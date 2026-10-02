@@ -6,6 +6,9 @@
 //! create private readiness; source ready/progress/possession rows are not
 //! copied. Retaining proof never applies an owned business operation.
 
+use super::root_policy_binding::{
+    RootAnchorBindingError, require_configuration, require_root_anchor,
+};
 use super::{
     BusinessReconstructionOverlay, BusinessReconstructionPlan, OwnedPublicationMaterial,
     ReconstructionEd25519Verifier, SourceBusinessSnapshot, SourceSnapshotRecord,
@@ -19,7 +22,7 @@ use crate::ordered_economics::{
     OrderedHistoryHeightMaterial, OrderedHistoryVerifier, OrderedOperationKind,
     advance_drain_union, confirm_drain_signer_entry, decode_drain_set_intent,
     decode_ordered_candidate, drain_signer_entry_key, import_staged_drain_publication,
-    ingest_drain_signer_page, ordered_economics_authority_anchor, staged_drain_signer_identity,
+    ingest_drain_signer_page, staged_drain_signer_identity,
 };
 use consensus::bundle::{PublicationBundleError, encode_publication_bundle};
 use consensus::{
@@ -162,39 +165,21 @@ fn require_plan_binding(plan: &BusinessReconstructionPlan<'_>) -> ControlResult<
     // disagreement among its own manifest/digest/profile/resolver is
     // unrepresentable, so only the still-independent `ordered_policy`/
     // `domain` inputs are cross-checked against it here.
-    if !plan.genesis_root.admission_profile().is_causal()
-        || plan.ordered_policy.genesis_digest() != plan.genesis_root.digest()
-        || plan.ordered_policy.context() != plan.genesis_root.manifest().context()
-        || plan.ordered_policy.domain() != plan.domain
-        || plan.ordered_policy.resolver().schedules()
-            != plan.genesis_root.genesis_resolver().schedules()
-        || plan.ordered_policy.engine().validator_set() != plan.genesis_root.genesis_committee()
-    {
-        return Err(DrainSetControlProofError::Invalid(
+    require_configuration(plan.genesis_root, plan.ordered_policy, plan.domain).map_err(|_| {
+        DrainSetControlProofError::Invalid(
             "control plan differs from locally pinned causal genesis",
-        ));
-    }
-    // An internally consistent historical policy cannot substitute for a
-    // signed causal root merely by copying its digest/domain/committee: the
-    // policy's own anchor must equal the canonical anchor independently
-    // re-derived from exactly this root, including its signed Freeze height.
-    let expected_anchor: Digest32 = ordered_economics_authority_anchor(
-        plan.genesis_root.genesis_resolver(),
-        plan.genesis_root.manifest().context(),
-        plan.domain,
-        plan.genesis_root.digest(),
-        plan.genesis_root.manifest().minimum_freeze_block_height,
-        plan.genesis_root.genesis_committee(),
-    )
-    .map_err(|_| {
-        DrainSetControlProofError::Invalid("control plan genesis root anchor derivation failed")
+        )
     })?;
-    if plan.ordered_policy.anchor() != expected_anchor {
-        return Err(DrainSetControlProofError::Invalid(
-            "control plan ordered policy anchor does not match the genesis root",
-        ));
-    }
-    Ok(())
+    require_root_anchor(plan.genesis_root, plan.ordered_policy, plan.domain).map_err(
+        |error: RootAnchorBindingError| match error {
+            RootAnchorBindingError::Derivation => DrainSetControlProofError::Invalid(
+                "control plan genesis root anchor derivation failed",
+            ),
+            RootAnchorBindingError::Mismatch => DrainSetControlProofError::Invalid(
+                "control plan ordered policy anchor does not match the genesis root",
+            ),
+        },
+    )
 }
 
 fn component(

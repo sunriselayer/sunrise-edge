@@ -795,7 +795,9 @@ fn historical_policy_copying_the_causal_roots_digest_domain_and_committee_still_
     plan.ordered_policy = &historical_policy;
     assert!(matches!(
         BusinessReconstructionOverlay::new(plan),
-        Err(BusinessReconstructionError::Invalid(_))
+        Err(BusinessReconstructionError::Invalid(
+            "trusted genesis/profile/policy pins disagree"
+        ))
     ));
 }
 
@@ -831,7 +833,9 @@ fn historical_policy_with_a_forged_matching_history_identity_still_refuses() {
     plan.ordered_policy = &historical_policy;
     assert!(matches!(
         BusinessReconstructionOverlay::new(plan),
-        Err(BusinessReconstructionError::Invalid(_))
+        Err(BusinessReconstructionError::Invalid(
+            "ordered policy anchor does not match the genesis root"
+        ))
     ));
 }
 
@@ -887,6 +891,44 @@ fn ordered_policy_resolver_schedule_must_equal_the_roots_complete_schedule_even_
     plan.ordered_policy = &extended_policy;
     assert!(matches!(
         BusinessReconstructionOverlay::new(plan),
-        Err(BusinessReconstructionError::Invalid(_))
+        Err(BusinessReconstructionError::Invalid(
+            "trusted genesis/profile/policy pins disagree"
+        ))
+    ));
+}
+
+#[test]
+fn reconstruction_history_defect_precedes_a_signed_root_anchor_defect() {
+    let fixture: CausalFixture = fresh_fixture();
+    let network: &Network = &fixture.network;
+    let (identity, _history): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
+        complete_history(network);
+    BusinessReconstructionOverlay::new(reconstruction_plan(&fixture, &identity)).unwrap();
+    let historical_policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::historical(
+        network.root.genesis_context().clone(),
+        network.domain(),
+        network.root.digest(),
+        network.root.genesis_committee().clone(),
+        network.root.genesis_resolver().clone(),
+    )
+    .unwrap();
+    let defective_identity: OrderedHistoryIdentity = OrderedHistoryIdentity {
+        domain: AtomicityDomainId::new([0x91; 32]).unwrap(),
+        anchor: historical_policy.anchor(),
+        ..identity
+    };
+    assert_ne!(defective_identity.domain, network.domain());
+    assert_eq!(defective_identity.anchor, historical_policy.anchor());
+    assert_ne!(historical_policy.anchor(), network.policy.anchor());
+    let mut plan: BusinessReconstructionPlan<'_> =
+        reconstruction_plan(&fixture, &defective_identity);
+    plan.ordered_policy = &historical_policy;
+    // Immutable configuration agrees, but the independent history domain and
+    // root-derived anchor both disagree. The companion diagnosis stays first.
+    assert!(matches!(
+        BusinessReconstructionOverlay::new(plan),
+        Err(BusinessReconstructionError::Invalid(
+            "trusted genesis/profile/policy pins disagree"
+        ))
     ));
 }

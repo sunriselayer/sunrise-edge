@@ -11,12 +11,16 @@ pub mod cut;
 mod dependency_graph;
 pub mod inactive_import;
 mod projection;
+mod root_policy_binding;
 
 pub use control::{
     DrainSetControlMaterial, DrainSetControlProofError, DrainSetSignerFrontierMaterial,
     drain_control_material_from_source_snapshot,
 };
 
+use self::root_policy_binding::{
+    RootAnchorBindingError, require_configuration, require_root_anchor,
+};
 use crate::NodeDedupRecord;
 use crate::fast_path::drain_publication::{drain_publication_artifact_key, drain_publication_key};
 use crate::fast_path::publication::witness::{
@@ -41,7 +45,6 @@ use crate::ordered_economics::{
     OrderedEconomicsEnvironment, OrderedEconomicsError, OrderedEconomicsPolicy,
     OrderedHistoryComponentKind, OrderedHistoryHeightMaterial, OrderedHistoryIdentity,
     OrderedHistoryVerifier, OrderedOperationKind, decode_ordered_candidate,
-    ordered_economics_authority_anchor,
 };
 use crate::{MAX_AUTHENTICATED_OBJECT_BODY_BYTES, genesis};
 use canonical_encoding::{CanonicalStruct, decode_canonical_frame};
@@ -2370,14 +2373,9 @@ impl<'a> BusinessReconstructionOverlay<'a> {
         // unrepresentable here and is no longer independently re-checked.
         // The still-independent policy/history/domain inputs below are not
         // guaranteed by the root and keep their real cross-checks.
-        if !plan.genesis_root.admission_profile().is_causal()
-            || plan.ordered_policy.context() != plan.genesis_root.manifest().context()
-            || plan.ordered_policy.domain() != plan.domain
-            || plan.ordered_policy.genesis_digest() != plan.genesis_root.digest()
-            || plan.ordered_policy.resolver().schedules()
-                != plan.genesis_root.genesis_resolver().schedules()
-            || plan.ordered_policy.engine().validator_set() != plan.genesis_root.genesis_committee()
-            || plan.ordered_history_identity.context != *plan.genesis_root.manifest().context()
+        require_configuration(plan.genesis_root, plan.ordered_policy, plan.domain)
+            .map_err(|_| invalid("trusted genesis/profile/policy pins disagree"))?;
+        if plan.ordered_history_identity.context != *plan.genesis_root.manifest().context()
             || plan.ordered_history_identity.domain != plan.domain
             || plan.ordered_history_identity.genesis_digest != plan.genesis_root.digest()
             || plan.ordered_history_identity.anchor != plan.ordered_policy.anchor()
@@ -2388,26 +2386,18 @@ impl<'a> BusinessReconstructionOverlay<'a> {
         {
             return Err(invalid("trusted genesis/profile/policy pins disagree"));
         }
-        // An internally consistent historical policy/archive pair cannot
-        // substitute for a signed causal root merely by copying its digest,
-        // domain and committee bytes: the policy's own anchor must equal the
-        // canonical anchor independently re-derived from exactly this root
-        // (including its signed Freeze height), which only a genuinely
-        // root-derived policy can satisfy.
-        let expected_anchor: Digest32 = ordered_economics_authority_anchor(
-            plan.genesis_root.genesis_resolver(),
-            plan.genesis_root.manifest().context(),
-            plan.domain,
-            plan.genesis_root.digest(),
-            plan.genesis_root.manifest().minimum_freeze_block_height,
-            plan.genesis_root.genesis_committee(),
-        )
-        .map_err(|_| invalid("genesis root anchor could not be derived"))?;
-        if plan.ordered_policy.anchor() != expected_anchor {
-            return Err(invalid(
-                "ordered policy anchor does not match the genesis root",
-            ));
-        }
+        // Companion disagreement keeps its original diagnostic precedence
+        // over a policy anchor which differs from the signed root's anchor.
+        require_root_anchor(plan.genesis_root, plan.ordered_policy, plan.domain).map_err(
+            |error: RootAnchorBindingError| match error {
+                RootAnchorBindingError::Derivation => {
+                    invalid("genesis root anchor could not be derived")
+                }
+                RootAnchorBindingError::Mismatch => {
+                    invalid("ordered policy anchor does not match the genesis root")
+                }
+            },
+        )?;
         let store: MemoryDurableStateStore =
             MemoryDurableStateStore::new_bound(plan.domain, plan.operation_context.writer_fence());
         let install: GenesisInstallOutcome = genesis::install_genesis_with_history(

@@ -401,6 +401,93 @@ fn genuine_control_history_needs_complete_selected_proof_and_reconstructs_withou
     assert_canonical_source_fact_corruptions_refuse_without_writes(&source, &before, &overlay);
 }
 
+#[test]
+fn public_control_rejects_historical_and_full_schedule_policy_substitution() {
+    use protocol_types::{HashSuite, HashSuiteSchedule};
+
+    let source: GenuineControlSource = genuine_control_source(false);
+    let network: &Network = &source.fixture.network;
+    let (identity, history): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
+        complete_history(network);
+    let before: SourceBusinessSnapshot = snapshot(network);
+    let healthy_plan: BusinessReconstructionPlan<'_> =
+        reconstruction_plan(&source.fixture, &identity);
+    let healthy_controls: Vec<DrainSetControlMaterial> =
+        drain_control_material_from_source_snapshot(&before, &healthy_plan, &history).unwrap();
+    assert_eq!(healthy_controls.len(), 1);
+    assert_eq!(healthy_controls[0].signer_frontiers.len(), 3);
+
+    let historical_policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::historical(
+        network.root.genesis_context().clone(),
+        network.domain(),
+        network.root.digest(),
+        network.root.genesis_committee().clone(),
+        network.root.genesis_resolver().clone(),
+    )
+    .unwrap();
+    assert_ne!(historical_policy.anchor(), network.policy.anchor());
+    let forged_identity: OrderedHistoryIdentity = OrderedHistoryIdentity {
+        anchor: historical_policy.anchor(),
+        ..identity.clone()
+    };
+    for substituted_identity in [&identity, &forged_identity] {
+        let mut plan: BusinessReconstructionPlan<'_> =
+            reconstruction_plan(&source.fixture, substituted_identity);
+        plan.ordered_policy = &historical_policy;
+        assert!(matches!(
+            drain_control_material_from_source_snapshot(&before, &plan, &history),
+            Err(DrainSetControlProofError::Invalid(
+                "control plan ordered policy anchor does not match the genesis root"
+            ))
+        ));
+    }
+
+    let manifest_bytes: Vec<u8> =
+        genesis::encode_genesis_manifest(network.root.manifest()).unwrap();
+    let extended_resolver: HashSuiteResolver = HashSuiteResolver::new(
+        fixture::chain(),
+        fixture::protocol().protocol_version(),
+        vec![
+            HashSuiteSchedule {
+                activation_epoch: Epoch::new(0),
+                suite: HashSuite::genesis(),
+            },
+            HashSuiteSchedule {
+                activation_epoch: Epoch::new(1_000_000),
+                suite: HashSuite::genesis(),
+            },
+        ],
+    )
+    .unwrap();
+    let extended_root: genesis::VerifiedGenesisRoot = genesis::VerifiedGenesisRoot::verify_bytes(
+        &extended_resolver,
+        &manifest_bytes,
+        network.root.digest().bytes(),
+        network.root.genesis_context(),
+    )
+    .unwrap();
+    let extended_policy: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(&extended_root, network.domain()).unwrap();
+    assert_eq!(extended_policy.anchor(), network.policy.anchor());
+    assert_ne!(
+        extended_policy.resolver().schedules(),
+        network.root.genesis_resolver().schedules()
+    );
+    let mut plan: BusinessReconstructionPlan<'_> = reconstruction_plan(&source.fixture, &identity);
+    plan.ordered_policy = &extended_policy;
+    assert!(matches!(
+        drain_control_material_from_source_snapshot(&before, &plan, &history),
+        Err(DrainSetControlProofError::Invalid(
+            "control plan differs from locally pinned causal genesis"
+        ))
+    ));
+    assert_eq!(
+        drain_control_material_from_source_snapshot(&before, &healthy_plan, &history).unwrap(),
+        healthy_controls
+    );
+    assert_eq!(snapshot(network), before);
+}
+
 #[derive(Clone, Copy, Debug)]
 enum SourceFactMutation {
     Nonce,

@@ -80,6 +80,7 @@
 - [DR-0182: one immutable verified genesis root](0182-immutable-verified-genesis-root.md)
 - [DR-0183: test observation ownership and complete preparation equivalence](0183-test-observation-ownership.md)
 - [DR-0184: one FastVote committee record validator](0184-one-fastvote-committee-record-validator.md)
+- [DR-0185: one immutable reconstruction policy binding owner](0185-one-reconstruction-policy-binding.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

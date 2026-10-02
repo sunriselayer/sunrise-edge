@@ -93,15 +93,34 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   activation obligations. Six pure tests, two installed-history restart
   negatives, two actual SQLite startup tests plus eleven shared support tests,
   twenty-one compiled operator CLI unit tests and the complete required local
-  gate passed before main integration at `8a4cff3`; fresh read-only Codex
-  fallback review explicitly approved that head.
+  gate passed. The final integrated head `cea8e5c` received fresh read-only
+  Codex fallback APPROVE and all four required CI lanes plus the aggregate
+  check passed in run `37006114264`.
   The first selected full PostgreSQL run failed in restart connection readiness:
   its disposable service used a dynamically assigned host port, which changed
   on restart while the fixture retained the original database URL. A separate
-  owned-container reproduction confirmed the port change. Use an explicitly
-  fixed loopback port, retain every required fault scenario, and rerun complete
-  acceptance on the integrated head. Fresh exact-head review and required CI
-  are also pending after integration; no Seal/serving/Delivery 3 claim.
+  owned-container reproduction confirmed the port change. The disposable wrapper
+  was changed to a fixed loopback port without changing the repository tests;
+  acceptance then reran
+  `npm ci --prefix adapters/cloudflare-workers` and the complete serial
+  `./scripts/check-all.sh --full` on that final head. All required and selected
+  PostgreSQL cases passed, including backup/restore, connection exhaustion,
+  SIGKILL recovery, data and WAL ENOSPC and PgBouncer. This is actual local
+  full-profile evidence, not a claim of five separately dispatched CI jobs.
+  PR #261 merged normally as `e5b00c1`; its merge tree equals the reviewed head
+  and main equals origin/main with a clean tree. No Seal/serving/Delivery 3 claim.
+  [DR-0185](docs/architecture/decisions/0185-one-reconstruction-policy-binding.md)
+  and [PR #262](https://github.com/sunriselayer/sunrise-edge/pull/262) establish
+  one private two-stage immutable root/policy/domain and signed anchor relation
+  for the actual overlay and control collector. Complete resolver schedules
+  remain checked; independent execution/history companions, genuine control,
+  saved-cut integrity and fresh destination completion keep their own authority
+  and error order. At `eefc87d`, all 42 causal-placement tests, the complete
+  local required gate, fresh read-only Codex fallback APPROVE and required CI
+  `37006116206` passed, including genuine completed Freeze/DrainSet positives,
+  public-control substitution and combined-defect diagnostic precedence.
+  Integration with PR #261 requires fresh final-head acceptance before merge.
+  This is not Seal, serving or Delivery 3 completion.
 - [ ] Test/CI architecture: owner-specific fixture composition and a coherent
   gate registry/execution contract, preserving all required coverage.
   Closed executable plans and separately owned action recipes merged in PR #257.
@@ -130,7 +149,7 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   test mechanics, and the PR-creation-only PAT was not reused for merge.
 - [ ] Independently reviewed, fully checked PR checkpoints; update this list
   from actual evidence, not skeleton compilation or file counts.
-  PR #257, PR #258, PR #259 and PR #260 are verified normal-merge checkpoints; full
+  PR #257 through PR #261 are verified normal-merge checkpoints; full
   local acceptance does not replace independent review, exact-head CI or
   production qualification.
 

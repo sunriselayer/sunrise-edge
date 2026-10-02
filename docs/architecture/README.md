@@ -38,6 +38,10 @@ roadmap describes a later target state.
   ([DR-0184](decisions/0184-one-fastvote-committee-record-validator.md)):
   one typed structural invariant across core and operator consumers, distinct
   from genesis capacity, historical authentication and live serving authority.
+- [Immutable reconstruction configuration](reconstruction-policy-binding.md)
+  ([DR-0185](decisions/0185-one-reconstruction-policy-binding.md)):
+  one private root/policy/domain and signed-anchor relation used by overlay and
+  control collection; independent history, cut and destination evidence remain.
 - [Generic contract architecture](generic-contracts.md): common execution and
   authority, type/instance/object separation, upgrades, migration and durable
   verification obligations.
