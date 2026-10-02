@@ -114,14 +114,14 @@ fn load(parsed: &ParsedArgs) -> Result<Inputs, CliError> {
         &context,
     )
     .map_err(failure)?;
-    if !trusted.commitment_profile.is_logical() || trusted.minimum_freeze_block_height == 0 {
+    if !trusted.commitment_profile().is_logical() || trusted.minimum_freeze_block_height() == 0 {
         return Err(invalid(
             "frozen frontier requires locally pinned signed genesis authorizing Freeze",
         ));
     }
     let peers = parse_network_config(parsed.require("--fastvote-network")?)?;
     let mut endpoints: Vec<FastVoteEndpoint<CliTransport>> = build_frontier_endpoints(&peers)?;
-    validate_fastvote_endpoints(&endpoints, &trusted.certifier).map_err(failure)?;
+    validate_fastvote_endpoints(&endpoints, trusted.certifier()).map_err(failure)?;
     let validator: ValidatorId = ValidatorId::new(decode_hex_32(
         "--validator-id",
         parsed.require("--validator-id")?,
@@ -135,7 +135,7 @@ fn load(parsed: &ParsedArgs) -> Result<Inputs, CliError> {
         context.chain_id().clone(),
         context.protocol_version(),
         context.epoch(),
-        trusted.certifier.validator_set().clone(),
+        trusted.certifier().validator_set().clone(),
     )
     .map_err(failure)?;
     let domain: AtomicityDomainId = AtomicityDomainId::new(decode_hex_32(
@@ -148,7 +148,7 @@ fn load(parsed: &ParsedArgs) -> Result<Inputs, CliError> {
         parsed.require("--freeze-request-id")?,
     )?;
     let freeze_height: u64 = parse_u64("--freeze-height", parsed.require("--freeze-height")?)?;
-    if freeze_request == [0; 32] || freeze_height < trusted.minimum_freeze_block_height {
+    if freeze_request == [0; 32] || freeze_height < trusted.minimum_freeze_block_height() {
         return Err(invalid(
             "Freeze pin must name a nonzero request and an eligible actual block height",
         ));

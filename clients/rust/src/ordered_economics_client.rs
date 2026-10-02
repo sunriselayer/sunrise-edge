@@ -44,7 +44,6 @@ use consensus::{ConsensusMessage, ConsensusVote, QuorumCertificate};
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
 use node_core::fast_path::FastPathEd25519Verifier;
-use node_core::genesis::GenesisManifest;
 use node_core::ordered_economics::{
     OrderedCandidate, OrderedEconomicsError, OrderedEconomicsPolicy, OrderedEventOutput,
     OrderedOutcome, OrderedStatus, decode_ordered_event_output, decode_ordered_proposal,
@@ -65,10 +64,8 @@ use protocol_types::SignatureSchemeId;
 use crate::Client;
 use crate::client::expect_success;
 use crate::error::ClientError;
-use crate::local_genesis::{
-    LocalGenesisError, PinnedGenesis, load_pinned_genesis, validator_set_from_record,
-};
-use crate::transport::{Method, Transport, WireRequest};
+use crate::local_genesis::{GenesisTrustError, load_verified_genesis_root};
+use node_core::genesis::{GenesisCommitteeError, GenesisRootError, VerifiedGenesisRoot};
 
 /// Bounded fan-out cap for one configured ordered-economics cohort, mirroring
 /// [`crate::fastvote_client::MAX_FASTVOTE_NETWORK_ENDPOINTS`].
@@ -143,9 +140,11 @@ pub enum OrderedGenesisTrustError {
     ContextMismatch,
     /// The genesis authority signature failed to verify.
     InvalidSignature,
-    /// The embedded validator-set record was invalid.
+    /// The original committee's context, scheme, capacity, or structure was
+    /// invalid.
     InvalidValidatorSet(String),
-    /// `OrderedEconomicsPolicy::new` itself rejected the pinned inputs.
+    /// `OrderedEconomicsPolicy::from_genesis_root` itself rejected the
+    /// pinned inputs.
     Policy(OrderedEconomicsError),
 }
 
@@ -171,14 +170,31 @@ impl fmt::Display for OrderedGenesisTrustError {
 
 impl Error for OrderedGenesisTrustError {}
 
-impl From<LocalGenesisError> for OrderedGenesisTrustError {
-    fn from(error: LocalGenesisError) -> Self {
+impl From<GenesisTrustError> for OrderedGenesisTrustError {
+    fn from(error: GenesisTrustError) -> Self {
         match error {
-            LocalGenesisError::Io(error) => Self::Io(error),
-            LocalGenesisError::Decode(error) => Self::Decode(error),
-            LocalGenesisError::CommitmentMismatch => Self::CommitmentMismatch,
-            LocalGenesisError::ContextMismatch => Self::ContextMismatch,
-            LocalGenesisError::InvalidSignature => Self::InvalidSignature,
+            GenesisTrustError::Io(error) => Self::Io(error),
+            GenesisTrustError::Verification(error) => Self::from(error),
+        }
+    }
+}
+
+impl From<GenesisRootError> for OrderedGenesisTrustError {
+    fn from(error: GenesisRootError) -> Self {
+        match error {
+            GenesisRootError::Decode(error) => Self::Decode(error),
+            GenesisRootError::CommitmentMismatch => Self::CommitmentMismatch,
+            GenesisRootError::ContextMismatch => Self::ContextMismatch,
+            GenesisRootError::InvalidSignature => Self::InvalidSignature,
+            GenesisRootError::InvalidCommittee(
+                GenesisCommitteeError::UnsupportedSignatureScheme,
+            ) => Self::InvalidValidatorSet(
+                "ordered economics fixed-epoch profile supports only Ed25519 validators"
+                    .to_string(),
+            ),
+            GenesisRootError::InvalidCommittee(reason) => {
+                Self::InvalidValidatorSet(reason.to_string())
+            }
         }
     }
 }
@@ -186,9 +202,8 @@ impl From<LocalGenesisError> for OrderedGenesisTrustError {
 /// Reads and strictly validates a genesis manifest file exactly like
 /// [`crate::fastvote_client::load_trusted_fastvote_genesis`], then builds the
 /// [`OrderedEconomicsPolicy`] this call's fixed-epoch profile uses for local
-/// verification. `domain` and `genesis_digest` are separate, caller-supplied
-/// pins the manifest's own commitment digest is checked against; neither is
-/// ever replaced by a value read from any endpoint.
+/// verification. `domain` is a separate, caller-supplied pin; it is never
+/// replaced by a value read from any endpoint.
 #[allow(clippy::result_large_err)]
 pub fn load_trusted_ordered_policy(
     manifest_path: &Path,
@@ -197,25 +212,10 @@ pub fn load_trusted_ordered_policy(
     expected_context: &PublicationContext,
     domain: AtomicityDomainId,
 ) -> Result<OrderedEconomicsPolicy, OrderedGenesisTrustError> {
-    let pinned: PinnedGenesis =
-        load_pinned_genesis(manifest_path, resolver, expected_digest, expected_context)
-            .map_err(OrderedGenesisTrustError::from)?;
-    let manifest: &GenesisManifest = &pinned.manifest;
-    let validator_set: ValidatorSet = validator_set_from_record(
-        &manifest.validator_set,
-        expected_context,
-        "ordered economics fixed-epoch profile supports only Ed25519 validators",
-    )
-    .map_err(OrderedGenesisTrustError::InvalidValidatorSet)?;
-    OrderedEconomicsPolicy::new(
-        expected_context.clone(),
-        domain,
-        pinned.digest,
-        Some(manifest),
-        validator_set,
-        resolver.clone(),
-    )
-    .map_err(OrderedGenesisTrustError::Policy)
+    let root: VerifiedGenesisRoot =
+        load_verified_genesis_root(manifest_path, resolver, expected_digest, expected_context)?;
+    OrderedEconomicsPolicy::from_genesis_root(&root, domain)
+        .map_err(OrderedGenesisTrustError::Policy)
 }
 
 /// Fail-closed configuration errors [`validate_ordered_economics_endpoints`]
@@ -1589,11 +1589,10 @@ mod recovery_preflight_tests {
                 .collect(),
         )
         .unwrap();
-        let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
+        let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::historical(
             PublicationContext::new(chain, protocol, epoch).unwrap(),
             AtomicityDomainId::new([0x11; 32]).unwrap(),
             Digest32::new(HashAlgorithmId::Sha2_256, [0x22; 32]),
-            None,
             set,
             resolver,
         )

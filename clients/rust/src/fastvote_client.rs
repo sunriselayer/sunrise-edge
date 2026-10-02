@@ -81,7 +81,6 @@ use node_core::admission_profile::{
     ExternalRequestLane, VerifiedAdmissionProfile, require_external_request_lane,
 };
 use node_core::fast_path::FastPathEd25519Verifier;
-use node_core::genesis::GenesisManifest;
 use node_core::logical_generation::CommitmentProfile;
 use node_wire::{FASTVOTE_CERTIFICATES_PATH, FASTVOTE_PREPARE_PATH, FastVoteApplyRequest};
 use protocol_types::{Digest32, ValidatorId};
@@ -94,11 +93,10 @@ use validator_set::ValidatorInfo;
 
 use crate::client::expect_success;
 use crate::error::ClientError;
-use crate::local_genesis::{
-    LocalGenesisError, PinnedGenesis, load_pinned_genesis, validator_set_from_record,
-};
+use crate::local_genesis::{GenesisTrustError, load_verified_genesis_root};
 use crate::transport::{Method, Transport, WireRequest};
 use crate::{Client, NODE_RESULT_MEDIA_TYPE};
+use node_core::genesis::{GenesisCommitteeError, GenesisRootError, VerifiedGenesisRoot};
 use node_wire::{HttpNodeResult, NODE_EVENT_MEDIA_TYPE};
 
 /// Bounded fan-out cap for one configured FastVote network: a caller-side
@@ -130,8 +128,8 @@ pub enum FastVoteGenesisTrustError {
     ContextMismatch,
     /// The genesis authority signature failed to verify.
     InvalidSignature,
-    /// The embedded validator-set record's context, scheme, or structure
-    /// was invalid.
+    /// The original committee's context, scheme, capacity, or structure was
+    /// invalid.
     InvalidValidatorSet(String),
 }
 
@@ -164,14 +162,30 @@ impl Error for FastVoteGenesisTrustError {
     }
 }
 
-impl From<LocalGenesisError> for FastVoteGenesisTrustError {
-    fn from(error: LocalGenesisError) -> Self {
+impl From<GenesisTrustError> for FastVoteGenesisTrustError {
+    fn from(error: GenesisTrustError) -> Self {
         match error {
-            LocalGenesisError::Io(error) => Self::Io(error),
-            LocalGenesisError::Decode(error) => Self::Decode(error),
-            LocalGenesisError::CommitmentMismatch => Self::CommitmentMismatch,
-            LocalGenesisError::ContextMismatch => Self::ContextMismatch,
-            LocalGenesisError::InvalidSignature => Self::InvalidSignature,
+            GenesisTrustError::Io(error) => Self::Io(error),
+            GenesisTrustError::Verification(error) => Self::from(error),
+        }
+    }
+}
+
+impl From<GenesisRootError> for FastVoteGenesisTrustError {
+    fn from(error: GenesisRootError) -> Self {
+        match error {
+            GenesisRootError::Decode(error) => Self::Decode(error),
+            GenesisRootError::CommitmentMismatch => Self::CommitmentMismatch,
+            GenesisRootError::ContextMismatch => Self::ContextMismatch,
+            GenesisRootError::InvalidSignature => Self::InvalidSignature,
+            GenesisRootError::InvalidCommittee(
+                GenesisCommitteeError::UnsupportedSignatureScheme,
+            ) => Self::InvalidValidatorSet(
+                "FastVote phase 1 supports only Ed25519 validators".to_string(),
+            ),
+            GenesisRootError::InvalidCommittee(reason) => {
+                Self::InvalidValidatorSet(reason.to_string())
+            }
         }
     }
 }
@@ -195,38 +209,76 @@ pub fn load_trusted_fastvote_genesis(
         expected_digest,
         expected_context,
     )
-    .map(|trusted| trusted.certifier)
+    .map(|trusted| trusted.certifier().clone())
 }
 
-/// Verified local genesis policy and validator-set pin from the *same*
-/// authenticated manifest bytes. The profile is never inferred from a peer,
-/// route choice or an independent second file read.
+/// Verified local genesis root and the `FastPathCertifier` derived from its
+/// own original committee -- never a second, independently supplied
+/// validator set, so disagreement between the pinned committee and the
+/// certifier's own committee is unrepresentable. The profile is never
+/// inferred from a peer, route choice or an independent second file read.
+///
+/// Construction and mutation of its private fields is impossible outside
+/// this module:
+///
+/// ```compile_fail
+/// fn assert_sealed(
+///     root: node_core::genesis::VerifiedGenesisRoot,
+///     certifier: consensus::FastPathCertifier,
+/// ) {
+///     let _ = sunrise_edge_client::TrustedFastVoteGenesis { root, certifier };
+/// }
+/// ```
+///
+/// ```compile_fail
+/// fn assert_immutable(
+///     mut trusted: sunrise_edge_client::TrustedFastVoteGenesis,
+///     certifier: consensus::FastPathCertifier,
+/// ) {
+///     trusted.certifier = certifier;
+/// }
+/// ```
 pub struct TrustedFastVoteGenesis {
-    /// Pinned committee and its exact chain/protocol/epoch context.
-    pub certifier: FastPathCertifier,
-    /// Signed commitment profile selecting the mandatory publication gate.
-    pub commitment_profile: CommitmentProfile,
-    /// Signed Freeze warrant; zero preserves the historical v1/v2 policy.
-    pub minimum_freeze_block_height: u64,
-    admission_profile: VerifiedAdmissionProfile,
-    pinned_validator_set: ValidatorSet,
+    root: VerifiedGenesisRoot,
+    certifier: FastPathCertifier,
 }
 
 impl TrustedFastVoteGenesis {
+    /// The locally verified genesis root this certifier and profile are
+    /// derived from.
+    pub fn genesis_root(&self) -> &VerifiedGenesisRoot {
+        &self.root
+    }
+
+    /// Pinned committee and its exact chain/protocol/epoch context.
+    pub fn certifier(&self) -> &FastPathCertifier {
+        &self.certifier
+    }
+
+    /// Signed commitment profile selecting the mandatory publication gate.
+    pub fn commitment_profile(&self) -> CommitmentProfile {
+        self.root.manifest().commitment_profile
+    }
+
+    /// Signed Freeze warrant; zero preserves the historical v1/v2 policy.
+    pub fn minimum_freeze_block_height(&self) -> u64 {
+        self.root.manifest().minimum_freeze_block_height
+    }
+
     /// The lane rule is rooted in the exact locally pinned signed manifest,
     /// not a freely constructed profile tag or any endpoint response.
     pub fn admission_profile(&self) -> &VerifiedAdmissionProfile {
-        &self.admission_profile
+        self.root.admission_profile()
     }
 
     /// Run before creating a signature or sending a standalone paid request.
     pub fn require_owned_request_id(&self, request: &[u8; 32]) -> Result<(), ClientError> {
-        require_external_request_lane(&self.admission_profile, ExternalRequestLane::Owned, request)
-            .map_err(ClientError::NodeCore)
-    }
-
-    pub(crate) fn committee_matches_pin(&self) -> bool {
-        self.certifier.validator_set() == &self.pinned_validator_set
+        require_external_request_lane(
+            self.admission_profile(),
+            ExternalRequestLane::Owned,
+            request,
+        )
+        .map_err(ClientError::NodeCore)
     }
 }
 
@@ -239,37 +291,16 @@ pub fn load_trusted_fastvote_genesis_with_profile(
     expected_digest: [u8; 32],
     expected_context: &PublicationContext,
 ) -> Result<TrustedFastVoteGenesis, FastVoteGenesisTrustError> {
-    let pinned: PinnedGenesis =
-        load_pinned_genesis(manifest_path, resolver, expected_digest, expected_context)
-            .map_err(FastVoteGenesisTrustError::from)?;
-    let manifest: &GenesisManifest = &pinned.manifest;
-    let commitment_profile: CommitmentProfile = manifest.commitment_profile;
-    let admission_profile: VerifiedAdmissionProfile =
-        VerifiedAdmissionProfile::from_pinned_genesis(resolver, manifest, pinned.digest)
-            .map_err(|_| FastVoteGenesisTrustError::InvalidSignature)?;
-    validator_set_from_record(
-        &manifest.validator_set,
-        expected_context,
-        "FastVote phase 1 supports only Ed25519 validators",
+    let root: VerifiedGenesisRoot =
+        load_verified_genesis_root(manifest_path, resolver, expected_digest, expected_context)?;
+    let certifier: FastPathCertifier = FastPathCertifier::new(
+        expected_context.chain_id().clone(),
+        expected_context.protocol_version(),
+        expected_context.epoch(),
+        root.genesis_committee().clone(),
     )
-    .map_err(FastVoteGenesisTrustError::InvalidValidatorSet)
-    .and_then(|validator_set| {
-        let pinned_validator_set: ValidatorSet = validator_set.clone();
-        let certifier: FastPathCertifier = FastPathCertifier::new(
-            expected_context.chain_id().clone(),
-            expected_context.protocol_version(),
-            expected_context.epoch(),
-            validator_set,
-        )
-        .map_err(|error| FastVoteGenesisTrustError::InvalidValidatorSet(error.to_string()))?;
-        Ok(TrustedFastVoteGenesis {
-            certifier,
-            commitment_profile,
-            minimum_freeze_block_height: manifest.minimum_freeze_block_height,
-            admission_profile,
-            pinned_validator_set,
-        })
-    })
+    .map_err(|error| FastVoteGenesisTrustError::InvalidValidatorSet(error.to_string()))?;
+    Ok(TrustedFastVoteGenesis { root, certifier })
 }
 
 /// One caller-configured FastVote validator endpoint: a fixed,
