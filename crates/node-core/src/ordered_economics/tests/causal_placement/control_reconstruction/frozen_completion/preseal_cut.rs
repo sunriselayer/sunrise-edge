@@ -420,10 +420,8 @@ fn preseal_cut_genuine_fast_certificate_subsets_share_semantic_cut_not_exact_pac
         &history,
     )
     .unwrap();
-    let saved: SavedBusinessCut = alternate_retained_certificate(
-        transfer(&cut, &network.resolver),
-        &network.resolver,
-    );
+    let saved: SavedBusinessCut =
+        alternate_retained_certificate(transfer(&cut, &network.resolver), &network.resolver);
     let verified: VerifiedBusinessCut =
         verify_saved_business_cut(reconstruction_plan(&source.fixture, &identity), &saved).unwrap();
     assert_eq!(verified.cut_digest(), cut.cut_digest());
@@ -474,8 +472,7 @@ pub(super) fn alternate_retained_certificate(
     actual.bytes = alternate;
     actual.descriptor.length = actual.bytes.len() as u64;
     actual.descriptor.digest =
-        business_cut_component_digest(resolver, &saved.identity.context, &actual.bytes)
-            .unwrap();
+        business_cut_component_digest(resolver, &saved.identity.context, &actual.bytes).unwrap();
     refresh_package(&mut saved, resolver);
     saved
 }

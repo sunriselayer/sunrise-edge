@@ -179,10 +179,8 @@ fn conditional_readiness_genuine_sqlite_all_members_restart_quorum_corrected_set
         )
         .unwrap();
         let blobs: SqliteBlobStore = SqliteBlobStore::open(&body).unwrap();
-        let signer: ReadinessSigningKey = ReadinessSigningKey::new(
-            network.signers[index].id,
-            network.signers[index].key.clone(),
-        );
+        let signer: ReadinessSigningKey =
+            ReadinessSigningKey::new(network.signers[index].id, network.signers[index].key);
         assert!(
             retain_conditional_readiness(
                 reconstruction_plan(&source.fixture, &identity),
@@ -290,10 +288,8 @@ fn conditional_readiness_genuine_sqlite_all_members_restart_quorum_corrected_set
         let target: SqliteImportTarget =
             SqliteImportTarget::open_existing(&state, namespace, verified.binding()).unwrap();
         let blobs: SqliteBlobStore = SqliteBlobStore::open_existing(&body).unwrap();
-        let restarted: ReadinessSigningKey = ReadinessSigningKey::new(
-            network.signers[index].id,
-            network.signers[index].key.clone(),
-        );
+        let restarted: ReadinessSigningKey =
+            ReadinessSigningKey::new(network.signers[index].id, network.signers[index].key);
         let replay: ReadinessVote = retain_conditional_readiness(
             reconstruction_plan(&source.fixture, &identity),
             &saved,
@@ -412,10 +408,8 @@ fn conditional_readiness_genuine_sqlite_all_members_restart_quorum_corrected_set
                     rusqlite::params![slot_bytes],
                 )
                 .unwrap();
-            let recreated: ReadinessSigningKey = ReadinessSigningKey::new(
-                network.signers[index].id,
-                network.signers[index].key.clone(),
-            );
+            let recreated: ReadinessSigningKey =
+                ReadinessSigningKey::new(network.signers[index].id, network.signers[index].key);
             assert_eq!(
                 retain_conditional_readiness(
                     reconstruction_plan(&source.fixture, &identity),
@@ -502,10 +496,8 @@ fn conditional_readiness_genuine_sqlite_all_members_restart_quorum_corrected_set
                 &alternate_bodies,
                 &operation,
             );
-            let alternate_signer: ReadinessSigningKey = ReadinessSigningKey::new(
-                network.signers[index].id,
-                network.signers[index].key.clone(),
-            );
+            let alternate_signer: ReadinessSigningKey =
+                ReadinessSigningKey::new(network.signers[index].id, network.signers[index].key);
             let alternate_vote: ReadinessVote = retain_conditional_readiness(
                 reconstruction_plan(&source.fixture, &identity),
                 &alternate,
@@ -574,10 +566,8 @@ fn conditional_readiness_genuine_sqlite_all_members_restart_quorum_corrected_set
             );
             let mut another: Vec<FastPathValidatorEntry> = members.clone();
             another[0].voting_power = 3;
-            let fenced: ReadinessSigningKey = ReadinessSigningKey::new(
-                network.signers[index].id,
-                network.signers[index].key.clone(),
-            );
+            let fenced: ReadinessSigningKey =
+                ReadinessSigningKey::new(network.signers[index].id, network.signers[index].key);
             assert!(
                 retain_conditional_readiness(
                     reconstruction_plan(&source.fixture, &identity),
@@ -660,7 +650,7 @@ fn conditional_readiness_real_initial_e_four_separate_imports_and_restarted_weig
         let bodies: SqliteBlobStore = SqliteBlobStore::open(&body).unwrap();
         complete(&verified, &target, &bodies, &operation);
         let signer: ReadinessSigningKey =
-            ReadinessSigningKey::new(member.id, source.signing_key(member.id).clone());
+            ReadinessSigningKey::new(member.id, *source.signing_key(member.id));
         let vote: ReadinessVote = retain_conditional_readiness(
             source.plan(operation),
             source.saved(),
@@ -680,7 +670,7 @@ fn conditional_readiness_real_initial_e_four_separate_imports_and_restarted_weig
             SqliteImportTarget::open_existing(&state, namespace, verified.binding()).unwrap();
         let bodies: SqliteBlobStore = SqliteBlobStore::open_existing(&body).unwrap();
         let restarted: ReadinessSigningKey =
-            ReadinessSigningKey::new(member.id, source.signing_key(member.id).clone());
+            ReadinessSigningKey::new(member.id, *source.signing_key(member.id));
         assert_eq!(
             retain_conditional_readiness(
                 source.plan(operation),

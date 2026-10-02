@@ -147,6 +147,13 @@ reviewable commits; semantic changes stay with their owning feature.
   compiled CLI and provider acceptance, retain positive controls independent
   of the negative under test. Do not replace actual restart/fencing/atomicity
   evidence with mocks or rename a source-local snapshot test as cut/import.
+  A same-selector local readiness probe at `00b3fb9` passed both genuine tests
+  in 756.39s without curve optimization and 47.47s with a named-package
+  `curve25519-dalek` opt-level 3 override; the latter build took 12.08s.
+  The corresponding dev/test override keeps debug assertions and overflow
+  checks enabled, without changing release settings, dependencies or tests.
+  Final same-head gates remain required; this is not whole-CI or provider
+  performance evidence. See [validation profiles](docs/development/validation.md).
 - [ ] **Audit/startup preparation:** map changed attack surfaces and assemble
   executable configuration/key/TLS/recovery instructions while Delivery 3
   proceeds. Tech-lead approval is not the independent security audit.

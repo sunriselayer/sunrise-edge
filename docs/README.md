@@ -7,6 +7,9 @@ detailed design, operator guides, and specialist references live here.
 
 - [Code ownership map](development/code-map.md): where a feature enters,
   changes protocol state, and is tested.
+- [Validation and build profiles](development/validation.md): storage-neutral
+  required checks, selected PostgreSQL acceptance and assertion-preserving
+  signature-heavy test builds.
 
 ## Architecture
 
