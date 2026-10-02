@@ -92,6 +92,8 @@ fn conditional_readiness_genuine_sqlite_all_members_restart_quorum_corrected_set
     assert!(verified.binding().row_count > runtime::inactive_import::MAX_IMPORT_BATCH_ROWS as u64);
     let members: Vec<FastPathValidatorEntry> = next_members(network);
     let proposal: OrderedProposal = inactive_business_import::proof_proposal(&history);
+    let uncompleted: OrderedProposal =
+        inactive_business_import::uncompleted_empty_proposal(network, &history);
     let files: Files = Files::new();
     let mut votes: Vec<ReadinessVote> = Vec::new();
     for index in 0..REPLICAS {
@@ -221,7 +223,12 @@ fn conditional_readiness_genuine_sqlite_all_members_restart_quorum_corrected_set
             "present slot returns original signature"
         );
         inactive_business_import::assert_live_routes_denied(
-            &target, &operation, &source, &proposal,
+            &target,
+            &blobs,
+            &operation,
+            &source,
+            &proposal,
+            &uncompleted,
         );
         drop(target);
         drop(blobs);
@@ -243,7 +250,12 @@ fn conditional_readiness_genuine_sqlite_all_members_restart_quorum_corrected_set
         assert_eq!(vote, replay);
         assert_eq!(restarted.signatures_created(), 0, "restart does not resign");
         inactive_business_import::assert_live_routes_denied(
-            &target, &operation, &source, &proposal,
+            &target,
+            &blobs,
+            &operation,
+            &source,
+            &proposal,
+            &uncompleted,
         );
         assert!(
             SqliteDurableStore::open(
