@@ -10,6 +10,7 @@ bonds.workspace = true
 canonical-encoding.workspace = true
 consensus.workspace = true
 crypto.workspace = true
+ed25519-zebra.workspace = true
 execution.workspace = true
 fees.workspace = true
 hashing.workspace = true

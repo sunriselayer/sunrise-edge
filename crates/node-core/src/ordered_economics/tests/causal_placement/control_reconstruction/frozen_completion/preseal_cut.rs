@@ -420,7 +420,26 @@ fn preseal_cut_genuine_fast_certificate_subsets_share_semantic_cut_not_exact_pac
         &history,
     )
     .unwrap();
-    let mut saved: SavedBusinessCut = transfer(&cut, &network.resolver);
+    let saved: SavedBusinessCut = alternate_retained_certificate(
+        transfer(&cut, &network.resolver),
+        &network.resolver,
+    );
+    let verified: VerifiedBusinessCut =
+        verify_saved_business_cut(reconstruction_plan(&source.fixture, &identity), &saved).unwrap();
+    assert_eq!(verified.cut_digest(), cut.cut_digest());
+    assert_ne!(verified.package_digest(), cut.package_digest());
+    assert_ne!(
+        business_cut_package_digest(&network.resolver, &saved.identity, &saved.package).unwrap(),
+        cut.package_digest()
+    );
+}
+
+/// Reuse a genuine retained quorum, not manufactured signatures. The owning
+/// application used another genuine subset for these identical effects.
+pub(super) fn alternate_retained_certificate(
+    mut saved: SavedBusinessCut,
+    resolver: &HashSuiteResolver,
+) -> SavedBusinessCut {
     let proof: &SavedBusinessCutComponent = saved
         .components
         .iter()
@@ -455,15 +474,8 @@ fn preseal_cut_genuine_fast_certificate_subsets_share_semantic_cut_not_exact_pac
     actual.bytes = alternate;
     actual.descriptor.length = actual.bytes.len() as u64;
     actual.descriptor.digest =
-        business_cut_component_digest(&network.resolver, &saved.identity.context, &actual.bytes)
+        business_cut_component_digest(resolver, &saved.identity.context, &actual.bytes)
             .unwrap();
-    refresh_package(&mut saved, &network.resolver);
-    let verified: VerifiedBusinessCut =
-        verify_saved_business_cut(reconstruction_plan(&source.fixture, &identity), &saved).unwrap();
-    assert_eq!(verified.cut_digest(), cut.cut_digest());
-    assert_ne!(verified.package_digest(), cut.package_digest());
-    assert_ne!(
-        business_cut_package_digest(&network.resolver, &saved.identity, &saved.package).unwrap(),
-        cut.package_digest()
-    );
+    refresh_package(&mut saved, resolver);
+    saved
 }

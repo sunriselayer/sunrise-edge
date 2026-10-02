@@ -28,6 +28,9 @@ mod inactive_business_import;
 #[path = "frozen_completion/inactive_business_import_faults.rs"]
 mod inactive_business_import_faults;
 
+#[path = "frozen_completion/conditional_readiness.rs"]
+mod conditional_readiness;
+
 struct ObservedPaidEngine<'a> {
     inner: &'a dyn PaidContractEngine,
     calls: Cell<usize>,

@@ -320,6 +320,42 @@ impl VerifiedImportPlan {
         self.lifecycle(destination, operation)?;
         Ok(snapshot.token)
     }
+
+    /// Private readiness observation: a completed marker alone never
+    /// constructs this full-plan comparison. No live admission is granted.
+    pub(crate) fn observe_complete<S, B>(
+        &self,
+        destination: &S,
+        destination_blobs: &B,
+        operation: &DurableOperationContext,
+    ) -> Result<(ImportProgress, PortableSnapshotToken), BusinessImportError>
+    where
+        S: InactiveImportRepository,
+        B: PortableBlobRepository,
+    {
+        let lifecycle: NamespaceLifecycle = self.lifecycle(destination, operation)?;
+        let NamespaceLifecycle::CompleteInactive { progress, .. } = lifecycle else {
+            return Err(invalid("readiness requires exact CompleteInactive origin"));
+        };
+        if self.progress_index(&progress)? != self.batches.len() {
+            return Err(invalid(
+                "readiness completion is not the complete verified plan",
+            ));
+        }
+        let token: PortableSnapshotToken = self.verify_prefix(
+            destination,
+            destination_blobs,
+            operation,
+            self.binding.row_count,
+        )?;
+        let current: NamespaceLifecycle = self.lifecycle(destination, operation)?;
+        if !matches!(current, NamespaceLifecycle::CompleteInactive { .. })
+            || current.progress() != Some(&progress)
+        {
+            return Err(invalid("readiness completion changed during verification"));
+        }
+        Ok((progress, token))
+    }
 }
 
 /// Reexecutes the exact saved cut under local pins while the raw private store

@@ -343,6 +343,13 @@ impl HashSuiteResolver {
         self.protocol_version
     }
 
+    /// Returns the exact locally configured schedule in activation order.
+    /// This is configuration data, not proof that genesis authorized it.
+    #[must_use]
+    pub fn schedules(&self) -> &[HashSuiteSchedule] {
+        &self.schedules
+    }
+
     /// Returns whether `algorithm` was selected for `purpose` by some
     /// schedule entry active at or before `epoch`.
     ///

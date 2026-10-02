@@ -45,6 +45,7 @@ pub mod admission_profile;
 mod authenticated_object_effects;
 pub mod bond_lifecycle;
 pub mod business_reconstruction;
+pub mod conditional_readiness;
 pub use mutation_fence::require_ordinary_namespace;
 mod durable_reconciliation;
 pub mod economics;

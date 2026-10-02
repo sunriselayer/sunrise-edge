@@ -67,6 +67,7 @@ check_vectors() {
   node scripts/ordered-history-vectors.mjs
   node scripts/business-cut-vectors.mjs
   node scripts/business-import-vectors.mjs
+  node scripts/conditional-readiness-vectors.mjs
 }
 
 check_deno_adapters() {

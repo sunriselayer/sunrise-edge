@@ -6,7 +6,9 @@
 //! separate. A [`ValidatorSet`] is the immutable consensus snapshot for one
 //! epoch; bond amounts never implicitly determine voting power.
 
-use canonical_encoding::{CanonicalEncodingError, CanonicalStruct};
+use canonical_encoding::{
+    CanonicalDecodingError, CanonicalEncodingError, CanonicalStruct, decode_canonical_frame,
+};
 use core::fmt;
 use hashing::{HashSuiteResolver, HashingError};
 use protocol_types::{Digest32, Epoch, HashPurpose, SignatureSchemeId, ValidatorId};
@@ -44,6 +46,10 @@ pub enum ValidatorSetError {
     VotingPowerOverflow,
     /// Canonical encoding failed.
     CanonicalEncoding(CanonicalEncodingError),
+    /// The closed validator-set frame failed decoding or canonical equality.
+    CanonicalDecoding(CanonicalDecodingError),
+    /// A redundant field or identifier did not describe the canonical set.
+    InvalidEncoding(&'static str),
     /// Validator-set hashing failed.
     Hashing(HashingError),
 }
@@ -73,6 +79,8 @@ impl fmt::Display for ValidatorSetError {
             }
             Self::VotingPowerOverflow => write!(f, "total validator voting power overflowed"),
             Self::CanonicalEncoding(error) => error.fmt(f),
+            Self::CanonicalDecoding(error) => error.fmt(f),
+            Self::InvalidEncoding(message) => f.write_str(message),
             Self::Hashing(error) => error.fmt(f),
         }
     }
@@ -83,6 +91,12 @@ impl Error for ValidatorSetError {}
 impl From<CanonicalEncodingError> for ValidatorSetError {
     fn from(value: CanonicalEncodingError) -> Self {
         Self::CanonicalEncoding(value)
+    }
+}
+
+impl From<CanonicalDecodingError> for ValidatorSetError {
+    fn from(value: CanonicalDecodingError) -> Self {
+        Self::CanonicalDecoding(value)
     }
 }
 
@@ -258,6 +272,58 @@ pub fn encode_validator_set(set: &ValidatorSet) -> Result<Vec<u8>, ValidatorSetE
     Ok(canonical.finish()?)
 }
 
+/// Decodes the existing closed set frame without changing its encoding.
+/// Redundant power/threshold summaries, sorted member order and all bounds are
+/// verified by exact owner re-encoding; neither summary is quorum authority.
+pub fn decode_validator_set(bytes: &[u8]) -> Result<ValidatorSet, ValidatorSetError> {
+    let frame = decode_canonical_frame(bytes)?;
+    frame.require_type(VALIDATOR_SET_TYPE_ID)?;
+    frame.require_version(ENCODING_VERSION)?;
+    let count: usize = usize::try_from(frame.required_u32(4)?)
+        .map_err(|_| ValidatorSetError::InvalidEncoding("validator count capacity"))?;
+    if count > MAX_VALIDATORS {
+        return Err(ValidatorSetError::TooManyValidators(count));
+    }
+    let fields: Vec<u16> = (1..=count + 4)
+        .map(|value: usize| {
+            u16::try_from(value)
+                .map_err(|_| ValidatorSetError::InvalidEncoding("validator field capacity"))
+        })
+        .collect::<Result<Vec<u16>, ValidatorSetError>>()?;
+    frame.require_only_fields(&fields)?;
+    let mut validators: Vec<ValidatorInfo> = Vec::with_capacity(count);
+    for index in 0..count {
+        let member = decode_canonical_frame(frame.required_field(fields[index + 4])?)?;
+        member.require_type(VALIDATOR_INFO_TYPE_ID)?;
+        member.require_version(ENCODING_VERSION)?;
+        member.require_only_fields(&[1, 2, 3, 4])?;
+        let key: &[u8] = member.required_field(4)?;
+        if key.len() > MAX_PUBLIC_KEY_BYTES {
+            return Err(ValidatorSetError::InvalidEncoding("validator key bound"));
+        }
+        let id: [u8; 32] = member
+            .required_field(1)?
+            .try_into()
+            .map_err(|_| ValidatorSetError::InvalidEncoding("validator id length"))?;
+        let signature_scheme: SignatureSchemeId =
+            SignatureSchemeId::try_from(member.required_u16(3)?)
+                .map_err(|_| ValidatorSetError::InvalidEncoding("validator signature scheme"))?;
+        validators.push(ValidatorInfo {
+            id: ValidatorId::new(id),
+            voting_power: member.required_u64(2)?,
+            signature_scheme,
+            public_key: key.to_vec(),
+        });
+    }
+    let set: ValidatorSet = ValidatorSet::new(Epoch::new(frame.required_u64(1)?), validators)?;
+    if encode_validator_set(&set)? != bytes {
+        return Err(ValidatorSetError::InvalidEncoding(
+            "noncanonical validator set or summary",
+        ));
+    }
+    Ok(set)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,5 +453,84 @@ mod tests {
             left.digest(&resolver).unwrap(),
             right.digest(&resolver).unwrap()
         );
+    }
+
+    fn claimed_set(members: &[ValidatorInfo], total: u64, threshold: u64) -> Vec<u8> {
+        let mut frame: CanonicalStruct = CanonicalStruct::new(VALIDATOR_SET_TYPE_ID, 1);
+        frame.field_u64(1, 9).unwrap();
+        frame.field_u64(2, total).unwrap();
+        frame.field_u64(3, threshold).unwrap();
+        frame
+            .field_u32(4, u32::try_from(members.len()).unwrap())
+            .unwrap();
+        for (index, member) in members.iter().enumerate() {
+            frame
+                .field_bytes(
+                    u16::try_from(index + 5).unwrap(),
+                    encode_validator_info(member).unwrap(),
+                )
+                .unwrap();
+        }
+        frame.finish().unwrap()
+    }
+
+    #[test]
+    fn closed_decoder_roundtrips_and_rejects_forged_summaries_or_member_order() {
+        let members: Vec<ValidatorInfo> = vec![
+            validator(1, 4),
+            validator(2, 3),
+            validator(3, 2),
+            validator(4, 1),
+        ];
+        let set: ValidatorSet = ValidatorSet::new(Epoch::new(9), members.clone()).unwrap();
+        let bytes: Vec<u8> = encode_validator_set(&set).unwrap();
+        assert_eq!(decode_validator_set(&bytes).unwrap(), set);
+        assert!(decode_validator_set(&claimed_set(&members, 11, 7)).is_err());
+        assert!(decode_validator_set(&claimed_set(&members, 10, 6)).is_err());
+        let mut reversed: Vec<ValidatorInfo> = members;
+        reversed.reverse();
+        assert!(decode_validator_set(&claimed_set(&reversed, 10, 7)).is_err());
+        assert!(
+            decode_validator_set(&claimed_set(&[validator(1, 1), validator(1, 2)], 3, 3)).is_err()
+        );
+        let mut shared_key: ValidatorInfo = validator(2, 1);
+        shared_key.public_key = vec![1; 32];
+        assert!(decode_validator_set(&claimed_set(&[validator(1, 1), shared_key], 2, 2)).is_err());
+    }
+
+    #[test]
+    fn closed_decoder_checks_count_key_and_closed_fields_before_acceptance() {
+        let mut excessive: CanonicalStruct = CanonicalStruct::new(VALIDATOR_SET_TYPE_ID, 1);
+        excessive
+            .field_u32(4, u32::try_from(MAX_VALIDATORS + 1).unwrap())
+            .unwrap();
+        assert_eq!(
+            decode_validator_set(&excessive.finish().unwrap()),
+            Err(ValidatorSetError::TooManyValidators(MAX_VALIDATORS + 1))
+        );
+        let mut member: CanonicalStruct = CanonicalStruct::new(VALIDATOR_INFO_TYPE_ID, 1);
+        member.field_bytes(1, [1; 32]).unwrap();
+        member.field_u64(2, 1).unwrap();
+        member
+            .field_u16(3, SignatureSchemeId::Ed25519.as_u16())
+            .unwrap();
+        member
+            .field_bytes(4, vec![1; MAX_PUBLIC_KEY_BYTES + 1])
+            .unwrap();
+        let mut frame: CanonicalStruct = CanonicalStruct::new(VALIDATOR_SET_TYPE_ID, 1);
+        frame.field_u64(1, 9).unwrap();
+        frame.field_u64(2, 1).unwrap();
+        frame.field_u64(3, 1).unwrap();
+        frame.field_u32(4, 1).unwrap();
+        frame.field_bytes(5, member.finish().unwrap()).unwrap();
+        assert!(decode_validator_set(&frame.finish().unwrap()).is_err());
+        let valid: Vec<u8> = claimed_set(&[validator(1, 1)], 1, 1);
+        for end in 0..valid.len() {
+            assert!(decode_validator_set(&valid[..end]).is_err());
+        }
+        let mut trailing: Vec<u8> = valid;
+        trailing.push(0);
+        assert!(decode_validator_set(&trailing).is_err());
+        assert!(decode_validator_set(&claimed_set(&[], 0, 0)).is_err());
     }
 }

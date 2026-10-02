@@ -10,6 +10,7 @@ crypto.workspace = true
 hashing.workspace = true
 objects.workspace = true
 protocol-types.workspace = true
+protocol-upgrades.workspace = true
 validator-set.workspace = true
 
 [dev-dependencies]

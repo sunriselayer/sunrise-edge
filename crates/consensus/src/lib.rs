@@ -28,6 +28,7 @@ mod durable;
 mod epoch_transition;
 mod equivocation;
 mod fast_vote;
+pub mod readiness;
 #[cfg(test)]
 mod test_support;
 pub use availability::union::{

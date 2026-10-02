@@ -96,7 +96,7 @@ fn complete(
     }
 }
 
-fn proof_proposal(history: &[OrderedHistoryHeightMaterial]) -> OrderedProposal {
+pub(super) fn proof_proposal(history: &[OrderedHistoryHeightMaterial]) -> OrderedProposal {
     let material: &OrderedHistoryHeightMaterial = &history[0];
     let proof: CommittedBlockProof = consensus::decode_committed_block_proof(
         &material
@@ -130,7 +130,7 @@ fn denied(error: impl std::fmt::Display) {
     );
 }
 
-fn assert_live_routes_denied<S>(
+pub(super) fn assert_live_routes_denied<S>(
     store: &S,
     operation: &DurableOperationContext,
     source: &FrozenCompletionSource,
