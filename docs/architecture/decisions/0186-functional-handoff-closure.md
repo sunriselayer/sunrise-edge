@@ -6,6 +6,11 @@ Status: **Proposed** for independent design review. No implementation approval,
 wire/key allocation, migration, serving activation or deployment is authorized.
 Current work and evidence remain only in [TODO.md](../../../TODO.md).
 
+[DR-0187](0187-first-epoch-ordered-seal.md) subsequently accepts the narrower
+first-epoch Seal contract, superseding this record's alternative Seal suffix,
+post-Seal progress and companion proposals. Its acceptance does not approve
+the separate successor activation/recurring schemas proposed here.
+
 ## Context
 
 [DR-0180](0180-architecture-first-interface-contracts.md) asks for responsibility

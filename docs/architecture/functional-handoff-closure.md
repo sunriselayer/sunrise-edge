@@ -7,6 +7,13 @@ recorded in [DR-0186](decisions/0186-functional-handoff-closure.md).
 This is not an accepted wire/storage contract, executable authority or deployment
 approval. Work status remains only in [TODO.md](../../TODO.md).
 
+[DR-0187](decisions/0187-first-epoch-ordered-seal.md) and
+[ordered Seal](ordered-seal.md) supersede this proposal's first-epoch Seal
+alternatives: selected-branch verification with existing retained material,
+exact private acceptance terminal and hard-stop outgoing signatures/writes.
+The separate activation and recurring-predecessor proposals below are not
+accepted by that narrower decision.
+
 ## Implemented constraints and source evidence
 
 - [DR-0178](decisions/0178-conditional-readiness-wire-and-retention.md) uses

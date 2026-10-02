@@ -5,7 +5,9 @@ The readiness-only contract in
 [DR-0154](decisions/0154-complete-epoch-handoff.md) and the earlier
 [DR-0177 proposal](decisions/0177-conditional-readiness-and-ordered-seal.md).
 Readiness is a nonexclusive assertion, not Seal, membership activation or
-serving authority. The separate Seal design remains unresolved. Work and
+serving authority. [DR-0187](decisions/0187-first-epoch-ordered-seal.md) separately
+defines the first-epoch [Seal contract](ordered-seal.md); it does not relax this
+readiness producer's empty-terminal or inactive-origin rules. Work and
 validation status belong only in [TODO.md](../../TODO.md).
 
 ## Finite source of readiness
@@ -183,7 +185,12 @@ Existing saved-cut/import readers retain their bounded page/chunk contracts.
 Full private reconstruction and destination comparison retain explicit linear
 cost; this is not a constant-memory, constant-time or bounded-total-history claim.
 
-## Subsequent Seal boundary, still unresolved
+## Separate Seal boundary
+
+The earlier alternatives in this section are historical proposal context.
+[DR-0187](decisions/0187-first-epoch-ordered-seal.md) supersedes them with exact
+selected-branch checks, an acceptance-only terminal and hard-stop closure.
+Readiness alone still grants none of that authority.
 
 Fix the exact pre-Seal business-prefix anchor. This first boundary admits only
 fully proof-checked post-anchor empty progress with unchanged business roots

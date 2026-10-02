@@ -138,6 +138,10 @@ roadmap describes a later target state.
   ([DR-0186](decisions/0186-functional-handoff-closure.md), Proposed):
   staged namespace/crash ordering, retained Seal companions, complete suffix
   verification and snapshot-covered serving activation; not code authority.
+- [First-epoch ordered Seal](ordered-seal.md)
+  ([DR-0187](decisions/0187-first-epoch-ordered-seal.md)):
+  accepted hard-stop authority, private exact acceptance terminal and permanent
+  token-checked outgoing barrier contract; not successor activation or serving.
 - [Initial validator bond registration](initial-validator-bond.md)
   ([DR-0179](decisions/0179-initial-validator-bond-registration.md)):
   self-authenticated first collateral through generic custody and ordered
