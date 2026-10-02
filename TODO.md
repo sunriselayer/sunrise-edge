@@ -3,7 +3,11 @@
 **2026-10-02: one integrated implementation and refactoring queue.**
 [DR-0173](docs/architecture/decisions/0173-integrated-implementation-refactoring.md)
 integrates the remaining functions with responsibility-oriented cleanup.
-Do not finish a repository-wide rewrite before resuming feature delivery.
+The user's newer architecture-first direction is recorded in
+[DR-0180](docs/architecture/decisions/0180-architecture-first-interface-contracts.md):
+fundamentally review responsibility, dependency, authority and persistence
+interfaces across implementation, tests and CI before filling remaining bodies.
+This is not file splitting or permission to replace working routes with stubs.
 The stable target boundaries are in
 [implementation structure](docs/architecture/implementation-structure.md);
 the [code map](docs/development/code-map.md) locates their current owners.
@@ -35,6 +39,25 @@ withdrawal unlock are still functional work. Independent audit and actual
 network startup are Delivery 4, not included in this estimate.
 
 ## Functional critical path with embedded refactoring
+
+**Current architecture-first work window, 2026-10-02:** approximately eight
+hours, from 13:50 until 21:50 Asia/Singapore. Establish the
+[global contracts](docs/architecture/architecture-contracts.md), independently
+review concrete interfaces, then integrate useful owning implementations with
+actual callers. Stop launching new work at the deadline and preserve a safe
+verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
+
+- [ ] Global responsibility/authority and typed interface review, including
+  still-unimplemented Seal, serving and recurring reconstruction boundaries.
+- [ ] Runtime/core completion design: centralize identical transaction
+  consistency and assembly rules without merging storage and protocol authority.
+- [ ] Core lifecycle and dependency composition: distinguish genesis trust,
+  current serving and historical verification; remove duplicated mechanisms
+  where a reviewed interface has actual consumers.
+- [ ] Test/CI architecture: owner-specific fixture composition and a coherent
+  gate registry/execution contract, preserving all required coverage.
+- [ ] Independently reviewed, fully checked PR checkpoints; update this list
+  from actual evidence, not skeleton compilation or file counts.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.

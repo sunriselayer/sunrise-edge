@@ -39,6 +39,7 @@ use super::publication::witness::required_artifacts;
 use super::publication::{MAX_RETAINED_ARTIFACTS, PublicationRetentionError};
 use super::*;
 use consensus::bundle::ArtifactKind;
+use runtime::VersionedStateReader;
 use std::collections::BTreeMap;
 
 /// One durably retained prepare-side commitment witness, keyed by the
@@ -218,7 +219,7 @@ pub(crate) fn stage_prepared_material<S: StructuredDurableDomainStateStore>(
 /// vote. A missing or corrupt row fails closed; replay never repairs it from
 /// current state, which may already have advanced since prepare.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn verify_prepared_material<S: StructuredDurableDomainStateStore>(
+pub(crate) fn verify_prepared_material<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -228,8 +229,7 @@ pub(crate) fn verify_prepared_material<S: StructuredDurableDomainStateStore>(
 ) -> FastPathResult<()> {
     let witness_key: Vec<u8> =
         fastpath_prepared_witness_key(prepared.context.chain_id(), &prepared.request_id)?;
-    let witness: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &witness_key)?;
+    let witness: VersionedStateValue = store.read_versioned_state(context, domain, &witness_key)?;
     let witness_bytes: &[u8] = witness.value().ok_or(FastPathError::Invalid(
         "fast-path retained prepare witness is absent",
     ))?;
@@ -259,7 +259,7 @@ pub(crate) fn verify_prepared_material<S: StructuredDurableDomainStateStore>(
             kind,
             digest,
         )?;
-        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
         let content: &[u8] = observed.value().ok_or(FastPathError::Invalid(
             "fast-path retained prepare artifact is absent",
         ))?;

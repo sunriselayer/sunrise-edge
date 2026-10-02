@@ -6,6 +6,7 @@ use crate::ordered_economics::{
 };
 use abi::call_values::CallValue;
 use execution::ObjectEffect;
+use runtime::VersionedStateReader;
 
 fn policy_inputs(
     policy: &OrderedEconomicsPolicy,
@@ -43,7 +44,7 @@ fn record_read(
 /// any execution, membership or live signing authority. Later transition
 /// records use the unchanged old chain walker, rooted in this signed row.
 #[allow(clippy::too_many_arguments)]
-pub fn verify_registered_bond_chain<S: StructuredDurableDomainStateStore>(
+pub fn verify_registered_bond_chain<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -69,7 +70,7 @@ pub fn verify_registered_bond_chain<S: StructuredDurableDomainStateStore>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn verify_chain<S: StructuredDurableDomainStateStore>(
+fn verify_chain<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -83,7 +84,7 @@ fn verify_chain<S: StructuredDurableDomainStateStore>(
 ) -> Result<FastPathBondRecord, BondRegistrationError> {
     let chain: &ChainId = profile.context().chain_id();
     let key: Vec<u8> = bond_registration_anchor_key(chain, &validator_id)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     let anchor: BondRegistrationAnchor = decode_bond_registration_anchor(observed.value().ok_or(
         BondRegistrationError::Prerequisite("registration anchor missing"),
     )?)?;
@@ -121,7 +122,7 @@ fn verify_chain<S: StructuredDurableDomainStateStore>(
     let first_transition: Vec<u8> =
         local_instance_state::fastpath_bond_transition_key(chain, &validator_id, 1)?;
     let first: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &first_transition)?;
+        store.read_versioned_state(context, domain, &first_transition)?;
     if first.value().is_some() || first.revision() != StateRevision::INITIAL {
         return Err(BondRegistrationError::Prerequisite(
             "registration generation-one transition slot is not pristine",
@@ -138,7 +139,7 @@ fn verify_chain<S: StructuredDurableDomainStateStore>(
         &anchor.resulting_row,
     )
     .map_err(|_| BondRegistrationError::Prerequisite("registered bond chain missing or corrupt"))?;
-    let installed: VersionedStateValue = store.get_versioned_durable(context, domain, &bond_key)?;
+    let installed: VersionedStateValue = store.read_versioned_state(context, domain, &bond_key)?;
     Ok(decode_fastpath_bond_record(installed.value().ok_or(
         BondRegistrationError::Prerequisite("registered current bond missing"),
     )?)?)

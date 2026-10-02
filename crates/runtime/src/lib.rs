@@ -11,6 +11,7 @@ pub mod inactive_import;
 mod operation;
 pub mod outbox_guard;
 pub mod portable;
+mod state_read;
 pub mod transaction;
 pub use composition::{ComposedRuntime, MemoryRuntime};
 pub use conditional_readiness::{
@@ -24,6 +25,7 @@ pub use operation::{
     DurableOperationContext, InvocationCancellation, NeverCancelled, StorageCorrelationId,
     StorageDeadline, WriterFenceGeneration,
 };
+pub use state_read::VersionedStateReader;
 use transaction::represented_transaction_bytes;
 pub use transaction::{StateAssemblyError, StateObservationSet, StateTransactionBuilder};
 

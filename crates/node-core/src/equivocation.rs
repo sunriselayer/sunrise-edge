@@ -497,7 +497,7 @@ fn commit_new_evidence<S: StructuredDurableDomainStateStore>(
 /// of its own and must not silently assume a caller threading a resolver
 /// through without also passing the value it addresses
 /// `PublicationContext::new` with.
-fn load_historical_validator_set_with_revisions<S: StructuredDurableDomainStateStore>(
+fn load_historical_validator_set_with_revisions<S: runtime::VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -509,7 +509,7 @@ fn load_historical_validator_set_with_revisions<S: StructuredDurableDomainStateS
     let mut revisions: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     let epoch_key: Vec<u8> = local_instance_state::fastpath_epoch_record_key(chain)?;
     let epoch_observed: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &epoch_key)?;
+        store.read_versioned_state(context, domain, &epoch_key)?;
     revisions.insert(epoch_key, epoch_observed.revision());
     let live: local_instance_state::FastPathEpochRecord =
         local_instance_state::decode_fastpath_epoch_record(epoch_observed.value().ok_or(
@@ -525,7 +525,7 @@ fn load_historical_validator_set_with_revisions<S: StructuredDurableDomainStateS
         let transition_key: Vec<u8> =
             local_instance_state::fastpath_epoch_transition_key(chain, next_epoch)?;
         let transition_observed: VersionedStateValue =
-            store.get_versioned_durable(context, domain, &transition_key)?;
+            store.read_versioned_state(context, domain, &transition_key)?;
         revisions.insert(transition_key, transition_observed.revision());
         let record: epoch_transition::FastPathEpochTransitionRecord =
             epoch_transition::decode_fastpath_epoch_transition_record(
@@ -546,7 +546,7 @@ fn load_historical_validator_set_with_revisions<S: StructuredDurableDomainStateS
     let validator_context: PublicationContext =
         PublicationContext::new(chain.clone(), protocol_version, evidence_epoch)?;
     let key: Vec<u8> = local_instance_state::fastpath_validator_set_key(&validator_context)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     revisions.insert(key, observed.revision());
     let bytes: &[u8] = observed.value().ok_or(EquivocationEvidenceError::Invalid(
         "no committed validator set for the evidence epoch",
@@ -567,7 +567,7 @@ fn load_historical_validator_set_with_revisions<S: StructuredDurableDomainStateS
 /// Loads the chain-anchored historical validator set without carrying CAS
 /// assertions into a later mutation. Evidence-only callers do not write the
 /// loaded rows; fee claims use [`load_historical_validator_set_fenced`].
-pub(crate) fn load_historical_validator_set<S: StructuredDurableDomainStateStore>(
+pub(crate) fn load_historical_validator_set<S: runtime::VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
