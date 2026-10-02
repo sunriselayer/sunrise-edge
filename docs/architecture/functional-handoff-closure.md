@@ -193,8 +193,9 @@ The following are proposed functions with real consumers, not existing APIs:
 | Core `activate_verified_successor` and fresh `resolve_current_serving` | Dedicated target completion/reopen plus owned/ordered admission and cached live responses |
 | Predecessor-aware reconstruction constructor | Subsequent cut/import/readiness; consumes authenticated activation history, not supplied rows/flags |
 
-Before code, settle protected virgin-slot initialization, competing Seal results/phase tags, exact suffix/continuation
-rules, companion ownership/retention limits, snapshot-covered completion shapes,
+Before code, settle protected virgin-slot initialization, competing Seal
+results/phase tags, exact suffix/continuation rules, companion ownership/retention
+limits, snapshot-covered completion shapes,
 activation/provenance preimages and reviewed namespace/schema allocations. Prove
 the proposed closure actually covers all fresh completion/exposure roots.
 Do not ship unused ports, public permission constructors or a second engine.

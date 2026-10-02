@@ -44,7 +44,8 @@ concrete proposed functional contract, with primary-source links. Its choices:
    Add only consumed completion seams, not a generic maintenance override.
 5. Retain one unique outgoing signer/epoch-transition slot after committed Seal.
    Positively initialized virgin protected history, not absent cache alone,
-   permits initial signing. Exact retry does not sign; conflicting/tombstoned history refuses. Ambiguity
+   permits initial signing. Exact retry does not sign; conflicting/tombstoned
+   history refuses. Ambiguity
    exposes no authority until fresh reconciliation observes exact landed bytes.
 6. Review distinct purpose/versioned schemas and successor epoch-key families;
    retain original signed preimages and verification. Bind verified predecessor,
@@ -59,8 +60,9 @@ concrete proposed functional contract, with primary-source links. Its choices:
 
 Exact competing Seal no-effect outcomes, phase/error tags, traversal rules and
 limits, companion retention/manifest shape, activation/provenance preimages,
-token-covered completion interfaces, protected virgin-slot initialization and canonical/storage allocations require
-independent pre-code review. The closure/no-cross-namespace-atomicity argument
+token-covered completion interfaces, protected virgin-slot initialization and
+canonical/storage allocations require independent pre-code review.
+The closure/no-cross-namespace-atomicity argument
 must be checked against every actual fresh completion and exposure path.
 Do not preselect numeric IDs or treat proposed function names as callable APIs.
 
