@@ -121,7 +121,7 @@ impl DurableDomainStateStore for ScriptedDurableStore {
         _: AtomicityDomainId,
     ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
         // Protected state is explicitly initialized with this scripted fixture.
-        Ok(self.outgoing_barrier.clone())
+        Ok(self.outgoing_barrier)
     }
 
     fn get_namespace_lifecycle(

@@ -762,7 +762,10 @@ fn compiled_preparation_wrap_and_nondefault_suite_submission_delivers_exact_orde
     assert_eq!(requests.len(), INGRESS_PROBE_REQUESTS);
     assert_eq!(
         requests[0].path,
-        format!("{ORDERED_ECONOMICS_OUTCOME_PATH_PREFIX}{}", hex(&REQUEST_ID)),
+        format!(
+            "{ORDERED_ECONOMICS_OUTCOME_PATH_PREFIX}{}",
+            hex(&REQUEST_ID)
+        ),
     );
     for request in &requests[..3] {
         assert_eq!(request.method, "GET");
@@ -787,5 +790,8 @@ fn compiled_preparation_wrap_and_nondefault_suite_submission_delivers_exact_orde
     );
     assert_eq!(fixture.input_inventory(), inputs);
     assert_eq!(fs::read(fixture.path("signed")).unwrap(), signed_bytes);
-    assert_eq!(fs::read(fixture.path("candidate")).unwrap(), candidate_bytes);
+    assert_eq!(
+        fs::read(fixture.path("candidate")).unwrap(),
+        candidate_bytes
+    );
 }

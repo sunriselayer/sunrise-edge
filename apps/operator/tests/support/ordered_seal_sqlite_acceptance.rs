@@ -2,6 +2,8 @@
 //! Mutable validator stores are independent SQLite files. Public immutable
 //! artifacts share the fixture's blob repository; no completion is seeded.
 use super::{fixture::Fixture, hex};
+#[path = "ordered_seal_warrant_faults.rs"]
+mod warrant_faults;
 use consensus::ConsensusSigner;
 use ed25519_zebra::SigningKey;
 use execution::LocalWasmExecutionEngine;
@@ -23,6 +25,7 @@ use runtime::{
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 use std::{ffi::OsString, num::NonZeroUsize, path::Path, sync::Arc, time::Duration};
 use sunrise_edge_operator::business_snapshot::capture_source_business_snapshot;
+use warrant_faults::{SealWarrantFault, SealWarrantFaultStore};
 
 struct Signer {
     id: ValidatorId,
@@ -75,6 +78,7 @@ pub(super) async fn run(
 ) {
     let fence: WriterFenceGeneration = fixture.operation.writer_fence();
     let mut stores: Vec<Arc<SqliteDurableStore>> = Vec::new();
+    let mut ports: Vec<Arc<SealWarrantFaultStore>> = Vec::new();
     let mut servers = Vec::new();
     let mut stops = Vec::new();
     let mut peers: String = String::new();
@@ -92,6 +96,34 @@ pub(super) async fn run(
             .unwrap()
         })
         .collect();
+    let env = OrderedEconomicsEnvironment {
+        policy: &fixture.policy,
+        history: &[],
+        leg_policy: &fixture.local_policy,
+        engine: &fixture.engine,
+        blobs: &fixture.blobs,
+        seal: Some(node_core::ordered_economics::OrderedSealComposition {
+            genesis_root: &fixture.root,
+            paid_base_policy: &fixture.local_policy,
+            paid_engine: &fixture.engine,
+            blobs: &fixture.blobs,
+        }),
+    };
+    let initial_status =
+        node_core::ordered_economics::query_status(&fixture.stores[0], &fixture.operation, &env)
+            .unwrap();
+    let mut seal_height: u64 = initial_status.high_qc.height.checked_add(1).unwrap();
+    while seal_height % 3 != 1 {
+        seal_height = seal_height.checked_add(1).unwrap();
+    }
+    let prior_height: u64 = seal_height.checked_sub(1).unwrap();
+    let fault_plans: [SealWarrantFault; 4] = [
+        SealWarrantFault::Healthy,
+        SealWarrantFault::MissingFreeze,
+        SealWarrantFault::MissingDrain,
+        SealWarrantFault::IneligibleSuccessor,
+    ];
+    assert_eq!(fixture.network.validators.len(), fault_plans.len());
     for (index, validator) in fixture.network.validators.iter().enumerate() {
         let store: Arc<SqliteDurableStore> = Arc::new(
             SqliteDurableStore::open_existing(
@@ -107,8 +139,25 @@ pub(super) async fn run(
         let blobs: Arc<SqliteBlobStore> =
             Arc::new(SqliteBlobStore::open(fixture.directory.0.join("blobs.sqlite")).unwrap());
         let engine: Arc<LocalWasmExecutionEngine> = Arc::new(LocalWasmExecutionEngine::new());
+        let port: Arc<SealWarrantFaultStore> = Arc::new(
+            SealWarrantFaultStore::new(
+                Arc::clone(&store),
+                fixture.policy.clone(),
+                fixture.local_policy.clone(),
+                Arc::clone(&engine),
+                Arc::clone(&blobs),
+                prior_height,
+                fault_plans[index],
+                &before[index],
+            )
+            .unwrap(),
+        );
+        assert!(
+            Arc::ptr_eq(port.inner(), &store),
+            "all authority belongs to the actual validator store"
+        );
         let router = certified_ordered_economics_router(OrderedEconomicsState {
-            store: Arc::clone(&store),
+            store: Arc::clone(&port),
             clock: Arc::new(SystemClock),
             identities: Arc::new(sunrise_edge_devnet::DevnetOutboxIdentitySource::new(fence)),
             domain: fixture.network.domain,
@@ -127,7 +176,7 @@ pub(super) async fn run(
             }),
             signer: Signer {
                 id: validator.validator_id,
-                key: validator.signing_key.clone(),
+                key: validator.signing_key,
             },
             blocking_executor: NativeBlockingExecutor::new(NativeBlockingPolicy::new(
                 NonZeroUsize::new(2).unwrap(),
@@ -146,6 +195,7 @@ pub(super) async fn run(
             let _ = shutdown.await;
         })));
         stores.push(store);
+        ports.push(port);
     }
     let network = fixture.directory.0.join("seal-network.conf");
     std::fs::write(&network, peers).unwrap();
@@ -166,6 +216,70 @@ pub(super) async fn run(
         .unwrap()
         .unwrap();
     let request: DurableRequestId = DurableRequestId::new(candidate.request_id).unwrap();
+    for index in 1..ports.len() {
+        let port = &ports[index];
+        assert!(
+            port.fault_hits() > 0,
+            "the exact completion warrant fault was consumed"
+        );
+        assert_eq!(
+            port.ordinary_commit_attempts_after_fault(),
+            0,
+            "a failed Seal warrant stops before any ordinary refusal commit, not merely a later CAS conflict"
+        );
+        assert_eq!(
+            capture_source_business_snapshot(
+                stores[index].as_ref(),
+                &fixture.blobs,
+                &fixture.operation,
+                fixture.network.domain,
+                NonZeroUsize::new(128).unwrap(),
+            )
+            .unwrap(),
+            port.before_fault().unwrap(),
+            "a genuine committed Seal certificate cannot advance consensus/applied state or archive on a local warrant failure"
+        );
+        assert_eq!(
+            stores[index]
+                .get_outgoing_barrier(&fixture.operation, fixture.network.domain)
+                .unwrap(),
+            OutgoingBarrier::Unsealed
+        );
+        assert!(
+            stores[index]
+                .get_request_receipt(&fixture.operation, fixture.network.domain, request)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            query_ordered_outcome(
+                stores[index].as_ref(),
+                &fixture.operation,
+                &env,
+                &candidate.request_id
+            )
+            .unwrap()
+            .is_none()
+        );
+        port.disable_fault();
+    }
+    let manifest = std::path::PathBuf::from(format!("{}.manifest", prefix.display()));
+    let catchup_prefix = fixture.directory.0.join("seal-warrant-catchup");
+    let catchup_args = arguments(
+        fixture,
+        &network,
+        "network-replay",
+        &[
+            "--manifest".into(),
+            manifest.as_os_str().into(),
+            "--out".into(),
+            catchup_prefix.as_os_str().into(),
+        ],
+    );
+    tokio::task::spawn_blocking(move || sunrise_edge_cli::run(catchup_args))
+        .await
+        .unwrap()
+        .unwrap();
     let mut original_receipts = Vec::new();
     let mut completed = Vec::new();
     let mut agreed = None;
@@ -182,19 +296,6 @@ pub(super) async fn run(
             assert_eq!(sealed, previous);
         }
         agreed = Some(sealed);
-        let env = OrderedEconomicsEnvironment {
-            policy: &fixture.policy,
-            history: &[],
-            leg_policy: &fixture.local_policy,
-            engine: &fixture.engine,
-            blobs: &fixture.blobs,
-            seal: Some(node_core::ordered_economics::OrderedSealComposition {
-                genesis_root: &fixture.root,
-                paid_base_policy: &fixture.local_policy,
-                paid_engine: &fixture.engine,
-                blobs: &fixture.blobs,
-            }),
-        };
         let outcome = query_ordered_outcome(
             store.as_ref(),
             &fixture.operation,
@@ -216,7 +317,7 @@ pub(super) async fn run(
         original_receipts.push(receipt);
         let signer = Signer {
             id: fixture.network.validators[index].validator_id,
-            key: fixture.network.validators[index].signing_key.clone(),
+            key: fixture.network.validators[index].signing_key,
         };
         assert!(
             propose(store.as_ref(), &fixture.operation, &env, None, &signer).is_err(),
@@ -260,35 +361,24 @@ pub(super) async fn run(
         }
         completed.push(snapshot);
     }
-    let manifest = std::path::PathBuf::from(format!("{}.manifest", prefix.display()));
-    let proposal_path = std::fs::read_to_string(&manifest)
-        .unwrap()
+    let manifest_text: String = std::fs::read_to_string(&manifest).unwrap();
+    let proposal: OrderedProposal = manifest_text
         .lines()
-        .next()
-        .unwrap()
-        .split_whitespace()
-        .next()
-        .unwrap()
-        .to_owned();
-    let proposal: OrderedProposal =
-        decode_ordered_proposal(&std::fs::read(proposal_path).unwrap()).unwrap();
-    let env = OrderedEconomicsEnvironment {
-        policy: &fixture.policy,
-        history: &[],
-        leg_policy: &fixture.local_policy,
-        engine: &fixture.engine,
-        blobs: &fixture.blobs,
-        seal: Some(node_core::ordered_economics::OrderedSealComposition {
-            genesis_root: &fixture.root,
-            paid_base_policy: &fixture.local_policy,
-            paid_engine: &fixture.engine,
-            blobs: &fixture.blobs,
-        }),
-    };
+        .filter_map(|line| line.split_whitespace().next())
+        .map(|path| decode_ordered_proposal(&std::fs::read(path).unwrap()).unwrap())
+        .find(|proposal: &OrderedProposal| {
+            proposal
+                .candidate
+                .as_ref()
+                .is_some_and(|retained: &OrderedCandidate| {
+                    retained.request_id == candidate.request_id && retained.kind == candidate.kind
+                })
+        })
+        .expect("the manifest retains the actual Seal candidate proposal");
     for (index, store) in stores.iter().enumerate() {
         let signer = Signer {
             id: fixture.network.validators[index].validator_id,
-            key: fixture.network.validators[index].signing_key.clone(),
+            key: fixture.network.validators[index].signing_key,
         };
         assert!(
             process_proposal(store.as_ref(), &fixture.operation, &env, &proposal, &signer).is_err(),
@@ -331,6 +421,7 @@ pub(super) async fn run(
     for server in servers {
         server.await.unwrap().unwrap();
     }
+    drop(ports);
     drop(stores);
     fixture.stores.clear(); // True close of every structured-state handle.
     for (index, validator) in fixture.network.validators.iter().enumerate() {

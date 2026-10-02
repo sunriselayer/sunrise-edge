@@ -37,7 +37,7 @@ fn seal_barrier_round_trip_rejects_low_bit_and_corrupt_bytes() {
     let encoded = encode_seal_barrier(&sealed).unwrap();
     assert_eq!(decode_seal_barrier(&encoded).unwrap(), sealed);
 
-    let mut no_high_bit = sealed.clone();
+    let mut no_high_bit = sealed;
     no_high_bit.request[0] &= 0x7F;
     assert_eq!(
         encode_seal_barrier(&no_high_bit),
@@ -96,17 +96,17 @@ fn memory_seal_completion_seals_barrier_and_blocks_both_ordinary_ports() {
     let invocation = minimal_invocation(selected, &sealed);
 
     assert_eq!(
-        store.commit_seal_completion(&operation, &token, invocation.clone(), sealed.clone()),
+        store.commit_seal_completion(&operation, &token, invocation.clone(), sealed),
         DurableCommitOutcome::Committed
     );
     assert_eq!(
         store.get_outgoing_barrier(&operation, selected),
-        Ok(OutgoingBarrier::Sealed(sealed.clone()))
+        Ok(OutgoingBarrier::Sealed(sealed))
     );
 
     let retry_token = store.begin_portable_snapshot(&operation, selected).unwrap();
     assert_eq!(
-        store.commit_seal_completion(&operation, &retry_token, invocation, sealed.clone()),
+        store.commit_seal_completion(&operation, &retry_token, invocation, sealed),
         DurableCommitOutcome::Rejected(DurableCommitRejection::NamespaceSealed)
     );
 
@@ -163,7 +163,7 @@ fn memory_seal_completion_rejects_stale_token_and_receipt_mismatch() {
     let sealed = sample_sealed(31);
     let invocation = minimal_invocation(selected, &sealed);
     assert_eq!(
-        store.commit_seal_completion(&operation, &stale_token, invocation, sealed.clone()),
+        store.commit_seal_completion(&operation, &stale_token, invocation, sealed),
         DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
     );
 

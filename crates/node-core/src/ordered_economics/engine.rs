@@ -1167,11 +1167,12 @@ pub(super) fn execute_candidate<S: StructuredStateReader>(
     env: &OrderedEconomicsEnvironment<'_>,
     operation: &AuthenticatedOrderedOperation<'_>,
     admission: Option<&OrderedLegAdmission<'_>>,
-    block_height: u64,
-    block_digest: Digest32,
+    committed: &CommittedOrderedOperation<'_>,
     seal_repository: Option<&dyn OutgoingSealRepository>,
 ) -> LegOutcome {
     let candidate: &OrderedCandidate = operation.candidate();
+    let block_height: u64 = committed.height();
+    let block_digest: Digest32 = committed.block_digest();
     if candidate.kind == OrderedOperationKind::Seal
         && (env.seal.is_none() || seal_repository.is_none())
     {
@@ -1180,6 +1181,12 @@ pub(super) fn execute_candidate<S: StructuredStateReader>(
         ));
     }
     if let Err(error) = preflight::preflight(store, context, env, candidate, block_height) {
+        // A Seal warrant is a local prerequisite for its independently
+        // verified closure, not a healthy-state business refusal. Keep the
+        // applied prefix and original receipt absent until it can be proved.
+        if candidate.kind == OrderedOperationKind::Seal {
+            return LegOutcome::Stop(error);
+        }
         return disposition(candidate.request_id, error);
     }
     let domain = env.policy.domain();
@@ -2115,6 +2122,21 @@ struct AdmittedCandidate {
     request_id: [u8; 32],
 }
 
+/// Read-only facts about an unfinished request, not admission or signing
+/// authority. The owning admission phase must fence its policy and consume
+/// these exact observations before any proposed writes can be committed.
+struct UncompletedCandidateBinding {
+    bytes: Vec<u8>,
+    digest: Digest32,
+    reads: BTreeMap<Vec<u8>, StateRevision>,
+    writes: Vec<PendingWrite>,
+}
+
+enum CandidateReconciliation {
+    Uncompleted(UncompletedCandidateBinding),
+    Completed(Box<OrderedOutcome>),
+}
+
 /// Pinned pure policy and installed durable authority must describe the same
 /// profile. Manifest-free legacy policies cannot mutate a causal store.
 fn fence_policy<S: StructuredStateReader>(
@@ -2160,42 +2182,35 @@ enum AdmissionPurpose {
     FreshSigning,
 }
 
-/// Reconciles one candidate a caller wants to newly place into the shared
-/// order: reads (never writes) the permanent request-header row, failing
-/// closed on any header-reuse conflict **before** the caller applies any
-/// consensus event, then the candidate-bytes row, then -- only when
-/// fresh signing -- this candidate's own address-owned reservations.
-/// Signerless reconciliation signs nothing and reserves nothing.
-///
-/// A request id that already carries a retained **completed** outcome short
-/// circuits here, before any reservation, preflight, module, object or nonce
-/// I/O: the candidate is answered from its retained outcome rather than placed
-/// a second time. A retained header alone is not completion.
-fn admit_candidate<S: StructuredStateReader>(
+/// Checks the immutable request binding and original completion using bounded
+/// point reads only. In particular, an unfinished request does not consult the
+/// installed profile, candidate carrier, reservations, modules, objects or
+/// nonces. Signing roots must check their namespace authority before entering
+/// the separate admission phase. A retained header alone is not completion.
+fn reconcile_candidate<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
-    purpose: AdmissionPurpose,
-) -> Result<Admission, OrderedEconomicsError> {
-    let chain = env.policy.context().chain_id();
-    let domain = env.policy.domain();
-    let bytes = encode_ordered_candidate(candidate)?;
-    let digest = candidate_digest(env.resolver(), candidate.context.epoch(), &bytes)?;
+) -> Result<CandidateReconciliation, OrderedEconomicsError> {
+    let chain: &ChainId = env.policy.context().chain_id();
+    let domain: AtomicityDomainId = env.policy.domain();
+    let bytes: Vec<u8> = encode_ordered_candidate(candidate)?;
+    let digest: Digest32 = candidate_digest(env.resolver(), candidate.context.epoch(), &bytes)?;
     let mut writes: Vec<PendingWrite> = Vec::new();
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
-    let mut head_reads: Vec<DurableObjectHeadRead> = Vec::new();
 
     // 1. Header reuse is a conflict before all other metadata.
-    let header_key = ordered_request_header_key(chain, &candidate.request_id)?;
-    let observed_header = store.read_versioned_state(context, domain, &header_key)?;
+    let header_key: Vec<u8> = ordered_request_header_key(chain, &candidate.request_id)?;
+    let observed_header: VersionedStateValue =
+        store.read_versioned_state(context, domain, &header_key)?;
     reads.insert(header_key.clone(), observed_header.revision());
     // A deleted header must never be recreated: it is the immutable binding
     // every later replay and every completion cross-check depends on.
     require_virgin_absence(&observed_header, "ordered request header row was deleted")?;
     match observed_header.value() {
         None => {
-            let header = RequestHeader {
+            let header: RequestHeader = RequestHeader {
                 candidate_digest: digest,
                 kind: candidate.kind,
                 created_checkpoint: candidate.created_checkpoint,
@@ -2207,7 +2222,7 @@ fn admit_candidate<S: StructuredStateReader>(
             ));
         }
         Some(existing_bytes) => {
-            let existing = decode_request_header(existing_bytes)?;
+            let existing: RequestHeader = decode_request_header(existing_bytes)?;
             if existing.candidate_digest != digest
                 || existing.kind != candidate.kind
                 || existing.created_checkpoint != candidate.created_checkpoint
@@ -2230,9 +2245,46 @@ fn admit_candidate<S: StructuredStateReader>(
         // The outcome row is only ever written by the invocation that read the
         // committed candidate bytes, so their row already exists and matches
         // this digest; there is nothing left to place.
-        return Ok(Admission::Completed(Box::new(retained)));
+        return Ok(CandidateReconciliation::Completed(Box::new(retained)));
     }
     reads.insert(outcome_row.key, outcome_row.revision);
+    Ok(CandidateReconciliation::Uncompleted(
+        UncompletedCandidateBinding {
+            bytes,
+            digest,
+            reads,
+            writes,
+        },
+    ))
+}
+
+/// Prepares exact candidate retention and, only for authorized fresh signing,
+/// this candidate's own reservations. Original completion returns before any
+/// admission preparation. The captured header/outcome observations remain
+/// part of the actual atomic admission, not permission to bypass its guards.
+fn admit_candidate<S: StructuredStateReader>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+    purpose: AdmissionPurpose,
+) -> Result<Admission, OrderedEconomicsError> {
+    let binding: UncompletedCandidateBinding =
+        match reconcile_candidate(store, context, env, candidate)? {
+            CandidateReconciliation::Uncompleted(binding) => binding,
+            CandidateReconciliation::Completed(outcome) => {
+                return Ok(Admission::Completed(outcome));
+            }
+        };
+    let UncompletedCandidateBinding {
+        bytes,
+        digest,
+        mut reads,
+        mut writes,
+    } = binding;
+    let chain: &ChainId = env.policy.context().chain_id();
+    let domain: AtomicityDomainId = env.policy.domain();
+    let mut head_reads: Vec<DurableObjectHeadRead> = Vec::new();
     fence_policy(store, context, env, &mut reads)?;
 
     // 3. Exact candidate bytes, content-addressed and immutable.
@@ -3312,16 +3364,10 @@ where
     S: StructuredDurableDomainStateStore,
     C: ConsensusSigner,
 {
-    let preliminary: Option<AdmittedCandidate> = match candidate {
-        Some(candidate) => match admit_candidate(
-            store,
-            context,
-            env,
-            candidate,
-            AdmissionPurpose::ReconcileOnly,
-        )? {
-            Admission::Fresh(item) => Some(item),
-            Admission::Completed(outcome) => {
+    let preliminary: Option<Digest32> = match candidate {
+        Some(candidate) => match reconcile_candidate(store, context, env, candidate)? {
+            CandidateReconciliation::Uncompleted(binding) => Some(binding.digest),
+            CandidateReconciliation::Completed(outcome) => {
                 return Err(OrderedEconomicsError::AlreadyCompleted(outcome));
             }
         },
@@ -3346,8 +3392,7 @@ where
         loaded = load_state(store, context, env)?;
     }
     crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
-    let transactions: Vec<Digest32> =
-        transactions_for(&loaded.state, preliminary.as_ref().map(|item| item.digest))?;
+    let transactions: Vec<Digest32> = transactions_for(&loaded.state, preliminary)?;
     let probe: CapacityProbeSigner<'_, C> = CapacityProbeSigner(signer);
     let preview: ConsensusProposal = env
         .policy
@@ -3536,15 +3581,9 @@ where
                     "causal proposal candidate digest differs",
                 ));
             }
-            match admit_candidate(
-                store,
-                context,
-                env,
-                candidate,
-                AdmissionPurpose::ReconcileOnly,
-            )? {
-                Admission::Fresh(_) => {}
-                Admission::Completed(outcome) => {
+            match reconcile_candidate(store, context, env, candidate)? {
+                CandidateReconciliation::Uncompleted(_) => {}
+                CandidateReconciliation::Completed(outcome) => {
                     return Err(OrderedEconomicsError::AlreadyCompleted(outcome));
                 }
             }

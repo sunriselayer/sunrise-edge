@@ -3797,7 +3797,7 @@ impl DurableDomainStateStore for MemoryDurableStateStore {
             .map_err(|_| DurableReadError::Unavailable)?;
         validate_memory_durable_read_domain(&data, domain)?;
         validate_memory_durable_read_authority(&data, context)?;
-        Ok(data.outgoing_barrier.clone())
+        Ok(data.outgoing_barrier)
     }
     fn get_versioned_durable(
         &self,

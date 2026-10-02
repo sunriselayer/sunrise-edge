@@ -357,7 +357,7 @@ fn outgoing_seal_repository_rejects_stale_token_fence_deadline_and_bad_completio
             &live,
             &fresh_token,
             mismatched_invocation,
-            sealed.clone(),
+            sealed,
         ),
         DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
     );

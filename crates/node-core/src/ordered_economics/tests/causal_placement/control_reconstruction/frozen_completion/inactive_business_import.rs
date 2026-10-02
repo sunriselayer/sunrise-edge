@@ -290,8 +290,8 @@ pub(super) fn assert_live_routes_denied<S>(
     assert!(matches!(
         &lifecycle,
         NamespaceLifecycle::FreshImport(_)
-            | NamespaceLifecycle::Importing(_)
-            | NamespaceLifecycle::CompleteInactive(_)
+            | NamespaceLifecycle::Importing { .. }
+            | NamespaceLifecycle::CompleteInactive { .. }
     ));
     let signer: CountingConsensusSigner<'_> = CountingConsensusSigner {
         signer: &network.signers[0],
@@ -358,7 +358,7 @@ pub(super) fn assert_live_routes_denied<S>(
     denied(propose(store, operation, &environment, None, &signer).unwrap_err());
     let original: OrderedEconomicsError =
         process_proposal(store, operation, &environment, proposal, &signer).unwrap_err();
-    if matches!(&lifecycle, NamespaceLifecycle::CompleteInactive(_))
+    if matches!(&lifecycle, NamespaceLifecycle::CompleteInactive { .. })
         || matches!(&original, OrderedEconomicsError::AlreadyCompleted(_))
     {
         assert_exact_original_freeze(store, operation, network, proposal, &original);

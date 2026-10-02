@@ -58,7 +58,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         println!("{HELP}");
         return Ok(());
     }
-    if values.is_empty() || values.remove(0) != OsString::from("prepare-sqlite") {
+    if values.is_empty() || values.remove(0) != "prepare-sqlite" {
         return Err(HELP.into());
     }
     let mut flags: FlagSet = FlagSet::parse(values, FLAGS, &[])?;

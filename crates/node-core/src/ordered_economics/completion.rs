@@ -15,7 +15,7 @@ pub(super) struct PreparedOriginalCompletion {
     outcome: OrderedOutcome,
     business: DurableInvocationTransaction,
     reads: StateObservationSet,
-    seal: Option<SealRetention>,
+    seal: Option<Box<SealRetention>>,
 }
 
 /// Actual store confirmation of an original completion. Neither an owning
@@ -29,7 +29,7 @@ pub(super) struct ConfirmedOriginalCompletion {
 pub(super) struct AssembledOriginalCompletion {
     outcome: OrderedOutcome,
     transaction: DurableInvocationTransaction,
-    seal: Option<SealRetention>,
+    seal: Option<Box<SealRetention>>,
 }
 
 impl AssembledOriginalCompletion {
@@ -196,8 +196,7 @@ pub(super) fn prepare_original_completion<S: StructuredStateReader>(
                     env,
                     &authenticated,
                     Some(admission),
-                    operation.height(),
-                    operation.block_digest(),
+                    operation,
                     seal_repository,
                 )
             }
@@ -214,7 +213,7 @@ pub(super) fn prepare_original_completion<S: StructuredStateReader>(
     let (output, business, seal): (
         NodeOutput,
         DurableInvocationTransaction,
-        Option<SealRetention>,
+        Option<Box<SealRetention>>,
     ) = match result {
         LegOutcome::PreparedInvocation(prepared) => {
             let (business, output) = prepared.into_parts();
@@ -249,7 +248,7 @@ pub(super) fn prepare_original_completion<S: StructuredStateReader>(
                 super::engine::build_receipt(candidate.request_id, digest, &output)?,
                 None,
             )?;
-            (output, business, Some(retention))
+            (output, business, Some(Box::new(retention)))
         }
         LegOutcome::Stop(error) => return Err(error),
     };

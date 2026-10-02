@@ -1,19 +1,36 @@
 //! DR-0187 private acceptance-only closure (verify_live_seal_closure):
 //! genuine real-consensus negative-path coverage.
 //!
-//! A genuine committed Seal candidate cannot be produced anywhere in this
-//! repository today: the ordered-economics Seal dispatch arm explicitly
-//! stops rather than completing one, because the mandatory outgoing
-//! barrier/sealed record is a separate, runtime-owned deliverable not yet
-//! integrated. Every test below therefore drives the exact same genuine,
-//! already-proven-correct consensus history `preseal_cut.rs` itself
+//! Every test below drives the same genuine consensus history `preseal_cut.rs`
 //! reconstructs (completed_source_with_generic_prefix, real Drain, real
 //! multi-round empty finishing), then exercises verify_live_seal_closure
-//! rejection paths against that real material. No certificate, quorum,
-//! candidate or receipt is fabricated here, and no positive acceptance is
-//! attempted or claimed.
+//! rejection paths against that real material. The local Seal claims are
+//! intentionally malformed; no accepted receipt or quorum is fabricated.
+//! Positive acceptance is exercised through the four-store HTTP/CLI workflow.
 use super::*;
 use crate::business_reconstruction::cut::{BusinessCutError, verify_live_seal_closure};
+
+fn terminal_child_digest(
+    network: &Network,
+    history: &[crate::ordered_economics::OrderedHistoryHeightMaterial],
+) -> Digest32 {
+    let material = history.last().unwrap();
+    let bytes = &material
+        .components
+        .iter()
+        .find(|(kind, _)| {
+            *kind == crate::ordered_economics::OrderedHistoryComponentKind::CommitProof
+        })
+        .unwrap()
+        .1;
+    let proof: consensus::CommittedBlockProof =
+        consensus::decode_committed_block_proof(bytes).unwrap();
+    network
+        .policy
+        .engine()
+        .proposal_digest(&proof.child)
+        .unwrap()
+}
 
 fn seal_candidate(
     context: PublicationContext,
@@ -46,6 +63,8 @@ fn verify_live_seal_closure_rejects_the_genuine_empty_terminal_as_unaccepted() {
         &network.blobs,
         &history,
         &candidate,
+        terminal_child_digest(network, &history),
+        &[],
     );
     assert!(matches!(
         result,
@@ -77,6 +96,8 @@ fn verify_live_seal_closure_rejects_a_non_seal_candidate_kind() {
         &network.blobs,
         &history,
         &candidate,
+        terminal_child_digest(network, &history),
+        &[],
     );
     assert!(matches!(
         result,
@@ -103,6 +124,8 @@ fn verify_live_seal_closure_rejects_a_created_checkpoint_beyond_the_prior_applie
         &network.blobs,
         &history,
         &candidate,
+        terminal_child_digest(network, &history),
+        &[],
     );
     assert!(matches!(
         result,
@@ -132,6 +155,8 @@ fn verify_live_seal_closure_rejects_a_fixed_target_that_is_not_the_genuine_last_
         &network.blobs,
         &history,
         &candidate,
+        terminal_child_digest(network, &history),
+        &[],
     );
     assert!(
         result.is_err(),

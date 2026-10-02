@@ -3891,7 +3891,7 @@ mod tests {
     fn schema_identity_is_exact_and_generation_is_non_zero() {
         assert_eq!(
             POSTGRES_SCHEMA_IDENTITY,
-            *b"sunrise-edge/postgres/schema/v5\0"
+            *b"sunrise-edge/postgres/schema/v6\0"
         );
         assert_eq!(POSTGRES_SCHEMA_IDENTITY.len(), 32);
         assert_eq!(POSTGRES_SCHEMA_GENERATION.get(), 6);

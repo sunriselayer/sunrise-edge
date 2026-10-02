@@ -83,6 +83,7 @@
 - [DR-0185: one immutable reconstruction policy binding owner](0185-one-reconstruction-policy-binding.md)
 - [DR-0186: functional Seal and authenticated serving closure (Proposed)](0186-functional-handoff-closure.md)
 - [DR-0187: first-epoch ordered Seal and permanent outgoing closure](0187-first-epoch-ordered-seal.md)
+- [DR-0188: bounded ordered-client empty alignment](0188-ordered-client-empty-alignment.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

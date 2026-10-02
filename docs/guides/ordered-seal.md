@@ -70,7 +70,9 @@ The source preparation does not make any proposal succeed. Missing certificate
 material, incomplete drain, unsupported storage, a changed verification token,
 wrong roots or an incomplete authenticated prefix stop without an accepted
 receipt. Keep every proposal, certificate and replay-manifest artifact. The
-original accepted outcome, committed proof and protected Sealed barrier must
+client may first certify up to two ordinary empty alignment rounds; their exact
+artifacts stay in that manifest. No candidate-height exception is granted.
+The original accepted outcome, committed proof and protected Sealed barrier must
 agree; an unsigned acknowledgement alone is not that evidence.
 
 ## Reconciliation and historical access

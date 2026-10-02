@@ -1396,7 +1396,7 @@ impl<B: SqlBackend> DurableDomainStateStore for SqlDurableEngine<B> {
         run_read(&self.backend, Self::budget(context), |session, now| {
             let metadata = schema::verify_namespace(session, &self.namespace)?;
             validate_authority(&metadata, context, now)?;
-            Ok(metadata.barrier().clone())
+            Ok(*metadata.barrier())
         })
         .map_err(PreCommitFailure::into_read_error)
     }
