@@ -302,6 +302,15 @@ pub(crate) fn verify_causal_prerequisites<S: StructuredDurableDomainStateStore>(
             verify_causal_leg(store, context, env, &intent.leg, plan, reads, head_reads)?;
         }
         OrderedOperationKind::BondRegistration => {
+            use bond_lifecycle::registration::{BondRegistrationError, BondRegistrationRefusal};
+            match bond_lifecycle::registration::verify_registration_admission(
+                store, context, env, candidate, reads,
+            ) {
+                Ok(())
+                | Err(BondRegistrationError::Refused(BondRegistrationRefusal::AlreadyRegistered)) =>
+                    {}
+                Err(error) => return Err(bond_registration_failure(&error)),
+            }
             let signed = bond_lifecycle::registration::decode_signed_bond_registration_intent(
                 &candidate.intent,
             )

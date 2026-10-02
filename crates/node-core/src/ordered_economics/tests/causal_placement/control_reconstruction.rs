@@ -41,7 +41,7 @@ fn commit_freeze(network: &Network, request: [u8; 32]) {
     }
 }
 
-fn derive_ready(
+pub(super) fn derive_ready(
     network: &Network,
     replica: usize,
     selected: &[(FrozenFrontierVote, FrozenFrontierPage)],
@@ -119,6 +119,17 @@ fn derive_ready(
         }
     }
     panic!("genuine full members must derive readiness in bounded member steps");
+}
+
+pub(super) fn registration_generic_prefix(fixture: &CausalFixture) -> Vec<CertifiedPaidMaterial> {
+    frozen_completion::registration_generic_prefix(fixture)
+}
+
+pub(super) fn registration_transfer_cut(
+    cut: &crate::business_reconstruction::cut::VerifiedBusinessCut,
+    resolver: &HashSuiteResolver,
+) -> crate::business_reconstruction::cut::SavedBusinessCut {
+    frozen_completion::registration_transfer_cut(cut, resolver)
 }
 
 fn genuine_control_source(retain_unapplied: bool) -> GenuineControlSource {
