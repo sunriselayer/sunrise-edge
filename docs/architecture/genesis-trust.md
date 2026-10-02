@@ -166,6 +166,15 @@ or authorize signatures. It cannot stand in for authenticated successor
 selection/activation or choose a later serving epoch. First-epoch configuration
 is not a new serving-activation capability.
 
+An installed committee row remains an independent input. The first-epoch host's
+opt-in ordered composition must still require that row to describe the root's
+original committee, in addition to its ordinary installed live-epoch/digest
+checks. Deriving the ordered policy from the root cannot silently remove the
+old policy constructor's comparison against the host's actually loaded row.
+This is a real storage/configuration boundary, not a repair check between two
+values already derived from one immutable root. Reject disagreement before
+exposing a listener or performing ordered initialization.
+
 ## Acceptance and boundaries
 
 Record v1/v2/v3/v4 digest, ordered anchor, causal profile, minimum Freeze height,
