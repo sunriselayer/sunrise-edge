@@ -1,4 +1,5 @@
 //! Readiness from genuine owning executions, never seeded rows or signatures.
+use super::sqlite_handoff_faults::{HandoffFaultPlan, PendingHandoffFault, SqliteHandoffFaults};
 use super::*;
 use crate::business_reconstruction::cut::{SavedBusinessCut, derive_source_business_cut};
 use crate::business_reconstruction::inactive_import::{
@@ -6,11 +7,7 @@ use crate::business_reconstruction::inactive_import::{
 };
 use crate::conditional_readiness::{ReadinessSigningKey, retain_conditional_readiness};
 use consensus::readiness::{ReadinessCertifier, ReadinessVote, encode_readiness_vote};
-use runtime::portable::{PortableSnapshotError, PortableSnapshotToken};
-use runtime::{
-    ImportBinding, ImportProgress, ReadinessRecord, ReadinessRetentionRepository, ReadinessSlot,
-    ReadinessSlotObservation,
-};
+use runtime::{ReadinessRecord, ReadinessSlot};
 use runtime_sqlite::SqliteImportTarget;
 use std::{
     num::NonZeroUsize,
@@ -72,71 +69,6 @@ fn complete(
                 return;
             }
         }
-    }
-}
-
-/// The existing forwarding adapter really uses SQLite. Only the response is
-/// hidden; an unlanded write never calls the underlying retention operation.
-impl ReadinessRetentionRepository for inactive_business_import_faults::ReplyLoss<'_> {
-    fn read_ready_slot_at(
-        &self,
-        operation: &DurableOperationContext,
-        domain: AtomicityDomainId,
-        binding: &ImportBinding,
-        progress: &ImportProgress,
-        token: &PortableSnapshotToken,
-        slot: &ReadinessSlot,
-    ) -> Result<ReadinessSlotObservation, PortableSnapshotError> {
-        let observed: ReadinessSlotObservation = self
-            .inner
-            .read_ready_slot_at(operation, domain, binding, progress, token, slot)?;
-        if self.fence_finish.replace(false) {
-            let next: runtime::WriterFenceGeneration =
-                runtime::WriterFenceGeneration::new(operation.writer_fence().get() + 1).unwrap();
-            self.inner
-                .advance_writer_fence(operation.writer_fence(), next)
-                .unwrap();
-        }
-        Ok(observed)
-    }
-    fn retain_ready_slot(
-        &self,
-        operation: &DurableOperationContext,
-        domain: AtomicityDomainId,
-        binding: &ImportBinding,
-        progress: &ImportProgress,
-        token: &PortableSnapshotToken,
-        observed: &ReadinessSlotObservation,
-        record: &ReadinessRecord,
-    ) -> DurableCommitOutcome {
-        if self.abort_batch.replace(false) {
-            return DurableCommitOutcome::Indeterminate(
-                runtime::IndeterminateCommitReason::ConnectionLost,
-            );
-        }
-        let actual: DurableCommitOutcome = self.inner.retain_ready_slot(
-            operation, domain, binding, progress, token, observed, record,
-        );
-        if actual == DurableCommitOutcome::Committed && self.hide_stages.get() & 8 != 0 {
-            self.hide_stages.set(self.hide_stages.get() & !8);
-            DurableCommitOutcome::Indeterminate(runtime::IndeterminateCommitReason::ConnectionLost)
-        } else {
-            actual
-        }
-    }
-}
-
-fn loss(
-    target: &SqliteImportTarget,
-    hide: bool,
-    abort: bool,
-    fence: bool,
-) -> inactive_business_import_faults::ReplyLoss<'_> {
-    inactive_business_import_faults::ReplyLoss {
-        inner: target,
-        hide_stages: Cell::new(if hide { 8 } else { 0 }),
-        abort_batch: Cell::new(abort),
-        fence_finish: Cell::new(fence),
     }
 }
 
@@ -238,16 +170,24 @@ fn conditional_readiness_genuine_sqlite_all_members_restart_quorum_corrected_set
             "a supplied ID cannot assert its signing key"
         );
         let vote: ReadinessVote = if index == 0 {
-            retain_conditional_readiness(
+            let reply_loss: SqliteHandoffFaults<'_> =
+                SqliteHandoffFaults::new(&target, HandoffFaultPlan::LoseCommittedReadinessReply);
+            let retained: ReadinessVote = retain_conditional_readiness(
                 reconstruction_plan(&source.fixture, &identity),
                 &saved,
-                &loss(&target, true, false, false),
+                &reply_loss,
                 &blobs,
                 &operation,
                 &members,
                 &signer,
             )
-            .unwrap()
+            .unwrap();
+            assert_eq!(
+                reply_loss.pending_faults(),
+                Vec::<PendingHandoffFault>::new(),
+                "the actual committed readiness reply was hidden"
+            );
+            retained
         } else {
             retain_conditional_readiness(
                 reconstruction_plan(&source.fixture, &identity),
@@ -515,16 +455,25 @@ fn conditional_readiness_genuine_sqlite_all_members_restart_quorum_corrected_set
             );
             let mut corrected: Vec<FastPathValidatorEntry> = members.clone();
             corrected[0].voting_power = 2;
+            let undispatched: SqliteHandoffFaults<'_> = SqliteHandoffFaults::new(
+                &target,
+                HandoffFaultPlan::ReadinessRetentionUndispatchedAmbiguity,
+            );
             let failure = retain_conditional_readiness(
                 reconstruction_plan(&source.fixture, &identity),
                 &saved,
-                &loss(&target, false, true, false),
+                &undispatched,
                 &blobs,
                 &operation,
                 &corrected,
                 &restarted,
             )
             .unwrap_err();
+            assert_eq!(
+                undispatched.pending_faults(),
+                Vec::<PendingHandoffFault>::new(),
+                "readiness retention returned ambiguity without dispatch"
+            );
             assert!(matches!(
                 failure,
                 crate::conditional_readiness::ConditionalReadinessError::Indeterminate(_)
@@ -568,17 +517,26 @@ fn conditional_readiness_genuine_sqlite_all_members_restart_quorum_corrected_set
             another[0].voting_power = 3;
             let fenced: ReadinessSigningKey =
                 ReadinessSigningKey::new(network.signers[index].id, network.signers[index].key);
+            let fence_after_read: SqliteHandoffFaults<'_> = SqliteHandoffFaults::new(
+                &target,
+                HandoffFaultPlan::AdvanceFenceAfterReadinessSlotRead,
+            );
             assert!(
                 retain_conditional_readiness(
                     reconstruction_plan(&source.fixture, &identity),
                     &saved,
-                    &loss(&target, false, false, true),
+                    &fence_after_read,
                     &blobs,
                     &operation,
                     &another,
                     &fenced
                 )
                 .is_err()
+            );
+            assert_eq!(
+                fence_after_read.pending_faults(),
+                Vec::<PendingHandoffFault>::new(),
+                "the writer fence advanced after the successful readiness-slot read"
             );
             assert_eq!(
                 fenced.signatures_created(),

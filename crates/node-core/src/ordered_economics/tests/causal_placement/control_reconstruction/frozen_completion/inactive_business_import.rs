@@ -874,13 +874,11 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
         plan.binding(),
     )
     .unwrap();
-    let lost: super::inactive_business_import_faults::ReplyLoss<'_> =
-        super::inactive_business_import_faults::ReplyLoss {
-            inner: &uncertain,
-            hide_stages: Cell::new(7),
-            abort_batch: Cell::new(false),
-            fence_finish: Cell::new(false),
-        };
+    let lost: super::sqlite_handoff_faults::SqliteHandoffFaults<'_> =
+        super::sqlite_handoff_faults::SqliteHandoffFaults::new(
+            &uncertain,
+            super::sqlite_handoff_faults::HandoffFaultPlan::LoseCommittedImportReplies,
+        );
     loop {
         if plan
             .advance(&lost, &blobs, &operation, NonZeroUsize::MIN)
@@ -891,8 +889,8 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
         }
     }
     assert_eq!(
-        lost.hide_stages.get(),
-        0,
+        lost.pending_faults(),
+        Vec::<super::sqlite_handoff_faults::PendingHandoffFault>::new(),
         "all three actual committed replies were hidden"
     );
     original_replays(&uncertain, &blobs, &operation, &source);
@@ -903,17 +901,20 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
         plan.binding(),
     )
     .unwrap();
-    let stopped: super::inactive_business_import_faults::ReplyLoss<'_> =
-        super::inactive_business_import_faults::ReplyLoss {
-            inner: &aborted,
-            hide_stages: Cell::new(0),
-            abort_batch: Cell::new(true),
-            fence_finish: Cell::new(false),
-        };
+    let stopped: super::sqlite_handoff_faults::SqliteHandoffFaults<'_> =
+        super::sqlite_handoff_faults::SqliteHandoffFaults::new(
+            &aborted,
+            super::sqlite_handoff_faults::HandoffFaultPlan::ImportBatchUndispatchedAmbiguity,
+        );
     assert!(matches!(
         plan.advance(&stopped, &blobs, &operation, NonZeroUsize::MIN),
         Err(crate::business_reconstruction::inactive_import::BusinessImportError::Indeterminate(_))
     ));
+    assert_eq!(
+        stopped.pending_faults(),
+        Vec::<super::sqlite_handoff_faults::PendingHandoffFault>::new(),
+        "the import batch returned ambiguity without dispatch"
+    );
     assert_eq!(
         aborted
             .read_import_progress(&operation, network.domain())
@@ -931,13 +932,11 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
         plan.binding(),
     )
     .unwrap();
-    let race: super::inactive_business_import_faults::ReplyLoss<'_> =
-        super::inactive_business_import_faults::ReplyLoss {
-            inner: &raced,
-            hide_stages: Cell::new(0),
-            abort_batch: Cell::new(false),
-            fence_finish: Cell::new(true),
-        };
+    let race: super::sqlite_handoff_faults::SqliteHandoffFaults<'_> =
+        super::sqlite_handoff_faults::SqliteHandoffFaults::new(
+            &raced,
+            super::sqlite_handoff_faults::HandoffFaultPlan::AdvanceFenceBeforeImportFinish,
+        );
     loop {
         match plan.advance(&race, &blobs, &operation, NonZeroUsize::MIN) {
             Ok(BusinessImportAdvance::Partial { .. }) => {}
@@ -947,6 +946,11 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
             }
         }
     }
+    assert_eq!(
+        race.pending_faults(),
+        Vec::<super::sqlite_handoff_faults::PendingHandoffFault>::new(),
+        "the writer fence advanced before import completion"
+    );
     assert!(matches!(
         raced
             .get_namespace_lifecycle(&fixture::context(42), network.domain())
