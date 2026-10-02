@@ -25,5 +25,5 @@ pub use engine::SqlDurableEngine;
 pub use schema::{
     NamespaceMetadata, SQL_DURABLE_SCHEMA_IDENTITY, SchemaError, SqlDurableNamespace,
     advance_writer_fence, bootstrap_namespace, ensure_schema, object_heads_is_empty,
-    verify_namespace,
+    open_namespace_historical, verify_namespace,
 };

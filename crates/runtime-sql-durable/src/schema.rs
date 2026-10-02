@@ -15,7 +15,10 @@ use protocol_types::{ChainId, ValidatorId};
 use runtime::inactive_import::{
     decode_import_binding, decode_import_progress, encode_import_binding,
 };
-use runtime::{AtomicityDomainId, ImportBinding, NamespaceLifecycle, WriterFenceGeneration};
+use runtime::outgoing_seal::{decode_outgoing_barrier, encode_outgoing_barrier};
+use runtime::{
+    AtomicityDomainId, ImportBinding, NamespaceLifecycle, OutgoingBarrier, WriterFenceGeneration,
+};
 use std::fmt;
 
 /// Stable identity of the shared structured SQL schema.
@@ -26,7 +29,11 @@ use std::fmt;
 /// protected conditional-readiness table, with explicit immutable
 /// origin/binding and separate import progress. Older initialized
 /// shapes are unsupported; opening never migrates, resets or repairs them.
-pub const SQL_DURABLE_SCHEMA_IDENTITY: &[u8] = b"sunrise-edge/sqlite/structured/schema/v4";
+/// `v5` additionally requires the protected `durable_outgoing_barrier` row,
+/// a single canonical frame decoded through the shared runtime codec; a
+/// fresh or import bootstrap always installs it in the same transaction and
+/// never repairs a surviving row.
+pub const SQL_DURABLE_SCHEMA_IDENTITY: &[u8] = b"sunrise-edge/sqlite/structured/schema/v5";
 
 pub(crate) const OBJECT_HEAD_STATUS_CURRENT: i64 = 1;
 pub(crate) const OBJECT_HEAD_STATUS_TOMBSTONED: i64 = 2;
@@ -123,6 +130,10 @@ pub const TABLE_STATEMENTS: &[&str] = &[
          progress BLOB NULL CHECK(progress IS NULL OR (typeof(progress) = 'blob' AND length(progress) <= 16384)),
          CHECK((phase = 0 AND progress IS NULL) OR (phase IN (1, 2) AND progress IS NOT NULL))
      )",
+    "CREATE TABLE IF NOT EXISTS durable_outgoing_barrier (
+         id INTEGER PRIMARY KEY CHECK(id = 1),
+         barrier BLOB NOT NULL CHECK(typeof(barrier) = 'blob' AND length(barrier) <= 1536)
+     )",
     "CREATE TABLE IF NOT EXISTS durable_state (
          key BLOB PRIMARY KEY NOT NULL,
          revision BLOB NOT NULL CHECK(length(revision) = 8),
@@ -212,6 +223,9 @@ pub enum SchemaError {
     InvalidPersistedMetadata,
     /// A normal bootstrap/open attempted to serve an import-only namespace.
     InactiveNamespace,
+    /// A normal bootstrap/open attempted to serve a namespace whose outgoing
+    /// barrier is already Sealed.
+    NamespaceSealed,
     /// A persisted writer fence was zero.
     ZeroWriterFence,
     /// The expected writer fence was no longer active when advancing it.
@@ -241,6 +255,9 @@ impl fmt::Display for SchemaError {
                 f.write_str("SQL structured metadata row is missing or malformed")
             }
             Self::InactiveNamespace => f.write_str("SQL namespace is permanently import-only"),
+            Self::NamespaceSealed => {
+                f.write_str("SQL namespace outgoing barrier is already Sealed")
+            }
             Self::ZeroWriterFence => f.write_str("SQL writer fence must be non-zero"),
             Self::WriterFenceMismatch { expected, actual } => write!(
                 f,
@@ -280,6 +297,7 @@ pub struct NamespaceMetadata {
     /// writer-refencing procedure, not this identity.
     source_instance_id: [u8; 16],
     lifecycle: NamespaceLifecycle,
+    barrier: OutgoingBarrier,
 }
 
 impl NamespaceMetadata {
@@ -305,6 +323,12 @@ impl NamespaceMetadata {
     #[must_use]
     pub const fn lifecycle(&self) -> &NamespaceLifecycle {
         &self.lifecycle
+    }
+
+    /// Returns the mandatory protected outgoing barrier.
+    #[must_use]
+    pub const fn barrier(&self) -> &OutgoingBarrier {
+        &self.barrier
     }
 }
 
@@ -402,11 +426,28 @@ pub fn verify_namespace(
         }
         _ => return Err(SchemaError::InvalidPersistedMetadata),
     };
+    // No WHERE clause: a corrupt extra row under a different id must still
+    // surface as more than one row rather than being filtered out unseen.
+    let barrier_rows = session.exec(
+        "SELECT CASE WHEN id = 1 AND length(barrier) <= 1536 THEN barrier ELSE NULL END
+         FROM durable_outgoing_barrier LIMIT 2",
+        &[],
+    )?;
+    let barrier_row = barrier_rows
+        .one()?
+        .ok_or(SchemaError::InvalidPersistedMetadata)?;
+    let barrier_bytes: &[u8] = barrier_row
+        .opt_blob(0)
+        .map_err(SqlSessionError::from)?
+        .ok_or(SchemaError::InvalidPersistedMetadata)?;
+    let barrier: OutgoingBarrier = decode_outgoing_barrier(barrier_bytes)
+        .map_err(|_| SchemaError::InvalidPersistedMetadata)?;
     Ok(NamespaceMetadata {
         writer_fence,
         mutation_sequence,
         source_instance_id,
         lifecycle,
+        barrier,
     })
 }
 
@@ -434,6 +475,9 @@ pub fn bootstrap_namespace(
         if !metadata.lifecycle().is_ordinary() {
             return Err(SchemaError::InactiveNamespace);
         }
+        if metadata.barrier().is_sealed() {
+            return Err(SchemaError::NamespaceSealed);
+        }
         return Ok(metadata);
     }
     let surviving = session.exec(
@@ -445,7 +489,7 @@ pub fn bootstrap_namespace(
     }
     ensure_schema(session)?;
     session.exec(
-        "INSERT OR IGNORE INTO durable_metadata
+        "INSERT INTO durable_metadata
              (id, schema_identity, chain_id, validator_id, domain, writer_fence,
               mutation_sequence, source_instance_id, namespace_origin, import_binding)
          VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, randomblob(16), 1, NULL)",
@@ -457,6 +501,13 @@ pub fn bootstrap_namespace(
             SqlValue::Blob(encode_u64(initial_writer_fence.get()).to_vec()),
             SqlValue::Blob(encode_u64(0).to_vec()),
         ],
+    )?;
+    session.exec(
+        "INSERT INTO durable_outgoing_barrier (id, barrier) VALUES (1, ?1)",
+        &[SqlValue::Blob(
+            encode_outgoing_barrier(&OutgoingBarrier::Unsealed)
+                .map_err(|_| SchemaError::InvalidPersistedMetadata)?,
+        )],
     )?;
     verify_namespace(session, namespace)
 }
@@ -501,6 +552,32 @@ pub fn bootstrap_import_namespace(
         "INSERT INTO durable_import_progress (id, phase, progress) VALUES (1, 0, NULL)",
         &[],
     )?;
+    session.exec(
+        "INSERT INTO durable_outgoing_barrier (id, barrier) VALUES (1, ?1)",
+        &[SqlValue::Blob(
+            encode_outgoing_barrier(&OutgoingBarrier::Unsealed)
+                .map_err(|_| SchemaError::InvalidPersistedMetadata)?,
+        )],
+    )?;
+    verify_namespace(session, namespace)
+}
+
+/// Opens an already initialized namespace for read-only historical
+/// inspection, export, or query. Unlike bootstrap/live open this grants no
+/// write exemption and does not refuse a Sealed or import-only namespace;
+/// every commit path still independently rechecks and rejects under its own
+/// lock/transaction. This requires the metadata row to already exist.
+pub fn open_namespace_historical(
+    session: &mut dyn SqlSession,
+    namespace: &SqlDurableNamespace,
+) -> Result<NamespaceMetadata, SchemaError> {
+    let existing = session.exec(
+        "SELECT name FROM sqlite_schema WHERE name = 'durable_metadata' LIMIT 1",
+        &[],
+    )?;
+    if existing.one()?.is_none() {
+        return Err(SchemaError::InvalidPersistedMetadata);
+    }
     verify_namespace(session, namespace)
 }
 

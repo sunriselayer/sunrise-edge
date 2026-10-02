@@ -64,6 +64,20 @@ pub(crate) fn probe(
     ))
 }
 
+/// Reuse the exact EmptyOnly inventory after reading protected phase under
+/// the owning metadata lock, before any cached delivery return. No inventory
+/// queries are added to the ordinary Unsealed claim/ACK path.
+pub(crate) fn require_sealed_inventory(
+    transaction: &mut postgres::Transaction<'_>,
+    namespace: &PostgresNamespace,
+    metadata: &PostgresSchemaMetadata,
+) -> Result<(), PreCommitFailure> {
+    if metadata.barrier.is_sealed() && probe(transaction, namespace)?.blocks_exclusion() {
+        return Err(PreCommitFailure::InvalidPersistedState);
+    }
+    Ok(())
+}
+
 impl<M> StructuredOutboxExclusionGuard for PostgresDurableStore<M>
 where
     M: ManageConnection<Connection = Client, Error = postgres::Error> + 'static,

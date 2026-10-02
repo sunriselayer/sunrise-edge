@@ -40,6 +40,18 @@ CREATE TABLE sunrise_edge.storage_metadata (
     CHECK (schema_generation <= compatibility_max_generation)
 );
 
+CREATE TABLE sunrise_edge.outgoing_barrier (
+    chain_id_bytes BYTEA NOT NULL,
+    validator_id BYTEA NOT NULL,
+    atomicity_domain_id BYTEA NOT NULL,
+    barrier BYTEA NOT NULL CHECK (octet_length(barrier) <= 1536),
+    PRIMARY KEY (chain_id_bytes, validator_id, atomicity_domain_id),
+    FOREIGN KEY (chain_id_bytes, validator_id, atomicity_domain_id)
+        REFERENCES sunrise_edge.storage_metadata
+        (chain_id_bytes, validator_id, atomicity_domain_id)
+        ON DELETE RESTRICT NOT DEFERRABLE
+);
+
 CREATE TABLE sunrise_edge.blobs (
     chain_id_bytes BYTEA NOT NULL,
     validator_id BYTEA NOT NULL,

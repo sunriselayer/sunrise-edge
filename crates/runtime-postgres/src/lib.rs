@@ -26,6 +26,9 @@ use r2d2_postgres::{
     PostgresConnectionManager,
     r2d2::{ManageConnection, Pool},
 };
+use runtime::outgoing_seal::{
+    MAX_OUTGOING_BARRIER_BYTES, decode_outgoing_barrier, encode_outgoing_barrier,
+};
 use runtime::{
     AtomicStateTransaction, DURABLE_OBJECT_CANONICAL_RECORD_TYPE_ID, DueOutboxClaimRequest,
     DurableCommitOutcome, DurableCommitRejection, DurableDomainStateStore,
@@ -38,9 +41,9 @@ use runtime::{
     DurableOutboxClaimRejection, DurableOutboxLeaseId, DurableReadError, DurableRequestId,
     DurableRequestReceipt, DurableStateKeyScanner, IndeterminateCommitReason,
     IndexedOutboxRepository, MAX_DURABLE_INLINE_OBJECT_BYTES, ObjectHeadRevision, ObjectId,
-    OutboxRequestId, RequestOutboxClaimRequest, StateKeyPage, StateKeyScan, StateMutation,
-    StateMutationEntry, StateReadAssertion, StateRevision, StructuredDurableDomainStateStore,
-    VersionedStateValue, WriterFenceGeneration,
+    OutboxRequestId, OutgoingBarrier, RequestOutboxClaimRequest, StateKeyPage, StateKeyScan,
+    StateMutation, StateMutationEntry, StateReadAssertion, StateRevision,
+    StructuredDurableDomainStateStore, VersionedStateValue, WriterFenceGeneration,
 };
 use std::{
     error::Error,
@@ -52,16 +55,23 @@ use std::{
 /// Exact first migration executed only by an explicit operator action.
 pub const INITIAL_MIGRATION_SQL: &str = include_str!("../migrations/0001_initial.sql");
 
-/// Stable identity of the normalized PostgreSQL schema generation one.
+/// Stable identity of the normalized PostgreSQL schema.
 ///
 /// `v5` keeps an explicitly initialized Ordinary namespace origin alongside
 /// the local source identity and fence. Import bootstrap is unsupported here.
 /// Older initialized shapes fail closed; no migration, repair or backfill is
 /// shipped for this unreleased schema.
-pub const POSTGRES_SCHEMA_IDENTITY: [u8; 32] = *b"sunrise-edge/postgres/schema/v5\0";
+/// `v6` additionally requires the protected per-namespace `outgoing_barrier`
+/// row, a single canonical frame decoded through the shared runtime codec;
+/// bootstrap installs it in the same transaction as `storage_metadata` and
+/// never repairs a surviving row. Its schema generation is aligned to 6.
+pub const POSTGRES_SCHEMA_IDENTITY: [u8; 32] = *b"sunrise-edge/postgres/schema/v6\0";
 
-/// First supported schema generation.
-pub const POSTGRES_SCHEMA_GENERATION: SchemaGeneration = SchemaGeneration(NonZeroU64::MIN);
+/// Supported schema generation, aligned to the `v6` identity above.
+pub const POSTGRES_SCHEMA_GENERATION: SchemaGeneration = match SchemaGeneration::new(6) {
+    Some(generation) => generation,
+    None => unreachable!(),
+};
 
 const INITIAL_MIGRATION_ID: i32 = 1;
 const MIGRATION_PHASE_ACTIVE: i16 = 5;
@@ -335,6 +345,7 @@ pub struct PostgresSchemaMetadata {
     schema_generation: SchemaGeneration,
     writer_fence: WriterFenceGeneration,
     commit_sequence: u64,
+    barrier: OutgoingBarrier,
     /// A 16-byte UUIDv4 identity persisted once at trusted bootstrap. It
     /// distinguishes two independently bootstrapped stores that otherwise
     /// share the same chain/validator/domain namespace tuple, so a portable
@@ -355,6 +366,13 @@ impl PostgresSchemaMetadata {
     #[must_use]
     pub const fn writer_fence(self) -> WriterFenceGeneration {
         self.writer_fence
+    }
+
+    /// Returns the mandatory protected outgoing barrier. Unsealed is never
+    /// membership or serving permission; Sealed never reverts to Unsealed.
+    #[must_use]
+    pub const fn barrier(self) -> OutgoingBarrier {
+        self.barrier
     }
 
     /// Returns the last allocated commit sequence.
@@ -406,6 +424,9 @@ pub enum PostgresSchemaError {
     },
     /// A stored writer fence was zero.
     ZeroWriterFence,
+    /// The mandatory protected outgoing barrier row was missing, duplicated,
+    /// or failed to decode through the shared runtime codec.
+    InvalidPersistedState,
 }
 
 impl fmt::Display for PostgresSchemaError {
@@ -439,6 +460,9 @@ impl fmt::Display for PostgresSchemaError {
                 write!(f, "PostgreSQL {field} is not a canonical u64: {value}")
             }
             Self::ZeroWriterFence => f.write_str("PostgreSQL writer fence must be non-zero"),
+            Self::InvalidPersistedState => {
+                f.write_str("PostgreSQL outgoing barrier row is missing, duplicated, or invalid")
+            }
         }
     }
 }
@@ -539,6 +563,18 @@ pub fn bootstrap_namespace(
 ) -> Result<PostgresSchemaMetadata, PostgresSchemaError> {
     let mut transaction = client.transaction()?;
     verify_initial_schema(&mut transaction)?;
+    // Reopening never repairs a surviving barrier row; it is only ever
+    // installed once, in the same transaction as a genuinely fresh
+    // storage_metadata row below.
+    if let Some(metadata) = inspect_namespace(&mut transaction, namespace)? {
+        if metadata.schema_generation() != schema_generation
+            || metadata.writer_fence() != writer_fence
+        {
+            return Err(PostgresSchemaError::NamespaceMetadataMismatch);
+        }
+        transaction.commit()?;
+        return Ok(metadata);
+    }
     let schema_generation_text = schema_generation.get().to_string();
     let writer_fence_text = writer_fence.get().to_string();
     transaction.execute(
@@ -571,6 +607,19 @@ pub fn bootstrap_namespace(
             &schema_generation_text,
             &MIGRATION_PHASE_ACTIVE,
             &writer_fence_text,
+        ],
+    )?;
+    let barrier_bytes = encode_outgoing_barrier(&OutgoingBarrier::Unsealed)
+        .map_err(|_| PostgresSchemaError::InvalidPersistedState)?;
+    transaction.execute(
+        "INSERT INTO sunrise_edge.outgoing_barrier
+             (chain_id_bytes, validator_id, atomicity_domain_id, barrier)
+         VALUES ($1, $2, $3, $4)",
+        &[
+            &namespace.chain_id_bytes(),
+            &&namespace.validator_id().as_bytes()[..],
+            &&namespace.domain().as_bytes()[..],
+            &barrier_bytes,
         ],
     )?;
     let metadata = inspect_namespace(&mut transaction, namespace)?
@@ -651,6 +700,32 @@ pub fn advance_writer_fence(
     Ok(metadata)
 }
 
+/// Loads the mandatory protected `outgoing_barrier` row for one namespace.
+/// `LIMIT 2` with no artificial cap on the predicate means a corrupt extra
+/// row under the same namespace key is still returned and rejected by the
+/// caller instead of being silently hidden by a `LIMIT 1`.
+fn outgoing_barrier_rows(
+    client: &mut impl GenericClient,
+    namespace: &PostgresNamespace,
+    lock_suffix: &str,
+) -> Result<Vec<postgres::Row>, postgres::Error> {
+    let sql = format!(
+        "SELECT CASE WHEN octet_length(barrier) <= {MAX_OUTGOING_BARRIER_BYTES}
+                THEN barrier ELSE NULL END
+         FROM sunrise_edge.outgoing_barrier
+         WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3
+         LIMIT 2{lock_suffix}"
+    );
+    client.query(
+        &sql,
+        &[
+            &namespace.chain_id_bytes(),
+            &&namespace.validator_id().as_bytes()[..],
+            &&namespace.domain().as_bytes()[..],
+        ],
+    )
+}
+
 /// Reads and validates one exact namespace metadata row.
 pub fn inspect_namespace(
     client: &mut impl GenericClient,
@@ -705,10 +780,21 @@ pub fn inspect_namespace(
     let writer_fence = WriterFenceGeneration::new(writer_fence_value)
         .ok_or(PostgresSchemaError::ZeroWriterFence)?;
     let commit_sequence = parse_u64("commit_sequence", row.get(7))?;
+    let barrier_rows = outgoing_barrier_rows(client, namespace, "")?;
+    if barrier_rows.len() != 1 {
+        return Err(PostgresSchemaError::InvalidPersistedState);
+    }
+    let barrier_bytes: Vec<u8> = barrier_rows[0]
+        .try_get::<_, Option<Vec<u8>>>(0)
+        .map_err(|_| PostgresSchemaError::InvalidPersistedState)?
+        .ok_or(PostgresSchemaError::InvalidPersistedState)?;
+    let barrier = decode_outgoing_barrier(&barrier_bytes)
+        .map_err(|_| PostgresSchemaError::InvalidPersistedState)?;
     Ok(Some(PostgresSchemaMetadata {
         schema_generation: POSTGRES_SCHEMA_GENERATION,
         writer_fence,
         commit_sequence,
+        barrier,
         source_instance_id,
     }))
 }
@@ -927,10 +1013,22 @@ fn load_namespace_metadata(
     }
     let writer_fence = WriterFenceGeneration::new(parse_database_u64(&row, 6)?)
         .ok_or(PreCommitFailure::InvalidPersistedState)?;
+    let barrier_rows = outgoing_barrier_rows(transaction, namespace, suffix)
+        .map_err(|error| PreCommitFailure::from_database(&error))?;
+    if barrier_rows.len() != 1 {
+        return Err(PreCommitFailure::InvalidPersistedState);
+    }
+    let barrier_bytes: Vec<u8> = barrier_rows[0]
+        .try_get::<_, Option<Vec<u8>>>(0)
+        .map_err(|_| PreCommitFailure::InvalidPersistedState)?
+        .ok_or(PreCommitFailure::InvalidPersistedState)?;
+    let barrier = decode_outgoing_barrier(&barrier_bytes)
+        .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
     Ok(PostgresSchemaMetadata {
         schema_generation: POSTGRES_SCHEMA_GENERATION,
         writer_fence,
         commit_sequence: parse_database_u64(&row, 7)?,
+        barrier,
         source_instance_id,
     })
 }
@@ -2385,6 +2483,7 @@ fn reconcile_outbox_claim(
     lease_id: DurableOutboxLeaseId,
     attempt: PersistedOutboxAttempt,
     now_unix_millis: u64,
+    sealed: bool,
 ) -> Result<DurableOutboxClaim, DurableOutboxClaimRejection> {
     if attempt.state_id != OUTBOX_ATTEMPT_CLAIMED
         || attempt.lease_expires_at_unix_millis <= now_unix_millis
@@ -2400,6 +2499,9 @@ fn reconcile_outbox_claim(
         || delivery.lease_expires_at_unix_millis != Some(attempt.lease_expires_at_unix_millis)
         || delivery.available_at_unix_millis != attempt.lease_expires_at_unix_millis
     {
+        return Err(DurableOutboxClaimRejection::InvalidPersistedState);
+    }
+    if sealed && delivery.message_count != 0 {
         return Err(DurableOutboxClaimRejection::InvalidPersistedState);
     }
     let payload = load_outbox_payload(
@@ -2801,6 +2903,37 @@ where
         remaining_deadline(context).map_err(PreCommitFailure::into_read_error)?;
         Ok(runtime::NamespaceLifecycle::Ordinary)
     }
+    fn get_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        if !self.domain_is_bound(domain) {
+            return Err(DurableReadError::InvalidRequest(
+                runtime::RuntimeError::AtomicityDomainMismatch,
+            ));
+        }
+        let mut client = self
+            .acquire(context)
+            .map_err(PreCommitFailure::into_read_error)?;
+        let mut transaction = client
+            .build_transaction()
+            .isolation_level(IsolationLevel::Serializable)
+            .read_only(true)
+            .start()
+            .map_err(|error| PreCommitFailure::from_database(&error).into_read_error())?;
+        set_local_timeouts(&mut transaction, context).map_err(PreCommitFailure::into_read_error)?;
+        let metadata =
+            load_namespace_metadata(&mut transaction, &self.namespace, MetadataLockMode::None)
+                .map_err(PreCommitFailure::into_read_error)?;
+        validate_operation_authority(metadata, context)
+            .map_err(PreCommitFailure::into_read_error)?;
+        transaction
+            .rollback()
+            .map_err(|error| PreCommitFailure::from_database(&error).into_read_error())?;
+        remaining_deadline(context).map_err(PreCommitFailure::into_read_error)?;
+        Ok(metadata.barrier())
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -2880,6 +3013,9 @@ where
             };
             if let Err(reason) = validate_operation_authority(metadata, context) {
                 return DurableCommitOutcome::Rejected(reason.into_commit_rejection());
+            }
+            if metadata.barrier().is_sealed() {
+                return DurableCommitOutcome::Rejected(DurableCommitRejection::NamespaceSealed);
             }
             if let Err(reason) =
                 validate_state_reads(&mut transaction, context, &self.namespace, state.reads())
@@ -3079,6 +3215,9 @@ where
             if let Err(reason) = validate_operation_authority(metadata, context) {
                 return DurableCommitOutcome::Rejected(reason.into_commit_rejection());
             }
+            if metadata.barrier().is_sealed() {
+                return DurableCommitOutcome::Rejected(DurableCommitRejection::NamespaceSealed);
+            }
             let receipt = invocation.receipt();
             match receipt_already_exists(
                 &mut transaction,
@@ -3260,6 +3399,11 @@ where
             if let Err(reason) = validate_operation_authority(metadata, context) {
                 return DurableOutboxClaimOutcome::Rejected(reason.into_claim_rejection());
             }
+            if let Err(reason) =
+                outbox_guard::require_sealed_inventory(&mut transaction, &self.namespace, &metadata)
+            {
+                return DurableOutboxClaimOutcome::Rejected(reason.into_claim_rejection());
+            }
             let existing = match load_outbox_attempt(
                 &mut transaction,
                 context,
@@ -3284,6 +3428,7 @@ where
                     request.lease_id(),
                     attempt,
                     request.now_unix_millis(),
+                    metadata.barrier().is_sealed(),
                 ) {
                     Ok(claim) => DurableOutboxClaimOutcome::Claimed(claim),
                     Err(reason) => DurableOutboxClaimOutcome::Rejected(reason),
@@ -3308,6 +3453,11 @@ where
                     .is_some_and(|expires_at| expires_at > request.now_unix_millis())
             {
                 return DurableOutboxClaimOutcome::NoDueWork;
+            }
+            if metadata.barrier().is_sealed() && delivery.message_count != 0 {
+                return DurableOutboxClaimOutcome::Rejected(
+                    DurableOutboxClaimRejection::InvalidPersistedState,
+                );
             }
             let claim = match install_outbox_claim(
                 &mut transaction,
@@ -3380,6 +3530,11 @@ where
             if let Err(reason) = validate_operation_authority(metadata, context) {
                 return DurableOutboxClaimOutcome::Rejected(reason.into_claim_rejection());
             }
+            if let Err(reason) =
+                outbox_guard::require_sealed_inventory(&mut transaction, &self.namespace, &metadata)
+            {
+                return DurableOutboxClaimOutcome::Rejected(reason.into_claim_rejection());
+            }
             let existing = match load_outbox_attempt(
                 &mut transaction,
                 context,
@@ -3399,6 +3554,7 @@ where
                     request.lease_id(),
                     attempt,
                     request.now_unix_millis(),
+                    metadata.barrier().is_sealed(),
                 ) {
                     Ok(claim) => DurableOutboxClaimOutcome::Claimed(claim),
                     Err(reason) => DurableOutboxClaimOutcome::Rejected(reason),
@@ -3416,6 +3572,11 @@ where
                     return DurableOutboxClaimOutcome::Rejected(reason.into_claim_rejection());
                 }
             };
+            if metadata.barrier().is_sealed() && delivery.message_count != 0 {
+                return DurableOutboxClaimOutcome::Rejected(
+                    DurableOutboxClaimRejection::InvalidPersistedState,
+                );
+            }
             let claim = match install_outbox_claim(
                 &mut transaction,
                 context,
@@ -3497,6 +3658,13 @@ where
                     reason.into_acknowledgement_rejection(),
                 );
             }
+            if let Err(reason) =
+                outbox_guard::require_sealed_inventory(&mut transaction, &self.namespace, &metadata)
+            {
+                return DurableOutboxAcknowledgementOutcome::Rejected(
+                    reason.into_acknowledgement_rejection(),
+                );
+            }
             let attempt = match load_outbox_attempt(
                 &mut transaction,
                 context,
@@ -3540,6 +3708,11 @@ where
                     );
                 }
             };
+            if metadata.barrier().is_sealed() && delivery.message_count != 0 {
+                return DurableOutboxAcknowledgementOutcome::Rejected(
+                    DurableOutboxAcknowledgementRejection::InvalidPersistedState,
+                );
+            }
             if attempt.state_id == OUTBOX_ATTEMPT_ACKNOWLEDGED {
                 if attempt.message_index >= delivery.message_count
                     || delivery.next_message_index <= attempt.message_index
@@ -3721,7 +3894,7 @@ mod tests {
             *b"sunrise-edge/postgres/schema/v5\0"
         );
         assert_eq!(POSTGRES_SCHEMA_IDENTITY.len(), 32);
-        assert_eq!(POSTGRES_SCHEMA_GENERATION.get(), 1);
+        assert_eq!(POSTGRES_SCHEMA_GENERATION.get(), 6);
         assert!(INITIAL_MIGRATION_SQL.contains("CREATE TABLE sunrise_edge.state_records"));
         assert!(INITIAL_MIGRATION_SQL.contains("CREATE TABLE sunrise_edge.blobs"));
         assert_eq!(runtime::MAX_STATE_VALUE_BYTES, 33_554_432);

@@ -10,6 +10,7 @@ pub mod conformance;
 pub mod inactive_import;
 mod operation;
 pub mod outbox_guard;
+pub mod outgoing_seal;
 pub mod portable;
 mod state_read;
 pub mod transaction;
@@ -24,6 +25,11 @@ pub use inactive_import::{
 pub use operation::{
     DurableOperationContext, InvocationCancellation, NeverCancelled, StorageCorrelationId,
     StorageDeadline, WriterFenceGeneration,
+};
+pub use outgoing_seal::{
+    MAX_OUTGOING_BARRIER_BYTES, MAX_SEAL_BARRIER_BYTES, OutgoingBarrier, OutgoingSealRepository,
+    SealBarrier, TransitionHistoryState, decode_outgoing_barrier, decode_seal_barrier,
+    encode_outgoing_barrier, encode_seal_barrier,
 };
 pub use state_read::{StructuredStateReader, VersionedStateReader};
 use transaction::represented_transaction_bytes;
@@ -144,6 +150,8 @@ pub enum RuntimeError {
     InvalidImportRequest,
     /// A bounded readiness record or its local observation is invalid.
     InvalidReadinessRequest,
+    /// A protected outgoing-barrier or sealed-record frame is invalid.
+    InvalidOutgoingBarrier,
 }
 
 impl fmt::Display for RuntimeError {
@@ -219,6 +227,9 @@ impl fmt::Display for RuntimeError {
             }
             Self::InvalidImportRequest => write!(f, "invalid inactive import request"),
             Self::InvalidReadinessRequest => write!(f, "invalid conditional readiness request"),
+            Self::InvalidOutgoingBarrier => {
+                write!(f, "invalid outgoing barrier or sealed record")
+            }
         }
     }
 }
@@ -2475,6 +2486,9 @@ pub enum AtomicStateWriteResult {
 pub enum DurableCommitRejection {
     /// Ordinary writes cannot mutate a permanently import-only namespace.
     InactiveNamespace,
+    /// Ordinary writes cannot mutate a namespace whose outgoing barrier is
+    /// already Sealed, including a previously opened live handle.
+    NamespaceSealed,
     /// The immutable import binding differs from this operation.
     ImportBindingMismatch,
     /// The exact expected import progress or row contents differed.
@@ -2714,6 +2728,15 @@ pub trait DurableDomainStateStore {
         domain: AtomicityDomainId,
         key: &[u8],
     ) -> Result<VersionedStateValue, DurableReadError>;
+    /// Reads the protected outgoing barrier. There is deliberately no
+    /// ordinary/unsealed default; every adapter must observe and report
+    /// its own persisted barrier. Unsealed is never membership or serving
+    /// permission, and Sealed never reverts to Unsealed.
+    fn get_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<OutgoingBarrier, DurableReadError>;
 
     /// Revalidates the fence and complete read set, then commits all or none.
     ///
@@ -2783,6 +2806,14 @@ pub trait StructuredDurableDomainStateStore: DurableDomainStateStore {
         context: &DurableOperationContext,
         transaction: DurableInvocationTransaction,
     ) -> DurableCommitOutcome;
+
+    /// Returns Seal production capability only when this exact store
+    /// provides it. Defaults to unsupported, never success; the returned
+    /// reference always refers to this same store, never a caller-supplied
+    /// foreign writer.
+    fn outgoing_seal_repository(&self) -> Option<&dyn OutgoingSealRepository> {
+        None
+    }
 }
 
 /// Bounded indexed repository for unattended production outbox recovery.
@@ -3328,6 +3359,7 @@ struct PreparedMemoryObjectMutation {
 #[derive(Debug)]
 struct MemoryDurableStoreData {
     lifecycle: NamespaceLifecycle,
+    outgoing_barrier: OutgoingBarrier,
     portable_namespace: Vec<u8>,
     mutation_sequences: BTreeMap<[u8; 32], u64>,
     readiness_slots: BTreeMap<MemoryReadinessSlotKey, Option<Vec<u8>>>,
@@ -3428,6 +3460,7 @@ impl MemoryDurableStateStore {
         Self {
             inner: Arc::new(RwLock::new(MemoryDurableStoreData {
                 lifecycle: NamespaceLifecycle::Ordinary,
+                outgoing_barrier: OutgoingBarrier::Unsealed,
                 portable_namespace,
                 mutation_sequences: BTreeMap::new(),
                 readiness_slots: BTreeMap::new(),
@@ -3753,6 +3786,19 @@ impl DurableDomainStateStore for MemoryDurableStateStore {
         validate_memory_durable_read_authority(&data, context)?;
         Ok(data.lifecycle.clone())
     }
+    fn get_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<OutgoingBarrier, DurableReadError> {
+        let data = self
+            .inner
+            .read()
+            .map_err(|_| DurableReadError::Unavailable)?;
+        validate_memory_durable_read_domain(&data, domain)?;
+        validate_memory_durable_read_authority(&data, context)?;
+        Ok(data.outgoing_barrier.clone())
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -3789,6 +3835,9 @@ impl DurableDomainStateStore for MemoryDurableStateStore {
         }
         if !data.lifecycle.is_ordinary() {
             return DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace);
+        }
+        if data.outgoing_barrier.is_sealed() {
+            return DurableCommitOutcome::Rejected(DurableCommitRejection::NamespaceSealed);
         }
         let domain = *transaction.domain.as_bytes();
         let state = data.state_domains.get(&domain);
@@ -3887,6 +3936,9 @@ impl StructuredDurableDomainStateStore for MemoryDurableStateStore {
         if !data.lifecycle.is_ordinary() {
             return DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace);
         }
+        if data.outgoing_barrier.is_sealed() {
+            return DurableCommitOutcome::Rejected(DurableCommitRejection::NamespaceSealed);
+        }
         let domain = *transaction.domain.as_bytes();
         let request_key = (domain, *transaction.receipt.request_id.as_bytes());
         if data.receipts.contains_key(&request_key) {
@@ -3955,6 +4007,15 @@ impl StructuredDurableDomainStateStore for MemoryDurableStateStore {
         }
         data.mutation_sequences.insert(domain, sequence);
         DurableCommitOutcome::Committed
+    }
+
+    fn outgoing_seal_repository(&self) -> Option<&dyn OutgoingSealRepository> {
+        let bound = self
+            .inner
+            .read()
+            .map(|data| data.bound_domain.is_some())
+            .unwrap_or(false);
+        if bound { Some(self) } else { None }
     }
 }
 
@@ -4042,6 +4103,9 @@ fn memory_outbox_claim_from_attempt(
     {
         return Err(DurableOutboxClaimRejection::InvalidPersistedState);
     }
+    if data.outgoing_barrier.is_sealed() {
+        return Err(DurableOutboxClaimRejection::InvalidPersistedState);
+    }
     let batch = data
         .outboxes
         .get(&request_key)
@@ -4074,6 +4138,11 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
             .expect("durable state store lock poisoned");
         if let Err(reason) = validate_memory_outbox_claim_authority(&data, context) {
             return DurableOutboxClaimOutcome::Rejected(reason);
+        }
+        if !outgoing_seal::sealed_outbox_is_consistent(&data, request.domain()) {
+            return DurableOutboxClaimOutcome::Rejected(
+                DurableOutboxClaimRejection::InvalidPersistedState,
+            );
         }
 
         let lease_key = *request.lease_id().as_bytes();
@@ -4130,6 +4199,11 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
                 .is_some_and(|(_, expires_at)| expires_at > request.now_unix_millis())
         {
             return DurableOutboxClaimOutcome::NoDueWork;
+        }
+        if data.outgoing_barrier.is_sealed() {
+            return DurableOutboxClaimOutcome::Rejected(
+                DurableOutboxClaimRejection::InvalidPersistedState,
+            );
         }
         let batch = match data.outboxes.get(&request_key) {
             Some(batch) => batch,
@@ -4233,6 +4307,11 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
         if let Err(reason) = validate_memory_outbox_claim_authority(&data, context) {
             return DurableOutboxClaimOutcome::Rejected(reason);
         }
+        if !outgoing_seal::sealed_outbox_is_consistent(&data, request.domain()) {
+            return DurableOutboxClaimOutcome::Rejected(
+                DurableOutboxClaimRejection::InvalidPersistedState,
+            );
+        }
 
         let lease_key = *request.lease_id().as_bytes();
         if let Some(attempt) = data.delivery_attempts.get(&lease_key).cloned() {
@@ -4293,6 +4372,11 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
         let Some((request_key, mut delivery)) = selected else {
             return DurableOutboxClaimOutcome::NoDueWork;
         };
+        if data.outgoing_barrier.is_sealed() {
+            return DurableOutboxClaimOutcome::Rejected(
+                DurableOutboxClaimRejection::InvalidPersistedState,
+            );
+        }
         let request_id = match OutboxRequestId::new(request_key.1) {
             Ok(request_id) => request_id,
             Err(_) => {
@@ -4404,6 +4488,11 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
         if let Err(reason) = validate_memory_outbox_ack_authority(&data, context) {
             return DurableOutboxAcknowledgementOutcome::Rejected(reason);
         }
+        if !outgoing_seal::sealed_outbox_is_consistent(&data, acknowledgement.domain()) {
+            return DurableOutboxAcknowledgementOutcome::Rejected(
+                DurableOutboxAcknowledgementRejection::InvalidPersistedState,
+            );
+        }
         let lease_key = *acknowledgement.lease_id().as_bytes();
         let Some(attempt) = data.delivery_attempts.get(&lease_key).cloned() else {
             return DurableOutboxAcknowledgementOutcome::Rejected(
@@ -4452,6 +4541,11 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
         {
             return DurableOutboxAcknowledgementOutcome::Rejected(
                 DurableOutboxAcknowledgementRejection::LeaseMismatch,
+            );
+        }
+        if data.outgoing_barrier.is_sealed() {
+            return DurableOutboxAcknowledgementOutcome::Rejected(
+                DurableOutboxAcknowledgementRejection::InvalidPersistedState,
             );
         }
         let Some(batch) = data.outboxes.get(&request_key) else {

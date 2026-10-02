@@ -131,6 +131,14 @@ impl SqliteImportTarget {
 }
 
 impl DurableDomainStateStore for SqliteImportTarget {
+    fn get_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        self.store.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &DurableOperationContext,
