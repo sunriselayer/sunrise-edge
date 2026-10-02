@@ -60,6 +60,8 @@ use node_core::fast_path::records::{
     FastPathValidatorEntry, MAX_FASTPATH_ACTIVE_VALIDATORS, decode_fastpath_validator_set_record,
 };
 use node_core::fast_path::{self, FastPathEd25519Verifier, FastPathValidatorSetRecord};
+#[cfg(test)]
+use node_core::genesis::GenesisRootError;
 use node_core::genesis::VerifiedGenesisRoot;
 use node_core::local_instance_state;
 use node_core::{
@@ -1436,7 +1438,10 @@ mod tests {
         let error: GenesisTrustError =
             load_verified_genesis_root(&file.0, &resolver, [0u8; 32], &dummy_context())
                 .unwrap_err();
-        assert!(format!("{error:?}").contains("Decode"));
+        assert!(matches!(
+            error,
+            GenesisTrustError::Verification(GenesisRootError::Decode(_))
+        ));
     }
 
     #[test]

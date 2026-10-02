@@ -634,7 +634,6 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
         let genesis_engine = execution::LocalWasmExecutionEngine::new();
         let ordered_env = node_core::ordered_economics::OrderedEconomicsEnvironment {
             policy: &ordered_policy,
-            resolver: ordered_policy.resolver(),
             history: &[],
             leg_policy: &ordered_leg_policy,
             engine: &genesis_engine,

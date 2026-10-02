@@ -124,7 +124,6 @@ async fn ordered_router_authenticates_before_actual_io_and_has_no_direct_mutatio
     let engine = execution::LocalWasmExecutionEngine::new();
     let env = ordered_economics::OrderedEconomicsEnvironment {
         policy: &policy,
-        resolver: policy.resolver(),
         history: &[],
         leg_policy: &leg_policy,
         engine: &engine,

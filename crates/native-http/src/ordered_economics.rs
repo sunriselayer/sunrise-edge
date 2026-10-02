@@ -261,7 +261,6 @@ where
         };
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
@@ -346,7 +345,6 @@ where
         }
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
@@ -417,7 +415,6 @@ where
         }
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
@@ -480,7 +477,6 @@ where
         }
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
@@ -518,7 +514,6 @@ where
     publication::admitted(cancelled, executor, move || {
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
@@ -568,7 +563,6 @@ where
     publication::admitted(state.is_cancelled(), executor, move || {
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
@@ -672,7 +666,6 @@ where
         };
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),

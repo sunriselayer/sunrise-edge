@@ -173,7 +173,6 @@ impl Fixture {
     fn environment(&self) -> OrderedEconomicsEnvironment<'_> {
         OrderedEconomicsEnvironment {
             policy: &self.policy,
-            resolver: self.policy.resolver(),
             history: &[],
             leg_policy: &self.local_policy,
             engine: &self.engine,

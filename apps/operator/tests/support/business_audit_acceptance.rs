@@ -520,7 +520,6 @@ pub(super) fn recover_retained_fixture(harness: &Harness<'_>, through_pin: [u8; 
         cli::read_context(harness.pool, &harness.namespaces[0]);
     let environment: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
         policy: &policy,
-        resolver: policy.resolver(),
         history: &[],
         leg_policy: &leg_policy,
         engine: &engine,

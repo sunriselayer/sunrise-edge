@@ -519,7 +519,6 @@ impl Fixture {
         let context: DurableOperationContext = live_operation_context(state.writer_fence, 0xe2);
         let env: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
