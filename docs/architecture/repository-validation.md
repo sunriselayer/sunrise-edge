@@ -5,6 +5,17 @@ two explicit validation profiles. [DR-0172](decisions/0172-storage-neutral-requi
 supersedes [DR-0171](decisions/0171-partitioned-repository-validation.md)'s
 every-PR PG policy while retaining its complete tests.
 
+The closed execution plans in `scripts/ci-gates.sh` own prerequisite profiles,
+lane membership and ordered action IDs. `scripts/ci-execution.sh` owns the
+literal recipes and exact ignored-test discovery/execution. The entrypoint
+only parses a known selection and dispatches that plan: no evaluated command
+strings or provider auto-selection. `required`, `full` and isolated lanes
+share these owners; `full` deliberately preserves its serial workspace feature
+union rather than concatenating the isolated lanes. Independent fixed expected
+plans and command baselines check the actual dispatch, including failures
+inside a recipe. Workflow jobs and success-only aggregates remain separate
+consumers, not a second definition of gate execution.
+
 ## Required storage-neutral checks
 
 Every PR and main update runs these four unconditional lanes:
