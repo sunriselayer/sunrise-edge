@@ -22,10 +22,11 @@ use std::fmt;
 ///
 /// A future additive migration bumps this identity together with any new
 /// column; a database claimed by an unsupported identity fails closed
-/// rather than being silently reinterpreted. `v3` requires an explicit,
-/// immutable origin/binding and separate import progress. Older initialized
+/// rather than being silently reinterpreted. `v4` additionally requires the
+/// protected conditional-readiness table, with explicit immutable
+/// origin/binding and separate import progress. Older initialized
 /// shapes are unsupported; opening never migrates, resets or repairs them.
-pub const SQL_DURABLE_SCHEMA_IDENTITY: &[u8] = b"sunrise-edge/sqlite/structured/schema/v3";
+pub const SQL_DURABLE_SCHEMA_IDENTITY: &[u8] = b"sunrise-edge/sqlite/structured/schema/v4";
 
 pub(crate) const OBJECT_HEAD_STATUS_CURRENT: i64 = 1;
 pub(crate) const OBJECT_HEAD_STATUS_TOMBSTONED: i64 = 2;
@@ -126,6 +127,13 @@ pub const TABLE_STATEMENTS: &[&str] = &[
          key BLOB PRIMARY KEY NOT NULL,
          revision BLOB NOT NULL CHECK(length(revision) = 8),
          value BLOB NULL
+     ) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS durable_conditional_readiness (
+         slot BLOB PRIMARY KEY NOT NULL CHECK(typeof(slot) = 'blob' AND length(slot) <= 256),
+         status INTEGER NOT NULL CHECK(status IN (1, 2)),
+         record BLOB NULL,
+         CHECK((status = 1 AND typeof(record) = 'blob' AND length(record) BETWEEN 1 AND 16384)
+            OR (status = 2 AND record IS NULL))
      ) WITHOUT ROWID",
     "CREATE TABLE IF NOT EXISTS durable_object_heads (
          object_id BLOB PRIMARY KEY NOT NULL CHECK(length(object_id) = 32),
@@ -330,6 +338,12 @@ pub fn verify_namespace(
     if schema_identity != SQL_DURABLE_SCHEMA_IDENTITY {
         return Err(SchemaError::SchemaIdentityMismatch);
     }
+    // Absence of this mandatory protected owner is never an absent cache.
+    // No records or potentially large bytes are loaded during schema checking.
+    session.exec(
+        "SELECT slot, status, record FROM durable_conditional_readiness LIMIT 0",
+        &[],
+    )?;
     let chain_id = row.text(1).map_err(SqlSessionError::from)?;
     let validator_id = row.blob(2).map_err(SqlSessionError::from)?;
     let domain = row.blob(3).map_err(SqlSessionError::from)?;

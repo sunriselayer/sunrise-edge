@@ -3,6 +3,7 @@
 //! Runtime abstraction and in-memory adapters for serverless-safe node execution.
 
 mod composition;
+pub mod conditional_readiness;
 #[cfg(any(test, feature = "durable-conformance"))]
 pub mod conformance;
 
@@ -11,6 +12,9 @@ mod operation;
 pub mod outbox_guard;
 pub mod portable;
 pub use composition::{ComposedRuntime, MemoryRuntime};
+pub use conditional_readiness::{
+    ReadinessRecord, ReadinessRetentionRepository, ReadinessSlot, ReadinessSlotObservation,
+};
 pub use inactive_import::{
     ImportBatch, ImportBinding, ImportContext, ImportObjectHead, ImportProgress, ImportRow,
     InactiveImportRepository, NamespaceLifecycle,
@@ -133,6 +137,8 @@ pub enum RuntimeError {
     },
     /// A bounded import request has an invalid shape or progress relation.
     InvalidImportRequest,
+    /// A bounded readiness record or its local observation is invalid.
+    InvalidReadinessRequest,
 }
 
 impl fmt::Display for RuntimeError {
@@ -207,6 +213,7 @@ impl fmt::Display for RuntimeError {
                 )
             }
             Self::InvalidImportRequest => write!(f, "invalid inactive import request"),
+            Self::InvalidReadinessRequest => write!(f, "invalid conditional readiness request"),
         }
     }
 }
@@ -3316,6 +3323,7 @@ fn read_memory_versioned(
 type MemoryDurableInvocationKey = ([u8; 32], [u8; 32]);
 type MemoryDurableObjectHeadKey = ([u8; 32], ObjectId);
 type MemoryDurableObjectVersionKey = ([u8; 32], ObjectId, DurableObjectVersion);
+type MemoryReadinessSlotKey = ([u8; 32], Vec<u8>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum MemoryStoredObjectHead {
@@ -3343,6 +3351,7 @@ struct MemoryDurableStoreData {
     lifecycle: NamespaceLifecycle,
     portable_namespace: Vec<u8>,
     mutation_sequences: BTreeMap<[u8; 32], u64>,
+    readiness_slots: BTreeMap<MemoryReadinessSlotKey, Option<Vec<u8>>>,
     bound_domain: Option<AtomicityDomainId>,
     active_writer_fence: WriterFenceGeneration,
     now_unix_millis: u64,
@@ -3442,6 +3451,7 @@ impl MemoryDurableStateStore {
                 lifecycle: NamespaceLifecycle::Ordinary,
                 portable_namespace,
                 mutation_sequences: BTreeMap::new(),
+                readiness_slots: BTreeMap::new(),
                 bound_domain,
                 active_writer_fence,
                 now_unix_millis: 0,

@@ -54,11 +54,11 @@ pub const INITIAL_MIGRATION_SQL: &str = include_str!("../migrations/0001_initial
 
 /// Stable identity of the normalized PostgreSQL schema generation one.
 ///
-/// `v4` requires an explicitly initialized Ordinary namespace origin alongside
+/// `v5` keeps an explicitly initialized Ordinary namespace origin alongside
 /// the local source identity and fence. Import bootstrap is unsupported here.
 /// Older initialized shapes fail closed; no migration, repair or backfill is
 /// shipped for this unreleased schema.
-pub const POSTGRES_SCHEMA_IDENTITY: [u8; 32] = *b"sunrise-edge/postgres/schema/v4\0";
+pub const POSTGRES_SCHEMA_IDENTITY: [u8; 32] = *b"sunrise-edge/postgres/schema/v5\0";
 
 /// First supported schema generation.
 pub const POSTGRES_SCHEMA_GENERATION: SchemaGeneration = SchemaGeneration(NonZeroU64::MIN);
@@ -3718,7 +3718,7 @@ mod tests {
     fn schema_identity_is_exact_and_generation_is_non_zero() {
         assert_eq!(
             POSTGRES_SCHEMA_IDENTITY,
-            *b"sunrise-edge/postgres/schema/v4\0"
+            *b"sunrise-edge/postgres/schema/v5\0"
         );
         assert_eq!(POSTGRES_SCHEMA_IDENTITY.len(), 32);
         assert_eq!(POSTGRES_SCHEMA_GENERATION.get(), 1);
