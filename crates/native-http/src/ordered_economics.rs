@@ -41,10 +41,13 @@ use axum::{
 };
 use consensus::ConsensusSigner;
 use execution::local_execution::{LocalContractEngine, LocalExecutionPolicy};
+use execution::paid_execution::PaidContractEngine;
 use hashing::HashSuiteResolver;
 use node_core::fast_path::FastPathEd25519Verifier;
+use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::{
     self, OrderedEconomicsEnvironment, OrderedEconomicsError, OrderedEconomicsPolicy,
+    OrderedSealComposition,
 };
 use node_wire::ordered_economics::{
     MAX_ORDERED_CERTIFICATE_BYTES, MAX_ORDERED_PROPOSAL_BYTES, MAX_ORDERED_PROPOSE_REQUEST_BYTES,
@@ -54,6 +57,7 @@ use node_wire::ordered_economics::{
     ORDERED_EVENT_OUTPUT_MEDIA_TYPE, ORDERED_PROPOSAL_MEDIA_TYPE,
     ORDERED_PROPOSE_REQUEST_MEDIA_TYPE, ORDERED_STATUS_MEDIA_TYPE, OrderedProposeRequest,
 };
+use runtime::portable::PortableBlobRepository;
 use runtime::{
     AtomicityDomainId, BlobStore, Clock, DurableOperationContext, InvocationCancellation,
     StorageDeadline, StructuredDurableDomainStateStore, WriterFenceGeneration,
@@ -63,6 +67,27 @@ use std::{sync::Arc, time::Duration};
 use crate::NativeBlockingExecutor;
 
 mod ordered_history;
+
+/// Real locally pinned reconstruction dependencies for the optional Seal
+/// route. Capability support still comes only from this router's owning store;
+/// these dependencies neither activate a successor nor grant serving authority.
+pub struct OrderedSealHostComposition {
+    pub genesis_root: VerifiedGenesisRoot,
+    pub paid_base_policy: LocalExecutionPolicy,
+    pub paid_engine: Arc<dyn PaidContractEngine + Send + Sync>,
+    pub blobs: Arc<dyn PortableBlobRepository + Send + Sync>,
+}
+
+impl OrderedSealHostComposition {
+    fn borrowed(&self) -> OrderedSealComposition<'_> {
+        OrderedSealComposition {
+            genesis_root: &self.genesis_root,
+            paid_base_policy: &self.paid_base_policy,
+            paid_engine: self.paid_engine.as_ref(),
+            blobs: self.blobs.as_ref(),
+        }
+    }
+}
 
 /// State this router's handlers share. Never contains a signer capable of
 /// authorizing a direct economics mutation outside the ordered routes.
@@ -78,6 +103,8 @@ pub struct OrderedEconomicsState<S, C, I, Sig> {
     pub leg_policy: LocalExecutionPolicy,
     pub engine: Arc<dyn LocalContractEngine + Send + Sync>,
     pub blobs: Arc<dyn BlobStore + Send + Sync>,
+    /// Unsupported by default composition, never a decoded readiness claim.
+    pub seal: Option<OrderedSealHostComposition>,
     /// This node's own leader-eligible signer. `observe`/`status`/
     /// `certificate` never use it; only `propose` and the vote it may emit
     /// from `proposal` do.
@@ -95,6 +122,9 @@ pub struct OrderedEconomicsState<S, C, I, Sig> {
 }
 
 impl<S, C, I, Sig> OrderedEconomicsState<S, C, I, Sig> {
+    fn seal_composition(&self) -> Option<OrderedSealComposition<'_>> {
+        self.seal.as_ref().map(OrderedSealHostComposition::borrowed)
+    }
     fn is_cancelled(&self) -> bool {
         match &self.cancellation {
             Some(cancellation) => cancellation.is_cancelled(),
@@ -265,6 +295,7 @@ where
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
             blobs: state.blobs.as_ref(),
+            seal: state.seal_composition(),
         };
         // Pure authentication before any identity/clock/storage access.
         if let Some(candidate) = &candidate
@@ -349,6 +380,7 @@ where
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
             blobs: state.blobs.as_ref(),
+            seal: state.seal_composition(),
         };
         if let Some(candidate) = &proposal.candidate
             && let Err(error) = ordered_economics::authenticate_candidate(&env, candidate)
@@ -419,6 +451,7 @@ where
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
             blobs: state.blobs.as_ref(),
+            seal: state.seal_composition(),
         };
         let context = match build_context(&state) {
             Ok(value) => value,
@@ -481,6 +514,7 @@ where
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
             blobs: state.blobs.as_ref(),
+            seal: state.seal_composition(),
         };
         if let Some(candidate) = &proposal.candidate
             && let Err(error) = ordered_economics::authenticate_candidate(&env, candidate)
@@ -518,6 +552,7 @@ where
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
             blobs: state.blobs.as_ref(),
+            seal: state.seal_composition(),
         };
         let context = match build_context(&state) {
             Ok(value) => value,
@@ -567,6 +602,7 @@ where
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
             blobs: state.blobs.as_ref(),
+            seal: state.seal_composition(),
         };
         let context = match build_context(&state) {
             Ok(value) => value,
@@ -670,6 +706,7 @@ where
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
             blobs: state.blobs.as_ref(),
+            seal: state.seal_composition(),
         };
         let context = match build_context(&state) {
             Ok(value) => value,

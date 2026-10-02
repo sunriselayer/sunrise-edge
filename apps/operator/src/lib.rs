@@ -8,4 +8,5 @@ pub mod common;
 pub mod conditional_readiness;
 pub mod economics;
 pub mod immutable_archive;
+pub mod ordered_seal;
 pub mod source_sqlite;

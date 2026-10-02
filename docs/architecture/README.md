@@ -133,7 +133,8 @@ roadmap describes a later target state.
   ([DR-0178](decisions/0178-conditional-readiness-wire-and-retention.md)):
   private fresh staging verification, actual-key-bound votes, weighted public
   certificates and protected per-identity retention; no serving authority.
-  Seal traversal and activation remain subsequent design work.
+  Seal traversal follows the separate DR-0187 contract below; successor
+  activation requires its own serving-authority contract.
 - [Functional handoff closure](functional-handoff-closure.md)
   ([DR-0186](decisions/0186-functional-handoff-closure.md), Proposed):
   staged namespace/crash ordering, retained Seal companions, complete suffix

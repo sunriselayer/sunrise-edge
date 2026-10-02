@@ -524,6 +524,7 @@ pub(super) fn recover_retained_fixture(harness: &Harness<'_>, through_pin: [u8; 
         leg_policy: &leg_policy,
         engine: &engine,
         blobs: &blobs,
+        seal: None,
     };
     let before: Vec<Snapshot> = harness.snapshot();
     let summary: OrderedHistorySummary =

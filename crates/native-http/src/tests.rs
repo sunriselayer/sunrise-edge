@@ -1368,6 +1368,15 @@ impl StateStore for ScriptedIndexedStore {
 }
 
 impl DurableDomainStateStore for ScriptedIndexedStore {
+    fn get_outgoing_barrier(
+        &self,
+        _: &DurableOperationContext,
+        _: AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        self.storage_calls.fetch_add(1, Ordering::SeqCst);
+        Err(DurableReadError::Unavailable)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         _: &DurableOperationContext,
@@ -1482,6 +1491,14 @@ impl IndeterminateRequestClaimStore {
 }
 
 impl DurableDomainStateStore for IndeterminateRequestClaimStore {
+    fn get_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,
@@ -1584,6 +1601,14 @@ impl CancelOnFirstReceiptReadStore {
 }
 
 impl DurableDomainStateStore for CancelOnFirstReceiptReadStore {
+    fn get_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,

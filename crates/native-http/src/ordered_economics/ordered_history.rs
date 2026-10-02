@@ -193,6 +193,7 @@ fn environment<S, C, I, Sig>(
         leg_policy: &state.leg_policy,
         engine: state.engine.as_ref(),
         blobs: state.blobs.as_ref(),
+        seal: state.seal_composition(),
     }
 }
 

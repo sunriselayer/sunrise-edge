@@ -111,6 +111,14 @@ impl TrackedStore {
 }
 
 impl DurableDomainStateStore for TrackedStore {
+    fn get_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,
@@ -495,6 +503,7 @@ impl Fixture {
             leg_policy: LocalExecutionPolicy::generic_object_results(self.policy.context().clone()),
             engine: Arc::new(execution::LocalWasmExecutionEngine::new()),
             blobs: Arc::new(MemoryBlobStore::default()),
+            seal: None,
             signer: CountedSigner::new(self.sign_calls.clone()),
             blocking_executor: self.executor.clone(),
             cancellation,
@@ -523,6 +532,7 @@ impl Fixture {
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
             blobs: state.blobs.as_ref(),
+            seal: None,
         };
         install_ordered_genesis(self.store.as_ref(), &context, &env, 10_000).unwrap();
         for view in 1..=5 {

@@ -9,6 +9,8 @@ mod support {
 mod causal_genesis_fixture;
 #[path = "business_cut/fixture.rs"]
 mod fixture;
+#[path = "support/ordered_seal_sqlite_acceptance.rs"]
+mod ordered_seal_sqlite_acceptance;
 
 use consensus::readiness::{
     ReadinessCertificate, ReadinessCertifier, ReadinessVote, decode_readiness_certificate,
@@ -26,7 +28,8 @@ use node_core::business_reconstruction::{
 use protocol_types::ValidatorId;
 use runtime::portable::DurablePortableSnapshotRepository;
 use runtime::{
-    InactiveImportRepository, ReadinessRetentionRepository, ReadinessSlot, ReadinessSlotObservation,
+    BlobStore, InactiveImportRepository, ReadinessRetentionRepository, ReadinessSlot,
+    ReadinessSlotObservation,
 };
 use runtime_sqlite::{SqliteImportTarget, SqliteNamespace};
 use std::{
@@ -160,9 +163,9 @@ fn voting(
     command
 }
 
-#[test]
-fn compiled_conditional_readiness_real_retention_restart_and_distinct_certificate() {
-    let fixture: Fixture = Fixture::new();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compiled_conditional_readiness_real_retention_restart_and_distinct_certificate() {
+    let mut fixture: Fixture = Fixture::new();
     fixture.freeze_and_complete();
     std::fs::write(
         fixture.directory.0.join("genesis.bin"),
@@ -417,10 +420,126 @@ fn compiled_conditional_readiness_real_retention_restart_and_distinct_certificat
         })
         .collect();
     assert_eq!(roles.len(), 3);
+    // Reuse the independently reconstructed cut and genuine successor quorum
+    // above. Preparation is a separate compiled process, not a raw storage
+    // completion, and adding this step does not duplicate the expensive setup.
+    let seal_output: Directory = Directory::new("unsigned-seal-preparation");
+    let prepare = |certificate_path: &Path, state: &Path, blobs: &Path| -> Command {
+        let mut command: Command = Command::new(env!("CARGO_BIN_EXE_ordered_seal"));
+        command.arg("prepare-sqlite");
+        pins(&mut command, &fixture, &history_root, &cut.0);
+        command.args([
+            "--certificate",
+            certificate_path.to_str().unwrap(),
+            "--state-db",
+            state.to_str().unwrap(),
+            "--blob-db",
+            blobs.to_str().unwrap(),
+            "--validator-id",
+            &hex(fixture.network.validators[0].validator_id.as_bytes()),
+            "--out-dir",
+            seal_output.0.to_str().unwrap(),
+        ]);
+        command
+    };
+    let certificate_path: PathBuf = certificates.0.join("certificate.bin");
+    let source_state: PathBuf = fixture.directory.0.join("state-0.sqlite");
+    let source_blobs: PathBuf = fixture.directory.0.join("blobs.sqlite");
+    let certificate_digest = node_core::ordered_economics::seal_certificate_digest(
+        &fixture.network.resolver,
+        fixture.network.epoch,
+        &bytes,
+    )
+    .unwrap();
+    assert!(
+        fixture
+            .blobs
+            .get_blob(&certificate_digest)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !prepare(
+            &certificate_path,
+            &destinations[0].0.join("state.db"),
+            &destinations[0].0.join("body.db"),
+        )
+        .output()
+        .unwrap()
+        .status
+        .success(),
+        "an inactive successor target is not an outgoing source"
+    );
+    assert!(!seal_output.0.join("candidate.bin").exists());
+    assert!(
+        success(
+            prepare(&certificate_path, &source_state, &source_blobs)
+                .output()
+                .unwrap()
+        )
+        .contains("ordered_seal=prepared")
+    );
+    let candidate_bytes: Vec<u8> = std::fs::read(seal_output.0.join("candidate.bin")).unwrap();
+    let candidate =
+        node_core::ordered_economics::decode_ordered_candidate(&candidate_bytes).unwrap();
+    assert_eq!(
+        candidate.kind,
+        node_core::ordered_economics::OrderedOperationKind::Seal
+    );
+    let seal = node_core::ordered_economics::decode_seal_intent(&candidate.intent).unwrap();
+    assert_eq!(seal.readiness_subject, expected_subject);
+    assert_eq!(
+        candidate.created_checkpoint,
+        saved.identity.ordered_history.through_height
+    );
+    assert_eq!(seal.certificate_digest, certificate_digest);
+    assert_eq!(
+        fixture.blobs.get_blob(&certificate_digest).unwrap(),
+        Some(bytes.clone())
+    );
+    success(
+        prepare(&certificate_path, &source_state, &source_blobs)
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        std::fs::read(seal_output.0.join("candidate.bin")).unwrap(),
+        candidate_bytes
+    );
+    let bad_certificate: PathBuf = fixture.directory.0.join("invalid-seal-certificate.bin");
+    let mut altered: ReadinessCertificate = certificate.clone();
+    altered.votes[0].signature[0] ^= 1;
+    std::fs::write(
+        &bad_certificate,
+        consensus::readiness::encode_readiness_certificate(&altered).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !prepare(&bad_certificate, &source_state, &source_blobs)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(
+        std::fs::read(seal_output.0.join("candidate.bin")).unwrap(),
+        candidate_bytes
+    );
+    assert_eq!(
+        fixture.snapshot(),
+        before,
+        "preparation never changes source state or receipts"
+    );
     assert_eq!(files(&cut.0), original_cut);
     assert_eq!(
         fixture.snapshot(),
         before,
         "local readiness cannot mutate the source"
     );
+    ordered_seal_sqlite_acceptance::run(
+        &mut fixture,
+        &seal_output.0.join("candidate.bin"),
+        &candidate,
+    )
+    .await;
 }

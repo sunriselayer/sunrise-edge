@@ -109,8 +109,9 @@ never becomes a fresh target, readiness capability or ordinary-host fallback.
 Exact local records use 0x64D0 slot, 0x64D1 record and 0x64D2 creation observation.
 The owning `durable_conditional_readiness` table is outside business inventory;
 its schema and bounded exact lookup are still mandatory. The shared metadata
-identity is v4, the native SQLite durable schema is v3 and the aligned ordinary
-PostgreSQL identity is v5. Older initialized targets are unsupported, never
+identity is v5, the native SQLite durable schema is v4 and the aligned ordinary
+PostgreSQL identity and generation are v6. DR-0187 adds the mandatory protected
+outgoing barrier without making PostgreSQL a Seal producer. Older initialized targets are unsupported, never
 automatically migrated, recreated or repaired. PG import/readiness is not
 introduced by an ordinary schema identity update.
 
