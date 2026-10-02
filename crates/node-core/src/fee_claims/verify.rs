@@ -149,7 +149,7 @@ struct HistoricalObjectVersion {
 
 /// An authority sidecar is written exactly once alongside a newly created
 /// object. A tombstone or rewritten revision is never an authentic absence.
-fn exact_authority_exists<S: StructuredStateReader>(
+fn exact_authority_exists<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -177,7 +177,7 @@ fn exact_authority_exists<S: StructuredStateReader>(
 /// Checks the original escrow's immutable authority sidecar against the
 /// genesis-pinned fee resource. The same id is retained through all escrow
 /// versions; there is no mutable per-version authority row.
-pub(super) fn verify_escrow_authority<S: StructuredStateReader>(
+pub(super) fn verify_escrow_authority<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -923,8 +923,8 @@ fn verify_fee_claim_chain_walk<S: StructuredStateReader>(
 /// to observe absence. This is the historical strategy, kept exactly as it
 /// behaved before this module gained a scanner-backed alternative; it is
 /// the only strategy available to a caller that has nothing but a plain
-/// [`StructuredStateReader`].
-fn verify_no_orphan_claims_by_point_read<S: StructuredStateReader>(
+/// [`VersionedStateReader`].
+fn verify_no_orphan_claims_by_point_read<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,

@@ -354,7 +354,7 @@ fn resource_policy(
 /// Reads the paid policy at the certificate epoch, then the signed
 /// `0x642C/v1` economics policy at the defining code's pinned context.
 /// Both reads are fenced into the claim commit.
-fn read_economics_policy<S: StructuredStateReader>(
+fn read_economics_policy<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -473,7 +473,7 @@ pub fn verify_fee_claim_history<S: StructuredStateReader>(
 /// [`verify::verify_no_orphan_claims_by_point_read`]'s strategy (an uncharged
 /// row is the `target_generation == 0` case) without depending on that
 /// function's private visibility.
-fn verify_uncharged_claim_absence_by_point_read<S: StructuredStateReader>(
+fn verify_uncharged_claim_absence_by_point_read<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1275,7 +1275,7 @@ where
 /// fenced read (epoch, historical validator-set rows, economics policy, the
 /// sender-nonce range for a positive claim), and the one outer receipt.
 #[allow(clippy::too_many_arguments)]
-fn prepare_claim_invocation<S: StructuredStateReader>(
+fn prepare_claim_invocation<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,

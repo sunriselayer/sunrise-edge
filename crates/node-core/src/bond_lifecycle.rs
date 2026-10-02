@@ -75,7 +75,7 @@ use execution::protocol_custody::{
 use execution::publication::PublicationContext;
 use objects::{ProtocolCustodyPurpose, ProtocolCustodyScope};
 use protocol_types::{SignatureSchemeId, ValidatorId};
-use runtime::StructuredStateReader;
+use runtime::{StructuredStateReader, VersionedStateReader};
 use validator_set::ValidatorSet;
 
 mod effects;
@@ -637,7 +637,7 @@ fn authenticate_legs(
 /// Reads the signed `0x642C/v1` economics policy installed under the
 /// resource's own genesis-pinned publication context -- never the current
 /// operation's epoch-varying context.
-fn read_economics_policy<S: StructuredStateReader>(
+fn read_economics_policy<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1186,7 +1186,7 @@ where
 /// re-verified evidence alone, so there is nothing an attacker could
 /// substitute a different resulting row against.
 #[allow(clippy::too_many_arguments)]
-fn prepare_bond_transition<S: StructuredStateReader>(
+fn prepare_bond_transition<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,

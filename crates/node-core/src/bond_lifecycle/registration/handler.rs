@@ -146,7 +146,7 @@ fn verify_chain<S: VersionedStateReader + ?Sized>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn require_pristine<S: StructuredStateReader>(
+fn require_pristine<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
