@@ -190,13 +190,88 @@ fn causal_signed_genesis_with_unsupported_validator_scheme_is_rejected_before_an
         .into();
     let digest: Digest32 = genesis_manifest_commitment(&resolver, &manifest).unwrap();
     let path: ManifestFile = write_manifest(&manifest);
-    let error: FastVoteGenesisTrustError =
-        load_trusted_fastvote_genesis_with_profile(&path.0, &resolver, digest.bytes(), &context)
-            .unwrap_err();
+    // `TrustedFastVoteGenesis` is not `Debug` on purpose (its root/certifier
+    // are sealed, not a diagnostic surface), so an explicit match -- not
+    // `unwrap_err`, which requires the success type to be `Debug` -- proves
+    // this rejection without granting that unnecessary capability.
+    let error: FastVoteGenesisTrustError = match load_trusted_fastvote_genesis_with_profile(
+        &path.0,
+        &resolver,
+        digest.bytes(),
+        &context,
+    ) {
+        Ok(_) => panic!("unsupported committee signature scheme must be rejected"),
+        Err(error) => error,
+    };
     assert!(matches!(
         error,
         FastVoteGenesisTrustError::InvalidValidatorSet(reason)
             if reason == "FastVote phase 1 supports only Ed25519 validators"
+    ));
+}
+
+/// A signed intent whose own context disagrees with the locally pinned
+/// root's authenticated context must be rejected before any endpoint is
+/// ever contacted -- a genuine per-request check, distinct from the removed
+/// self-consistency checks among `certifier`/`commitment_profile`/
+/// `admission_profile`, all of which are derived from that same root and so
+/// can no longer disagree with each other.
+#[test]
+fn causal_signed_intent_with_wrong_context_is_rejected_before_any_io() {
+    let (_path, trusted, resolver, manifest) = pinned();
+    let wrong_context: PublicationContext = PublicationContext::new(
+        manifest.context().chain_id().clone(),
+        manifest.context().protocol_version(),
+        Epoch::new(manifest.context().epoch().get() + 1),
+    )
+    .unwrap();
+    let signed: SignedPaidIntent = SignedPaidIntent {
+        intent: PaidIntent {
+            context: wrong_context,
+            request_id: [1; 32],
+            sender: manifest.genesis_authority,
+            nonce: 0,
+            fee_policy_digest: execution::paid_execution::paid_fee_policy_digest(
+                &resolver,
+                &manifest.fee_policy,
+            )
+            .unwrap(),
+            consent: FeeSourceConsent {
+                source: objects::ObjectRef {
+                    id: objects::ObjectId::new([0x22; 32]),
+                    version: 1,
+                    digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x33; 32]),
+                },
+                access: ReservationAccessKind::Write,
+                max_fee: fees::Amount::new(1),
+                refund_recipient: manifest.genesis_authority,
+            },
+            application: PaidApplication::Publish(
+                manifest.publication.request().artifact().clone(),
+            ),
+            gas_limit: 1,
+            authorizations: Vec::new(),
+        },
+        signature: [0; 64],
+    };
+    let endpoints: Vec<FastVoteEndpoint<NoIo>> = vec![FastVoteEndpoint {
+        validator_id: protocol_types::ValidatorId::new(manifest.genesis_authority),
+        endpoint_label: "never-dial".to_owned(),
+        client: Client::new(NoIo),
+    }];
+    let error: FastVoteQuorumError = trusted
+        .collect_owned_certificate(
+            &endpoints,
+            &signed,
+            Instant::now() + Duration::from_secs(10),
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        FastVoteQuorumError::Network(FastVoteNetworkError::Preflight(
+            ClientError::PublicationTrustMismatch
+        ))
     ));
 }
 

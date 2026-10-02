@@ -22,16 +22,17 @@ use crate::fastvote_publication_client::{
 use crate::{ClientError, Transport};
 
 impl TrustedFastVoteGenesis {
+    /// Checks the request lane and this exact signed intent's own context
+    /// against the one immutable root's authenticated context. `certifier`,
+    /// `commitment_profile()` and `admission_profile()` are all derived from
+    /// that same root at construction time, so a disagreement among them is
+    /// not a case this preflight can observe -- there is no longer a second,
+    /// independently supplied value either could drift from, so no repair
+    /// check is preserved for it.
     fn require_owned_preflight(&self, signed: &SignedPaidIntent) -> Result<(), Box<ClientError>> {
         self.require_owned_request_id(&signed.intent.request_id)
             .map_err(Box::new)?;
-        let context = self.admission_profile().context();
-        if signed.intent.context != *context
-            || self.commitment_profile() != self.admission_profile().commitment_profile()
-            || self.certifier().chain_id() != context.chain_id()
-            || self.certifier().protocol_version() != context.protocol_version()
-            || self.certifier().epoch() != context.epoch()
-        {
+        if signed.intent.context != *self.admission_profile().context() {
             return Err(Box::new(ClientError::PublicationTrustMismatch));
         }
         Ok(())
