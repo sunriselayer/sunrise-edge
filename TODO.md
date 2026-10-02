@@ -72,22 +72,19 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   current serving and historical verification; remove duplicated mechanisms
   where a reviewed interface has actual consumers.
   [DR-0182](docs/architecture/decisions/0182-immutable-verified-genesis-root.md)
-  defines one immutable original genesis trust root binding its exact resolver,
-  profile and committee. Detailed Opus design APPROVE at `3e5c4b7` follows a
-  blocking first review and closes every actual consumer, historical policy
-  substitution and current-resolver composition boundary. Before/after v1/v2/
-  v3/v4 digest/anchor/profile/Freeze/economics baselines were actually recorded
-  before removal of the old constructors. Core, SDK/CLI and operator/HTTP
-  sources are integrated and old public constructor/loader call sites are
-  removed. Migration type/import defects are corrected. Full required local
-  acceptance now passes, including the frozen baseline, genuine root/installer/
-  historical-policy/schedule negatives, SDK before-I/O checks, compiled CLI,
-  real SQLite restoration/reopen/fencing/replay, independent vectors, native/WASM
-  and portable adapters. Immutable-boundary doctests name every field so missing
-  fields cannot masquerade as privacy proof. The wrong-epoch SDK fixture separately
-  authenticates its real signature before checking rejection. Exact-head review,
-  required CI and selected PostgreSQL evidence are tracked in PR #259; original
-  genesis trust is not a completed current-serving or successor capability.
+  is implemented in [PR #259](https://github.com/sunriselayer/sunrise-edge/pull/259),
+  merged normally as `0bf99fdf` after fresh exact-head Opus APPROVE, required
+  CI `36996436664` and all five explicitly selected PostgreSQL lanes
+  `36996527437` passed at `9a934115`. One immutable original trust root binds
+  its exact resolver, profile and committee across core, SDK/CLI and operator/
+  HTTP consumers; old public constructors/loaders and independently replaceable
+  resolvers are removed. Full local acceptance passed, including genuine root/
+  installer/history/full-schedule negatives, authenticated wrong-epoch SDK
+  refusal before I/O, compiled CLI, real SQLite reopen/fencing/replay and
+  independent vectors/native/WASM/portable adapters. The v1-v4 frozen baseline
+  matches an actual rerun of the original constructors at immutable `b34f771`,
+  not expectations recomputed from the new implementation. Original genesis
+  trust still grants no current-serving or successor capability.
 - [ ] Test/CI architecture: owner-specific fixture composition and a coherent
   gate registry/execution contract, preserving all required coverage.
   Closed executable plans and separately owned action recipes merged in PR #257.
@@ -99,13 +96,22 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   plan, with an executable reproducing negative control. Typed one-shot real
   SQLite handoff faults preserve each existing assertion and prove that the
   intended fault was actually consumed. Both complete final-head required and
-  selected PostgreSQL acceptance passed. Stronger all-owner blob/state equality
-  assertions are nonblocking review follow-ups, not silently waived evidence.
+  selected PostgreSQL acceptance passed.
+  [DR-0183](docs/architecture/decisions/0183-test-observation-ownership.md)
+  now defines private reader/counter/capture ownership and complete same-engine
+  direct/prepared equality for fee, unbond, slash and registration. Genuine
+  distinct quorum voters remain separate from same-signer comparison mirrors;
+  before-state equality, actual prepared/direct commits and replay invariance
+  are asserted without normalization. All seven focused writer-free tests and
+  three observation/counter negatives passed after integration with PR #259.
+  These storage-port body negatives do not claim blob-backed business execution.
+  Complete required acceptance and independent exact-head review remain gates
+  for this new checkpoint; no PostgreSQL requirement is added for test mechanics.
 - [ ] Independently reviewed, fully checked PR checkpoints; update this list
   from actual evidence, not skeleton compilation or file counts.
-  PR #257 and PR #258 are verified normal-merge checkpoints. The genesis-root
-  checkpoint is tracked separately in PR #259; full local acceptance does not
-  replace independent review, exact-head CI or production qualification.
+  PR #257, PR #258 and PR #259 are verified normal-merge checkpoints; full
+  local acceptance does not replace independent review, exact-head CI or
+  production qualification.
 
 The remaining handoff interface partition now identifies namespace lifecycle,
 fresh serving resolution, epoch-scoped ordered safety, reconstruction

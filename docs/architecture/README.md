@@ -41,6 +41,10 @@ roadmap describes a later target state.
   ([DR-0181](decisions/0181-writer-free-operation-preparation.md)):
   business evaluation, physical observations and actual commit are separate
   contracts; logical dependency selection remains owner-specific.
+- [Test observation contracts](test-observation-contracts.md)
+  ([DR-0183](decisions/0183-test-observation-ownership.md)):
+  private reader/counter/capture mechanics, complete direct/prepared persisted
+  equivalence, and distinct replay and cut/import comparison responsibilities.
 - [Smart contracts](../smartcontract/README.md): publication/call lifecycle and
   Standard Asset/fee semantics.
 - [Durable local code publication](decisions/0121-durable-local-code-publication.md):

@@ -8,6 +8,19 @@ Explicit PostgreSQL acceptance remains required for affected storage/schema
 changes and provider claims; it is not restored as an every-PR prerequisite.
 Current acceptance results and pending work belong in [TODO.md](../../TODO.md).
 
+## Owning fixtures and observation evidence
+
+Business fixtures keep genuine signing, genesis, quorum and execution with their
+owning tests. Shared test infrastructure provides only reader capabilities,
+publication counters and complete portable observation; see
+[test observation contracts](../architecture/test-observation-contracts.md).
+Direct versus prepared completion compares complete actual persisted rows and
+referenced bodies, not merely matching outputs or a selected receipt. Independent
+backend tokens are local continuity evidence, not cross-store identity.
+Replay/source audit and verified cut/import are different derivations with
+their own verifiers; do not hide their legitimate differences behind a universal
+normalizer or a universal fixture.
+
 ## Signature-heavy tests
 
 Genuine multi-validator reconstruction deliberately verifies real signatures,
