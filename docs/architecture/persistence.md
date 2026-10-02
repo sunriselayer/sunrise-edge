@@ -116,8 +116,17 @@ stale writer fence, exhausted serialization retry, and failures proved to
 precede commit dispatch are definite rejections. Deadline, cancellation, or
 connection loss after dispatch is indeterminate unless the backend proves an
 abort; reconciliation must read the persisted request receipt before effects
-are retried. Node-core, native composition, SQLite, and provider adapters have
-not migrated to this new production boundary yet.
+are retried. Durable node-core handlers, normalized native composition and
+the structured store implementations use this boundary alongside the older
+state/domain APIs; the code map identifies the owning paths. A provider's
+verified deployment scope is still a separate question.
+
+Read-only proof/material verification uses `VersionedStateReader`, not a
+writable structured-store requirement. Existing durable stores forward its
+distinct read method with the original context/domain/key and unchanged
+checks. Captured reconstruction views implement only the read contract, with
+no dummy receipt/commit methods. A reader proves neither snapshot continuity
+nor serving authority; the owning verifier checks the exact returned bytes.
 
 The additive `IndexedOutboxRepository` is the production discovery and lease
 boundary. A claim receives one deployment-bound logical domain, trusted runtime time,

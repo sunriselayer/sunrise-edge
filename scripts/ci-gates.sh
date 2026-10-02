@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# Closed repository gate membership. Sourcing this file never runs a gate.
-readonly CI_REQUIRED_GROUPS=(lint rust-tests portable-tools cloudflare)
-readonly CI_POSTGRES_GROUPS=(
-  pg-storage pg-lifecycle pg-drain-history pg-business-audit pg-recovery-economics
-)
-readonly CI_GATE_GROUPS=(
-  lint rust-tests pg-storage pg-lifecycle pg-drain-history pg-business-audit
-  pg-recovery-economics portable-tools cloudflare
+# Closed selection | prerequisite profile | ordered action IDs.
+# Sourcing this file only defines the registry and its read-only interface.
+# Full preserves the former serial order and full-workspace feature union;
+# it is deliberately not concatenation of the isolated CI lane plans.
+readonly CI_EXECUTION_PLANS=(
+  'required|required|gate-contract rust-style rust-tests-required sqlite-inventory soak-cli vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene'
+  'full|postgres|gate-contract rust-style rust-tests-full sqlite-inventory pg-inventory pg-protocol-all soak-cli pg-soak vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene'
+  'lint|required|gate-contract rust-style diff-hygiene'
+  'rust-tests|required|rust-tests-required sqlite-inventory'
+  'pg-storage|postgres|pg-storage-tests'
+  'pg-lifecycle|postgres|pg-protocol-lifecycle'
+  'pg-drain-history|postgres|pg-protocol-drain-history'
+  'pg-business-audit|postgres|pg-protocol-business-audit'
+  'pg-recovery-economics|postgres|pg-inventory pg-protocol-recovery-economics pg-soak'
+  'portable-tools|required|soak-cli vectors deno-adapters'
+  'cloudflare|required|cloudflare-build cloudflare-check'
 )
 
 # group | package | existing test target (or --lib) | exact ignored name | nocapture
@@ -41,17 +49,64 @@ ci_gate_groups() {
     echo 'unknown repository gate profile' >&2
     return 1
   fi
-  case "${1-required}" in
-    required) printf '%s\n' "${CI_REQUIRED_GROUPS[@]}" ;;
-    postgres) printf '%s\n' "${CI_POSTGRES_GROUPS[@]}" ;;
+  local requested_profile="${1-required}"
+  case "$requested_profile" in
+    required|postgres) ;;
     *) echo 'unknown repository gate profile' >&2; return 1 ;;
   esac
+  local row selection profile actions
+  for row in "${CI_EXECUTION_PLANS[@]}"; do
+    IFS='|' read -r selection profile actions <<< "$row"
+    if [[ "$selection" != required && "$selection" != full && "$profile" == "$requested_profile" ]]; then
+      printf '%s\n' "$selection"
+    fi
+  done
+}
+
+ci_plan_row() {
+  if [[ "$#" -ne 1 ]]; then
+    echo 'unknown repository gate selection' >&2
+    return 1
+  fi
+  local row selection profile actions
+  for row in "${CI_EXECUTION_PLANS[@]}"; do
+    IFS='|' read -r selection profile actions <<< "$row"
+    if [[ "$selection" == "$1" ]]; then
+      printf '%s\n' "$row"
+      return 0
+    fi
+  done
+  echo 'unknown repository gate selection' >&2
+  return 1
 }
 
 ci_group_is_known() {
-  local group
-  for group in "${CI_GATE_GROUPS[@]}"; do
-    if [[ "$group" == "$1" ]]; then
+  [[ "$#" -eq 1 && "$1" != required && "$1" != full ]] || return 1
+  ci_plan_row "$1" >/dev/null
+}
+
+ci_execution_profile() {
+  local row selection profile actions
+  row="$(ci_plan_row "$@")" || return 1
+  IFS='|' read -r selection profile actions <<< "$row"
+  printf '%s\n' "$profile"
+}
+
+ci_execution_plan() {
+  local row selection profile actions
+  local -a action_ids=()
+  row="$(ci_plan_row "$@")" || return 1
+  IFS='|' read -r selection profile actions <<< "$row"
+  read -r -a action_ids <<< "$actions"
+  printf '%s\n' "${action_ids[@]}"
+}
+
+ci_fastvote_pg_group_is_known() {
+  [[ "$#" -eq 1 ]] || return 1
+  ci_group_is_known "$1" || return 1
+  local row
+  for row in "${CI_FASTVOTE_PG_CASES[@]}"; do
+    if [[ "${row%%|*}" == "$1" ]]; then
       return 0
     fi
   done
@@ -74,13 +129,4 @@ ci_require_storage_neutral() {
     echo 'required gates refuse PostgreSQL configuration; select --full or a PG group' >&2
     exit 1
   done
-}
-
-ci_require_exact_ignored_test() {
-  local test_name="$1"
-  shift
-  if ! cargo test --quiet "$@" "$test_name" -- --ignored --list | grep -Fqx "$test_name: test"; then
-    echo "missing expected ignored repository test: $test_name" >&2
-    exit 1
-  fi
 }

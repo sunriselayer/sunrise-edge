@@ -7,6 +7,8 @@ project_root="$(cd "$script_directory/.." && pwd)"
 cd "$project_root"
 # shellcheck source=scripts/ci-gates.sh
 source "$project_root/scripts/ci-gates.sh"
+# shellcheck source=scripts/ci-execution.sh
+source "$project_root/scripts/ci-execution.sh"
 
 group=all
 if [[ "$#" -ne 0 ]]; then
@@ -14,10 +16,11 @@ if [[ "$#" -ne 0 ]]; then
     echo 'usage: check-fastvote-pg.sh [--group <known PostgreSQL protocol gate>]' >&2
     exit 1
   fi
-  case "$2" in
-    pg-lifecycle|pg-drain-history|pg-business-audit|pg-recovery-economics) group="$2" ;;
-    *) echo 'unknown PostgreSQL protocol gate' >&2; exit 1 ;;
-  esac
+  if ! ci_fastvote_pg_group_is_known "$2"; then
+    echo 'unknown PostgreSQL protocol gate' >&2
+    exit 1
+  fi
+  group="$2"
 fi
 ci_require_postgres
 
@@ -49,14 +52,7 @@ for row in "${CI_FASTVOTE_PG_CASES[@]}"; do
   else
     args+=(--test "$target")
   fi
-  ci_require_exact_ignored_test "$test_name" "${args[@]}"
-  test_args=(--ignored --exact)
-  case "$nocapture" in
-    yes) test_args+=(--nocapture) ;;
-    no) ;;
-    *) echo 'invalid ignored-test capture policy' >&2; exit 1 ;;
-  esac
-  cargo test --quiet "${args[@]}" "$test_name" -- "${test_args[@]}"
+  ci_run_exact_ignored_test "$test_name" "$nocapture" "${args[@]}"
 done
 
 echo "live PostgreSQL protocol gate passed: $group"

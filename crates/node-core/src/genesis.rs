@@ -55,7 +55,7 @@ use runtime::{
     DurableObjectVersion, DurableObjectVersionRecord, DurableOperationContext, DurableReadError,
     DurableRequestId, DurableRequestReceipt, DurableStateTransaction, IndeterminateCommitReason,
     RuntimeError, StateMutation, StateMutationEntry, StateReadAssertion, StateRevision,
-    StructuredDurableDomainStateStore, VersionedStateValue,
+    StructuredDurableDomainStateStore, VersionedStateReader, VersionedStateValue,
 };
 use validator_set::{ValidatorInfo, ValidatorSet};
 
@@ -1953,7 +1953,7 @@ fn bond_transition_resolver<'a>(
 /// actually signed, never merely by an unauthenticated stored summary. The
 /// final loop iteration's resulting row must equal the installed singleton
 /// byte-for-byte.
-pub(crate) fn verify_fastpath_bond_chain<S: StructuredDurableDomainStateStore>(
+pub(crate) fn verify_fastpath_bond_chain<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1962,7 +1962,7 @@ pub(crate) fn verify_fastpath_bond_chain<S: StructuredDurableDomainStateStore>(
     bond_key: &[u8],
     genesis_row_bytes: &[u8],
 ) -> Result<(), GenesisError> {
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, bond_key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, bond_key)?;
     let installed_bytes: &[u8] = observed
         .value()
         .ok_or(GenesisError::TamperedInstalledRecord(
@@ -2008,7 +2008,7 @@ pub(crate) fn verify_fastpath_bond_chain<S: StructuredDurableDomainStateStore>(
             next_generation,
         )?;
         let transition_observed: VersionedStateValue =
-            store.get_versioned_durable(context, domain, &transition_key)?;
+            store.read_versioned_state(context, domain, &transition_key)?;
         let transition_bytes: &[u8] =
             transition_observed
                 .value()
@@ -2258,7 +2258,7 @@ pub(crate) fn verify_fastpath_bond_chain<S: StructuredDurableDomainStateStore>(
                     *evidence_digest,
                 )?;
                 let consumed_observed: VersionedStateValue =
-                    store.get_versioned_durable(context, domain, &consumed_key)?;
+                    store.read_versioned_state(context, domain, &consumed_key)?;
                 let consumed_bytes: &[u8] =
                     consumed_observed
                         .value()
@@ -2315,7 +2315,7 @@ pub(crate) fn verify_fastpath_bond_chain<S: StructuredDurableDomainStateStore>(
                 let policy_key: Vec<u8> =
                     local_instance_state::fastpath_economics_policy_key(&previous_row.context)?;
                 let policy_observed: VersionedStateValue =
-                    store.get_versioned_durable(context, domain, &policy_key)?;
+                    store.read_versioned_state(context, domain, &policy_key)?;
                 let policy: FastPathEconomicsPolicy =
                     decode_fastpath_economics_policy(policy_observed.value().ok_or(
                         GenesisError::TamperedInstalledRecord("fast-path bond transition record"),

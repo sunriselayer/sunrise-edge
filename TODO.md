@@ -3,7 +3,11 @@
 **2026-10-02: one integrated implementation and refactoring queue.**
 [DR-0173](docs/architecture/decisions/0173-integrated-implementation-refactoring.md)
 integrates the remaining functions with responsibility-oriented cleanup.
-Do not finish a repository-wide rewrite before resuming feature delivery.
+The user's newer architecture-first direction is recorded in
+[DR-0180](docs/architecture/decisions/0180-architecture-first-interface-contracts.md):
+fundamentally review responsibility, dependency, authority and persistence
+interfaces across implementation, tests and CI before filling remaining bodies.
+This is not file splitting or permission to replace working routes with stubs.
 The stable target boundaries are in
 [implementation structure](docs/architecture/implementation-structure.md);
 the [code map](docs/development/code-map.md) locates their current owners.
@@ -17,7 +21,7 @@ Only this file owns current status, sequencing and deferred work.
 | Generic paid contracts and Standard Asset | DR-0121–0128 implement Publish/Instantiate/Call, ordinary contract-defined fees and asset create/transfer/split/merge/mint/burn; no Standard Asset privilege in node-core |
 | Delivery 1: certified network contract lifecycle | PR #228 merged on 2026-09-27 after the full gate, fresh exact-head Opus approval and CI; paid lifecycle, assets, replay and declared catch-up, not complete state handoff |
 | Delivery 2: fixed-epoch ordered economics | PR #232 merged on 2026-09-27; shared ordering for claims, bonds and evidence/slash/reactivation, with four-namespace CLI evidence. Genuine membership-dependent Deposit/Withdraw positives remain in Delivery 3 |
-| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250/#252/#255 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history, genuine frozen-member source reconstruction, persistent verified inactive import and first incoming-validator bonding. PR #256 adds conditional readiness with its exact-source evidence below. Seal/activation and recurring lifecycle acceptance remain open |
+| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250/#252/#255/#256 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history, genuine frozen-member source reconstruction, persistent verified inactive import, first incoming-validator bonding and conditional readiness. Seal/activation and recurring lifecycle acceptance remain open |
 | Authenticated pre-Seal business cut | PR #251 merged normally on 2026-10-02 after the full local gate, independent exact-head approval and required CI. Complete core derivation, immutable SQLite export/resumption and source-free independent saved verification; not import or activation evidence |
 | Shared artifact/configuration primitives | PR #249 merged: bounded local genesis and held-handle artifact I/O, with authority/error semantics retained by the callers |
 | Required validation | PR #247 implements DR-0172: four unconditional DB-free lanes. PostgreSQL integration/fault acceptance is retained and explicitly selected, not run on every PR |
@@ -35,6 +39,37 @@ withdrawal unlock are still functional work. Independent audit and actual
 network startup are Delivery 4, not included in this estimate.
 
 ## Functional critical path with embedded refactoring
+
+**Current architecture-first work window, 2026-10-02:** approximately eight
+hours, from 13:50 until 21:50 Asia/Singapore. Establish the
+[global contracts](docs/architecture/architecture-contracts.md), independently
+review concrete interfaces, then integrate useful owning implementations with
+actual callers. Stop launching new work at the deadline and preserve a safe
+verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
+
+- [ ] Global responsibility/authority and typed interface review, including
+  still-unimplemented Seal, serving and recurring reconstruction boundaries.
+- [ ] Runtime/core completion design: centralize identical transaction
+  consistency and assembly rules without merging storage and protocol authority.
+  The first unmerged implementation provides domain-bound observations and
+  strict single-owner versus explicit exact-coalescing assembly, and migrates
+  actual direct paid execution and fee-claim completions. Read-only prepared
+  material and registered-bond verification use a genuinely read-only port.
+  A contradictory internal nonce observation now fails closed instead of
+  replacing an earlier read. Combined-head acceptance and independent review
+  remain pending; this is not complete ordered-handler migration.
+- [ ] Core lifecycle and dependency composition: distinguish genesis trust,
+  current serving and historical verification; remove duplicated mechanisms
+  where a reviewed interface has actual consumers.
+- [ ] Test/CI architecture: owner-specific fixture composition and a coherent
+  gate registry/execution contract, preserving all required coverage.
+  Closed executable plans and separately owned action recipes are implemented
+  but unmerged. Fixed independent contract expectations retain four required
+  DB-free lanes, five selected PostgreSQL lanes and every ignored selector;
+  nested prerequisite failures propagate explicitly. Complete acceptance on
+  the final PR head remains pending.
+- [ ] Independently reviewed, fully checked PR checkpoints; update this list
+  from actual evidence, not skeleton compilation or file counts.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.
@@ -120,7 +155,9 @@ Import provides no readiness, Seal, activation or deployed-provider authority.
   vectors and the complete local npm ci/check-all gate at `6480d170`.
   Fresh independent exact-source review returned APPROVE; required CI
   `36964203012` and selected complete PG `36964200199` both passed that head.
-  Final-head merge gates remain mandatory. This adds native SQLite/memory
+  The final documentation head `634c8c2e` also passed required CI `36965510823`
+  and selected complete PG `36965562613`; PR #256 merged normally as
+  `2d5c8d91` on 2026-10-02. This adds native SQLite/memory
   readiness, not PG/DO/D1 readiness, Seal, activation, serving or Delivery 3
   completion. A public certificate is no activation capability.
 - [ ] **After readiness:** separately reviewed ordered Seal and activation/
@@ -130,6 +167,12 @@ Import provides no readiness, Seal, activation or deployed-provider authority.
   CLI and authenticated hosts; keep Delivery 3 unchecked until it passes.
 - [ ] **Before live exposure:** close the independently scoped economics and
   ingress security gates and the selected initial-network release profile.
+  Review the locked Cloudflare development toolchain's dependency advisories
+  separately from chain exploit findings: on 2026-10-02 `npm ci` and `npm audit`
+  reported six high-severity affected packages including propagated tooling
+  dependencies; `npm audit --omit=dev` reported zero. No forced audit-fix or
+  unrelated dependency PR was merged, and development-tool exposure still
+  needs review before a release claim.
   This plan does not introduce or approve such a profile, waive S4/S5, or
   authorize protocol-v3 live activation.
 

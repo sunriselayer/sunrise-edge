@@ -25,6 +25,11 @@ roadmap describes a later target state.
   responsibility-oriented core/runtime/store/host/SDK boundaries, concrete
   extraction seams and behavior-preserving refactor acceptance; scheduling
   remains in TODO.
+- [Architecture contracts](architecture-contracts.md)
+  ([DR-0180](decisions/0180-architecture-first-interface-contracts.md)):
+  responsibility, dependency, typed authority and completion interfaces for
+  the architecture-first redesign; interface skeletons do not grant runtime
+  authority or functional completion.
 - [Generic contract architecture](generic-contracts.md): common execution and
   authority, type/instance/object separation, upgrades, migration and durable
   verification obligations.

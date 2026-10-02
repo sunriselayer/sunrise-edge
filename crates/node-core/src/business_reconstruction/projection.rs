@@ -35,10 +35,8 @@ use runtime::portable::{
     DurableRecordScan, MAX_PORTABLE_CHUNK_BYTES, MAX_PORTABLE_PAGE_KEYS, PortableSnapshotToken,
 };
 use runtime::{
-    AtomicStateTransaction, AtomicityDomainId, BlobStore, DurableCommitOutcome,
-    DurableCommitRejection, DurableDomainStateStore, DurableInvocationTransaction,
-    DurableObjectHead, DurableObjectProvenance, DurableOperationContext, DurableReadError,
-    DurableRequestId, DurableRequestReceipt, StateRevision, StructuredDurableDomainStateStore,
+    AtomicityDomainId, BlobStore, DurableObjectHead, DurableObjectProvenance,
+    DurableOperationContext, DurableReadError, StateRevision, VersionedStateReader,
     VersionedStateValue,
 };
 use std::{
@@ -77,16 +75,8 @@ struct CapturedStateView<'a> {
     rows: StateRows<'a>,
 }
 
-impl DurableDomainStateStore for CapturedStateView<'_> {
-    fn get_namespace_lifecycle(
-        &self,
-        _: &DurableOperationContext,
-        _: AtomicityDomainId,
-    ) -> Result<runtime::NamespaceLifecycle, DurableReadError> {
-        // Captured comparison rows have no persisted namespace authority.
-        Err(DurableReadError::InvalidPersistedState)
-    }
-    fn get_versioned_durable(
+impl VersionedStateReader for CapturedStateView<'_> {
+    fn read_versioned_state(
         &self,
         _operation: &DurableOperationContext,
         domain: AtomicityDomainId,
@@ -106,35 +96,6 @@ impl DurableDomainStateStore for CapturedStateView<'_> {
             None => VersionedStateValue::from_persisted_parts(StateRevision::INITIAL, None)
                 .map_err(DurableReadError::InvalidRequest),
         }
-    }
-
-    fn commit_durable(
-        &self,
-        _operation: &DurableOperationContext,
-        _transaction: AtomicStateTransaction,
-    ) -> DurableCommitOutcome {
-        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
-    }
-}
-
-impl StructuredDurableDomainStateStore for CapturedStateView<'_> {
-    fn get_request_receipt(
-        &self,
-        _operation: &DurableOperationContext,
-        _domain: AtomicityDomainId,
-        _request: DurableRequestId,
-    ) -> Result<Option<DurableRequestReceipt>, DurableReadError> {
-        // Prepared-material validation never reads receipts. There is no
-        // fallback that turns source companions into completed execution.
-        Err(DurableReadError::InvalidPersistedState)
-    }
-
-    fn commit_invocation(
-        &self,
-        _operation: &DurableOperationContext,
-        _transaction: DurableInvocationTransaction,
-    ) -> DurableCommitOutcome {
-        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
     }
 }
 
