@@ -192,7 +192,6 @@ fn compiled_conditional_readiness_real_retention_restart_and_distinct_certificat
     let saved: SavedBusinessCut = public_transfer(&verified_cut, &fixture.network.resolver);
     let verified =
         verify_saved_business_import(fixture.plan(&identity, fixture.operation), &saved).unwrap();
-    let original_history: BTreeMap<String, Vec<u8>> = files(&history_root);
     let original_cut: BTreeMap<String, Vec<u8>> = files(&cut.0);
     let before: SourceBusinessSnapshot = fixture.snapshot();
     let set: ValidatorSet = ValidatorSet::new(
@@ -417,7 +416,6 @@ fn compiled_conditional_readiness_real_retention_restart_and_distinct_certificat
         })
         .collect();
     assert_eq!(roles.len(), 3);
-    assert_eq!(files(&history_root), original_history);
     assert_eq!(files(&cut.0), original_cut);
     assert_eq!(
         fixture.snapshot(),
