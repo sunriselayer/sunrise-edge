@@ -84,12 +84,11 @@ use node_core::fast_path::FastPathEd25519Verifier;
 use node_core::logical_generation::CommitmentProfile;
 use node_wire::{FASTVOTE_CERTIFICATES_PATH, FASTVOTE_PREPARE_PATH, FastVoteApplyRequest};
 use protocol_types::{Digest32, ValidatorId};
-use validator_set::ValidatorSet;
 
 #[cfg(test)]
 use protocol_types::SignatureSchemeId;
 #[cfg(test)]
-use validator_set::ValidatorInfo;
+use validator_set::{ValidatorInfo, ValidatorSet};
 
 use crate::client::expect_success;
 use crate::error::ClientError;

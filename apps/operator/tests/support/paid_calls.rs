@@ -86,12 +86,12 @@ pub fn verify_saved_availability_certificate(
             manifest.context(),
         )
         .unwrap();
-    assert!(trusted.commitment_profile.is_logical());
+    assert!(trusted.commitment_profile().is_logical());
     let certifier: AvailabilityCertifier = AvailabilityCertifier::new(
         manifest.context().chain_id().clone(),
         manifest.context().protocol_version(),
         manifest.context().epoch(),
-        trusted.certifier.validator_set().clone(),
+        trusted.certifier().validator_set().clone(),
     )
     .unwrap();
     certifier
@@ -102,7 +102,7 @@ pub fn verify_saved_availability_certificate(
     let full: FastCertificate =
         decode_fast_certificate(&fs::read(certificate_path).unwrap()).unwrap();
     trusted
-        .certifier
+        .certifier()
         .verify_certificate(&full, &FastPathEd25519Verifier)
         .unwrap();
     let signed_digest: protocol_types::Digest32 =

@@ -189,7 +189,7 @@ fn bad_signature_fails_with_invalid_signature() {
 
 #[test]
 fn wrong_family_signature_fails_with_invalid_signature() {
-    // A valid v2 (handoff-capable, non-Freeze) signature never authorizes a
+    // A valid v2 (logical-admission, non-Freeze) signature never authorizes a
     // v4 (causal) manifest, even though both share the same other fields.
     let mut manifest: GenesisManifest = causal_bonded_manifest();
     let other: GenesisManifest = logical_bonded_manifest();

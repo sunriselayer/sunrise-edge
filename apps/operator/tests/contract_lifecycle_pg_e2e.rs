@@ -155,12 +155,12 @@ fn recover_logical_lifecycle(
             &fixture.context,
         )
         .unwrap();
-    assert!(trusted.commitment_profile.is_logical());
+    assert!(trusted.commitment_profile().is_logical());
     let availability_certifier: AvailabilityCertifier = AvailabilityCertifier::new(
         fixture.chain_id.clone(),
         fixture.protocol_version,
         fixture.epoch,
-        trusted.certifier.validator_set().clone(),
+        trusted.certifier().validator_set().clone(),
     )
     .unwrap();
     let source: Client<LoopbackHttpTransport> = publication_client(source_addr);
@@ -214,7 +214,7 @@ fn recover_logical_lifecycle(
             .source_fastvote_publication(
                 &signed,
                 &full,
-                &trusted.certifier,
+                trusted.certifier(),
                 &fixture.resolver,
                 &[],
                 fixture.domain,

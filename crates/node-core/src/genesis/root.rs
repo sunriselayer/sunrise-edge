@@ -91,9 +91,19 @@ impl std::error::Error for GenesisRootError {}
 /// existing value's fields:
 ///
 /// ```compile_fail
-/// fn build(manifest: node_core::genesis::GenesisManifest) {
+/// fn build(
+///     manifest: node_core::genesis::GenesisManifest,
+///     digest: protocol_types::Digest32,
+///     resolver: hashing::HashSuiteResolver,
+///     admission_profile: node_core::admission_profile::VerifiedAdmissionProfile,
+///     genesis_committee: validator_set::ValidatorSet,
+/// ) {
 ///     let _root = node_core::genesis::VerifiedGenesisRoot {
 ///         manifest,
+///         digest,
+///         resolver,
+///         admission_profile,
+///         genesis_committee,
 ///     };
 /// }
 /// ```

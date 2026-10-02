@@ -212,7 +212,7 @@ pub(super) fn run(
         fixture.chain_id.clone(),
         fixture.protocol_version,
         fixture.epoch,
-        trusted.certifier.validator_set().clone(),
+        trusted.certifier().validator_set().clone(),
     )
     .unwrap();
     let mut selected: Vec<(usize, FrozenFrontierVote)> = (0..3)
@@ -450,7 +450,7 @@ pub(super) fn run(
         all_snapshots(fixture, pool, namespaces, ids, requests, publications);
     let bundle: consensus::bundle::PublicationBundle = relay
         .source_retained_fastvote_publication(
-            &trusted.certifier,
+            trusted.certifier(),
             &fixture.resolver,
             &[],
             unapplied_identity,

@@ -2319,7 +2319,6 @@ fn installer_order_signature_before_namespace_fence_before_committee() {
         assert!(matches!(
             err,
             GenesisError::DurableRead(DurableReadError::WriterFenced { .. })
-                | GenesisError::CommitRejected(DurableCommitRejection::WriterFenced { .. })
         ));
     }
 }

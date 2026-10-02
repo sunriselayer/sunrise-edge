@@ -976,9 +976,10 @@ fn ordered_policy_resolver_schedule_must_equal_the_roots_complete_schedule_even_
 {
     // A resolver whose genesis-epoch suite is identical to the root's own
     // (so the anchor it derives hashes the same) but whose complete trusted
-    // schedule carries an extra future rotation the root never signed. The
-    // anchor alone cannot distinguish this from the real root-derived
-    // policy; only comparing the complete schedule can.
+    // schedule carries an extra future rotation not in the root's locally
+    // trusted resolver. The genesis signature does not authenticate future
+    // schedule entries; the anchor alone cannot distinguish this mismatch
+    // from the real root-derived policy. The complete schedule must match.
     let fixture: CausalFixture = fresh_fixture();
     let network: &Network = &fixture.network;
     let (identity, _history) = complete_history(network);
