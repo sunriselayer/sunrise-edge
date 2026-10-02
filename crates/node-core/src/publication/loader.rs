@@ -63,7 +63,7 @@ impl PublicationLoadBudget {
 
 /// Verifies one stored legacy `PublicationSubmission` row exactly as before.
 #[allow(clippy::too_many_arguments)]
-fn legacy_node<S: StructuredDurableDomainStateStore>(
+fn legacy_node<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -118,7 +118,7 @@ fn legacy_node<S: StructuredDurableDomainStateStore>(
 /// and its committed successful paid Publish receipt is required before the
 /// artifact may be returned as a dependency.
 #[allow(clippy::too_many_arguments)]
-fn paid_node<S: StructuredDurableDomainStateStore>(
+fn paid_node<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -155,7 +155,7 @@ fn paid_node<S: StructuredDurableDomainStateStore>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn load_node<S: StructuredDurableDomainStateStore>(
+fn load_node<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -182,7 +182,7 @@ fn load_node<S: StructuredDurableDomainStateStore>(
         return Err(PublicationAdmissionError::Limit);
     }
     let key: Vec<u8> = publication_record_key(origin)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     let Some(bytes) = observed.value() else {
         if expected.is_some() {
             return Err(PublicationAdmissionError::MissingDependency);
@@ -229,7 +229,7 @@ fn load_node<S: StructuredDurableDomainStateStore>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn interface<S: StructuredDurableDomainStateStore>(
+fn interface<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -284,7 +284,7 @@ fn interface<S: StructuredDurableDomainStateStore>(
 /// itself is never treated as durable provenance: it is only the in-flight
 /// candidate whose dependencies must already be durably published.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn load_unstored_root_with_budget<S: StructuredDurableDomainStateStore>(
+pub(crate) fn load_unstored_root_with_budget<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -325,7 +325,7 @@ pub(crate) fn load_unstored_root_with_budget<S: StructuredDurableDomainStateStor
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn load_unstored_root<S: StructuredDurableDomainStateStore>(
+pub(super) fn load_unstored_root<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -360,7 +360,7 @@ pub(super) fn load_unstored_root<S: StructuredDurableDomainStateStore>(
 /// both receive. It grants no publication authority: the caller separately
 /// asserts origin absence and commits the record only on a verified success.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn load_paid_publish_closure<S: StructuredDurableDomainStateStore>(
+pub(crate) fn load_paid_publish_closure<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -384,7 +384,7 @@ pub(crate) fn load_paid_publish_closure<S: StructuredDurableDomainStateStore>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn load_verified_publication_with_budget<S: StructuredDurableDomainStateStore>(
+pub(crate) fn load_verified_publication_with_budget<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,

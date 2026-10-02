@@ -25,7 +25,7 @@ pub(crate) struct CheckedEffects<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn translate<S: StructuredDurableDomainStateStore>(
+pub(crate) fn translate<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -250,7 +250,7 @@ pub(crate) fn translate<S: StructuredDurableDomainStateStore>(
                     "initial object version",
                 ));
             }
-            let head: DurableObjectHead = store.get_object_head(context, domain, object.id)?;
+            let head: DurableObjectHead = store.read_object_head(context, domain, object.id)?;
             if head != DurableObjectHead::Absent {
                 return Err(LocalExecutionAdmissionError::Invalid(
                     "created object exists",

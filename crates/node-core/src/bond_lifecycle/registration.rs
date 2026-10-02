@@ -15,9 +15,11 @@ pub use codec::{
     decode_signed_bond_registration_intent, encode_bond_registration_anchor,
     encode_bond_registration_intent, encode_signed_bond_registration_intent,
 };
+#[cfg(test)]
+pub(crate) use handler::handle_bond_registration_ordered;
 pub use handler::verify_registered_bond_chain;
 pub(crate) use handler::{
-    handle_bond_registration_ordered, preflight_registration, verify_registration_admission,
+    preflight_registration, prepare_bond_registration_ordered, verify_registration_admission,
 };
 
 mod codec;

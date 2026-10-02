@@ -314,7 +314,7 @@ where
     S: StructuredDurableDomainStateStore,
     E: LocalContractEngine + ?Sized,
 {
-    handle_bond_slash_ordered(
+    Ok(prepare_bond_slash_ordered(
         store,
         blob_store,
         context,
@@ -327,7 +327,8 @@ where
         intent_bytes,
         created_checkpoint,
         None,
-    )
+    )?
+    .commit(store, context)?)
 }
 
 /// [`handle_bond_slash`] plus DR-0153's private admitted-candidate
@@ -335,7 +336,7 @@ where
 /// submitter's own already-reserved sender nonce. The public entry point
 /// delegates here with `None`.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn handle_bond_slash_ordered<S, E>(
+pub(crate) fn prepare_bond_slash_ordered<S, E>(
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -348,9 +349,9 @@ pub(crate) fn handle_bond_slash_ordered<S, E>(
     intent_bytes: &[u8],
     created_checkpoint: u64,
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
-) -> Result<NodeOutput, BondLifecycleError>
+) -> Result<InvocationPreparation, BondLifecycleError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader,
     E: LocalContractEngine + ?Sized,
 {
     if history.len() > publication::MAX_PUBLICATION_HISTORY {
@@ -403,7 +404,7 @@ where
         request_id,
         receipt_digest,
     )? {
-        return Ok(output);
+        return Ok(InvocationPreparation::Retained(output));
     }
 
     // 6. current epoch fence.
@@ -445,7 +446,7 @@ where
         &intent.validator_id,
     )?;
     let bond_observed: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &bond_key)?;
+        store.read_versioned_state(context, domain, &bond_key)?;
     let bond_row_revision: StateRevision = bond_observed.revision();
     reads.insert(bond_key.clone(), bond_row_revision);
     let previous_bond_bytes: Vec<u8> = bond_observed
@@ -481,7 +482,7 @@ where
         intent.conflict_digest,
     )?;
     let evidence_observed: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &evidence_key)?;
+        store.read_versioned_state(context, domain, &evidence_key)?;
     reads.insert(evidence_key, evidence_observed.revision());
     let evidence_record: equivocation::FastPathEquivocationEvidenceRecord =
         equivocation::decode_fastpath_equivocation_evidence_record(
@@ -615,7 +616,7 @@ where
         intent.conflict_digest,
     )?;
     let consumed_observed: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &consumed_key)?;
+        store.read_versioned_state(context, domain, &consumed_key)?;
     if consumed_observed.value().is_some() || consumed_observed.revision() != StateRevision::INITIAL
     {
         return Err(BondLifecycleError::Invalid("evidence already consumed"));
@@ -809,7 +810,7 @@ where
         consumed_key,
         StateMutation::Put(encode_evidence_consumption_record(&consumption_record)?),
     )?);
-    commit_bond_transition(
+    prepare_bond_transition(
         store,
         context,
         domain,

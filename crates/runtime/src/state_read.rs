@@ -1,7 +1,9 @@
 //! Read-only observations for verification that does not own persistence.
 
 use crate::{
-    AtomicityDomainId, DurableDomainStateStore, DurableOperationContext, DurableReadError,
+    AtomicityDomainId, DurableDomainStateStore, DurableObjectHead, DurableObjectVersion,
+    DurableObjectVersionRecord, DurableOperationContext, DurableReadError, DurableRequestId,
+    DurableRequestReceipt, NamespaceLifecycle, ObjectId, StructuredDurableDomainStateStore,
     VersionedStateValue,
 };
 
@@ -46,6 +48,95 @@ impl<S: DurableDomainStateStore + ?Sized> VersionedStateReader for S {
         key: &[u8],
     ) -> Result<VersionedStateValue, DurableReadError> {
         self.get_versioned_durable(context, domain, key)
+    }
+}
+
+/// Structured observations for business preparation, without persistence.
+///
+/// Every method is required: neither an ordinary origin nor an absent receipt
+/// may be fabricated by a default. The observations alone prove no stable
+/// snapshot, authenticated history, current serving or signing authority.
+/// The owning admission and final commit still check those distinct contracts.
+/// Existing stores forward the same domain, fence, deadline and schema checks.
+///
+/// A reader cannot be used where actual persistence is required:
+///
+/// ```compile_fail
+/// use runtime::{StructuredDurableDomainStateStore, StructuredStateReader};
+/// fn requires_writer<S: StructuredDurableDomainStateStore>(_: &S) {}
+/// fn cannot_promote<S: StructuredStateReader>(reader: &S) {
+///     requires_writer(reader);
+/// }
+/// ```
+pub trait StructuredStateReader: VersionedStateReader {
+    /// Observes physical namespace origin; this is not serving authority.
+    fn read_namespace_lifecycle(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<NamespaceLifecycle, DurableReadError>;
+
+    /// Reads one exact object-head observation without changing its version.
+    fn read_object_head(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+    ) -> Result<DurableObjectHead, DurableReadError>;
+
+    /// Reads a retained immutable object version; bodies keep their own port.
+    fn read_object_version(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+        object_version: DurableObjectVersion,
+    ) -> Result<Option<DurableObjectVersionRecord>, DurableReadError>;
+
+    /// Reads the exact original receipt for owner-specific reconciliation.
+    fn read_request_receipt(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        request_id: DurableRequestId,
+    ) -> Result<Option<DurableRequestReceipt>, DurableReadError>;
+}
+
+impl<S: StructuredDurableDomainStateStore + ?Sized> StructuredStateReader for S {
+    fn read_namespace_lifecycle(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<NamespaceLifecycle, DurableReadError> {
+        self.get_namespace_lifecycle(context, domain)
+    }
+
+    fn read_object_head(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+    ) -> Result<DurableObjectHead, DurableReadError> {
+        self.get_object_head(context, domain, object_id)
+    }
+
+    fn read_object_version(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+        object_version: DurableObjectVersion,
+    ) -> Result<Option<DurableObjectVersionRecord>, DurableReadError> {
+        self.get_object_version(context, domain, object_id, object_version)
+    }
+
+    fn read_request_receipt(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        request_id: DurableRequestId,
+    ) -> Result<Option<DurableRequestReceipt>, DurableReadError> {
+        self.get_request_receipt(context, domain, request_id)
     }
 }
 
@@ -165,5 +256,85 @@ mod tests {
             reader.read_versioned_state(&context(5, 50), selected, b"key"),
             Err(DurableReadError::DeadlineExceeded),
         );
+    }
+
+    #[test]
+    fn structured_reader_forwards_absence_origin_and_all_operation_refusals() {
+        let domain: AtomicityDomainId = domain(7);
+        let store: MemoryDurableStateStore =
+            MemoryDurableStateStore::new_bound(domain, WriterFenceGeneration::new(4).unwrap());
+        store.set_time(50);
+        let reader: &dyn StructuredStateReader = &store;
+        let operation: DurableOperationContext = context(4, 1_000);
+        let object: ObjectId = ObjectId::new([8; 32]);
+        let request: DurableRequestId = DurableRequestId::new([9; 32]).unwrap();
+        assert_eq!(
+            reader.read_namespace_lifecycle(&operation, domain),
+            Ok(NamespaceLifecycle::Ordinary)
+        );
+        assert_eq!(
+            reader.read_object_head(&operation, domain, object),
+            Ok(DurableObjectHead::Absent)
+        );
+        assert_eq!(
+            reader.read_object_version(&operation, domain, object, DurableObjectVersion::FIRST),
+            Ok(None)
+        );
+        assert_eq!(
+            reader.read_request_receipt(&operation, domain, request),
+            Ok(None)
+        );
+
+        let wrong_domain: AtomicityDomainId = AtomicityDomainId::new([10; 32]).unwrap();
+        let expected: DurableReadError =
+            DurableReadError::InvalidRequest(RuntimeError::AtomicityDomainMismatch);
+        assert_eq!(
+            reader.read_namespace_lifecycle(&operation, wrong_domain),
+            Err(expected.clone())
+        );
+        assert_eq!(
+            reader.read_object_head(&operation, wrong_domain, object),
+            Err(expected.clone())
+        );
+        assert_eq!(
+            reader.read_object_version(
+                &operation,
+                wrong_domain,
+                object,
+                DurableObjectVersion::FIRST
+            ),
+            Err(expected.clone())
+        );
+        assert_eq!(
+            reader.read_request_receipt(&operation, wrong_domain, request),
+            Err(expected)
+        );
+
+        for (operation, expected) in [
+            (
+                context(3, 1_000),
+                DurableReadError::WriterFenced {
+                    active_generation: WriterFenceGeneration::new(4).unwrap(),
+                },
+            ),
+            (context(4, 50), DurableReadError::DeadlineExceeded),
+        ] {
+            assert_eq!(
+                reader.read_namespace_lifecycle(&operation, domain),
+                Err(expected.clone())
+            );
+            assert_eq!(
+                reader.read_object_head(&operation, domain, object),
+                Err(expected.clone())
+            );
+            assert_eq!(
+                reader.read_object_version(&operation, domain, object, DurableObjectVersion::FIRST),
+                Err(expected.clone())
+            );
+            assert_eq!(
+                reader.read_request_receipt(&operation, domain, request),
+                Err(expected)
+            );
+        }
     }
 }

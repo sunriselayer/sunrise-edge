@@ -1,6 +1,8 @@
 //! Regressions and adversarial tests for DR-0133 equivocation evidence
 //! persistence and historical verification.
 
+mod preparation;
+
 use super::*;
 use crate::epoch_transition::{
     activate, propose_and_vote,

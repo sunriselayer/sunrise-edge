@@ -7,7 +7,8 @@
 //! `ChainedHotStuff` rules -- the same leader/view/lock/QC machinery every
 //! other ordered candidate already uses. There is no separate signature or
 //! parallel voting chain: a *proposed* `Freeze` changes nothing, and only a
-//! *committed* one -- decided in [`super::preflight`] and applied here, after
+//! *committed* one -- decided in [`super::preflight`], prepared here and
+//! applied atomically by ordered completion, after
 //! the same [`super::authenticate_candidate`]/preflight sequence every other
 //! kind goes through -- installs the durable [`AdmissionClosureRecord`].
 //! Quorum ordering is not a substitute for the signed-genesis epoch-end
@@ -21,6 +22,7 @@
 //! the module-level remaining-integration note in [`super`].
 use super::*;
 use crate::epoch_transition::{self, EpochTransitionError, NextSetEligibilityError};
+use crate::operation_preparation::PreparedStateOperation;
 use canonical_encoding::encode_chain_id;
 use execution::publication::{
     PublicationContext, decode_publication_context, encode_publication_context,
@@ -30,6 +32,7 @@ use fast_path::records::{
     decode_fastpath_validator_set_record, encode_fastpath_validator_set_record,
 };
 use protocol_types::SignatureSchemeId;
+use runtime::{StructuredStateReader, VersionedStateReader};
 use validator_set::{ValidatorInfo, ValidatorSet};
 
 /// Canonical frame type of an encoded [`FreezeIntent`] (an
@@ -161,8 +164,8 @@ pub fn decode_freeze_intent(bytes: &[u8]) -> Result<FreezeIntent, NodeCoreError>
 /// epoch activation candidate, and each of its members must be eligible in
 /// the current committed bond/policy state. The signer calls this before
 /// exposing a proposal or vote; committed execution calls it again through
-/// the staging store, whose observed rows become final CAS assertions.
-pub(crate) fn require_freeze_warrant<S: StructuredDurableDomainStateStore>(
+/// the read-only observation scope, whose rows become final CAS assertions.
+pub(crate) fn require_freeze_warrant<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -309,15 +312,15 @@ pub(crate) fn admission_closure_key(
 /// Reads the durable closure record for `chain`, if any, recording the read
 /// as a CAS precondition exactly like every other ordered-economics row this
 /// module's callers observe.
-pub(crate) fn read_admission_closure<S: StructuredDurableDomainStateStore>(
+pub(crate) fn read_admission_closure<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     chain: &ChainId,
     epoch: Epoch,
 ) -> Result<Option<AdmissionClosureRecord>, NodeCoreError> {
-    let key = admission_closure_key(chain, epoch)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let key: Vec<u8> = admission_closure_key(chain, epoch)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     match observed.value() {
         Some(bytes) => {
             let record: AdmissionClosureRecord = decode_admission_closure_record(bytes)?;
@@ -332,9 +335,9 @@ pub(crate) fn read_admission_closure<S: StructuredDurableDomainStateStore>(
 }
 
 /// Resolves Freeze authority only for the explicitly signed fresh profile.
-/// A staging caller captures the profile/genesis/closure observations in its
+/// A read-only scope captures the profile/genesis/closure observations in its
 /// final CAS. Legacy v1/v2 order and application commitments stay unchanged.
-pub(crate) fn read_authorized_closure<S: StructuredDurableDomainStateStore>(
+pub(crate) fn read_authorized_closure<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -382,7 +385,7 @@ pub(crate) fn read_authorized_closure<S: StructuredDurableDomainStateStore>(
 /// to), while an ordered-economics business candidate itself is refused
 /// deterministically, without ever reaching its handler's own call into this
 /// function.
-pub(crate) fn fence_admission_open<S: StructuredDurableDomainStateStore>(
+pub(crate) fn fence_admission_open<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -398,8 +401,8 @@ pub(crate) fn fence_admission_open<S: StructuredDurableDomainStateStore>(
     {
         return Ok(());
     }
-    let key = admission_closure_key(chain, epoch)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let key: Vec<u8> = admission_closure_key(chain, epoch)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     if let Some(previous_revision) = reads.insert(key, observed.revision())
         && previous_revision != observed.revision()
     {
@@ -420,17 +423,60 @@ pub(crate) fn fence_admission_open<S: StructuredDurableDomainStateStore>(
     Ok(())
 }
 
-/// Executes a committed `Freeze` candidate against `staging`.
+/// Prepares the exact control proposal for a committed `Freeze` candidate.
 ///
 /// [`super::preflight::preflight`] already refused this candidate with
 /// [`super::OrderedRefusal::AlreadyFrozen`] if [`AdmissionClosureRecord`] was
 /// already present, so this handler only ever runs while the row is
-/// genuinely absent: it installs the record, atomically closing admission,
-/// and returns an accepted response. It never touches an object, a
+/// genuinely absent: it proposes the record that ordered completion installs
+/// atomically with its own receipt and progress, plus an accepted response.
+/// Preparation holds no writer capability and never touches an object, a
 /// sender-nonce row, or any other business state -- "Retention does not
 /// execute WASM again, move objects or custody, charge fees, advance the
 /// sender nonce, release locks or create an original user receipt" applies
 /// equally to `Freeze` itself: it is pure control.
+pub(crate) fn prepare_freeze_ordered<S: VersionedStateReader + ?Sized>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain: &ChainId,
+    candidate: &OrderedCandidate,
+    block_height: u64,
+) -> Result<PreparedStateOperation, NodeCoreError> {
+    let key: Vec<u8> = admission_closure_key(chain, candidate.context.epoch())?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
+    if observed.value().is_some() || observed.revision() != StateRevision::INITIAL {
+        // Preflight already proves this is unreachable in the ordinary
+        // sequence (it would have refused with `AlreadyFrozen` first); fail
+        // closed rather than silently accepting a second closure.
+        return Err(invalid("freeze admission closure record already installed"));
+    }
+    let record: AdmissionClosureRecord = AdmissionClosureRecord {
+        closed_epoch: candidate.context.epoch(),
+        request_id: candidate.request_id,
+        closed_at_block_height: block_height,
+    };
+    let mutation: StateMutationEntry = StateMutationEntry::new(
+        key.clone(),
+        StateMutation::Put(encode_admission_closure_record(&record)?),
+    )?;
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain,
+        AtomicStateReadSet::new(vec![StateReadAssertion::new(key, observed.revision())?])?,
+        AtomicStateMutationSet::new(vec![mutation])?,
+    )?;
+    let response: NodeResponse = NodeResponse::new(
+        RequestId::new(candidate.request_id)?,
+        NodeResponseStatus::Accepted,
+        None,
+    )?;
+    let output: NodeOutput = NodeOutput::new(vec![response], Vec::new())?;
+    Ok(PreparedStateOperation::new(transaction, output))
+}
+
+/// Test-only direct completion; production completion joins the proposal
+/// with the ordered receipt instead of installing metadata on its own.
+#[cfg(test)]
 pub(crate) fn handle_freeze_ordered<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
@@ -439,43 +485,8 @@ pub(crate) fn handle_freeze_ordered<S: StructuredDurableDomainStateStore>(
     candidate: &OrderedCandidate,
     block_height: u64,
 ) -> Result<NodeOutput, NodeCoreError> {
-    let key = admission_closure_key(chain, candidate.context.epoch())?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
-    if observed.value().is_some() || observed.revision() != StateRevision::INITIAL {
-        // Preflight already proves this is unreachable in the ordinary
-        // sequence (it would have refused with `AlreadyFrozen` first); fail
-        // closed rather than silently accepting a second closure.
-        return Err(invalid("freeze admission closure record already installed"));
-    }
-    let record = AdmissionClosureRecord {
-        closed_epoch: candidate.context.epoch(),
-        request_id: candidate.request_id,
-        closed_at_block_height: block_height,
-    };
-    let mutation = StateMutationEntry::new(
-        key.clone(),
-        StateMutation::Put(encode_admission_closure_record(&record)?),
-    )?;
-    let transaction = AtomicStateTransaction::new(
-        domain,
-        AtomicStateReadSet::new(vec![StateReadAssertion::new(key, observed.revision())?])?,
-        AtomicStateMutationSet::new(vec![mutation])?,
-    )?;
-    match store.commit_durable(context, transaction) {
-        DurableCommitOutcome::Committed => {}
-        DurableCommitOutcome::Rejected(reason) => {
-            return Err(NodeCoreError::DurableCommitRejected(reason));
-        }
-        DurableCommitOutcome::Indeterminate(reason) => {
-            return Err(NodeCoreError::DurableCommitIndeterminate(reason));
-        }
-    }
-    let response = NodeResponse::new(
-        RequestId::new(candidate.request_id)?,
-        NodeResponseStatus::Accepted,
-        None,
-    )?;
-    NodeOutput::new(vec![response], Vec::new())
+    prepare_freeze_ordered(store, context, domain, chain, candidate, block_height)?
+        .commit(store, context)
 }
 
 #[cfg(test)]

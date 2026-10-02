@@ -119,7 +119,7 @@ pub(crate) fn validate_inputs(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn admit<S: StructuredDurableDomainStateStore>(
+pub(super) fn admit<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,

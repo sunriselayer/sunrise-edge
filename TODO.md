@@ -51,25 +51,44 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   still-unimplemented Seal, serving and recurring reconstruction boundaries.
 - [ ] Runtime/core completion design: centralize identical transaction
   consistency and assembly rules without merging storage and protocol authority.
-  The first unmerged implementation provides domain-bound observations and
+  The first implementation, merged in PR #257 at `f83b437`, provides domain-bound
+  observations and
   strict single-owner versus explicit exact-coalescing assembly, and migrates
   actual direct paid execution and fee-claim completions. Read-only prepared
   material and registered-bond verification use a genuinely read-only port.
   A contradictory internal nonce observation now fails closed instead of
-  replacing an earlier read. Combined-head acceptance and independent review
-  remain pending; this is not complete ordered-handler migration.
+  replacing an earlier read. Full local acceptance, all four required CI lanes,
+  selected complete PostgreSQL acceptance and fresh exact-head Opus APPROVE
+  passed. This is not complete ordered-handler migration.
+  [DR-0181](docs/architecture/decisions/0181-writer-free-operation-preparation.md)
+  defines the next integrated migration: all seven owning preparations, direct
+  real-store wrappers, consuming execution/signing observation scopes, and no
+  capture store or synthetic commit success. Source is integrated on the next
+  branch. Integrated compilation, strict core Clippy, 17 genuine preparation/
+  observation/completion regressions and three runtime reader tests passed;
+  complete final-head acceptance and independent implementation review remain
+  pending.
 - [ ] Core lifecycle and dependency composition: distinguish genesis trust,
   current serving and historical verification; remove duplicated mechanisms
   where a reviewed interface has actual consumers.
 - [ ] Test/CI architecture: owner-specific fixture composition and a coherent
   gate registry/execution contract, preserving all required coverage.
-  Closed executable plans and separately owned action recipes are implemented
-  but unmerged. Fixed independent contract expectations retain four required
+  Closed executable plans and separately owned action recipes merged in PR #257.
+  Fixed independent contract expectations retain four required
   DB-free lanes, five selected PostgreSQL lanes and every ignored selector;
-  nested prerequisite failures propagate explicitly. Complete acceptance on
-  the final PR head remains pending.
+  nested prerequisite failures propagate explicitly. Required/full local and
+  selected complete PostgreSQL acceptance passed on that exact reviewed head.
+  The next branch also isolates recipe stdin from the remaining coordinator
+  plan, with an executable reproducing negative control. Those gate-contract
+  tests passed; complete final-head acceptance remains pending. Typed real
+  SQLite handoff fault plans preserve each existing assertion; their combined
+  acceptance joins the owning-operation migration rather than a new test-only
+  framework.
 - [ ] Independently reviewed, fully checked PR checkpoints; update this list
   from actual evidence, not skeleton compilation or file counts.
+  PR #257 is the first verified normal-merge checkpoint. Main equals
+  `origin/main` with a clean tree at `f83b437`; the next branch is not yet a
+  completed feature or reviewed release.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.

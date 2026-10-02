@@ -25,8 +25,8 @@ mod preseal_cut_contracts;
 #[path = "frozen_completion/inactive_business_import.rs"]
 mod inactive_business_import;
 
-#[path = "frozen_completion/inactive_business_import_faults.rs"]
-mod inactive_business_import_faults;
+#[path = "frozen_completion/sqlite_handoff_faults.rs"]
+mod sqlite_handoff_faults;
 
 #[path = "frozen_completion/conditional_readiness.rs"]
 mod conditional_readiness;

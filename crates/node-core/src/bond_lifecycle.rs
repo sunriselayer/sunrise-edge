@@ -60,6 +60,7 @@ use crate::fast_path::records::{
 use crate::local_execution::{
     AdmittedLeg, CustodyEffectMode, LocalExecutionAdmissionError, admit_and_execute_leg,
 };
+use crate::operation_preparation::{InvocationPreparation, PreparedBusinessInvocation};
 use bonds::{BondError, BondResourceConfig, BondResourceId, decode_bond_resource_id};
 use canonical_encoding::{decode_digest32, encode_digest32};
 use crypto::{Ed25519Verifier, SignatureDomain, SignatureMessageType, SignatureVerifier};
@@ -74,6 +75,7 @@ use execution::protocol_custody::{
 use execution::publication::PublicationContext;
 use objects::{ProtocolCustodyPurpose, ProtocolCustodyScope};
 use protocol_types::{SignatureSchemeId, ValidatorId};
+use runtime::{StructuredStateReader, VersionedStateReader};
 use validator_set::ValidatorSet;
 
 mod effects;
@@ -635,7 +637,7 @@ fn authenticate_legs(
 /// Reads the signed `0x642C/v1` economics policy installed under the
 /// resource's own genesis-pinned publication context -- never the current
 /// operation's epoch-varying context.
-fn read_economics_policy<S: StructuredDurableDomainStateStore>(
+fn read_economics_policy<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -643,7 +645,7 @@ fn read_economics_policy<S: StructuredDurableDomainStateStore>(
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<FastPathEconomicsPolicy, BondLifecycleError> {
     let key: Vec<u8> = local_instance_state::fastpath_economics_policy_key(resource_context)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     if let Some(old) = reads.insert(key, observed.revision())
         && old != observed.revision()
     {
@@ -779,9 +781,9 @@ fn release_capability(
 
 /// Shared context threaded through every operation branch. `bond` is the
 /// exact row read and signature-checked before dispatch; every branch
-/// mutates it into `new_bond` and hands both to [`commit`].
+/// mutates it into `new_bond` and hands both to [`prepare_lifecycle_transition`].
 #[allow(clippy::too_many_arguments)]
-struct Preamble<'a, S: StructuredDurableDomainStateStore, E: LocalContractEngine + ?Sized> {
+struct Preamble<'a, S: StructuredStateReader, E: LocalContractEngine + ?Sized> {
     store: &'a S,
     blob_store: &'a dyn BlobStore,
     context: &'a DurableOperationContext,
@@ -812,7 +814,7 @@ struct Preamble<'a, S: StructuredDurableDomainStateStore, E: LocalContractEngine
     ordered: Option<&'a ordered_economics::OrderedLegAdmission<'a>>,
 }
 
-impl<S: StructuredDurableDomainStateStore, E: LocalContractEngine + ?Sized> Preamble<'_, S, E> {
+impl<S: StructuredStateReader, E: LocalContractEngine + ?Sized> Preamble<'_, S, E> {
     /// Returns the object monotonicity rule this store's signed genesis bound.
     const fn object_minimum(&self) -> logical_generation::ObjectMinimum {
         logical_generation::ObjectMinimum::for_profile(&self.profile, self.created_checkpoint)
@@ -824,7 +826,8 @@ impl<S: StructuredDurableDomainStateStore, E: LocalContractEngine + ?Sized> Prea
 /// verifies its own committed validator signature. Dispatches into exactly
 /// one of [`deposit`], [`replace`], [`unbond`] or [`withdraw`], each of
 /// which performs its own policy/live-set/nonce/lock/publication/object/
-/// execution work and commits through [`commit`].
+/// execution work. This direct entry point commits the prepared invocation
+/// through the real store.
 #[allow(clippy::too_many_arguments)]
 pub fn handle_bond_lifecycle<S, E>(
     store: &S,
@@ -843,7 +846,7 @@ where
     S: StructuredDurableDomainStateStore,
     E: LocalContractEngine + ?Sized,
 {
-    handle_bond_lifecycle_ordered(
+    Ok(prepare_bond_lifecycle_ordered(
         store,
         blob_store,
         context,
@@ -856,7 +859,8 @@ where
         signed_bytes,
         created_checkpoint,
         None,
-    )
+    )?
+    .commit(store, context)?)
 }
 
 /// [`handle_bond_lifecycle`] plus DR-0153's private admitted-candidate
@@ -864,7 +868,7 @@ where
 /// the one implementation and the ordered path shares every existing
 /// arithmetic, custody, policy and signature check unmodified.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn handle_bond_lifecycle_ordered<S, E>(
+pub(crate) fn prepare_bond_lifecycle_ordered<S, E>(
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -877,9 +881,9 @@ pub(crate) fn handle_bond_lifecycle_ordered<S, E>(
     signed_bytes: &[u8],
     created_checkpoint: u64,
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
-) -> Result<NodeOutput, BondLifecycleError>
+) -> Result<InvocationPreparation, BondLifecycleError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader,
     E: LocalContractEngine + ?Sized,
 {
     if history.len() > publication::MAX_PUBLICATION_HISTORY {
@@ -932,7 +936,7 @@ where
         request_id,
         receipt_digest,
     )? {
-        return Ok(output);
+        return Ok(InvocationPreparation::Retained(output));
     }
 
     // 6. current epoch fence.
@@ -964,7 +968,7 @@ where
         &signed.intent.validator_id,
     )?;
     let bond_observed: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &bond_key)?;
+        store.read_versioned_state(context, domain, &bond_key)?;
     let bond_row_revision: StateRevision = bond_observed.revision();
     reads.insert(bond_key.clone(), bond_row_revision);
     let previous_bond_bytes: Vec<u8> = bond_observed
@@ -1100,13 +1104,13 @@ where
     }
 }
 
-/// One atomic commit: every touched object head, the new bond row, the new
+/// Prepare one atomic invocation: every touched object head, the new bond row, the new
 /// (never overwritten) transition record, and the one outer receipt. The
 /// response payload is the canonical encoded next bond row. Thin wrapper
-/// over [`commit_bond_transition`] for the four validator-signed lifecycle
-/// operations; [`slash::handle_bond_slash`] calls
-/// [`commit_bond_transition`] directly since it has no [`Preamble`].
-fn commit<S, E>(
+/// over [`prepare_bond_transition`] for the validator-signed lifecycle
+/// operations; [`slash::prepare_bond_slash_ordered`] calls
+/// [`prepare_bond_transition`] directly since it has no [`Preamble`].
+fn prepare_lifecycle_transition<S, E>(
     preamble: Preamble<'_, S, E>,
     operation: FastPathBondLifecycleOperation,
     new_bond: FastPathBondRecord,
@@ -1114,9 +1118,9 @@ fn commit<S, E>(
     object_mutations: Vec<DurableObjectMutationEntry>,
     state_mutations: Vec<StateMutationEntry>,
     nonce: Option<&PendingSenderNonceWrite>,
-) -> Result<NodeOutput, BondLifecycleError>
+) -> Result<InvocationPreparation, BondLifecycleError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader,
     E: LocalContractEngine + ?Sized,
 {
     let Preamble {
@@ -1138,7 +1142,7 @@ where
         ..
     } = preamble;
     let expected_next_row_digest: Digest32 = signed.intent.expected_next_row_digest;
-    commit_bond_transition(
+    prepare_bond_transition(
         store,
         context,
         domain,
@@ -1166,7 +1170,7 @@ where
     )
 }
 
-/// The shared atomic commit every DR-0137 bond transition -- lifecycle or
+/// The shared invocation preparation every DR-0137 bond transition -- lifecycle or
 /// slash -- goes through: every touched object head, the new bond row, the
 /// new (never overwritten) transition record, and the one outer receipt. The
 /// response payload is the canonical encoded next bond row.
@@ -1182,7 +1186,7 @@ where
 /// re-verified evidence alone, so there is nothing an attacker could
 /// substitute a different resulting row against.
 #[allow(clippy::too_many_arguments)]
-fn commit_bond_transition<S: StructuredDurableDomainStateStore>(
+fn prepare_bond_transition<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1205,7 +1209,7 @@ fn commit_bond_transition<S: StructuredDurableDomainStateStore>(
     object_mutations: Vec<DurableObjectMutationEntry>,
     mut state_mutations: Vec<StateMutationEntry>,
     nonce: Option<&PendingSenderNonceWrite>,
-) -> Result<NodeOutput, BondLifecycleError> {
+) -> Result<InvocationPreparation, BondLifecycleError> {
     let new_bond_bytes: Vec<u8> = encode_fastpath_bond_record(&new_bond)?;
     // Each row's digest is hashed at its own `lifecycle_epoch`, not the
     // committing transition's epoch: this makes a row's digest a pure,
@@ -1245,7 +1249,7 @@ fn commit_bond_transition<S: StructuredDurableDomainStateStore>(
         new_bond.generation,
     )?;
     let transition_observed: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &transition_key)?;
+        store.read_versioned_state(context, domain, &transition_key)?;
     if transition_observed.value().is_some() {
         return Err(BondLifecycleError::Invalid(
             "bond transition record already exists",
@@ -1312,10 +1316,9 @@ fn commit_bond_transition<S: StructuredDurableDomainStateStore>(
         receipt,
         None,
     )?;
-    Ok(durable_reconciliation::committed_output(
-        store.commit_invocation(context, transaction),
-        output,
-    )?)
+    Ok(InvocationPreparation::Prepared(Box::new(
+        PreparedBusinessInvocation::new(transaction, output)?,
+    )))
 }
 
 /// [`deposit`] and [`reactivate`] share identical mechanics -- a fresh
@@ -1358,9 +1361,9 @@ impl DepositKind {
 fn deposit<S, E>(
     preamble: Preamble<'_, S, E>,
     leg: AuthenticatedLocalExecutionIntent,
-) -> Result<NodeOutput, BondLifecycleError>
+) -> Result<InvocationPreparation, BondLifecycleError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader,
     E: LocalContractEngine + ?Sized,
 {
     deposit_or_reactivate(preamble, leg, DepositKind::Deposit)
@@ -1372,9 +1375,9 @@ where
 fn reactivate<S, E>(
     preamble: Preamble<'_, S, E>,
     leg: AuthenticatedLocalExecutionIntent,
-) -> Result<NodeOutput, BondLifecycleError>
+) -> Result<InvocationPreparation, BondLifecycleError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader,
     E: LocalContractEngine + ?Sized,
 {
     deposit_or_reactivate(preamble, leg, DepositKind::Reactivate)
@@ -1384,9 +1387,9 @@ fn deposit_or_reactivate<S, E>(
     mut preamble: Preamble<'_, S, E>,
     leg: AuthenticatedLocalExecutionIntent,
     kind: DepositKind,
-) -> Result<NodeOutput, BondLifecycleError>
+) -> Result<InvocationPreparation, BondLifecycleError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader,
     E: LocalContractEngine + ?Sized,
 {
     if !kind.accepts(&preamble.bond.state) {
@@ -1556,7 +1559,7 @@ where
         authorization_scheme: preamble.bond.authorization_scheme,
         authorization_key: preamble.bond.authorization_key,
     };
-    commit(
+    prepare_lifecycle_transition(
         preamble,
         kind.operation(),
         new_bond,
@@ -1583,9 +1586,9 @@ fn replace<S, E>(
     deposit_leg: AuthenticatedLocalExecutionIntent,
     release_leg: AuthenticatedLocalExecutionIntent,
     release_recipient: Address,
-) -> Result<NodeOutput, BondLifecycleError>
+) -> Result<InvocationPreparation, BondLifecycleError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader,
     E: LocalContractEngine + ?Sized,
 {
     if preamble.bond.state != FastPathBondState::Active {
@@ -1854,7 +1857,7 @@ where
         authorization_scheme: preamble.bond.authorization_scheme,
         authorization_key: preamble.bond.authorization_key,
     };
-    commit(
+    prepare_lifecycle_transition(
         preamble,
         FastPathBondLifecycleOperation::Replace,
         new_bond,
@@ -1870,9 +1873,9 @@ where
 fn unbond<S, E>(
     mut preamble: Preamble<'_, S, E>,
     recipient: Address,
-) -> Result<NodeOutput, BondLifecycleError>
+) -> Result<InvocationPreparation, BondLifecycleError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader,
     E: LocalContractEngine + ?Sized,
 {
     if preamble.bond.state != FastPathBondState::Active {
@@ -1937,7 +1940,7 @@ where
         authorization_scheme: preamble.bond.authorization_scheme,
         authorization_key: preamble.bond.authorization_key,
     };
-    commit(
+    prepare_lifecycle_transition(
         preamble,
         FastPathBondLifecycleOperation::Unbond,
         new_bond,
@@ -1955,9 +1958,9 @@ where
 fn withdraw<S, E>(
     mut preamble: Preamble<'_, S, E>,
     leg: AuthenticatedLocalExecutionIntent,
-) -> Result<NodeOutput, BondLifecycleError>
+) -> Result<InvocationPreparation, BondLifecycleError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader,
     E: LocalContractEngine + ?Sized,
 {
     let (unlock_epoch, recorded_recipient): (Epoch, [u8; 32]) = match preamble.bond.state {
@@ -2133,7 +2136,7 @@ where
         authorization_scheme: preamble.bond.authorization_scheme,
         authorization_key: preamble.bond.authorization_key,
     };
-    commit(
+    prepare_lifecycle_transition(
         preamble,
         FastPathBondLifecycleOperation::Withdraw,
         new_bond,

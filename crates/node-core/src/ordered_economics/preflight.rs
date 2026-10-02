@@ -23,7 +23,7 @@
 //! digests ([`bond_lifecycle::bond_row_digest`],
 //! [`fee_claims::fee_claim_row_digest`]) and compares the same equality
 //! predicates the handlers already own. Every accepted candidate still goes
-//! through the unmodified handler, which re-checks all of this itself.
+//! through the same owning preparation, which re-checks all of this itself.
 use super::*;
 use bond_lifecycle::{
     BondLifecycleOperation, bond_row_digest, decode_signed_bond_lifecycle_intent,
@@ -42,14 +42,14 @@ use protocol_types::ValidatorId;
 use validator_set::ValidatorInfo;
 
 /// Reads one durable row, requiring it to be present.
-fn require_row<S: StructuredDurableDomainStateStore>(
+fn require_row<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     key: &[u8],
     missing: &'static str,
 ) -> Result<Vec<u8>, OrderedEconomicsError> {
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, key)?;
     Ok(observed
         .value()
         .ok_or(OrderedEconomicsError::Prerequisite(missing))?
@@ -65,7 +65,7 @@ fn require_row<S: StructuredDurableDomainStateStore>(
 /// A non-current epoch here is a *fence*, not a stale candidate: the profile
 /// pinned one epoch, and an epoch transition invalidates this whole profile
 /// rather than this one candidate. It therefore stops.
-pub(crate) fn require_live_authority<S: StructuredDurableDomainStateStore>(
+pub(crate) fn require_live_authority<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -106,7 +106,7 @@ pub(crate) fn require_live_authority<S: StructuredDurableDomainStateStore>(
 /// user-invalid/stale case and refuses; an undecodable or
 /// deleted-but-not-initial row is corruption `read_sender_next_nonce` itself
 /// raises, and stops.
-fn require_next_nonce<S: StructuredDurableDomainStateStore>(
+fn require_next_nonce<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -139,7 +139,7 @@ fn require_next_nonce<S: StructuredDurableDomainStateStore>(
 /// handler consumes them. Derived from the already-authenticated reservation
 /// plan's own first nonce plus the operation's leg count, so a `Replace`'s
 /// second leg is checked at `first_nonce + 1` -- not at `first_nonce`.
-fn require_leg_nonces<S: StructuredDurableDomainStateStore>(
+fn require_leg_nonces<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -171,10 +171,10 @@ fn require_leg_nonces<S: StructuredDurableDomainStateStore>(
 ///   initial profile a committed Freeze is a commitment to finish that
 ///   epoch... There is no local unfreeze."
 ///
-/// This read goes through `store` (the caller's `staging` adapter during
+/// This read goes through `store` (the caller's observed read scope during
 /// real execution), so it becomes a CAS assertion in the final commit exactly
 /// like every other row this module reads.
-pub(crate) fn require_admission_open<S: StructuredDurableDomainStateStore>(
+pub(crate) fn require_admission_open<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -196,7 +196,7 @@ pub(crate) fn require_admission_open<S: StructuredDurableDomainStateStore>(
 
 /// Runs every typed business check this candidate's kind admits, against the
 /// current committed state, before the existing handler is invoked.
-pub(crate) fn preflight<S: StructuredDurableDomainStateStore>(
+pub(crate) fn preflight<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -231,7 +231,7 @@ pub(crate) fn preflight<S: StructuredDurableDomainStateStore>(
 }
 
 /// Loads and identity-checks the committed bond row for `validator_id`.
-fn committed_bond<S: StructuredDurableDomainStateStore>(
+fn committed_bond<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -309,7 +309,7 @@ fn require_signed_predecessor(
     Ok(())
 }
 
-fn preflight_bond_lifecycle<S: StructuredDurableDomainStateStore>(
+fn preflight_bond_lifecycle<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -375,7 +375,7 @@ fn preflight_bond_lifecycle<S: StructuredDurableDomainStateStore>(
     require_leg_nonces(store, context, env, candidate)
 }
 
-fn preflight_bond_slash<S: StructuredDurableDomainStateStore>(
+fn preflight_bond_slash<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -428,7 +428,7 @@ fn preflight_bond_slash<S: StructuredDurableDomainStateStore>(
     require_leg_nonces(store, context, env, candidate)
 }
 
-fn preflight_fee_claim<S: StructuredDurableDomainStateStore>(
+fn preflight_fee_claim<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,

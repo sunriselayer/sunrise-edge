@@ -21,7 +21,8 @@ use protocol_types::{ChainId, Digest32, Epoch, HashPurpose, ProtocolVersion};
 use runtime::{
     AtomicityDomainId, DurableObjectHead, DurableObjectOwnerProjection, DurableObjectPayload,
     DurableObjectVersion, DurableOperationContext, DurableRequestId, ObjectHeadRevision,
-    PersistenceLayout, StateRevision, StructuredDurableDomainStateStore, VersionedStateValue,
+    PersistenceLayout, StateRevision, StructuredStateReader, VersionedStateReader,
+    VersionedStateValue,
 };
 
 /// One observed persisted next-nonce value plus the exact revision it was
@@ -49,9 +50,9 @@ pub(super) fn read_sender_next_nonce<S>(
     epoch: Epoch,
 ) -> Result<SenderNextNonceObservation, NodeCoreError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: VersionedStateReader + ?Sized,
 {
-    let observed = store.get_versioned_durable(context, domain, nonce_key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, nonce_key)?;
     let next_nonce = match observed.value() {
         Some(bytes) => {
             let record = SenderNonceRecord::decode(bytes).map_err(|_| {
@@ -94,7 +95,7 @@ pub fn query_sender_next_nonce<S>(
     sender: [u8; 32],
 ) -> Result<u64, NodeCoreError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: VersionedStateReader + ?Sized,
 {
     let layout = PersistenceLayout::new(chain_id, protocol_version);
     let nonce_key = layout.sender_nonce_key(sender, epoch);
@@ -116,10 +117,10 @@ pub fn query_committed_epoch_state<S>(
     chain_id: &ChainId,
 ) -> Result<local_instance_state::FastPathEpochRecord, NodeCoreError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: VersionedStateReader + ?Sized,
 {
     let key: Vec<u8> = local_instance_state::fastpath_epoch_record_key(chain_id)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     let bytes: &[u8] = observed.value().ok_or(NodeCoreError::PersistenceInvariant(
         "fast-path epoch record not installed",
     ))?;
@@ -226,9 +227,9 @@ pub fn query_object<S>(
     object_id: ObjectId,
 ) -> Result<ObjectQueryResult, NodeCoreError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader + ?Sized,
 {
-    let head: DurableObjectHead = store.get_object_head(context, domain, object_id)?;
+    let head: DurableObjectHead = store.read_object_head(context, domain, object_id)?;
     let (head_revision, object_version, digest) = match &head {
         DurableObjectHead::Absent => return Ok(ObjectQueryResult::Absent { object_id }),
         DurableObjectHead::Tombstoned {
@@ -250,7 +251,7 @@ where
     };
 
     let record = store
-        .get_object_version(context, domain, object_id, object_version)?
+        .read_object_version(context, domain, object_id, object_version)?
         .ok_or(NodeCoreError::ObjectRecordMissing { object_id })?;
     if record.object_id() != object_id
         || record.object_version() != object_version
@@ -387,12 +388,12 @@ pub fn query_request_receipt<S>(
     request_id: RequestId,
 ) -> Result<ReceiptQueryResult, NodeCoreError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader + ?Sized,
 {
     let durable_request_id = DurableRequestId::new(*request_id.as_bytes()).map_err(|_| {
         NodeCoreError::PersistenceInvariant("validated request id failed durable projection")
     })?;
-    let receipt = match store.get_request_receipt(context, domain, durable_request_id)? {
+    let receipt = match store.read_request_receipt(context, domain, durable_request_id)? {
         Some(receipt) => receipt,
         None => return Ok(ReceiptQueryResult::Absent { request_id }),
     };
@@ -445,7 +446,7 @@ pub fn query_fastpath_equivocation_evidence<S>(
     conflict_digest: Digest32,
 ) -> Result<Option<equivocation::FastPathEquivocationEvidenceRecord>, NodeCoreError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: VersionedStateReader + ?Sized,
 {
     let key: Vec<u8> = local_instance_state::fastpath_equivocation_evidence_key(
         chain,
@@ -453,7 +454,7 @@ where
         validator,
         conflict_digest,
     )?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     let Some(bytes) = observed.value() else {
         return Ok(None);
     };

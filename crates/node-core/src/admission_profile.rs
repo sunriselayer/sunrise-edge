@@ -14,7 +14,7 @@ use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
 use protocol_types::{Digest32, HashPurpose};
 use runtime::{
-    AtomicityDomainId, DurableOperationContext, StateRevision, StructuredDurableDomainStateStore,
+    AtomicityDomainId, DurableOperationContext, StateRevision, VersionedStateReader,
     VersionedStateValue,
 };
 
@@ -155,7 +155,7 @@ pub fn require_external_request_lane(
 /// `expected` is trusted composition, never decoded request context. A present
 /// profile supplies its original genesis root independently of the live epoch.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn fence_installed_external_request_lane<S: StructuredDurableDomainStateStore>(
+pub(crate) fn fence_installed_external_request_lane<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -174,7 +174,7 @@ pub(crate) fn fence_installed_external_request_lane<S: StructuredDurableDomainSt
 
 /// Reconciles a private locally pinned profile with its installed association.
 /// Call before nonce/object work and merge `reads` into the admission's CAS.
-pub(crate) fn fence_verified_admission_profile<S: StructuredDurableDomainStateStore>(
+pub(crate) fn fence_verified_admission_profile<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -199,7 +199,7 @@ pub(crate) fn fence_verified_admission_profile<S: StructuredDurableDomainStateSt
 /// Refuses fresh untracked/direct business writers in the causal profile.
 /// Exact completed receipt reconciliation must precede this check. No caller
 /// boolean, decoded certificate or stored tag supplies a certified bypass.
-pub(crate) fn require_historical_direct_writer<S: StructuredDurableDomainStateStore>(
+pub(crate) fn require_historical_direct_writer<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -216,7 +216,7 @@ pub(crate) fn require_historical_direct_writer<S: StructuredDurableDomainStateSt
     Ok(())
 }
 
-fn resolve_installed<S: StructuredDurableDomainStateStore>(
+fn resolve_installed<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -297,7 +297,7 @@ fn resolve_installed<S: StructuredDurableDomainStateStore>(
     Ok(Some(verified))
 }
 
-fn refuse_conflicting_composition_root<S: StructuredDurableDomainStateStore>(
+fn refuse_conflicting_composition_root<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -349,7 +349,7 @@ fn refuse_conflicting_composition_root<S: StructuredDurableDomainStateStore>(
     Ok(())
 }
 
-fn fence_manifest_and_marker<S: StructuredDurableDomainStateStore>(
+fn fence_manifest_and_marker<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -435,14 +435,14 @@ fn verify_signature(manifest: &GenesisManifest) -> Result<(), NodeCoreError> {
     Ok(())
 }
 
-fn fence_read<S: StructuredDurableDomainStateStore>(
+fn fence_read<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     key: Vec<u8>,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<VersionedStateValue, NodeCoreError> {
-    let seen: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let seen: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     if let Some(previous) = reads.insert(key, seen.revision())
         && previous != seen.revision()
     {

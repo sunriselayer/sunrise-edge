@@ -42,6 +42,7 @@ use fast_path::{FastPathEd25519Verifier, load_validator_set};
 use local_instance_state::FastPathEpochRecord;
 use protocol_types::SignatureSchemeId;
 use publication::{LocalPublicationPolicy, PublicationAdmissionError};
+use runtime::VersionedStateReader;
 use validator_set::{ValidatorInfo, ValidatorSet, ValidatorSetError};
 
 #[cfg(test)]
@@ -350,7 +351,7 @@ impl From<DurableReadError> for NextSetEligibilityError {
 /// a structurally validated next set. Does not itself prove that the set is
 /// canonical or that the current paid fee policy can be carried forward.
 /// Callers must perform those structural/activation checks first.
-pub(crate) fn check_next_set_eligibility<S: StructuredDurableDomainStateStore>(
+pub(crate) fn check_next_set_eligibility<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -371,7 +372,7 @@ pub(crate) fn check_next_set_eligibility<S: StructuredDurableDomainStateStore>(
         let bond_key: Vec<u8> =
             local_instance_state::fastpath_bond_record_key(chain, &validator.id)?;
         let bond_observed: VersionedStateValue =
-            store.get_versioned_durable(context, domain, &bond_key)?;
+            store.read_versioned_state(context, domain, &bond_key)?;
         let bond_bytes: &[u8] = bond_observed
             .value()
             .ok_or(NextSetEligibilityError::Prerequisite)?;
@@ -412,7 +413,7 @@ pub(crate) fn check_next_set_eligibility<S: StructuredDurableDomainStateStore>(
                 let policy_key: Vec<u8> =
                     local_instance_state::fastpath_economics_policy_key(&bond.context)?;
                 let policy_observed: VersionedStateValue =
-                    store.get_versioned_durable(context, domain, &policy_key)?;
+                    store.read_versioned_state(context, domain, &policy_key)?;
                 let policy_bytes: &[u8] = policy_observed
                     .value()
                     .ok_or(NextSetEligibilityError::Prerequisite)?;
@@ -451,7 +452,7 @@ pub(crate) fn check_next_set_eligibility<S: StructuredDurableDomainStateStore>(
     Ok(())
 }
 
-fn derive_eligibility_reads<S: StructuredDurableDomainStateStore>(
+fn derive_eligibility_reads<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -490,7 +491,7 @@ fn derive_eligibility_reads<S: StructuredDurableDomainStateStore>(
 /// `activation_digest`, not merely the same `next_validator_set_digest`
 /// (which [`ValidatorSet::new`] already canonicalizes internally).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn derive_activation_set<S: StructuredDurableDomainStateStore>(
+pub(crate) fn derive_activation_set<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -544,7 +545,7 @@ pub(crate) fn derive_activation_set<S: StructuredDurableDomainStateStore>(
         PublicationContext::new(chain.clone(), protocol_version, current_epoch)?;
     let fee_policy_key: Vec<u8> = local_instance_state::paid_fee_policy_key(&current_context)?;
     let observed_fee_policy: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &fee_policy_key)?;
+        store.read_versioned_state(context, domain, &fee_policy_key)?;
     let current_fee_policy_bytes: &[u8] =
         observed_fee_policy
             .value()

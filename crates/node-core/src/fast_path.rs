@@ -105,6 +105,7 @@ use paid_execution::{
     build_paid_admission,
 };
 use protocol_types::{SignatureSchemeId, ValidatorId};
+use runtime::VersionedStateReader;
 use validator_set::{ValidatorInfo, ValidatorSet, ValidatorSetError};
 
 pub(crate) mod commitment;
@@ -402,7 +403,7 @@ pub(crate) fn decode_validator_set_row(
 /// digest matches `epoch_record.current_validator_set_digest` -- strictly
 /// additive to [`mutation_fence::fence_current_epoch`], which the caller has
 /// already run to obtain `epoch_record`.
-pub(crate) fn load_validator_set<S: StructuredDurableDomainStateStore>(
+pub(crate) fn load_validator_set<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -412,7 +413,7 @@ pub(crate) fn load_validator_set<S: StructuredDurableDomainStateStore>(
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> FastPathResult<ValidatorSet> {
     let key: Vec<u8> = fastpath_validator_set_key(validator_context)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     if let Some(previous_revision) = reads.insert(key, observed.revision())
         && previous_revision != observed.revision()
     {

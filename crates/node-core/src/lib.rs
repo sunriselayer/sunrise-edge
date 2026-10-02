@@ -60,6 +60,7 @@ pub mod local_instance_state;
 pub mod logical_generation;
 mod mutation_fence;
 mod object_snapshots;
+mod operation_preparation;
 pub mod ordered_economics;
 pub mod paid_execution;
 pub mod phase2_authorization;
@@ -5976,7 +5977,7 @@ fn load_and_authorize_objects<S>(
     treasury_object_id: Option<ObjectId>,
 ) -> Result<LoadedAuthenticatedObjects, NodeCoreError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: runtime::StructuredStateReader + ?Sized,
 {
     let mut loaded: LoadedAuthenticatedObjects =
         LoadedAuthenticatedObjects::with_capacity(dispatch.accesses.len());

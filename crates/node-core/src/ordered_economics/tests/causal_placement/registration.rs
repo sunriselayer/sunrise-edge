@@ -26,6 +26,8 @@ const CHECKPOINT: u64 = 20;
 
 #[path = "registration/generic.rs"]
 mod generic;
+#[path = "registration/preparation.rs"]
+mod preparation;
 #[path = "registration/sqlite.rs"]
 mod sqlite;
 

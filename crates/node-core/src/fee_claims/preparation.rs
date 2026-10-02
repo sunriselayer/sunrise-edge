@@ -175,7 +175,7 @@ fn inspect_fee_escrow_with_verifier<S, Verify>(
     verify: Verify,
 ) -> Result<FeeEscrowInspection, FeeClaimError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader,
     Verify: FnOnce() -> Result<FeeClaimVerificationReport, FeeClaimError>,
 {
     require_preparation_context(resolver, history, expected)?;
@@ -190,7 +190,7 @@ where
     )?;
     let key: Vec<u8> =
         local_instance_state::fastpath_settlement_key(expected.chain_id(), &escrow_request_id)?;
-    let before: VersionedStateValue = store.get_versioned_durable(operation, domain, &key)?;
+    let before: VersionedStateValue = store.read_versioned_state(operation, domain, &key)?;
     let canonical_settlement: Vec<u8> = before
         .value()
         .ok_or(FeeClaimError::Invalid("fee claim settlement missing"))?
@@ -237,7 +237,7 @@ where
             kind: kind_for_share(&settlement, index),
         });
     }
-    let after: VersionedStateValue = store.get_versioned_durable(operation, domain, &key)?;
+    let after: VersionedStateValue = store.read_versioned_state(operation, domain, &key)?;
     if after.revision() != before.revision()
         || after.value() != Some(canonical_settlement.as_slice())
         || verification.final_generation != settlement.generation
@@ -298,7 +298,7 @@ pub fn inspect_fee_claim<S: DurableStateKeyScanner>(
         let policy_key: Vec<u8> =
             local_instance_state::execution_policy_key_for_profile(expected, leg_policy.profile())?;
         let policy_observed: VersionedStateValue =
-            store.get_versioned_durable(operation, domain, &policy_key)?;
+            store.read_versioned_state(operation, domain, &policy_key)?;
         if policy_observed.value() != Some(leg_policy.encode()?.as_slice()) {
             return Err(FeeClaimError::Invalid(
                 "fee inspection leg policy not installed",
@@ -531,7 +531,7 @@ pub(super) fn execute_positive_claim<S, E>(
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
 ) -> Result<ExecutedFeeClaim, FeeClaimError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader,
     E: LocalContractEngine + ?Sized,
 {
     let (fee_policy, policy): (PaidFeePolicy, FastPathEconomicsPolicy) =
@@ -749,7 +749,7 @@ where
     let request_id: DurableRequestId = DurableRequestId::new(request.request_id)
         .map_err(|_| FeeClaimError::Invalid("fee preparation request id"))?;
     if store
-        .get_request_receipt(operation, domain, request_id)?
+        .read_request_receipt(operation, domain, request_id)?
         .is_some()
     {
         return Err(FeeClaimError::Invalid(
