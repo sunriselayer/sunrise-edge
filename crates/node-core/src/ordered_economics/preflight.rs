@@ -211,6 +211,11 @@ pub(crate) fn preflight<S: StructuredDurableDomainStateStore>(
             preflight_bond_lifecycle(store, context, env, candidate)
         }
         OrderedOperationKind::BondSlash => preflight_bond_slash(store, context, env, candidate),
+        OrderedOperationKind::BondRegistration => {
+            bond_lifecycle::registration::preflight_registration(store, context, env, candidate)
+                .map_err(|error| bond_registration_failure(&error))?;
+            require_leg_nonces(store, context, env, candidate)
+        }
         // Evidence admission is content-addressed and idempotent: a repeated
         // submission is recorded once and re-reports the same record, so
         // there is no stale predecessor to refuse. Its entire validity is

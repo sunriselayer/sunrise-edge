@@ -77,6 +77,7 @@ use protocol_types::{SignatureSchemeId, ValidatorId};
 use validator_set::ValidatorSet;
 
 mod effects;
+pub mod registration;
 pub mod slash;
 #[cfg(test)]
 mod tests;

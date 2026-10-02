@@ -632,6 +632,37 @@ fn project(
     is_source: bool,
 ) -> Result<SemanticProjection, BusinessReconstructionError> {
     snapshot.validate()?;
+    // Registered roots are business State, never a prefix exclusion or a
+    // normalization. Validate the complete owning natural key and signed
+    // generation-one root before comparing their exact independently derived
+    // bytes, including later old-format chain records.
+    let encoded_chain: Vec<u8> = encode_chain_id(overlay.plan.genesis.context().chain_id())
+        .map_err(|_| invalid("registration projection chain encoding"))?;
+    let registered_view: CapturedStateView<'_> = CapturedStateView {
+        domain: overlay.plan.domain,
+        rows: state_rows(&snapshot.records),
+    };
+    for (key, row) in &registered_view.rows {
+        if let Some(tail) = exact_tail(key, b"bond-registration/", &encoded_chain, 32)? {
+            let id: [u8; 32] = tail
+                .try_into()
+                .map_err(|_| invalid("registration projection identity"))?;
+            if row.value.is_none() {
+                return Err(invalid("registration anchor is tombstoned"));
+            }
+            crate::bond_lifecycle::registration::verify_registered_bond_chain(
+                &registered_view,
+                &overlay.plan.operation_context,
+                overlay.plan.domain,
+                overlay.plan.resolver,
+                overlay.plan.resolver_history,
+                overlay.plan.genesis,
+                overlay.plan.pinned_genesis_digest,
+                protocol_types::ValidatorId::new(id),
+            )
+            .map_err(|_| invalid("registered root key, signature or bond chain differs"))?;
+        }
+    }
     let (local_rows, mut internal_receipts) =
         local_fastpath_rows(overlay, &snapshot.records, publications)?;
     let ordered = crate::ordered_economics::audit_projection::validate_local_rows(
