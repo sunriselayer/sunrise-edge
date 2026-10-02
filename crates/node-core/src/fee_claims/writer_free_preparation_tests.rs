@@ -12,10 +12,10 @@ use crate::paid_execution::tests::{
 use consensus::FastVote;
 use execution::LocalWasmExecutionEngine;
 use execution::paid_execution::{PaidExecutionStatus, ReservationAccessKind};
+use runtime::portable::{DurablePortableSnapshotRepository, PortableSnapshotToken};
 use runtime::{
-    DurableObjectVersion, DurableObjectVersionRecord, DurablePortableSnapshotRepository,
-    DurableReadError, MemoryBlobStore, NamespaceLifecycle, PortableSnapshotToken,
-    VersionedStateReader,
+    DurableObjectVersion, DurableObjectVersionRecord, DurableReadError, MemoryBlobStore,
+    NamespaceLifecycle, VersionedStateReader,
 };
 use std::cell::Cell;
 

@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::fee_claims::writer_free_preparation_tests::WriterFreeView;
-use runtime::{DurablePortableSnapshotRepository, PortableSnapshotToken};
+use runtime::portable::{DurablePortableSnapshotRepository, PortableSnapshotToken};
 
 fn prepare_unbond(
     source: &MemoryDurableStateStore,
