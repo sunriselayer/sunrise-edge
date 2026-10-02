@@ -12,9 +12,10 @@
 //!
 //! Shares `fastvote_pg`'s own conventions and several small helpers
 //! (bounded flag parsing, the TOCTOU-safe local signing-key file loader, the
-//! TLS-only PostgreSQL connection builder, and the trusted genesis-manifest
-//! loader) rather than reimplementing them; this binary adds no new trust
-//! model beyond what that CLI's own doc comments already establish.
+//! TLS-only PostgreSQL connection builder, and the bounded SDK verified
+//! genesis root loader) rather than reimplementing them; this binary adds
+//! no new trust model beyond what that CLI's own doc comments already
+//! establish.
 //!
 //! Trust boundaries:
 //!
@@ -39,11 +40,18 @@
 //!   TLS itself: reaching it from anywhere other than loopback requires an
 //!   externally configured TLS-terminating proxy the operator controls, and
 //!   that proxy is not part of this protocol's trust boundary.
+//! * `--enable-ordered-economics` additionally requires the already-loaded,
+//!   already-live-pinned committed validator-set record to exactly equal
+//!   the trusted root's own signed genesis committee/context
+//!   (`require_committed_record_matches_root_committee`), before claiming
+//!   the writer-fence generation. `require_live_fastvote_pin` alone only
+//!   proves the record matches the live epoch digest, not that it still
+//!   agrees with the independently pinned signed genesis the ordered engine
+//!   derives its policy from.
 #![forbid(unsafe_code)]
 
 use sunrise_edge_operator::common::{
-    FlagSet, connect_pool, load_signing_key_file, load_trusted_genesis_manifest, parse_hex_32,
-    require_live_fastvote_pin,
+    FlagSet, connect_pool, load_signing_key_file, parse_hex_32, require_live_fastvote_pin,
 };
 
 use consensus::ConsensusSigner;
@@ -60,10 +68,10 @@ use native_http::{
 };
 use node_core::fast_path::FastPathValidatorSetRecord;
 use node_core::fast_path::records::{FastPathValidatorEntry, decode_fastpath_validator_set_record};
+use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::OrderedEconomicsPolicy;
 use node_core::{
-    GenesisManifest, NodeConfig, decode_genesis_install_marker, genesis_manifest_commitment,
-    genesis_marker_key, local_instance_state,
+    NodeConfig, decode_genesis_install_marker, genesis_marker_key, local_instance_state,
 };
 use postgres_rustls::MakeTlsConnector;
 use protocol_config::{DomainPlacementManifest, ProtocolConfig, TransactionAuthProfile};
@@ -93,7 +101,7 @@ use std::{
     },
     time::Duration,
 };
-use validator_set::{ValidatorInfo, ValidatorSet};
+use sunrise_edge_client::load_verified_genesis_root;
 
 fn parse_chain(value: String) -> Result<ChainId, String> {
     ChainId::new(value).map_err(|_| "invalid --chain-id".to_string())
@@ -209,14 +217,13 @@ impl ConsensusSigner for FileEd25519Signer {
 // ---------------------------------------------------------------------
 
 /// Reads the already-committed genesis marker and fee policy and requires
-/// them to match the trusted manifest exactly. Never installs anything.
+/// them to match the trusted verified root exactly. Never installs anything.
 fn require_committed_genesis_fee_policy(
     store: &PostgresDurableStore<PostgresConnectionManager<MakeTlsConnector>>,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     expected_context: &PublicationContext,
-    expected_digest: [u8; 32],
-    manifest: &GenesisManifest,
+    root: &VerifiedGenesisRoot,
 ) -> Result<PaidFeePolicy, Box<dyn Error>> {
     let marker_key: Vec<u8> = genesis_marker_key(expected_context)?;
     let marker_value = store
@@ -227,10 +234,10 @@ fn require_committed_genesis_fee_policy(
         .ok_or("no committed genesis install marker for expected context; this namespace was never bootstrapped")?;
     let marker = decode_genesis_install_marker(marker_bytes)?;
     if marker.context != *expected_context
-        || marker.manifest_digest.bytes() != expected_digest
-        || marker.genesis_authority != manifest.genesis_authority
+        || marker.manifest_digest != root.digest()
+        || marker.genesis_authority != root.manifest().genesis_authority
     {
-        return Err("committed genesis marker differs from the trusted manifest".into());
+        return Err("committed genesis marker differs from the trusted verified root".into());
     }
     let policy_key: Vec<u8> = local_instance_state::paid_fee_policy_key(expected_context)?;
     let policy_value = store
@@ -240,8 +247,8 @@ fn require_committed_genesis_fee_policy(
         .value()
         .ok_or("no committed paid fee policy for expected context")?;
     let policy: PaidFeePolicy = decode_paid_fee_policy(policy_bytes)?;
-    if policy != manifest.fee_policy {
-        return Err("committed fee policy differs from the trusted genesis manifest".into());
+    if policy != root.manifest().fee_policy {
+        return Err("committed fee policy differs from the trusted verified root".into());
     }
     Ok(policy)
 }
@@ -267,24 +274,29 @@ fn require_registered_signer<'a>(
     Ok(entry)
 }
 
-/// Converts the already-loaded, already-pinned `FastPathValidatorSetRecord`
-/// into a `ValidatorSet` for [`OrderedEconomicsPolicy::new`] -- the DR-0153
-/// fixed-epoch profile reuses this host's existing genesis validator set
-/// unchanged, never a separately loaded one.
-fn ordered_validator_set_from_record(
+/// Required only when `--enable-ordered-economics` is set, before claiming
+/// the writer-fence generation or exposing any listener.
+///
+/// This is not a new serving/activation token, and the root is not
+/// installed-row evidence: `require_live_fastvote_pin` already requires the
+/// actually committed record to match the live epoch digest, but a
+/// coherently altered record paired with a matching altered live digest
+/// would still pass that check while disagreeing with the independently
+/// pinned signed genesis. Exact equality against `root.manifest()`'s own
+/// signed committee/context closes that gap for the one opt-in path
+/// (`OrderedEconomicsPolicy::from_genesis_root`) that no longer performs its
+/// own internal comparison against a caller-supplied validator set.
+fn require_committed_record_matches_root_committee(
     record: &FastPathValidatorSetRecord,
-    epoch: Epoch,
-) -> Result<ValidatorSet, Box<dyn Error>> {
-    let mut info: Vec<ValidatorInfo> = Vec::with_capacity(record.validators.len());
-    for validator in &record.validators {
-        info.push(ValidatorInfo {
-            id: validator.id,
-            voting_power: validator.voting_power,
-            signature_scheme: validator.signature_scheme,
-            public_key: validator.public_key.clone(),
-        });
+    root_committee: &FastPathValidatorSetRecord,
+) -> Result<(), String> {
+    if record != root_committee {
+        return Err(
+            "committed fast-path validator set does not match the trusted verified root's original signed committee/context; refusing to enable the opt-in ordered-economics path"
+                .into(),
+        );
     }
-    Ok(ValidatorSet::new(epoch, info)?)
+    Ok(())
 }
 
 // ---------------------------------------------------------------------
@@ -504,7 +516,7 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
         HashSuiteResolver::new(chain.clone(), protocol_version, schedule)?;
     let expected_context: PublicationContext =
         PublicationContext::new(chain.clone(), protocol_version, epoch)?;
-    let manifest: GenesisManifest = load_trusted_genesis_manifest(
+    let root: VerifiedGenesisRoot = load_verified_genesis_root(
         &manifest_path,
         &resolver,
         expected_digest,
@@ -546,14 +558,8 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
     let blob_store: PostgresBlobStore<PostgresConnectionManager<MakeTlsConnector>> =
         PostgresBlobStore::new(pool.clone(), namespace.clone())?;
 
-    let fee_policy: PaidFeePolicy = require_committed_genesis_fee_policy(
-        &store,
-        &context,
-        domain,
-        &expected_context,
-        expected_digest,
-        &manifest,
-    )?;
+    let fee_policy: PaidFeePolicy =
+        require_committed_genesis_fee_policy(&store, &context, domain, &expected_context, &root)?;
 
     let validator_set_key: Vec<u8> =
         local_instance_state::fastpath_validator_set_key(&expected_context)?;
@@ -578,6 +584,9 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
     let verification_key: VerificationKey = VerificationKey::from(&signing_key);
     let derived_public_key: [u8; 32] = verification_key.into();
     require_registered_signer(&record, validator, &derived_public_key)?;
+    if ordered_economics_enabled {
+        require_committed_record_matches_root_committee(&record, &root.manifest().validator_set)?;
+    }
     let (serving_context, generation) =
         claim_fresh_writer_fence_once(&pool, &namespace, timeout_seconds, previous)?;
     require_live_fastvote_pin(
@@ -656,23 +665,11 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
     // trust decision, no daemon-correctness guarantee beyond what
     // `certified_fastvote_router` itself already provides.
     let ordered_economics_router = if ordered_economics_enabled {
-        let ordered_validator_set =
-            ordered_validator_set_from_record(&record, expected_context.epoch())?;
-        let genesis_digest = genesis_manifest_commitment(&resolver, &manifest)
-            .map_err(|error| format!("failed to recompute genesis manifest digest: {error}"))?;
-        let ordered_policy = OrderedEconomicsPolicy::new(
-            expected_context.clone(),
-            domain,
-            genesis_digest,
-            Some(&manifest),
-            ordered_validator_set,
-            resolver.clone(),
-        )
-        .map_err(|error| format!("failed to compose ordered economics policy: {error}"))?;
+        let ordered_policy = OrderedEconomicsPolicy::from_genesis_root(&root, domain)
+            .map_err(|error| format!("failed to compose ordered economics policy: {error}"))?;
         let genesis_engine = execution::LocalWasmExecutionEngine::new();
         let ordered_env = node_core::ordered_economics::OrderedEconomicsEnvironment {
             policy: &ordered_policy,
-            resolver: &resolver,
             history: &[],
             leg_policy: &ordered_leg_policy,
             engine: &genesis_engine,
@@ -696,7 +693,6 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
             writer_fence: generation,
             operation_timeout: Duration::from_secs(timeout_seconds),
             policy: ordered_policy,
-            resolver: resolver.clone(),
             history: Vec::new(),
             leg_policy: ordered_leg_policy,
             engine: Arc::new(execution::LocalWasmExecutionEngine::new()),
@@ -767,6 +763,83 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
     use native_http::IndexedOutboxIdentitySource;
+
+    fn signer_entry(seed: u8) -> FastPathValidatorEntry {
+        let signing_key: SigningKey = SigningKey::from([seed; 32]);
+        let verification_key: VerificationKey = VerificationKey::from(&signing_key);
+        let public_key: [u8; 32] = verification_key.into();
+        FastPathValidatorEntry {
+            id: ValidatorId::new(public_key),
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: public_key.to_vec(),
+        }
+    }
+
+    fn dummy_context() -> PublicationContext {
+        PublicationContext::new(
+            ChainId::new("fastvote-host-pg-test").unwrap(),
+            ProtocolVersion::new(1),
+            Epoch::new(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn committed_record_matching_the_root_committee_is_accepted() {
+        let record: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
+            context: dummy_context(),
+            validators: vec![signer_entry(1), signer_entry(2)],
+        };
+        let root_committee: FastPathValidatorSetRecord = record.clone();
+        assert!(require_committed_record_matches_root_committee(&record, &root_committee).is_ok());
+    }
+
+    #[test]
+    fn committed_record_with_a_foreign_committee_is_rejected() {
+        let root_committee: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
+            context: dummy_context(),
+            validators: vec![signer_entry(1), signer_entry(2)],
+        };
+        // Internally coherent -- same context, same validator count -- but a
+        // genuinely different committee, not a tampered/truncated byte
+        // string, proving the check is a real committee comparison.
+        let foreign_record: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
+            context: dummy_context(),
+            validators: vec![signer_entry(1), signer_entry(99)],
+        };
+        assert!(
+            require_committed_record_matches_root_committee(&foreign_record, &root_committee)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn committed_record_with_a_foreign_context_is_rejected_even_with_the_same_committee() {
+        let root_committee: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
+            context: dummy_context(),
+            validators: vec![signer_entry(1)],
+        };
+        // Same signed validators, different chain/protocol/epoch: a record
+        // that a live-epoch-digest check against the wrong namespace could
+        // still consider internally coherent. This is not the same as a
+        // bare `assert_ne!` between two vectors -- it drives the actual
+        // production check end to end.
+        let other_context: PublicationContext = PublicationContext::new(
+            ChainId::new("fastvote-host-pg-test-other").unwrap(),
+            ProtocolVersion::new(1),
+            Epoch::new(0),
+        )
+        .unwrap();
+        let foreign_record: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
+            context: other_context,
+            validators: root_committee.validators.clone(),
+        };
+        assert!(
+            require_committed_record_matches_root_committee(&foreign_record, &root_committee)
+                .is_err()
+        );
+    }
 
     #[test]
     fn sequential_identity_source_exhaustion_is_sticky_near_u64_max() {

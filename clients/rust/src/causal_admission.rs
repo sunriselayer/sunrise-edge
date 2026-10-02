@@ -22,28 +22,29 @@ use crate::fastvote_publication_client::{
 use crate::{ClientError, Transport};
 
 impl TrustedFastVoteGenesis {
+    /// Checks the request lane and this exact signed intent's own context
+    /// against the one immutable root's authenticated context. `certifier`,
+    /// `commitment_profile()` and `admission_profile()` are all derived from
+    /// that same root at construction time, so a disagreement among them is
+    /// not a case this preflight can observe -- there is no longer a second,
+    /// independently supplied value either could drift from, so no repair
+    /// check is preserved for it.
     fn require_owned_preflight(&self, signed: &SignedPaidIntent) -> Result<(), Box<ClientError>> {
         self.require_owned_request_id(&signed.intent.request_id)
             .map_err(Box::new)?;
-        let context = self.admission_profile().context();
-        if signed.intent.context != *context
-            || self.commitment_profile != self.admission_profile().commitment_profile()
-            || !self.committee_matches_pin()
-            || self.certifier.chain_id() != context.chain_id()
-            || self.certifier.protocol_version() != context.protocol_version()
-            || self.certifier.epoch() != context.epoch()
-        {
+        if signed.intent.context != *self.admission_profile().context() {
             return Err(Box::new(ClientError::PublicationTrustMismatch));
         }
         Ok(())
     }
 
-    /// Authenticate the lane and collect independently verified matching votes.
+    /// Authenticate the lane and collect independently verified matching
+    /// votes, using this root's own resolver -- never a second,
+    /// independently selected schedule.
     #[allow(clippy::result_large_err)]
     pub fn collect_owned_certificate<T: Transport>(
         &self,
         endpoints: &[FastVoteEndpoint<T>],
-        resolver: &HashSuiteResolver,
         signed: &SignedPaidIntent,
         overall_deadline: Instant,
         per_request_cap: Duration,
@@ -52,20 +53,21 @@ impl TrustedFastVoteGenesis {
             .map_err(|cause: Box<ClientError>| FastVoteNetworkError::from(*cause))?;
         collect_fastvote_certificate(
             endpoints,
-            &self.certifier,
-            resolver,
+            self.certifier(),
+            self.genesis_root().genesis_resolver(),
             signed,
             overall_deadline,
             per_request_cap,
         )
     }
 
-    /// Retain the complete certified closure before forming availability.
+    /// Retain the complete certified closure before forming availability,
+    /// using this root's own resolver. `history` remains a separate explicit
+    /// local input.
     #[allow(clippy::too_many_arguments, clippy::result_large_err)]
     pub fn collect_owned_availability<T: Transport>(
         &self,
         endpoints: &[FastVoteEndpoint<T>],
-        resolver: &HashSuiteResolver,
         history: &[HashSuiteResolver],
         domain: AtomicityDomainId,
         signed: &SignedPaidIntent,
@@ -77,8 +79,8 @@ impl TrustedFastVoteGenesis {
             .map_err(|cause: Box<ClientError>| FastVoteNetworkError::from(*cause))?;
         collect_fastvote_availability_certificate(
             endpoints,
-            &self.certifier,
-            resolver,
+            self.certifier(),
+            self.genesis_root().genesis_resolver(),
             history,
             domain,
             signed,
@@ -88,12 +90,12 @@ impl TrustedFastVoteGenesis {
         )
     }
 
-    /// Apply only after both execution and availability quorums verify.
+    /// Apply only after both execution and availability quorums verify,
+    /// using this root's own resolver.
     #[allow(clippy::too_many_arguments, clippy::result_large_err)]
     pub fn apply_owned_publication<T: Transport>(
         &self,
         endpoints: &[FastVoteEndpoint<T>],
-        resolver: &HashSuiteResolver,
         domain: AtomicityDomainId,
         signed: &SignedPaidIntent,
         certificate: &FastCertificate,
@@ -105,8 +107,8 @@ impl TrustedFastVoteGenesis {
             .map_err(|cause: Box<ClientError>| FastVoteNetworkError::from(*cause))?;
         apply_published_fastvote_to_all(
             endpoints,
-            &self.certifier,
-            resolver,
+            self.certifier(),
+            self.genesis_root().genesis_resolver(),
             domain,
             signed,
             certificate,

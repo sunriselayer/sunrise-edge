@@ -6,20 +6,22 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crypto::SignatureSigner;
 use ed25519_zebra::SigningKey;
 use execution::paid_execution::{
-    FeeSourceConsent, PaidApplication, PaidIntent, ReservationAccessKind,
+    FeeSourceConsent, PaidApplication, PaidIntent, ReservationAccessKind, paid_intent_signing_frame,
 };
 use node_core::genesis::genesis_manifest_signing_frame;
 use node_core::logical_generation::CommitmentProfile;
 use node_core::{GenesisManifest, encode_genesis_manifest, genesis_manifest_commitment};
 use protocol_types::{
     ChainId, Digest32, Epoch, HashAlgorithmId, HashSuite, HashSuiteSchedule, ProtocolVersion,
+    SignatureSchemeId,
 };
 use sunrise_edge_client::{
-    Client, ClientError, FastVoteEndpoint, FastVoteNetworkError, FastVoteQuorumError,
-    HashSuiteResolver, LocalSigner, PublicationContext, SignedPaidIntent, TrustedFastVoteGenesis,
-    load_trusted_fastvote_genesis_with_profile,
+    Client, ClientError, FastVoteEndpoint, FastVoteGenesisTrustError, FastVoteNetworkError,
+    FastVoteQuorumError, HashSuiteResolver, LocalSigner, PublicationContext, SignedPaidIntent,
+    TrustedFastVoteGenesis, load_trusted_fastvote_genesis_with_profile,
     transport::{Transport, TransportError, WireRequest, WireResponse},
 };
 use sunrise_edge_devnet::{DEVNET_PAID_GENESIS_SEED, DevOwner, build_paid_genesis_manifest};
@@ -39,19 +41,17 @@ impl Transport for NoIo {
     }
 }
 
-fn pinned() -> (
-    ManifestFile,
-    TrustedFastVoteGenesis,
-    HashSuiteResolver,
-    GenesisManifest,
-) {
-    let context: PublicationContext = PublicationContext::new(
+fn context_fixture() -> PublicationContext {
+    PublicationContext::new(
         ChainId::new("causal-sdk-pin").unwrap(),
         ProtocolVersion::new(3),
         Epoch::new(0),
     )
-    .unwrap();
-    let resolver: HashSuiteResolver = HashSuiteResolver::new(
+    .unwrap()
+}
+
+fn resolver_fixture(context: &PublicationContext) -> HashSuiteResolver {
+    HashSuiteResolver::new(
         context.chain_id().clone(),
         context.protocol_version(),
         vec![HashSuiteSchedule {
@@ -59,7 +59,27 @@ fn pinned() -> (
             suite: HashSuite::genesis(),
         }],
     )
-    .unwrap();
+    .unwrap()
+}
+
+fn write_manifest(manifest: &GenesisManifest) -> ManifestFile {
+    let path: ManifestFile = ManifestFile(std::env::temp_dir().join(format!(
+        "sunrise-causal-sdk-{}-{}.manifest",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+    )));
+    std::fs::write(&path.0, encode_genesis_manifest(manifest).unwrap()).unwrap();
+    path
+}
+
+fn pinned() -> (
+    ManifestFile,
+    TrustedFastVoteGenesis,
+    HashSuiteResolver,
+    GenesisManifest,
+) {
+    let context: PublicationContext = context_fixture();
+    let resolver: HashSuiteResolver = resolver_fixture(&context);
     let signer: LocalSigner = LocalSigner::from_seed(DEVNET_PAID_GENESIS_SEED);
     let owner: DevOwner = DevOwner::new(*signer.address().as_bytes());
     let (mut manifest, _) =
@@ -69,12 +89,7 @@ fn pinned() -> (
     manifest.signature = SigningKey::from(DEVNET_PAID_GENESIS_SEED)
         .sign(&genesis_manifest_signing_frame(&manifest).unwrap())
         .into();
-    let path: ManifestFile = ManifestFile(std::env::temp_dir().join(format!(
-        "sunrise-causal-sdk-{}-{}.manifest",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed),
-    )));
-    std::fs::write(&path.0, encode_genesis_manifest(&manifest).unwrap()).unwrap();
+    let path: ManifestFile = write_manifest(&manifest);
     let trusted: TrustedFastVoteGenesis = load_trusted_fastvote_genesis_with_profile(
         &path.0,
         &resolver,
@@ -89,14 +104,14 @@ fn pinned() -> (
 
 #[test]
 fn signed_v4_client_pin_refuses_ordered_or_synthetic_owned_ids_before_io() {
-    let (_path, mut trusted, resolver, manifest) = pinned();
+    let (_path, trusted, resolver, manifest) = pinned();
     assert!(trusted.admission_profile().is_causal());
     assert!(trusted.require_owned_request_id(&[1; 32]).is_ok());
     assert!(trusted.require_owned_request_id(&[0x81; 32]).is_err());
     let mut synthetic: [u8; 32] = [1; 32];
     synthetic[..8].copy_from_slice(b"SE:FPv1:");
     assert!(trusted.require_owned_request_id(&synthetic).is_err());
-    let mut signed: SignedPaidIntent = SignedPaidIntent {
+    let signed: SignedPaidIntent = SignedPaidIntent {
         intent: PaidIntent {
             context: manifest.context().clone(),
             request_id: [0x81; 32],
@@ -133,7 +148,6 @@ fn signed_v4_client_pin_refuses_ordered_or_synthetic_owned_ids_before_io() {
     let error: FastVoteQuorumError = trusted
         .collect_owned_certificate(
             &endpoints,
-            &resolver,
             &signed,
             Instant::now() + Duration::from_secs(10),
             Duration::from_secs(1),
@@ -143,24 +157,126 @@ fn signed_v4_client_pin_refuses_ordered_or_synthetic_owned_ids_before_io() {
         error,
         FastVoteQuorumError::Network(FastVoteNetworkError::Preflight(ClientError::NodeCore(_)))
     ));
+}
 
-    signed.intent.request_id = [1; 32];
-    let mut members: Vec<validator_set::ValidatorInfo> =
-        trusted.certifier.validator_set().validators().to_vec();
-    members[0].voting_power = members[0].voting_power.checked_add(1).unwrap();
-    let altered: validator_set::ValidatorSet =
-        validator_set::ValidatorSet::new(Epoch::new(0), members).unwrap();
-    trusted.certifier = consensus::FastPathCertifier::new(
-        trusted.certifier.chain_id().clone(),
-        trusted.certifier.protocol_version(),
-        trusted.certifier.epoch(),
-        altered,
+/// `commitment_profile()` and `admission_profile().commitment_profile()` are
+/// both derived from the one immutable root's one signed manifest, so they
+/// can never independently disagree -- there is no longer any separate
+/// mutable profile tag a caller or an internal bug could downgrade.
+#[test]
+fn commitment_profile_always_matches_its_own_admission_profile() {
+    let (_path, trusted, _, _) = pinned();
+    assert_eq!(
+        trusted.commitment_profile(),
+        trusted.admission_profile().commitment_profile()
+    );
+    assert!(trusted.require_owned_request_id(&[0x81; 32]).is_err());
+}
+
+/// A signed genesis whose original committee names a non-Ed25519 validator
+/// must be rejected while constructing the `TrustedFastVoteGenesis` itself --
+/// before any endpoint is ever configured or dialed, not merely before a
+/// caller-chosen request signs anything.
+#[test]
+fn causal_signed_genesis_with_unsupported_validator_scheme_is_rejected_before_any_io() {
+    let context: PublicationContext = context_fixture();
+    let resolver: HashSuiteResolver = resolver_fixture(&context);
+    let signer: LocalSigner = LocalSigner::from_seed(DEVNET_PAID_GENESIS_SEED);
+    let owner: DevOwner = DevOwner::new(*signer.address().as_bytes());
+    let (mut manifest, _) =
+        build_paid_genesis_manifest(&resolver, &context, &[owner], owner).unwrap();
+    manifest.validator_set.validators[0].signature_scheme = SignatureSchemeId::Secp256k1;
+    manifest.signature = SigningKey::from(DEVNET_PAID_GENESIS_SEED)
+        .sign(&genesis_manifest_signing_frame(&manifest).unwrap())
+        .into();
+    let digest: Digest32 = genesis_manifest_commitment(&resolver, &manifest).unwrap();
+    let path: ManifestFile = write_manifest(&manifest);
+    // `TrustedFastVoteGenesis` does not implement `Debug`, so match
+    // explicitly here instead of `unwrap_err`, which requires the success
+    // type to be `Debug`.
+    let error: FastVoteGenesisTrustError = match load_trusted_fastvote_genesis_with_profile(
+        &path.0,
+        &resolver,
+        digest.bytes(),
+        &context,
+    ) {
+        Ok(_) => panic!("unsupported committee signature scheme must be rejected"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        FastVoteGenesisTrustError::InvalidValidatorSet(reason)
+            if reason == "FastVote phase 1 supports only Ed25519 validators"
+    ));
+}
+
+/// A signed intent whose own context disagrees with the locally pinned
+/// root's authenticated context must be rejected before any endpoint is
+/// ever contacted -- a genuine per-request check, distinct from the removed
+/// self-consistency checks among `certifier`/`commitment_profile`/
+/// `admission_profile`, all of which are derived from that same root and so
+/// can no longer disagree with each other. The intent carries a real
+/// signature from the genesis authority's own key over its own (wrong)
+/// context, so the context field is the sole reason for rejection, not an
+/// incidentally invalid signature.
+#[test]
+fn causal_signed_intent_with_wrong_context_is_rejected_before_any_io() {
+    let (_path, trusted, resolver, manifest) = pinned();
+    let wrong_context: PublicationContext = PublicationContext::new(
+        manifest.context().chain_id().clone(),
+        manifest.context().protocol_version(),
+        Epoch::new(manifest.context().epoch().get() + 1),
     )
     .unwrap();
+    let signer: LocalSigner = LocalSigner::from_seed(DEVNET_PAID_GENESIS_SEED);
+    let owner: DevOwner = DevOwner::new(*signer.address().as_bytes());
+    // Publish artifacts bind their own context too. Build a genuinely valid
+    // intent for the other epoch, rather than failing to encode/sign a mixed
+    // context fixture before reaching the client boundary under test.
+    let (wrong_manifest, _) =
+        build_paid_genesis_manifest(&resolver, &wrong_context, &[owner], owner).unwrap();
+    let intent: PaidIntent = PaidIntent {
+        context: wrong_context.clone(),
+        request_id: [1; 32],
+        sender: manifest.genesis_authority,
+        nonce: 0,
+        fee_policy_digest: execution::paid_execution::paid_fee_policy_digest(
+            &resolver,
+            &wrong_manifest.fee_policy,
+        )
+        .unwrap(),
+        consent: FeeSourceConsent {
+            source: objects::ObjectRef {
+                id: objects::ObjectId::new([0x22; 32]),
+                version: 1,
+                digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x33; 32]),
+            },
+            access: ReservationAccessKind::Write,
+            max_fee: fees::Amount::new(1),
+            refund_recipient: manifest.genesis_authority,
+        },
+        application: PaidApplication::Publish(
+            wrong_manifest.publication.request().artifact().clone(),
+        ),
+        gas_limit: 1,
+        authorizations: Vec::new(),
+    };
+    let frame: Vec<u8> = paid_intent_signing_frame(&wrong_context, &intent).unwrap();
+    let signature_bytes: Vec<u8> = signer.sign_framed(&frame).unwrap();
+    let signature: [u8; 64] = signature_bytes.as_slice().try_into().unwrap();
+    let signed: SignedPaidIntent = SignedPaidIntent { intent, signature };
+    let signed_bytes: Vec<u8> =
+        execution::paid_execution::encode_signed_paid_intent(&signed).unwrap();
+    execution::paid_execution::authenticate_paid_intent(&resolver, &wrong_context, &signed_bytes)
+        .expect("the wrong-epoch intent must independently authenticate under its own context");
+    let endpoints: Vec<FastVoteEndpoint<NoIo>> = vec![FastVoteEndpoint {
+        validator_id: protocol_types::ValidatorId::new(manifest.genesis_authority),
+        endpoint_label: "never-dial".to_owned(),
+        client: Client::new(NoIo),
+    }];
     let error: FastVoteQuorumError = trusted
         .collect_owned_certificate(
             &endpoints,
-            &resolver,
             &signed,
             Instant::now() + Duration::from_secs(10),
             Duration::from_secs(1),
@@ -172,17 +288,6 @@ fn signed_v4_client_pin_refuses_ordered_or_synthetic_owned_ids_before_io() {
             ClientError::PublicationTrustMismatch
         ))
     ));
-}
-
-#[test]
-fn public_descriptive_profile_cannot_downgrade_the_private_pin() {
-    let (_path, mut trusted, _, _) = pinned();
-    trusted.commitment_profile = CommitmentProfile::PhysicalCheckpointV1;
-    assert!(trusted.require_owned_request_id(&[0x81; 32]).is_err());
-    assert_eq!(
-        trusted.admission_profile().commitment_profile(),
-        CommitmentProfile::CausalAdmission
-    );
 }
 
 struct ArchiveDirectory(PathBuf);
@@ -211,16 +316,11 @@ fn saved_ordering_marker_cannot_replace_complete_pinned_prefix_verification() {
         OrderedEconomicsPolicy, OrderedHistoryIdentity, encode_ordered_history_identity,
     };
     use sunrise_edge_client::ordered_history_archive::read_verified_ordered_history_archive;
-    let (_path, trusted, resolver, manifest) = pinned();
-    let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
-        manifest.context().clone(),
-        protocol_types::AtomicityDomainId::new([0x41; 32]).unwrap(),
-        genesis_manifest_commitment(&resolver, &manifest).unwrap(),
-        Some(&manifest),
-        trusted.certifier.validator_set().clone(),
-        resolver,
-    )
-    .unwrap();
+    let (_path, trusted, _, manifest) = pinned();
+    let domain: protocol_types::AtomicityDomainId =
+        protocol_types::AtomicityDomainId::new([0x41; 32]).unwrap();
+    let policy: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(trusted.genesis_root(), domain).unwrap();
     let mut identity: OrderedHistoryIdentity = OrderedHistoryIdentity {
         context: manifest.context().clone(),
         domain: policy.domain(),

@@ -43,27 +43,25 @@ fn record_read(
 /// A fully authenticated registered root can be inspected without granting
 /// any execution, membership or live signing authority. Later transition
 /// records use the unchanged old chain walker, rooted in this signed row.
-#[allow(clippy::too_many_arguments)]
 pub fn verify_registered_bond_chain<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
-    resolver: &HashSuiteResolver,
+    root: &crate::genesis::VerifiedGenesisRoot,
     history: &[HashSuiteResolver],
-    manifest: &GenesisManifest,
-    pinned_genesis_digest: Digest32,
     validator_id: ValidatorId,
 ) -> Result<FastPathBondRecord, BondRegistrationError> {
-    let (profile, registry, leg_policy) = pinned_inputs(resolver, manifest, pinned_genesis_digest)?;
+    let leg_policy: LocalExecutionPolicy =
+        LocalExecutionPolicy::generic_object_results(root.genesis_context().clone());
     verify_chain(
         store,
         context,
         domain,
-        resolver,
+        root.genesis_resolver(),
         history,
-        &profile,
-        &registry,
-        &manifest.economics_policy,
+        root.admission_profile(),
+        root.genesis_committee(),
+        &root.manifest().economics_policy,
         &leg_policy,
         validator_id,
     )
@@ -230,7 +228,7 @@ pub(crate) fn verify_registration_admission<S: StructuredStateReader>(
 ) -> Result<(), BondRegistrationError> {
     let (profile, economics) = policy_inputs(env.policy)?;
     let (signed, _) = authenticate_registration(
-        env.resolver,
+        env.resolver(),
         profile,
         env.policy.engine().validator_set(),
         economics,
@@ -241,7 +239,7 @@ pub(crate) fn verify_registration_admission<S: StructuredStateReader>(
         store,
         context,
         env.policy.domain(),
-        env.resolver,
+        env.resolver(),
         env.history,
         env.policy,
         env.leg_policy,
@@ -350,7 +348,7 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
     let domain: AtomicityDomainId = policy.domain();
     let (profile, economics) = policy_inputs(policy)?;
     let (signed, leg) = authenticate_registration(
-        env.resolver,
+        env.resolver(),
         profile,
         policy.engine().validator_set(),
         economics,
@@ -365,7 +363,7 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
     }
     let request: RequestId = RequestId::new(intent.request_id)?;
     let event: Digest32 =
-        bond_registration_receipt_digest(env.resolver, &intent.context, &candidate.intent)?;
+        bond_registration_receipt_digest(env.resolver(), &intent.context, &candidate.intent)?;
     if let Some(output) =
         durable_reconciliation::reconcile_receipt(store, context, domain, request, event)?
     {
@@ -400,7 +398,7 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
         store,
         context,
         domain,
-        env.resolver,
+        env.resolver(),
         &intent.context,
         &epoch,
         &mut reads,
@@ -417,7 +415,7 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
         store,
         context,
         domain,
-        env.resolver,
+        env.resolver(),
         env.history,
         policy,
         env.leg_policy,
@@ -451,10 +449,14 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
         intent.validator_id,
         *intent.resource.value(),
     );
-    let (capability, source, leg_event) =
-        deposit_capability(env.resolver, &intent.context, resource, scope.clone(), &leg).map_err(
-            |_| BondRegistrationError::Prerequisite("registration custody capability failed"),
-        )?;
+    let (capability, source, leg_event) = deposit_capability(
+        env.resolver(),
+        &intent.context,
+        resource,
+        scope.clone(),
+        &leg,
+    )
+    .map_err(|_| BondRegistrationError::Prerequisite("registration custody capability failed"))?;
     let call = &leg.intent().call;
     let nonce: PendingSenderNonceWrite = durable_reconciliation::reserve_sender_nonce_range(
         store,
@@ -489,7 +491,7 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
         env.blobs,
         context,
         domain,
-        env.resolver,
+        env.resolver(),
         env.history,
         env.leg_policy,
         env.engine,
@@ -530,7 +532,7 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
             "registration source missing after execution",
         ))?;
     let (object_mutation, digest) = effects::build_mutation_entry(
-        env.resolver,
+        env.resolver(),
         &intent.context,
         candidate.created_checkpoint,
         snapshot,
@@ -583,7 +585,7 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
             "registration resulting row bound",
         ));
     }
-    if bond_row_digest(env.resolver, bond.lifecycle_epoch, &bytes)?
+    if bond_row_digest(env.resolver(), bond.lifecycle_epoch, &bytes)?
         != intent.expected_initial_row_digest
     {
         return Err(BondRegistrationError::Refused(
@@ -620,7 +622,7 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
         store,
         context,
         domain,
-        env.resolver,
+        env.resolver(),
         intent.context.chain_id(),
         intent.context.epoch(),
         &heads,

@@ -353,19 +353,19 @@ pub(super) fn load_drain_endpoints_and_certifier(
             context,
         )
         .map_err(failure)?;
-    if !trusted.commitment_profile.is_logical() || trusted.minimum_freeze_block_height == 0 {
+    if !trusted.commitment_profile().is_logical() || trusted.minimum_freeze_block_height() == 0 {
         return Err(invalid(
             "drain requires locally pinned signed genesis authorizing Freeze",
         ));
     }
     let peers: Vec<PeerConfig> = parse_network_config(parsed.require("--fastvote-network")?)?;
     let endpoints: Vec<FastVoteEndpoint<CliTransport>> =
-        build_endpoints(&peers, trusted.commitment_profile)?;
-    validate_fastvote_endpoints(&endpoints, &trusted.certifier).map_err(failure)?;
+        build_endpoints(&peers, trusted.commitment_profile())?;
+    validate_fastvote_endpoints(&endpoints, trusted.certifier()).map_err(failure)?;
     Ok((
         endpoints,
-        trusted.certifier,
-        trusted.minimum_freeze_block_height,
+        trusted.certifier().clone(),
+        trusted.minimum_freeze_block_height(),
     ))
 }
 
@@ -410,9 +410,9 @@ pub(super) fn load_endpoints_and_profile(
             .map_err(failure)?;
     }
     let endpoints: Vec<FastVoteEndpoint<CliTransport>> =
-        build_endpoints(&peers, trusted.commitment_profile)?;
+        build_endpoints(&peers, trusted.commitment_profile())?;
     let admission: VerifiedAdmissionProfile = trusted.admission_profile().clone();
-    let certifier: FastPathCertifier = trusted.certifier;
+    let certifier: FastPathCertifier = trusted.certifier().clone();
     validate_fastvote_endpoints(&endpoints, &certifier).map_err(failure)?;
     Ok((endpoints, certifier, admission))
 }

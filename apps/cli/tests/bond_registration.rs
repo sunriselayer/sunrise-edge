@@ -35,7 +35,7 @@ use protocol_types::HashPurpose;
 use sunrise_edge_client::{
     AccessMode, AtomicityDomainId, ChainId, CommitmentProfile, Digest32, Epoch, HashAlgorithmId,
     HashSuite, HashSuiteId, HashSuiteResolver, HashSuiteSchedule, LocalSigner, ProtocolVersion,
-    PublicationContext, SignatureSchemeId, ValidatorId,
+    PublicationContext, SignatureSchemeId, ValidatorId, VerifiedGenesisRoot,
     bond_registration::{
         BondRegistrationContext, FastPathBondRecord, LocalBondRegistrationError,
         MAX_BOND_REGISTRATION_ROW_BYTES, MAX_LOCAL_EXECUTION_INTENT_BYTES,
@@ -355,13 +355,15 @@ fn executable_prepares_exact_claim_wraps_kind7_and_preserves_inputs() {
     assert!(stdout.contains("preparation=structural_registration_claim\nexecuted=false\n"));
     assert!(!stdout.contains("ready=true"));
     let bytes: Vec<u8> = fs::read(fixture.path("signed")).unwrap();
-    let signed = verify_signed_bond_registration(
+    let genesis_bytes: Vec<u8> = encode_genesis_manifest(&fixture.manifest).unwrap();
+    let root: VerifiedGenesisRoot = VerifiedGenesisRoot::verify_bytes(
         &fixture.resolver,
-        &fixture.manifest,
-        fixture.digest,
-        &bytes,
+        &genesis_bytes,
+        fixture.digest.bytes(),
+        &fixture.context,
     )
     .unwrap();
+    let signed = verify_signed_bond_registration(&root, &bytes).unwrap();
     assert_eq!(signed.intent.validator_id, fixture.row.validator_id);
     assert_eq!(
         signed.intent.authorization_key,

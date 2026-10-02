@@ -112,6 +112,8 @@ pub use fastvote_publication_client::{
 pub use hashing::HashSuiteResolver;
 pub use key::LocalSigner;
 pub use local_execution_client::{build_signed_general_execution, build_signed_local_execution};
+pub use local_genesis::{GenesisTrustError, load_verified_genesis_root};
+pub use node_core::genesis::{GenesisCommitteeError, GenesisRootError, VerifiedGenesisRoot};
 pub use node_core::publication::{
     decode_publication_query_result, encode_publication_query_result,
 };

@@ -3,6 +3,7 @@
 
 use abi::call_values::{CallValue, encode_call_value};
 use ed25519_zebra::SigningKey;
+use node_core::genesis::VerifiedGenesisRoot;
 use node_core::genesis::genesis_manifest_signing_frame;
 use node_core::logical_generation::CommitmentProfile;
 use node_core::{GenesisManifest, GenesisObjectEntry};
@@ -81,18 +82,16 @@ fn genuine_causal_fixture_has_signed_v4_and_disjoint_owned_ids() {
     let fixture: CausalGenesisFixture = build("causal-audit-fixture");
     let manifest: GenesisManifest =
         node_core::decode_genesis_manifest(&fixture.network.manifest_bytes).unwrap();
-    let digest: protocol_types::Digest32 =
-        node_core::genesis_manifest_commitment(&fixture.network.resolver, &manifest).unwrap();
-    let profile: node_core::admission_profile::VerifiedAdmissionProfile =
-        node_core::admission_profile::VerifiedAdmissionProfile::from_pinned_genesis(
-            &fixture.network.resolver,
-            &manifest,
-            digest,
-        )
-        .unwrap();
-    assert!(profile.is_causal());
+    let root: VerifiedGenesisRoot = VerifiedGenesisRoot::verify_bytes(
+        &fixture.network.resolver,
+        &fixture.network.manifest_bytes,
+        fixture.network.manifest_digest,
+        &fixture.network.context,
+    )
+    .unwrap();
+    assert!(root.admission_profile().is_causal());
     assert_eq!(manifest.encoding_version(), 4);
-    assert_eq!(digest.bytes(), fixture.network.manifest_digest);
+    assert_eq!(root.digest().bytes(), fixture.network.manifest_digest);
     assert_eq!(fixture.network.request_id[0] & 0x80, 0);
     assert!(
         fixture

@@ -4,9 +4,10 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use node_core::fast_path::records::FastPathValidatorEntry;
-use node_core::genesis::encode_genesis_manifest;
-use protocol_types::{ChainId, Epoch, HashSuite, HashSuiteSchedule, ProtocolVersion, ValidatorId};
+use node_core::genesis::{
+    GenesisCommitteeError, GenesisRootError, encode_genesis_manifest, genesis_manifest_commitment,
+};
+use protocol_types::{ChainId, Digest32, Epoch, HashSuite, HashSuiteSchedule, ProtocolVersion};
 use sunrise_edge_devnet::{DEVNET_PAID_GENESIS_SEED, DevOwner, build_paid_genesis_manifest};
 
 use crate::fastvote_client::{FastVoteGenesisTrustError, load_trusted_fastvote_genesis};
@@ -80,7 +81,7 @@ fn bounded_read_keeps_following_input_symlinks() {
 }
 
 #[test]
-fn pinned_genesis_preserves_verification_order_and_public_error_mappings() {
+fn verified_genesis_root_preserves_verification_order_and_public_error_mappings() {
     let directory: TestDirectory = TestDirectory::new();
     let path: PathBuf = directory.path("manifest");
     let expected_context: PublicationContext = context(0);
@@ -100,17 +101,19 @@ fn pinned_genesis_preserves_verification_order_and_public_error_mappings() {
     let bytes: Vec<u8> = encode_genesis_manifest(&manifest).unwrap();
     let digest: Digest32 = genesis_manifest_commitment(&resolver, &manifest).unwrap();
     std::fs::write(&path, &bytes).unwrap();
-    let pinned: PinnedGenesis =
-        load_pinned_genesis(&path, &resolver, digest.bytes(), &expected_context).unwrap();
-    assert_eq!(pinned.digest, digest);
-    assert_eq!(encode_genesis_manifest(&pinned.manifest).unwrap(), bytes);
+    let root: VerifiedGenesisRoot =
+        load_verified_genesis_root(&path, &resolver, digest.bytes(), &expected_context).unwrap();
+    assert_eq!(root.digest(), digest);
+    assert_eq!(encode_genesis_manifest(root.manifest()).unwrap(), bytes);
 
     let wrong_context: PublicationContext = context(1);
     let mut wrong_digest: [u8; 32] = digest.bytes();
     wrong_digest[0] ^= 1;
     assert!(matches!(
-        load_pinned_genesis(&path, &resolver, wrong_digest, &wrong_context),
-        Err(LocalGenesisError::CommitmentMismatch)
+        load_verified_genesis_root(&path, &resolver, wrong_digest, &wrong_context),
+        Err(GenesisTrustError::Verification(
+            GenesisRootError::CommitmentMismatch
+        ))
     ));
     assert!(matches!(
         load_trusted_fastvote_genesis(&path, &resolver, wrong_digest, &wrong_context),
@@ -123,77 +126,57 @@ fn pinned_genesis_preserves_verification_order_and_public_error_mappings() {
         Err(OrderedGenesisTrustError::CommitmentMismatch)
     ));
     assert!(matches!(
-        load_pinned_genesis(&path, &resolver, digest.bytes(), &wrong_context),
-        Err(LocalGenesisError::ContextMismatch)
+        load_verified_genesis_root(&path, &resolver, digest.bytes(), &wrong_context),
+        Err(GenesisTrustError::Verification(
+            GenesisRootError::ContextMismatch
+        ))
     ));
 
     manifest.signature[0] ^= 1;
     let invalid_digest: Digest32 = genesis_manifest_commitment(&resolver, &manifest).unwrap();
     std::fs::write(&path, encode_genesis_manifest(&manifest).unwrap()).unwrap();
     assert!(matches!(
-        load_pinned_genesis(&path, &resolver, invalid_digest.bytes(), &expected_context),
-        Err(LocalGenesisError::InvalidSignature)
+        load_verified_genesis_root(&path, &resolver, invalid_digest.bytes(), &expected_context),
+        Err(GenesisTrustError::Verification(
+            GenesisRootError::InvalidSignature
+        ))
     ));
     std::fs::write(&path, b"not a canonical manifest").unwrap();
     assert!(matches!(
-        load_pinned_genesis(&path, &resolver, digest.bytes(), &expected_context),
-        Err(LocalGenesisError::Decode(_))
+        load_verified_genesis_root(&path, &resolver, digest.bytes(), &expected_context),
+        Err(GenesisTrustError::Verification(GenesisRootError::Decode(_)))
     ));
     assert!(matches!(
-        load_pinned_genesis(
+        load_verified_genesis_root(
             &directory.path("missing"),
             &resolver,
             digest.bytes(),
             &expected_context
         ),
-        Err(LocalGenesisError::Io(_))
+        Err(GenesisTrustError::Io(_))
     ));
 }
 
 #[test]
-fn validator_conversion_preserves_members_and_owner_specific_diagnostics() {
-    let expected_context: PublicationContext = context(0);
-    let mut record: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
-        context: expected_context.clone(),
-        validators: vec![FastPathValidatorEntry {
-            id: ValidatorId::new([0x11; 32]),
-            voting_power: 7,
-            signature_scheme: SignatureSchemeId::Ed25519,
-            public_key: vec![0x22; 32],
-        }],
-    };
-    let validator_set: ValidatorSet =
-        validator_set_from_record(&record, &expected_context, "unsupported").unwrap();
-    assert_eq!(validator_set.epoch(), expected_context.epoch());
+fn unsupported_committee_scheme_maps_to_each_caller_own_diagnostic_text() {
+    let reason: GenesisCommitteeError = GenesisCommitteeError::UnsupportedSignatureScheme;
     assert_eq!(
-        validator_set.validators(),
-        &[ValidatorInfo {
-            id: record.validators[0].id,
-            voting_power: record.validators[0].voting_power,
-            signature_scheme: record.validators[0].signature_scheme,
-            public_key: record.validators[0].public_key.clone(),
-        }]
+        FastVoteGenesisTrustError::from(GenesisRootError::InvalidCommittee(reason)).to_string(),
+        "genesis validator set is invalid: FastVote phase 1 supports only Ed25519 validators"
     );
-    record.validators[0].signature_scheme = SignatureSchemeId::Secp256k1;
+    let reason: GenesisCommitteeError = GenesisCommitteeError::UnsupportedSignatureScheme;
     assert_eq!(
-        validator_set_from_record(&record, &context(1), "unsupported").unwrap_err(),
-        "validator set record context mismatch"
+        OrderedGenesisTrustError::from(GenesisRootError::InvalidCommittee(reason)).to_string(),
+        "genesis validator set is invalid: ordered economics fixed-epoch profile supports only Ed25519 validators"
     );
-    for diagnostic in [
-        "FastVote phase 1 supports only Ed25519 validators",
-        "ordered economics fixed-epoch profile supports only Ed25519 validators",
-    ] {
-        assert_eq!(
-            validator_set_from_record(&record, &expected_context, diagnostic).unwrap_err(),
-            diagnostic
-        );
-    }
-    record.validators[0].signature_scheme = SignatureSchemeId::Ed25519;
-    record.validators[0].voting_power = 0;
-    let error: String =
-        validator_set_from_record(&record, &expected_context, "unsupported").unwrap_err();
+    // Every other committee-shaped defect preserves the core diagnostic text
+    // unchanged, rather than collapsing every reason into the same message.
+    let capacity: GenesisCommitteeError = GenesisCommitteeError::CapacityExceeded;
     assert_eq!(
-        error,
-        validator_set::ValidatorSetError::ZeroVotingPower(record.validators[0].id).to_string()
+        FastVoteGenesisTrustError::from(GenesisRootError::InvalidCommittee(capacity)).to_string(),
+        format!(
+            "genesis validator set is invalid: {}",
+            GenesisCommitteeError::CapacityExceeded
+        )
     );
 }

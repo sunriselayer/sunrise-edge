@@ -201,8 +201,8 @@ where
     S: ReadinessRetentionRepository,
     B: PortableBlobRepository,
 {
-    let resolver: &HashSuiteResolver = plan.resolver;
-    let epoch: Epoch = plan.genesis.context().epoch();
+    let resolver: &HashSuiteResolver = plan.genesis_root.genesis_resolver();
+    let epoch: Epoch = plan.genesis_root.manifest().context().epoch();
     let import: VerifiedImportPlan = verify_saved_business_import(plan, saved)?;
     let (progress, token): (runtime::ImportProgress, PortableSnapshotToken) =
         import.observe_complete(destination, blobs, operation)?;

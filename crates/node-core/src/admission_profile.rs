@@ -7,11 +7,7 @@
 //! local install-marker checkpoints must never change a certified commitment.
 use std::collections::BTreeMap;
 
-use crypto::{
-    Ed25519OwnerAddressPolicy, Ed25519Verifier, SignatureVerifier, validate_ed25519_owner_address,
-};
 use execution::publication::PublicationContext;
-use hashing::HashSuiteResolver;
 use protocol_types::{Digest32, HashPurpose};
 use runtime::{
     AtomicityDomainId, DurableOperationContext, StateRevision, VersionedStateReader,
@@ -19,15 +15,18 @@ use runtime::{
 };
 
 use crate::NodeCoreError;
+#[cfg(test)]
+use crate::genesis::genesis_manifest_commitment;
 use crate::genesis::{
     GenesisInstallMarker, GenesisManifest, decode_genesis_install_marker, decode_genesis_manifest,
-    encode_genesis_manifest, genesis_manifest_commitment, genesis_manifest_key,
-    genesis_manifest_signing_frame, genesis_marker_key,
+    genesis_manifest_key, genesis_marker_key,
 };
 use crate::logical_generation::{
     CommitmentProfile, InstalledCommitmentProfile, LogicalProfileRecord, fence_commitment_profile,
     logical_profile_key,
 };
+#[cfg(test)]
+use hashing::HashSuiteResolver;
 
 #[cfg(test)]
 mod tests;
@@ -56,35 +55,12 @@ pub struct VerifiedAdmissionProfile {
 }
 
 impl VerifiedAdmissionProfile {
-    /// Verifies bounded canonical manifest bytes, the local digest pin and the
-    /// authority's profile-specific signature. The pin must be trusted local
-    /// composition; accepting a peer-selected pin does not establish trust.
-    pub fn from_pinned_genesis(
-        resolver: &HashSuiteResolver,
-        manifest: &GenesisManifest,
-        pinned_digest: Digest32,
-    ) -> Result<Self, NodeCoreError> {
-        if manifest.context().chain_id() != resolver.chain_id()
-            || manifest.context().protocol_version() != resolver.protocol_version()
-        {
-            return Err(invalid("admission profile resolver context differs"));
-        }
-        let bytes: Vec<u8> = encode_genesis_manifest(manifest)
-            .map_err(|_| invalid("admission profile genesis encoding"))?;
-        let decoded: GenesisManifest = decode_genesis_manifest(&bytes)
-            .map_err(|_| invalid("admission profile genesis decoding"))?;
-        if decoded != *manifest
-            || genesis_manifest_commitment(resolver, manifest)
-                .map_err(|_| invalid("admission profile genesis digest"))?
-                != pinned_digest
-        {
-            return Err(invalid("admission profile genesis pin differs"));
-        }
-        verify_signature(manifest)?;
-        Ok(Self::from_verified_manifest(manifest, pinned_digest))
-    }
-
-    fn from_verified_manifest(manifest: &GenesisManifest, digest: Digest32) -> Self {
+    /// Root-only crate-private verified construction (DR-0182). The only
+    /// public path to a [`VerifiedAdmissionProfile`] is
+    /// [`crate::genesis::VerifiedGenesisRoot::verify_bytes`], which performs
+    /// the pin/context/resolver/round-trip/authority checks this type used to
+    /// duplicate as an independent public authenticator.
+    pub(crate) fn from_verified_manifest(manifest: &GenesisManifest, digest: Digest32) -> Self {
         Self {
             profile: manifest.commitment_profile,
             context: manifest.context().clone(),
@@ -412,27 +388,12 @@ fn verify_marker_and_manifest(
     Ok(())
 }
 
+/// Shares the installer/root's own strict nonzero canonical prime-order
+/// Ed25519 authority and signature check (DR-0182), so this installed-profile
+/// verifier can never accept a weaker authority shape than either.
 fn verify_signature(manifest: &GenesisManifest) -> Result<(), NodeCoreError> {
-    if manifest.genesis_authority == [0; 32] {
-        return Err(invalid("admission genesis authority is zero"));
-    }
-    validate_ed25519_owner_address(
-        &manifest.genesis_authority,
-        Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
-    )
-    .map_err(|_| invalid("admission genesis authority is invalid"))?;
-    let verifier: Ed25519Verifier =
-        Ed25519Verifier::from_verifying_key_bytes(&manifest.genesis_authority)
-            .map_err(|_| invalid("admission genesis authority is invalid"))?;
-    let signed: Vec<u8> = genesis_manifest_signing_frame(manifest)
-        .map_err(|_| invalid("admission genesis signing frame"))?;
-    if !verifier
-        .verify_framed(&signed, &manifest.signature)
-        .map_err(|_| invalid("admission genesis signature is invalid"))?
-    {
-        return Err(invalid("admission genesis signature is invalid"));
-    }
-    Ok(())
+    crate::genesis::verify_manifest_authority(manifest)
+        .map_err(|_| invalid("admission genesis authority or signature is invalid"))
 }
 
 fn fence_read<S: VersionedStateReader + ?Sized>(

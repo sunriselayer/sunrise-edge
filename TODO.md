@@ -52,25 +52,42 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
 - [ ] Runtime/core completion design: centralize identical transaction
   consistency and assembly rules without merging storage and protocol authority.
   The first implementation, merged in PR #257 at `f83b437`, provides domain-bound
-  observations and
-  strict single-owner versus explicit exact-coalescing assembly, and migrates
+  observations and strict single-owner versus explicit exact-coalescing assembly,
+  and migrates
   actual direct paid execution and fee-claim completions. Read-only prepared
   material and registered-bond verification use a genuinely read-only port.
   A contradictory internal nonce observation now fails closed instead of
   replacing an earlier read. Full local acceptance, all four required CI lanes,
   selected complete PostgreSQL acceptance and fresh exact-head Opus APPROVE
-  passed. This is not complete ordered-handler migration.
+  passed.
   [DR-0181](docs/architecture/decisions/0181-writer-free-operation-preparation.md)
-  defines the next integrated migration: all seven owning preparations, direct
+  is implemented and merged in PR #258 at `3bcbb15`: all seven owning preparations, direct
   real-store wrappers, consuming execution/signing observation scopes, and no
-  capture store or synthetic commit success. Source is integrated on the next
-  branch. Integrated compilation, strict core Clippy, 17 genuine preparation/
-  observation/completion regressions and three runtime reader tests passed;
-  complete final-head acceptance and independent implementation review remain
-  pending.
+  capture store or synthetic commit success. Full local acceptance, all four
+  required CI lanes, all five explicitly selected PostgreSQL lanes and fresh
+  exact-head Opus APPROVE passed. Genuine preparation/observation/completion,
+  reader negative capability, SQLite reopen/fencing/replay and independent
+  vectors remain checked. This does not complete every core/serving interface.
 - [ ] Core lifecycle and dependency composition: distinguish genesis trust,
   current serving and historical verification; remove duplicated mechanisms
   where a reviewed interface has actual consumers.
+  [DR-0182](docs/architecture/decisions/0182-immutable-verified-genesis-root.md)
+  defines one immutable original genesis trust root binding its exact resolver,
+  profile and committee. Detailed Opus design APPROVE at `3e5c4b7` follows a
+  blocking first review and closes every actual consumer, historical policy
+  substitution and current-resolver composition boundary. Before/after v1/v2/
+  v3/v4 digest/anchor/profile/Freeze/economics baselines were actually recorded
+  before removal of the old constructors. Core, SDK/CLI and operator/HTTP
+  sources are integrated and old public constructor/loader call sites are
+  removed. Migration type/import defects are corrected. Full required local
+  acceptance now passes, including the frozen baseline, genuine root/installer/
+  historical-policy/schedule negatives, SDK before-I/O checks, compiled CLI,
+  real SQLite restoration/reopen/fencing/replay, independent vectors, native/WASM
+  and portable adapters. Immutable-boundary doctests name every field so missing
+  fields cannot masquerade as privacy proof. The wrong-epoch SDK fixture separately
+  authenticates its real signature before checking rejection. Exact-head review,
+  required CI and selected PostgreSQL evidence are tracked in PR #259; original
+  genesis trust is not a completed current-serving or successor capability.
 - [ ] Test/CI architecture: owner-specific fixture composition and a coherent
   gate registry/execution contract, preserving all required coverage.
   Closed executable plans and separately owned action recipes merged in PR #257.
@@ -78,17 +95,25 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   DB-free lanes, five selected PostgreSQL lanes and every ignored selector;
   nested prerequisite failures propagate explicitly. Required/full local and
   selected complete PostgreSQL acceptance passed on that exact reviewed head.
-  The next branch also isolates recipe stdin from the remaining coordinator
-  plan, with an executable reproducing negative control. Those gate-contract
-  tests passed; complete final-head acceptance remains pending. Typed real
-  SQLite handoff fault plans preserve each existing assertion; their combined
-  acceptance joins the owning-operation migration rather than a new test-only
-  framework.
+  PR #258 additionally isolates recipe stdin from the remaining coordinator
+  plan, with an executable reproducing negative control. Typed one-shot real
+  SQLite handoff faults preserve each existing assertion and prove that the
+  intended fault was actually consumed. Both complete final-head required and
+  selected PostgreSQL acceptance passed. Stronger all-owner blob/state equality
+  assertions are nonblocking review follow-ups, not silently waived evidence.
 - [ ] Independently reviewed, fully checked PR checkpoints; update this list
   from actual evidence, not skeleton compilation or file counts.
-  PR #257 is the first verified normal-merge checkpoint. Main equals
-  `origin/main` with a clean tree at `f83b437`; the next branch is not yet a
-  completed feature or reviewed release.
+  PR #257 and PR #258 are verified normal-merge checkpoints. The genesis-root
+  checkpoint is tracked separately in PR #259; full local acceptance does not
+  replace independent review, exact-head CI or production qualification.
+
+The remaining handoff interface partition now identifies namespace lifecycle,
+fresh serving resolution, epoch-scoped ordered safety, reconstruction
+predecessors, Seal target verification and actual activation completion.
+It does not manufacture their producers. Retained-member namespace selection,
+crash ordering, bounded Seal companions/suffix evidence and authenticated
+successor schemas remain coupled pre-code decisions; genesis-only trust is not
+a substitute. See the [handoff contracts](docs/architecture/architecture-contracts.md#handoff-contracts).
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.

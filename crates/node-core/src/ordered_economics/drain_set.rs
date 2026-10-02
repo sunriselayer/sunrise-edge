@@ -520,7 +520,7 @@ fn verify_and_match_local_readiness<S: VersionedStateReader + ?Sized>(
         store,
         context,
         env.policy.domain(),
-        env.resolver,
+        env.resolver(),
         env.policy.context(),
         &intent.selected_votes,
         reads,

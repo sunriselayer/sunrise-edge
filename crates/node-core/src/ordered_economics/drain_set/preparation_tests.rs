@@ -12,7 +12,7 @@ use runtime::{
     DurableDomainStateStore, DurableReadError, MemoryBlobStore, MemoryDurableStateStore,
     VersionedStateReader, WriterFenceGeneration,
 };
-use validator_set::{ValidatorInfo, ValidatorSet};
+use validator_set::ValidatorSet;
 
 struct ControlReader<'a> {
     store: &'a MemoryDurableStateStore,
@@ -55,37 +55,26 @@ fn freeze_and_genuine_empty_drain_preparations_have_no_effects() {
         MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
     let manifest: GenesisManifest = fixture::freeze_bonded_manifest();
     crate::genesis::install_genesis(&store, &operation, domain, &resolver, &manifest, 10).unwrap();
-    let validators: ValidatorSet = ValidatorSet::new(
-        manifest.validator_set.context.epoch(),
-        manifest
-            .validator_set
-            .validators
-            .iter()
-            .map(|entry| ValidatorInfo {
-                id: entry.id,
-                voting_power: entry.voting_power,
-                signature_scheme: entry.signature_scheme,
-                public_key: entry.public_key.clone(),
-            })
-            .collect(),
-    )
-    .unwrap();
-    let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
-        fixture::protocol(),
-        domain,
-        crate::genesis::genesis_manifest_commitment(&resolver, &manifest).unwrap(),
-        Some(&manifest),
-        validators.clone(),
-        resolver.clone(),
-    )
-    .unwrap();
+    let manifest_bytes: Vec<u8> = crate::genesis::encode_genesis_manifest(&manifest).unwrap();
+    let manifest_digest: Digest32 =
+        crate::genesis::genesis_manifest_commitment(&resolver, &manifest).unwrap();
+    let root: crate::genesis::VerifiedGenesisRoot =
+        crate::genesis::VerifiedGenesisRoot::verify_bytes(
+            &resolver,
+            &manifest_bytes,
+            manifest_digest.bytes(),
+            manifest.context(),
+        )
+        .unwrap();
+    let validators: ValidatorSet = root.genesis_committee().clone();
+    let policy: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(&root, domain).unwrap();
     let leg_policy: LocalExecutionPolicy =
         LocalExecutionPolicy::generic_object_results(fixture::protocol());
     let engine: LocalWasmExecutionEngine = LocalWasmExecutionEngine::new();
     let blobs: MemoryBlobStore = MemoryBlobStore::default();
     let env: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
         policy: &policy,
-        resolver: &resolver,
         history: &[],
         leg_policy: &leg_policy,
         engine: &engine,

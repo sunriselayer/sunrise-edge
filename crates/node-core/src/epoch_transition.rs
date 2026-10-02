@@ -321,8 +321,9 @@ pub(crate) struct DerivedActivation {
 /// once a certificate exists, applying it is a pure derivation of the
 /// certificate's own bytes (DR-0137 unit 3: "certificate-wins ordering").
 /// The ordered Freeze path reuses this exact predicate at vote time and
-/// committed execution. The latter reads through its staging store, making
-/// observed revisions part of the atomic result's CAS assertions. Distinguish
+/// committed execution. The latter reads through the read-only observation
+/// scope, making observed revisions part of the atomic result's CAS
+/// assertions. Distinguish
 /// a healthy but ineligible row from an absent or corrupt prerequisite so the
 /// ordered prefix never advances on an invented refusal.
 #[derive(Debug)]

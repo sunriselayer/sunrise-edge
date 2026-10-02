@@ -2284,6 +2284,45 @@ fn fencing_rejects_stale_writer() {
     ));
 }
 
+/// Pins the installer's actual validation order (ADR-0182): authority/
+/// signature (step 2), then the shared store/namespace/fence read
+/// (`require_ordinary_namespace`, still inside step 2, positioned exactly
+/// where it always was -- the shared `verify_manifest_authority`/
+/// `convert_genesis_committee` helpers must not move it), then context and
+/// committee checks (step 3). Each sub-case carries a genuine second defect
+/// that would also fail on its own, so the asserted error pins precedence,
+/// not merely presence.
+#[test]
+fn installer_order_signature_before_namespace_fence_before_committee() {
+    // Bad signature + stale writer fence: signature wins.
+    {
+        let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(2).unwrap());
+        let (mut manifest, _, _, _, _) = build_bonded_fixture();
+        manifest.signature[0] ^= 0xFF;
+        let err: GenesisError =
+            install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap_err();
+        assert!(matches!(
+            err,
+            GenesisError::Invalid(message) if message == "invalid genesis manifest signature"
+        ));
+    }
+    // Valid signature, stale writer fence + non-Ed25519 committee member:
+    // the namespace/fence read (still step 2) wins over the later committee
+    // check (step 3).
+    {
+        let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(2).unwrap());
+        let (mut manifest, _, _, _, _) = build_bonded_fixture();
+        manifest.validator_set.validators[0].signature_scheme = SignatureSchemeId::Secp256k1;
+        resign_manifest(&mut manifest);
+        let err: GenesisError =
+            install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap_err();
+        assert!(matches!(
+            err,
+            GenesisError::DurableRead(DurableReadError::WriterFenced { .. })
+        ));
+    }
+}
+
 #[test]
 fn fee_abi_admission_mismatch_fails_closed() {
     let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());

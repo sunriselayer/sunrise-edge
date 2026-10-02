@@ -130,7 +130,7 @@ pub(super) fn add_material(
         output,
         ProofKind::Genesis,
         &[],
-        crate::genesis::encode_genesis_manifest(overlay.plan.genesis)
+        crate::genesis::encode_genesis_manifest(overlay.plan.genesis_root.manifest())
             .map_err(|_| invalid("cut signed genesis encoding"))?,
     )?;
     for item in owned {
@@ -278,7 +278,7 @@ fn parsed(
             ProofKind::Genesis => {
                 let manifest = crate::genesis::decode_genesis_manifest(bytes)
                     .map_err(|_| invalid("saved cut genesis schema"))?;
-                if genesis_seen || &manifest != plan.genesis {
+                if genesis_seen || &manifest != plan.genesis_root.manifest() {
                     return Err(invalid("saved cut signed genesis differs from local pin"));
                 }
                 genesis_seen = true;
@@ -482,9 +482,9 @@ pub(in crate::business_reconstruction) fn verify_saved_with_overlay<'a>(
 ) -> Result<VerifiedSavedReconstruction<'a>, BusinessCutError> {
     encode_business_cut_identity(&saved.identity)?;
     encode_business_cut_package(&saved.package)?;
-    if saved.identity.context != *plan.genesis.context()
+    if saved.identity.context != *plan.genesis_root.manifest().context()
         || saved.identity.domain != plan.domain
-        || saved.identity.genesis_digest != plan.pinned_genesis_digest
+        || saved.identity.genesis_digest != plan.genesis_root.digest()
         || saved.identity.ordered_history != *plan.ordered_history_identity
     {
         return Err(invalid("saved cut differs from local reconstruction pins"));
@@ -498,8 +498,11 @@ pub(in crate::business_reconstruction) fn verify_saved_with_overlay<'a>(
             || u64::try_from(item.bytes.len())
                 .map_err(|_| invalid("saved cut body length overflow"))?
                 != item.descriptor.length
-            || business_cut_component_digest(plan.resolver, plan.genesis.context(), &item.bytes)?
-                != item.descriptor.digest
+            || business_cut_component_digest(
+                plan.genesis_root.genesis_resolver(),
+                plan.genesis_root.manifest().context(),
+                &item.bytes,
+            )? != item.descriptor.digest
         {
             return Err(invalid(
                 "saved cut component order/length/content digest differs",
@@ -543,7 +546,7 @@ pub(super) fn source_application_carriers(
         .filter(|item| item.applied)
     {
         let key: Vec<u8> = crate::local_instance_state::fastpath_certificate_key(
-            overlay.plan.genesis.context().chain_id(),
+            overlay.plan.genesis_root.manifest().context().chain_id(),
             &producer.request_id,
         )
         .map_err(|_| invalid("cut original applied certificate key"))?;
@@ -565,7 +568,7 @@ pub(super) fn verify_application_carriers(
     overlay: &BusinessReconstructionOverlay<'_>,
     carriers: &BTreeMap<[u8; 32], Vec<u8>>,
 ) -> Result<(), BusinessCutError> {
-    let context = overlay.plan.genesis.context();
+    let context = overlay.plan.genesis_root.manifest().context();
     let certifier = consensus::FastPathCertifier::new(
         context.chain_id().clone(),
         context.protocol_version(),

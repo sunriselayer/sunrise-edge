@@ -1884,18 +1884,12 @@ fn verify_installed_genesis_binding<S: VersionedStateReader + ?Sized>(
             "logical profile signed genesis binding differs",
         ));
     }
-    let signed: Vec<u8> = crate::genesis::genesis_manifest_signing_frame(&manifest)
-        .map_err(|_| provenance_error("logical profile genesis signing frame"))?;
-    let verifier: crypto::Ed25519Verifier =
-        crypto::Ed25519Verifier::from_verifying_key_bytes(&record.genesis_authority)
-            .map_err(|_| provenance_error("logical profile genesis authority"))?;
-    if !crypto::SignatureVerifier::verify_framed(&verifier, &signed, &manifest.signature)
-        .map_err(|_| provenance_error("logical profile genesis signature"))?
-    {
-        return Err(provenance_error(
-            "logical profile genesis signature differs",
-        ));
-    }
+    // Shares the installer/root's own strict nonzero canonical prime-order
+    // Ed25519 authority and signature check, so this installed-row verifier
+    // can never accept a weaker authority shape than either (DR-0182).
+    crate::genesis::verify_manifest_authority(&manifest).map_err(|_| {
+        provenance_error("logical profile genesis authority or signature is invalid")
+    })?;
     let expected: LogicalProfileRecord = LogicalProfileRecord {
         context: record.context.clone(),
         profile: manifest.commitment_profile,

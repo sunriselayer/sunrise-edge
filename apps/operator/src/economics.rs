@@ -5,8 +5,7 @@
 //! signed bytes; applying that artifact never loads a key or replaces a nonce.
 
 use crate::common::{
-    FlagSet, connect_pool, load_signing_key_file, load_trusted_genesis_manifest, parse_hex_32,
-    require_live_fastvote_pin,
+    FlagSet, connect_pool, load_signing_key_file, parse_hex_32, require_live_fastvote_pin,
 };
 use abi::call_values::{CallValue, ValueLayout, encode_call_value};
 use abi::{AccessEntry, AccessManifest};
@@ -18,7 +17,8 @@ use execution::local_execution::{
 };
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
-use node_core::{GenesisManifest, decode_genesis_install_marker, genesis_marker_key};
+use node_core::genesis::VerifiedGenesisRoot;
+use node_core::{decode_genesis_install_marker, genesis_marker_key};
 use objects::{AccessMode, Address};
 use postgres_rustls::MakeTlsConnector;
 use protocol_types::{
@@ -42,6 +42,8 @@ use std::{
     num::NonZeroU32,
     path::{Path, PathBuf},
 };
+use sunrise_edge_client::load_verified_genesis_root;
+use validator_set::ValidatorInfo;
 
 type OperatorResult<T> = Result<T, Box<dyn Error>>;
 type OperatorPool = Pool<PostgresConnectionManager<MakeTlsConnector>>;
@@ -390,9 +392,9 @@ fn require_installed_manifest(
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     resolver: &HashSuiteResolver,
-    manifest: &GenesisManifest,
-    digest: [u8; 32],
+    root: &VerifiedGenesisRoot,
 ) -> OperatorResult<()> {
+    let manifest = root.manifest();
     let key: Vec<u8> = genesis_marker_key(manifest.context())?;
     let observed: runtime::VersionedStateValue = store
         .get_versioned_durable(context, domain, &key)
@@ -400,10 +402,10 @@ fn require_installed_manifest(
     let marker: node_core::GenesisInstallMarker =
         decode_genesis_install_marker(observed.value().ok_or("no installed genesis marker")?)?;
     if &marker.context != manifest.context()
-        || marker.manifest_digest.bytes() != digest
+        || marker.manifest_digest != root.digest()
         || marker.genesis_authority != manifest.genesis_authority
     {
-        return Err("installed genesis differs from independently pinned manifest".into());
+        return Err("installed genesis differs from independently pinned verified root".into());
     }
     let fee_key: Vec<u8> =
         node_core::local_instance_state::paid_fee_policy_key(manifest.context())?;
@@ -446,14 +448,13 @@ impl Session {
         args: &CommonArgs,
         resolver: HashSuiteResolver,
         expected: PublicationContext,
-        manifest: GenesisManifest,
+        root: VerifiedGenesisRoot,
         deadline: u64,
     ) -> OperatorResult<Self> {
-        if manifest
-            .validator_set
-            .validators
-            .iter()
-            .all(|entry| entry.id != args.namespace_validator)
+        if root
+            .genesis_committee()
+            .get(args.namespace_validator)
+            .is_none()
         {
             return Err("namespace validator absent from pinned genesis".into());
         }
@@ -474,14 +475,7 @@ impl Session {
             .writer_fence();
         let now: u64 = SystemClock.now_unix_millis()?;
         let before: DurableOperationContext = operation_context(previous, deadline, now)?;
-        require_installed_manifest(
-            &store,
-            &before,
-            args.domain,
-            &resolver,
-            &manifest,
-            args.manifest_digest,
-        )?;
+        require_installed_manifest(&store, &before, args.domain, &resolver, &root)?;
         if SystemClock.now_unix_millis()? >= deadline {
             return Err("deadline expired before writer fence advance".into());
         }
@@ -490,14 +484,7 @@ impl Session {
         advance_writer_fence(&mut connection, &namespace, previous, generation)?;
         drop(connection);
         let context: DurableOperationContext = operation_context(generation, deadline, now)?;
-        require_installed_manifest(
-            &store,
-            &context,
-            args.domain,
-            &resolver,
-            &manifest,
-            args.manifest_digest,
-        )?;
+        require_installed_manifest(&store, &context, args.domain, &resolver, &root)?;
         Ok(Self {
             pool,
             store,
@@ -572,8 +559,8 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> OperatorResult<()> {
         HashSuiteResolver::new(args.chain.clone(), args.protocol, args.schedule.clone())?;
     let expected: PublicationContext =
         PublicationContext::new(args.chain.clone(), args.protocol, args.epoch)?;
-    let manifest: GenesisManifest =
-        load_trusted_genesis_manifest(&args.manifest, &resolver, args.manifest_digest, &expected)?;
+    let root: VerifiedGenesisRoot =
+        load_verified_genesis_root(&args.manifest, &resolver, args.manifest_digest, &expected)?;
     let signing_key: Option<SigningKey> = match &operation {
         OperationArgs::Prepare { key, .. } => Some(load_signing_key_file(key)?),
         _ => None,
@@ -586,11 +573,9 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> OperatorResult<()> {
             if signed.intent.context != expected {
                 return Err("saved claim context differs from independently pinned context".into());
             }
-            let entry: &node_core::fast_path::records::FastPathValidatorEntry = manifest
-                .validator_set
-                .validators
-                .iter()
-                .find(|entry| entry.id == signed.intent.validator_id)
+            let entry: &ValidatorInfo = root
+                .genesis_committee()
+                .get(signed.intent.validator_id)
                 .ok_or("saved claim validator absent from pinned historical set")?;
             if entry.signature_scheme != protocol_types::SignatureSchemeId::Ed25519 {
                 return Err("unsupported historical claimant signature scheme".into());
@@ -611,11 +596,9 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> OperatorResult<()> {
     };
     if let (OperationArgs::Prepare { claimant, .. }, Some(key)) = (&operation, &signing_key) {
         let public: [u8; 32] = VerificationKey::from(key).into();
-        let entry: &node_core::fast_path::records::FastPathValidatorEntry = manifest
-            .validator_set
-            .validators
-            .iter()
-            .find(|entry| entry.id == *claimant)
+        let entry: &ValidatorInfo = root
+            .genesis_committee()
+            .get(*claimant)
             .ok_or("claimant absent from pinned genesis set")?;
         if entry.signature_scheme != protocol_types::SignatureSchemeId::Ed25519
             || entry.public_key.as_slice() != public
@@ -626,7 +609,7 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> OperatorResult<()> {
     // A create_new reservation precedes the disruptive fence and all business
     // mutations. Failure intentionally leaves an empty/partial investigation artifact.
     let mut output: ReservedOutput = ReservedOutput::reserve(&args.output)?;
-    let session: Session = Session::open(&args, resolver, expected, manifest, deadline)?;
+    let session: Session = Session::open(&args, resolver, expected, root, deadline)?;
     execute(
         &session,
         &operation,

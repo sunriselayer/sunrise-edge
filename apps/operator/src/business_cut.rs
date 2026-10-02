@@ -296,7 +296,7 @@ pub fn export_source_business_cut<
 ) -> Result<CutExportProgress, CutArchiveError> {
     let operation: DurableOperationContext = plan.operation_context;
     let domain: AtomicityDomainId = plan.domain;
-    let resolver: &HashSuiteResolver = plan.resolver;
+    let resolver: &HashSuiteResolver = plan.genesis_root.genesis_resolver();
     let cut: VerifiedBusinessCut = derive_source_business_cut(plan, source, source_blobs, ordered)?;
     publish_source_cut(&cut, resolver, archive, limits, || {
         let token: &PortableSnapshotToken = cut
@@ -442,8 +442,12 @@ pub(crate) fn read_business_cut_archive(
     .collect();
     let mut components: Vec<SavedBusinessCutComponent> = Vec::new();
     for collection in BUSINESS_CUT_STREAMS {
-        let mut page_verifier: BusinessCutPageVerifier =
-            BusinessCutPageVerifier::new(plan.resolver, &identity, &package, collection)?;
+        let mut page_verifier: BusinessCutPageVerifier = BusinessCutPageVerifier::new(
+            plan.genesis_root.genesis_resolver(),
+            &identity,
+            &package,
+            collection,
+        )?;
         let mut page_index: u64 = 0;
         let mut component_index: u64 = 0;
         loop {
@@ -454,7 +458,7 @@ pub(crate) fn read_business_cut_archive(
             if page.collection != collection || page.descriptors.len() > limits.page_entries.get() {
                 return Err(invalid("saved cut page has foreign collection or sizing"));
             }
-            page_verifier.push_page(plan.resolver, &page)?;
+            page_verifier.push_page(plan.genesis_root.genesis_resolver(), &page)?;
             for descriptor in &page.descriptors {
                 let mut bytes: Vec<u8> = Vec::new();
                 let mut offset: u64 = 0;

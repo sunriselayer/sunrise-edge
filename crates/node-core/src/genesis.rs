@@ -57,7 +57,7 @@ use runtime::{
     RuntimeError, StateMutation, StateMutationEntry, StateReadAssertion, StateRevision,
     StructuredDurableDomainStateStore, VersionedStateReader, VersionedStateValue,
 };
-use validator_set::{ValidatorInfo, ValidatorSet};
+use validator_set::{ValidatorInfo, ValidatorSet, ValidatorSetError};
 
 use crate::bond_lifecycle;
 use crate::economics::{
@@ -86,6 +86,13 @@ use crate::{
 
 #[cfg(test)]
 pub mod tests;
+
+#[cfg(test)]
+mod root_baseline_tests;
+
+mod root;
+
+pub use root::{GenesisRootError, VerifiedGenesisRoot};
 
 /// Canonical frame type of an encoded [`GenesisManifest`] (DR-0126).
 pub const GENESIS_MANIFEST_FRAME_TYPE: u16 = 0x6416;
@@ -490,6 +497,100 @@ impl From<InterfaceError> for GenesisError {
     }
 }
 
+/// Errors converting a signed genesis manifest's static validator-set record
+/// into the original immutable consensus [`ValidatorSet`] (the "genesis
+/// committee"). Shared by the installer, [`VerifiedGenesisRoot`] and every
+/// installed-row verifier so none can diverge in strictness (DR-0182).
+#[derive(Debug)]
+pub enum GenesisCommitteeError {
+    /// The signed validator-set record's own context differs from the
+    /// manifest's publication context.
+    ContextMismatch,
+    /// A signed validator entry names a scheme other than Ed25519.
+    UnsupportedSignatureScheme,
+    /// The signed validator set exceeds the fee-claim capacity bound.
+    CapacityExceeded,
+    /// The converted set failed [`ValidatorSet::new`]'s own invariants.
+    InvalidSet(ValidatorSetError),
+}
+
+impl fmt::Display for GenesisCommitteeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ContextMismatch => write!(f, "genesis committee context mismatch"),
+            Self::UnsupportedSignatureScheme => {
+                write!(f, "genesis committee requires Ed25519 validators")
+            }
+            Self::CapacityExceeded => {
+                write!(f, "genesis committee exceeds the fee-claim capacity bound")
+            }
+            Self::InvalidSet(error) => write!(f, "genesis committee set is invalid: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for GenesisCommitteeError {}
+
+/// Checks the manifest's own nonzero canonical prime-order Ed25519 authority
+/// and that authority's signature over this manifest's own profile-specific
+/// signed frame.
+///
+/// Shared by the installer, [`VerifiedGenesisRoot::verify_bytes`] and every
+/// installed-row verifier so none can accept a weaker authority shape than
+/// the others (DR-0182).
+pub(crate) fn verify_manifest_authority(manifest: &GenesisManifest) -> Result<(), GenesisError> {
+    if manifest.genesis_authority == [0; 32] {
+        return Err(GenesisError::Invalid("zero genesis authority"));
+    }
+    validate_ed25519_owner_address(
+        &manifest.genesis_authority,
+        Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
+    )?;
+    let manifest_verifier: Ed25519Verifier =
+        Ed25519Verifier::from_verifying_key_bytes(&manifest.genesis_authority)?;
+    let manifest_signing_frame: Vec<u8> = genesis_manifest_signing_frame(manifest)?;
+    if !manifest_verifier.verify_framed(&manifest_signing_frame, &manifest.signature)? {
+        return Err(GenesisError::Invalid("invalid genesis manifest signature"));
+    }
+    Ok(())
+}
+
+/// Converts the manifest's signed static validator-set record into the
+/// original immutable genesis committee: its own context must match the
+/// manifest context, every member must register an Ed25519 key, the set must
+/// not exceed the fee-claim capacity bound, and the result must satisfy
+/// [`ValidatorSet::new`]. Shared by the installer and [`VerifiedGenesisRoot`].
+pub(crate) fn convert_genesis_committee(
+    manifest: &GenesisManifest,
+) -> Result<ValidatorSet, GenesisCommitteeError> {
+    let manifest_context: &PublicationContext = manifest.context();
+    if &manifest.validator_set.context != manifest_context {
+        return Err(GenesisCommitteeError::ContextMismatch);
+    }
+    if manifest.validator_set.validators.len() > fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS
+    {
+        return Err(GenesisCommitteeError::CapacityExceeded);
+    }
+    let validator_info: Vec<ValidatorInfo> = manifest
+        .validator_set
+        .validators
+        .iter()
+        .map(|validator| {
+            if validator.signature_scheme != SignatureSchemeId::Ed25519 {
+                return Err(GenesisCommitteeError::UnsupportedSignatureScheme);
+            }
+            Ok(ValidatorInfo {
+                id: validator.id,
+                voting_power: validator.voting_power,
+                signature_scheme: validator.signature_scheme,
+                public_key: validator.public_key.clone(),
+            })
+        })
+        .collect::<Result<Vec<ValidatorInfo>, GenesisCommitteeError>>()?;
+    ValidatorSet::new(manifest_context.epoch(), validator_info)
+        .map_err(GenesisCommitteeError::InvalidSet)
+}
+
 /// Encodes one [`GenesisObjectEntry`].
 pub fn encode_genesis_object_entry(entry: &GenesisObjectEntry) -> Result<Vec<u8>, GenesisError> {
     let mut frame: CanonicalStruct = CanonicalStruct::new(
@@ -864,23 +965,13 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     }
 
     // 2. Genesis authority shape check.
-    if manifest.genesis_authority == [0; 32] {
-        return Err(GenesisError::Invalid("zero genesis authority"));
-    }
-    validate_ed25519_owner_address(
-        &manifest.genesis_authority,
-        Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
-    )?;
-
+    //
     // The publication and initializer signatures bind their own requests.
     // This additional signature binds the complete bootstrap result set,
     // including all initialized objects and authorities, before any state I/O.
-    let manifest_verifier: Ed25519Verifier =
-        Ed25519Verifier::from_verifying_key_bytes(&manifest.genesis_authority)?;
-    let manifest_signing_frame: Vec<u8> = genesis_manifest_signing_frame(manifest)?;
-    if !manifest_verifier.verify_framed(&manifest_signing_frame, &manifest.signature)? {
-        return Err(GenesisError::Invalid("invalid genesis manifest signature"));
-    }
+    // Shared with `VerifiedGenesisRoot::verify_bytes` and every installed-row
+    // verifier so none can diverge in strictness (DR-0182).
+    verify_manifest_authority(manifest)?;
     // Preserve the installer's typed storage-read contract at this earlier
     // origin check. Inactive-origin and all other core errors stay distinct.
     crate::mutation_fence::require_ordinary_namespace(store, context, domain).map_err(
@@ -901,36 +992,21 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     if &manifest.economics_policy.context != manifest_context {
         return Err(GenesisError::ContextMismatch);
     }
-    if &manifest.validator_set.context != manifest_context {
-        return Err(GenesisError::ContextMismatch);
-    }
-    if manifest.validator_set.validators.len() > fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS
-    {
-        return Err(GenesisError::Invalid(
-            "genesis fast-path validator set exceeds the fee-claim capacity bound",
-        ));
-    }
-    let validator_info: Vec<ValidatorInfo> = manifest
-        .validator_set
-        .validators
-        .iter()
-        .map(|validator| {
-            if validator.signature_scheme != SignatureSchemeId::Ed25519 {
-                return Err(GenesisError::Invalid(
-                    "genesis fast-path validators must use Ed25519",
-                ));
-            }
-            Ok(ValidatorInfo {
-                id: validator.id,
-                voting_power: validator.voting_power,
-                signature_scheme: validator.signature_scheme,
-                public_key: validator.public_key.clone(),
-            })
-        })
-        .collect::<Result<Vec<ValidatorInfo>, GenesisError>>()?;
+    // Shared with `VerifiedGenesisRoot::verify_bytes` and every installed-row
+    // verifier so none can diverge in strictness (DR-0182).
     let genesis_validator_set: ValidatorSet =
-        ValidatorSet::new(manifest_context.epoch(), validator_info)
-            .map_err(|_| GenesisError::Invalid("invalid genesis fast-path validator set"))?;
+        convert_genesis_committee(manifest).map_err(|error| match error {
+            GenesisCommitteeError::ContextMismatch => GenesisError::ContextMismatch,
+            GenesisCommitteeError::CapacityExceeded => GenesisError::Invalid(
+                "genesis fast-path validator set exceeds the fee-claim capacity bound",
+            ),
+            GenesisCommitteeError::UnsupportedSignatureScheme => {
+                GenesisError::Invalid("genesis fast-path validators must use Ed25519")
+            }
+            GenesisCommitteeError::InvalidSet(_) => {
+                GenesisError::Invalid("invalid genesis fast-path validator set")
+            }
+        })?;
     let genesis_validator_set_digest: Digest32 = genesis_validator_set
         .digest(resolver)
         .map_err(|_| GenesisError::Invalid("genesis fast-path validator set digest"))?;

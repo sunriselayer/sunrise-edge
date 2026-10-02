@@ -88,7 +88,7 @@ pub(crate) fn require_live_authority<S: StructuredStateReader + ?Sized>(
         .policy
         .engine()
         .validator_set()
-        .digest(env.resolver)
+        .digest(env.resolver())
         .map_err(|_| {
             OrderedEconomicsError::Prerequisite("pinned validator set identity is not derivable")
         })?;
@@ -299,7 +299,7 @@ fn require_signed_predecessor(
         ));
     }
     if let Some(expected) = expected_previous_row_digest {
-        let actual: Digest32 = bond_row_digest(env.resolver, bond.lifecycle_epoch, bond_bytes)?;
+        let actual: Digest32 = bond_row_digest(env.resolver(), bond.lifecycle_epoch, bond_bytes)?;
         if expected != actual {
             return Err(OrderedEconomicsError::Refused(
                 OrderedRefusal::StalePreviousRow,
@@ -487,7 +487,7 @@ fn preflight_fee_claim<S: StructuredStateReader>(
         ));
     }
     let previous_row_digest: Digest32 =
-        fee_claim_row_digest(env.resolver, settlement.context.epoch(), &bytes)?;
+        fee_claim_row_digest(env.resolver(), settlement.context.epoch(), &bytes)?;
     if previous_row_digest != signed.intent.expected_previous_row_digest {
         return Err(OrderedEconomicsError::Refused(
             OrderedRefusal::StalePreviousRow,

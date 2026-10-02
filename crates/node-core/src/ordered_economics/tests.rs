@@ -28,7 +28,10 @@ use fast_path::records::{
     encode_fastpath_settlement_record,
 };
 use fast_path::{FastPathValidatorEntry, FastPathValidatorSetRecord};
-use genesis::{GenesisManifest, GenesisObjectEntry, tests as fixture};
+use genesis::{
+    GenesisManifest, GenesisObjectEntry, VerifiedGenesisRoot, encode_genesis_manifest,
+    tests as fixture,
+};
 use local_instance_state::{
     decode_fastpath_nonce_lock_record, fastpath_bond_record_key, fastpath_epoch_record_key,
     fastpath_nonce_lock_key,
@@ -154,6 +157,7 @@ fn four_validator_manifest(signers: &[TestSigner]) -> GenesisManifest {
 struct Network {
     stores: Vec<MemoryDurableStateStore>,
     context: DurableOperationContext,
+    root: VerifiedGenesisRoot,
     policy: OrderedEconomicsPolicy,
     leg_policy: LocalExecutionPolicy,
     engine: LocalWasmExecutionEngine,
@@ -203,18 +207,22 @@ fn setup_with_freeze_height(minimum_freeze_block_height: u64) -> Network {
             .unwrap(),
     )
     .unwrap();
-    let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
-        fixture::protocol(),
-        fixture::domain(),
-        genesis::genesis_manifest_commitment(&fixture::resolver(), &manifest).unwrap(),
-        Some(&manifest),
-        validator_set(&signers),
-        fixture::resolver(),
+    let manifest_bytes: Vec<u8> = encode_genesis_manifest(&manifest).unwrap();
+    let manifest_digest: Digest32 =
+        genesis::genesis_manifest_commitment(&fixture::resolver(), &manifest).unwrap();
+    let root: VerifiedGenesisRoot = VerifiedGenesisRoot::verify_bytes(
+        &fixture::resolver(),
+        &manifest_bytes,
+        manifest_digest.bytes(),
+        manifest.context(),
     )
     .unwrap();
+    let policy: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(&root, fixture::domain()).unwrap();
     Network {
         stores,
         context,
+        root,
         policy,
         leg_policy: LocalExecutionPolicy::generic_object_results(fixture::protocol()),
         engine: LocalWasmExecutionEngine::new(),
@@ -230,7 +238,6 @@ impl Network {
     fn env(&self) -> OrderedEconomicsEnvironment<'_> {
         OrderedEconomicsEnvironment {
             policy: &self.policy,
-            resolver: &self.resolver,
             history: &self.history,
             leg_policy: &self.leg_policy,
             engine: &self.engine,
@@ -677,11 +684,10 @@ fn authority_anchor_binds_domain_genesis_epoch_and_validator_set_identity() {
 
     // The policy actually installs the derived anchor as its genesis block,
     // never the raw manifest digest.
-    let policy = OrderedEconomicsPolicy::new(
+    let policy = OrderedEconomicsPolicy::historical(
         fixture::protocol(),
         fixture::domain(),
         genesis,
-        None,
         set,
         fixture::resolver(),
     )
@@ -704,11 +710,10 @@ fn policy_new_fails_closed_on_validator_set_epoch_mismatch() {
         }],
     )
     .unwrap();
-    let result = OrderedEconomicsPolicy::new(
+    let result = OrderedEconomicsPolicy::historical(
         fixture::protocol(),
         fixture::domain(),
         Digest32::new(HashAlgorithmId::Sha2_256, [1; 32]),
-        None,
         mismatched,
         fixture::resolver(),
     );
@@ -725,65 +730,57 @@ fn freeze_height_cannot_be_enabled_without_the_matching_signed_genesis_manifest(
     let digest: Digest32 =
         genesis::genesis_manifest_commitment(&fixture::resolver(), &manifest).unwrap();
     let selected: ValidatorSet = validator_set(&signers);
-    let valid: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
-        fixture::protocol(),
-        fixture::domain(),
-        digest,
-        Some(&manifest),
-        selected.clone(),
-        fixture::resolver(),
+    let manifest_bytes: Vec<u8> = genesis::encode_genesis_manifest(&manifest).unwrap();
+    let root: genesis::VerifiedGenesisRoot = genesis::VerifiedGenesisRoot::verify_bytes(
+        &fixture::resolver(),
+        &manifest_bytes,
+        digest.bytes(),
+        manifest.context(),
     )
     .unwrap();
+    let valid: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(&root, fixture::domain()).unwrap();
     assert_eq!(valid.minimum_freeze_block_height(), 4);
+    assert_eq!(root.genesis_committee().validators(), selected.validators());
 
+    // A manifest whose own bytes differ from what was signed (a changed
+    // Freeze height, re-pinned to the *original* digest) can never produce a
+    // root: its recomputed commitment differs from the pinned digest.
     let mut changed: GenesisManifest = manifest.clone();
     changed.minimum_freeze_block_height = 1;
+    let changed_bytes: Vec<u8> = genesis::encode_genesis_manifest(&changed).unwrap();
     assert!(matches!(
-        OrderedEconomicsPolicy::new(
-            fixture::protocol(),
-            fixture::domain(),
-            digest,
-            Some(&changed),
-            selected.clone(),
-            fixture::resolver(),
+        genesis::VerifiedGenesisRoot::verify_bytes(
+            &fixture::resolver(),
+            &changed_bytes,
+            digest.bytes(),
+            manifest.context(),
         ),
-        Err(OrderedEconomicsError::Policy(_))
+        Err(genesis::GenesisRootError::CommitmentMismatch)
     ));
+
+    // Re-pinned to its own real (changed) digest, the signature -- still the
+    // original manifest's, since `changed` was never re-signed -- no longer
+    // verifies: a positive Freeze height can never be smuggled in by
+    // re-pinning under a signature that never authorized it.
     let changed_digest: Digest32 =
         genesis::genesis_manifest_commitment(&fixture::resolver(), &changed).unwrap();
     assert!(matches!(
-        OrderedEconomicsPolicy::new(
-            fixture::protocol(),
-            fixture::domain(),
-            changed_digest,
-            Some(&changed),
-            selected.clone(),
-            fixture::resolver(),
+        genesis::VerifiedGenesisRoot::verify_bytes(
+            &fixture::resolver(),
+            &changed_bytes,
+            changed_digest.bytes(),
+            manifest.context(),
         ),
-        Err(OrderedEconomicsError::Policy(_))
-    ));
-    let smaller: ValidatorSet = ValidatorSet::new(
-        fixture::protocol().epoch(),
-        vec![selected.validators()[0].clone()],
-    )
-    .unwrap();
-    assert!(matches!(
-        OrderedEconomicsPolicy::new(
-            fixture::protocol(),
-            fixture::domain(),
-            digest,
-            Some(&manifest),
-            smaller,
-            fixture::resolver(),
-        ),
-        Err(OrderedEconomicsError::Policy(_))
+        Err(genesis::GenesisRootError::InvalidSignature)
     ));
 
-    let unwarranted: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
+    // A genuinely manifest-free historical policy always reports a zero
+    // Freeze height, independent of whatever digest value it is given.
+    let unwarranted: OrderedEconomicsPolicy = OrderedEconomicsPolicy::historical(
         fixture::protocol(),
         fixture::domain(),
         digest,
-        None,
         selected,
         fixture::resolver(),
     )
