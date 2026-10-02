@@ -22,6 +22,7 @@
 //! the module-level remaining-integration note in [`super`].
 use super::*;
 use crate::epoch_transition::{self, EpochTransitionError, NextSetEligibilityError};
+use crate::fast_path::{FastVoteCommitteeError, validate_fastvote_validator_set_record};
 use crate::operation_preparation::PreparedStateOperation;
 use canonical_encoding::encode_chain_id;
 use execution::publication::{
@@ -31,9 +32,9 @@ use fast_path::records::{
     FastPathValidatorSetRecord, MAX_FASTPATH_ACTIVE_VALIDATORS,
     decode_fastpath_validator_set_record, encode_fastpath_validator_set_record,
 };
+#[cfg(test)]
 use protocol_types::SignatureSchemeId;
 use runtime::{StructuredStateReader, VersionedStateReader};
-use validator_set::{ValidatorInfo, ValidatorSet};
 
 /// Canonical frame type of an encoded [`FreezeIntent`] (an
 /// [`OrderedCandidate::intent`] body for [`OrderedOperationKind::Freeze`]).
@@ -102,20 +103,19 @@ pub(crate) fn validate_freeze_intent_structure(intent: &FreezeIntent) -> Result<
     if validators.windows(2).any(|pair| pair[0].id >= pair[1].id) {
         return Err(invalid("freeze advisory set is not strictly ordered"));
     }
-    let mut info: Vec<ValidatorInfo> = Vec::with_capacity(validators.len());
-    for validator in validators {
-        if validator.signature_scheme != SignatureSchemeId::Ed25519 {
-            return Err(invalid("freeze advisory set supports only Ed25519"));
-        }
-        info.push(ValidatorInfo {
-            id: validator.id,
-            voting_power: validator.voting_power,
-            signature_scheme: validator.signature_scheme,
-            public_key: validator.public_key.clone(),
-        });
-    }
-    ValidatorSet::new(next_context.epoch(), info)
-        .map_err(|_| invalid("freeze advisory validator set is invalid"))?;
+    validate_fastvote_validator_set_record(&intent.advisory_next_set, next_context).map_err(
+        |error: FastVoteCommitteeError| match error {
+            FastVoteCommitteeError::ContextMismatch => {
+                invalid("freeze advisory set is not bound to the next epoch")
+            }
+            FastVoteCommitteeError::UnsupportedSignatureScheme { .. } => {
+                invalid("freeze advisory set supports only Ed25519")
+            }
+            FastVoteCommitteeError::InvalidSet(_) => {
+                invalid("freeze advisory validator set is invalid")
+            }
+        },
+    )?;
     Ok(())
 }
 

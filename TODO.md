@@ -85,6 +85,23 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   matches an actual rerun of the original constructors at immutable `b34f771`,
   not expectations recomputed from the new implementation. Original genesis
   trust still grants no current-serving or successor capability.
+  [DR-0184](docs/architecture/decisions/0184-one-fastvote-committee-record-validator.md)
+  and [PR #261](https://github.com/sunriselayer/sunrise-edge/pull/261) establish
+  one typed committee-record structural owner across core, genesis/installed
+  history, Freeze/activation derivation and operator startup/CLI. Each caller
+  retains capacity, diagnostic ordering, digest/certificate, freshness and
+  activation obligations. Six pure tests, two installed-history restart
+  negatives, two actual SQLite startup tests plus eleven shared support tests,
+  twenty-one compiled operator CLI unit tests and the complete required local
+  gate passed before main integration at `8a4cff3`; fresh read-only Codex
+  fallback review explicitly approved that head.
+  The first selected full PostgreSQL run failed in restart connection readiness:
+  its disposable service used a dynamically assigned host port, which changed
+  on restart while the fixture retained the original database URL. A separate
+  owned-container reproduction confirmed the port change. Use an explicitly
+  fixed loopback port, retain every required fault scenario, and rerun complete
+  acceptance on the integrated head. Fresh exact-head review and required CI
+  are also pending after integration; no Seal/serving/Delivery 3 claim.
 - [ ] Test/CI architecture: owner-specific fixture composition and a coherent
   gate registry/execution contract, preserving all required coverage.
   Closed executable plans and separately owned action recipes merged in PR #257.
@@ -98,18 +115,22 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   intended fault was actually consumed. Both complete final-head required and
   selected PostgreSQL acceptance passed.
   [DR-0183](docs/architecture/decisions/0183-test-observation-ownership.md)
-  now defines private reader/counter/capture ownership and complete same-engine
+  implements private reader/counter/capture ownership and complete same-engine
   direct/prepared equality for fee, unbond, slash and registration. Genuine
   distinct quorum voters remain separate from same-signer comparison mirrors;
-  before-state equality, actual prepared/direct commits and replay invariance
-  are asserted without normalization. All seven focused writer-free tests and
-  three observation/counter negatives passed after integration with PR #259.
-  These storage-port body negatives do not claim blob-backed business execution.
-  Complete required acceptance and independent exact-head review remain gates
-  for this new checkpoint; no PostgreSQL requirement is added for test mechanics.
+  actual before-state, prepared/direct completion and replay equality are
+  asserted without normalization. These raw storage-port body controls do not
+  claim blob-backed business execution. Seven writer-free tests, three actual
+  capture/counter controls, the complete required local gate, fresh exact-head
+  Codex fallback APPROVE and all required CI `37002824263` passed at `c5a684e`.
+  [PR #260](https://github.com/sunriselayer/sunrise-edge/pull/260) merged normally
+  as `fc41fd3` using the existing SSH identity; GitHub confirms merged state.
+  Its merge tree equals the reviewed head, local main equals origin/main and
+  the source branch is absent. No PostgreSQL requirement is added for private
+  test mechanics, and the PR-creation-only PAT was not reused for merge.
 - [ ] Independently reviewed, fully checked PR checkpoints; update this list
   from actual evidence, not skeleton compilation or file counts.
-  PR #257, PR #258 and PR #259 are verified normal-merge checkpoints; full
+  PR #257, PR #258, PR #259 and PR #260 are verified normal-merge checkpoints; full
   local acceptance does not replace independent review, exact-head CI or
   production qualification.
 

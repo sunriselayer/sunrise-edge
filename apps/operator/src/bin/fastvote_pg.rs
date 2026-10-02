@@ -59,7 +59,10 @@ use hashing::HashSuiteResolver;
 use node_core::fast_path::records::{
     FastPathValidatorEntry, MAX_FASTPATH_ACTIVE_VALIDATORS, decode_fastpath_validator_set_record,
 };
-use node_core::fast_path::{self, FastPathEd25519Verifier, FastPathValidatorSetRecord};
+use node_core::fast_path::{
+    self, FastPathEd25519Verifier, FastPathValidatorSetRecord, FastVoteCommitteeError,
+    validate_fastvote_validator_set_record,
+};
 #[cfg(test)]
 use node_core::genesis::GenesisRootError;
 use node_core::genesis::VerifiedGenesisRoot;
@@ -98,7 +101,7 @@ use std::{
 #[cfg(test)]
 use sunrise_edge_client::GenesisTrustError;
 use sunrise_edge_client::load_verified_genesis_root;
-use validator_set::{ValidatorInfo, ValidatorSet};
+use validator_set::ValidatorSet;
 
 /// Generous bound on one encoded `FastVote` file (canonical frame overhead
 /// plus an ordinary chain id, several 32-byte digests and a 64-byte
@@ -290,35 +293,6 @@ fn require_committed_genesis_fee_policy(
         return Err("committed fee policy differs from the trusted genesis manifest".into());
     }
     Ok(policy)
-}
-
-// ---------------------------------------------------------------------
-// Validator-set conversion: maps the durable/manifest record shape onto
-// `validator_set::ValidatorSet`, exactly like `node_core::fast_path`'s own
-// (crate-private) conversion, rejecting a non-Ed25519 member and a context
-// mismatch.
-// ---------------------------------------------------------------------
-
-fn validator_set_from_record(
-    record: &FastPathValidatorSetRecord,
-    expected_context: &PublicationContext,
-) -> Result<ValidatorSet, String> {
-    if &record.context != expected_context {
-        return Err("fast-path validator set record context mismatch".into());
-    }
-    let mut info: Vec<ValidatorInfo> = Vec::with_capacity(record.validators.len());
-    for validator in &record.validators {
-        if validator.signature_scheme != SignatureSchemeId::Ed25519 {
-            return Err("fast-path phase 1 supports only Ed25519 validators".into());
-        }
-        info.push(ValidatorInfo {
-            id: validator.id,
-            voting_power: validator.voting_power,
-            signature_scheme: validator.signature_scheme,
-            public_key: validator.public_key.clone(),
-        });
-    }
-    ValidatorSet::new(expected_context.epoch(), info).map_err(|error| error.to_string())
 }
 
 /// Requires that `validator_id`/`public_key` are a registered Ed25519
@@ -855,7 +829,17 @@ fn run_assemble_certificate(
             let record: FastPathValidatorSetRecord =
                 decode_fastpath_validator_set_record(record_bytes)?;
             let validator_set: ValidatorSet =
-                validator_set_from_record(&record, &expected_context)?;
+                validate_fastvote_validator_set_record(&record, &expected_context).map_err(
+                    |error: FastVoteCommitteeError| match error {
+                        FastVoteCommitteeError::ContextMismatch => {
+                            "fast-path validator set record context mismatch".to_owned()
+                        }
+                        FastVoteCommitteeError::UnsupportedSignatureScheme { .. } => {
+                            "fast-path phase 1 supports only Ed25519 validators".to_owned()
+                        }
+                        FastVoteCommitteeError::InvalidSet(error) => error.to_string(),
+                    },
+                )?;
             reconcile_writer_fence(&pool, &namespace, &context)?;
             validator_set
         }
@@ -1333,7 +1317,7 @@ mod tests {
     }
 
     #[test]
-    fn validator_set_from_record_rejects_context_mismatch() {
+    fn shared_validator_set_validation_rejects_context_mismatch() {
         let (_, entry) = signer_entry(1);
         let record: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
             context: dummy_context(),
@@ -1345,8 +1329,11 @@ mod tests {
             Epoch::new(0),
         )
         .unwrap();
-        assert!(validator_set_from_record(&record, &other_context).is_err());
-        assert!(validator_set_from_record(&record, &dummy_context()).is_ok());
+        assert!(matches!(
+            validate_fastvote_validator_set_record(&record, &other_context),
+            Err(FastVoteCommitteeError::ContextMismatch)
+        ));
+        assert!(validate_fastvote_validator_set_record(&record, &dummy_context()).is_ok());
     }
 
     #[test]
