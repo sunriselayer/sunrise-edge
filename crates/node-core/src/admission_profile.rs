@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 
 use execution::publication::PublicationContext;
-use hashing::HashSuiteResolver;
 use protocol_types::{Digest32, HashPurpose};
 use runtime::{
     AtomicityDomainId, DurableOperationContext, StateRevision, VersionedStateReader,
@@ -26,6 +25,8 @@ use crate::logical_generation::{
     CommitmentProfile, InstalledCommitmentProfile, LogicalProfileRecord, fence_commitment_profile,
     logical_profile_key,
 };
+#[cfg(test)]
+use hashing::HashSuiteResolver;
 
 #[cfg(test)]
 mod tests;

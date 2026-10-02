@@ -5,8 +5,7 @@ use crate::genesis::tests::{
 };
 use crate::genesis::{GenesisCommitteeError, encode_genesis_manifest, genesis_manifest_commitment};
 use execution::publication::PublicationContext;
-use hashing::{HashSuite, HashSuiteSchedule};
-use protocol_types::{Epoch, ProtocolVersion, SignatureSchemeId};
+use protocol_types::{Epoch, HashSuite, HashSuiteSchedule, ProtocolVersion, SignatureSchemeId};
 
 /// Universal ZIP-215 noncanonical, small-order owner vector (see
 /// `crypto::owner_address`'s own copy): the canonical identity re-encoded
@@ -74,8 +73,10 @@ fn verify_bytes_authenticates_every_profile_and_matches_its_manifest() {
 #[test]
 fn wrong_pin_fails_with_commitment_mismatch_even_with_a_corrupted_signature() {
     let mut manifest: GenesisManifest = causal_bonded_manifest();
-    let bytes: Vec<u8> = encode_genesis_manifest(&manifest).unwrap();
+    // Mutate before encoding: the bytes actually tested below must carry the
+    // corrupted signature, not a stale pre-mutation snapshot.
     manifest.signature[0] ^= 0xFF;
+    let bytes: Vec<u8> = encode_genesis_manifest(&manifest).unwrap();
     let wrong_pin: [u8; 32] = pin(&freeze_bonded_manifest());
     let error: GenesisRootError =
         VerifiedGenesisRoot::verify_bytes(&resolver(), &bytes, wrong_pin, manifest.context())
@@ -86,9 +87,12 @@ fn wrong_pin_fails_with_commitment_mismatch_even_with_a_corrupted_signature() {
 #[test]
 fn wrong_context_fails_before_signature_is_even_checked() {
     let mut manifest: GenesisManifest = causal_bonded_manifest();
+    // Mutate before encoding/pinning: both the tested bytes and the matching
+    // pin must reflect the corrupted signature, so commitment passes and
+    // only the context check is actually exercised.
+    manifest.signature[0] ^= 0xFF;
     let bytes: Vec<u8> = encode_genesis_manifest(&manifest).unwrap();
     let digest: [u8; 32] = pin(&manifest);
-    manifest.signature[0] ^= 0xFF;
     let wrong_context: PublicationContext =
         PublicationContext::new(chain(), ProtocolVersion::new(3), Epoch::new(99)).unwrap();
     let error: GenesisRootError =
@@ -257,8 +261,8 @@ fn multidefect_precedence_commitment_before_context_before_signature_before_comm
     // Wrong pin + wrong context + bad signature: commitment wins.
     {
         let mut manifest: GenesisManifest = causal_bonded_manifest();
-        let bytes: Vec<u8> = encode_genesis_manifest(&manifest).unwrap();
         manifest.signature[0] ^= 0xFF;
+        let bytes: Vec<u8> = encode_genesis_manifest(&manifest).unwrap();
         let wrong_context: PublicationContext =
             PublicationContext::new(chain(), ProtocolVersion::new(3), Epoch::new(99)).unwrap();
         let wrong_pin: [u8; 32] = pin(&freeze_bonded_manifest());
@@ -270,9 +274,9 @@ fn multidefect_precedence_commitment_before_context_before_signature_before_comm
     // Correct pin, wrong context + bad signature: context wins.
     {
         let mut manifest: GenesisManifest = causal_bonded_manifest();
+        manifest.signature[0] ^= 0xFF;
         let bytes: Vec<u8> = encode_genesis_manifest(&manifest).unwrap();
         let digest: [u8; 32] = pin(&manifest);
-        manifest.signature[0] ^= 0xFF;
         let wrong_context: PublicationContext =
             PublicationContext::new(chain(), ProtocolVersion::new(3), Epoch::new(99)).unwrap();
         let error: GenesisRootError =

@@ -330,7 +330,6 @@ impl OrderedEconomicsPolicy {
             LocalExecutionPolicy::generic_object_results(self.context.clone());
         let authentication: CandidateAuthentication<'_> = CandidateAuthentication {
             policy: self,
-            resolver: &self.resolver,
             leg_policy: &leg_policy,
         };
         authenticate_with_policy(&authentication, candidate)
@@ -407,8 +406,15 @@ impl OrderedEconomicsPolicy {
 
 struct CandidateAuthentication<'a> {
     policy: &'a OrderedEconomicsPolicy,
-    resolver: &'a HashSuiteResolver,
     leg_policy: &'a LocalExecutionPolicy,
+}
+
+impl<'a> CandidateAuthentication<'a> {
+    /// Returns the sole current resolver, borrowed from `policy` rather than
+    /// carried as a separately caller-selected field (DR-0182).
+    fn resolver(&self) -> &'a HashSuiteResolver {
+        self.policy.resolver()
+    }
 }
 
 /// Immutable evidence about exact original bytes under this pinned policy.
@@ -638,7 +644,6 @@ pub fn authenticate_candidate(
 ) -> Result<(), OrderedEconomicsError> {
     let authentication: CandidateAuthentication<'_> = CandidateAuthentication {
         policy: env.policy,
-        resolver: env.resolver(),
         leg_policy: env.leg_policy,
     };
     authenticate_with_policy(&authentication, candidate)

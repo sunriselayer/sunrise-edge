@@ -2107,9 +2107,9 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     .confirm(store, context)
 }
 
-/// An unpublished result and its one explicit completion kind. A capacity
-/// probe only builds and drops this proposal; it never simulates confirmation
-/// through the handler capture adapter.
+/// An unpublished result and its one explicit completion kind, produced by
+/// the handler's actual read-only observation preparation. A capacity probe
+/// only builds and drops this proposal; it never simulates confirmation.
 struct PreparedEventCompletion {
     result: OrderedEventOutput,
     completion: PreparedEventWrite,

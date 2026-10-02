@@ -74,7 +74,7 @@ use runtime::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
-use validator_set::{ValidatorInfo, ValidatorSet};
+use validator_set::ValidatorSet;
 
 /// One complete authenticated-publication candidate supplied to reconstruction.
 /// Every field remains untrusted until the overlay independently verifies it.
@@ -412,24 +412,10 @@ pub fn owned_material_from_source_snapshot(
         ));
     }
 
-    let validator_members: Vec<ValidatorInfo> = plan
-        .genesis_root
-        .manifest()
-        .validator_set
-        .validators
-        .iter()
-        .map(|member| ValidatorInfo {
-            id: member.id,
-            voting_power: member.voting_power,
-            signature_scheme: member.signature_scheme,
-            public_key: member.public_key.clone(),
-        })
-        .collect();
-    let validator_set: ValidatorSet = ValidatorSet::new(
-        plan.genesis_root.manifest().context().epoch(),
-        validator_members,
-    )
-    .map_err(|_| invalid("signed genesis validator set is malformed"))?;
+    // The root already validated the original committee (DR-0182); no
+    // independent reconstruction from the manifest's raw validator-set
+    // record is needed or trusted here.
+    let validator_set: ValidatorSet = plan.genesis_root.genesis_committee().clone();
     let fast_certifier: FastPathCertifier = FastPathCertifier::new(
         chain.clone(),
         plan.genesis_root.manifest().context().protocol_version(),
@@ -1512,25 +1498,10 @@ impl<'a> BusinessReconstructionOverlay<'a> {
         &self,
         owned: &[OwnedPublicationMaterial],
     ) -> Result<Vec<VerifiedPublicationSemantic>, BusinessReconstructionError> {
-        let validators: Vec<ValidatorInfo> = self
-            .plan
-            .genesis_root
-            .manifest()
-            .validator_set
-            .validators
-            .iter()
-            .map(|validator| ValidatorInfo {
-                id: validator.id,
-                voting_power: validator.voting_power,
-                signature_scheme: validator.signature_scheme,
-                public_key: validator.public_key.clone(),
-            })
-            .collect();
-        let validator_set: ValidatorSet = ValidatorSet::new(
-            self.plan.genesis_root.manifest().context().epoch(),
-            validators,
-        )
-        .map_err(|_| invalid("pinned genesis validator set invalid"))?;
+        // The root already validated the original committee (DR-0182); no
+        // independent reconstruction from the manifest's raw validator-set
+        // record is needed or trusted here.
+        let validator_set: ValidatorSet = self.plan.genesis_root.genesis_committee().clone();
         let fast_certifier: FastPathCertifier = FastPathCertifier::new(
             self.plan
                 .genesis_root
@@ -2269,22 +2240,10 @@ fn normalize_carrier_rows(
     catalog: &[VerifiedPublicationSemantic],
     plan: &BusinessReconstructionPlan<'_>,
 ) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, BusinessReconstructionError> {
-    let validators: Vec<ValidatorInfo> = plan
-        .genesis_root
-        .manifest()
-        .validator_set
-        .validators
-        .iter()
-        .map(|member| ValidatorInfo {
-            id: member.id,
-            voting_power: member.voting_power,
-            signature_scheme: member.signature_scheme,
-            public_key: member.public_key.clone(),
-        })
-        .collect();
-    let validator_set: ValidatorSet =
-        ValidatorSet::new(plan.genesis_root.manifest().context().epoch(), validators)
-            .map_err(|_| invalid("carrier validator set invalid"))?;
+    // The root already validated the original committee (DR-0182); no
+    // independent reconstruction from the manifest's raw validator-set
+    // record is needed or trusted here.
+    let validator_set: ValidatorSet = plan.genesis_root.genesis_committee().clone();
     let fast: FastPathCertifier = FastPathCertifier::new(
         plan.genesis_root.manifest().context().chain_id().clone(),
         plan.genesis_root.manifest().context().protocol_version(),
