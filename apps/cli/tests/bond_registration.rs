@@ -138,10 +138,7 @@ impl Fixture {
             .iter()
             .find(|entry| entry.object.id == metadata.owner_coins[0].spend_coin)
             .unwrap();
-        assert_eq!(
-            source.object.owner,
-            Owner::Address(*signer.address().as_bytes())
-        );
+        assert_eq!(source.object.owner, Owner::Address(signer.address()));
         let source_ref: ObjectRef = object_ref(&resolver, &source.object, context.epoch());
         let scope: ProtocolCustodyScope = ProtocolCustodyScope {
             purpose: ProtocolCustodyPurpose::BondCollateral,
@@ -592,13 +589,13 @@ fn read_request(stream: &mut TcpStream) -> Result<ObservedRequest, String> {
     let path: String = first[1].to_string();
     let mut length: usize = 0;
     for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("content-length") {
-                length = value
-                    .trim()
-                    .parse::<usize>()
-                    .map_err(|error| error.to_string())?;
-            }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            length = value
+                .trim()
+                .parse::<usize>()
+                .map_err(|error| error.to_string())?;
         }
     }
     if length > sunrise_edge_client::ordered_economics::MAX_ORDERED_CANDIDATE_BYTES + 1024 {
