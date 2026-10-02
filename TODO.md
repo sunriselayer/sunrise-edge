@@ -72,33 +72,31 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   current serving and historical verification; remove duplicated mechanisms
   where a reviewed interface has actual consumers.
   [DR-0182](docs/architecture/decisions/0182-immutable-verified-genesis-root.md)
-  defines one immutable original genesis trust root binding its exact resolver,
-  profile and committee. Detailed Opus design APPROVE at `3e5c4b7` follows a
-  blocking first review and closes every actual consumer, historical policy
-  substitution and current-resolver composition boundary. Before/after v1/v2/
-  v3/v4 digest/anchor/profile/Freeze/economics baselines were actually recorded
-  before removal of the old constructors. Core, SDK/CLI and operator/HTTP
-  sources are integrated and old public constructor/loader call sites are
-  removed. Migration type/import defects are corrected. Full required local
-  acceptance now passes, including the frozen baseline, genuine root/installer/
-  historical-policy/schedule negatives, SDK before-I/O checks, compiled CLI,
-  real SQLite restoration/reopen/fencing/replay, independent vectors, native/WASM
-  and portable adapters. Immutable-boundary doctests name every field so missing
-  fields cannot masquerade as privacy proof. The wrong-epoch SDK fixture separately
-  authenticates its real signature before checking rejection. PR #259 merged
-  normally as `0bf99fd` after exact-head Opus APPROVE, required CI `36996436664`
-  and selected complete PostgreSQL CI `36996527437`. Original genesis trust is
-  not a completed current-serving or successor capability.
+  is implemented in [PR #259](https://github.com/sunriselayer/sunrise-edge/pull/259),
+  merged normally as `0bf99fdf` after fresh exact-head Opus APPROVE, required
+  CI `36996436664` and all five explicitly selected PostgreSQL lanes
+  `36996527437` passed at `9a934115`. One immutable original trust root binds
+  its exact resolver, profile and committee across core, SDK/CLI and operator/
+  HTTP consumers; old public constructors/loaders and independently replaceable
+  resolvers are removed. Full local acceptance passed, including genuine root/
+  installer/history/full-schedule negatives, authenticated wrong-epoch SDK
+  refusal before I/O, compiled CLI, real SQLite reopen/fencing/replay and
+  independent vectors/native/WASM/portable adapters. The v1-v4 frozen baseline
+  matches an actual rerun of the original constructors at immutable `b34f771`,
+  not expectations recomputed from the new implementation. Original genesis
+  trust still grants no current-serving or successor capability.
   [DR-0185](docs/architecture/decisions/0185-one-reconstruction-policy-binding.md)
-  establishes one private two-stage immutable root/policy/domain and signed
-  anchor relation for the actual overlay and control collector. Complete
-  resolver schedules remain checked; independent execution/history companions,
-  genuine control, saved-cut integrity and fresh destination completion keep
-  their separate authority and error order. The source implementation includes
-  public-control historical/full-schedule substitution and healthy completed
-  Freeze/DrainSet controls plus combined history/anchor-defect precedence.
-  Cargo acceptance, fresh exact-head review and required CI remain pending;
-  this is not Seal, serving or Delivery 3 completion.
+  and [PR #262](https://github.com/sunriselayer/sunrise-edge/pull/262) establish
+  one private two-stage immutable root/policy/domain and signed anchor relation
+  for the actual overlay and control collector. Complete resolver schedules
+  remain checked; independent execution/history companions, genuine control,
+  saved-cut integrity and fresh destination completion keep their own authority
+  and error order. Public-control historical/full-schedule substitution,
+  genuine completed Freeze/DrainSet positives and combined history/anchor
+  defect precedence are source assertions, not unexecuted test-pass claims.
+  Fresh read-only Codex fallback review approved pre-integration `5fafd16`;
+  actual Cargo/full required acceptance, integrated exact-head review and CI
+  remain pending. This is not Seal, serving or Delivery 3 completion.
 - [ ] Test/CI architecture: owner-specific fixture composition and a coherent
   gate registry/execution contract, preserving all required coverage.
   Closed executable plans and separately owned action recipes merged in PR #257.
@@ -110,13 +108,26 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   plan, with an executable reproducing negative control. Typed one-shot real
   SQLite handoff faults preserve each existing assertion and prove that the
   intended fault was actually consumed. Both complete final-head required and
-  selected PostgreSQL acceptance passed. Stronger all-owner blob/state equality
-  assertions are nonblocking review follow-ups, not silently waived evidence.
+  selected PostgreSQL acceptance passed.
+  [DR-0183](docs/architecture/decisions/0183-test-observation-ownership.md)
+  implements private reader/counter/capture ownership and complete same-engine
+  direct/prepared equality for fee, unbond, slash and registration. Genuine
+  distinct quorum voters remain separate from same-signer comparison mirrors;
+  actual before-state, prepared/direct completion and replay equality are
+  asserted without normalization. These raw storage-port body controls do not
+  claim blob-backed business execution. Seven writer-free tests, three actual
+  capture/counter controls, the complete required local gate, fresh exact-head
+  Codex fallback APPROVE and all required CI `37002824263` passed at `c5a684e`.
+  [PR #260](https://github.com/sunriselayer/sunrise-edge/pull/260) merged normally
+  as `fc41fd3` using the existing SSH identity; GitHub confirms merged state.
+  Its merge tree equals the reviewed head, local main equals origin/main and
+  the source branch is absent. No PostgreSQL requirement is added for private
+  test mechanics, and the PR-creation-only PAT was not reused for merge.
 - [ ] Independently reviewed, fully checked PR checkpoints; update this list
   from actual evidence, not skeleton compilation or file counts.
-  PR #257 and PR #258 are verified normal-merge checkpoints. The genesis-root
-  checkpoint is tracked separately in PR #259; full local acceptance does not
-  replace independent review, exact-head CI or production qualification.
+  PR #257, PR #258, PR #259 and PR #260 are verified normal-merge checkpoints; full
+  local acceptance does not replace independent review, exact-head CI or
+  production qualification.
 
 The remaining handoff interface partition now identifies namespace lifecycle,
 fresh serving resolution, epoch-scoped ordered safety, reconstruction

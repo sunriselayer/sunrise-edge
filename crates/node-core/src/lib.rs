@@ -6714,4 +6714,7 @@ fn take_nested_bytes<'a>(
 }
 
 #[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
 mod tests;

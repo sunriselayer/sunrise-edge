@@ -78,6 +78,7 @@
 - [DR-0180: architecture-first interfaces and owning implementations](0180-architecture-first-interface-contracts.md)
 - [DR-0181: writer-free business preparation and actual completion](0181-writer-free-operation-preparation.md)
 - [DR-0182: one immutable verified genesis root](0182-immutable-verified-genesis-root.md)
+- [DR-0183: test observation ownership and complete preparation equivalence](0183-test-observation-ownership.md)
 - [DR-0185: one immutable reconstruction policy binding owner](0185-one-reconstruction-policy-binding.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
