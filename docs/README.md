@@ -41,6 +41,7 @@ detailed design, operator guides, and specialist references live here.
 - [Closed PostgreSQL FastVote operator rehearsal](operations/fastvote-pg-rehearsal.md)
 - [Certified-only FastVote HTTP network and CLI quorum client](guides/fastvote-network.md)
 - [Ordered economics submission and signerless recovery](guides/ordered-economics.md)
+- [Prepare and submit an initial validator bond](guides/initial-validator-bond.md)
 - [Ordered Freeze and resumable signed frontier export](guides/frozen-frontier.md)
 - [Quorum-retained drain and explicit member recovery](guides/quorum-drain.md)
 - [Export and verify ordered history](guides/ordered-history.md)

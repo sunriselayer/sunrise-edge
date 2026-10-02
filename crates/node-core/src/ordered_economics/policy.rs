@@ -136,6 +136,7 @@ pub struct OrderedEconomicsPolicy {
     domain: AtomicityDomainId,
     genesis_digest: Digest32,
     admission_profile: Option<VerifiedAdmissionProfile>,
+    registration_economics: Option<crate::economics::FastPathEconomicsPolicy>,
     minimum_freeze_block_height: u64,
     anchor: Digest32,
     engine: ChainedHotStuff,
@@ -251,6 +252,12 @@ impl OrderedEconomicsPolicy {
             domain,
             genesis_digest,
             admission_profile,
+            registration_economics: genesis_manifest
+                .filter(|manifest| {
+                    manifest.commitment_profile
+                        == crate::logical_generation::CommitmentProfile::CausalAdmission
+                })
+                .map(|manifest| manifest.economics_policy.clone()),
             minimum_freeze_block_height,
             anchor,
             engine,
@@ -288,6 +295,13 @@ impl OrderedEconomicsPolicy {
     #[must_use]
     pub const fn admission_profile(&self) -> Option<&VerifiedAdmissionProfile> {
         self.admission_profile.as_ref()
+    }
+
+    /// Signed first-genesis economics authority for initial registration only.
+    pub(crate) fn registration_economics(
+        &self,
+    ) -> Option<&crate::economics::FastPathEconomicsPolicy> {
+        self.registration_economics.as_ref()
     }
 
     /// Whether fresh ordered signatures require committed causal prerequisites.
@@ -383,6 +397,14 @@ impl OrderedEconomicsPolicy {
                     decode_signed_bond_lifecycle_intent(bytes).map_err(receipt_digest_error)?;
                 bond_lifecycle_receipt_digest(&self.resolver, &signed.intent.context, bytes)
                     .map_err(receipt_digest_error)
+            }
+            OrderedOperationKind::BondRegistration => {
+                bond_lifecycle::registration::bond_registration_receipt_digest(
+                    &self.resolver,
+                    &candidate.context,
+                    bytes,
+                )
+                .map_err(receipt_digest_error)
             }
             OrderedOperationKind::BondSlash => {
                 let intent = decode_slash_intent(bytes).map_err(receipt_digest_error)?;
@@ -630,6 +652,7 @@ fn authenticate_with_policy(
     match candidate.kind {
         OrderedOperationKind::FeeClaim => authenticate_fee_claim(env, candidate),
         OrderedOperationKind::BondLifecycle => authenticate_bond_lifecycle(env, candidate),
+        OrderedOperationKind::BondRegistration => authenticate_bond_registration(env, candidate),
         OrderedOperationKind::BondSlash => authenticate_bond_slash(env, candidate),
         OrderedOperationKind::Evidence => authenticate_evidence(env, candidate),
         OrderedOperationKind::Freeze => authenticate_freeze(env, candidate),
@@ -865,6 +888,43 @@ fn authenticate_bond_lifecycle(
                 "bond replace legs require one sender and consecutive nonces",
             ));
         }
+    }
+    Ok(())
+}
+
+fn authenticate_bond_registration(
+    env: &CandidateAuthentication<'_>,
+    candidate: &OrderedCandidate,
+) -> Result<(), OrderedEconomicsError> {
+    let profile: &VerifiedAdmissionProfile =
+        env.policy
+            .admission_profile()
+            .ok_or(OrderedEconomicsError::Unauthenticated(
+                "registration requires pinned causal genesis",
+            ))?;
+    let economics =
+        env.policy
+            .registration_economics()
+            .ok_or(OrderedEconomicsError::Unauthenticated(
+                "registration signed resource policy missing",
+            ))?;
+    let (signed, _) = bond_lifecycle::registration::authenticate_registration(
+        env.resolver,
+        profile,
+        env.policy.engine().validator_set(),
+        economics,
+        env.leg_policy,
+        &candidate.intent,
+    )
+    .map_err(|_| {
+        OrderedEconomicsError::Unauthenticated("invalid initial bond registration authentication")
+    })?;
+    if signed.intent.context != candidate.context
+        || signed.intent.request_id != candidate.request_id
+    {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "registration candidate context or request mismatch",
+        ));
     }
     Ok(())
 }

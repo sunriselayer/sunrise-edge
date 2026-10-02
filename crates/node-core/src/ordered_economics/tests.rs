@@ -44,7 +44,7 @@ use validator_set::{ValidatorInfo, ValidatorSet};
 
 const REPLICAS: usize = 4;
 #[path = "tests/causal_placement.rs"]
-mod causal_placement;
+pub(crate) mod causal_placement;
 #[path = "tests/drain_boundaries.rs"]
 mod drain_boundaries;
 #[path = "tests/freeze_boundaries.rs"]

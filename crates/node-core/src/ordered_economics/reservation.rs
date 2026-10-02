@@ -179,6 +179,15 @@ pub(crate) fn ordered_causal_requirements(
                     .map(<[u8]>::to_vec),
             );
         }
+        OrderedOperationKind::BondRegistration => {
+            let signed = bond_lifecycle::registration::decode_signed_bond_registration_intent(
+                &candidate.intent,
+            )
+            .map_err(|_| {
+                OrderedEconomicsError::Unauthenticated("invalid registration candidate")
+            })?;
+            legs.push(signed.intent.leg);
+        }
         OrderedOperationKind::BondSlash => {
             let intent = bond_lifecycle::slash::decode_slash_intent(&candidate.intent)
                 .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid slash candidate"))?;
@@ -292,6 +301,32 @@ pub(crate) fn verify_causal_prerequisites<S: StructuredDurableDomainStateStore>(
                 .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid slash candidate"))?;
             verify_causal_leg(store, context, env, &intent.leg, plan, reads, head_reads)?;
         }
+        OrderedOperationKind::BondRegistration => {
+            use bond_lifecycle::registration::{BondRegistrationError, BondRegistrationRefusal};
+            match bond_lifecycle::registration::verify_registration_admission(
+                store, context, env, candidate, reads,
+            ) {
+                Ok(())
+                | Err(BondRegistrationError::Refused(BondRegistrationRefusal::AlreadyRegistered)) =>
+                    {}
+                Err(error) => return Err(bond_registration_failure(&error)),
+            }
+            let signed = bond_lifecycle::registration::decode_signed_bond_registration_intent(
+                &candidate.intent,
+            )
+            .map_err(|_| {
+                OrderedEconomicsError::Unauthenticated("invalid registration candidate")
+            })?;
+            verify_causal_leg(
+                store,
+                context,
+                env,
+                &signed.intent.leg,
+                plan,
+                reads,
+                head_reads,
+            )?;
+        }
         OrderedOperationKind::Evidence
         | OrderedOperationKind::Freeze
         | OrderedOperationKind::DrainSet => {}
@@ -388,6 +423,25 @@ pub(crate) fn reservation_plan(
                         }),
                     }
                 }
+            }
+        }
+        OrderedOperationKind::BondRegistration => {
+            let signed = bond_lifecycle::registration::decode_signed_bond_registration_intent(
+                &candidate.intent,
+            )
+            .map_err(|_| {
+                OrderedEconomicsError::Unauthenticated("invalid registration candidate")
+            })?;
+            let authenticated = authenticate(&signed.intent.leg)?;
+            let call = &authenticated.intent().call;
+            OrderedReservationPlan {
+                objects: vec![deposit_source(&authenticated)?],
+                nonce: Some(OrderedNonceLockHeld {
+                    sender: call.sender,
+                    epoch,
+                    first_nonce: call.nonce,
+                    count: 1,
+                }),
             }
         }
         OrderedOperationKind::BondLifecycle => {

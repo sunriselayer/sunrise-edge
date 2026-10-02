@@ -183,6 +183,18 @@ pub enum OrderedRefusal {
     AlreadyDrained,
     /// The declared selection differs from the committed Freeze or verified union.
     ForeignDrainSet,
+    /// A healthy immutable signed registration already roots this identity.
+    AlreadyRegistered,
+    /// A healthy admitted initial collateral leg trapped.
+    RegistrationTrapped,
+    /// Initial collateral execution produced forbidden effects.
+    RegistrationEffects,
+    /// Initial collateral amount is not a positive conserved u64.
+    RegistrationAmount,
+    /// Initial collateral policy is disabled or its minimum is not met.
+    RegistrationMinimum,
+    /// Initial collateral exceeds the committed maximum exposure.
+    RegistrationExposure,
 }
 
 impl OrderedRefusal {
@@ -203,6 +215,12 @@ impl OrderedRefusal {
             Self::NoFreeze => 12,
             Self::AlreadyDrained => 13,
             Self::ForeignDrainSet => 14,
+            Self::AlreadyRegistered => 15,
+            Self::RegistrationTrapped => 16,
+            Self::RegistrationEffects => 17,
+            Self::RegistrationAmount => 18,
+            Self::RegistrationMinimum => 19,
+            Self::RegistrationExposure => 20,
         }
     }
 
@@ -222,6 +240,12 @@ impl OrderedRefusal {
             12 => Ok(Self::NoFreeze),
             13 => Ok(Self::AlreadyDrained),
             14 => Ok(Self::ForeignDrainSet),
+            15 => Ok(Self::AlreadyRegistered),
+            16 => Ok(Self::RegistrationTrapped),
+            17 => Ok(Self::RegistrationEffects),
+            18 => Ok(Self::RegistrationAmount),
+            19 => Ok(Self::RegistrationMinimum),
+            20 => Ok(Self::RegistrationExposure),
             _ => Err(NodeCoreError::PersistenceInvariant(
                 "unknown ordered refusal tag",
             )),
@@ -252,6 +276,12 @@ impl OrderedRefusal {
             Self::ForeignDrainSet => {
                 "drain set union identity disagrees with the local ready union"
             }
+            Self::AlreadyRegistered => "validator already has a verified initial registration",
+            Self::RegistrationTrapped => "initial collateral leg trapped",
+            Self::RegistrationEffects => "initial collateral leg produced forbidden effects",
+            Self::RegistrationAmount => "initial collateral amount is not positive and conserved",
+            Self::RegistrationMinimum => "initial collateral minimum or enabled policy is not met",
+            Self::RegistrationExposure => "initial collateral exceeds committed maximum exposure",
         }
     }
 }
@@ -441,6 +471,26 @@ pub(crate) fn bond_lifecycle_failure(
     }
 }
 
+pub(crate) fn bond_registration_failure(
+    error: &bond_lifecycle::registration::BondRegistrationError,
+) -> OrderedEconomicsError {
+    use bond_lifecycle::registration::{BondRegistrationError, BondRegistrationRefusal};
+    match error {
+        BondRegistrationError::Refused(refusal) => OrderedEconomicsError::Refused(match refusal {
+            BondRegistrationRefusal::AlreadyRegistered => OrderedRefusal::AlreadyRegistered,
+            BondRegistrationRefusal::Trapped => OrderedRefusal::RegistrationTrapped,
+            BondRegistrationRefusal::ForbiddenEffects => OrderedRefusal::RegistrationEffects,
+            BondRegistrationRefusal::InvalidAmount => OrderedRefusal::RegistrationAmount,
+            BondRegistrationRefusal::BelowMinimum => OrderedRefusal::RegistrationMinimum,
+            BondRegistrationRefusal::AboveMaximum => OrderedRefusal::RegistrationExposure,
+            BondRegistrationRefusal::InitialRowMismatch => OrderedRefusal::SignedRowMismatch,
+        }),
+        BondRegistrationError::Node(inner) => node_failure(inner),
+        BondRegistrationError::Admission(inner) => admission_failure(inner),
+        _ => OrderedEconomicsError::Prerequisite(HANDLER_STOP),
+    }
+}
+
 pub(crate) fn equivocation_failure(
     error: &equivocation::EquivocationEvidenceError,
 ) -> OrderedEconomicsError {
@@ -452,3 +502,8 @@ pub(crate) fn equivocation_failure(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use tests::causal_placement::registration::{
+    RegisteredCutFixture, registered_cut_fixture,
+};

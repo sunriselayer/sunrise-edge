@@ -74,10 +74,33 @@ receipts, real commit-reply-loss/fence cases, independent vectors, bounded body
 corruption and compiled operator checks pass. The complete local npm ci and
 check-all.sh gate passed at 491c3388; independent exact-source review approved
 that head. [PR #252](https://github.com/sunriselayer/sunrise-edge/pull/252)
-records the feature/gate evidence. Hosted required CI and selected complete PG
-acceptance must actually pass before merge; this local evidence does not claim
-either result or a merge. Import provides no readiness, Seal, activation or
-deployed-provider authority.
+records the feature/gate evidence. Required CI `36933807173` and selected
+complete PostgreSQL acceptance `36933845654` passed before the normal merge
+`de6cf079`. Main's required CI `36942374347` also passed at `27f33a54`.
+Import provides no readiness, Seal, activation or deployed-provider authority.
+
+**Delivery 3 outlook:** the remaining functional work is estimated at 24–40
+focused engineering hours, with a provisional 2026-10-04–06 completion window
+including review, CI and fixes. This is not a release commitment. Ordered Seal
+safety and genuine multi-epoch unlock/withdrawal remain mandatory and can
+extend that estimate. Independent audit and initial-network startup are
+Delivery 4, not completed by Delivery 3 implementation.
+
+- [x] **Initial-validator registration design:** accepted
+  [DR-0179](docs/architecture/decisions/0179-initial-validator-bond-registration.md)
+  closes the missing first deposit for a genuinely new E. Existing Deposit
+  requires an Exited predecessor; genesis bonds are Active, and genesis cannot
+  seed arbitrary non-committee custody. The new owner uses an actually funded
+  generic contract leg and the new validator's real key, not fixture insertion,
+  forced Exited state or a Standard Asset-specific core privilege. The exact
+  design received independent approval before implementation.
+- [ ] **Initial-validator registration implementation and acceptance:**
+  integrate the owning kind-7 ordered path, SDK/CLI, genuine four-validator
+  funding/registration/replay, full source-free cut reconstruction and real
+  SQLite partial import/reopen/receipt-only replay/fencing. Independent final
+  exact-head review and the complete required gate remain necessary before
+  marking this feature complete. Registration alone grants no membership or
+  serving authority.
 
 - [ ] **Pre-code next feature design:**
   [Proposed DR-0177](docs/architecture/decisions/0177-conditional-readiness-and-ordered-seal.md)
@@ -115,8 +138,9 @@ reviewable commits; semantic changes stay with their owning feature.
   the same root API and unchanged implementation bodies. A typed wiring test
   covers all six supplied components; all 74 runtime tests and independent
   exact-source review pass. [PR #253](https://github.com/sunriselayer/sunrise-edge/pull/253)
-  tracks its required full local/hosted gates before merge. Transaction/object/
-  receipt/outbox/memory and node-core cleanup remain separate unfinished work.
+  passed its complete local gate and required CI `36934774194`, and merged
+  normally as `a4f5c48`. Transaction/object/receipt/outbox/memory and node-core
+  cleanup remain separate unfinished work.
 - [x] **Bounded artifact and configuration primitives:** SDK local-genesis
   verification and committee conversion now share `local_genesis`; CLI
   bounded reads, fresh reservations and held-handle synchronization share

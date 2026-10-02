@@ -108,6 +108,10 @@ roadmap describes a later target state.
   ([Proposed DR-0177](decisions/0177-conditional-readiness-and-ordered-seal.md)):
   pre-code readiness-only contract, fresh staging and bounded per-identity
   retention; Seal traversal and activation remain subsequent design work.
+- [Initial validator bond registration](initial-validator-bond.md)
+  ([DR-0179](decisions/0179-initial-validator-bond-registration.md)):
+  self-authenticated first collateral through generic custody and ordered
+  execution; no fabricated predecessor, membership or activation authority.
 - [Repository validation](repository-validation.md)
   ([DR-0172](decisions/0172-storage-neutral-required-validation.md)):
   four required storage-neutral lanes and separately selected complete PG

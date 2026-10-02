@@ -1185,6 +1185,13 @@ fn execute_candidate<S: StructuredDurableDomainStateStore>(
             candidate.request_id,
             bond_lifecycle_failure,
         ),
+        OrderedOperationKind::BondRegistration => dispatch(
+            bond_lifecycle::registration::handle_bond_registration_ordered(
+                staging, context, env, candidate, admission,
+            ),
+            candidate.request_id,
+            bond_registration_failure,
+        ),
         OrderedOperationKind::BondSlash => dispatch(
             bond_lifecycle::slash::handle_bond_slash_ordered(
                 staging,
