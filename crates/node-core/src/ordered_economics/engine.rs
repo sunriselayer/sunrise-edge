@@ -778,7 +778,7 @@ fn admission_transaction(
     writes: MergedWrites,
 ) -> Result<DurableInvocationTransaction, OrderedEconomicsError> {
     let synthetic: [u8; 32] = reservation::ordered_admission_request_id(
-        env.resolver,
+        env.resolver(),
         env.policy.context().epoch(),
         &admitted.request_id,
         admitted.digest,
@@ -813,7 +813,7 @@ fn require_admission_receipt<S: StructuredStateReader>(
     }
     let digest: Digest32 = env.policy.candidate_digest(candidate)?;
     let synthetic: [u8; 32] = reservation::ordered_admission_request_id(
-        env.resolver,
+        env.resolver(),
         env.policy.context().epoch(),
         &candidate.request_id,
         digest,
@@ -1158,7 +1158,7 @@ pub(super) fn execute_candidate<S: StructuredStateReader>(
                 env.blobs,
                 context,
                 domain,
-                env.resolver,
+                env.resolver(),
                 env.history,
                 env.policy.context(),
                 env.leg_policy,
@@ -1176,7 +1176,7 @@ pub(super) fn execute_candidate<S: StructuredStateReader>(
                 env.blobs,
                 context,
                 domain,
-                env.resolver,
+                env.resolver(),
                 env.history,
                 env.policy.context(),
                 env.leg_policy,
@@ -1201,7 +1201,7 @@ pub(super) fn execute_candidate<S: StructuredStateReader>(
                 env.blobs,
                 context,
                 domain,
-                env.resolver,
+                env.resolver(),
                 env.history,
                 env.policy.context(),
                 env.leg_policy,
@@ -1293,7 +1293,7 @@ fn execute_evidence_candidate<S: StructuredStateReader>(
             store,
             context,
             domain,
-            env.resolver,
+            env.resolver(),
             &chain,
             protocol_version,
             statement_a,
@@ -1312,7 +1312,7 @@ fn execute_evidence_candidate<S: StructuredStateReader>(
             store,
             context,
             domain,
-            env.resolver,
+            env.resolver(),
             &chain,
             protocol_version,
             statement_a,
@@ -1331,7 +1331,7 @@ fn execute_evidence_candidate<S: StructuredStateReader>(
             store,
             context,
             domain,
-            env.resolver,
+            env.resolver(),
             &chain,
             protocol_version,
             statement_a,
@@ -1405,7 +1405,7 @@ impl<'a> CommittedOrderedOperation<'a> {
         block: &'a CommittedBlock,
     ) -> Result<Self, OrderedEconomicsError> {
         let bytes: Vec<u8> = encode_ordered_candidate(candidate)?;
-        let digest: Digest32 = candidate_digest(env.resolver, candidate.context.epoch(), &bytes)?;
+        let digest: Digest32 = candidate_digest(env.resolver(), candidate.context.epoch(), &bytes)?;
         if block.transactions.as_slice() != [digest] {
             return Err(stop(
                 "committed operation differs from exact original material",
@@ -1716,7 +1716,7 @@ fn admit_candidate<S: StructuredStateReader>(
     let chain = env.policy.context().chain_id();
     let domain = env.policy.domain();
     let bytes = encode_ordered_candidate(candidate)?;
-    let digest = candidate_digest(env.resolver, candidate.context.epoch(), &bytes)?;
+    let digest = candidate_digest(env.resolver(), candidate.context.epoch(), &bytes)?;
     let mut writes: Vec<PendingWrite> = Vec::new();
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     let mut head_reads: Vec<DurableObjectHeadRead> = Vec::new();
@@ -1904,7 +1904,7 @@ pub(crate) fn reconstruction_drain_readiness_needed(
         store,
         context,
         env.policy.domain(),
-        env.resolver,
+        env.resolver(),
         env.policy.context(),
         &intent.selected_votes,
         &mut reads,
@@ -1983,7 +1983,7 @@ fn admit_candidate_for_signer_observed<S: StructuredStateReader>(
         // outcome query verify its immutable header and receipt. None of
         // these reads touches local readiness, reservations or fresh rows.
         let bytes: Vec<u8> = encode_ordered_candidate(candidate)?;
-        let digest: Digest32 = candidate_digest(env.resolver, candidate.context.epoch(), &bytes)?;
+        let digest: Digest32 = candidate_digest(env.resolver(), candidate.context.epoch(), &bytes)?;
         let header_key: Vec<u8> =
             ordered_request_header_key(env.policy.context().chain_id(), &candidate.request_id)?;
         let header_row: VersionedStateValue =
@@ -3129,7 +3129,7 @@ where
                     .ok_or_else(|| stop("Freeze preview lacks committed candidate"))?;
                 let committed: OrderedCandidate = decode_ordered_candidate(bytes)?;
                 if committed.context != *env.policy.context()
-                    || candidate_digest(env.resolver, committed.context.epoch(), bytes)?
+                    || candidate_digest(env.resolver(), committed.context.epoch(), bytes)?
                         != *committed_digest
                 {
                     return Err(stop("Freeze preview candidate context or digest differs"));

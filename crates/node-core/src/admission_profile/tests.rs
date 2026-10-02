@@ -3,12 +3,33 @@ use crate::genesis::tests::{
     causal_bonded_manifest, context, domain, expected_profile_row, freeze_bonded_manifest,
     logical_bonded_manifest, put_state, resolver,
 };
-use crate::genesis::{GenesisInstallOutcome, install_genesis};
+use crate::genesis::{
+    GenesisInstallOutcome, VerifiedGenesisRoot, encode_genesis_manifest, install_genesis,
+};
 use runtime::{
     AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, DurableCommitOutcome,
     DurableDomainStateStore, MemoryDurableStateStore, StateMutation, StateMutationEntry,
     StateReadAssertion, WriterFenceGeneration,
 };
+
+/// Test-only replacement for the removed public `from_pinned_genesis`
+/// authenticator: builds the one immutable root and returns its profile.
+fn verified_profile(
+    resolver: &HashSuiteResolver,
+    manifest: &GenesisManifest,
+    pinned_digest: Digest32,
+) -> Result<VerifiedAdmissionProfile, crate::genesis::GenesisRootError> {
+    let bytes: Vec<u8> =
+        encode_genesis_manifest(manifest).map_err(crate::genesis::GenesisRootError::Decode)?;
+    Ok(VerifiedGenesisRoot::verify_bytes(
+        resolver,
+        &bytes,
+        pinned_digest.bytes(),
+        manifest.context(),
+    )?
+    .admission_profile()
+    .clone())
+}
 
 fn installed() -> (
     MemoryDurableStateStore,
@@ -23,8 +44,7 @@ fn installed() -> (
         GenesisInstallOutcome::FreshInstall { .. }
     ));
     let pin: Digest32 = genesis_manifest_commitment(&resolver(), &manifest).unwrap();
-    let verified: VerifiedAdmissionProfile =
-        VerifiedAdmissionProfile::from_pinned_genesis(&resolver(), &manifest, pin).unwrap();
+    let verified: VerifiedAdmissionProfile = verified_profile(&resolver(), &manifest, pin).unwrap();
     (store, manifest, verified)
 }
 
@@ -56,7 +76,7 @@ fn lane_bit_is_fresh_signed_authority_and_synthetic_namespace_still_refuses() {
         require_external_request_lane(&verified, ExternalRequestLane::Owned, &[0; 32]).is_err()
     );
     for historical in [logical_bonded_manifest(), freeze_bonded_manifest()] {
-        let old: VerifiedAdmissionProfile = VerifiedAdmissionProfile::from_pinned_genesis(
+        let old: VerifiedAdmissionProfile = verified_profile(
             &resolver(),
             &historical,
             genesis_manifest_commitment(&resolver(), &historical).unwrap(),
@@ -74,7 +94,7 @@ fn profile_token_rejects_foreign_pin_bad_signature_and_relabeling() {
     let (_, mut manifest, verified) = installed();
     let historical: GenesisManifest = freeze_bonded_manifest();
     assert!(
-        VerifiedAdmissionProfile::from_pinned_genesis(
+        verified_profile(
             &resolver(),
             &manifest,
             genesis_manifest_commitment(&resolver(), &historical).unwrap()
@@ -83,18 +103,9 @@ fn profile_token_rejects_foreign_pin_bad_signature_and_relabeling() {
     );
     manifest.signature = historical.signature;
     let bad_pin: Digest32 = genesis_manifest_commitment(&resolver(), &manifest).unwrap();
-    assert!(
-        VerifiedAdmissionProfile::from_pinned_genesis(&resolver(), &manifest, bad_pin).is_err()
-    );
+    assert!(verified_profile(&resolver(), &manifest, bad_pin).is_err());
     manifest.commitment_profile = CommitmentProfile::LogicalGenerationV2;
-    assert!(
-        VerifiedAdmissionProfile::from_pinned_genesis(
-            &resolver(),
-            &manifest,
-            verified.genesis_digest()
-        )
-        .is_err()
-    );
+    assert!(verified_profile(&resolver(), &manifest, verified.genesis_digest()).is_err());
 }
 
 #[test]

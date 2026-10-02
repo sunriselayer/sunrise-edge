@@ -281,9 +281,7 @@ fn registration_claim_for_object(
         authorization_key: *e_id().as_bytes(),
     };
     let prepared = prepare_bond_registration(
-        &network.resolver,
-        &fixture.manifest,
-        network.policy.genesis_digest(),
+        &network.root,
         BondRegistrationPreparationRequest {
             context: fixture::protocol(),
             request_id: request,
@@ -301,13 +299,7 @@ fn registration_claim_for_object(
     };
     let bytes: Vec<u8> = encode_signed_bond_registration_intent(&signed).unwrap();
     assert_eq!(
-        verify_signed_bond_registration(
-            &network.resolver,
-            &fixture.manifest,
-            network.policy.genesis_digest(),
-            &bytes
-        )
-        .unwrap(),
+        verify_signed_bond_registration(&network.root, &bytes).unwrap(),
         signed
     );
     (
@@ -369,10 +361,8 @@ fn assert_registered(fixture: &CausalFixture, expected: &FastPathBondRecord) {
             &network.stores[replica],
             &network.context,
             network.domain(),
-            &network.resolver,
+            &network.root,
             &network.history,
-            &fixture.manifest,
-            network.policy.genesis_digest(),
             e_id(),
         )
         .unwrap();
@@ -747,12 +737,7 @@ fn initial_registration_genuine_future_nonce_and_tombstone_stop_without_metadata
             "registration requires canonical prime-order key"
         };
         assert!(matches!(
-            verify_signed_bond_registration(
-                &network.resolver,
-                &fixture.manifest,
-                network.policy.genesis_digest(),
-                &candidate.intent
-            ),
+            verify_signed_bond_registration(&network.root, &candidate.intent),
             Err(crate::bond_lifecycle::registration::BondRegistrationError::Invalid(message))
                 if message == reason
         ));

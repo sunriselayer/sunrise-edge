@@ -18,7 +18,6 @@ pub use control::{
 };
 
 use crate::NodeDedupRecord;
-use crate::admission_profile::VerifiedAdmissionProfile;
 use crate::fast_path::drain_publication::{drain_publication_artifact_key, drain_publication_key};
 use crate::fast_path::publication::witness::{
     DecodedLogicalWitness, DecodedObjectHeadObservation, DecodedObjectMutationKind,
@@ -32,7 +31,7 @@ use crate::fast_path::records::{
     decode_fastpath_availability_certificate_record, decode_fastpath_settlement_record,
     fastpath_availability_certificate_key,
 };
-use crate::genesis::{GenesisInstallOutcome, GenesisManifest};
+use crate::genesis::{GenesisInstallOutcome, VerifiedGenesisRoot};
 use crate::local_instance_state::fastpath_certificate_key;
 use crate::logical_generation::{
     LogicalKeySpace, LogicalObservation, LogicalProvenanceRecord, LogicalSubject,
@@ -42,6 +41,7 @@ use crate::ordered_economics::{
     OrderedEconomicsEnvironment, OrderedEconomicsError, OrderedEconomicsPolicy,
     OrderedHistoryComponentKind, OrderedHistoryHeightMaterial, OrderedHistoryIdentity,
     OrderedHistoryVerifier, OrderedOperationKind, decode_ordered_candidate,
+    ordered_economics_authority_anchor,
 };
 use crate::{MAX_AUTHENTICATED_OBJECT_BODY_BYTES, genesis};
 use canonical_encoding::{CanonicalStruct, decode_canonical_frame};
@@ -243,18 +243,15 @@ pub fn referenced_blob_digests(
 /// Engines and policies are borrowed, while the operation context is copied
 /// only into an isolated memory store. No source-store handle is accepted.
 pub struct BusinessReconstructionPlan<'a> {
-    /// Privately constructed from locally pinned signed genesis.
-    pub admission_profile: &'a VerifiedAdmissionProfile,
-    /// Exact signed genesis whose digest is pinned below.
-    pub genesis: &'a GenesisManifest,
-    /// Independently configured local genesis digest pin.
-    pub pinned_genesis_digest: Digest32,
+    /// One immutable verified genesis root (DR-0182): its manifest, digest,
+    /// admission profile, original committee and resolver are already
+    /// mutually consistent, so this plan no longer carries those as
+    /// independently supplied values that could disagree with each other.
+    pub genesis_root: &'a VerifiedGenesisRoot,
     /// Operational context used only for the private memory store.
     pub operation_context: DurableOperationContext,
     /// Fixed logical atomicity domain.
     pub domain: AtomicityDomainId,
-    /// Resolver at the signed genesis epoch.
-    pub resolver: &'a HashSuiteResolver,
     /// Locally trusted historical resolver schedule.
     pub resolver_history: &'a [HashSuiteResolver],
     /// Fixed ordered-consensus authority derived from this genesis.
@@ -289,8 +286,8 @@ pub fn owned_material_from_source_snapshot(
         let body_valid: bool = hashing::verify_digest(
             digest,
             HashPurpose::Object,
-            plan.genesis.context().protocol_version(),
-            plan.genesis.context().chain_id(),
+            plan.genesis_root.manifest().context().protocol_version(),
+            plan.genesis_root.manifest().context().chain_id(),
             bytes,
         )
         .map_err(|_| invalid("referenced source object blob hash is not verifiable"))?;
@@ -306,7 +303,7 @@ pub fn owned_material_from_source_snapshot(
             state.insert(key.clone(), bytes);
         }
     }
-    let chain = plan.genesis.context().chain_id();
+    let chain = plan.genesis_root.manifest().context().chain_id();
     let mut normal: BTreeMap<[u8; 32], FastPathPublicationRecord> = BTreeMap::new();
     let mut drain: BTreeMap<[u8; 32], FastPathPublicationRecord> = BTreeMap::new();
     let mut expected_artifacts: BTreeSet<Vec<u8>> = BTreeSet::new();
@@ -341,7 +338,7 @@ pub fn owned_material_from_source_snapshot(
         let Some(imported) = target else { continue };
         let retained: FastPathPublicationRecord = decode_fastpath_publication_record(bytes)
             .map_err(|_| invalid("retained publication record decoding failed"))?;
-        if retained.context != *plan.genesis.context() {
+        if retained.context != *plan.genesis_root.manifest().context() {
             return Err(invalid(
                 "retained publication context differs from pinned genesis",
             ));
@@ -416,7 +413,8 @@ pub fn owned_material_from_source_snapshot(
     }
 
     let validator_members: Vec<ValidatorInfo> = plan
-        .genesis
+        .genesis_root
+        .manifest()
         .validator_set
         .validators
         .iter()
@@ -427,20 +425,22 @@ pub fn owned_material_from_source_snapshot(
             public_key: member.public_key.clone(),
         })
         .collect();
-    let validator_set: ValidatorSet =
-        ValidatorSet::new(plan.genesis.context().epoch(), validator_members)
-            .map_err(|_| invalid("signed genesis validator set is malformed"))?;
+    let validator_set: ValidatorSet = ValidatorSet::new(
+        plan.genesis_root.manifest().context().epoch(),
+        validator_members,
+    )
+    .map_err(|_| invalid("signed genesis validator set is malformed"))?;
     let fast_certifier: FastPathCertifier = FastPathCertifier::new(
         chain.clone(),
-        plan.genesis.context().protocol_version(),
-        plan.genesis.context().epoch(),
+        plan.genesis_root.manifest().context().protocol_version(),
+        plan.genesis_root.manifest().context().epoch(),
         validator_set.clone(),
     )
     .map_err(|_| invalid("signed genesis FastVote authority is malformed"))?;
     let availability_certifier: AvailabilityCertifier = AvailabilityCertifier::new(
         chain.clone(),
-        plan.genesis.context().protocol_version(),
-        plan.genesis.context().epoch(),
+        plan.genesis_root.manifest().context().protocol_version(),
+        plan.genesis_root.manifest().context().epoch(),
         validator_set,
     )
     .map_err(|_| invalid("signed genesis availability authority is malformed"))?;
@@ -465,7 +465,7 @@ pub fn owned_material_from_source_snapshot(
             &bundle,
             &fast_certifier,
             &verifier,
-            plan.resolver,
+            plan.genesis_root.genesis_resolver(),
             plan.resolver_history,
         )
         .map_err(|_| invalid("retained publication certificate or artifact closure failed"))?;
@@ -502,7 +502,7 @@ pub fn owned_material_from_source_snapshot(
                 &alias_bundle,
                 &fast_certifier,
                 &verifier,
-                plan.resolver,
+                plan.genesis_root.genesis_resolver(),
                 plan.resolver_history,
             )
             .map_err(|_| invalid("DrainSet publication alias proof failed"))?;
@@ -598,7 +598,8 @@ pub fn owned_material_from_source_snapshot(
             }
             let settlement = decode_fastpath_settlement_record(state[&settlement_key])
                 .map_err(|_| invalid("applied settlement record malformed"))?;
-            if settlement.request_id != request_id || settlement.context != *plan.genesis.context()
+            if settlement.request_id != request_id
+                || settlement.context != *plan.genesis_root.manifest().context()
             {
                 return Err(invalid("applied settlement linkage differs"));
             }
@@ -666,7 +667,7 @@ fn bundle_from_retained_record(
     for entry in &manifest.entries {
         let key: Vec<u8> = if imported {
             drain_publication_artifact_key(
-                plan.genesis.context().chain_id(),
+                plan.genesis_root.manifest().context().chain_id(),
                 record.context.epoch(),
                 &record.request_id,
                 entry,
@@ -674,7 +675,7 @@ fn bundle_from_retained_record(
             .map_err(|_| invalid("DrainSet artifact key derivation failed"))?
         } else {
             fastpath_publication_artifact_key(
-                plan.genesis.context().chain_id(),
+                plan.genesis_root.manifest().context().chain_id(),
                 &record.request_id,
                 entry.kind,
                 &entry.content_digest.bytes(),
@@ -828,8 +829,9 @@ fn owned_material_is_ready(
     let decoded =
         crate::fast_path::publication::witness::decode_logical_witness(&material.bundle.witness)
             .map_err(|_| invalid("owned publication witness decoding failed"))?;
-    let profile_key: Vec<u8> = logical_profile_key(plan.genesis.context().chain_id())
-        .map_err(|_| invalid("logical profile key derivation failed"))?;
+    let profile_key: Vec<u8> =
+        logical_profile_key(plan.genesis_root.manifest().context().chain_id())
+            .map_err(|_| invalid("logical profile key derivation failed"))?;
     let profile_row = overlay
         .store
         .get_versioned_durable(&plan.operation_context, plan.domain, &profile_key)
@@ -840,7 +842,8 @@ fn owned_material_is_ready(
             .ok_or(invalid("private logical profile row missing"))?,
     )
     .map_err(|_| invalid("private logical profile row malformed"))?;
-    let keyspace: LogicalKeySpace<'_> = LogicalKeySpace::new(&profile, plan.resolver);
+    let keyspace: LogicalKeySpace<'_> =
+        LogicalKeySpace::new(&profile, plan.genesis_root.genesis_resolver());
     let mut expected_observations: BTreeMap<
         LogicalSubject,
         (
@@ -879,9 +882,10 @@ fn owned_material_is_ready(
                     return Ok(false);
                 };
                 let digest: Digest32 = plan
-                    .resolver
+                    .genesis_root
+                    .genesis_resolver()
                     .hash_for_purpose(
-                        plan.genesis.context().epoch(),
+                        plan.genesis_root.manifest().context().epoch(),
                         HashPurpose::ExecutionEffects,
                         bytes,
                     )
@@ -1008,8 +1012,8 @@ fn owned_material_is_ready(
     }
 
     let authenticated = execution::paid_execution::authenticate_paid_intent(
-        plan.resolver,
-        plan.genesis.context(),
+        plan.genesis_root.genesis_resolver(),
+        plan.genesis_root.manifest().context(),
         &material.bundle.signed_intent,
     )
     .map_err(|_| invalid("owned signed intent authentication failed"))?;
@@ -1025,8 +1029,8 @@ fn owned_material_is_ready(
         &overlay.store,
         &plan.operation_context,
         plan.domain,
-        plan.genesis.context().chain_id(),
-        plan.genesis.context().protocol_version(),
+        plan.genesis_root.manifest().context().chain_id(),
+        plan.genesis_root.manifest().context().protocol_version(),
         intent.sender,
         intent.context.epoch(),
     )?;
@@ -1038,8 +1042,8 @@ fn owned_material_is_ready(
         epoch: intent.context.epoch(),
     };
     let nonce_row_key: Vec<u8> = PersistenceLayout::new(
-        plan.genesis.context().chain_id().clone(),
-        plan.genesis.context().protocol_version(),
+        plan.genesis_root.manifest().context().chain_id().clone(),
+        plan.genesis_root.manifest().context().protocol_version(),
     )
     .sender_nonce_key(intent.sender, intent.context.epoch());
     if decoded.nonce.key != nonce_row_key {
@@ -1184,8 +1188,8 @@ impl<'a> BusinessReconstructionOverlay<'a> {
             .map_err(|_| invalid("owned witness decode failed during replay"))?;
             let decoded_outputs: Vec<(LogicalSubject, LogicalObservation)> = logical_outputs(
                 &witness,
-                self.plan.resolver,
-                self.plan.genesis.context().epoch(),
+                self.plan.genesis_root.genesis_resolver(),
+                self.plan.genesis_root.manifest().context().epoch(),
             )?;
             let first_output: LogicalSubject = decoded_outputs
                 .first()
@@ -1294,7 +1298,6 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                     .map_err(|_| invalid("ordered candidate decoding failed"))?;
                 let environment: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
                     policy: self.plan.ordered_policy,
-                    resolver: self.plan.resolver,
                     history: self.plan.resolver_history,
                     leg_policy: self.plan.ordered_leg_policy,
                     engine: self.plan.ordered_engine,
@@ -1322,7 +1325,6 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                         let barrier_environment: OrderedEconomicsEnvironment<'_> =
                             OrderedEconomicsEnvironment {
                                 policy: self.plan.ordered_policy,
-                                resolver: self.plan.resolver,
                                 history: self.plan.resolver_history,
                                 leg_policy: self.plan.ordered_leg_policy,
                                 engine: self.plan.ordered_engine,
@@ -1380,7 +1382,6 @@ impl<'a> BusinessReconstructionOverlay<'a> {
 
             let environment: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
                 policy: self.plan.ordered_policy,
-                resolver: self.plan.resolver,
                 history: self.plan.resolver_history,
                 leg_policy: self.plan.ordered_leg_policy,
                 engine: self.plan.ordered_engine,
@@ -1513,7 +1514,8 @@ impl<'a> BusinessReconstructionOverlay<'a> {
     ) -> Result<Vec<VerifiedPublicationSemantic>, BusinessReconstructionError> {
         let validators: Vec<ValidatorInfo> = self
             .plan
-            .genesis
+            .genesis_root
+            .manifest()
             .validator_set
             .validators
             .iter()
@@ -1524,20 +1526,40 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 public_key: validator.public_key.clone(),
             })
             .collect();
-        let validator_set: ValidatorSet =
-            ValidatorSet::new(self.plan.genesis.context().epoch(), validators)
-                .map_err(|_| invalid("pinned genesis validator set invalid"))?;
+        let validator_set: ValidatorSet = ValidatorSet::new(
+            self.plan.genesis_root.manifest().context().epoch(),
+            validators,
+        )
+        .map_err(|_| invalid("pinned genesis validator set invalid"))?;
         let fast_certifier: FastPathCertifier = FastPathCertifier::new(
-            self.plan.genesis.context().chain_id().clone(),
-            self.plan.genesis.context().protocol_version(),
-            self.plan.genesis.context().epoch(),
+            self.plan
+                .genesis_root
+                .manifest()
+                .context()
+                .chain_id()
+                .clone(),
+            self.plan
+                .genesis_root
+                .manifest()
+                .context()
+                .protocol_version(),
+            self.plan.genesis_root.manifest().context().epoch(),
             validator_set.clone(),
         )
         .map_err(|_| invalid("pinned FastVote authority invalid"))?;
         let availability_certifier: AvailabilityCertifier = AvailabilityCertifier::new(
-            self.plan.genesis.context().chain_id().clone(),
-            self.plan.genesis.context().protocol_version(),
-            self.plan.genesis.context().epoch(),
+            self.plan
+                .genesis_root
+                .manifest()
+                .context()
+                .chain_id()
+                .clone(),
+            self.plan
+                .genesis_root
+                .manifest()
+                .context()
+                .protocol_version(),
+            self.plan.genesis_root.manifest().context().epoch(),
             validator_set,
         )
         .map_err(|_| invalid("pinned availability authority invalid"))?;
@@ -1561,7 +1583,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 bundle,
                 &fast_certifier,
                 &verifier,
-                self.plan.resolver,
+                self.plan.genesis_root.genesis_resolver(),
                 self.plan.resolver_history,
             )
             .map_err(|_| invalid("owned publication certificate or closure failed"))?;
@@ -1572,13 +1594,13 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 return Err(invalid("owned publication verified identity mismatch"));
             }
             let authenticated = execution::paid_execution::authenticate_paid_intent(
-                self.plan.resolver,
-                self.plan.genesis.context(),
+                self.plan.genesis_root.genesis_resolver(),
+                self.plan.genesis_root.manifest().context(),
                 &bundle.signed_intent,
             )
             .map_err(|_| invalid("owned paid intent authentication failed"))?;
             if authenticated.intent().request_id != bundle.request_id
-                || authenticated.intent().context != *self.plan.genesis.context()
+                || authenticated.intent().context != *self.plan.genesis_root.manifest().context()
                 || bundle.request_id[0] & 0x80 != 0
             {
                 return Err(invalid(
@@ -1673,8 +1695,12 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 &self.store,
                 &self.plan.operation_context,
                 self.plan.domain,
-                self.plan.genesis.context().chain_id(),
-                self.plan.genesis.context().protocol_version(),
+                self.plan.genesis_root.manifest().context().chain_id(),
+                self.plan
+                    .genesis_root
+                    .manifest()
+                    .context()
+                    .protocol_version(),
                 nonce.sender,
                 nonce.epoch,
             )?;
@@ -1696,7 +1722,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 add_unique_applied_state_producer(works, index, &mut roots)?;
             }
             let instance_key: Vec<u8> = crate::local_instance_state::instance_record_key(
-                self.plan.genesis.context().chain_id(),
+                self.plan.genesis_root.manifest().context().chain_id(),
                 &call.instance.creator,
                 &call.instance.seed,
             )
@@ -1734,7 +1760,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
         }
         if let Some(request_id) = requirements.fee_escrow_request_id {
             let key: Vec<u8> = crate::local_instance_state::fastpath_settlement_key(
-                self.plan.genesis.context().chain_id(),
+                self.plan.genesis_root.manifest().context().chain_id(),
                 &request_id,
             )
             .map_err(|_| invalid("fee escrow producer key derivation failed"))?;
@@ -1846,11 +1872,11 @@ fn apply_owned_closure(
                     &overlay.blobs,
                     &overlay.plan.operation_context,
                     overlay.plan.domain,
-                    overlay.plan.resolver,
+                    overlay.plan.genesis_root.genesis_resolver(),
                     overlay.plan.resolver_history,
-                    overlay.plan.genesis.context(),
+                    overlay.plan.genesis_root.manifest().context(),
                     overlay.plan.paid_base_policy,
-                    &overlay.plan.genesis.fee_policy,
+                    &overlay.plan.genesis_root.manifest().fee_policy,
                     overlay.plan.paid_engine,
                     &work.material.bundle.signed_intent,
                     &certificate,
@@ -1872,11 +1898,11 @@ fn apply_owned_closure(
                     &overlay.blobs,
                     &overlay.plan.operation_context,
                     overlay.plan.domain,
-                    overlay.plan.resolver,
+                    overlay.plan.genesis_root.genesis_resolver(),
                     overlay.plan.resolver_history,
-                    overlay.plan.genesis.context(),
+                    overlay.plan.genesis_root.manifest().context(),
                     overlay.plan.paid_base_policy,
-                    &overlay.plan.genesis.fee_policy,
+                    &overlay.plan.genesis_root.manifest().fee_policy,
                     overlay.plan.paid_engine,
                     work.material.bundle.request_id,
                     work.material.recovery_created_checkpoint,
@@ -2125,7 +2151,7 @@ fn source_retention_keys(
     let mut retained: BTreeSet<Vec<u8>> = BTreeSet::new();
     for material in materials {
         let request: [u8; 32] = material.bundle.request_id;
-        let chain = plan.genesis.context().chain_id();
+        let chain = plan.genesis_root.manifest().context().chain_id();
         let normal_key: Vec<u8> = fastpath_publication_key(chain, &request)
             .map_err(|_| invalid("normal publication key derivation failed"))?;
         let drain_key: Vec<u8> =
@@ -2220,12 +2246,15 @@ fn carrier_keys(
     for item in catalog {
         if item.applied {
             keys.insert(
-                fastpath_certificate_key(plan.genesis.context().chain_id(), &item.request_id)
-                    .map_err(|_| invalid("application certificate key derivation failed"))?,
+                fastpath_certificate_key(
+                    plan.genesis_root.manifest().context().chain_id(),
+                    &item.request_id,
+                )
+                .map_err(|_| invalid("application certificate key derivation failed"))?,
             );
             keys.insert(
                 fastpath_availability_certificate_key(
-                    plan.genesis.context().chain_id(),
+                    plan.genesis_root.manifest().context().chain_id(),
                     &item.request_id,
                 )
                 .map_err(|_| invalid("availability certificate key derivation failed"))?,
@@ -2241,7 +2270,8 @@ fn normalize_carrier_rows(
     plan: &BusinessReconstructionPlan<'_>,
 ) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, BusinessReconstructionError> {
     let validators: Vec<ValidatorInfo> = plan
-        .genesis
+        .genesis_root
+        .manifest()
         .validator_set
         .validators
         .iter()
@@ -2252,30 +2282,33 @@ fn normalize_carrier_rows(
             public_key: member.public_key.clone(),
         })
         .collect();
-    let validator_set: ValidatorSet = ValidatorSet::new(plan.genesis.context().epoch(), validators)
-        .map_err(|_| invalid("carrier validator set invalid"))?;
+    let validator_set: ValidatorSet =
+        ValidatorSet::new(plan.genesis_root.manifest().context().epoch(), validators)
+            .map_err(|_| invalid("carrier validator set invalid"))?;
     let fast: FastPathCertifier = FastPathCertifier::new(
-        plan.genesis.context().chain_id().clone(),
-        plan.genesis.context().protocol_version(),
-        plan.genesis.context().epoch(),
+        plan.genesis_root.manifest().context().chain_id().clone(),
+        plan.genesis_root.manifest().context().protocol_version(),
+        plan.genesis_root.manifest().context().epoch(),
         validator_set.clone(),
     )
     .map_err(|_| invalid("carrier FastVote authority invalid"))?;
     let availability: AvailabilityCertifier = AvailabilityCertifier::new(
-        plan.genesis.context().chain_id().clone(),
-        plan.genesis.context().protocol_version(),
-        plan.genesis.context().epoch(),
+        plan.genesis_root.manifest().context().chain_id().clone(),
+        plan.genesis_root.manifest().context().protocol_version(),
+        plan.genesis_root.manifest().context().epoch(),
         validator_set,
     )
     .map_err(|_| invalid("carrier availability authority invalid"))?;
     let verifier: ReconstructionEd25519Verifier = ReconstructionEd25519Verifier;
     let mut normalized: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
     for item in catalog {
-        let certificate_key: Vec<u8> =
-            fastpath_certificate_key(plan.genesis.context().chain_id(), &item.request_id)
-                .map_err(|_| invalid("application certificate key derivation failed"))?;
+        let certificate_key: Vec<u8> = fastpath_certificate_key(
+            plan.genesis_root.manifest().context().chain_id(),
+            &item.request_id,
+        )
+        .map_err(|_| invalid("application certificate key derivation failed"))?;
         let availability_key: Vec<u8> = fastpath_availability_certificate_key(
-            plan.genesis.context().chain_id(),
+            plan.genesis_root.manifest().context().chain_id(),
             &item.request_id,
         )
         .map_err(|_| invalid("availability certificate key derivation failed"))?;
@@ -2371,34 +2404,49 @@ impl<'a> BusinessReconstructionOverlay<'a> {
     /// Verifies the signed-v4 causal-admission pin and installs genesis into a
     /// fresh private store. The supplied context/domain cannot select genesis.
     pub fn new(plan: BusinessReconstructionPlan<'a>) -> Result<Self, BusinessReconstructionError> {
-        if !plan.admission_profile.is_causal()
-            || plan.admission_profile.commitment_profile() != plan.genesis.commitment_profile
-            || plan.admission_profile.context() != plan.genesis.context()
-            || plan.admission_profile.genesis_digest() != plan.pinned_genesis_digest
-            || plan.resolver.chain_id() != plan.genesis.context().chain_id()
-            || plan.resolver.protocol_version() != plan.genesis.context().protocol_version()
-            || plan.ordered_policy.context() != plan.genesis.context()
+        // `plan.genesis_root` is one immutable `VerifiedGenesisRoot`
+        // (DR-0182): its manifest, digest, admission profile, original
+        // committee and resolver are already mutually consistent by
+        // construction, so disagreement among those specific values is
+        // unrepresentable here and is no longer independently re-checked.
+        // The still-independent policy/history/domain inputs below are not
+        // guaranteed by the root and keep their real cross-checks.
+        if !plan.genesis_root.admission_profile().is_causal()
+            || plan.ordered_policy.context() != plan.genesis_root.manifest().context()
             || plan.ordered_policy.domain() != plan.domain
-            || plan.ordered_policy.genesis_digest() != plan.pinned_genesis_digest
-            || plan.ordered_history_identity.context != *plan.genesis.context()
+            || plan.ordered_policy.genesis_digest() != plan.genesis_root.digest()
+            || plan.ordered_policy.resolver().schedules()
+                != plan.genesis_root.genesis_resolver().schedules()
+            || plan.ordered_policy.engine().validator_set() != plan.genesis_root.genesis_committee()
+            || plan.ordered_history_identity.context != *plan.genesis_root.manifest().context()
             || plan.ordered_history_identity.domain != plan.domain
-            || plan.ordered_history_identity.genesis_digest != plan.pinned_genesis_digest
+            || plan.ordered_history_identity.genesis_digest != plan.genesis_root.digest()
             || plan.ordered_history_identity.anchor != plan.ordered_policy.anchor()
-            || plan.ordered_leg_policy.context() != plan.genesis.context()
-            || plan.paid_base_policy.context() != plan.genesis.context()
-            || plan.genesis.fee_policy.context != *plan.genesis.context()
+            || plan.ordered_leg_policy.context() != plan.genesis_root.manifest().context()
+            || plan.paid_base_policy.context() != plan.genesis_root.manifest().context()
+            || plan.genesis_root.manifest().fee_policy.context
+                != *plan.genesis_root.manifest().context()
         {
             return Err(invalid("trusted genesis/profile/policy pins disagree"));
         }
-        let recomputed: VerifiedAdmissionProfile = VerifiedAdmissionProfile::from_pinned_genesis(
-            plan.resolver,
-            plan.genesis,
-            plan.pinned_genesis_digest,
+        // An internally consistent historical policy/archive pair cannot
+        // substitute for a signed causal root merely by copying its digest,
+        // domain and committee bytes: the policy's own anchor must equal the
+        // canonical anchor independently re-derived from exactly this root
+        // (including its signed Freeze height), which only a genuinely
+        // root-derived policy can satisfy.
+        let expected_anchor: Digest32 = ordered_economics_authority_anchor(
+            plan.genesis_root.genesis_resolver(),
+            plan.genesis_root.manifest().context(),
+            plan.domain,
+            plan.genesis_root.digest(),
+            plan.genesis_root.manifest().minimum_freeze_block_height,
+            plan.genesis_root.genesis_committee(),
         )
-        .map_err(|_| invalid("signed causal-admission genesis verification failed"))?;
-        if &recomputed != plan.admission_profile {
+        .map_err(|_| invalid("genesis root anchor could not be derived"))?;
+        if plan.ordered_policy.anchor() != expected_anchor {
             return Err(invalid(
-                "verified admission capability differs from genesis",
+                "ordered policy anchor does not match the genesis root",
             ));
         }
         let store: MemoryDurableStateStore =
@@ -2407,9 +2455,9 @@ impl<'a> BusinessReconstructionOverlay<'a> {
             &store,
             &plan.operation_context,
             plan.domain,
-            plan.resolver,
+            plan.genesis_root.genesis_resolver(),
             plan.resolver_history,
-            plan.genesis,
+            plan.genesis_root.manifest(),
             0,
         )
         .map_err(|_| invalid("private signed-genesis installation failed"))?;
@@ -2419,14 +2467,15 @@ impl<'a> BusinessReconstructionOverlay<'a> {
             }
             | GenesisInstallOutcome::VerifiedExisting {
                 manifest_digest, ..
-            } if manifest_digest == plan.pinned_genesis_digest => {}
+            } if manifest_digest == plan.genesis_root.digest() => {}
             _ => return Err(invalid("private genesis install returned another digest")),
         }
+        let genesis_digest: Digest32 = plan.genesis_root.digest();
         Ok(Self {
             plan,
             store,
             blobs: MemoryBlobStore::default(),
-            genesis_digest: recomputed.genesis_digest(),
+            genesis_digest,
             reconstruction_started: false,
             reconstruction_complete: false,
             publication_catalog: None,

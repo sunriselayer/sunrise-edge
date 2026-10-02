@@ -117,12 +117,17 @@ fn causal_wrong_lane_prepare_direct_paid_and_recovery_refuse_without_writes_or_s
     };
     let before = full_snapshot(&store);
     let wrong: Vec<u8> = transfer_bytes(&fixture, 0x91, next_nonce(&store));
-    let verified: VerifiedAdmissionProfile = VerifiedAdmissionProfile::from_pinned_genesis(
+    let verified: VerifiedAdmissionProfile = crate::genesis::VerifiedGenesisRoot::verify_bytes(
         &resolver(),
-        &manifest,
-        crate::genesis::genesis_manifest_commitment(&resolver(), &manifest).unwrap(),
+        &crate::genesis::encode_genesis_manifest(&manifest).unwrap(),
+        crate::genesis::genesis_manifest_commitment(&resolver(), &manifest)
+            .unwrap()
+            .bytes(),
+        manifest.context(),
     )
-    .unwrap();
+    .unwrap()
+    .admission_profile()
+    .clone();
     assert!(
         crate::paid_execution::authenticate_paid_execution_with_profile(
             &resolver(),
@@ -207,12 +212,17 @@ fn causal_wrong_lane_prepare_direct_paid_and_recovery_refuse_without_writes_or_s
 fn causal_imported_owned_material_wrong_lane_refuses_pure_and_retention_without_ack() {
     let store: MemoryDurableStateStore = memory_store();
     let (_, manifest, signers) = causal_fixture(&store, 10);
-    let verified: VerifiedAdmissionProfile = VerifiedAdmissionProfile::from_pinned_genesis(
+    let verified: VerifiedAdmissionProfile = crate::genesis::VerifiedGenesisRoot::verify_bytes(
         &resolver(),
-        &manifest,
-        crate::genesis::genesis_manifest_commitment(&resolver(), &manifest).unwrap(),
+        &crate::genesis::encode_genesis_manifest(&manifest).unwrap(),
+        crate::genesis::genesis_manifest_commitment(&resolver(), &manifest)
+            .unwrap()
+            .bytes(),
+        manifest.context(),
     )
-    .unwrap();
+    .unwrap()
+    .admission_profile()
+    .clone();
     let (bundle, _): (PublicationBundle, FastCertificate) =
         transfer_bundle_bytes(0x92, FIRST_PAID_NONCE);
     let certifier: consensus::FastPathCertifier = certifier(installed_validator_set());

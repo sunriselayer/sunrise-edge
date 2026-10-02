@@ -96,15 +96,18 @@ fn setup_fixture_configure(
             .unwrap(),
     )
     .unwrap();
-    let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
-        fixture::protocol(),
-        fixture::domain(),
-        genesis::genesis_manifest_commitment(&fixture::resolver(), &manifest).unwrap(),
-        Some(&manifest),
-        validator_set(&signers),
-        fixture::resolver(),
+    let manifest_bytes: Vec<u8> = genesis::encode_genesis_manifest(&manifest).unwrap();
+    let manifest_digest: Digest32 =
+        genesis::genesis_manifest_commitment(&fixture::resolver(), &manifest).unwrap();
+    let root: genesis::VerifiedGenesisRoot = genesis::VerifiedGenesisRoot::verify_bytes(
+        &fixture::resolver(),
+        &manifest_bytes,
+        manifest_digest.bytes(),
+        manifest.context(),
     )
     .unwrap();
+    let policy: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(&root, fixture::domain()).unwrap();
     let init = &manifest.initialization.intent.call;
     let instance: InstanceRecord = InstanceRecord {
         context: init.context.clone(),
@@ -117,6 +120,7 @@ fn setup_fixture_configure(
     let network: Network = Network {
         stores,
         context,
+        root,
         policy,
         leg_policy: LocalExecutionPolicy::generic_object_results(fixture::protocol()),
         engine: LocalWasmExecutionEngine::new(),

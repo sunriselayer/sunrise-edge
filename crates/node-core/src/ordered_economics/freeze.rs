@@ -197,7 +197,7 @@ pub(crate) fn require_freeze_warrant<S: StructuredStateReader + ?Sized>(
         store,
         context,
         env.policy.domain(),
-        env.resolver,
+        env.resolver(),
         env.policy.context().chain_id(),
         env.policy.context().protocol_version(),
         current_epoch,

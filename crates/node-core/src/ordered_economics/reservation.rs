@@ -200,7 +200,7 @@ pub(crate) fn ordered_causal_requirements(
     let authenticated: Vec<AuthenticatedLocalExecutionIntent> = legs
         .into_iter()
         .map(|bytes| {
-            authenticate_local_execution(env.resolver, env.leg_policy, &bytes).map_err(|_| {
+            authenticate_local_execution(env.resolver(), env.leg_policy, &bytes).map_err(|_| {
                 OrderedEconomicsError::Unauthenticated("invalid causal prerequisite leg")
             })
         })
@@ -345,7 +345,7 @@ fn verify_causal_leg<S: StructuredStateReader>(
     head_reads: &mut Vec<DurableObjectHeadRead>,
 ) -> Result<(), OrderedEconomicsError> {
     let leg: AuthenticatedLocalExecutionIntent =
-        authenticate_local_execution(env.resolver, env.leg_policy, bytes)
+        authenticate_local_execution(env.resolver(), env.leg_policy, bytes)
             .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid ordered candidate leg"))?;
     let reserved: Vec<ObjectRef> = plan
         .objects
@@ -361,7 +361,7 @@ fn verify_causal_leg<S: StructuredStateReader>(
         .cloned()
         .collect();
     crate::local_execution::verify_ordered_leg_prerequisites(
-        store, env.blobs, context, env.policy.domain(), env.resolver, env.history,
+        store, env.blobs, context, env.policy.domain(), env.resolver(), env.history,
         env.leg_policy, &leg, &reserved, reads, head_reads,
     ).map_err(|_| OrderedEconomicsError::Prerequisite(
         "ordered admission requires verified exact executable/source material; recovery required",
@@ -380,7 +380,7 @@ pub(crate) fn reservation_plan(
     let epoch: Epoch = candidate.context.epoch();
     let authenticate =
         |leg: &[u8]| -> Result<AuthenticatedLocalExecutionIntent, OrderedEconomicsError> {
-            authenticate_local_execution(env.resolver, env.leg_policy, leg).map_err(|_| {
+            authenticate_local_execution(env.resolver(), env.leg_policy, leg).map_err(|_| {
                 OrderedEconomicsError::Unauthenticated("invalid ordered candidate leg signature")
             })
         };

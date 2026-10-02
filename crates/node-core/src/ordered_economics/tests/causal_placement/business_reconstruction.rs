@@ -30,12 +30,9 @@ pub(super) fn reconstruction_plan<'a>(
 ) -> BusinessReconstructionPlan<'a> {
     let network: &Network = &fixture.network;
     BusinessReconstructionPlan {
-        admission_profile: network.policy.admission_profile().unwrap(),
-        genesis: &fixture.manifest,
-        pinned_genesis_digest: network.policy.genesis_digest(),
+        genesis_root: &network.root,
         operation_context: network.context,
         domain: network.domain(),
-        resolver: &network.resolver,
         resolver_history: &network.history,
         ordered_policy: &network.policy,
         ordered_history_identity: identity,
@@ -908,4 +905,31 @@ fn genesis_marker_provenance_projection_rejects_noninitial_or_unbound_rows() {
         .expect("genesis marker provenance row");
     row.value = None;
     assert!(overlay.compare_source(&tombstoned).is_err());
+}
+
+#[test]
+fn historical_policy_copying_the_causal_roots_digest_domain_and_committee_still_refuses() {
+    // An internally consistent historical (manifest-free) policy, rebuilt
+    // from exactly this causal root's own digest/domain/committee/resolver
+    // bytes, is still not a root-derived policy: it never carries the root's
+    // signed Freeze height, so it cannot stand in for the real genesis-root
+    // ordered authority this plan requires (DR-0182).
+    let fixture: CausalFixture = fresh_fixture();
+    let network: &Network = &fixture.network;
+    let (identity, _history) = complete_history(network);
+    let historical_policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::historical(
+        network.root.genesis_context().clone(),
+        network.domain(),
+        network.root.digest(),
+        network.root.genesis_committee().clone(),
+        network.root.genesis_resolver().clone(),
+    )
+    .unwrap();
+    assert_ne!(historical_policy.anchor(), network.policy.anchor());
+    let mut plan: BusinessReconstructionPlan<'_> = reconstruction_plan(&fixture, &identity);
+    plan.ordered_policy = &historical_policy;
+    assert!(matches!(
+        BusinessReconstructionOverlay::new(plan),
+        Err(BusinessReconstructionError::Invalid(_))
+    ));
 }
