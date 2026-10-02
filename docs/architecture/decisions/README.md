@@ -76,6 +76,7 @@
 - [DR-0178: conditional readiness wire, actual-key signing and protected retention](0178-conditional-readiness-wire-and-retention.md)
 - [DR-0179: authenticated initial validator bond registration](0179-initial-validator-bond-registration.md)
 - [DR-0180: architecture-first interfaces and owning implementations](0180-architecture-first-interface-contracts.md)
+- [DR-0182: one immutable verified genesis root](0182-immutable-verified-genesis-root.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong
