@@ -21,6 +21,22 @@ successor import. The ordinary ordered host needs the real local reconstruction
 composition and its store's Seal capability. A PostgreSQL or unsupported host
 does not gain that capability by receiving a candidate.
 
+## Host composition boundary
+
+The preparation command below is a shipped executable. Seal execution uses
+the `native-http` library with an explicitly composed reconstruction port and
+the same SQLite store's optional Seal capability. The supplied PostgreSQL host
+does not compose that port, and no supplied native SQLite serving executable
+turns preparation plus network submission into a turnkey deployment. Provide
+and verify that host composition before using the submission example; a
+successful preparation does not make an unsupported host capable of Seal.
+
+The repository's four-store acceptance harness invokes the Rust CLI entry
+point in-process over real TCP and runs preparation as an external compiled
+binary. It does not demonstrate an external compiled network-submit process
+or authorize a live-provider deployment. Implementation and release gates
+remain in [TODO.md](../../TODO.md).
+
 ## Prepare and stage exact material
 
 With variables set to independently verified values, run this once for each
@@ -53,7 +69,8 @@ eligible successor set, empty-prefix extension and selected ancestry.
 
 ## Submit through ordinary ordered consensus
 
-Use the existing [ordered network client](ordered-economics.md):
+Against validators with the explicit library composition above, use the
+existing [ordered network client](ordered-economics.md):
 
 ```sh
 cargo run -p sunrise-edge-cli -- economics network-submit \
