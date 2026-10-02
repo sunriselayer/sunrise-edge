@@ -1953,7 +1953,7 @@ fn bond_transition_resolver<'a>(
 /// actually signed, never merely by an unauthenticated stored summary. The
 /// final loop iteration's resulting row must equal the installed singleton
 /// byte-for-byte.
-fn verify_fastpath_bond_chain<S: StructuredDurableDomainStateStore>(
+pub(crate) fn verify_fastpath_bond_chain<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
