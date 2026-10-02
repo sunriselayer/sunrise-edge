@@ -319,7 +319,19 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     return runBash([join(root, script), ...args], overrides);
   }
   const functionScript = join(directory, "gate-function.sh");
-  writeFileSync(functionScript, 'set -euo pipefail\nsource "$1"\nsource "$2"\nshift 2\n"$@"\n', { flag: "wx", mode: 0o700 });
+  writeFileSync(functionScript, [
+    "set -euo pipefail", 'source "$1"', 'source "$2"', "shift 2",
+    'case "${CI_MOCK_FAIL_PREREQUISITE-}" in',
+    "  ci_require_exact_ignored_test) ci_require_exact_ignored_test() { return 9; } ;;",
+    "  ci_require_storage_neutral) ci_require_storage_neutral() { return 9; } ;;",
+    "  ci_require_postgres) ci_require_postgres() { return 9; } ;;",
+    "  ci_execution_profile) ci_execution_profile() { return 9; } ;;",
+    "  ci_execution_plan) ci_execution_plan() { return 9; } ;;",
+    '  "") ;;', "  *) exit 98 ;;", "esac",
+    // An if condition disables errexit throughout nested functions, just as
+    // the gate runner's OR-list does. Helpers must propagate returned errors.
+    'if "$@"; then exit 0; else exit "$?"; fi', "",
+  ].join("\n"), { flag: "wx", mode: 0o700 });
   function runFunction(fn, args = [], overrides = {}) {
     return runBash([functionScript, registry, execution, fn, ...args], overrides);
   }
@@ -335,6 +347,24 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     assert.notEqual(refused.status, 0);
     assert.equal(refused.log.length, 0);
   }
+  for (const [prerequisite, fn, args] of [
+    ["ci_require_exact_ignored_test", "ci_check_sqlite_inventory", []],
+    ["ci_require_exact_ignored_test", "ci_run_action", ["sqlite-inventory"]],
+    ["ci_require_exact_ignored_test", "ci_run_exact_ignored_test", ["name", "yes", "-p", "node-core", "--lib"]],
+    ["ci_require_storage_neutral", "ci_run_gate", ["required"]],
+    ["ci_require_postgres", "ci_run_gate", ["full"]],
+    ["ci_execution_profile", "ci_run_gate", ["required"]],
+    ["ci_execution_plan", "ci_run_gate", ["required"]],
+  ]) {
+    const refused = runFunction(fn, args, { CI_MOCK_FAIL_PREREQUISITE: prerequisite });
+    assert.equal(refused.status, 9, `${fn} must propagate ${prerequisite}'s returned failure`);
+    assert.deepEqual(refused.log, [], `${fn} must not run a consumer after a failed prerequisite`);
+  }
+  const refusedInventory = runFunction("ci_run_gate", ["rust-tests"], { CI_MOCK_FAIL_PREREQUISITE: "ci_require_exact_ignored_test" });
+  assert.equal(refusedInventory.status, 9);
+  assert.deepEqual(refusedInventory.log.map(({ tool, args }) => [tool, args]), [[
+    "cargo", ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"],
+  ]], "failed discovery must stop the nested gate before the inventory consumer");
   for (const group of groups) {
     const result = runFunction("ci_fastvote_pg_group_is_known", [group]);
     assert.equal(result.status, ["pg-lifecycle", "pg-drain-history", "pg-business-audit", "pg-recovery-economics"].includes(group) ? 0 : 1);

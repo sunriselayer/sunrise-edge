@@ -27,7 +27,7 @@ ci_run_exact_ignored_test() {
     *) echo 'invalid ignored-test capture policy' >&2; return 1 ;;
   esac
   shift 2
-  ci_require_exact_ignored_test "$test_name" "$@"
+  ci_require_exact_ignored_test "$test_name" "$@" || return "$?"
   cargo test --quiet "$@" "$test_name" -- "${test_args[@]}"
 }
 
@@ -53,7 +53,7 @@ ci_check_rust_style() {
 ci_check_sqlite_inventory() {
   ci_require_exact_ignored_test \
     fee_claims::tests::certified_multi_escrow_inventory::export_certified_operator_fixture \
-    -p node-core --lib
+    -p node-core --lib || return "$?"
   bash scripts/check-fee-escrow-inventory.sh
 }
 
@@ -116,13 +116,13 @@ ci_run_action() {
 
 ci_run_gate() {
   local profile plan action
-  profile="$(ci_execution_profile "$@")" || return 1
+  profile="$(ci_execution_profile "$@")" || return "$?"
   case "$profile" in
-    required) ci_require_storage_neutral ;;
-    postgres) ci_require_postgres ;;
+    required) ci_require_storage_neutral || return "$?" ;;
+    postgres) ci_require_postgres || return "$?" ;;
     *) echo 'unknown repository gate prerequisite profile' >&2; return 1 ;;
   esac
-  plan="$(ci_execution_plan "$@")" || return 1
+  plan="$(ci_execution_plan "$@")" || return "$?"
   while IFS= read -r action; do
     ci_run_action "$action" || return "$?"
   done <<< "$plan"
