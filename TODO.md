@@ -17,7 +17,7 @@ Only this file owns current status, sequencing and deferred work.
 | Generic paid contracts and Standard Asset | DR-0121–0128 implement Publish/Instantiate/Call, ordinary contract-defined fees and asset create/transfer/split/merge/mint/burn; no Standard Asset privilege in node-core |
 | Delivery 1: certified network contract lifecycle | PR #228 merged on 2026-09-27 after the full gate, fresh exact-head Opus approval and CI; paid lifecycle, assets, replay and declared catch-up, not complete state handoff |
 | Delivery 2: fixed-epoch ordered economics | PR #232 merged on 2026-09-27; shared ordering for claims, bonds and evidence/slash/reactivation, with four-namespace CLI evidence. Genuine membership-dependent Deposit/Withdraw positives remain in Delivery 3 |
-| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250/#252 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history, genuine frozen-member source reconstruction and persistent verified inactive import. First incoming-validator bonding, readiness/Seal/activation remain open |
+| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250/#252/#255 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history, genuine frozen-member source reconstruction, persistent verified inactive import and first incoming-validator bonding. Readiness/Seal/activation remain open |
 | Authenticated pre-Seal business cut | PR #251 merged normally on 2026-10-02 after the full local gate, independent exact-head approval and required CI. Complete core derivation, immutable SQLite export/resumption and source-free independent saved verification; not import or activation evidence |
 | Shared artifact/configuration primitives | PR #249 merged: bounded local genesis and held-handle artifact I/O, with authority/error semantics retained by the callers |
 | Required validation | PR #247 implements DR-0172: four unconditional DB-free lanes. PostgreSQL integration/fault acceptance is retained and explicitly selected, not run on every PR |
@@ -29,9 +29,9 @@ epoch handoff plus independent security gates still remain.
 
 **Delivery 3 forecast, 2026-10-02:** approximately 24..40 focused engineering
 hours remain, with an initial target of 2026-10-04..06 including CI/review and
-corrections. This is a planning estimate, not a release commitment. First-ever
-incoming-validator registration, Seal safety and repeated epochs through the
-real withdrawal unlock are still functional work. Independent audit and actual
+corrections. This is a planning estimate, not a release commitment. Conditional
+readiness acceptance, Seal safety and repeated epochs through the real
+withdrawal unlock are still functional work. Independent audit and actual
 network startup are Delivery 4, not included in this estimate.
 
 ## Functional critical path with embedded refactoring
@@ -83,15 +83,25 @@ check-all.sh gate passed at 491c3388; independent exact-source review approved
 that head. [PR #252](https://github.com/sunriselayer/sunrise-edge/pull/252)
 merged normally as de6cf079 on 2026-10-02 after required CI 36933807173 and
 selected complete PG acceptance 36933845654 passed on that exact head. Main CI
-36942374347 also passed after PR #254. Import provides no readiness, Seal, activation or
-deployed-provider authority.
+36942374347 also passed after PR #254 at 27f33a54.
+Import provides no readiness, Seal, activation or deployed-provider authority.
 
-- [ ] **First-ever incoming-validator bond:** inspection found that the current
-  Deposit requires an existing Exited row, while all genesis bonds are Active
-  and genesis forbids noncommittee custody subjects. Build a separately
-  authenticated first registration through the ordinary public-contract
-  custody path, ordered network execution and private reconstruction. No
-  seeded E row or fabricated Exited predecessor may stand in for this gate.
+- [x] **Initial-validator registration design:** accepted
+  [DR-0179](docs/architecture/decisions/0179-initial-validator-bond-registration.md)
+  closes the missing first deposit for a genuinely new E. Existing Deposit
+  requires an Exited predecessor; genesis bonds are Active, and genesis cannot
+  seed arbitrary non-committee custody. The new owner uses an actually funded
+  generic contract leg and the new validator's real key, not fixture insertion,
+  forced Exited state or a Standard Asset-specific core privilege. The exact
+  design received independent approval before implementation.
+- [x] **Initial-validator registration implementation and acceptance:**
+  [PR #255](https://github.com/sunriselayer/sunrise-edge/pull/255) implements the
+  owning kind-7 ordered path, SDK/CLI, genuine four-validator funding/
+  registration/replay, full source-free cut reconstruction and real SQLite
+  partial import/reopen/receipt-only replay/fencing. The complete local gate,
+  fresh independent exact-head approval and all required CI `36959189963`
+  passed at `bcd318c4`; normal merge `68a8c2e4` preserves separately merged
+  PR #246. Registration alone grants no membership or serving authority.
 
 - [x] **Readiness design boundary:**
   [DR-0178](docs/architecture/decisions/0178-conditional-readiness-wire-and-retention.md)
@@ -183,7 +193,7 @@ initial-network profile. Neither profile is completed by this plan.
 Use independently reviewable feature-sized PRs, normally based on
 `origin/main`; dependent PRs may stack on their explicit prerequisites.
 Preserve Draft PR #235 as extraction material, not an unfinished aggregate
-merge target; unrelated PR #246 is outside this queue. A prerequisite may
+merge target; separately merged PR #246 is outside this queue. A prerequisite may
 merge without the whole delivery being complete if it authorizes no unfinished
 transition. Recheck current main/PR state before each assignment.
 

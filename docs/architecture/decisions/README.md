@@ -74,6 +74,7 @@
 - [DR-0176: verified business state in a permanently import-only namespace](0176-verified-inactive-business-import.md)
 - [DR-0177: conditional readiness and ordered Seal (Proposed, readiness-only first)](0177-conditional-readiness-and-ordered-seal.md)
 - [DR-0178: conditional readiness wire, actual-key signing and protected retention](0178-conditional-readiness-wire-and-retention.md)
+- [DR-0179: authenticated initial validator bond registration](0179-initial-validator-bond-registration.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

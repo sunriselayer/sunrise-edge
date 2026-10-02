@@ -45,7 +45,7 @@ use sunrise_edge_client::{
 };
 
 use crate::{
-    args::{ParsedArgs, parse_flags, scalar},
+    args::{ParsedArgs, scalar},
     error::CliError,
     hex::decode_hex_32,
     net::CliTransport,
@@ -190,7 +190,10 @@ struct LoadedPolicyInputs {
     policy: sunrise_edge_client::ordered_economics_core::OrderedEconomicsPolicy,
 }
 
-fn load_policy_and_endpoints(parsed: &ParsedArgs) -> Result<LoadedPolicyInputs, CliError> {
+fn load_policy_and_endpoints(
+    parsed: &ParsedArgs,
+    schedules: Vec<sunrise_edge_client::HashSuiteSchedule>,
+) -> Result<LoadedPolicyInputs, CliError> {
     let peers = parse_network_config(parsed.require("--ordered-network")?)?;
     let endpoints = build_ordered_endpoints(&peers)?;
     let chain_id =
@@ -209,7 +212,12 @@ fn load_policy_and_endpoints(parsed: &ParsedArgs) -> Result<LoadedPolicyInputs, 
         "--ordered-expected-genesis-digest",
         parsed.require("--ordered-expected-genesis-digest")?,
     )?;
-    let resolver = genesis_hash_suite_resolver(chain_id, protocol_version)?;
+    let resolver: sunrise_edge_client::HashSuiteResolver = if schedules.is_empty() {
+        genesis_hash_suite_resolver(chain_id, protocol_version)?
+    } else {
+        sunrise_edge_client::HashSuiteResolver::new(chain_id, protocol_version, schedules)
+            .map_err(failure)?
+    };
     let policy = load_trusted_ordered_policy(
         Path::new(parsed.require("--ordered-genesis-manifest")?),
         &resolver,
@@ -457,7 +465,8 @@ fn network_submit_flag_specs() -> Vec<crate::args::FlagSpec> {
 }
 
 fn run_network_submit<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
-    let parsed = parse_flags(args, &network_submit_flag_specs())?;
+    let (parsed, schedules) =
+        super::hash_suite_pins::parse_pinned_flags(args, &network_submit_flag_specs())?;
     let candidate_path = parsed.require("--candidate")?;
     let candidate_bytes = read_bounded(candidate_path, MAX_ORDERED_CANDIDATE_BYTES)?;
     // Decoded once here, purely to independently re-check the returned
@@ -467,7 +476,7 @@ fn run_network_submit<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
     let candidate =
         sunrise_edge_client::ordered_economics_core::decode_ordered_candidate(&candidate_bytes)
             .map_err(failure)?;
-    let loaded = load_policy_and_endpoints(&parsed)?;
+    let loaded = load_policy_and_endpoints(&parsed, schedules)?;
 
     let resume_proposal = match parsed.get("--resume-proposal") {
         Some(path) => Some(read_bounded(path, MAX_ORDERED_PROPOSAL_BYTES)?),
@@ -510,7 +519,10 @@ fn run_network_submit<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
 }
 
 fn run_network_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
-    let parsed = parse_flags(args, &network_flag_specs(&["--manifest", "--out"]))?;
+    let (parsed, schedules) = super::hash_suite_pins::parse_pinned_flags(
+        args,
+        &network_flag_specs(&["--manifest", "--out"]),
+    )?;
     let manifest_bytes = read_bounded(parsed.require("--manifest")?, MAX_MANIFEST_BYTES)?;
     let manifest_text =
         std::str::from_utf8(&manifest_bytes).map_err(|_| invalid("--manifest must be UTF-8"))?;
@@ -549,7 +561,7 @@ fn run_network_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
         rounds.push((proposal_bytes, certificate_bytes));
     }
 
-    let loaded = load_policy_and_endpoints(&parsed)?;
+    let loaded = load_policy_and_endpoints(&parsed, schedules)?;
 
     // Reserve the results file before the first mutating (`observe`/
     // `certificate`) POST, exactly like `network-submit`.
@@ -617,13 +629,17 @@ fn candidate_wrap_flag_specs() -> Vec<crate::args::FlagSpec> {
 /// pure, read-only, offline construction step: it performs no network I/O
 /// and never mutates any durable/fenced state.
 fn run_candidate_wrap<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
-    let parsed = parse_flags(args, &candidate_wrap_flag_specs())?;
+    let (parsed, schedules) =
+        super::hash_suite_pins::parse_pinned_flags(args, &candidate_wrap_flag_specs())?;
     let intent_bytes = read_bounded(parsed.require("--intent")?, MAX_ORDERED_CANDIDATE_BYTES)?;
     let kind = parsed.require("--kind")?;
     let ordered_kind = match kind {
         "fee-claim" => sunrise_edge_client::ordered_economics_core::OrderedOperationKind::FeeClaim,
         "bond-lifecycle" => {
             sunrise_edge_client::ordered_economics_core::OrderedOperationKind::BondLifecycle
+        }
+        "bond-registration" => {
+            sunrise_edge_client::ordered_economics_core::OrderedOperationKind::BondRegistration
         }
         "bond-slash" => {
             sunrise_edge_client::ordered_economics_core::OrderedOperationKind::BondSlash
@@ -653,7 +669,12 @@ fn run_candidate_wrap<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
         "--ordered-expected-genesis-digest",
         parsed.require("--ordered-expected-genesis-digest")?,
     )?;
-    let resolver = genesis_hash_suite_resolver(chain_id, protocol_version)?;
+    let resolver = if schedules.is_empty() {
+        genesis_hash_suite_resolver(chain_id, protocol_version)?
+    } else {
+        sunrise_edge_client::HashSuiteResolver::new(chain_id, protocol_version, schedules)
+            .map_err(failure)?
+    };
     // Local genesis validation only -- confirms the declared context is the
     // one this operator actually trusts before any candidate bytes are
     // produced; never contacts a network endpoint.
@@ -678,7 +699,13 @@ fn run_candidate_wrap<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
         .map_err(failure)?;
 
     let out_path = parsed.require("--out")?;
-    let mut reserved = reserve_artifacts(&[(out_path, "ordered-economics-candidate")], &[])?;
+    let mut reserved = reserve_artifacts(
+        &[(out_path, "ordered-economics-candidate")],
+        &[
+            parsed.require("--intent")?,
+            parsed.require("--ordered-genesis-manifest")?,
+        ],
+    )?;
     let mut reserved = reserved.pop().expect("candidate artifact reserved");
     reserved.persist(&encoded).map_err(failure)?;
     println!("candidate_bytes={} out={out_path}", encoded.len());
@@ -694,8 +721,8 @@ fn run_freeze_build<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), Cli
         "--advisory-next-set",
         "--out",
     ]);
-    let parsed: ParsedArgs = parse_flags(args, &specs)?;
-    let inputs: LoadedPolicyInputs = load_policy_and_endpoints(&parsed)?;
+    let (parsed, schedules) = super::hash_suite_pins::parse_pinned_flags(args, &specs)?;
+    let inputs: LoadedPolicyInputs = load_policy_and_endpoints(&parsed, schedules)?;
     if inputs.policy.minimum_freeze_block_height() == 0 {
         return Err(invalid(
             "ordered Freeze requires a locally pinned signed-v3 genesis",
@@ -804,7 +831,8 @@ their own durable union marker. Submit with economics network-submit --candidate
         );
         return Ok(());
     }
-    let parsed: ParsedArgs = parse_flags(args, &drain_set_build_flag_specs())?;
+    let (parsed, schedules) =
+        super::hash_suite_pins::parse_pinned_flags(args, &drain_set_build_flag_specs())?;
 
     let request_id: [u8; 32] = decode_hex_32("--request-id", parsed.require("--request-id")?)?;
     if request_id == [0u8; 32] {
@@ -833,8 +861,12 @@ their own durable union marker. Submit with economics network-submit --candidate
         "--ordered-expected-genesis-digest",
         parsed.require("--ordered-expected-genesis-digest")?,
     )?;
-    let resolver: sunrise_edge_client::HashSuiteResolver =
-        genesis_hash_suite_resolver(chain_id, protocol_version)?;
+    let resolver: sunrise_edge_client::HashSuiteResolver = if schedules.is_empty() {
+        genesis_hash_suite_resolver(chain_id, protocol_version)?
+    } else {
+        sunrise_edge_client::HashSuiteResolver::new(chain_id, protocol_version, schedules)
+            .map_err(failure)?
+    };
     // Local genesis validation only -- confirms the declared context is the
     // one this operator actually trusts before any candidate bytes are
     // produced; never contacts a network endpoint.
@@ -958,6 +990,7 @@ pub(crate) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
         "network-submit" => run_network_submit(iterator),
         "network-replay" => run_network_replay(iterator),
         "candidate-wrap" => run_candidate_wrap(iterator),
+        "bond-registration-prepare" => super::bond_registration::run(iterator),
         "ordered-freeze-build" => run_freeze_build(iterator),
         "drain-set-build" => run_drain_set_build(iterator),
         other => Err(invalid(format!("unknown economics subcommand: {other}"))),
