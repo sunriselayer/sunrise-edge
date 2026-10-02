@@ -6,9 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crypto::SignatureSigner;
 use ed25519_zebra::SigningKey;
 use execution::paid_execution::{
-    FeeSourceConsent, PaidApplication, PaidIntent, ReservationAccessKind,
+    FeeSourceConsent, PaidApplication, PaidIntent, ReservationAccessKind, paid_intent_signing_frame,
 };
 use node_core::genesis::genesis_manifest_signing_frame;
 use node_core::logical_generation::CommitmentProfile;
@@ -190,10 +191,9 @@ fn causal_signed_genesis_with_unsupported_validator_scheme_is_rejected_before_an
         .into();
     let digest: Digest32 = genesis_manifest_commitment(&resolver, &manifest).unwrap();
     let path: ManifestFile = write_manifest(&manifest);
-    // `TrustedFastVoteGenesis` is not `Debug` on purpose (its root/certifier
-    // are sealed, not a diagnostic surface), so an explicit match -- not
-    // `unwrap_err`, which requires the success type to be `Debug` -- proves
-    // this rejection without granting that unnecessary capability.
+    // `TrustedFastVoteGenesis` does not implement `Debug`, so match
+    // explicitly here instead of `unwrap_err`, which requires the success
+    // type to be `Debug`.
     let error: FastVoteGenesisTrustError = match load_trusted_fastvote_genesis_with_profile(
         &path.0,
         &resolver,
@@ -215,7 +215,10 @@ fn causal_signed_genesis_with_unsupported_validator_scheme_is_rejected_before_an
 /// ever contacted -- a genuine per-request check, distinct from the removed
 /// self-consistency checks among `certifier`/`commitment_profile`/
 /// `admission_profile`, all of which are derived from that same root and so
-/// can no longer disagree with each other.
+/// can no longer disagree with each other. The intent carries a real
+/// signature from the genesis authority's own key over its own (wrong)
+/// context, so the context field is the sole reason for rejection, not an
+/// incidentally invalid signature.
 #[test]
 fn causal_signed_intent_with_wrong_context_is_rejected_before_any_io() {
     let (_path, trusted, resolver, manifest) = pinned();
@@ -225,35 +228,35 @@ fn causal_signed_intent_with_wrong_context_is_rejected_before_any_io() {
         Epoch::new(manifest.context().epoch().get() + 1),
     )
     .unwrap();
-    let signed: SignedPaidIntent = SignedPaidIntent {
-        intent: PaidIntent {
-            context: wrong_context,
-            request_id: [1; 32],
-            sender: manifest.genesis_authority,
-            nonce: 0,
-            fee_policy_digest: execution::paid_execution::paid_fee_policy_digest(
-                &resolver,
-                &manifest.fee_policy,
-            )
-            .unwrap(),
-            consent: FeeSourceConsent {
-                source: objects::ObjectRef {
-                    id: objects::ObjectId::new([0x22; 32]),
-                    version: 1,
-                    digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x33; 32]),
-                },
-                access: ReservationAccessKind::Write,
-                max_fee: fees::Amount::new(1),
-                refund_recipient: manifest.genesis_authority,
+    let signer: LocalSigner = LocalSigner::from_seed(DEVNET_PAID_GENESIS_SEED);
+    let intent: PaidIntent = PaidIntent {
+        context: wrong_context.clone(),
+        request_id: [1; 32],
+        sender: manifest.genesis_authority,
+        nonce: 0,
+        fee_policy_digest: execution::paid_execution::paid_fee_policy_digest(
+            &resolver,
+            &manifest.fee_policy,
+        )
+        .unwrap(),
+        consent: FeeSourceConsent {
+            source: objects::ObjectRef {
+                id: objects::ObjectId::new([0x22; 32]),
+                version: 1,
+                digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x33; 32]),
             },
-            application: PaidApplication::Publish(
-                manifest.publication.request().artifact().clone(),
-            ),
-            gas_limit: 1,
-            authorizations: Vec::new(),
+            access: ReservationAccessKind::Write,
+            max_fee: fees::Amount::new(1),
+            refund_recipient: manifest.genesis_authority,
         },
-        signature: [0; 64],
+        application: PaidApplication::Publish(manifest.publication.request().artifact().clone()),
+        gas_limit: 1,
+        authorizations: Vec::new(),
     };
+    let frame: Vec<u8> = paid_intent_signing_frame(&wrong_context, &intent).unwrap();
+    let signature_bytes: Vec<u8> = signer.sign_framed(&frame).unwrap();
+    let signature: [u8; 64] = signature_bytes.as_slice().try_into().unwrap();
+    let signed: SignedPaidIntent = SignedPaidIntent { intent, signature };
     let endpoints: Vec<FastVoteEndpoint<NoIo>> = vec![FastVoteEndpoint {
         validator_id: protocol_types::ValidatorId::new(manifest.genesis_authority),
         endpoint_label: "never-dial".to_owned(),

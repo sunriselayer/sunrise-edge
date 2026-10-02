@@ -65,6 +65,7 @@ use crate::Client;
 use crate::client::expect_success;
 use crate::error::ClientError;
 use crate::local_genesis::{GenesisTrustError, load_verified_genesis_root};
+use crate::transport::{Method, Transport, WireRequest};
 use node_core::genesis::{GenesisCommitteeError, GenesisRootError, VerifiedGenesisRoot};
 
 /// Bounded fan-out cap for one configured ordered-economics cohort, mirroring
