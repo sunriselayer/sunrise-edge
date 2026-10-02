@@ -14,9 +14,14 @@ use consensus::readiness::{
     ReadinessCertificate, ReadinessCertifier, ReadinessVote, decode_readiness_certificate,
     decode_readiness_vote,
 };
-use fixture::{Directory, Fixture};
+use fixture::{Directory, Fixture, copy_files, files};
 use node_core::business_reconstruction::{
-    SourceBusinessSnapshot, cut::SavedBusinessCut, inactive_import::verify_saved_business_import,
+    SourceBusinessSnapshot,
+    cut::{
+        BUSINESS_CUT_STREAMS, BusinessCutChunk, BusinessCutPage, SavedBusinessCut,
+        SavedBusinessCutComponent, VerifiedBusinessCut,
+    },
+    inactive_import::verify_saved_business_import,
 };
 use protocol_types::ValidatorId;
 use runtime::portable::DurablePortableSnapshotRepository;
@@ -26,11 +31,12 @@ use runtime::{
 use runtime_sqlite::{SqliteImportTarget, SqliteNamespace};
 use std::{
     collections::BTreeMap,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     process::{Command, Output},
 };
 use sunrise_edge_operator::{
-    business_cut::{CutArchiveLimits, export_source_business_cut, read_business_cut_archive},
+    business_cut::{CutArchiveLimits, export_source_business_cut, verify_business_cut_archive},
     business_snapshot::capture_source_business_snapshot,
     immutable_archive::ImmutableArchive,
 };
@@ -50,6 +56,56 @@ fn success(output: Output) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap()
+}
+
+/// Assemble public paginated transport from a genuinely verified archive;
+/// private import verification must still reconstruct it independently.
+fn public_transfer(
+    cut: &VerifiedBusinessCut,
+    resolver: &hashing::HashSuiteResolver,
+) -> SavedBusinessCut {
+    let mut saved: SavedBusinessCut = SavedBusinessCut {
+        identity: cut.identity().clone(),
+        package: cut.package_identity().clone(),
+        components: Vec::new(),
+    };
+    for collection in BUSINESS_CUT_STREAMS {
+        let mut after: Option<Vec<u8>> = None;
+        loop {
+            let page: BusinessCutPage = cut
+                .read_page(
+                    resolver,
+                    collection,
+                    after.as_deref(),
+                    NonZeroUsize::new(128).unwrap(),
+                )
+                .unwrap();
+            for descriptor in page.descriptors {
+                let mut bytes: Vec<u8> = Vec::new();
+                let mut offset: u64 = 0;
+                loop {
+                    let chunk: BusinessCutChunk = cut
+                        .read_chunk(&descriptor, offset, NonZeroUsize::new(1048576).unwrap())
+                        .unwrap();
+                    offset = offset
+                        .checked_add(u64::try_from(chunk.bytes.len()).unwrap())
+                        .unwrap();
+                    bytes.extend_from_slice(&chunk.bytes);
+                    if offset == descriptor.length {
+                        break;
+                    }
+                }
+                after = Some(descriptor.key.clone());
+                saved
+                    .components
+                    .push(SavedBusinessCutComponent { descriptor, bytes });
+            }
+            if page.terminal {
+                break;
+            }
+        }
+    }
+    saved
 }
 fn pins(command: &mut Command, fixture: &Fixture, history: &Path, cut: &Path) {
     command.args([
@@ -131,10 +187,13 @@ fn compiled_conditional_readiness_real_retention_restart_and_distinct_certificat
         .unwrap()
         .complete
     );
-    let saved: SavedBusinessCut =
-        read_business_cut_archive(&fixture.plan(&identity, fixture.operation), &archive).unwrap();
+    let verified_cut: VerifiedBusinessCut =
+        verify_business_cut_archive(fixture.plan(&identity, fixture.operation), &archive).unwrap();
+    let saved: SavedBusinessCut = public_transfer(&verified_cut, &fixture.network.resolver);
     let verified =
         verify_saved_business_import(fixture.plan(&identity, fixture.operation), &saved).unwrap();
+    let original_history: BTreeMap<String, Vec<u8>> = files(&history_root);
+    let original_cut: BTreeMap<String, Vec<u8>> = files(&cut.0);
     let before: SourceBusinessSnapshot = fixture.snapshot();
     let set: ValidatorSet = ValidatorSet::new(
         protocol_types::Epoch::new(fixture.network.epoch.get() + 1),
@@ -310,6 +369,9 @@ fn compiled_conditional_readiness_real_retention_restart_and_distinct_certificat
         votes.push((output, original));
         destinations.push(destination);
     }
+    let copied_vote: Directory = Directory::new("ready-public-vote-copy");
+    copy_files(&votes[0].0.0, &copied_vote.0);
+    assert_eq!(files(&votes[0].0.0), files(&copied_vote.0));
     let certificates: Directory = Directory::new("ready-certificates");
     let assembly = |count: usize, duplicate: bool| -> Command {
         let mut command: Command = Command::new(env!("CARGO_BIN_EXE_conditional_readiness"));
@@ -322,12 +384,13 @@ fn compiled_conditional_readiness_real_retention_restart_and_distinct_certificat
             certificates.0.to_str().unwrap(),
         ]);
         for index in 0..count {
-            command.arg("--vote").arg(
-                votes[if duplicate { 0 } else { index }]
-                    .0
-                    .0
-                    .join("vote.bin"),
-            );
+            let selected: usize = if duplicate { 0 } else { index };
+            let directory: &Path = if selected == 0 {
+                &copied_vote.0
+            } else {
+                &votes[selected].0.0
+            };
+            command.arg("--vote").arg(directory.join("vote.bin"));
         }
         command
     };
@@ -354,6 +417,8 @@ fn compiled_conditional_readiness_real_retention_restart_and_distinct_certificat
         })
         .collect();
     assert_eq!(roles.len(), 3);
+    assert_eq!(files(&history_root), original_history);
+    assert_eq!(files(&cut.0), original_cut);
     assert_eq!(
         fixture.snapshot(),
         before,
