@@ -85,9 +85,20 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   real SQLite restoration/reopen/fencing/replay, independent vectors, native/WASM
   and portable adapters. Immutable-boundary doctests name every field so missing
   fields cannot masquerade as privacy proof. The wrong-epoch SDK fixture separately
-  authenticates its real signature before checking rejection. Exact-head review,
-  required CI and selected PostgreSQL evidence are tracked in PR #259; original
-  genesis trust is not a completed current-serving or successor capability.
+  authenticates its real signature before checking rejection. PR #259 merged
+  normally as `0bf99fd` after exact-head Opus APPROVE, required CI `36996436664`
+  and selected complete PostgreSQL CI `36996527437`. Original genesis trust is
+  not a completed current-serving or successor capability.
+  [DR-0185](docs/architecture/decisions/0185-one-reconstruction-policy-binding.md)
+  establishes one private two-stage immutable root/policy/domain and signed
+  anchor relation for the actual overlay and control collector. Complete
+  resolver schedules remain checked; independent execution/history companions,
+  genuine control, saved-cut integrity and fresh destination completion keep
+  their separate authority and error order. The source implementation includes
+  public-control historical/full-schedule substitution and healthy completed
+  Freeze/DrainSet controls plus combined history/anchor-defect precedence.
+  Cargo acceptance, fresh exact-head review and required CI remain pending;
+  this is not Seal, serving or Delivery 3 completion.
 - [ ] Test/CI architecture: owner-specific fixture composition and a coherent
   gate registry/execution contract, preserving all required coverage.
   Closed executable plans and separately owned action recipes merged in PR #257.
