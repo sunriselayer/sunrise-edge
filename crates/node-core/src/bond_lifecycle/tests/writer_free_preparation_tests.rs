@@ -1,18 +1,21 @@
 //! Genuine genesis/evidence owners drive preparations with no writer port.
 
 use super::*;
-use crate::fee_claims::writer_free_preparation_tests::WriterFreeView;
-use runtime::portable::{DurablePortableSnapshotRepository, PortableSnapshotToken};
+use crate::business_reconstruction::SourceBusinessSnapshot;
+use crate::test_support::capture::{assert_same_records_and_blobs, captured_source};
+use crate::test_support::counted_blobs::CountedBlobs;
+use crate::test_support::reader_view::WriterFreeView;
 
 fn prepare_unbond(
     source: &MemoryDurableStateStore,
+    blobs: &CountedBlobs<'_>,
     signed: &SignedBondLifecycleIntent,
     engine: &CountingEngine,
 ) -> InvocationPreparation {
     let reader: WriterFreeView<'_, MemoryDurableStateStore> = WriterFreeView::new(source);
     prepare_bond_lifecycle_ordered(
         &reader,
-        &MemoryBlobStore::default(),
+        blobs,
         &context(1),
         domain(),
         &resolver(),
@@ -55,16 +58,20 @@ fn writer_free_lifecycle_prepares_genesis_rooted_transition_and_exact_replay() {
     install(&source, &manifest);
     install(&direct_store, &manifest);
     let (signed, expected_row) = fresh_unbond(&source);
-    let before: PortableSnapshotToken = source
-        .begin_portable_snapshot(&context(1), domain())
-        .unwrap();
+    let source_blobs: MemoryBlobStore = MemoryBlobStore::default();
+    let direct_blobs: MemoryBlobStore = MemoryBlobStore::default();
+    let blobs: CountedBlobs<'_> = CountedBlobs::new(&source_blobs);
+    let before: SourceBusinessSnapshot =
+        captured_source(&source, &source_blobs, &context(1), domain());
+    let direct_before: SourceBusinessSnapshot =
+        captured_source(&direct_store, &direct_blobs, &context(1), domain());
+    assert_same_records_and_blobs(&before, &direct_before);
     let engine: CountingEngine = CountingEngine::new();
-    let prepared: InvocationPreparation = prepare_unbond(&source, &signed, &engine);
+    let prepared: InvocationPreparation = prepare_unbond(&source, &blobs, &signed, &engine);
     assert_eq!(engine.call_count(), 0);
+    assert_eq!(blobs.put_count(), 0);
     assert_eq!(
-        source
-            .begin_portable_snapshot(&context(1), domain())
-            .unwrap(),
+        captured_source(&source, &source_blobs, &context(1), domain()),
         before
     );
     let proposal: Box<PreparedBusinessInvocation> = match prepared {
@@ -83,7 +90,15 @@ fn writer_free_lifecycle_prepares_genesis_rooted_transition_and_exact_replay() {
         .unwrap()
         .commit(&source, &context(1))
         .unwrap();
-    let direct: NodeOutput = call(&direct_store, &signed, &protocol(), &leg_policy(), 11).unwrap();
+    let direct: NodeOutput = call_with_engine(
+        &direct_store,
+        &signed,
+        &protocol(),
+        &leg_policy(),
+        11,
+        &engine,
+    )
+    .unwrap();
     assert_eq!(committed, direct);
     assert_eq!(get_bond(&source, expected_row.validator_id), expected_row);
     assert_eq!(
@@ -104,19 +119,37 @@ fn writer_free_lifecycle_prepares_genesis_rooted_transition_and_exact_replay() {
             GenesisInstallOutcome::VerifiedExisting { .. }
         ));
     }
-    let committed_token: PortableSnapshotToken = source
-        .begin_portable_snapshot(&context(1), domain())
-        .unwrap();
-    match prepare_unbond(&source, &signed, &engine) {
+    let completed: SourceBusinessSnapshot =
+        captured_source(&source, &source_blobs, &context(1), domain());
+    let direct_completed: SourceBusinessSnapshot =
+        captured_source(&direct_store, &direct_blobs, &context(1), domain());
+    assert_same_records_and_blobs(&completed, &direct_completed);
+    match prepare_unbond(&source, &blobs, &signed, &engine) {
         InvocationPreparation::Retained(replay) => assert_eq!(replay, committed),
         InvocationPreparation::Prepared(_) => panic!("exact replay cannot create a proposal"),
     }
     assert_eq!(engine.call_count(), 0);
+    assert_eq!(blobs.put_count(), 0);
     assert_eq!(
-        source
-            .begin_portable_snapshot(&context(1), domain())
-            .unwrap(),
-        committed_token
+        captured_source(&source, &source_blobs, &context(1), domain()),
+        completed
+    );
+    assert_eq!(
+        call_with_engine(
+            &direct_store,
+            &signed,
+            &protocol(),
+            &leg_policy(),
+            11,
+            &engine
+        )
+        .unwrap(),
+        direct
+    );
+    assert_eq!(engine.call_count(), 0);
+    assert_eq!(
+        captured_source(&direct_store, &direct_blobs, &context(1), domain()),
+        direct_completed
     );
 }
 
@@ -126,22 +159,28 @@ fn writer_free_lifecycle_proposal_requires_actual_unchanged_cas_then_valid_progr
     let source: MemoryDurableStateStore = store();
     install(&source, &manifest);
     let (signed, expected_row) = fresh_unbond(&source);
+    let source_blobs: MemoryBlobStore = MemoryBlobStore::default();
+    let blobs: CountedBlobs<'_> = CountedBlobs::new(&source_blobs);
+    let before: SourceBusinessSnapshot =
+        captured_source(&source, &source_blobs, &context(1), domain());
     let engine: CountingEngine = CountingEngine::new();
-    let prepared: InvocationPreparation = prepare_unbond(&source, &signed, &engine);
+    let prepared: InvocationPreparation = prepare_unbond(&source, &blobs, &signed, &engine);
+    assert_eq!(blobs.put_count(), 0);
+    assert_eq!(
+        captured_source(&source, &source_blobs, &context(1), domain()),
+        before
+    );
     // Genuine competing storage action advances the deciding bond revision,
     // without inventing another business result. A proposal is not a commit.
     let previous_row: FastPathBondRecord = get_bond(&source, expected_row.validator_id);
     put_bond(&source, &previous_row);
-    let after_competing_write: PortableSnapshotToken = source
-        .begin_portable_snapshot(&context(1), domain())
-        .unwrap();
+    let after_competing_write: SourceBusinessSnapshot =
+        captured_source(&source, &source_blobs, &context(1), domain());
     let result: Result<NodeOutput, NodeCoreError> = prepared.commit(&source, &context(1));
     assert!(matches!(result, Err(NodeCoreError::StateConflict)));
     assert_eq!(get_bond(&source, expected_row.validator_id), previous_row);
     assert_eq!(
-        source
-            .begin_portable_snapshot(&context(1), domain())
-            .unwrap(),
+        captured_source(&source, &source_blobs, &context(1), domain()),
         after_competing_write
     );
     assert!(
@@ -188,14 +227,19 @@ fn writer_free_slash_prepares_real_evidence_and_wasm_then_commits_exact_bytes() 
         [0xb1; 32],
     );
     let bytes: Vec<u8> = slash::encode_slash_intent(&intent).unwrap();
-    let before: PortableSnapshotToken = source
-        .begin_portable_snapshot(&context(1), domain())
-        .unwrap();
+    let source_blobs: MemoryBlobStore = MemoryBlobStore::default();
+    let direct_blobs: MemoryBlobStore = MemoryBlobStore::default();
+    let blobs: CountedBlobs<'_> = CountedBlobs::new(&source_blobs);
+    let before: SourceBusinessSnapshot =
+        captured_source(&source, &source_blobs, &context(1), domain());
+    let direct_before: SourceBusinessSnapshot =
+        captured_source(&direct_store, &direct_blobs, &context(1), domain());
+    assert_same_records_and_blobs(&before, &direct_before);
     let engine: CountingEngine = CountingEngine::new();
     let reader: WriterFreeView<'_, MemoryDurableStateStore> = WriterFreeView::new(&source);
     let prepared: InvocationPreparation = slash::prepare_bond_slash_ordered(
         &reader,
-        &MemoryBlobStore::default(),
+        &blobs,
         &context(1),
         domain(),
         &resolver(),
@@ -209,10 +253,9 @@ fn writer_free_slash_prepares_real_evidence_and_wasm_then_commits_exact_bytes() 
     )
     .unwrap();
     assert_eq!(engine.call_count(), 1);
+    assert_eq!(blobs.put_count(), 0);
     assert_eq!(
-        source
-            .begin_portable_snapshot(&context(1), domain())
-            .unwrap(),
+        captured_source(&source, &source_blobs, &context(1), domain()),
         before
     );
     let proposal: Box<PreparedBusinessInvocation> = match prepared {
@@ -233,7 +276,7 @@ fn writer_free_slash_prepares_real_evidence_and_wasm_then_commits_exact_bytes() 
         .unwrap();
     let direct: NodeOutput = slash::handle_bond_slash(
         &direct_store,
-        &MemoryBlobStore::default(),
+        &direct_blobs,
         &context(1),
         domain(),
         &resolver(),
@@ -272,12 +315,14 @@ fn writer_free_slash_prepares_real_evidence_and_wasm_then_commits_exact_bytes() 
             GenesisInstallOutcome::VerifiedExisting { .. }
         ));
     }
-    let committed_token: PortableSnapshotToken = source
-        .begin_portable_snapshot(&context(1), domain())
-        .unwrap();
+    let completed: SourceBusinessSnapshot =
+        captured_source(&source, &source_blobs, &context(1), domain());
+    let direct_completed: SourceBusinessSnapshot =
+        captured_source(&direct_store, &direct_blobs, &context(1), domain());
+    assert_same_records_and_blobs(&completed, &direct_completed);
     let replay: InvocationPreparation = slash::prepare_bond_slash_ordered(
         &reader,
-        &MemoryBlobStore::default(),
+        &blobs,
         &context(1),
         domain(),
         &resolver(),
@@ -295,10 +340,31 @@ fn writer_free_slash_prepares_real_evidence_and_wasm_then_commits_exact_bytes() 
         InvocationPreparation::Prepared(_) => panic!("exact replay cannot create a proposal"),
     }
     assert_eq!(engine.call_count(), 2);
+    assert_eq!(blobs.put_count(), 0);
     assert_eq!(
-        source
-            .begin_portable_snapshot(&context(1), domain())
-            .unwrap(),
-        committed_token
+        captured_source(&source, &source_blobs, &context(1), domain()),
+        completed
+    );
+    assert_eq!(
+        slash::handle_bond_slash(
+            &direct_store,
+            &direct_blobs,
+            &context(1),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &leg_policy(),
+            &engine,
+            &bytes,
+            20,
+        )
+        .unwrap(),
+        direct
+    );
+    assert_eq!(engine.call_count(), 2);
+    assert_eq!(
+        captured_source(&direct_store, &direct_blobs, &context(1), domain()),
+        direct_completed
     );
 }

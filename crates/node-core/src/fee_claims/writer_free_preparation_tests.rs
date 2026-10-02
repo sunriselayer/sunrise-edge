@@ -1,6 +1,7 @@
 //! Genuine certified escrow preparation through a view with no writer trait.
 
 use super::*;
+use crate::business_reconstruction::SourceBusinessSnapshot;
 use crate::fee_claims::tests::certified_multi_escrow_inventory::{
     Voter, apply_escrow, build_split_claim, build_validator_set, certify, four_sorted_voters,
     install_all, prepare_vote,
@@ -9,14 +10,13 @@ use crate::paid_execution::tests::{
     FIRST_PAID_NONCE, PaidCall, base_policy, context, domain, entry, memory_store, next_nonce,
     paid_call_with_access, protocol, receipt, refund_account, resolver,
 };
+use crate::test_support::capture::{assert_same_records_and_blobs, captured_source};
+use crate::test_support::counted_blobs::CountedBlobs;
+use crate::test_support::reader_view::WriterFreeView;
 use consensus::FastVote;
 use execution::LocalWasmExecutionEngine;
 use execution::paid_execution::{PaidExecutionStatus, ReservationAccessKind};
-use runtime::portable::{DurablePortableSnapshotRepository, PortableSnapshotToken};
-use runtime::{
-    DurableObjectVersion, DurableObjectVersionRecord, DurableReadError, MemoryBlobStore,
-    NamespaceLifecycle, VersionedStateReader,
-};
+use runtime::MemoryBlobStore;
 use std::cell::Cell;
 
 struct CountingLocalEngine {
@@ -43,69 +43,6 @@ impl LocalContractEngine for CountingLocalEngine {
     }
 }
 
-/// This adapter deliberately implements only observation ports. Calling an
-/// actual durable commit on it would be a compile error, not a test stub.
-pub(crate) struct WriterFreeView<'a, S: StructuredStateReader> {
-    source: &'a S,
-}
-
-impl<'a, S: StructuredStateReader> WriterFreeView<'a, S> {
-    pub(crate) const fn new(source: &'a S) -> Self {
-        Self { source }
-    }
-}
-
-impl<S: StructuredStateReader> VersionedStateReader for WriterFreeView<'_, S> {
-    fn read_versioned_state(
-        &self,
-        context: &DurableOperationContext,
-        domain: AtomicityDomainId,
-        key: &[u8],
-    ) -> Result<VersionedStateValue, DurableReadError> {
-        self.source.read_versioned_state(context, domain, key)
-    }
-}
-
-impl<S: StructuredStateReader> StructuredStateReader for WriterFreeView<'_, S> {
-    fn read_namespace_lifecycle(
-        &self,
-        context: &DurableOperationContext,
-        domain: AtomicityDomainId,
-    ) -> Result<NamespaceLifecycle, DurableReadError> {
-        self.source.read_namespace_lifecycle(context, domain)
-    }
-
-    fn read_object_head(
-        &self,
-        context: &DurableOperationContext,
-        domain: AtomicityDomainId,
-        object_id: objects::ObjectId,
-    ) -> Result<DurableObjectHead, DurableReadError> {
-        self.source.read_object_head(context, domain, object_id)
-    }
-
-    fn read_object_version(
-        &self,
-        context: &DurableOperationContext,
-        domain: AtomicityDomainId,
-        object_id: objects::ObjectId,
-        object_version: DurableObjectVersion,
-    ) -> Result<Option<DurableObjectVersionRecord>, DurableReadError> {
-        self.source
-            .read_object_version(context, domain, object_id, object_version)
-    }
-
-    fn read_request_receipt(
-        &self,
-        context: &DurableOperationContext,
-        domain: AtomicityDomainId,
-        request_id: DurableRequestId,
-    ) -> Result<Option<DurableRequestReceipt>, DurableReadError> {
-        self.source
-            .read_request_receipt(context, domain, request_id)
-    }
-}
-
 #[test]
 fn writer_free_fee_claim_prepares_real_certified_escrow_then_commits_exact_bytes() {
     let voters: Vec<Voter> = four_sorted_voters();
@@ -118,6 +55,8 @@ fn writer_free_fee_claim_prepares_real_certified_escrow_then_commits_exact_bytes
     for store in &stores[1..] {
         install_all(store, &entries);
     }
+    let direct_store: runtime::MemoryDurableStateStore = memory_store();
+    install_all(&direct_store, &entries);
     let paid: Vec<u8> = paid_call_with_access(
         PaidCall {
             fixture: &fixture,
@@ -136,8 +75,13 @@ fn writer_free_fee_claim_prepares_real_certified_escrow_then_commits_exact_bytes
         .zip(&voters)
         .map(|(store, voter)| prepare_vote(store, &policy, voter, &paid))
         .collect();
+    // The comparison mirror repeats source zero's actual local preparation.
+    // Other quorum participants legitimately retain different signed votes.
+    // Only the original three distinct voters contribute to certification.
+    let mirror_vote: FastVote = prepare_vote(&direct_store, &policy, &voters[0], &paid);
+    assert_eq!(mirror_vote, votes[0]);
     let certificate: Vec<u8> = certify(&validators, &votes);
-    for store in &stores {
+    for store in stores.iter().chain(std::iter::once(&direct_store)) {
         let applied: NodeOutput = apply_escrow(store, &policy, &paid, &certificate);
         assert_eq!(receipt(&applied).status, PaidExecutionStatus::Success);
         assert_eq!(receipt(&applied).charged.unwrap().actual.get(), 2);
@@ -153,16 +97,21 @@ fn writer_free_fee_claim_prepares_real_certified_escrow_then_commits_exact_bytes
         next_nonce(&stores[0]),
         0xd3,
     );
-    let before: PortableSnapshotToken = stores[0]
-        .begin_portable_snapshot(&context(), domain())
-        .unwrap();
+    let source_blobs: MemoryBlobStore = MemoryBlobStore::default();
+    let direct_blobs: MemoryBlobStore = MemoryBlobStore::default();
+    let blobs: CountedBlobs<'_> = CountedBlobs::new(&source_blobs);
+    let before: SourceBusinessSnapshot =
+        captured_source(&stores[0], &source_blobs, &context(), domain());
+    let direct_before: SourceBusinessSnapshot =
+        captured_source(&direct_store, &direct_blobs, &context(), domain());
+    assert_same_records_and_blobs(&before, &direct_before);
     let nonce_before: u64 = next_nonce(&stores[0]);
     let reader: WriterFreeView<'_, runtime::MemoryDurableStateStore> =
         WriterFreeView::new(&stores[0]);
     let engine: CountingLocalEngine = CountingLocalEngine::new();
     let prepared: InvocationPreparation = prepare_fee_claim_ordered(
         &reader,
-        &MemoryBlobStore::default(),
+        &blobs,
         &context(),
         domain(),
         &resolver(),
@@ -176,10 +125,9 @@ fn writer_free_fee_claim_prepares_real_certified_escrow_then_commits_exact_bytes
     )
     .unwrap();
     assert_eq!(engine.calls.get(), 1);
+    assert_eq!(blobs.put_count(), 0);
     assert_eq!(
-        stores[0]
-            .begin_portable_snapshot(&context(), domain())
-            .unwrap(),
+        captured_source(&stores[0], &source_blobs, &context(), domain()),
         before
     );
     assert_eq!(next_nonce(&stores[0]), nonce_before);
@@ -204,8 +152,8 @@ fn writer_free_fee_claim_prepares_real_certified_escrow_then_commits_exact_bytes
         .commit(&stores[0], &context())
         .unwrap();
     let direct: NodeOutput = handle_fee_claim(
-        &stores[1],
-        &MemoryBlobStore::default(),
+        &direct_store,
+        &direct_blobs,
         &context(),
         domain(),
         &resolver(),
@@ -227,20 +175,22 @@ fn writer_free_fee_claim_prepares_real_certified_escrow_then_commits_exact_bytes
         exact_receipt
     );
     assert_eq!(
-        stores[1]
+        direct_store
             .read_request_receipt(&context(), domain(), exact_receipt.request_id())
             .unwrap()
             .unwrap(),
         exact_receipt
     );
-    let committed_token: PortableSnapshotToken = stores[0]
-        .begin_portable_snapshot(&context(), domain())
-        .unwrap();
+    let completed: SourceBusinessSnapshot =
+        captured_source(&stores[0], &source_blobs, &context(), domain());
+    let direct_completed: SourceBusinessSnapshot =
+        captured_source(&direct_store, &direct_blobs, &context(), domain());
+    assert_same_records_and_blobs(&completed, &direct_completed);
     // A preparation retry returns the original output before any fresh
     // admission or execution work, rather than a second proposal.
     let replay: InvocationPreparation = prepare_fee_claim_ordered(
         &reader,
-        &MemoryBlobStore::default(),
+        &blobs,
         &context(),
         domain(),
         &resolver(),
@@ -254,14 +204,35 @@ fn writer_free_fee_claim_prepares_real_certified_escrow_then_commits_exact_bytes
     )
     .unwrap();
     assert_eq!(engine.calls.get(), 2);
+    assert_eq!(blobs.put_count(), 0);
     match replay {
         InvocationPreparation::Retained(output) => assert_eq!(output, committed),
         InvocationPreparation::Prepared(_) => panic!("exact replay cannot create a proposal"),
     }
     assert_eq!(
-        stores[0]
-            .begin_portable_snapshot(&context(), domain())
-            .unwrap(),
-        committed_token
+        captured_source(&stores[0], &source_blobs, &context(), domain()),
+        completed
+    );
+    assert_eq!(
+        handle_fee_claim(
+            &direct_store,
+            &direct_blobs,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &base_policy(),
+            &engine,
+            &split.signed_bytes,
+            12,
+        )
+        .unwrap(),
+        direct
+    );
+    assert_eq!(engine.calls.get(), 2);
+    assert_eq!(
+        captured_source(&direct_store, &direct_blobs, &context(), domain()),
+        direct_completed
     );
 }
