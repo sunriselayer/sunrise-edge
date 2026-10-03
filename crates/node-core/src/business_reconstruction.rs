@@ -1291,6 +1291,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                     leg_policy: self.plan.ordered_leg_policy,
                     engine: self.plan.ordered_engine,
                     blobs: &self.blobs,
+                    seal: None,
                 };
                 let requirements =
                     crate::ordered_economics::ordered_causal_requirements(&environment, &candidate)
@@ -1318,6 +1319,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                                 leg_policy: self.plan.ordered_leg_policy,
                                 engine: self.plan.ordered_engine,
                                 blobs: &self.blobs,
+                                seal: None,
                             };
                         crate::ordered_economics::engine::reconstruction_freeze_barrier_needed(
                             &self.store,
@@ -1375,6 +1377,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 leg_policy: self.plan.ordered_leg_policy,
                 engine: self.plan.ordered_engine,
                 blobs: &self.blobs,
+                seal: None,
             };
             let outcome = crate::ordered_economics::engine::reconstruct_ordered_history_height(
                 &self.store,

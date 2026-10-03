@@ -166,8 +166,40 @@ fn postgres_blob_store_conformance() {
     .unwrap();
     let store_c: PostgresBlobStore<TestPostgresManager> =
         PostgresBlobStore::new(pool.clone(), namespace_c.clone()).unwrap();
+    // The protected barrier prevents an ordinary parent deletion. This
+    // privileged corruption control must remove its exact child first.
+    let metadata_delete_error: postgres::Error = admin
+        .execute(
+            "DELETE FROM sunrise_edge.storage_metadata
+         WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3",
+            &[
+                &namespace_c.chain_id_bytes(),
+                &&namespace_c.validator_id().as_bytes()[..],
+                &&namespace_c.domain().as_bytes()[..],
+            ],
+        )
+        .unwrap_err();
     assert_eq!(
-        admin
+        metadata_delete_error.code(),
+        Some(&postgres::error::SqlState::RESTRICT_VIOLATION)
+    );
+    let mut corruption: postgres::Transaction<'_> = admin.transaction().unwrap();
+    assert_eq!(
+        corruption
+            .execute(
+                "DELETE FROM sunrise_edge.outgoing_barrier
+         WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3",
+                &[
+                    &namespace_c.chain_id_bytes(),
+                    &&namespace_c.validator_id().as_bytes()[..],
+                    &&namespace_c.domain().as_bytes()[..],
+                ],
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        corruption
             .execute(
                 "DELETE FROM sunrise_edge.storage_metadata
          WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3",
@@ -180,6 +212,7 @@ fn postgres_blob_store_conformance() {
             .unwrap(),
         1
     );
+    corruption.commit().unwrap();
     let orphan_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0xC3; 32]);
     assert!(matches!(
         store_c.put_blob(orphan_digest, b"orphan".to_vec()),

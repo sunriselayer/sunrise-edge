@@ -2,8 +2,8 @@
 
 use protocol_types::{AtomicityDomainId, ChainId, ValidatorId};
 use runtime::{
-    Clock, DurableOperationContext, StorageCorrelationId, StorageDeadline, SystemClock,
-    WriterFenceGeneration,
+    Clock, DurableDomainStateStore, DurableOperationContext, NamespaceLifecycle,
+    StorageCorrelationId, StorageDeadline, SystemClock, WriterFenceGeneration,
 };
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 use std::{error::Error, io, path::Path};
@@ -17,8 +17,10 @@ pub struct ExistingSqliteSource {
 }
 
 impl ExistingSqliteSource {
-    /// Uses only `open_existing` and the current persisted writer accessor.
-    /// A subsequent mutation or fence change is refused by the snapshot token.
+    /// Uses the named historical open and the current persisted writer accessor.
+    /// An outgoing Sealed namespace remains inspectable; permanent import
+    /// origin remains excluded from this source composition. A subsequent
+    /// mutation or fence change is refused by the snapshot token.
     pub fn open(
         durable_file: &Path,
         blob_file: &Path,
@@ -36,7 +38,7 @@ impl ExistingSqliteSource {
         }
         let namespace: SqliteNamespace = SqliteNamespace::new(chain, validator, domain);
         let durable: SqliteDurableStore =
-            SqliteDurableStore::open_existing(durable_file, namespace)?;
+            SqliteDurableStore::open_historical(durable_file, namespace)?;
         let blobs: SqliteBlobStore = SqliteBlobStore::open_existing(blob_file)?;
         let writer: WriterFenceGeneration = durable.writer_fence()?;
         let deadline: u64 = SystemClock
@@ -56,6 +58,12 @@ impl ExistingSqliteSource {
                 io::Error::new(io::ErrorKind::InvalidInput, "invalid source correlation")
             })?,
         );
+        let origin: NamespaceLifecycle = durable
+            .get_namespace_lifecycle(&operation, domain)
+            .map_err(|error| io::Error::other(format!("source origin read failed: {error:?}")))?;
+        if !origin.is_ordinary() {
+            return Err(runtime_sqlite::SqliteDurableStoreError::InactiveNamespace.into());
+        }
         Ok(Self {
             durable,
             blobs,

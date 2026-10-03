@@ -1,6 +1,6 @@
 # Current delivery roadmap
 
-**2026-10-02: one integrated implementation and refactoring queue.**
+**2026-10-03: one integrated implementation and refactoring queue.**
 [DR-0173](docs/architecture/decisions/0173-integrated-implementation-refactoring.md)
 integrates the remaining functions with responsibility-oriented cleanup.
 The user's newer architecture-first direction is recorded in
@@ -21,7 +21,7 @@ Only this file owns current status, sequencing and deferred work.
 | Generic paid contracts and Standard Asset | DR-0121–0128 implement Publish/Instantiate/Call, ordinary contract-defined fees and asset create/transfer/split/merge/mint/burn; no Standard Asset privilege in node-core |
 | Delivery 1: certified network contract lifecycle | PR #228 merged on 2026-09-27 after the full gate, fresh exact-head Opus approval and CI; paid lifecycle, assets, replay and declared catch-up, not complete state handoff |
 | Delivery 2: fixed-epoch ordered economics | PR #232 merged on 2026-09-27; shared ordering for claims, bonds and evidence/slash/reactivation, with four-namespace CLI evidence. Genuine membership-dependent Deposit/Withdraw positives remain in Delivery 3 |
-| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250/#252/#255/#256 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history, genuine frozen-member source reconstruction, persistent verified inactive import, first incoming-validator bonding and conditional readiness. Seal/activation and recurring lifecycle acceptance remain open |
+| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250/#252/#255/#256 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history, genuine frozen-member source reconstruction, persistent verified inactive import, first incoming-validator bonding and conditional readiness. Native outgoing Seal library/test composition and complete local acceptance are implemented below; successor activation and recurring lifecycle acceptance remain open |
 | Authenticated pre-Seal business cut | PR #251 merged normally on 2026-10-02 after the full local gate, independent exact-head approval and required CI. Complete core derivation, immutable SQLite export/resumption and source-free independent saved verification; not import or activation evidence |
 | Shared artifact/configuration primitives | PR #249 merged: bounded local genesis and held-handle artifact I/O, with authority/error semantics retained by the callers |
 | Required validation | PR #247 implements DR-0172: four unconditional DB-free lanes. PostgreSQL integration/fault acceptance is retained and explicitly selected, not run on every PR |
@@ -40,12 +40,35 @@ network startup are Delivery 4, not included in this estimate.
 
 ## Functional critical path with embedded refactoring
 
-**Current architecture-first work window, 2026-10-02:** approximately eight
+**Completed architecture-first work window, 2026-10-02:** approximately eight
 hours, from 13:50 until 21:50 Asia/Singapore. Establish the
 [global contracts](docs/architecture/architecture-contracts.md), independently
 review concrete interfaces, then integrate useful owning implementations with
 actual callers. Stop launching new work at the deadline and preserve a safe
 verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
+
+**2026-10-03 resumption:** the window ended at a verified clean-main checkpoint;
+its heartbeat is paused. Continue the functional queue, not another generic
+cleanup window. [DR-0187](docs/architecture/decisions/0187-first-epoch-ordered-seal.md)
+now closes the first-epoch Seal design after explicit read-only Opus APPROVE:
+selected-branch verification, private exact acceptance terminal, mandatory
+storage barrier and hard-stop outgoing signatures/writes. Design approval alone
+is not implementation, activation or Delivery 3 completion. PR #265's native
+library/test composition at runtime/test head `3b15680` passed the complete
+local `npm ci` / `check-all.sh --full` gate and required CI on 2026-10-03.
+The earlier `9c49a8b` Opus BLOCK led to signing-site/adversarial coverage,
+fail-closed causal-profile authentication and corrected host/evidence boundaries.
+The genuine post-Drain network case now starts before EMPTY alignment; the
+real CLI, not fixture preparation, performs that alignment. An initial `3b15680`
+full run failed on a PG catch-up read; the complete same-source rerun passed.
+The cause is unconfirmed, and failed/interrupted runs are not acceptance evidence.
+Fresh independent exact-final-head APPROVE and required CI remain merge gates,
+not waived by passing tests or the earlier design approval.
+The four-SQLite workflow uses an external compiled preparation binary and the
+Rust CLI entry point in-process over real TCP, not a compiled network-submit
+process. No shipped live host completes Seal: the PG host composes `seal: None`.
+Original read-only reconciliation remains separate from fresh admission.
+Successor/recurring and release gates stay open.
 
 ### Verified architecture checkpoints
 
@@ -91,8 +114,8 @@ consumers, not merely shorter files or new interfaces with missing bodies:
 Every row below is a normal merge with fresh exact-head explicit APPROVE, local
 `npm ci --prefix adapters/cloudflare-workers` / `./scripts/check-all.sh` and
 all four required CI lanes plus the aggregate passing before merge. Opus was
-quota-limited for the final three reviews; the authorized Codex substitute was
-used. GitHub confirms the seven listed PRs merged. Merge trees equal the reviewed heads;
+quota-limited for PR #260..#262; the authorized Codex substitute was used.
+GitHub confirms the eight listed PRs merged. Merge trees equal the reviewed heads;
 source branches are absent and local main equals origin/main with a clean tree.
 
 | PR | Reviewed head | Merge | Independent review | Required CI | Selected PG acceptance |
@@ -104,6 +127,7 @@ source branches are absent and local main equals origin/main with a clean tree.
 | [#261](https://github.com/sunriselayer/sunrise-edge/pull/261) | `cea8e5c1` | `e5b00c1a` | Codex APPROVE | `37006114264` | Complete local `--full`, all original prerequisites/fault flags |
 | [#262](https://github.com/sunriselayer/sunrise-edge/pull/262) | `9e93b13e` | `dafa7061` | Codex APPROVE | `37008915410` | Not selected: private core binding, no provider change/claim |
 | [#263](https://github.com/sunriselayer/sunrise-edge/pull/263) | `8f0d396f` | `3fa03b74` | Opus APPROVE to record Proposed design | `37010660824` | Not selected: documentation only |
+| [#264](https://github.com/sunriselayer/sunrise-edge/pull/264) | `0cbc45da` | `73e2f446` | Opus APPROVE to record Proposed backstops | `37013847916` | Not selected: documentation only |
 
 PR #261's first PG lab restart failed because a dynamically assigned Docker
 host port changed while the fixture retained its original URL. An independent
@@ -121,14 +145,17 @@ design, not permission to implement unresolved schemas or claim activation.
 
 The [handoff contracts](docs/architecture/architecture-contracts.md#handoff-contracts)
 and [proposed DR-0186 closure](docs/architecture/functional-handoff-closure.md)
-identify concrete remaining consumers, not executable producers or wire
-approval. Do not start another generic framework or repository-wide cleanup
-phase before them. Resolve the coupled pre-code questions in that proposal:
-protected barrier/virgin transition history, retained delivery policy,
-competing Seal outcomes, bounded retained
-companions/full phase-aware suffix, snapshot checks inside actual completion,
-and exact successor schemas/key allocations. Proposed documentation alone does
-not complete Seal, serving, recurring reconstruction or Delivery 3.
+identify concrete remaining consumers, not executable producers.
+[DR-0187](docs/architecture/decisions/0187-first-epoch-ordered-seal.md) supersedes
+the Seal-only alternatives with a reviewed exact first-epoch contract. It avoids
+a second uncommitted archive and post-Seal progress state machine while retaining
+real justified-prefix completion and the exact committed boundary. Its native
+cut/store/engine/exposure owners are now consumed and locally verified. Do not start
+another generic framework or repository-wide cleanup phase. Proof-backed
+target-local activation, serving and successor/predecessor schema allocations
+still require their separate design and functional evidence, without new
+outgoing signatures after Seal. Proposed documentation alone does not complete
+serving, recurring reconstruction or Delivery 3.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.
@@ -138,10 +165,9 @@ HTTP/SDK/CLI, tests and documentation; do not split merely by codec or file.
 
 | Order | Remaining outcome | Refactoring included where needed | Acceptance boundary |
 | --- | --- | --- | --- |
-| 1 | Callable ordered Seal | Existing ordered proposal/vote/observer and actual completion; one target verifier, bounded retained companions and full phase-aware high/locked/proposed-QC ancestry | Ready eligible next quorum and independently verified cut; complete business-free inherited suffix; exact snapshot continuity inside Seal commit. Only committed acceptance fixes the target and closes old business. No proposal-time singleton, timeout unfreeze or force selection |
-| 2 | Unique post-Seal transition and authenticated successor serving | Protected actual-key retention, backend closure, epoch-scoped safety and fresh invocation authority; reuse inactive staging for retained/new members | No fresh old-namespace business, exact receipt replay, positive virgin-history proof, retained non-signing retry, ambiguous-write reconciliation; one proof-backed target-local activation under its own fence with permanent import origin and outgoing history retained |
-| 3 | Recurring add/replace/recover/epoch lifecycle | Verified predecessor reconstruction plus actual HTTP/SDK/CLI composition; share only needed artifact/configuration primitives | Real A/B/C/D → A/B/C/E flow: Deposit E, Unbond absent D, verified replacement, new-epoch paid contracts/claims, advance to genuine unlock epoch, Withdraw D; restart/replay, retired-key, early withdrawal, stale writer and inventory-race negatives. An unbond-delay=1 fixture does not waive repeated epochs |
-| 4 | Delivery 4: independent audit and initial-network startup | Only deployment-facing composition/dispatch cleanup needed for the chosen profile; reuse capability tests rather than copy PG-only fixtures | Explicit reviewed initial-network activation profile, independently controlled stores, executable auth/TLS/startup/recovery instructions, separate economics and ingress audits and remediation before live exposure |
+| 1 | Proof-backed target-local activation and authenticated successor serving | Protected actual-key retention, backend closure, epoch-scoped safety and fresh invocation authority; reuse inactive staging for retained/new members | Permanently Sealed outgoing source with no new outgoing signatures or ordinary business; exact receipt replay, positive virgin-history proof, retained non-signing retry and ambiguous-write reconciliation; one separately reviewed target-local activation under its own fence with permanent import origin and outgoing history retained |
+| 2 | Recurring add/replace/recover/epoch lifecycle | Verified predecessor reconstruction plus actual HTTP/SDK/CLI composition; share only needed artifact/configuration primitives | Real A/B/C/D → A/B/C/E flow: Deposit E, Unbond absent D, verified replacement, new-epoch paid contracts/claims, advance to genuine unlock epoch, Withdraw D; restart/replay, retired-key, early withdrawal, stale writer and inventory-race negatives. An unbond-delay=1 fixture does not waive repeated epochs |
+| 3 | Delivery 4: independent audit and initial-network startup | Only deployment-facing composition/dispatch cleanup needed for the chosen profile; reuse capability tests rather than copy PG-only fixtures | Explicit reviewed initial-network activation profile, independently controlled stores, executable auth/TLS/startup/recovery instructions, separate economics and ingress audits and remediation before live exposure |
 
 - [x] **Frozen-member source reconstruction gap:**
   [DR-0174](docs/architecture/decisions/0174-frozen-member-business-reconstruction.md)
@@ -219,9 +245,53 @@ Import provides no readiness, Seal, activation or deployed-provider authority.
   `2d5c8d91` on 2026-10-02. This adds native SQLite/memory
   readiness, not PG/DO/D1 readiness, Seal, activation, serving or Delivery 3
   completion. A public certificate is no activation capability.
-- [ ] **After readiness:** separately reviewed ordered Seal and activation/
-  serving rollover. Phase-aware high/locked traversal and Seal companion
-  ownership remain pre-code gates; no singleton lock from an uncommitted Seal.
+- [x] **First-epoch Seal design boundary:**
+  [DR-0187](docs/architecture/decisions/0187-first-epoch-ordered-seal.md) closes
+  the selected-branch/committed-boundary checks, bounded certificate retention,
+  private exact acceptance terminal and mandatory atomic outgoing barrier.
+  Hard-stop outgoing signatures after acceptance removes the proposed second
+  uncommitted archive and post-Seal progress engine. This is design approval
+  only; no proposal-time singleton or readiness-as-serving permission.
+- [x] **Native first-epoch Seal implementation and complete local acceptance:**
+  DR-0187 is consumed through actual completion, cached-signature guards,
+  original replay, CLI entry-point and SQLite restart/fault tests. The integrated
+  implementation has native SQLite/domain-bound memory capability, mandatory
+  protected barriers in all stores, independent Seal/barrier vectors and generic
+  bounded EMPTY client alignment under
+  [DR-0188](docs/architecture/decisions/0188-ordered-client-empty-alignment.md).
+  PostgreSQL Seal completion is still unsupported, not implied by its barrier.
+  Native Seal is library/test host composition only; the shipped PG host has
+  no Seal composition and there is no shipped native SQLite serving executable.
+  Read-only original-result reconciliation is now separate from fresh
+  admission. Genuine inactive-import/readiness and compiled nondefault-suite
+  candidate POST regressions pass without waiving signing/origin/quorum guards.
+  Every fresh/cached signing owner has a Sealed-barrier control. Genuine
+  acceptance controls cover authentication, causal ancestry, missing capability,
+  exact certificate retention, applied prerequisites, competing Seal targets,
+  distinct quorum subsets, landed/unlanded commit reply loss, stale writers and
+  exact token/inventory races. Canonical-only private terminal-guard controls
+  are not advertised as positive whole scheduled closures. Exact-original
+  `AlreadyCompleted` is historical reconciliation, not cached-vote guard proof.
+  Four live SQLite validators start at the genuine unmodified post-Drain source;
+  real TCP CLI submission performs EMPTY alignment and retains chronological
+  proposal/QC/candidate and two-phase peer-result artifacts. Separate checked
+  quiescent clones isolate competing-proposal/reply-loss controls; raw copying
+  is test-only, not concurrent backup evidence. Actual close/reopen, replay and
+  writer fencing remain covered. The integrated E2E passed at `3b15680`, followed
+  by the complete local `npm ci --prefix adapters/cloudflare-workers` and
+  `./scripts/check-all.sh --full` acceptance: all six selected live PG fault
+  flags, all nineteen retained ignored selectors, nineteen independent vector
+  checkers and every provider check. Required CI `37094031169` passed that
+  runtime/test head. The first same-head full run's PG catch-up read failed;
+  only the complete successful rerun counts. Earlier interrupted or failed
+  gates and the `9c49a8b` Opus BLOCK are not waived by aggregate test counts.
+  Fresh exact-head independent review and required CI must pass before merge;
+  this is neither successor activation nor Delivery 3 completion.
+- [ ] **Next:** separately review a Seal-derived authenticated successor-serving
+  and target-local activation contract, then consume its protected actual-key
+  retention under the target's own fence. The outgoing source remains permanently
+  Sealed without new outgoing signatures; permanent import origin and outgoing
+  history remain unchanged. This queue defines no replacement producer or schema.
 - [ ] **Then:** integrated membership/recovery acceptance through real compiled
   CLI and authenticated hosts; keep Delivery 3 unchecked until it passes.
 - [ ] **Before live exposure:** close the independently scoped economics and

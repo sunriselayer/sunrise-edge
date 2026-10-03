@@ -195,7 +195,8 @@ pub(crate) fn ordered_causal_requirements(
         }
         OrderedOperationKind::Evidence
         | OrderedOperationKind::Freeze
-        | OrderedOperationKind::DrainSet => {}
+        | OrderedOperationKind::DrainSet
+        | OrderedOperationKind::Seal => {}
     }
     let authenticated: Vec<AuthenticatedLocalExecutionIntent> = legs
         .into_iter()
@@ -329,7 +330,8 @@ pub(crate) fn verify_causal_prerequisites<S: StructuredStateReader>(
         }
         OrderedOperationKind::Evidence
         | OrderedOperationKind::Freeze
-        | OrderedOperationKind::DrainSet => {}
+        | OrderedOperationKind::DrainSet
+        | OrderedOperationKind::Seal => {}
     }
     Ok(())
 }
@@ -524,11 +526,11 @@ pub(crate) fn reservation_plan(
         // Evidence admission commits through a content-addressed absence
         // fence and consumes neither an object nor a nonce.
         OrderedOperationKind::Evidence => OrderedReservationPlan::default(),
-        // Freeze and DrainSet are pure control: no address-owned input, no
-        // sender nonce.
-        OrderedOperationKind::Freeze | OrderedOperationKind::DrainSet => {
-            OrderedReservationPlan::default()
-        }
+        // Freeze, DrainSet and Seal are pure control: no address-owned
+        // input, no sender nonce.
+        OrderedOperationKind::Freeze
+        | OrderedOperationKind::DrainSet
+        | OrderedOperationKind::Seal => OrderedReservationPlan::default(),
     };
     if plan.objects.len() > MAX_ORDERED_RESERVED_OBJECTS {
         return Err(OrderedEconomicsError::Unauthenticated(

@@ -499,6 +499,7 @@ pub(super) fn prepare_drain_control(
         leg_policy: plan.ordered_leg_policy,
         engine: plan.ordered_engine,
         blobs: &overlay.blobs,
+        seal: None,
     };
     if !crate::ordered_economics::engine::reconstruction_drain_readiness_needed(
         &overlay.store,

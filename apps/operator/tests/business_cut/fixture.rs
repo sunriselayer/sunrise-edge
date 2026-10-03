@@ -177,6 +177,7 @@ impl Fixture {
             leg_policy: &self.local_policy,
             engine: &self.engine,
             blobs: &self.blobs,
+            seal: None,
         }
     }
 

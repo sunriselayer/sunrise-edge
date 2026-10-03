@@ -9,7 +9,7 @@ use runtime::portable::{
     PortableBlobDescriptor,
 };
 
-fn body<S: DurablePortableSnapshotRepository>(
+fn body<S: DurablePortableSnapshotRepository + ?Sized>(
     source: &S,
     operation: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -48,7 +48,7 @@ fn body<S: DurablePortableSnapshotRepository>(
     }
     Ok(Some(bytes))
 }
-fn blob<B: PortableBlobRepository>(
+fn blob<B: PortableBlobRepository + ?Sized>(
     source: &B,
     digest: Digest32,
     maximum: usize,
@@ -95,7 +95,10 @@ fn blob<B: PortableBlobRepository>(
     Ok(bytes)
 }
 
-pub(super) fn capture<S: DurablePortableSnapshotRepository, B: PortableBlobRepository>(
+pub(super) fn capture<
+    S: DurablePortableSnapshotRepository + ?Sized,
+    B: PortableBlobRepository + ?Sized,
+>(
     source: &S,
     blobs: &B,
     operation: &DurableOperationContext,

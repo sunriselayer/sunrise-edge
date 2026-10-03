@@ -30,10 +30,12 @@ use super::identity::{LocalVoteReconciliation, RetainedIdentity};
 use super::observed_read::ObservedBusinessReadView;
 use super::policy::{AuthenticatedOrderedOperation, Ed25519ConsensusVerifier};
 use super::reservation::{OrderedReservationPlan, PendingWrite};
+use super::seal;
 use super::*;
 use crate::admission_profile::{
     fence_verified_admission_profile, require_historical_direct_writer,
 };
+use crate::business_reconstruction::BusinessReconstructionPlan;
 use crate::operation_preparation::{
     InvocationPreparation, PreparedBusinessInvocation, PreparedStateOperation,
 };
@@ -44,9 +46,12 @@ use consensus::{
     decode_proposal, decode_quorum_certificate, encode_consensus_state, encode_proposal,
     encode_quorum_certificate,
 };
+use runtime::portable::PortableSnapshotToken;
 use runtime::{
-    DurableCommitOutcome, DurableDomainStateStore, DurableObjectHeadRead, StateAssemblyError,
-    StateObservationSet, StateTransactionBuilder, StructuredStateReader, VersionedStateReader,
+    DurableCommitOutcome, DurableDomainStateStore, DurableObjectHeadRead, OutgoingSealRepository,
+    SealBarrier, StateAssemblyError, StateObservationSet, StateTransactionBuilder,
+    StructuredDurableDomainStateStore, StructuredStateReader, TransitionHistoryState,
+    VersionedStateReader,
 };
 
 /// Reserved under [`crate::local_instance_state::INSTANCE_STATE_PREFIX`], so
@@ -959,7 +964,7 @@ struct LoadedState {
 /// was never installed or fails
 /// [`consensus::ChainedHotStuff::validate_state`] -- the restart-safety guard
 /// every orchestrator entry point runs before applying a new event.
-fn load_state<S: StructuredStateReader>(
+fn load_state<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -1042,7 +1047,7 @@ pub fn install_ordered_genesis<S: StructuredDurableDomainStateStore>(
 /// Reads the highest committed height whose economic effects (if any) are
 /// already durably applied. Absent means genesis, matching
 /// [`ConsensusState::committed_height`]'s own zero start.
-pub(super) fn load_applied_height<S: StructuredStateReader>(
+pub(super) fn load_applied_height<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -1096,9 +1101,27 @@ pub(super) enum LegOutcome {
     AcceptedRetainedEvidence(NodeOutput),
     /// A deterministic, retained refusal: no value or nonce movement.
     Refused(NodeOutput),
+    /// DR-0187 Seal acceptance: the real independent private business
+    /// closure (`business_reconstruction::cut::verify_live_seal_closure`)
+    /// has already run and matched, producing a genuine receipt-only
+    /// output and the token/barrier the actual `OutgoingSealRepository`
+    /// completion port must retain atomically with it. Produced only by
+    /// [`execute_seal_candidate`]; never a metadata-only convenience result.
+    AcceptedSeal {
+        output: NodeOutput,
+        retention: SealRetention,
+    },
     /// Infrastructural failure or unknown prerequisite: local apply must stop
     /// and require reconciliation.
     Stop(OrderedEconomicsError),
+}
+
+/// The real token-covered source capture and the exact sealed-record fields
+/// one successful DR-0187 acceptance must retain atomically with the
+/// ordinary original receipt via `OutgoingSealRepository::commit_seal_completion`.
+pub(super) struct SealRetention {
+    pub(super) token: PortableSnapshotToken,
+    pub(super) barrier: SealBarrier,
 }
 
 fn refused(request_id: [u8; 32], refusal: OrderedRefusal) -> LegOutcome {
@@ -1144,10 +1167,26 @@ pub(super) fn execute_candidate<S: StructuredStateReader>(
     env: &OrderedEconomicsEnvironment<'_>,
     operation: &AuthenticatedOrderedOperation<'_>,
     admission: Option<&OrderedLegAdmission<'_>>,
-    block_height: u64,
+    committed: &CommittedOrderedOperation<'_>,
+    seal_repository: Option<&dyn OutgoingSealRepository>,
 ) -> LegOutcome {
     let candidate: &OrderedCandidate = operation.candidate();
+    let block_height: u64 = committed.height();
+    let block_digest: Digest32 = committed.block_digest();
+    if candidate.kind == OrderedOperationKind::Seal
+        && (env.seal.is_none() || seal_repository.is_none())
+    {
+        return LegOutcome::Stop(stop(
+            "ordered Seal completion requires the live composition and same-store capability",
+        ));
+    }
     if let Err(error) = preflight::preflight(store, context, env, candidate, block_height) {
+        // A Seal warrant is a local prerequisite for its independently
+        // verified closure, not a healthy-state business refusal. Keep the
+        // applied prefix and original receipt absent until it can be proved.
+        if candidate.kind == OrderedOperationKind::Seal {
+            return LegOutcome::Stop(error);
+        }
         return disposition(candidate.request_id, error);
     }
     let domain = env.policy.domain();
@@ -1240,8 +1279,445 @@ pub(super) fn execute_candidate<S: StructuredStateReader>(
             candidate.request_id,
             node_failure,
         ),
+        // DR-0187: the real acceptance-only business closure. A warranted
+        // candidate (preflight, above) is necessary but never sufficient by
+        // itself: `execute_seal_candidate` additionally requires the live
+        // `env.seal` composition and the store's own `OutgoingSealRepository`
+        // capability, and only ever produces `AcceptedSeal` after the real
+        // independent `verify_live_seal_closure` comparison has matched.
+        OrderedOperationKind::Seal => execute_seal_candidate(
+            context,
+            env,
+            candidate,
+            block_height,
+            block_digest,
+            seal_repository,
+        ),
     }
 }
+
+/// DR-0187 Seal dispatch. Pure fields (target/request/output) are
+/// derivable from the already pure-authenticated candidate alone, but
+/// producing [`LegOutcome::AcceptedSeal`] additionally requires the live
+/// `env.seal` composition and the stores own [`OutgoingSealRepository`]
+/// capability, and only after the real independent
+/// `business_reconstruction::cut::verify_live_seal_closure` comparison has
+/// matched. Neither a missing composition nor a missing capability ever
+/// falls back to a receipt-only acceptance: this first-epoch feature never
+/// needs to replay an accepted Seal through historical reconstruction, so
+/// both Stop rather than fabricate a success this validator has not
+/// actually, independently verified.
+fn execute_seal_candidate(
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+    block_height: u64,
+    block_digest: Digest32,
+    seal_repository: Option<&dyn OutgoingSealRepository>,
+) -> LegOutcome {
+    let intent = match seal::decode_seal_intent(&candidate.intent) {
+        Ok(intent) => intent,
+        Err(_) => {
+            return LegOutcome::Stop(stop("seal acceptance candidate intent does not decode"));
+        }
+    };
+    let cut_identity = match seal::decode_seal_cut_identity(&intent) {
+        Ok(identity) => identity,
+        Err(_) => {
+            return LegOutcome::Stop(stop(
+                "seal acceptance candidate cut identity does not decode",
+            ));
+        }
+    };
+    let subject_identity: Digest32 = match intent.readiness_subject.identity(env.resolver()) {
+        Ok(digest) => digest,
+        Err(_) => {
+            return LegOutcome::Stop(stop("seal acceptance readiness subject configuration"));
+        }
+    };
+    let target: Digest32 = match seal::seal_target_digest(
+        env.resolver(),
+        &candidate.context,
+        subject_identity,
+        intent.predecessor_tag,
+        intent.predecessor_digest,
+    ) {
+        Ok(target) => target,
+        Err(error) => return LegOutcome::Stop(error.into()),
+    };
+    let outcome_frame: SealOutcome = SealOutcome {
+        target,
+        request: candidate.request_id,
+        seal_block_height: block_height,
+        seal_block_digest: block_digest,
+    };
+    let payload: Vec<u8> = match seal::encode_seal_outcome(&outcome_frame) {
+        Ok(bytes) => bytes,
+        Err(error) => return LegOutcome::Stop(error.into()),
+    };
+    let request_id: RequestId = match RequestId::new(candidate.request_id) {
+        Ok(id) => id,
+        Err(error) => return LegOutcome::Stop(error.into()),
+    };
+    let response: NodeResponse =
+        match NodeResponse::new(request_id, NodeResponseStatus::Accepted, Some(payload)) {
+            Ok(response) => response,
+            Err(error) => return LegOutcome::Stop(error.into()),
+        };
+    let output: NodeOutput = match NodeOutput::new(vec![response], Vec::new()) {
+        Ok(output) => output,
+        Err(error) => return LegOutcome::Stop(error.into()),
+    };
+    // DR-0187: "None or missing SAMESTORE capability is Unsupported Stop";
+    // public cut/saved/import/readiness keep their own unrelated 3-empty
+    // terminal and never need to re-execute an accepted Seal, so there is
+    // deliberately no reduced/receipt-only branch below this point.
+    let Some(composition) = env.seal.as_ref() else {
+        return LegOutcome::Stop(OrderedEconomicsError::Prerequisite(
+            "ordered Seal acceptance requires a live Seal composition; this environment carries none",
+        ));
+    };
+    let Some(repository) = seal_repository else {
+        return LegOutcome::Stop(OrderedEconomicsError::Prerequisite(
+            "ordered Seal acceptance requires the stores OutgoingSealRepository capability",
+        ));
+    };
+    // DR-0187: the business-reconstruction target is the actual CURRENT
+    // prior tip h-1, never the candidates own possibly-stale declared
+    // checkpoint -- empty progress may have extended it since signing.
+    let Some(current_height) = block_height.checked_sub(1) else {
+        return LegOutcome::Stop(stop("seal acceptance height underflow"));
+    };
+    let prior_state: LoadedState = match load_state(repository, context, env) {
+        Ok(loaded) => loaded,
+        Err(error) => return LegOutcome::Stop(error),
+    };
+    let (applied_height, _, _) = match load_applied_height(repository, context, env) {
+        Ok(applied) => applied,
+        Err(error) => return LegOutcome::Stop(error),
+    };
+    if applied_height != current_height || prior_state.state.committed_height != current_height {
+        return LegOutcome::Stop(stop(
+            "ordered Seal acceptance requires the actual applied and committed prior tip h-1; declared recovery required",
+        ));
+    }
+    let certificate: consensus::readiness::ReadinessCertificate =
+        match seal::load_verified_seal_certificate(env, candidate) {
+            Ok(certificate) => certificate,
+            Err(error) => return LegOutcome::Stop(error),
+        };
+    let next_members: Vec<crate::fast_path::records::FastPathValidatorEntry> =
+        seal::seal_next_members(&certificate);
+    let current_identity: OrderedHistoryIdentity = match super::ordered_history::identity_at_height(
+        repository,
+        context,
+        env,
+        current_height,
+    ) {
+        Ok(identity) => identity,
+        Err(error) => return LegOutcome::Stop(error),
+    };
+    let ordered_material: Vec<OrderedHistoryHeightMaterial> =
+        match super::ordered_history::assemble_verified_material(
+            repository,
+            context,
+            env,
+            &current_identity,
+        ) {
+            Ok(material) => material,
+            Err(error) => return LegOutcome::Stop(error),
+        };
+    // The intents own anchor must land on the real authenticated chain at
+    // exactly its declared checkpoint, and every height strictly after it
+    // through the current prior tip must be empty progress: an intent
+    // cannot silently repin to a different branch or skip a nonempty one.
+    if cut_identity.ordered_history.through_height > current_height {
+        return LegOutcome::Stop(stop(
+            "seal acceptance candidate checkpoint lies beyond the current prior tip",
+        ));
+    }
+    for material in &ordered_material {
+        if material.descriptor.height == cut_identity.ordered_history.through_height {
+            if material.descriptor.view != cut_identity.ordered_history.through_view
+                || material.descriptor.block_digest != cut_identity.ordered_history.through_digest
+            {
+                return LegOutcome::Stop(stop(
+                    "seal acceptance candidate anchor disagrees with the authenticated archive",
+                ));
+            }
+        } else if material.descriptor.height > cut_identity.ordered_history.through_height
+            && (material.descriptor.components.len() != 1
+                || material.descriptor.components[0].kind
+                    != OrderedHistoryComponentKind::CommitProof)
+        {
+            return LegOutcome::Stop(stop(
+                "seal acceptance candidate post-anchor committed height is not empty",
+            ));
+        }
+    }
+    let plan: BusinessReconstructionPlan<'_> = BusinessReconstructionPlan {
+        genesis_root: composition.genesis_root,
+        operation_context: *context,
+        domain: env.policy.domain(),
+        resolver_history: env.history,
+        ordered_policy: env.policy,
+        ordered_history_identity: &current_identity,
+        ordered_leg_policy: env.leg_policy,
+        ordered_engine: env.engine,
+        paid_base_policy: composition.paid_base_policy,
+        paid_engine: composition.paid_engine,
+    };
+    let verified = match crate::business_reconstruction::cut::verify_live_seal_closure(
+        plan,
+        repository,
+        composition.blobs,
+        &ordered_material,
+        candidate,
+        block_digest,
+        &next_members,
+    ) {
+        Ok(verified) => verified,
+        Err(_) => {
+            return LegOutcome::Stop(OrderedEconomicsError::Prerequisite(
+                "ordered Seal acceptance independent business closure failed",
+            ));
+        }
+    };
+    // DR-0187: the verified cut must equal the candidates ENTIRE own
+    // declared intent cut except the independently authenticated empty
+    // history extension this block just proved.
+    let mut expected_identity = cut_identity.clone();
+    expected_identity.ordered_history = verified.identity().ordered_history.clone();
+    if &expected_identity != verified.identity() {
+        return LegOutcome::Stop(OrderedEconomicsError::Prerequisite(
+            "ordered Seal acceptance verified business cut differs from the candidates own intent",
+        ));
+    }
+    let Some(token) = verified.source_token().cloned() else {
+        return LegOutcome::Stop(stop(
+            "ordered Seal acceptance business closure produced no source token",
+        ));
+    };
+    let barrier: SealBarrier = SealBarrier {
+        outgoing_epoch: env.policy.context().epoch(),
+        request: candidate.request_id,
+        height: block_height,
+        block_digest,
+        target_digest: target,
+        transition_history: TransitionHistoryState::Virgin,
+    };
+    LegOutcome::AcceptedSeal {
+        output,
+        retention: SealRetention { token, barrier },
+    }
+}
+
+/// DR-0187 pre-vote/leader signing retention: ordinary cut derivation's
+/// unchanged terminal three-empty, over the
+/// CURRENT committed prefix, through the same SAMESTORE capability. Compares
+/// the result against the candidates own declared intent cut on every
+/// field except the independently authenticated empty history extension,
+/// exactly like acceptance, then returns the fresh token this one signing
+/// attempt retains. A missing composition/capability or a disagreeing
+/// reconstruction stops rather than signing on an unverified claim.
+fn require_seal_signing_retention<S: StructuredDurableDomainStateStore + ?Sized>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+    loaded: &LoadedState,
+    selected: &QuorumCertificate,
+    observations: &mut StateObservationSet,
+) -> Result<PortableSnapshotToken, OrderedEconomicsError> {
+    let current_height: u64 = loaded.state.committed_height;
+    let (applied_height, applied_key, applied_revision) = load_applied_height(store, context, env)?;
+    if applied_height != current_height {
+        return Err(stop(
+            "ordered Seal signing requires the applied prefix to match the committed height",
+        ));
+    }
+    observations
+        .observe(StateReadAssertion::new(
+            loaded.key.clone(),
+            loaded.revision,
+        )?)
+        .map_err(state_assembly_error)?;
+    observations
+        .observe(StateReadAssertion::new(applied_key, applied_revision)?)
+        .map_err(state_assembly_error)?;
+    let composition = env
+        .seal
+        .as_ref()
+        .ok_or(OrderedEconomicsError::Prerequisite(
+            "ordered Seal signing requires a live Seal composition",
+        ))?;
+    let repository: &dyn OutgoingSealRepository =
+        store
+            .outgoing_seal_repository()
+            .ok_or(OrderedEconomicsError::Prerequisite(
+                "ordered Seal signing requires the stores OutgoingSealRepository capability",
+            ))?;
+    let intent = seal::decode_seal_intent(&candidate.intent)
+        .map_err(|_| stop("seal signing candidate intent does not decode"))?;
+    let cut_identity = seal::decode_seal_cut_identity(&intent)
+        .map_err(|_| stop("seal signing candidate cut identity does not decode"))?;
+    let certificate: consensus::readiness::ReadinessCertificate =
+        seal::load_verified_seal_certificate(env, candidate)?;
+    let next_members: Vec<crate::fast_path::records::FastPathValidatorEntry> =
+        seal::seal_next_members(&certificate);
+    if cut_identity.ordered_history.through_height > current_height {
+        return Err(stop(
+            "seal signing candidate checkpoint lies beyond the current prior tip",
+        ));
+    }
+    let current_identity: OrderedHistoryIdentity =
+        super::ordered_history::identity_at_height(repository, context, env, current_height)?;
+    let ordered_material: Vec<OrderedHistoryHeightMaterial> =
+        super::ordered_history::assemble_verified_material(
+            repository,
+            context,
+            env,
+            &current_identity,
+        )?;
+    let boundary: &OrderedHistoryHeightDescriptor = &ordered_material
+        .last()
+        .ok_or(stop(
+            "Seal signing lacks the independently verified committed boundary",
+        ))?
+        .descriptor;
+    require_seal_selected_ancestry(env.policy, &loaded.state, selected, boundary)?;
+    for material in &ordered_material {
+        if material.descriptor.height == cut_identity.ordered_history.through_height {
+            if material.descriptor.view != cut_identity.ordered_history.through_view
+                || material.descriptor.block_digest != cut_identity.ordered_history.through_digest
+            {
+                return Err(stop(
+                    "seal signing candidate anchor disagrees with the authenticated archive",
+                ));
+            }
+        } else if material.descriptor.height > cut_identity.ordered_history.through_height
+            && (material.descriptor.components.len() != 1
+                || material.descriptor.components[0].kind
+                    != OrderedHistoryComponentKind::CommitProof)
+        {
+            return Err(stop(
+                "seal signing candidate post-anchor committed height is not empty",
+            ));
+        }
+    }
+    let plan: BusinessReconstructionPlan<'_> = BusinessReconstructionPlan {
+        genesis_root: composition.genesis_root,
+        operation_context: *context,
+        domain: env.policy.domain(),
+        resolver_history: env.history,
+        ordered_policy: env.policy,
+        ordered_history_identity: &current_identity,
+        ordered_leg_policy: env.leg_policy,
+        ordered_engine: env.engine,
+        paid_base_policy: composition.paid_base_policy,
+        paid_engine: composition.paid_engine,
+    };
+    let verified =
+        crate::business_reconstruction::cut::derive_source_business_cut_for_seal_signing(
+            plan,
+            repository,
+            composition.blobs,
+            &ordered_material,
+            &next_members,
+        )
+        .map_err(|_| {
+            OrderedEconomicsError::Prerequisite(
+                "ordered Seal signing independent business reconstruction failed",
+            )
+        })?;
+    let mut expected_identity = cut_identity.clone();
+    expected_identity.ordered_history = verified.identity().ordered_history.clone();
+    if &expected_identity != verified.identity() {
+        return Err(OrderedEconomicsError::Prerequisite(
+            "ordered Seal signing verified business cut differs from the candidates own intent",
+        ));
+    }
+    verified.source_token().cloned().ok_or(stop(
+        "ordered Seal signing business reconstruction produced no source token",
+    ))
+}
+
+/// Only the selected justification must be empty above the independently
+/// verified committed boundary. `load_state` already re-verifies every cached
+/// proposal's context, membership, leadership, QC and signature; this bounded
+/// walk additionally requires direct heights, monotonic views and the exact
+/// boundary digest/view. Unrelated superseded forks remain ordinary consensus
+/// state and do not acquire a second global business-free condition.
+fn require_seal_selected_ancestry(
+    policy: &OrderedEconomicsPolicy,
+    state: &ConsensusState,
+    selected: &QuorumCertificate,
+    boundary: &OrderedHistoryHeightDescriptor,
+) -> Result<(), OrderedEconomicsError> {
+    if boundary.height != state.committed_height {
+        return Err(stop(
+            "Seal committed boundary differs from the loaded state; catch-up required",
+        ));
+    }
+    let mut cursor: &QuorumCertificate = selected;
+    for walked in 0..=MAX_VOTE_ANCESTOR_WALK {
+        if cursor.height == boundary.height {
+            if cursor.proposal_digest != boundary.block_digest || cursor.view != boundary.view {
+                return Err(stop(
+                    "Seal selected branch forks at the committed boundary; catch-up required",
+                ));
+            }
+            return Ok(());
+        }
+        if cursor.height < boundary.height {
+            return Err(stop(
+                "Seal selected branch skips the committed boundary; catch-up required",
+            ));
+        }
+        if walked == MAX_VOTE_ANCESTOR_WALK {
+            return Err(stop(
+                "Seal selected-ancestor walk exceeded its bound; catch-up required",
+            ));
+        }
+        let ancestor: &ConsensusProposal = state.known_proposal(&cursor.proposal_digest).ok_or(
+            stop("Seal selected ancestor is missing; declared catch-up required"),
+        )?;
+        if ancestor.height != cursor.height
+            || ancestor.view != cursor.view
+            || policy
+                .engine()
+                .proposal_digest(ancestor)
+                .map_err(consensus_to_node)?
+                != cursor.proposal_digest
+            || ancestor.justify.height.checked_add(1) != Some(ancestor.height)
+            || ancestor.justify.view >= ancestor.view
+        {
+            return Err(stop(
+                "Seal selected ancestry has inconsistent direct links; catch-up required",
+            ));
+        }
+        require_profile_shape(ancestor).map_err(|_| {
+            stop("Seal selected ancestor violates the ordered profile; catch-up required")
+        })?;
+        if !ancestor.transactions.is_empty() {
+            return Err(stop(
+                "Seal selected ancestor carries a candidate; declared catch-up required",
+            ));
+        }
+        cursor = &ancestor.justify;
+    }
+    Err(stop(
+        "Seal selected-ancestor walk exceeded its bound; catch-up required",
+    ))
+}
+
+#[cfg(test)]
+#[path = "tests/seal_selected_ancestry.rs"]
+mod seal_selected_ancestry_tests;
+
+#[cfg(test)]
+#[path = "tests/seal_acceptance_dispatch.rs"]
+pub(super) mod seal_acceptance_dispatch_tests;
 
 fn dispatch_invocation<E>(
     result: Result<InvocationPreparation, E>,
@@ -1590,7 +2066,7 @@ pub(crate) fn reconstruct_ordered_history_height(
                 let operation: CommittedOrderedOperation<'_> =
                     CommittedOrderedOperation::bind_verified(env, &candidate, &block)?;
                 let actual: PreparedOriginalCompletion = completion::prepare_original_completion(
-                    store, context, env, &operation, &warrant,
+                    store, context, env, &operation, &warrant, None,
                 )?;
                 if encode_retained_outcome(actual.outcome())?.as_slice() != source_outcome {
                     return Err(stop(
@@ -1650,6 +2126,21 @@ struct AdmittedCandidate {
     request_id: [u8; 32],
 }
 
+/// Read-only facts about an unfinished request, not admission or signing
+/// authority. The owning admission phase must fence its policy and consume
+/// these exact observations before any proposed writes can be committed.
+struct UncompletedCandidateBinding {
+    bytes: Vec<u8>,
+    digest: Digest32,
+    reads: BTreeMap<Vec<u8>, StateRevision>,
+    writes: Vec<PendingWrite>,
+}
+
+enum CandidateReconciliation {
+    Uncompleted(UncompletedCandidateBinding),
+    Completed(Box<OrderedOutcome>),
+}
+
 /// Pinned pure policy and installed durable authority must describe the same
 /// profile. Manifest-free legacy policies cannot mutate a causal store.
 fn fence_policy<S: StructuredStateReader>(
@@ -1695,42 +2186,35 @@ enum AdmissionPurpose {
     FreshSigning,
 }
 
-/// Reconciles one candidate a caller wants to newly place into the shared
-/// order: reads (never writes) the permanent request-header row, failing
-/// closed on any header-reuse conflict **before** the caller applies any
-/// consensus event, then the candidate-bytes row, then -- only when
-/// fresh signing -- this candidate's own address-owned reservations.
-/// Signerless reconciliation signs nothing and reserves nothing.
-///
-/// A request id that already carries a retained **completed** outcome short
-/// circuits here, before any reservation, preflight, module, object or nonce
-/// I/O: the candidate is answered from its retained outcome rather than placed
-/// a second time. A retained header alone is not completion.
-fn admit_candidate<S: StructuredStateReader>(
+/// Checks the immutable request binding and original completion using bounded
+/// point reads only. In particular, an unfinished request does not consult the
+/// installed profile, candidate carrier, reservations, modules, objects or
+/// nonces. Signing roots must check their namespace authority before entering
+/// the separate admission phase. A retained header alone is not completion.
+fn reconcile_candidate<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
-    purpose: AdmissionPurpose,
-) -> Result<Admission, OrderedEconomicsError> {
-    let chain = env.policy.context().chain_id();
-    let domain = env.policy.domain();
-    let bytes = encode_ordered_candidate(candidate)?;
-    let digest = candidate_digest(env.resolver(), candidate.context.epoch(), &bytes)?;
+) -> Result<CandidateReconciliation, OrderedEconomicsError> {
+    let chain: &ChainId = env.policy.context().chain_id();
+    let domain: AtomicityDomainId = env.policy.domain();
+    let bytes: Vec<u8> = encode_ordered_candidate(candidate)?;
+    let digest: Digest32 = candidate_digest(env.resolver(), candidate.context.epoch(), &bytes)?;
     let mut writes: Vec<PendingWrite> = Vec::new();
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
-    let mut head_reads: Vec<DurableObjectHeadRead> = Vec::new();
 
     // 1. Header reuse is a conflict before all other metadata.
-    let header_key = ordered_request_header_key(chain, &candidate.request_id)?;
-    let observed_header = store.read_versioned_state(context, domain, &header_key)?;
+    let header_key: Vec<u8> = ordered_request_header_key(chain, &candidate.request_id)?;
+    let observed_header: VersionedStateValue =
+        store.read_versioned_state(context, domain, &header_key)?;
     reads.insert(header_key.clone(), observed_header.revision());
     // A deleted header must never be recreated: it is the immutable binding
     // every later replay and every completion cross-check depends on.
     require_virgin_absence(&observed_header, "ordered request header row was deleted")?;
     match observed_header.value() {
         None => {
-            let header = RequestHeader {
+            let header: RequestHeader = RequestHeader {
                 candidate_digest: digest,
                 kind: candidate.kind,
                 created_checkpoint: candidate.created_checkpoint,
@@ -1742,7 +2226,7 @@ fn admit_candidate<S: StructuredStateReader>(
             ));
         }
         Some(existing_bytes) => {
-            let existing = decode_request_header(existing_bytes)?;
+            let existing: RequestHeader = decode_request_header(existing_bytes)?;
             if existing.candidate_digest != digest
                 || existing.kind != candidate.kind
                 || existing.created_checkpoint != candidate.created_checkpoint
@@ -1765,9 +2249,46 @@ fn admit_candidate<S: StructuredStateReader>(
         // The outcome row is only ever written by the invocation that read the
         // committed candidate bytes, so their row already exists and matches
         // this digest; there is nothing left to place.
-        return Ok(Admission::Completed(Box::new(retained)));
+        return Ok(CandidateReconciliation::Completed(Box::new(retained)));
     }
     reads.insert(outcome_row.key, outcome_row.revision);
+    Ok(CandidateReconciliation::Uncompleted(
+        UncompletedCandidateBinding {
+            bytes,
+            digest,
+            reads,
+            writes,
+        },
+    ))
+}
+
+/// Prepares exact candidate retention and, only for authorized fresh signing,
+/// this candidate's own reservations. Original completion returns before any
+/// admission preparation. The captured header/outcome observations remain
+/// part of the actual atomic admission, not permission to bypass its guards.
+fn admit_candidate<S: StructuredStateReader>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+    purpose: AdmissionPurpose,
+) -> Result<Admission, OrderedEconomicsError> {
+    let binding: UncompletedCandidateBinding =
+        match reconcile_candidate(store, context, env, candidate)? {
+            CandidateReconciliation::Uncompleted(binding) => binding,
+            CandidateReconciliation::Completed(outcome) => {
+                return Ok(Admission::Completed(outcome));
+            }
+        };
+    let UncompletedCandidateBinding {
+        bytes,
+        digest,
+        mut reads,
+        mut writes,
+    } = binding;
+    let chain: &ChainId = env.policy.context().chain_id();
+    let domain: AtomicityDomainId = env.policy.domain();
+    let mut head_reads: Vec<DurableObjectHeadRead> = Vec::new();
     fence_policy(store, context, env, &mut reads)?;
 
     // 3. Exact candidate bytes, content-addressed and immutable.
@@ -1956,8 +2477,9 @@ fn admit_candidate_for_signer_observed<S: StructuredStateReader>(
     // Post-DrainSet liveness gate, strictly stronger than (and checked before)
     // the Freeze-only gate below: once a healthy accepted `DrainSet` has
     // committed for this chain/epoch, an honest leader/replica never again
-    // places or votes for *any* fresh candidate-bearing proposal -- `Freeze`
-    // and `DrainSet` themselves included, unlike the business-only exemption
+    // places or votes for fresh business, Freeze or DrainSet candidates.
+    // Only Seal can continue to its own fully warranted signing preflight,
+    // unlike the business-only exemption
     // below. This reuses the exact durable one-per-epoch `DrainSetRecord` a
     // committed, accepted `DrainSet` installs; a *refused* `DrainSet` installs
     // nothing, so it never trips this gate. Assert the observed row revision
@@ -2004,9 +2526,11 @@ fn admit_candidate_for_signer_observed<S: StructuredStateReader>(
             }
             return Err(OrderedEconomicsError::AlreadyCompleted(Box::new(outcome)));
         }
-        return Err(OrderedEconomicsError::Refused(
-            OrderedRefusal::AlreadyDrained,
-        ));
+        if candidate.kind != OrderedOperationKind::Seal {
+            return Err(OrderedEconomicsError::Refused(
+                OrderedRefusal::AlreadyDrained,
+            ));
+        }
     }
     // DR-0154 liveness gate, additive to (not a substitute for) `preflight`'s
     // own authoritative closed-epoch refusal at commit time: an honest
@@ -2035,7 +2559,9 @@ fn admit_candidate_for_signer_observed<S: StructuredStateReader>(
             admitted.reads.insert(drain_key, drain_revision);
             if !matches!(
                 candidate.kind,
-                OrderedOperationKind::Freeze | OrderedOperationKind::DrainSet
+                OrderedOperationKind::Freeze
+                    | OrderedOperationKind::DrainSet
+                    | OrderedOperationKind::Seal
             ) && freeze::read_authorized_closure(store, context, env)?.is_some()
             {
                 return Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch));
@@ -2051,6 +2577,9 @@ fn admit_candidate_for_signer_observed<S: StructuredStateReader>(
                     candidate,
                     &mut admitted.reads,
                 )?;
+            }
+            if candidate.kind == OrderedOperationKind::Seal {
+                preflight::preflight(store, context, env, candidate, proposal_height)?;
             }
             Ok(admitted)
         }
@@ -2143,6 +2672,35 @@ impl PreparedEventCompletion {
         match outcome {
             DurableCommitOutcome::Committed => Ok(self.result),
             outcome => Err(commit_outcome_error(outcome)),
+        }
+    }
+    fn confirm_seal_retention(
+        self,
+        repository: &dyn OutgoingSealRepository,
+        context: &DurableOperationContext,
+        token: &PortableSnapshotToken,
+        observations: &StateObservationSet,
+    ) -> Result<OrderedEventOutput, OrderedEconomicsError> {
+        match self.completion {
+            PreparedEventWrite::Metadata(transaction) => {
+                let domain: AtomicityDomainId = transaction.domain();
+                let mut writes: MergedWrites = MergedWrites::new(domain);
+                writes.merge_handler_state(&DurableStateTransaction::from(transaction))?;
+                writes.merge_observations(observations)?;
+                match repository.commit_seal_retention(
+                    context,
+                    token,
+                    writes.into_atomic_transaction(domain)?,
+                ) {
+                    DurableCommitOutcome::Committed => Ok(self.result),
+                    outcome => Err(commit_outcome_error(outcome)),
+                }
+            }
+            PreparedEventWrite::Unchanged
+            | PreparedEventWrite::Admission(_)
+            | PreparedEventWrite::Original(_) => Err(stop(
+                "ordered Seal signing retention requires a pure metadata completion",
+            )),
         }
     }
 }
@@ -2419,8 +2977,14 @@ fn prepare_event<S: StructuredDurableDomainStateStore>(
         };
         let operation: CommittedOrderedOperation<'_> =
             CommittedOrderedOperation::bind_verified(env, &candidate, block)?;
-        let actual: PreparedOriginalCompletion =
-            completion::prepare_original_completion(store, context, env, &operation, &warrant)?;
+        let actual: PreparedOriginalCompletion = completion::prepare_original_completion(
+            store,
+            context,
+            env,
+            &operation,
+            &warrant,
+            store.outgoing_seal_repository(),
+        )?;
         // Successful preparation includes acceptance or a typed no-effect
         // refusal. A stop returns above and releases no reservation.
         let release: Vec<PendingWrite> = match &retained {
@@ -2635,10 +3199,10 @@ where
     if let Some(candidate) = candidate {
         authenticate_candidate(env, candidate)?;
     }
-    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
     if env.policy.is_causal() {
         return propose_causal(store, context, env, candidate, signer);
     }
+    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
     let loaded = load_state(store, context, env)?;
     let mut profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     fence_policy(store, context, env, &mut profile_reads)?;
@@ -2772,6 +3336,27 @@ fn causal_leader_writes<S: StructuredDurableDomainStateStore>(
     Ok(writes)
 }
 
+/// DR-0187: Seal signing requires the live OutgoingSealRepository SAMESTORE
+/// capability and composition before any proposal or vote is produced for
+/// it, not only at eventual acceptance. Every other candidate kind is
+/// unaffected. A missing capability stops; it never silently falls back to
+/// ordinary signing or a fabricated refusal.
+fn require_seal_signing_capability<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    candidate: Option<&OrderedCandidate>,
+    env: &OrderedEconomicsEnvironment<'_>,
+) -> Result<(), OrderedEconomicsError> {
+    let is_seal: bool =
+        candidate.is_some_and(|candidate| candidate.kind == OrderedOperationKind::Seal);
+    let capable: bool = env.seal.is_some() && store.outgoing_seal_repository().is_some();
+    if is_seal && !capable {
+        return Err(OrderedEconomicsError::Prerequisite(
+            "ordered Seal signing requires the live Seal composition and OutgoingSealRepository capability",
+        ));
+    }
+    Ok(())
+}
+
 fn propose_causal<S, C>(
     store: &S,
     context: &DurableOperationContext,
@@ -2783,24 +3368,35 @@ where
     S: StructuredDurableDomainStateStore,
     C: ConsensusSigner,
 {
-    let loaded: LoadedState = load_state(store, context, env)?;
-    let preliminary: Option<AdmittedCandidate> = match candidate {
-        Some(candidate) => match admit_candidate(
-            store,
-            context,
-            env,
-            candidate,
-            AdmissionPurpose::ReconcileOnly,
-        )? {
-            Admission::Fresh(item) => Some(item),
-            Admission::Completed(outcome) => {
+    let preliminary: Option<Digest32> = match candidate {
+        Some(candidate) => match reconcile_candidate(store, context, env, candidate)? {
+            CandidateReconciliation::Uncompleted(binding) => Some(binding.digest),
+            CandidateReconciliation::Completed(outcome) => {
                 return Err(OrderedEconomicsError::AlreadyCompleted(outcome));
             }
         },
         None => None,
     };
-    let transactions: Vec<Digest32> =
-        transactions_for(&loaded.state, preliminary.as_ref().map(|item| item.digest))?;
+    require_seal_signing_capability(store, candidate, env)?;
+    crate::mutation_fence::require_origin_ordinary_namespace(store, context, env.policy.domain())?;
+    let mut loaded: LoadedState = load_state(store, context, env)?;
+    // The current high QC can itself finish the justified prefix. A capacity
+    // preview and a retained leader signature must not bypass that completion.
+    let prefix: ConsensusOutput = env
+        .policy
+        .engine()
+        .on_observer_event(
+            &loaded.state,
+            ConsensusEvent::Certificate(loaded.state.high_qc.clone()),
+            &Ed25519ConsensusVerifier,
+        )
+        .map_err(consensus_to_node)?;
+    if !prefix.committed_blocks.is_empty() {
+        finalize_event(store, context, env, &loaded, prefix, None, None)?;
+        loaded = load_state(store, context, env)?;
+    }
+    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
+    let transactions: Vec<Digest32> = transactions_for(&loaded.state, preliminary)?;
     let probe: CapacityProbeSigner<'_, C> = CapacityProbeSigner(signer);
     let preview: ConsensusProposal = env
         .policy
@@ -2825,6 +3421,7 @@ where
                 retained.view,
             )?;
         }
+        crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
         return Ok(OrderedProposal {
             proposal: retained,
             candidate: candidate.cloned(),
@@ -2855,6 +3452,31 @@ where
     } else {
         drop(probe_writes.into_atomic_transaction(env.policy.domain())?);
     }
+    let mut seal_signing_observations: StateObservationSet =
+        StateObservationSet::new(env.policy.domain());
+    let seal_signing_token: Option<PortableSnapshotToken> =
+        match candidate.filter(|item| item.kind == OrderedOperationKind::Seal) {
+            Some(fresh_candidate) => {
+                if admitted
+                    .as_ref()
+                    .is_some_and(|item| !item.head_reads.is_empty())
+                {
+                    return Err(stop(
+                        "ordered Seal signing admission unexpectedly produced object reads",
+                    ));
+                }
+                Some(require_seal_signing_retention(
+                    store,
+                    context,
+                    env,
+                    fresh_candidate,
+                    &loaded,
+                    &loaded.state.high_qc,
+                    &mut seal_signing_observations,
+                )?)
+            }
+            None => None,
+        };
     let proposal: ConsensusProposal = env
         .policy
         .engine()
@@ -2874,7 +3496,7 @@ where
         .engine()
         .verify_proposal(&proposal, &Ed25519ConsensusVerifier)
         .map_err(consensus_to_node)?;
-    let writes: MergedWrites = causal_leader_writes(
+    let mut writes: MergedWrites = causal_leader_writes(
         store,
         context,
         env,
@@ -2885,24 +3507,41 @@ where
         revision,
         admitted.as_ref(),
     )?;
-    let outcome: DurableCommitOutcome =
-        if let Some(item) = admitted.as_ref().filter(|item| !item.head_reads.is_empty()) {
-            store.commit_invocation(
-                context,
-                admission_transaction(
-                    env,
-                    item,
-                    reservation::OrderedAdmissionStage::LeaderProposal,
-                    proposal.view,
-                    writes,
-                )?,
-            )
-        } else {
-            store.commit_durable(
-                context,
-                writes.into_atomic_transaction(env.policy.domain())?,
-            )
-        };
+    let outcome: DurableCommitOutcome = if let Some(token) = seal_signing_token.as_ref() {
+        if admitted
+            .as_ref()
+            .is_some_and(|item| !item.head_reads.is_empty())
+        {
+            return Err(stop(
+                "ordered Seal retention cannot contain object admission",
+            ));
+        }
+        writes.merge_observations(&seal_signing_observations)?;
+        let repository: &dyn OutgoingSealRepository = store.outgoing_seal_repository().ok_or(
+            stop("ordered Seal signing capability vanished before commit"),
+        )?;
+        repository.commit_seal_retention(
+            context,
+            token,
+            writes.into_atomic_transaction(env.policy.domain())?,
+        )
+    } else if let Some(item) = admitted.as_ref().filter(|item| !item.head_reads.is_empty()) {
+        store.commit_invocation(
+            context,
+            admission_transaction(
+                env,
+                item,
+                reservation::OrderedAdmissionStage::LeaderProposal,
+                proposal.view,
+                writes,
+            )?,
+        )
+    } else {
+        store.commit_durable(
+            context,
+            writes.into_atomic_transaction(env.policy.domain())?,
+        )
+    };
     if !matches!(outcome, DurableCommitOutcome::Committed) {
         return Err(commit_outcome_error(outcome));
     }
@@ -2936,6 +3575,27 @@ where
     if let Some(candidate) = &proposal.candidate {
         authenticate_candidate(env, candidate)?;
     }
+    if env.policy.is_causal() {
+        // Completed originals reconcile before live capabilities, blobs or
+        // signing authority. Their exact immutable replay performs no write.
+        if let Some(candidate) = &proposal.candidate {
+            let expected: [Digest32; 1] = [env.policy.candidate_digest(candidate)?];
+            if proposal.proposal.transactions.as_slice() != expected.as_slice() {
+                return Err(OrderedEconomicsError::Unauthenticated(
+                    "causal proposal candidate digest differs",
+                ));
+            }
+            match reconcile_candidate(store, context, env, candidate)? {
+                CandidateReconciliation::Uncompleted(_) => {}
+                CandidateReconciliation::Completed(outcome) => {
+                    return Err(OrderedEconomicsError::AlreadyCompleted(outcome));
+                }
+            }
+        } else if !proposal.proposal.transactions.is_empty() {
+            return Err(stop("causal proposal lacks delivered candidate bytes"));
+        }
+    }
+    require_seal_signing_capability(store, proposal.candidate.as_ref(), env)?;
     crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
     let mut loaded = load_state(store, context, env)?;
     let digest = env
@@ -2944,69 +3604,10 @@ where
         .proposal_digest(&proposal.proposal)
         .map_err(consensus_to_node)?;
 
-    // 2. Header conflict before any consensus metadata, then reservations.
-    let retained: LocalVoteReconciliation =
-        identity::reconcile_local_vote(store, context, env, proposal.proposal.view, digest)?;
-    if let RetainedIdentity::Exact(vote) = retained.retained {
-        if vote.validator != signer.validator_id() {
-            return Err(stop("retained ordered vote signer differs"));
-        }
-        env.policy
-            .engine()
-            .verify_vote(&vote, &Ed25519ConsensusVerifier)
-            .map_err(consensus_to_node)?;
-        if let Some(candidate) = &proposal.candidate {
-            let candidate_digest: Digest32 = env.policy.candidate_digest(candidate)?;
-            let expected: [Digest32; 1] = [candidate_digest];
-            if proposal.proposal.transactions.as_slice() != expected.as_slice() {
-                return Err(OrderedEconomicsError::Unauthenticated(
-                    "replayed candidate differs from retained proposal",
-                ));
-            }
-            require_admission_receipt(
-                store,
-                context,
-                env,
-                candidate,
-                reservation::OrderedAdmissionStage::Vote,
-                vote.view,
-            )?;
-        } else if !proposal.proposal.transactions.is_empty() {
-            return Err(stop("replayed business proposal lacks candidate bytes"));
-        }
-        return Ok(OrderedEventOutput {
-            messages: vec![ConsensusMessage::Vote(vote)],
-            committed: Vec::new(),
-        });
-    }
     let mut profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     fence_policy(store, context, env, &mut profile_reads)?;
     let mut prefix_committed: Vec<OrderedOutcome> = Vec::new();
     if env.policy.is_causal() {
-        // Link every supplied byte before any prefix commit. In particular,
-        // an attached claim is not authority to reinterpret an empty shell.
-        if let Some(candidate) = &proposal.candidate {
-            let expected: [Digest32; 1] = [env.policy.candidate_digest(candidate)?];
-            if proposal.proposal.transactions.as_slice() != expected.as_slice() {
-                return Err(OrderedEconomicsError::Unauthenticated(
-                    "causal proposal candidate digest differs",
-                ));
-            }
-            match admit_candidate(
-                store,
-                context,
-                env,
-                candidate,
-                AdmissionPurpose::ReconcileOnly,
-            )? {
-                Admission::Fresh(_) => {}
-                Admission::Completed(outcome) => {
-                    return Err(OrderedEconomicsError::AlreadyCompleted(outcome));
-                }
-            }
-        } else if !proposal.proposal.transactions.is_empty() {
-            return Err(stop("causal proposal lacks delivered candidate bytes"));
-        }
         require_vote_readiness(store, context, env, &loaded.state, &proposal.proposal)?;
         // Preserve the existing future-view/branch admission checks before
         // using the independently authenticated certificate for progress.
@@ -3043,7 +3644,9 @@ where
                     )?;
                     commits_control |= matches!(
                         candidate.kind,
-                        OrderedOperationKind::Freeze | OrderedOperationKind::DrainSet
+                        OrderedOperationKind::Freeze
+                            | OrderedOperationKind::DrainSet
+                            | OrderedOperationKind::Seal
                     );
                 }
             }
@@ -3060,6 +3663,45 @@ where
             }
             loaded = load_state(store, context, env)?;
         }
+    }
+    // A retained vote is still this validator's own live signature. Process
+    // justified progress first, then reobserve the outgoing barrier before
+    // considering either a retained response or a fresh vote.
+    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
+    let retained: LocalVoteReconciliation =
+        identity::reconcile_local_vote(store, context, env, proposal.proposal.view, digest)?;
+    if let RetainedIdentity::Exact(vote) = retained.retained {
+        if vote.validator != signer.validator_id() {
+            return Err(stop("retained ordered vote signer differs"));
+        }
+        env.policy
+            .engine()
+            .verify_vote(&vote, &Ed25519ConsensusVerifier)
+            .map_err(consensus_to_node)?;
+        if let Some(candidate) = &proposal.candidate {
+            let candidate_digest: Digest32 = env.policy.candidate_digest(candidate)?;
+            let expected: [Digest32; 1] = [candidate_digest];
+            if proposal.proposal.transactions.as_slice() != expected.as_slice() {
+                return Err(OrderedEconomicsError::Unauthenticated(
+                    "replayed candidate differs from retained proposal",
+                ));
+            }
+            require_admission_receipt(
+                store,
+                context,
+                env,
+                candidate,
+                reservation::OrderedAdmissionStage::Vote,
+                vote.view,
+            )?;
+        } else if !proposal.proposal.transactions.is_empty() {
+            return Err(stop("replayed business proposal lacks candidate bytes"));
+        }
+        crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
+        return Ok(OrderedEventOutput {
+            messages: vec![ConsensusMessage::Vote(vote)],
+            committed: prefix_committed,
+        });
     }
     let admitted = match &proposal.candidate {
         Some(candidate) => {
@@ -3113,6 +3755,7 @@ where
         }
         let mut commits_freeze: bool = false;
         let mut commits_drain_set: bool = false;
+        let mut commits_seal: bool = false;
         for block in &preview.committed_blocks {
             if block.transactions.len() > 1 {
                 return Err(stop("Freeze preview violates the candidate profile"));
@@ -3138,9 +3781,10 @@ where
                     .map_err(|_| stop("Freeze preview candidate authentication failed"))?;
                 commits_freeze |= committed.kind == OrderedOperationKind::Freeze;
                 commits_drain_set |= committed.kind == OrderedOperationKind::DrainSet;
+                commits_seal |= committed.kind == OrderedOperationKind::Seal;
             }
         }
-        if commits_freeze || commits_drain_set {
+        if commits_freeze || commits_drain_set || commits_seal {
             let observed: OrderedEventOutput = observe_proposal(store, context, env, proposal)?;
             if commits_freeze
                 && freeze::read_admission_closure(
@@ -3212,6 +3856,34 @@ where
         )?;
         drop(prepared);
     }
+    let mut seal_signing_observations: StateObservationSet =
+        StateObservationSet::new(env.policy.domain());
+    let seal_signing_token: Option<PortableSnapshotToken> = match proposal
+        .candidate
+        .as_ref()
+        .filter(|item| item.kind == OrderedOperationKind::Seal)
+    {
+        Some(seal_candidate) => {
+            if admitted
+                .as_ref()
+                .is_some_and(|item| !item.head_reads.is_empty())
+            {
+                return Err(stop(
+                    "ordered Seal vote admission unexpectedly produced object reads",
+                ));
+            }
+            Some(require_seal_signing_retention(
+                store,
+                context,
+                env,
+                seal_candidate,
+                &loaded,
+                &proposal.proposal.justify,
+                &mut seal_signing_observations,
+            )?)
+        }
+        None => None,
+    };
 
     // 4. One engine event.
     let output = env
@@ -3232,15 +3904,37 @@ where
                 ConsensusMessage::Vote(vote) => Some(vote.clone()),
                 _ => None,
             });
-    let mut result = finalize_event(
-        store,
-        context,
-        env,
-        &loaded,
-        output,
-        admitted,
-        Some((reconciliation, produced)),
-    )?;
+    let mut result = match seal_signing_token {
+        Some(token) => {
+            let repository: &dyn OutgoingSealRepository = store.outgoing_seal_repository().ok_or(
+                stop("ordered Seal signing capability vanished before commit"),
+            )?;
+            prepare_event(
+                store,
+                context,
+                env,
+                &loaded,
+                output,
+                admitted,
+                Some((reconciliation, produced)),
+            )?
+            .confirm_seal_retention(
+                repository,
+                context,
+                &token,
+                &seal_signing_observations,
+            )?
+        }
+        None => finalize_event(
+            store,
+            context,
+            env,
+            &loaded,
+            output,
+            admitted,
+            Some((reconciliation, produced)),
+        )?,
+    };
     prefix_committed.append(&mut result.committed);
     result.committed = prefix_committed;
     // Exact repeated output: an already-recorded vote is re-emitted from its
@@ -3253,6 +3947,7 @@ where
         let replay: LocalVoteReconciliation =
             identity::reconcile_local_vote(store, context, env, proposal.proposal.view, digest)?;
         if let RetainedIdentity::Exact(vote) = replay.retained {
+            crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
             result.messages.insert(0, ConsensusMessage::Vote(vote));
         }
     }
@@ -3274,7 +3969,7 @@ pub fn process_certificate<S: StructuredDurableDomainStateStore>(
         .map_err(|_| {
             OrderedEconomicsError::Unauthenticated("ordered certificate failed verification")
         })?;
-    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
+    crate::mutation_fence::require_origin_ordinary_namespace(store, context, env.policy.domain())?;
     let loaded = load_state(store, context, env)?;
     let output = env
         .policy
@@ -3306,7 +4001,7 @@ pub fn observe_proposal<S: StructuredDurableDomainStateStore>(
     if let Some(candidate) = &proposal.candidate {
         authenticate_candidate(env, candidate)?;
     }
-    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
+    crate::mutation_fence::require_origin_ordinary_namespace(store, context, env.policy.domain())?;
     let loaded = load_state(store, context, env)?;
     let admitted = match &proposal.candidate {
         Some(candidate) => {
@@ -3357,7 +4052,7 @@ pub fn observe_proposal<S: StructuredDurableDomainStateStore>(
 }
 
 /// Bounded read-only status snapshot.
-pub fn query_status<S: StructuredDurableDomainStateStore>(
+pub fn query_status<S: StructuredDurableDomainStateStore + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,

@@ -113,6 +113,15 @@ impl<S: StructuredStateReader + ?Sized> VersionedStateReader for ObservedBusines
 }
 
 impl<S: StructuredStateReader + ?Sized> StructuredStateReader for ObservedBusinessReadView<'_, S> {
+    fn read_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        self.require_domain(domain)?;
+        self.inner.read_outgoing_barrier(context, domain)
+    }
+
     fn read_namespace_lifecycle(
         &self,
         context: &DurableOperationContext,

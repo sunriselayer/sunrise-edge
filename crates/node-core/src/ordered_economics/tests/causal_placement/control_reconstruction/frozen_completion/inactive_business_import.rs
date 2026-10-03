@@ -7,7 +7,12 @@ use crate::business_reconstruction::cut::{SavedBusinessCut, derive_source_busine
 use crate::business_reconstruction::inactive_import::{
     BusinessImportAdvance, VerifiedImportPlan, verify_saved_business_import,
 };
+use crate::ordered_economics::policy::Ed25519ConsensusVerifier;
+use execution::local_execution::{
+    LocalContractEngine, LocalExecutionError, LocalExecutionOutcome, LocalExecutionRequest,
+};
 use runtime::inactive_import::{InactiveImportRepository, NamespaceLifecycle};
+use runtime::{BlobStore, RuntimeError};
 use runtime_sqlite::SqliteImportTarget;
 use std::{
     num::NonZeroUsize,
@@ -122,6 +127,141 @@ pub(super) fn proof_proposal(history: &[OrderedHistoryHeightMaterial]) -> Ordere
     }
 }
 
+/// An existing uncompleted EMPTY with a genuine retained source vote. Derive
+/// it from the verified terminal proof, without advancing the frozen source.
+pub(super) fn uncompleted_empty_proposal(
+    network: &Network,
+    history: &[OrderedHistoryHeightMaterial],
+) -> OrderedProposal {
+    let material: &OrderedHistoryHeightMaterial = history.last().unwrap();
+    let proof: CommittedBlockProof = consensus::decode_committed_block_proof(
+        &material
+            .components
+            .iter()
+            .find(|(kind, _)| *kind == OrderedHistoryComponentKind::CommitProof)
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    network
+        .policy
+        .engine()
+        .verify_proposal(&proof.grandchild, &Ed25519ConsensusVerifier)
+        .unwrap();
+    assert!(proof.grandchild.transactions.is_empty());
+    let status: OrderedStatus =
+        query_status(&network.stores[0], &network.context, &network.env()).unwrap();
+    assert!(proof.grandchild.height > status.committed_height);
+    OrderedProposal {
+        proposal: proof.grandchild,
+        candidate: None,
+    }
+}
+
+struct ObservedReplayEffects<'a> {
+    engine: &'a LocalWasmExecutionEngine,
+    blobs: &'a dyn BlobStore,
+    engine_calls: Cell<usize>,
+    blob_calls: Cell<usize>,
+}
+
+impl LocalContractEngine for ObservedReplayEffects<'_> {
+    fn execute(
+        &self,
+        request: LocalExecutionRequest<'_>,
+    ) -> Result<LocalExecutionOutcome, LocalExecutionError> {
+        self.engine_calls
+            .set(self.engine_calls.get().checked_add(1).unwrap());
+        self.engine.execute(request)
+    }
+}
+
+impl BlobStore for ObservedReplayEffects<'_> {
+    fn put_blob(&self, digest: Digest32, bytes: Vec<u8>) -> Result<(), RuntimeError> {
+        self.blob_calls
+            .set(self.blob_calls.get().checked_add(1).unwrap());
+        self.blobs.put_blob(digest, bytes)
+    }
+
+    fn get_blob(&self, digest: &Digest32) -> Result<Option<Vec<u8>>, RuntimeError> {
+        self.blob_calls
+            .set(self.blob_calls.get().checked_add(1).unwrap());
+        self.blobs.get_blob(digest)
+    }
+}
+
+fn assert_exact_original_freeze<S: runtime::StructuredDurableDomainStateStore>(
+    store: &S,
+    operation: &DurableOperationContext,
+    network: &Network,
+    proposal: &OrderedProposal,
+    error: &OrderedEconomicsError,
+) {
+    let OrderedEconomicsError::AlreadyCompleted(actual) = error else {
+        panic!("expected exact original completion, got {error:?}");
+    };
+    let candidate: &OrderedCandidate = proposal.candidate.as_ref().unwrap();
+    assert_eq!(candidate.kind, OrderedOperationKind::Freeze);
+    assert_eq!(candidate.request_id, FREEZE_REQUEST);
+    network.policy.authenticate_candidate(candidate).unwrap();
+    network
+        .policy
+        .engine()
+        .verify_proposal(&proposal.proposal, &Ed25519ConsensusVerifier)
+        .unwrap();
+    let digest: Digest32 = network.policy.candidate_digest(candidate).unwrap();
+    assert_eq!(proposal.proposal.transactions.as_slice(), &[digest]);
+    let expected: OrderedOutcome = query_ordered_outcome(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &candidate.request_id,
+    )
+    .unwrap()
+    .expect("source independently retains the original Freeze outcome");
+    let retained: OrderedOutcome =
+        query_ordered_outcome(store, operation, &network.env(), &candidate.request_id)
+            .unwrap()
+            .expect("replay requires a matching independently retained target outcome");
+    assert_eq!(expected.candidate_digest, digest);
+    assert_eq!(expected.request_id, candidate.request_id);
+    assert_eq!(expected.block_height, proposal.proposal.height);
+    assert_eq!(
+        expected.block_digest,
+        network
+            .policy
+            .engine()
+            .proposal_digest(&proposal.proposal)
+            .unwrap()
+    );
+    let expected_bytes: Vec<u8> = encode_ordered_outcome(&expected).unwrap();
+    assert_eq!(encode_ordered_outcome(&retained).unwrap(), expected_bytes);
+    assert_eq!(encode_ordered_outcome(actual).unwrap(), expected_bytes);
+    let original: runtime::DurableRequestReceipt =
+        receipt(network, 0, candidate.request_id).unwrap();
+    assert_eq!(
+        store
+            .get_request_receipt(
+                operation,
+                network.domain(),
+                DurableRequestId::new(candidate.request_id).unwrap(),
+            )
+            .unwrap(),
+        Some(original.clone()),
+        "AlreadyCompleted requires the exact original target receipt"
+    );
+    let dedup: NodeDedupRecord = NodeDedupRecord::decode(original.canonical_bytes()).unwrap();
+    assert_eq!(actual.output.responses(), dedup.responses());
+    assert_eq!(actual.output.responses().len(), 1);
+    assert_eq!(
+        actual.output.responses()[0].status(),
+        crate::NodeResponseStatus::Accepted
+    );
+    assert!(actual.output.outbound_messages().is_empty());
+    assert!(!error.is_semantic_rejection());
+    assert!(!error.requires_reconciliation());
+}
+
 /// Typed early-origin errors, not merely an unrelated missing-state error.
 fn denied(error: impl std::fmt::Display) {
     assert!(
@@ -132,15 +272,27 @@ fn denied(error: impl std::fmt::Display) {
 
 pub(super) fn assert_live_routes_denied<S>(
     store: &S,
+    blobs: &SqliteBlobStore,
     operation: &DurableOperationContext,
     source: &FrozenCompletionSource,
     proposal: &OrderedProposal,
+    uncompleted: &OrderedProposal,
 ) where
     S: runtime::StructuredDurableDomainStateStore
-        + runtime::portable::DurablePortableRepository
+        + runtime::portable::DurablePortableSnapshotRepository
         + runtime::outbox_guard::StructuredOutboxExclusionGuard,
 {
     let network: &Network = &source.fixture.network;
+    let before: SourceBusinessSnapshot = captured_source(store, blobs, operation, network.domain());
+    let lifecycle: NamespaceLifecycle = store
+        .get_namespace_lifecycle(operation, network.domain())
+        .unwrap();
+    assert!(matches!(
+        &lifecycle,
+        NamespaceLifecycle::FreshImport(_)
+            | NamespaceLifecycle::Importing { .. }
+            | NamespaceLifecycle::CompleteInactive { .. }
+    ));
     let signer: CountingConsensusSigner<'_> = CountingConsensusSigner {
         signer: &network.signers[0],
         calls: Cell::new(0),
@@ -149,12 +301,21 @@ pub(super) fn assert_live_routes_denied<S>(
         inner: &network.engine,
         calls: Cell::new(0),
     };
+    let effects: ObservedReplayEffects<'_> = ObservedReplayEffects {
+        engine: &network.engine,
+        blobs,
+        engine_calls: Cell::new(0),
+        blob_calls: Cell::new(0),
+    };
+    let mut environment: OrderedEconomicsEnvironment<'_> = network.env();
+    environment.engine = &effects;
+    environment.blobs = &effects;
     let bundle: PublicationBundle =
         consensus::bundle::decode_publication_bundle(&source.paid.bundle).unwrap();
     denied(
         crate::fast_path::prepare(
             store,
-            &network.blobs,
+            &effects,
             operation,
             network.domain(),
             &network.resolver,
@@ -194,14 +355,27 @@ pub(super) fn assert_live_routes_denied<S>(
         )
         .unwrap_err(),
     );
-    denied(propose(store, operation, &network.env(), None, &signer).unwrap_err());
-    denied(process_proposal(store, operation, &network.env(), proposal, &signer).unwrap_err());
-    denied(observe_proposal(store, operation, &network.env(), proposal).unwrap_err());
+    denied(propose(store, operation, &environment, None, &signer).unwrap_err());
+    let original: OrderedEconomicsError =
+        process_proposal(store, operation, &environment, proposal, &signer).unwrap_err();
+    if matches!(&lifecycle, NamespaceLifecycle::CompleteInactive { .. })
+        || matches!(&original, OrderedEconomicsError::AlreadyCompleted(_))
+    {
+        assert_exact_original_freeze(store, operation, network, proposal, &original);
+    } else {
+        denied(&original);
+    }
+    // An exact original returns no live response. This genuine uncompleted
+    // EMPTY must still refuse, including when its own vote cache is present.
+    assert!(uncompleted.candidate.is_none());
+    assert!(uncompleted.proposal.transactions.is_empty());
+    denied(process_proposal(store, operation, &environment, uncompleted, &signer).unwrap_err());
+    denied(observe_proposal(store, operation, &environment, proposal).unwrap_err());
     denied(
-        process_certificate(store, operation, &network.env(), &proposal.proposal.justify)
+        process_certificate(store, operation, &environment, &proposal.proposal.justify)
             .unwrap_err(),
     );
-    denied(process_tick(store, operation, &network.env(), u64::MAX, &signer).unwrap_err());
+    denied(process_tick(store, operation, &environment, u64::MAX, &signer).unwrap_err());
     denied(
         crate::epoch_transition::propose_and_vote(
             store,
@@ -235,6 +409,27 @@ pub(super) fn assert_live_routes_denied<S>(
         signer.calls.get(),
         0,
         "no fresh or cached protocol response reaches a signer"
+    );
+    assert_eq!(
+        effects.engine_calls.get(),
+        0,
+        "no local execution during replay or denial"
+    );
+    assert_eq!(
+        effects.blob_calls.get(),
+        0,
+        "no blob work during replay or denial"
+    );
+    assert_eq!(
+        captured_source(store, blobs, operation, network.domain()),
+        before,
+        "original reconciliation and every live denial leave the actual target unchanged"
+    );
+    assert_eq!(
+        store
+            .get_namespace_lifecycle(operation, network.domain())
+            .unwrap(),
+        lifecycle
     );
 }
 
@@ -447,6 +642,7 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
         "factory cannot change the source"
     );
     let proposal: OrderedProposal = proof_proposal(&history);
+    let uncompleted: OrderedProposal = uncompleted_empty_proposal(network, &history);
     let control_signer: CountingConsensusSigner<'_> = CountingConsensusSigner {
         signer: &network.signers[0],
         calls: Cell::new(0),
@@ -455,11 +651,20 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
         inner: &network.engine,
         calls: Cell::new(0),
     };
+    let control_effects: ObservedReplayEffects<'_> = ObservedReplayEffects {
+        engine: &network.engine,
+        blobs: &network.blobs,
+        engine_calls: Cell::new(0),
+        blob_calls: Cell::new(0),
+    };
+    let mut control_environment: OrderedEconomicsEnvironment<'_> = network.env();
+    control_environment.engine = &control_effects;
+    control_environment.blobs = &control_effects;
     let original_bundle: PublicationBundle =
         consensus::bundle::decode_publication_bundle(&source.paid.bundle).unwrap();
     let frozen_prepare = crate::fast_path::prepare(
         &network.stores[0],
-        &network.blobs,
+        &control_effects,
         &network.context,
         network.domain(),
         &network.resolver,
@@ -492,20 +697,74 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
         &control_signer,
     )
     .unwrap();
-    process_proposal(
+    let original: OrderedEconomicsError = process_proposal(
         &network.stores[0],
         &network.context,
-        &network.env(),
+        &control_environment,
         &proposal,
         &control_signer,
     )
+    .unwrap_err();
+    assert_exact_original_freeze(
+        &network.stores[0],
+        &network.context,
+        network,
+        &proposal,
+        &original,
+    );
+    let vote_key: Vec<u8> = crate::ordered_economics::identity::ordered_vote_record_key(
+        &fixture::chain(),
+        uncompleted.proposal.view,
+    )
     .unwrap();
+    let (record, retained): (
+        crate::ordered_economics::identity::LocalVoteRecord,
+        ConsensusVote,
+    ) = crate::ordered_economics::identity::decode_local_vote_record(
+        &network
+            .value(0, &vote_key)
+            .expect("genuine uncompleted EMPTY vote cache"),
+    )
+    .unwrap();
+    network
+        .policy
+        .engine()
+        .verify_vote(&retained, &Ed25519ConsensusVerifier)
+        .unwrap();
+    assert_eq!(
+        record.proposal_digest,
+        network
+            .policy
+            .engine()
+            .proposal_digest(&uncompleted.proposal)
+            .unwrap()
+    );
+    let cached: OrderedEventOutput = process_proposal(
+        &network.stores[0],
+        &network.context,
+        &control_environment,
+        &uncompleted,
+        &control_signer,
+    )
+    .unwrap();
+    let [ConsensusMessage::Vote(vote)] = cached.messages.as_slice() else {
+        panic!("ordinary source must expose its one genuine cached EMPTY vote");
+    };
+    assert_eq!(consensus::encode_vote(vote).unwrap(), record.vote);
+    assert!(cached.committed.is_empty());
     assert_eq!(
         control_signer.calls.get(),
         0,
-        "ordinary positive controls actually expose existing retained signatures without resigning"
+        "only the ordinary uncompleted EMPTY control exposes a genuine cached vote without resigning"
     );
     assert_eq!(control_engine.calls.get(), 0);
+    assert_eq!(control_effects.engine_calls.get(), 0);
+    assert_eq!(control_effects.blob_calls.get(), 0);
+    assert_eq!(
+        snapshot(network),
+        before,
+        "all ordinary controls are read-only"
+    );
     let files: Files = Files::new();
     let operation: DurableOperationContext = fixture::context(41);
     let target_path: PathBuf = files.path("destination.db");
@@ -523,13 +782,27 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
             .unwrap(),
         NamespaceLifecycle::FreshImport(_)
     ));
-    assert_live_routes_denied(&target, &operation, &source, &proposal);
+    assert_live_routes_denied(
+        &target,
+        &blobs,
+        &operation,
+        &source,
+        &proposal,
+        &uncompleted,
+    );
     assert!(
         SqliteDurableStore::open(&target_path, namespace(network), operation.writer_fence())
             .is_err()
     );
     begin_before_restart(&plan, &target, &operation, network);
-    assert_live_routes_denied(&target, &operation, &source, &proposal);
+    assert_live_routes_denied(
+        &target,
+        &blobs,
+        &operation,
+        &source,
+        &proposal,
+        &uncompleted,
+    );
     drop(target);
     let mut target: SqliteImportTarget =
         SqliteImportTarget::open_existing(&target_path, namespace(network), plan.binding())
@@ -550,7 +823,14 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
         .unwrap();
     let progress: runtime::ImportProgress = complete(&plan, &target, &blobs, &operation);
     assert_eq!(progress.next_ordinal, plan.binding().row_count);
-    assert_live_routes_denied(&target, &operation, &source, &proposal);
+    assert_live_routes_denied(
+        &target,
+        &blobs,
+        &operation,
+        &source,
+        &proposal,
+        &uncompleted,
+    );
     assert!(
         SqliteDurableStore::open(&target_path, namespace(network), operation.writer_fence())
             .is_err()
@@ -705,6 +985,11 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
         crate::local_instance_state::fastpath_prepared_record_key(&fixture::chain(), &PAID_REQUEST)
             .unwrap(),
         crate::ordered_economics::identity::ordered_vote_record_key(&fixture::chain(), 1).unwrap(),
+        crate::ordered_economics::identity::ordered_vote_record_key(
+            &fixture::chain(),
+            uncompleted.proposal.view,
+        )
+        .unwrap(),
         crate::ordered_economics::frontier::key(
             &fixture::chain(),
             fixture::protocol().epoch(),
@@ -724,7 +1009,14 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
         .unwrap();
     }
     drop(sql);
-    assert_live_routes_denied(&target, &operation, &source, &proposal);
+    assert_live_routes_denied(
+        &target,
+        &blobs,
+        &operation,
+        &source,
+        &proposal,
+        &uncompleted,
+    );
     assert!(
         plan.advance(&target, &blobs, &operation, NonZeroUsize::MIN)
             .is_err(),
@@ -810,7 +1102,14 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
             .is_err(),
         "canonical but wrong progress cannot silently resume"
     );
-    assert_live_routes_denied(&corrupt_cursor, &operation, &source, &proposal);
+    assert_live_routes_denied(
+        &corrupt_cursor,
+        &blobs,
+        &operation,
+        &source,
+        &proposal,
+        &uncompleted,
+    );
     drop(cursor_sql);
     let corrupt_rows_path: PathBuf = files.path("wrong-prefix.db");
     let corrupt_rows: SqliteImportTarget = SqliteImportTarget::create(
@@ -862,7 +1161,14 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
             "a corrupt incomplete target cannot mark completion"
         );
     }
-    assert_live_routes_denied(&corrupt_rows, &operation, &source, &proposal);
+    assert_live_routes_denied(
+        &corrupt_rows,
+        &blobs,
+        &operation,
+        &source,
+        &proposal,
+        &uncompleted,
+    );
     drop(row_sql);
 
     // Real begin, batch and finish commits with their acknowledgements lost:

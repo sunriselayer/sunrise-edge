@@ -128,6 +128,7 @@ async fn ordered_router_authenticates_before_actual_io_and_has_no_direct_mutatio
         leg_policy: &leg_policy,
         engine: &engine,
         blobs: blobs.as_ref(),
+        seal: None,
     };
     ordered_economics::install_ordered_genesis(store.as_ref(), &context, &env, now).unwrap();
     let proposal =
@@ -186,6 +187,7 @@ async fn ordered_router_authenticates_before_actual_io_and_has_no_direct_mutatio
         leg_policy,
         engine: Arc::new(engine),
         blobs: Arc::new(Observed::new(blobs, &counters)),
+        seal: None,
         signer,
         blocking_executor: NativeBlockingExecutor::new(NativeBlockingPolicy::new(
             NonZeroUsize::new(2).unwrap(),

@@ -121,6 +121,379 @@ fn reopening_never_recreates_deleted_namespace_metadata() {
     assert_eq!(count, 0);
 }
 
+#[test]
+fn durable_outgoing_barrier_missing_row_fails_closed_on_reopen() {
+    let database: TestDatabase = TestDatabase::new();
+    let pinned: SqliteNamespace = namespace("barrier-missing-row", 0x51, 0x52);
+    let generation: WriterFenceGeneration = WriterFenceGeneration::new(3).unwrap();
+    drop(SqliteDurableStore::open(&database.path, pinned.clone(), generation).unwrap());
+    let connection: Connection = Connection::open(&database.path).unwrap();
+    connection
+        .execute("DELETE FROM durable_outgoing_barrier", [])
+        .unwrap();
+    assert!(matches!(
+        SqliteDurableStore::open(&database.path, pinned.clone(), generation),
+        Err(SqliteDurableStoreError::InvalidPersistedMetadata)
+    ));
+    assert!(matches!(
+        SqliteDurableStore::open_existing(&database.path, pinned.clone()),
+        Err(SqliteDurableStoreError::InvalidPersistedMetadata)
+    ));
+    assert!(matches!(
+        SqliteDurableStore::open_historical(&database.path, pinned),
+        Err(SqliteDurableStoreError::InvalidPersistedMetadata)
+    ));
+}
+
+#[test]
+fn durable_outgoing_barrier_malformed_bytes_fail_closed_on_reopen() {
+    let database: TestDatabase = TestDatabase::new();
+    let pinned: SqliteNamespace = namespace("barrier-malformed-bytes", 0x53, 0x54);
+    let generation: WriterFenceGeneration = WriterFenceGeneration::new(3).unwrap();
+    drop(SqliteDurableStore::open(&database.path, pinned.clone(), generation).unwrap());
+    let connection: Connection = Connection::open(&database.path).unwrap();
+    connection
+        .execute(
+            "UPDATE durable_outgoing_barrier SET barrier = X'DEADBEEF'",
+            [],
+        )
+        .unwrap();
+    assert!(matches!(
+        SqliteDurableStore::open(&database.path, pinned.clone(), generation),
+        Err(SqliteDurableStoreError::InvalidPersistedMetadata)
+    ));
+    assert!(matches!(
+        SqliteDurableStore::open_existing(&database.path, pinned.clone()),
+        Err(SqliteDurableStoreError::InvalidPersistedMetadata)
+    ));
+    assert!(matches!(
+        SqliteDurableStore::open_historical(&database.path, pinned),
+        Err(SqliteDurableStoreError::InvalidPersistedMetadata)
+    ));
+}
+
+#[test]
+fn sealed_namespace_blocks_live_reopen_but_open_historical_still_reads() {
+    let database: TestDatabase = TestDatabase::new();
+    let pinned: SqliteNamespace = namespace("sealed-reopen-vs-historical", 0x61, 0x62);
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(3).unwrap();
+    let store = SqliteDurableStore::open(&database.path, pinned.clone(), fence).unwrap();
+    let operation: DurableOperationContext = live_context(fence, 9);
+    let domain = pinned.domain();
+    let token = runtime::portable::DurablePortableSnapshotRepository::begin_portable_snapshot(
+        &store, &operation, domain,
+    )
+    .unwrap();
+    let mut request = [0x20u8; 32];
+    request[0] |= 0x80;
+    let sealed = runtime::outgoing_seal::SealBarrier {
+        outgoing_epoch: protocol_types::Epoch::new(1),
+        request,
+        height: 5,
+        block_digest: protocol_types::Digest32::new(
+            protocol_types::HashAlgorithmId::Sha2_256,
+            [1; 32],
+        ),
+        target_digest: protocol_types::Digest32::new(
+            protocol_types::HashAlgorithmId::Sha2_256,
+            [2; 32],
+        ),
+        transition_history: runtime::outgoing_seal::TransitionHistoryState::Virgin,
+    };
+    let request_id = runtime::DurableRequestId::new(sealed.request).unwrap();
+    let event_digest =
+        protocol_types::Digest32::new(protocol_types::HashAlgorithmId::Sha2_256, [3; 32]);
+    let receipt = DurableRequestReceipt::new(request_id, event_digest, vec![1]).unwrap();
+    let invocation = DurableInvocationTransaction::new(
+        domain,
+        None,
+        DurableObjectChanges::empty(),
+        receipt,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        runtime::OutgoingSealRepository::commit_seal_completion(
+            &store, &operation, &token, invocation, sealed,
+        ),
+        DurableCommitOutcome::Committed
+    );
+    drop(store);
+
+    assert!(matches!(
+        SqliteDurableStore::open_existing(&database.path, pinned.clone()),
+        Err(SqliteDurableStoreError::NamespaceSealed)
+    ));
+    assert!(matches!(
+        SqliteDurableStore::open(&database.path, pinned.clone(), fence),
+        Err(SqliteDurableStoreError::NamespaceSealed)
+    ));
+
+    let historical = SqliteDurableStore::open_historical(&database.path, pinned).unwrap();
+    let barrier = historical.get_outgoing_barrier(&operation, domain).unwrap();
+    assert!(barrier.is_sealed());
+    let persisted_receipt = historical
+        .get_request_receipt(&operation, domain, request_id)
+        .unwrap()
+        .expect("original Seal receipt is atomically persisted with the barrier");
+    assert_eq!(persisted_receipt.request_id(), request_id);
+}
+
+#[test]
+fn outgoing_seal_repository_rejects_stale_token_fence_deadline_and_bad_completion() {
+    let database: TestDatabase = TestDatabase::new();
+    let pinned: SqliteNamespace = namespace("seal-repository-rejections", 0x71, 0x72);
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(5).unwrap();
+    let store = SqliteDurableStore::open(&database.path, pinned.clone(), fence).unwrap();
+    let domain = pinned.domain();
+    let live: DurableOperationContext = live_context(fence, 0x11);
+
+    let wrong_fence: WriterFenceGeneration = WriterFenceGeneration::new(6).unwrap();
+    let fenced_context: DurableOperationContext = live_context(wrong_fence, 0x12);
+    let token = runtime::portable::DurablePortableSnapshotRepository::begin_portable_snapshot(
+        &store, &live, domain,
+    )
+    .unwrap();
+    let retention = AtomicStateTransaction::new(
+        domain,
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(b"cut".to_vec(), StateRevision::INITIAL).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(b"cut".to_vec(), StateMutation::Put(vec![1])).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        runtime::OutgoingSealRepository::commit_seal_retention(
+            &store,
+            &fenced_context,
+            &token,
+            retention.clone(),
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::WriterFenced { .. })
+    ));
+
+    let past_deadline = DurableOperationContext::new(
+        fence,
+        StorageDeadline::new(1).unwrap(),
+        StorageCorrelationId::new([0x13; 16]).unwrap(),
+    );
+    assert_eq!(
+        runtime::OutgoingSealRepository::commit_seal_retention(
+            &store,
+            &past_deadline,
+            &token,
+            retention.clone(),
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::DeadlineExceededBeforeCommit)
+    );
+
+    assert_eq!(
+        runtime::OutgoingSealRepository::commit_seal_retention(&store, &live, &token, retention),
+        DurableCommitOutcome::Committed
+    );
+    let stale_retention = AtomicStateTransaction::new(
+        domain,
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(b"cut".to_vec(), StateRevision::new(1)).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(b"cut".to_vec(), StateMutation::Put(vec![2])).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        runtime::OutgoingSealRepository::commit_seal_retention(
+            &store,
+            &live,
+            &token,
+            stale_retention,
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
+    );
+
+    let fresh_token =
+        runtime::portable::DurablePortableSnapshotRepository::begin_portable_snapshot(
+            &store, &live, domain,
+        )
+        .unwrap();
+    let mut request = [0x22u8; 32];
+    request[0] |= 0x80;
+    let sealed = runtime::outgoing_seal::SealBarrier {
+        outgoing_epoch: protocol_types::Epoch::new(1),
+        request,
+        height: 1,
+        block_digest: protocol_types::Digest32::new(
+            protocol_types::HashAlgorithmId::Sha2_256,
+            [1; 32],
+        ),
+        target_digest: protocol_types::Digest32::new(
+            protocol_types::HashAlgorithmId::Sha2_256,
+            [2; 32],
+        ),
+        transition_history: runtime::outgoing_seal::TransitionHistoryState::Virgin,
+    };
+    let mismatched_request_id = runtime::DurableRequestId::new([0x33; 32]).unwrap();
+    let event_digest =
+        protocol_types::Digest32::new(protocol_types::HashAlgorithmId::Sha2_256, [4; 32]);
+    let mismatched_receipt =
+        DurableRequestReceipt::new(mismatched_request_id, event_digest, vec![1]).unwrap();
+    let mismatched_invocation = DurableInvocationTransaction::new(
+        domain,
+        None,
+        DurableObjectChanges::empty(),
+        mismatched_receipt,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        runtime::OutgoingSealRepository::commit_seal_completion(
+            &store,
+            &live,
+            &fresh_token,
+            mismatched_invocation,
+            sealed,
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
+    );
+
+    let request_id = runtime::DurableRequestId::new(sealed.request).unwrap();
+    let matching_receipt = DurableRequestReceipt::new(request_id, event_digest, vec![1]).unwrap();
+    let read_only_objects = DurableObjectChanges::new(
+        vec![DurableObjectHeadRead::new(
+            ObjectId::new([0x75; 32]),
+            DurableObjectHead::Absent,
+        )],
+        Vec::new(),
+    )
+    .unwrap();
+    let object_read_invocation = DurableInvocationTransaction::new(
+        domain,
+        None,
+        read_only_objects,
+        matching_receipt.clone(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        runtime::OutgoingSealRepository::commit_seal_completion(
+            &store,
+            &live,
+            &fresh_token,
+            object_read_invocation,
+            sealed
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
+    );
+    assert_eq!(
+        runtime::portable::DurablePortableSnapshotRepository::begin_portable_snapshot(
+            &store, &live, domain
+        )
+        .unwrap(),
+        fresh_token,
+        "invalid closed sections do not advance the token"
+    );
+    let message = DurableOutboxMessage::new(
+        protocol_types::Digest32::new(protocol_types::HashAlgorithmId::Sha2_256, [5; 32]),
+        vec![9],
+    )
+    .unwrap();
+    let nonempty_outbox = DurableOutboxBatch::new(request_id, event_digest, vec![message]).unwrap();
+    let nonempty_invocation = DurableInvocationTransaction::new(
+        domain,
+        None,
+        DurableObjectChanges::empty(),
+        matching_receipt,
+        Some(nonempty_outbox),
+    )
+    .unwrap();
+    assert_eq!(
+        runtime::OutgoingSealRepository::commit_seal_completion(
+            &store,
+            &live,
+            &fresh_token,
+            nonempty_invocation,
+            sealed,
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
+    );
+
+    drop(store);
+    let reopened = SqliteDurableStore::open_existing(&database.path, pinned).unwrap();
+    let barrier = reopened.get_outgoing_barrier(&live, domain).unwrap();
+    assert!(
+        !barrier.is_sealed(),
+        "every rejected attempt left no partial effect"
+    );
+    assert!(
+        reopened
+            .get_request_receipt(&live, domain, request_id)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        reopened
+            .get_versioned_durable(&live, domain, b"cut")
+            .unwrap()
+            .value(),
+        Some(&[1][..])
+    );
+}
+
+#[test]
+fn protected_barrier_rejects_wrong_singleton_id_extra_rows_and_oversized_frame_without_repair() {
+    for case in 0..3 {
+        let database: TestDatabase = TestDatabase::new();
+        let pinned: SqliteNamespace = namespace("corrupt-protected-barrier", 0x81, 0x82);
+        let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+        let store = SqliteDurableStore::open(&database.path, pinned.clone(), fence).unwrap();
+        let live: DurableOperationContext = live_context(fence, 0x81);
+        let connection: Connection = Connection::open(&database.path).unwrap();
+        // Only this disposable file is corrupted. An exact row predicate must
+        // still refuse invalid metadata even if schema constraints were lost.
+        connection.execute_batch("DROP TABLE durable_outgoing_barrier; CREATE TABLE durable_outgoing_barrier(id INTEGER, barrier BLOB)").unwrap();
+        let bytes: Vec<u8> = if case == 2 {
+            vec![0; 1537]
+        } else {
+            runtime::encode_outgoing_barrier(&runtime::OutgoingBarrier::Unsealed).unwrap()
+        };
+        connection
+            .execute(
+                "INSERT INTO durable_outgoing_barrier VALUES(?1,?2)",
+                params![if case == 0 { 2 } else { 1 }, &bytes],
+            )
+            .unwrap();
+        if case == 1 {
+            connection
+                .execute(
+                    "INSERT INTO durable_outgoing_barrier VALUES(2,?1)",
+                    params![&bytes],
+                )
+                .unwrap();
+        }
+        assert!(store.get_outgoing_barrier(&live, pinned.domain()).is_err());
+        drop(store);
+        assert!(SqliteDurableStore::open_existing(&database.path, pinned.clone()).is_err());
+        assert!(SqliteDurableStore::open_historical(&database.path, pinned.clone()).is_err());
+        assert!(SqliteDurableStore::open(&database.path, pinned, fence).is_err());
+        let count: i64 = connection
+            .query_row("SELECT count(*) FROM durable_outgoing_barrier", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            count,
+            if case == 1 { 2 } else { 1 },
+            "reopen never repairs protected rows"
+        );
+    }
+}
+
 struct SqliteConformanceFixture {
     _database: TestDatabase,
     path: PathBuf,

@@ -16,8 +16,9 @@
 //! [`submit_candidate`] drives the current leader (selected by
 //! `policy.engine().validator_set().leader(view)`, from this call's own
 //! locally pinned genesis validator set, never a value the network reports)
-//! through a real proposal/vote/certificate round carrying the candidate,
-//! then two further empty-descendant rounds, persisting every input,
+//! through up to two real empty alignment rounds, a proposal/vote/certificate
+//! round carrying the candidate, then two further empty-descendant rounds,
+//! persisting every input,
 //! proposal, and certificate artifact via the caller-supplied
 //! [`ArtifactSink`] *before* the corresponding network call, per DR-0153's
 //! "record artifacts before sending" requirement. [`replay_declared_prefix`]
@@ -71,6 +72,13 @@ use node_core::genesis::{GenesisCommitteeError, GenesisRootError, VerifiedGenesi
 /// Bounded fan-out cap for one configured ordered-economics cohort, mirroring
 /// [`crate::fastvote_client::MAX_FASTVOTE_NETWORK_ENDPOINTS`].
 pub const MAX_ORDERED_ECONOMICS_ENDPOINTS: usize = 32;
+
+const MAX_EMPTY_ALIGNMENT_ROUNDS: usize = 2;
+const EMPTY_DESCENDANT_ROUNDS: usize = 2;
+/// Maximum chronological rounds in a fresh submission: bounded empty
+/// alignment, the candidate, and its two certified descendants. Callers must
+/// reserve all proposal/certificate destinations before the first POST.
+pub const MAX_SUBMISSION_ROUNDS: usize = MAX_EMPTY_ALIGNMENT_ROUNDS + 1 + EMPTY_DESCENDANT_ROUNDS;
 
 /// Pure profile authentication of the original signed envelope and every leg.
 /// This never obtains fresh execution authority or contacts a validator.
@@ -463,7 +471,7 @@ pub struct RoundOutcome {
 /// test for a missing acknowledgement. A quorum certificate
 /// certifies one proposal, not by itself that the network
 /// committed this business operation; that distinction is exactly why
-/// `committed_outcome` is independently bound to the round-0 proposal
+/// `committed_outcome` is independently bound to the candidate-carrying proposal
 /// height/digest before this function ever returns it.
 pub struct SubmissionOutcome {
     pub rounds: Vec<RoundOutcome>,
@@ -595,18 +603,34 @@ fn query_retained_outcome<T: Transport>(
     Ok(Some(outcome))
 }
 
-/// Unsigned status is only a routing hint. Require a configured voting quorum
-/// to report the same view; a Byzantine peer's invented maximum cannot select
-/// a new leader. Every reported high QC is independently authenticated first.
-fn routing_view<T: Transport>(
+/// A routing observation grants neither signing authority nor finality. The
+/// authenticated high QC only selects bounded empty delivery; the returned
+/// signed proposal and each actual certificate still require verification.
+struct RoutingHint {
+    current_view: u64,
+    high_qc: QuorumCertificate,
+}
+
+/// Unsigned status is only a routing hint. Require distinct configured voting
+/// powers to agree on view and authenticated high-QC identity. Disagreement,
+/// missing status and invalid QCs cannot invent a leader or next height.
+fn routing_hint<T: Transport>(
     endpoints: &[OrderedEconomicsEndpoint<T>],
     policy: &OrderedEconomicsPolicy,
     overall: Instant,
     cap: Duration,
-) -> Result<Option<u64>, OrderedEconomicsNetworkError> {
+) -> Result<Option<RoutingHint>, OrderedEconomicsNetworkError> {
     let set: &ValidatorSet = policy.engine().validator_set();
-    let mut powers: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut powers: BTreeMap<(u64, u64, u64, Digest32), (u64, QuorumCertificate)> = BTreeMap::new();
+    let mut seen: BTreeSet<ValidatorId> = BTreeSet::new();
     for endpoint in endpoints {
+        if !seen.insert(endpoint.validator_id) {
+            continue;
+        }
+        let info: &ValidatorInfo = match set.get(endpoint.validator_id) {
+            Some(info) => info,
+            None => continue,
+        };
         let deadline: Instant = request_deadline(overall, cap)?;
         let Ok(status) = query_status(endpoint, deadline) else {
             continue;
@@ -620,10 +644,14 @@ fn routing_view<T: Transport>(
         {
             continue;
         }
-        let info: &ValidatorInfo = set
-            .get(endpoint.validator_id)
-            .ok_or(OrderedEconomicsNetworkError::QuorumNotFormed)?;
-        let power: &mut u64 = powers.entry(status.current_view).or_default();
+        let key: (u64, u64, u64, Digest32) = (
+            status.current_view,
+            status.high_qc.view,
+            status.high_qc.height,
+            status.high_qc.proposal_digest,
+        );
+        let (power, _certificate): &mut (u64, QuorumCertificate) =
+            powers.entry(key).or_insert((0, status.high_qc));
         *power = power.checked_add(info.voting_power).ok_or_else(|| {
             OrderedEconomicsNetworkError::Rejected("routing power overflow".into())
         })?;
@@ -631,7 +659,12 @@ fn routing_view<T: Transport>(
     Ok(powers
         .into_iter()
         .rev()
-        .find_map(|(view, power)| (power >= set.quorum_threshold()).then_some(view)))
+        .find_map(|((current_view, _, _, _), (power, high_qc))| {
+            (power >= set.quorum_threshold()).then_some(RoutingHint {
+                current_view,
+                high_qc,
+            })
+        }))
 }
 
 fn clock_progress<T: Transport>(
@@ -646,15 +679,16 @@ fn clock_progress<T: Transport>(
     broadcast_tick(endpoints, overall, cap)
 }
 
-/// Drives the current leader through one real proposal/vote/certificate
-/// round carrying `candidate_bytes` (an exact canonical `OrderedCandidate`),
+/// Drives up to two genuine empty rounds to align the closed economic window,
+/// then one real proposal/vote/certificate round carrying `candidate_bytes`
+/// (an exact canonical `OrderedCandidate`),
 /// then `EMPTY_DESCENDANT_ROUNDS` further empty rounds so the three-chain
 /// profile actually commits it. Every proposal/certificate is persisted via
 /// `artifacts` before the corresponding POST. Returns every round's outcome
 /// in order. `resume_round0_proposal`, when `Some`, is an already-retained,
 /// exact authenticated proposal bytes from an interrupted prior attempt for
-/// this exact candidate: round 0 verifies and reuses it instead of asking
-/// the leader to build a fresh, possibly-conflicting proposal.
+/// this exact candidate: round 0 verifies and reuses it without preceding
+/// alignment or asking the leader to build a fresh, conflicting proposal.
 pub fn submit_candidate<T: Transport>(
     endpoints: &[OrderedEconomicsEndpoint<T>],
     policy: &OrderedEconomicsPolicy,
@@ -712,22 +746,44 @@ pub fn submit_candidate<T: Transport>(
         }
     }
 
-    const EMPTY_DESCENDANT_ROUNDS: usize = 2;
-    let mut rounds = Vec::with_capacity(1 + EMPTY_DESCENDANT_ROUNDS);
+    let (alignment_rounds, mut expected_parent): (usize, Option<QuorumCertificate>) =
+        if resume_round0_proposal.is_some() {
+            (0, None)
+        } else {
+            let hint: RoutingHint = loop {
+                if let Some(hint) =
+                    routing_hint(endpoints, policy, overall_deadline, per_request_cap)?
+                {
+                    break hint;
+                }
+                clock_progress(endpoints, overall_deadline, per_request_cap)?;
+            };
+            let next_height: u64 = hint.high_qc.height.checked_add(1).ok_or_else(|| {
+                OrderedEconomicsNetworkError::Rejected("routing height overflow".into())
+            })?;
+            let alignment: usize = match next_height % 3 {
+                1 => 0,
+                2 => MAX_EMPTY_ALIGNMENT_ROUNDS,
+                _ => 1,
+            };
+            (alignment, Some(hint.high_qc))
+        };
+    let total_rounds: usize = alignment_rounds + 1 + EMPTY_DESCENDANT_ROUNDS;
+    let mut rounds: Vec<RoundOutcome> = Vec::with_capacity(total_rounds);
     let mut committed_outcome: Option<OrderedOutcome> = None;
-    let mut round0_binding: Option<(u64, Digest32)> = None;
-    let mut expected_parent: Option<QuorumCertificate> = None;
-    for round_index in 0..=EMPTY_DESCENDANT_ROUNDS {
-        let candidate_for_round = if round_index == 0 {
+    let mut candidate_binding: Option<(u64, Digest32)> = None;
+    for round_index in 0..total_rounds {
+        let carries_candidate: bool = round_index == alignment_rounds;
+        let candidate_for_round: Option<Vec<u8>> = if carries_candidate {
             Some(candidate_bytes.to_vec())
         } else {
             None
         };
-        let outcome = run_one_round(
+        let outcome: RoundOutcome = run_one_round(
             endpoints,
             policy,
             candidate_for_round,
-            if round_index == 0 {
+            if carries_candidate {
                 resume_round0_proposal.clone()
             } else {
                 None
@@ -742,12 +798,9 @@ pub fn submit_candidate<T: Transport>(
             consensus::decode_quorum_certificate(&outcome.certificate_bytes)
                 .map_err(|error| OrderedEconomicsNetworkError::Rejected(error.to_string()))?,
         );
-        if round_index == 0 {
-            round0_binding = Some((outcome.height, outcome.proposal_digest));
+        if carries_candidate {
+            candidate_binding = Some((outcome.height, outcome.proposal_digest));
         }
-        let (expected_block_height, expected_block_digest) = round0_binding.ok_or_else(|| {
-            OrderedEconomicsNetworkError::Rejected("missing round-0 binding".into())
-        })?;
         for peer in &outcome.peers {
             for phase in [&peer.vote_phase, &peer.certificate_phase] {
                 if let PeerPhaseOutcome::Applied(output) = phase {
@@ -757,15 +810,21 @@ pub fn submit_candidate<T: Transport>(
                         {
                             continue;
                         }
+                        let (expected_block_height, expected_block_digest): (u64, Digest32) =
+                            candidate_binding.ok_or_else(|| {
+                                OrderedEconomicsNetworkError::Rejected(
+                                    "empty alignment acknowledgement cannot bind the submitted candidate".into(),
+                                )
+                            })?;
                         // The committing block a peer echoes back must be
-                        // exactly the authenticated round-0 proposal this
+                        // exactly the authenticated candidate proposal this
                         // call itself submitted -- never trusted merely
                         // because the candidate digest/request id match.
                         if found.block_height != expected_block_height
                             || found.block_digest != expected_block_digest
                         {
                             return Err(OrderedEconomicsNetworkError::Rejected(
-                                "committed outcome block binding does not match the authenticated round-0 proposal".into(),
+                                "committed outcome block binding does not match the authenticated candidate proposal".into(),
                             ));
                         }
                         match &committed_outcome {
@@ -839,15 +898,24 @@ fn run_one_round<T: Transport>(
         (resume_bytes, decoded)
     } else {
         loop {
-            let Some(view) = routing_view(endpoints, policy, overall_deadline, per_request_cap)?
+            let Some(hint) = routing_hint(endpoints, policy, overall_deadline, per_request_cap)?
             else {
                 clock_progress(endpoints, overall_deadline, per_request_cap)?;
                 continue;
             };
+            if let Some(parent) = expected_parent
+                && (hint.high_qc.proposal_digest != parent.proposal_digest
+                    || hint.high_qc.height != parent.height
+                    || hint.high_qc.view != parent.view)
+            {
+                return Err(OrderedEconomicsNetworkError::Rejected(
+                    "routing hint does not match this submission's certified prefix".into(),
+                ));
+            }
             let leader_id = policy
                 .engine()
                 .validator_set()
-                .leader(view)
+                .leader(hint.current_view)
                 .ok_or(OrderedEconomicsNetworkError::QuorumNotFormed)?;
             let Ok(leader) = find_leader(endpoints, leader_id) else {
                 clock_progress(endpoints, overall_deadline, per_request_cap)?;
@@ -916,6 +984,9 @@ fn run_one_round<T: Transport>(
     };
     if let Some(parent) = expected_parent {
         let justify: &QuorumCertificate = &proposal.proposal.justify;
+        // Different genuine voter subsets may certify the same block. The
+        // full justify is authenticated above; parent continuity binds its
+        // certified identity, not one particular quorum's vote vector.
         if justify.proposal_digest != parent.proposal_digest
             || justify.height != parent.height
             || justify.view != parent.view
@@ -1783,13 +1854,14 @@ mod recovery_preflight_tests {
         let (policy, _) = fixture();
         let (peers, _) = endpoints(&policy, &[None, Some(1), Some(1), Some(1)], true);
         assert_eq!(
-            routing_view(
+            routing_hint(
                 &peers,
                 &policy,
                 Instant::now() + Duration::from_secs(1),
                 Duration::from_millis(50)
             )
-            .unwrap(),
+            .unwrap()
+            .map(|hint| hint.current_view),
             Some(1)
         );
     }
@@ -1798,13 +1870,14 @@ mod recovery_preflight_tests {
         let (policy, _) = fixture();
         let (peers, _) = endpoints(&policy, &[Some(1), Some(1), Some(1), Some(u64::MAX)], true);
         assert_eq!(
-            routing_view(
+            routing_hint(
                 &peers,
                 &policy,
                 Instant::now() + Duration::from_secs(1),
                 Duration::from_millis(50)
             )
-            .unwrap(),
+            .unwrap()
+            .map(|hint| hint.current_view),
             Some(1)
         );
     }
@@ -1986,5 +2059,937 @@ mod recovery_preflight_tests {
             result.is_err(),
             "an unknown committed block reference must fail closed, not be silently accepted"
         );
+    }
+
+    #[test]
+    fn invalid_high_qcs_cannot_supply_a_routing_height() {
+        let (policy, signers) = fixture();
+        let prefix: Vec<(Vec<u8>, Vec<u8>)> = empty_prefix(&policy, &signers, 1);
+        let mut high_qc: QuorumCertificate =
+            consensus::decode_quorum_certificate(&prefix[0].1).unwrap();
+        high_qc.votes[0].signature[0] ^= 1;
+        let status: Vec<u8> = node_core::ordered_economics::encode_ordered_status(&OrderedStatus {
+            current_view: 2,
+            high_qc,
+            committed_height: u64::MAX,
+        })
+        .unwrap();
+        let (mut peers, calls) = endpoints(&policy, &[Some(1); 4], true);
+        for peer in peers.iter_mut().take(3) {
+            peer.client = Client::new(Mock {
+                status: Some(status.clone()),
+                calls: calls.clone(),
+                panic_on_post: true,
+                fail_posts_from: None,
+                post_committed: None,
+            });
+        }
+        assert!(
+            routing_hint(
+                &peers,
+                &policy,
+                Instant::now() + Duration::from_secs(1),
+                Duration::from_millis(50),
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn a_single_signed_high_qc_hint_cannot_force_empty_alignment() {
+        let (policy, signers) = fixture();
+        let prefix: Vec<(Vec<u8>, Vec<u8>)> = empty_prefix(&policy, &signers, 2);
+        let high_qc: QuorumCertificate =
+            consensus::decode_quorum_certificate(&prefix[1].1).unwrap();
+        let status: Vec<u8> = node_core::ordered_economics::encode_ordered_status(&OrderedStatus {
+            current_view: 4,
+            high_qc,
+            committed_height: u64::MAX,
+        })
+        .unwrap();
+        let (mut peers, calls) = endpoints(&policy, &[Some(4); 4], true);
+        peers[3].client = Client::new(Mock {
+            status: Some(status.clone()),
+            calls: calls.clone(),
+            panic_on_post: true,
+            fail_posts_from: None,
+            post_committed: None,
+        });
+        let hint: RoutingHint = routing_hint(
+            &peers,
+            &policy,
+            Instant::now() + Duration::from_secs(1),
+            Duration::from_millis(50),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(hint.current_view, 4);
+        assert_eq!(hint.high_qc.height, 0);
+        peers[2].client = Client::new(Mock {
+            status: Some(status),
+            calls,
+            panic_on_post: true,
+            fail_posts_from: None,
+            post_committed: None,
+        });
+        assert!(
+            routing_hint(
+                &peers,
+                &policy,
+                Instant::now() + Duration::from_secs(1),
+                Duration::from_millis(50),
+            )
+            .unwrap()
+            .is_none(),
+            "split authenticated high-QC hints do not select a new height"
+        );
+    }
+
+    #[test]
+    fn repeated_endpoint_identity_cannot_count_twice_in_a_routing_hint() {
+        let (policy, _) = fixture();
+        let (mut peers, _) = endpoints(&policy, &[Some(1); 3], true);
+        peers[2].validator_id = peers[0].validator_id;
+        assert!(
+            routing_hint(
+                &peers,
+                &policy,
+                Instant::now() + Duration::from_secs(1),
+                Duration::from_millis(50),
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    mod submission_alignment {
+        use super::*;
+        use crate::bond_registration::BondResourceId;
+        use node_core::fee_claims::{
+            codec::{
+                FeeClaimIntent, FeeClaimOperation, SignedFeeClaimIntent,
+                encode_signed_fee_claim_intent,
+            },
+            fee_claim_intent_digest, fee_claim_signing_frame,
+        };
+        use objects::{Address, ObjectId, ObjectRef};
+        use std::sync::Mutex;
+
+        fn signed_candidate(policy: &OrderedEconomicsPolicy, signer: &Signer) -> OrderedCandidate {
+            let digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x66; 32]);
+            let intent: FeeClaimIntent = FeeClaimIntent {
+                context: policy.context().clone(),
+                request_id: [0x77; 32],
+                escrow_request_id: [0x78; 32],
+                certificate_epoch: policy.context().epoch(),
+                validator_id: signer.id,
+                resource_id: BondResourceId::new(1, [0x79; 32]).unwrap(),
+                expected_generation: 1,
+                expected_fee_output: ObjectRef {
+                    id: ObjectId::new([0x7a; 32]),
+                    version: 1,
+                    digest,
+                },
+                expected_previous_row_digest: digest,
+                expected_next_row_digest: digest,
+                share_amount: 0,
+                recipient: Address::new([0x7b; 32]),
+                operation: FeeClaimOperation::ZeroShare,
+            };
+            let intent_digest: Digest32 =
+                fee_claim_intent_digest(policy.resolver(), &intent).unwrap();
+            let frame: Vec<u8> = fee_claim_signing_frame(&intent.context, intent_digest).unwrap();
+            let signed: SignedFeeClaimIntent = SignedFeeClaimIntent {
+                signature: signer.key.sign(&frame).to_bytes(),
+                intent,
+            };
+            let candidate: OrderedCandidate = OrderedCandidate {
+                context: policy.context().clone(),
+                request_id: signed.intent.request_id,
+                kind: node_core::ordered_economics::OrderedOperationKind::FeeClaim,
+                intent: encode_signed_fee_claim_intent(&signed).unwrap(),
+                created_checkpoint: 11,
+            };
+            authenticate_ordered_candidate(policy, &candidate).unwrap();
+            candidate
+        }
+
+        #[derive(Default)]
+        struct SubmissionArtifacts {
+            bytes: BTreeMap<String, Vec<u8>>,
+            certified: Vec<usize>,
+            results: Vec<usize>,
+        }
+
+        struct SubmissionSink {
+            artifacts: Arc<Mutex<SubmissionArtifacts>>,
+            fail_key: Option<String>,
+            fail_manifest: bool,
+        }
+
+        impl SubmissionSink {
+            fn new() -> Self {
+                Self {
+                    artifacts: Arc::new(Mutex::new(SubmissionArtifacts::default())),
+                    fail_key: None,
+                    fail_manifest: false,
+                }
+            }
+        }
+
+        impl ArtifactSink for SubmissionSink {
+            fn persist(&mut self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+                if self.fail_key.as_deref() == Some(name) {
+                    return Err(std::io::Error::other("injected artifact failure"));
+                }
+                self.artifacts
+                    .lock()
+                    .unwrap()
+                    .bytes
+                    .insert(name.to_string(), bytes.to_vec());
+                Ok(())
+            }
+
+            fn record_certified_round(&mut self, round: usize) -> std::io::Result<()> {
+                if self.fail_manifest {
+                    return Err(std::io::Error::other("injected manifest failure"));
+                }
+                let mut artifacts = self.artifacts.lock().unwrap();
+                assert_eq!(round, artifacts.certified.len());
+                artifacts.certified.push(round);
+                Ok(())
+            }
+
+            fn record_peer_result(
+                &mut self,
+                round: usize,
+                _peer: &PeerResult,
+            ) -> std::io::Result<()> {
+                self.artifacts.lock().unwrap().results.push(round);
+                Ok(())
+            }
+        }
+
+        struct SubmissionNetwork {
+            policy: OrderedEconomicsPolicy,
+            signers: Vec<Signer>,
+            states: BTreeMap<ValidatorId, consensus::ConsensusState>,
+            candidates: BTreeMap<Digest32, OrderedCandidate>,
+            retained_votes: BTreeMap<(ValidatorId, Digest32), ConsensusVote>,
+            outcomes: BTreeMap<[u8; 32], OrderedOutcome>,
+            artifacts: Arc<Mutex<SubmissionArtifacts>>,
+            proposed: Vec<bool>,
+            posts: Vec<String>,
+            suppress_outcomes: bool,
+            acknowledging_validator: Option<ValidatorId>,
+            poison_alignment_with: Option<OrderedCandidate>,
+            override_proposal: Option<Vec<u8>>,
+        }
+
+        struct ConsensusTransport {
+            validator: ValidatorId,
+            network: Arc<Mutex<SubmissionNetwork>>,
+        }
+
+        fn event_response(output: &OrderedEventOutput) -> WireResponse {
+            WireResponse {
+                status: 200,
+                content_type: Some(
+                    node_wire::ordered_economics::ORDERED_EVENT_OUTPUT_MEDIA_TYPE.into(),
+                ),
+                body: node_core::ordered_economics::encode_ordered_event_output(output).unwrap(),
+            }
+        }
+
+        impl Transport for ConsensusTransport {
+            fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportError> {
+                let mut network = self.network.lock().unwrap();
+                let policy: OrderedEconomicsPolicy = network.policy.clone();
+                let state: consensus::ConsensusState = network.states[&self.validator].clone();
+                if request.method == Method::Get {
+                    if request.path == ORDERED_ECONOMICS_STATUS_PATH {
+                        return Ok(WireResponse {
+                            status: 200,
+                            content_type: Some(
+                                node_wire::ordered_economics::ORDERED_STATUS_MEDIA_TYPE.into(),
+                            ),
+                            body: node_core::ordered_economics::encode_ordered_status(
+                                &OrderedStatus {
+                                    current_view: state.current_view,
+                                    high_qc: state.high_qc,
+                                    committed_height: u64::MAX,
+                                },
+                            )
+                            .unwrap(),
+                        });
+                    }
+                    let found: Option<&OrderedOutcome> =
+                        network.outcomes.values().find(|outcome| {
+                            request.path.ends_with(
+                                &outcome
+                                    .request_id
+                                    .iter()
+                                    .map(|byte| format!("{byte:02x}"))
+                                    .collect::<String>(),
+                            )
+                        });
+                    return Ok(match found {
+                        Some(outcome) => WireResponse {
+                            status: 200,
+                            content_type: Some(
+                                node_wire::ordered_economics::ORDERED_OUTCOME_MEDIA_TYPE.into(),
+                            ),
+                            body: node_core::ordered_economics::encode_ordered_outcome(outcome)
+                                .unwrap(),
+                        },
+                        None => WireResponse {
+                            status: 204,
+                            content_type: None,
+                            body: Vec::new(),
+                        },
+                    });
+                }
+                network.posts.push(request.path.clone());
+                let signer: &Signer = network
+                    .signers
+                    .iter()
+                    .find(|s| s.id == self.validator)
+                    .unwrap();
+                if request.path == ORDERED_ECONOMICS_PROPOSE_PATH {
+                    let proposed: OrderedProposeRequest =
+                        OrderedProposeRequest::decode(&request.body).unwrap();
+                    let candidate: Option<OrderedCandidate> =
+                        proposed.candidate.as_deref().map(|bytes| {
+                            node_core::ordered_economics::decode_ordered_candidate(bytes).unwrap()
+                        });
+                    let transactions: Vec<Digest32> = candidate
+                        .iter()
+                        .map(|candidate| policy.candidate_digest(candidate).unwrap())
+                        .collect();
+                    assert!(candidate.is_none() || (state.high_qc.height + 1) % 3 == 1);
+                    assert!(
+                        network
+                            .artifacts
+                            .lock()
+                            .unwrap()
+                            .bytes
+                            .contains_key("round-0.candidate")
+                    );
+                    let proposal: consensus::ConsensusProposal = policy
+                        .engine()
+                        .propose(&state, transactions, signer)
+                        .unwrap();
+                    let bytes: Vec<u8> = node_core::ordered_economics::encode_ordered_proposal(
+                        &node_core::ordered_economics::OrderedProposal {
+                            proposal,
+                            candidate: candidate.clone(),
+                        },
+                    )
+                    .unwrap();
+                    network.proposed.push(candidate.is_some());
+                    return Ok(WireResponse {
+                        status: 200,
+                        content_type: Some(ORDERED_PROPOSAL_MEDIA_TYPE.into()),
+                        body: network.override_proposal.clone().unwrap_or(bytes),
+                    });
+                }
+
+                let transition: consensus::ConsensusOutput = match request.path.as_str() {
+                    ORDERED_ECONOMICS_PROPOSAL_PATH | ORDERED_ECONOMICS_OBSERVE_PATH => {
+                        let proposal: node_core::ordered_economics::OrderedProposal =
+                            decode_ordered_proposal(&request.body).unwrap();
+                        verify_ordered_proposal(&policy, &proposal).unwrap();
+                        let digest: Digest32 =
+                            policy.engine().proposal_digest(&proposal.proposal).unwrap();
+                        if request.path == ORDERED_ECONOMICS_PROPOSAL_PATH {
+                            assert!(
+                                network
+                                    .artifacts
+                                    .lock()
+                                    .unwrap()
+                                    .bytes
+                                    .iter()
+                                    .any(|(key, bytes)| key.ends_with(".proposal")
+                                        && *bytes == request.body)
+                            );
+                        }
+                        let transition: consensus::ConsensusOutput =
+                            if request.path == ORDERED_ECONOMICS_PROPOSAL_PATH {
+                                policy
+                                    .engine()
+                                    .on_event(
+                                        &state,
+                                        ConsensusEvent::Proposal(proposal.proposal),
+                                        signer,
+                                        &FastPathEd25519Verifier,
+                                    )
+                                    .unwrap()
+                            } else {
+                                policy
+                                    .engine()
+                                    .on_observer_event(
+                                        &state,
+                                        ConsensusEvent::Proposal(proposal.proposal),
+                                        &FastPathEd25519Verifier,
+                                    )
+                                    .unwrap()
+                            };
+                        if let Some(candidate) = proposal.candidate {
+                            network.candidates.insert(digest, candidate);
+                        }
+                        transition
+                    }
+                    ORDERED_ECONOMICS_CERTIFICATE_PATH => {
+                        let artifacts = network.artifacts.lock().unwrap();
+                        assert!(artifacts.certified.iter().any(|round| artifacts.bytes
+                            [&format!("round-{round}.certificate")]
+                            == request.body));
+                        drop(artifacts);
+                        let certificate: QuorumCertificate =
+                            consensus::decode_quorum_certificate(&request.body).unwrap();
+                        policy
+                            .engine()
+                            .on_event(
+                                &state,
+                                ConsensusEvent::Certificate(certificate),
+                                signer,
+                                &FastPathEd25519Verifier,
+                            )
+                            .unwrap()
+                    }
+                    _ => panic!("unexpected consensus fixture POST: {}", request.path),
+                };
+                let mut messages: Vec<ConsensusMessage> = transition.outbound_messages;
+                for message in &messages {
+                    if let ConsensusMessage::Vote(vote) = message {
+                        network
+                            .retained_votes
+                            .insert((self.validator, vote.proposal_digest), vote.clone());
+                    }
+                }
+                if request.path == ORDERED_ECONOMICS_PROPOSAL_PATH && messages.is_empty() {
+                    let proposal = decode_ordered_proposal(&request.body).unwrap();
+                    let digest: Digest32 =
+                        policy.engine().proposal_digest(&proposal.proposal).unwrap();
+                    if let Some(vote) = network.retained_votes.get(&(self.validator, digest)) {
+                        messages.push(ConsensusMessage::Vote(vote.clone()));
+                    }
+                }
+                let mut committed: Vec<OrderedOutcome> = Vec::new();
+                for block in transition.committed_blocks {
+                    let Some(candidate) = network.candidates.get(&block.digest) else {
+                        continue;
+                    };
+                    // This transport models consensus only. Its unsigned
+                    // acknowledgement is derived from an actual committed
+                    // block; no accepted business receipt is seeded or claimed.
+                    let outcome: OrderedOutcome = OrderedOutcome {
+                        candidate_digest: policy.candidate_digest(candidate).unwrap(),
+                        request_id: candidate.request_id,
+                        block_height: block.height,
+                        block_digest: block.digest,
+                        output: node_core::NodeOutput::default(),
+                    };
+                    if !network.suppress_outcomes
+                        && network
+                            .acknowledging_validator
+                            .is_none_or(|id| id == self.validator)
+                    {
+                        network.outcomes.insert(outcome.request_id, outcome.clone());
+                        committed.push(outcome);
+                    }
+                }
+                if let Some(candidate) = &network.poison_alignment_with {
+                    committed.push(OrderedOutcome {
+                        candidate_digest: policy.candidate_digest(candidate).unwrap(),
+                        request_id: candidate.request_id,
+                        block_height: transition.state.high_qc.height,
+                        block_digest: transition.state.high_qc.proposal_digest,
+                        output: node_core::NodeOutput::default(),
+                    });
+                }
+                network.states.insert(self.validator, transition.state);
+                Ok(event_response(&OrderedEventOutput {
+                    messages,
+                    committed,
+                }))
+            }
+        }
+
+        struct SubmissionFixture {
+            policy: OrderedEconomicsPolicy,
+            candidate: OrderedCandidate,
+            peers: Vec<OrderedEconomicsEndpoint<ConsensusTransport>>,
+            network: Arc<Mutex<SubmissionNetwork>>,
+            sink: SubmissionSink,
+        }
+
+        fn submission_fixture(initial_height: usize) -> SubmissionFixture {
+            let (policy, signers) = fixture();
+            let candidate: OrderedCandidate = signed_candidate(&policy, &signers[0]);
+            let prefix: Vec<(Vec<u8>, Vec<u8>)> = empty_prefix(&policy, &signers, initial_height);
+            let mut state: consensus::ConsensusState = policy.engine().genesis_state(0);
+            for (proposal, certificate) in &prefix {
+                state = policy
+                    .engine()
+                    .on_observer_event(
+                        &state,
+                        ConsensusEvent::Proposal(
+                            decode_ordered_proposal(proposal).unwrap().proposal,
+                        ),
+                        &FastPathEd25519Verifier,
+                    )
+                    .unwrap()
+                    .state;
+                state = policy
+                    .engine()
+                    .on_observer_event(
+                        &state,
+                        ConsensusEvent::Certificate(
+                            consensus::decode_quorum_certificate(certificate).unwrap(),
+                        ),
+                        &FastPathEd25519Verifier,
+                    )
+                    .unwrap()
+                    .state;
+            }
+            let sink: SubmissionSink = SubmissionSink::new();
+            let network: Arc<Mutex<SubmissionNetwork>> = Arc::new(Mutex::new(SubmissionNetwork {
+                policy: policy.clone(),
+                states: signers.iter().map(|s| (s.id, state.clone())).collect(),
+                signers,
+                candidates: BTreeMap::new(),
+                retained_votes: BTreeMap::new(),
+                outcomes: BTreeMap::new(),
+                artifacts: sink.artifacts.clone(),
+                proposed: Vec::new(),
+                posts: Vec::new(),
+                suppress_outcomes: false,
+                acknowledging_validator: None,
+                poison_alignment_with: None,
+                override_proposal: None,
+            }));
+            let peers: Vec<OrderedEconomicsEndpoint<ConsensusTransport>> = policy
+                .engine()
+                .validator_set()
+                .validators()
+                .iter()
+                .map(|info| OrderedEconomicsEndpoint {
+                    validator_id: info.id,
+                    endpoint_label: format!("peer-{}", info.id),
+                    client: Client::new(ConsensusTransport {
+                        validator: info.id,
+                        network: network.clone(),
+                    }),
+                })
+                .collect();
+            SubmissionFixture {
+                policy,
+                candidate,
+                peers,
+                network,
+                sink,
+            }
+        }
+
+        fn submit(
+            fixture: &mut SubmissionFixture,
+            resume: Option<Vec<u8>>,
+        ) -> Result<SubmissionOutcome, OrderedEconomicsNetworkError> {
+            let candidate: Vec<u8> = encode_ordered_candidate(&fixture.candidate).unwrap();
+            submit_candidate(
+                &fixture.peers,
+                &fixture.policy,
+                &candidate,
+                resume,
+                Instant::now() + Duration::from_secs(10),
+                Duration::from_millis(100),
+                &mut fixture.sink,
+            )
+        }
+
+        #[test]
+        fn both_non_economic_starting_heights_produce_bounded_real_alignment_and_replay() {
+            for (initial, alignment) in [(1usize, 2usize), (2, 1), (7, 2), (8, 1)] {
+                let mut fixture: SubmissionFixture = submission_fixture(initial);
+                let mut parent: QuorumCertificate = fixture
+                    .network
+                    .lock()
+                    .unwrap()
+                    .states
+                    .values()
+                    .next()
+                    .unwrap()
+                    .high_qc
+                    .clone();
+                let outcome: SubmissionOutcome = submit(&mut fixture, None).unwrap();
+                assert_eq!(outcome.rounds.len(), alignment + 3);
+                assert!(outcome.rounds.len() <= MAX_SUBMISSION_ROUNDS);
+                let artifacts = fixture.sink.artifacts.lock().unwrap();
+                assert_eq!(
+                    artifacts.certified,
+                    (0..outcome.rounds.len()).collect::<Vec<usize>>()
+                );
+                for (index, round) in outcome.rounds.iter().enumerate() {
+                    let proposal = decode_ordered_proposal(&round.proposal_bytes).unwrap();
+                    assert_eq!(proposal.candidate.is_some(), index == alignment);
+                    assert_eq!(round.height, u64::try_from(initial + index + 1).unwrap());
+                    assert_eq!(proposal.proposal.justify, parent);
+                    parent =
+                        consensus::decode_quorum_certificate(&round.certificate_bytes).unwrap();
+                    assert_eq!(
+                        artifacts.bytes[&format!("round-{index}.proposal")],
+                        round.proposal_bytes
+                    );
+                    assert_eq!(
+                        artifacts.bytes[&format!("round-{index}.certificate")],
+                        round.certificate_bytes
+                    );
+                }
+                assert_eq!(
+                    outcome.committed_outcome.block_height,
+                    outcome.rounds[alignment].height
+                );
+                assert_eq!(
+                    outcome.committed_outcome.block_digest,
+                    outcome.rounds[alignment].proposal_digest
+                );
+                assert!(
+                    artifacts
+                        .results
+                        .iter()
+                        .all(|index| *index < outcome.rounds.len())
+                );
+                let prefix: Vec<(Vec<u8>, Vec<u8>)> = outcome
+                    .rounds
+                    .iter()
+                    .map(|round| {
+                        (
+                            round.proposal_bytes.clone(),
+                            round.certificate_bytes.clone(),
+                        )
+                    })
+                    .collect();
+                drop(artifacts);
+                let replica: SubmissionFixture = submission_fixture(initial);
+                replica.network.lock().unwrap().artifacts = fixture.sink.artifacts.clone();
+                let replay: Vec<ReplayRoundOutcome> = replay_declared_prefix(
+                    &replica.peers,
+                    &replica.policy,
+                    &prefix,
+                    Instant::now() + Duration::from_secs(10),
+                    Duration::from_millis(100),
+                )
+                .unwrap();
+                assert_eq!(replay.len(), outcome.rounds.len());
+                assert!(replica.network.lock().unwrap().proposed.is_empty());
+                for state in replica.network.lock().unwrap().states.values() {
+                    assert!(state.contains_committed(&outcome.rounds[alignment].proposal_digest));
+                }
+            }
+        }
+
+        #[test]
+        fn an_aligned_submission_keeps_the_original_three_round_flow() {
+            let mut fixture: SubmissionFixture = submission_fixture(0);
+            let outcome: SubmissionOutcome = submit(&mut fixture, None).unwrap();
+            assert_eq!(outcome.rounds.len(), 3);
+            assert_eq!(
+                fixture.network.lock().unwrap().proposed,
+                vec![true, false, false]
+            );
+            assert_eq!(outcome.committed_outcome.block_height, 1);
+        }
+
+        #[test]
+        fn genuine_qc_vote_subsets_share_one_routing_and_parent_identity() {
+            let mut fixture: SubmissionFixture = submission_fixture(1);
+            let mut network = fixture.network.lock().unwrap();
+            let prefix: Vec<(Vec<u8>, Vec<u8>)> =
+                empty_prefix(&fixture.policy, &network.signers, 1);
+            let proposal: node_core::ordered_economics::OrderedProposal =
+                decode_ordered_proposal(&prefix[0].0).unwrap();
+            let minimal: QuorumCertificate =
+                consensus::decode_quorum_certificate(&prefix[0].1).unwrap();
+            let genesis: consensus::ConsensusState = fixture.policy.engine().genesis_state(0);
+            let votes: Vec<ConsensusVote> = network
+                .signers
+                .iter()
+                .map(|signer| {
+                    fixture
+                        .policy
+                        .engine()
+                        .on_event(
+                            &genesis,
+                            ConsensusEvent::Proposal(proposal.proposal.clone()),
+                            signer,
+                            &FastPathEd25519Verifier,
+                        )
+                        .unwrap()
+                        .outbound_messages
+                        .into_iter()
+                        .find_map(|message| match message {
+                            ConsensusMessage::Vote(vote) => Some(vote),
+                            _ => None,
+                        })
+                        .unwrap()
+                })
+                .collect();
+            let mut complete: QuorumCertificate = minimal.clone();
+            complete.votes = votes;
+            fixture
+                .policy
+                .engine()
+                .verify_certificate(&minimal, &FastPathEd25519Verifier)
+                .unwrap();
+            fixture
+                .policy
+                .engine()
+                .verify_certificate(&complete, &FastPathEd25519Verifier)
+                .unwrap();
+            assert_eq!(minimal.votes.len(), 3);
+            assert_eq!(complete.votes.len(), 4);
+            assert_ne!(
+                consensus::encode_quorum_certificate(&minimal).unwrap(),
+                consensus::encode_quorum_certificate(&complete).unwrap(),
+            );
+            for (index, endpoint) in fixture.peers.iter().enumerate() {
+                let certificate: QuorumCertificate = if index % 2 == 0 {
+                    minimal.clone()
+                } else {
+                    complete.clone()
+                };
+                let observed: consensus::ConsensusState = fixture
+                    .policy
+                    .engine()
+                    .on_observer_event(
+                        &genesis,
+                        ConsensusEvent::Proposal(proposal.proposal.clone()),
+                        &FastPathEd25519Verifier,
+                    )
+                    .unwrap()
+                    .state;
+                let certified: consensus::ConsensusState = fixture
+                    .policy
+                    .engine()
+                    .on_observer_event(
+                        &observed,
+                        ConsensusEvent::Certificate(certificate),
+                        &FastPathEd25519Verifier,
+                    )
+                    .unwrap()
+                    .state;
+                network.states.insert(endpoint.validator_id, certified);
+            }
+            let leader: ValidatorId = fixture.policy.engine().validator_set().leader(2).unwrap();
+            assert_eq!(network.states[&leader].high_qc, complete);
+            drop(network);
+            // Two peers hold each byte variant, so neither encoded variant
+            // alone reaches the three-of-four routing quorum.
+            let hint: RoutingHint = routing_hint(
+                &fixture.peers,
+                &fixture.policy,
+                Instant::now() + Duration::from_secs(10),
+                Duration::from_millis(100),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(hint.current_view, 2);
+            assert_eq!(hint.high_qc, minimal);
+            let outcome: SubmissionOutcome = submit(&mut fixture, None).unwrap();
+            assert_eq!(outcome.rounds.len(), 5);
+            let first: node_core::ordered_economics::OrderedProposal =
+                decode_ordered_proposal(&outcome.rounds[0].proposal_bytes).unwrap();
+            assert_eq!(first.proposal.justify, complete);
+            assert_eq!(
+                outcome.committed_outcome.block_digest,
+                outcome.rounds[2].proposal_digest
+            );
+            let artifacts = fixture.sink.artifacts.lock().unwrap();
+            assert_eq!(
+                artifacts.bytes["round-0.proposal"],
+                outcome.rounds[0].proposal_bytes
+            );
+            assert_eq!(
+                artifacts.bytes["round-0.certificate"],
+                outcome.rounds[0].certificate_bytes
+            );
+            assert_eq!(artifacts.certified, vec![0, 1, 2, 3, 4]);
+        }
+
+        #[test]
+        fn a_retained_candidate_resumes_exactly_despite_a_non_economic_next_height() {
+            let mut fixture: SubmissionFixture = submission_fixture(3);
+            let candidate: Vec<u8> = encode_ordered_candidate(&fixture.candidate).unwrap();
+            fixture
+                .sink
+                .persist("round-0.candidate", &candidate)
+                .unwrap();
+            let retained: RoundOutcome = run_one_round(
+                &fixture.peers,
+                &fixture.policy,
+                Some(candidate),
+                None,
+                0,
+                Instant::now() + Duration::from_secs(10),
+                Duration::from_millis(100),
+                &mut fixture.sink,
+                None,
+            )
+            .unwrap();
+            assert_eq!(retained.height, 4);
+            fixture.sink = SubmissionSink::new();
+            fixture.network.lock().unwrap().artifacts = fixture.sink.artifacts.clone();
+            let outcome: SubmissionOutcome =
+                submit(&mut fixture, Some(retained.proposal_bytes.clone())).unwrap();
+            assert_eq!(outcome.rounds.len(), 3);
+            assert_eq!(outcome.rounds[0].proposal_bytes, retained.proposal_bytes);
+            assert_eq!(
+                fixture.network.lock().unwrap().proposed,
+                vec![true, false, false]
+            );
+            assert_eq!(outcome.committed_outcome.block_height, 4);
+        }
+
+        #[test]
+        fn an_invalid_retained_proposal_cannot_start_alignment_or_voting() {
+            let mut fixture: SubmissionFixture = submission_fixture(2);
+            assert!(submit(&mut fixture, Some(vec![0])).is_err());
+            assert!(fixture.network.lock().unwrap().posts.is_empty());
+        }
+
+        #[test]
+        fn real_alignment_certificates_and_http_success_without_an_outcome_fail_closed() {
+            let mut fixture: SubmissionFixture = submission_fixture(1);
+            fixture.network.lock().unwrap().suppress_outcomes = true;
+            assert!(matches!(
+                submit(&mut fixture, None),
+                Err(OrderedEconomicsNetworkError::NoCommittedOutcome)
+            ));
+            assert_eq!(fixture.sink.artifacts.lock().unwrap().certified.len(), 5);
+        }
+
+        #[test]
+        fn a_real_quorum_with_one_bound_replica_acknowledgement_is_sufficient() {
+            let mut fixture: SubmissionFixture = submission_fixture(2);
+            let validator: ValidatorId = fixture.peers[0].validator_id;
+            fixture.network.lock().unwrap().acknowledging_validator = Some(validator);
+            let outcome: SubmissionOutcome = submit(&mut fixture, None).unwrap();
+            assert_eq!(outcome.rounds.len(), 4);
+            assert_eq!(
+                outcome.committed_outcome.block_height,
+                outcome.rounds[1].height
+            );
+            let acknowledged: usize = outcome.rounds.last().unwrap().peers.iter().filter(|peer| {
+                matches!(&peer.certificate_phase, PeerPhaseOutcome::Applied(output) if !output.committed.is_empty())
+            }).count();
+            assert_eq!(acknowledged, 1);
+        }
+
+        #[test]
+        fn an_empty_alignment_acknowledgement_cannot_supply_candidate_completion() {
+            let mut fixture: SubmissionFixture = submission_fixture(2);
+            fixture.network.lock().unwrap().poison_alignment_with = Some(fixture.candidate.clone());
+            assert!(
+                matches!(submit(&mut fixture, None), Err(OrderedEconomicsNetworkError::Rejected(reason)) if reason.contains("empty alignment acknowledgement"))
+            );
+            assert_eq!(fixture.network.lock().unwrap().proposed, vec![false]);
+            assert_eq!(fixture.sink.artifacts.lock().unwrap().certified, vec![0]);
+        }
+
+        #[test]
+        fn completion_reconciliation_precedes_any_new_alignment_mutation() {
+            let mut fixture: SubmissionFixture = submission_fixture(1);
+            submit(&mut fixture, None).unwrap();
+            let posts: usize = fixture.network.lock().unwrap().posts.len();
+            assert!(matches!(
+                submit(&mut fixture, None),
+                Err(OrderedEconomicsNetworkError::CompletedRequestRequiresReplay)
+            ));
+            assert_eq!(fixture.network.lock().unwrap().posts.len(), posts);
+            fixture.candidate.created_checkpoint += 1;
+            assert!(
+                matches!(submit(&mut fixture, None), Err(OrderedEconomicsNetworkError::Rejected(reason)) if reason.contains("request header conflict"))
+            );
+            assert_eq!(fixture.network.lock().unwrap().posts.len(), posts);
+        }
+
+        #[test]
+        fn an_authenticated_proposal_with_an_unexpected_parent_stops_before_voting() {
+            let mut fixture: SubmissionFixture = submission_fixture(1);
+            let mut state: consensus::ConsensusState = fixture.policy.engine().genesis_state(0);
+            state.current_view = 2;
+            let network = fixture.network.lock().unwrap();
+            let leader: ValidatorId = fixture.policy.engine().validator_set().leader(2).unwrap();
+            let signer: &Signer = network.signers.iter().find(|s| s.id == leader).unwrap();
+            let proposal: consensus::ConsensusProposal = fixture
+                .policy
+                .engine()
+                .propose(&state, Vec::new(), signer)
+                .unwrap();
+            let bytes: Vec<u8> = node_core::ordered_economics::encode_ordered_proposal(
+                &node_core::ordered_economics::OrderedProposal {
+                    proposal,
+                    candidate: None,
+                },
+            )
+            .unwrap();
+            drop(network);
+            fixture.network.lock().unwrap().override_proposal = Some(bytes);
+            assert!(
+                matches!(submit(&mut fixture, None), Err(OrderedEconomicsNetworkError::Rejected(reason)) if reason.contains("certified prefix"))
+            );
+            assert_eq!(
+                fixture.network.lock().unwrap().posts,
+                vec![ORDERED_ECONOMICS_PROPOSE_PATH]
+            );
+            assert!(fixture.sink.artifacts.lock().unwrap().certified.is_empty());
+        }
+
+        #[test]
+        fn alignment_artifact_failures_stop_before_the_corresponding_post() {
+            for key in [
+                "round-0.candidate",
+                "round-0.proposal",
+                "round-0.certificate",
+            ] {
+                let mut fixture: SubmissionFixture = submission_fixture(1);
+                fixture.sink.fail_key = Some(key.to_string());
+                assert!(matches!(
+                    submit(&mut fixture, None),
+                    Err(OrderedEconomicsNetworkError::Artifact(_))
+                ));
+                let network = fixture.network.lock().unwrap();
+                match key {
+                    "round-0.candidate" => assert!(network.posts.is_empty()),
+                    "round-0.proposal" => {
+                        assert_eq!(network.posts, vec![ORDERED_ECONOMICS_PROPOSE_PATH])
+                    }
+                    _ => assert!(
+                        !network
+                            .posts
+                            .iter()
+                            .any(|path| path == ORDERED_ECONOMICS_CERTIFICATE_PATH)
+                    ),
+                }
+            }
+            let mut fixture: SubmissionFixture = submission_fixture(1);
+            fixture.sink.fail_manifest = true;
+            assert!(matches!(
+                submit(&mut fixture, None),
+                Err(OrderedEconomicsNetworkError::Artifact(_))
+            ));
+            assert!(
+                !fixture
+                    .network
+                    .lock()
+                    .unwrap()
+                    .posts
+                    .iter()
+                    .any(|path| path == ORDERED_ECONOMICS_CERTIFICATE_PATH)
+            );
+        }
     }
 }

@@ -14,6 +14,7 @@
 //!   a real genesis install to exercise, not a hand-poked one.
 use super::*;
 use crate::economics::{FastPathEconomicsPolicy, FastPathEconomicsResourcePolicy};
+use crate::fast_path::tests::{full_snapshot, seal_namespace};
 use crate::genesis::{
     GenesisError, GenesisInstallOutcome, GenesisManifest, GenesisObjectEntry,
     genesis_manifest_signing_frame, install_genesis_with_history,
@@ -61,6 +62,7 @@ use runtime::{
     StorageCorrelationId, StorageDeadline, WriterFenceGeneration,
 };
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
+use std::cell::Cell;
 
 // ── shared context helpers ──────────────────────────────────────────────
 
@@ -393,6 +395,88 @@ fn propose_vote_and_certify<S: StructuredDurableDomainStateStore>(
         certificate.next_validator_set_digest,
         certificate.activation_digest,
     )
+}
+
+fn memory_store_bound() -> MemoryDurableStateStore {
+    MemoryDurableStateStore::new_bound(pe_domain(), WriterFenceGeneration::new(1).unwrap())
+}
+
+struct CountingSigner<'a> {
+    inner: &'a TestSigner,
+    calls: Cell<u32>,
+}
+impl ConsensusSigner for CountingSigner<'_> {
+    fn validator_id(&self) -> ValidatorId {
+        self.inner.validator_id()
+    }
+    fn signature_scheme(&self) -> SignatureSchemeId {
+        self.inner.signature_scheme()
+    }
+    fn sign_framed(&self, framed: &[u8]) -> Result<Vec<u8>, String> {
+        self.calls.set(self.calls.get() + 1);
+        self.inner.sign_framed(framed)
+    }
+}
+
+#[test]
+fn propose_and_vote_stops_before_signing_once_sealed() {
+    let unsealed_store: MemoryDurableStateStore = memory_store();
+    let (_fixture, signers, _entries) = install_lightweight(&unsealed_store);
+    let (_next_signers, next_entries) = four_next_validators();
+    propose_and_vote(
+        &unsealed_store,
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        pe_protocol().chain_id(),
+        pe_protocol().protocol_version(),
+        next_entries,
+        &signers[0],
+    )
+    .unwrap();
+
+    let sealed_store: MemoryDurableStateStore = memory_store_bound();
+    let (_fixture, signers, _entries) = install_lightweight(&sealed_store);
+    let (_next_signers, next_entries) = four_next_validators();
+    seal_namespace(&sealed_store, pe_domain());
+    let signer: CountingSigner<'_> = CountingSigner {
+        inner: &signers[0],
+        calls: Cell::new(0),
+    };
+    let result: EtResult<EpochTransitionVote> = propose_and_vote(
+        &sealed_store,
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        pe_protocol().chain_id(),
+        pe_protocol().protocol_version(),
+        next_entries,
+        &signer,
+    );
+    assert!(
+        matches!(
+            &result,
+            Err(EpochTransitionError::Node(
+                NodeCoreError::PersistenceInvariant(
+                    "outgoing epoch is sealed; live work is forbidden"
+                )
+            ))
+        ),
+        "unexpected sealed propose_and_vote result: {result:?}"
+    );
+    assert_eq!(signer.calls.get(), 0);
+    let transition_key: Vec<u8> = local_instance_state::fastpath_epoch_transition_key(
+        pe_protocol().chain_id(),
+        Epoch::new(pe_protocol().epoch().get() + 1),
+    )
+    .unwrap();
+    assert!(
+        sealed_store
+            .get_versioned_durable(&pe_context(), pe_domain(), &transition_key)
+            .unwrap()
+            .value()
+            .is_none()
+    );
 }
 
 #[test]
@@ -854,6 +938,14 @@ struct ActivateBetweenEpochReadsStore {
     served_stale: std::cell::Cell<bool>,
 }
 impl runtime::DurableDomainStateStore for ActivateBetweenEpochReadsStore {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,
@@ -974,6 +1066,160 @@ fn propose_and_vote_returns_state_conflict_when_activation_lands_between_its_own
         result,
         Err(EpochTransitionError::Node(NodeCoreError::StateConflict))
     ));
+}
+
+#[test]
+fn activate_stops_before_commit_once_sealed() {
+    let unsealed_store: MemoryDurableStateStore = memory_store();
+    let (_fixture, signers, entries) = install_lightweight(&unsealed_store);
+    let (_next_signers, next_entries) = four_next_validators();
+    let (certificate, _, _) =
+        propose_vote_and_certify(&unsealed_store, &signers, &entries, next_entries.clone());
+    let certificate_bytes: Vec<u8> =
+        consensus::encode_epoch_transition_certificate(&certificate).unwrap();
+    activate(
+        &unsealed_store,
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        pe_protocol().chain_id(),
+        pe_protocol().protocol_version(),
+        next_entries,
+        &certificate_bytes,
+        11,
+    )
+    .unwrap();
+
+    let sealed_store: MemoryDurableStateStore = memory_store_bound();
+    let (_fixture, signers, entries) = install_lightweight(&sealed_store);
+    let (_next_signers, next_entries) = four_next_validators();
+    let (certificate, _, _) =
+        propose_vote_and_certify(&sealed_store, &signers, &entries, next_entries.clone());
+    let certificate_bytes: Vec<u8> =
+        consensus::encode_epoch_transition_certificate(&certificate).unwrap();
+    seal_namespace(&sealed_store, pe_domain());
+    let before: Vec<(runtime::portable::DurableRecordDescriptor, Vec<u8>)> =
+        full_snapshot(&sealed_store);
+    let result: EtResult<EpochActivationOutcome> = activate(
+        &sealed_store,
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        pe_protocol().chain_id(),
+        pe_protocol().protocol_version(),
+        next_entries,
+        &certificate_bytes,
+        11,
+    );
+    assert!(
+        matches!(
+            &result,
+            Err(EpochTransitionError::Node(
+                NodeCoreError::PersistenceInvariant(
+                    "outgoing epoch is sealed; live work is forbidden"
+                )
+            ))
+        ),
+        "unexpected sealed activate result: {result:?}"
+    );
+    let epoch_record: FastPathEpochRecord = query_committed_epoch_state(
+        &sealed_store,
+        &pe_context(),
+        pe_domain(),
+        pe_protocol().chain_id(),
+    )
+    .unwrap();
+    assert_eq!(epoch_record.current_epoch, pe_protocol().epoch());
+    let transition_key: Vec<u8> = local_instance_state::fastpath_epoch_transition_key(
+        pe_protocol().chain_id(),
+        Epoch::new(pe_protocol().epoch().get() + 1),
+    )
+    .unwrap();
+    assert!(
+        sealed_store
+            .get_versioned_durable(&pe_context(), pe_domain(), &transition_key)
+            .unwrap()
+            .value()
+            .is_none()
+    );
+    let after: Vec<(runtime::portable::DurableRecordDescriptor, Vec<u8>)> =
+        full_snapshot(&sealed_store);
+    assert_eq!(
+        before, after,
+        "a sealed fresh activate must write nothing at all, not merely the named transition row"
+    );
+}
+
+#[test]
+fn activate_replays_already_activated_then_stops_once_sealed() {
+    let store: MemoryDurableStateStore = memory_store_bound();
+    let (_fixture, signers, entries) = install_lightweight(&store);
+    let (_next_signers, next_entries) = four_next_validators();
+    let (certificate, _, _) =
+        propose_vote_and_certify(&store, &signers, &entries, next_entries.clone());
+    let certificate_bytes: Vec<u8> =
+        consensus::encode_epoch_transition_certificate(&certificate).unwrap();
+    let first_outcome: EpochActivationOutcome = activate(
+        &store,
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        pe_protocol().chain_id(),
+        pe_protocol().protocol_version(),
+        next_entries.clone(),
+        &certificate_bytes,
+        11,
+    )
+    .unwrap();
+    assert!(matches!(
+        first_outcome,
+        EpochActivationOutcome::Activated(_)
+    ));
+    let replayed_outcome: EpochActivationOutcome = activate(
+        &store,
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        pe_protocol().chain_id(),
+        pe_protocol().protocol_version(),
+        next_entries.clone(),
+        &certificate_bytes,
+        11,
+    )
+    .unwrap();
+    assert!(matches!(
+        replayed_outcome,
+        EpochActivationOutcome::AlreadyActivated(_)
+    ));
+    seal_namespace(&store, pe_domain());
+    let before: Vec<(runtime::portable::DurableRecordDescriptor, Vec<u8>)> = full_snapshot(&store);
+    let sealed_result: EtResult<EpochActivationOutcome> = activate(
+        &store,
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        pe_protocol().chain_id(),
+        pe_protocol().protocol_version(),
+        next_entries,
+        &certificate_bytes,
+        11,
+    );
+    assert!(
+        matches!(
+            &sealed_result,
+            Err(EpochTransitionError::Node(
+                NodeCoreError::PersistenceInvariant(
+                    "outgoing epoch is sealed; live work is forbidden"
+                )
+            ))
+        ),
+        "an already-activated replay must still stop at the barrier, not return AlreadyActivated: {sealed_result:?}"
+    );
+    let after: Vec<(runtime::portable::DurableRecordDescriptor, Vec<u8>)> = full_snapshot(&store);
+    assert_eq!(
+        before, after,
+        "an already-activated replay under Seal must write nothing at all"
+    );
 }
 
 #[test]
@@ -4079,6 +4325,14 @@ impl IndeterminateOnceActivateStore {
     }
 }
 impl runtime::DurableDomainStateStore for IndeterminateOnceActivateStore {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,
@@ -4528,6 +4782,14 @@ struct FeePolicyRaceStore {
     raced: std::cell::Cell<bool>,
 }
 impl runtime::DurableDomainStateStore for FeePolicyRaceStore {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,
@@ -4753,6 +5015,14 @@ struct BarrierGatedActivateStore {
     barrier: std::sync::Arc<std::sync::Barrier>,
 }
 impl runtime::DurableDomainStateStore for BarrierGatedActivateStore {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,
@@ -4947,6 +5217,14 @@ struct ActivateWinsPaidRaceStore {
 }
 
 impl runtime::DurableDomainStateStore for ActivateWinsPaidRaceStore {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,

@@ -459,6 +459,14 @@ impl<'a> ObservedSource<'a> {
 
 // Production capture may read, never call any durable or blob write seam.
 impl DurableDomainStateStore for ObservedSource<'_> {
+    fn get_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        self.fixture.store.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,

@@ -16,6 +16,7 @@ pub use codec::{
     decode_ordered_history_summary, encode_ordered_history_height_descriptor,
     encode_ordered_history_identity, encode_ordered_history_summary,
 };
+pub(crate) use source::{assemble_verified_material, identity_at_height};
 pub use source::{
     query_ordered_history_summary, read_ordered_history_component_chunk,
     read_ordered_history_height_descriptor,
@@ -188,7 +189,12 @@ pub fn ordered_history_descriptor_digest(
     )
 }
 
-pub(super) fn verified_committed_block(
+/// `pub(crate)`: also independently re-used (never trusted structurally) by
+/// the private Seal-acceptance terminal in
+/// `business_reconstruction::cut::derive`, which cannot rely on a caller
+/// having pre-verified the prior-tip three-chain through
+/// `OrderedHistoryVerifier` first.
+pub(crate) fn verified_committed_block(
     policy: &OrderedEconomicsPolicy,
     proof: &CommittedBlockProof,
 ) -> Result<CommittedBlock, OrderedEconomicsError> {

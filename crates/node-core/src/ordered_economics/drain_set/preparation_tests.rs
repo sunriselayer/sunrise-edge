@@ -74,6 +74,7 @@ fn freeze_and_genuine_empty_drain_preparations_have_no_effects() {
     let engine: LocalWasmExecutionEngine = LocalWasmExecutionEngine::new();
     let blobs: MemoryBlobStore = MemoryBlobStore::default();
     let env: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
+        seal: None,
         policy: &policy,
         history: &[],
         leg_policy: &leg_policy,

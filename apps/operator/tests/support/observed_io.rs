@@ -91,6 +91,15 @@ impl<T: BlobStore> BlobStore for Observed<T> {
     }
 }
 impl<T: DurableDomainStateStore> DurableDomainStateStore for Observed<T> {
+    fn get_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        self.read();
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,

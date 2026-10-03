@@ -10,6 +10,7 @@
 
 mod inactive_import;
 mod outbox_guard;
+mod outgoing_seal;
 mod portable;
 
 use crate::backend::{
@@ -137,6 +138,7 @@ impl From<schema::SchemaError> for PreCommitFailure {
             schema::SchemaError::MutationSequenceOverflow => Self::MutationSequenceOverflow,
             schema::SchemaError::MutationSequenceConflict => Self::InvalidPersistedState,
             schema::SchemaError::InactiveNamespace => Self::InvalidPersistedState,
+            schema::SchemaError::NamespaceSealed => Self::InvalidPersistedState,
         }
     }
 }
@@ -1083,6 +1085,7 @@ fn reconcile_outbox_claim(
     lease_id: DurableOutboxLeaseId,
     attempt: PersistedOutboxAttempt,
     now_unix_millis: u64,
+    sealed: bool,
 ) -> Result<DurableOutboxClaim, DurableOutboxClaimRejection> {
     if attempt.status != OutboxAttemptStatus::Claimed
         || attempt.lease_expires_at_unix_millis <= now_unix_millis
@@ -1098,6 +1101,9 @@ fn reconcile_outbox_claim(
         || delivery.lease_expires_at_unix_millis != Some(attempt.lease_expires_at_unix_millis)
         || delivery.available_at_unix_millis != attempt.lease_expires_at_unix_millis
     {
+        return Err(DurableOutboxClaimRejection::InvalidPersistedState);
+    }
+    if sealed {
         return Err(DurableOutboxClaimRejection::InvalidPersistedState);
     }
     let payload = load_outbox_payload(session, attempt.request_id, attempt.message_index)
@@ -1377,6 +1383,24 @@ impl<B: SqlBackend> DurableDomainStateStore for SqlDurableEngine<B> {
         .map_err(PreCommitFailure::into_read_error)
     }
 
+    fn get_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        if !self.domain_is_bound(domain) {
+            return Err(DurableReadError::InvalidRequest(
+                RuntimeError::AtomicityDomainMismatch,
+            ));
+        }
+        run_read(&self.backend, Self::budget(context), |session, now| {
+            let metadata = schema::verify_namespace(session, &self.namespace)?;
+            validate_authority(&metadata, context, now)?;
+            Ok(*metadata.barrier())
+        })
+        .map_err(PreCommitFailure::into_read_error)
+    }
+
     fn commit_durable(
         &self,
         context: &DurableOperationContext,
@@ -1398,6 +1422,9 @@ impl<B: SqlBackend> DurableDomainStateStore for SqlDurableEngine<B> {
                         .map_err(PreCommitFailure::into_commit_rejection)?;
                     if !metadata.lifecycle().is_ordinary() {
                         return Err(DurableCommitRejection::InactiveNamespace);
+                    }
+                    if metadata.barrier().is_sealed() {
+                        return Err(DurableCommitRejection::NamespaceSealed);
                     }
                     validate_state_reads(session, transaction.reads())?;
                     schema::advance_mutation_sequence(session, metadata.mutation_sequence())
@@ -1502,6 +1529,9 @@ impl<B: SqlBackend> StructuredDurableDomainStateStore for SqlDurableEngine<B> {
                     if !metadata.lifecycle().is_ordinary() {
                         return Err(DurableCommitRejection::InactiveNamespace);
                     }
+                    if metadata.barrier().is_sealed() {
+                        return Err(DurableCommitRejection::NamespaceSealed);
+                    }
                     let receipt = invocation.receipt();
                     if receipt_exists(session, receipt.request_id())
                         .map_err(PreCommitFailure::into_commit_rejection)?
@@ -1588,6 +1618,8 @@ impl<B: SqlBackend> IndexedOutboxRepository for SqlDurableEngine<B> {
                         )?;
                         validate_authority(&metadata, context, now)
                             .map_err(PreCommitFailure::into_claim_rejection)?;
+                        outbox_guard::require_sealed_inventory(session, &metadata)
+                            .map_err(PreCommitFailure::into_claim_rejection)?;
                         let existing = load_outbox_attempt(session, request.lease_id())
                             .map_err(PreCommitFailure::into_claim_rejection)?;
                         if let Some(attempt) = existing {
@@ -1599,6 +1631,7 @@ impl<B: SqlBackend> IndexedOutboxRepository for SqlDurableEngine<B> {
                                 request.lease_id(),
                                 attempt,
                                 request.now_unix_millis(),
+                                metadata.barrier().is_sealed(),
                             )?;
                             return Ok(DurableOutboxClaimOutcome::Claimed(claim));
                         }
@@ -1614,6 +1647,9 @@ impl<B: SqlBackend> IndexedOutboxRepository for SqlDurableEngine<B> {
                                 .is_some_and(|expires_at| expires_at > request.now_unix_millis())
                         {
                             return Ok(DurableOutboxClaimOutcome::NoDueWork);
+                        }
+                        if metadata.barrier().is_sealed() {
+                            return Err(DurableOutboxClaimRejection::InvalidPersistedState);
                         }
                         schema::advance_mutation_sequence(session, metadata.mutation_sequence())
                             .map_err(|error| {
@@ -1665,6 +1701,8 @@ impl<B: SqlBackend> IndexedOutboxRepository for SqlDurableEngine<B> {
                         )?;
                         validate_authority(&metadata, context, now)
                             .map_err(PreCommitFailure::into_claim_rejection)?;
+                        outbox_guard::require_sealed_inventory(session, &metadata)
+                            .map_err(PreCommitFailure::into_claim_rejection)?;
                         let existing = load_outbox_attempt(session, request.lease_id())
                             .map_err(PreCommitFailure::into_claim_rejection)?;
                         if let Some(attempt) = existing {
@@ -1673,6 +1711,7 @@ impl<B: SqlBackend> IndexedOutboxRepository for SqlDurableEngine<B> {
                                 request.lease_id(),
                                 attempt,
                                 request.now_unix_millis(),
+                                metadata.barrier().is_sealed(),
                             )?;
                             return Ok(DurableOutboxClaimOutcome::Claimed(claim));
                         }
@@ -1682,6 +1721,9 @@ impl<B: SqlBackend> IndexedOutboxRepository for SqlDurableEngine<B> {
                         else {
                             return Ok(DurableOutboxClaimOutcome::NoDueWork);
                         };
+                        if metadata.barrier().is_sealed() {
+                            return Err(DurableOutboxClaimRejection::InvalidPersistedState);
+                        }
                         schema::advance_mutation_sequence(session, metadata.mutation_sequence())
                             .map_err(|error| {
                                 PreCommitFailure::from(error).into_claim_rejection()
@@ -1758,6 +1800,9 @@ fn acknowledge_outbox_step(
     if let Err(failure) = validate_authority(&metadata, context, now) {
         return reject(failure.into_acknowledgement_rejection());
     }
+    if let Err(failure) = outbox_guard::require_sealed_inventory(session, &metadata) {
+        return reject(failure.into_acknowledgement_rejection());
+    }
     let attempt = match load_outbox_attempt(session, acknowledgement.lease_id()) {
         Ok(Some(attempt)) => attempt,
         Ok(None) => return reject(Rejection::LeaseMismatch),
@@ -1794,6 +1839,9 @@ fn acknowledge_outbox_step(
         || delivery.available_at_unix_millis != attempt.lease_expires_at_unix_millis
     {
         return reject(Rejection::LeaseMismatch);
+    }
+    if metadata.barrier().is_sealed() {
+        return reject(Rejection::InvalidPersistedState);
     }
     let Some(next_message_index) = delivery.next_message_index.checked_add(1) else {
         return reject(Rejection::ArithmeticOverflow);

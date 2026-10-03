@@ -237,6 +237,7 @@ fn setup_with_freeze_height(minimum_freeze_block_height: u64) -> Network {
 impl Network {
     fn env(&self) -> OrderedEconomicsEnvironment<'_> {
         OrderedEconomicsEnvironment {
+            seal: None,
             policy: &self.policy,
             history: &self.history,
             leg_policy: &self.leg_policy,
@@ -2236,6 +2237,14 @@ struct FlakyStore<'a> {
 }
 
 impl DurableDomainStateStore for FlakyStore<'_> {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,
@@ -2742,6 +2751,14 @@ impl RaceStore<'_> {
 }
 
 impl DurableDomainStateStore for RaceStore<'_> {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,

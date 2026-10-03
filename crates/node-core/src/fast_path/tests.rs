@@ -25,12 +25,14 @@ use execution::paid_execution::{
     ReservationAccessKind, paid_fee_policy_digest,
 };
 use fees::Amount;
+use runtime::portable::DurablePortableSnapshotRepository;
 use runtime::{
     DurableCommitOutcome, DurableDomainStateStore, DurableInvocationTransaction,
     DurableObjectChanges, DurableObjectHeadRead, DurableObjectMutation, DurableObjectMutationEntry,
     DurableObjectOwnerProjection, DurableObjectProvenance, DurableObjectRoutingProjection,
     DurableObjectVersionRecord, DurableRequestId, DurableRequestReceipt, MemoryBlobStore,
-    MemoryDurableStateStore, StorageCorrelationId, StorageDeadline, WriterFenceGeneration,
+    MemoryDurableStateStore, OutgoingSealRepository, SealBarrier, StorageCorrelationId,
+    StorageDeadline, TransitionHistoryState, WriterFenceGeneration,
 };
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 use std::cell::Cell;
@@ -104,6 +106,64 @@ fn install_four_validators<S: StructuredDurableDomainStateStore>(
     )
     .unwrap();
     (signers, entries)
+}
+
+pub(crate) fn memory_store_bound() -> MemoryDurableStateStore {
+    MemoryDurableStateStore::new_bound(domain(), WriterFenceGeneration::new(1).unwrap())
+}
+
+/// Raw-port Sealed barrier installation for guard unit tests: the narrow
+/// `OutgoingSealRepository::commit_seal_completion` completion port, called
+/// directly with a synthetic sentinel record. This is deliberately NOT an
+/// independently reconstructed protocol Seal proof (no real Freeze/DrainSet
+/// readiness, certificate, or ordered engine commit backs it); it exists only
+/// to flip the storage-level barrier a guard test observes. Never reuse this
+/// as evidence that a real Seal would authorize anything.
+pub(crate) fn seal_namespace(store: &MemoryDurableStateStore, domain: AtomicityDomainId) {
+    let token = store.begin_portable_snapshot(&context(), domain).unwrap();
+    let mut request: [u8; 32] = [0xFE; 32];
+    request[0] |= 0x80;
+    let sealed: SealBarrier = SealBarrier {
+        outgoing_epoch: protocol().epoch(),
+        request,
+        height: 1,
+        block_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0xFC; 32]),
+        target_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0xFD; 32]),
+        transition_history: TransitionHistoryState::Virgin,
+    };
+    let request_id: DurableRequestId = DurableRequestId::new(sealed.request).unwrap();
+    let event_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0xFB; 32]);
+    let receipt: DurableRequestReceipt =
+        DurableRequestReceipt::new(request_id, event_digest, vec![1]).unwrap();
+    let invocation: DurableInvocationTransaction = DurableInvocationTransaction::new(
+        domain,
+        None,
+        DurableObjectChanges::empty(),
+        receipt,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_seal_completion(&context(), &token, invocation, sealed),
+        DurableCommitOutcome::Committed
+    );
+}
+
+pub(crate) struct CountingSigner<'a> {
+    pub(crate) inner: &'a TestSigner,
+    pub(crate) calls: Cell<u32>,
+}
+impl ConsensusSigner for CountingSigner<'_> {
+    fn validator_id(&self) -> ValidatorId {
+        self.inner.validator_id()
+    }
+    fn signature_scheme(&self) -> SignatureSchemeId {
+        self.inner.signature_scheme()
+    }
+    fn sign_framed(&self, framed: &[u8]) -> Result<Vec<u8>, String> {
+        self.calls.set(self.calls.get() + 1);
+        self.inner.sign_framed(framed)
+    }
 }
 
 fn install_fee_escrow_economics<S: StructuredDurableDomainStateStore>(
@@ -1202,6 +1262,373 @@ fn apply_uses_the_prepare_time_checkpoint_and_releases_both_locks() {
             .value()
             .is_none()
     );
+}
+
+fn transfer_bytes_for(fixture: &Fixture, request: u8, nonce: u64) -> Vec<u8> {
+    let call: PaidCall = PaidCall {
+        fixture,
+        policy: &fixture.policy,
+        request,
+        nonce,
+        source: &fixture.coin,
+        entrypoint: "transfer",
+        arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+        access: vec![entry(&fixture.coin, objects::AccessMode::Write)],
+    };
+    paid_call_with_access(call, ReservationAccessKind::Write)
+}
+
+/// DR-0187 signing-site guard: `require_ordinary_namespace` at the top of
+/// `prepare` (`fast_path.rs:675`), before any lock, nonce or execution touch
+/// and before the validator's own signature. An Unsealed companion proves
+/// the same request is otherwise valid; `CountingEngine`/`CountingSigner`
+/// prove zero execution and zero local signing, not merely a returned
+/// error. The second half proves a cached exact-replay prepare (a vote
+/// already cached before sealing) is also stopped at this same guard,
+/// before it ever reaches the exact-replay cache branch that would
+/// otherwise re-expose the cached vote.
+#[test]
+fn prepare_stops_before_signing_once_sealed() {
+    let unsealed_store: MemoryDurableStateStore = memory_store_bound();
+    let fixture: Fixture = install(&unsealed_store);
+    let (signers, _entries) = install_four_validators(&unsealed_store);
+    prepare_transfer(
+        &unsealed_store,
+        &fixture,
+        &signers[0],
+        0x61,
+        FIRST_PAID_NONCE,
+    )
+    .unwrap();
+
+    let sealed_store: MemoryDurableStateStore = memory_store_bound();
+    let fixture: Fixture = install(&sealed_store);
+    let (signers, _entries) = install_four_validators(&sealed_store);
+    seal_namespace(&sealed_store, domain());
+    let before_fresh: Vec<(runtime::portable::DurableRecordDescriptor, Vec<u8>)> =
+        full_snapshot(&sealed_store);
+    let bytes: Vec<u8> = transfer_bytes_for(&fixture, 0x61, FIRST_PAID_NONCE);
+    let engine: CountingEngine = CountingEngine::new();
+    let signer: CountingSigner<'_> = CountingSigner {
+        inner: &signers[0],
+        calls: Cell::new(0),
+    };
+    let result: FastPathResult<FastVote> = prepare(
+        &sealed_store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &engine,
+        &signer,
+        &bytes,
+        10,
+    );
+    assert!(
+        matches!(
+            &result,
+            Err(FastPathError::Node(NodeCoreError::PersistenceInvariant(
+                "outgoing epoch is sealed; live work is forbidden"
+            )))
+        ),
+        "unexpected sealed prepare result: {result:?}"
+    );
+    assert_eq!(engine.calls.get(), 0);
+    assert_eq!(signer.calls.get(), 0);
+    let chain: ChainId = protocol().chain_id().clone();
+    for key in [
+        fastpath_lock_key(&chain, fixture.coin.id).unwrap(),
+        fastpath_nonce_lock_key(&chain, &sender(), protocol().epoch()).unwrap(),
+        fastpath_prepared_record_key(&chain, &[0x61; 32]).unwrap(),
+    ] {
+        assert!(
+            sealed_store
+                .get_versioned_durable(&context(), domain(), &key)
+                .unwrap()
+                .value()
+                .is_none()
+        );
+    }
+    let after_fresh: Vec<(runtime::portable::DurableRecordDescriptor, Vec<u8>)> =
+        full_snapshot(&sealed_store);
+    assert_eq!(
+        before_fresh, after_fresh,
+        "a sealed fresh prepare must write nothing at all, not merely the named lock/nonce/prepared rows"
+    );
+
+    let cached_store: MemoryDurableStateStore = memory_store_bound();
+    let fixture: Fixture = install(&cached_store);
+    let (signers, _entries) = install_four_validators(&cached_store);
+    let cached_bytes: Vec<u8> = transfer_bytes_for(&fixture, 0x62, FIRST_PAID_NONCE);
+    let first_vote: FastVote = prepare(
+        &cached_store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &CountingEngine::new(),
+        &signers[0],
+        &cached_bytes,
+        10,
+    )
+    .unwrap();
+    let unsealed_replay_engine: CountingEngine = CountingEngine::new();
+    let unsealed_replay_signer: CountingSigner<'_> = CountingSigner {
+        inner: &signers[0],
+        calls: Cell::new(0),
+    };
+    let unsealed_replay_vote: FastVote = prepare(
+        &cached_store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &unsealed_replay_engine,
+        &unsealed_replay_signer,
+        &cached_bytes,
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        unsealed_replay_vote, first_vote,
+        "the exact-replay cache branch must return the identical retained vote"
+    );
+    assert_eq!(unsealed_replay_engine.calls.get(), 0);
+    assert_eq!(unsealed_replay_signer.calls.get(), 0);
+    seal_namespace(&cached_store, domain());
+    let before_cached: Vec<(runtime::portable::DurableRecordDescriptor, Vec<u8>)> =
+        full_snapshot(&cached_store);
+    let replay_engine: CountingEngine = CountingEngine::new();
+    let replay_signer: CountingSigner<'_> = CountingSigner {
+        inner: &signers[0],
+        calls: Cell::new(0),
+    };
+    let replay_result: FastPathResult<FastVote> = prepare(
+        &cached_store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &replay_engine,
+        &replay_signer,
+        &cached_bytes,
+        10,
+    );
+    assert!(
+        matches!(
+            &replay_result,
+            Err(FastPathError::Node(NodeCoreError::PersistenceInvariant(
+                "outgoing epoch is sealed; live work is forbidden"
+            )))
+        ),
+        "cached replay must stop at the barrier: {replay_result:?}"
+    );
+    assert_eq!(replay_engine.calls.get(), 0);
+    assert_eq!(replay_signer.calls.get(), 0);
+    let after_cached: Vec<(runtime::portable::DurableRecordDescriptor, Vec<u8>)> =
+        full_snapshot(&cached_store);
+    assert_eq!(
+        before_cached, after_cached,
+        "a sealed cached replay must write nothing and must not re-expose the retained vote"
+    );
+}
+
+/// DR-0187 signing-site guard: `require_ordinary_namespace` inside
+/// `apply_internal` (`fast_path.rs:1308`), reached only after the legal
+/// historical-receipt reconciliation returns `None` (this request has never
+/// completed) so the stop below is genuinely the barrier, not
+/// `AlreadyCompleted`. An Unsealed companion applies the identical
+/// certificate successfully first. The sealed twin's certificate is formed
+/// before sealing (an otherwise-valid, already-quorum-certified request),
+/// then applied after sealing: zero engine executions, no receipt, no
+/// nonce advance and the prepared record/lock untouched, proving no partial
+/// commit leaked past the guard.
+#[test]
+fn apply_stops_before_commit_once_sealed() {
+    let unsealed_store: MemoryDurableStateStore = memory_store_bound();
+    let fixture: Fixture = install(&unsealed_store);
+    let (signers, entries) = install_four_validators(&unsealed_store);
+    let (unsealed_bytes, unsealed_certificate): (Vec<u8>, Vec<u8>) = prepare_and_certify(
+        &unsealed_store,
+        &fixture,
+        &signers,
+        &entries,
+        0x63,
+        FIRST_PAID_NONCE,
+    );
+    let unsealed_output: NodeOutput = apply(
+        &unsealed_store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &CountingEngine::new(),
+        &unsealed_bytes,
+        &unsealed_certificate,
+    )
+    .unwrap();
+    assert_eq!(
+        receipt(&unsealed_output).status,
+        PaidExecutionStatus::Success
+    );
+
+    let sealed_store: MemoryDurableStateStore = memory_store_bound();
+    let fixture: Fixture = install(&sealed_store);
+    let (signers, entries) = install_four_validators(&sealed_store);
+    let (bytes, certificate_bytes): (Vec<u8>, Vec<u8>) = prepare_and_certify(
+        &sealed_store,
+        &fixture,
+        &signers,
+        &entries,
+        0x63,
+        FIRST_PAID_NONCE,
+    );
+    seal_namespace(&sealed_store, domain());
+    let engine: CountingEngine = CountingEngine::new();
+    let result: FastPathResult<NodeOutput> = apply(
+        &sealed_store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &engine,
+        &bytes,
+        &certificate_bytes,
+    );
+    assert!(
+        matches!(
+            &result,
+            Err(FastPathError::Node(NodeCoreError::PersistenceInvariant(
+                "outgoing epoch is sealed; live work is forbidden"
+            )))
+        ),
+        "unexpected sealed apply result: {result:?}"
+    );
+    assert_eq!(engine.calls.get(), 0);
+    let request_id: DurableRequestId = DurableRequestId::new([0x63; 32]).unwrap();
+    assert!(
+        sealed_store
+            .get_request_receipt(&context(), domain(), request_id)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(next_nonce(&sealed_store), FIRST_PAID_NONCE);
+    let chain: ChainId = protocol().chain_id().clone();
+    assert!(
+        sealed_store
+            .get_versioned_durable(
+                &context(),
+                domain(),
+                &fastpath_prepared_record_key(&chain, &[0x63; 32]).unwrap(),
+            )
+            .unwrap()
+            .value()
+            .is_some(),
+        "a sealed apply must leave the local prepared record untouched"
+    );
+    assert!(
+        sealed_store
+            .get_versioned_durable(
+                &context(),
+                domain(),
+                &fastpath_lock_key(&chain, fixture.coin.id).unwrap(),
+            )
+            .unwrap()
+            .value()
+            .is_some(),
+        "a sealed apply must never release a lock it never committed"
+    );
+}
+
+fn prepare_and_certify<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    fixture: &Fixture,
+    signers: &[TestSigner],
+    entries: &[FastPathValidatorEntry],
+    request: u8,
+    nonce: u64,
+) -> (Vec<u8>, Vec<u8>) {
+    let bytes: Vec<u8> = transfer_bytes_for(fixture, request, nonce);
+    let vote: FastVote = prepare(
+        store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &CountingEngine::new(),
+        &signers[0],
+        &bytes,
+        10,
+    )
+    .unwrap();
+    let validator_set: ValidatorSet = ValidatorSet::new(
+        protocol().epoch(),
+        entries
+            .iter()
+            .map(|entry| ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let cert: consensus::FastPathCertifier = certifier(validator_set);
+    let remote_votes: Vec<FastVote> = signers[1..3]
+        .iter()
+        .map(|signer| {
+            cert.cast_vote(
+                vote.tx_hash,
+                vote.execution_effects_hash,
+                vote.locked_objects_digest,
+                signer,
+            )
+            .unwrap()
+        })
+        .collect();
+    let mut all_votes: Vec<FastVote> = vec![vote.clone()];
+    all_votes.extend(remote_votes);
+    let certificate: FastCertificate = cert
+        .try_form_certificate(
+            vote.tx_hash,
+            vote.execution_effects_hash,
+            vote.locked_objects_digest,
+            &all_votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .unwrap();
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+    (bytes, certificate_bytes)
 }
 
 /// One validator's independent pair of file-backed SQLite stores (state and
@@ -2839,6 +3266,14 @@ impl IndeterminateOnceApplyStore {
     }
 }
 impl runtime::DurableDomainStateStore for IndeterminateOnceApplyStore {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,
@@ -4894,6 +5329,33 @@ pub(crate) fn logical_replica() -> RetentionReplica {
     retention_replica(true, 3)
 }
 
+/// Same handoff-capable fixture as `logical_replica`, but its store is
+/// explicitly bound to `domain()` (see `memory_store_bound`), so it carries
+/// `OutgoingSealRepository`: DR-0187 grants that capability only to an
+/// explicitly domain-bound store. Used by cross-module Sealed-barrier guard
+/// tests that must legitimately seal this exact replica's own store.
+pub(crate) fn logical_replica_bound() -> RetentionReplica {
+    let store: MemoryDurableStateStore = memory_store_bound();
+    let profile: logical_generation::LogicalProfileRecord =
+        crate::paid_execution::tests::install_freeze_profile(&store);
+    let fixture: Fixture = install_with_profile(&store, Some(&profile));
+    let (mut signers, entries) = four_validators();
+    install_validator_set(
+        &store,
+        &context(),
+        domain(),
+        &resolver(),
+        protocol(),
+        entries,
+    )
+    .unwrap();
+    RetentionReplica {
+        store,
+        fixture,
+        signer: signers.swap_remove(3),
+    }
+}
+
 /// A historical physical-profile (`0x6424/v1`) replica.
 pub(crate) fn physical_replica() -> RetentionReplica {
     retention_replica(false, 3)
@@ -5111,6 +5573,14 @@ pub(crate) struct AmbiguousCommitStore<'a> {
 }
 
 impl runtime::DurableDomainStateStore for AmbiguousCommitStore<'_> {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,
@@ -5716,6 +6186,14 @@ impl IndeterminateCommitStore {
 }
 
 impl runtime::DurableDomainStateStore for IndeterminateCommitStore {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,

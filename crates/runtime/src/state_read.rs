@@ -3,8 +3,8 @@
 use crate::{
     AtomicityDomainId, DurableDomainStateStore, DurableObjectHead, DurableObjectVersion,
     DurableObjectVersionRecord, DurableOperationContext, DurableReadError, DurableRequestId,
-    DurableRequestReceipt, NamespaceLifecycle, ObjectId, StructuredDurableDomainStateStore,
-    VersionedStateValue,
+    DurableRequestReceipt, NamespaceLifecycle, ObjectId, OutgoingBarrier,
+    StructuredDurableDomainStateStore, VersionedStateValue,
 };
 
 /// Reads a value and its exact revision without granting a commit capability.
@@ -100,6 +100,14 @@ pub trait StructuredStateReader: VersionedStateReader {
         domain: AtomicityDomainId,
         request_id: DurableRequestId,
     ) -> Result<Option<DurableRequestReceipt>, DurableReadError>;
+
+    /// Observes the protected outgoing barrier through this same reader.
+    /// Unsealed is never membership or serving permission.
+    fn read_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<OutgoingBarrier, DurableReadError>;
 }
 
 impl<S: StructuredDurableDomainStateStore + ?Sized> StructuredStateReader for S {
@@ -137,6 +145,14 @@ impl<S: StructuredDurableDomainStateStore + ?Sized> StructuredStateReader for S 
         request_id: DurableRequestId,
     ) -> Result<Option<DurableRequestReceipt>, DurableReadError> {
         self.get_request_receipt(context, domain, request_id)
+    }
+
+    fn read_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<OutgoingBarrier, DurableReadError> {
+        self.get_outgoing_barrier(context, domain)
     }
 }
 

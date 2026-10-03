@@ -51,6 +51,7 @@ type ScriptedStateReads = BTreeMap<Vec<u8>, (StateRevision, Option<Vec<u8>>)>;
 
 struct ScriptedDurableStore {
     lifecycle: runtime::NamespaceLifecycle,
+    outgoing_barrier: runtime::OutgoingBarrier,
     receipt: Mutex<Option<DurableRequestReceipt>>,
     commits: Mutex<Vec<DurableInvocationTransaction>>,
     state_reads: AtomicUsize,
@@ -65,6 +66,7 @@ impl ScriptedDurableStore {
     fn new(commit_outcome: DurableCommitOutcome) -> Self {
         let store: Self = Self {
             lifecycle: runtime::NamespaceLifecycle::Ordinary,
+            outgoing_barrier: runtime::OutgoingBarrier::Unsealed,
             receipt: Mutex::new(None),
             commits: Mutex::new(Vec::new()),
             state_reads: AtomicUsize::new(0),
@@ -113,6 +115,15 @@ impl ScriptedDurableStore {
 }
 
 impl DurableDomainStateStore for ScriptedDurableStore {
+    fn get_outgoing_barrier(
+        &self,
+        _: &DurableOperationContext,
+        _: AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        // Protected state is explicitly initialized with this scripted fixture.
+        Ok(self.outgoing_barrier)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         _: &DurableOperationContext,

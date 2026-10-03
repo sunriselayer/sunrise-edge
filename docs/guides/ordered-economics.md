@@ -63,8 +63,11 @@ cargo run -p sunrise-edge-cli -- economics network-submit \
 
 Other closed kinds are `bond-lifecycle`, `bond-slash` and `evidence`. The SDK
 authenticates the candidate before network I/O, routes only to the deterministically
-selected leader, verifies each vote and forms each QC locally. It drives the
-candidate window plus two empty descendants. A typed retained rejection is also
+selected leader, verifies each vote and forms each QC locally. It drives
+at most two genuine empty alignment rounds, then the candidate window and two
+empty descendants. Tick can change a view but cannot change a certified height;
+the client never relaxes candidate placement to compensate. Alignment artifacts
+remain in the same chronological replay manifest. A typed retained rejection is also
 a completed ordered outcome: inspect the retained response rather than equating
 successful workflow execution with acceptance of the economic operation.
 
@@ -84,8 +87,9 @@ Results distinguish acknowledgement, rejection, unreachability and skipped steps
 
 If submission was interrupted, do not invent a new request ID or nonce. A
 completed-request response directs you back to the original saved manifest.
-`--resume-proposal` reuses an exact retained round-0 proposal when it has not yet
+`--resume-proposal` reuses an exact retained candidate proposal when it has not yet
 completed; it does not discover missing history or replace later prefix recovery.
+No new alignment round is inserted ahead of that retained proposal.
 Recover the saved prefix, concatenating contiguous original manifest lines when
 several complete windows are needed:
 

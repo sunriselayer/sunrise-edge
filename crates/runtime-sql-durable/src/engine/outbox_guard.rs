@@ -36,6 +36,19 @@ pub(super) fn probe(
     ))
 }
 
+/// Protected phase is read under the same write transaction. A Sealed
+/// namespace cannot expose cached delivery responses from a corrupt nonempty
+/// inventory; legal historical zero-message completed rows remain queryable.
+pub(super) fn require_sealed_inventory(
+    session: &mut dyn SqlSession,
+    metadata: &NamespaceMetadata,
+) -> Result<(), PreCommitFailure> {
+    if metadata.barrier().is_sealed() && probe(session)?.blocks_exclusion() {
+        return Err(PreCommitFailure::InvalidPersistedState);
+    }
+    Ok(())
+}
+
 impl<B: SqlBackend> StructuredOutboxExclusionGuard for SqlDurableEngine<B> {
     fn inspect_outbox_exclusion(
         &self,

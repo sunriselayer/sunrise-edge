@@ -65,12 +65,14 @@ fn structural_preparation() -> PreparedOriginalCompletion {
     .unwrap();
     PreparedOriginalCompletion {
         outcome: OrderedOutcome {
+            // This structural assembly is not a Seal completion.
             candidate_digest: digest(10),
             request_id,
             block_height: 1,
             block_digest: digest(11),
             output,
         },
+        seal: None,
         business: DurableInvocationTransaction::new(
             domain(),
             Some(state),

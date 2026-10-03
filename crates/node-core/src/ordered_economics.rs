@@ -68,6 +68,7 @@ pub mod ordered_history;
 mod policy;
 mod preflight;
 mod reservation;
+mod seal;
 
 pub use candidate::{
     MAX_ORDERED_CANDIDATE_INTENT_BYTES, OrderedCandidate, OrderedOperationKind,
@@ -107,6 +108,7 @@ pub use freeze::{
 pub use frontier::{
     FrozenFrontierError, FrozenFrontierStep, advance_frozen_frontier, read_frozen_frontier_page,
 };
+pub(crate) use ordered_history::verified_committed_block;
 pub use ordered_history::{
     MAX_ORDERED_HISTORY_CHUNK_BYTES, MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
     OrderedHistoryComponentKind, OrderedHistoryComponentRef, OrderedHistoryHeightDescriptor,
@@ -120,10 +122,16 @@ pub use ordered_history::{
 };
 pub use policy::{
     ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE, OrderedEconomicsEnvironment, OrderedEconomicsPolicy,
-    authenticate_candidate, ordered_economics_authority_anchor,
+    OrderedSealComposition, authenticate_candidate, ordered_economics_authority_anchor,
 };
 pub(crate) use reservation::{
     OrderedCausalRequirements, OrderedLegAdmission, ordered_causal_requirements,
+};
+pub use seal::{
+    MAX_SEAL_CUT_IDENTITY_BYTES, MAX_SEAL_INTENT_BYTES, MAX_SEAL_OUTCOME_BYTES,
+    SEAL_PREDECESSOR_TAG_GENESIS, SealIntent, SealOutcome, decode_seal_intent, decode_seal_outcome,
+    encode_seal_intent, encode_seal_outcome, seal_certificate_digest, seal_request_id,
+    seal_target_digest,
 };
 
 /// Maximum address-owned object inputs one admitted candidate may reserve.

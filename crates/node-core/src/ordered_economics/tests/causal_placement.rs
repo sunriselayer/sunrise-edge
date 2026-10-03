@@ -73,8 +73,10 @@ fn setup_fixture_configure(
     let context: DurableOperationContext = fixture::context(1);
     let stores: Vec<MemoryDurableStateStore> = (0..REPLICAS)
         .map(|_| {
-            let store: MemoryDurableStateStore =
-                MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+            let store: MemoryDurableStateStore = MemoryDurableStateStore::new_bound(
+                fixture::domain(),
+                WriterFenceGeneration::new(1).unwrap(),
+            );
             genesis::install_genesis(
                 &store,
                 &context,
@@ -1780,6 +1782,14 @@ struct PaidHeadRaceStore<'a> {
 }
 
 impl DurableDomainStateStore for PaidHeadRaceStore<'_> {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.fixture.network.stores[self.replica].get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,

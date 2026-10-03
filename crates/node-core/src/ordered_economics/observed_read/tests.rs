@@ -40,6 +40,14 @@ impl VersionedStateReader for ReadOnly<'_> {
 }
 
 impl StructuredStateReader for ReadOnly<'_> {
+    fn read_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        self.inner.read_outgoing_barrier(context, domain)
+    }
+
     fn read_namespace_lifecycle(
         &self,
         context: &DurableOperationContext,

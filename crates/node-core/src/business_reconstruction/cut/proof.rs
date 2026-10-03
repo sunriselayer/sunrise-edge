@@ -514,7 +514,7 @@ pub(in crate::business_reconstruction) fn verify_saved_with_overlay<'a>(
     let mut overlay: BusinessReconstructionOverlay<'_> = BusinessReconstructionOverlay::new(plan)?;
     overlay.reconstruct_with_control_material(&owned, &ordered, &controls)?;
     let expected: VerifiedBusinessCut =
-        derive::from_overlay(&overlay, &owned, &ordered, &controls, &carriers)?;
+        derive::from_overlay(&overlay, &owned, &ordered, &controls, &carriers, None)?;
     if expected.identity != saved.identity
         || expected.package != saved.package
         || expected.components.len() != saved.components.len()

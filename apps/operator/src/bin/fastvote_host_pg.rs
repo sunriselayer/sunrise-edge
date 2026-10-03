@@ -558,6 +558,10 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
     let blob_store: PostgresBlobStore<PostgresConnectionManager<MakeTlsConnector>> =
         PostgresBlobStore::new(pool.clone(), namespace.clone())?;
 
+    // Live admission is separate from permanent origin and from the signed
+    // committee pin. Refuse a closed outgoing namespace before claiming a
+    // new writer generation; the actual backend also fences every write.
+    node_core::require_ordinary_namespace(&store, &context, domain)?;
     let fee_policy: PaidFeePolicy =
         require_committed_genesis_fee_policy(&store, &context, domain, &expected_context, &root)?;
 
@@ -589,6 +593,8 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
     }
     let (serving_context, generation) =
         claim_fresh_writer_fence_once(&pool, &namespace, timeout_seconds, previous)?;
+    // Recheck under the generation this host will actually serve with.
+    node_core::require_ordinary_namespace(&store, &serving_context, domain)?;
     require_live_fastvote_pin(
         &store,
         &serving_context,
@@ -674,6 +680,7 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
             leg_policy: &ordered_leg_policy,
             engine: &genesis_engine,
             blobs: blob_arc.as_ref(),
+            seal: None,
         };
         // The production installer verifies retained state without rewriting
         // it, and distinguishes never-written absence from a tombstone.
@@ -697,6 +704,7 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
             leg_policy: ordered_leg_policy,
             engine: Arc::new(execution::LocalWasmExecutionEngine::new()),
             blobs: blob_arc.clone(),
+            seal: None,
             signer: ordered_signer,
             blocking_executor: blocking_executor.clone(),
             cancellation: None,

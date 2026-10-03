@@ -38,9 +38,10 @@ use sunrise_edge_client::{
         MAX_ORDERED_CANDIDATE_BYTES, MAX_ORDERED_CERTIFICATE_BYTES, MAX_ORDERED_PROPOSAL_BYTES,
     },
     ordered_economics_client::{
-        ArtifactSink, MAX_REPLAY_BYTES, MAX_REPLAY_ROUNDS, OrderedEconomicsEndpoint,
-        PeerPhaseOutcome, PeerResult, authenticate_ordered_candidate, load_trusted_ordered_policy,
-        replay_declared_prefix_with_sink, submit_candidate, validate_ordered_economics_endpoints,
+        ArtifactSink, MAX_REPLAY_BYTES, MAX_REPLAY_ROUNDS, MAX_SUBMISSION_ROUNDS,
+        OrderedEconomicsEndpoint, PeerPhaseOutcome, PeerResult, authenticate_ordered_candidate,
+        load_trusted_ordered_policy, replay_declared_prefix_with_sink, submit_candidate,
+        validate_ordered_economics_endpoints,
     },
 };
 
@@ -67,10 +68,6 @@ fn invalid(message: impl Into<String>) -> CliError {
     )))
 }
 
-/// Number of empty descendant rounds after the real candidate round, per the
-/// three-chain commit profile.
-const EMPTY_DESCENDANT_ROUNDS: usize = 2;
-const TOTAL_ROUNDS: usize = EMPTY_DESCENDANT_ROUNDS + 1;
 /// Bounded total manifest size: one path pair (proposal + certificate file
 /// path) per round, generously bounding each path at 4KiB.
 const MAX_MANIFEST_BYTES: usize = MAX_REPLAY_ROUNDS * 2 * 4096;
@@ -231,7 +228,7 @@ fn load_policy_and_endpoints(
     Ok(LoadedPolicyInputs { endpoints, policy })
 }
 
-/// Reserves every round's proposal/certificate artifact, the one candidate
+/// Reserves the maximum five rounds' proposal/certificate artifacts, the candidate
 /// artifact, the declared replay manifest, and the results file -- all
 /// up front, before any network call. `ArtifactSink::persist` writes into
 /// the already-reserved handle for round artifacts; the manifest/results
@@ -417,7 +414,7 @@ fn reserve_submission_artifacts(out_prefix: &str) -> Result<CliArtifactSink, Cli
         format!("{out_prefix}.round-0.candidate"),
         "ordered-economics-candidate",
     )];
-    for round in 0..TOTAL_ROUNDS {
+    for round in 0..MAX_SUBMISSION_ROUNDS {
         keys.push((
             format!("round-{round}.proposal"),
             format!("{out_prefix}.round-{round}.proposal"),
@@ -502,7 +499,7 @@ fn run_network_submit<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
     // `NoCommittedOutcome` rather than ever returning `Ok` with an
     // unconfirmed submission, so `committed_outcome` here is always the
     // unsigned replica acknowledgement bound to the certified prefix -- a raw
-    // peer HTTP 200 across the three rounds is never reported as success by
+    // peer HTTP 200 across the chronological rounds is never reported as success by
     // itself. This CLI layer still independently re-verifies the binding
     // rather than trusting the SDK result blindly.
     if submission.committed_outcome.request_id != candidate.request_id {
@@ -1478,7 +1475,8 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         let prefix: String = directory.join("out").to_str().unwrap().to_owned();
         let mut sink: CliArtifactSink = reserve_submission_artifacts(&prefix).unwrap();
-        for round in 0..2 {
+        assert_eq!(sink.reserved.len(), MAX_SUBMISSION_ROUNDS * 2 + 1);
+        for round in 0..MAX_SUBMISSION_ROUNDS {
             sink.persist(&format!("round-{round}.proposal"), &[1])
                 .unwrap();
             sink.persist(&format!("round-{round}.certificate"), &[2])
@@ -1497,6 +1495,64 @@ mod tests {
             "no output overwrite on retry"
         );
         drop(sink);
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn unused_reserved_alignment_capacity_is_absent_from_manifest_and_results() {
+        let directory = unique_test_directory("unused-capacity");
+        fs::create_dir(&directory).unwrap();
+        let prefix: String = directory.join("out").to_str().unwrap().to_owned();
+        let mut sink: CliArtifactSink = reserve_submission_artifacts(&prefix).unwrap();
+        for round in 0..3 {
+            sink.persist(&format!("round-{round}.proposal"), &[1])
+                .unwrap();
+            sink.persist(&format!("round-{round}.certificate"), &[2])
+                .unwrap();
+            sink.record_certified_round(round).unwrap();
+            sink.record_peer_result(
+                round,
+                &PeerResult {
+                    validator_id: protocol_types::ValidatorId::new([1; 32]),
+                    endpoint_label: "peer-1".into(),
+                    vote_phase: PeerPhaseOutcome::Skipped("fixture".into()),
+                    certificate_phase: PeerPhaseOutcome::Skipped("fixture".into()),
+                },
+            )
+            .unwrap();
+        }
+        let manifest: String = fs::read_to_string(format!("{prefix}.manifest")).unwrap();
+        let results: String = fs::read_to_string(format!("{prefix}.results")).unwrap();
+        assert_eq!(manifest.lines().count(), 3);
+        assert_eq!(results.lines().count(), 3);
+        for round in 3..MAX_SUBMISSION_ROUNDS {
+            assert!(!manifest.contains(&format!("round-{round}.")));
+            assert!(!results.contains(&format!("round={round} ")));
+            assert!(
+                fs::read(format!("{prefix}.round-{round}.proposal"))
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                fs::read(format!("{prefix}.round-{round}.certificate"))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        drop(sink);
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_collision_in_the_fifth_round_fails_full_reservation_preflight() {
+        let directory = unique_test_directory("last-round-collision");
+        fs::create_dir(&directory).unwrap();
+        let prefix: String = directory.join("out").to_str().unwrap().to_owned();
+        let last: usize = MAX_SUBMISSION_ROUNDS - 1;
+        let retained_path: String = format!("{prefix}.round-{last}.certificate");
+        fs::write(&retained_path, b"retained certificate").unwrap();
+        assert!(reserve_submission_artifacts(&prefix).is_err());
+        assert_eq!(fs::read(&retained_path).unwrap(), b"retained certificate");
         fs::remove_dir_all(&directory).unwrap();
     }
 
