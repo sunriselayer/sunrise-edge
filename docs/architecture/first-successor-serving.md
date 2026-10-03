@@ -718,9 +718,18 @@ recomputes the v3 anchor through the owning extended anchor function with
 the root resolver, verified context/domain/genesis/set, the original
 signed minimum Freeze height and `inputs.subject_digest()`, and refuses
 unless it equals `inputs.anchor()`. It accepts no separate domain or epoch
-argument. The returned policy leaves `admission_profile` and
-`registration_economics` disabled; Section 8 still explicitly refuses
-Freeze, registration and other unsupported successor controls.
+argument. The returned policy carries
+`admission_profile = Some(root.admission_profile().clone())`, the original
+verified causal profile, so `fence_policy` still fences against the imported
+installed profile and external-request lane and causal-prerequisite checks
+still apply. It carries
+`minimum_freeze_block_height = root.manifest().minimum_freeze_block_height`,
+the original signed value bound into v3 anchor field 9. Only
+`registration_economics` is `None`. The retained profile and Freeze height
+would pass the ordinary Freeze/Seal authentication checks, so Section 8's
+explicit typed pre-signing refusals reject Freeze, DrainSet, Seal, initial
+registration and other unsupported successor controls before any
+authentication or signing. A missing profile is not an authorization gate.
 
 FastVote reuses `load_validator_set` at ctx@e+1 against the installed row.
 The SDK gains `load_successor_authority(plan, manifest_identity,
@@ -813,7 +822,10 @@ caller-supplied context or flag; `Ordinary` with `Serving`; a planted
 non-INITIAL singleton root; a token advanced after `observe_complete`; a
 present receipt or must-absent row; an oversized suffix refused whole with
 no write; an e+1 policy row without provenance; tampered Seal closure or
-e+1 rows at live resolution; cached-signature exposure with a stale scope.
+e+1 rows at live resolution; cached-signature exposure with a stale scope;
+successor-scoped Freeze, DrainSet and Seal candidates refused by the typed
+unsupported-control error before authentication or signing, not by a
+missing admission profile.
 
 **Durability and races:** SQLite restart and refencing; stale fence and
 token; inventory race between plan comparison and commit; both reply-loss

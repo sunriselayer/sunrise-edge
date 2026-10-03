@@ -174,7 +174,12 @@ key byte and caller. Parent verification passed 11 exact-layout tests and all
 after an independent BLOCK; no new serving writer or provider schema is
 implemented. The complete local storage-neutral required gate passed at
 `f227c72` on 2026-10-03; that head has independent approval of the key refactor
-but its Proposed successor interfaces still have two explicit review blockers.
+but the Proposed successor interfaces are not yet independently approved.
+Subsequent reviews closed the opaque-scope, SDK visibility and policy-input
+binding findings. The latest proposed correction preserves the original causal
+admission profile and signed Freeze height, using explicit pre-signing refusals
+for unsupported controls. That correction still requires independent approval;
+no new producer or schema is implemented.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.

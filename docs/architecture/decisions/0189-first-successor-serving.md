@@ -113,6 +113,12 @@ proposed contract. Its choices, summarized:
     signature and schema/namespace allocation, including
     `GenerationScope`/`derive_scoped` constructed only from a warrant, as
     exact proposed interfaces with named migrated callers.
+11. Preserve the original verified causal admission profile and signed
+    minimum Freeze height in the successor policy, while its context,
+    domain and anchor come only from verified successor inputs. Ordered
+    fencing and causal/external-lane checks remain active. Registration
+    economics is absent; explicitly unsupported successor controls are
+    refused by typed pre-signing errors, never by disabling the profile.
 
 ## Not yet decided
 
