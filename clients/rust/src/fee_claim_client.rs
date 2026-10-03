@@ -82,15 +82,15 @@ pub fn require_successor_fee_claim_request(
         })
 }
 
-/// Checks an untrusted prepared intent against the verified scope and the
-/// exact request before any signature is created.
-pub fn verify_prepared_fee_claim(
-    workflow: &SuccessorWorkflowAuthority,
+/// Pure structural comparison between one untrusted prepared intent and the
+/// exact request that asked for it, against an already-trusted expected
+/// context. Carries no certificate/committee trust lookup of its own; that
+/// stays in [`verify_prepared_fee_claim`], against the real workflow policy.
+fn fee_claim_selectors_match(
+    expected: &PublicationContext,
     request: &FeeClaimPrepareRequest,
     intent: &FeeClaimIntent,
 ) -> Result<(), FeeClaimPreparationError> {
-    require_successor_fee_claim_request(workflow, request)?;
-    let expected: &PublicationContext = workflow.expected_context();
     let mismatch = FeeClaimPreparationError::Mismatch;
     if intent.context != *expected {
         return Err(mismatch("intent context is not the verified e+1 context"));
@@ -114,17 +114,6 @@ pub fn verify_prepared_fee_claim(
             return Err(mismatch("signed leg is not in the verified e+1 context"));
         }
     }
-    let (scheme, public_key): (SignatureSchemeId, &[u8]) = workflow
-        .ordered_policy()
-        .certificate_set(intent.certificate_epoch)
-        .and_then(|set| set.get(request.validator_id))
-        .map(|member| (member.signature_scheme, member.public_key.as_slice()))
-        .ok_or_else(|| mismatch("claimant has no key in the verified certificate scope"))?;
-    if scheme != SignatureSchemeId::Ed25519 || public_key != request.claimant_public_key {
-        return Err(mismatch(
-            "claimant key differs from the verified certificate committee",
-        ));
-    }
     let leg_matches: bool = match (&intent.operation, request.signed_leg.as_deref()) {
         (FeeClaimOperation::ZeroShare, None) => true,
         (FeeClaimOperation::Split { leg, .. }, Some(requested))
@@ -136,6 +125,31 @@ pub fn verify_prepared_fee_claim(
     if !leg_matches {
         return Err(mismatch(
             "intent operation or signed leg differs from the request",
+        ));
+    }
+    Ok(())
+}
+
+/// Checks an untrusted prepared intent against the verified scope and the
+/// exact request before any signature is created.
+pub fn verify_prepared_fee_claim(
+    workflow: &SuccessorWorkflowAuthority,
+    request: &FeeClaimPrepareRequest,
+    intent: &FeeClaimIntent,
+) -> Result<(), FeeClaimPreparationError> {
+    require_successor_fee_claim_request(workflow, request)?;
+    let expected: &PublicationContext = workflow.expected_context();
+    fee_claim_selectors_match(expected, request, intent)?;
+    let mismatch = FeeClaimPreparationError::Mismatch;
+    let (scheme, public_key): (SignatureSchemeId, &[u8]) = workflow
+        .ordered_policy()
+        .certificate_set(intent.certificate_epoch)
+        .and_then(|set| set.get(request.validator_id))
+        .map(|member| (member.signature_scheme, member.public_key.as_slice()))
+        .ok_or_else(|| mismatch("claimant has no key in the verified certificate scope"))?;
+    if scheme != SignatureSchemeId::Ed25519 || public_key != request.claimant_public_key {
+        return Err(mismatch(
+            "claimant key differs from the verified certificate committee",
         ));
     }
     Ok(())
@@ -219,3 +233,6 @@ impl<T: Transport> Client<T> {
         Ok(intent)
     }
 }
+
+#[cfg(test)]
+mod tests;
