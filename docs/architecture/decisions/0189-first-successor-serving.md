@@ -62,7 +62,7 @@ proposed contract. Its choices, summarized:
 1. Keep source-free verified evidence (immutable genesis, outgoing
    committee, ordered history through the committed Seal, readiness
    certificate and eligibility) strictly separate from two private
-   destination warrants with private fields: `ActivationWarrant` before
+   opaque destination warrants with private fields: `ActivationWarrant` before
    Serving and `LiveWarrant` only from an installed Serving slot. The SDK consumes only
    the evidence; no decoded row or destination-reported flag constructs
    any of the three.

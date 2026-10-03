@@ -610,7 +610,8 @@ pub fn resolve_live_authority<'inv, S: StructuredDurableDomainStateStore>(
 pub enum LiveAuthority<'inv> { OriginalGenesis, Successor(LiveWarrant<'inv>) }
 ```
 
-`LiveWarrant` has private fields and exposes `generation_scope()`,
+`LiveWarrant` has private fields and exposes the crate-private
+`generation_scope()` (returning the crate-private `GenerationScope`),
 `policy_inputs() -> &SuccessorPolicyInputs` (Section 9: e+1 context,
 `ValidatorSet`, v3 anchor, binding floor -- source-free only, no local
 member), `serving_observation()` and `reads()`. The destination's local
@@ -684,6 +685,8 @@ and `historical` (`crates/node-core/src/ordered_economics/policy.rs:149,183`).
 pub struct SuccessorPolicyInputs { /* private fields */ }
 impl SuccessorPolicyInputs {
     pub fn context(&self) -> &PublicationContext;   // ctx@e+1
+    pub fn domain(&self) -> AtomicityDomainId;       // verified plan domain
+    pub fn subject_digest(&self) -> Digest32;        // 0xD054, v3 field 10
     pub fn genesis_digest(&self) -> Digest32;        // original, unchanged
     pub fn validator_set(&self) -> &ValidatorSet;    // checked e+1 set
     pub fn anchor(&self) -> Digest32;                 // v3 anchor
@@ -706,6 +709,18 @@ input that selects the internal `Successor` key scope. A reviewed extension
 of `ordered_economics_authority_anchor` itself accepts the v3 inputs;
 genesis policies keep byte-identical v1/v2 anchors and keys. No
 caller-supplied epoch or `epoch-repin-required` hint selects a policy.
+
+`from_successor` takes its domain only from `inputs.domain()`. It refuses
+unless the supplied root digest equals `inputs.genesis_digest()` and the
+root chain and protocol equal those of `inputs.context()` (the root epoch
+stays original; the successor epoch is independently verified). It
+recomputes the v3 anchor through the owning extended anchor function with
+the root resolver, verified context/domain/genesis/set, the original
+signed minimum Freeze height and `inputs.subject_digest()`, and refuses
+unless it equals `inputs.anchor()`. It accepts no separate domain or epoch
+argument. The returned policy leaves `admission_profile` and
+`registration_economics` disabled; Section 8 still explicitly refuses
+Freeze, registration and other unsupported successor controls.
 
 FastVote reuses `load_validator_set` at ctx@e+1 against the installed row.
 The SDK gains `load_successor_authority(plan, manifest_identity,
