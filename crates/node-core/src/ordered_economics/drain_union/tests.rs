@@ -8,8 +8,8 @@ use crate::fast_path::publication::{
     FastPathPublicationRecord, PublicationRetentionError, encode_fastpath_publication_record,
 };
 use crate::fast_path::tests::{
-    RetentionReplica, TestSigner, four_validators, installed_validator_set, logical_replica,
-    transfer_bundle_bytes,
+    RetentionReplica, TestSigner, four_validators, full_snapshot, installed_validator_set,
+    logical_replica, logical_replica_bound, seal_namespace, transfer_bundle_bytes,
 };
 use crate::ordered_economics::{AdmissionClosureRecord, encode_admission_closure_record};
 use crate::paid_execution::tests::{FIRST_PAID_NONCE, context, domain, protocol, resolver};
@@ -196,6 +196,148 @@ fn one_page(entries: &[AvailabilityIdentity]) -> FrozenFrontierPage {
         entries: entries.to_vec(),
         terminal: true,
     }
+}
+
+#[test]
+fn ingest_drain_signer_page_stops_before_commit_once_sealed() {
+    let unsealed: RetentionReplica = logical_replica();
+    close(&unsealed.store);
+    let (signers, _entries) = four_validators();
+    let vote: FrozenFrontierVote = cast_vote(&signers[0], &[]);
+    let page: FrozenFrontierPage = one_page(&[]);
+    ingest_drain_signer_page(
+        &unsealed.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &protocol(),
+        signers[0].validator_id(),
+        vote.clone(),
+        page.clone(),
+    )
+    .unwrap();
+
+    let sealed: RetentionReplica = logical_replica_bound();
+    close(&sealed.store);
+    seal_namespace(&sealed.store, domain());
+    let before: Vec<(runtime::portable::DurableRecordDescriptor, Vec<u8>)> =
+        full_snapshot(&sealed.store);
+    let result: Result<(), DrainSignerError> = ingest_drain_signer_page(
+        &sealed.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &protocol(),
+        signers[0].validator_id(),
+        vote,
+        page,
+    );
+    assert!(
+        matches!(
+            &result,
+            Err(DrainSignerError::Node(NodeCoreError::PersistenceInvariant(
+                "outgoing epoch is sealed; live work is forbidden"
+            )))
+        ),
+        "unexpected sealed ingest result: {result:?}"
+    );
+    let progress_key: Vec<u8> = drain_signer_progress_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        signers[0].validator_id(),
+    )
+    .unwrap();
+    assert!(
+        sealed
+            .store
+            .get_versioned_durable(&context(), domain(), &progress_key)
+            .unwrap()
+            .value()
+            .is_none()
+    );
+    let after: Vec<(runtime::portable::DurableRecordDescriptor, Vec<u8>)> =
+        full_snapshot(&sealed.store);
+    assert_eq!(
+        before, after,
+        "a sealed ingest must write nothing at all, not merely the named progress row"
+    );
+}
+
+fn complete_empty_signers(
+    store: &MemoryDurableStateStore,
+    signers: &[TestSigner],
+) -> Vec<FrozenFrontierVote> {
+    let votes: Vec<FrozenFrontierVote> = signers
+        .iter()
+        .map(|signer| {
+            let vote: FrozenFrontierVote = cast_vote(signer, &[]);
+            ingest_drain_signer_page(
+                store,
+                &context(),
+                domain(),
+                &resolver(),
+                &protocol(),
+                signer.validator_id(),
+                vote.clone(),
+                one_page(&[]),
+            )
+            .unwrap();
+            vote
+        })
+        .collect();
+    sorted(votes)
+}
+
+#[test]
+fn advance_drain_union_stops_before_commit_once_sealed() {
+    let unsealed: RetentionReplica = logical_replica();
+    close(&unsealed.store);
+    let (signers, _entries) = four_validators();
+    let votes: Vec<FrozenFrontierVote> = complete_empty_signers(&unsealed.store, &signers[..3]);
+    let step: DrainUnionStep = advance_drain_union(
+        &unsealed.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &votes,
+    )
+    .unwrap();
+    assert!(matches!(step, DrainUnionStep::Ready(_)));
+
+    let sealed: RetentionReplica = logical_replica_bound();
+    close(&sealed.store);
+    let (sealed_signers, _entries) = four_validators();
+    let sealed_votes: Vec<FrozenFrontierVote> =
+        complete_empty_signers(&sealed.store, &sealed_signers[..3]);
+    seal_namespace(&sealed.store, domain());
+    let before: Vec<(runtime::portable::DurableRecordDescriptor, Vec<u8>)> =
+        full_snapshot(&sealed.store);
+    let result: Result<DrainUnionStep, DrainSignerError> = advance_drain_union(
+        &sealed.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &sealed_votes,
+    );
+    assert!(
+        matches!(
+            &result,
+            Err(DrainSignerError::Node(NodeCoreError::PersistenceInvariant(
+                "outgoing epoch is sealed; live work is forbidden"
+            )))
+        ),
+        "unexpected sealed advance result: {result:?}"
+    );
+    let after: Vec<(runtime::portable::DurableRecordDescriptor, Vec<u8>)> =
+        full_snapshot(&sealed.store);
+    assert_eq!(
+        before, after,
+        "a sealed advance must write nothing beyond the Seal completion itself"
+    );
 }
 
 #[test]
