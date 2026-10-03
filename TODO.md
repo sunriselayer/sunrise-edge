@@ -243,8 +243,9 @@ acceptance remain incomplete. Full
 required/selected-PG acceptance,
 fresh independent exact-head review and CI are still pending. These local
 checks do not complete authenticated serving, Delivery 3 or network readiness.
-The first full run at `8e11b12` passed the required storage-neutral lanes but
-failed the selected PG blob conformance corruption fixture: the new mandatory
+The first full run at `8e11b12` passed lint and the preceding Rust tests, then
+stopped during the full-workspace PG blob conformance corruption fixture:
+the remaining required and selected gates had not run. The new mandatory
 successor-slot RESTRICT foreign key prevented deleting its parent metadata.
 The fixture now explicitly removes both protected children for its isolated
 orphan-metadata case; production protection is unchanged. This failed full run
