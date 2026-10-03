@@ -181,7 +181,7 @@ impl ImmutableArchiveReader {
         &self.directory
     }
 
-    /// The held staging role, if one existed or was created at open.
+    /// The held staging role, if one already existed when the reader opened.
     #[must_use]
     pub fn staging(&self) -> Option<&ArchiveStagingDirectory> {
         self.staging.as_ref()
