@@ -31,46 +31,66 @@ anchor and historical object/code context; consensus-signer versus
 ordinary-sender refusal of a retired validator; and exact schema/namespace
 allocation. This record adopts the corrected contract.
 
+A second independent review of that corrected contract (base `54791cf`)
+returned five further blocking findings: an incomplete safety-state
+family list, generic commit ports that would have defeated the warrant,
+an installer that ignored a real carried-forward policy dependency,
+underspecified/duplicate warrant and artifact interfaces, and an
+incorrect certificate-equivalence claim. On 2026-10-03 the contract was
+revised to address them and to close the remaining interfaces: a
+node-core `SuccessorArtifactSource` over existing saved-cut and history
+transport types, distinct `ActivationWarrant` and `LiveWarrant` types, a
+runtime `SuccessorServingRepository` returning the existing
+`DurableCommitOutcome`, an explicit physical namespace validator, and a
+whole-transaction preflight against existing limits. Whether the findings
+are resolved is for the next independent review to decide.
+
 ## Decision
 
 Use [first-successor-serving.md](../first-successor-serving.md) as the
-closed proposed contract. Its choices, summarized:
+proposed contract. Its choices, summarized:
 
 1. Keep source-free verified evidence (immutable genesis, outgoing
    committee, ordered history through the committed Seal, readiness
-   certificate and eligibility) strictly separate from the destination's
-   private activation warrant (import binding, completed progress, fresh
-   writer token). The SDK and operator consume only the former; neither a
-   decoded row nor a destination-reported flag constructs either.
+   certificate and eligibility) strictly separate from two private
+   destination warrants: `ActivationWarrant` before Serving and
+   `LiveWarrant` only from an installed Serving slot. The SDK consumes only
+   the evidence; no decoded row or destination-reported flag constructs
+   any of the three.
 2. Re-verify full cryptographic evidence on every invocation -- activation,
-   startup and reconciliation alike. No live warrant is cached or memoized;
-   signature, proof and certificate verification cost is explicit and linear
-   in history length, never assumed constant-time.
-3. Give every new or changed activation row (successor validator set,
-   execution/paid-fee/publication policy, consensus anchor, epoch-scoped
-   safety state, the protected serving record) an exact, specified Logical
-   generation-floor and provenance rule derived from the verified cut
-   binding's `generation_floor`, reusing `logical_generation`'s own checked
-   derivation and regression guard -- never the unrelated, byte-identical
-   genesis floor, and never a silent provenance-free write.
-4. Scope the new ordered-economics safety state (leader/vote/high-QC/applied
-   prefix) by chain, protocol and the verified successor epoch/anchor, in a
-   key family distinct from the existing chain-only safety rows, created
-   only at virgin `INITIAL` revisions under positively observed `Inactive`
-   origin.
-5. Install every authoritative fact -- next-epoch policy/committee rows, the
-   consensus anchor, the new safety state and the original Seal closure
-   companions -- atomically with the permanent protected serving record,
-   under the target's own fence. Every ordinary commit port rechecks the
-   protected serving/origin contract inside its own lock, exactly like the
-   outgoing barrier.
+   reconciliation, startup and every live request alike. Nothing is cached
+   or memoized; cost is explicit and linear in saved-cut re-execution plus
+   history length, never assumed constant-time.
+3. Give the three new e+1 execution/paid-fee/publication policy rows
+   provenance at a generation derived under the verified cut binding
+   `generation_floor`, through the existing checked derivation and
+   regression guard scoped by `GenerationScope` -- never the genesis floor
+   and never a provenance-free write. Excluded control families and
+   protected rows need none.
+4. Scope all five ordered-economics live safety families (`state`,
+   `applied-height`, `leader-proposal`, `vote`, `vote-high`) by chain,
+   protocol and the verified successor epoch/anchor through one private
+   `OrderedKeyScope`, distinct from the existing chain-only safety rows,
+   with the three singleton roots asserted virgin `INITIAL` at activation;
+   per-view rows are excluded by full inventory comparison, plan refusal
+   of any `epoch-` row and the in-lock token sequence.
+5. Keep the generic ordinary commit ports Ordinary-only, adding only an
+   in-lock `Inactive` slot recheck. A new optional runtime
+   `SuccessorServingRepository` installs every authoritative fact --
+   next-epoch policy/committee rows (via the real `derive_activation_set`
+   dependency fold), the epoch-state root and the exact Seal closure with
+   its original receipt -- atomically with the protected serving record,
+   after one whole-transaction preflight against existing limits, and
+   rechecks the protected serving/origin observation in its own lock for
+   every later successor commit. Core maps its `DurableCommitOutcome`.
 6. After Serving, verify only immutable authority and the unmodified
    original import/Seal evidence on retry; never require the now-mutated
    business inventory to equal the raw plan again, and never rewrite
    mutable state.
-7. Reuse the existing ordered-history verifier and acceptance-only terminal
-   for the Seal suffix, with no caller Boolean bypass and no missing-body
-   exception for an otherwise-authenticated proof.
+7. Reuse the existing ordered-history verifier for the Seal suffix with one
+   required, reviewed extension that accepts a Seal candidate only at the
+   terminal height; no caller Boolean bypass and no missing-body exception
+   for an otherwise-authenticated proof.
 8. Keep the new epoch anchor and height-zero safety namespace separate from
    historical object/code/escrow verification; prove new-epoch paid calls
    against imported instances and original receipts before any claim of
@@ -80,19 +100,18 @@ closed proposed contract. Its choices, summarized:
    an ordinary request sender; document same-key-multiple-namespace and
    whole-database-rollback as an explicit operational scope/fault-model
    boundary, not a blanket accepted risk.
-10. Close every field, phase, digest purpose/epoch, length, bound and
-    schema/namespace allocation, including the generation-floor scoping
-    (`GenerationScope`/`derive_scoped`), as closed, exact, private-only
-    signature additions with migrated callers -- not an assumed interface
-    and not an open implementation blocker.
+10. Specify every field, phase, digest purpose/epoch, length, bound, port
+    signature and schema/namespace allocation, including
+    `GenerationScope`/`derive_scoped` constructed only from a warrant, as
+    exact proposed interfaces with named migrated callers.
 
 ## Not yet decided
 
 Recurring Freeze/DrainSet/Seal and predecessor reconstruction for a second
 successor, genuine Withdraw/Unbond unlock for a retired validator, PG/DO
 activation production, and independent security audit remain separately
-reviewed next work, out of this record's scope. No open design or
-core-signature question remains within this record's scope.
+reviewed next work, out of scope for this record. It remains Proposed
+pending a further independent pass and makes no claim of approval.
 
 ## Consequences and acceptance
 

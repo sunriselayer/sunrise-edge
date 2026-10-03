@@ -167,6 +167,12 @@ The first-successor design is being closed in proposed
 effective cut-floor provenance and the real per-invocation authority consumers.
 Independent design approval is required before implementing the new producer;
 no activation, serving or schema implementation is claimed by that proposal.
+The preparatory ordered-key refactor now uses one closed family type with the
+required view/epoch/height/digest/request suffixes, preserving every existing
+key byte and caller. Parent verification passed 11 exact-layout tests and all
+240 ordered-core regression tests. The successor design remains under revision
+after an independent BLOCK; no new serving writer or provider schema is
+implemented, and the complete repository gate has not yet run for this slice.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.
