@@ -201,6 +201,22 @@ fn postgres_blob_store_conformance() {
     assert_eq!(
         corruption
             .execute(
+                "DELETE FROM sunrise_edge.successor_serving
+         WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3",
+                &[
+                    &namespace_c.chain_id_bytes(),
+                    &&namespace_c.validator_id().as_bytes()[..],
+                    &&namespace_c.domain().as_bytes()[..],
+                ],
+            )
+            .unwrap(),
+        1
+    );
+    // Both protected children must be removed explicitly inside this isolated
+    // corruption transaction. Their production RESTRICT guards stay intact.
+    assert_eq!(
+        corruption
+            .execute(
                 "DELETE FROM sunrise_edge.storage_metadata
          WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3",
                 &[

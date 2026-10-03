@@ -243,6 +243,12 @@ acceptance remain incomplete. Full
 required/selected-PG acceptance,
 fresh independent exact-head review and CI are still pending. These local
 checks do not complete authenticated serving, Delivery 3 or network readiness.
+The first full run at `8e11b12` passed the required storage-neutral lanes but
+failed the selected PG blob conformance corruption fixture: the new mandatory
+successor-slot RESTRICT foreign key prevented deleting its parent metadata.
+The fixture now explicitly removes both protected children for its isolated
+orphan-metadata case; production protection is unchanged. This failed full run
+is not acceptance, and the complete selected profile must pass again.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.
