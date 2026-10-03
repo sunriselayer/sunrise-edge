@@ -1,5 +1,11 @@
 //! Native opt-in facade. Neither ordinary open nor DO/PG composition creates
-//! this permanent import-only origin, and no serving transition is exposed.
+//! this permanent import-only origin. This is the only native facade that
+//! exposes first-successor activation and serving (DR-0189): its lifecycle
+//! can reach `CompleteInactive`, so it alone satisfies
+//! `SuccessorServingRepository: InactiveImportRepository`. There is no
+//! ordinary promotion path; an operator reaches `Serving` only through an
+//! explicit, separately reviewed `commit_successor_activation` call against
+//! this exact facade.
 use super::*;
 use crate::native_files;
 use protocol_types::Digest32;
@@ -7,6 +13,10 @@ use runtime::{
     ImportBatch, ImportBinding, ImportProgress, InactiveImportRepository, NamespaceLifecycle,
     ReadinessRecord, ReadinessRetentionRepository, ReadinessSlot, ReadinessSlotObservation,
 };
+use runtime::successor_serving::{
+    SuccessorServingObservation, SuccessorServingRepository, SuccessorServingSlot,
+};
+use protocol_types::ValidatorId;
 
 /// Fresh or resumed installation destination, never an ordinary node store.
 #[derive(Debug)]
@@ -146,6 +156,13 @@ impl DurableDomainStateStore for SqliteImportTarget {
     ) -> Result<NamespaceLifecycle, DurableReadError> {
         self.store.get_namespace_lifecycle(context, domain)
     }
+    fn get_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::successor_serving::SuccessorServingSlot, DurableReadError> {
+        self.store.get_successor_serving(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -195,6 +212,9 @@ impl StructuredDurableDomainStateStore for SqliteImportTarget {
         invocation: DurableInvocationTransaction,
     ) -> DurableCommitOutcome {
         self.store.commit_invocation(context, invocation)
+    }
+    fn successor_serving_repository(&self) -> Option<&dyn SuccessorServingRepository> {
+        Some(self)
     }
 }
 impl DurableStateKeyScanner for SqliteImportTarget {
@@ -333,8 +353,59 @@ impl InactiveImportRepository for SqliteImportTarget {
     }
 }
 
+impl SuccessorServingRepository for SqliteImportTarget {
+    fn read_namespace_validator(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<ValidatorId, DurableReadError> {
+        self.store.engine.read_namespace_validator(context, domain)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_successor_activation(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        binding: &ImportBinding,
+        progress: &ImportProgress,
+        fresh_token: &PortableSnapshotToken,
+        record: &[u8],
+        transaction: DurableInvocationTransaction,
+    ) -> DurableCommitOutcome {
+        self.store.engine.commit_successor_activation(
+            context, domain, binding, progress, fresh_token, record, transaction,
+        )
+    }
+
+    fn commit_successor_durable(
+        &self,
+        context: &DurableOperationContext,
+        observation: &SuccessorServingObservation,
+        transaction: AtomicStateTransaction,
+    ) -> DurableCommitOutcome {
+        self.store
+            .engine
+            .commit_successor_durable(context, observation, transaction)
+    }
+
+    fn commit_successor_invocation(
+        &self,
+        context: &DurableOperationContext,
+        observation: &SuccessorServingObservation,
+        transaction: DurableInvocationTransaction,
+    ) -> DurableCommitOutcome {
+        self.store
+            .engine
+            .commit_successor_invocation(context, observation, transaction)
+    }
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod successor_tests;
 
 impl ReadinessRetentionRepository for SqliteImportTarget {
     fn read_ready_slot_at(

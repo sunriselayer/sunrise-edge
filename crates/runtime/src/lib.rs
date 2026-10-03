@@ -13,6 +13,7 @@ pub mod outbox_guard;
 pub mod outgoing_seal;
 pub mod portable;
 mod state_read;
+pub mod successor_serving;
 pub mod transaction;
 pub use composition::{ComposedRuntime, MemoryRuntime};
 pub use conditional_readiness::{
@@ -32,6 +33,12 @@ pub use outgoing_seal::{
     encode_outgoing_barrier, encode_seal_barrier,
 };
 pub use state_read::{StructuredStateReader, VersionedStateReader};
+pub use successor_serving::{
+    MAX_SUCCESSOR_SERVING_RECORD_BYTES, MAX_SUCCESSOR_SERVING_SLOT_BYTES,
+    SuccessorServingObservation, SuccessorServingRecord, SuccessorServingRepository,
+    SuccessorServingSlot, decode_successor_serving_record, decode_successor_serving_slot,
+    encode_successor_serving_record, encode_successor_serving_slot,
+};
 use transaction::represented_transaction_bytes;
 pub use transaction::{StateAssemblyError, StateObservationSet, StateTransactionBuilder};
 
@@ -152,6 +159,8 @@ pub enum RuntimeError {
     InvalidReadinessRequest,
     /// A protected outgoing-barrier or sealed-record frame is invalid.
     InvalidOutgoingBarrier,
+    /// A protected successor-serving record or slot frame is invalid.
+    InvalidSuccessorServingRequest,
 }
 
 impl fmt::Display for RuntimeError {
@@ -229,6 +238,9 @@ impl fmt::Display for RuntimeError {
             Self::InvalidReadinessRequest => write!(f, "invalid conditional readiness request"),
             Self::InvalidOutgoingBarrier => {
                 write!(f, "invalid outgoing barrier or sealed record")
+            }
+            Self::InvalidSuccessorServingRequest => {
+                write!(f, "invalid successor-serving record or slot")
             }
         }
     }
@@ -2737,6 +2749,15 @@ pub trait DurableDomainStateStore {
         context: &DurableOperationContext,
         domain: AtomicityDomainId,
     ) -> Result<OutgoingBarrier, DurableReadError>;
+    /// Reads the protected successor-serving slot. There is deliberately no
+    /// ordinary/Inactive default; every adapter must observe and report its
+    /// own persisted slot. Inactive is never serving permission, and Serving
+    /// never reverts to Inactive.
+    fn get_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<SuccessorServingSlot, DurableReadError>;
 
     /// Revalidates the fence and complete read set, then commits all or none.
     ///
@@ -2812,6 +2833,14 @@ pub trait StructuredDurableDomainStateStore: DurableDomainStateStore {
     /// reference always refers to this same store, never a caller-supplied
     /// foreign writer.
     fn outgoing_seal_repository(&self) -> Option<&dyn OutgoingSealRepository> {
+        None
+    }
+
+    /// Returns first-successor activation/serving capability only when this
+    /// exact store provides it. Defaults to unsupported, never success; the
+    /// returned reference always refers to this same store, never a
+    /// caller-supplied foreign writer.
+    fn successor_serving_repository(&self) -> Option<&dyn SuccessorServingRepository> {
         None
     }
 }
@@ -3360,6 +3389,8 @@ struct PreparedMemoryObjectMutation {
 struct MemoryDurableStoreData {
     lifecycle: NamespaceLifecycle,
     outgoing_barrier: OutgoingBarrier,
+    successor_serving: SuccessorServingSlot,
+    successor_namespace_validator: Option<ValidatorId>,
     portable_namespace: Vec<u8>,
     mutation_sequences: BTreeMap<[u8; 32], u64>,
     readiness_slots: BTreeMap<MemoryReadinessSlotKey, Option<Vec<u8>>>,
@@ -3432,7 +3463,7 @@ impl MemoryDurableStateStore {
     /// Creates an empty fixture with one authoritative writer generation.
     #[must_use]
     pub fn new(active_writer_fence: WriterFenceGeneration) -> Self {
-        Self::new_with_optional_domain(None, active_writer_fence)
+        Self::new_with_optional_domain(None, None, active_writer_fence)
     }
 
     /// Creates an empty fixture bound to one logical atomicity domain.
@@ -3445,11 +3476,30 @@ impl MemoryDurableStateStore {
         bound_domain: AtomicityDomainId,
         active_writer_fence: WriterFenceGeneration,
     ) -> Self {
-        Self::new_with_optional_domain(Some(bound_domain), active_writer_fence)
+        Self::new_with_optional_domain(Some(bound_domain), None, active_writer_fence)
+    }
+
+    /// Creates an empty fixture explicitly bound to one successor
+    /// namespace, domain and physical member validator.
+    ///
+    /// This is the only memory constructor that exposes
+    /// [`SuccessorServingRepository`]; every other constructor keeps the
+    /// slot mandatory `Inactive` and returns `None` from
+    /// `successor_serving_repository`. The slot itself still starts
+    /// `Inactive` here: only a later `commit_successor_activation` call may
+    /// install `Serving`.
+    #[must_use]
+    pub fn new_successor_bound(
+        domain: AtomicityDomainId,
+        validator: ValidatorId,
+        active_writer_fence: WriterFenceGeneration,
+    ) -> Self {
+        Self::new_with_optional_domain(Some(domain), Some(validator), active_writer_fence)
     }
 
     fn new_with_optional_domain(
         bound_domain: Option<AtomicityDomainId>,
+        successor_namespace_validator: Option<ValidatorId>,
         active_writer_fence: WriterFenceGeneration,
     ) -> Self {
         // A fixture token must not be reusable on another store, even when
@@ -3461,6 +3511,8 @@ impl MemoryDurableStateStore {
             inner: Arc::new(RwLock::new(MemoryDurableStoreData {
                 lifecycle: NamespaceLifecycle::Ordinary,
                 outgoing_barrier: OutgoingBarrier::Unsealed,
+                successor_serving: SuccessorServingSlot::Inactive,
+                successor_namespace_validator,
                 portable_namespace,
                 mutation_sequences: BTreeMap::new(),
                 readiness_slots: BTreeMap::new(),
@@ -3799,6 +3851,19 @@ impl DurableDomainStateStore for MemoryDurableStateStore {
         validate_memory_durable_read_authority(&data, context)?;
         Ok(data.outgoing_barrier)
     }
+    fn get_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<SuccessorServingSlot, DurableReadError> {
+        let data = self
+            .inner
+            .read()
+            .map_err(|_| DurableReadError::Unavailable)?;
+        validate_memory_durable_read_domain(&data, domain)?;
+        validate_memory_durable_read_authority(&data, context)?;
+        Ok(data.successor_serving.clone())
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -3838,6 +3903,9 @@ impl DurableDomainStateStore for MemoryDurableStateStore {
         }
         if data.outgoing_barrier.is_sealed() {
             return DurableCommitOutcome::Rejected(DurableCommitRejection::NamespaceSealed);
+        }
+        if data.successor_serving.is_serving() {
+            return DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace);
         }
         let domain = *transaction.domain.as_bytes();
         let state = data.state_domains.get(&domain);
@@ -3939,6 +4007,9 @@ impl StructuredDurableDomainStateStore for MemoryDurableStateStore {
         if data.outgoing_barrier.is_sealed() {
             return DurableCommitOutcome::Rejected(DurableCommitRejection::NamespaceSealed);
         }
+        if data.successor_serving.is_serving() {
+            return DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace);
+        }
         let domain = *transaction.domain.as_bytes();
         let request_key = (domain, *transaction.receipt.request_id.as_bytes());
         if data.receipts.contains_key(&request_key) {
@@ -4014,6 +4085,15 @@ impl StructuredDurableDomainStateStore for MemoryDurableStateStore {
             .inner
             .read()
             .map(|data| data.bound_domain.is_some())
+            .unwrap_or(false);
+        if bound { Some(self) } else { None }
+    }
+
+    fn successor_serving_repository(&self) -> Option<&dyn SuccessorServingRepository> {
+        let bound = self
+            .inner
+            .read()
+            .map(|data| data.successor_namespace_validator.is_some())
             .unwrap_or(false);
         if bound { Some(self) } else { None }
     }

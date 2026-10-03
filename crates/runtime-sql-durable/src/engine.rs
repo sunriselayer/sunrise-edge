@@ -12,6 +12,7 @@ mod inactive_import;
 mod outbox_guard;
 mod outgoing_seal;
 mod portable;
+mod successor_serving;
 
 use crate::backend::{
     SqlBackend, SqlBackendError, SqlSession, SqlSessionError, SqlValue, TransactionBudget,
@@ -22,7 +23,8 @@ use crate::schema::{
     OUTBOX_ATTEMPT_ACKNOWLEDGED, OUTBOX_ATTEMPT_CLAIMED, OUTBOX_ATTEMPT_EXPIRED,
     SqlDurableNamespace, decode_u64, encode_u64,
 };
-use protocol_types::{ChainId, Digest32, HashAlgorithmId, ProtocolVersion};
+use protocol_types::{ChainId, Digest32, HashAlgorithmId, ProtocolVersion, ValidatorId};
+use runtime::successor_serving::SuccessorServingSlot;
 use runtime::{
     AtomicStateTransaction, AtomicityDomainId, DURABLE_OBJECT_CANONICAL_RECORD_TYPE_ID,
     DueOutboxClaimRequest, DurableCommitOutcome, DurableCommitRejection, DurableDomainStateStore,
@@ -1401,6 +1403,24 @@ impl<B: SqlBackend> DurableDomainStateStore for SqlDurableEngine<B> {
         .map_err(PreCommitFailure::into_read_error)
     }
 
+    fn get_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<SuccessorServingSlot, DurableReadError> {
+        if !self.domain_is_bound(domain) {
+            return Err(DurableReadError::InvalidRequest(
+                RuntimeError::AtomicityDomainMismatch,
+            ));
+        }
+        run_read(&self.backend, Self::budget(context), |session, now| {
+            let metadata = schema::verify_namespace(session, &self.namespace)?;
+            validate_authority(&metadata, context, now)?;
+            Ok(metadata.successor_serving().clone())
+        })
+        .map_err(PreCommitFailure::into_read_error)
+    }
+
     fn commit_durable(
         &self,
         context: &DurableOperationContext,
@@ -1425,6 +1445,9 @@ impl<B: SqlBackend> DurableDomainStateStore for SqlDurableEngine<B> {
                     }
                     if metadata.barrier().is_sealed() {
                         return Err(DurableCommitRejection::NamespaceSealed);
+                    }
+                    if metadata.successor_serving().is_serving() {
+                        return Err(DurableCommitRejection::InactiveNamespace);
                     }
                     validate_state_reads(session, transaction.reads())?;
                     schema::advance_mutation_sequence(session, metadata.mutation_sequence())
@@ -1531,6 +1554,9 @@ impl<B: SqlBackend> StructuredDurableDomainStateStore for SqlDurableEngine<B> {
                     }
                     if metadata.barrier().is_sealed() {
                         return Err(DurableCommitRejection::NamespaceSealed);
+                    }
+                    if metadata.successor_serving().is_serving() {
+                        return Err(DurableCommitRejection::InactiveNamespace);
                     }
                     let receipt = invocation.receipt();
                     if receipt_exists(session, receipt.request_id())

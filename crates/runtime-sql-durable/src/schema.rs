@@ -16,6 +16,9 @@ use runtime::inactive_import::{
     decode_import_binding, decode_import_progress, encode_import_binding,
 };
 use runtime::outgoing_seal::{decode_outgoing_barrier, encode_outgoing_barrier};
+use runtime::successor_serving::{
+    SuccessorServingSlot, decode_successor_serving_slot, encode_successor_serving_slot,
+};
 use runtime::{
     AtomicityDomainId, ImportBinding, NamespaceLifecycle, OutgoingBarrier, WriterFenceGeneration,
 };
@@ -33,7 +36,12 @@ use std::fmt;
 /// a single canonical frame decoded through the shared runtime codec; a
 /// fresh or import bootstrap always installs it in the same transaction and
 /// never repairs a surviving row.
-pub const SQL_DURABLE_SCHEMA_IDENTITY: &[u8] = b"sunrise-edge/sqlite/structured/schema/v5";
+/// `v6` additionally requires the protected `durable_successor_serving`
+/// single-row table (DR-0189), mandatory and created `Inactive` with every
+/// namespace; the body is read only after its phase and length are
+/// validated, and a missing or corrupt row fails closed rather than being
+/// treated as absent/Inactive.
+pub const SQL_DURABLE_SCHEMA_IDENTITY: &[u8] = b"sunrise-edge/sqlite/structured/schema/v6";
 
 pub(crate) const OBJECT_HEAD_STATUS_CURRENT: i64 = 1;
 pub(crate) const OBJECT_HEAD_STATUS_TOMBSTONED: i64 = 2;
@@ -133,6 +141,11 @@ pub const TABLE_STATEMENTS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS durable_outgoing_barrier (
          id INTEGER PRIMARY KEY CHECK(id = 1),
          barrier BLOB NOT NULL CHECK(typeof(barrier) = 'blob' AND length(barrier) <= 1536)
+     )",
+    "CREATE TABLE IF NOT EXISTS durable_successor_serving (
+         id INTEGER PRIMARY KEY CHECK(id = 1),
+         phase INTEGER NOT NULL CHECK(phase IN (1, 2)),
+         serving BLOB NOT NULL CHECK(typeof(serving) = 'blob' AND length(serving) <= 17408)
      )",
     "CREATE TABLE IF NOT EXISTS durable_state (
          key BLOB PRIMARY KEY NOT NULL,
@@ -298,6 +311,7 @@ pub struct NamespaceMetadata {
     source_instance_id: [u8; 16],
     lifecycle: NamespaceLifecycle,
     barrier: OutgoingBarrier,
+    successor_serving: SuccessorServingSlot,
 }
 
 impl NamespaceMetadata {
@@ -329,6 +343,13 @@ impl NamespaceMetadata {
     #[must_use]
     pub const fn barrier(&self) -> &OutgoingBarrier {
         &self.barrier
+    }
+
+    /// Returns the mandatory protected successor-serving slot. Inactive is
+    /// never serving permission; Serving never reverts to Inactive.
+    #[must_use]
+    pub const fn successor_serving(&self) -> &SuccessorServingSlot {
+        &self.successor_serving
     }
 }
 
@@ -442,13 +463,55 @@ pub fn verify_namespace(
         .ok_or(SchemaError::InvalidPersistedMetadata)?;
     let barrier: OutgoingBarrier = decode_outgoing_barrier(barrier_bytes)
         .map_err(|_| SchemaError::InvalidPersistedMetadata)?;
+    let successor_serving: SuccessorServingSlot = read_successor_serving(session)?;
     Ok(NamespaceMetadata {
         writer_fence,
         mutation_sequence,
         source_instance_id,
         lifecycle,
         barrier,
+        successor_serving,
     })
+}
+
+/// Reads the mandatory protected successor-serving row through the one
+/// shared phase-gated query: `phase` is a plain integer column read
+/// alongside the length-guarded body in the same round trip, and the body
+/// is only decoded into a typed value after `phase` is confirmed to be
+/// `1` (`Inactive`) or `2` (`Serving`). A missing row, an unknown phase, a
+/// body that fails the shared bound, or a decoded value whose own phase
+/// disagrees with this column fails closed; absence is never treated as
+/// `Inactive`. `runtime_sql_durable::engine` calls this exact function for
+/// every read and commit path instead of keeping a second query.
+pub fn read_successor_serving(
+    session: &mut dyn SqlSession,
+) -> Result<SuccessorServingSlot, SchemaError> {
+    // No WHERE clause: a corrupt extra row under a different id must still
+    // surface as more than one row rather than being filtered out unseen.
+    let rows = session.exec(
+        "SELECT CASE WHEN id = 1 THEN phase ELSE NULL END,
+                CASE WHEN id = 1 AND length(serving) <= 17408 THEN serving ELSE NULL END
+         FROM durable_successor_serving LIMIT 2",
+        &[],
+    )?;
+    let row = rows.one()?.ok_or(SchemaError::InvalidPersistedMetadata)?;
+    let phase: i64 = row
+        .opt_integer(0)
+        .map_err(SqlSessionError::from)?
+        .ok_or(SchemaError::InvalidPersistedMetadata)?;
+    if phase != 1 && phase != 2 {
+        return Err(SchemaError::InvalidPersistedMetadata);
+    }
+    let bytes: &[u8] = row
+        .opt_blob(1)
+        .map_err(SqlSessionError::from)?
+        .ok_or(SchemaError::InvalidPersistedMetadata)?;
+    let slot: SuccessorServingSlot =
+        decode_successor_serving_slot(bytes).map_err(|_| SchemaError::InvalidPersistedMetadata)?;
+    if slot.is_serving() != (phase == 2) {
+        return Err(SchemaError::InvalidPersistedMetadata);
+    }
+    Ok(slot)
 }
 
 /// Creates the shared tables if absent, installs `namespace`'s metadata
@@ -509,6 +572,13 @@ pub fn bootstrap_namespace(
                 .map_err(|_| SchemaError::InvalidPersistedMetadata)?,
         )],
     )?;
+    session.exec(
+        "INSERT INTO durable_successor_serving (id, phase, serving) VALUES (1, 1, ?1)",
+        &[SqlValue::Blob(
+            encode_successor_serving_slot(&SuccessorServingSlot::Inactive)
+                .map_err(|_| SchemaError::InvalidPersistedMetadata)?,
+        )],
+    )?;
     verify_namespace(session, namespace)
 }
 
@@ -556,6 +626,13 @@ pub fn bootstrap_import_namespace(
         "INSERT INTO durable_outgoing_barrier (id, barrier) VALUES (1, ?1)",
         &[SqlValue::Blob(
             encode_outgoing_barrier(&OutgoingBarrier::Unsealed)
+                .map_err(|_| SchemaError::InvalidPersistedMetadata)?,
+        )],
+    )?;
+    session.exec(
+        "INSERT INTO durable_successor_serving (id, phase, serving) VALUES (1, 1, ?1)",
+        &[SqlValue::Blob(
+            encode_successor_serving_slot(&SuccessorServingSlot::Inactive)
                 .map_err(|_| SchemaError::InvalidPersistedMetadata)?,
         )],
     )?;

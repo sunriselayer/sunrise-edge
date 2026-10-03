@@ -4,7 +4,7 @@ use crate::{
     AtomicityDomainId, DurableDomainStateStore, DurableObjectHead, DurableObjectVersion,
     DurableObjectVersionRecord, DurableOperationContext, DurableReadError, DurableRequestId,
     DurableRequestReceipt, NamespaceLifecycle, ObjectId, OutgoingBarrier,
-    StructuredDurableDomainStateStore, VersionedStateValue,
+    StructuredDurableDomainStateStore, SuccessorServingSlot, VersionedStateValue,
 };
 
 /// Reads a value and its exact revision without granting a commit capability.
@@ -108,6 +108,15 @@ pub trait StructuredStateReader: VersionedStateReader {
         context: &DurableOperationContext,
         domain: AtomicityDomainId,
     ) -> Result<OutgoingBarrier, DurableReadError>;
+
+    /// Observes the protected successor-serving slot through this same
+    /// reader. Inactive is never serving permission, and Serving never
+    /// reverts to Inactive.
+    fn read_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<SuccessorServingSlot, DurableReadError>;
 }
 
 impl<S: StructuredDurableDomainStateStore + ?Sized> StructuredStateReader for S {
@@ -153,6 +162,14 @@ impl<S: StructuredDurableDomainStateStore + ?Sized> StructuredStateReader for S 
         domain: AtomicityDomainId,
     ) -> Result<OutgoingBarrier, DurableReadError> {
         self.get_outgoing_barrier(context, domain)
+    }
+
+    fn read_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<SuccessorServingSlot, DurableReadError> {
+        self.get_successor_serving(context, domain)
     }
 }
 
