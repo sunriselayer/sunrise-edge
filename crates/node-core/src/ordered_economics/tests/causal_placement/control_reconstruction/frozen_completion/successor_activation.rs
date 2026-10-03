@@ -1,10 +1,15 @@
 //! Genuine source-free terminal-Seal verification and SQLite activation.
-//! This re-epochs the same eligible committee; ABCE replacement and shipped
-//! host/CLI acceptance are distinct coverage, not claimed by these tests.
+//! One shared Seal/activation builder serves the same-committee world here
+//! and the ABCD -> ABCE replacement world in `successor_replacement`.
+//! Shipped host/CLI acceptance is distinct coverage, not claimed here.
 
 use super::*;
-use crate::business_reconstruction::cut::{SavedBusinessCut, derive_source_business_cut};
-use crate::business_reconstruction::inactive_import::verify_saved_business_import;
+use crate::business_reconstruction::cut::{
+    SavedBusinessCut, business_cut_identity_digest, derive_source_business_cut,
+};
+use crate::business_reconstruction::inactive_import::{
+    VerifiedImportPlan, verify_saved_business_import,
+};
 use crate::conditional_readiness::{
     ConditionalReadinessError, ReadinessSigningKey, retain_conditional_readiness,
 };
@@ -13,7 +18,11 @@ use crate::serving_authority::{
     activate_successor, resolve_live_authority, verify_successor_authority,
 };
 use runtime::{BlobStore, SuccessorServingSlot};
+use consensus::readiness::{ReadinessSubject, ReadinessVote};
 use runtime_sqlite::SqliteImportTarget;
+
+#[path = "successor_replacement.rs"]
+mod successor_replacement;
 
 struct Artifacts<'a> {
     saved: &'a SavedBusinessCut,
@@ -299,10 +308,225 @@ fn genuine_terminal_seal_activates_separate_sqlite_targets_and_reconciles_advanc
     }
 }
 
+/// The genuine outgoing source a successor world was sealed from.
+enum WorldSource {
+    /// The same eligible ABCD committee re-epoched.
+    SameCommittee(Box<seal_signing::SealSigningFixture>),
+    /// ABCD -> ABCE with the actually registered incoming E.
+    Replacement(Box<crate::ordered_economics::RegisteredCutFixture>),
+}
+
+impl WorldSource {
+    fn causal(&self) -> &CausalFixture {
+        match self {
+            WorldSource::SameCommittee(fixture) => &fixture.source.fixture,
+            WorldSource::Replacement(fixture) => fixture.source(),
+        }
+    }
+}
+
+/// A genuine, not yet accepted terminal Seal candidate over a real saved
+/// cut, plus each successor member's own completed file-backed import.
+struct SealedSource {
+    source: WorldSource,
+    cut_history: OrderedHistoryIdentity,
+    saved: SavedBusinessCut,
+    seal: OrderedCandidate,
+    view: u64,
+    certificate_digest: Digest32,
+    members: Vec<TestSigner>,
+    operation: DurableOperationContext,
+    targets: Vec<(SqliteImportTarget, SqliteBlobStore)>,
+    files: conditional_readiness::Files,
+}
+
+/// One separately created and completed import in `member`'s own physical
+/// namespace and files.
+fn member_import(
+    plan: &VerifiedImportPlan,
+    domain: AtomicityDomainId,
+    member: protocol_types::ValidatorId,
+    files: &conditional_readiness::Files,
+    operation: &DurableOperationContext,
+    name: &str,
+) -> (SqliteImportTarget, SqliteBlobStore) {
+    let target: SqliteImportTarget = SqliteImportTarget::create(
+        files.path(&format!("{name}-state.db")),
+        SqliteNamespace::new(fixture::chain(), member, domain),
+        operation.writer_fence(),
+        plan.binding(),
+    )
+    .unwrap();
+    let blobs: SqliteBlobStore =
+        SqliteBlobStore::open(files.path(&format!("{name}-body.db"))).unwrap();
+    conditional_readiness::complete(plan, &target, &blobs, operation);
+    (target, blobs)
+}
+
+fn member_imports(
+    plan: &VerifiedImportPlan,
+    domain: AtomicityDomainId,
+    members: &[TestSigner],
+    files: &conditional_readiness::Files,
+    operation: &DurableOperationContext,
+) -> Vec<(SqliteImportTarget, SqliteBlobStore)> {
+    members
+        .iter()
+        .enumerate()
+        .map(|(index, member): (usize, &TestSigner)| {
+            member_import(
+                plan,
+                domain,
+                member.id,
+                files,
+                operation,
+                &format!("serving-{index}"),
+            )
+        })
+        .collect()
+}
+
+/// Same-committee source: the genuine seal_signing fixture and its own cut.
+fn same_committee_source() -> SealedSource {
+    let fixture: seal_signing::SealSigningFixture = seal_signing::seal_signing_fixture();
+    let network: &Network = &fixture.source.fixture.network;
+    let (cut_history, history_before) = complete_history(network);
+    let cut = derive_source_business_cut(
+        reconstruction_plan(&fixture.source.fixture, &cut_history),
+        &network.stores[0],
+        &network.blobs,
+        &history_before,
+    )
+    .unwrap();
+    let saved: SavedBusinessCut = preseal_cut::transfer(&cut, &network.resolver);
+    let plan: VerifiedImportPlan = verify_saved_business_import(
+        reconstruction_plan(&fixture.source.fixture, &cut_history),
+        &saved,
+    )
+    .unwrap();
+    let members: Vec<TestSigner> = network
+        .signers
+        .iter()
+        .map(|signer: &TestSigner| TestSigner {
+            id: signer.id,
+            key: signer.key,
+        })
+        .collect();
+    let files: conditional_readiness::Files = conditional_readiness::Files::new();
+    let operation: DurableOperationContext = fixture::context(51);
+    let targets: Vec<(SqliteImportTarget, SqliteBlobStore)> =
+        member_imports(&plan, network.domain(), &members, &files, &operation);
+    let seal: OrderedCandidate = fixture.candidate.clone();
+    let view: u64 = fixture.view;
+    let certificate_digest: Digest32 = fixture.certificate_digest;
+    SealedSource {
+        source: WorldSource::SameCommittee(Box::new(fixture)),
+        cut_history,
+        saved,
+        seal,
+        view,
+        certificate_digest,
+        members,
+        operation,
+        targets,
+        files,
+    }
+}
+
+/// ABCD -> ABCE source: the real registered-E cut. Each ABC/E member signs
+/// conditional readiness on its own completed import; those exact votes form
+/// the staged certificate the honest Seal candidate references.
+fn replacement_source() -> SealedSource {
+    let fixture: crate::ordered_economics::RegisteredCutFixture =
+        crate::ordered_economics::registered_cut_fixture();
+    let network: &Network = &fixture.source().network;
+    let saved: SavedBusinessCut = fixture.saved().clone();
+    let cut_history: OrderedHistoryIdentity = saved.identity.ordered_history.clone();
+    let operation: DurableOperationContext = fixture::context(51);
+    let plan: VerifiedImportPlan =
+        verify_saved_business_import(fixture.plan(operation), &saved).unwrap();
+    let entries: Vec<FastPathValidatorEntry> = fixture.next_set().validators.clone();
+    let members: Vec<TestSigner> = entries
+        .iter()
+        .map(|entry: &FastPathValidatorEntry| TestSigner {
+            id: entry.id,
+            key: *fixture.signing_key(entry.id),
+        })
+        .collect();
+    let files: conditional_readiness::Files = conditional_readiness::Files::new();
+    let targets: Vec<(SqliteImportTarget, SqliteBlobStore)> =
+        member_imports(&plan, network.domain(), &members, &files, &operation);
+    let votes: Vec<ReadinessVote> = targets
+        .iter()
+        .zip(&members)
+        .map(
+            |((target, blobs), member): (&(SqliteImportTarget, SqliteBlobStore), &TestSigner)| {
+                let signer: ReadinessSigningKey = ReadinessSigningKey::new(member.id, member.key);
+                let vote: ReadinessVote = retain_conditional_readiness(
+                    fixture.plan(operation),
+                    fixture.saved(),
+                    target,
+                    blobs,
+                    &operation,
+                    &entries,
+                    &signer,
+                )
+                .unwrap();
+                assert_eq!(signer.signatures_created(), 1);
+                vote
+            },
+        )
+        .collect();
+    let subject: ReadinessSubject = votes[0].subject.clone();
+    assert_eq!(
+        subject.cut_digest,
+        business_cut_identity_digest(&network.resolver, &saved.identity).unwrap()
+    );
+    let next_set: ValidatorSet = ValidatorSet::new(
+        subject.next_epoch,
+        entries
+            .iter()
+            .map(|entry: &FastPathValidatorEntry| validator_set::ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let (certificate_digest, certificate_length): (Digest32, u32) =
+        seal_signing::stage_votes(network, &subject, &next_set, &votes);
+    let status: OrderedStatus = seal_signing::align_economic_height(network);
+    let seal: OrderedCandidate = seal_signing::seal_candidate(
+        network,
+        &saved.identity,
+        subject,
+        certificate_digest,
+        certificate_length,
+        cut_history.through_height,
+    );
+    SealedSource {
+        source: WorldSource::Replacement(Box::new(fixture)),
+        cut_history,
+        saved,
+        seal,
+        view: status.current_view,
+        certificate_digest,
+        members,
+        operation,
+        targets,
+        files,
+    }
+}
+
 /// Four genuinely activated file-backed SQLite successor targets over one
-/// genuinely accepted terminal Seal of the same eligible committee.
+/// genuinely accepted terminal Seal. `members[i]` owns `targets[i]`.
 struct SuccessorWorld {
-    fixture: seal_signing::SealSigningFixture,
+    source: WorldSource,
+    members: Vec<TestSigner>,
+    /// The genuinely accepted epoch-e terminal Seal candidate.
+    seal: OrderedCandidate,
     cut_history: OrderedHistoryIdentity,
     sealed_history: OrderedHistoryIdentity,
     saved: SavedBusinessCut,
@@ -315,74 +539,53 @@ struct SuccessorWorld {
     _files: conditional_readiness::Files,
 }
 
-fn activated_world() -> SuccessorWorld {
-    let fixture: seal_signing::SealSigningFixture = seal_signing::seal_signing_fixture();
-    let network: &Network = &fixture.source.fixture.network;
-    let (cut_history, history_before) = complete_history(network);
-    let cut = derive_source_business_cut(
-        reconstruction_plan(&fixture.source.fixture, &cut_history),
-        &network.stores[0],
-        &network.blobs,
-        &history_before,
-    )
-    .unwrap();
-    let saved: SavedBusinessCut = preseal_cut::transfer(&cut, &network.resolver);
-    let plan = verify_saved_business_import(
-        reconstruction_plan(&fixture.source.fixture, &cut_history),
-        &saved,
-    )
-    .unwrap();
+/// Shared Seal acceptance and activation: the outgoing source committee
+/// accepts the genuine Seal through real rounds, the source-free verifier
+/// authenticates the exported artifacts, and every member activates its own
+/// already completed import without signing.
+fn activate(sealed: SealedSource) -> SuccessorWorld {
+    let SealedSource {
+        source,
+        cut_history,
+        saved,
+        seal,
+        view,
+        certificate_digest,
+        members,
+        operation,
+        targets,
+        files,
+    } = sealed;
+    let network: &Network = &source.causal().network;
     let env_before: OrderedEconomicsEnvironment<'_> = seal_signing::env_with_seal(network);
-    seal_acceptance::accept_genuine_seal(&fixture, &env_before);
+    seal_acceptance::accept_seal_candidate(network, &env_before, view, &seal);
     let (sealed_history, history) = complete_history(network);
-    let certificate: Vec<u8> = network
-        .blobs
-        .get_blob(&fixture.certificate_digest)
-        .unwrap()
-        .unwrap();
+    assert!(sealed_history.through_height > cut_history.through_height);
+    let certificate: Vec<u8> = network.blobs.get_blob(&certificate_digest).unwrap().unwrap();
     let mut artifacts: Artifacts<'_> = Artifacts {
         saved: &saved,
         history: &history,
         certificate: &certificate,
     };
     let authority = verify_successor_authority(
-        reconstruction_plan(&fixture.source.fixture, &cut_history),
+        reconstruction_plan(source.causal(), &cut_history),
         &sealed_history,
         &mut artifacts,
     )
-    .unwrap();
+    .expect("genuinely accepted terminal Seal authenticates the successor");
     let policy: OrderedEconomicsPolicy =
         OrderedEconomicsPolicy::from_successor(&network.root, authority.policy_inputs()).unwrap();
     let next_base: LocalExecutionPolicy =
         LocalExecutionPolicy::generic_object_results(authority.policy_inputs().context().clone());
-    let files: conditional_readiness::Files = conditional_readiness::Files::new();
-    let operation: DurableOperationContext = fixture::context(51);
-    let mut targets: Vec<(SqliteImportTarget, SqliteBlobStore)> = Vec::new();
-    for index in 0..REPLICAS {
-        let namespace: SqliteNamespace = SqliteNamespace::new(
-            fixture::chain(),
-            network.signers[index].id,
-            network.domain(),
-        );
-        let target: SqliteImportTarget = SqliteImportTarget::create(
-            files.path(&format!("serving-state-{index}.db")),
-            namespace,
-            operation.writer_fence(),
-            plan.binding(),
-        )
-        .unwrap();
-        let blobs: SqliteBlobStore =
-            SqliteBlobStore::open(files.path(&format!("serving-body-{index}.db"))).unwrap();
-        conditional_readiness::complete(&plan, &target, &blobs, &operation);
-        let signer: ReadinessSigningKey =
-            ReadinessSigningKey::new(network.signers[index].id, network.signers[index].key);
+    for ((target, blobs), member) in targets.iter().zip(&members) {
+        let signer: ReadinessSigningKey = ReadinessSigningKey::new(member.id, member.key);
         assert!(matches!(
             activate_successor(
-                reconstruction_plan(&fixture.source.fixture, &cut_history),
+                reconstruction_plan(source.causal(), &cut_history),
                 &sealed_history,
                 &mut artifacts,
-                &target,
-                &blobs,
+                target,
+                blobs,
                 &operation,
                 &signer,
                 1,
@@ -390,10 +593,12 @@ fn activated_world() -> SuccessorWorld {
             .unwrap(),
             SuccessorActivationOutcome::Activated { .. }
         ));
-        targets.push((target, blobs));
+        assert_eq!(signer.signatures_created(), 0, "activation signs nothing");
     }
     SuccessorWorld {
-        fixture,
+        source,
+        members,
+        seal,
         cut_history,
         sealed_history,
         saved,
@@ -407,9 +612,22 @@ fn activated_world() -> SuccessorWorld {
     }
 }
 
+fn activated_world() -> SuccessorWorld {
+    activate(same_committee_source())
+}
+
+/// The genuine ABCD -> ABCE world over the actually registered incoming E.
+fn replacement_world() -> SuccessorWorld {
+    activate(replacement_source())
+}
+
 impl SuccessorWorld {
     fn network(&self) -> &Network {
-        &self.fixture.source.fixture.network
+        &self.source.causal().network
+    }
+
+    fn source(&self) -> &CausalFixture {
+        self.source.causal()
     }
 
     fn artifacts(&self) -> Artifacts<'_> {
@@ -433,8 +651,8 @@ impl SuccessorWorld {
     }
 
     fn public_key(&self, index: usize) -> [u8; 32] {
-        let network: &Network = self.network();
-        ReadinessSigningKey::new(network.signers[index].id, network.signers[index].key).public_key()
+        let member: &TestSigner = &self.members[index];
+        ReadinessSigningKey::new(member.id, member.key).public_key()
     }
 
     fn resolve(
@@ -446,7 +664,7 @@ impl SuccessorWorld {
             &self.targets[index].0,
             &self.operation,
             self.network().domain(),
-            reconstruction_plan(&self.fixture.source.fixture, &self.cut_history),
+            reconstruction_plan(self.source(), &self.cut_history),
             &self.sealed_history,
             &mut artifacts,
             self.public_key(index),
@@ -467,12 +685,11 @@ impl SuccessorWorld {
         index: usize,
     ) -> Result<SuccessorActivationOutcome, crate::serving_authority::SuccessorActivationError>
     {
-        let network: &Network = self.network();
-        let signer: ReadinessSigningKey =
-            ReadinessSigningKey::new(network.signers[index].id, network.signers[index].key);
+        let member: &TestSigner = &self.members[index];
+        let signer: ReadinessSigningKey = ReadinessSigningKey::new(member.id, member.key);
         let mut artifacts: Artifacts<'_> = self.artifacts();
         activate_successor(
-            reconstruction_plan(&self.fixture.source.fixture, &self.cut_history),
+            reconstruction_plan(self.source(), &self.cut_history),
             &self.sealed_history,
             &mut artifacts,
             &self.targets[index].0,
@@ -691,7 +908,7 @@ fn successor_paid_transfer(
     request_id: [u8; 32],
     fee_policy: &PaidFeePolicy,
 ) -> Vec<u8> {
-    let source: &CausalFixture = &world.fixture.source.fixture;
+    let source: &CausalFixture = world.source();
     let network: &Network = &source.network;
     let signer: &TestSigner = &network.signers[signer_index];
     let sender: [u8; 32] = *signer.id.as_bytes();
@@ -782,7 +999,7 @@ fn successor_fastvote_paid_call_on_imported_instance_applies_above_cut_floor() {
     let fee_policy: PaidFeePolicy =
         execution::paid_execution::decode_paid_fee_policy(&fee_bytes).unwrap();
     assert_eq!(fee_policy.context, next);
-    let coin_id: ObjectId = world.fixture.source.fixture.claimant_coin.id;
+    let coin_id: ObjectId = world.source().claimant_coin.id;
     let (version, digest): (DurableObjectVersion, Digest32) = match world.targets[0]
         .0
         .get_object_head(&world.operation, domain, coin_id)
@@ -971,7 +1188,7 @@ fn successor_fastvote_paid_call_on_imported_instance_applies_above_cut_floor() {
         ),
         head_after
     );
-    for receipt in [request_id, world.fixture.candidate.request_id] {
+    for receipt in [request_id, world.seal.request_id] {
         assert!(matches!(
             crate::serving_authority::query_request_receipt_successor(
                 &world.warrant(1),
@@ -989,7 +1206,7 @@ fn successor_fastvote_paid_call_on_imported_instance_applies_above_cut_floor() {
 #[test]
 fn source_free_verifier_refuses_non_terminal_tampered_and_incomplete_artifacts() {
     let world: SuccessorWorld = activated_world();
-    let source: &CausalFixture = &world.fixture.source.fixture;
+    let source: &CausalFixture = world.source();
     let seal_height: u64 = world.sealed_history.through_height;
     let verify = |identity: &OrderedHistoryIdentity,
                   history: &[OrderedHistoryHeightMaterial],
@@ -1096,7 +1313,6 @@ fn successor_round(
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: Option<&OrderedCandidate>,
 ) -> (Vec<OrderedEventOutput>, consensus::QuorumCertificate) {
-    let network: &Network = world.network();
     let view: u64 = crate::ordered_economics::query_status_successor(
         &world.warrant(0),
         &world.targets[0].0,
@@ -1106,8 +1322,8 @@ fn successor_round(
     .current_view;
     let leader_id: protocol_types::ValidatorId =
         world.policy.engine().validator_set().leader(view).unwrap();
-    let leader: usize = network
-        .signers
+    let leader: usize = world
+        .members
         .iter()
         .position(|signer: &TestSigner| signer.id == leader_id)
         .unwrap();
@@ -1116,17 +1332,17 @@ fn successor_round(
         &world.targets[leader].0,
         env,
         candidate,
-        &network.signers[leader],
+        &world.members[leader],
     )
     .unwrap();
-    let votes: Vec<consensus::ConsensusVote> = (0..REPLICAS)
+    let votes: Vec<consensus::ConsensusVote> = (0..world.members.len())
         .map(|index: usize| {
             crate::ordered_economics::process_proposal_successor(
                 &world.warrant(index),
                 &world.targets[index].0,
                 env,
                 &proposal,
-                &network.signers[index],
+                &world.members[index],
             )
             .unwrap()
             .messages
@@ -1148,7 +1364,7 @@ fn successor_round(
         )
         .unwrap()
         .expect("four successor votes reach quorum");
-    let outputs: Vec<OrderedEventOutput> = (0..REPLICAS)
+    let outputs: Vec<OrderedEventOutput> = (0..world.members.len())
         .map(|index: usize| {
             crate::ordered_economics::process_certificate_successor(
                 &world.warrant(index),
@@ -1178,11 +1394,10 @@ fn successor_split_leg(
     world: &SuccessorWorld,
     escrow: [u8; 32],
     request: [u8; 32],
-    claimant: usize,
+    signer: &TestSigner,
 ) -> Vec<u8> {
-    let source: &CausalFixture = &world.fixture.source.fixture;
+    let source: &CausalFixture = world.source();
     let network: &Network = &source.network;
-    let signer: &TestSigner = &network.signers[claimant];
     let next: PublicationContext = world.policy.context().clone();
     let settlement: FastPathSettlementRecord = imported_settlement(world, 0, escrow);
     let amount: u64 = settlement
@@ -1229,11 +1444,10 @@ fn successor_claim(
     world: &SuccessorWorld,
     escrow: [u8; 32],
     request: [u8; 32],
-    claimant: usize,
+    signer: &TestSigner,
 ) -> (OrderedCandidate, crate::fee_claims::PreparedFeeClaim) {
     let network: &Network = world.network();
-    let signer: &TestSigner = &network.signers[claimant];
-    let leg: Vec<u8> = successor_split_leg(world, escrow, request, claimant);
+    let leg: Vec<u8> = successor_split_leg(world, escrow, request, signer);
     let prepared: crate::fee_claims::PreparedFeeClaim =
         crate::serving_authority::prepare_fee_claim_successor(
             &world.warrant(0),
@@ -1300,7 +1514,7 @@ fn successor_ordered_claim_settles_imported_epoch_e_escrow_above_cut_floor() {
     );
 
     // Preparation refuses a non-successor leg policy and a missing escrow.
-    let leg: Vec<u8> = successor_split_leg(&world, PAID_REQUEST, claim, claimant);
+    let leg: Vec<u8> = successor_split_leg(&world, PAID_REQUEST, claim, &network.signers[claimant]);
     let request = |escrow: [u8; 32]| crate::fee_claims::FeeClaimPreparationRequest {
         escrow_request_id: escrow,
         request_id: claim,
@@ -1339,7 +1553,7 @@ fn successor_ordered_claim_settles_imported_epoch_e_escrow_above_cut_floor() {
     );
 
     let (candidate, prepared): (OrderedCandidate, crate::fee_claims::PreparedFeeClaim) =
-        successor_claim(&world, PAID_REQUEST, claim, claimant);
+        successor_claim(&world, PAID_REQUEST, claim, &network.signers[claimant]);
     assert_eq!(prepared.intent.certificate_epoch, outgoing);
     world.policy.authenticate_candidate(&candidate).unwrap();
     // Pure scope refusals: any certificate epoch other than the pinned e+1 or

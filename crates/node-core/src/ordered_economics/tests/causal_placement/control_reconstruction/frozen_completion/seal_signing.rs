@@ -65,6 +65,27 @@ pub(super) fn candidate_for_cut(
     subject.cut_digest = business_cut_identity_digest(resolver, cut_identity).unwrap();
     let (certificate_digest, certificate_length): (Digest32, u32) =
         stage_certificate(network, &subject, next_set);
+    seal_candidate(
+        network,
+        cut_identity,
+        subject,
+        certificate_digest,
+        certificate_length,
+        created_checkpoint,
+    )
+}
+
+/// The honest proposer's Seal candidate over an already staged certificate
+/// of exactly `subject`: target, request and intent derive from it alone.
+pub(super) fn seal_candidate(
+    network: &Network,
+    cut_identity: &BusinessCutIdentity,
+    subject: ReadinessSubject,
+    certificate_digest: Digest32,
+    certificate_length: u32,
+    created_checkpoint: u64,
+) -> OrderedCandidate {
+    let resolver: &HashSuiteResolver = &network.resolver;
     let subject_identity: Digest32 = subject.identity(resolver).unwrap();
     let target: Digest32 = seal_target_digest(
         resolver,
@@ -120,10 +141,21 @@ pub(super) fn stage_certificate(
             }
         })
         .collect();
+    stage_votes(network, subject, next_set, &votes)
+}
+
+/// Forms and verifies the real quorum certificate over independently signed
+/// readiness votes, then stages it through the real blob owner.
+pub(super) fn stage_votes(
+    network: &Network,
+    subject: &ReadinessSubject,
+    next_set: &ValidatorSet,
+    votes: &[ReadinessVote],
+) -> (Digest32, u32) {
     let certifier: ReadinessCertifier<'_> =
         ReadinessCertifier::new(&network.resolver, subject, next_set).unwrap();
     let certificate: consensus::readiness::ReadinessCertificate =
-        certifier.form_certificate(&votes).unwrap();
+        certifier.form_certificate(votes).unwrap();
     certifier.verify_certificate(&certificate).unwrap();
     let bytes: Vec<u8> = encode_readiness_certificate(&certificate).unwrap();
     let digest: Digest32 =
@@ -144,6 +176,22 @@ pub(super) fn agreed_status(network: &Network) -> OrderedStatus {
     status
 }
 
+/// Performs only real EMPTY rounds until the next pending height is an
+/// economic height. Views and heights are not interchangeable, and no raw
+/// state or lock repair is performed.
+pub(super) fn align_economic_height(network: &Network) -> OrderedStatus {
+    for _ in 0..2 {
+        let status: OrderedStatus = agreed_status(network);
+        if status.high_qc.height.checked_add(1).unwrap() % 3 == 1 {
+            break;
+        }
+        network.round(status.current_view, None);
+    }
+    let status: OrderedStatus = agreed_status(network);
+    assert_eq!(status.high_qc.height.checked_add(1).unwrap() % 3, 1);
+    status
+}
+
 /// One genuine pre-Seal fixture: real Freeze/Drain/empty-terminal history,
 /// the real derived post-drain business cut and a real 4-of-4 quorum
 /// `ReadinessCertificate` over the same outgoing validator set reused as its
@@ -156,18 +204,7 @@ pub(super) fn seal_signing_fixture() -> SealSigningFixture {
     assert_eq!(finished.committed_height, 7);
     assert_eq!(finished.high_qc.height, 9);
     assert_eq!(finished.current_view, 10);
-    // Query the authenticated pending height, and perform only real EMPTY
-    // rounds if a future fixture needs alignment. Views and heights are not
-    // interchangeable, and no raw state or lock repair is performed.
-    for _ in 0..2 {
-        let status: OrderedStatus = agreed_status(network);
-        if status.high_qc.height.checked_add(1).unwrap() % 3 == 1 {
-            break;
-        }
-        network.round(status.current_view, None);
-    }
-    let status: OrderedStatus = agreed_status(network);
-    assert_eq!(status.high_qc.height.checked_add(1).unwrap() % 3, 1);
+    let status: OrderedStatus = align_economic_height(network);
     let (identity, history) = complete_history(network);
     let cut: VerifiedBusinessCut = derive_source_business_cut(
         reconstruction_plan(&source.fixture, &identity),
