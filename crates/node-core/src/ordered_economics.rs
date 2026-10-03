@@ -58,6 +58,7 @@ mod candidate;
 mod completion;
 mod drain_set;
 mod drain_union;
+mod durable_keys;
 pub(crate) mod engine;
 mod evidence_submission;
 mod freeze;

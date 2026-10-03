@@ -84,6 +84,7 @@
 - [DR-0186: functional Seal and authenticated serving closure (Proposed)](0186-functional-handoff-closure.md)
 - [DR-0187: first-epoch ordered Seal and permanent outgoing closure](0187-first-epoch-ordered-seal.md)
 - [DR-0188: bounded ordered-client empty alignment](0188-ordered-client-empty-alignment.md)
+- [DR-0189: first successor target-local activation and authenticated serving](0189-first-successor-serving.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

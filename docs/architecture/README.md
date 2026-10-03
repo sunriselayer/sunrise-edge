@@ -143,6 +143,11 @@ roadmap describes a later target state.
   ([DR-0187](decisions/0187-first-epoch-ordered-seal.md)):
   accepted hard-stop authority, private exact acceptance terminal and permanent
   token-checked outgoing barrier contract; not successor activation or serving.
+- [First successor serving](first-successor-serving.md)
+  ([DR-0189](decisions/0189-first-successor-serving.md)):
+  source-free Seal authority, target-local atomic activation and separately
+  scoped successor signing/admission, with permanent import origin retained.
+  Design acceptance does not create a serving capability.
 - [Initial validator bond registration](initial-validator-bond.md)
   ([DR-0179](decisions/0179-initial-validator-bond-registration.md)):
   self-authenticated first collateral through generic custody and ordered

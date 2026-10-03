@@ -39,7 +39,7 @@ use crate::business_reconstruction::BusinessReconstructionPlan;
 use crate::operation_preparation::{
     InvocationPreparation, PreparedBusinessInvocation, PreparedStateOperation,
 };
-use canonical_encoding::{decode_digest32, encode_chain_id, encode_digest32};
+use canonical_encoding::{decode_digest32, encode_digest32};
 use consensus::{
     CommittedBlock, ConsensusEngine, ConsensusEvent, ConsensusMessage, ConsensusOutput,
     ConsensusProposal, ConsensusSigner, ConsensusState, QuorumCertificate, decode_consensus_state,
@@ -468,20 +468,12 @@ pub fn decode_ordered_status(bytes: &[u8]) -> Result<OrderedStatus, NodeCoreErro
 
 // --- durable storage keys -------------------------------------------------
 
-fn prefixed_key(infix: &[u8], chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
-    let mut key: Vec<u8> = ORDERED_ECONOMICS_STATE_PREFIX.to_vec();
-    key.extend_from_slice(infix);
-    key.extend(encode_chain_id(chain)?);
-    validate_transactional_state_key(&key)?;
-    Ok(key)
-}
-
 fn ordered_state_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
-    prefixed_key(b"state/", chain)
+    durable_keys::key(chain, durable_keys::OrderedKeyFamily::State)
 }
 
 pub(crate) fn ordered_applied_height_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
-    prefixed_key(b"applied-height/", chain)
+    durable_keys::key(chain, durable_keys::OrderedKeyFamily::AppliedHeight)
 }
 
 /// Immutable per-height proof key. This new family does not alter any
@@ -491,31 +483,29 @@ pub(crate) fn ordered_committed_proof_key(
     epoch: Epoch,
     height: u64,
 ) -> Result<Vec<u8>, NodeCoreError> {
-    let mut key: Vec<u8> = prefixed_key(b"committed-proof/", chain)?;
-    key.extend_from_slice(&epoch.get().to_be_bytes());
-    key.extend_from_slice(&height.to_be_bytes());
-    validate_transactional_state_key(&key)?;
-    Ok(key)
+    durable_keys::key(
+        chain,
+        durable_keys::OrderedKeyFamily::CommittedProof { epoch, height },
+    )
 }
 
 pub(crate) fn ordered_candidate_record_key(
     chain: &ChainId,
     digest: Digest32,
 ) -> Result<Vec<u8>, NodeCoreError> {
-    let mut key: Vec<u8> = prefixed_key(b"candidate/", chain)?;
-    key.extend_from_slice(&digest.bytes());
-    validate_transactional_state_key(&key)?;
-    Ok(key)
+    durable_keys::key(chain, durable_keys::OrderedKeyFamily::Candidate { digest })
 }
 
 pub(crate) fn ordered_request_header_key(
     chain: &ChainId,
     request_id: &[u8; 32],
 ) -> Result<Vec<u8>, NodeCoreError> {
-    let mut key: Vec<u8> = prefixed_key(b"header/", chain)?;
-    key.extend_from_slice(request_id);
-    validate_transactional_state_key(&key)?;
-    Ok(key)
+    durable_keys::key(
+        chain,
+        durable_keys::OrderedKeyFamily::Header {
+            request_id: *request_id,
+        },
+    )
 }
 
 /// Key of one retained, completed ordered outcome, in the same reserved
@@ -524,10 +514,12 @@ pub(crate) fn ordered_outcome_key(
     chain: &ChainId,
     request_id: &[u8; 32],
 ) -> Result<Vec<u8>, NodeCoreError> {
-    let mut key: Vec<u8> = prefixed_key(b"outcome/", chain)?;
-    key.extend_from_slice(request_id);
-    validate_transactional_state_key(&key)?;
-    Ok(key)
+    durable_keys::key(
+        chain,
+        durable_keys::OrderedKeyFamily::Outcome {
+            request_id: *request_id,
+        },
+    )
 }
 
 /// Encodes frame `0x644F/v1`: the durable row identity wrapping one exact

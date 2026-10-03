@@ -16,7 +16,7 @@
 //! closed before any signature is exposed -- an honest leader/voter is never
 //! made to equivocate by a caller handing it conflicting work.
 use super::*;
-use canonical_encoding::{decode_digest32, encode_chain_id, encode_digest32};
+use canonical_encoding::{decode_digest32, encode_digest32};
 use consensus::{ConsensusProposal, ConsensusVote, decode_proposal, decode_vote, encode_proposal};
 use protocol_types::ValidatorId;
 
@@ -29,35 +29,25 @@ fn invalid(message: &'static str) -> NodeCoreError {
     NodeCoreError::PersistenceInvariant(message)
 }
 
-fn view_key(chain: &ChainId, infix: &[u8], view: u64) -> Result<Vec<u8>, NodeCoreError> {
-    let mut key: Vec<u8> = super::engine::ORDERED_ECONOMICS_STATE_PREFIX.to_vec();
-    key.extend_from_slice(infix);
-    key.extend(encode_chain_id(chain)?);
-    key.extend_from_slice(&view.to_be_bytes());
-    validate_transactional_state_key(&key)?;
-    Ok(key)
-}
-
 pub(crate) fn ordered_leader_record_key(
     chain: &ChainId,
     view: u64,
 ) -> Result<Vec<u8>, NodeCoreError> {
-    view_key(chain, b"leader-proposal/", view)
+    super::durable_keys::key(
+        chain,
+        super::durable_keys::OrderedKeyFamily::LeaderProposal { view },
+    )
 }
 
 pub(crate) fn ordered_vote_record_key(
     chain: &ChainId,
     view: u64,
 ) -> Result<Vec<u8>, NodeCoreError> {
-    view_key(chain, b"vote/", view)
+    super::durable_keys::key(chain, super::durable_keys::OrderedKeyFamily::Vote { view })
 }
 
 pub(crate) fn ordered_vote_high_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
-    let mut key: Vec<u8> = super::engine::ORDERED_ECONOMICS_STATE_PREFIX.to_vec();
-    key.extend_from_slice(b"vote-high/");
-    key.extend(encode_chain_id(chain)?);
-    validate_transactional_state_key(&key)?;
-    Ok(key)
+    super::durable_keys::key(chain, super::durable_keys::OrderedKeyFamily::VoteHigh)
 }
 
 /// The exact signed leader proposal this replica produced for one view.
