@@ -91,6 +91,15 @@ impl<T: BlobStore> BlobStore for Observed<T> {
     }
 }
 impl<T: DurableDomainStateStore> DurableDomainStateStore for Observed<T> {
+    fn get_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, DurableReadError> {
+        self.read();
+        self.inner.get_successor_serving(context, domain)
+    }
+
     fn get_outgoing_barrier(
         &self,
         context: &DurableOperationContext,

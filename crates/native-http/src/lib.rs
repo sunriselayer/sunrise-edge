@@ -3767,6 +3767,10 @@ fn node_error_response(error: &NodeCoreError) -> Response {
         return transaction_auth_error_response(error);
     }
     let (status, code) = match error {
+        NodeCoreError::UnsupportedSuccessorControl => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "successor-control-unsupported",
+        ),
         NodeCoreError::InactiveImportNamespace => (
             StatusCode::CONFLICT,
             "inactive-import-namespace",

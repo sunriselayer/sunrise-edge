@@ -203,7 +203,9 @@ pub fn read_ordered_history_height(
         return Err(invalid("ordered archive root is not a directory"));
     }
     if height == 0 || height > identity.through_height {
-        return Err(invalid("ordered archive height is outside its fixed target"));
+        return Err(invalid(
+            "ordered archive height is outside its fixed target",
+        ));
     }
     let chunk_size: u32 = read_chunk_size(&root)?;
     read_height_material(&root, chunk_size, policy, identity, height)

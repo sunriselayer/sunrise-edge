@@ -118,8 +118,8 @@ pub use query::{
 pub use serving_authority::{
     LiveAuthority, LiveWarrant, ServingAuthorityError, SuccessorActivationError,
     SuccessorActivationOutcome, SuccessorArtifactError, SuccessorArtifactSource,
-    SuccessorPolicyInputs, VerifiedSuccessorAuthority, activate_successor,
-    resolve_live_authority, verify_successor_authority,
+    SuccessorPolicyInputs, VerifiedSuccessorAuthority, activate_successor, resolve_live_authority,
+    verify_successor_authority,
 };
 pub use transaction_auth::{
     AuthenticatedTransaction, MAX_TRANSACTION_SIGNABLE_BYTES, SUBMIT_TRANSACTION_SIGNABLE_TYPE_ID,

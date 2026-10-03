@@ -37,7 +37,9 @@ impl<'w> ServingGate<'w> {
         domain: AtomicityDomainId,
     ) -> Result<(), NodeCoreError> {
         match self {
-            Self::Original => crate::mutation_fence::require_ordinary_namespace(store, context, domain),
+            Self::Original => {
+                crate::mutation_fence::require_ordinary_namespace(store, context, domain)
+            }
             Self::Successor(warrant) => warrant.require_issuer(store, context, domain),
         }
     }
@@ -120,14 +122,18 @@ impl<'w> ServingGate<'w> {
         match self {
             Self::Original => store.commit_durable(context, transaction),
             Self::Successor(warrant) => {
-                let prepared: Result<(&dyn SuccessorServingRepository, AtomicStateTransaction), NodeCoreError> =
-                    Self::port(warrant, store, context).and_then(|port| {
+                let prepared: Result<
+                    (&dyn SuccessorServingRepository, AtomicStateTransaction),
+                    NodeCoreError,
+                > = Self::port(warrant, store, context).and_then(|port| {
                     fold_atomic(warrant.reads(), transaction).map(|folded| (port, folded))
                 });
                 match prepared {
-                    Ok((port, folded)) => {
-                        port.commit_successor_durable(context, warrant.serving_observation(), folded)
-                    }
+                    Ok((port, folded)) => port.commit_successor_durable(
+                        context,
+                        warrant.serving_observation(),
+                        folded,
+                    ),
                     Err(_) => refused(),
                 }
             }
@@ -144,8 +150,13 @@ impl<'w> ServingGate<'w> {
         match self {
             Self::Original => store.commit_invocation(context, transaction),
             Self::Successor(warrant) => {
-                let prepared: Result<(&dyn SuccessorServingRepository, DurableInvocationTransaction), NodeCoreError> =
-                    Self::port(warrant, store, context).and_then(|port| {
+                let prepared: Result<
+                    (
+                        &dyn SuccessorServingRepository,
+                        DurableInvocationTransaction,
+                    ),
+                    NodeCoreError,
+                > = Self::port(warrant, store, context).and_then(|port| {
                     fold_invocation(warrant.reads(), transaction).map(|folded| (port, folded))
                 });
                 match prepared {

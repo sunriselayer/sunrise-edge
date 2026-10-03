@@ -3847,14 +3847,15 @@ where
                 {
                     return Err(stop("Freeze preview candidate context or digest differs"));
                 }
-                authenticate_candidate(env, &committed)
-                    .map_err(|error: OrderedEconomicsError| match error {
+                authenticate_candidate(env, &committed).map_err(
+                    |error: OrderedEconomicsError| match error {
                         // DR-0189: a successor-scoped vote refuses a proposal
                         // that would commit an unsupported control with the
                         // typed refusal, unchanged, before any signature.
                         OrderedEconomicsError::UnsupportedSuccessorControl => error,
                         _ => stop("Freeze preview candidate authentication failed"),
-                    })?;
+                    },
+                )?;
                 commits_freeze |= committed.kind == OrderedOperationKind::Freeze;
                 commits_drain_set |= committed.kind == OrderedOperationKind::DrainSet;
                 commits_seal |= committed.kind == OrderedOperationKind::Seal;

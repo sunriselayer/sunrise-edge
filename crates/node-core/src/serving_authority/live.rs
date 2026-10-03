@@ -46,9 +46,11 @@ pub fn resolve_live_authority<'inv, S: StructuredDurableDomainStateStore>(
     let barrier: OutgoingBarrier = store.get_outgoing_barrier(context, domain)?;
     let slot: SuccessorServingSlot = store.get_successor_serving(context, domain)?;
     match (lifecycle, barrier, slot) {
-        (NamespaceLifecycle::Ordinary, OutgoingBarrier::Unsealed, SuccessorServingSlot::Inactive) => {
-            Ok(LiveAuthority::OriginalGenesis)
-        }
+        (
+            NamespaceLifecycle::Ordinary,
+            OutgoingBarrier::Unsealed,
+            SuccessorServingSlot::Inactive,
+        ) => Ok(LiveAuthority::OriginalGenesis),
         (NamespaceLifecycle::Ordinary, _, SuccessorServingSlot::Serving(_)) => Err(
             ServingAuthorityError::Refused("ordinary namespace carries a serving record"),
         ),
@@ -94,14 +96,20 @@ fn successor_warrant<'inv, S: StructuredDurableDomainStateStore>(
             "verified successor domain differs from the invocation domain",
         ));
     }
-    let repository: &dyn SuccessorServingRepository = store
-        .successor_serving_repository()
-        .ok_or(ServingAuthorityError::Refused(
-            "store exposes no successor serving repository",
-        ))?;
+    let repository: &dyn SuccessorServingRepository =
+        store
+            .successor_serving_repository()
+            .ok_or(ServingAuthorityError::Refused(
+                "store exposes no successor serving repository",
+            ))?;
     let namespace_validator: ValidatorId = repository.read_namespace_validator(context, domain)?;
     require_local_member(&evidence, namespace_validator, signer_public_key)?;
-    require_installed_record(&evidence, &observation, namespace_validator, signer_public_key)?;
+    require_installed_record(
+        &evidence,
+        &observation,
+        namespace_validator,
+        signer_public_key,
+    )?;
     let rows: SuccessorRows = derive_successor_rows(store, context, root, &evidence)?;
     let reads: BTreeMap<Vec<u8>, StateRevision> =
         require_installed_closure(store, context, &evidence, &rows)?;
@@ -125,8 +133,10 @@ impl LiveWarrant<'_> {
         context: &DurableOperationContext,
         domain: AtomicityDomainId,
     ) -> Result<(), NodeCoreError> {
-        if !std::ptr::addr_eq(store as *const S, self.issuer as *const dyn runtime::StructuredStateReader)
-            || context != self.context
+        if !std::ptr::addr_eq(
+            store as *const S,
+            self.issuer as *const dyn runtime::StructuredStateReader,
+        ) || context != self.context
             || domain != self.evidence.policy_inputs.domain
         {
             return Err(NodeCoreError::PersistenceInvariant(
@@ -162,7 +172,8 @@ impl LiveWarrant<'_> {
             NamespaceLifecycle::CompleteInactive { binding, progress }
                 if binding == self.observation.binding && progress == self.observation.progress
         );
-        let unsealed: bool = reader.read_outgoing_barrier(context, domain)? == OutgoingBarrier::Unsealed;
+        let unsealed: bool =
+            reader.read_outgoing_barrier(context, domain)? == OutgoingBarrier::Unsealed;
         if !serving || !origin || !unsealed {
             return Err(NodeCoreError::PersistenceInvariant(
                 "successor preparation reader differs from the warrant observation",
@@ -181,14 +192,13 @@ impl LiveWarrant<'_> {
         signer: ValidatorId,
     ) -> Result<&'s dyn SuccessorServingRepository, NodeCoreError> {
         self.require_issuer(store, self.context, self.evidence.policy_inputs.domain)?;
-        let repository: &'s dyn SuccessorServingRepository =
-            store
-                .successor_serving_repository()
-                .ok_or(NodeCoreError::PersistenceInvariant(
-                    "store exposes no successor serving repository",
-                ))?;
-        let namespace_validator: ValidatorId =
-            repository.read_namespace_validator(self.context, self.evidence.policy_inputs.domain)?;
+        let repository: &'s dyn SuccessorServingRepository = store
+            .successor_serving_repository()
+            .ok_or(
+            NodeCoreError::PersistenceInvariant("store exposes no successor serving repository"),
+        )?;
+        let namespace_validator: ValidatorId = repository
+            .read_namespace_validator(self.context, self.evidence.policy_inputs.domain)?;
         if namespace_validator != signer
             || self
                 .evidence

@@ -73,7 +73,9 @@ fn validate_subject(subject: &SuccessorActivationSubject) -> Result<(), NodeCore
         return Err(invalid("successor subject epoch is not the adjacent epoch"));
     }
     if subject.seal_request[0] & 0x80 == 0 {
-        return Err(invalid("successor subject Seal request lacks the sealed bit"));
+        return Err(invalid(
+            "successor subject Seal request lacks the sealed bit",
+        ));
     }
     if subject.seal_height == 0 {
         return Err(invalid("successor subject Seal height is zero"));

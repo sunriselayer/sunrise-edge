@@ -100,7 +100,7 @@ fn round_with_env(
 /// propose/vote/certify round at its own height, then two further genuine
 /// empty rounds -- the exact DR-0187 justified-prefix lag -- so the real
 /// 3-chain commits the Seal block on every replica.
-fn accept_genuine_seal(
+pub(super) fn accept_genuine_seal(
     fixture: &SealSigningFixture,
     env: &OrderedEconomicsEnvironment<'_>,
 ) -> Vec<OrderedProposal> {

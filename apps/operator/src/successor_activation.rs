@@ -19,9 +19,7 @@ use node_core::conditional_readiness::ReadinessSigningKey;
 use node_core::ordered_economics::{
     MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES, OrderedHistoryIdentity, decode_ordered_history_identity,
 };
-use node_core::serving_authority::{
-    SuccessorActivationOutcome, activate_successor,
-};
+use node_core::serving_authority::{SuccessorActivationOutcome, activate_successor};
 use protocol_types::ValidatorId;
 use runtime::{Clock, SystemClock};
 use runtime_sqlite::{SqliteBlobStore, SqliteImportTarget, SqliteNamespace};
@@ -83,8 +81,10 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     }
 
     let cut_archive: ImmutableArchive = ImmutableArchive::open_read_only(&cut_directory)?;
-    let manifest_history: ImmutableArchive = ImmutableArchive::open_read_only(&manifest_history_directory)?;
-    let certificate_archive: ImmutableArchive = ImmutableArchive::open_read_only(&certificate_directory)?;
+    let manifest_history: ImmutableArchive =
+        ImmutableArchive::open_read_only(&manifest_history_directory)?;
+    let certificate_archive: ImmutableArchive =
+        ImmutableArchive::open_read_only(&certificate_directory)?;
     for archive in [&cut_archive, &manifest_history, &certificate_archive] {
         for path in [&state_path, &blob_path] {
             archive.require_output_outside(path)?;
@@ -106,8 +106,9 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     let saved: SavedBusinessCut =
         read_business_cut_archive(&pins.plan(private_operation()?), &cut_archive)?;
     let verified: VerifiedImportPlan =
-        verify_saved_business_import(pins.plan(private_operation()?), &saved)
-            .map_err(|error| format!("successor activation saved-cut reconstruction failed: {error:?}"))?;
+        verify_saved_business_import(pins.plan(private_operation()?), &saved).map_err(|error| {
+            format!("successor activation saved-cut reconstruction failed: {error:?}")
+        })?;
 
     let namespace: SqliteNamespace =
         SqliteNamespace::new(pins.context.chain_id().clone(), validator, pins.domain);
@@ -121,7 +122,9 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         std::env::current_dir()?.join(key_path)
     };
     let key_directory: ImmutableArchive = ImmutableArchive::open_read_only(
-        key_path.parent().ok_or("signer key has no parent directory")?,
+        key_path
+            .parent()
+            .ok_or("signer key has no parent directory")?,
     )?;
     let key: ed25519_zebra::SigningKey = load_signing_key_file(&key_path)?;
     let key_name: &str = key_path

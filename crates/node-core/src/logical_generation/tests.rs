@@ -865,10 +865,7 @@ fn successor_scope_derives_above_the_cut_floor_and_original_scope_is_unchanged()
         &mut lifted_reads,
     )
     .unwrap();
-    assert_eq!(
-        lifted.generation.get(),
-        inputs.generation_floor().get() + 1
-    );
+    assert_eq!(lifted.generation.get(), inputs.generation_floor().get() + 1);
     assert!(lifted.generation > legacy.generation);
 
     let installed: InstalledCommitmentProfile =

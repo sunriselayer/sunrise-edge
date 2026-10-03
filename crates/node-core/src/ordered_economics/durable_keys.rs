@@ -10,8 +10,8 @@
 //! complete, correctly suffixed address: no caller can omit a required
 //! suffix, attach the wrong one, or mix up which family a view, epoch,
 //! height, digest or request id belongs to.
-use super::*;
 use super::policy::OrderedKeyScope;
+use super::*;
 use canonical_encoding::encode_chain_id;
 
 /// One ordered-economics durable key family, carrying the exact payload its
@@ -343,7 +343,8 @@ mod tests {
         }
     }
 
-    fn successor_and_original_policies() -> (OrderedEconomicsPolicy, OrderedEconomicsPolicy, ChainId) {
+    fn successor_and_original_policies() -> (OrderedEconomicsPolicy, OrderedEconomicsPolicy, ChainId)
+    {
         let root: crate::genesis::VerifiedGenesisRoot =
             crate::serving_authority::tests::causal_root();
         let inputs: crate::serving_authority::SuccessorPolicyInputs =

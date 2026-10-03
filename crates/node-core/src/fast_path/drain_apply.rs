@@ -577,6 +577,7 @@ where
     // object/sender-epoch locks this admission's own inputs touch, instead
     // of failing closed like ordinary `NonceMode::RecoveryApply`.
     let admission: PaidAdmissionOutput = build_paid_admission(
+        crate::serving_authority::ServingGate::Original,
         store,
         blob_store,
         context,

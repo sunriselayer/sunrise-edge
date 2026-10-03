@@ -20,6 +20,8 @@ use consensus::ConsensusParameters;
 use execution::publication::encode_publication_context;
 use protocol_types::{Epoch, HashAlgorithmId, HashPurpose};
 
+mod vectors;
+
 const SUCCESSOR_FLOOR: u64 = 10;
 
 /// The original causal genesis root with a positive signed Freeze height.
@@ -64,7 +66,10 @@ fn subject_digest(seed: u8) -> Digest32 {
 
 /// Verified-shape successor inputs over the original root and its committee
 /// re-epoched to e+1, with the honest v3 anchor.
-pub(crate) fn successor_inputs(root: &VerifiedGenesisRoot, subject: Digest32) -> SuccessorPolicyInputs {
+pub(crate) fn successor_inputs(
+    root: &VerifiedGenesisRoot,
+    subject: Digest32,
+) -> SuccessorPolicyInputs {
     let context: PublicationContext = successor_context(root);
     let validator_set: ValidatorSet = successor_set(root);
     let anchor: Digest32 = ordered_economics_successor_anchor(
@@ -166,15 +171,21 @@ fn v3_anchor_is_the_v2_preimage_plus_the_subject_at_the_successor_context() {
     frame
         .field_bytes(3, fixture::domain().as_bytes().to_vec())
         .unwrap();
-    frame.field_bytes(4, encode_digest32(&root.digest()).unwrap()).unwrap();
+    frame
+        .field_bytes(4, encode_digest32(&root.digest()).unwrap())
+        .unwrap();
     frame
         .field_bytes(5, encode_digest32(&set.digest(resolver).unwrap()).unwrap())
         .unwrap();
     frame.field_u16(6, parameters.protocol.as_u16()).unwrap();
-    frame.field_u32(7, parameters.max_block_transactions).unwrap();
+    frame
+        .field_u32(7, parameters.max_block_transactions)
+        .unwrap();
     frame.field_u64(8, parameters.view_timeout_millis).unwrap();
     frame.field_u64(9, 7).unwrap();
-    frame.field_bytes(10, encode_digest32(&subject).unwrap()).unwrap();
+    frame
+        .field_bytes(10, encode_digest32(&subject).unwrap())
+        .unwrap();
     let expected: Digest32 = resolver
         .hash_for_purpose(
             context.epoch(),

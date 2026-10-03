@@ -1362,20 +1362,21 @@ pub(crate) fn build_paid_admission<
     // this operation installs from the complete verified input set -- before any
     // caller can reserve, mutate or expose a signature. Overflow, regression,
     // missing, foreign or mismatched provenance are typed refusals here.
-    let logical: logical_generation::LogicalAdmission = logical_generation::admit_application_gated(
-        gate,
-        store,
-        context,
-        domain,
-        resolver,
-        intent.context.chain_id(),
-        intent.context.epoch(),
-        &head_reads,
-        &object_mutations,
-        nonce_write.as_ref(),
-        &mut state_mutations,
-        &mut reads,
-    )?;
+    let logical: logical_generation::LogicalAdmission =
+        logical_generation::admit_application_gated(
+            gate,
+            store,
+            context,
+            domain,
+            resolver,
+            intent.context.chain_id(),
+            intent.context.epoch(),
+            &head_reads,
+            &object_mutations,
+            nonce_write.as_ref(),
+            &mut state_mutations,
+            &mut reads,
+        )?;
     Ok(PaidAdmissionOutput {
         event_digest,
         outcome,
@@ -1601,7 +1602,15 @@ pub(crate) fn handle_preflighted_paid_execution_gated<
             return Err(NodeCoreError::StateConflict.into());
         }
     }
-    commit_direct_paid_admission(gate, store, context, domain, request_id, event_digest, admission)
+    commit_direct_paid_admission(
+        gate,
+        store,
+        context,
+        domain,
+        request_id,
+        event_digest,
+        admission,
+    )
 }
 
 /// Authenticates, admits and durably commits one paid invocation.

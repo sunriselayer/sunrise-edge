@@ -120,7 +120,9 @@ pub(super) fn derive_successor_rows<S: VersionedStateReader + ?Sized>(
     if derived.next_validator_set_digest != evidence.subject.successor_set_digest
         || derived.activation_set.next_context != inputs.context
     {
-        return Err(invalid("derived successor set differs from the verified subject"));
+        return Err(invalid(
+            "derived successor set differs from the verified subject",
+        ));
     }
     let next: &PublicationContext = &inputs.context;
     let publication_key: Vec<u8> = publication_policy_key_for_profile(next, 4)
@@ -225,7 +227,9 @@ pub(super) fn require_installed_closure<S: StructuredDurableDomainStateStore + ?
         )
         .is_some()
     {
-        return Err(invalid("carried-forward fee policy aliases a successor row"));
+        return Err(invalid(
+            "carried-forward fee policy aliases a successor row",
+        ));
     }
     let chain: &protocol_types::ChainId = evidence.outgoing_context.chain_id();
     let outgoing: protocol_types::Epoch = evidence.outgoing_context.epoch();

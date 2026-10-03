@@ -8,7 +8,9 @@ use super::closure::{
 };
 use super::*;
 use crate::conditional_readiness::ReadinessSigningKey;
-use crate::fast_path::records::{FastPathBondRecord, FastPathBondState, decode_fastpath_bond_record};
+use crate::fast_path::records::{
+    FastPathBondRecord, FastPathBondState, decode_fastpath_bond_record,
+};
 use crate::genesis::VerifiedGenesisRoot;
 use crate::local_instance_state::{
     FastPathEpochRecord, decode_fastpath_epoch_record, fastpath_bond_record_key,
@@ -18,22 +20,21 @@ use crate::logical_generation::{
     GenerationScope, InstalledCommitmentProfile, LogicalDerivation, LogicalWrite, derive_scoped,
     fence_commitment_profile, provenance_mutations_scoped, staged_writes,
 };
-use crate::ordered_economics::{OrderedEconomicsPolicy, OrderedKeyScope};
 use crate::ordered_economics::engine::{
     ordered_candidate_record_key, ordered_committed_proof_key, ordered_outcome_key,
-    ordered_request_header_key, scoped_applied_height_key, scoped_state_key,
-    scoped_vote_high_key,
+    ordered_request_header_key, scoped_applied_height_key, scoped_state_key, scoped_vote_high_key,
 };
+use crate::ordered_economics::{OrderedEconomicsPolicy, OrderedKeyScope};
 use consensus::encode_consensus_state;
 use protocol_types::{SignatureSchemeId, ValidatorId};
 use runtime::inactive_import::{ImportProgress, InactiveImportRepository, NamespaceLifecycle};
 use runtime::portable::{PortableBlobRepository, PortableSnapshotToken};
 use runtime::{
-    AtomicStateReadSet, DurableCommitOutcome, DurableInvocationTransaction,
-    DurableObjectChanges, DurableRequestReceipt, DurableStateTransaction, StateMutation,
-    StateMutationEntry, StateReadAssertion, StructuredDurableDomainStateStore,
-    SuccessorServingRecord, SuccessorServingRepository, SuccessorServingSlot,
-    VersionedStateReader, VersionedStateValue, encode_successor_serving_record,
+    AtomicStateReadSet, DurableCommitOutcome, DurableInvocationTransaction, DurableObjectChanges,
+    DurableRequestReceipt, DurableStateTransaction, StateMutation, StateMutationEntry,
+    StateReadAssertion, StructuredDurableDomainStateStore, SuccessorServingRecord,
+    SuccessorServingRepository, SuccessorServingSlot, VersionedStateReader, VersionedStateValue,
+    encode_successor_serving_record,
 };
 
 fn invalid(message: &'static str) -> SuccessorActivationError {
@@ -77,13 +78,19 @@ where
     if let SuccessorServingSlot::Serving(observation) =
         destination.get_successor_serving(operation, domain)?
     {
-        return reconcile_serving(root, &evidence, destination, operation, signer, &observation);
+        return reconcile_serving(
+            root,
+            &evidence,
+            destination,
+            operation,
+            signer,
+            &observation,
+        );
     }
     // Step 3.
-    let (progress, token): (ImportProgress, PortableSnapshotToken) =
-        evidence
-            .import
-            .observe_complete(destination, destination_blobs, operation)?;
+    let (progress, token): (ImportProgress, PortableSnapshotToken) = evidence
+        .import
+        .observe_complete(destination, destination_blobs, operation)?;
     if &progress != evidence.import.complete_progress() {
         return Err(invalid("destination completion is not the verified plan"));
     }
@@ -93,7 +100,8 @@ where
         .ok_or(SuccessorActivationError::Unsupported(
             "destination exposes no successor serving repository",
         ))?;
-    let namespace_validator: ValidatorId = repository.read_namespace_validator(operation, domain)?;
+    let namespace_validator: ValidatorId =
+        repository.read_namespace_validator(operation, domain)?;
     if signer.validator_id() != namespace_validator {
         return Err(invalid(
             "physical namespace validator differs from the local signer",
@@ -101,8 +109,13 @@ where
     }
     let public_key: [u8; 32] = signer.public_key();
     require_local_member(&evidence, namespace_validator, public_key)?;
-    let bond: (Vec<u8>, StateRevision) =
-        require_local_bond(destination, operation, &evidence, namespace_validator, public_key)?;
+    let bond: (Vec<u8>, StateRevision) = require_local_bond(
+        destination,
+        operation,
+        &evidence,
+        namespace_validator,
+        public_key,
+    )?;
     // Step 5.
     let warrant: ActivationWarrant = ActivationWarrant {
         evidence,
@@ -112,8 +125,14 @@ where
         public_key,
     };
     // Step 6.
-    let transaction: DurableInvocationTransaction =
-        activation_transaction(root, destination, operation, &warrant, bond, now_unix_millis)?;
+    let transaction: DurableInvocationTransaction = activation_transaction(
+        root,
+        destination,
+        operation,
+        &warrant,
+        bond,
+        now_unix_millis,
+    )?;
     let record: Vec<u8> = activation_record(&warrant)?;
     let subject: Digest32 = warrant.evidence.subject_digest;
     let manifest: Digest32 = warrant.evidence.manifest_digest;
@@ -189,7 +208,8 @@ fn reconcile_serving<S: StructuredDurableDomainStateStore + ?Sized>(
         .ok_or(SuccessorActivationError::Unsupported(
             "destination exposes no successor serving repository",
         ))?;
-    let namespace_validator: ValidatorId = repository.read_namespace_validator(operation, domain)?;
+    let namespace_validator: ValidatorId =
+        repository.read_namespace_validator(operation, domain)?;
     if signer.validator_id() != namespace_validator {
         return Err(invalid(
             "physical namespace validator differs from the local signer",
@@ -231,9 +251,9 @@ fn add_read(
     revision: StateRevision,
 ) -> Result<(), SuccessorActivationError> {
     match reads.insert(key, revision) {
-        Some(previous) if previous != revision => {
-            Err(SuccessorActivationError::Node(Box::new(NodeCoreError::StateConflict)))
-        }
+        Some(previous) if previous != revision => Err(SuccessorActivationError::Node(Box::new(
+            NodeCoreError::StateConflict,
+        ))),
         _ => Ok(()),
     }
 }
@@ -338,7 +358,15 @@ fn policy_rows_with_provenance<S: StructuredDurableDomainStateStore + ?Sized>(
         rows.derived.current_fee_policy_revision,
     );
     let derivation: LogicalDerivation = derive_scoped(
-        &scope, store, operation, domain, resolver, &profile, &[], None, &mut fold,
+        &scope,
+        store,
+        operation,
+        domain,
+        resolver,
+        &profile,
+        &[],
+        None,
+        &mut fold,
     )?;
     let mut mutations: Vec<StateMutationEntry> = Vec::with_capacity(6);
     for (key, value) in &rows.next_rows[1..] {
@@ -412,10 +440,19 @@ fn activation_transaction<S: StructuredDurableDomainStateStore + ?Sized>(
             .ok_or(invalid("destination epoch record is not installed"))?,
     )?;
     if current.current_epoch != outgoing {
-        return Err(invalid("destination epoch record is not the outgoing epoch"));
+        return Err(invalid(
+            "destination epoch record is not the outgoing epoch",
+        ));
     }
-    add_read(&mut reads, rows.epoch_record_key.clone(), epoch_observed.revision())?;
-    mutations.push(put(rows.epoch_record_key.clone(), rows.epoch_record.clone())?);
+    add_read(
+        &mut reads,
+        rows.epoch_record_key.clone(),
+        epoch_observed.revision(),
+    )?;
+    mutations.push(put(
+        rows.epoch_record_key.clone(),
+        rows.epoch_record.clone(),
+    )?);
     add_read(&mut reads, bond.0, bond.1)?;
     // The e+1 validator set and the three provenance-carrying policy rows.
     let (set_key, set_value): &(Vec<u8>, Vec<u8>) = &rows.next_rows[0];
@@ -480,7 +517,10 @@ fn activation_transaction<S: StructuredDurableDomainStateStore + ?Sized>(
             ordered_candidate_record_key(chain, seal.candidate_digest)?,
             &seal.candidate,
         ),
-        (ordered_request_header_key(chain, &seal.request_id)?, &seal.header),
+        (
+            ordered_request_header_key(chain, &seal.request_id)?,
+            &seal.header,
+        ),
         (ordered_outcome_key(chain, &seal.request_id)?, &seal.outcome),
     ] {
         require_absent(

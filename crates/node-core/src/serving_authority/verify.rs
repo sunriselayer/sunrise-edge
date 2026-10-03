@@ -3,19 +3,18 @@
 //! reruns completely on every call: there is no cache or memo.
 
 use super::*;
-use crate::{NodeDedupRecord, NodeResponseStatus};
 use crate::business_reconstruction::inactive_import::verify_saved_business_import;
 use crate::epoch_transition::check_next_set_eligibility;
 use crate::genesis::VerifiedGenesisRoot;
 use crate::local_instance_state::FASTPATH_STATE_PREFIX;
 use crate::ordered_economics::{
-    OrderedCandidate, OrderedEconomicsPolicy, OrderedHistoryComponentKind,
-    OrderedHistoryVerifier, OrderedOperationKind, SEAL_PREDECESSOR_TAG_GENESIS, SealIntent,
-    SealOutcome, VerifiedOrderedHistory, decode_ordered_candidate, decode_seal_cut_identity,
-    decode_seal_intent, decode_seal_outcome, ordered_economics_successor_anchor,
-    ordered_history_component_digest, seal_certificate_digest, seal_cut_identity_digest,
-    seal_next_members, seal_target_digest,
+    OrderedCandidate, OrderedEconomicsPolicy, OrderedHistoryComponentKind, OrderedHistoryVerifier,
+    OrderedOperationKind, SEAL_PREDECESSOR_TAG_GENESIS, SealIntent, SealOutcome,
+    VerifiedOrderedHistory, decode_ordered_candidate, decode_seal_cut_identity, decode_seal_intent,
+    decode_seal_outcome, ordered_economics_successor_anchor, ordered_history_component_digest,
+    seal_certificate_digest, seal_cut_identity_digest, seal_next_members, seal_target_digest,
 };
+use crate::{NodeDedupRecord, NodeResponseStatus};
 use consensus::readiness::{
     MAX_READINESS_CERTIFICATE_BYTES, ReadinessCertificate, ReadinessCertifier, ReadinessSubject,
     decode_readiness_certificate, encode_readiness_certificate,
@@ -128,7 +127,9 @@ fn require_predecessor(
         || binding.domain != domain
         || binding.genesis_digest != root.digest()
     {
-        return Err(invalid("verified cut binding differs from the pinned genesis"));
+        return Err(invalid(
+            "verified cut binding differs from the pinned genesis",
+        ));
     }
     Ok(())
 }
@@ -268,7 +269,9 @@ fn verify_suffix(
             && (block.view != cut_identity.through_view
                 || block.digest != cut_identity.through_digest)
         {
-            return Err(invalid("history block at the cut height differs from the cut"));
+            return Err(invalid(
+                "history block at the cut height differs from the cut",
+            ));
         }
         if height > cut_height {
             if height < seal_height && !block.transactions.is_empty() {
@@ -296,12 +299,16 @@ fn verify_suffix(
     }
     let verified: VerifiedOrderedHistory = verifier.finish()?;
     if verified.identity() != manifest_identity {
-        return Err(invalid("verified history identity differs from the manifest"));
+        return Err(invalid(
+            "verified history identity differs from the manifest",
+        ));
     }
     let (seal_block, seal_material): (CommittedBlock, OrderedHistoryHeightMaterial) =
         terminal.ok_or(invalid("successor history has no terminal height"))?;
     if predecessor_child != Some(seal_block.digest) {
-        return Err(invalid("Seal predecessor child does not link to the Seal block"));
+        return Err(invalid(
+            "Seal predecessor child does not link to the Seal block",
+        ));
     }
     let kinds: Vec<OrderedHistoryComponentKind> = seal_material
         .components
@@ -318,14 +325,15 @@ fn verify_suffix(
                 OrderedHistoryComponentKind::OriginalReceipt,
             ]
     {
-        return Err(invalid("terminal height is not one first-occurrence candidate"));
+        return Err(invalid(
+            "terminal height is not one first-occurrence candidate",
+        ));
     }
     let seal_proof: CommittedBlockProof = decode_proof(component(
         &seal_material,
         OrderedHistoryComponentKind::CommitProof,
     )?)?;
-    if !seal_proof.child.transactions.is_empty() || !seal_proof.grandchild.transactions.is_empty()
-    {
+    if !seal_proof.child.transactions.is_empty() || !seal_proof.grandchild.transactions.is_empty() {
         return Err(invalid("Seal proof child and grandchild are not empty"));
     }
     Ok(VerifiedSuffix {
@@ -378,17 +386,23 @@ fn verify_seal_certificate(
     }
     let bytes: Vec<u8> = artifacts.readiness_certificate(intent.certificate_length)?;
     if bytes.len() != length {
-        return Err(invalid("readiness certificate length differs from the Seal"));
+        return Err(invalid(
+            "readiness certificate length differs from the Seal",
+        ));
     }
     if seal_certificate_digest(resolver, context.epoch(), &bytes)? != intent.certificate_digest {
-        return Err(invalid("readiness certificate digest differs from the Seal"));
+        return Err(invalid(
+            "readiness certificate digest differs from the Seal",
+        ));
     }
     let certificate: ReadinessCertificate = decode_readiness_certificate(&bytes)?;
     if encode_readiness_certificate(&certificate)? != bytes {
         return Err(invalid("readiness certificate is noncanonical"));
     }
     if &certificate.subject != subject {
-        return Err(invalid("readiness certificate subject differs from the Seal"));
+        return Err(invalid(
+            "readiness certificate subject differs from the Seal",
+        ));
     }
     ReadinessCertifier::new(resolver, subject, &certificate.next_set)?
         .verify_certificate(&certificate)?;
@@ -416,7 +430,8 @@ pub(super) fn verify_successor_activation(
     let binding: ImportBinding = import.binding().clone();
     require_predecessor(root, policy, domain, &binding)?;
     // Steps 2 and 3: history through the terminal Seal.
-    let suffix: VerifiedSuffix = verify_suffix(policy, &cut_identity, manifest_identity, artifacts)?;
+    let suffix: VerifiedSuffix =
+        verify_suffix(policy, &cut_identity, manifest_identity, artifacts)?;
     let seal_material: &OrderedHistoryHeightMaterial = &suffix.seal_material;
     let candidate_bytes: &[u8] = component(seal_material, OrderedHistoryComponentKind::Candidate)?;
     let candidate: OrderedCandidate = decode_ordered_candidate(candidate_bytes)?;
@@ -470,10 +485,9 @@ pub(super) fn verify_successor_activation(
     // receipt must be the one accepted response carrying the exact 0xD053
     // outcome of this target, request, height and block.
     let accepted: Option<SealOutcome> = match receipt.responses() {
-        [response] if response.status() == NodeResponseStatus::Accepted => response
-            .payload()
-            .map(decode_seal_outcome)
-            .transpose()?,
+        [response] if response.status() == NodeResponseStatus::Accepted => {
+            response.payload().map(decode_seal_outcome).transpose()?
+        }
         _ => None,
     };
     let expected_outcome: SealOutcome = SealOutcome {

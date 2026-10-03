@@ -69,6 +69,7 @@ fn paid_observed_completion_refuses_conflicting_or_duplicate_contributions_befor
         let (authenticated, digest, request): (AuthenticatedPaidIntent, Digest32, RequestId) =
             authenticate_and_identify(&resolver, &expected, &bytes).unwrap();
         let mut admission: PaidAdmissionOutput = build_paid_admission(
+            crate::serving_authority::ServingGate::Original,
             &store,
             &blobs,
             &context,
@@ -118,8 +119,15 @@ fn paid_observed_completion_refuses_conflicting_or_duplicate_contributions_befor
                 );
             }
         }
-        let refused: PaidResult<NodeOutput> =
-            commit_direct_paid_admission(&store, &context, domain, request, digest, admission);
+        let refused: PaidResult<NodeOutput> = commit_direct_paid_admission(
+            crate::serving_authority::ServingGate::Original,
+            &store,
+            &context,
+            domain,
+            request,
+            digest,
+            admission,
+        );
         match case {
             BrokenContribution::ConfigurationRevision
             | BrokenContribution::PendingNonceRevision => {

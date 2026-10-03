@@ -150,6 +150,13 @@ fn ordered_economics_error_response(error: &OrderedEconomicsError) -> Response {
     // unavailability/fencing/ambiguity must never be reported as an ordinary
     // client error that a retry-with-different-bytes could paper over.
     match error {
+        OrderedEconomicsError::UnsupportedSuccessorControl
+        | OrderedEconomicsError::Node(node_core::NodeCoreError::UnsupportedSuccessorControl) => {
+            error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "successor-control-unsupported",
+            )
+        }
         OrderedEconomicsError::Unauthenticated(_) | OrderedEconomicsError::Policy(_) => {
             error_response(StatusCode::BAD_REQUEST, "ordered-economics-rejected")
         }
@@ -777,6 +784,22 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn successor_controls_are_permanent_client_refusals_not_retryable_failures() {
+        for error in [
+            OrderedEconomicsError::UnsupportedSuccessorControl,
+            OrderedEconomicsError::Node(node_core::NodeCoreError::UnsupportedSuccessorControl),
+        ] {
+            let response: Response = ordered_economics_error_response(&error);
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            let body: Bytes = axum::body::to_bytes(response.into_body(), 128)
+                .await
+                .unwrap();
+            assert_eq!(body.as_ref(), b"successor-control-unsupported");
+        }
+    }
 
     #[test]
     fn reject_unsupported_request_rejects_the_wrong_media_type_with_zero_admission() {

@@ -55,10 +55,10 @@ pub use activation::{SuccessorActivationOutcome, activate_successor};
 pub use frames::{
     MAX_SUCCESSOR_ACTIVATION_MANIFEST_BYTES, MAX_SUCCESSOR_ACTIVATION_SUBJECT_BYTES,
     SUCCESSOR_ACTIVATION_MANIFEST_TYPE, SUCCESSOR_ACTIVATION_SUBJECT_TYPE,
-    SuccessorActivationManifest, SuccessorActivationSubject,
-    decode_successor_activation_manifest, decode_successor_activation_subject,
-    encode_successor_activation_manifest, encode_successor_activation_subject,
-    successor_activation_manifest_digest, successor_activation_subject_digest,
+    SuccessorActivationManifest, SuccessorActivationSubject, decode_successor_activation_manifest,
+    decode_successor_activation_subject, encode_successor_activation_manifest,
+    encode_successor_activation_subject, successor_activation_manifest_digest,
+    successor_activation_subject_digest,
 };
 pub use live::{LiveAuthority, resolve_live_authority};
 

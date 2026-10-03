@@ -15,9 +15,9 @@
 //! revision. A second, *different* proposal or vote in the same view fails
 //! closed before any signature is exposed -- an honest leader/voter is never
 //! made to equivocate by a caller handing it conflicting work.
-use super::*;
 use super::durable_keys::{OrderedKeyFamily, scoped_key};
 use super::policy::OrderedKeyScope;
+use super::*;
 use canonical_encoding::{decode_digest32, encode_digest32};
 use consensus::{ConsensusProposal, ConsensusVote, decode_proposal, decode_vote, encode_proposal};
 use protocol_types::ValidatorId;
@@ -234,8 +234,11 @@ pub(crate) fn reconcile_leader_proposal<S: StructuredDurableDomainStateStore>(
     leader: ValidatorId,
     digest: Digest32,
 ) -> Result<(Vec<u8>, StateRevision, RetainedIdentity<ConsensusProposal>), OrderedEconomicsError> {
-    let key: Vec<u8> =
-        scoped_leader_record_key(env.policy.key_scope(), env.policy.context().chain_id(), view)?;
+    let key: Vec<u8> = scoped_leader_record_key(
+        env.policy.key_scope(),
+        env.policy.context().chain_id(),
+        view,
+    )?;
     let observed: VersionedStateValue =
         store.get_versioned_durable(context, env.policy.domain(), &key)?;
     match observed.value() {

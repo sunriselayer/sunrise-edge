@@ -180,9 +180,22 @@ Opus explicitly approved that exact head; required CI lanes and the aggregate
 and signed Freeze height, refusing unsupported candidate kinds in the shared
 pure authenticator and other controls before signing. Real activation, live
 successor commits and operator/SDK/CLI consumers remain implementation work.
-The next integrated implementation is in progress in separate core, persistence
-and operator/HTTP/SDK worktrees. Their uncompiled changes are not completed
-activation, serving, Delivery 3 or network-readiness evidence.
+Functional implementation is integrated locally on the in-progress
+`codex/first-successor-serving-implementation-1003` branch, not merged or accepted.
+The required protected slot, codecs, memory/shared-SQL/SQLite storage ports and
+PG metadata refusal are implemented; workspace all-target type checking and
+the focused storage tests pass. Independent Node/Rust vectors agree.
+Genuine accepted terminal-Seal evidence now activates four separate file-backed
+SQLite targets over the same eligible committee. Tests cover wrong local key,
+same-length certificate substitution, foreign-handle warrant refusal, a real
+e+1 Tick advancing ordered state, reconciliation preserving that state, and
+close/reopen/refencing. This is not the A/B/C/D -> A/B/C/E host/CLI acceptance.
+Readiness signing refuses the protected Serving slot; native HTTP classifies
+the typed unsupported control as a permanent 4xx, not a retryable 503.
+The full live ordered/FastVote/paid/claim consumers, successor host and shipped
+network workflow remain incomplete. Full required/selected-PG acceptance,
+fresh independent exact-head review and CI are still pending. These local
+checks do not complete authenticated serving, Delivery 3 or network readiness.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.
