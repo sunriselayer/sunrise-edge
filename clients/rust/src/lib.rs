@@ -71,6 +71,7 @@ pub mod ordered_history_client;
 pub mod paid_execution_client;
 pub mod publication_client;
 pub mod support;
+pub mod successor_authority;
 pub mod transaction;
 pub mod transport;
 
@@ -155,6 +156,7 @@ pub use protocol_types::{HashSuite, HashSuiteSchedule};
 pub use publication_client::{
     PublicationQueryResult, build_signed_publication, local_publication_resolver,
 };
+pub use successor_authority::load_successor_authority;
 pub use signing_view::{
     ClearSigningPolicy, ClearSigningPolicyError, ClearSigningView, DeviceSigningProfile,
     HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3, SigningViewError,

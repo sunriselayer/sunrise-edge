@@ -1396,6 +1396,15 @@ impl DurableDomainStateStore for ScriptedIndexedStore {
         Err(DurableReadError::Unavailable)
     }
 
+    fn get_successor_serving(
+        &self,
+        _context: &DurableOperationContext,
+        _domain: AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, DurableReadError> {
+        self.storage_calls.fetch_add(1, Ordering::SeqCst);
+        Err(DurableReadError::Unavailable)
+    }
+
     fn commit_durable(
         &self,
         _context: &DurableOperationContext,

@@ -28,7 +28,7 @@ use runtime::{
     DurableObjectVersionRecord, DurableOperationContext, DurableReadError, DurableRequestId,
     DurableRequestReceipt, IndeterminateCommitReason, NamespaceLifecycle, OutgoingBarrier,
     OutgoingSealRepository, SealBarrier, StateRevision, StructuredDurableDomainStateStore,
-    VersionedStateValue,
+    SuccessorServingSlot, VersionedStateValue,
 };
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore};
 use std::{
@@ -336,6 +336,14 @@ impl DurableDomainStateStore for SealWarrantFaultStore {
         Ok(faulted)
     }
 
+    fn get_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<SuccessorServingSlot, DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
+    }
+
     fn commit_durable(
         &self,
         context: &DurableOperationContext,
@@ -640,6 +648,14 @@ impl DurableDomainStateStore for SealCompletionReplyLossStore {
         key: &[u8],
     ) -> Result<VersionedStateValue, DurableReadError> {
         self.inner.get_versioned_durable(context, domain, key)
+    }
+
+    fn get_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<SuccessorServingSlot, DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
     }
 
     fn commit_durable(
