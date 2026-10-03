@@ -859,6 +859,7 @@ pub(super) async fn run(
     candidate_path: &Path,
     candidate: &OrderedCandidate,
     competing_candidate: &OrderedCandidate,
+    successor: &super::successor_host_acceptance::SuccessorProcessInputs,
 ) {
     let fence: WriterFenceGeneration = fixture.operation.writer_fence();
     let mut stores: Vec<Arc<SqliteDurableStore>> = Vec::new();
@@ -1667,4 +1668,8 @@ pub(super) async fn run(
             completed[index]
         );
     }
+    // Every outgoing assertion above stays intact; the sealed files are now
+    // only historical. The positive first-successor process acceptance runs
+    // inside this lifetime over the same genuine sealed source.
+    super::successor_host_acceptance::run(&*fixture, successor, candidate, fence).await;
 }

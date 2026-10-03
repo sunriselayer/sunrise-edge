@@ -11,6 +11,8 @@ mod causal_genesis_fixture;
 mod fixture;
 #[path = "support/ordered_seal_sqlite_acceptance.rs"]
 mod ordered_seal_sqlite_acceptance;
+#[path = "support/successor_host_acceptance.rs"]
+mod successor_host_acceptance;
 
 use consensus::readiness::{
     ReadinessCertificate, ReadinessCertifier, ReadinessVote, decode_readiness_certificate,
@@ -664,6 +666,16 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
         &seal_output.0.join("candidate.bin"),
         &candidate,
         &competing_candidate,
+        &successor_host_acceptance::SuccessorProcessInputs {
+            plan_history: history_root.clone(),
+            cut: cut.0.clone(),
+            certificate: certificates.0.clone(),
+            competing_certificate: certificates_b.0.clone(),
+            targets: destinations
+                .iter()
+                .map(|destination: &Directory| destination.0.clone())
+                .collect(),
+        },
     )
     .await;
 }
