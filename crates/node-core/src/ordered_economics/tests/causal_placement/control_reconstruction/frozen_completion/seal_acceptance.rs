@@ -123,12 +123,8 @@ pub(super) fn accept_seal_candidate(
     let mut proposals: Vec<OrderedProposal> = Vec::new();
     for offset in 0..3 {
         let candidate: Option<&OrderedCandidate> = (offset == 0).then_some(seal);
-        let (certificate, proposal): (QuorumCertificate, OrderedProposal) = certify_with_env(
-            network,
-            env,
-            view.checked_add(offset).unwrap(),
-            candidate,
-        );
+        let (certificate, proposal): (QuorumCertificate, OrderedProposal) =
+            certify_with_env(network, env, view.checked_add(offset).unwrap(), candidate);
         for replica in 0..REPLICAS {
             process_certificate(
                 &network.stores[replica],

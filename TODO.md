@@ -205,8 +205,16 @@ Imported epoch-e escrow claims now also settle through genuine e+1 ordered
 rounds, with identical settlement, payout/escrow object and sender-nonce
 provenance above the cut floor on all four replicas, and completed-claim replay
 refusal without reapplication. The archive integration tests pass exact/short/
-oversized certificate and held-directory replacement/symlink checks. A retired
-claimant/consensus-signer distinction still needs the A/B/C/E replacement fixture.
+oversized certificate and held-directory replacement/symlink checks. All ten
+successor tests pass, now including genuine A/B/C/D -> A/B/C/E registration,
+readiness retained by the same four imports, accepted terminal Seal, activation
+and an e+1 quorum. They prove retired D cannot activate/resolve/vote, but can
+claim its imported predecessor escrow and unbond its own imported bond. Its
+first-successor withdrawal authenticates D and refuses precisely on the
+genuine future unlock rule, without signing or state changes. Authenticated
+unsupported control carriers are refused in observation and committed recovery.
+Retired-D FastVote/ACK refusal and the stored-control vote-preview negative
+remain to be checked. This remains in-process evidence, not four shipped hosts.
 The real loopback-only successor host now mounts authenticated ordered,
 FastVote, certified paid-execution, publication/ACK and query routes. Its
 per-request authority reconstruction never falls back to original-genesis

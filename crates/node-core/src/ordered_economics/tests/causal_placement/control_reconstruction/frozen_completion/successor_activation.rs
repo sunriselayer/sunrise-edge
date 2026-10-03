@@ -17,8 +17,8 @@ use crate::serving_authority::{
     LiveAuthority, SuccessorActivationOutcome, SuccessorArtifactError, SuccessorArtifactSource,
     activate_successor, resolve_live_authority, verify_successor_authority,
 };
-use runtime::{BlobStore, SuccessorServingSlot};
 use consensus::readiness::{ReadinessSubject, ReadinessVote};
+use runtime::{BlobStore, SuccessorServingSlot};
 use runtime_sqlite::SqliteImportTarget;
 
 #[path = "successor_replacement.rs"]
@@ -486,12 +486,14 @@ fn replacement_source() -> SealedSource {
         subject.next_epoch,
         entries
             .iter()
-            .map(|entry: &FastPathValidatorEntry| validator_set::ValidatorInfo {
-                id: entry.id,
-                voting_power: entry.voting_power,
-                signature_scheme: entry.signature_scheme,
-                public_key: entry.public_key.clone(),
-            })
+            .map(
+                |entry: &FastPathValidatorEntry| validator_set::ValidatorInfo {
+                    id: entry.id,
+                    voting_power: entry.voting_power,
+                    signature_scheme: entry.signature_scheme,
+                    public_key: entry.public_key.clone(),
+                },
+            )
             .collect(),
     )
     .unwrap();
@@ -561,7 +563,11 @@ fn activate(sealed: SealedSource) -> SuccessorWorld {
     seal_acceptance::accept_seal_candidate(network, &env_before, view, &seal);
     let (sealed_history, history) = complete_history(network);
     assert!(sealed_history.through_height > cut_history.through_height);
-    let certificate: Vec<u8> = network.blobs.get_blob(&certificate_digest).unwrap().unwrap();
+    let certificate: Vec<u8> = network
+        .blobs
+        .get_blob(&certificate_digest)
+        .unwrap()
+        .unwrap();
     let mut artifacts: Artifacts<'_> = Artifacts {
         saved: &saved,
         history: &history,

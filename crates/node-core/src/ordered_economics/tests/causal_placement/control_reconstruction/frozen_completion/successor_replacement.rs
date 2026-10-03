@@ -49,8 +49,11 @@ fn retired(world: &SuccessorWorld) -> &TestSigner {
 /// The single successor member absent from the genesis committee.
 fn incoming(world: &SuccessorWorld) -> usize {
     let original: &OrderedEconomicsPolicy = &world.network().policy;
-    let mut fresh = (0..world.members.len())
-        .filter(|index: &usize| original.registered_validator(world.members[*index].id).is_none());
+    let mut fresh = (0..world.members.len()).filter(|index: &usize| {
+        original
+            .registered_validator(world.members[*index].id)
+            .is_none()
+    });
     let incoming: usize = fresh.next().expect("E is incoming");
     assert!(fresh.next().is_none(), "exactly one member is incoming");
     incoming
@@ -98,7 +101,10 @@ fn committed_bond_row(
     id: ValidatorId,
 ) -> (FastPathBondRecord, Vec<u8>) {
     let bytes: Vec<u8> = world
-        .value(index, &fastpath_bond_record_key(&fixture::chain(), &id).unwrap())
+        .value(
+            index,
+            &fastpath_bond_record_key(&fixture::chain(), &id).unwrap(),
+        )
         .1
         .unwrap();
     (decode_fastpath_bond_record(&bytes).unwrap(), bytes)
@@ -129,9 +135,11 @@ fn predicted_unbond(
     let delay: u64 = policy
         .resources
         .iter()
-        .find(|entry: &&crate::economics::FastPathEconomicsResourcePolicy| {
-            entry.resource_id == resource
-        })
+        .find(
+            |entry: &&crate::economics::FastPathEconomicsResourcePolicy| {
+                entry.resource_id == resource
+            },
+        )
         .unwrap()
         .bond
         .as_ref()
@@ -169,12 +177,8 @@ fn bond_candidate(
         validator_id: owner.id,
         resource_id: BondResourceId::new(bond.resource_domain, bond.resource).unwrap(),
         expected_generation: bond.generation,
-        expected_previous_row_digest: bond_row_digest(
-            resolver,
-            bond.lifecycle_epoch,
-            bond_bytes,
-        )
-        .unwrap(),
+        expected_previous_row_digest: bond_row_digest(resolver, bond.lifecycle_epoch, bond_bytes)
+            .unwrap(),
         expected_next_row_digest: bond_row_digest(
             resolver,
             next_row.lifecycle_epoch,
@@ -250,7 +254,12 @@ fn replacement_abce_activates_registered_e_and_certifies_an_e1_round() {
     let e: usize = incoming(&world);
     let d: &TestSigner = retired(&world);
     assert_eq!(world.members.len(), REPLICAS);
-    assert!(world.policy.registered_validator(world.members[e].id).is_some());
+    assert!(
+        world
+            .policy
+            .registered_validator(world.members[e].id)
+            .is_some()
+    );
     assert!(world.policy.registered_validator(d.id).is_none());
     let bond: FastPathBondRecord = decode_fastpath_bond_record(
         &world
@@ -354,7 +363,9 @@ fn retired_d_is_refused_activation_resolution_and_consensus_signing() {
     );
     assert_eq!(signer.signatures_created(), 0);
     assert_eq!(
-        target.get_successor_serving(&world.operation, domain).unwrap(),
+        target
+            .get_successor_serving(&world.operation, domain)
+            .unwrap(),
         SuccessorServingSlot::Inactive
     );
     assert!(!matches!(
@@ -392,13 +403,18 @@ fn retired_d_is_refused_activation_resolution_and_consensus_signing() {
     )
     .unwrap();
     let chain: protocol_types::ChainId = fixture::chain();
-    let vote_key: Vec<u8> =
-        crate::ordered_economics::identity::scoped_vote_record_key(world.policy.key_scope(), &chain, view)
-            .unwrap();
+    let vote_key: Vec<u8> = crate::ordered_economics::identity::scoped_vote_record_key(
+        world.policy.key_scope(),
+        &chain,
+        view,
+    )
+    .unwrap();
     let state_key: Vec<u8> = engine::scoped_state_key(world.policy.key_scope(), &chain).unwrap();
     for index in 0..REPLICAS {
-        let before: [(StateRevision, Option<Vec<u8>>); 2] =
-            [world.value(index, &vote_key), world.value(index, &state_key)];
+        let before: [(StateRevision, Option<Vec<u8>>); 2] = [
+            world.value(index, &vote_key),
+            world.value(index, &state_key),
+        ];
         assert!(
             crate::ordered_economics::process_proposal_successor(
                 &world.warrant(index),
@@ -420,7 +436,10 @@ fn retired_d_is_refused_activation_resolution_and_consensus_signing() {
             .is_err()
         );
         assert_eq!(
-            [world.value(index, &vote_key), world.value(index, &state_key)],
+            [
+                world.value(index, &vote_key),
+                world.value(index, &state_key)
+            ],
             before
         );
     }
@@ -590,9 +609,12 @@ fn retired_d_keeps_verified_predecessor_bond_and_claim_ownership_only() {
     let before: Vec<(StateRevision, Option<Vec<u8>>)> = (0..REPLICAS)
         .map(|index: usize| world.value(index, &bond_key))
         .collect();
-    let status: OrderedStatus =
-        crate::ordered_economics::query_status_successor(&world.warrant(0), &world.targets[0].0, &env)
-            .unwrap();
+    let status: OrderedStatus = crate::ordered_economics::query_status_successor(
+        &world.warrant(0),
+        &world.targets[0].0,
+        &env,
+    )
+    .unwrap();
     assert!(matches!(
         crate::ordered_economics::preflight::preflight(
             &world.targets[0].0,
@@ -601,7 +623,9 @@ fn retired_d_keeps_verified_predecessor_bond_and_claim_ownership_only() {
             &withdraw,
             status.high_qc.height.checked_add(1).unwrap(),
         ),
-        Err(OrderedEconomicsError::Refused(OrderedRefusal::IneligibleState))
+        Err(OrderedEconomicsError::Refused(
+            OrderedRefusal::IneligibleState
+        ))
     ));
     let leader: usize = leader_of(&world, status.current_view);
     let counted: CountingSigner<'_> = CountingSigner::new(&world.members[leader]);
@@ -634,7 +658,8 @@ fn byzantine_chain(
     let hotstuff: &consensus::ChainedHotStuff = world.policy.engine();
     let verifier: crate::ordered_economics::policy::Ed25519ConsensusVerifier =
         crate::ordered_economics::policy::Ed25519ConsensusVerifier;
-    let key: Vec<u8> = engine::scoped_state_key(world.policy.key_scope(), &fixture::chain()).unwrap();
+    let key: Vec<u8> =
+        engine::scoped_state_key(world.policy.key_scope(), &fixture::chain()).unwrap();
     let byzantine: Vec<usize> = (0..world.members.len())
         .filter(|index: &usize| *index != honest)
         .collect();
@@ -853,8 +878,11 @@ fn successor_refuses_certified_byzantine_controls_in_vote_observation_and_commit
 
     // Signerless recovery of the genuinely certified Freeze chain.
     let freeze_digest: Digest32 = world.policy.candidate_digest(&freeze).unwrap();
-    let blocks: Vec<(consensus::ConsensusProposal, consensus::QuorumCertificate)> =
-        byzantine_chain(&world, honest, &[vec![freeze_digest], Vec::new(), Vec::new()]);
+    let blocks: Vec<(consensus::ConsensusProposal, consensus::QuorumCertificate)> = byzantine_chain(
+        &world,
+        honest,
+        &[vec![freeze_digest], Vec::new(), Vec::new()],
+    );
     for (position, (proposal, certificate)) in blocks.iter().enumerate() {
         crate::ordered_economics::observe_proposal_successor(
             &world.warrant(honest),
