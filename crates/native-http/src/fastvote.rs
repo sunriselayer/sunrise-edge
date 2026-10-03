@@ -67,7 +67,7 @@ pub const CERTIFIED_FASTVOTE_EXCLUDED_MUTATION_PATHS: &[&str] = &[
 /// ConsensusSigner` itself is not, and this crate cannot implement the
 /// foreign `ConsensusSigner` trait directly on `Arc<dyn ConsensusSigner>`
 /// under Rust's orphan rules.
-struct DynConsensusSigner<'a>(&'a (dyn ConsensusSigner + Send + Sync));
+pub(super) struct DynConsensusSigner<'a>(pub(super) &'a (dyn ConsensusSigner + Send + Sync));
 
 impl ConsensusSigner for DynConsensusSigner<'_> {
     fn validator_id(&self) -> ValidatorId {
@@ -617,7 +617,7 @@ where
     .await
 }
 
-fn publication_retention_error_response(error: &PublicationRetentionError) -> Response {
+pub(super) fn publication_retention_error_response(error: &PublicationRetentionError) -> Response {
     match error {
         PublicationRetentionError::Admission(error) => paid_execution::admission_error(error),
         PublicationRetentionError::Node(NodeCoreError::EpochMismatch { .. }) => {
@@ -1028,7 +1028,7 @@ where
     .await
 }
 
-fn fastpath_error_response(error: &FastPathError) -> Response {
+pub(super) fn fastpath_error_response(error: &FastPathError) -> Response {
     match error {
         FastPathError::Admission(error) => paid_execution::admission_error(error),
         FastPathError::Node(NodeCoreError::EpochMismatch { .. }) => {

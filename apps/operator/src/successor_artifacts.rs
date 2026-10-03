@@ -56,6 +56,17 @@ impl<'a> SuccessorArtifactFiles<'a> {
             certificate_archive,
         }
     }
+
+    /// Returns the three held directory handles so a long-lived host can
+    /// rebuild a fresh, non-caching source for its next invocation.
+    #[must_use]
+    pub fn into_directories(self) -> (ImmutableArchive, ImmutableArchive, ImmutableArchive) {
+        (
+            self.cut_archive,
+            self.manifest_history,
+            self.certificate_archive,
+        )
+    }
 }
 
 fn cut_error(error: CutArchiveError) -> SuccessorArtifactError {

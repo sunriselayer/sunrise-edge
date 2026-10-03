@@ -139,7 +139,7 @@ fn error_response(status: StatusCode, code: &'static str) -> Response {
     (status, [(header::CACHE_CONTROL, "no-store")], code).into_response()
 }
 
-fn ordered_economics_error_response(error: &OrderedEconomicsError) -> Response {
+pub(crate) fn ordered_economics_error_response(error: &OrderedEconomicsError) -> Response {
     if let Some(outcome) = error.completed_outcome() {
         return encode_event_output_response(&ordered_economics::OrderedEventOutput {
             messages: Vec::new(),
@@ -232,7 +232,7 @@ fn has_media_type(headers: &HeaderMap, expected: &str) -> bool {
 /// Shared preflight: unsupported media type, unsupported `Content-Encoding`,
 /// or an oversized body, all rejected on the async task with zero identity/
 /// clock/storage access and zero admission-slot use.
-fn reject_unsupported_request(
+pub(crate) fn reject_unsupported_request(
     headers: &HeaderMap,
     body: &Bytes,
     expected_media_type: &str,
@@ -650,7 +650,9 @@ where
     .await
 }
 
-fn encode_event_output_response(output: &ordered_economics::OrderedEventOutput) -> Response {
+pub(crate) fn encode_event_output_response(
+    output: &ordered_economics::OrderedEventOutput,
+) -> Response {
     match ordered_economics::encode_ordered_event_output(output) {
         Ok(bytes) => (
             StatusCode::OK,

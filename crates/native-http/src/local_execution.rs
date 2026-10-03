@@ -5,7 +5,7 @@ use execution::local_execution::{
 };
 
 pub(super) const EXECUTION_PATH: &str = "/v1/contracts/executions";
-const INSTANCE_PATH: &str = "/v1/contracts/instances/{creator}/{seed}";
+pub(super) const INSTANCE_PATH: &str = "/v1/contracts/instances/{creator}/{seed}";
 
 /// The one direct/legacy mutating local-execution route. A certified-only
 /// FastVote router (DR-0148, see [`crate::fastvote`]) never calls this.

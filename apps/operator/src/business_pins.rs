@@ -130,6 +130,11 @@ impl BusinessPins {
         self.root.genesis_resolver()
     }
 
+    /// The original pinned verified genesis root, never a replacement.
+    pub(crate) fn root(&self) -> &VerifiedGenesisRoot {
+        &self.root
+    }
+
     pub(crate) fn plan(
         &self,
         operation: DurableOperationContext,

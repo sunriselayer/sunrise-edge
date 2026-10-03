@@ -12,3 +12,4 @@ pub mod ordered_seal;
 pub mod source_sqlite;
 pub mod successor_activation;
 pub mod successor_artifacts;
+pub mod successor_host;

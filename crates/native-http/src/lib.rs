@@ -20,6 +20,7 @@ mod local_execution;
 pub mod ordered_economics;
 mod paid_execution;
 mod publication;
+pub mod successor;
 use execution::{ExecutionError, WasmExecutionEngine};
 use hashing::HashSuiteResolver;
 use http_body_util::LengthLimitError;

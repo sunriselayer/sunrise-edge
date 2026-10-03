@@ -160,7 +160,10 @@ pub use signing_view::{
     ClearSigningPolicy, ClearSigningPolicyError, ClearSigningView, DeviceSigningProfile,
     HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3, SigningViewError,
 };
-pub use successor_authority::load_successor_authority;
+pub use successor_authority::{
+    SuccessorWorkflowAuthority, SuccessorWorkflowError, load_successor_authority,
+    load_successor_workflow,
+};
 pub use support::{
     ED25519_ADDRESS_IS_PUBLIC_KEY_BINDING_ID, ED25519_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
     ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
