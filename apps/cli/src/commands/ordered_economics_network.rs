@@ -186,7 +186,6 @@ fn network_flag_specs(extra: &[&'static str]) -> Vec<crate::args::FlagSpec> {
 struct LoadedPolicyInputs {
     endpoints: Vec<OrderedEconomicsEndpoint<CliTransport>>,
     policy: sunrise_edge_client::ordered_economics_core::OrderedEconomicsPolicy,
-    resolver: sunrise_edge_client::HashSuiteResolver,
     successor: Option<sunrise_edge_client::SuccessorWorkflowAuthority>,
 }
 
@@ -248,7 +247,6 @@ fn load_policy_and_endpoints(
     Ok(LoadedPolicyInputs {
         endpoints,
         policy,
-        resolver,
         successor,
     })
 }
@@ -1051,12 +1049,16 @@ fn run_fee_claim_prepare<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
             "fee-claim-prepare is a successor workflow and requires the --successor-* artifact flags",
         ));
     }
-    let escrow_request_id: [u8; 32] =
-        decode_hex_32("--escrow-request-id", parsed.require("--escrow-request-id")?)?;
+    let escrow_request_id: [u8; 32] = decode_hex_32(
+        "--escrow-request-id",
+        parsed.require("--escrow-request-id")?,
+    )?;
     let request_id: [u8; 32] = decode_hex_32("--request-id", parsed.require("--request-id")?)?;
-    let claimant: sunrise_edge_client::ValidatorId = sunrise_edge_client::ValidatorId::new(
-        decode_hex_32("--claimant-validator-id", parsed.require("--claimant-validator-id")?)?,
-    );
+    let claimant: sunrise_edge_client::ValidatorId =
+        sunrise_edge_client::ValidatorId::new(decode_hex_32(
+            "--claimant-validator-id",
+            parsed.require("--claimant-validator-id")?,
+        )?);
     let recipient: sunrise_edge_client::Address = sunrise_edge_client::Address::new(decode_hex_32(
         "--recipient",
         parsed.require("--recipient")?,
@@ -1093,10 +1095,12 @@ fn run_fee_claim_prepare<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
         .ok_or_else(|| invalid("missing fee claim candidate reservation"))?;
     // The seed is read only after every local pin and the output reservation
     // succeeded, and is never printed.
-    let seed: [u8; 32] = crate::seed::load_dev_seed(Path::new(parsed.require("--claimant-seed-file")?))
-        .map_err(failure)?;
-    let claimant_public_key: [u8; 32] =
-        *sunrise_edge_client::LocalSigner::from_seed(seed).address().as_bytes();
+    let seed: [u8; 32] =
+        crate::seed::load_dev_seed(Path::new(parsed.require("--claimant-seed-file")?))
+            .map_err(failure)?;
+    let claimant_public_key: [u8; 32] = *sunrise_edge_client::LocalSigner::from_seed(seed)
+        .address()
+        .as_bytes();
     let request: sunrise_edge_client::FeeClaimPrepareRequest =
         sunrise_edge_client::FeeClaimPrepareRequest {
             context: workflow.expected_context().clone(),
@@ -1116,7 +1120,7 @@ fn run_fee_claim_prepare<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
         .prepare_successor_fee_claim(workflow, &request, Some(request_deadline))
         .map_err(failure)?;
     let signed: Vec<u8> =
-        sunrise_edge_client::sign_prepared_fee_claim(&loaded.resolver, &request, intent, seed)
+        sunrise_edge_client::sign_prepared_fee_claim(workflow, &request, intent, seed)
             .map_err(failure)?;
     let encoded: Vec<u8> =
         sunrise_edge_client::fee_claim_candidate(workflow, request_id, signed, created_checkpoint)

@@ -59,7 +59,9 @@ impl ImmutableArchiveReader {
         let root: PathBuf = Self::directory_path(root)?;
         let before: std::fs::Metadata = std::fs::symlink_metadata(&root)?;
         if before.file_type().is_symlink() || !before.is_dir() {
-            return Err(invalid("archive root must be an existing regular directory"));
+            return Err(invalid(
+                "archive root must be an existing regular directory",
+            ));
         }
         let directory: File = File::open(&root)?;
         let held: std::fs::Metadata = directory.metadata()?;
@@ -121,7 +123,9 @@ impl ImmutableArchiveReader {
             .ok_or_else(|| invalid("destination database has no parent directory"))?;
         let parent: PathBuf = Self::directory_path(parent)?;
         if parent.starts_with(&self.root) {
-            return Err(invalid("destination database must be outside pinned input archive"));
+            return Err(invalid(
+                "destination database must be outside pinned input archive",
+            ));
         }
         #[cfg(unix)]
         {
@@ -242,7 +246,9 @@ impl ImmutableArchiveReader {
                 .into_string()
                 .map_err(|_| invalid("staging filename is not UTF-8"))?;
             let metadata: std::fs::Metadata = std::fs::symlink_metadata(entry.path())?;
-            if !Self::staging_filename(&name) || !metadata.is_file() || metadata.file_type().is_symlink()
+            if !Self::staging_filename(&name)
+                || !metadata.is_file()
+                || metadata.file_type().is_symlink()
             {
                 return Err(invalid(
                     "archive staging role contains an unknown or non-regular entry",
@@ -300,7 +306,9 @@ impl ImmutableArchiveReader {
             || bytes.len() as u64 != held.len()
             || file.metadata()?.len() != held.len()
         {
-            return Err(invalid("archive artifact changed length or exceeds its bound"));
+            return Err(invalid(
+                "archive artifact changed length or exceeds its bound",
+            ));
         }
         Self::ensure_file_attached(&path, &file)?;
         self.ensure_attached()?;

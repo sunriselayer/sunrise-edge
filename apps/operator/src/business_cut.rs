@@ -8,6 +8,10 @@
 
 use crate::immutable_archive::ImmutableArchive;
 use hashing::HashSuiteResolver;
+#[cfg(test)]
+use node_core::business_reconstruction::cut::{
+    BusinessCutCollection, MAX_BUSINESS_CUT_CHUNK_BYTES, decode_business_cut_chunk,
+};
 use node_core::business_reconstruction::{
     BusinessReconstructionPlan,
     cut::{
@@ -19,25 +23,21 @@ use node_core::business_reconstruction::{
 use node_core::ordered_economics::OrderedHistoryHeightMaterial;
 use protocol_types::{AtomicityDomainId, Digest32};
 use runtime::DurableOperationContext;
+#[cfg(test)]
+use runtime::WriterFenceGeneration;
 use runtime::portable::{
     DurablePortableSnapshotRepository, PortableBlobRepository, PortableSnapshotToken,
 };
 use std::collections::BTreeSet;
-use sunrise_edge_client::business_cut_archive::{
-    chunk_name, encode_saved_source_token as source_bytes, page_name,
-};
 pub use sunrise_edge_client::business_cut_archive::{
     CutArchiveError, CutArchiveLimits, read_business_cut_archive, verify_business_cut_archive,
 };
 #[cfg(test)]
-use node_core::business_reconstruction::cut::{
-    BusinessCutCollection, MAX_BUSINESS_CUT_CHUNK_BYTES, decode_business_cut_chunk,
-};
-#[cfg(test)]
-use runtime::WriterFenceGeneration;
-#[cfg(test)]
 use sunrise_edge_client::business_cut_archive::{
     MAX_SAVED_CHUNK_BYTES, decode_saved_source_token as read_source_token,
+};
+use sunrise_edge_client::business_cut_archive::{
+    chunk_name, encode_saved_source_token as source_bytes, page_name,
 };
 
 mod command;
@@ -69,8 +69,14 @@ fn visit_cut_files(
         .ok_or_else(|| invalid("source cut capability has no source token"))?;
     for (name, bytes) in [
         ("source-token.bin", source_bytes(token)?),
-        ("identity.bin", encode_business_cut_identity(cut.identity())?),
-        ("package.bin", encode_business_cut_package(cut.package_identity())?),
+        (
+            "identity.bin",
+            encode_business_cut_identity(cut.identity())?,
+        ),
+        (
+            "package.bin",
+            encode_business_cut_package(cut.package_identity())?,
+        ),
         ("transfer.bin", limits.transfer_bytes()?),
     ] {
         if !visit(name.to_string(), &bytes)? {
@@ -82,8 +88,12 @@ fn visit_cut_files(
         let mut page_index: u64 = 0;
         let mut component_index: u64 = 0;
         loop {
-            let page: BusinessCutPage =
-                cut.read_page(resolver, collection, after.as_deref(), limits.page_entries())?;
+            let page: BusinessCutPage = cut.read_page(
+                resolver,
+                collection,
+                after.as_deref(),
+                limits.page_entries(),
+            )?;
             let bytes: Vec<u8> = encode_business_cut_page(&page)?;
             if !visit(page_name(collection, page_index), &bytes)? {
                 return Ok(false);
@@ -166,7 +176,9 @@ fn publish_source_cut(
     visit_cut_files(cut, resolver, limits, |name: String, bytes: &[u8]| {
         if existing.contains(&name) {
             if archive.read(&name, bytes.len())? != bytes {
-                return Err(invalid("saved cut material differs from exact fixed source"));
+                return Err(invalid(
+                    "saved cut material differs from exact fixed source",
+                ));
             }
         } else {
             missing = true;

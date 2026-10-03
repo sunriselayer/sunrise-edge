@@ -55,8 +55,16 @@ impl<'a> SuccessorArtifactFiles<'a> {
     #[must_use]
     pub fn into_directories(
         self,
-    ) -> (ImmutableArchiveReader, ImmutableArchiveReader, ImmutableArchiveReader) {
-        (self.cut_archive, self.manifest_history, self.certificate_archive)
+    ) -> (
+        ImmutableArchiveReader,
+        ImmutableArchiveReader,
+        ImmutableArchiveReader,
+    ) {
+        (
+            self.cut_archive,
+            self.manifest_history,
+            self.certificate_archive,
+        )
     }
 }
 

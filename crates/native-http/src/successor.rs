@@ -1430,38 +1430,46 @@ async fn fee_claim_prepare<S: SuccessorStore>(
             return error_response(StatusCode::BAD_REQUEST, "invalid-fee-claim-prepare-request");
         };
         let outcome: Result<Result<PreparedFeeClaim, Response>, SuccessorInvocationError> =
-            with_authority(host, |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
-                if request.context != *warrant.policy_inputs().context() {
-                    return Ok(Err(error_response(
-                        StatusCode::CONFLICT,
-                        "fee-claim-epoch-repin-required",
-                    )));
-                }
-                let leg_policy: LocalExecutionPolicy = LocalExecutionPolicy::generic_object_results(
-                    warrant.policy_inputs().context().clone(),
-                );
-                Ok(prepare_fee_claim_successor(
-                    warrant,
-                    host.store.as_ref(),
-                    host.blobs.as_ref(),
-                    &host.resolver,
-                    &host.history,
-                    &leg_policy,
-                    host.engine.as_ref(),
-                    request.as_core_request(),
-                    host.created_checkpoint,
-                )
-                .map_err(|_| {
-                    error_response(StatusCode::UNPROCESSABLE_ENTITY, "fee-claim-preparation-refused")
-                }))
-            });
+            with_authority(
+                host,
+                |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
+                    if request.context != *warrant.policy_inputs().context() {
+                        return Ok(Err(error_response(
+                            StatusCode::CONFLICT,
+                            "fee-claim-epoch-repin-required",
+                        )));
+                    }
+                    let leg_policy: LocalExecutionPolicy =
+                        LocalExecutionPolicy::generic_object_results(
+                            warrant.policy_inputs().context().clone(),
+                        );
+                    Ok(prepare_fee_claim_successor(
+                        warrant,
+                        host.store.as_ref(),
+                        host.blobs.as_ref(),
+                        &host.resolver,
+                        &host.history,
+                        &leg_policy,
+                        host.engine.as_ref(),
+                        request.as_core_request(),
+                        host.created_checkpoint,
+                    )
+                    .map_err(|_| {
+                        error_response(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "fee-claim-preparation-refused",
+                        )
+                    }))
+                },
+            );
         match outcome {
             Ok(Ok(prepared)) => {
                 match node_core::fee_claims::codec::encode_fee_claim_intent(&prepared.intent) {
                     Ok(bytes) => bytes_response(node_wire::FEE_CLAIM_INTENT_MEDIA_TYPE, bytes),
-                    Err(_) => {
-                        error_response(StatusCode::INTERNAL_SERVER_ERROR, "fee-claim-intent-encoding")
-                    }
+                    Err(_) => error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "fee-claim-intent-encoding",
+                    ),
                 }
             }
             Ok(Err(response)) => response,

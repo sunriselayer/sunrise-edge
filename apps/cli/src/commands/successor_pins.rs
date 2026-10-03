@@ -55,9 +55,16 @@ pub(super) fn successor_flag_specs(with_domain: bool) -> Vec<FlagSpec> {
 /// Whether any successor flag is present. Commands that support no
 /// successor action refuse explicitly when this is true.
 pub(super) fn successor_requested(parsed: &ParsedArgs) -> bool {
-    [GENESIS_EPOCH, DOMAIN, PLAN_HISTORY, CUT, MANIFEST_HISTORY, CERTIFICATE]
-        .iter()
-        .any(|flag: &&str| parsed.get(flag).is_some())
+    [
+        GENESIS_EPOCH,
+        DOMAIN,
+        PLAN_HISTORY,
+        CUT,
+        MANIFEST_HISTORY,
+        CERTIFICATE,
+    ]
+    .iter()
+    .any(|flag: &&str| parsed.get(flag).is_some())
 }
 
 /// Loads the verified successor workflow when successor flags are present
@@ -75,7 +82,8 @@ pub(super) fn load_successor_pins(
     if !successor_requested(parsed) {
         return Ok(None);
     }
-    let genesis_epoch: Epoch = Epoch::new(parse_u64(GENESIS_EPOCH, parsed.require(GENESIS_EPOCH)?)?);
+    let genesis_epoch: Epoch =
+        Epoch::new(parse_u64(GENESIS_EPOCH, parsed.require(GENESIS_EPOCH)?)?);
     let domain: AtomicityDomainId = match domain {
         Some(domain) => domain,
         None => AtomicityDomainId::new(decode_hex_32(DOMAIN, parsed.require(DOMAIN)?)?)
@@ -145,9 +153,16 @@ mod tests {
         let (resolver, context) = pins();
         assert!(!successor_requested(&parsed));
         assert!(
-            load_successor_pins(&parsed, "/nonexistent/genesis", [0; 32], &resolver, &context, None)
-                .unwrap()
-                .is_none()
+            load_successor_pins(
+                &parsed,
+                "/nonexistent/genesis",
+                [0; 32],
+                &resolver,
+                &context,
+                None
+            )
+            .unwrap()
+            .is_none()
         );
     }
 
@@ -161,8 +176,15 @@ mod tests {
         let (resolver, context) = pins();
         assert!(successor_requested(&parsed));
         assert!(
-            load_successor_pins(&parsed, "/nonexistent/genesis", [0; 32], &resolver, &context, None)
-                .is_err()
+            load_successor_pins(
+                &parsed,
+                "/nonexistent/genesis",
+                [0; 32],
+                &resolver,
+                &context,
+                None
+            )
+            .is_err()
         );
     }
 
@@ -183,6 +205,9 @@ mod tests {
         ]))
         .unwrap_err()
         .to_string();
-        assert!(claim.contains("requires the --successor-* artifact flags"), "{claim}");
+        assert!(
+            claim.contains("requires the --successor-* artifact flags"),
+            "{claim}"
+        );
     }
 }

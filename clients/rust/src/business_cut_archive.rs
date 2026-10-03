@@ -149,7 +149,9 @@ fn invalid(reason: &'static str) -> CutArchiveError {
 }
 
 /// Exact saved local source-token frame.
-pub fn encode_saved_source_token(token: &PortableSnapshotToken) -> Result<Vec<u8>, CutArchiveError> {
+pub fn encode_saved_source_token(
+    token: &PortableSnapshotToken,
+) -> Result<Vec<u8>, CutArchiveError> {
     let mut bytes: Vec<u8> = SOURCE_MAGIC.to_vec();
     bytes.extend_from_slice(
         &u16::try_from(token.namespace().len())
@@ -212,7 +214,10 @@ pub fn page_name(collection: BusinessCutCollection, index: u64) -> String {
 /// Saved chunk filename.
 #[must_use]
 pub fn chunk_name(collection: BusinessCutCollection, component: u64, offset: u64) -> String {
-    format!("chunk-{:02}-{component:020}-{offset:020}.bin", collection as u16)
+    format!(
+        "chunk-{:02}-{component:020}-{offset:020}.bin",
+        collection as u16
+    )
 }
 
 /// Independently verifies a complete immutable saved cut under local pins.

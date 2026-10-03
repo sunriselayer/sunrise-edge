@@ -1,4 +1,4 @@
-//! Compiled first-successor host and CLI process boundaries.
+//! Compiled first-successor host and CLI refusal boundaries, not four-host acceptance.
 //!
 //! These drive the real successor_host executable and the shipped Rust CLI
 //! entry. They prove refusal ordering at the process boundary: loopback
@@ -84,7 +84,13 @@ fn no_target_written(root: &Path) {
 
 #[test]
 fn compiled_host_refuses_every_nonloopback_listen_before_any_io() {
-    for listen in ["0.0.0.0:0", "127.0.0.2:0", "[::]:0", "[::ffff:127.0.0.1]:0", "localhost:0"] {
+    for listen in [
+        "0.0.0.0:0",
+        "127.0.0.2:0",
+        "[::]:0",
+        "[::ffff:127.0.0.1]:0",
+        "localhost:0",
+    ] {
         let root: TempDir = TempDir::new("nonloopback");
         let output: Output = host(&root.0, listen, true);
         assert!(!output.status.success(), "{listen}");
@@ -151,7 +157,12 @@ fn shipped_cli_successor_actions_refuse_without_ordinary_fallback() {
         "0",
     ]);
     assert!(freeze.contains("successor-control-unsupported"), "{freeze}");
-    let claim: String = run(&["economics", "fee-claim-prepare", "--out", out.to_str().unwrap()]);
+    let claim: String = run(&[
+        "economics",
+        "fee-claim-prepare",
+        "--out",
+        out.to_str().unwrap(),
+    ]);
     assert!(claim.contains("--successor-*"), "{claim}");
     // A partial successor flag set never falls back to the ordinary genesis
     // policy and never writes the output candidate.

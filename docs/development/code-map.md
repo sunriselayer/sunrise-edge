@@ -86,3 +86,24 @@ contracts; they do not define protocol rules.
 3. Make structural moves reviewable separately from semantic changes. Preserve
    public paths and exact effects; do not create another crate just to shorten
    a source file.
+
+## First-successor serving and immutable transport
+
+- [Core authority](../../crates/node-core/src/serving_authority.rs) owns the
+  source-free verifier, private issuer-bound warrants and shared invocation
+  gate. [Protected runtime slot](../../crates/runtime/src/successor_serving.rs)
+  and backend completion ports own atomic persistence, not eligibility.
+- [SDK artifact reader](../../clients/rust/src/immutable_archive.rs),
+  [saved-cut reader](../../clients/rust/src/business_cut_archive.rs) and
+  [successor artifacts](../../clients/rust/src/successor_artifacts.rs) own one
+  bounded held-handle transport policy. The operator publication writer wraps
+  that reader rather than duplicating its validation.
+- [SDK successor workflow](../../clients/rust/src/successor_authority.rs) owns
+  independently verified signing pins; [fee-claim client](../../clients/rust/src/fee_claim_client.rs)
+  verifies them inside the signing API. [Native successor adapter](../../crates/native-http/src/successor.rs)
+  resolves fresh authority for each request. The loopback host supplies local
+  pins, artifacts, store, fence and signer; no response grants authority.
+- [Replacement tests](../../crates/node-core/src/ordered_economics/tests/causal_placement/control_reconstruction/frozen_completion/successor_replacement.rs)
+  own the real registration/Seal/activation and retired-owner distinction.
+  [Process refusal tests](../../apps/operator/tests/successor_host_process_refusals.rs)
+  prove executable refusal ordering, not a positive four-host workflow.

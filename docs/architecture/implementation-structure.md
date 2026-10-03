@@ -143,3 +143,20 @@ Dependency-light standalone SDK crates, universal store/handler frameworks,
 full production provider support and broad SQL/native facade cleanup are not
 prerequisites for functional membership and handoff. A future change needs its
 own concrete consumer, boundary and evidence, not this inventory as authority.
+
+## Successor invocation and artifact ownership
+
+The [first-successor contract](first-successor-serving.md) separates immutable
+original trust, verified historical evidence and per-invocation live authority.
+The core privately mints an issuer-bound warrant; the runtime's protected port
+checks its observation and the complete atomic write set. Ordered, FastVote,
+ACK and fee handlers consume the same gate, not duplicate successor engines.
+
+SDK-held archive readers share filename, attachment, symlink, inventory and
+bounded-read rules with the operator writer. Byte transport does not verify
+business authority, and publication stays with the writer. SDK workflow loading
+uses the one source-free verifier; a returned HTTP context or prepared intent
+cannot replace its pins. Claim signing verifies the exact certified committee,
+recipient and execution leg inside the signature-producing API and uses the
+same policy's resolver. A predecessor claimant key never grants current
+consensus membership. Mutable staging roles do not grant chain authority.

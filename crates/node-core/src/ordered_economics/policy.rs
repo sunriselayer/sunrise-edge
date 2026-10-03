@@ -535,7 +535,10 @@ impl OrderedEconomicsPolicy {
     /// `certificate_epoch`: the pinned set at the policy epoch, or, only for
     /// a verified first successor, the verified predecessor committee at its
     /// exact epoch. Every other epoch has no certificate scope.
-    pub(crate) fn certificate_set(&self, certificate_epoch: Epoch) -> Option<&ValidatorSet> {
+    /// Read-only claimant key lookup. This never grants current consensus
+    /// membership or widens the privately verified predecessor scope.
+    #[must_use]
+    pub fn certificate_set(&self, certificate_epoch: Epoch) -> Option<&ValidatorSet> {
         if certificate_epoch == self.context.epoch() {
             return Some(self.engine.validator_set());
         }

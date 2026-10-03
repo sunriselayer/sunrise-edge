@@ -233,7 +233,8 @@ fn successor_artifact_files_detects_replaced_or_symlinked_history_directory() {
     )
     .unwrap();
 
-    let history_archive: ImmutableArchiveReader = ImmutableArchiveReader::open(&history_path).unwrap();
+    let history_archive: ImmutableArchiveReader =
+        ImmutableArchiveReader::open(&history_path).unwrap();
     let mut artifacts = SuccessorArtifactFiles::new(
         plan,
         ImmutableArchiveReader::open(&cut_dir.0).unwrap(),

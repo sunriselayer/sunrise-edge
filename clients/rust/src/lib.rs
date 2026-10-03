@@ -73,8 +73,8 @@ pub mod ordered_history_archive;
 pub mod ordered_history_client;
 pub mod paid_execution_client;
 pub mod publication_client;
-pub mod successor_authority;
 pub mod successor_artifacts;
+pub mod successor_authority;
 pub mod support;
 pub mod transaction;
 pub mod transport;
@@ -134,6 +134,10 @@ pub use consensus::{
     decode_frozen_frontier_page, decode_frozen_frontier_vote, encode_frozen_frontier_page,
     encode_frozen_frontier_vote,
 };
+pub use fee_claim_client::{
+    FeeClaimPreparationError, fee_claim_candidate, require_successor_fee_claim_request,
+    sign_prepared_fee_claim, verify_prepared_fee_claim,
+};
 pub use node_core::admission_profile::{
     ExternalRequestLane, VerifiedAdmissionProfile, require_external_request_lane,
 };
@@ -153,6 +157,9 @@ pub use node_wire::{
     FrozenFrontierPageRequest, FrozenFrontierPageResponse, MAX_FRONTIER_PAGE_LIMIT,
     MAX_FRONTIER_PAGE_RESPONSE_BYTES, MAX_FRONTIER_VOTE_BYTES, RetainedPublicationSourceRequest,
 };
+pub use node_wire::{
+    FEE_CLAIM_PREPARE_PATH, FeeClaimPrepareRequest, MAX_FEE_CLAIM_PREPARE_LEG_BYTES,
+};
 pub use paid_execution_client::{
     PAID_EXECUTION_PATH, PAID_FEE_POLICY_PATH, build_signed_paid_execution,
 };
@@ -167,13 +174,6 @@ pub use signing_view::{
 pub use successor_authority::{
     SuccessorArtifactDirectories, SuccessorWorkflowAuthority, SuccessorWorkflowError,
     load_successor_authority, load_successor_workflow, load_successor_workflow_from_directories,
-};
-pub use fee_claim_client::{
-    FeeClaimPreparationError, fee_claim_candidate, require_successor_fee_claim_request,
-    sign_prepared_fee_claim, verify_prepared_fee_claim,
-};
-pub use node_wire::{
-    FEE_CLAIM_PREPARE_PATH, FeeClaimPrepareRequest, MAX_FEE_CLAIM_PREPARE_LEG_BYTES,
 };
 pub use support::{
     ED25519_ADDRESS_IS_PUBLIC_KEY_BINDING_ID, ED25519_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,

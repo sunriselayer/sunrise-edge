@@ -10,10 +10,9 @@
 
 use crate::client::expect_success;
 use crate::successor_authority::SuccessorWorkflowAuthority;
-use crate::{
-    Client, ClientError, Digest32, HashSuiteResolver, Method, Transport, WireRequest, WireResponse,
-};
+use crate::{Client, ClientError, Digest32, Method, Transport, WireRequest, WireResponse};
 use ed25519_zebra::{SigningKey, VerificationKey};
+use execution::local_execution::{SignedLocalExecutionIntent, decode_signed_local_execution};
 use execution::publication::PublicationContext;
 use node_core::NodeCoreError;
 use node_core::fee_claims::codec::{
@@ -21,18 +20,21 @@ use node_core::fee_claims::codec::{
     decode_fee_claim_intent, encode_signed_fee_claim_intent,
 };
 use node_core::fee_claims::{FeeClaimError, fee_claim_intent_digest, fee_claim_signing_frame};
-use node_core::ordered_economics::{OrderedCandidate, OrderedOperationKind, encode_ordered_candidate};
+use node_core::ordered_economics::{
+    OrderedCandidate, OrderedOperationKind, encode_ordered_candidate,
+};
 use node_wire::{
     FEE_CLAIM_INTENT_MEDIA_TYPE, FEE_CLAIM_PREPARE_PATH, FEE_CLAIM_PREPARE_REQUEST_MEDIA_TYPE,
     FeeClaimPrepareRequest, FeeClaimPrepareRequestError,
 };
+use protocol_types::SignatureSchemeId;
 use std::{error::Error, fmt, time::Instant};
 
 /// Refusal of successor fee-claim preparation, verification or signing.
 #[derive(Debug)]
 pub enum FeeClaimPreparationError {
     /// Transport or HTTP status failure.
-    Client(ClientError),
+    Client(Box<ClientError>),
     /// The request frame refused to encode.
     RequestWire(FeeClaimPrepareRequestError),
     /// The response is not one canonical unsigned FeeClaimIntent.
@@ -63,7 +65,7 @@ impl Error for FeeClaimPreparationError {}
 
 impl From<ClientError> for FeeClaimPreparationError {
     fn from(error: ClientError) -> Self {
-        Self::Client(error)
+        Self::Client(Box::new(error))
     }
 }
 
@@ -75,7 +77,9 @@ pub fn require_successor_fee_claim_request(
 ) -> Result<(), FeeClaimPreparationError> {
     workflow
         .require_signing_context(&request.context)
-        .map_err(|_| FeeClaimPreparationError::Mismatch("request context is not the verified e+1 context"))
+        .map_err(|_| {
+            FeeClaimPreparationError::Mismatch("request context is not the verified e+1 context")
+        })
 }
 
 /// Checks an untrusted prepared intent against the verified scope and the
@@ -103,31 +107,53 @@ pub fn verify_prepared_fee_claim(
     if intent.recipient != request.recipient {
         return Err(mismatch("intent recipient differs"));
     }
-    if intent.certificate_epoch > expected.epoch() {
-        return Err(mismatch("intent certificate epoch is after the verified e+1 epoch"));
+    if let Some(bytes) = request.signed_leg.as_deref() {
+        let leg: SignedLocalExecutionIntent = decode_signed_local_execution(bytes)
+            .map_err(|_| mismatch("signed leg is not a canonical execution intent"))?;
+        if leg.intent.call.context != *expected {
+            return Err(mismatch("signed leg is not in the verified e+1 context"));
+        }
+    }
+    let (scheme, public_key): (SignatureSchemeId, &[u8]) = workflow
+        .ordered_policy()
+        .certificate_set(intent.certificate_epoch)
+        .and_then(|set| set.get(request.validator_id))
+        .map(|member| (member.signature_scheme, member.public_key.as_slice()))
+        .ok_or_else(|| mismatch("claimant has no key in the verified certificate scope"))?;
+    if scheme != SignatureSchemeId::Ed25519 || public_key != request.claimant_public_key {
+        return Err(mismatch(
+            "claimant key differs from the verified certificate committee",
+        ));
     }
     let leg_matches: bool = match (&intent.operation, request.signed_leg.as_deref()) {
         (FeeClaimOperation::ZeroShare, None) => true,
         (FeeClaimOperation::Split { leg, .. }, Some(requested))
-        | (FeeClaimOperation::FinalTransfer { leg }, Some(requested)) => leg.as_slice() == requested,
+        | (FeeClaimOperation::FinalTransfer { leg }, Some(requested)) => {
+            leg.as_slice() == requested
+        }
         _ => false,
     };
     if !leg_matches {
-        return Err(mismatch("intent operation or signed leg differs from the request"));
+        return Err(mismatch(
+            "intent operation or signed leg differs from the request",
+        ));
     }
     Ok(())
 }
 
 /// Signs a verified prepared intent with the historical claimant key seed,
-/// after requiring that key to be exactly the requested claimant public key.
-/// Callers must run [verify_prepared_fee_claim] first; the seed is never
-/// retained.
+/// after verifying the request, returned intent and certificate committee
+/// against the required source-free successor authority. The hash resolver is
+/// derived from that same authority; callers cannot skip verification or
+/// substitute a schedule. The seed is never retained.
 pub fn sign_prepared_fee_claim(
-    resolver: &HashSuiteResolver,
+    workflow: &SuccessorWorkflowAuthority,
     request: &FeeClaimPrepareRequest,
     intent: FeeClaimIntent,
     claimant_seed: [u8; 32],
 ) -> Result<Vec<u8>, FeeClaimPreparationError> {
+    verify_prepared_fee_claim(workflow, request, &intent)?;
+    let resolver: &crate::HashSuiteResolver = workflow.ordered_policy().resolver();
     let key: SigningKey = SigningKey::from(claimant_seed);
     let public: [u8; 32] = VerificationKey::from(&key).into();
     if public != request.claimant_public_key {
@@ -173,7 +199,9 @@ impl<T: Transport> Client<T> {
         deadline: Option<Instant>,
     ) -> Result<FeeClaimIntent, FeeClaimPreparationError> {
         require_successor_fee_claim_request(workflow, request)?;
-        let body: Vec<u8> = request.encode().map_err(FeeClaimPreparationError::RequestWire)?;
+        let body: Vec<u8> = request
+            .encode()
+            .map_err(FeeClaimPreparationError::RequestWire)?;
         let response: WireResponse = self
             .transport()
             .send(&WireRequest {

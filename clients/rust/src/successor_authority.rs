@@ -14,20 +14,22 @@ use execution::LocalWasmExecutionEngine;
 use execution::local_execution::LocalExecutionPolicy;
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
-use node_core::business_reconstruction::BusinessReconstructionPlan;
 use node_core::admission_profile::VerifiedAdmissionProfile;
+use node_core::business_reconstruction::BusinessReconstructionPlan;
 use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::{
     MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES, OrderedEconomicsError, OrderedEconomicsPolicy,
     OrderedHistoryHeightMaterial, OrderedHistoryIdentity, decode_ordered_history_identity,
 };
-use protocol_types::AtomicityDomainId;
-use runtime::{DurableOperationContext, StorageCorrelationId, StorageDeadline, WriterFenceGeneration};
-use std::path::Path;
 use node_core::serving_authority::{
     SuccessorActivationError, SuccessorArtifactSource, VerifiedSuccessorAuthority,
     verify_successor_authority,
 };
+use protocol_types::AtomicityDomainId;
+use runtime::{
+    DurableOperationContext, StorageCorrelationId, StorageDeadline, WriterFenceGeneration,
+};
+use std::path::Path;
 use std::{error::Error, fmt};
 
 /// Verifies full source-free successor evidence and returns opaque,
@@ -200,8 +202,9 @@ pub fn load_successor_workflow_from_directories(
             "successor requires a signed causal-admission genesis".into(),
         ));
     }
-    let genesis_policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::from_genesis_root(&root, domain)
-        .map_err(SuccessorWorkflowError::Policy)?;
+    let genesis_policy: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(&root, domain)
+            .map_err(SuccessorWorkflowError::Policy)?;
     let (identity, _ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
         read_verified_ordered_history_archive(&genesis_policy, directories.plan_history)
             .map_err(|error| load("plan ordered history", &error))?;
@@ -219,8 +222,9 @@ pub fn load_successor_workflow_from_directories(
     )
     .map_err(|error| load("manifest identity", &error))?;
     // Untrusted transport claim; the core verifier re-derives it.
-    let manifest_identity: OrderedHistoryIdentity = decode_ordered_history_identity(&identity_bytes)
-        .map_err(|error| load("manifest identity", &error))?;
+    let manifest_identity: OrderedHistoryIdentity =
+        decode_ordered_history_identity(&identity_bytes)
+            .map_err(|error| load("manifest identity", &error))?;
     let base_policy: LocalExecutionPolicy =
         LocalExecutionPolicy::generic_object_results(genesis_context.clone());
     let engine: LocalWasmExecutionEngine = LocalWasmExecutionEngine::new();

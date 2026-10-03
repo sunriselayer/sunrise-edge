@@ -13,9 +13,9 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
-pub use sunrise_edge_client::immutable_archive::{ArchiveStagingDirectory, ImmutableArchiveReader};
 #[cfg(test)]
 use sunrise_edge_client::immutable_archive::ARCHIVE_STAGING_DIRECTORY as STAGING_DIRECTORY;
+pub use sunrise_edge_client::immutable_archive::{ArchiveStagingDirectory, ImmutableArchiveReader};
 
 static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 const MAX_STAGING_COLLISION_RETRIES: usize = 32;
@@ -99,7 +99,9 @@ impl ImmutableArchive {
         let staging: &ArchiveStagingDirectory = self.staging()?;
         if self.contains(name)? {
             if self.read(name, bytes.len())? != bytes {
-                return Err(invalid("saved archive bytes differ from the fixed artifact"));
+                return Err(invalid(
+                    "saved archive bytes differ from the fixed artifact",
+                ));
             }
             return Ok(false);
         }

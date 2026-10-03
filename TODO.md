@@ -213,18 +213,33 @@ claim its imported predecessor escrow and unbond its own imported bond. Its
 first-successor withdrawal authenticates D and refuses precisely on the
 genuine future unlock rule, without signing or state changes. Authenticated
 unsupported control carriers are refused in observation and committed recovery.
-Retired-D FastVote/ACK refusal and the stored-control vote-preview negative
-remain to be checked. This remains in-process evidence, not four shipped hosts.
+The five replacement-specific tests also pass retired-D FastVote/ACK refusal
+with zero signatures and unchanged state, followed by a genuine current-member
+quorum for the same valid request. The stored-control vote preview and observation
+both refuse before signing or mutation, using a genuine three-member Byzantine
+chain with trusted-clock view skips. This remains in-process evidence, not four
+shipped hosts. A genuinely committed rejected Seal is unreachable: owning
+warrant failure stops instead of retaining a rejection; substituted archive
+components are separately rejected by their digest checks.
 The real loopback-only successor host now mounts authenticated ordered,
 FastVote, certified paid-execution, publication/ACK and query routes. Its
 per-request authority reconstruction never falls back to original-genesis
-serving. Workspace all-target type checking, strict lint, and 316 native-HTTP,
-SDK and operator library tests pass. Fee-claim preparation currently has only
-a callable Rust helper. Its bounded HTTP request codec and 17 focused codec
+serving. The HTTP fee-claim preparation and successor-scoped history routes,
+SDK loader and explicit all-or-none CLI successor pins are now implemented.
+The shared SDK owns bounded held-handle archive reads; the operator wraps that
+reader with the existing publication writer. The public signing API requires
+verified successor authority, verifies the exact current/predecessor claimant
+committee and execution-leg context, and derives its resolver from that same
+authority. It cannot skip verification or accept a caller-selected schedule.
+Workspace all-target type checking and strict lint pass. The native-HTTP,
+CLI, SDK and operator library regressions pass 524 cases; archive integration
+and compiled-host/CLI-entry refusal tests pass another nine cases. These are
+not positive four-host serving acceptance. The bounded request codec's 17
+focused codec
 tests pass; the frozen v1 request vector and transport contract are recorded in
 [DR-0190](docs/architecture/decisions/0190-read-only-fee-claim-preparation-transport.md).
-The HTTP route, shipped CLI authority composition,
-history routes and four-process replacement workflow remain incomplete. Full
+The positive four-host/CLI workflow, positive HTTP claim and restart/catch-up
+acceptance remain incomplete. Full
 required/selected-PG acceptance,
 fresh independent exact-head review and CI are still pending. These local
 checks do not complete authenticated serving, Delivery 3 or network readiness.
