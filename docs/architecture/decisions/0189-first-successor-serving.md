@@ -45,6 +45,15 @@ runtime `SuccessorServingRepository` returning the existing
 whole-transaction preflight against existing limits. Whether the findings
 are resolved is for the next independent review to decide.
 
+A further independent review at `f227c72` accepted the byte-preserving
+ordered-key refactor and found two remaining design interface issues:
+crate-visible raw scope enums could be constructed without a warrant,
+and the SDK could not reach the private verifier. The revised proposal
+uses opaque scopes with module-private inner representations and a public
+read-only wrapper over the one private source-free verifier. Warrants
+retain private fields; shared policy inputs contain no destination member.
+This revision is still subject to independent review, not self-approval.
+
 ## Decision
 
 Use [first-successor-serving.md](../first-successor-serving.md) as the
@@ -53,8 +62,8 @@ proposed contract. Its choices, summarized:
 1. Keep source-free verified evidence (immutable genesis, outgoing
    committee, ordered history through the committed Seal, readiness
    certificate and eligibility) strictly separate from two private
-   destination warrants: `ActivationWarrant` before Serving and
-   `LiveWarrant` only from an installed Serving slot. The SDK consumes only
+   destination warrants with private fields: `ActivationWarrant` before
+   Serving and `LiveWarrant` only from an installed Serving slot. The SDK consumes only
    the evidence; no decoded row or destination-reported flag constructs
    any of the three.
 2. Re-verify full cryptographic evidence on every invocation -- activation,

@@ -172,7 +172,9 @@ required view/epoch/height/digest/request suffixes, preserving every existing
 key byte and caller. Parent verification passed 11 exact-layout tests and all
 240 ordered-core regression tests. The successor design remains under revision
 after an independent BLOCK; no new serving writer or provider schema is
-implemented, and the complete repository gate has not yet run for this slice.
+implemented. The complete local storage-neutral required gate passed at
+`f227c72` on 2026-10-03; that head has independent approval of the key refactor
+but its Proposed successor interfaces still have two explicit review blockers.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.

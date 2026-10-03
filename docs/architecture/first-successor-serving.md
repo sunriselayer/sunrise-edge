@@ -34,14 +34,26 @@ Every outgoing signature this chain relies on was created before Seal
 acceptance; nothing here creates a new outgoing signature. Relaying an
 already formed QC or certificate is historical relay, not signing.
 
-Three private core types keep the roles apart:
+Three opaque core types keep the roles apart:
+
+All fields are private to one node-core `serving_authority` module; only
+its own `verify_successor_activation`, `activate_successor` and
+`resolve_live_authority` can construct them, so no other module can
+fabricate evidence or a warrant. The module exposes one public wrapper,
+`verify_successor_authority` (Section 3.2), for cross-crate callers.
+`VerifiedSuccessorActivation` is module-private, `ActivationWarrant` is
+crate-visible with private fields, and `LiveWarrant<'inv>` is a public
+opaque type so native HTTP can borrow it without constructing one. Type
+visibility never exposes a constructor or a writable field.
 
 - `VerifiedSuccessorActivation` -- source-free evidence produced only by
   `verify_successor_activation(plan, manifest_identity, artifacts)`
   (Section 3). Its inputs are the existing `BusinessReconstructionPlan`, an
   untrusted claimed `OrderedHistoryIdentity` through h and a
   `SuccessorArtifactSource`; it never takes a destination store, lifecycle,
-  token or local key. The Rust SDK consumes only this evidence.
+  token or local key. The Rust SDK consumes only this evidence, through the
+  public `verify_successor_authority`/`VerifiedSuccessorAuthority` wrapper,
+  never this private type directly.
 - `ActivationWarrant` -- built only inside `activate_successor`
   (Section 6) while the destination slot is `Inactive`. It combines the
   evidence with a full `observe_complete` comparison, the namespace
@@ -126,12 +138,43 @@ skip; a directory listing is never authority.
 ### 3.2 Verifier
 
 ```rust
-pub(crate) fn verify_successor_activation(
+fn verify_successor_activation(
     plan: BusinessReconstructionPlan<'_>,
     manifest_identity: &OrderedHistoryIdentity,
     artifacts: &mut dyn SuccessorArtifactSource,
 ) -> Result<VerifiedSuccessorActivation, SuccessorActivationError>;
 ```
+
+This stays module-private: the one private verifier, called only from this
+module. The public surface the SDK and operator actually use is a thin
+wrapper over it, in the same module:
+
+```rust
+pub fn verify_successor_authority(
+    plan: BusinessReconstructionPlan<'_>,
+    manifest_identity: &OrderedHistoryIdentity,
+    artifacts: &mut dyn SuccessorArtifactSource,
+) -> Result<VerifiedSuccessorAuthority, SuccessorActivationError> {
+    verify_successor_activation(plan, manifest_identity, artifacts)
+        .map(VerifiedSuccessorAuthority)
+}
+pub struct VerifiedSuccessorAuthority(VerifiedSuccessorActivation); // private field
+impl VerifiedSuccessorAuthority {
+    pub fn subject_digest(&self) -> Digest32;
+    pub fn manifest_digest(&self) -> Digest32;
+    pub fn validator_set(&self) -> &ValidatorSet;
+    pub fn policy_inputs(&self) -> &SuccessorPolicyInputs;
+}
+```
+
+`VerifiedSuccessorAuthority` has no `Clone`, serde or `Default` impl and no
+constructor besides this wrapper; it calls the one private verifier with
+no duplicated verification logic, and takes no destination store, signing
+key or live-authority input beyond what `verify_successor_activation`
+already takes. `activate_successor` (Section 6.2) and
+`resolve_live_authority` (Section 8) call `verify_successor_activation`
+directly, in the same module; only cross-crate callers, namely the SDK's
+`load_successor_authority` (Section 9), call `verify_successor_authority`.
 
 `plan` is the existing `BusinessReconstructionPlan`
 (`crates/node-core/src/business_reconstruction.rs:248`) with all ten real
@@ -215,48 +258,60 @@ Only `derive` (`:893`) and the `Logical` arm of
 `require_application_admissible` (`:1531`) hard-code `genesis_floor`;
 `provenance_mutations` (`:947`) already writes at `derived.generation`.
 
-Crate-private additions, no raw-value constructor:
+Crate-private additions, opaque, no raw-value constructor:
 
 ```rust
-enum GenerationScope {
+pub(crate) struct GenerationScope(Scope); // Scope is private to this module
+enum Scope {
     Original { floor: ExecutionGeneration },
     Successor { floor: ExecutionGeneration, epoch: Epoch, anchor: Digest32 },
 }
 impl GenerationScope {
-    fn from_profile(profile: &LogicalProfileRecord) -> Self;
-    fn for_activation(warrant: &ActivationWarrant) -> Self;
-    fn for_live(warrant: &LiveWarrant) -> Self;
+    pub(crate) fn from_profile(profile: &LogicalProfileRecord) -> Self;
+    pub(crate) fn for_activation(warrant: &ActivationWarrant) -> Self;
+    pub(crate) fn for_live(warrant: &LiveWarrant) -> Self;
+    pub(crate) fn floor(&self) -> ExecutionGeneration; // the only accessor
 }
 ```
 
-Both successor constructors take floor, epoch and anchor only from the
-warrant, whose values come only from `VerifiedSuccessorActivation`:
-floor from the binding, epoch e+1 from the verified subject, anchor the v3
-anchor computed from the verified subject and set. Neither reads an
-installed anchor, so there is no install-before-anchor circularity.
+No module outside `logical_generation` can name `Scope` or build a
+`Successor` variant; a caller holding no warrant cannot construct a
+successor floor. Both successor constructors take floor, epoch and anchor
+only from the warrant, whose values come only from
+`VerifiedSuccessorActivation`: floor from the binding, epoch e+1 from the
+verified subject, anchor the v3 anchor computed from the verified subject
+and set. Neither reads an installed anchor, so there is no
+install-before-anchor circularity.
 
-`derive_scoped(scope, ..)` is the body of `derive` with `scope.floor()`;
+`derive_scoped(&scope, ..)` is the body of `derive` with `scope.floor()`;
 `derive` becomes `derive_scoped(&GenerationScope::from_profile(..), ..)`,
 byte-identical for every Original call site and vector.
 `require_application_admissible_scoped` compares against `scope.floor()`.
-The Successor anchor binding is: at activation, the `epoch-state/` key
-built from `(scope.epoch, scope.anchor)` is asserted INITIAL and written in
-the same transaction (Section 6.3); live, `scope.anchor` equals 0x64D5
-field 6 of the warrant observation, which every successor port rechecks
-byte-exactly inside its lock (Section 6.5). Live transactions do not CAS
-`epoch-state/`, which would serialize fast-path traffic behind consensus.
+The Successor anchor binding does not go through `GenerationScope`, which
+exposes only `floor()`: at activation, the `epoch-state/` key built from
+the warrant's own verified epoch/anchor (`policy_inputs()`, Section 9) is
+asserted INITIAL and written in the same transaction (Section 6.3); live,
+that same anchor equals 0x64D5 field 6 of the warrant observation, which
+every successor port rechecks byte-exactly inside its lock (Section 6.5).
+Live transactions do not CAS `epoch-state/`, which would serialize
+fast-path traffic behind consensus.
 
 Activation names the existing derivation
 `epoch_transition::derive_activation_set`
 (`crates/node-core/src/epoch_transition.rs:499`), which reads
 `paid_fee_policy_key(ctx@e)` as a CAS read and carries it forward
-(`:549-567`). That read is folded through `derive_scoped`, so the three
+(`:549-567`). The fold set for the three new rows is exactly this one
+dependency: `paid_fee_policy_key(ctx@e)`, folded through `derive_scoped`, so the three
 rows depend on it; `provenance_mutations` writes exactly the three target
 provenance rows at `derived.generation`. Every successor live path (normal
 prepare/apply, ordered paid execution, fee claims) calls the `_scoped`
 siblings with `GenerationScope::for_live`. Protected 0x64C0/0x64C1/0x64D5/
 0x64D6 rows and the barrier are read only through typed ports, never
-through the generic CAS fold.
+through the generic CAS fold. `committed-proof/` for T+1..h and the Seal
+candidate/header/outcome/receipt keys (Section 6.3) are typed archive
+writes outside this fold, exactly as `engine.rs:1973,2801` writes them
+today for the outgoing epoch: they take no provenance and are asserted
+must-absent, never folded as dependencies.
 
 ## 5. Epoch-scoped consensus safety state
 
@@ -267,11 +322,18 @@ Five chain-only families are live mutable signing safety: `state/`
 `leader-proposal/<chain><view>`, `vote/<chain><view>` (first-writer-wins
 per view) and the `vote-high/<chain>` watermark that
 `reconcile_local_vote` (`:282-333`) enforces. Each gets an e+1 counterpart
-through a private `OrderedKeyScope::{Chain, Successor { protocol, epoch,
-anchor }}` taken by the key builders in `identity.rs` and `engine.rs`.
-Only `OrderedEconomicsPolicy::from_successor` (Section 9) produces
-`Successor`; `from_genesis_root` and `historical` produce `Chain`, so every
-existing key byte is unchanged. Layout: `PREFIX || infix ||
+through an opaque `pub(crate) struct OrderedKeyScope(KeyScope)`, whose
+`enum KeyScope { Chain, Successor { protocol, epoch, anchor } }` is
+private to `policy.rs`. The key builders in `identity.rs` and `engine.rs`
+take `&OrderedKeyScope` and call only its read-only selectors (the bytes a
+builder appends); they never match on `KeyScope` directly, so no other
+module can name it. `OrderedEconomicsPolicy`'s three constructors are the
+only producers: `from_successor` (Section 9) builds `Successor` from its
+verified `SuccessorPolicyInputs`; `from_genesis_root` and `historical`
+build `Chain`. The v3 anchor hash itself
+(`ordered_economics_authority_anchor`) only computes a digest from given
+inputs; it never selects or inspects a scope, so every existing key byte
+is unchanged. Layout: `PREFIX || infix ||
 encode_chain_id(chain) || protocol u32 BE || epoch u64 BE ||
 encode_digest32(v3_anchor) [|| view u64 BE]`, checked by
 `validate_transactional_state_key`. Infixes: `epoch-state/`,
@@ -522,8 +584,11 @@ authority stays in core.
   a used token is never compared with a fresh one (DR-0178 retry rule).
   Compare the installed Seal closure rows (proofs T+1..h, Seal candidate,
   header, outcome, receipt) and the four e+1 rows byte-for-byte with the
-  verified evidence, and require `FastPathEpochRecord.current_epoch ==
-  e+1`. Each history proof variant is re-verified cryptographically by
+  verified evidence, and require the installed `FastPathEpochRecord` to
+  equal exactly `{current_epoch: e+1, current_validator_set_digest:
+  verified subject field 11, previous_epoch: Some(e),
+  activated_at_checkpoint: h}`, not `current_epoch` alone. Each history
+  proof variant is re-verified cryptographically by
   Section 3, and the installed bytes must be the variant this host
   verified. Never compare advanced business inventory or the values of the
   singleton safety rows, and never write. Return `AlreadyActivated`.
@@ -546,9 +611,13 @@ pub enum LiveAuthority<'inv> { OriginalGenesis, Successor(LiveWarrant<'inv>) }
 ```
 
 `LiveWarrant` has private fields and exposes `generation_scope()`,
-`policy_inputs()` (e+1 context, `ValidatorSet`, v3 anchor, binding floor,
-local member), `serving_observation()` and `reads()`. It is tied to the
-store borrow and never stored past the call. Decision:
+`policy_inputs() -> &SuccessorPolicyInputs` (Section 9: e+1 context,
+`ValidatorSet`, v3 anchor, binding floor -- source-free only, no local
+member), `serving_observation()` and `reads()`. The destination's local
+namespace validator/key is a separate, warrant-only fact, never part of
+`SuccessorPolicyInputs`; it is read fresh at each check below, not cached
+on the warrant. It is tied to the store borrow and never stored past the
+call. Decision:
 
 - `Ordinary` and `Unsealed` and slot `Inactive` -> `OriginalGenesis`;
   existing behavior and gates unchanged.
@@ -561,9 +630,16 @@ store borrow and never stored past the call. Decision:
      member whose key equals field 8 and `signer_public_key`;
   5. CAS reads that become `reads()`: `fastpath_validator_set_key(ctx@e+1)`
      equal to the verified set record; the three e+1 policy rows equal to a
-     fresh `derive_activation_set` over the verified members and the
-     imported `paid_fee_policy_key(ctx@e)` row; `FastPathEpochRecord` with
-     `current_epoch == e+1`;
+     fresh `derive_activation_set` over the verified members; the imported
+     `paid_fee_policy_key(ctx@e)` row itself, included in this CAS read set
+     as a real deciding dependency, not merely the immutable-closure
+     inspection of step 6; and
+     `FastPathEpochRecord` equal to exactly `{current_epoch: e+1,
+     current_validator_set_digest: verified subject field 11,
+     previous_epoch: Some(e), activated_at_checkpoint: h}`. The local bond
+     row is checked only at activation (Section 6.2 step 4); live
+     resolution relies on the fixed e+1 committee membership this step
+     already re-verifies, matching current non-successor behavior;
   6. fenced exact reads of the immutable Seal closure rows (proofs
      T+1..h, Seal candidate/header/outcome, Seal receipt) equal to the
      verified bytes. They are not added to every CAS set: no e+1 path
@@ -580,7 +656,8 @@ successor store.
 
 Migrated `_successor` entries, each taking `&LiveWarrant`: ordered
 proposal, vote, vote-high and applied-prefix retention (through
-`OrderedEconomicsPolicy::from_successor` and `OrderedKeyScope::Successor`);
+`OrderedEconomicsPolicy::from_successor` and its internal `Successor` key
+scope);
 FastVote prepare and ACK (`load_validator_set` at ctx@e+1); paid
 evaluation and fee claims (`GenerationScope::for_live`); receipt exposure;
 and native-http cached-signature exposure. Each folds `warrant.reads()`
@@ -602,18 +679,42 @@ stay legal and may relay the Seal and its QCs without signing.
 `OrderedEconomicsPolicy::from_successor(root, inputs:
 &SuccessorPolicyInputs)` is a third constructor beside `from_genesis_root`
 and `historical` (`crates/node-core/src/ordered_economics/policy.rs:149,183`).
-`SuccessorPolicyInputs` is obtainable only from `policy_inputs()` of either
-warrant or from the SDK verifier result. It uses ctx@e+1, the original
-genesis digest, the e+1 `ValidatorSet` and the v3 anchor, and is the only
-constructor selecting `OrderedKeyScope::Successor`. A reviewed extension
+
+```rust
+pub struct SuccessorPolicyInputs { /* private fields */ }
+impl SuccessorPolicyInputs {
+    pub fn context(&self) -> &PublicationContext;   // ctx@e+1
+    pub fn genesis_digest(&self) -> Digest32;        // original, unchanged
+    pub fn validator_set(&self) -> &ValidatorSet;    // checked e+1 set
+    pub fn anchor(&self) -> Digest32;                 // v3 anchor
+    pub fn generation_floor(&self) -> ExecutionGeneration;
+}
+```
+
+`SuccessorPolicyInputs` has no public or `pub(crate)` constructor and no
+`Default`/serde. Its fields are private to `serving_authority`; the private
+verifier constructs it from verified evidence and retains it in that
+evidence. `ActivationWarrant::policy_inputs()`,
+`LiveWarrant::policy_inputs()` and
+`VerifiedSuccessorAuthority::policy_inputs()` (Section 3.2) return shared
+read-only references to those same verified inputs, never raw constructors.
+It holds only
+these source-free facts -- never a local validator id or key: the SDK has
+no local key, and both warrants keep the destination's local member on a
+separate, warrant-only accessor, not on this shared struct. It is the only
+input that selects the internal `Successor` key scope. A reviewed extension
 of `ordered_economics_authority_anchor` itself accepts the v3 inputs;
 genesis policies keep byte-identical v1/v2 anchors and keys. No
 caller-supplied epoch or `epoch-repin-required` hint selects a policy.
 
 FastVote reuses `load_validator_set` at ctx@e+1 against the installed row.
 The SDK gains `load_successor_authority(plan, manifest_identity,
-artifacts)`, which runs Section 3 only and authenticates the e+1 set
-itself rather than trusting a destination claim.
+artifacts)`, a thin wrapper over the public
+`node_core::verify_successor_authority` (Section 3.2) -- `clients/rust` is
+a separate crate and cannot call a `pub(crate)` item, so this is the one
+entry point the SDK uses, never `verify_successor_activation` directly --
+and authenticates the e+1 set itself rather than trusting a destination
+claim.
 
 ## 10. New-epoch business admission
 

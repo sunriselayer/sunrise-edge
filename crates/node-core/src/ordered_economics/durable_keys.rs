@@ -1,5 +1,5 @@
 //! Single typed, closed family API for exact durable key construction shared
-//! by every ordered-economics storage key rooted under
+//! by the nine ordered safety and completion families rooted under
 //! [`crate::ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX`].
 //!
 //! Historically `engine` and `identity` each hand-built
