@@ -852,7 +852,10 @@ missing admission profile.
 Both vote validation of a leader proposal containing any of those four
 candidate kinds and committed-block preview containing one must return
 `UnsupportedSuccessorControl`, not `Unauthenticated`, with no signature
-or state mutation.
+or state mutation. Native HTTP maps this permanent refusal to an explicit
+4xx response, not a retryable 503. New and retained readiness signing/retention
+also refuse from the protected Serving slot before any exposure or signing,
+with `ConditionalReadinessError::UnsupportedSuccessorControl`.
 
 **Durability and races:** SQLite restart and refencing; stale fence and
 token; inventory race between plan comparison and commit; both reply-loss

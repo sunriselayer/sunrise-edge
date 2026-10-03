@@ -167,18 +167,22 @@ The first-successor design is accepted in
 effective cut-floor provenance and the real per-invocation authority consumers.
 Fresh independent Opus explicitly approved the closed design for implementation
 at `7124ea9` on 2026-10-03. No activation, serving or schema implementation is
-claimed by design acceptance. PR #266 contains the accepted contract and
-byte-preserving preparatory ordered-key refactor, not the functional producer.
+claimed by design acceptance. [PR #266](https://github.com/sunriselayer/sunrise-edge/pull/266)
+was normally merged as `e37ad2e` on 2026-10-03. It contains the accepted contract
+and byte-preserving preparatory ordered-key refactor, not the functional producer.
 The preparatory ordered-key refactor now uses one closed family type with the
 required view/epoch/height/digest/request suffixes, preserving every existing
 key byte and caller. Parent verification passed 11 exact-layout tests and all
 240 ordered-core regression tests. The complete local storage-neutral required
-gate passed at clean `e16c983` on 2026-10-03; only architecture/TODO prose changed
-since. The independently accepted design preserves the original causal profile
+gate passed on the final clean `9714797` head on 2026-10-03. Fresh independent
+Opus explicitly approved that exact head; required CI lanes and the aggregate
+`check` all passed. The independently accepted design preserves the original causal profile
 and signed Freeze height, refusing unsupported candidate kinds in the shared
 pure authenticator and other controls before signing. Real activation, live
-successor commits and operator/SDK/CLI consumers remain implementation work;
-final exact-head local acceptance, fresh Opus and required CI gate PR #266.
+successor commits and operator/SDK/CLI consumers remain implementation work.
+The next integrated implementation is in progress in separate core, persistence
+and operator/HTTP/SDK worktrees. Their uncompiled changes are not completed
+activation, serving, Delivery 3 or network-readiness evidence.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.
