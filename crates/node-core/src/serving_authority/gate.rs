@@ -96,6 +96,19 @@ impl<'w> ServingGate<'w> {
         }
     }
 
+    /// The verified outgoing committee digest when `certificate_epoch` is
+    /// exactly the predecessor epoch of a successor warrant. The original
+    /// namespace keeps its legacy transition-chain anchor and returns `None`.
+    pub(crate) fn predecessor_certificate_anchor(
+        self,
+        certificate_epoch: protocol_types::Epoch,
+    ) -> Option<Digest32> {
+        match self {
+            Self::Original => None,
+            Self::Successor(warrant) => warrant.predecessor_certificate_anchor(certificate_epoch),
+        }
+    }
+
     /// The successor port of the issuing store, refused for any other store.
     fn port<'s, S: StructuredDurableDomainStateStore + ?Sized>(
         warrant: &LiveWarrant<'_>,

@@ -54,7 +54,7 @@ pub(crate) mod tests;
 
 pub use activation::{SuccessorActivationOutcome, activate_successor};
 pub use entry::{
-    SuccessorFastVoteComposition, apply_successor, prepare_successor,
+    SuccessorFastVoteComposition, apply_successor, prepare_fee_claim_successor, prepare_successor,
     query_request_receipt_successor, retain_publication_successor,
 };
 pub use frames::{
@@ -279,6 +279,9 @@ pub struct SuccessorPolicyInputs {
     validator_set: ValidatorSet,
     anchor: Digest32,
     generation_floor: ExecutionGeneration,
+    /// Verified outgoing (epoch e) committee digest bound by the cut and the
+    /// terminal Seal. It anchors historical certificate-epoch claims only.
+    predecessor_set_digest: Digest32,
 }
 
 impl SuccessorPolicyInputs {
@@ -316,6 +319,12 @@ impl SuccessorPolicyInputs {
     #[must_use]
     pub const fn generation_floor(&self) -> ExecutionGeneration {
         self.generation_floor
+    }
+    /// Verified outgoing epoch-e committee digest, the only predecessor
+    /// certificate scope a successor accepts for imported claims.
+    #[must_use]
+    pub const fn predecessor_set_digest(&self) -> Digest32 {
+        self.predecessor_set_digest
     }
 }
 

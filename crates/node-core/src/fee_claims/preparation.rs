@@ -140,7 +140,35 @@ pub fn inspect_fee_escrow<S: DurableStateKeyScanner>(
     expected: &PublicationContext,
     escrow_request_id: [u8; 32],
 ) -> Result<FeeEscrowInspection, FeeClaimError> {
+    inspect_fee_escrow_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        blob_store,
+        operation,
+        domain,
+        resolver,
+        history,
+        expected,
+        escrow_request_id,
+    )
+}
+
+/// [`inspect_fee_escrow`] under one invocation gate: a successor anchors the
+/// imported certificate-epoch committee by its verified outgoing digest.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn inspect_fee_escrow_gated<S: DurableStateKeyScanner>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    blob_store: &dyn BlobStore,
+    operation: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    escrow_request_id: [u8; 32],
+) -> Result<FeeEscrowInspection, FeeClaimError> {
     inspect_fee_escrow_with_verifier(
+        gate,
         store,
         operation,
         domain,
@@ -150,6 +178,7 @@ pub fn inspect_fee_escrow<S: DurableStateKeyScanner>(
         escrow_request_id,
         || {
             inventory::verify_fee_claim_history_scanned(
+                gate,
                 store,
                 blob_store,
                 operation,
@@ -165,6 +194,7 @@ pub fn inspect_fee_escrow<S: DurableStateKeyScanner>(
 
 #[allow(clippy::too_many_arguments)]
 fn inspect_fee_escrow_with_verifier<S, Verify>(
+    gate: crate::serving_authority::ServingGate<'_>,
     store: &S,
     operation: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -204,7 +234,8 @@ where
         return Err(FeeClaimError::Invalid("fee inspection settlement context"));
     }
     let verification: FeeClaimVerificationReport = verify()?;
-    let validator_set: ValidatorSet = equivocation::load_historical_validator_set(
+    let validator_set: ValidatorSet = equivocation::load_certificate_validator_set(
+        gate,
         store,
         operation,
         domain,
@@ -707,6 +738,45 @@ where
     S: DurableStateKeyScanner,
     E: LocalContractEngine + ?Sized,
 {
+    prepare_fee_claim_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        blob_store,
+        operation,
+        domain,
+        resolver,
+        history,
+        expected,
+        leg_policy,
+        engine,
+        request,
+        created_checkpoint,
+    )
+}
+
+/// [`prepare_fee_claim`] under one invocation gate. For a successor the
+/// read-only dry run uses the ordered-lane authority of exactly this claim
+/// request, with no reserved object or nonce, because a successor claim is
+/// only ever committed as an ordered candidate. Nothing is written.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_fee_claim_gated<S, E>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    blob_store: &dyn BlobStore,
+    operation: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    leg_policy: &LocalExecutionPolicy,
+    engine: &E,
+    request: FeeClaimPreparationRequest<'_>,
+    created_checkpoint: u64,
+) -> Result<PreparedFeeClaim, FeeClaimError>
+where
+    S: DurableStateKeyScanner,
+    E: LocalContractEngine + ?Sized,
+{
     require_preparation_context(resolver, history, expected)?;
     local_instance_state::reject_reserved_request_id(&request.request_id)
         .map_err(FeeClaimError::Invalid)?;
@@ -721,7 +791,8 @@ where
         Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
     )
     .map_err(|_| FeeClaimError::Invalid("fee preparation recipient address"))?;
-    let escrow: FeeEscrowInspection = inspect_fee_escrow(
+    let escrow: FeeEscrowInspection = inspect_fee_escrow_gated(
+        gate,
         store,
         blob_store,
         operation,
@@ -815,6 +886,18 @@ where
                 return Err(FeeClaimError::Invalid("fee claim leg request id mismatch"));
             }
             let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+            let successor_lane: Option<ordered_economics::OrderedLegAdmission<'_>> =
+                match gate {
+                    crate::serving_authority::ServingGate::Original => None,
+                    crate::serving_authority::ServingGate::Successor(_) => {
+                        Some(ordered_economics::OrderedLegAdmission {
+                            request_id: request.request_id,
+                            objects: &[],
+                            nonce: None,
+                            gate,
+                        })
+                    }
+                };
             let executed: ExecutedFeeClaim = execute_positive_claim(
                 store,
                 blob_store,
@@ -833,7 +916,7 @@ where
                 created_checkpoint,
                 &mut reads,
                 // Offline read-only preparation reuses no reservation at all.
-                None,
+                successor_lane.as_ref(),
             )?;
             (executed.next_settlement, executed.payout)
         };

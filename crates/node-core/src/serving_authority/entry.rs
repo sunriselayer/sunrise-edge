@@ -173,3 +173,50 @@ pub fn query_request_receipt_successor<S: StructuredDurableDomainStateStore>(
     ServingGate::Successor(warrant).require_live(store, warrant.context(), domain)?;
     crate::query_request_receipt(store, warrant.context(), domain, request_id)
 }
+
+/// Read-only successor fee-claim preparation, including an imported
+/// epoch-e escrow: the claim binds its own certificate epoch, the historical
+/// claimant is never required to be a current consensus member, and the
+/// returned intent is signed by the claimant offline and then submitted as
+/// an ordered e+1 candidate. Nothing is written.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_fee_claim_successor<S, E>(
+    warrant: &LiveWarrant<'_>,
+    store: &S,
+    blob_store: &dyn BlobStore,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    leg_policy: &LocalExecutionPolicy,
+    engine: &E,
+    request: crate::fee_claims::FeeClaimPreparationRequest<'_>,
+    created_checkpoint: u64,
+) -> Result<crate::fee_claims::PreparedFeeClaim, crate::fee_claims::FeeClaimError>
+where
+    S: runtime::DurableStateKeyScanner,
+    E: execution::local_execution::LocalContractEngine + ?Sized,
+{
+    require_successor_scope(warrant, resolver)?;
+    let context: &PublicationContext = warrant.policy_inputs().context();
+    if leg_policy.context() != context {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "successor claim leg policy is not the verified e+1 scope",
+        )
+        .into());
+    }
+    let domain: AtomicityDomainId = warrant.policy_inputs().domain();
+    ServingGate::Successor(warrant).require_live(store, warrant.context(), domain)?;
+    crate::fee_claims::prepare_fee_claim_gated(
+        ServingGate::Successor(warrant),
+        store,
+        blob_store,
+        warrant.context(),
+        domain,
+        resolver,
+        history,
+        context,
+        leg_policy,
+        engine,
+        request,
+        created_checkpoint,
+    )
+}

@@ -123,6 +123,16 @@ fn successor_warrant<'inv, S: StructuredDurableDomainStateStore>(
 }
 
 impl LiveWarrant<'_> {
+    /// The verified outgoing committee digest for the exact predecessor
+    /// epoch, else `None`.
+    pub(crate) fn predecessor_certificate_anchor(
+        &self,
+        certificate_epoch: protocol_types::Epoch,
+    ) -> Option<Digest32> {
+        (certificate_epoch == self.evidence.outgoing_context.epoch())
+            .then_some(self.evidence.policy_inputs.predecessor_set_digest)
+    }
+
     /// Writer-side issuer binding: the store must be the exact object that
     /// issued this warrant, under the same operation context and verified
     /// domain. Address identity is checked privately; nothing public can

@@ -601,7 +601,34 @@ fn load_historical_validator_set_with_revisions<S: runtime::VersionedStateReader
     } else {
         return invalid("evidence epoch is not yet committed");
     };
+    let validator_set: ValidatorSet = read_anchored_validator_set(
+        store,
+        context,
+        domain,
+        resolver,
+        chain,
+        protocol_version,
+        evidence_epoch,
+        trusted_anchor,
+        &mut revisions,
+    )?;
+    Ok((validator_set, revisions))
+}
 
+/// Reads and fences the committed set row at `epoch` and requires its digest
+/// to equal an already trusted anchor.
+#[allow(clippy::too_many_arguments)]
+fn read_anchored_validator_set<S: runtime::VersionedStateReader + ?Sized>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    chain: &ChainId,
+    protocol_version: ProtocolVersion,
+    evidence_epoch: Epoch,
+    trusted_anchor: Digest32,
+    revisions: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> EqResult<ValidatorSet> {
     let validator_context: PublicationContext =
         PublicationContext::new(chain.clone(), protocol_version, evidence_epoch)?;
     let key: Vec<u8> = local_instance_state::fastpath_validator_set_key(&validator_context)?;
@@ -620,7 +647,103 @@ fn load_historical_validator_set_with_revisions<S: runtime::VersionedStateReader
             "historical validator set does not match the restart-verified transition chain",
         );
     }
-    Ok((validator_set, revisions))
+    Ok(validator_set)
+}
+
+/// DR-0189: a verified first successor has no legacy transition row for its
+/// predecessor epoch. Its trusted anchor is instead the outgoing committee
+/// digest the verified cut binding and terminal Seal bind, supplied only by
+/// the private successor gate. The live epoch record must be exactly the
+/// successor of `predecessor_epoch`, and the imported set row must hash to
+/// that anchor; both rows are fenced into the caller's commit.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn load_successor_predecessor_set_fenced<S: runtime::VersionedStateReader + ?Sized>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    chain: &ChainId,
+    protocol_version: ProtocolVersion,
+    predecessor_epoch: Epoch,
+    trusted_anchor: Digest32,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> EqResult<ValidatorSet> {
+    let mut revisions: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let epoch_key: Vec<u8> = local_instance_state::fastpath_epoch_record_key(chain)?;
+    let epoch_observed: VersionedStateValue =
+        store.read_versioned_state(context, domain, &epoch_key)?;
+    revisions.insert(epoch_key, epoch_observed.revision());
+    let live: local_instance_state::FastPathEpochRecord =
+        local_instance_state::decode_fastpath_epoch_record(epoch_observed.value().ok_or(
+            EquivocationEvidenceError::Invalid("fast-path epoch record not installed"),
+        )?)?;
+    if live.previous_epoch != Some(predecessor_epoch)
+        || predecessor_epoch.get().checked_add(1) != Some(live.current_epoch.get())
+    {
+        return invalid("live epoch is not the verified successor of the certificate epoch");
+    }
+    let validator_set: ValidatorSet = read_anchored_validator_set(
+        store,
+        context,
+        domain,
+        resolver,
+        chain,
+        protocol_version,
+        predecessor_epoch,
+        trusted_anchor,
+        &mut revisions,
+    )?;
+    for (key, revision) in revisions {
+        if let Some(previous) = reads.insert(key, revision)
+            && previous != revision
+        {
+            return Err(EquivocationEvidenceError::Node(
+                NodeCoreError::StateConflict,
+            ));
+        }
+    }
+    Ok(validator_set)
+}
+
+/// The certificate-epoch committee under one invocation gate, without CAS
+/// carry-over: the verified predecessor anchor for a successor warrant at its
+/// exact predecessor epoch, otherwise the unchanged transition chain.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn load_certificate_validator_set<S: runtime::VersionedStateReader + ?Sized>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    chain: &ChainId,
+    protocol_version: ProtocolVersion,
+    certificate_epoch: Epoch,
+) -> EqResult<ValidatorSet> {
+    match gate.predecessor_certificate_anchor(certificate_epoch) {
+        Some(anchor) => {
+            let mut discarded: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+            load_successor_predecessor_set_fenced(
+                store,
+                context,
+                domain,
+                resolver,
+                chain,
+                protocol_version,
+                certificate_epoch,
+                anchor,
+                &mut discarded,
+            )
+        }
+        None => load_historical_validator_set(
+            store,
+            context,
+            domain,
+            resolver,
+            chain,
+            protocol_version,
+            certificate_epoch,
+        ),
+    }
 }
 
 /// Loads the chain-anchored historical validator set without carrying CAS

@@ -1087,3 +1087,345 @@ fn source_free_verifier_refuses_non_terminal_tampered_and_incomplete_artifacts()
         )
     ));
 }
+
+/// One genuine e+1 ordered round on every activated target under fresh
+/// warrants: the real leader proposes, every member votes, the real quorum
+/// certificate is applied everywhere. Returns each replica's certificate
+/// output and the certificate.
+fn successor_round(
+    world: &SuccessorWorld,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: Option<&OrderedCandidate>,
+) -> (Vec<OrderedEventOutput>, consensus::QuorumCertificate) {
+    let network: &Network = world.network();
+    let view: u64 = crate::ordered_economics::query_status_successor(
+        &world.warrant(0),
+        &world.targets[0].0,
+        env,
+    )
+    .unwrap()
+    .current_view;
+    let leader_id: protocol_types::ValidatorId =
+        world.policy.engine().validator_set().leader(view).unwrap();
+    let leader: usize = network
+        .signers
+        .iter()
+        .position(|signer: &TestSigner| signer.id == leader_id)
+        .unwrap();
+    let proposal: OrderedProposal = crate::ordered_economics::propose_successor(
+        &world.warrant(leader),
+        &world.targets[leader].0,
+        env,
+        candidate,
+        &network.signers[leader],
+    )
+    .unwrap();
+    let votes: Vec<consensus::ConsensusVote> = (0..REPLICAS)
+        .map(|index: usize| {
+            crate::ordered_economics::process_proposal_successor(
+                &world.warrant(index),
+                &world.targets[index].0,
+                env,
+                &proposal,
+                &network.signers[index],
+            )
+            .unwrap()
+            .messages
+            .into_iter()
+            .find_map(|message: consensus::ConsensusMessage| match message {
+                consensus::ConsensusMessage::Vote(vote) => Some(vote),
+                _ => None,
+            })
+            .expect("every successor member votes on a safe proposal")
+        })
+        .collect();
+    let certificate: consensus::QuorumCertificate = world
+        .policy
+        .engine()
+        .certificate_from_votes(
+            &proposal.proposal,
+            &votes,
+            &crate::ordered_economics::policy::Ed25519ConsensusVerifier,
+        )
+        .unwrap()
+        .expect("four successor votes reach quorum");
+    let outputs: Vec<OrderedEventOutput> = (0..REPLICAS)
+        .map(|index: usize| {
+            crate::ordered_economics::process_certificate_successor(
+                &world.warrant(index),
+                &world.targets[index].0,
+                env,
+                &certificate,
+            )
+            .unwrap()
+        })
+        .collect();
+    (outputs, certificate)
+}
+
+/// The imported epoch-e settlement row of `escrow`, read from a target.
+fn imported_settlement(world: &SuccessorWorld, index: usize, escrow: [u8; 32]) -> FastPathSettlementRecord {
+    let key: Vec<u8> =
+        crate::local_instance_state::fastpath_settlement_key(&fixture::chain(), &escrow).unwrap();
+    decode_fastpath_settlement_record(&world.value(index, &key).1.unwrap()).unwrap()
+}
+
+/// The claimant's own genuinely signed e+1 split leg over an imported escrow.
+fn successor_split_leg(
+    world: &SuccessorWorld,
+    escrow: [u8; 32],
+    request: [u8; 32],
+    claimant: usize,
+) -> Vec<u8> {
+    let source: &CausalFixture = &world.fixture.source.fixture;
+    let network: &Network = &source.network;
+    let signer: &TestSigner = &network.signers[claimant];
+    let next: PublicationContext = world.policy.context().clone();
+    let settlement: FastPathSettlementRecord = imported_settlement(world, 0, escrow);
+    let amount: u64 = settlement
+        .shares
+        .iter()
+        .find(|share| share.validator_id == signer.id)
+        .unwrap()
+        .amount;
+    let leg: LocalExecutionIntent = LocalExecutionIntent {
+        mode: LocalExecutionMode::Call,
+        policy_digest: world.next_base.digest(&network.resolver).unwrap(),
+        call: CallIntent {
+            context: next.clone(),
+            request_id: request,
+            sender: *signer.id.as_bytes(),
+            nonce: 0,
+            code: source.instance.code.clone(),
+            instance: instance_target(&network.resolver, &source.instance).unwrap(),
+            entrypoint: "split".into(),
+            type_arguments: source.manifest.fee_policy.type_arguments.clone(),
+            access: abi::AccessManifest {
+                entries: vec![abi::AccessEntry {
+                    object_ref: settlement.fee_output.clone().unwrap(),
+                    mode: AccessMode::Write,
+                }],
+            },
+            arguments: public_standard_asset::split_arguments(amount, signer.id.as_bytes())
+                .unwrap(),
+            gas_limit: 500_000,
+        },
+        authorizations: Vec::new(),
+    };
+    let frame: Vec<u8> = local_execution_signing_frame(&next, &leg).unwrap();
+    encode_signed_local_execution(&SignedLocalExecutionIntent {
+        signature: signer.key.sign(&frame).into(),
+        intent: leg,
+    })
+    .unwrap()
+}
+
+/// Successor preparation plus the claimant's own claim signature, as an
+/// ordered e+1 candidate. The claim binds its own certificate epoch.
+fn successor_claim(
+    world: &SuccessorWorld,
+    escrow: [u8; 32],
+    request: [u8; 32],
+    claimant: usize,
+) -> (OrderedCandidate, crate::fee_claims::PreparedFeeClaim) {
+    let network: &Network = world.network();
+    let signer: &TestSigner = &network.signers[claimant];
+    let leg: Vec<u8> = successor_split_leg(world, escrow, request, claimant);
+    let prepared: crate::fee_claims::PreparedFeeClaim =
+        crate::serving_authority::prepare_fee_claim_successor(
+            &world.warrant(0),
+            &world.targets[0].0,
+            &world.targets[0].1,
+            &network.resolver,
+            &network.history,
+            &world.next_base,
+            &network.engine,
+            crate::fee_claims::FeeClaimPreparationRequest {
+                escrow_request_id: escrow,
+                request_id: request,
+                validator_id: signer.id,
+                claimant_public_key: *signer.id.as_bytes(),
+                recipient: Address::new(*signer.id.as_bytes()),
+                signed_leg: Some(&leg),
+            },
+            13,
+        )
+        .unwrap();
+    let next: PublicationContext = world.policy.context().clone();
+    let digest: Digest32 =
+        crate::fee_claims::fee_claim_intent_digest(&network.resolver, &prepared.intent).unwrap();
+    let frame: Vec<u8> = crate::fee_claims::fee_claim_signing_frame(&next, digest).unwrap();
+    let signed: crate::fee_claims::codec::SignedFeeClaimIntent =
+        crate::fee_claims::codec::SignedFeeClaimIntent {
+            signature: signer.key.sign(&frame).into(),
+            intent: prepared.intent.clone(),
+        };
+    (
+        OrderedCandidate {
+            context: next,
+            request_id: request,
+            kind: OrderedOperationKind::FeeClaim,
+            intent: crate::fee_claims::codec::encode_signed_fee_claim_intent(&signed).unwrap(),
+            created_checkpoint: 13,
+        },
+        prepared,
+    )
+}
+
+/// DR-0189 Section 10: the genuine epoch-e drained paid escrow imported into
+/// every target is claimed through the existing e+1 ordered handler with the
+/// claimant's own claim and leg signatures bound to the certificate epoch e,
+/// anchored by the verified outgoing committee. The settlement and payout
+/// advance identically on every replica at a generation above the cut floor;
+/// the completed claim is never re-placed; wrong scopes refuse.
+#[test]
+fn successor_ordered_claim_settles_imported_epoch_e_escrow_above_cut_floor() {
+    let world: SuccessorWorld = activated_world();
+    let env: OrderedEconomicsEnvironment<'_> = world.env();
+    let network: &Network = world.network();
+    let outgoing: Epoch = network.root.genesis_context().epoch();
+    let claimant: usize = 1;
+    let claim: [u8; 32] = [0xec; 32];
+    let settlement_key: Vec<u8> =
+        crate::local_instance_state::fastpath_settlement_key(&fixture::chain(), &PAID_REQUEST)
+            .unwrap();
+    let imported: FastPathSettlementRecord = imported_settlement(&world, 0, PAID_REQUEST);
+    assert_eq!(imported.context.epoch(), outgoing);
+    assert!(imported.fee_output.is_some(), "the drained escrow is charged");
+
+    // Preparation refuses a non-successor leg policy and a missing escrow.
+    let leg: Vec<u8> = successor_split_leg(&world, PAID_REQUEST, claim, claimant);
+    let request = |escrow: [u8; 32]| crate::fee_claims::FeeClaimPreparationRequest {
+        escrow_request_id: escrow,
+        request_id: claim,
+        validator_id: network.signers[claimant].id,
+        claimant_public_key: *network.signers[claimant].id.as_bytes(),
+        recipient: Address::new(*network.signers[claimant].id.as_bytes()),
+        signed_leg: Some(&leg),
+    };
+    assert!(crate::serving_authority::prepare_fee_claim_successor(
+        &world.warrant(0),
+        &world.targets[0].0,
+        &world.targets[0].1,
+        &network.resolver,
+        &network.history,
+        &network.leg_policy,
+        &network.engine,
+        request(PAID_REQUEST),
+        13,
+    )
+    .is_err());
+    assert!(crate::serving_authority::prepare_fee_claim_successor(
+        &world.warrant(0),
+        &world.targets[0].0,
+        &world.targets[0].1,
+        &network.resolver,
+        &network.history,
+        &world.next_base,
+        &network.engine,
+        request([0x5c; 32]),
+        13,
+    )
+    .is_err());
+
+    let (candidate, prepared): (OrderedCandidate, crate::fee_claims::PreparedFeeClaim) =
+        successor_claim(&world, PAID_REQUEST, claim, claimant);
+    assert_eq!(prepared.intent.certificate_epoch, outgoing);
+    world.policy.authenticate_candidate(&candidate).unwrap();
+    // Pure scope refusals: any certificate epoch other than the pinned e+1 or
+    // the verified predecessor e, and any foreign replay context.
+    let mut signed: crate::fee_claims::codec::SignedFeeClaimIntent =
+        crate::fee_claims::codec::decode_signed_fee_claim_intent(&candidate.intent).unwrap();
+    signed.intent.certificate_epoch = Epoch::new(outgoing.get().checked_add(2).unwrap());
+    let mut wrong_epoch: OrderedCandidate = candidate.clone();
+    wrong_epoch.intent = crate::fee_claims::codec::encode_signed_fee_claim_intent(&signed).unwrap();
+    assert!(matches!(
+        world.policy.authenticate_candidate(&wrong_epoch),
+        Err(OrderedEconomicsError::Unauthenticated(_))
+    ));
+    let original: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(&network.root, network.domain()).unwrap();
+    assert!(matches!(
+        original.authenticate_candidate(&candidate),
+        Err(OrderedEconomicsError::Unauthenticated(_))
+    ));
+
+    let mut placed: Option<&OrderedCandidate> = Some(&candidate);
+    let mut outcome: Option<OrderedOutcome> = None;
+    for _ in 0..6 {
+        let (outputs, _): (Vec<OrderedEventOutput>, consensus::QuorumCertificate) =
+            successor_round(&world, &env, placed.take());
+        if let Some(found) = outputs[0]
+            .committed
+            .iter()
+            .find(|item: &&OrderedOutcome| item.request_id == claim)
+        {
+            outcome = Some(found.clone());
+            break;
+        }
+    }
+    let outcome: OrderedOutcome = outcome.expect("the imported escrow claim commits at e+1");
+    assert_eq!(
+        outcome.output.responses()[0].status(),
+        crate::NodeResponseStatus::Accepted
+    );
+    for index in 0..REPLICAS {
+        assert_eq!(
+            imported_settlement(&world, index, PAID_REQUEST),
+            prepared.next_settlement
+        );
+    }
+    let profile: crate::logical_generation::LogicalProfileRecord =
+        crate::logical_generation::decode_logical_profile_record(
+            &world
+                .value(0, &crate::logical_generation::logical_profile_key(&fixture::chain()).unwrap())
+                .1
+                .unwrap(),
+        )
+        .unwrap();
+    let provenance_key: Vec<u8> =
+        crate::logical_generation::LogicalKeySpace::new(&profile, &network.resolver)
+            .provenance_key(&crate::logical_generation::LogicalSubject::StateKey(
+                settlement_key.clone(),
+            ))
+            .unwrap();
+    let provenance: crate::logical_generation::LogicalProvenanceRecord =
+        crate::logical_generation::decode_logical_provenance_record(
+            &world.value(0, &provenance_key).1.unwrap(),
+        )
+        .unwrap();
+    assert!(provenance.generation > world.warrant(0).policy_inputs().generation_floor());
+
+    // The completed original is answered, never re-placed or re-applied.
+    let after: (StateRevision, Option<Vec<u8>>) = world.value(0, &settlement_key);
+    let leader_id: protocol_types::ValidatorId = world
+        .policy
+        .engine()
+        .validator_set()
+        .leader(
+            crate::ordered_economics::query_status_successor(
+                &world.warrant(0),
+                &world.targets[0].0,
+                &env,
+            )
+            .unwrap()
+            .current_view,
+        )
+        .unwrap();
+    let leader: usize = network
+        .signers
+        .iter()
+        .position(|signer: &TestSigner| signer.id == leader_id)
+        .unwrap();
+    assert!(matches!(
+        crate::ordered_economics::propose_successor(
+            &world.warrant(leader),
+            &world.targets[leader].0,
+            &env,
+            Some(&candidate),
+            &network.signers[leader],
+        ),
+        Err(OrderedEconomicsError::AlreadyCompleted(_))
+    ));
+    assert_eq!(world.value(0, &settlement_key), after);
+}

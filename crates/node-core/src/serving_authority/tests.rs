@@ -90,6 +90,10 @@ pub(crate) fn successor_inputs(
         validator_set,
         anchor,
         generation_floor: ExecutionGeneration::new(SUCCESSOR_FLOOR),
+        predecessor_set_digest: root
+            .genesis_committee()
+            .digest(root.genesis_resolver())
+            .unwrap(),
     }
 }
 

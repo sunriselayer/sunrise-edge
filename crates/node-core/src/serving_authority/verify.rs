@@ -217,6 +217,7 @@ fn finish(
         validator_set: verified.next_set,
         anchor,
         generation_floor: verified.binding.generation_floor,
+        predecessor_set_digest: verified.binding.validator_set_digest,
     };
     Ok(VerifiedSuccessorActivation {
         subject,

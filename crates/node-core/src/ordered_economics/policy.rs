@@ -251,6 +251,11 @@ pub struct OrderedEconomicsPolicy {
     minimum_freeze_block_height: u64,
     anchor: Digest32,
     key_scope: OrderedKeyScope,
+    /// DR-0189 Section 10: the one historical certificate scope a verified
+    /// first successor accepts for imported fee claims, namely the original
+    /// genesis committee at its own epoch e. `None` for every chain-scoped
+    /// policy, whose fee claims stay pinned to the policy epoch.
+    predecessor_certificates: Option<(Epoch, ValidatorSet)>,
     engine: ChainedHotStuff,
     resolver: HashSuiteResolver,
 }
@@ -321,7 +326,7 @@ impl OrderedEconomicsPolicy {
                 "successor policy root chain or protocol differs from the verified context",
             ));
         }
-        let policy: Self = Self::build(
+        let mut policy: Self = Self::build(
             context.clone(),
             inputs.domain(),
             root.digest(),
@@ -337,6 +342,22 @@ impl OrderedEconomicsPolicy {
                 "successor policy anchor differs from the verified successor anchor",
             ));
         }
+        // The predecessor of a first successor is exactly the original
+        // genesis epoch, whose committee digest the cut binding and the
+        // terminal Seal verified. Nothing else can become a historical scope.
+        let predecessor_epoch: Epoch = root.genesis_context().epoch();
+        let committee: &ValidatorSet = root.genesis_committee();
+        if predecessor_epoch.get().checked_add(1) != Some(context.epoch().get())
+            || committee.epoch() != predecessor_epoch
+            || committee.digest(root.genesis_resolver()).map_err(|_| {
+                OrderedEconomicsError::Policy("successor predecessor committee digest")
+            })? != inputs.predecessor_set_digest()
+        {
+            return Err(OrderedEconomicsError::Policy(
+                "successor predecessor committee differs from the verified outgoing set",
+            ));
+        }
+        policy.predecessor_certificates = Some((predecessor_epoch, committee.clone()));
         Ok(policy)
     }
 
@@ -427,6 +448,7 @@ impl OrderedEconomicsPolicy {
             minimum_freeze_block_height,
             anchor,
             key_scope,
+            predecessor_certificates: None,
             engine,
             resolver,
         })
@@ -507,6 +529,20 @@ impl OrderedEconomicsPolicy {
     /// widen it.
     pub(crate) const fn key_scope(&self) -> &OrderedKeyScope {
         &self.key_scope
+    }
+
+    /// The committee whose keys certify a fee claim signed for
+    /// `certificate_epoch`: the pinned set at the policy epoch, or, only for
+    /// a verified first successor, the verified predecessor committee at its
+    /// exact epoch. Every other epoch has no certificate scope.
+    pub(crate) fn certificate_set(&self, certificate_epoch: Epoch) -> Option<&ValidatorSet> {
+        if certificate_epoch == self.context.epoch() {
+            return Some(self.engine.validator_set());
+        }
+        match &self.predecessor_certificates {
+            Some((epoch, set)) if *epoch == certificate_epoch => Some(set),
+            _ => None,
+        }
     }
 
     /// Returns the registered authority for `validator_id` in the pinned
@@ -747,7 +783,15 @@ fn trusted_registered_key<'a>(
     env: &'a CandidateAuthentication<'a>,
     validator_id: ValidatorId,
 ) -> Result<&'a [u8], OrderedEconomicsError> {
-    let info: &ValidatorInfo = env.policy.registered_validator(validator_id).ok_or(
+    trusted_key_in(env.policy.engine().validator_set(), validator_id)
+}
+
+/// [`trusted_registered_key`] against one explicit trusted committee.
+fn trusted_key_in(
+    validator_set: &ValidatorSet,
+    validator_id: ValidatorId,
+) -> Result<&[u8], OrderedEconomicsError> {
+    let info: &ValidatorInfo = validator_set.get(validator_id).ok_or(
         OrderedEconomicsError::Unauthenticated(
             "ordered candidate names a validator outside the pinned validator set",
         ),
@@ -1148,16 +1192,18 @@ fn authenticate_fee_claim(
             "fee claim candidate context or request id mismatch",
         ));
     }
-    // This closed profile pins exactly one epoch/set, so the certificate
-    // epoch whose historical key the handler will verify against must be the
-    // pinned epoch. Without this, the outer signature would only be
-    // verifiable against a historical key no longer pinned here.
-    if signed.intent.certificate_epoch != env.policy.context().epoch() {
-        return Err(OrderedEconomicsError::Unauthenticated(
+    // The certificate epoch whose historical key the handler verifies must be
+    // a scope this policy pins: its own epoch, or (verified first successor
+    // only) the exact predecessor epoch of an imported escrow. The claimant
+    // is an ordinary historical certificate member, never required to be a
+    // current consensus member.
+    let certificate_set: &ValidatorSet = env
+        .policy
+        .certificate_set(signed.intent.certificate_epoch)
+        .ok_or(OrderedEconomicsError::Unauthenticated(
             "fee claim certificate epoch is not the pinned profile epoch",
-        ));
-    }
-    let public_key: Vec<u8> = trusted_registered_key(env, signed.intent.validator_id)?.to_vec();
+        ))?;
+    let public_key: Vec<u8> = trusted_key_in(certificate_set, signed.intent.validator_id)?.to_vec();
     let intent_digest: Digest32 = fee_claim_intent_digest(env.resolver(), &signed.intent)
         .map_err(|_| OrderedEconomicsError::Unauthenticated("fee claim intent digest"))?;
     let framed: Vec<u8> = fee_claim_signing_frame(&signed.intent.context, intent_digest)

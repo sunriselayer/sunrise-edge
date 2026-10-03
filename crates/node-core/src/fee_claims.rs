@@ -92,6 +92,7 @@ pub use preparation::{
     FeeClaimPreparationRequest, FeeEscrowDiscoveryPage, FeeEscrowInspection, PreparedFeeClaim,
     discover_fee_escrows_page, inspect_fee_claim, inspect_fee_escrow, prepare_fee_claim,
 };
+pub(crate) use preparation::prepare_fee_claim_gated;
 
 pub use inventory::{
     FeeEscrowInventoryPage, FeeEscrowInventorySweep, verify_fee_escrow_inventory_all,
@@ -431,6 +432,7 @@ pub fn verify_fee_claim_history<S: StructuredStateReader>(
     escrow_request_id: &[u8; 32],
 ) -> Result<FeeClaimVerificationReport, FeeClaimError> {
     verify_fee_claim_history_shared(
+        crate::serving_authority::ServingGate::Original,
         store,
         blob_store,
         context,
@@ -513,6 +515,7 @@ fn verify_uncharged_claim_absence_by_point_read<S: VersionedStateReader + ?Sized
 /// single bounded scanner page (used only by the read-only inventory sweep).
 #[allow(clippy::too_many_arguments)]
 fn verify_fee_claim_history_shared<S, UnchargedCheck, ChainVerify>(
+    gate: crate::serving_authority::ServingGate<'_>,
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -589,7 +592,8 @@ where
         certificate.epoch,
     )
     .map_err(|_| FeeClaimError::Invalid("fee claim certificate context"))?;
-    let validator_set: ValidatorSet = equivocation::load_historical_validator_set(
+    let validator_set: ValidatorSet = equivocation::load_certificate_validator_set(
+        gate,
         store,
         context,
         domain,
@@ -1165,16 +1169,35 @@ where
     // 10. chain-anchored historical validator set at the signed certificate
     // epoch, fenced into this same commit -- never current membership or
     // bond state.
-    let validator_set: ValidatorSet = equivocation::load_historical_validator_set_fenced(
-        store,
-        context,
-        domain,
-        resolver,
-        signed.intent.context.chain_id(),
-        signed.intent.context.protocol_version(),
-        signed.intent.certificate_epoch,
-        &mut reads,
-    )?;
+    // DR-0189: an imported epoch-e escrow at a verified first successor is
+    // anchored by the verified outgoing committee, since successor
+    // activation installs no legacy transition row. Every other epoch keeps
+    // the existing restart-verified transition chain.
+    let validator_set: ValidatorSet = match mutation_fence::ordered_gate(ordered)
+        .predecessor_certificate_anchor(signed.intent.certificate_epoch)
+    {
+        Some(anchor) => equivocation::load_successor_predecessor_set_fenced(
+            store,
+            context,
+            domain,
+            resolver,
+            signed.intent.context.chain_id(),
+            signed.intent.context.protocol_version(),
+            signed.intent.certificate_epoch,
+            anchor,
+            &mut reads,
+        )?,
+        None => equivocation::load_historical_validator_set_fenced(
+            store,
+            context,
+            domain,
+            resolver,
+            signed.intent.context.chain_id(),
+            signed.intent.context.protocol_version(),
+            signed.intent.certificate_epoch,
+            &mut reads,
+        )?,
+    };
     let validator = validator_set
         .get(signed.intent.validator_id)
         .ok_or(FeeClaimError::Invalid(
