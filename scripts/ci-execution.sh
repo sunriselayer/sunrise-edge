@@ -63,7 +63,7 @@ ci_check_vectors() {
     call-value call-intent publication-submission local-execution \
     call-authorization paid-execution fast-vote availability frozen-frontier \
     drainset fast-path fastvote-apply-request fastvote-published-apply \
-    ordered-history business-cut business-import bond-registration conditional-readiness ordered-seal; do
+    ordered-history business-cut business-import bond-registration conditional-readiness ordered-seal successor-serving; do
     node "scripts/$vector-vectors.mjs" || return "$?"
   done
 }
