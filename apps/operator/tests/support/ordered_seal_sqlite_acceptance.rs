@@ -402,6 +402,14 @@ fn saved_peer_results(
     let results_text: String =
         std::fs::read_to_string(format!("{}.results", prefix.display())).unwrap();
     let mut reports: BTreeMap<(usize, usize), (String, String)> = BTreeMap::new();
+    let mut pre_certificate_votes: BTreeMap<(usize, usize), String> = BTreeMap::new();
+    let validator_count: usize = fixture.network.validators.len();
+    assert!(validator_count > 0);
+    assert_eq!(endpoints.len(), validator_count);
+    let expected_pairs: usize = rounds.checked_mul(validator_count).unwrap();
+    let pre_certificate_phase: String = format!("skipped:{}", hex(b"certificate not sent yet"));
+    let mut pre_certificate_count: usize = 0;
+    let mut record_count: usize = 0;
     let mut previous_round: usize = 0;
     for line in results_text.lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
@@ -410,6 +418,13 @@ fn saved_peer_results(
         };
         let round: usize = round.strip_prefix("round=").unwrap().parse().unwrap();
         assert!(round < rounds && round >= previous_round);
+        if round > previous_round {
+            assert_eq!(reports.len(), round.checked_mul(validator_count).unwrap());
+            assert!(
+                pre_certificate_votes.is_empty(),
+                "every preceding round finished both phases"
+            );
+        }
         previous_round = round;
         let validator: &str = validator.strip_prefix("validator=").unwrap();
         let index: usize = fixture
@@ -422,25 +437,60 @@ fn saved_peer_results(
             endpoint.strip_prefix("endpoint_hex=").unwrap(),
             hex(endpoints[index].as_bytes())
         );
-        assert!(
-            reports
-                .insert(
-                    (round, index),
-                    (
-                        vote.strip_prefix("vote=").unwrap().to_owned(),
-                        certificate.strip_prefix("certificate=").unwrap().to_owned(),
-                    )
-                )
-                .is_none(),
-            "each real peer phase appears exactly once for its chronological round"
-        );
+        let vote: &str = vote.strip_prefix("vote=").unwrap();
+        let certificate: &str = certificate.strip_prefix("certificate=").unwrap();
+        let key: (usize, usize) = (round, index);
+        // Submit saves all vote phases before certificate fan-out; replay
+        // saves each observe phase immediately before that peer's certificate.
+        // Both retain exactly one initial and one final record per peer,
+        // with configured peer order preserved independently in each phase.
+        if certificate == pre_certificate_phase {
+            assert!(
+                !reports.contains_key(&key),
+                "a completed peer phase cannot regress"
+            );
+            assert_eq!(
+                key,
+                (
+                    pre_certificate_count / validator_count,
+                    pre_certificate_count % validator_count
+                ),
+                "pre-certificate phases occur once in chronological round and configured peer order"
+            );
+            assert!(pre_certificate_votes.insert(key, vote.to_owned()).is_none());
+            pre_certificate_count = pre_certificate_count.checked_add(1).unwrap();
+        } else {
+            assert!(
+                certificate.starts_with("acknowledged:") || certificate.starts_with("rejected:"),
+                "the final certificate phase is an actual acknowledgement or rejection, never skipped"
+            );
+            assert_eq!(
+                key,
+                (
+                    reports.len() / validator_count,
+                    reports.len() % validator_count
+                ),
+                "final phases occur once in chronological round and configured peer order"
+            );
+            let initial_vote: String = pre_certificate_votes
+                .remove(&key)
+                .expect("the exact pre-certificate record must precede its final phase");
+            assert_eq!(
+                vote, initial_vote,
+                "the final phase preserves the exact original vote/observe bytes"
+            );
+            assert!(
+                reports
+                    .insert(key, (vote.to_owned(), certificate.to_owned()))
+                    .is_none()
+            );
+        }
+        record_count = record_count.checked_add(1).unwrap();
     }
-    assert_eq!(
-        reports.len(),
-        rounds
-            .checked_mul(fixture.network.validators.len())
-            .unwrap()
-    );
+    assert!(pre_certificate_votes.is_empty());
+    assert_eq!(pre_certificate_count, expected_pairs);
+    assert_eq!(reports.len(), expected_pairs);
+    assert_eq!(record_count, expected_pairs.checked_mul(2).unwrap());
     reports
 }
 
