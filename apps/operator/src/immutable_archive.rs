@@ -15,6 +15,7 @@ use std::{
 };
 #[cfg(test)]
 use sunrise_edge_client::immutable_archive::ARCHIVE_STAGING_DIRECTORY as STAGING_DIRECTORY;
+use sunrise_edge_client::immutable_archive::ARCHIVE_STAGING_DIRECTORY;
 pub use sunrise_edge_client::immutable_archive::{ArchiveStagingDirectory, ImmutableArchiveReader};
 
 static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
@@ -50,10 +51,25 @@ impl ImmutableArchive {
     }
 
     fn open_mode(root: &Path, writable: bool) -> io::Result<Self> {
-        let archive: Self = Self {
-            reader: ImmutableArchiveReader::open_mode(root, writable)?,
-            writable,
-        };
+        let mut reader: ImmutableArchiveReader = ImmutableArchiveReader::open(root)?;
+        if writable && reader.staging().is_none() {
+            // Only this publication owner creates a staging role. Keep the
+            // original root attached across creation and read-only re-open;
+            // the SDK constructor itself never mutates saved input trees.
+            reader.ensure_attached()?;
+            let staging_path: PathBuf = reader.root().join(ARCHIVE_STAGING_DIRECTORY);
+            match std::fs::create_dir(&staging_path) {
+                Ok(()) => reader.directory().sync_all()?,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+            reader.ensure_attached()?;
+            let attached: ImmutableArchiveReader = ImmutableArchiveReader::open(reader.root())?;
+            reader.ensure_attached()?;
+            attached.ensure_attached()?;
+            reader = attached;
+        }
+        let archive: Self = Self { reader, writable };
         // Refuse unsupported directory synchronization before publication.
         if writable {
             archive.reader.directory().sync_all()?;

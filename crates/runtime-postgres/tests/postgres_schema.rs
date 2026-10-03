@@ -1058,6 +1058,7 @@ fn postgres_schema_and_durable_store_conformance() {
             "schema_migrations",
             "state_records",
             "storage_metadata",
+            "successor_serving",
         ]
     );
     let due_index: bool = client

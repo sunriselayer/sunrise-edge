@@ -231,6 +231,23 @@ fn read_only_archive_never_creates_staging_or_publishes() {
     assert!(existing.publish("new.bin", b"no").is_err());
 }
 
+#[test]
+fn sdk_reader_never_creates_the_operator_staging_role() {
+    let directory: TestDirectory = TestDirectory::new();
+    std::fs::write(directory.0.join("component.bin"), b"exact").unwrap();
+    let reader: ImmutableArchiveReader = ImmutableArchiveReader::open(&directory.0).unwrap();
+    assert_eq!(reader.read("component.bin", 5).unwrap(), b"exact");
+    assert_eq!(reader.names().unwrap().len(), 1);
+    assert!(reader.staging().is_none());
+    assert!(!directory.0.join(STAGING_DIRECTORY).exists());
+
+    let writer: ImmutableArchive = ImmutableArchive::open(&directory.0).unwrap();
+    assert!(directory.0.join(STAGING_DIRECTORY).is_dir());
+    assert!(writer.publish("published.bin", b"complete").unwrap());
+    let saved: ImmutableArchiveReader = ImmutableArchiveReader::open(&directory.0).unwrap();
+    assert_eq!(saved.read("published.bin", 8).unwrap(), b"complete");
+}
+
 #[cfg(unix)]
 #[test]
 fn staging_symlink_substitution_and_unknown_role_names_refuse() {

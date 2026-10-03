@@ -49,13 +49,6 @@ pub struct ImmutableArchiveReader {
 impl ImmutableArchiveReader {
     /// Opens saved material without creating a staging role or artifact.
     pub fn open(root: &Path) -> io::Result<Self> {
-        Self::open_mode(root, false)
-    }
-
-    /// Opens and attaches one root. Only the operator publication writer
-    /// passes create_staging; it creates the empty staging role before the
-    /// held inventory is validated and never publishes through this type.
-    pub fn open_mode(root: &Path, create_staging: bool) -> io::Result<Self> {
         let root: PathBuf = Self::directory_path(root)?;
         let before: std::fs::Metadata = std::fs::symlink_metadata(&root)?;
         if before.file_type().is_symlink() || !before.is_dir() {
@@ -77,13 +70,6 @@ impl ImmutableArchiveReader {
         }
         Self::ensure_directory_attached(&root, &directory)?;
         let staging_path: PathBuf = root.join(ARCHIVE_STAGING_DIRECTORY);
-        if create_staging {
-            match std::fs::create_dir(&staging_path) {
-                Ok(()) => directory.sync_all()?,
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
         let staging: Option<ArchiveStagingDirectory> =
             match std::fs::symlink_metadata(&staging_path) {
                 Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
@@ -95,7 +81,7 @@ impl ImmutableArchiveReader {
                     })
                 }
                 Ok(_) => return Err(invalid("archive staging role is not a regular directory")),
-                Err(error) if !create_staging && error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
                 Err(error) => return Err(error),
             };
         let archive: Self = Self {

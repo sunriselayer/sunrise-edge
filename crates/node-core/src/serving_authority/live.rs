@@ -137,6 +137,10 @@ impl LiveWarrant<'_> {
     /// issued this warrant, under the same operation context and verified
     /// domain. Address identity is checked privately; nothing public can
     /// assert it.
+    /// An offset-zero wrapper may share this address; this is an invocation
+    /// identity check, not the final persistence authority. Protected ports
+    /// still compare the actual namespace, observation and deciding CAS
+    /// under their lock before any successor write.
     pub(crate) fn require_issuer<S: ?Sized>(
         &self,
         store: &S,

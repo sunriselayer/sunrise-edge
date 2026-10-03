@@ -214,7 +214,7 @@ Evidence before final-head acceptance:
   archive and compiled-host refusal regressions passed nine. New SDK structural
   selector comparisons pass 13 cases; they do not prove committee authority.
 - The request codec passes 17 focused cases and its frozen vector. Independent
-  Node/Rust protected-slot vectors agree. See proposed [DR-0190](docs/architecture/decisions/0190-read-only-fee-claim-preparation-transport.md).
+  Node/Rust protected-slot vectors agree. See accepted [DR-0190](docs/architecture/decisions/0190-read-only-fee-claim-preparation-transport.md).
 - Real PG mandatory-slot/refusal tests pass. A full run exposed an isolated
   corruption-fixture cleanup mismatch; its retry passed that fixture but failed
   on a changing disposable Docker host port after restart. Both causes are fixed
@@ -237,6 +237,17 @@ Opus APPROVE and green CI. Strict all-target/all-feature lint passes with the
 latest core and lifecycle tests; full-head regression acceptance remains pending.
 No Delivery 3, recurring lifecycle, PG/DO activation, security
 audit or network readiness completion is claimed.
+
+Fresh independent Opus APPROVE is recorded at `7253c62`; its optional archive
+ownership finding is addressed by removing the SDK's directory-creating mode
+and keeping staging creation solely in the operator publication owner. The
+first full run of that head reached PG schema conformance, whose exact table
+inventory still omitted the new protected table; its expected inventory is
+corrected without changing production schema or protection. These follow-ups
+need final-head validation and independent review again. Legacy ordinary-gate
+offline fee-history/equivocation helpers are not successor history authority;
+their epoch-e refusal remains a known limitation for the recurring lifecycle
+and audit work, not a completed successor audit path.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.

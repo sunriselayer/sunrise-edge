@@ -2,8 +2,10 @@
 
 Date: 2026-10-04 (Asia/Singapore)
 
-Status: **Proposed implementation contract**, subject to the independent
-exact-head review. Work status and acceptance evidence remain in
+Status: **Accepted design**. Fresh independent Opus explicitly approved the
+transport and enclosing producer at `7253c62` on 2026-10-04. This decision does
+not certify the final producer's merge, selected backend gates or readiness;
+work status and acceptance evidence remain in
 [TODO.md](../../../TODO.md).
 
 ## Context
