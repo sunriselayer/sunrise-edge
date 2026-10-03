@@ -65,7 +65,12 @@ impl SuccessorServingRepository for MemoryDurableStateStore {
                 .copied()
                 .unwrap_or(0);
             fresh_token
-                .check(&data.portable_namespace, domain, data.active_writer_fence, current)
+                .check(
+                    &data.portable_namespace,
+                    domain,
+                    data.active_writer_fence,
+                    current,
+                )
                 .map_err(|_| DurableCommitRejection::InvalidPersistedState)?;
             match &data.lifecycle {
                 NamespaceLifecycle::CompleteInactive {
@@ -80,9 +85,8 @@ impl SuccessorServingRepository for MemoryDurableStateStore {
             if data.successor_serving != SuccessorServingSlot::Inactive {
                 return Err(DurableCommitRejection::InactiveNamespace);
             }
-            let decoded: SuccessorServingRecord =
-                decode_successor_serving_record(record)
-                    .map_err(|_| DurableCommitRejection::InvalidPersistedState)?;
+            let decoded: SuccessorServingRecord = decode_successor_serving_record(record)
+                .map_err(|_| DurableCommitRejection::InvalidPersistedState)?;
             if decoded.binding != *binding
                 || decoded.progress != *progress
                 || decoded.activation_token != *fresh_token
@@ -219,13 +223,16 @@ impl SuccessorServingRepository for MemoryDurableStateStore {
             validate_memory_object_reads(&data, domain, transaction.objects.reads())?;
             let prepared_objects =
                 prepare_memory_object_mutations(&data, domain, &transaction.objects)?;
-            let delivery = transaction.outbox.as_ref().map(|outbox| MemoryOutboxDelivery {
-                next_index: 0,
-                available_at_unix_millis: 0,
-                active_lease: None,
-                attempt_count: 0,
-                completed: outbox.messages().is_empty(),
-            });
+            let delivery = transaction
+                .outbox
+                .as_ref()
+                .map(|outbox| MemoryOutboxDelivery {
+                    next_index: 0,
+                    available_at_unix_millis: 0,
+                    active_lease: None,
+                    attempt_count: 0,
+                    completed: outbox.messages().is_empty(),
+                });
             let next: u64 = memory_next_mutation_sequence(&data, domain)
                 .ok_or(DurableCommitRejection::CommitSequenceOverflow)?;
             if let Some(state_transaction) = transaction.state {

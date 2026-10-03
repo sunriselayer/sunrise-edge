@@ -56,7 +56,6 @@ CREATE TABLE sunrise_edge.successor_serving (
     chain_id_bytes BYTEA NOT NULL,
     validator_id BYTEA NOT NULL,
     atomicity_domain_id BYTEA NOT NULL,
-    phase SMALLINT NOT NULL CHECK (phase IN (1, 2)),
     serving BYTEA NOT NULL CHECK (octet_length(serving) <= 17408),
     PRIMARY KEY (chain_id_bytes, validator_id, atomicity_domain_id),
     FOREIGN KEY (chain_id_bytes, validator_id, atomicity_domain_id)

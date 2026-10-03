@@ -18,6 +18,7 @@ use runtime::inactive_import::{
 use runtime::outgoing_seal::{decode_outgoing_barrier, encode_outgoing_barrier};
 use runtime::successor_serving::{
     SuccessorServingSlot, decode_successor_serving_slot, encode_successor_serving_slot,
+    preflight_successor_serving_slot,
 };
 use runtime::{
     AtomicityDomainId, ImportBinding, NamespaceLifecycle, OutgoingBarrier, WriterFenceGeneration,
@@ -144,7 +145,6 @@ pub const TABLE_STATEMENTS: &[&str] = &[
      )",
     "CREATE TABLE IF NOT EXISTS durable_successor_serving (
          id INTEGER PRIMARY KEY CHECK(id = 1),
-         phase INTEGER NOT NULL CHECK(phase IN (1, 2)),
          serving BLOB NOT NULL CHECK(typeof(serving) = 'blob' AND length(serving) <= 17408)
      )",
     "CREATE TABLE IF NOT EXISTS durable_state (
@@ -475,43 +475,47 @@ pub fn verify_namespace(
 }
 
 /// Reads the mandatory protected successor-serving row through the one
-/// shared phase-gated query: `phase` is a plain integer column read
-/// alongside the length-guarded body in the same round trip, and the body
-/// is only decoded into a typed value after `phase` is confirmed to be
-/// `1` (`Inactive`) or `2` (`Serving`). A missing row, an unknown phase, a
-/// body that fails the shared bound, or a decoded value whose own phase
-/// disagrees with this column fails closed; absence is never treated as
-/// `Inactive`. `runtime_sql_durable::engine` calls this exact function for
-/// every read and commit path instead of keeping a second query.
+/// shared two-stage read. First fetch only length and the 24-byte canonical
+/// header; refuse malformed phase/length before requesting the record body.
+/// The second query guards that exact header and length in the same enclosing
+/// transaction. There is no duplicate phase column or absent/Inactive default.
+/// Engine reads and commits reuse this metadata observation.
 pub fn read_successor_serving(
     session: &mut dyn SqlSession,
 ) -> Result<SuccessorServingSlot, SchemaError> {
     // No WHERE clause: a corrupt extra row under a different id must still
     // surface as more than one row rather than being filtered out unseen.
     let rows = session.exec(
-        "SELECT CASE WHEN id = 1 THEN phase ELSE NULL END,
-                CASE WHEN id = 1 AND length(serving) <= 17408 THEN serving ELSE NULL END
+        "SELECT CASE WHEN id = 1 AND typeof(serving) = 'blob' THEN length(serving) ELSE NULL END,
+                CASE WHEN id = 1 AND typeof(serving) = 'blob' THEN substr(serving, 1, 24) ELSE NULL END
          FROM durable_successor_serving LIMIT 2",
         &[],
     )?;
     let row = rows.one()?.ok_or(SchemaError::InvalidPersistedMetadata)?;
-    let phase: i64 = row
+    let length: i64 = row
         .opt_integer(0)
         .map_err(SqlSessionError::from)?
         .ok_or(SchemaError::InvalidPersistedMetadata)?;
-    if phase != 1 && phase != 2 {
-        return Err(SchemaError::InvalidPersistedMetadata);
-    }
-    let bytes: &[u8] = row
+    let header: &[u8] = row
         .opt_blob(1)
         .map_err(SqlSessionError::from)?
         .ok_or(SchemaError::InvalidPersistedMetadata)?;
-    let slot: SuccessorServingSlot =
-        decode_successor_serving_slot(bytes).map_err(|_| SchemaError::InvalidPersistedMetadata)?;
-    if slot.is_serving() != (phase == 2) {
-        return Err(SchemaError::InvalidPersistedMetadata);
-    }
-    Ok(slot)
+    preflight_successor_serving_slot(
+        header,
+        usize::try_from(length).map_err(|_| SchemaError::InvalidPersistedMetadata)?,
+    )
+    .map_err(|_| SchemaError::InvalidPersistedMetadata)?;
+    let bodies = session.exec(
+        "SELECT CASE WHEN id = 1 AND length(serving) = ?1 AND substr(serving, 1, 24) = ?2
+                THEN serving ELSE NULL END FROM durable_successor_serving LIMIT 2",
+        &[SqlValue::Integer(length), SqlValue::Blob(header.to_vec())],
+    )?;
+    let body = bodies.one()?.ok_or(SchemaError::InvalidPersistedMetadata)?;
+    let bytes: &[u8] = body
+        .opt_blob(0)
+        .map_err(SqlSessionError::from)?
+        .ok_or(SchemaError::InvalidPersistedMetadata)?;
+    decode_successor_serving_slot(bytes).map_err(|_| SchemaError::InvalidPersistedMetadata)
 }
 
 /// Creates the shared tables if absent, installs `namespace`'s metadata
@@ -573,7 +577,7 @@ pub fn bootstrap_namespace(
         )],
     )?;
     session.exec(
-        "INSERT INTO durable_successor_serving (id, phase, serving) VALUES (1, 1, ?1)",
+        "INSERT INTO durable_successor_serving (id, serving) VALUES (1, ?1)",
         &[SqlValue::Blob(
             encode_successor_serving_slot(&SuccessorServingSlot::Inactive)
                 .map_err(|_| SchemaError::InvalidPersistedMetadata)?,
@@ -630,7 +634,7 @@ pub fn bootstrap_import_namespace(
         )],
     )?;
     session.exec(
-        "INSERT INTO durable_successor_serving (id, phase, serving) VALUES (1, 1, ?1)",
+        "INSERT INTO durable_successor_serving (id, serving) VALUES (1, ?1)",
         &[SqlValue::Blob(
             encode_successor_serving_slot(&SuccessorServingSlot::Inactive)
                 .map_err(|_| SchemaError::InvalidPersistedMetadata)?,

@@ -29,7 +29,10 @@ fn binding(byte: u8) -> ImportBinding {
 fn progress() -> ImportProgress {
     ImportProgress {
         next_ordinal: 1,
-        last_batch_digest: Some(Digest32::new(protocol_types::HashAlgorithmId::Sha2_256, [6; 32])),
+        last_batch_digest: Some(Digest32::new(
+            protocol_types::HashAlgorithmId::Sha2_256,
+            [6; 32],
+        )),
         accumulator: Digest32::new(protocol_types::HashAlgorithmId::Sha2_256, [7; 32]),
     }
 }
@@ -58,7 +61,7 @@ fn record(byte: u8) -> SuccessorServingRecord {
 }
 
 #[test]
-fn record_round_trips_and_rejects_tamper() {
+fn record_round_trips_but_does_not_authenticate_a_member_key() {
     let value = record(1);
     let bytes = encode_successor_serving_record(&value).unwrap();
     assert_eq!(decode_successor_serving_record(&bytes).unwrap(), value);
@@ -66,7 +69,9 @@ fn record_round_trips_and_rejects_tamper() {
     let mut tampered = bytes.clone();
     let last = tampered.len() - 1;
     tampered[last] ^= 0x01;
-    assert!(decode_successor_serving_record(&tampered).is_err());
+    let changed: SuccessorServingRecord = decode_successor_serving_record(&tampered).unwrap();
+    assert_ne!(changed.public_key, value.public_key);
+    assert_eq!(encode_successor_serving_record(&changed).unwrap(), tampered);
 }
 
 #[test]
@@ -78,7 +83,10 @@ fn record_stays_within_bound() {
 #[test]
 fn slot_inactive_round_trips_and_rejects_nonempty_record() {
     let bytes = encode_successor_serving_slot(&SuccessorServingSlot::Inactive).unwrap();
-    assert_eq!(decode_successor_serving_slot(&bytes).unwrap(), SuccessorServingSlot::Inactive);
+    assert_eq!(
+        decode_successor_serving_slot(&bytes).unwrap(),
+        SuccessorServingSlot::Inactive
+    );
 
     let frame_bytes: Vec<u8> = {
         let mut frame = canonical_encoding::CanonicalStruct::new(0x64D6, 1);
@@ -123,4 +131,42 @@ fn decode_rejects_unknown_phase_and_oversized_frame() {
     assert!(decode_successor_serving_slot(&oversized).is_err());
     let oversized_record = vec![0u8; MAX_SUCCESSOR_SERVING_RECORD_BYTES + 1];
     assert!(decode_successor_serving_record(&oversized_record).is_err());
+}
+
+#[test]
+fn header_preflight_refuses_bad_layout_and_length_before_any_body_is_needed() {
+    let inactive: Vec<u8> = encode_successor_serving_slot(&SuccessorServingSlot::Inactive).unwrap();
+    assert_eq!(
+        preflight_successor_serving_slot(&inactive, inactive.len()),
+        Ok(1)
+    );
+    for offset in [0usize, 4, 6, 8, 10, 12, 16, 18, 20] {
+        let mut corrupt: Vec<u8> = inactive.clone();
+        corrupt[offset] ^= 0x80;
+        assert!(
+            preflight_successor_serving_slot(&corrupt, inactive.len()).is_err(),
+            "offset {offset}"
+        );
+    }
+    for length in [
+        0usize,
+        23,
+        25,
+        MAX_SUCCESSOR_SERVING_SLOT_BYTES + 1,
+        usize::MAX,
+    ] {
+        assert!(preflight_successor_serving_slot(&inactive, length).is_err());
+    }
+    let value: SuccessorServingRecord = record(1);
+    let slot: SuccessorServingSlot = SuccessorServingSlot::Serving(SuccessorServingObservation {
+        record: encode_successor_serving_record(&value).unwrap(),
+        binding: value.binding,
+        progress: value.progress,
+    });
+    let bytes: Vec<u8> = encode_successor_serving_slot(&slot).unwrap();
+    assert_eq!(
+        preflight_successor_serving_slot(&bytes[..24], bytes.len()),
+        Ok(2)
+    );
+    assert!(preflight_successor_serving_slot(&bytes[..24], bytes.len() + 1).is_err());
 }

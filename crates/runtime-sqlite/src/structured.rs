@@ -26,6 +26,7 @@ use runtime::portable::{
     DurableRecordChunkRequest, DurableRecordDescriptor, DurableRecordKey, DurableRecordPage,
     DurableRecordScan, PortableSnapshotError, PortableSnapshotToken,
 };
+use runtime::successor_serving::SuccessorServingSlot;
 use runtime::{
     AtomicStateTransaction, AtomicityDomainId, DueOutboxClaimRequest, DurableCommitOutcome,
     DurableDomainStateStore, DurableInvocationTransaction, DurableObjectHead, DurableObjectVersion,
@@ -35,7 +36,6 @@ use runtime::{
     ObjectId, RequestOutboxClaimRequest, StateKeyPage, StateKeyScan,
     StructuredDurableDomainStateStore, VersionedStateValue, WriterFenceGeneration,
 };
-use runtime::successor_serving::SuccessorServingSlot;
 use runtime_sql_durable::{
     SqlBackend, SqlDurableEngine, SqlDurableNamespace, TransactionBudget, TransactionDecision,
     schema,

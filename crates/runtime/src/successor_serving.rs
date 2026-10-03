@@ -13,12 +13,46 @@ use crate::inactive_import::{
 };
 use crate::portable::PortableSnapshotToken;
 use crate::*;
-use canonical_encoding::{CanonicalStruct, decode_canonical_frame, decode_digest32, encode_digest32};
+use canonical_encoding::{
+    CanonicalStruct, decode_canonical_frame, decode_digest32, encode_digest32,
+};
 
 /// Closed 0x64D5 protected-record byte bound.
 pub const MAX_SUCCESSOR_SERVING_RECORD_BYTES: usize = 16 * 1024;
 /// Closed 0x64D6 protected-slot byte bound.
 pub const MAX_SUCCESSOR_SERVING_SLOT_BYTES: usize = 17 * 1024;
+/// Fixed closed slot header: frame header, phase field and record-field length.
+pub const SUCCESSOR_SERVING_SLOT_HEADER_BYTES: usize = 24;
+
+/// Checks phase and exact represented length before a backend fetches the
+/// record body. Only raw encoding structure is validated, never authority.
+pub fn preflight_successor_serving_slot(
+    header: &[u8],
+    total_length: usize,
+) -> Result<u16, RuntimeError> {
+    const PREFIX: &[u8; 16] = b"SNRE\xd6\x64\x01\x00\x02\x00\x01\x00\x02\x00\x00\x00";
+    if header.len() != SUCCESSOR_SERVING_SLOT_HEADER_BYTES
+        || !(SUCCESSOR_SERVING_SLOT_HEADER_BYTES..=MAX_SUCCESSOR_SERVING_SLOT_BYTES)
+            .contains(&total_length)
+        || &header[..16] != PREFIX
+        || header[18..20] != [2, 0]
+    {
+        return Err(invalid());
+    }
+    let phase: u16 = u16::from_le_bytes([header[16], header[17]]);
+    let body_length: usize = usize::try_from(u32::from_le_bytes([
+        header[20], header[21], header[22], header[23],
+    ]))
+    .map_err(|_| invalid())?;
+    if body_length.checked_add(SUCCESSOR_SERVING_SLOT_HEADER_BYTES) != Some(total_length)
+        || !matches!(phase, 1 | 2)
+        || (phase == 1 && body_length != 0)
+        || (phase == 2 && !(10..=MAX_SUCCESSOR_SERVING_RECORD_BYTES).contains(&body_length))
+    {
+        return Err(invalid());
+    }
+    Ok(phase)
+}
 
 fn invalid() -> RuntimeError {
     RuntimeError::InvalidSuccessorServingRequest
@@ -182,9 +216,12 @@ pub fn encode_successor_serving_slot(
 
 /// Decodes and re-verifies the closed 0x64D6/v1 protected slot.
 pub fn decode_successor_serving_slot(bytes: &[u8]) -> Result<SuccessorServingSlot, RuntimeError> {
-    if bytes.len() > MAX_SUCCESSOR_SERVING_SLOT_BYTES {
-        return Err(invalid());
-    }
+    preflight_successor_serving_slot(
+        bytes
+            .get(..SUCCESSOR_SERVING_SLOT_HEADER_BYTES)
+            .ok_or_else(invalid)?,
+        bytes.len(),
+    )?;
     let frame = decode_canonical_frame(bytes).map_err(|_| invalid())?;
     frame.require_type(0x64D6).map_err(|_| invalid())?;
     frame.require_version(1).map_err(|_| invalid())?;

@@ -22,14 +22,6 @@ fn conflict() -> DurableCommitRejection {
     DurableCommitRejection::ImportConflict
 }
 
-fn load_successor_serving(
-    session: &mut dyn SqlSession,
-) -> Result<SuccessorServingSlot, PreCommitFailure> {
-    // The one shared phase-gated query/decode lives in `schema`; this
-    // module never keeps a second copy of its SQL text or bound checks.
-    schema::read_successor_serving(session).map_err(PreCommitFailure::from)
-}
-
 impl<B: SqlBackend> SqlDurableEngine<B> {
     /// Reads the persisted physical namespace validator. This is raw
     /// continuity data; core independently verifies membership and signing
@@ -75,7 +67,9 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
         let decoded = match decode_successor_serving_record(record) {
             Ok(decoded) => decoded,
             Err(_) => {
-                return DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState);
+                return DurableCommitOutcome::Rejected(
+                    DurableCommitRejection::InvalidPersistedState,
+                );
             }
         };
         if &decoded.binding != binding
@@ -92,13 +86,17 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
         let serving_bytes = match encode_successor_serving_slot(&serving_slot) {
             Ok(bytes) => bytes,
             Err(_) => {
-                return DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState);
+                return DurableCommitOutcome::Rejected(
+                    DurableCommitRejection::InvalidPersistedState,
+                );
             }
         };
         let inactive_bytes = match encode_successor_serving_slot(&SuccessorServingSlot::Inactive) {
             Ok(bytes) => bytes,
             Err(_) => {
-                return DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState);
+                return DurableCommitOutcome::Rejected(
+                    DurableCommitRejection::InvalidPersistedState,
+                );
             }
         };
         run_write(
@@ -133,14 +131,15 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
                     if metadata.barrier().is_sealed() {
                         return Err(DurableCommitRejection::NamespaceSealed);
                     }
-                    if load_successor_serving(session).map_err(reject)? != SuccessorServingSlot::Inactive
-                    {
+                    if metadata.successor_serving() != &SuccessorServingSlot::Inactive {
                         return Err(DurableCommitRejection::InactiveNamespace);
                     }
                     if decoded.validator != self.namespace.validator_id() {
                         return Err(conflict());
                     }
-                    if receipt_exists(session, transaction.receipt().request_id()).map_err(reject)? {
+                    if receipt_exists(session, transaction.receipt().request_id())
+                        .map_err(reject)?
+                    {
                         return Err(DurableCommitRejection::RequestAlreadyCommitted);
                     }
                     if let Some(state) = transaction.state() {
@@ -154,8 +153,8 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
                     insert_structured_invocation(session, &transaction)?;
                     let updated = session
                         .exec(
-                            "UPDATE durable_successor_serving SET phase = 2, serving = ?1
-                             WHERE id = 1 AND phase = 1 AND serving = ?2",
+                            "UPDATE durable_successor_serving SET serving = ?1
+                             WHERE id = 1 AND serving = ?2",
                             &[
                                 SqlValue::Blob(serving_bytes.clone()),
                                 SqlValue::Blob(inactive_bytes.clone()),
@@ -191,7 +190,9 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
         let decoded = match decode_successor_serving_record(&observation.record) {
             Ok(decoded) => decoded,
             Err(_) => {
-                return DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState);
+                return DurableCommitOutcome::Rejected(
+                    DurableCommitRejection::InvalidPersistedState,
+                );
             }
         };
         run_write(
@@ -205,14 +206,15 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
                     validate_authority(&metadata, context, now).map_err(reject)?;
                     match metadata.lifecycle() {
                         NamespaceLifecycle::CompleteInactive { binding, progress }
-                            if binding == &observation.binding && progress == &observation.progress => {}
+                            if binding == &observation.binding
+                                && progress == &observation.progress => {}
                         _ => return Err(DurableCommitRejection::ImportBindingMismatch),
                     }
                     if metadata.barrier().is_sealed() {
                         return Err(DurableCommitRejection::NamespaceSealed);
                     }
-                    if load_successor_serving(session).map_err(reject)?
-                        != SuccessorServingSlot::Serving(observation.clone())
+                    if metadata.successor_serving()
+                        != &SuccessorServingSlot::Serving(observation.clone())
                     {
                         return Err(conflict());
                     }
@@ -249,7 +251,9 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
         let decoded = match decode_successor_serving_record(&observation.record) {
             Ok(decoded) => decoded,
             Err(_) => {
-                return DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState);
+                return DurableCommitOutcome::Rejected(
+                    DurableCommitRejection::InvalidPersistedState,
+                );
             }
         };
         run_write(
@@ -263,14 +267,15 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
                     validate_authority(&metadata, context, now).map_err(reject)?;
                     match metadata.lifecycle() {
                         NamespaceLifecycle::CompleteInactive { binding, progress }
-                            if binding == &observation.binding && progress == &observation.progress => {}
+                            if binding == &observation.binding
+                                && progress == &observation.progress => {}
                         _ => return Err(DurableCommitRejection::ImportBindingMismatch),
                     }
                     if metadata.barrier().is_sealed() {
                         return Err(DurableCommitRejection::NamespaceSealed);
                     }
-                    if load_successor_serving(session).map_err(reject)?
-                        != SuccessorServingSlot::Serving(observation.clone())
+                    if metadata.successor_serving()
+                        != &SuccessorServingSlot::Serving(observation.clone())
                     {
                         return Err(conflict());
                     }

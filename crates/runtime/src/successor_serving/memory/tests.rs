@@ -250,7 +250,8 @@ fn activation_rejects_validator_mismatch() {
 
 #[test]
 fn ordinary_commit_refuses_once_slot_is_serving() {
-    let store = MemoryDurableStateStore::new_bound(domain(6), WriterFenceGeneration::new(1).unwrap());
+    let store =
+        MemoryDurableStateStore::new_bound(domain(6), WriterFenceGeneration::new(1).unwrap());
     let bogus_observation = SuccessorServingObservation {
         record: vec![0xAA; 4],
         binding: binding(6),
@@ -281,7 +282,11 @@ fn ordinary_commit_refuses_once_slot_is_serving() {
 // Builds a store bound to one domain and validator, with lifecycle forced
 // directly to CompleteInactive so the repository checks can be exercised
 // without driving the full inactive-import flow.
-fn complete_inactive_store(byte: u8, validator: ValidatorId, fence: u64) -> MemoryDurableStateStore {
+fn complete_inactive_store(
+    byte: u8,
+    validator: ValidatorId,
+    fence: u64,
+) -> MemoryDurableStateStore {
     let store = MemoryDurableStateStore::new_successor_bound(
         domain(byte),
         validator,

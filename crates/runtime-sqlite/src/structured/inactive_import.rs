@@ -9,14 +9,12 @@
 use super::*;
 use crate::native_files;
 use protocol_types::Digest32;
+use protocol_types::ValidatorId;
+use runtime::successor_serving::{SuccessorServingObservation, SuccessorServingRepository};
 use runtime::{
     ImportBatch, ImportBinding, ImportProgress, InactiveImportRepository, NamespaceLifecycle,
     ReadinessRecord, ReadinessRetentionRepository, ReadinessSlot, ReadinessSlotObservation,
 };
-use runtime::successor_serving::{
-    SuccessorServingObservation, SuccessorServingRepository, SuccessorServingSlot,
-};
-use protocol_types::ValidatorId;
 
 /// Fresh or resumed installation destination, never an ordinary node store.
 #[derive(Debug)]
@@ -374,7 +372,13 @@ impl SuccessorServingRepository for SqliteImportTarget {
         transaction: DurableInvocationTransaction,
     ) -> DurableCommitOutcome {
         self.store.engine.commit_successor_activation(
-            context, domain, binding, progress, fresh_token, record, transaction,
+            context,
+            domain,
+            binding,
+            progress,
+            fresh_token,
+            record,
+            transaction,
         )
     }
 

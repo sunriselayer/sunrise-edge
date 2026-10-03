@@ -16,9 +16,11 @@ use runtime::{
     ImportContext, StateMutation, StateMutationEntry, StateReadAssertion, StateRevision,
     StorageCorrelationId, StorageDeadline,
 };
+use runtime_sql_durable::{SqlBackendError, SqlSession, SqlSessionError};
+use rusqlite::OptionalExtension;
 use std::{
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -138,12 +140,22 @@ fn complete_inactive_store(
         store.begin_import(&context, binding.domain, &binding, initial().accumulator),
         DurableCommitOutcome::Committed
     );
-    let pre_finish_token = store.begin_portable_snapshot(&context, binding.domain).unwrap();
+    let pre_finish_token = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
     assert_eq!(
-        store.finish_import(&context, binding.domain, &binding, &initial(), &pre_finish_token),
+        store.finish_import(
+            &context,
+            binding.domain,
+            &binding,
+            &initial(),
+            &pre_finish_token
+        ),
         DurableCommitOutcome::Committed
     );
-    let fresh_token = store.begin_portable_snapshot(&context, binding.domain).unwrap();
+    let fresh_token = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
     (db, store, context, fresh_token, pre_finish_token)
 }
 fn valid_record(token: &PortableSnapshotToken) -> SuccessorServingRecord {
@@ -231,7 +243,9 @@ fn activation_commits_persists_across_reopen_and_then_refuses_retry() {
         DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
     );
     assert_eq!(
-        store.get_successor_serving(&context, binding.domain).unwrap(),
+        store
+            .get_successor_serving(&context, binding.domain)
+            .unwrap(),
         SuccessorServingSlot::Inactive
     );
     assert_eq!(
@@ -252,7 +266,9 @@ fn activation_commits_persists_across_reopen_and_then_refuses_retry() {
     );
     assert_eq!(outcome, DurableCommitOutcome::Committed);
 
-    let slot = store.get_successor_serving(&context, binding.domain).unwrap();
+    let slot = store
+        .get_successor_serving(&context, binding.domain)
+        .unwrap();
     match &slot {
         SuccessorServingSlot::Serving(observation) => {
             assert_eq!(observation.record, record_bytes);
@@ -292,13 +308,15 @@ fn activation_commits_persists_across_reopen_and_then_refuses_retry() {
     let retry_token = reopened
         .begin_portable_snapshot(&context, binding.domain)
         .unwrap();
+    let retry_record: Vec<u8> =
+        encode_successor_serving_record(&valid_record(&retry_token)).unwrap();
     let retry = reopened.commit_successor_activation(
         &context,
         binding.domain,
         &binding,
         &initial(),
         &retry_token,
-        &record_bytes,
+        &retry_record,
         activation_transaction(binding.domain, 62, b"activation-key-2", 8),
     );
     assert_eq!(
@@ -361,7 +379,7 @@ fn successor_durable_and_invocation_apply_and_reject_mismatch() {
             &wrong_observation,
             durable_write(binding.domain, b"durable-key", 2),
         ),
-        DurableCommitOutcome::Rejected(DurableCommitRejection::ImportConflict)
+        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
     );
     assert_eq!(
         store
@@ -393,7 +411,10 @@ fn object_create_changes(object_id: ObjectId) -> DurableObjectChanges {
         DurableObjectVersion::new(1).unwrap(),
         digest(80),
         1,
-        runtime::DurableObjectProvenance::new(pin().context.chain_id.clone(), pin().context.protocol_version),
+        runtime::DurableObjectProvenance::new(
+            pin().context.chain_id.clone(),
+            pin().context.protocol_version,
+        ),
         0,
         digest(81),
     );
@@ -454,7 +475,7 @@ fn successor_invocation_applies_objects_outbox_and_persists_across_reopen() {
             &wrong_observation,
             invocation_with_objects_and_outbox(binding.domain, 73, object_id),
         ),
-        DurableCommitOutcome::Rejected(DurableCommitRejection::ImportConflict)
+        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
     );
 
     assert_eq!(
@@ -466,22 +487,30 @@ fn successor_invocation_applies_objects_outbox_and_persists_across_reopen() {
         DurableCommitOutcome::Committed
     );
     assert_eq!(
-        store.get_request_receipt(&context, binding.domain, receipt(73).request_id()).unwrap(),
+        store
+            .get_request_receipt(&context, binding.domain, receipt(73).request_id())
+            .unwrap(),
         Some(receipt(73))
     );
     assert!(matches!(
-        store.get_object_head(&context, binding.domain, object_id).unwrap(),
+        store
+            .get_object_head(&context, binding.domain, object_id)
+            .unwrap(),
         DurableObjectHead::Current { .. }
     ));
 
     drop(store);
     let reopened = SqliteImportTarget::open_existing(&db.0, namespace(&binding), &binding).unwrap();
     assert!(matches!(
-        reopened.get_object_head(&context, binding.domain, object_id).unwrap(),
+        reopened
+            .get_object_head(&context, binding.domain, object_id)
+            .unwrap(),
         DurableObjectHead::Current { .. }
     ));
     assert_eq!(
-        reopened.get_request_receipt(&context, binding.domain, receipt(73).request_id()).unwrap(),
+        reopened
+            .get_request_receipt(&context, binding.domain, receipt(73).request_id())
+            .unwrap(),
         Some(receipt(73))
     );
     assert_eq!(
@@ -500,8 +529,10 @@ fn activation_rejects_wrong_binding_and_wrong_validator() {
 
     let mut wrong_binding = binding.clone();
     wrong_binding.row_count = 5;
-    let wrong_binding_record =
-        encode_successor_serving_record(&valid_record(&fresh_token)).unwrap();
+    let mut wrong_binding_value: SuccessorServingRecord = valid_record(&fresh_token);
+    wrong_binding_value.binding = wrong_binding.clone();
+    let wrong_binding_record: Vec<u8> =
+        encode_successor_serving_record(&wrong_binding_value).unwrap();
     assert_eq!(
         store.commit_successor_activation(
             &context,
@@ -531,7 +562,9 @@ fn activation_rejects_wrong_binding_and_wrong_validator() {
         DurableCommitOutcome::Rejected(DurableCommitRejection::ImportConflict)
     );
     assert_eq!(
-        store.get_successor_serving(&context, binding.domain).unwrap(),
+        store
+            .get_successor_serving(&context, binding.domain)
+            .unwrap(),
         SuccessorServingSlot::Inactive
     );
 }
@@ -579,4 +612,284 @@ fn only_import_target_exposes_successor_serving_repository() {
         SqliteDurableStore::open_existing(&db.0, namespace(&binding)),
         Err(SqliteDurableStoreError::InactiveNamespace)
     ));
+}
+
+#[test]
+fn successor_reopen_refencing_preserves_record_and_rejects_the_old_writer() {
+    let (db, store, context, token, _) = complete_inactive_store(51);
+    let binding: ImportBinding = pin();
+    let observation: SuccessorServingObservation = activate(&store, &context, &token, 81);
+    drop(store);
+    let reopened: SqliteImportTarget =
+        SqliteImportTarget::open_existing(&db.0, namespace(&binding), &binding).unwrap();
+    let next: DurableOperationContext = operation(52);
+    reopened
+        .advance_writer_fence(context.writer_fence(), next.writer_fence())
+        .unwrap();
+    assert_eq!(
+        reopened.commit_successor_durable(
+            &context,
+            &observation,
+            durable_write(binding.domain, b"old-writer", 3),
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::WriterFenced {
+            active_generation: next.writer_fence(),
+        }),
+    );
+    assert_eq!(
+        reopened
+            .get_successor_serving(&next, binding.domain)
+            .unwrap(),
+        SuccessorServingSlot::Serving(observation.clone()),
+    );
+    assert_eq!(
+        reopened.commit_successor_durable(
+            &next,
+            &observation,
+            durable_write(binding.domain, b"new-writer", 4),
+        ),
+        DurableCommitOutcome::Committed,
+    );
+    assert_eq!(
+        reopened
+            .get_versioned_durable(&next, binding.domain, b"old-writer")
+            .unwrap()
+            .revision(),
+        StateRevision::INITIAL,
+    );
+}
+
+#[test]
+fn activation_checks_all_assertions_before_writing_a_record_or_receipt() {
+    let (_db, store, context, token, _) = complete_inactive_store(53);
+    let binding: ImportBinding = pin();
+    let record: Vec<u8> = encode_successor_serving_record(&valid_record(&token)).unwrap();
+    let key: &[u8] = b"asserted-key";
+    let state: runtime::DurableStateTransaction = runtime::DurableStateTransaction::new(
+        binding.domain,
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.to_vec(), StateRevision::new(1)).unwrap(),
+        ])
+        .unwrap(),
+        vec![StateMutationEntry::new(key.to_vec(), StateMutation::Put(vec![5])).unwrap()],
+    )
+    .unwrap();
+    let transaction: DurableInvocationTransaction = DurableInvocationTransaction::new(
+        binding.domain,
+        Some(state),
+        DurableObjectChanges::empty(),
+        receipt(82),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_successor_activation(
+            &context,
+            binding.domain,
+            &binding,
+            &initial(),
+            &token,
+            &record,
+            transaction,
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::Conflict {
+            key: key.to_vec(),
+            current_revision: StateRevision::INITIAL,
+        }),
+    );
+    assert_eq!(
+        store
+            .begin_portable_snapshot(&context, binding.domain)
+            .unwrap(),
+        token
+    );
+    assert_eq!(
+        store
+            .get_successor_serving(&context, binding.domain)
+            .unwrap(),
+        SuccessorServingSlot::Inactive
+    );
+    assert!(
+        store
+            .get_request_receipt(&context, binding.domain, receipt(82).request_id())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .get_versioned_durable(&context, binding.domain, key)
+            .unwrap()
+            .revision(),
+        StateRevision::INITIAL
+    );
+}
+
+#[test]
+fn activation_refuses_a_foreign_physical_token_before_any_write() {
+    let (_db, store, context, token, _) = complete_inactive_store(54);
+    let (_other_db, other, _, other_token, _) = complete_inactive_store(54);
+    let binding: ImportBinding = pin();
+    assert_ne!(token.namespace(), other_token.namespace());
+    let record: Vec<u8> = encode_successor_serving_record(&valid_record(&other_token)).unwrap();
+    assert!(matches!(
+        store.commit_successor_activation(
+            &context,
+            binding.domain,
+            &binding,
+            &initial(),
+            &other_token,
+            &record,
+            activation_transaction(binding.domain, 83, b"foreign-source", 6),
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState),
+    ));
+    assert_eq!(
+        store
+            .begin_portable_snapshot(&context, binding.domain)
+            .unwrap(),
+        token
+    );
+    assert_eq!(
+        store
+            .get_successor_serving(&context, binding.domain)
+            .unwrap(),
+        SuccessorServingSlot::Inactive
+    );
+    drop(other);
+}
+
+#[test]
+fn successor_slot_missing_corrupt_or_unknown_phase_never_repairs_or_falls_back() {
+    let inactive: Vec<u8> =
+        runtime::encode_successor_serving_slot(&SuccessorServingSlot::Inactive).unwrap();
+    let mut unknown: Vec<u8> = inactive.clone();
+    unknown[16] = 3;
+    let mut bad_length: Vec<u8> = inactive.clone();
+    bad_length[20] = 1;
+    for corrupt in [None, Some(vec![0; 16]), Some(unknown), Some(bad_length)] {
+        let (db, store, context, _, _) = complete_inactive_store(55);
+        let binding: ImportBinding = pin();
+        let connection: Connection = Connection::open(&db.0).unwrap();
+        match corrupt.as_ref() {
+            Some(bytes) => {
+                connection
+                    .execute("UPDATE durable_successor_serving SET serving = ?1", [bytes])
+                    .unwrap();
+            }
+            None => {
+                connection
+                    .execute("DELETE FROM durable_successor_serving", [])
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            store.get_successor_serving(&context, binding.domain),
+            Err(DurableReadError::SchemaMismatch)
+        );
+        assert_eq!(
+            store.commit_durable(&context, ordinary_write(binding.domain)),
+            DurableCommitOutcome::Rejected(DurableCommitRejection::SchemaMismatch)
+        );
+        drop(store);
+        assert!(SqliteImportTarget::open_existing(&db.0, namespace(&binding), &binding).is_err());
+        let persisted: Option<Vec<u8>> = connection
+            .query_row("SELECT serving FROM durable_successor_serving", [], |row| {
+                row.get(0)
+            })
+            .optional()
+            .unwrap();
+        assert_eq!(persisted, corrupt);
+    }
+}
+
+struct LostActivationReply {
+    inner: NativeSqlBackend,
+    armed: AtomicBool,
+    land: bool,
+}
+
+impl SqlBackend for LostActivationReply {
+    fn transaction<T>(
+        &self,
+        budget: TransactionBudget,
+        run: impl FnOnce(&mut dyn SqlSession, u64) -> Result<TransactionDecision<T>, SqlSessionError>,
+    ) -> Result<T, SqlBackendError> {
+        if self.armed.swap(false, Ordering::SeqCst) {
+            if self.land {
+                let _: T = self.inner.transaction(budget, run)?;
+            }
+            return Err(SqlBackendError::CommitIndeterminate);
+        }
+        self.inner.transaction(budget, run)
+    }
+}
+
+#[test]
+fn activation_reply_loss_is_atomic_in_both_directions_and_observable_after_reopen() {
+    for land in [false, true] {
+        let (db, store, context, token, _) = complete_inactive_store(56);
+        let binding: ImportBinding = pin();
+        let record: Vec<u8> = encode_successor_serving_record(&valid_record(&token)).unwrap();
+        drop(store);
+        let connection: Connection = Connection::open(&db.0).unwrap();
+        configure(&connection).unwrap();
+        let engine: SqlDurableEngine<LostActivationReply> = SqlDurableEngine::new(
+            LostActivationReply {
+                inner: NativeSqlBackend::new(connection),
+                armed: AtomicBool::new(true),
+                land,
+            },
+            namespace(&binding),
+        );
+        assert_eq!(
+            engine.commit_successor_activation(
+                &context,
+                binding.domain,
+                &binding,
+                &initial(),
+                &token,
+                &record,
+                activation_transaction(binding.domain, 84, b"reply-loss", 7),
+            ),
+            DurableCommitOutcome::Indeterminate(runtime::IndeterminateCommitReason::ConnectionLost),
+        );
+        drop(engine);
+        let reopened: SqliteImportTarget =
+            SqliteImportTarget::open_existing(&db.0, namespace(&binding), &binding).unwrap();
+        let slot: SuccessorServingSlot = reopened
+            .get_successor_serving(&context, binding.domain)
+            .unwrap();
+        assert_eq!(slot.is_serving(), land);
+        assert_eq!(
+            reopened
+                .get_request_receipt(&context, binding.domain, receipt(84).request_id())
+                .unwrap(),
+            land.then(|| receipt(84))
+        );
+        let value: runtime::VersionedStateValue = reopened
+            .get_versioned_durable(&context, binding.domain, b"reply-loss")
+            .unwrap();
+        assert_eq!(value.value(), land.then_some([7].as_slice()));
+        let after: PortableSnapshotToken = reopened
+            .begin_portable_snapshot(&context, binding.domain)
+            .unwrap();
+        assert_eq!(
+            after.mutation_sequence(),
+            token.mutation_sequence() + u64::from(land)
+        );
+        if !land {
+            assert_eq!(
+                reopened.commit_successor_activation(
+                    &context,
+                    binding.domain,
+                    &binding,
+                    &initial(),
+                    &token,
+                    &record,
+                    activation_transaction(binding.domain, 84, b"reply-loss", 7),
+                ),
+                DurableCommitOutcome::Committed
+            );
+        }
+    }
 }

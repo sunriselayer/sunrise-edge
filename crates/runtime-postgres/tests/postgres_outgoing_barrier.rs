@@ -1,4 +1,4 @@
-//! Live protected outgoing-barrier correctness: oversized/missing rows
+//! Live protected namespace-slot correctness: oversized/missing rows
 //! fail closed, and a Sealed row with a nonempty outbox rejects cached
 //! claim/ACK replay from the same metadata-locked transaction.
 
@@ -24,6 +24,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+#[path = "postgres_outgoing_barrier/successor_serving.rs"]
+mod successor_serving;
 mod support;
 
 type Manager = PostgresConnectionManager<NoTls>;
