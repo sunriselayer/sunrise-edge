@@ -49,11 +49,8 @@ fn retired(world: &SuccessorWorld) -> &TestSigner {
 /// The single successor member absent from the genesis committee.
 fn incoming(world: &SuccessorWorld) -> usize {
     let original: &OrderedEconomicsPolicy = &world.network().policy;
-    let mut fresh = (0..world.members.len()).filter(|index: &usize| {
-        original
-            .registered_validator(world.members[*index].id)
-            .is_none()
-    });
+    let mut fresh = (0..world.members.len())
+        .filter(|index: &usize| original.registered_validator(world.members[*index].id).is_none());
     let incoming: usize = fresh.next().expect("E is incoming");
     assert!(fresh.next().is_none(), "exactly one member is incoming");
     incoming
@@ -101,10 +98,7 @@ fn committed_bond_row(
     id: ValidatorId,
 ) -> (FastPathBondRecord, Vec<u8>) {
     let bytes: Vec<u8> = world
-        .value(
-            index,
-            &fastpath_bond_record_key(&fixture::chain(), &id).unwrap(),
-        )
+        .value(index, &fastpath_bond_record_key(&fixture::chain(), &id).unwrap())
         .1
         .unwrap();
     (decode_fastpath_bond_record(&bytes).unwrap(), bytes)
@@ -135,11 +129,9 @@ fn predicted_unbond(
     let delay: u64 = policy
         .resources
         .iter()
-        .find(
-            |entry: &&crate::economics::FastPathEconomicsResourcePolicy| {
-                entry.resource_id == resource
-            },
-        )
+        .find(|entry: &&crate::economics::FastPathEconomicsResourcePolicy| {
+            entry.resource_id == resource
+        })
         .unwrap()
         .bond
         .as_ref()
@@ -177,8 +169,12 @@ fn bond_candidate(
         validator_id: owner.id,
         resource_id: BondResourceId::new(bond.resource_domain, bond.resource).unwrap(),
         expected_generation: bond.generation,
-        expected_previous_row_digest: bond_row_digest(resolver, bond.lifecycle_epoch, bond_bytes)
-            .unwrap(),
+        expected_previous_row_digest: bond_row_digest(
+            resolver,
+            bond.lifecycle_epoch,
+            bond_bytes,
+        )
+        .unwrap(),
         expected_next_row_digest: bond_row_digest(
             resolver,
             next_row.lifecycle_epoch,
@@ -254,12 +250,7 @@ fn replacement_abce_activates_registered_e_and_certifies_an_e1_round() {
     let e: usize = incoming(&world);
     let d: &TestSigner = retired(&world);
     assert_eq!(world.members.len(), REPLICAS);
-    assert!(
-        world
-            .policy
-            .registered_validator(world.members[e].id)
-            .is_some()
-    );
+    assert!(world.policy.registered_validator(world.members[e].id).is_some());
     assert!(world.policy.registered_validator(d.id).is_none());
     let bond: FastPathBondRecord = decode_fastpath_bond_record(
         &world
@@ -363,9 +354,7 @@ fn retired_d_is_refused_activation_resolution_and_consensus_signing() {
     );
     assert_eq!(signer.signatures_created(), 0);
     assert_eq!(
-        target
-            .get_successor_serving(&world.operation, domain)
-            .unwrap(),
+        target.get_successor_serving(&world.operation, domain).unwrap(),
         SuccessorServingSlot::Inactive
     );
     assert!(!matches!(
@@ -403,18 +392,13 @@ fn retired_d_is_refused_activation_resolution_and_consensus_signing() {
     )
     .unwrap();
     let chain: protocol_types::ChainId = fixture::chain();
-    let vote_key: Vec<u8> = crate::ordered_economics::identity::scoped_vote_record_key(
-        world.policy.key_scope(),
-        &chain,
-        view,
-    )
-    .unwrap();
+    let vote_key: Vec<u8> =
+        crate::ordered_economics::identity::scoped_vote_record_key(world.policy.key_scope(), &chain, view)
+            .unwrap();
     let state_key: Vec<u8> = engine::scoped_state_key(world.policy.key_scope(), &chain).unwrap();
     for index in 0..REPLICAS {
-        let before: [(StateRevision, Option<Vec<u8>>); 2] = [
-            world.value(index, &vote_key),
-            world.value(index, &state_key),
-        ];
+        let before: [(StateRevision, Option<Vec<u8>>); 2] =
+            [world.value(index, &vote_key), world.value(index, &state_key)];
         assert!(
             crate::ordered_economics::process_proposal_successor(
                 &world.warrant(index),
@@ -436,10 +420,7 @@ fn retired_d_is_refused_activation_resolution_and_consensus_signing() {
             .is_err()
         );
         assert_eq!(
-            [
-                world.value(index, &vote_key),
-                world.value(index, &state_key)
-            ],
+            [world.value(index, &vote_key), world.value(index, &state_key)],
             before
         );
     }
@@ -452,6 +433,218 @@ fn funded_escrow(world: &SuccessorWorld) -> [u8; 32] {
         WorldSource::Replacement(fixture) => fixture.funded_escrow(),
         WorldSource::SameCommittee(_) => panic!("only the registered-E world funds E"),
     }
+}
+
+/// Every local observation a refused FastVote/ACK signer must leave intact.
+type FastVoteObservation = (
+    Vec<(StateRevision, Option<Vec<u8>>)>,
+    DurableObjectHead,
+    bool,
+);
+
+fn fastvote_observation(
+    world: &SuccessorWorld,
+    index: usize,
+    keys: &[Vec<u8>],
+    coin: ObjectId,
+    request_id: [u8; 32],
+) -> FastVoteObservation {
+    let rows: Vec<(StateRevision, Option<Vec<u8>>)> = keys
+        .iter()
+        .map(|key: &Vec<u8>| world.value(index, key))
+        .collect();
+    let head: DurableObjectHead = world.targets[index]
+        .0
+        .get_object_head(&world.operation, world.network().domain(), coin)
+        .unwrap();
+    let receipt: bool = matches!(
+        crate::serving_authority::query_request_receipt_successor(
+            &world.warrant(index),
+            &world.targets[index].0,
+            crate::RequestId::new(request_id).unwrap(),
+        )
+        .unwrap(),
+        crate::ReceiptQueryResult::Present { .. }
+    );
+    (rows, head, receipt)
+}
+
+/// Retired D is never the local signer of a FastVote prepare or an
+/// availability ACK under any genuine ABC/E warrant. The paid request is an
+/// ordinary member's genuinely signed e+1 transfer of the real imported
+/// coin on the imported instance; every member then genuinely prepares and
+/// retains it, proving the refusal is the local signer alone.
+#[test]
+fn retired_d_cannot_sign_fastvote_prepare_or_availability_ack() {
+    let world: SuccessorWorld = replacement_world();
+    let network: &Network = world.network();
+    let domain: AtomicityDomainId = network.domain();
+    let chain: protocol_types::ChainId = fixture::chain();
+    let next: PublicationContext = world.policy.context().clone();
+    let d: &TestSigner = retired(&world);
+    let fee_policy: PaidFeePolicy = execution::paid_execution::decode_paid_fee_policy(
+        &world
+            .value(0, &crate::local_instance_state::paid_fee_policy_key(&next).unwrap())
+            .1
+            .unwrap(),
+    )
+    .unwrap();
+    let coin_id: ObjectId = world.source().claimant_coin.id;
+    let (version, digest): (DurableObjectVersion, Digest32) = match world.targets[0]
+        .0
+        .get_object_head(&world.operation, domain, coin_id)
+        .unwrap()
+    {
+        DurableObjectHead::Current {
+            object_version,
+            digest,
+            ..
+        } => (object_version, digest),
+        DurableObjectHead::Absent | DurableObjectHead::Tombstoned { .. } => {
+            panic!("the imported claimant coin is live")
+        }
+    };
+    let record: DurableObjectVersionRecord = world.targets[0]
+        .0
+        .get_object_version(&world.operation, domain, coin_id, version)
+        .unwrap()
+        .unwrap();
+    let coin: Object = match record.payload() {
+        DurableObjectPayload::Inline(inline) => {
+            objects::decode_object(inline.canonical_bytes()).unwrap()
+        }
+        DurableObjectPayload::BlobReference(_) => panic!("standard asset coins are inline"),
+    };
+    let owner: [u8; 32] = match &coin.owner {
+        Owner::Address(address) => *address.as_bytes(),
+        _ => panic!("the claimant coin is address-owned"),
+    };
+    let sender: usize = network
+        .signers
+        .iter()
+        .position(|signer: &TestSigner| *signer.id.as_bytes() == owner)
+        .unwrap();
+    let request_id: [u8; 32] = [0x7d; 32];
+    let signed: Vec<u8> =
+        successor_paid_transfer(&world, sender, &coin, digest, request_id, &fee_policy);
+    let keys: Vec<Vec<u8>> = vec![
+        crate::local_instance_state::fastpath_prepared_record_key(&chain, &request_id).unwrap(),
+        crate::local_instance_state::fastpath_nonce_lock_key(&chain, &owner, next.epoch())
+            .unwrap(),
+        crate::fast_path::publication::fastpath_availability_ack_key(&chain, &request_id)
+            .unwrap(),
+    ];
+    let counted: CountingSigner<'_> = CountingSigner::new(d);
+    for index in 0..REPLICAS {
+        let before: FastVoteObservation =
+            fastvote_observation(&world, index, &keys, coin_id, request_id);
+        let refused: Result<consensus::FastVote, crate::fast_path::FastPathError> =
+            crate::serving_authority::prepare_successor(
+                &world.warrant(index),
+                &world.targets[index].0,
+                &composition(&world, index, &fee_policy),
+                &counted,
+                &signed,
+                1,
+            );
+        assert!(
+            matches!(
+                &refused,
+                Err(crate::fast_path::FastPathError::Node(
+                    crate::NodeCoreError::PersistenceInvariant(
+                        "local signer is not the namespace successor member"
+                    )
+                ))
+            ),
+            "retired D is refused as local FastVote signer: {refused:?}"
+        );
+        assert_eq!(
+            fastvote_observation(&world, index, &keys, coin_id, request_id),
+            before
+        );
+    }
+    let votes: Vec<consensus::FastVote> = (0..REPLICAS)
+        .map(|index: usize| {
+            crate::serving_authority::prepare_successor(
+                &world.warrant(index),
+                &world.targets[index].0,
+                &composition(&world, index, &fee_policy),
+                &world.members[index],
+                &signed,
+                1,
+            )
+            .unwrap()
+        })
+        .collect();
+    let certificate: consensus::FastCertificate = consensus::FastPathCertifier::new(
+        chain.clone(),
+        next.protocol_version(),
+        next.epoch(),
+        world.policy.engine().validator_set().clone(),
+    )
+    .unwrap()
+    .try_form_certificate(
+        votes[0].tx_hash,
+        votes[0].execution_effects_hash,
+        votes[0].locked_objects_digest,
+        &votes,
+        &crate::fast_path::FastPathEd25519Verifier,
+    )
+    .unwrap()
+    .unwrap();
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+    let bundle: PublicationBundle = crate::fast_path::publication::assemble_publication_bundle(
+        &world.targets[0].0,
+        &world.operation,
+        domain,
+        &network.resolver,
+        &network.history,
+        &next,
+        &signed,
+        &certificate_bytes,
+    )
+    .unwrap();
+    let bundle_bytes: Vec<u8> = consensus::bundle::encode_publication_bundle(&bundle).unwrap();
+    for index in 0..REPLICAS {
+        let before: FastVoteObservation =
+            fastvote_observation(&world, index, &keys, coin_id, request_id);
+        let refused: Result<
+            consensus::AvailabilityVote,
+            crate::fast_path::publication::PublicationRetentionError,
+        > = crate::serving_authority::retain_publication_successor(
+            &world.warrant(index),
+            &world.targets[index].0,
+            &network.resolver,
+            &network.history,
+            &bundle_bytes,
+            &counted,
+        );
+        assert!(
+            matches!(
+                &refused,
+                Err(crate::fast_path::publication::PublicationRetentionError::Node(
+                    crate::NodeCoreError::PersistenceInvariant(
+                        "local signer is not the namespace successor member"
+                    )
+                ))
+            ),
+            "retired D is refused as local availability signer: {refused:?}"
+        );
+        assert_eq!(
+            fastvote_observation(&world, index, &keys, coin_id, request_id),
+            before
+        );
+        crate::serving_authority::retain_publication_successor(
+            &world.warrant(index),
+            &world.targets[index].0,
+            &network.resolver,
+            &network.history,
+            &bundle_bytes,
+            &world.members[index],
+        )
+        .expect("the same bundle is genuinely retained by the namespace member");
+    }
+    assert_eq!(counted.created.get(), 0, "D exposes no FastVote or ACK signature");
 }
 
 /// Retired D keeps exactly its verified predecessor ownership: it claims its
@@ -609,12 +802,9 @@ fn retired_d_keeps_verified_predecessor_bond_and_claim_ownership_only() {
     let before: Vec<(StateRevision, Option<Vec<u8>>)> = (0..REPLICAS)
         .map(|index: usize| world.value(index, &bond_key))
         .collect();
-    let status: OrderedStatus = crate::ordered_economics::query_status_successor(
-        &world.warrant(0),
-        &world.targets[0].0,
-        &env,
-    )
-    .unwrap();
+    let status: OrderedStatus =
+        crate::ordered_economics::query_status_successor(&world.warrant(0), &world.targets[0].0, &env)
+            .unwrap();
     assert!(matches!(
         crate::ordered_economics::preflight::preflight(
             &world.targets[0].0,
@@ -623,9 +813,7 @@ fn retired_d_keeps_verified_predecessor_bond_and_claim_ownership_only() {
             &withdraw,
             status.high_qc.height.checked_add(1).unwrap(),
         ),
-        Err(OrderedEconomicsError::Refused(
-            OrderedRefusal::IneligibleState
-        ))
+        Err(OrderedEconomicsError::Refused(OrderedRefusal::IneligibleState))
     ));
     let leader: usize = leader_of(&world, status.current_view);
     let counted: CountingSigner<'_> = CountingSigner::new(&world.members[leader]);
@@ -649,7 +837,10 @@ fn retired_d_keeps_verified_predecessor_bond_and_claim_ownership_only() {
 /// A Byzantine quorum (every member except `honest`) extends its own
 /// genuinely validated stored e+1 states through the owning consensus
 /// engine only, bypassing every ordered admission owner, signing with the
-/// members' real keys. Returns each signed proposal and its quorum.
+/// members' real keys. A view the honest member leads is skipped by each
+/// Byzantine member's own trusted-clock timeout (`Tick`), exactly the
+/// engine's pacemaker; the next proposal then justifies the last quorum.
+/// Returns each signed proposal and its quorum.
 fn byzantine_chain(
     world: &SuccessorWorld,
     honest: usize,
@@ -658,8 +849,7 @@ fn byzantine_chain(
     let hotstuff: &consensus::ChainedHotStuff = world.policy.engine();
     let verifier: crate::ordered_economics::policy::Ed25519ConsensusVerifier =
         crate::ordered_economics::policy::Ed25519ConsensusVerifier;
-    let key: Vec<u8> =
-        engine::scoped_state_key(world.policy.key_scope(), &fixture::chain()).unwrap();
+    let key: Vec<u8> = engine::scoped_state_key(world.policy.key_scope(), &fixture::chain()).unwrap();
     let byzantine: Vec<usize> = (0..world.members.len())
         .filter(|index: &usize| *index != honest)
         .collect();
@@ -674,6 +864,25 @@ fn byzantine_chain(
         .collect();
     let mut chain: Vec<(consensus::ConsensusProposal, consensus::QuorumCertificate)> = Vec::new();
     for transactions in blocks {
+        while hotstuff.validator_set().leader(states[0].current_view).unwrap()
+            == world.members[honest].id
+        {
+            for (slot, index) in byzantine.iter().enumerate() {
+                let now: u64 = states[slot].view_deadline_unix_millis;
+                let output: consensus::ConsensusOutput = hotstuff
+                    .on_event(
+                        &states[slot],
+                        ConsensusEvent::Tick {
+                            now_unix_millis: now,
+                        },
+                        &world.members[*index],
+                        &verifier,
+                    )
+                    .unwrap();
+                assert!(output.view_advanced);
+                states[slot] = output.state;
+            }
+        }
         let leader_id: ValidatorId = hotstuff
             .validator_set()
             .leader(states[0].current_view)
@@ -876,14 +1085,38 @@ fn successor_refuses_certified_byzantine_controls_in_vote_observation_and_commit
     }
     assert_eq!(counted.created.get(), 0, "no honest vote is signed");
 
-    // Signerless recovery of the genuinely certified Freeze chain.
-    let freeze_digest: Digest32 = world.policy.candidate_digest(&freeze).unwrap();
-    let blocks: Vec<(consensus::ConsensusProposal, consensus::QuorumCertificate)> = byzantine_chain(
+    // Signerless recovery of the genuinely certified Freeze chain. The fourth
+    // block, proposed by a Byzantine leader after the honest member's view
+    // times out, carries retired D's genuinely authenticated Unbond and
+    // justifies the third quorum, so voting on it would commit the Freeze.
+    let d: &TestSigner = retired(&world);
+    let (bond, bond_bytes): (FastPathBondRecord, Vec<u8>) = committed_bond_row(&world, honest, d.id);
+    let unbond: OrderedCandidate = bond_candidate(
         &world,
-        honest,
-        &[vec![freeze_digest], Vec::new(), Vec::new()],
+        d,
+        [0xdb; 32],
+        &bond_bytes,
+        &predicted_unbond(&world, &bond, 13, *d.id.as_bytes()),
+        BondLifecycleOperation::Unbond {
+            recipient: Address::new(*d.id.as_bytes()),
+        },
+        13,
     );
-    for (position, (proposal, certificate)) in blocks.iter().enumerate() {
+    world.policy.authenticate_candidate(&unbond).unwrap();
+    let freeze_digest: Digest32 = world.policy.candidate_digest(&freeze).unwrap();
+    let unbond_digest: Digest32 = world.policy.candidate_digest(&unbond).unwrap();
+    let blocks: Vec<(consensus::ConsensusProposal, consensus::QuorumCertificate)> =
+        byzantine_chain(
+            &world,
+            honest,
+            &[
+                vec![freeze_digest],
+                Vec::new(),
+                Vec::new(),
+                vec![unbond_digest],
+            ],
+        );
+    for (position, (proposal, certificate)) in blocks.iter().take(3).enumerate() {
         crate::ordered_economics::observe_proposal_successor(
             &world.warrant(honest),
             &world.targets[honest].0,
@@ -905,7 +1138,36 @@ fn successor_refuses_certified_byzantine_controls_in_vote_observation_and_commit
         }
     }
     let terminal: &consensus::QuorumCertificate = &blocks[2].1;
+    let preview: OrderedProposal = OrderedProposal {
+        proposal: blocks[3].0.clone(),
+        candidate: Some(unbond.clone()),
+    };
+    assert_eq!(preview.proposal.height % 3, 1);
+    assert_eq!(preview.proposal.justify, *terminal);
+    assert_ne!(leader_of(&world, preview.proposal.view), honest);
+    let preview_vote_key: Vec<u8> = crate::ordered_economics::identity::scoped_vote_record_key(
+        world.policy.key_scope(),
+        &chain,
+        preview.proposal.view,
+    )
+    .unwrap();
     let before: Vec<(StateRevision, Option<Vec<u8>>)> = snapshot(&[&state_key, &applied_key]);
+    let vote_before: (StateRevision, Option<Vec<u8>>) = world.value(honest, &preview_vote_key);
+    // Vote-time prefix completion without the certified ancestor bytes stops
+    // for declared catch-up before any signature.
+    let unready: Result<OrderedEventOutput, OrderedEconomicsError> =
+        crate::ordered_economics::process_proposal_successor(
+            &world.warrant(honest),
+            &world.targets[honest].0,
+            &env,
+            &preview,
+            &counted,
+        );
+    assert!(
+        matches!(unready, Err(OrderedEconomicsError::Prerequisite(_))),
+        "missing ancestor bytes stop the vote: {unready:?}"
+    );
+    assert_eq!(snapshot(&[&state_key, &applied_key]), before);
     let missing: Result<OrderedEventOutput, OrderedEconomicsError> =
         crate::ordered_economics::process_certificate_successor(
             &world.warrant(honest),
@@ -929,6 +1191,29 @@ fn successor_refuses_certified_byzantine_controls_in_vote_observation_and_commit
         Err(OrderedEconomicsError::UnsupportedSuccessorControl)
     ));
     assert_eq!(snapshot(&[&state_key, &applied_key]), before);
+    // Vote-time committed prefix over the stored, quorum-certified control:
+    // the honest consumer refuses independently, before any vote signature.
+    assert!(matches!(
+        crate::ordered_economics::process_proposal_successor(
+            &world.warrant(honest),
+            &world.targets[honest].0,
+            &env,
+            &preview,
+            &counted,
+        ),
+        Err(OrderedEconomicsError::UnsupportedSuccessorControl)
+    ));
+    assert!(matches!(
+        crate::ordered_economics::observe_proposal_successor(
+            &world.warrant(honest),
+            &world.targets[honest].0,
+            &env,
+            &preview,
+        ),
+        Err(OrderedEconomicsError::UnsupportedSuccessorControl)
+    ));
+    assert_eq!(snapshot(&[&state_key, &applied_key]), before);
+    assert_eq!(world.value(honest, &preview_vote_key), vote_before);
     assert!(!matches!(
         crate::serving_authority::query_request_receipt_successor(
             &world.warrant(honest),
