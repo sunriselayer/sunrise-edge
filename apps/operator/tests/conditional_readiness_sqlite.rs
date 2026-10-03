@@ -675,6 +675,7 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
                 .iter()
                 .map(|destination: &Directory| destination.0.clone())
                 .collect(),
+            binding: verified.binding().clone(),
         },
     )
     .await;

@@ -54,6 +54,8 @@ pub struct SuccessorProcessInputs {
     pub competing_certificate: PathBuf,
     /// Four staged import targets, each with state.db, body.db, private.key.
     pub targets: Vec<PathBuf>,
+    /// The immutable import binding the targets were staged under.
+    pub binding: runtime::inactive_import::ImportBinding,
 }
 
 fn success(output: Output) -> String {
@@ -157,14 +159,7 @@ fn start_host(
     let mut command: Command = Command::new(env!("CARGO_BIN_EXE_successor_host"));
     command.arg("serve");
     pins(&mut command, fixture, inputs);
-    target_flags(
-        &mut command,
-        fixture,
-        inputs,
-        export,
-        &inputs.certificate,
-        index,
-    );
+    target_flags(&mut command, fixture, inputs, export, &inputs.certificate, index);
     command
         .args([
             "--listen",
@@ -207,13 +202,7 @@ fn transport(address: SocketAddr) -> LoopbackHttpTransport {
     .unwrap()
 }
 
-fn raw(
-    address: SocketAddr,
-    method: Method,
-    path: &str,
-    media: Option<&'static str>,
-    body: Vec<u8>,
-) -> WireResponse {
+fn raw(address: SocketAddr, method: Method, path: &str, media: Option<&'static str>, body: Vec<u8>) -> WireResponse {
     transport(address)
         .send(&WireRequest {
             method,
@@ -233,12 +222,7 @@ fn status(address: SocketAddr) -> OrderedStatus {
         None,
         Vec::new(),
     );
-    assert_eq!(
-        response.status,
-        200,
-        "{}",
-        String::from_utf8_lossy(&response.body)
-    );
+    assert_eq!(response.status, 200, "{}", String::from_utf8_lossy(&response.body));
     decode_ordered_status(&response.body).unwrap()
 }
 
@@ -306,10 +290,7 @@ async fn export_sealed_history(fixture: &Fixture, fence: WriterFenceGeneration) 
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address: SocketAddr = listener.local_addr().unwrap();
-        peers.push_str(&format!(
-            "{} {address} - -\n",
-            hex(validator.validator_id.as_bytes())
-        ));
+        peers.push_str(&format!("{} {address} - -\n", hex(validator.validator_id.as_bytes())));
         let (stop, shutdown) = tokio::sync::oneshot::channel::<()>();
         stops.push(stop);
         servers.push(tokio::spawn(native_http::serve(listener, router, async {
@@ -325,13 +306,7 @@ async fn export_sealed_history(fixture: &Fixture, fence: WriterFenceGeneration) 
         "--ordered-network".into(),
         network.to_str().unwrap().into(),
         "--ordered-genesis-manifest".into(),
-        fixture
-            .directory
-            .0
-            .join("genesis.bin")
-            .to_str()
-            .unwrap()
-            .into(),
+        fixture.directory.0.join("genesis.bin").to_str().unwrap().into(),
         "--ordered-expected-genesis-digest".into(),
         hex(&fixture.network.manifest_digest),
         "--expected-chain-id".into(),
@@ -357,10 +332,7 @@ async fn export_sealed_history(fixture: &Fixture, fence: WriterFenceGeneration) 
     .map(OsString::from)
     .collect();
     tokio::task::block_in_place(|| sunrise_edge_cli::run(arguments)).unwrap();
-    assert!(
-        out.join("complete").exists(),
-        "the full sealed prefix verified"
-    );
+    assert!(out.join("complete").exists(), "the full sealed prefix verified");
     for stop in stops {
         stop.send(()).unwrap();
     }
@@ -485,8 +457,7 @@ fn paid_call_on_imported_instance(
     );
     let signed: execution::paid_execution::SignedPaidIntent =
         execution::paid_execution::decode_signed_paid_intent(&signed_bytes).unwrap();
-    let endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> =
-        fastvote_endpoints(fixture, hosts);
+    let endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> = fastvote_endpoints(fixture, hosts);
     let certifier: &consensus::FastPathCertifier = workflow.fastvote_certifier();
     let deadline: Instant = Instant::now() + Duration::from_secs(1800);
     let cap: Duration = Duration::from_secs(300);
@@ -560,13 +531,7 @@ fn successor_cli_flags(
         "--ordered-network".into(),
         network.to_str().unwrap().into(),
         "--ordered-genesis-manifest".into(),
-        fixture
-            .directory
-            .0
-            .join("genesis.bin")
-            .to_str()
-            .unwrap()
-            .into(),
+        fixture.directory.0.join("genesis.bin").to_str().unwrap().into(),
         "--ordered-expected-genesis-digest".into(),
         hex(&fixture.network.manifest_digest),
         "--expected-chain-id".into(),
@@ -600,12 +565,62 @@ fn cli(prefix: &[&str], tail: Vec<String>) {
     tokio::task::block_in_place(|| sunrise_edge_cli::run(arguments)).unwrap();
 }
 
+/// Real read-only inspection of the imported epoch-e escrow share on the
+/// claimant own activated target at e+1, before its host claims the fence.
+/// The sealed source correctly refuses (admission closed by the committed
+/// Freeze) and the escrow does not exist before Freeze (it is created by the
+/// post-Freeze drain apply), so the activated target is the genuine owner of
+/// this state. The view is untrusted client construction input only: the
+/// host preparation and the ordered claim evaluator recheck the object and
+/// share under a fresh warrant.
+fn inspect_imported_share(
+    fixture: &Fixture,
+    inputs: &SuccessorProcessInputs,
+    workflow: &SuccessorWorkflowAuthority,
+    claimant: usize,
+) -> node_core::fee_claims::FeeClaimInspection {
+    let validator = &fixture.network.validators[claimant];
+    let public: [u8; 32] = ed25519_zebra::VerificationKey::from(&validator.signing_key).into();
+    let target: runtime_sqlite::SqliteImportTarget = runtime_sqlite::SqliteImportTarget::open_existing(
+        inputs.targets[claimant].join("state.db"),
+        SqliteNamespace::new(
+            fixture.network.chain_id.clone(),
+            validator.validator_id,
+            fixture.network.domain,
+        ),
+        &inputs.binding,
+    )
+    .unwrap();
+    let blobs: SqliteBlobStore =
+        SqliteBlobStore::open_existing(inputs.targets[claimant].join("body.db")).unwrap();
+    let operation: runtime::DurableOperationContext = runtime::DurableOperationContext::new(
+        target.writer_fence().unwrap(),
+        runtime::StorageDeadline::new(u64::MAX / 2).unwrap(),
+        runtime::StorageCorrelationId::new([0xC9; 16]).unwrap(),
+    );
+    let next: &execution::publication::PublicationContext = workflow.expected_context();
+    node_core::fee_claims::inspect_fee_claim(
+        &target,
+        &blobs,
+        &operation,
+        fixture.network.domain,
+        &fixture.network.resolver,
+        &[],
+        next,
+        fixture.network.request_id,
+        validator.validator_id,
+        public,
+        &execution::local_execution::LocalExecutionPolicy::generic_object_results(next.clone()),
+    )
+    .unwrap()
+}
+
 /// Positive fee claim against the imported epoch-e escrow. The signed leg
-/// is built from a real local inspection of the sealed source (read-only
-/// historical open) at the claim certificate epoch, re-scoped to e+1 with
-/// the claimant e+1 nonce observed through a host. The successor host
-/// prepares the unsigned intent; the shipped CLI verifies it against its own
-/// successor pins, signs, wraps and submits it as an ordered e+1 candidate.
+/// is built from the real activated-target inspection, scoped to e+1 with
+/// the claimant e+1 nonce observed through a host. The SDK first proves its
+/// pre-signing refusals on the real independently loaded workflow; then the
+/// shipped CLI prepares through a host, verifies against its own successor
+/// pins, signs, wraps and submits it as an ordered e+1 candidate.
 #[allow(clippy::too_many_arguments)]
 fn imported_escrow_fee_claim(
     fixture: &Fixture,
@@ -614,41 +629,16 @@ fn imported_escrow_fee_claim(
     network: &Path,
     hosts: &[HostProcess],
     workflow: &SuccessorWorkflowAuthority,
+    view: &node_core::fee_claims::FeeClaimInspection,
 ) -> [u8; 32] {
     use abi::call_values::{CallValue, encode_call_value};
     use execution::local_execution::{
         LocalExecutionIntent, LocalExecutionMode, LocalExecutionPolicy, SignedLocalExecutionIntent,
         encode_signed_local_execution, local_execution_signing_frame,
     };
-    use node_core::fee_claims::{FeeClaimExecutionView, FeeClaimInspection, FeeClaimKind};
+    use node_core::fee_claims::{FeeClaimExecutionView, FeeClaimKind};
     let claimant = &fixture.network.validators[1];
     let public: [u8; 32] = ed25519_zebra::VerificationKey::from(&claimant.signing_key).into();
-    let source: SqliteDurableStore = SqliteDurableStore::open_historical(
-        fixture.directory.0.join("state-0.sqlite"),
-        SqliteNamespace::new(
-            fixture.network.chain_id.clone(),
-            fixture.network.validators[0].validator_id,
-            fixture.network.domain,
-        ),
-    )
-    .unwrap();
-    let source_blobs: SqliteBlobStore =
-        SqliteBlobStore::open(fixture.directory.0.join("blobs.sqlite")).unwrap();
-    let view: FeeClaimInspection = node_core::fee_claims::inspect_fee_claim(
-        &source,
-        &source_blobs,
-        &fixture.operation,
-        fixture.network.domain,
-        &fixture.network.resolver,
-        &[],
-        &fixture.network.context,
-        fixture.network.request_id,
-        claimant.validator_id,
-        public,
-        &fixture.local_policy,
-    )
-    .unwrap();
-    drop(source);
     let kind: FeeClaimKind = view.entitlement.kind.expect("an unclaimed imported share");
     let next: execution::publication::PublicationContext = workflow.expected_context().clone();
     let request: [u8; 32] = [0xA5; 32];
@@ -715,6 +705,53 @@ fn imported_escrow_fee_claim(
         }
     };
     let seed_file: PathBuf = fixture.directory.0.join("successor-claimant.seed");
+    // Real SDK pre-signing refusals on the independently loaded workflow and
+    // an actual host-prepared intent; nothing below signs or submits.
+    let request_frame: node_wire::FeeClaimPrepareRequest = node_wire::FeeClaimPrepareRequest {
+        context: next.clone(),
+        escrow_request_id: fixture.network.request_id,
+        request_id: request,
+        validator_id: claimant.validator_id,
+        claimant_public_key: public,
+        recipient: objects::Address::new(public),
+        signed_leg: leg.clone(),
+    };
+    let prepared = Client::new(transport(hosts[0].address))
+        .prepare_successor_fee_claim(workflow, &request_frame, None)
+        .unwrap();
+    sunrise_edge_client::verify_prepared_fee_claim(workflow, &request_frame, &prepared).unwrap();
+    let mut later_epoch = prepared.clone();
+    later_epoch.certificate_epoch = protocol_types::Epoch::new(next.epoch().get() + 1);
+    let mut other_claimant = prepared.clone();
+    other_claimant.validator_id = fixture.network.validators[2].validator_id;
+    let mut other_recipient = prepared.clone();
+    other_recipient.recipient = objects::Address::new([0x44; 32]);
+    let mut other_escrow = prepared.clone();
+    other_escrow.escrow_request_id = [0x45; 32];
+    for (label, altered) in [
+        ("certificate epoch after e+1", &later_epoch),
+        ("claimant selector", &other_claimant),
+        ("recipient", &other_recipient),
+        ("escrow selector", &other_escrow),
+    ] {
+        assert!(
+            sunrise_edge_client::verify_prepared_fee_claim(workflow, &request_frame, altered).is_err(),
+            "{label} must refuse before signing"
+        );
+    }
+    let mut stale_scope: node_wire::FeeClaimPrepareRequest = request_frame.clone();
+    stale_scope.context = fixture.network.context.clone();
+    assert!(sunrise_edge_client::verify_prepared_fee_claim(workflow, &stale_scope, &prepared).is_err());
+    assert!(
+        sunrise_edge_client::sign_prepared_fee_claim(
+            workflow,
+            &request_frame,
+            prepared.clone(),
+            fixture.network.validators[2].seed,
+        )
+        .is_err(),
+        "a different claimant key never signs"
+    );
     std::fs::write(&seed_file, hex(&claimant.seed)).unwrap();
     #[cfg(unix)]
     {
@@ -744,10 +781,7 @@ fn imported_escrow_fee_claim(
     if let Some(leg) = &leg {
         let leg_file: PathBuf = fixture.directory.0.join("successor-fee-claim.leg");
         std::fs::write(&leg_file, leg).unwrap();
-        tail.extend([
-            "--signed-leg".to_string(),
-            leg_file.to_str().unwrap().into(),
-        ]);
+        tail.extend(["--signed-leg".to_string(), leg_file.to_str().unwrap().into()]);
     }
     cli(&["economics", "fee-claim-prepare"], tail);
     let mut submit: Vec<String> = successor_cli_flags(fixture, inputs, export, network);
@@ -767,10 +801,7 @@ fn imported_escrow_fee_claim(
     request
 }
 
-fn receipts(
-    hosts: &[&HostProcess],
-    request: [u8; 32],
-) -> sunrise_edge_client::HttpReceiptQueryResult {
+fn receipts(hosts: &[&HostProcess], request: [u8; 32]) -> sunrise_edge_client::HttpReceiptQueryResult {
     let request_id: sunrise_edge_client::RequestId =
         sunrise_edge_client::RequestId::new(request).unwrap();
     let mut agreed: Option<sunrise_edge_client::HttpReceiptQueryResult> = None;
@@ -779,10 +810,7 @@ fn receipts(
             .query_receipt(request_id)
             .unwrap();
         if let Some(previous) = &agreed {
-            assert_eq!(
-                previous, &receipt,
-                "every successor host exposes the same receipt"
-            );
+            assert_eq!(previous, &receipt, "every successor host exposes the same receipt");
         }
         agreed = Some(receipt);
     }
@@ -800,12 +828,7 @@ pub async fn run(
     tokio::task::block_in_place(|| accept(fixture, inputs, seal, &export));
 }
 
-fn accept(
-    fixture: &Fixture,
-    inputs: &SuccessorProcessInputs,
-    seal: &OrderedCandidate,
-    export: &Path,
-) {
+fn accept(fixture: &Fixture, inputs: &SuccessorProcessInputs, seal: &OrderedCandidate, export: &Path) {
     assert_eq!(inputs.targets.len(), 4);
     // Artifact substitution: a genuine but unnamed certificate variant is
     // refused by the source-free verifier before any destination write.
@@ -815,13 +838,7 @@ fn accept(
             .success()
     );
     for index in 0..4 {
-        let stdout: String = success(activation(
-            fixture,
-            inputs,
-            export,
-            &inputs.certificate,
-            index,
-        ));
+        let stdout: String = success(activation(fixture, inputs, export, &inputs.certificate, index));
         assert!(
             stdout.contains("successor_activation=activated"),
             "the substituted run installed nothing: {stdout}"
@@ -832,21 +849,18 @@ fn accept(
             .contains("successor_activation=already-activated")
     );
 
-    let mut hosts: Vec<HostProcess> = (0..4)
-        .map(|index: usize| start_host(fixture, inputs, export, index))
-        .collect();
     let workflow: SuccessorWorkflowAuthority = load_workflow(fixture, inputs, export);
+    // Read-only inspection of the claimant own activated target, before
+    // any host claims its writer fence.
+    let share: node_core::fee_claims::FeeClaimInspection =
+        inspect_imported_share(fixture, inputs, &workflow, 1);
+    let mut hosts: Vec<HostProcess> =
+        (0..4).map(|index: usize| start_host(fixture, inputs, export, index)).collect();
     let next_epoch: u64 = fixture.network.epoch.get() + 1;
     assert_eq!(workflow.expected_context().epoch().get(), next_epoch);
     for host in &hosts {
-        let context = Client::new(transport(host.address))
-            .query_context()
-            .unwrap();
-        assert_eq!(
-            context.epoch().get(),
-            next_epoch,
-            "hosts serve the verified e+1 scope"
-        );
+        let context = Client::new(transport(host.address)).query_context().unwrap();
+        assert_eq!(context.epoch().get(), next_epoch, "hosts serve the verified e+1 scope");
     }
     let all: Vec<&HostProcess> = hosts.iter().collect();
     let seal_receipt = receipts(&all, seal.request_id);
@@ -870,12 +884,7 @@ fn accept(
         Some(node_wire::FEE_CLAIM_PREPARE_REQUEST_MEDIA_TYPE),
         stale_request.encode().unwrap(),
     );
-    assert_eq!(
-        response.status,
-        409,
-        "{}",
-        String::from_utf8_lossy(&response.body)
-    );
+    assert_eq!(response.status, 409, "{}", String::from_utf8_lossy(&response.body));
     let stale_intent: Vec<u8> =
         fixture
             .network
@@ -887,41 +896,19 @@ fn accept(
         Some(node_wire::NODE_EVENT_MEDIA_TYPE),
         stale_intent,
     );
-    assert_eq!(
-        response.status,
-        409,
-        "{}",
-        String::from_utf8_lossy(&response.body)
-    );
+    assert_eq!(response.status, 409, "{}", String::from_utf8_lossy(&response.body));
     for path in [
         node_wire::FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
         node_wire::FASTVOTE_DRAIN_APPLY_PATH,
     ] {
-        let response: WireResponse = raw(
-            hosts[0].address,
-            Method::Post,
-            path,
-            Some(node_wire::NODE_EVENT_MEDIA_TYPE),
-            Vec::new(),
-        );
+        let response: WireResponse =
+            raw(hosts[0].address, Method::Post, path, Some(node_wire::NODE_EVENT_MEDIA_TYPE), Vec::new());
         assert_eq!(response.status, 422, "{path}");
     }
-    assert_eq!(
-        status(hosts[0].address),
-        before,
-        "refusals change no consensus state"
-    );
+    assert_eq!(status(hosts[0].address), before, "refusals change no consensus state");
 
     // Genuine e+1 ordered rounds under independently loaded SDK pins.
-    let endpoints = ordered_endpoints(
-        fixture,
-        &[
-            Some(&hosts[0]),
-            Some(&hosts[1]),
-            Some(&hosts[2]),
-            Some(&hosts[3]),
-        ],
-    );
+    let endpoints = ordered_endpoints(fixture, &[Some(&hosts[0]), Some(&hosts[1]), Some(&hosts[2]), Some(&hosts[3])]);
     let mut parent: Option<QuorumCertificate> = None;
     for _ in 0..3 {
         let outcome: RoundOutcome = round(&endpoints, &workflow, parent.as_ref());
@@ -938,17 +925,11 @@ fn accept(
     let peers: String = hosts
         .iter()
         .zip(&fixture.network.validators)
-        .map(|(host, validator)| {
-            format!(
-                "{} {} - -\n",
-                hex(validator.validator_id.as_bytes()),
-                host.address
-            )
-        })
+        .map(|(host, validator)| format!("{} {} - -\n", hex(validator.validator_id.as_bytes()), host.address))
         .collect();
     std::fs::write(&network, peers).unwrap();
     let claim: [u8; 32] =
-        imported_escrow_fee_claim(fixture, inputs, export, &network, &hosts, &workflow);
+        imported_escrow_fee_claim(fixture, inputs, export, &network, &hosts, &workflow, &share);
     let claim_receipt = receipts(&all, claim);
     drop(all);
 
@@ -975,26 +956,17 @@ fn accept(
     let paused: HostProcess = hosts.remove(3);
     let paused_generation: u64 = paused.generation;
     drop(paused);
-    let alive = ordered_endpoints(
-        fixture,
-        &[Some(&hosts[0]), Some(&hosts[1]), Some(&hosts[2]), None],
-    );
+    let alive = ordered_endpoints(fixture, &[Some(&hosts[0]), Some(&hosts[1]), Some(&hosts[2]), None]);
     // The paid Call and fee-claim rounds advanced the prefix since the last
     // empty round, so the routing hint (not a stale parent) selects it.
     let missed: RoundOutcome = round(&alive, &workflow, None);
     let reopened: HostProcess = start_host(fixture, inputs, export, 3);
-    assert!(
-        reopened.generation > paused_generation,
-        "reopen claims a new writer fence"
-    );
+    assert!(reopened.generation > paused_generation, "reopen claims a new writer fence");
     let deadline: Instant = Instant::now() + Duration::from_secs(1800);
     replay_declared_prefix_with_sink(
         &ordered_endpoints(fixture, &[None, None, None, Some(&reopened)]),
         workflow.ordered_policy(),
-        &[(
-            missed.proposal_bytes.clone(),
-            missed.certificate_bytes.clone(),
-        )],
+        &[(missed.proposal_bytes.clone(), missed.certificate_bytes.clone())],
         deadline,
         Duration::from_secs(300),
         &mut Sink,
@@ -1008,10 +980,7 @@ fn accept(
     hosts.push(reopened);
     let reopened_all: Vec<&HostProcess> = hosts.iter().collect();
     assert_eq!(receipts(&reopened_all, seal.request_id), seal_receipt);
-    assert_eq!(
-        receipts(&reopened_all, fixture.network.request_id),
-        imported_receipt
-    );
+    assert_eq!(receipts(&reopened_all, fixture.network.request_id), imported_receipt);
     assert_eq!(receipts(&reopened_all, call), call_receipt);
     assert_eq!(receipts(&reopened_all, claim), claim_receipt);
 }
