@@ -14,8 +14,8 @@
 //! Ordered envelope and candidate authentication need the verified e+1
 //! committee, so they run after resolution and before the owning core entry.
 //! Permanent epoch-handoff, drain and direct-mutation paths answer the
-//! existing explicit 422 successor-control-unsupported; read routes this
-//! host does not serve answer 501 successor-route-unimplemented.
+//! existing explicit 422 successor-control-unsupported. Ordered history
+//! reads serve only the successor-scoped e+1 history under a fresh warrant.
 
 use super::*;
 use abi::package_types::PackageOrigin;
@@ -71,14 +71,6 @@ pub const SUCCESSOR_REFUSED_CONTROL_PATHS: &[&str] = &[
     node_wire::FASTVOTE_DRAIN_IMPORT_PATH,
     node_wire::FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,
     node_wire::FASTVOTE_DRAIN_APPLY_PATH,
-];
-
-/// Historical read routes this host does not serve. The Seal suffix is
-/// exported from the historical read-only source instead (Section 12).
-pub const SUCCESSOR_UNIMPLEMENTED_PATHS: &[&str] = &[
-    node_wire::ordered_history::ORDERED_HISTORY_SUMMARY_PATH,
-    node_wire::ordered_history::ORDERED_HISTORY_HEIGHT_PATH,
-    node_wire::ordered_history::ORDERED_HISTORY_COMPONENT_PATH,
 ];
 
 /// Host-owned resolution of one invocation authority.
@@ -558,8 +550,8 @@ fn fastvote_preflight(headers: &HeaderMap, body: &Bytes, maximum: usize) -> Opti
     None
 }
 
-trait SuccessorStore: StructuredDurableDomainStateStore + Send + Sync + 'static {}
-impl<S: StructuredDurableDomainStateStore + Send + Sync + 'static> SuccessorStore for S {}
+trait SuccessorStore: DurableStateKeyScanner + Send + Sync + 'static {}
+impl<S: DurableStateKeyScanner + Send + Sync + 'static> SuccessorStore for S {}
 
 fn signer<S>(host: &SuccessorHostComposition<S>) -> DynConsensusSigner<'_> {
     DynConsensusSigner(host.signer.as_ref())
@@ -1415,8 +1407,68 @@ async fn refused_control() -> Response {
     )
 }
 
-async fn unimplemented_route() -> Response {
-    error_response(StatusCode::NOT_IMPLEMENTED, "successor-route-unimplemented")
+/// Read-only fee-claim preparation, including an imported epoch-e escrow.
+/// Untrusted structural decode first; then a fresh warrant, exact e+1
+/// context comparison, host checkpoint and fence, and the owning pure
+/// preparation. Nothing is signed or committed; the raw unsigned canonical
+/// FeeClaimIntent is returned for offline claimant signing.
+async fn fee_claim_prepare<S: SuccessorStore>(
+    State(host): State<SharedSuccessorHost<S>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Some(response) = ordered_economics::reject_unsupported_request(
+        &headers,
+        &body,
+        node_wire::FEE_CLAIM_PREPARE_REQUEST_MEDIA_TYPE,
+        node_wire::MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES,
+    ) {
+        return response;
+    }
+    blocking(host, move |host: &SuccessorHostComposition<S>| {
+        let Ok(request) = node_wire::FeeClaimPrepareRequest::decode(&body) else {
+            return error_response(StatusCode::BAD_REQUEST, "invalid-fee-claim-prepare-request");
+        };
+        let outcome: Result<Result<PreparedFeeClaim, Response>, SuccessorInvocationError> =
+            with_authority(host, |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
+                if request.context != *warrant.policy_inputs().context() {
+                    return Ok(Err(error_response(
+                        StatusCode::CONFLICT,
+                        "fee-claim-epoch-repin-required",
+                    )));
+                }
+                let leg_policy: LocalExecutionPolicy = LocalExecutionPolicy::generic_object_results(
+                    warrant.policy_inputs().context().clone(),
+                );
+                Ok(prepare_fee_claim_successor(
+                    warrant,
+                    host.store.as_ref(),
+                    host.blobs.as_ref(),
+                    &host.resolver,
+                    &host.history,
+                    &leg_policy,
+                    host.engine.as_ref(),
+                    request.as_core_request(),
+                    host.created_checkpoint,
+                )
+                .map_err(|_| {
+                    error_response(StatusCode::UNPROCESSABLE_ENTITY, "fee-claim-preparation-refused")
+                }))
+            });
+        match outcome {
+            Ok(Ok(prepared)) => {
+                match node_core::fee_claims::codec::encode_fee_claim_intent(&prepared.intent) {
+                    Ok(bytes) => bytes_response(node_wire::FEE_CLAIM_INTENT_MEDIA_TYPE, bytes),
+                    Err(_) => {
+                        error_response(StatusCode::INTERNAL_SERVER_ERROR, "fee-claim-intent-encoding")
+                    }
+                }
+            }
+            Ok(Err(response)) => response,
+            Err(error) => invocation_error_response(&error),
+        }
+    })
+    .await
 }
 
 /// Read-only successor fee-claim preparation, including an imported epoch-e
@@ -1460,13 +1512,13 @@ where
 /// object, receipt, next-nonce, publication, instance and fee-policy
 /// queries; ordered propose, vote, certificate, observe, status, outcome and
 /// tick; FastVote prepare, apply, publication source, availability ACK and
-/// published apply. [SUCCESSOR_REFUSED_CONTROL_PATHS] answer 422 and
-/// [SUCCESSOR_UNIMPLEMENTED_PATHS] answer 501, both before any I/O.
+/// published apply; fee-claim preparation; and successor-scoped ordered
+/// history reads. [SUCCESSOR_REFUSED_CONTROL_PATHS] answer 422 before I/O.
 pub fn successor_router<S>(
     host: SuccessorHostComposition<S>,
 ) -> Result<Router, SuccessorRouterError>
 where
-    S: StructuredDurableDomainStateStore + Send + Sync + 'static,
+    S: DurableStateKeyScanner + Send + Sync + 'static,
 {
     if host.resolver.protocol_version() != host.protocol_config.protocol_version {
         return Err(SuccessorRouterError::ProtocolVersionMismatch);
@@ -1539,15 +1591,21 @@ where
             post(fastvote_published_apply::<S>).layer(DefaultBodyLimit::max(
                 MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES,
             )),
-        );
+        )
+        .route(
+            node_wire::FEE_CLAIM_PREPARE_PATH,
+            post(fee_claim_prepare::<S>).layer(DefaultBodyLimit::max(
+                node_wire::MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES,
+            )),
+        )
+        .merge(history::routes::<S>());
     for path in SUCCESSOR_REFUSED_CONTROL_PATHS {
         router = router.route(path, any(refused_control));
     }
-    for path in SUCCESSOR_UNIMPLEMENTED_PATHS {
-        router = router.route(path, any(unimplemented_route));
-    }
     Ok(router.with_state(shared))
 }
+
+mod history;
 
 #[cfg(test)]
 mod tests;

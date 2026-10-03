@@ -152,9 +152,9 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     key_directory.ensure_attached()?;
     let mut artifacts: SuccessorArtifactFiles<'_> = SuccessorArtifactFiles::new(
         pins.plan(private_operation()?),
-        cut_archive,
-        manifest_history,
-        certificate_archive,
+        cut_archive.into_reader(),
+        manifest_history.into_reader(),
+        certificate_archive.into_reader(),
     );
 
     let outcome: SuccessorActivationOutcome = activate_successor(

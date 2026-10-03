@@ -29,7 +29,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use sunrise_edge_operator::{
-    immutable_archive::ImmutableArchive, successor_artifacts::SuccessorArtifactFiles,
+    immutable_archive::ImmutableArchiveReader, successor_artifacts::SuccessorArtifactFiles,
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -85,9 +85,9 @@ fn open_certificate_fixture<'a>(
             paid_base_policy: base_policy,
             paid_engine: engine,
         },
-        ImmutableArchive::open_read_only(cut_dir).unwrap(),
-        ImmutableArchive::open_read_only(history_dir).unwrap(),
-        ImmutableArchive::open_read_only(certificate_dir).unwrap(),
+        ImmutableArchiveReader::open(cut_dir).unwrap(),
+        ImmutableArchiveReader::open(history_dir).unwrap(),
+        ImmutableArchiveReader::open(certificate_dir).unwrap(),
     )
 }
 
@@ -233,13 +233,12 @@ fn successor_artifact_files_detects_replaced_or_symlinked_history_directory() {
     )
     .unwrap();
 
-    let history_archive: ImmutableArchive =
-        ImmutableArchive::open_read_only(&history_path).unwrap();
+    let history_archive: ImmutableArchiveReader = ImmutableArchiveReader::open(&history_path).unwrap();
     let mut artifacts = SuccessorArtifactFiles::new(
         plan,
-        ImmutableArchive::open_read_only(&cut_dir.0).unwrap(),
+        ImmutableArchiveReader::open(&cut_dir.0).unwrap(),
         history_archive,
-        ImmutableArchive::open_read_only(&certificate_dir.0).unwrap(),
+        ImmutableArchiveReader::open(&certificate_dir.0).unwrap(),
     );
     assert_eq!(
         artifacts.history_height(&identity, 1).unwrap().components,

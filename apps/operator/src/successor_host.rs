@@ -15,7 +15,7 @@ use crate::{
     business_cut::read_business_cut_archive,
     business_pins::{BusinessPinInputs, BusinessPins, bounded, hex, operation, private_operation},
     common::{FlagSet, load_signing_key_file, parse_hex_32},
-    immutable_archive::ImmutableArchive,
+    immutable_archive::ImmutableArchiveReader,
     successor_artifacts::SuccessorArtifactFiles,
 };
 use consensus::ConsensusSigner;
@@ -135,7 +135,11 @@ impl IndexedOutboxIdentitySource for GenerationIdentities {
     }
 }
 
-type ArtifactDirectories = (ImmutableArchive, ImmutableArchive, ImmutableArchive);
+type ArtifactDirectories = (
+    ImmutableArchiveReader,
+    ImmutableArchiveReader,
+    ImmutableArchiveReader,
+);
 
 /// Owns the original pins, the through-h manifest identity claim, the held
 /// artifact directories and the local signer public key. It stores no
@@ -277,11 +281,11 @@ struct SuccessorHostInputs {
 }
 
 fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
-    let cut_archive: ImmutableArchive = ImmutableArchive::open_read_only(&host.cut_directory)?;
-    let manifest_history: ImmutableArchive =
-        ImmutableArchive::open_read_only(&host.manifest_history_directory)?;
-    let certificate_archive: ImmutableArchive =
-        ImmutableArchive::open_read_only(&host.certificate_directory)?;
+    let cut_archive: ImmutableArchiveReader = ImmutableArchiveReader::open(&host.cut_directory)?;
+    let manifest_history: ImmutableArchiveReader =
+        ImmutableArchiveReader::open(&host.manifest_history_directory)?;
+    let certificate_archive: ImmutableArchiveReader =
+        ImmutableArchiveReader::open(&host.certificate_directory)?;
     for archive in [&cut_archive, &manifest_history, &certificate_archive] {
         for path in [&host.state_path, &host.blob_path] {
             archive.require_output_outside(path)?;

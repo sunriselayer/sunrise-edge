@@ -208,19 +208,37 @@ async fn permanent_controls_and_unserved_routes_refuse_before_authority() {
             assert_eq!(body, b"successor-control-unsupported");
         }
     }
-    for path in SUCCESSOR_UNIMPLEMENTED_PATHS {
-        let (status, body): (StatusCode, Vec<u8>) =
-            send(&router, "GET", path, None, Vec::new()).await;
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{path}");
-        assert_eq!(body, b"successor-route-unimplemented");
-    }
     assert_eq!(authority.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
 async fn malformed_requests_refuse_before_identity_clock_or_authority() {
     let (router, authority): (Router, Arc<StubAuthority>) = router(Decision::Original);
-    let cases: [(&str, Option<&str>, Vec<u8>, StatusCode); 7] = [
+    let cases: [(&str, Option<&str>, Vec<u8>, StatusCode); 11] = [
+        (
+            node_wire::FEE_CLAIM_PREPARE_PATH,
+            Some(node_wire::FEE_CLAIM_PREPARE_REQUEST_MEDIA_TYPE),
+            b"junk".to_vec(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            node_wire::FEE_CLAIM_PREPARE_PATH,
+            Some(NODE_EVENT_MEDIA_TYPE),
+            b"junk".to_vec(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ),
+        (
+            node_wire::ordered_history::ORDERED_HISTORY_HEIGHT_PATH,
+            Some(NODE_EVENT_MEDIA_TYPE),
+            b"junk".to_vec(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            node_wire::ordered_history::ORDERED_HISTORY_COMPONENT_PATH,
+            Some("text/plain"),
+            b"junk".to_vec(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ),
         (
             FASTVOTE_PREPARE_PATH,
             Some(NODE_EVENT_MEDIA_TYPE),
@@ -278,8 +296,9 @@ async fn malformed_requests_refuse_before_identity_clock_or_authority() {
 async fn original_genesis_is_an_explicit_refusal_never_a_serving_fallback() {
     let (router, authority): (Router, Arc<StubAuthority>) = router(Decision::Original);
     let selector: String = "11".repeat(32);
-    let reads: [String; 6] = [
+    let reads: [String; 7] = [
         QUERY_CONTEXT_PATH.to_string(),
+        node_wire::ordered_history::ORDERED_HISTORY_SUMMARY_PATH.to_string(),
         format!("/v1/objects/{selector}"),
         format!("/v1/receipts/{selector}"),
         format!("/v1/senders/{selector}/next-nonce"),

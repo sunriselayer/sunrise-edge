@@ -179,12 +179,15 @@ fn network_flag_specs(extra: &[&'static str]) -> Vec<crate::args::FlagSpec> {
         scalar("--per-request-cap-seconds"),
     ];
     flags.extend(extra.iter().map(|flag| scalar(flag)));
+    flags.extend(super::successor_pins::successor_flag_specs(false));
     flags
 }
 
 struct LoadedPolicyInputs {
     endpoints: Vec<OrderedEconomicsEndpoint<CliTransport>>,
     policy: sunrise_edge_client::ordered_economics_core::OrderedEconomicsPolicy,
+    resolver: sunrise_edge_client::HashSuiteResolver,
+    successor: Option<sunrise_edge_client::SuccessorWorkflowAuthority>,
 }
 
 fn load_policy_and_endpoints(
@@ -215,17 +218,39 @@ fn load_policy_and_endpoints(
         sunrise_edge_client::HashSuiteResolver::new(chain_id, protocol_version, schedules)
             .map_err(failure)?
     };
-    let policy = load_trusted_ordered_policy(
-        Path::new(parsed.require("--ordered-genesis-manifest")?),
-        &resolver,
-        expected_digest,
-        &context,
-        domain,
-    )
-    .map_err(failure)?;
+    let manifest: &str = parsed.require("--ordered-genesis-manifest")?;
+    // Explicit successor flags select the verified e+1 successor policy and
+    // require the declared --expected-* context to be exactly its e+1
+    // context; there is no fallback to the ordinary genesis policy.
+    let successor: Option<sunrise_edge_client::SuccessorWorkflowAuthority> =
+        super::successor_pins::load_successor_pins(
+            parsed,
+            manifest,
+            expected_digest,
+            &resolver,
+            &context,
+            Some(domain),
+        )?;
+    let policy: sunrise_edge_client::ordered_economics_core::OrderedEconomicsPolicy =
+        match &successor {
+            Some(workflow) => workflow.ordered_policy().clone(),
+            None => load_trusted_ordered_policy(
+                Path::new(manifest),
+                &resolver,
+                expected_digest,
+                &context,
+                domain,
+            )
+            .map_err(failure)?,
+        };
     validate_ordered_economics_endpoints(&endpoints, policy.engine().validator_set())
         .map_err(failure)?;
-    Ok(LoadedPolicyInputs { endpoints, policy })
+    Ok(LoadedPolicyInputs {
+        endpoints,
+        policy,
+        resolver,
+        successor,
+    })
 }
 
 /// Reserves the maximum five rounds' proposal/certificate artifacts, the candidate
@@ -603,7 +628,7 @@ fn run_network_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
 }
 
 fn candidate_wrap_flag_specs() -> Vec<crate::args::FlagSpec> {
-    vec![
+    let mut flags: Vec<crate::args::FlagSpec> = vec![
         scalar("--intent"),
         scalar("--kind"),
         scalar("--request-id"),
@@ -615,7 +640,9 @@ fn candidate_wrap_flag_specs() -> Vec<crate::args::FlagSpec> {
         scalar("--ordered-expected-genesis-digest"),
         scalar("--domain"),
         scalar("--out"),
-    ]
+    ];
+    flags.extend(super::successor_pins::successor_flag_specs(false));
+    flags
 }
 
 /// Wraps an already-signed existing canonical intent into an exact
@@ -675,14 +702,35 @@ fn run_candidate_wrap<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
     // Local genesis validation only -- confirms the declared context is the
     // one this operator actually trusts before any candidate bytes are
     // produced; never contacts a network endpoint.
-    let policy = load_trusted_ordered_policy(
-        Path::new(parsed.require("--ordered-genesis-manifest")?),
-        &resolver,
-        expected_digest,
-        &context,
-        domain,
-    )
-    .map_err(failure)?;
+    let manifest: &str = parsed.require("--ordered-genesis-manifest")?;
+    let policy: sunrise_edge_client::ordered_economics_core::OrderedEconomicsPolicy =
+        match super::successor_pins::load_successor_pins(
+            &parsed,
+            manifest,
+            expected_digest,
+            &resolver,
+            &context,
+            Some(domain),
+        )? {
+            Some(workflow) => {
+                if ordered_kind
+                    == sunrise_edge_client::ordered_economics_core::OrderedOperationKind::BondRegistration
+                {
+                    return Err(invalid(
+                        "successor-control-unsupported: initial bond registration is unavailable at a first successor",
+                    ));
+                }
+                workflow.ordered_policy().clone()
+            }
+            None => load_trusted_ordered_policy(
+                Path::new(manifest),
+                &resolver,
+                expected_digest,
+                &context,
+                domain,
+            )
+            .map_err(failure)?,
+        };
 
     let candidate = sunrise_edge_client::ordered_economics_core::OrderedCandidate {
         context,
@@ -719,6 +767,11 @@ fn run_freeze_build<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), Cli
         "--out",
     ]);
     let (parsed, schedules) = super::hash_suite_pins::parse_pinned_flags(args, &specs)?;
+    if super::successor_pins::successor_requested(&parsed) {
+        return Err(invalid(
+            "successor-control-unsupported: Freeze is unavailable at a first successor",
+        ));
+    }
     let inputs: LoadedPolicyInputs = load_policy_and_endpoints(&parsed, schedules)?;
     if inputs.policy.minimum_freeze_block_height() == 0 {
         return Err(invalid(
@@ -973,6 +1026,113 @@ their own durable union marker. Submit with economics network-submit --candidate
     Ok(())
 }
 
+/// Successor fee-claim preparation, including an imported epoch-e escrow:
+/// verifies the successor evidence locally, asks one configured successor
+/// host to prepare the unsigned claim, independently checks every returned
+/// field against the verified e+1 scope and the request, signs it with the
+/// historical claimant seed, wraps it as an ordered FeeClaim candidate and
+/// authenticates that candidate under the successor policy. Submit the
+/// output with economics network-submit using the same successor flags.
+fn run_fee_claim_prepare<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    let specs: Vec<crate::args::FlagSpec> = network_flag_specs(&[
+        "--prepare-peer",
+        "--escrow-request-id",
+        "--request-id",
+        "--claimant-validator-id",
+        "--claimant-seed-file",
+        "--recipient",
+        "--signed-leg",
+        "--created-checkpoint",
+        "--out",
+    ]);
+    let (parsed, schedules) = super::hash_suite_pins::parse_pinned_flags(args, &specs)?;
+    if !super::successor_pins::successor_requested(&parsed) {
+        return Err(invalid(
+            "fee-claim-prepare is a successor workflow and requires the --successor-* artifact flags",
+        ));
+    }
+    let escrow_request_id: [u8; 32] =
+        decode_hex_32("--escrow-request-id", parsed.require("--escrow-request-id")?)?;
+    let request_id: [u8; 32] = decode_hex_32("--request-id", parsed.require("--request-id")?)?;
+    let claimant: sunrise_edge_client::ValidatorId = sunrise_edge_client::ValidatorId::new(
+        decode_hex_32("--claimant-validator-id", parsed.require("--claimant-validator-id")?)?,
+    );
+    let recipient: sunrise_edge_client::Address = sunrise_edge_client::Address::new(decode_hex_32(
+        "--recipient",
+        parsed.require("--recipient")?,
+    )?);
+    let peer: sunrise_edge_client::ValidatorId = sunrise_edge_client::ValidatorId::new(
+        decode_hex_32("--prepare-peer", parsed.require("--prepare-peer")?)?,
+    );
+    let created_checkpoint: u64 = parse_u64(
+        "--created-checkpoint",
+        parsed.require("--created-checkpoint")?,
+    )?;
+    let signed_leg: Option<Vec<u8>> = match parsed.get("--signed-leg") {
+        Some(path) => Some(read_bounded(
+            path,
+            sunrise_edge_client::MAX_FEE_CLAIM_PREPARE_LEG_BYTES,
+        )?),
+        None => None,
+    };
+    let loaded: LoadedPolicyInputs = load_policy_and_endpoints(&parsed, schedules)?;
+    let workflow: &sunrise_edge_client::SuccessorWorkflowAuthority = loaded
+        .successor
+        .as_ref()
+        .ok_or_else(|| invalid("successor evidence did not load"))?;
+    let endpoint: &OrderedEconomicsEndpoint<CliTransport> = loaded
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.validator_id == peer)
+        .ok_or_else(|| invalid("--prepare-peer must name a configured --ordered-network peer"))?;
+    let out: &str = parsed.require("--out")?;
+    let mut reserved: Vec<ReservedArtifact> =
+        reserve_artifacts(&[(out, "ordered-economics-candidate")], &[])?;
+    let mut artifact: ReservedArtifact = reserved
+        .pop()
+        .ok_or_else(|| invalid("missing fee claim candidate reservation"))?;
+    // The seed is read only after every local pin and the output reservation
+    // succeeded, and is never printed.
+    let seed: [u8; 32] = crate::seed::load_dev_seed(Path::new(parsed.require("--claimant-seed-file")?))
+        .map_err(failure)?;
+    let claimant_public_key: [u8; 32] =
+        *sunrise_edge_client::LocalSigner::from_seed(seed).address().as_bytes();
+    let request: sunrise_edge_client::FeeClaimPrepareRequest =
+        sunrise_edge_client::FeeClaimPrepareRequest {
+            context: workflow.expected_context().clone(),
+            escrow_request_id,
+            request_id,
+            validator_id: claimant,
+            claimant_public_key,
+            recipient,
+            signed_leg,
+        };
+    let (deadline, per_request_cap) = parse_budget(&parsed)?;
+    let request_deadline: Instant = Instant::now()
+        .checked_add(per_request_cap)
+        .map_or(deadline, |cap| cap.min(deadline));
+    let intent = endpoint
+        .client
+        .prepare_successor_fee_claim(workflow, &request, Some(request_deadline))
+        .map_err(failure)?;
+    let signed: Vec<u8> =
+        sunrise_edge_client::sign_prepared_fee_claim(&loaded.resolver, &request, intent, seed)
+            .map_err(failure)?;
+    let encoded: Vec<u8> =
+        sunrise_edge_client::fee_claim_candidate(workflow, request_id, signed, created_checkpoint)
+            .map_err(failure)?;
+    let candidate = sunrise_edge_client::ordered_economics_core::decode_ordered_candidate(&encoded)
+        .map_err(failure)?;
+    authenticate_ordered_candidate(&loaded.policy, &candidate).map_err(failure)?;
+    artifact.persist(&encoded)?;
+    println!(
+        "fee_claim_candidate_bytes={} out={out} epoch={}",
+        encoded.len(),
+        workflow.expected_context().epoch().get()
+    );
+    Ok(())
+}
+
 /// Dispatches `economics <subcommand>`.
 pub(crate) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
     let mut iterator = args.into_iter();
@@ -990,6 +1150,7 @@ pub(crate) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
         "bond-registration-prepare" => super::bond_registration::run(iterator),
         "ordered-freeze-build" => run_freeze_build(iterator),
         "drain-set-build" => run_drain_set_build(iterator),
+        "fee-claim-prepare" => run_fee_claim_prepare(iterator),
         other => Err(invalid(format!("unknown economics subcommand: {other}"))),
     }
 }

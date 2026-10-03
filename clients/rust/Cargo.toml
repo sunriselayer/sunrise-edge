@@ -15,6 +15,7 @@ fees.workspace = true
 hashing.workspace = true
 node-core.workspace = true
 node-wire.workspace = true
+runtime.workspace = true
 objects.workspace = true
 protocol-types.workspace = true
 rustls.workspace = true
