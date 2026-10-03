@@ -119,14 +119,8 @@ fn paid_observed_completion_refuses_conflicting_or_duplicate_contributions_befor
                 );
             }
         }
-        let refused: PaidResult<NodeOutput> = commit_direct_paid_admission(
-            &store,
-            &context,
-            domain,
-            request,
-            digest,
-            admission,
-        );
+        let refused: PaidResult<NodeOutput> =
+            commit_direct_paid_admission(&store, &context, domain, request, digest, admission);
         match case {
             BrokenContribution::ConfigurationRevision
             | BrokenContribution::PendingNonceRevision => {
