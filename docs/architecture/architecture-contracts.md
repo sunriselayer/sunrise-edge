@@ -128,8 +128,9 @@ the existing chained-HotStuff engine. The architectural stages are:
    local observation; retain conditional next-set readiness atomically.
 4. Verify the complete business-free inherited suffix and normally commit
    one Seal target through outgoing consensus.
-5. Retain unique post-Seal transition authority and atomically install the
-   verified successor serving state without resetting outgoing safety history.
+5. Under a separately accepted activation contract, verify Seal-derived
+   successor authority and atomically install target-local serving without
+   resetting permanent storage origin or outgoing safety history.
 6. Reconstruct subsequent epochs from a verified predecessor and retain the
    original trust root, histories, receipts and logical provenance.
 
@@ -137,6 +138,15 @@ The interfaces must name these evidence transitions, not collapse them into
 `complete`, `active`, `is_ordinary()` or a shared mutable context. Readiness
 and a public certificate cannot create Seal or serving authority. Permanent
 storage origin and current serving authorization remain separate.
+
+For first-epoch Seal, [DR-0187](decisions/0187-first-epoch-ordered-seal.md)
+defines the exact committed boundary and permanently stops outgoing own
+signatures and ordinary completion. It supersedes the earlier proposed
+post-Seal outgoing transition vote: neither fresh signing nor cached live
+outgoing own-signature responses may be exposed after acceptance. Original
+read-only reconciliation remains distinct. Successor activation needs its own
+reviewed proof-backed contract; this outline approves no replacement schema
+and does not treat a Seal or Ready certificate alone as serving authority.
 
 The remaining interface partition is below. These are conceptual contracts,
 not names of callable Rust producers or approved wire/storage schemas.
@@ -147,8 +157,8 @@ not names of callable Rust producers or approved wire/storage schemas.
 | Serving-authority resolver | Original trust root or authenticated predecessor, fresh installed epoch/committee/policy/closure observations and local operation context; returns a private invocation-scoped warrant plus its deciding observations | Fresh owned/ordered admission and cached live vote/ACK exposure consume the same authority rules. Original receipt replay and historical certificate verification remain distinct consumers |
 | Ordered epoch namespace | Verified epoch/predecessor selection and existing consensus engine; selects the safety, signing-identity and applied-prefix keys for that epoch | Successor state must not overwrite outgoing safety/history. A caller-supplied epoch or a host-held policy cannot itself select an authorized successor |
 | Reconstruction predecessor | Immutable genesis root for the first epoch, or a separately authenticated activation chain for a later epoch; supplies the exact predecessor cut and generation floor | Reconstruction, cut verification and readiness retain their independent policy/history/domain checks. An activation-chain variant has no usable producer until those proofs exist |
-| Seal-target verifier | Locally derived complete business cut, committed DrainSet, eligible ready next set and complete retained readiness/suffix companions; produces exact immutable target evidence | Seal commitment, the unique post-Seal transition vote, activation and recurring reconstruction must share target verification without treating evidence as a fresh mutation warrant |
-| Activation completion | Verified committed Seal/transition certificate, exact complete inactive target, fresh local serving/lifecycle observations and the target's own writer fence | One actual atomic target rollover installs the successor policies/provenance/serving state; output is exposed only after real confirmation or exact retained reconciliation |
+| Seal-target verifier | Locally derived complete business cut, committed DrainSet, eligible ready next set and complete retained readiness/suffix companions; produces exact immutable target evidence | First-epoch commitment follows DR-0187; separately reviewed activation and recurring reconstruction must preserve that target without treating evidence as a fresh mutation warrant or granting post-Seal outgoing signing |
+| Activation completion | Separately accepted proof-backed activation contract bound to the committed Seal, exact complete inactive target, fresh local serving/lifecycle observations and the target's own writer fence | One actual atomic target rollover installs the successor policies/provenance/serving state; output is exposed only after real confirmation or exact retained reconciliation, with import origin and outgoing history preserved |
 
 The serving resolver removes repeated authority derivation only if its deciding
 observations join the actual completion. It must not cache a live permission
@@ -163,25 +173,29 @@ sweep before implementation. Original request identities/receipts remain
 chain-wide so replay can reconcile before resolving a newer epoch. These
 requirements do not globally order otherwise independent owned transactions.
 
-Final Seal subject/proof ownership, epoch-scoped successor safety keys,
-non-circular activation commitments, unique protected transition retention
-and recurring reconstruction need their owning detailed contracts. The
-architecture outline does not approve a wire format or fill those gaps with
-placeholder authority.
+DR-0187 defines the first-epoch Seal subject/proof ownership. Epoch-scoped
+successor safety keys, non-circular activation commitments, protected
+target-local activation retention and recurring reconstruction still need
+their owning detailed contracts. The architecture outline does not approve
+a wire format or fill those gaps with placeholder authority.
 
 [Functional handoff closure](functional-handoff-closure.md) and
 [DR-0186](decisions/0186-functional-handoff-closure.md) propose concrete closures
-for the decisions below; they remain pre-code design review, not serving authority.
+for the decisions below; their separate activation/recurring proposals remain
+pre-code design review, not serving authority. Their outgoing post-Seal signing
+sketches are superseded by DR-0187.
 
 Settle these coupled design questions before implementing those producers:
 
 - Whether retained validators continue in the outgoing namespace or select
-  their separately verified import target, and how outgoing safety/unique
-  transition history remains available across crashes. An atomic transaction
+  their separately verified import target, and how outgoing safety and original
+  Seal history remain available across crashes. An atomic transaction
   in one namespace does not imply cross-namespace atomic retirement/activation.
-- The bounded Seal reference and quorum-retained companion closure. Readiness
-  evidence cannot simply be inlined if it exceeds the ordered candidate bound;
-  a digest alone proves neither retention nor local target verification.
+- Preserve DR-0187's bounded first-epoch Seal reference and quorum-retained
+  companion closure in the separately reviewed successor/predecessor contract.
+  Readiness evidence cannot simply be inlined if it exceeds the ordered
+  candidate bound; a digest alone proves neither retention nor local target
+  verification.
 - Exact retained headers/justifications and bounded phase-aware high/locked
   traversal for the business-free suffix; pruning must not delete evidence
   which a later verifier requires.

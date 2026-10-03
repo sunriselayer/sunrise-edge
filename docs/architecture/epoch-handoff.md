@@ -5,6 +5,14 @@ This is the handoff-capable **To-Be**, governed by
 the existing fixed-epoch implementation. Implementation and validation status
 belong only in [`TODO.md`](../../TODO.md).
 
+For first-epoch Seal, [DR-0187](decisions/0187-first-epoch-ordered-seal.md)
+supersedes this outline's old-engine post-Seal progress and outgoing
+epoch-transition-vote sketches. Its accepted boundary permanently stops fresh
+signing, cached live outgoing own-signature responses and ordinary completion.
+Original read-only reconciliation remains legal; successor activation requires a separate reviewed
+proof-backed target-local contract. This clarification defines no replacement
+producer or schema.
+
 ## Guarantees and fault model
 
 Preserve every authenticated atomic application, even if only one replica
@@ -218,9 +226,10 @@ Advance with empty/control proposals until all ordered business outcomes in
 the prefix are applied and the seal's continuing high/locked suffix is
 business-free. Any business-bearing justification must be resolved first,
 not hidden behind a claimed equal applied/committed height. Do not reject the
-consensus messages needed to reach this barrier. After Seal, only empty
-progress and the retained activation decision can progress the old engine;
-no new user outcome may appear behind the sealed state. Treat the seal suffix
+consensus messages needed to reach this barrier. Under DR-0187's first-epoch
+contract, accepted Seal permanently stops outgoing own signatures and ordinary
+completion; do not generate more old-engine empty progress or outgoing activation
+votes. No new user outcome may appear behind the sealed state. Treat the seal suffix
 as a protocol predicate over complete verified block headers/justifications,
 not a leader's Boolean claim. Include imported inherited candidates and their
 authentication in the applied prefix before deriving the state to seal.
@@ -244,7 +253,9 @@ binds the pre-Seal cut identity, not a future Seal block digest, and does not
 authorize active serving or consensus votes. Conditional readiness is
 non-exclusive across cut/set candidates: exact retries return the retained
 signature, and a corrected candidate may obtain a new readiness signature.
-Only the post-Seal epoch-transition vote has the unique-target constraint.
+The committed Seal fixes the selected target. DR-0187 retires the formerly
+proposed post-Seal outgoing epoch-transition vote; conditional readiness does
+not grant permission to create that signature or reopen the source.
 An incomplete or rejected import can continue from verified content, or its
 still-ineligible, unverified staging namespace can be quarantined and another
 fresh staging namespace prepared. Do not delete/reset an existing active or
@@ -254,7 +265,7 @@ foreign writer token. This is not a legacy migration escape hatch.
 `Seal` commits the cut, the exact ready eligible set and verifying readiness
 evidence through the same old engine. After that decision its target cannot
 change. Loss of that next quorum is a fault-model availability stop, not an
-excuse to sign another epoch-transition target.
+excuse to reopen the outgoing source or substitute a successor target.
 Voting requires the committed business prefix applied, drain complete, no
 unresolved authenticated facts and equality with the locally derived cut.
 Signature-subset differences and local database counters are not disagreement
