@@ -12,3 +12,6 @@ node-core.workspace = true
 objects.workspace = true
 protocol-types.workspace = true
 runtime.workspace = true
+
+[dev-dependencies]
+bonds.workspace = true
