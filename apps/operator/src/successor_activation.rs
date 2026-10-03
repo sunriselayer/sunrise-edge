@@ -93,7 +93,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
 
     let pins = inputs.load()?;
     let manifest_identity_bytes: Vec<u8> = read_regular_archive_file(
-        &manifest_history_directory,
+        manifest_history.root(),
         std::path::Path::new("identity.bin"),
         MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
     )?;
@@ -153,10 +153,9 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     let mut artifacts: SuccessorArtifactFiles<'_> = SuccessorArtifactFiles::new(
         pins.plan(private_operation()?),
         cut_archive,
-        manifest_history_directory,
+        manifest_history,
         certificate_archive,
     );
-    drop(manifest_history);
 
     let outcome: SuccessorActivationOutcome = activate_successor(
         pins.plan(private_operation()?),

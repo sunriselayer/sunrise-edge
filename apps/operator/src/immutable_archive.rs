@@ -172,6 +172,14 @@ impl ImmutableArchive {
         Ok(())
     }
 
+    /// The validated absolute root this archive attached to. A caller using
+    /// this path for its own direct reads must still call
+    /// [`Self::ensure_attached`] around that use; holding this reference
+    /// alone proves nothing about files read through a different path.
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
     fn ensure_directory_attached(path: &Path, directory: &File) -> io::Result<()> {
         Self::directory_path(path)?;
         let actual: std::fs::Metadata = std::fs::symlink_metadata(path)?;

@@ -373,3 +373,136 @@ fn saved_archive_reader_rejects_oversize_and_non_regular_relative_paths() {
         assert!(read_regular_archive_file(&archive.0, Path::new("alias.bin"), 4).is_err());
     }
 }
+
+#[test]
+fn full_history_reader_requires_a_present_completion_marker() {
+    use node_core::ordered_economics::{
+        OrderedEconomicsPolicy, OrderedHistoryIdentity, encode_ordered_history_identity,
+    };
+    use sunrise_edge_client::ordered_history_archive::read_verified_ordered_history_archive;
+    let (_path, trusted, _, manifest) = pinned();
+    let domain: protocol_types::AtomicityDomainId =
+        protocol_types::AtomicityDomainId::new([0x43; 32]).unwrap();
+    let policy: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(trusted.genesis_root(), domain).unwrap();
+    let identity: OrderedHistoryIdentity = OrderedHistoryIdentity {
+        context: manifest.context().clone(),
+        domain: policy.domain(),
+        genesis_digest: policy.genesis_digest(),
+        anchor: policy.anchor(),
+        through_height: 0,
+        through_view: 0,
+        through_digest: policy.anchor(),
+    };
+    let archive: ArchiveDirectory = ArchiveDirectory::new();
+    std::fs::write(
+        archive.0.join("identity.bin"),
+        encode_ordered_history_identity(&identity).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(archive.0.join("chunk-size.bin"), 1024_u32.to_be_bytes()).unwrap();
+    // No "complete" marker file exists at all, as opposed to one present but
+    // differing (already covered above): a missing marker must also refuse,
+    // never fall back to treating the identity file alone as authoritative.
+    assert!(read_verified_ordered_history_archive(&policy, &archive.0).is_err());
+}
+
+#[test]
+fn single_height_transport_rejects_corruption_and_mismatched_target() {
+    use node_core::ordered_economics::{
+        OrderedEconomicsPolicy, OrderedHistoryComponentKind, OrderedHistoryComponentRef,
+        OrderedHistoryHeightDescriptor, OrderedHistoryIdentity,
+        encode_ordered_history_height_descriptor, ordered_history_component_digest,
+    };
+    use sunrise_edge_client::ordered_history_archive::read_ordered_history_height;
+    let (_path, trusted, _, manifest) = pinned();
+    let domain: protocol_types::AtomicityDomainId =
+        protocol_types::AtomicityDomainId::new([0x44; 32]).unwrap();
+    let policy: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(trusted.genesis_root(), domain).unwrap();
+    let identity: OrderedHistoryIdentity = OrderedHistoryIdentity {
+        context: manifest.context().clone(),
+        domain: policy.domain(),
+        genesis_digest: policy.genesis_digest(),
+        anchor: policy.anchor(),
+        through_height: 1,
+        through_view: 1,
+        through_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x51; 32]),
+    };
+    let component_bytes: Vec<u8> = vec![0xAB; 48];
+    let digest: Digest32 = ordered_history_component_digest(&policy, &component_bytes).unwrap();
+    let descriptor: OrderedHistoryHeightDescriptor = OrderedHistoryHeightDescriptor {
+        identity: identity.clone(),
+        height: 1,
+        view: 1,
+        block_digest: identity.through_digest,
+        components: vec![OrderedHistoryComponentRef {
+            kind: OrderedHistoryComponentKind::CommitProof,
+            length: component_bytes.len() as u64,
+            digest,
+        }],
+    };
+    let archive: ArchiveDirectory = ArchiveDirectory::new();
+    std::fs::write(archive.0.join("chunk-size.bin"), 1024_u32.to_be_bytes()).unwrap();
+    let height_dir: PathBuf = archive.0.join(format!("height-{:020}", 1));
+    std::fs::create_dir(&height_dir).unwrap();
+    let descriptor_path: PathBuf = height_dir.join("descriptor.bin");
+    let descriptor_bytes: Vec<u8> = encode_ordered_history_height_descriptor(&descriptor).unwrap();
+    std::fs::write(&descriptor_path, &descriptor_bytes).unwrap();
+    let component_dir: PathBuf =
+        height_dir.join(format!("component-{:02}", OrderedHistoryComponentKind::CommitProof as u16));
+    std::fs::create_dir(&component_dir).unwrap();
+    let chunk_path: PathBuf = component_dir.join(format!("chunk-{:020}.bin", 0));
+    std::fs::write(&chunk_path, &component_bytes).unwrap();
+
+    let good = read_ordered_history_height(&policy, &archive.0, &identity, 1).unwrap();
+    assert_eq!(good.descriptor, descriptor);
+    assert_eq!(
+        good.components,
+        vec![(OrderedHistoryComponentKind::CommitProof, component_bytes.clone())]
+    );
+
+    // Height outside the fixed target, both directions.
+    assert!(read_ordered_history_height(&policy, &archive.0, &identity, 0).is_err());
+    assert!(read_ordered_history_height(&policy, &archive.0, &identity, 2).is_err());
+
+    // A claimed identity differing from the saved descriptor target.
+    let mut wrong_identity: OrderedHistoryIdentity = identity.clone();
+    wrong_identity.domain = protocol_types::AtomicityDomainId::new([0x99; 32]).unwrap();
+    assert!(read_ordered_history_height(&policy, &archive.0, &wrong_identity, 1).is_err());
+
+    // Missing descriptor.
+    std::fs::remove_file(&descriptor_path).unwrap();
+    assert!(read_ordered_history_height(&policy, &archive.0, &identity, 1).is_err());
+
+    // Malformed descriptor.
+    std::fs::write(&descriptor_path, b"not a canonical descriptor frame").unwrap();
+    assert!(read_ordered_history_height(&policy, &archive.0, &identity, 1).is_err());
+    std::fs::write(&descriptor_path, &descriptor_bytes).unwrap();
+
+    // Truncated chunk: fewer bytes than the descriptor declares.
+    std::fs::write(&chunk_path, &component_bytes[..component_bytes.len() - 10]).unwrap();
+    assert!(read_ordered_history_height(&policy, &archive.0, &identity, 1).is_err());
+
+    // Oversized chunk: more bytes than the descriptor declares and bounds.
+    let mut oversized: Vec<u8> = component_bytes.clone();
+    oversized.extend_from_slice(&[0xFF; 20]);
+    std::fs::write(&chunk_path, &oversized).unwrap();
+    assert!(read_ordered_history_height(&policy, &archive.0, &identity, 1).is_err());
+
+    // Exact length, wrong content: digest mismatch.
+    let mut tampered: Vec<u8> = component_bytes.clone();
+    tampered[0] ^= 0xFF;
+    std::fs::write(&chunk_path, &tampered).unwrap();
+    assert!(read_ordered_history_height(&policy, &archive.0, &identity, 1).is_err());
+
+    // Restoring the exact original bytes must read genuinely again, proving
+    // every prior failure came from the corruption, not residual state.
+    std::fs::write(&chunk_path, &component_bytes).unwrap();
+    assert_eq!(
+        read_ordered_history_height(&policy, &archive.0, &identity, 1)
+            .unwrap()
+            .components,
+        vec![(OrderedHistoryComponentKind::CommitProof, component_bytes)]
+    );
+}
