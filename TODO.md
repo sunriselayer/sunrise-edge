@@ -64,6 +64,11 @@ full run failed on a PG catch-up read; the complete same-source rerun passed.
 The cause is unconfirmed, and failed/interrupted runs are not acceptance evidence.
 Fresh independent exact-final-head APPROVE and required CI remain merge gates,
 not waived by passing tests or the earlier design approval.
+PR #265 subsequently merged normally on 2026-10-03 as `aa0f6649`, after fresh
+native Opus APPROVE at final head `c7e69b86` and all four required lanes plus
+the aggregate check passed in CI `37096536588`. Local `main` matched
+`origin/main` at that merge with a clean tree. These gates establish the scoped
+Seal library/test composition, not successor serving or Delivery 3 completion.
 The four-SQLite workflow uses an external compiled preparation binary and the
 Rust CLI entry point in-process over real TCP, not a compiled network-submit
 process. No shipped live host completes Seal: the PG host composes `seal: None`.
@@ -156,6 +161,12 @@ target-local activation, serving and successor/predecessor schema allocations
 still require their separate design and functional evidence, without new
 outgoing signatures after Seal. Proposed documentation alone does not complete
 serving, recurring reconstruction or Delivery 3.
+The first-successor design is being closed in proposed
+[DR-0189](docs/architecture/decisions/0189-first-successor-serving.md) and its
+[detailed contract](docs/architecture/first-successor-serving.md), including
+effective cut-floor provenance and the real per-invocation authority consumers.
+Independent design approval is required before implementing the new producer;
+no activation, serving or schema implementation is claimed by that proposal.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.
