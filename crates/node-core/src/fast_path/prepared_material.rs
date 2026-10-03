@@ -161,9 +161,9 @@ pub(crate) fn stage_prepared_material<S: StructuredDurableDomainStateStore>(
     mutations: &mut Vec<StateMutationEntry>,
 ) -> FastPathResult<()> {
     let (_event_digest, required): (Digest32, publication::RequiredArtifacts) =
-        required_artifacts(witness_bytes).map_err(FastPathError::Publication)?;
+        required_artifacts(witness_bytes).map_err(FastPathError::from)?;
     if required.len() > MAX_RETAINED_ARTIFACTS {
-        return Err(FastPathError::Publication(
+        return Err(FastPathError::from(
             PublicationRetentionError::ClosureTooLarge {
                 actual: required.len(),
                 max: MAX_RETAINED_ARTIFACTS,
@@ -176,9 +176,8 @@ pub(crate) fn stage_prepared_material<S: StructuredDurableDomainStateStore>(
     // are staged once, mirroring `publication::stage_publication_artifacts`.
     let mut staged: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
     for ((kind_tag, identity), digest) in required.iter() {
-        let kind: ArtifactKind = ArtifactKind::from_u16(*kind_tag).map_err(|error| {
-            FastPathError::Publication(PublicationRetentionError::Bundle(error))
-        })?;
+        let kind: ArtifactKind = ArtifactKind::from_u16(*kind_tag)
+            .map_err(|error| FastPathError::from(PublicationRetentionError::Bundle(error)))?;
         let content: Vec<u8> =
             fetch_artifact_content(store, blob_store, context, domain, kind, identity)?;
         let content_digest: Digest32 =

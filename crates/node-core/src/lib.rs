@@ -120,8 +120,8 @@ pub use serving_authority::{
     SuccessorActivationOutcome, SuccessorArtifactError, SuccessorArtifactSource,
     SuccessorFastVoteComposition, SuccessorPolicyInputs, VerifiedSuccessorAuthority,
     activate_successor, apply_successor, prepare_fee_claim_successor, prepare_successor,
-    query_request_receipt_successor,
-    resolve_live_authority, retain_publication_successor, verify_successor_authority,
+    query_request_receipt_successor, resolve_live_authority, retain_publication_successor,
+    verify_successor_authority,
 };
 pub use transaction_auth::{
     AuthenticatedTransaction, MAX_TRANSACTION_SIGNABLE_BYTES, SUBMIT_TRANSACTION_SIGNABLE_TYPE_ID,

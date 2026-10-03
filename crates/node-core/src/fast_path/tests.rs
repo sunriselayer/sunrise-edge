@@ -409,11 +409,11 @@ fn prepare_rejects_protocol_custody_owned_lock_target_before_execution() {
     assert!(
         matches!(
             &result,
-            Err(FastPathError::Admission(
+            Err(FastPathError::Admission(error)) if matches!(error.as_ref(),
                 PaidExecutionAdmissionError::Invalid(
                     "paid inputs require sender address ownership"
                 )
-            ))
+            )
         ),
         "unexpected custody prepare result: {result:?}"
     );
@@ -3629,11 +3629,11 @@ fn reserved_request_id_prefix_is_rejected_by_direct_commit_and_prepare() {
     );
     assert!(matches!(
         prepare_result,
-        Err(FastPathError::Admission(
+        Err(FastPathError::Admission(error)) if matches!(error.as_ref(),
             PaidExecutionAdmissionError::Invalid(
                 "request id reserved for fast-path synthetic receipts"
             )
-        ))
+        )
     ));
 }
 
@@ -4032,9 +4032,9 @@ fn fast_path_prepare_rejects_a_colliding_instantiate_seed() {
             &colliding,
             CHECKPOINT,
         ),
-        Err(FastPathError::Admission(
+        Err(FastPathError::Admission(error)) if matches!(error.as_ref(),
             PaidExecutionAdmissionError::Invalid("instance already reserved")
-        ))
+        )
     ));
     assert_eq!(next_nonce(&store), FIRST_PAID_NONCE + 1);
     let prepared_key: Vec<u8> =
@@ -4122,9 +4122,9 @@ fn fast_path_prepare_rejects_a_duplicate_publish_origin() {
             &duplicate_bytes,
             CHECKPOINT,
         ),
-        Err(FastPathError::Admission(
+        Err(FastPathError::Admission(error)) if matches!(error.as_ref(),
             PaidExecutionAdmissionError::Invalid("publication origin already exists")
-        ))
+        )
     ));
     assert_eq!(next_nonce(&store), FIRST_PAID_NONCE + 1);
 }
@@ -4178,9 +4178,9 @@ fn fast_path_prepare_rejects_a_publish_with_a_missing_dependency() {
             &bytes,
             CHECKPOINT,
         ),
-        Err(FastPathError::Admission(
+        Err(FastPathError::Admission(error)) if matches!(error.as_ref(),
             PaidExecutionAdmissionError::Publication(PublicationAdmissionError::MissingDependency)
-        ))
+        )
     ));
     assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
 }

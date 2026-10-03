@@ -201,8 +201,14 @@ are in-process tests over four independent files, not shipped-host acceptance.
 The two new mandatory-slot PostgreSQL tests also pass against a real disposable
 PostgreSQL instance; that focused result is not the full selected PG gate and
 does not add a PG successor-activation capability or PG requirement for other stores.
-Imported-escrow claims, successor host and the shipped network workflow remain
-incomplete. Full required/selected-PG acceptance,
+Imported epoch-e escrow claims now also settle through genuine e+1 ordered
+rounds, with identical settlement, payout/escrow object and sender-nonce
+provenance above the cut floor on all four replicas, and completed-claim replay
+refusal without reapplication. The archive integration tests pass exact/short/
+oversized certificate and held-directory replacement/symlink checks. A retired
+claimant/consensus-signer distinction still needs the A/B/C/E replacement fixture.
+Successor host and the shipped network workflow remain incomplete. Full
+required/selected-PG acceptance,
 fresh independent exact-head review and CI are still pending. These local
 checks do not complete authenticated serving, Delivery 3 or network readiness.
 

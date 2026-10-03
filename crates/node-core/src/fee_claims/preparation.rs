@@ -886,18 +886,17 @@ where
                 return Err(FeeClaimError::Invalid("fee claim leg request id mismatch"));
             }
             let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
-            let successor_lane: Option<ordered_economics::OrderedLegAdmission<'_>> =
-                match gate {
-                    crate::serving_authority::ServingGate::Original => None,
-                    crate::serving_authority::ServingGate::Successor(_) => {
-                        Some(ordered_economics::OrderedLegAdmission {
-                            request_id: request.request_id,
-                            objects: &[],
-                            nonce: None,
-                            gate,
-                        })
-                    }
-                };
+            let successor_lane: Option<ordered_economics::OrderedLegAdmission<'_>> = match gate {
+                crate::serving_authority::ServingGate::Original => None,
+                crate::serving_authority::ServingGate::Successor(_) => {
+                    Some(ordered_economics::OrderedLegAdmission {
+                        request_id: request.request_id,
+                        objects: &[],
+                        nonce: None,
+                        gate,
+                    })
+                }
+            };
             let executed: ExecutedFeeClaim = execute_positive_claim(
                 store,
                 blob_store,

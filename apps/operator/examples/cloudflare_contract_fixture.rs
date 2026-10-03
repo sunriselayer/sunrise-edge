@@ -361,9 +361,14 @@ fn classify_prepare_error(error: &FastPathError) -> (u16, String) {
             (400, "FastPathPreparedConflict".to_owned())
         }
         FastPathError::Node(NodeCoreError::RequestIdReuse) => (409, "RequestIdReuse".to_owned()),
-        FastPathError::Admission(PaidExecutionAdmissionError::Node(
-            NodeCoreError::SenderNonceMismatch { .. },
-        )) => (409, "SenderNonceMismatch".to_owned()),
+        FastPathError::Admission(error)
+            if matches!(
+                error.as_ref(),
+                PaidExecutionAdmissionError::Node(NodeCoreError::SenderNonceMismatch { .. })
+            ) =>
+        {
+            (409, "SenderNonceMismatch".to_owned())
+        }
         other => (0, format!("{other:?}")),
     }
 }

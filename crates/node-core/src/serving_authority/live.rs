@@ -21,7 +21,7 @@ pub enum LiveAuthority<'inv> {
     /// unchanged.
     OriginalGenesis,
     /// A verified, installed first successor for this invocation only.
-    Successor(LiveWarrant<'inv>),
+    Successor(Box<LiveWarrant<'inv>>),
 }
 
 /// Resolves the authority of one invocation.
@@ -71,10 +71,10 @@ pub fn resolve_live_authority<'inv, S: StructuredDurableDomainStateStore>(
                 domain,
                 root,
                 verify::verify_successor_activation(plan, manifest_identity, artifacts)?,
-                observation,
+                *observation,
                 signer_public_key,
             )?;
-            Ok(LiveAuthority::Successor(warrant))
+            Ok(LiveAuthority::Successor(Box::new(warrant)))
         }
         _ => Err(ServingAuthorityError::Refused(
             "namespace is neither an ordinary original nor a serving successor",

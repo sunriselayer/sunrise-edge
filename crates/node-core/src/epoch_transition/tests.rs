@@ -3981,11 +3981,11 @@ fn a_current_epoch_lock_still_blocks_a_fresh_prepare() {
     );
     assert!(matches!(
         result,
-        Err(fast_path::FastPathError::Admission(
+        Err(fast_path::FastPathError::Admission(error)) if matches!(error.as_ref(),
             crate::paid_execution::PaidExecutionAdmissionError::Invalid(
                 "object locked by a pending fast-path certificate"
             )
-        ))
+        )
     ));
 }
 
@@ -4022,11 +4022,11 @@ fn a_lock_stamped_a_future_epoch_fails_closed_at_a_fresh_prepare() {
     );
     assert!(matches!(
         result,
-        Err(fast_path::FastPathError::Admission(
+        Err(fast_path::FastPathError::Admission(error)) if matches!(error.as_ref(),
             crate::paid_execution::PaidExecutionAdmissionError::Invalid(
                 "fast-path lock stamped a future epoch"
             )
-        ))
+        )
     ));
 }
 

@@ -242,7 +242,7 @@ pub(crate) fn validator_fee_shares(
 #[derive(Debug)]
 pub enum FastPathError {
     /// Shared admission/execution pipeline failure.
-    Admission(PaidExecutionAdmissionError),
+    Admission(Box<PaidExecutionAdmissionError>),
     /// `consensus::FastPathCertifier` vote/certificate failure.
     Consensus(ConsensusError),
     /// Storage or node boundary failure.
@@ -252,7 +252,7 @@ pub enum FastPathError {
     /// A DR-0154 publication-retention failure, surfaced through this error
     /// type by [`prepared_material`] (prepare-side witness/artifact
     /// retention) and by the availability-certificate gate in [`apply_internal`].
-    Publication(publication::PublicationRetentionError),
+    Publication(Box<publication::PublicationRetentionError>),
 }
 impl fmt::Display for FastPathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -268,7 +268,7 @@ impl fmt::Display for FastPathError {
 impl Error for FastPathError {}
 impl From<PaidExecutionAdmissionError> for FastPathError {
     fn from(error: PaidExecutionAdmissionError) -> Self {
-        Self::Admission(error)
+        Self::Admission(Box::new(error))
     }
 }
 impl From<ConsensusError> for FastPathError {
@@ -313,7 +313,7 @@ impl From<HashingError> for FastPathError {
 }
 impl From<publication::PublicationRetentionError> for FastPathError {
     fn from(error: publication::PublicationRetentionError) -> Self {
-        Self::Publication(error)
+        Self::Publication(Box::new(error))
     }
 }
 impl From<ValidatorSetError> for FastPathError {

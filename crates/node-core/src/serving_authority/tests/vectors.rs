@@ -255,11 +255,12 @@ fn production_successor_codecs_match_independent_fixed_vectors() {
         24,
         "aead91b30a178ecade9219318a660dd7e9bc3482ba44cd9faba8ffc8fbc8e8ed",
     );
-    let slot: SuccessorServingSlot = SuccessorServingSlot::Serving(SuccessorServingObservation {
-        record: record_bytes,
-        binding: record.binding,
-        progress: record.progress,
-    });
+    let slot: SuccessorServingSlot =
+        SuccessorServingSlot::Serving(Box::new(SuccessorServingObservation {
+            record: record_bytes,
+            binding: record.binding,
+            progress: record.progress,
+        }));
     let slot_bytes: Vec<u8> = encode_successor_serving_slot(&slot).unwrap();
     assert_vector(
         &resolver,

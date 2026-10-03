@@ -376,7 +376,7 @@ pub struct SuccessorServingObservation {
     pub binding: ImportBinding,
     pub progress: ImportProgress,
 }
-pub enum SuccessorServingSlot { Inactive, Serving(SuccessorServingObservation) }
+pub enum SuccessorServingSlot { Inactive, Serving(Box<SuccessorServingObservation>) }
 
 // DurableDomainStateStore, required, no default:
 fn get_successor_serving(
@@ -607,7 +607,7 @@ pub fn resolve_live_authority<'inv, S: StructuredDurableDomainStateStore>(
     signer_public_key: [u8; 32],
 ) -> Result<LiveAuthority<'inv>, ServingAuthorityError>;
 
-pub enum LiveAuthority<'inv> { OriginalGenesis, Successor(LiveWarrant<'inv>) }
+pub enum LiveAuthority<'inv> { OriginalGenesis, Successor(Box<LiveWarrant<'inv>>) }
 ```
 
 `LiveWarrant` has private fields and exposes the crate-private
@@ -769,10 +769,27 @@ The e+1 anchor and safety namespace are not a replacement genesis and do
 not change historical object, code or instance provenance.
 `paid_execution.rs` checks only `chain_id` and `protocol_version` of a
 called instance context (`crates/node-core/src/paid_execution.rs:1438-1439`),
-so a paid `Call` on an epoch-e instance admits at e+1 unchanged. Fee claims
-verify at their own `certificate_epoch`
-(`crates/node-core/src/fee_claims.rs:1119`), so an imported epoch-e escrow
-needs no re-signing. This contract adds no check to either path.
+so a paid `Call` on an epoch-e instance admits at e+1 unchanged. An imported
+escrow retains its epoch-e certificate, settlement and historical signatures;
+none is rewritten or re-signed. A new claim and its execution leg use the live
+e+1 context, while `certificate_epoch` still identifies the escrow's own epoch.
+
+The shared pure claim authenticator accepts only the live policy epoch or the
+exact predecessor epoch pinned privately by `from_successor`: its committee
+must match the verified outgoing-set digest in the cut and terminal Seal.
+Chain-scoped policies retain their original single-epoch behavior. Historical
+claimants use that certificate committee's key, not current membership.
+
+The successor invocation gate supplies that verified predecessor digest to
+the existing historical-set reader, since this activation deliberately installs
+no legacy transition row. The reader requires the exact adjacent live epoch,
+checks the imported set's digest and folds both revisions into the deciding
+claim commit. Other epochs continue through the unchanged transition-chain
+reader. Historical paid/economics policy and settlement verification are not
+bypassed. Settlement rows keep their owning authenticated history; the actual
+payout/escrow object and sender-nonce writes carry logical provenance above
+the verified cut floor. Read-only claim preparation uses the same evaluator
+and gate, with no reservation or write.
 
 A retired validator D is refused only as a consensus signer, by the
 membership checks of Sections 6.2 and 8 and the pre-signing refusals.

@@ -101,11 +101,12 @@ fn postgres_successor_slot_is_mandatory_but_never_enables_an_activation_reposito
         validator: namespace.validator_id(),
         public_key: [0xd4; 32],
     };
-    let slot: SuccessorServingSlot = SuccessorServingSlot::Serving(SuccessorServingObservation {
-        record: runtime::encode_successor_serving_record(&record).unwrap(),
-        binding,
-        progress,
-    });
+    let slot: SuccessorServingSlot =
+        SuccessorServingSlot::Serving(Box::new(SuccessorServingObservation {
+            record: runtime::encode_successor_serving_record(&record).unwrap(),
+            binding,
+            progress,
+        }));
     set_slot(
         &mut admin,
         &namespace,

@@ -258,7 +258,7 @@ fn ordinary_commit_refuses_once_slot_is_serving() {
         progress: progress(),
     };
     store.inner.write().unwrap().successor_serving =
-        SuccessorServingSlot::Serving(bogus_observation);
+        SuccessorServingSlot::Serving(Box::new(bogus_observation));
 
     let context = operation(1);
     let transaction = AtomicStateTransaction::new(

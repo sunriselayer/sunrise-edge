@@ -75,7 +75,7 @@ pub struct SuccessorServingObservation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SuccessorServingSlot {
     Inactive,
-    Serving(SuccessorServingObservation),
+    Serving(Box<SuccessorServingObservation>),
 }
 
 impl SuccessorServingSlot {
@@ -232,11 +232,11 @@ pub fn decode_successor_serving_slot(bytes: &[u8]) -> Result<SuccessorServingSlo
         (1, true) => SuccessorServingSlot::Inactive,
         (2, false) => {
             let record: SuccessorServingRecord = decode_successor_serving_record(record_bytes)?;
-            SuccessorServingSlot::Serving(SuccessorServingObservation {
+            SuccessorServingSlot::Serving(Box::new(SuccessorServingObservation {
                 record: record_bytes.to_vec(),
                 binding: record.binding,
                 progress: record.progress,
-            })
+            }))
         }
         _ => return Err(invalid()),
     };

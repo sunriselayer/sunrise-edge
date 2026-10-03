@@ -1271,9 +1271,9 @@ fn signerless_recovery_of_an_instantiate_before_its_publish_dependency_fails_clo
             &certificate,
             CHECKPOINT,
         ),
-        Err(FastPathError::Admission(PaidExecutionAdmissionError::Node(
+        Err(FastPathError::Admission(error)) if matches!(error.as_ref(), PaidExecutionAdmissionError::Node(
             NodeCoreError::SenderNonceMismatch { .. }
-        )))
+        ))
     ));
     assert_eq!(engine.calls.get(), 0);
     assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
@@ -1376,9 +1376,9 @@ fn signerless_recovery_of_an_instantiate_fails_closed_when_its_recovered_publish
             &instantiate_certificate,
             CHECKPOINT,
         ),
-        Err(FastPathError::Admission(
+        Err(FastPathError::Admission(error)) if matches!(error.as_ref(),
             PaidExecutionAdmissionError::Publication(PublicationAdmissionError::CorruptRecord)
-        ))
+        )
     ));
     assert_eq!(engine.calls.get(), 0);
     assert_eq!(next_nonce(&store), nonce_before);

@@ -101,19 +101,21 @@ fn slot_inactive_round_trips_and_rejects_nonempty_record() {
 fn slot_serving_round_trips_and_rejects_mismatched_observation() {
     let value = record(2);
     let record_bytes = encode_successor_serving_record(&value).unwrap();
-    let slot = SuccessorServingSlot::Serving(SuccessorServingObservation {
-        record: record_bytes.clone(),
-        binding: value.binding.clone(),
-        progress: value.progress.clone(),
-    });
+    let slot: SuccessorServingSlot =
+        SuccessorServingSlot::Serving(Box::new(SuccessorServingObservation {
+            record: record_bytes.clone(),
+            binding: value.binding.clone(),
+            progress: value.progress.clone(),
+        }));
     let bytes = encode_successor_serving_slot(&slot).unwrap();
     assert_eq!(decode_successor_serving_slot(&bytes).unwrap(), slot);
 
-    let mismatched = SuccessorServingSlot::Serving(SuccessorServingObservation {
-        record: record_bytes,
-        binding: binding(9),
-        progress: value.progress,
-    });
+    let mismatched: SuccessorServingSlot =
+        SuccessorServingSlot::Serving(Box::new(SuccessorServingObservation {
+            record: record_bytes,
+            binding: binding(9),
+            progress: value.progress,
+        }));
     assert!(encode_successor_serving_slot(&mismatched).is_err());
 }
 
@@ -158,11 +160,12 @@ fn header_preflight_refuses_bad_layout_and_length_before_any_body_is_needed() {
         assert!(preflight_successor_serving_slot(&inactive, length).is_err());
     }
     let value: SuccessorServingRecord = record(1);
-    let slot: SuccessorServingSlot = SuccessorServingSlot::Serving(SuccessorServingObservation {
-        record: encode_successor_serving_record(&value).unwrap(),
-        binding: value.binding,
-        progress: value.progress,
-    });
+    let slot: SuccessorServingSlot =
+        SuccessorServingSlot::Serving(Box::new(SuccessorServingObservation {
+            record: encode_successor_serving_record(&value).unwrap(),
+            binding: value.binding,
+            progress: value.progress,
+        }));
     let bytes: Vec<u8> = encode_successor_serving_slot(&slot).unwrap();
     assert_eq!(
         preflight_successor_serving_slot(&bytes[..24], bytes.len()),

@@ -87,12 +87,12 @@ mod inventory;
 mod preparation;
 mod verify;
 
+pub(crate) use preparation::prepare_fee_claim_gated;
 pub use preparation::{
     FeeClaimEntitlement, FeeClaimExecutionView, FeeClaimInspection, FeeClaimKind,
     FeeClaimPreparationRequest, FeeEscrowDiscoveryPage, FeeEscrowInspection, PreparedFeeClaim,
     discover_fee_escrows_page, inspect_fee_claim, inspect_fee_escrow, prepare_fee_claim,
 };
-pub(crate) use preparation::prepare_fee_claim_gated;
 
 pub use inventory::{
     FeeEscrowInventoryPage, FeeEscrowInventorySweep, verify_fee_escrow_inventory_all,
@@ -114,13 +114,13 @@ use codec::{
 #[derive(Debug)]
 pub enum FeeClaimError {
     /// Shared leg-admission/execution pipeline failure.
-    Admission(LocalExecutionAdmissionError),
+    Admission(Box<LocalExecutionAdmissionError>),
     /// `execution` crate typed-WASM or capability-construction failure.
     Execution(LocalExecutionError),
     /// Storage or node boundary failure.
     Node(NodeCoreError),
     /// DR-0133 historical-validator-set reload/re-verification failure.
-    Equivocation(equivocation::EquivocationEvidenceError),
+    Equivocation(Box<equivocation::EquivocationEvidenceError>),
     /// Fee-claim-specific invariant failed.
     Invalid(&'static str),
 }
@@ -138,7 +138,7 @@ impl fmt::Display for FeeClaimError {
 impl Error for FeeClaimError {}
 impl From<LocalExecutionAdmissionError> for FeeClaimError {
     fn from(error: LocalExecutionAdmissionError) -> Self {
-        Self::Admission(error)
+        Self::Admission(Box::new(error))
     }
 }
 impl From<LocalExecutionError> for FeeClaimError {
@@ -153,7 +153,7 @@ impl From<NodeCoreError> for FeeClaimError {
 }
 impl From<equivocation::EquivocationEvidenceError> for FeeClaimError {
     fn from(error: equivocation::EquivocationEvidenceError) -> Self {
-        Self::Equivocation(error)
+        Self::Equivocation(Box::new(error))
     }
 }
 impl From<codec::FeeClaimCodecError> for FeeClaimError {

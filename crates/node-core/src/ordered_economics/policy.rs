@@ -791,11 +791,12 @@ fn trusted_key_in(
     validator_set: &ValidatorSet,
     validator_id: ValidatorId,
 ) -> Result<&[u8], OrderedEconomicsError> {
-    let info: &ValidatorInfo = validator_set.get(validator_id).ok_or(
-        OrderedEconomicsError::Unauthenticated(
-            "ordered candidate names a validator outside the pinned validator set",
-        ),
-    )?;
+    let info: &ValidatorInfo =
+        validator_set
+            .get(validator_id)
+            .ok_or(OrderedEconomicsError::Unauthenticated(
+                "ordered candidate names a validator outside the pinned validator set",
+            ))?;
     if info.signature_scheme != SignatureSchemeId::Ed25519 {
         return Err(OrderedEconomicsError::Unauthenticated(
             "ordered candidate validator is not registered for Ed25519",

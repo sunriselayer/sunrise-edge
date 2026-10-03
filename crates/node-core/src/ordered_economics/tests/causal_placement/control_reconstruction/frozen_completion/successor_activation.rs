@@ -224,7 +224,7 @@ fn genuine_terminal_seal_activates_separate_sqlite_targets_and_reconciles_advanc
         )
         .unwrap();
         let warrant = match live {
-            LiveAuthority::Successor(warrant) => warrant,
+            LiveAuthority::Successor(warrant) => *warrant,
             LiveAuthority::OriginalGenesis => panic!("import target is not an original namespace"),
         };
         let foreign_handle: SqliteImportTarget =
@@ -365,14 +365,14 @@ fn activated_world() -> SuccessorWorld {
             network.domain(),
         );
         let target: SqliteImportTarget = SqliteImportTarget::create(
-            &files.path(&format!("serving-state-{index}.db")),
+            files.path(&format!("serving-state-{index}.db")),
             namespace,
             operation.writer_fence(),
             plan.binding(),
         )
         .unwrap();
         let blobs: SqliteBlobStore =
-            SqliteBlobStore::open(&files.path(&format!("serving-body-{index}.db"))).unwrap();
+            SqliteBlobStore::open(files.path(&format!("serving-body-{index}.db"))).unwrap();
         conditional_readiness::complete(&plan, &target, &blobs, &operation);
         let signer: ReadinessSigningKey =
             ReadinessSigningKey::new(network.signers[index].id, network.signers[index].key);
@@ -392,7 +392,6 @@ fn activated_world() -> SuccessorWorld {
         ));
         targets.push((target, blobs));
     }
-    drop(artifacts);
     SuccessorWorld {
         fixture,
         cut_history,
@@ -458,7 +457,7 @@ impl SuccessorWorld {
     /// destination comparison happen on each call.
     fn warrant(&self, index: usize) -> crate::serving_authority::LiveWarrant<'_> {
         match self.resolve(index).unwrap() {
-            LiveAuthority::Successor(warrant) => warrant,
+            LiveAuthority::Successor(warrant) => *warrant,
             LiveAuthority::OriginalGenesis => panic!("an activated target is a successor"),
         }
     }
@@ -603,7 +602,7 @@ fn successor_ordered_round_votes_and_certifies_through_protected_ports() {
         )
         .unwrap()
         .expect("four successor votes reach quorum");
-    for index in 0..REPLICAS {
+    for (index, before) in imported_before.iter().enumerate() {
         crate::ordered_economics::process_certificate_successor(
             &world.warrant(index),
             &world.targets[index].0,
@@ -618,7 +617,7 @@ fn successor_ordered_round_votes_and_certifies_through_protected_ports() {
         )
         .unwrap();
         assert_eq!(status.high_qc, certificate);
-        assert_eq!(world.value(index, &imported_state), imported_before[index]);
+        assert_eq!(world.value(index, &imported_state), *before);
     }
 }
 
@@ -1164,7 +1163,11 @@ fn successor_round(
 }
 
 /// The imported epoch-e settlement row of `escrow`, read from a target.
-fn imported_settlement(world: &SuccessorWorld, index: usize, escrow: [u8; 32]) -> FastPathSettlementRecord {
+fn imported_settlement(
+    world: &SuccessorWorld,
+    index: usize,
+    escrow: [u8; 32],
+) -> FastPathSettlementRecord {
     let key: Vec<u8> =
         crate::local_instance_state::fastpath_settlement_key(&fixture::chain(), &escrow).unwrap();
     decode_fastpath_settlement_record(&world.value(index, &key).1.unwrap()).unwrap()
@@ -1291,7 +1294,10 @@ fn successor_ordered_claim_settles_imported_epoch_e_escrow_above_cut_floor() {
             .unwrap();
     let imported: FastPathSettlementRecord = imported_settlement(&world, 0, PAID_REQUEST);
     assert_eq!(imported.context.epoch(), outgoing);
-    assert!(imported.fee_output.is_some(), "the drained escrow is charged");
+    assert!(
+        imported.fee_output.is_some(),
+        "the drained escrow is charged"
+    );
 
     // Preparation refuses a non-successor leg policy and a missing escrow.
     let leg: Vec<u8> = successor_split_leg(&world, PAID_REQUEST, claim, claimant);
@@ -1303,30 +1309,34 @@ fn successor_ordered_claim_settles_imported_epoch_e_escrow_above_cut_floor() {
         recipient: Address::new(*network.signers[claimant].id.as_bytes()),
         signed_leg: Some(&leg),
     };
-    assert!(crate::serving_authority::prepare_fee_claim_successor(
-        &world.warrant(0),
-        &world.targets[0].0,
-        &world.targets[0].1,
-        &network.resolver,
-        &network.history,
-        &network.leg_policy,
-        &network.engine,
-        request(PAID_REQUEST),
-        13,
-    )
-    .is_err());
-    assert!(crate::serving_authority::prepare_fee_claim_successor(
-        &world.warrant(0),
-        &world.targets[0].0,
-        &world.targets[0].1,
-        &network.resolver,
-        &network.history,
-        &world.next_base,
-        &network.engine,
-        request([0x5c; 32]),
-        13,
-    )
-    .is_err());
+    assert!(
+        crate::serving_authority::prepare_fee_claim_successor(
+            &world.warrant(0),
+            &world.targets[0].0,
+            &world.targets[0].1,
+            &network.resolver,
+            &network.history,
+            &network.leg_policy,
+            &network.engine,
+            request(PAID_REQUEST),
+            13,
+        )
+        .is_err()
+    );
+    assert!(
+        crate::serving_authority::prepare_fee_claim_successor(
+            &world.warrant(0),
+            &world.targets[0].0,
+            &world.targets[0].1,
+            &network.resolver,
+            &network.history,
+            &world.next_base,
+            &network.engine,
+            request([0x5c; 32]),
+            13,
+        )
+        .is_err()
+    );
 
     let (candidate, prepared): (OrderedCandidate, crate::fee_claims::PreparedFeeClaim) =
         successor_claim(&world, PAID_REQUEST, claim, claimant);
@@ -1378,23 +1388,51 @@ fn successor_ordered_claim_settles_imported_epoch_e_escrow_above_cut_floor() {
     let profile: crate::logical_generation::LogicalProfileRecord =
         crate::logical_generation::decode_logical_profile_record(
             &world
-                .value(0, &crate::logical_generation::logical_profile_key(&fixture::chain()).unwrap())
+                .value(
+                    0,
+                    &crate::logical_generation::logical_profile_key(&fixture::chain()).unwrap(),
+                )
                 .1
                 .unwrap(),
         )
         .unwrap();
-    let provenance_key: Vec<u8> =
-        crate::logical_generation::LogicalKeySpace::new(&profile, &network.resolver)
-            .provenance_key(&crate::logical_generation::LogicalSubject::StateKey(
-                settlement_key.clone(),
-            ))
-            .unwrap();
-    let provenance: crate::logical_generation::LogicalProvenanceRecord =
-        crate::logical_generation::decode_logical_provenance_record(
-            &world.value(0, &provenance_key).1.unwrap(),
-        )
+    // Settlement rows have their own authenticated history and are excluded
+    // from generic logical subjects. The actual object and sender-nonce
+    // changes must still carry provenance above the verified cut floor.
+    assert!(crate::logical_generation::is_excluded_subject(
+        &settlement_key
+    ));
+    let key_space: crate::logical_generation::LogicalKeySpace<'_> =
+        crate::logical_generation::LogicalKeySpace::new(&profile, &network.resolver);
+    let settlement_provenance: Vec<u8> = key_space
+        .provenance_key(&crate::logical_generation::LogicalSubject::StateKey(
+            settlement_key.clone(),
+        ))
         .unwrap();
-    assert!(provenance.generation > world.warrant(0).policy_inputs().generation_floor());
+    assert!(world.value(0, &settlement_provenance).1.is_none());
+    let payout: &objects::ObjectRef = prepared.expected_payout.as_ref().unwrap();
+    let escrow: &objects::ObjectRef = prepared.next_settlement.fee_output.as_ref().unwrap();
+    for subject in [
+        crate::logical_generation::LogicalSubject::Object(payout.id),
+        crate::logical_generation::LogicalSubject::Object(escrow.id),
+        crate::logical_generation::LogicalSubject::SenderNonce {
+            sender: *network.signers[claimant].id.as_bytes(),
+            epoch: world.policy.context().epoch(),
+        },
+    ] {
+        let provenance_key: Vec<u8> = key_space.provenance_key(&subject).unwrap();
+        let expected: Vec<u8> = world.value(0, &provenance_key).1.unwrap();
+        let provenance: crate::logical_generation::LogicalProvenanceRecord =
+            crate::logical_generation::decode_logical_provenance_record(&expected).unwrap();
+        assert_eq!(provenance.subject, subject);
+        assert!(provenance.generation > world.warrant(0).policy_inputs().generation_floor());
+        for index in 1..REPLICAS {
+            assert_eq!(
+                world.value(index, &provenance_key).1.as_deref(),
+                Some(expected.as_slice())
+            );
+        }
+    }
 
     // The completed original is answered, never re-placed or re-applied.
     let after: (StateRevision, Option<Vec<u8>>) = world.value(0, &settlement_key);

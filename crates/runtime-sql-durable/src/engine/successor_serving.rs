@@ -78,11 +78,12 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
         {
             return DurableCommitOutcome::Rejected(DurableCommitRejection::ImportConflict);
         }
-        let serving_slot = SuccessorServingSlot::Serving(SuccessorServingObservation {
-            record: record.to_vec(),
-            binding: binding.clone(),
-            progress: progress.clone(),
-        });
+        let serving_slot: SuccessorServingSlot =
+            SuccessorServingSlot::Serving(Box::new(SuccessorServingObservation {
+                record: record.to_vec(),
+                binding: binding.clone(),
+                progress: progress.clone(),
+            }));
         let serving_bytes = match encode_successor_serving_slot(&serving_slot) {
             Ok(bytes) => bytes,
             Err(_) => {
@@ -213,9 +214,7 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
                     if metadata.barrier().is_sealed() {
                         return Err(DurableCommitRejection::NamespaceSealed);
                     }
-                    if metadata.successor_serving()
-                        != &SuccessorServingSlot::Serving(observation.clone())
-                    {
+                    if metadata.successor_serving().serving() != Some(observation) {
                         return Err(conflict());
                     }
                     if decoded.validator != self.namespace.validator_id() {
@@ -274,9 +273,7 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
                     if metadata.barrier().is_sealed() {
                         return Err(DurableCommitRejection::NamespaceSealed);
                     }
-                    if metadata.successor_serving()
-                        != &SuccessorServingSlot::Serving(observation.clone())
-                    {
+                    if metadata.successor_serving().serving() != Some(observation) {
                         return Err(conflict());
                     }
                     if decoded.validator != self.namespace.validator_id() {

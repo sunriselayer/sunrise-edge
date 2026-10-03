@@ -136,7 +136,7 @@ pub enum PublicationRetentionError {
     /// A storage or node boundary failure.
     Node(NodeCoreError),
     /// The signed intent failed the ordinary authentication pipeline.
-    Admission(PaidExecutionAdmissionError),
+    Admission(Box<PaidExecutionAdmissionError>),
     /// The bundle names an atomicity domain other than this deployment's
     /// configured logical domain.
     ForeignDomain,
@@ -306,7 +306,7 @@ impl From<HashingError> for PublicationRetentionError {
 }
 impl From<PaidExecutionAdmissionError> for PublicationRetentionError {
     fn from(error: PaidExecutionAdmissionError) -> Self {
-        Self::Admission(error)
+        Self::Admission(Box::new(error))
     }
 }
 impl From<FastPathError> for PublicationRetentionError {
@@ -318,7 +318,7 @@ impl From<FastPathError> for PublicationRetentionError {
             FastPathError::Invalid(message) => {
                 Self::Node(NodeCoreError::PersistenceInvariant(message))
             }
-            FastPathError::Publication(inner) => inner,
+            FastPathError::Publication(inner) => *inner,
         }
     }
 }

@@ -124,11 +124,12 @@ impl SuccessorServingRepository for MemoryDurableStateStore {
             }
             data.receipts
                 .insert(request_key, transaction.receipt().clone());
-            data.successor_serving = SuccessorServingSlot::Serving(SuccessorServingObservation {
-                record: record.to_vec(),
-                binding: binding.clone(),
-                progress: progress.clone(),
-            });
+            data.successor_serving =
+                SuccessorServingSlot::Serving(Box::new(SuccessorServingObservation {
+                    record: record.to_vec(),
+                    binding: binding.clone(),
+                    progress: progress.clone(),
+                }));
             data.mutation_sequences.insert(domain_bytes, next);
             Ok(())
         })())

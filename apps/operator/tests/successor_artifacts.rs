@@ -20,12 +20,17 @@ use node_core::ordered_economics::{
     OrderedHistoryHeightDescriptor, OrderedHistoryIdentity,
     encode_ordered_history_height_descriptor, ordered_history_component_digest,
 };
-use runtime::{DurableOperationContext, StorageCorrelationId, StorageDeadline, WriterFenceGeneration};
+use node_core::serving_authority::SuccessorArtifactSource;
+use runtime::{
+    DurableOperationContext, StorageCorrelationId, StorageDeadline, WriterFenceGeneration,
+};
 use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
-use sunrise_edge_operator::{immutable_archive::ImmutableArchive, successor_artifacts::SuccessorArtifactFiles};
+use sunrise_edge_operator::{
+    immutable_archive::ImmutableArchive, successor_artifacts::SuccessorArtifactFiles,
+};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -86,7 +91,6 @@ fn open_certificate_fixture<'a>(
     )
 }
 
-
 #[test]
 fn successor_artifact_files_enforces_exact_certificate_length_transport() {
     let fixture = causal_genesis_fixture::build("successor-artifact-certificate");
@@ -98,7 +102,8 @@ fn successor_artifact_files_enforces_exact_certificate_length_transport() {
     )
     .unwrap();
     let domain = fixture.network.domain;
-    let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::from_genesis_root(&root, domain).unwrap();
+    let policy: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(&root, domain).unwrap();
     let identity: OrderedHistoryIdentity = OrderedHistoryIdentity {
         context: fixture.network.context.clone(),
         domain: policy.domain(),
@@ -118,7 +123,7 @@ fn successor_artifact_files_enforces_exact_certificate_length_transport() {
     let certificate_bytes: [u8; 10] = [0xCC; 10];
     std::fs::write(certificate_dir.0.join("certificate.bin"), certificate_bytes).unwrap();
 
-    let mut open = || {
+    let open = || {
         open_certificate_fixture(
             &root,
             domain,
@@ -161,7 +166,8 @@ fn successor_artifact_files_detects_replaced_or_symlinked_history_directory() {
     )
     .unwrap();
     let domain = fixture.network.domain;
-    let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::from_genesis_root(&root, domain).unwrap();
+    let policy: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(&root, domain).unwrap();
     let identity: OrderedHistoryIdentity = OrderedHistoryIdentity {
         context: fixture.network.context.clone(),
         domain: policy.domain(),
@@ -216,8 +222,10 @@ fn successor_artifact_files_detects_replaced_or_symlinked_history_directory() {
         encode_ordered_history_height_descriptor(&descriptor).unwrap(),
     )
     .unwrap();
-    let component_dir: PathBuf =
-        height_dir.join(format!("component-{:02}", OrderedHistoryComponentKind::CommitProof as u16));
+    let component_dir: PathBuf = height_dir.join(format!(
+        "component-{:02}",
+        OrderedHistoryComponentKind::CommitProof as u16
+    ));
     std::fs::create_dir(&component_dir).unwrap();
     std::fs::write(
         component_dir.join(format!("chunk-{:020}.bin", 0)),
@@ -225,7 +233,8 @@ fn successor_artifact_files_detects_replaced_or_symlinked_history_directory() {
     )
     .unwrap();
 
-    let history_archive: ImmutableArchive = ImmutableArchive::open_read_only(&history_path).unwrap();
+    let history_archive: ImmutableArchive =
+        ImmutableArchive::open_read_only(&history_path).unwrap();
     let mut artifacts = SuccessorArtifactFiles::new(
         plan,
         ImmutableArchive::open_read_only(&cut_dir.0).unwrap(),

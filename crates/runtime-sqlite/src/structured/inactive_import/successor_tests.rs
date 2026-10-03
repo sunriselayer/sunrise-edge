@@ -640,7 +640,7 @@ fn successor_reopen_refencing_preserves_record_and_rejects_the_old_writer() {
         reopened
             .get_successor_serving(&next, binding.domain)
             .unwrap(),
-        SuccessorServingSlot::Serving(observation.clone()),
+        SuccessorServingSlot::Serving(Box::new(observation.clone())),
     );
     assert_eq!(
         reopened.commit_successor_durable(
