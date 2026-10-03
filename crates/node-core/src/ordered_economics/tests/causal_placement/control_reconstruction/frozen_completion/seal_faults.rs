@@ -169,24 +169,24 @@ impl DurableDomainStateStore for SealFaultStore<'_> {
         let observed: OutgoingBarrier = self.inner.get_outgoing_barrier(c, d)?;
         let count: usize = self.barrier_calls.get().checked_add(1).unwrap();
         self.barrier_calls.set(count);
-        if let Some((read_number, env, certificate)) = self.barrier_completion {
-            if count == read_number {
-                assert!(!observed.is_sealed());
-                assert_eq!(self.barrier_completion_calls.get(), 0);
-                // A concurrent, otherwise ordinary core invocation consumes
-                // the real QC and completes the original Seal in this exact
-                // store after this read's Unsealed observation. The caller
-                // must freshly guard a retained response before exposing it.
-                let completed: OrderedEventOutput =
-                    process_certificate(self.inner, c, env, certificate).unwrap();
-                assert_eq!(completed.committed.len(), 1);
-                assert_eq!(completed.committed[0].request_id, self.request);
-                assert!(self.inner.get_outgoing_barrier(c, d)?.is_sealed());
-                self.barrier_completion_calls.set(1);
-                *self.after_barrier_completion.borrow_mut() = Some(
-                    crate::test_support::capture::captured_source(self.inner, self.blobs, c, d),
-                );
-            }
+        if let Some((read_number, env, certificate)) = self.barrier_completion
+            && count == read_number
+        {
+            assert!(!observed.is_sealed());
+            assert_eq!(self.barrier_completion_calls.get(), 0);
+            // A concurrent, otherwise ordinary core invocation consumes
+            // the real QC and completes the original Seal in this exact
+            // store after this read's Unsealed observation. The caller
+            // must freshly guard a retained response before exposing it.
+            let completed: OrderedEventOutput =
+                process_certificate(self.inner, c, env, certificate).unwrap();
+            assert_eq!(completed.committed.len(), 1);
+            assert_eq!(completed.committed[0].request_id, self.request);
+            assert!(self.inner.get_outgoing_barrier(c, d)?.is_sealed());
+            self.barrier_completion_calls.set(1);
+            *self.after_barrier_completion.borrow_mut() = Some(
+                crate::test_support::capture::captured_source(self.inner, self.blobs, c, d),
+            );
         }
         Ok(observed)
     }

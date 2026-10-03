@@ -1253,7 +1253,7 @@ fn assert_expected_race_state(
     );
     let expected: CompleteSealState = CompleteSealState {
         source,
-        barrier: before.barrier.clone(),
+        barrier: before.barrier,
         status: before.status.clone(),
     };
     // This expected image was captured immediately after the one specified

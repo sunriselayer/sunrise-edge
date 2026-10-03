@@ -432,14 +432,13 @@ fn seal_leader_signing_rejects_a_post_anchor_nonempty_committed_height() {
     );
     network.round(status.current_view.checked_add(1).unwrap(), None);
     let (completed, _, _) = network.round(status.current_view.checked_add(2).unwrap(), None);
-    for replica in 0..REPLICAS {
+    assert_eq!(completed.len(), REPLICAS);
+    for output in &completed {
+        assert_eq!(output.committed.len(), 1);
+        assert_eq!(output.committed[0].request_id, second_freeze.request_id);
+        assert_eq!(output.committed[0].block_height, 10);
         assert_eq!(
-            completed[replica].committed[0].request_id,
-            second_freeze.request_id
-        );
-        assert_eq!(completed[replica].committed[0].block_height, 10);
-        assert_eq!(
-            refusal_of(&completed[replica].committed[0]),
+            refusal_of(&output.committed[0]),
             OrderedRefusal::AlreadyFrozen
         );
     }
