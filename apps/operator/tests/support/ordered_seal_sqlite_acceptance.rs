@@ -1,11 +1,15 @@
-//! Genuine outgoing Seal through the public CLI and four actual TCP routers.
+//! Genuine outgoing Seal through the in-process public Rust CLI entrypoint
+//! and four actual TCP routers; its return value is not captured stdout.
 //! Mutable validator stores are independent SQLite files. Public immutable
 //! artifacts share the fixture's blob repository; no completion is seeded.
 use super::{fixture::Fixture, hex};
 #[path = "ordered_seal_warrant_faults.rs"]
 mod warrant_faults;
 use consensus::ConsensusSigner;
-use consensus::{ConsensusMessage, ConsensusVerifier, ConsensusVote};
+use consensus::{
+    ConsensusMessage, ConsensusVerifier, ConsensusVote, QuorumCertificate,
+    decode_quorum_certificate,
+};
 use crypto::{Ed25519Verifier, SignatureVerifier};
 use ed25519_zebra::SigningKey;
 use execution::LocalWasmExecutionEngine;
@@ -16,7 +20,8 @@ use native_http::{NativeBlockingExecutor, NativeBlockingPolicy};
 use node_core::NodeCoreError;
 use node_core::business_reconstruction::SourceBusinessSnapshot;
 use node_core::ordered_economics::{
-    OrderedCandidate, OrderedEconomicsEnvironment, OrderedEconomicsError, OrderedProposal,
+    OrderedCandidate, OrderedEconomicsEnvironment, OrderedEconomicsError, OrderedEventOutput,
+    OrderedProposal, decode_ordered_candidate, decode_ordered_event_output,
     decode_ordered_proposal, decode_seal_outcome, observe_proposal, process_certificate,
     process_proposal, process_tick, propose, query_ordered_outcome, query_status,
 };
@@ -27,7 +32,14 @@ use runtime::{
     StructuredDurableDomainStateStore, SystemClock, WriterFenceGeneration,
 };
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
-use std::{ffi::OsString, num::NonZeroUsize, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    ffi::OsString,
+    num::NonZeroUsize,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use sunrise_edge_operator::business_snapshot::capture_source_business_snapshot;
 use warrant_faults::{
     SealCompletionReplyLossMode, SealCompletionReplyLossStore, SealWarrantFault,
@@ -88,6 +100,62 @@ fn clone_sqlite_store_files(source: &Path, destination: &Path) {
     }
 }
 
+fn clone_fixture_stores(
+    fixture: &Fixture,
+    env: &OrderedEconomicsEnvironment<'_>,
+    prefix: &str,
+) -> Vec<SqliteDurableStore> {
+    let mut stores: Vec<SqliteDurableStore> = Vec::new();
+    for (index, validator) in fixture.network.validators.iter().enumerate() {
+        let path: PathBuf = fixture.directory.0.join(format!("{prefix}-{index}.sqlite"));
+        clone_sqlite_store_files(
+            &fixture.directory.0.join(format!("state-{index}.sqlite")),
+            &path,
+        );
+        let cloned: SqliteDurableStore = SqliteDurableStore::open_existing(
+            &path,
+            SqliteNamespace::new(
+                fixture.network.chain_id.clone(),
+                validator.validator_id,
+                fixture.network.domain,
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            query_status(&cloned, &fixture.operation, env).unwrap(),
+            query_status(&fixture.stores[index], &fixture.operation, env).unwrap(),
+            "each quiescent raw clone independently verifies the original consensus state"
+        );
+        assert_eq!(
+            capture_source_business_snapshot(
+                &cloned,
+                &fixture.blobs,
+                &fixture.operation,
+                fixture.network.domain,
+                NonZeroUsize::new(128).unwrap(),
+            )
+            .unwrap(),
+            capture_source_business_snapshot(
+                &fixture.stores[index],
+                &fixture.blobs,
+                &fixture.operation,
+                fixture.network.domain,
+                NonZeroUsize::new(128).unwrap(),
+            )
+            .unwrap(),
+            "clone rows, referenced blobs, snapshot token and writer fence match their own source"
+        );
+        assert_eq!(
+            cloned
+                .get_outgoing_barrier(&fixture.operation, fixture.network.domain)
+                .unwrap(),
+            OutgoingBarrier::Unsealed
+        );
+        stores.push(cloned);
+    }
+    stores
+}
+
 fn arguments(fixture: &Fixture, network: &Path, action: &str, extra: &[OsString]) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "economics".into(),
@@ -119,7 +187,7 @@ fn quorum_round<S: StructuredDurableDomainStateStore>(
     env: &OrderedEconomicsEnvironment<'_>,
     stores: &[S],
     candidate: Option<&OrderedCandidate>,
-) -> (OrderedProposal, consensus::QuorumCertificate) {
+) -> (OrderedProposal, QuorumCertificate) {
     let status =
         node_core::ordered_economics::query_status(&stores[0], &fixture.operation, env).unwrap();
     let leader_id: ValidatorId = fixture
@@ -174,6 +242,208 @@ fn quorum_round<S: StructuredDurableDomainStateStore>(
     (proposal, certificate)
 }
 
+/// Direct rounds belong only to isolated fault/competing test controls.
+/// The four source stores must reach their alignment through HTTP/CLI.
+fn align_cloned_stores(
+    fixture: &Fixture,
+    env: &OrderedEconomicsEnvironment<'_>,
+    stores: &[SqliteDurableStore],
+    seal_height: u64,
+) -> Vec<(OrderedProposal, QuorumCertificate)> {
+    let mut rounds: Vec<(OrderedProposal, QuorumCertificate)> = Vec::new();
+    for _ in 0..2 {
+        let status = query_status(&stores[0], &fixture.operation, env).unwrap();
+        if status.high_qc.height.checked_add(1).unwrap() == seal_height {
+            break;
+        }
+        let (proposal, certificate) = quorum_round(fixture, env, stores, None);
+        assert!(proposal.candidate.is_none() && proposal.proposal.transactions.is_empty());
+        assert_eq!(
+            proposal.proposal.height,
+            status.high_qc.height.checked_add(1).unwrap()
+        );
+        assert_eq!(
+            proposal.proposal.justify.proposal_digest,
+            status.high_qc.proposal_digest
+        );
+        for store in stores {
+            process_certificate(store, &fixture.operation, env, &certificate).unwrap();
+            assert_eq!(
+                query_status(store, &fixture.operation, env)
+                    .unwrap()
+                    .high_qc,
+                certificate
+            );
+        }
+        rounds.push((proposal, certificate));
+    }
+    assert_eq!(
+        query_status(&stores[0], &fixture.operation, env)
+            .unwrap()
+            .high_qc
+            .height
+            .checked_add(1)
+            .unwrap(),
+        seal_height,
+        "at most two genuine EMPTY rounds align each isolated scenario"
+    );
+    rounds
+}
+
+fn saved_submission_rounds(
+    fixture: &Fixture,
+    candidate_path: &Path,
+    prefix: &Path,
+    candidate: &OrderedCandidate,
+    initial_parent: &QuorumCertificate,
+) -> Vec<(OrderedProposal, QuorumCertificate)> {
+    let saved_candidate: Vec<u8> =
+        std::fs::read(format!("{}.round-0.candidate", prefix.display())).unwrap();
+    assert_eq!(saved_candidate, std::fs::read(candidate_path).unwrap());
+    assert_eq!(
+        decode_ordered_candidate(&saved_candidate).unwrap(),
+        *candidate
+    );
+    let manifest_text: String =
+        std::fs::read_to_string(format!("{}.manifest", prefix.display())).unwrap();
+    let mut rounds: Vec<(OrderedProposal, QuorumCertificate)> = Vec::new();
+    let mut parent: QuorumCertificate = initial_parent.clone();
+    for (round, line) in manifest_text.lines().enumerate() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let [proposal_path, certificate_path] = fields.as_slice() else {
+            panic!("each chronological manifest round retains exactly one proposal/QC pair");
+        };
+        for (path, kind) in [
+            (*proposal_path, "proposal"),
+            (*certificate_path, "certificate"),
+        ] {
+            assert_eq!(
+                PathBuf::from(path),
+                std::fs::canonicalize(format!("{}.round-{round}.{kind}", prefix.display()))
+                    .unwrap(),
+                "manifest order is the actual CLI's chronological artifact order"
+            );
+        }
+        let proposal: OrderedProposal =
+            decode_ordered_proposal(&std::fs::read(proposal_path).unwrap()).unwrap();
+        let certificate: QuorumCertificate =
+            decode_quorum_certificate(&std::fs::read(certificate_path).unwrap()).unwrap();
+        fixture
+            .policy
+            .engine()
+            .verify_proposal(&proposal.proposal, &Verifier)
+            .unwrap();
+        fixture
+            .policy
+            .engine()
+            .verify_certificate(&certificate, &Verifier)
+            .unwrap();
+        let justify: &QuorumCertificate = &proposal.proposal.justify;
+        assert_eq!(justify.proposal_digest, parent.proposal_digest);
+        assert_eq!(justify.height, parent.height);
+        assert_eq!(justify.view, parent.view);
+        assert_eq!(
+            proposal.proposal.height,
+            parent.height.checked_add(1).unwrap()
+        );
+        assert!(proposal.proposal.view > parent.view);
+        assert_eq!(certificate.height, proposal.proposal.height);
+        assert_eq!(certificate.view, proposal.proposal.view);
+        assert_eq!(
+            certificate.proposal_digest,
+            fixture
+                .policy
+                .engine()
+                .proposal_digest(&proposal.proposal)
+                .unwrap()
+        );
+        if round == 1 {
+            assert_eq!(proposal.candidate.as_ref(), Some(candidate));
+            assert_eq!(
+                proposal.proposal.transactions,
+                vec![fixture.policy.candidate_digest(candidate).unwrap()]
+            );
+        } else {
+            assert!(proposal.candidate.is_none() && proposal.proposal.transactions.is_empty());
+        }
+        parent = certificate.clone();
+        rounds.push((proposal, certificate));
+    }
+    assert_eq!(
+        rounds
+            .iter()
+            .map(|(proposal, _)| proposal.proposal.height)
+            .collect::<Vec<u64>>(),
+        vec![9, 10, 11, 12],
+        "the actual HTTP/CLI path performs EMPTY9, Seal10 and EMPTY11/12 from original QC8"
+    );
+    rounds
+}
+
+fn acknowledged_output(phase: &str) -> OrderedEventOutput {
+    let encoded: &str = phase
+        .strip_prefix("acknowledged:")
+        .expect("an actual acknowledged phase");
+    assert_eq!(encoded.len() % 2, 0);
+    let bytes: Vec<u8> = encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair: &[u8]| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    decode_ordered_event_output(&bytes).unwrap()
+}
+
+fn saved_peer_results(
+    fixture: &Fixture,
+    prefix: &Path,
+    endpoints: &[String],
+    rounds: usize,
+) -> BTreeMap<(usize, usize), (String, String)> {
+    let results_text: String =
+        std::fs::read_to_string(format!("{}.results", prefix.display())).unwrap();
+    let mut reports: BTreeMap<(usize, usize), (String, String)> = BTreeMap::new();
+    let mut previous_round: usize = 0;
+    for line in results_text.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let [round, validator, endpoint, vote, certificate] = fields.as_slice() else {
+            panic!("each persisted phase result has exact round/validator/endpoint attribution");
+        };
+        let round: usize = round.strip_prefix("round=").unwrap().parse().unwrap();
+        assert!(round < rounds && round >= previous_round);
+        previous_round = round;
+        let validator: &str = validator.strip_prefix("validator=").unwrap();
+        let index: usize = fixture
+            .network
+            .validators
+            .iter()
+            .position(|member| hex(member.validator_id.as_bytes()) == validator)
+            .unwrap();
+        assert_eq!(
+            endpoint.strip_prefix("endpoint_hex=").unwrap(),
+            hex(endpoints[index].as_bytes())
+        );
+        assert!(
+            reports
+                .insert(
+                    (round, index),
+                    (
+                        vote.strip_prefix("vote=").unwrap().to_owned(),
+                        certificate.strip_prefix("certificate=").unwrap().to_owned(),
+                    )
+                )
+                .is_none(),
+            "each real peer phase appears exactly once for its chronological round"
+        );
+    }
+    assert_eq!(
+        reports.len(),
+        rounds
+            .checked_mul(fixture.network.validators.len())
+            .unwrap()
+    );
+    reports
+}
+
 /// Genuine landed-versus-unlanded completion reply-loss at the real
 /// `OutgoingSealRepository::commit_seal_completion` port, entirely on
 /// isolated clones of the exact pre-Seal state -- never touching the four
@@ -192,36 +462,11 @@ fn verify_completion_reply_loss(
     fixture: &Fixture,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
+    seal_height: u64,
 ) {
-    let mut voters: Vec<SqliteDurableStore> = Vec::new();
-    for (index, validator) in fixture.network.validators.iter().enumerate() {
-        let path = fixture
-            .directory
-            .0
-            .join(format!("reply-loss-voter-{index}.sqlite"));
-        clone_sqlite_store_files(
-            &fixture.directory.0.join(format!("state-{index}.sqlite")),
-            &path,
-        );
-        // A single-threaded, quiescent-between-transactions raw file copy:
-        // no writer is active at this instant. Verify coherence directly
-        // rather than merely assuming it.
-        let cloned = SqliteDurableStore::open_existing(
-            &path,
-            SqliteNamespace::new(
-                fixture.network.chain_id.clone(),
-                validator.validator_id,
-                fixture.network.domain,
-            ),
-        )
-        .unwrap();
-        assert_eq!(
-            query_status(&cloned, &fixture.operation, env).unwrap(),
-            query_status(&fixture.stores[index], &fixture.operation, env).unwrap(),
-            "the raw clone must agree exactly with the real source status"
-        );
-        voters.push(cloned);
-    }
+    let voters: Vec<SqliteDurableStore> = clone_fixture_stores(fixture, env, "reply-loss-voter");
+    let alignment: Vec<(OrderedProposal, QuorumCertificate)> =
+        align_cloned_stores(fixture, env, &voters, seal_height);
     // Round A: the real Seal candidate at its own height.
     let (proposal_a, certificate_a) = quorum_round(fixture, env, &voters, Some(candidate));
     for voter in &voters {
@@ -265,6 +510,10 @@ fn verify_completion_reply_loss(
     // own justified prefix on the actual faulted target, exactly like a
     // lagging replica, before the one explicit certificate application
     // that commits Seal.
+    for (proposal, certificate) in &alignment {
+        observe_proposal(&landed, &fixture.operation, env, proposal).unwrap();
+        process_certificate(&landed, &fixture.operation, env, certificate).unwrap();
+    }
     observe_proposal(&landed, &fixture.operation, env, &proposal_a).unwrap();
     observe_proposal(&landed, &fixture.operation, env, &proposal_b).unwrap();
     observe_proposal(&landed, &fixture.operation, env, &proposal_c).unwrap();
@@ -393,6 +642,10 @@ fn verify_completion_reply_loss(
         Arc::clone(&unlanded_inner),
         SealCompletionReplyLossMode::UnlandedIndeterminate,
     );
+    for (proposal, certificate) in &alignment {
+        observe_proposal(&unlanded, &fixture.operation, env, proposal).unwrap();
+        process_certificate(&unlanded, &fixture.operation, env, certificate).unwrap();
+    }
     observe_proposal(&unlanded, &fixture.operation, env, &proposal_a).unwrap();
     observe_proposal(&unlanded, &fixture.operation, env, &proposal_b).unwrap();
     observe_proposal(&unlanded, &fixture.operation, env, &proposal_c).unwrap();
@@ -563,6 +816,7 @@ pub(super) async fn run(
     let mut servers = Vec::new();
     let mut stops = Vec::new();
     let mut peers: String = String::new();
+    let mut endpoints: Vec<String> = Vec::new();
     let before: Vec<SourceBusinessSnapshot> = fixture
         .stores
         .iter()
@@ -593,6 +847,11 @@ pub(super) async fn run(
     let initial_status =
         node_core::ordered_economics::query_status(&fixture.stores[0], &fixture.operation, &env)
             .unwrap();
+    assert_eq!(
+        initial_status.high_qc.height, 8,
+        "the genuine post-Drain source has QC8"
+    );
+    assert_eq!(initial_status.committed_height, 6);
     let mut seal_height: u64 = initial_status.high_qc.height.checked_add(1).unwrap();
     while seal_height % 3 != 1 {
         seal_height = seal_height.checked_add(1).unwrap();
@@ -605,48 +864,23 @@ pub(super) async fn run(
         SealWarrantFault::IneligibleSuccessor,
     ];
     assert_eq!(fixture.network.validators.len(), fault_plans.len());
-    // The real pre-Seal height is not generally seal_height - 1: establish
-    // genuine authenticated EMPTY alignment first, with real proposal,
-    // votes and a real quorum certificate applied to every replica, exactly
-    // like any other causal round -- no patched height or lock.
-    // DR-0188 bounds client EMPTY alignment at two rounds; genuine progress
-    // each round means at most two are ever needed to reach seal_height - 1.
-    for _ in 0..2 {
-        let aligned_status = query_status(&fixture.stores[0], &fixture.operation, &env).unwrap();
-        if aligned_status.high_qc.height.checked_add(1).unwrap() == seal_height {
-            break;
-        }
-        let before_height = aligned_status.high_qc.height;
-        let (_, empty_certificate) = quorum_round(fixture, &env, &fixture.stores, None);
-        for store in &fixture.stores {
-            process_certificate(store, &fixture.operation, &env, &empty_certificate).unwrap();
-        }
-        let after_height = query_status(&fixture.stores[0], &fixture.operation, &env)
-            .unwrap()
-            .high_qc
-            .height;
-        assert_eq!(
-            after_height,
-            before_height.checked_add(1).unwrap(),
-            "each genuine EMPTY alignment round advances high_qc by exactly one height"
-        );
-    }
-    let aligned_status = query_status(&fixture.stores[0], &fixture.operation, &env).unwrap();
-    assert_eq!(
-        aligned_status.high_qc.height.checked_add(1).unwrap(),
-        seal_height,
-        "at most two genuine EMPTY alignment rounds reach exactly seal_height - 1"
-    );
+    assert_eq!(seal_height, 10);
     // Genuine landed-versus-unlanded completion reply-loss, entirely on
     // isolated clones of this exact pre-Seal state -- never on the four
     // live validators the rest of this acceptance drives below.
-    verify_completion_reply_loss(fixture, &env, candidate);
+    verify_completion_reply_loss(fixture, &env, candidate, seal_height);
     // DR-0187: build a genuine, real-signed competing Seal proposal before
     // any commitment lands. It targets the exact same height as the
     // accepted candidate but is never admitted by a quorum, so it stays a
-    // genuinely uncompleted, pending request -- not a raw-fabricated one.
+    // genuinely uncompleted, pending request. This hypothetical competing
+    // branch belongs to independently checked quiescent clones, so it cannot
+    // consume the live source's leader slot, own vote or HTTP alignment.
+    let competing_stores: Vec<SqliteDurableStore> =
+        clone_fixture_stores(fixture, &env, "competing-voter");
+    let competing_alignment: Vec<(OrderedProposal, QuorumCertificate)> =
+        align_cloned_stores(fixture, &env, &competing_stores, seal_height);
     let competing_status =
-        node_core::ordered_economics::query_status(&fixture.stores[0], &fixture.operation, &env)
+        node_core::ordered_economics::query_status(&competing_stores[0], &fixture.operation, &env)
             .unwrap();
     assert_eq!(
         competing_status.high_qc.height.checked_add(1).unwrap(),
@@ -669,7 +903,7 @@ pub(super) async fn run(
         key: fixture.network.validators[leader_index].signing_key,
     };
     let competing_proposal: OrderedProposal = propose(
-        &fixture.stores[leader_index],
+        &competing_stores[leader_index],
         &fixture.operation,
         &env,
         Some(competing_candidate),
@@ -685,7 +919,7 @@ pub(super) async fn run(
     // this after casting the own vote below would move to a fresh view and
     // a possibly different leader, so it would not prove retained replay.
     let repeated_competing_proposal: OrderedProposal = propose(
-        &fixture.stores[leader_index],
+        &competing_stores[leader_index],
         &fixture.operation,
         &env,
         Some(competing_candidate),
@@ -700,20 +934,55 @@ pub(super) async fn run(
     // casts its own genuine vote on the competing branch, never reaching
     // quorum, so this is a genuinely retained pending vote, not a one-off
     // dangling proposal.
-    process_proposal(
-        &fixture.stores[leader_index],
+    let competing_vote_output: OrderedEventOutput = process_proposal(
+        &competing_stores[leader_index],
         &fixture.operation,
         &env,
         &competing_proposal,
         &leader_signer,
     )
     .unwrap();
+    let competing_own_vote: ConsensusVote = competing_vote_output
+        .messages
+        .iter()
+        .find_map(|message| match message {
+            ConsensusMessage::Vote(vote) => Some(vote.clone()),
+            _ => None,
+        })
+        .unwrap();
+    fixture
+        .policy
+        .engine()
+        .verify_vote(&competing_own_vote, &Verifier)
+        .unwrap();
+    assert_eq!(competing_own_vote.validator, leader_id);
+    assert_eq!(
+        competing_own_vote.proposal_digest,
+        fixture
+            .policy
+            .engine()
+            .proposal_digest(&competing_proposal.proposal)
+            .unwrap()
+    );
+    let repeated_competing_vote: OrderedEventOutput = process_proposal(
+        &competing_stores[leader_index],
+        &fixture.operation,
+        &env,
+        &competing_proposal,
+        &leader_signer,
+    )
+    .unwrap();
+    assert!(
+        repeated_competing_vote
+            .messages
+            .contains(&ConsensusMessage::Vote(competing_own_vote))
+    );
     // Query real status after the leader's own cast vote -- never assume
     // casting it advanced the view. Verify it actually did (the engine's
     // own vote-processing sets current_view >= proposal.view + 1
     // unconditionally); if it somehow had not, the competing leader slot
     // would remain occupied and this assertion catches that directly.
-    let target_view = query_status(&fixture.stores[leader_index], &fixture.operation, &env)
+    let target_view = query_status(&competing_stores[leader_index], &fixture.operation, &env)
         .unwrap()
         .current_view;
     assert!(
@@ -725,7 +994,7 @@ pub(super) async fn run(
     // genesis-relative view deadline, so exactly one real Tick per
     // still-behind validator is the minimum justified scenario needed.
     for (index, validator) in fixture.network.validators.iter().enumerate() {
-        let behind_view = query_status(&fixture.stores[index], &fixture.operation, &env)
+        let behind_view = query_status(&competing_stores[index], &fixture.operation, &env)
             .unwrap()
             .current_view;
         if behind_view < target_view {
@@ -735,7 +1004,7 @@ pub(super) async fn run(
             };
             let now_unix_millis = SystemClock.now_unix_millis().unwrap();
             process_tick(
-                &fixture.stores[index],
+                &competing_stores[index],
                 &fixture.operation,
                 &env,
                 now_unix_millis,
@@ -744,11 +1013,11 @@ pub(super) async fn run(
             .unwrap();
         }
         assert_eq!(
-            query_status(&fixture.stores[index], &fixture.operation, &env)
+            query_status(&competing_stores[index], &fixture.operation, &env)
                 .unwrap()
                 .current_view,
             target_view,
-            "every validator reaches the exact same target view before the real Seal round"
+            "every isolated competing validator reaches the same real-clock target view"
         );
     }
     for (index, validator) in fixture.network.validators.iter().enumerate() {
@@ -812,6 +1081,7 @@ pub(super) async fn run(
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        endpoints.push(address.to_string());
         peers.push_str(&format!(
             "{} {address} - -\n",
             hex(validator.validator_id.as_bytes())
@@ -838,10 +1108,114 @@ pub(super) async fn run(
             prefix.as_os_str().into(),
         ],
     );
+    for (index, store) in stores.iter().enumerate() {
+        assert_eq!(
+            query_status(store.as_ref(), &fixture.operation, &env).unwrap(),
+            initial_status,
+            "no direct alignment, competing vote or Tick changes a live post-Drain validator before network-submit"
+        );
+        assert_eq!(
+            capture_source_business_snapshot(
+                store.as_ref(),
+                &fixture.blobs,
+                &fixture.operation,
+                fixture.network.domain,
+                NonZeroUsize::new(128).unwrap(),
+            )
+            .unwrap(),
+            before[index],
+            "every live source row, receipt, referenced blob, token and fence remains at its original post-Drain state"
+        );
+        assert_eq!(
+            store
+                .get_outgoing_barrier(&fixture.operation, fixture.network.domain)
+                .unwrap(),
+            OutgoingBarrier::Unsealed
+        );
+    }
     tokio::task::spawn_blocking(move || sunrise_edge_cli::run(submit_args))
         .await
         .unwrap()
         .unwrap();
+    let rounds: Vec<(OrderedProposal, QuorumCertificate)> = saved_submission_rounds(
+        fixture,
+        candidate_path,
+        &prefix,
+        candidate,
+        &initial_status.high_qc,
+    );
+    assert_eq!(competing_alignment.len(), 1);
+    for parent in [&competing_alignment[0].1, &competing_status.high_qc] {
+        assert_eq!(parent.proposal_digest, rounds[0].1.proposal_digest);
+        assert_eq!(parent.height, rounds[0].1.height);
+        assert_eq!(parent.view, rounds[0].1.view);
+    }
+    let submission_results: BTreeMap<(usize, usize), (String, String)> =
+        saved_peer_results(fixture, &prefix, &endpoints, rounds.len());
+    for (round, (_, certificate)) in rounds.iter().enumerate() {
+        for (index, validator) in fixture.network.validators.iter().enumerate() {
+            let (vote_phase, certificate_phase) = &submission_results[&(round, index)];
+            let voted: OrderedEventOutput = acknowledged_output(vote_phase);
+            assert!(voted.committed.is_empty());
+            assert!(
+                voted.messages.iter().any(|message| {
+                    if let ConsensusMessage::Vote(vote) = message {
+                        fixture
+                            .policy
+                            .engine()
+                            .verify_vote(vote, &Verifier)
+                            .unwrap();
+                        vote.validator == validator.validator_id
+                            && vote.height == certificate.height
+                            && vote.view == certificate.view
+                            && vote.proposal_digest == certificate.proposal_digest
+                    } else {
+                        false
+                    }
+                }),
+                "the saved acknowledgement attributes the actual signed vote to its configured peer and round"
+            );
+            if round == rounds.len() - 1 && index != 0 {
+                assert!(certificate_phase.starts_with("rejected:"));
+                continue;
+            }
+            let certified: OrderedEventOutput = acknowledged_output(certificate_phase);
+            assert!(certified.messages.is_empty());
+            if round == rounds.len() - 1 {
+                assert_eq!(certified.committed.len(), 1);
+                assert_eq!(certified.committed[0].request_id, candidate.request_id);
+                assert_eq!(
+                    certified.committed[0].block_height,
+                    rounds[1].0.proposal.height
+                );
+                assert_eq!(
+                    certified.committed[0].block_digest,
+                    rounds[1].1.proposal_digest
+                );
+                assert_eq!(
+                    certified.committed[0].candidate_digest,
+                    fixture.policy.candidate_digest(candidate).unwrap()
+                );
+                assert_eq!(
+                    query_ordered_outcome(
+                        stores[index].as_ref(),
+                        &fixture.operation,
+                        &env,
+                        &candidate.request_id
+                    )
+                    .unwrap(),
+                    Some(certified.committed[0].clone()),
+                    "the CLI's saved healthy acknowledgement matches the actual persisted Seal outcome"
+                );
+            } else {
+                assert!(
+                    certified.committed.is_empty(),
+                    "alignment and earlier QCs cannot acknowledge Seal completion"
+                );
+            }
+        }
+    }
+    assert_eq!(ports[0].fault_hits(), 0);
     let request: DurableRequestId = DurableRequestId::new(candidate.request_id).unwrap();
     for index in 1..ports.len() {
         let port = &ports[index];
@@ -907,6 +1281,31 @@ pub(super) async fn run(
         .await
         .unwrap()
         .unwrap();
+    let catchup_results: BTreeMap<(usize, usize), (String, String)> =
+        saved_peer_results(fixture, &catchup_prefix, &endpoints, rounds.len());
+    for ((round, index), (observe_phase, certificate_phase)) in &catchup_results {
+        let observed: OrderedEventOutput = acknowledged_output(observe_phase);
+        let certified: OrderedEventOutput = acknowledged_output(certificate_phase);
+        assert!(
+            observed.messages.is_empty() && certified.messages.is_empty(),
+            "actual HTTP recovery is signerless"
+        );
+        assert!(observed.committed.is_empty());
+        if *round == rounds.len() - 1 && *index != 0 {
+            assert_eq!(certified.committed.len(), 1);
+            assert_eq!(certified.committed[0].request_id, candidate.request_id);
+            assert_eq!(
+                certified.committed[0].block_height,
+                rounds[1].0.proposal.height
+            );
+            assert_eq!(
+                certified.committed[0].block_digest,
+                rounds[1].1.proposal_digest
+            );
+        } else {
+            assert!(certified.committed.is_empty());
+        }
+    }
     let mut original_receipts = Vec::new();
     let mut completed = Vec::new();
     let mut agreed = None;
@@ -988,20 +1387,7 @@ pub(super) async fn run(
         }
         completed.push(snapshot);
     }
-    let manifest_text: String = std::fs::read_to_string(&manifest).unwrap();
-    let proposal: OrderedProposal = manifest_text
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .map(|path| decode_ordered_proposal(&std::fs::read(path).unwrap()).unwrap())
-        .find(|proposal: &OrderedProposal| {
-            proposal
-                .candidate
-                .as_ref()
-                .is_some_and(|retained: &OrderedCandidate| {
-                    retained.request_id == candidate.request_id && retained.kind == candidate.kind
-                })
-        })
-        .expect("the manifest retains the actual Seal candidate proposal");
+    let proposal: &OrderedProposal = &rounds[1].0;
     for (index, store) in stores.iter().enumerate() {
         let signer = Signer {
             id: fixture.network.validators[index].validator_id,
@@ -1010,7 +1396,7 @@ pub(super) async fn run(
         // Replaying the exact committed Seal proposal is a legal original
         // reconciliation: it is the identical already-completed request, so
         // this is AlreadyCompleted, never a fresh barrier exposure.
-        match process_proposal(store.as_ref(), &fixture.operation, &env, &proposal, &signer) {
+        match process_proposal(store.as_ref(), &fixture.operation, &env, proposal, &signer) {
             Err(OrderedEconomicsError::AlreadyCompleted(outcome)) => {
                 assert_eq!(outcome.block_height, agreed.unwrap().height);
             }
@@ -1018,13 +1404,72 @@ pub(super) async fn run(
                 "exact-original Seal proposal replay must reconcile as already completed, got {other:?}"
             ),
         }
-        // A genuinely distinct, never-completed competing Seal candidate
-        // must instead Stop on the Sealed barrier -- not be laundered
-        // through AlreadyCompleted, which would hide an unrelated pending
-        // request as if it were this validator's own retained vote.
+    }
+    for (index, store) in competing_stores.iter().enumerate() {
+        assert_eq!(
+            store
+                .get_outgoing_barrier(&fixture.operation, fixture.network.domain)
+                .unwrap(),
+            OutgoingBarrier::Unsealed
+        );
         assert!(
             query_ordered_outcome(
-                store.as_ref(),
+                store,
+                &fixture.operation,
+                &env,
+                &competing_candidate.request_id
+            )
+            .unwrap()
+            .is_none()
+        );
+        // Apply the exact saved HTTP/CLI branch to the hypothetical pending
+        // stores through the real observer. No clone votes for that branch;
+        // its genuine Seal completion comes only from the CLI's real QCs.
+        for (round, (selected, certificate)) in rounds.iter().enumerate() {
+            let observed: OrderedEventOutput =
+                observe_proposal(store, &fixture.operation, &env, selected).unwrap();
+            let certified: OrderedEventOutput =
+                process_certificate(store, &fixture.operation, &env, certificate).unwrap();
+            assert!(observed.messages.is_empty() && certified.messages.is_empty());
+            assert!(observed.committed.is_empty());
+            if round == rounds.len() - 1 {
+                assert_eq!(certified.committed.len(), 1);
+                assert_eq!(certified.committed[0].request_id, candidate.request_id);
+                assert_eq!(
+                    certified.committed[0].block_height,
+                    rounds[1].0.proposal.height
+                );
+                assert_eq!(
+                    certified.committed[0].block_digest,
+                    rounds[1].1.proposal_digest
+                );
+            } else {
+                assert!(certified.committed.is_empty());
+            }
+        }
+        assert_eq!(
+            store
+                .get_outgoing_barrier(&fixture.operation, fixture.network.domain)
+                .unwrap(),
+            OutgoingBarrier::Sealed(agreed.unwrap())
+        );
+        assert_eq!(
+            query_ordered_outcome(store, &fixture.operation, &env, &candidate.request_id).unwrap(),
+            query_ordered_outcome(
+                stores[index].as_ref(),
+                &fixture.operation,
+                &env,
+                &candidate.request_id
+            )
+            .unwrap(),
+            "a competing clone completes the same selected Seal, not its pending request"
+        );
+        // A distinct request with a genuinely retained leader/own vote
+        // remains uncompleted. The retained-signature path must Stop at the
+        // barrier rather than return a cached vote or AlreadyCompleted.
+        assert!(
+            query_ordered_outcome(
+                store,
                 &fixture.operation,
                 &env,
                 &competing_candidate.request_id
@@ -1033,8 +1478,30 @@ pub(super) async fn run(
             .is_none(),
             "the competing branch was never admitted to completion"
         );
+        assert!(
+            store
+                .get_request_receipt(
+                    &fixture.operation,
+                    fixture.network.domain,
+                    DurableRequestId::new(competing_candidate.request_id).unwrap(),
+                )
+                .unwrap()
+                .is_none()
+        );
+        let before_stop: SourceBusinessSnapshot = capture_source_business_snapshot(
+            store,
+            &fixture.blobs,
+            &fixture.operation,
+            fixture.network.domain,
+            NonZeroUsize::new(128).unwrap(),
+        )
+        .unwrap();
+        let signer = Signer {
+            id: fixture.network.validators[index].validator_id,
+            key: fixture.network.validators[index].signing_key,
+        };
         match process_proposal(
-            store.as_ref(),
+            store,
             &fixture.operation,
             &env,
             &competing_proposal,
@@ -1047,7 +1514,26 @@ pub(super) async fn run(
                 "a distinct pending Seal candidate must stop on the Sealed barrier, got {other:?}"
             ),
         }
+        assert_eq!(
+            capture_source_business_snapshot(
+                store,
+                &fixture.blobs,
+                &fixture.operation,
+                fixture.network.domain,
+                NonZeroUsize::new(128).unwrap(),
+            )
+            .unwrap(),
+            before_stop,
+            "blocked cached competing work changes no token, fence, record or receipt"
+        );
+        assert_eq!(
+            store
+                .get_outgoing_barrier(&fixture.operation, fixture.network.domain)
+                .unwrap(),
+            OutgoingBarrier::Sealed(agreed.unwrap())
+        );
     }
+    drop(competing_stores);
     let replay_prefix = fixture.directory.0.join("seal-replay");
     let replay_args = arguments(
         fixture,
@@ -1064,6 +1550,14 @@ pub(super) async fn run(
         .await
         .unwrap()
         .unwrap();
+    let replay_results: BTreeMap<(usize, usize), (String, String)> =
+        saved_peer_results(fixture, &replay_prefix, &endpoints, rounds.len());
+    for (observe_phase, certificate_phase) in replay_results.values() {
+        let observed: OrderedEventOutput = acknowledged_output(observe_phase);
+        let certified: OrderedEventOutput = acknowledged_output(certificate_phase);
+        assert!(observed.messages.is_empty() && observed.committed.is_empty());
+        assert!(certified.messages.is_empty() && certified.committed.is_empty());
+    }
     for (index, store) in stores.iter().enumerate() {
         assert_eq!(
             capture_source_business_snapshot(
@@ -1086,7 +1580,7 @@ pub(super) async fn run(
     }
     drop(ports);
     drop(stores);
-    fixture.stores.clear(); // True close of every structured-state handle.
+    fixture.stores.clear(); // True close of every live state-{index} handle.
     for (index, validator) in fixture.network.validators.iter().enumerate() {
         let path = fixture.directory.0.join(format!("state-{index}.sqlite"));
         let namespace = SqliteNamespace::new(
