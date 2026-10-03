@@ -6,11 +6,13 @@
 //! here and needs separate acceptance through a real verified workflow.
 
 use super::*;
+use crate::bond_registration::BondResourceId;
 use abi::AccessManifest;
 use abi::package_types::PackageOrigin;
-use crate::bond_registration::BondResourceId;
 use execution::call::{CallIntent, InstanceTarget};
-use execution::local_execution::{LocalExecutionIntent, LocalExecutionMode, encode_signed_local_execution};
+use execution::local_execution::{
+    LocalExecutionIntent, LocalExecutionMode, encode_signed_local_execution,
+};
 use execution::publication::UnverifiedDependencyRef;
 use objects::{Address, ObjectId, ObjectRef};
 use protocol_types::{ChainId, Epoch, HashAlgorithmId, ProtocolVersion, ValidatorId};
@@ -225,6 +227,7 @@ fn positive_operation_leg_bytes_differing_from_the_request_is_refused() {
     let requested_leg: Vec<u8> = encode_minimal_signed_leg(&context, [2; 32]);
     let intent_leg: Vec<u8> = encode_minimal_signed_leg(&context, [0x6A; 32]);
     let request: FeeClaimPrepareRequest = sample_request(Some(requested_leg));
-    let intent: FeeClaimIntent = sample_intent(FeeClaimOperation::FinalTransfer { leg: intent_leg });
+    let intent: FeeClaimIntent =
+        sample_intent(FeeClaimOperation::FinalTransfer { leg: intent_leg });
     assert!(fee_claim_selectors_match(&context, &request, &intent).is_err());
 }

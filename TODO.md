@@ -259,6 +259,14 @@ restarted container. A separate Docker reproduction proves automatic host-port
 assignment changes on restart; the disposable local runner now binds an explicit
 port. No production storage or recovery checks are weakened. This second failed
 full run is not acceptance and did not reach the remaining required/selected lanes.
+The fixed-port runner passes all 72 crash-recovery executable tests, including
+actual SIGKILL/restart/WAL replay. The SDK's 13 private selector-comparison
+regressions also pass; they prove structural comparison only, not committee
+authority or a real signature. The four-host run reached verified terminal
+history export, then correctly refused original-source claim inspection after
+Freeze. Its fixture is being corrected to retain the real pre-Freeze view;
+the core admission guard is unchanged. No full-profile or positive process pass
+is claimed by these focused results.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.
