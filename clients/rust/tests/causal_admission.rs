@@ -409,6 +409,8 @@ fn full_history_reader_requires_a_present_completion_marker() {
 
 #[test]
 fn single_height_transport_rejects_corruption_and_mismatched_target() {
+    // Synthetic transport bytes under a genuinely pinned policy. This
+    // helper authenticates file integrity, not a committed block proof.
     use node_core::ordered_economics::{
         OrderedEconomicsPolicy, OrderedHistoryComponentKind, OrderedHistoryComponentRef,
         OrderedHistoryHeightDescriptor, OrderedHistoryIdentity,
@@ -449,8 +451,10 @@ fn single_height_transport_rejects_corruption_and_mismatched_target() {
     let descriptor_path: PathBuf = height_dir.join("descriptor.bin");
     let descriptor_bytes: Vec<u8> = encode_ordered_history_height_descriptor(&descriptor).unwrap();
     std::fs::write(&descriptor_path, &descriptor_bytes).unwrap();
-    let component_dir: PathBuf =
-        height_dir.join(format!("component-{:02}", OrderedHistoryComponentKind::CommitProof as u16));
+    let component_dir: PathBuf = height_dir.join(format!(
+        "component-{:02}",
+        OrderedHistoryComponentKind::CommitProof as u16
+    ));
     std::fs::create_dir(&component_dir).unwrap();
     let chunk_path: PathBuf = component_dir.join(format!("chunk-{:020}.bin", 0));
     std::fs::write(&chunk_path, &component_bytes).unwrap();
@@ -459,7 +463,10 @@ fn single_height_transport_rejects_corruption_and_mismatched_target() {
     assert_eq!(good.descriptor, descriptor);
     assert_eq!(
         good.components,
-        vec![(OrderedHistoryComponentKind::CommitProof, component_bytes.clone())]
+        vec![(
+            OrderedHistoryComponentKind::CommitProof,
+            component_bytes.clone()
+        )]
     );
 
     // Height outside the fixed target, both directions.
@@ -496,7 +503,7 @@ fn single_height_transport_rejects_corruption_and_mismatched_target() {
     std::fs::write(&chunk_path, &tampered).unwrap();
     assert!(read_ordered_history_height(&policy, &archive.0, &identity, 1).is_err());
 
-    // Restoring the exact original bytes must read genuinely again, proving
+    // Restoring the exact original bytes must read successfully again, proving
     // every prior failure came from the corruption, not residual state.
     std::fs::write(&chunk_path, &component_bytes).unwrap();
     assert_eq!(

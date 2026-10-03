@@ -99,7 +99,8 @@ impl<'a> SuccessorArtifactSource for SuccessorArtifactFiles<'a> {
 
     fn readiness_certificate(&mut self, length: u32) -> Result<Vec<u8>, SuccessorArtifactError> {
         let length: usize = bounded_certificate_length(length)?;
-        self.certificate_archive
+        let bytes: Vec<u8> = self
+            .certificate_archive
             .read("certificate.bin", length)
             .map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
@@ -107,7 +108,11 @@ impl<'a> SuccessorArtifactSource for SuccessorArtifactFiles<'a> {
                 } else {
                     SuccessorArtifactError::Io
                 }
-            })
+            })?;
+        if bytes.len() != length {
+            return Err(SuccessorArtifactError::Malformed);
+        }
+        Ok(bytes)
     }
 }
 
