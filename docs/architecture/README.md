@@ -147,7 +147,7 @@ roadmap describes a later target state.
   ([DR-0189](decisions/0189-first-successor-serving.md)):
   source-free Seal authority, target-local atomic activation and separately
   scoped successor signing/admission, with permanent import origin retained.
-  Proposed interfaces and schemas do not create a serving capability.
+  Design acceptance does not create a serving capability.
 - [Initial validator bond registration](initial-validator-bond.md)
   ([DR-0179](decisions/0179-initial-validator-bond-registration.md)):
   self-authenticated first collateral through generic custody and ordered
