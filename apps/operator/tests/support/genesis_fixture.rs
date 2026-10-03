@@ -139,6 +139,57 @@ impl FastVoteGenesisFixture {
         encode_signed_paid_intent(&SignedPaidIntent { intent, signature }).unwrap()
     }
 
+    /// Signs a real paid transfer Call on the fixture genesis instance under
+    /// an explicitly supplied context, with the caller-observed current fee
+    /// coin reference and installed fee-policy digest. A first-successor
+    /// acceptance uses it to call the imported epoch-e instance at e+1.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn sign_transfer_with(
+        &self,
+        context: &PublicationContext,
+        request_id: [u8; 32],
+        nonce: u64,
+        fee_coin_ref: ObjectRef,
+        fee_policy_digest: protocol_types::Digest32,
+        recipient: [u8; 32],
+    ) -> Vec<u8> {
+        let call: CallIntent = CallIntent {
+            context: context.clone(),
+            request_id,
+            sender: self.sender,
+            nonce,
+            code: self.code.clone(),
+            instance: self.instance.clone(),
+            entrypoint: "transfer".to_owned(),
+            type_arguments: vec![asset_type_argument(&self.definition_id)],
+            access: AccessManifest {
+                entries: vec![AccessEntry {
+                    object_ref: fee_coin_ref.clone(),
+                    mode: AccessMode::Write,
+                }],
+            },
+            arguments: transfer_arguments(&recipient).unwrap(),
+            gas_limit: 100_000,
+        };
+        self.sign_intent(PaidIntent {
+            context: context.clone(),
+            request_id,
+            sender: self.sender,
+            nonce,
+            fee_policy_digest,
+            consent: FeeSourceConsent {
+                source: fee_coin_ref,
+                access: ReservationAccessKind::Write,
+                max_fee: Amount::new(1_000_000),
+                refund_recipient: recipient,
+            },
+            application: PaidApplication::Call(call),
+            gas_limit: 100_000,
+            authorizations: Vec::new(),
+        })
+    }
+
     /// The public Standard Asset definition object id, needed to build the
     /// `asset_type_argument` a real CLI-built `transfer` call's
     /// `--type-args` must supply.

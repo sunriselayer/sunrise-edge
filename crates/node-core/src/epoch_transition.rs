@@ -644,6 +644,8 @@ where
     S: StructuredDurableDomainStateStore,
     C: ConsensusSigner,
 {
+    // DR-0189: the legacy transition never runs at a Serving first successor.
+    mutation_fence::refuse_successor_serving(store, context, domain)?;
     mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let mut fence_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     let epoch_record: FastPathEpochRecord =
@@ -807,6 +809,7 @@ pub fn activate<S: StructuredDurableDomainStateStore>(
             ConsensusError::ContextMismatch,
         ));
     }
+    mutation_fence::refuse_successor_serving(store, context, domain)?;
     mutation_fence::require_ordinary_namespace(store, context, domain)?;
 
     // 2. Fence the committed epoch record.

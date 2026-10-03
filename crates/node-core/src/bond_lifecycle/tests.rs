@@ -1732,7 +1732,8 @@ fn a_handoff_capable_store_commits_a_real_deposit_with_authenticated_provenance(
     };
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     reads.insert(nonce_key, nonce_observed.revision());
-    let next: logical_generation::LogicalDerivation = logical_generation::derive(
+    let next: logical_generation::LogicalDerivation = logical_generation::derive_scoped(
+        &logical_generation::GenerationScope::from_profile(&profile),
         &store,
         &context(1),
         domain(),

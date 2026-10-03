@@ -64,6 +64,17 @@ exposure. None is an implementation-completion claim.
 
 ## Decision
 
+Implementation clarification, 2026-10-04: imported epoch-e escrow claims need
+an explicitly pinned predecessor certificate scope in the successor's shared
+authenticator. The original single-epoch authenticator and legacy transition-row
+lookup cannot resolve such a claim after this non-legacy activation. The verified
+outgoing-set digest anchors the historical committee; the current adjacent epoch
+and imported set reads are fenced. Existing certificates and settlement history
+are unchanged; a new claim and leg remain signed in the live e+1 context. Retired
+claimants are not required to join the new consensus set. This narrows the claimed
+Section 10 behavior into explicit checks without adding wire fields or weakening
+original namespace behavior.
+
 Use [first-successor-serving.md](../first-successor-serving.md) as the
 accepted design contract. Its choices, summarized:
 

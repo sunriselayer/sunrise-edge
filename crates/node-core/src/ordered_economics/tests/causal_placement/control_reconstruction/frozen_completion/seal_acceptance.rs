@@ -100,20 +100,31 @@ fn round_with_env(
 /// propose/vote/certify round at its own height, then two further genuine
 /// empty rounds -- the exact DR-0187 justified-prefix lag -- so the real
 /// 3-chain commits the Seal block on every replica.
-fn accept_genuine_seal(
+pub(super) fn accept_genuine_seal(
     fixture: &SealSigningFixture,
     env: &OrderedEconomicsEnvironment<'_>,
 ) -> Vec<OrderedProposal> {
-    let network: &Network = &fixture.source.fixture.network;
+    accept_seal_candidate(
+        &fixture.source.fixture.network,
+        env,
+        fixture.view,
+        &fixture.candidate,
+    )
+}
+
+/// The same genuine three-round acceptance for any honest Seal candidate
+/// proposed at the economic `view` of the outgoing source committee.
+pub(super) fn accept_seal_candidate(
+    network: &Network,
+    env: &OrderedEconomicsEnvironment<'_>,
+    view: u64,
+    seal: &OrderedCandidate,
+) -> Vec<OrderedProposal> {
     let mut proposals: Vec<OrderedProposal> = Vec::new();
     for offset in 0..3 {
-        let candidate: Option<&OrderedCandidate> = (offset == 0).then_some(&fixture.candidate);
-        let (certificate, proposal): (QuorumCertificate, OrderedProposal) = certify_with_env(
-            network,
-            env,
-            fixture.view.checked_add(offset).unwrap(),
-            candidate,
-        );
+        let candidate: Option<&OrderedCandidate> = (offset == 0).then_some(seal);
+        let (certificate, proposal): (QuorumCertificate, OrderedProposal) =
+            certify_with_env(network, env, view.checked_add(offset).unwrap(), candidate);
         for replica in 0..REPLICAS {
             process_certificate(
                 &network.stores[replica],

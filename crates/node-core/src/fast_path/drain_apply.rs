@@ -74,7 +74,7 @@ impl From<ordered_economics::DrainSignerError> for FastPathError {
     fn from(error: ordered_economics::DrainSignerError) -> Self {
         match error {
             ordered_economics::DrainSignerError::Node(inner) => Self::Node(inner),
-            ordered_economics::DrainSignerError::Publication(inner) => Self::Publication(*inner),
+            ordered_economics::DrainSignerError::Publication(inner) => Self::Publication(inner),
             ordered_economics::DrainSignerError::NotReady(message)
             | ordered_economics::DrainSignerError::Invalid(message) => Self::Invalid(message),
             ordered_economics::DrainSignerError::Frontier(_) => {
@@ -577,6 +577,7 @@ where
     // object/sender-epoch locks this admission's own inputs touch, instead
     // of failing closed like ordinary `NonceMode::RecoveryApply`.
     let admission: PaidAdmissionOutput = build_paid_admission(
+        crate::serving_authority::ServingGate::Original,
         store,
         blob_store,
         context,

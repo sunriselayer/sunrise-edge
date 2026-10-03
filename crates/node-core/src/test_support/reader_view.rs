@@ -48,6 +48,14 @@ impl<S: StructuredStateReader> StructuredStateReader for WriterFreeView<'_, S> {
         self.source.read_namespace_lifecycle(context, domain)
     }
 
+    fn read_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, DurableReadError> {
+        self.source.read_successor_serving(context, domain)
+    }
+
     fn read_object_head(
         &self,
         context: &DurableOperationContext,

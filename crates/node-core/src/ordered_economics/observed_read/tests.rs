@@ -56,6 +56,14 @@ impl StructuredStateReader for ReadOnly<'_> {
         self.inner.read_namespace_lifecycle(context, domain)
     }
 
+    fn read_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, DurableReadError> {
+        self.inner.read_successor_serving(context, domain)
+    }
+
     fn read_object_head(
         &self,
         context: &DurableOperationContext,

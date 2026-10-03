@@ -90,64 +90,13 @@ pub fn read_verified_ordered_history_archive(
         MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
     )?;
     let identity: OrderedHistoryIdentity = decode_ordered_history_identity(&identity_bytes)?;
-    let chunk_size_bytes = read_regular_archive_file(&root, Path::new("chunk-size.bin"), 4)?;
-    let chunk_size: u32 = u32::from_be_bytes(
-        chunk_size_bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| invalid("ordered archive chunk size is not four bytes"))?,
-    );
-    if chunk_size == 0 || chunk_size as usize > MAX_ORDERED_HISTORY_CHUNK_BYTES {
-        return Err(invalid("ordered archive chunk size exceeds its bound"));
-    }
+    let chunk_size: u32 = read_chunk_size(&root)?;
     let mut verifier: OrderedHistoryVerifier =
         OrderedHistoryVerifier::new(policy.clone(), identity.clone())?;
     let mut heights: Vec<OrderedHistoryHeightMaterial> = Vec::new();
     let mut height: u64 = 1;
     while height <= identity.through_height {
-        let height_root = root.join(format!("height-{height:020}"));
-        let descriptor_bytes = read_regular_archive_file(
-            &root,
-            Path::new(&format!("height-{height:020}/descriptor.bin")),
-            MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
-        )?;
-        let descriptor = decode_ordered_history_height_descriptor(&descriptor_bytes)?;
-        if descriptor.identity != identity || descriptor.height != height {
-            return Err(invalid(
-                "saved height descriptor changed its fixed target or position",
-            ));
-        }
-        let mut components: Vec<(OrderedHistoryComponentKind, Vec<u8>)> = Vec::new();
-        for reference in &descriptor.components {
-            let mut bytes: Vec<u8> = Vec::new();
-            let mut offset: u64 = 0;
-            while offset < reference.length {
-                let count: usize =
-                    usize::try_from(u64::from(chunk_size).min(reference.length - offset))?;
-                let relative = format!(
-                    "component-{:02}/chunk-{offset:020}.bin",
-                    reference.kind as u16
-                );
-                let chunk = read_regular_archive_file(&height_root, Path::new(&relative), count)?;
-                if chunk.len() != count {
-                    return Err(invalid("saved ordered component chunk is truncated"));
-                }
-                bytes.extend_from_slice(&chunk);
-                offset = offset
-                    .checked_add(u64::try_from(chunk.len())?)
-                    .ok_or_else(|| invalid("ordered archive chunk cursor overflow"))?;
-            }
-            if bytes.len() as u64 != reference.length
-                || ordered_history_component_digest(policy, &bytes)? != reference.digest
-            {
-                return Err(invalid("saved component differs from its exact descriptor"));
-            }
-            components.push((reference.kind, bytes));
-        }
-        let material = OrderedHistoryHeightMaterial {
-            descriptor,
-            components,
-        };
+        let material = read_height_material(&root, chunk_size, policy, &identity, height)?;
         verifier.verify_next_height(&material)?;
         heights.push(material);
         height = height
@@ -168,4 +117,96 @@ pub fn read_verified_ordered_history_archive(
         ));
     }
     Ok((identity, heights))
+}
+
+fn read_chunk_size(root: &Path) -> Result<u32, Box<dyn Error>> {
+    let chunk_size_bytes = read_regular_archive_file(root, Path::new("chunk-size.bin"), 4)?;
+    let chunk_size: u32 = u32::from_be_bytes(
+        chunk_size_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| invalid("ordered archive chunk size is not four bytes"))?,
+    );
+    if chunk_size == 0 || chunk_size as usize > MAX_ORDERED_HISTORY_CHUNK_BYTES {
+        return Err(invalid("ordered archive chunk size exceeds its bound"));
+    }
+    Ok(chunk_size)
+}
+
+fn read_height_material(
+    root: &Path,
+    chunk_size: u32,
+    policy: &OrderedEconomicsPolicy,
+    identity: &OrderedHistoryIdentity,
+    height: u64,
+) -> Result<OrderedHistoryHeightMaterial, Box<dyn Error>> {
+    let height_root = root.join(format!("height-{height:020}"));
+    let descriptor_bytes = read_regular_archive_file(
+        root,
+        Path::new(&format!("height-{height:020}/descriptor.bin")),
+        MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
+    )?;
+    let descriptor = decode_ordered_history_height_descriptor(&descriptor_bytes)?;
+    if descriptor.identity != *identity || descriptor.height != height {
+        return Err(invalid(
+            "saved height descriptor changed its fixed target or position",
+        ));
+    }
+    let mut components: Vec<(OrderedHistoryComponentKind, Vec<u8>)> = Vec::new();
+    for reference in &descriptor.components {
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut offset: u64 = 0;
+        while offset < reference.length {
+            let count: usize =
+                usize::try_from(u64::from(chunk_size).min(reference.length - offset))?;
+            let relative = format!(
+                "component-{:02}/chunk-{offset:020}.bin",
+                reference.kind as u16
+            );
+            let chunk = read_regular_archive_file(&height_root, Path::new(&relative), count)?;
+            if chunk.len() != count {
+                return Err(invalid("saved ordered component chunk is truncated"));
+            }
+            bytes.extend_from_slice(&chunk);
+            offset = offset
+                .checked_add(u64::try_from(chunk.len())?)
+                .ok_or_else(|| invalid("ordered archive chunk cursor overflow"))?;
+        }
+        if bytes.len() as u64 != reference.length
+            || ordered_history_component_digest(policy, &bytes)? != reference.digest
+        {
+            return Err(invalid("saved component differs from its exact descriptor"));
+        }
+        components.push((reference.kind, bytes));
+    }
+    Ok(OrderedHistoryHeightMaterial {
+        descriptor,
+        components,
+    })
+}
+
+/// Reads and structurally checks one fixed height material against its own
+/// descriptor, without the cumulative [`OrderedHistoryVerifier`] state that
+/// [`read_verified_ordered_history_archive`] maintains across the whole
+/// prefix: the caller (an independent verifier run over the full claimed
+/// target) performs that ordering/signature check itself. `identity` is the
+/// caller's claimed target, checked only against this saved height descriptor,
+/// never locally trusted by this function.
+pub fn read_ordered_history_height(
+    policy: &OrderedEconomicsPolicy,
+    root: &Path,
+    identity: &OrderedHistoryIdentity,
+    height: u64,
+) -> Result<OrderedHistoryHeightMaterial, Box<dyn Error>> {
+    let root = root.canonicalize()?;
+    if !root.is_dir() {
+        return Err(invalid("ordered archive root is not a directory"));
+    }
+    if height == 0 || height > identity.through_height {
+        return Err(invalid(
+            "ordered archive height is outside its fixed target",
+        ));
+    }
+    let chunk_size: u32 = read_chunk_size(&root)?;
+    read_height_material(&root, chunk_size, policy, identity, height)
 }

@@ -95,7 +95,8 @@ impl Harness {
         nonce: Option<&PendingSenderNonceWrite>,
         reads: &mut BTreeMap<Vec<u8>, StateRevision>,
     ) -> Result<LogicalDerivation, NodeCoreError> {
-        super::derive(
+        super::derive_scoped(
+            &GenerationScope::from_profile(&self.profile),
             &self.store,
             &self.context,
             self.domain,
@@ -818,6 +819,66 @@ fn derive_distinguishes_an_absent_object_from_a_tombstone() {
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     let derived: LogicalDerivation = harness.derive(&heads, &mut reads).unwrap();
     assert_eq!(derived.generation.get(), 7);
+}
+
+/// DR-0189 generation-floor versus genesis-floor pair: the original scope is
+/// byte-identical to the historical derivation, while a verified successor
+/// scope derives above the verified cut binding floor and refuses a
+/// derivation that only clears the genesis floor.
+#[test]
+fn successor_scope_derives_above_the_cut_floor_and_original_scope_is_unchanged() {
+    let harness: Harness = Harness::new(1);
+    let original: GenerationScope = GenerationScope::from_profile(&harness.profile);
+    assert_eq!(original.floor(), ExecutionGeneration::new(1));
+    let mut legacy_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let legacy: LogicalDerivation = harness.derive(&[], &mut legacy_reads).unwrap();
+    let mut scoped_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let scoped: LogicalDerivation = derive_scoped(
+        &original,
+        &harness.store,
+        &harness.context,
+        harness.domain,
+        &harness.resolver,
+        &harness.profile,
+        &[],
+        None,
+        &mut scoped_reads,
+    )
+    .unwrap();
+    assert_eq!(legacy.generation, scoped.generation);
+    assert_eq!(legacy_reads, scoped_reads);
+
+    let root: crate::genesis::VerifiedGenesisRoot = crate::serving_authority::tests::causal_root();
+    let inputs: crate::serving_authority::SuccessorPolicyInputs =
+        crate::serving_authority::tests::successor_inputs(&root, digest(3));
+    let successor: GenerationScope = GenerationScope::successor(&inputs);
+    assert_eq!(successor.floor(), inputs.generation_floor());
+    let mut lifted_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let lifted: LogicalDerivation = derive_scoped(
+        &successor,
+        &harness.store,
+        &harness.context,
+        harness.domain,
+        &harness.resolver,
+        &harness.profile,
+        &[],
+        None,
+        &mut lifted_reads,
+    )
+    .unwrap();
+    assert_eq!(lifted.generation.get(), inputs.generation_floor().get() + 1);
+    assert!(lifted.generation > legacy.generation);
+
+    let installed: InstalledCommitmentProfile =
+        InstalledCommitmentProfile::Logical(harness.profile.clone());
+    assert!(require_application_admissible(&installed, Some(&legacy)).is_ok());
+    assert!(matches!(
+        require_application_admissible_scoped(&successor, &installed, Some(&legacy)),
+        Err(NodeCoreError::ExecutionGenerationRegression { previous, .. })
+            if previous == inputs.generation_floor().get()
+    ));
+    assert!(require_application_admissible_scoped(&successor, &installed, Some(&lifted)).is_ok());
+    assert!(require_application_admissible_scoped(&original, &installed, Some(&legacy)).is_ok());
 }
 
 fn resolver() -> HashSuiteResolver {

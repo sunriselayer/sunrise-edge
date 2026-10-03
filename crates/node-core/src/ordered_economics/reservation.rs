@@ -104,6 +104,11 @@ pub(crate) struct OrderedLegAdmission<'a> {
     pub(crate) objects: &'a [ObjectRef],
     /// Exact sender/epoch nonce range this request holds.
     pub(crate) nonce: Option<OrderedNonceLockHeld>,
+    /// DR-0189: the invocation authority the committed candidate executes
+    /// under. Owning handlers take their namespace admission and generation
+    /// floor from it, so an ordered candidate at a verified successor reuses
+    /// the same handlers without any ordinary guard being relaxed.
+    pub(crate) gate: crate::serving_authority::ServingGate<'a>,
 }
 
 impl OrderedLegAdmission<'_> {

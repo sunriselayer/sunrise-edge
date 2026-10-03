@@ -52,6 +52,18 @@ CREATE TABLE sunrise_edge.outgoing_barrier (
         ON DELETE RESTRICT NOT DEFERRABLE
 );
 
+CREATE TABLE sunrise_edge.successor_serving (
+    chain_id_bytes BYTEA NOT NULL,
+    validator_id BYTEA NOT NULL,
+    atomicity_domain_id BYTEA NOT NULL,
+    serving BYTEA NOT NULL CHECK (octet_length(serving) <= 17408),
+    PRIMARY KEY (chain_id_bytes, validator_id, atomicity_domain_id),
+    FOREIGN KEY (chain_id_bytes, validator_id, atomicity_domain_id)
+        REFERENCES sunrise_edge.storage_metadata
+        (chain_id_bytes, validator_id, atomicity_domain_id)
+        ON DELETE RESTRICT NOT DEFERRABLE
+);
+
 CREATE TABLE sunrise_edge.blobs (
     chain_id_bytes BYTEA NOT NULL,
     validator_id BYTEA NOT NULL,

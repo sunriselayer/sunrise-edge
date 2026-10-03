@@ -1139,10 +1139,12 @@ where
         created_checkpoint,
         reads,
         admission_profile_reads,
+        ordered,
         ..
     } = preamble;
     let expected_next_row_digest: Digest32 = signed.intent.expected_next_row_digest;
     prepare_bond_transition(
+        mutation_fence::ordered_gate(ordered),
         store,
         context,
         domain,
@@ -1187,6 +1189,7 @@ where
 /// substitute a different resulting row against.
 #[allow(clippy::too_many_arguments)]
 fn prepare_bond_transition<S: VersionedStateReader + ?Sized>(
+    gate: crate::serving_authority::ServingGate<'_>,
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1270,7 +1273,8 @@ fn prepare_bond_transition<S: VersionedStateReader + ?Sized>(
     // provenance rows covering both are derived here, over the complete write
     // set, before the atomic commit. A handoff-capable store refuses the
     // transition without that evidence; a historical store is unaffected.
-    logical_generation::admit_application(
+    logical_generation::admit_application_gated(
+        gate,
         store,
         context,
         domain,

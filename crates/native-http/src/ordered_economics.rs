@@ -139,7 +139,7 @@ fn error_response(status: StatusCode, code: &'static str) -> Response {
     (status, [(header::CACHE_CONTROL, "no-store")], code).into_response()
 }
 
-fn ordered_economics_error_response(error: &OrderedEconomicsError) -> Response {
+pub(crate) fn ordered_economics_error_response(error: &OrderedEconomicsError) -> Response {
     if let Some(outcome) = error.completed_outcome() {
         return encode_event_output_response(&ordered_economics::OrderedEventOutput {
             messages: Vec::new(),
@@ -150,6 +150,13 @@ fn ordered_economics_error_response(error: &OrderedEconomicsError) -> Response {
     // unavailability/fencing/ambiguity must never be reported as an ordinary
     // client error that a retry-with-different-bytes could paper over.
     match error {
+        OrderedEconomicsError::UnsupportedSuccessorControl
+        | OrderedEconomicsError::Node(node_core::NodeCoreError::UnsupportedSuccessorControl) => {
+            error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "successor-control-unsupported",
+            )
+        }
         OrderedEconomicsError::Unauthenticated(_) | OrderedEconomicsError::Policy(_) => {
             error_response(StatusCode::BAD_REQUEST, "ordered-economics-rejected")
         }
@@ -225,7 +232,7 @@ fn has_media_type(headers: &HeaderMap, expected: &str) -> bool {
 /// Shared preflight: unsupported media type, unsupported `Content-Encoding`,
 /// or an oversized body, all rejected on the async task with zero identity/
 /// clock/storage access and zero admission-slot use.
-fn reject_unsupported_request(
+pub(crate) fn reject_unsupported_request(
     headers: &HeaderMap,
     body: &Bytes,
     expected_media_type: &str,
@@ -643,7 +650,9 @@ where
     .await
 }
 
-fn encode_event_output_response(output: &ordered_economics::OrderedEventOutput) -> Response {
+pub(crate) fn encode_event_output_response(
+    output: &ordered_economics::OrderedEventOutput,
+) -> Response {
     match ordered_economics::encode_ordered_event_output(output) {
         Ok(bytes) => (
             StatusCode::OK,
@@ -777,6 +786,22 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn successor_controls_are_permanent_client_refusals_not_retryable_failures() {
+        for error in [
+            OrderedEconomicsError::UnsupportedSuccessorControl,
+            OrderedEconomicsError::Node(node_core::NodeCoreError::UnsupportedSuccessorControl),
+        ] {
+            let response: Response = ordered_economics_error_response(&error);
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            let body: Bytes = axum::body::to_bytes(response.into_body(), 128)
+                .await
+                .unwrap();
+            assert_eq!(body.as_ref(), b"successor-control-unsupported");
+        }
+    }
 
     #[test]
     fn reject_unsupported_request_rejects_the_wrong_media_type_with_zero_admission() {

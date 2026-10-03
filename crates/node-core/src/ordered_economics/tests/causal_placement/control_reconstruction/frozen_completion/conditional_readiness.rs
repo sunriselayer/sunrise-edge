@@ -15,9 +15,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-struct Files(PathBuf);
+pub(super) struct Files(PathBuf);
 impl Files {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let time: u128 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -27,7 +27,7 @@ impl Files {
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
-    fn path(&self, name: &str) -> PathBuf {
+    pub(super) fn path(&self, name: &str) -> PathBuf {
         self.0.join(name)
     }
 }
@@ -52,7 +52,7 @@ fn next_members(network: &Network) -> Vec<FastPathValidatorEntry> {
         .collect()
 }
 
-fn complete(
+pub(super) fn complete(
     plan: &VerifiedImportPlan,
     target: &SqliteImportTarget,
     blobs: &SqliteBlobStore,

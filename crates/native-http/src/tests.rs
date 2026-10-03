@@ -1396,6 +1396,15 @@ impl DurableDomainStateStore for ScriptedIndexedStore {
         Err(DurableReadError::Unavailable)
     }
 
+    fn get_successor_serving(
+        &self,
+        _context: &DurableOperationContext,
+        _domain: AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, DurableReadError> {
+        self.storage_calls.fetch_add(1, Ordering::SeqCst);
+        Err(DurableReadError::Unavailable)
+    }
+
     fn commit_durable(
         &self,
         _context: &DurableOperationContext,
@@ -1492,6 +1501,14 @@ impl IndeterminateRequestClaimStore {
 }
 
 impl DurableDomainStateStore for IndeterminateRequestClaimStore {
+    fn get_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
+    }
+
     fn get_outgoing_barrier(
         &self,
         context: &DurableOperationContext,
@@ -1602,6 +1619,15 @@ impl CancelOnFirstReceiptReadStore {
 }
 
 impl DurableDomainStateStore for CancelOnFirstReceiptReadStore {
+    fn get_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, DurableReadError> {
+        self.durable_reads.fetch_add(1, Ordering::SeqCst);
+        self.inner.get_successor_serving(context, domain)
+    }
+
     fn get_outgoing_barrier(
         &self,
         context: &DurableOperationContext,
@@ -2340,6 +2366,17 @@ async fn native_error_mapping_keeps_nonce_overflow_distinct_from_conflict() {
         to_bytes(overflow.into_body(), 128).await.unwrap(),
         "sender-nonce-overflow"
     );
+}
+
+#[tokio::test]
+async fn legacy_successor_control_error_is_a_permanent_refusal() {
+    let response = node_error_response(&NodeCoreError::UnsupportedSuccessorControl);
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let body: Bytes = axum::body::to_bytes(response.into_body(), 128)
+        .await
+        .unwrap();
+    assert_eq!(body.as_ref(), b"successor-control-unsupported");
 }
 
 #[tokio::test]

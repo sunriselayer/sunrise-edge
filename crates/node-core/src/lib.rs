@@ -68,6 +68,7 @@ pub mod phase3_authorization;
 mod preinstalled_wasm;
 pub mod publication;
 mod query;
+pub mod serving_authority;
 pub mod transaction_auth;
 
 use authenticated_object_effects::{
@@ -113,6 +114,14 @@ pub use query::{
     ObjectQueryResult, ReceiptQueryResult, query_committed_epoch_state,
     query_fastpath_equivocation_evidence, query_object, query_request_receipt,
     query_sender_next_nonce,
+};
+pub use serving_authority::{
+    LiveAuthority, LiveWarrant, ServingAuthorityError, SuccessorActivationError,
+    SuccessorActivationOutcome, SuccessorArtifactError, SuccessorArtifactSource,
+    SuccessorFastVoteComposition, SuccessorPolicyInputs, VerifiedSuccessorAuthority,
+    activate_successor, apply_successor, prepare_fee_claim_successor, prepare_successor,
+    query_request_receipt_successor, resolve_live_authority, retain_publication_successor,
+    verify_successor_authority,
 };
 pub use transaction_auth::{
     AuthenticatedTransaction, MAX_TRANSACTION_SIGNABLE_BYTES, SUBMIT_TRANSACTION_SIGNABLE_TYPE_ID,
@@ -306,6 +315,12 @@ pub enum NodeCoreError {
     /// A permanently import-only namespace cannot admit live work or expose
     /// protocol signatures. Exact original business receipts remain readable.
     InactiveImportNamespace,
+    /// DR-0189: an outgoing-epoch or genesis control (readiness, Freeze,
+    /// DrainSet, Seal, initial registration, ordered genesis install, legacy
+    /// epoch transition, frozen frontier or drain publication) was requested
+    /// at a Serving first successor. Refused before any authentication or
+    /// signing. A permanent refusal, not a storage stop.
+    UnsupportedSuccessorControl,
     /// No persisted outbox exists for the requested invocation.
     OutboxNotFound,
     /// Another delivery attempt owns an unexpired lease.
@@ -1214,6 +1229,9 @@ impl fmt::Display for NodeCoreError {
             Self::InactiveImportNamespace => {
                 f.write_str("inactive import namespace cannot admit live work")
             }
+            Self::UnsupportedSuccessorControl => f.write_str(
+                "epoch-handoff or genesis control is unsupported at a Serving first successor",
+            ),
             Self::OutboxNotFound => f.write_str("outbox batch was not found"),
             Self::OutboxLeaseActive {
                 expires_at_unix_millis,

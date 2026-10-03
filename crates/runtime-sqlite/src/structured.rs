@@ -26,6 +26,7 @@ use runtime::portable::{
     DurableRecordChunkRequest, DurableRecordDescriptor, DurableRecordKey, DurableRecordPage,
     DurableRecordScan, PortableSnapshotError, PortableSnapshotToken,
 };
+use runtime::successor_serving::SuccessorServingSlot;
 use runtime::{
     AtomicStateTransaction, AtomicityDomainId, DueOutboxClaimRequest, DurableCommitOutcome,
     DurableDomainStateStore, DurableInvocationTransaction, DurableObjectHead, DurableObjectVersion,
@@ -47,13 +48,13 @@ use std::{error::Error, fmt, path::Path};
 pub type SqliteNamespace = SqlDurableNamespace;
 
 /// Stable identity of the local-only structured SQLite schema, generation
-/// four, using the shared v5 SQL durable origin/progress/readiness/barrier
-/// layout.
+/// five, using the shared v6 SQL durable
+/// origin/progress/readiness/barrier/successor-serving layout (DR-0189).
 pub const SQLITE_STRUCTURED_SCHEMA_IDENTITY: &[u8] =
     runtime_sql_durable::SQL_DURABLE_SCHEMA_IDENTITY;
 
 const STRUCTURED_APPLICATION_ID: i64 = 0x5352_4453;
-const STRUCTURED_SCHEMA_VERSION: i64 = 4;
+const STRUCTURED_SCHEMA_VERSION: i64 = 5;
 const STRUCTURED_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Fail-closed errors opening, bootstrapping, or operating a structured
@@ -463,6 +464,13 @@ impl DurableDomainStateStore for SqliteDurableStore {
         domain: AtomicityDomainId,
     ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
         self.engine.get_outgoing_barrier(context, domain)
+    }
+    fn get_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<SuccessorServingSlot, DurableReadError> {
+        self.engine.get_successor_serving(context, domain)
     }
     fn get_versioned_durable(
         &self,

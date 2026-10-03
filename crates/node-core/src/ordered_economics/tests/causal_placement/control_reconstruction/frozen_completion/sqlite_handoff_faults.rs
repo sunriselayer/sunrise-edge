@@ -134,6 +134,13 @@ impl DurableDomainStateStore for SqliteHandoffFaults<'_> {
     ) -> Result<NamespaceLifecycle, DurableReadError> {
         self.inner.get_namespace_lifecycle(c, d)
     }
+    fn get_successor_serving(
+        &self,
+        c: &DurableOperationContext,
+        d: AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, DurableReadError> {
+        self.inner.get_successor_serving(c, d)
+    }
     fn get_versioned_durable(
         &self,
         c: &DurableOperationContext,

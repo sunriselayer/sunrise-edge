@@ -29,6 +29,10 @@ use r2d2_postgres::{
 use runtime::outgoing_seal::{
     MAX_OUTGOING_BARRIER_BYTES, decode_outgoing_barrier, encode_outgoing_barrier,
 };
+use runtime::successor_serving::{
+    SuccessorServingSlot, decode_successor_serving_slot, encode_successor_serving_slot,
+    preflight_successor_serving_slot,
+};
 use runtime::{
     AtomicStateTransaction, DURABLE_OBJECT_CANONICAL_RECORD_TYPE_ID, DueOutboxClaimRequest,
     DurableCommitOutcome, DurableCommitRejection, DurableDomainStateStore,
@@ -64,11 +68,19 @@ pub const INITIAL_MIGRATION_SQL: &str = include_str!("../migrations/0001_initial
 /// `v6` additionally requires the protected per-namespace `outgoing_barrier`
 /// row, a single canonical frame decoded through the shared runtime codec;
 /// bootstrap installs it in the same transaction as `storage_metadata` and
-/// never repairs a surviving row. Its schema generation is aligned to 6.
-pub const POSTGRES_SCHEMA_IDENTITY: [u8; 32] = *b"sunrise-edge/postgres/schema/v6\0";
+/// never repairs a surviving row.
+/// `v7` additionally requires the protected per-namespace
+/// `successor_serving` row (DR-0189), mandatory and created `Inactive` with
+/// every namespace. A bounded canonical header and exact length are checked
+/// before fetching the body; a missing row or malformed header fails closed.
+/// There is no separately persisted phase to synchronize. This schema
+/// grants no repository capability: first-successor activation production
+/// on PostgreSQL remains out of scope. Its schema generation is aligned
+/// to 7.
+pub const POSTGRES_SCHEMA_IDENTITY: [u8; 32] = *b"sunrise-edge/postgres/schema/v7\0";
 
-/// Supported schema generation, aligned to the `v6` identity above.
-pub const POSTGRES_SCHEMA_GENERATION: SchemaGeneration = match SchemaGeneration::new(6) {
+/// Supported schema generation, aligned to the `v7` identity above.
+pub const POSTGRES_SCHEMA_GENERATION: SchemaGeneration = match SchemaGeneration::new(7) {
     Some(generation) => generation,
     None => unreachable!(),
 };
@@ -622,6 +634,19 @@ pub fn bootstrap_namespace(
             &barrier_bytes,
         ],
     )?;
+    let successor_bytes = encode_successor_serving_slot(&SuccessorServingSlot::Inactive)
+        .map_err(|_| PostgresSchemaError::InvalidPersistedState)?;
+    transaction.execute(
+        "INSERT INTO sunrise_edge.successor_serving
+             (chain_id_bytes, validator_id, atomicity_domain_id, serving)
+         VALUES ($1, $2, $3, $4)",
+        &[
+            &namespace.chain_id_bytes(),
+            &&namespace.validator_id().as_bytes()[..],
+            &&namespace.domain().as_bytes()[..],
+            &successor_bytes,
+        ],
+    )?;
     let metadata = inspect_namespace(&mut transaction, namespace)?
         .ok_or(PostgresSchemaError::NamespaceMetadataMismatch)?;
     if metadata.schema_generation() != schema_generation || metadata.writer_fence() != writer_fence
@@ -726,6 +751,70 @@ fn outgoing_barrier_rows(
     )
 }
 
+/// Reads only the canonical 24-byte slot header before fetching its body.
+/// Both queries use the same namespace and exact header/length predicate;
+/// ordinary engine callers enclose them in their fenced transaction.
+fn read_successor_serving(
+    client: &mut impl GenericClient,
+    namespace: &PostgresNamespace,
+    lock_suffix: &str,
+) -> Result<SuccessorServingSlot, PostgresSchemaError> {
+    let sql: String = format!(
+        "SELECT octet_length(serving)::BIGINT, substring(serving from 1 for 24)
+         FROM sunrise_edge.successor_serving
+         WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3
+         LIMIT 2{lock_suffix}"
+    );
+    let rows: Vec<postgres::Row> = client.query(
+        &sql,
+        &[
+            &namespace.chain_id_bytes(),
+            &&namespace.validator_id().as_bytes()[..],
+            &&namespace.domain().as_bytes()[..],
+        ],
+    )?;
+    if rows.len() != 1 {
+        return Err(PostgresSchemaError::InvalidPersistedState);
+    }
+    let length: i64 = rows[0]
+        .try_get(0)
+        .map_err(|_| PostgresSchemaError::InvalidPersistedState)?;
+    let header: Vec<u8> = rows[0]
+        .try_get(1)
+        .map_err(|_| PostgresSchemaError::InvalidPersistedState)?;
+    preflight_successor_serving_slot(
+        &header,
+        usize::try_from(length).map_err(|_| PostgresSchemaError::InvalidPersistedState)?,
+    )
+    .map_err(|_| PostgresSchemaError::InvalidPersistedState)?;
+    let body_sql: String = format!(
+        "SELECT CASE WHEN octet_length(serving)::BIGINT = $4
+                     AND substring(serving from 1 for 24) = $5
+                THEN serving ELSE NULL END
+         FROM sunrise_edge.successor_serving
+         WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3
+         LIMIT 2{lock_suffix}"
+    );
+    let bodies: Vec<postgres::Row> = client.query(
+        &body_sql,
+        &[
+            &namespace.chain_id_bytes(),
+            &&namespace.validator_id().as_bytes()[..],
+            &&namespace.domain().as_bytes()[..],
+            &length,
+            &header,
+        ],
+    )?;
+    if bodies.len() != 1 {
+        return Err(PostgresSchemaError::InvalidPersistedState);
+    }
+    let bytes: Vec<u8> = bodies[0]
+        .try_get::<_, Option<Vec<u8>>>(0)
+        .map_err(|_| PostgresSchemaError::InvalidPersistedState)?
+        .ok_or(PostgresSchemaError::InvalidPersistedState)?;
+    decode_successor_serving_slot(&bytes).map_err(|_| PostgresSchemaError::InvalidPersistedState)
+}
+
 /// Reads and validates one exact namespace metadata row.
 pub fn inspect_namespace(
     client: &mut impl GenericClient,
@@ -790,6 +879,7 @@ pub fn inspect_namespace(
         .ok_or(PostgresSchemaError::InvalidPersistedState)?;
     let barrier = decode_outgoing_barrier(&barrier_bytes)
         .map_err(|_| PostgresSchemaError::InvalidPersistedState)?;
+    read_successor_serving(client, namespace, "")?;
     Ok(Some(PostgresSchemaMetadata {
         schema_generation: POSTGRES_SCHEMA_GENERATION,
         writer_fence,
@@ -953,6 +1043,14 @@ fn load_namespace_metadata(
     namespace: &PostgresNamespace,
     lock_mode: MetadataLockMode,
 ) -> Result<PostgresSchemaMetadata, PreCommitFailure> {
+    load_namespace_observation(transaction, namespace, lock_mode).map(|(metadata, _slot)| metadata)
+}
+
+fn load_namespace_observation(
+    transaction: &mut postgres::Transaction<'_>,
+    namespace: &PostgresNamespace,
+    lock_mode: MetadataLockMode,
+) -> Result<(PostgresSchemaMetadata, SuccessorServingSlot), PreCommitFailure> {
     let suffix: &str = match lock_mode {
         MetadataLockMode::None => "",
         MetadataLockMode::Update => " FOR UPDATE",
@@ -1024,12 +1122,28 @@ fn load_namespace_metadata(
         .ok_or(PreCommitFailure::InvalidPersistedState)?;
     let barrier = decode_outgoing_barrier(&barrier_bytes)
         .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
-    Ok(PostgresSchemaMetadata {
+    let slot: SuccessorServingSlot = load_successor_serving(transaction, namespace, suffix)?;
+    let metadata: PostgresSchemaMetadata = PostgresSchemaMetadata {
         schema_generation: POSTGRES_SCHEMA_GENERATION,
         writer_fence,
         commit_sequence: parse_database_u64(&row, 7)?,
         barrier,
         source_instance_id,
+    };
+    Ok((metadata, slot))
+}
+
+/// Reads and strictly decodes the mandatory `successor_serving` row.
+/// Raw continuity only; core independently verifies membership and
+/// signing authority before trusting the returned slot.
+fn load_successor_serving(
+    client: &mut impl GenericClient,
+    namespace: &PostgresNamespace,
+    lock_suffix: &str,
+) -> Result<SuccessorServingSlot, PreCommitFailure> {
+    read_successor_serving(client, namespace, lock_suffix).map_err(|error| match error {
+        PostgresSchemaError::Database(error) => PreCommitFailure::from_database(&error),
+        _ => PreCommitFailure::InvalidPersistedState,
     })
 }
 
@@ -2934,6 +3048,37 @@ where
         remaining_deadline(context).map_err(PreCommitFailure::into_read_error)?;
         Ok(metadata.barrier())
     }
+    fn get_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<SuccessorServingSlot, DurableReadError> {
+        if !self.domain_is_bound(domain) {
+            return Err(DurableReadError::InvalidRequest(
+                runtime::RuntimeError::AtomicityDomainMismatch,
+            ));
+        }
+        let mut client = self
+            .acquire(context)
+            .map_err(PreCommitFailure::into_read_error)?;
+        let mut transaction = client
+            .build_transaction()
+            .isolation_level(IsolationLevel::Serializable)
+            .read_only(true)
+            .start()
+            .map_err(|error| PreCommitFailure::from_database(&error).into_read_error())?;
+        set_local_timeouts(&mut transaction, context).map_err(PreCommitFailure::into_read_error)?;
+        let (metadata, slot): (PostgresSchemaMetadata, SuccessorServingSlot) =
+            load_namespace_observation(&mut transaction, &self.namespace, MetadataLockMode::None)
+                .map_err(PreCommitFailure::into_read_error)?;
+        validate_operation_authority(metadata, context)
+            .map_err(PreCommitFailure::into_read_error)?;
+        transaction
+            .rollback()
+            .map_err(|error| PreCommitFailure::from_database(&error).into_read_error())?;
+        remaining_deadline(context).map_err(PreCommitFailure::into_read_error)?;
+        Ok(slot)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -3001,21 +3146,25 @@ where
             if let Err(reason) = set_local_timeouts(&mut transaction, context) {
                 return DurableCommitOutcome::Rejected(reason.into_commit_rejection());
             }
-            let metadata = match load_namespace_metadata(
-                &mut transaction,
-                &self.namespace,
-                MetadataLockMode::Update,
-            ) {
-                Ok(metadata) => metadata,
-                Err(reason) => {
-                    return DurableCommitOutcome::Rejected(reason.into_commit_rejection());
-                }
-            };
+            let (metadata, slot): (PostgresSchemaMetadata, SuccessorServingSlot) =
+                match load_namespace_observation(
+                    &mut transaction,
+                    &self.namespace,
+                    MetadataLockMode::Update,
+                ) {
+                    Ok(observation) => observation,
+                    Err(reason) => {
+                        return DurableCommitOutcome::Rejected(reason.into_commit_rejection());
+                    }
+                };
             if let Err(reason) = validate_operation_authority(metadata, context) {
                 return DurableCommitOutcome::Rejected(reason.into_commit_rejection());
             }
             if metadata.barrier().is_sealed() {
                 return DurableCommitOutcome::Rejected(DurableCommitRejection::NamespaceSealed);
+            }
+            if slot.is_serving() {
+                return DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace);
             }
             if let Err(reason) =
                 validate_state_reads(&mut transaction, context, &self.namespace, state.reads())
@@ -3202,21 +3351,25 @@ where
             if let Err(reason) = set_local_timeouts(&mut transaction, context) {
                 return DurableCommitOutcome::Rejected(reason.into_commit_rejection());
             }
-            let metadata = match load_namespace_metadata(
-                &mut transaction,
-                &self.namespace,
-                MetadataLockMode::Update,
-            ) {
-                Ok(metadata) => metadata,
-                Err(reason) => {
-                    return DurableCommitOutcome::Rejected(reason.into_commit_rejection());
-                }
-            };
+            let (metadata, slot): (PostgresSchemaMetadata, SuccessorServingSlot) =
+                match load_namespace_observation(
+                    &mut transaction,
+                    &self.namespace,
+                    MetadataLockMode::Update,
+                ) {
+                    Ok(observation) => observation,
+                    Err(reason) => {
+                        return DurableCommitOutcome::Rejected(reason.into_commit_rejection());
+                    }
+                };
             if let Err(reason) = validate_operation_authority(metadata, context) {
                 return DurableCommitOutcome::Rejected(reason.into_commit_rejection());
             }
             if metadata.barrier().is_sealed() {
                 return DurableCommitOutcome::Rejected(DurableCommitRejection::NamespaceSealed);
+            }
+            if slot.is_serving() {
+                return DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace);
             }
             let receipt = invocation.receipt();
             match receipt_already_exists(
@@ -3891,10 +4044,10 @@ mod tests {
     fn schema_identity_is_exact_and_generation_is_non_zero() {
         assert_eq!(
             POSTGRES_SCHEMA_IDENTITY,
-            *b"sunrise-edge/postgres/schema/v6\0"
+            *b"sunrise-edge/postgres/schema/v7\0"
         );
         assert_eq!(POSTGRES_SCHEMA_IDENTITY.len(), 32);
-        assert_eq!(POSTGRES_SCHEMA_GENERATION.get(), 6);
+        assert_eq!(POSTGRES_SCHEMA_GENERATION.get(), 7);
         assert!(INITIAL_MIGRATION_SQL.contains("CREATE TABLE sunrise_edge.state_records"));
         assert!(INITIAL_MIGRATION_SQL.contains("CREATE TABLE sunrise_edge.blobs"));
         assert_eq!(runtime::MAX_STATE_VALUE_BYTES, 33_554_432);
@@ -3906,6 +4059,11 @@ mod tests {
         assert!(INITIAL_MIGRATION_SQL.contains("created_chain_id_bytes BYTEA NOT NULL"));
         assert!(INITIAL_MIGRATION_SQL.contains("created_protocol_version BIGINT NOT NULL"));
         assert!(INITIAL_MIGRATION_SQL.contains("CHECK (created_chain_id_bytes = chain_id_bytes)"));
+        assert!(INITIAL_MIGRATION_SQL.contains("CREATE TABLE sunrise_edge.successor_serving"));
+        assert!(
+            INITIAL_MIGRATION_SQL
+                .contains("serving BYTEA NOT NULL CHECK (octet_length(serving) <= 17408)")
+        );
     }
 
     #[test]

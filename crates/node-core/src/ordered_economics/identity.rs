@@ -15,6 +15,8 @@
 //! revision. A second, *different* proposal or vote in the same view fails
 //! closed before any signature is exposed -- an honest leader/voter is never
 //! made to equivocate by a caller handing it conflicting work.
+use super::durable_keys::{OrderedKeyFamily, scoped_key};
+use super::policy::OrderedKeyScope;
 use super::*;
 use canonical_encoding::{decode_digest32, encode_digest32};
 use consensus::{ConsensusProposal, ConsensusVote, decode_proposal, decode_vote, encode_proposal};
@@ -48,6 +50,45 @@ pub(crate) fn ordered_vote_record_key(
 
 pub(crate) fn ordered_vote_high_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
     super::durable_keys::key(chain, super::durable_keys::OrderedKeyFamily::VoteHigh)
+}
+
+/// DR-0189 policy-scoped leader-proposal key. A chain-only scope keeps the
+/// exact historical builder above.
+pub(crate) fn scoped_leader_record_key(
+    scope: &OrderedKeyScope,
+    chain: &ChainId,
+    view: u64,
+) -> Result<Vec<u8>, NodeCoreError> {
+    if scope.is_successor() {
+        scoped_key(scope, chain, OrderedKeyFamily::LeaderProposal { view })
+    } else {
+        ordered_leader_record_key(chain, view)
+    }
+}
+
+/// DR-0189 policy-scoped local vote key.
+pub(crate) fn scoped_vote_record_key(
+    scope: &OrderedKeyScope,
+    chain: &ChainId,
+    view: u64,
+) -> Result<Vec<u8>, NodeCoreError> {
+    if scope.is_successor() {
+        scoped_key(scope, chain, OrderedKeyFamily::Vote { view })
+    } else {
+        ordered_vote_record_key(chain, view)
+    }
+}
+
+/// DR-0189 policy-scoped vote watermark key.
+pub(crate) fn scoped_vote_high_key(
+    scope: &OrderedKeyScope,
+    chain: &ChainId,
+) -> Result<Vec<u8>, NodeCoreError> {
+    if scope.is_successor() {
+        scoped_key(scope, chain, OrderedKeyFamily::VoteHigh)
+    } else {
+        ordered_vote_high_key(chain)
+    }
 }
 
 /// The exact signed leader proposal this replica produced for one view.
@@ -193,7 +234,11 @@ pub(crate) fn reconcile_leader_proposal<S: StructuredDurableDomainStateStore>(
     leader: ValidatorId,
     digest: Digest32,
 ) -> Result<(Vec<u8>, StateRevision, RetainedIdentity<ConsensusProposal>), OrderedEconomicsError> {
-    let key: Vec<u8> = ordered_leader_record_key(env.policy.context().chain_id(), view)?;
+    let key: Vec<u8> = scoped_leader_record_key(
+        env.policy.key_scope(),
+        env.policy.context().chain_id(),
+        view,
+    )?;
     let observed: VersionedStateValue =
         store.get_versioned_durable(context, env.policy.domain(), &key)?;
     match observed.value() {
@@ -225,7 +270,11 @@ pub(crate) fn reconcile_unsigned_leader_proposal<S: StructuredDurableDomainState
     env: &OrderedEconomicsEnvironment<'_>,
     unsigned: &ConsensusProposal,
 ) -> Result<(Vec<u8>, StateRevision, RetainedIdentity<ConsensusProposal>), OrderedEconomicsError> {
-    let key: Vec<u8> = ordered_leader_record_key(env.policy.context().chain_id(), unsigned.view)?;
+    let key: Vec<u8> = scoped_leader_record_key(
+        env.policy.key_scope(),
+        env.policy.context().chain_id(),
+        unsigned.view,
+    )?;
     let observed: VersionedStateValue =
         store.get_versioned_durable(context, env.policy.domain(), &key)?;
     match observed.value() {
@@ -278,10 +327,10 @@ pub(crate) fn reconcile_local_vote<S: StructuredDurableDomainStateStore>(
 ) -> Result<LocalVoteReconciliation, OrderedEconomicsError> {
     let chain: &ChainId = env.policy.context().chain_id();
     let domain: AtomicityDomainId = env.policy.domain();
-    let record_key: Vec<u8> = ordered_vote_record_key(chain, view)?;
+    let record_key: Vec<u8> = scoped_vote_record_key(env.policy.key_scope(), chain, view)?;
     let observed: VersionedStateValue =
         store.get_versioned_durable(context, domain, &record_key)?;
-    let high_key: Vec<u8> = ordered_vote_high_key(chain)?;
+    let high_key: Vec<u8> = scoped_vote_high_key(env.policy.key_scope(), chain)?;
     let observed_high: VersionedStateValue =
         store.get_versioned_durable(context, domain, &high_key)?;
     let high_water: u64 = match observed_high.value() {

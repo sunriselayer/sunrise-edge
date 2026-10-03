@@ -20,6 +20,7 @@ mod local_execution;
 pub mod ordered_economics;
 mod paid_execution;
 mod publication;
+pub mod successor;
 use execution::{ExecutionError, WasmExecutionEngine};
 use hashing::HashSuiteResolver;
 use http_body_util::LengthLimitError;
@@ -3767,6 +3768,10 @@ fn node_error_response(error: &NodeCoreError) -> Response {
         return transaction_auth_error_response(error);
     }
     let (status, code) = match error {
+        NodeCoreError::UnsupportedSuccessorControl => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "successor-control-unsupported",
+        ),
         NodeCoreError::InactiveImportNamespace => (
             StatusCode::CONFLICT,
             "inactive-import-namespace",

@@ -459,6 +459,18 @@ impl RegisteredCutFixture {
         plan.operation_context = operation_context;
         plan
     }
+    /// The genuine outgoing ABCD source, for the successor Seal producer.
+    pub(super) fn source(&self) -> &CausalFixture {
+        &self.source
+    }
+    /// The original epoch-e kind7 registration, for successor replay refusal.
+    pub(super) fn registration(&self) -> &OrderedCandidate {
+        &self.registration
+    }
+    /// The certified A->E paid request whose drained escrow the cut imports.
+    pub(super) fn funded_escrow(&self) -> [u8; 32] {
+        FUND
+    }
 }
 
 /// ABCD real signed-v4 genesis, generic Publish/Instantiate/Call, certified

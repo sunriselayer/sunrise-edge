@@ -729,7 +729,7 @@ pub(crate) fn admit_and_execute_leg<
     state_mutations: &mut Vec<StateMutationEntry>,
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
 ) -> AdmissionResult<AdmittedLeg> {
-    mutation_fence::require_ordinary_reader_namespace(store, context, domain)?;
+    mutation_fence::ordered_gate(ordered).require_reader(store, context, domain)?;
     if protocol_custody.is_none()
         && matches!(
             &custody_effect_mode,

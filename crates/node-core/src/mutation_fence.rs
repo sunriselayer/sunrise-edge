@@ -47,7 +47,8 @@ use local_instance_state::{
 #[cfg(test)]
 use local_instance_state::{encode_fastpath_epoch_record, encode_fastpath_lock_record};
 use runtime::{
-    DurableDomainStateStore, NamespaceLifecycle, StructuredStateReader, VersionedStateReader,
+    DurableDomainStateStore, NamespaceLifecycle, StructuredStateReader, SuccessorServingSlot,
+    VersionedStateReader,
 };
 
 /// Entry-specific live admission guard. The backend validates the current
@@ -97,6 +98,22 @@ fn require_unsealed(barrier: &runtime::OutgoingBarrier) -> Result<(), NodeCoreEr
     }
 }
 
+/// DR-0189 explicit refusal of an outgoing-epoch or genesis control entry
+/// point at a Serving first successor, read from the protected serving slot
+/// before any authentication or signing. Existing ordinary-namespace guards
+/// remain where present. This grants nothing on success: `Inactive` is never
+/// membership, readiness or serving permission.
+pub(crate) fn refuse_successor_serving<S: DurableDomainStateStore + ?Sized>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+) -> Result<(), NodeCoreError> {
+    match store.get_successor_serving(context, domain)? {
+        SuccessorServingSlot::Inactive => Ok(()),
+        SuccessorServingSlot::Serving(_) => Err(NodeCoreError::UnsupportedSuccessorControl),
+    }
+}
+
 fn require_ordinary_origin(lifecycle: &NamespaceLifecycle) -> Result<(), NodeCoreError> {
     if !lifecycle.is_ordinary() {
         return Err(NodeCoreError::InactiveImportNamespace);
@@ -124,6 +141,19 @@ fn read_and_fence<S: VersionedStateReader + ?Sized>(
     Ok(value)
 }
 
+/// The authority an owning handler executes under: the gate carried by the
+/// exact ordered admission, else the unchanged original namespace guards.
+/// Only the ordered engine constructs an admission, from its own invocation
+/// gate, so no direct caller can select successor authority.
+pub(crate) fn ordered_gate<'a>(
+    ordered: Option<&ordered_economics::OrderedLegAdmission<'a>>,
+) -> crate::serving_authority::ServingGate<'a> {
+    ordered.map_or(
+        crate::serving_authority::ServingGate::Original,
+        |admission| admission.gate,
+    )
+}
+
 /// Denies an untracked public business writer in the fresh causal profile.
 /// Only the ordered engine's private, exact committed-operation capability
 /// can admit an embedded economics leg. This does not grant lock reuse: the
@@ -138,7 +168,7 @@ pub(crate) fn fence_direct_or_ordered_writer<S: StructuredStateReader + ?Sized>(
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<(), NodeCoreError> {
-    require_ordinary_reader_namespace(store, context, domain)?;
+    ordered_gate(ordered).require_reader(store, context, domain)?;
     match ordered {
         Some(admission) if &admission.request_id == request_id => {
             fence_installed_external_request_lane(

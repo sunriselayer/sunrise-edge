@@ -266,6 +266,8 @@ where
     S: DurablePortableRepository + StructuredOutboxExclusionGuard,
     C: ConsensusSigner,
 {
+    // DR-0189: a first successor never produces a frozen frontier vote.
+    mutation_fence::refuse_successor_serving(store, context, domain)?;
     mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let chain: ChainId = expected.chain_id().clone();
     let epoch: Epoch = expected.epoch();

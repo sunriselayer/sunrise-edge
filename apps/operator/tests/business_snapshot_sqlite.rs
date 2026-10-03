@@ -484,6 +484,13 @@ impl DurableDomainStateStore for ObservedSource<'_> {
             .store
             .get_versioned_durable(context, domain, key)
     }
+    fn get_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, DurableReadError> {
+        self.fixture.store.get_successor_serving(context, domain)
+    }
     fn commit_durable(
         &self,
         _: &DurableOperationContext,

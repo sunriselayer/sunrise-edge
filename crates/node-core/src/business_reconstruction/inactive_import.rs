@@ -76,6 +76,23 @@ impl VerifiedImportPlan {
         &self.binding
     }
 
+    /// DR-0189 read-only view of the exact independently re-executed raw
+    /// rows. Used only by the private successor verifier to re-derive
+    /// next-set eligibility from the plan and to refuse epoch-scoped or live
+    /// lock rows. It is never a destination observation or admission token.
+    pub(crate) fn rows(&self) -> &[ImportRow] {
+        &self.rows
+    }
+
+    /// DR-0189: the exact progress a complete installation of this verified
+    /// plan ends at. Compared with installed successor records without
+    /// requiring the now-mutable business inventory to equal the plan again.
+    pub(crate) fn complete_progress(&self) -> &ImportProgress {
+        self.batches
+            .last()
+            .map_or(&self.initial, |batch: &ImportBatch| batch.next())
+    }
+
     fn progress_index(&self, progress: &ImportProgress) -> Result<usize, BusinessImportError> {
         if progress == &self.initial {
             return Ok(0);

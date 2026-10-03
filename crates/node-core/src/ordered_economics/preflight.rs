@@ -241,11 +241,14 @@ pub(crate) fn preflight<S: StructuredStateReader>(
 }
 
 /// Loads and identity-checks the committed bond row for `validator_id`.
+/// `authority` is the exact trusted key authority the candidate outer
+/// signature was authenticated against.
 fn committed_bond<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     validator_id: ValidatorId,
+    authority: Option<&ValidatorInfo>,
     missing: &'static str,
 ) -> Result<(FastPathBondRecord, Vec<u8>), OrderedEconomicsError> {
     let chain: &ChainId = env.policy.context().chain_id();
@@ -267,11 +270,9 @@ fn committed_bond<S: StructuredStateReader>(
     // against. A divergence means the installed row and the pinned set
     // disagree about who controls this validator: an operator/storage
     // inconsistency, never a stale candidate.
-    let registered: &ValidatorInfo = env.policy.registered_validator(validator_id).ok_or(
-        OrderedEconomicsError::Prerequisite(
-            "committed bond row names a validator outside the pinned set",
-        ),
-    )?;
+    let registered: &ValidatorInfo = authority.ok_or(OrderedEconomicsError::Prerequisite(
+        "committed bond row names a validator outside the pinned set",
+    ))?;
     if registered.signature_scheme != bond.authorization_scheme
         || registered.public_key.as_slice() != bond.authorization_key.as_slice()
     {
@@ -333,6 +334,8 @@ fn preflight_bond_lifecycle<S: StructuredStateReader>(
         context,
         env,
         signed.intent.validator_id,
+        env.policy
+            .bond_owner_authority(signed.intent.validator_id, &signed.intent.operation),
         "bond lifecycle requires an existing committed bond row",
     )?;
     // Jail is an evidence-driven state; only `Reactivate` may leave it. Any
@@ -399,6 +402,7 @@ fn preflight_bond_slash<S: StructuredStateReader>(
         context,
         env,
         intent.validator_id,
+        env.policy.registered_validator(intent.validator_id),
         "bond slash requires an existing committed bond row",
     )?;
     require_signed_predecessor(

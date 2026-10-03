@@ -132,6 +132,15 @@ impl DurableDomainStateStore for ScriptedDurableStore {
         // An explicitly constructed ordinary test fixture, not a wrapper.
         Ok(self.lifecycle.clone())
     }
+
+    fn get_successor_serving(
+        &self,
+        _: &DurableOperationContext,
+        _: AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, DurableReadError> {
+        // The mandatory protected slot of an ordinary scripted fixture.
+        Ok(runtime::SuccessorServingSlot::Inactive)
+    }
     fn get_versioned_durable(
         &self,
         _context: &DurableOperationContext,

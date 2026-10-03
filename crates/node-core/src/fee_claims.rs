@@ -92,6 +92,7 @@ pub use preparation::{
     FeeClaimPreparationRequest, FeeEscrowDiscoveryPage, FeeEscrowInspection, PreparedFeeClaim,
     discover_fee_escrows_page, inspect_fee_claim, inspect_fee_escrow, prepare_fee_claim,
 };
+pub(crate) use preparation::{inspect_fee_claim_gated, prepare_fee_claim_gated};
 
 pub use inventory::{
     FeeEscrowInventoryPage, FeeEscrowInventorySweep, verify_fee_escrow_inventory_all,
@@ -113,13 +114,13 @@ use codec::{
 #[derive(Debug)]
 pub enum FeeClaimError {
     /// Shared leg-admission/execution pipeline failure.
-    Admission(LocalExecutionAdmissionError),
+    Admission(Box<LocalExecutionAdmissionError>),
     /// `execution` crate typed-WASM or capability-construction failure.
     Execution(LocalExecutionError),
     /// Storage or node boundary failure.
     Node(NodeCoreError),
     /// DR-0133 historical-validator-set reload/re-verification failure.
-    Equivocation(equivocation::EquivocationEvidenceError),
+    Equivocation(Box<equivocation::EquivocationEvidenceError>),
     /// Fee-claim-specific invariant failed.
     Invalid(&'static str),
 }
@@ -137,7 +138,7 @@ impl fmt::Display for FeeClaimError {
 impl Error for FeeClaimError {}
 impl From<LocalExecutionAdmissionError> for FeeClaimError {
     fn from(error: LocalExecutionAdmissionError) -> Self {
-        Self::Admission(error)
+        Self::Admission(Box::new(error))
     }
 }
 impl From<LocalExecutionError> for FeeClaimError {
@@ -152,7 +153,7 @@ impl From<NodeCoreError> for FeeClaimError {
 }
 impl From<equivocation::EquivocationEvidenceError> for FeeClaimError {
     fn from(error: equivocation::EquivocationEvidenceError) -> Self {
-        Self::Equivocation(error)
+        Self::Equivocation(Box::new(error))
     }
 }
 impl From<codec::FeeClaimCodecError> for FeeClaimError {
@@ -431,6 +432,7 @@ pub fn verify_fee_claim_history<S: StructuredStateReader>(
     escrow_request_id: &[u8; 32],
 ) -> Result<FeeClaimVerificationReport, FeeClaimError> {
     verify_fee_claim_history_shared(
+        crate::serving_authority::ServingGate::Original,
         store,
         blob_store,
         context,
@@ -513,6 +515,7 @@ fn verify_uncharged_claim_absence_by_point_read<S: VersionedStateReader + ?Sized
 /// single bounded scanner page (used only by the read-only inventory sweep).
 #[allow(clippy::too_many_arguments)]
 fn verify_fee_claim_history_shared<S, UnchargedCheck, ChainVerify>(
+    gate: crate::serving_authority::ServingGate<'_>,
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -589,7 +592,8 @@ where
         certificate.epoch,
     )
     .map_err(|_| FeeClaimError::Invalid("fee claim certificate context"))?;
-    let validator_set: ValidatorSet = equivocation::load_historical_validator_set(
+    let validator_set: ValidatorSet = equivocation::load_certificate_validator_set(
+        gate,
         store,
         context,
         domain,
@@ -1165,16 +1169,35 @@ where
     // 10. chain-anchored historical validator set at the signed certificate
     // epoch, fenced into this same commit -- never current membership or
     // bond state.
-    let validator_set: ValidatorSet = equivocation::load_historical_validator_set_fenced(
-        store,
-        context,
-        domain,
-        resolver,
-        signed.intent.context.chain_id(),
-        signed.intent.context.protocol_version(),
-        signed.intent.certificate_epoch,
-        &mut reads,
-    )?;
+    // DR-0189: an imported epoch-e escrow at a verified first successor is
+    // anchored by the verified outgoing committee, since successor
+    // activation installs no legacy transition row. Every other epoch keeps
+    // the existing restart-verified transition chain.
+    let validator_set: ValidatorSet = match mutation_fence::ordered_gate(ordered)
+        .predecessor_certificate_anchor(signed.intent.certificate_epoch)
+    {
+        Some(anchor) => equivocation::load_successor_predecessor_set_fenced(
+            store,
+            context,
+            domain,
+            resolver,
+            signed.intent.context.chain_id(),
+            signed.intent.context.protocol_version(),
+            signed.intent.certificate_epoch,
+            anchor,
+            &mut reads,
+        )?,
+        None => equivocation::load_historical_validator_set_fenced(
+            store,
+            context,
+            domain,
+            resolver,
+            signed.intent.context.chain_id(),
+            signed.intent.context.protocol_version(),
+            signed.intent.certificate_epoch,
+            &mut reads,
+        )?,
+    };
     let validator = validator_set
         .get(signed.intent.validator_id)
         .ok_or(FeeClaimError::Invalid(
@@ -1201,6 +1224,7 @@ where
         let new_settlement: FastPathSettlementRecord =
             preparation::advance_claim_row(&settlement, share_index, None)?;
         return prepare_claim_invocation(
+            mutation_fence::ordered_gate(ordered),
             store,
             context,
             domain,
@@ -1250,6 +1274,7 @@ where
         return Err(FeeClaimError::Invalid("signed payout ref mismatch"));
     }
     prepare_claim_invocation(
+        mutation_fence::ordered_gate(ordered),
         store,
         context,
         domain,
@@ -1276,6 +1301,7 @@ where
 /// sender-nonce range for a positive claim), and the one outer receipt.
 #[allow(clippy::too_many_arguments)]
 fn prepare_claim_invocation<S: VersionedStateReader + ?Sized>(
+    gate: crate::serving_authority::ServingGate<'_>,
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1332,7 +1358,8 @@ fn prepare_claim_invocation<S: VersionedStateReader + ?Sized>(
     // provenance rows covering both are derived here, over the complete write
     // set, before the atomic commit. A handoff-capable store refuses the
     // settlement without that evidence; a historical store is unaffected.
-    logical_generation::admit_application(
+    logical_generation::admit_application_gated(
+        gate,
         store,
         context,
         domain,

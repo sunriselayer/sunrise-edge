@@ -141,6 +141,7 @@ fn completion_kernel_head_disagreement_cannot_publish_a_receipt_or_progress() {
         },
     )];
     let result = prepared.confirm(
+        crate::serving_authority::ServingGate::Original,
         &store,
         &context(),
         domain(),
@@ -184,7 +185,14 @@ fn completion_kernel_disagreeing_state_contributions_stop_before_commit() {
             StateMutation::Put(vec![99]),
         )
         .unwrap();
-    let result = prepared.confirm(&store, &context(), domain(), coordinator, &[]);
+    let result = prepared.confirm(
+        crate::serving_authority::ServingGate::Original,
+        &store,
+        &context(),
+        domain(),
+        coordinator,
+        &[],
+    );
     assert!(matches!(
         result,
         Err(OrderedEconomicsError::Prerequisite(_))
@@ -213,6 +221,7 @@ fn completion_kernel_wrong_domain_and_stale_writer_never_confirm_preparation() {
     let store: MemoryDurableStateStore = MemoryDurableStateStore::new(context().writer_fence());
     let foreign: AtomicityDomainId = AtomicityDomainId::new([22; 32]).unwrap();
     let result = structural_preparation().confirm(
+        crate::serving_authority::ServingGate::Original,
         &store,
         &context(),
         foreign,
@@ -228,6 +237,7 @@ fn completion_kernel_wrong_domain_and_stale_writer_never_confirm_preparation() {
     let active: WriterFenceGeneration = WriterFenceGeneration::new(2).unwrap();
     store.set_active_writer_fence(active);
     let result = structural_preparation().confirm(
+        crate::serving_authority::ServingGate::Original,
         &store,
         &context(),
         domain(),

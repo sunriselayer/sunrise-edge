@@ -5,7 +5,7 @@ use abi::package_types::PackageOrigin;
 use execution::publication::{MAX_PUBLICATION_SUBMISSION_BYTES, decode_publication_submission};
 
 pub(super) const PUBLICATION_PATH: &str = "/v1/contracts/publications";
-const QUERY_PATH: &str = "/v1/contracts/publications/{publisher}/{origin_seed}";
+pub(super) const QUERY_PATH: &str = "/v1/contracts/publications/{publisher}/{origin_seed}";
 
 /// The one direct/legacy mutating publication route. A certified-only
 /// FastVote router (DR-0148, see [`crate::fastvote`]) never calls this.

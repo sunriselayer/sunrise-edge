@@ -126,6 +126,7 @@ pub fn verify_fee_escrow_inventory_page<S: DurableStateKeyScanner>(
             return Err(FeeClaimError::Invalid("fee escrow inventory key mismatch"));
         }
         let verified: FeeClaimVerificationReport = verify_fee_claim_history_scanned(
+            crate::serving_authority::ServingGate::Original,
             store,
             blob_store,
             context,
@@ -166,6 +167,7 @@ pub fn verify_fee_escrow_inventory_page<S: DurableStateKeyScanner>(
 /// See `docs/architecture/decisions/0140-fastvote-payout-proof-and-escrow-inventory.md`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn verify_fee_claim_history_scanned<S: DurableStateKeyScanner>(
+    gate: crate::serving_authority::ServingGate<'_>,
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -176,6 +178,7 @@ pub(super) fn verify_fee_claim_history_scanned<S: DurableStateKeyScanner>(
     escrow_request_id: &[u8; 32],
 ) -> Result<FeeClaimVerificationReport, FeeClaimError> {
     super::verify_fee_claim_history_shared(
+        gate,
         store,
         blob_store,
         context,

@@ -19,6 +19,7 @@ pub mod fastvote_drain;
 pub mod fastvote_frontier;
 pub mod fastvote_published;
 pub mod fastvote_retained_publication;
+pub mod fee_claims;
 pub mod ordered_economics;
 pub mod ordered_history;
 
@@ -53,6 +54,12 @@ pub use fastvote_published::{
     FASTVOTE_PUBLISHED_APPLY_PATH, FASTVOTE_PUBLISHED_APPLY_REQUEST_TYPE_ID,
     FastVotePublishedApplyRequest, FastVotePublishedApplyRequestError,
     MAX_FASTVOTE_AVAILABILITY_CERTIFICATE_BYTES, MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES,
+};
+pub use fee_claims::{
+    FEE_CLAIM_INTENT_MEDIA_TYPE, FEE_CLAIM_PREPARE_PATH,
+    FEE_CLAIM_PREPARE_REQUEST_ENCODING_VERSION, FEE_CLAIM_PREPARE_REQUEST_MEDIA_TYPE,
+    FEE_CLAIM_PREPARE_REQUEST_TYPE_ID, FeeClaimPrepareRequest, FeeClaimPrepareRequestError,
+    MAX_FEE_CLAIM_PREPARE_LEG_BYTES, MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES,
 };
 pub use ordered_history::{
     MAX_ORDERED_HISTORY_CHUNK_RESPONSE_BYTES, MAX_ORDERED_HISTORY_COMPONENT_REQUEST_BYTES,

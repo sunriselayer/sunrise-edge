@@ -119,11 +119,11 @@ fn stage_prepared_material_refuses_an_over_bound_closure_before_any_write() {
     .expect_err("a closure over the retention bound must be refused");
     assert!(
         matches!(
-            error,
-            FastPathError::Publication(PublicationRetentionError::ClosureTooLarge {
+            &error,
+            FastPathError::Publication(inner) if matches!(inner.as_ref(), PublicationRetentionError::ClosureTooLarge {
                 actual,
                 max,
-            }) if actual == MAX_RETAINED_ARTIFACTS + 1 && max == MAX_RETAINED_ARTIFACTS
+            } if *actual == MAX_RETAINED_ARTIFACTS + 1 && *max == MAX_RETAINED_ARTIFACTS)
         ),
         "unexpected error: {error:?}"
     );
@@ -291,6 +291,14 @@ impl DurableDomainStateStore for ControlledPrepareStore<'_> {
         domain: runtime::AtomicityDomainId,
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
+    }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
     }
     fn get_versioned_durable(
         &self,

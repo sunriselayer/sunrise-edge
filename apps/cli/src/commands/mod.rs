@@ -16,3 +16,4 @@ mod paid_execution;
 mod publication;
 pub mod receipt;
 pub mod standard_asset;
+mod successor_pins;

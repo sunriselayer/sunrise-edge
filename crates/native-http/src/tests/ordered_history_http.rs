@@ -111,6 +111,16 @@ impl TrackedStore {
 }
 
 impl DurableDomainStateStore for TrackedStore {
+    fn get_successor_serving(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, DurableReadError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.contexts.lock().unwrap().push(*context);
+        self.inner.get_successor_serving(context, domain)
+    }
+
     fn get_outgoing_barrier(
         &self,
         context: &DurableOperationContext,

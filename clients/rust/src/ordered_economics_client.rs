@@ -872,6 +872,33 @@ fn broadcast_tick<T: Transport>(
     Ok(())
 }
 
+/// Drives exactly one candidate-free round through the same leader routing,
+/// proposal verification, per-peer vote filtering and quorum certificate
+/// formation as [submit_candidate]. Used for verified liveness and catch-up
+/// rounds, including first-successor e+1 rounds under the policy returned
+/// by the successor workflow loader. It never builds or signs a candidate.
+pub fn drive_empty_ordered_round<T: Transport>(
+    endpoints: &[OrderedEconomicsEndpoint<T>],
+    policy: &OrderedEconomicsPolicy,
+    expected_parent: Option<&QuorumCertificate>,
+    overall_deadline: Instant,
+    per_request_cap: Duration,
+    artifacts: &mut dyn ArtifactSink,
+) -> Result<RoundOutcome, OrderedEconomicsNetworkError> {
+    validate_ordered_economics_endpoints(endpoints, policy.engine().validator_set())?;
+    run_one_round(
+        endpoints,
+        policy,
+        None,
+        None,
+        0,
+        overall_deadline,
+        per_request_cap,
+        artifacts,
+        expected_parent,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_one_round<T: Transport>(
     endpoints: &[OrderedEconomicsEndpoint<T>],

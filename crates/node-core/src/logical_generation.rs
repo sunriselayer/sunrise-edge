@@ -724,7 +724,19 @@ pub enum OrderedRowClass {
 pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
     let suffix: &[u8] =
         key.strip_prefix(ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX)?;
-    const CONTROL: [&[u8]; 3] = [b"state/", b"applied-height/", b"candidate/"];
+    // DR-0189 appends exactly the five epoch-scoped live signing-safety
+    // families. The existing lists and every chain-only identity family stay
+    // exactly as before.
+    const CONTROL: [&[u8]; 8] = [
+        b"state/",
+        b"applied-height/",
+        b"candidate/",
+        b"epoch-state/",
+        b"epoch-applied-height/",
+        b"epoch-vote-high/",
+        b"epoch-leader-proposal/",
+        b"epoch-vote/",
+    ];
     const HISTORY: [&[u8]; 4] = [b"header/", b"outcome/", b"freeze/", b"drain-set/"];
     const LOCAL_PROGRESS: [&[u8]; 7] = [
         b"frontier-progress/",
@@ -864,6 +876,59 @@ fn decode_installed_profile(
     }
 }
 
+/// DR-0189 opaque generation-floor scope.
+///
+/// The original namespace derives every generation above the installed
+/// profile genesis floor, unchanged. A verified first successor derives
+/// above the verified cut binding floor instead. No module outside this one
+/// can name the inner representation or build a successor variant: the only
+/// successor constructors take a warrant, whose floor comes only from the
+/// verified cut binding of successor evidence. The floor is the only
+/// accessor. Provenance observation epochs stay the owning row context
+/// epochs, exactly as for the original namespace, so an imported epoch-e row
+/// (for example a fee escrow settlement) keeps its own hash epoch.
+/// The successor anchor binding deliberately does not go through this scope:
+/// activation asserts the scoped epoch-state root and every live successor
+/// commit rechecks the exact protected serving record carrying the anchor.
+pub(crate) struct GenerationScope(Scope);
+
+enum Scope {
+    Original { floor: ExecutionGeneration },
+    Successor { floor: ExecutionGeneration },
+}
+
+impl GenerationScope {
+    /// Original-namespace scope: the authenticated profile genesis floor.
+    pub(crate) const fn from_profile(profile: &LogicalProfileRecord) -> Self {
+        Self(Scope::Original {
+            floor: profile.genesis_floor,
+        })
+    }
+
+    /// Successor scope of one activation, from verified evidence only.
+    pub(crate) fn for_activation(warrant: &crate::serving_authority::ActivationWarrant) -> Self {
+        Self::successor(warrant.policy_inputs())
+    }
+
+    /// Successor scope of one live invocation, from verified evidence only.
+    pub(crate) fn for_live(warrant: &crate::serving_authority::LiveWarrant<'_>) -> Self {
+        Self::successor(warrant.policy_inputs())
+    }
+
+    fn successor(inputs: &crate::serving_authority::SuccessorPolicyInputs) -> Self {
+        Self(Scope::Successor {
+            floor: inputs.generation_floor(),
+        })
+    }
+
+    /// The generation floor every derivation under this scope must exceed.
+    pub(crate) const fn floor(&self) -> ExecutionGeneration {
+        match self.0 {
+            Scope::Original { floor } | Scope::Successor { floor } => floor,
+        }
+    }
+}
+
 /// Folds one key's exact observed revision into `reads` as a CAS fence.
 /// Derives `G = 1 + max(floor, every verified input generation)` from already
 /// verified, already CAS-fenced observations.
@@ -875,8 +940,13 @@ fn decode_installed_profile(
 ///
 /// A present input without matching authenticated provenance fails closed, and
 /// overflow is a typed refusal before any signature or commit.
+///
+/// The floor is the invocation scope floor: the profile genesis floor for
+/// the original namespace (byte-identical to the historical derivation) or
+/// the verified cut binding floor for a successor.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn derive<S: VersionedStateReader + ?Sized>(
+pub(crate) fn derive_scoped<S: VersionedStateReader + ?Sized>(
+    scope: &GenerationScope,
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -890,7 +960,7 @@ pub(crate) fn derive<S: VersionedStateReader + ?Sized>(
         return Err(invariant(SUBJECT_COUNT));
     }
     let keys: LogicalKeySpace<'_> = LogicalKeySpace::new(profile, resolver);
-    let floor: ExecutionGeneration = profile.genesis_floor;
+    let floor: ExecutionGeneration = scope.floor();
     let subjects: Vec<(Vec<u8>, StateRevision)> =
         logical_subjects(reads, nonce.map(|pending| pending.key.as_slice()))?;
     let mut folded: Folded = Folded {
@@ -974,6 +1044,33 @@ pub(crate) fn provenance_mutations<S: VersionedStateReader + ?Sized>(
         out.push(entry);
     }
     Ok(out)
+}
+
+/// [`provenance_mutations`] for a derivation made under `scope`: the derived
+/// generation must strictly exceed the scope floor. The rows are written at
+/// the derived generation, exactly like the original path.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn provenance_mutations_scoped<S: VersionedStateReader + ?Sized>(
+    scope: &GenerationScope,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    profile: &LogicalProfileRecord,
+    epoch: Epoch,
+    derived: &LogicalDerivation,
+    writes: &[LogicalWrite],
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<Vec<StateMutationEntry>, NodeCoreError> {
+    if derived.generation <= scope.floor() {
+        return Err(NodeCoreError::ExecutionGenerationRegression {
+            previous: scope.floor().get(),
+            attempted: derived.generation.get(),
+        });
+    }
+    provenance_mutations(
+        store, context, domain, resolver, profile, epoch, derived, writes, reads,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1531,14 +1628,62 @@ pub(crate) fn require_application_admissible(
     installed: &InstalledCommitmentProfile,
     derived: Option<&LogicalDerivation>,
 ) -> Result<(), NodeCoreError> {
+    match installed {
+        InstalledCommitmentProfile::Logical(record) => require_application_admissible_scoped(
+            &GenerationScope::from_profile(record),
+            installed,
+            derived,
+        ),
+        InstalledCommitmentProfile::Historical => {
+            require_application_admissible_scoped_historical(derived)
+        }
+    }
+}
+
+fn require_application_admissible_scoped_historical(
+    derived: Option<&LogicalDerivation>,
+) -> Result<(), NodeCoreError> {
+    match derived {
+        None => Ok(()),
+        Some(_) => Err(NodeCoreError::LogicalProfileApplicationUnsupported),
+    }
+}
+
+/// [`require_application_admissible`] under one invocation gate.
+pub(crate) fn require_application_admissible_gated(
+    gate: crate::serving_authority::ServingGate<'_>,
+    installed: &InstalledCommitmentProfile,
+    derived: Option<&LogicalDerivation>,
+) -> Result<(), NodeCoreError> {
+    match installed {
+        InstalledCommitmentProfile::Logical(record) => require_application_admissible_scoped(
+            &gate.generation_scope(record),
+            installed,
+            derived,
+        ),
+        InstalledCommitmentProfile::Historical => {
+            require_application_admissible_scoped_historical(derived)
+        }
+    }
+}
+
+/// [`require_application_admissible`] under an explicit [`GenerationScope`]:
+/// a logical store must carry a derivation strictly above the scope floor
+/// (the genesis floor for the original namespace, the verified cut binding
+/// floor for a first successor).
+pub(crate) fn require_application_admissible_scoped(
+    scope: &GenerationScope,
+    installed: &InstalledCommitmentProfile,
+    derived: Option<&LogicalDerivation>,
+) -> Result<(), NodeCoreError> {
     match (installed, derived) {
         (InstalledCommitmentProfile::Historical, None) => Ok(()),
-        (InstalledCommitmentProfile::Logical(record), Some(derivation)) => {
-            if derivation.generation > record.genesis_floor {
+        (InstalledCommitmentProfile::Logical(_), Some(derivation)) => {
+            if derivation.generation > scope.floor() {
                 Ok(())
             } else {
                 Err(NodeCoreError::ExecutionGenerationRegression {
-                    previous: record.genesis_floor.get(),
+                    previous: scope.floor().get(),
                     attempted: derivation.generation.get(),
                 })
             }
@@ -1712,7 +1857,44 @@ pub(crate) fn admit_application<S: VersionedStateReader + ?Sized>(
 ) -> Result<LogicalAdmission, NodeCoreError> {
     let installed: InstalledCommitmentProfile =
         fence_commitment_profile(store, context, domain, chain, reads)?;
-    admit_resolved(
+    admit_resolved_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        context,
+        domain,
+        resolver,
+        installed,
+        epoch,
+        head_reads,
+        object_mutations,
+        nonce,
+        state_mutations,
+        reads,
+    )
+}
+
+/// [`admit_application`] under one invocation gate: a successor derives and
+/// admits above its verified cut floor and writes provenance only at its
+/// verified epoch. The original gate is exactly [`admit_application`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn admit_application_gated<S: VersionedStateReader + ?Sized>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    chain: &ChainId,
+    epoch: Epoch,
+    head_reads: &[DurableObjectHeadRead],
+    object_mutations: &[DurableObjectMutationEntry],
+    nonce: Option<&PendingSenderNonceWrite>,
+    state_mutations: &mut Vec<StateMutationEntry>,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<LogicalAdmission, NodeCoreError> {
+    let installed: InstalledCommitmentProfile =
+        fence_commitment_profile(store, context, domain, chain, reads)?;
+    admit_resolved_gated(
+        gate,
         store,
         context,
         domain,
@@ -1748,6 +1930,38 @@ pub(crate) fn admit_resolved<S: VersionedStateReader + ?Sized>(
     state_mutations: &mut Vec<StateMutationEntry>,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<LogicalAdmission, NodeCoreError> {
+    admit_resolved_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        context,
+        domain,
+        resolver,
+        installed,
+        epoch,
+        head_reads,
+        object_mutations,
+        nonce,
+        state_mutations,
+        reads,
+    )
+}
+
+/// [`admit_resolved`] under one invocation gate.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn admit_resolved_gated<S: VersionedStateReader + ?Sized>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    installed: InstalledCommitmentProfile,
+    epoch: Epoch,
+    head_reads: &[DurableObjectHeadRead],
+    object_mutations: &[DurableObjectMutationEntry],
+    nonce: Option<&PendingSenderNonceWrite>,
+    state_mutations: &mut Vec<StateMutationEntry>,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<LogicalAdmission, NodeCoreError> {
     let Some(record) = installed.logical().cloned() else {
         require_application_admissible(&installed, None)?;
         return Ok(LogicalAdmission {
@@ -1755,8 +1969,9 @@ pub(crate) fn admit_resolved<S: VersionedStateReader + ?Sized>(
             derived: None,
         });
     };
-    let derived: LogicalDerivation = derive(
-        store, context, domain, resolver, &record, head_reads, nonce, reads,
+    let scope: GenerationScope = gate.generation_scope(&record);
+    let derived: LogicalDerivation = derive_scoped(
+        &scope, store, context, domain, resolver, &record, head_reads, nonce, reads,
     )?;
     let writes: Vec<LogicalWrite> = staged_writes(
         resolver,
@@ -1766,11 +1981,11 @@ pub(crate) fn admit_resolved<S: VersionedStateReader + ?Sized>(
         head_reads,
         nonce,
     )?;
-    let rows: Vec<StateMutationEntry> = provenance_mutations(
-        store, context, domain, resolver, &record, epoch, &derived, &writes, reads,
+    let rows: Vec<StateMutationEntry> = provenance_mutations_scoped(
+        &scope, store, context, domain, resolver, &record, epoch, &derived, &writes, reads,
     )?;
     state_mutations.extend(rows);
-    require_application_admissible(&installed, Some(&derived))?;
+    require_application_admissible_scoped(&scope, &installed, Some(&derived))?;
     Ok(LogicalAdmission {
         profile: installed,
         derived: Some(derived),

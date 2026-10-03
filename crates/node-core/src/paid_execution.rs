@@ -631,6 +631,7 @@ pub(crate) fn build_paid_admission<
     S: StructuredDurableDomainStateStore,
     E: PaidContractEngine + ?Sized,
 >(
+    gate: crate::serving_authority::ServingGate<'_>,
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -646,7 +647,7 @@ pub(crate) fn build_paid_admission<
     created_checkpoint: u64,
     nonce_mode: NonceMode,
 ) -> PaidResult<PaidAdmissionOutput> {
-    mutation_fence::require_ordinary_namespace(store, context, domain)?;
+    gate.require_live(store, context, domain)?;
     let intent: &PaidIntent = authenticated.intent();
     let current_request_id: [u8; 32] = intent.request_id;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
@@ -1361,19 +1362,21 @@ pub(crate) fn build_paid_admission<
     // this operation installs from the complete verified input set -- before any
     // caller can reserve, mutate or expose a signature. Overflow, regression,
     // missing, foreign or mismatched provenance are typed refusals here.
-    let logical: logical_generation::LogicalAdmission = logical_generation::admit_application(
-        store,
-        context,
-        domain,
-        resolver,
-        intent.context.chain_id(),
-        intent.context.epoch(),
-        &head_reads,
-        &object_mutations,
-        nonce_write.as_ref(),
-        &mut state_mutations,
-        &mut reads,
-    )?;
+    let logical: logical_generation::LogicalAdmission =
+        logical_generation::admit_application_gated(
+            gate,
+            store,
+            context,
+            domain,
+            resolver,
+            intent.context.chain_id(),
+            intent.context.epoch(),
+            &head_reads,
+            &object_mutations,
+            nonce_write.as_ref(),
+            &mut state_mutations,
+            &mut reads,
+        )?;
     Ok(PaidAdmissionOutput {
         event_digest,
         outcome,
@@ -1522,6 +1525,7 @@ pub fn handle_preflighted_paid_execution<
         &mut direct_profile_reads,
     )?;
     let mut admission: PaidAdmissionOutput = build_paid_admission(
+        crate::serving_authority::ServingGate::Original,
         store,
         blob_store,
         context,

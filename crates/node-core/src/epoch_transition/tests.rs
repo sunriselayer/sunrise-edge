@@ -953,6 +953,14 @@ impl runtime::DurableDomainStateStore for ActivateBetweenEpochReadsStore {
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
     }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -3973,11 +3981,11 @@ fn a_current_epoch_lock_still_blocks_a_fresh_prepare() {
     );
     assert!(matches!(
         result,
-        Err(fast_path::FastPathError::Admission(
+        Err(fast_path::FastPathError::Admission(error)) if matches!(error.as_ref(),
             crate::paid_execution::PaidExecutionAdmissionError::Invalid(
                 "object locked by a pending fast-path certificate"
             )
-        ))
+        )
     ));
 }
 
@@ -4014,11 +4022,11 @@ fn a_lock_stamped_a_future_epoch_fails_closed_at_a_fresh_prepare() {
     );
     assert!(matches!(
         result,
-        Err(fast_path::FastPathError::Admission(
+        Err(fast_path::FastPathError::Admission(error)) if matches!(error.as_ref(),
             crate::paid_execution::PaidExecutionAdmissionError::Invalid(
                 "fast-path lock stamped a future epoch"
             )
-        ))
+        )
     ));
 }
 
@@ -4339,6 +4347,14 @@ impl runtime::DurableDomainStateStore for IndeterminateOnceActivateStore {
         domain: runtime::AtomicityDomainId,
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
+    }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
     }
     fn get_versioned_durable(
         &self,
@@ -4797,6 +4813,14 @@ impl runtime::DurableDomainStateStore for FeePolicyRaceStore {
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
     }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -5030,6 +5054,14 @@ impl runtime::DurableDomainStateStore for BarrierGatedActivateStore {
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
     }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -5231,6 +5263,14 @@ impl runtime::DurableDomainStateStore for ActivateWinsPaidRaceStore {
         domain: runtime::AtomicityDomainId,
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
+    }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
     }
     fn get_versioned_durable(
         &self,

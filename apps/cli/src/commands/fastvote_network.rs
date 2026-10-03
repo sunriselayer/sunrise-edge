@@ -102,7 +102,7 @@ type DerivedReference<'a> = (&'a str, &'static str, Vec<u8>);
 /// top-level Standard Asset commands. Application construction remains in
 /// their ordinary generic paid-execution paths.
 pub(super) fn network_flag_specs() -> Vec<crate::args::FlagSpec> {
-    vec![
+    let mut flags: Vec<crate::args::FlagSpec> = vec![
         scalar("--fastvote-network"),
         scalar("--fastvote-genesis-manifest"),
         scalar("--fastvote-expected-genesis-digest"),
@@ -111,7 +111,9 @@ pub(super) fn network_flag_specs() -> Vec<crate::args::FlagSpec> {
         scalar("--fastvote-availability-certificate-out"),
         scalar("--fastvote-deadline-seconds"),
         scalar("--fastvote-per-request-cap-seconds"),
-    ]
+    ];
+    flags.extend(super::successor_pins::successor_flag_specs(true));
+    flags
 }
 
 pub(super) const MAX_DRAIN_SELECTION_ENTRIES: usize = MAX_FASTVOTE_NETWORK_ENDPOINTS;
@@ -341,6 +343,11 @@ pub(super) fn load_drain_endpoints_and_certifier(
     resolver: &sunrise_edge_client::HashSuiteResolver,
     context: &sunrise_edge_client::PublicationContext,
 ) -> Result<(Vec<FastVoteEndpoint<CliTransport>>, FastPathCertifier, u64), CliError> {
+    if super::successor_pins::successor_requested(parsed) {
+        return Err(invalid(
+            "successor-control-unsupported: drain and Freeze frontier actions are unavailable at a first successor",
+        ));
+    }
     let digest: [u8; 32] = decode_hex_32(
         "--fastvote-expected-genesis-digest",
         parsed.require("--fastvote-expected-genesis-digest")?,
@@ -396,6 +403,28 @@ pub(super) fn load_endpoints_and_profile(
         "--fastvote-expected-genesis-digest",
         parsed.require("--fastvote-expected-genesis-digest")?,
     )?;
+    // A successor is selected only by explicit local artifact flags; its
+    // verified e+1 committee and the caller signing context are checked
+    // here, before any fee/nonce query or signature.
+    if let Some(workflow) = super::successor_pins::load_successor_pins(
+        parsed,
+        manifest_path,
+        expected_digest,
+        resolver,
+        context,
+        None,
+    )? {
+        let admission: VerifiedAdmissionProfile = workflow.admission_profile().clone();
+        if let Some(value) = parsed.get("--request-id") {
+            let request: [u8; 32] = decode_hex_32("--request-id", value)?;
+            require_owned_lane(&admission, &request)?;
+        }
+        let endpoints: Vec<FastVoteEndpoint<CliTransport>> =
+            build_endpoints(&peers, admission.commitment_profile())?;
+        let certifier: FastPathCertifier = workflow.fastvote_certifier().clone();
+        validate_fastvote_endpoints(&endpoints, &certifier).map_err(failure)?;
+        return Ok((endpoints, certifier, admission));
+    }
     let trusted = load_trusted_fastvote_genesis_with_profile(
         Path::new(manifest_path),
         resolver,

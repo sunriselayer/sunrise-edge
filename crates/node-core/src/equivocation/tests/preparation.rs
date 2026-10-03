@@ -39,6 +39,14 @@ impl StructuredStateReader for EvidenceReader<'_> {
         self.store.get_namespace_lifecycle(operation, domain)
     }
 
+    fn read_successor_serving(
+        &self,
+        operation: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, DurableReadError> {
+        self.store.get_successor_serving(operation, domain)
+    }
+
     fn read_object_head(
         &self,
         operation: &DurableOperationContext,

@@ -38,6 +38,8 @@ mod seal_acceptance;
 mod seal_faults;
 #[path = "frozen_completion/seal_signing.rs"]
 mod seal_signing;
+#[path = "frozen_completion/successor_activation.rs"]
+mod successor_activation;
 
 pub(super) fn registration_generic_prefix(fixture: &CausalFixture) -> Vec<CertifiedPaidMaterial> {
     preseal_cut_contracts::generic_import_prefix(fixture)

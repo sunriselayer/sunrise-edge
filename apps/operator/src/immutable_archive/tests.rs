@@ -118,7 +118,7 @@ fn unowned_temporary_collision_is_not_removed_or_accepted() {
     let collision: PathBuf = archive
         .staging()
         .unwrap()
-        .path
+        .path()
         .join(format!(".cut-{}-123.tmp", std::process::id()));
     std::fs::write(&collision, b"not ours").unwrap();
     assert!(
@@ -185,7 +185,7 @@ fn archive_root_and_ancestor_symlinks_refuse_before_artifact_reads() {
 fn staging_orphans_are_not_final_inventory_and_never_adopted_or_deleted() {
     let directory: TestDirectory = TestDirectory::new();
     let archive: ImmutableArchive = ImmutableArchive::open(&directory.0).unwrap();
-    let orphan: PathBuf = archive.staging().unwrap().path.join(".cut-123-0.tmp");
+    let orphan: PathBuf = archive.staging().unwrap().path().join(".cut-123-0.tmp");
     std::fs::write(&orphan, b"not the reconstructed component").unwrap();
     drop(archive);
     let resumed: ImmutableArchive = ImmutableArchive::open(&directory.0).unwrap();
@@ -206,7 +206,7 @@ fn staging_orphans_are_not_final_inventory_and_never_adopted_or_deleted() {
     let final_prefix: PathBuf = directory.0.join(".cut-123-0.tmp");
     std::fs::write(&final_prefix, b"foreign final artifact").unwrap();
     assert!(resumed.names().unwrap().contains(".cut-123-0.tmp"));
-    let unknown: PathBuf = resumed.staging().unwrap().path.join("unknown.bin");
+    let unknown: PathBuf = resumed.staging().unwrap().path().join("unknown.bin");
     std::fs::write(&unknown, b"not an owned temporary name").unwrap();
     assert!(resumed.names().is_err());
     assert!(ImmutableArchive::open(&directory.0).is_err());
@@ -231,6 +231,23 @@ fn read_only_archive_never_creates_staging_or_publishes() {
     assert!(existing.publish("new.bin", b"no").is_err());
 }
 
+#[test]
+fn sdk_reader_never_creates_the_operator_staging_role() {
+    let directory: TestDirectory = TestDirectory::new();
+    std::fs::write(directory.0.join("component.bin"), b"exact").unwrap();
+    let reader: ImmutableArchiveReader = ImmutableArchiveReader::open(&directory.0).unwrap();
+    assert_eq!(reader.read("component.bin", 5).unwrap(), b"exact");
+    assert_eq!(reader.names().unwrap().len(), 1);
+    assert!(reader.staging().is_none());
+    assert!(!directory.0.join(STAGING_DIRECTORY).exists());
+
+    let writer: ImmutableArchive = ImmutableArchive::open(&directory.0).unwrap();
+    assert!(directory.0.join(STAGING_DIRECTORY).is_dir());
+    assert!(writer.publish("published.bin", b"complete").unwrap());
+    let saved: ImmutableArchiveReader = ImmutableArchiveReader::open(&directory.0).unwrap();
+    assert_eq!(saved.read("published.bin", 8).unwrap(), b"complete");
+}
+
 #[cfg(unix)]
 #[test]
 fn staging_symlink_substitution_and_unknown_role_names_refuse() {
@@ -238,7 +255,7 @@ fn staging_symlink_substitution_and_unknown_role_names_refuse() {
     let archive: ImmutableArchive = ImmutableArchive::open(&directory.0).unwrap();
     let outside: PathBuf = directory.0.join("outside.bin");
     std::fs::write(&outside, b"unchanged").unwrap();
-    let stage: PathBuf = archive.staging().unwrap().path.clone();
+    let stage: PathBuf = archive.staging().unwrap().path().to_path_buf();
     let link: PathBuf = stage.join(".cut-123-0.tmp");
     std::os::unix::fs::symlink(&outside, &link).unwrap();
     assert!(archive.names().is_err());
