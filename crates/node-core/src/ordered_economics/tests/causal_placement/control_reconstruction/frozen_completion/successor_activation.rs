@@ -1519,6 +1519,62 @@ fn successor_ordered_claim_settles_imported_epoch_e_escrow_above_cut_floor() {
         "the drained escrow is charged"
     );
 
+    // Read-only client construction uses the actual verified predecessor
+    // history through the SAME invocation gate, not an ordinary-genesis
+    // lookup or an unchecked inspection DTO. No target is modified.
+    let selector = || crate::serving_authority::SuccessorFeeClaimInspection {
+        escrow_request_id: PAID_REQUEST,
+        validator_id: network.signers[claimant].id,
+        leg_sender: *network.signers[claimant].id.as_bytes(),
+    };
+    for index in 0..world.targets.len() {
+        let view: crate::fee_claims::FeeClaimInspection =
+            crate::serving_authority::inspect_fee_claim_successor(
+                &world.warrant(index),
+                &world.targets[index].0,
+                &world.targets[index].1,
+                &network.resolver,
+                &network.history,
+                &world.next_base,
+                selector(),
+            )
+            .unwrap();
+        assert_eq!(view.escrow.settlement, imported);
+        assert_eq!(view.entitlement.validator_id, network.signers[claimant].id);
+        assert_eq!(
+            view.entitlement.authorization_key,
+            *network.signers[claimant].id.as_bytes()
+        );
+        assert!(view.entitlement.amount > 0);
+        assert!(view.execution.is_some());
+    }
+    assert!(
+        crate::serving_authority::inspect_fee_claim_successor(
+            &world.warrant(0),
+            &world.targets[1].0,
+            &world.targets[1].1,
+            &network.resolver,
+            &network.history,
+            &world.next_base,
+            selector(),
+        )
+        .is_err(),
+        "an inspection warrant cannot be used on another issuer"
+    );
+    assert!(
+        crate::serving_authority::inspect_fee_claim_successor(
+            &world.warrant(0),
+            &world.targets[0].0,
+            &world.targets[0].1,
+            &network.resolver,
+            &network.history,
+            &network.leg_policy,
+            selector(),
+        )
+        .is_err(),
+        "inspection requires the exact e+1 execution policy"
+    );
+
     // Preparation refuses a non-successor leg policy and a missing escrow.
     let leg: Vec<u8> = successor_split_leg(&world, PAID_REQUEST, claim, &network.signers[claimant]);
     let request = |escrow: [u8; 32]| crate::fee_claims::FeeClaimPreparationRequest {

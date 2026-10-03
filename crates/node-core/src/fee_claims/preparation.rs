@@ -301,7 +301,42 @@ pub fn inspect_fee_claim<S: DurableStateKeyScanner>(
     leg_sender: [u8; 32],
     leg_policy: &LocalExecutionPolicy,
 ) -> Result<FeeClaimInspection, FeeClaimError> {
-    let escrow: FeeEscrowInspection = inspect_fee_escrow(
+    inspect_fee_claim_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        blob_store,
+        operation,
+        domain,
+        resolver,
+        history,
+        expected,
+        escrow_request_id,
+        validator_id,
+        leg_sender,
+        leg_policy,
+    )
+}
+
+/// The existing read-only inspection under the owning invocation gate.
+/// The gate selects only verified historical committee authority; it does
+/// not replace canonical history, resource, policy or object verification.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn inspect_fee_claim_gated<S: DurableStateKeyScanner>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    blob_store: &dyn BlobStore,
+    operation: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    escrow_request_id: [u8; 32],
+    validator_id: ValidatorId,
+    leg_sender: [u8; 32],
+    leg_policy: &LocalExecutionPolicy,
+) -> Result<FeeClaimInspection, FeeClaimError> {
+    let escrow: FeeEscrowInspection = inspect_fee_escrow_gated(
+        gate,
         store,
         blob_store,
         operation,

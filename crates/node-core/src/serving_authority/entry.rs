@@ -14,6 +14,7 @@ use consensus::{AvailabilityVote, ConsensusSigner, FastVote};
 use execution::local_execution::LocalExecutionPolicy;
 use execution::paid_execution::{PaidContractEngine, PaidFeePolicy};
 use hashing::HashSuiteResolver;
+use protocol_types::ValidatorId;
 use runtime::{BlobStore, StructuredDurableDomainStateStore};
 
 /// Trusted local execution composition of one successor FastVote request.
@@ -218,5 +219,55 @@ where
         engine,
         request,
         created_checkpoint,
+    )
+}
+
+/// Untrusted selectors for a read-only claimant inspection. A leg sender
+/// selects a nonce and is not certificate-epoch claimant authority.
+pub struct SuccessorFeeClaimInspection {
+    /// Existing certified escrow to inspect.
+    pub escrow_request_id: [u8; 32],
+    /// Claimant whose actual historical entitlement is requested.
+    pub validator_id: ValidatorId,
+    /// Public execution sender whose nonce will be observed.
+    pub leg_sender: [u8; 32],
+}
+
+/// Inspect the public inputs of an imported claim through the same owning
+/// verifier as ordinary inspection, under a fresh issuer-bound warrant.
+/// This read-only offline profile requires quiescence just like ordinary
+/// inspection; it reserves no nonce, generation or entitlement.
+pub fn inspect_fee_claim_successor<S: runtime::DurableStateKeyScanner>(
+    warrant: &LiveWarrant<'_>,
+    store: &S,
+    blob_store: &dyn BlobStore,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    leg_policy: &LocalExecutionPolicy,
+    request: SuccessorFeeClaimInspection,
+) -> Result<crate::fee_claims::FeeClaimInspection, crate::fee_claims::FeeClaimError> {
+    require_successor_scope(warrant, resolver)?;
+    let context: &PublicationContext = warrant.policy_inputs().context();
+    if leg_policy.context() != context {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "successor claim inspection policy is not the verified e+1 scope",
+        )
+        .into());
+    }
+    let domain: AtomicityDomainId = warrant.policy_inputs().domain();
+    ServingGate::Successor(warrant).require_live(store, warrant.context(), domain)?;
+    crate::fee_claims::inspect_fee_claim_gated(
+        ServingGate::Successor(warrant),
+        store,
+        blob_store,
+        warrant.context(),
+        domain,
+        resolver,
+        history,
+        context,
+        request.escrow_request_id,
+        request.validator_id,
+        request.leg_sender,
+        leg_policy,
     )
 }

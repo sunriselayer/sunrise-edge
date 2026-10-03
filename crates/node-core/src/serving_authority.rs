@@ -54,7 +54,8 @@ pub(crate) mod tests;
 
 pub use activation::{SuccessorActivationOutcome, activate_successor};
 pub use entry::{
-    SuccessorFastVoteComposition, apply_successor, prepare_fee_claim_successor, prepare_successor,
+    SuccessorFastVoteComposition, SuccessorFeeClaimInspection, apply_successor,
+    inspect_fee_claim_successor, prepare_fee_claim_successor, prepare_successor,
     query_request_receipt_successor, retain_publication_successor,
 };
 pub use frames::{

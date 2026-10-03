@@ -180,93 +180,60 @@ Opus explicitly approved that exact head; required CI lanes and the aggregate
 and signed Freeze height, refusing unsupported candidate kinds in the shared
 pure authenticator and other controls before signing. That preparatory PR
 implements none of the functional producer described below.
-Functional implementation is integrated locally on the in-progress
-`codex/first-successor-serving-implementation-1003` branch, not merged or accepted.
-The required protected slot, codecs, memory/shared-SQL/SQLite storage ports and
-PG metadata refusal are implemented; workspace all-target type checking and
-the focused storage tests pass. Independent Node/Rust vectors agree.
-Genuine accepted terminal-Seal evidence now activates four separate file-backed
-SQLite targets over the same eligible committee. Tests cover wrong local key,
-same-length certificate substitution, foreign-handle warrant refusal, a real
-e+1 Tick advancing ordered state, reconciliation preserving that state, and
-close/reopen/refencing. This is not the A/B/C/D -> A/B/C/E host/CLI acceptance.
-Readiness signing refuses the protected Serving slot; native HTTP classifies
-the typed unsupported control as a permanent 4xx, not a retryable 503.
-The shared invocation gate now connects the existing ordered, FastVote,
-availability-ACK, certified paid-execution and receipt handlers to the protected
-successor ports. Five genuine successor tests pass, including an e+1 ordered
-round and quorum-certified paid Call on an imported epoch-e instance, generation
-above the cut floor, exact apply replay, and policy/epoch tamper refusal. These
-are in-process tests over four independent files, not shipped-host acceptance.
-The two new mandatory-slot PostgreSQL tests also pass against a real disposable
-PostgreSQL instance; that focused result is not the full selected PG gate and
-does not add a PG successor-activation capability or PG requirement for other stores.
-Imported epoch-e escrow claims now also settle through genuine e+1 ordered
-rounds, with identical settlement, payout/escrow object and sender-nonce
-provenance above the cut floor on all four replicas, and completed-claim replay
-refusal without reapplication. The archive integration tests pass exact/short/
-oversized certificate and held-directory replacement/symlink checks. All ten
-successor tests pass, now including genuine A/B/C/D -> A/B/C/E registration,
-readiness retained by the same four imports, accepted terminal Seal, activation
-and an e+1 quorum. They prove retired D cannot activate/resolve/vote, but can
-claim its imported predecessor escrow and unbond its own imported bond. Its
-first-successor withdrawal authenticates D and refuses precisely on the
-genuine future unlock rule, without signing or state changes. Authenticated
-unsupported control carriers are refused in observation and committed recovery.
-The five replacement-specific tests also pass retired-D FastVote/ACK refusal
-with zero signatures and unchanged state, followed by a genuine current-member
-quorum for the same valid request. The stored-control vote preview and observation
-both refuse before signing or mutation, using a genuine three-member Byzantine
-chain with trusted-clock view skips. This remains in-process evidence, not four
-shipped hosts. A genuinely committed rejected Seal is unreachable: owning
-warrant failure stops instead of retaining a rejection; substituted archive
-components are separately rejected by their digest checks.
-The real loopback-only successor host now mounts authenticated ordered,
-FastVote, certified paid-execution, publication/ACK and query routes. Its
-per-request authority reconstruction never falls back to original-genesis
-serving. The HTTP fee-claim preparation and successor-scoped history routes,
-SDK loader and explicit all-or-none CLI successor pins are now implemented.
-The shared SDK owns bounded held-handle archive reads; the operator wraps that
-reader with the existing publication writer. The public signing API requires
-verified successor authority, verifies the exact current/predecessor claimant
-committee and execution-leg context, and derives its resolver from that same
-authority. It cannot skip verification or accept a caller-selected schedule.
-Workspace all-target type checking and strict lint pass. The native-HTTP,
-CLI, SDK and operator library regressions pass 524 cases; archive integration
-and compiled-host/CLI-entry refusal tests pass another nine cases. These are
-not positive four-host serving acceptance. The bounded request codec's 17
-focused codec
-tests pass; the frozen v1 request vector and transport contract are recorded in
-[DR-0190](docs/architecture/decisions/0190-read-only-fee-claim-preparation-transport.md).
-The positive four-host/CLI workflow, positive HTTP claim and restart/catch-up
-acceptance are added and compile, but have not yet passed. They use the same
-eligible committee; actual A/B/C/D -> A/B/C/E replacement remains core-test
-evidence. New e+1 Publish and Instantiate are not yet covered by this process
-acceptance. Full
-required/selected-PG acceptance,
-fresh independent exact-head review and CI are still pending. These local
-checks do not complete authenticated serving, Delivery 3 or network readiness.
-The first full run at `8e11b12` passed lint and the preceding Rust tests, then
-stopped during the full-workspace PG blob conformance corruption fixture:
-the remaining required and selected gates had not run. The new mandatory
-successor-slot RESTRICT foreign key prevented deleting its parent metadata.
-The fixture now explicitly removes both protected children for its isolated
-orphan-metadata case; production protection is unchanged. This failed full run
-is not acceptance, and the complete selected profile must pass again.
-The `228777e` retry passed that PG conformance fixture, then stopped in the
-real crash/restart scenario because its pinned test URL no longer reached the
-restarted container. A separate Docker reproduction proves automatic host-port
-assignment changes on restart; the disposable local runner now binds an explicit
-port. No production storage or recovery checks are weakened. This second failed
-full run is not acceptance and did not reach the remaining required/selected lanes.
-The fixed-port runner passes all 72 crash-recovery executable tests, including
-actual SIGKILL/restart/WAL replay. The SDK's 13 private selector-comparison
-regressions also pass; they prove structural comparison only, not committee
-authority or a real signature. The four-host run reached verified terminal
-history export, then correctly refused original-source claim inspection after
-Freeze. Its fixture is being corrected to retain the real pre-Freeze view;
-the core admission guard is unchanged. No full-profile or positive process pass
-is claimed by these focused results.
+The functional producer is integrated on
+`codex/first-successor-serving-implementation-1003` in Draft [PR #267](https://github.com/sunriselayer/sunrise-edge/pull/267),
+not merged or independently accepted.
+
+Implemented responsibilities:
+
+- Protected slot/codecs and required memory/shared-SQL/SQLite/PG metadata ports;
+  actual-key retention, bounded reads and typed refusal. Only the verified SQLite
+  inactive-import target supplies activation capability; PG remains optional.
+- Source-free activation and fresh invocation warrants. Existing ordered,
+  FastVote, ACK, paid execution, receipt and claim engines share one private gate;
+  unsupported successor controls refuse before signing or mutation.
+- Verified predecessor entitlement for imported escrow and retired bond owners,
+  without granting current consensus membership or unrelated bond authority.
+- Shipped loopback activation/host executables, scoped history and unsigned claim
+  preparation, SDK-owned bounded immutable readers and all-or-none CLI pins.
+  Signing requires verified context, exact selectors/leg and committee key.
+- Read-only claimant inspection shares the existing history/resource/object
+  verifier under a fresh issuer-bound warrant, not an ordinary historical lookup.
+  [Operator procedure](docs/guides/first-successor.md) and ownership maps are updated.
+
+Evidence before final-head acceptance:
+
+- Genuine file-backed core tests pass same-committee activation, A/B/C/D -> A/B/C/E,
+  current voting and retired-D refusal, predecessor claim/unbond, unlock-rule
+  refusal, unsupported-control vote/observation/recovery, imported paid Call,
+  exact replay, restart/refencing and generation above the cut floor.
+- The updated imported-claim core case passes genuine four-target read-only
+  inspection, foreign-warrant and wrong-policy refusal, then identical settlement
+  and claim replay. These are core tests, not shipped replacement-host acceptance.
+- Earlier native HTTP/CLI/SDK/operator library regressions passed 524 cases;
+  archive and compiled-host refusal regressions passed nine. New SDK structural
+  selector comparisons pass 13 cases; they do not prove committee authority.
+- The request codec passes 17 focused cases and its frozen vector. Independent
+  Node/Rust protected-slot vectors agree. See proposed [DR-0190](docs/architecture/decisions/0190-read-only-fee-claim-preparation-transport.md).
+- Real PG mandatory-slot/refusal tests pass. A full run exposed an isolated
+  corruption-fixture cleanup mismatch; its retry passed that fixture but failed
+  on a changing disposable Docker host port after restart. Both causes are fixed
+  without weakening production protection. The fixed-port SIGKILL/WAL recovery
+  executable passes all 72 cases; neither failed full run is acceptance.
+
+The real four-activation/four-host TCP/SDK/CLI workflow now passes all three
+executable tests, including verified e+1 ordered rounds, a certified Call on the
+imported epoch-e instance, actual imported claim preparation/submission, SDK
+pre-signing refusals on that real returned intent, live artifact replacement
+refusal, exact receipts/replay and paused-peer close/reopen/refencing/catch-up.
+It uses the same eligible committee, not the core A/B/C/D -> A/B/C/E world.
+The fresh-gated inspection corrects both earlier refused fixture attempts without
+weakening history, policy or admission checks. New e+1 Publish/Instantiate process
+coverage is added in a separate test worktree and remains to be integrated/run.
+Still required: final-head required/selected-PG gates, independent exact-head
+Opus APPROVE and green CI. Latest core changes need full-head lint and regression
+acceptance again. No Delivery 3, recurring lifecycle, PG/DO activation, security
+audit or network readiness completion is claimed.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.

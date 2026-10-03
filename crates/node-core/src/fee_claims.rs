@@ -87,12 +87,12 @@ mod inventory;
 mod preparation;
 mod verify;
 
-pub(crate) use preparation::prepare_fee_claim_gated;
 pub use preparation::{
     FeeClaimEntitlement, FeeClaimExecutionView, FeeClaimInspection, FeeClaimKind,
     FeeClaimPreparationRequest, FeeEscrowDiscoveryPage, FeeEscrowInspection, PreparedFeeClaim,
     discover_fee_escrows_page, inspect_fee_claim, inspect_fee_escrow, prepare_fee_claim,
 };
+pub(crate) use preparation::{inspect_fee_claim_gated, prepare_fee_claim_gated};
 
 pub use inventory::{
     FeeEscrowInventoryPage, FeeEscrowInventorySweep, verify_fee_escrow_inventory_all,

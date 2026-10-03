@@ -159,7 +159,14 @@ fn start_host(
     let mut command: Command = Command::new(env!("CARGO_BIN_EXE_successor_host"));
     command.arg("serve");
     pins(&mut command, fixture, inputs);
-    target_flags(&mut command, fixture, inputs, export, &inputs.certificate, index);
+    target_flags(
+        &mut command,
+        fixture,
+        inputs,
+        export,
+        &inputs.certificate,
+        index,
+    );
     command
         .args([
             "--listen",
@@ -202,7 +209,13 @@ fn transport(address: SocketAddr) -> LoopbackHttpTransport {
     .unwrap()
 }
 
-fn raw(address: SocketAddr, method: Method, path: &str, media: Option<&'static str>, body: Vec<u8>) -> WireResponse {
+fn raw(
+    address: SocketAddr,
+    method: Method,
+    path: &str,
+    media: Option<&'static str>,
+    body: Vec<u8>,
+) -> WireResponse {
     transport(address)
         .send(&WireRequest {
             method,
@@ -222,7 +235,12 @@ fn status(address: SocketAddr) -> OrderedStatus {
         None,
         Vec::new(),
     );
-    assert_eq!(response.status, 200, "{}", String::from_utf8_lossy(&response.body));
+    assert_eq!(
+        response.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&response.body)
+    );
     decode_ordered_status(&response.body).unwrap()
 }
 
@@ -290,7 +308,10 @@ async fn export_sealed_history(fixture: &Fixture, fence: WriterFenceGeneration) 
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address: SocketAddr = listener.local_addr().unwrap();
-        peers.push_str(&format!("{} {address} - -\n", hex(validator.validator_id.as_bytes())));
+        peers.push_str(&format!(
+            "{} {address} - -\n",
+            hex(validator.validator_id.as_bytes())
+        ));
         let (stop, shutdown) = tokio::sync::oneshot::channel::<()>();
         stops.push(stop);
         servers.push(tokio::spawn(native_http::serve(listener, router, async {
@@ -306,7 +327,13 @@ async fn export_sealed_history(fixture: &Fixture, fence: WriterFenceGeneration) 
         "--ordered-network".into(),
         network.to_str().unwrap().into(),
         "--ordered-genesis-manifest".into(),
-        fixture.directory.0.join("genesis.bin").to_str().unwrap().into(),
+        fixture
+            .directory
+            .0
+            .join("genesis.bin")
+            .to_str()
+            .unwrap()
+            .into(),
         "--ordered-expected-genesis-digest".into(),
         hex(&fixture.network.manifest_digest),
         "--expected-chain-id".into(),
@@ -332,7 +359,10 @@ async fn export_sealed_history(fixture: &Fixture, fence: WriterFenceGeneration) 
     .map(OsString::from)
     .collect();
     tokio::task::block_in_place(|| sunrise_edge_cli::run(arguments)).unwrap();
-    assert!(out.join("complete").exists(), "the full sealed prefix verified");
+    assert!(
+        out.join("complete").exists(),
+        "the full sealed prefix verified"
+    );
     for stop in stops {
         stop.send(()).unwrap();
     }
@@ -457,7 +487,8 @@ fn paid_call_on_imported_instance(
     );
     let signed: execution::paid_execution::SignedPaidIntent =
         execution::paid_execution::decode_signed_paid_intent(&signed_bytes).unwrap();
-    let endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> = fastvote_endpoints(fixture, hosts);
+    let endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> =
+        fastvote_endpoints(fixture, hosts);
     let certifier: &consensus::FastPathCertifier = workflow.fastvote_certifier();
     let deadline: Instant = Instant::now() + Duration::from_secs(1800);
     let cap: Duration = Duration::from_secs(300);
@@ -531,7 +562,13 @@ fn successor_cli_flags(
         "--ordered-network".into(),
         network.to_str().unwrap().into(),
         "--ordered-genesis-manifest".into(),
-        fixture.directory.0.join("genesis.bin").to_str().unwrap().into(),
+        fixture
+            .directory
+            .0
+            .join("genesis.bin")
+            .to_str()
+            .unwrap()
+            .into(),
         "--ordered-expected-genesis-digest".into(),
         hex(&fixture.network.manifest_digest),
         "--expected-chain-id".into(),
@@ -577,20 +614,22 @@ fn inspect_imported_share(
     fixture: &Fixture,
     inputs: &SuccessorProcessInputs,
     workflow: &SuccessorWorkflowAuthority,
+    export: &Path,
     claimant: usize,
 ) -> node_core::fee_claims::FeeClaimInspection {
     let validator = &fixture.network.validators[claimant];
     let public: [u8; 32] = ed25519_zebra::VerificationKey::from(&validator.signing_key).into();
-    let target: runtime_sqlite::SqliteImportTarget = runtime_sqlite::SqliteImportTarget::open_existing(
-        inputs.targets[claimant].join("state.db"),
-        SqliteNamespace::new(
-            fixture.network.chain_id.clone(),
-            validator.validator_id,
-            fixture.network.domain,
-        ),
-        &inputs.binding,
-    )
-    .unwrap();
+    let target: runtime_sqlite::SqliteImportTarget =
+        runtime_sqlite::SqliteImportTarget::open_existing(
+            inputs.targets[claimant].join("state.db"),
+            SqliteNamespace::new(
+                fixture.network.chain_id.clone(),
+                validator.validator_id,
+                fixture.network.domain,
+            ),
+            &inputs.binding,
+        )
+        .unwrap();
     let blobs: SqliteBlobStore =
         SqliteBlobStore::open_existing(inputs.targets[claimant].join("body.db")).unwrap();
     let operation: runtime::DurableOperationContext = runtime::DurableOperationContext::new(
@@ -598,19 +637,65 @@ fn inspect_imported_share(
         runtime::StorageDeadline::new(u64::MAX / 2).unwrap(),
         runtime::StorageCorrelationId::new([0xC9; 16]).unwrap(),
     );
-    let next: &execution::publication::PublicationContext = workflow.expected_context();
-    node_core::fee_claims::inspect_fee_claim(
+    let (identity, _ordered): (
+        node_core::ordered_economics::OrderedHistoryIdentity,
+        Vec<node_core::ordered_economics::OrderedHistoryHeightMaterial>,
+    ) = sunrise_edge_client::ordered_history_archive::read_verified_ordered_history_archive(
+        &fixture.policy,
+        &inputs.plan_history,
+    )
+    .unwrap();
+    let manifest_archive: sunrise_edge_client::immutable_archive::ImmutableArchiveReader =
+        sunrise_edge_client::immutable_archive::ImmutableArchiveReader::open(export).unwrap();
+    let manifest_identity_bytes: Vec<u8> =
+        sunrise_edge_client::ordered_history_archive::read_regular_archive_file(
+            manifest_archive.root(),
+            Path::new("identity.bin"),
+            node_core::ordered_economics::MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
+        )
+        .unwrap();
+    let manifest_identity: node_core::ordered_economics::OrderedHistoryIdentity =
+        node_core::ordered_economics::decode_ordered_history_identity(&manifest_identity_bytes)
+            .unwrap();
+    let mut artifacts: sunrise_edge_client::successor_artifacts::SuccessorArtifactFiles<'_> =
+        sunrise_edge_client::successor_artifacts::SuccessorArtifactFiles::new(
+            fixture.plan(&identity, operation),
+            sunrise_edge_client::immutable_archive::ImmutableArchiveReader::open(&inputs.cut)
+                .unwrap(),
+            manifest_archive,
+            sunrise_edge_client::immutable_archive::ImmutableArchiveReader::open(
+                &inputs.certificate,
+            )
+            .unwrap(),
+        );
+    let authority: node_core::serving_authority::LiveAuthority<'_> =
+        node_core::serving_authority::resolve_live_authority(
+            &target,
+            &operation,
+            fixture.network.domain,
+            fixture.plan(&identity, operation),
+            &manifest_identity,
+            &mut artifacts,
+            public,
+        )
+        .unwrap();
+    let node_core::serving_authority::LiveAuthority::Successor(warrant) = authority else {
+        panic!("the activated claimant target requires verified successor authority");
+    };
+    node_core::serving_authority::inspect_fee_claim_successor(
+        &warrant,
         &target,
         &blobs,
-        &operation,
-        fixture.network.domain,
         &fixture.network.resolver,
         &[],
-        next,
-        fixture.network.request_id,
-        validator.validator_id,
-        public,
-        &execution::local_execution::LocalExecutionPolicy::generic_object_results(next.clone()),
+        &execution::local_execution::LocalExecutionPolicy::generic_object_results(
+            workflow.expected_context().clone(),
+        ),
+        node_core::serving_authority::SuccessorFeeClaimInspection {
+            escrow_request_id: fixture.network.request_id,
+            validator_id: validator.validator_id,
+            leg_sender: public,
+        },
     )
     .unwrap()
 }
@@ -735,13 +820,16 @@ fn imported_escrow_fee_claim(
         ("escrow selector", &other_escrow),
     ] {
         assert!(
-            sunrise_edge_client::verify_prepared_fee_claim(workflow, &request_frame, altered).is_err(),
+            sunrise_edge_client::verify_prepared_fee_claim(workflow, &request_frame, altered)
+                .is_err(),
             "{label} must refuse before signing"
         );
     }
     let mut stale_scope: node_wire::FeeClaimPrepareRequest = request_frame.clone();
     stale_scope.context = fixture.network.context.clone();
-    assert!(sunrise_edge_client::verify_prepared_fee_claim(workflow, &stale_scope, &prepared).is_err());
+    assert!(
+        sunrise_edge_client::verify_prepared_fee_claim(workflow, &stale_scope, &prepared).is_err()
+    );
     assert!(
         sunrise_edge_client::sign_prepared_fee_claim(
             workflow,
@@ -781,7 +869,10 @@ fn imported_escrow_fee_claim(
     if let Some(leg) = &leg {
         let leg_file: PathBuf = fixture.directory.0.join("successor-fee-claim.leg");
         std::fs::write(&leg_file, leg).unwrap();
-        tail.extend(["--signed-leg".to_string(), leg_file.to_str().unwrap().into()]);
+        tail.extend([
+            "--signed-leg".to_string(),
+            leg_file.to_str().unwrap().into(),
+        ]);
     }
     cli(&["economics", "fee-claim-prepare"], tail);
     let mut submit: Vec<String> = successor_cli_flags(fixture, inputs, export, network);
@@ -801,7 +892,10 @@ fn imported_escrow_fee_claim(
     request
 }
 
-fn receipts(hosts: &[&HostProcess], request: [u8; 32]) -> sunrise_edge_client::HttpReceiptQueryResult {
+fn receipts(
+    hosts: &[&HostProcess],
+    request: [u8; 32],
+) -> sunrise_edge_client::HttpReceiptQueryResult {
     let request_id: sunrise_edge_client::RequestId =
         sunrise_edge_client::RequestId::new(request).unwrap();
     let mut agreed: Option<sunrise_edge_client::HttpReceiptQueryResult> = None;
@@ -810,7 +904,10 @@ fn receipts(hosts: &[&HostProcess], request: [u8; 32]) -> sunrise_edge_client::H
             .query_receipt(request_id)
             .unwrap();
         if let Some(previous) = &agreed {
-            assert_eq!(previous, &receipt, "every successor host exposes the same receipt");
+            assert_eq!(
+                previous, &receipt,
+                "every successor host exposes the same receipt"
+            );
         }
         agreed = Some(receipt);
     }
@@ -828,7 +925,12 @@ pub async fn run(
     tokio::task::block_in_place(|| accept(fixture, inputs, seal, &export));
 }
 
-fn accept(fixture: &Fixture, inputs: &SuccessorProcessInputs, seal: &OrderedCandidate, export: &Path) {
+fn accept(
+    fixture: &Fixture,
+    inputs: &SuccessorProcessInputs,
+    seal: &OrderedCandidate,
+    export: &Path,
+) {
     assert_eq!(inputs.targets.len(), 4);
     // Artifact substitution: a genuine but unnamed certificate variant is
     // refused by the source-free verifier before any destination write.
@@ -838,7 +940,13 @@ fn accept(fixture: &Fixture, inputs: &SuccessorProcessInputs, seal: &OrderedCand
             .success()
     );
     for index in 0..4 {
-        let stdout: String = success(activation(fixture, inputs, export, &inputs.certificate, index));
+        let stdout: String = success(activation(
+            fixture,
+            inputs,
+            export,
+            &inputs.certificate,
+            index,
+        ));
         assert!(
             stdout.contains("successor_activation=activated"),
             "the substituted run installed nothing: {stdout}"
@@ -853,14 +961,21 @@ fn accept(fixture: &Fixture, inputs: &SuccessorProcessInputs, seal: &OrderedCand
     // Read-only inspection of the claimant own activated target, before
     // any host claims its writer fence.
     let share: node_core::fee_claims::FeeClaimInspection =
-        inspect_imported_share(fixture, inputs, &workflow, 1);
-    let mut hosts: Vec<HostProcess> =
-        (0..4).map(|index: usize| start_host(fixture, inputs, export, index)).collect();
+        inspect_imported_share(fixture, inputs, &workflow, export, 1);
+    let mut hosts: Vec<HostProcess> = (0..4)
+        .map(|index: usize| start_host(fixture, inputs, export, index))
+        .collect();
     let next_epoch: u64 = fixture.network.epoch.get() + 1;
     assert_eq!(workflow.expected_context().epoch().get(), next_epoch);
     for host in &hosts {
-        let context = Client::new(transport(host.address)).query_context().unwrap();
-        assert_eq!(context.epoch().get(), next_epoch, "hosts serve the verified e+1 scope");
+        let context = Client::new(transport(host.address))
+            .query_context()
+            .unwrap();
+        assert_eq!(
+            context.epoch().get(),
+            next_epoch,
+            "hosts serve the verified e+1 scope"
+        );
     }
     let all: Vec<&HostProcess> = hosts.iter().collect();
     let seal_receipt = receipts(&all, seal.request_id);
@@ -884,7 +999,12 @@ fn accept(fixture: &Fixture, inputs: &SuccessorProcessInputs, seal: &OrderedCand
         Some(node_wire::FEE_CLAIM_PREPARE_REQUEST_MEDIA_TYPE),
         stale_request.encode().unwrap(),
     );
-    assert_eq!(response.status, 409, "{}", String::from_utf8_lossy(&response.body));
+    assert_eq!(
+        response.status,
+        409,
+        "{}",
+        String::from_utf8_lossy(&response.body)
+    );
     let stale_intent: Vec<u8> =
         fixture
             .network
@@ -896,19 +1016,41 @@ fn accept(fixture: &Fixture, inputs: &SuccessorProcessInputs, seal: &OrderedCand
         Some(node_wire::NODE_EVENT_MEDIA_TYPE),
         stale_intent,
     );
-    assert_eq!(response.status, 409, "{}", String::from_utf8_lossy(&response.body));
+    assert_eq!(
+        response.status,
+        409,
+        "{}",
+        String::from_utf8_lossy(&response.body)
+    );
     for path in [
         node_wire::FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
         node_wire::FASTVOTE_DRAIN_APPLY_PATH,
     ] {
-        let response: WireResponse =
-            raw(hosts[0].address, Method::Post, path, Some(node_wire::NODE_EVENT_MEDIA_TYPE), Vec::new());
+        let response: WireResponse = raw(
+            hosts[0].address,
+            Method::Post,
+            path,
+            Some(node_wire::NODE_EVENT_MEDIA_TYPE),
+            Vec::new(),
+        );
         assert_eq!(response.status, 422, "{path}");
     }
-    assert_eq!(status(hosts[0].address), before, "refusals change no consensus state");
+    assert_eq!(
+        status(hosts[0].address),
+        before,
+        "refusals change no consensus state"
+    );
 
     // Genuine e+1 ordered rounds under independently loaded SDK pins.
-    let endpoints = ordered_endpoints(fixture, &[Some(&hosts[0]), Some(&hosts[1]), Some(&hosts[2]), Some(&hosts[3])]);
+    let endpoints = ordered_endpoints(
+        fixture,
+        &[
+            Some(&hosts[0]),
+            Some(&hosts[1]),
+            Some(&hosts[2]),
+            Some(&hosts[3]),
+        ],
+    );
     let mut parent: Option<QuorumCertificate> = None;
     for _ in 0..3 {
         let outcome: RoundOutcome = round(&endpoints, &workflow, parent.as_ref());
@@ -925,7 +1067,13 @@ fn accept(fixture: &Fixture, inputs: &SuccessorProcessInputs, seal: &OrderedCand
     let peers: String = hosts
         .iter()
         .zip(&fixture.network.validators)
-        .map(|(host, validator)| format!("{} {} - -\n", hex(validator.validator_id.as_bytes()), host.address))
+        .map(|(host, validator)| {
+            format!(
+                "{} {} - -\n",
+                hex(validator.validator_id.as_bytes()),
+                host.address
+            )
+        })
         .collect();
     std::fs::write(&network, peers).unwrap();
     let claim: [u8; 32] =
@@ -956,17 +1104,26 @@ fn accept(fixture: &Fixture, inputs: &SuccessorProcessInputs, seal: &OrderedCand
     let paused: HostProcess = hosts.remove(3);
     let paused_generation: u64 = paused.generation;
     drop(paused);
-    let alive = ordered_endpoints(fixture, &[Some(&hosts[0]), Some(&hosts[1]), Some(&hosts[2]), None]);
+    let alive = ordered_endpoints(
+        fixture,
+        &[Some(&hosts[0]), Some(&hosts[1]), Some(&hosts[2]), None],
+    );
     // The paid Call and fee-claim rounds advanced the prefix since the last
     // empty round, so the routing hint (not a stale parent) selects it.
     let missed: RoundOutcome = round(&alive, &workflow, None);
     let reopened: HostProcess = start_host(fixture, inputs, export, 3);
-    assert!(reopened.generation > paused_generation, "reopen claims a new writer fence");
+    assert!(
+        reopened.generation > paused_generation,
+        "reopen claims a new writer fence"
+    );
     let deadline: Instant = Instant::now() + Duration::from_secs(1800);
     replay_declared_prefix_with_sink(
         &ordered_endpoints(fixture, &[None, None, None, Some(&reopened)]),
         workflow.ordered_policy(),
-        &[(missed.proposal_bytes.clone(), missed.certificate_bytes.clone())],
+        &[(
+            missed.proposal_bytes.clone(),
+            missed.certificate_bytes.clone(),
+        )],
         deadline,
         Duration::from_secs(300),
         &mut Sink,
@@ -980,7 +1137,10 @@ fn accept(fixture: &Fixture, inputs: &SuccessorProcessInputs, seal: &OrderedCand
     hosts.push(reopened);
     let reopened_all: Vec<&HostProcess> = hosts.iter().collect();
     assert_eq!(receipts(&reopened_all, seal.request_id), seal_receipt);
-    assert_eq!(receipts(&reopened_all, fixture.network.request_id), imported_receipt);
+    assert_eq!(
+        receipts(&reopened_all, fixture.network.request_id),
+        imported_receipt
+    );
     assert_eq!(receipts(&reopened_all, call), call_receipt);
     assert_eq!(receipts(&reopened_all, claim), claim_receipt);
 }
