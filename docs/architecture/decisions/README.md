@@ -85,6 +85,7 @@
 - [DR-0187: first-epoch ordered Seal and permanent outgoing closure](0187-first-epoch-ordered-seal.md)
 - [DR-0188: bounded ordered-client empty alignment](0188-ordered-client-empty-alignment.md)
 - [DR-0189: first successor target-local activation and authenticated serving](0189-first-successor-serving.md)
+- [DR-0190: bounded read-only fee-claim preparation transport (Proposed)](0190-read-only-fee-claim-preparation-transport.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

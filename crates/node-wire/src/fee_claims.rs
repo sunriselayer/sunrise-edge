@@ -40,6 +40,7 @@ use std::error::Error;
 
 /// Canonical type identifier for [`FeeClaimPrepareRequest`].
 pub const FEE_CLAIM_PREPARE_REQUEST_TYPE_ID: u16 = 0x6461;
+/// Closed request encoding version. Unknown versions fail explicitly.
 pub const FEE_CLAIM_PREPARE_REQUEST_ENCODING_VERSION: u16 = 1;
 
 /// Read-only bounded route: prepares (never applies) one fee-claim intent.
@@ -90,9 +91,9 @@ impl fmt::Display for FeeClaimPrepareRequestError {
             Self::CanonicalEncoding(error) => write!(f, "canonical encoding failed: {error}"),
             Self::CanonicalDecoding(error) => write!(f, "canonical decoding failed: {error}"),
             Self::InvalidContext => f.write_str("fee claim prepare request context is invalid"),
-            Self::EmptySignedLeg => f.write_str(
-                "fee claim prepare request signed leg must be nonempty when present",
-            ),
+            Self::EmptySignedLeg => {
+                f.write_str("fee claim prepare request signed leg must be nonempty when present")
+            }
             Self::LegTooLarge(length) => write!(
                 f,
                 "fee claim prepare request signed leg is {length} bytes, maximum is {MAX_FEE_CLAIM_PREPARE_LEG_BYTES}"
@@ -244,30 +245,33 @@ impl FeeClaimPrepareRequest {
             }
         })?;
         let validator_bytes = frame.required_field(4)?;
-        let validator_array: [u8; 32] = validator_bytes.try_into().map_err(|_| {
-            CanonicalDecodingError::InvalidFieldLength {
-                field_id: 4,
-                expected: 32,
-                actual: validator_bytes.len(),
-            }
-        })?;
+        let validator_array: [u8; 32] =
+            validator_bytes
+                .try_into()
+                .map_err(|_| CanonicalDecodingError::InvalidFieldLength {
+                    field_id: 4,
+                    expected: 32,
+                    actual: validator_bytes.len(),
+                })?;
         let validator_id = ValidatorId::new(validator_array);
         let claimant_bytes = frame.required_field(5)?;
-        let claimant_public_key: [u8; 32] = claimant_bytes.try_into().map_err(|_| {
-            CanonicalDecodingError::InvalidFieldLength {
-                field_id: 5,
-                expected: 32,
-                actual: claimant_bytes.len(),
-            }
-        })?;
+        let claimant_public_key: [u8; 32] =
+            claimant_bytes
+                .try_into()
+                .map_err(|_| CanonicalDecodingError::InvalidFieldLength {
+                    field_id: 5,
+                    expected: 32,
+                    actual: claimant_bytes.len(),
+                })?;
         let recipient_bytes = frame.required_field(6)?;
-        let recipient_array: [u8; 32] = recipient_bytes.try_into().map_err(|_| {
-            CanonicalDecodingError::InvalidFieldLength {
-                field_id: 6,
-                expected: 32,
-                actual: recipient_bytes.len(),
-            }
-        })?;
+        let recipient_array: [u8; 32] =
+            recipient_bytes
+                .try_into()
+                .map_err(|_| CanonicalDecodingError::InvalidFieldLength {
+                    field_id: 6,
+                    expected: 32,
+                    actual: recipient_bytes.len(),
+                })?;
         let recipient = Address::new(recipient_array);
         let leg_bytes = frame.required_field(7)?;
         if leg_bytes.len() > MAX_FEE_CLAIM_PREPARE_LEG_BYTES {
@@ -299,6 +303,29 @@ impl FeeClaimPrepareRequest {
 mod tests {
     use super::*;
 
+    // Independently framed once from the v1 field contract. Do not regenerate
+    // this expectation with the production encoder or roundtrip helper.
+    const FROZEN_ZERO_SHARE_REQUEST_V1: [u8; 256] = [
+        0x53, 0x4e, 0x52, 0x45, 0x61, 0x64, 0x01, 0x00, 0x07, 0x00, 0x01, 0x00, 0x2c, 0x00, 0x00,
+        0x00, 0x53, 0x4e, 0x52, 0x45, 0x01, 0x63, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x04, 0x00,
+        0x00, 0x00, 0x77, 0x69, 0x72, 0x65, 0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00,
+        0x00, 0x03, 0x00, 0x08, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x20, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x03, 0x00, 0x20, 0x00, 0x00, 0x00, 0x02,
+        0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
+        0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
+        0x02, 0x04, 0x00, 0x20, 0x00, 0x00, 0x00, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
+        0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
+        0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x05, 0x00, 0x20, 0x00, 0x00, 0x00,
+        0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+        0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+        0x04, 0x04, 0x06, 0x00, 0x20, 0x00, 0x00, 0x00, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05,
+        0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05,
+        0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x07, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ];
+
     const SAMPLE_CONTEXT_BYTES: [u8; 44] = [
         0x53, 0x4E, 0x52, 0x45, 0x01, 0x63, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x04, 0x00, 0x00,
         0x00, 0x77, 0x69, 0x72, 0x65, 0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00,
@@ -326,6 +353,17 @@ mod tests {
             signed_leg: None,
             ..sample_request_with_leg()
         }
+    }
+
+    #[test]
+    fn frozen_v1_zero_share_request_has_exact_stable_bytes() {
+        let request: FeeClaimPrepareRequest = sample_request_without_leg();
+        let bytes: Vec<u8> = request.encode().unwrap();
+        assert_eq!(bytes.as_slice(), FROZEN_ZERO_SHARE_REQUEST_V1);
+        assert_eq!(
+            FeeClaimPrepareRequest::decode(&FROZEN_ZERO_SHARE_REQUEST_V1).unwrap(),
+            request
+        );
     }
 
     #[test]

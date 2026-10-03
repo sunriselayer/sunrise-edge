@@ -791,6 +791,11 @@ payout/escrow object and sender-nonce writes carry logical provenance above
 the verified cut floor. Read-only claim preparation uses the same evaluator
 and gate, with no reservation or write.
 
+[DR-0190](decisions/0190-read-only-fee-claim-preparation-transport.md) specifies
+the bounded HTTP request for this preparation. Its response reuses the core
+unsigned intent unchanged. Neither caller context nor a returned intent can
+replace independently verified successor authority before client signing.
+
 A retired validator D is refused only as a consensus signer, by the
 membership checks of Sections 6.2 and 8 and the pre-signing refusals.
 Ordinary signed-sender requests of D, including

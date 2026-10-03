@@ -1110,6 +1110,7 @@ dependencies = [
 name = "node-wire"
 version = "0.1.0"
 dependencies = [
+ "bonds",
  "canonical-encoding",
  "consensus",
  "execution",

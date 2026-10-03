@@ -212,7 +212,10 @@ FastVote, certified paid-execution, publication/ACK and query routes. Its
 per-request authority reconstruction never falls back to original-genesis
 serving. Workspace all-target type checking, strict lint, and 316 native-HTTP,
 SDK and operator library tests pass. Fee-claim preparation currently has only
-a callable Rust helper; the HTTP codec/route, shipped CLI authority composition,
+a callable Rust helper. Its bounded HTTP request codec and 17 focused codec
+tests pass; the frozen v1 request vector and transport contract are recorded in
+[DR-0190](docs/architecture/decisions/0190-read-only-fee-claim-preparation-transport.md).
+The HTTP route, shipped CLI authority composition,
 history routes and four-process replacement workflow remain incomplete. Full
 required/selected-PG acceptance,
 fresh independent exact-head review and CI are still pending. These local

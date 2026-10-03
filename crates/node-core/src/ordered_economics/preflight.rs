@@ -270,11 +270,9 @@ fn committed_bond<S: StructuredStateReader>(
     // against. A divergence means the installed row and the pinned set
     // disagree about who controls this validator: an operator/storage
     // inconsistency, never a stale candidate.
-    let registered: &ValidatorInfo = authority.ok_or(
-        OrderedEconomicsError::Prerequisite(
-            "committed bond row names a validator outside the pinned set",
-        ),
-    )?;
+    let registered: &ValidatorInfo = authority.ok_or(OrderedEconomicsError::Prerequisite(
+        "committed bond row names a validator outside the pinned set",
+    ))?;
     if registered.signature_scheme != bond.authorization_scheme
         || registered.public_key.as_slice() != bond.authorization_key.as_slice()
     {
