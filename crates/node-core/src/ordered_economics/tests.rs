@@ -2252,6 +2252,14 @@ impl DurableDomainStateStore for FlakyStore<'_> {
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
     }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -2765,6 +2773,14 @@ impl DurableDomainStateStore for RaceStore<'_> {
         domain: runtime::AtomicityDomainId,
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
+    }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
     }
     fn get_versioned_durable(
         &self,
@@ -3967,4 +3983,83 @@ fn a_candidate_at_a_non_economic_height_is_rejected_and_shape_is_enforced_on_rec
         ),
         Err(OrderedEconomicsError::Unauthenticated(_))
     ));
+}
+
+/// DR-0189: an honest successor-scoped voter refuses a validly signed e+1
+/// leader proposal that carries any unsupported control candidate with the
+/// typed refusal from the one shared chokepoint, before any storage read,
+/// local signature or state mutation.
+#[test]
+fn successor_vote_refuses_a_byzantine_leader_proposal_of_every_unsupported_control() {
+    let network: Network = setup_with_freeze_height(5);
+    let inputs: crate::serving_authority::SuccessorPolicyInputs =
+        crate::serving_authority::tests::successor_inputs(
+            &network.root,
+            Digest32::new(HashAlgorithmId::Sha2_256, [0x3c; 32]),
+        );
+    let successor: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_successor(&network.root, &inputs).unwrap();
+    let leg_policy: LocalExecutionPolicy =
+        LocalExecutionPolicy::generic_object_results(inputs.context().clone());
+    let env: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
+        seal: None,
+        policy: &successor,
+        history: &network.history,
+        leg_policy: &leg_policy,
+        engine: &network.engine,
+        blobs: &network.blobs,
+    };
+    let state: consensus::ConsensusState = successor.engine().genesis_state(TRUSTED_NOW_MILLIS);
+    let leader_id: ValidatorId = successor
+        .engine()
+        .validator_set()
+        .leader(state.current_view)
+        .unwrap();
+    let leader: usize = network
+        .signers
+        .iter()
+        .position(|signer: &TestSigner| signer.id == leader_id)
+        .unwrap();
+    let voter: usize = (leader + 1) % REPLICAS;
+    let chain: ChainId = inputs.context().chain_id().clone();
+    let vote_key: Vec<u8> =
+        identity::scoped_vote_record_key(successor.key_scope(), &chain, state.current_view)
+            .unwrap();
+    let state_key: Vec<u8> = engine::scoped_state_key(successor.key_scope(), &chain).unwrap();
+    for kind in [
+        OrderedOperationKind::Freeze,
+        OrderedOperationKind::DrainSet,
+        OrderedOperationKind::Seal,
+        OrderedOperationKind::BondRegistration,
+    ] {
+        let candidate: OrderedCandidate = OrderedCandidate {
+            context: inputs.context().clone(),
+            request_id: [0x92; 32],
+            kind,
+            intent: vec![0xEE],
+            created_checkpoint: 0,
+        };
+        let digest: Digest32 = successor.candidate_digest(&candidate).unwrap();
+        let proposal: consensus::ConsensusProposal = successor
+            .engine()
+            .propose(&state, vec![digest], &network.signers[leader])
+            .unwrap();
+        let before: StateRevision = network.revision(voter, &vote_key);
+        assert!(matches!(
+            process_proposal(
+                &network.stores[voter],
+                &network.context,
+                &env,
+                &OrderedProposal {
+                    proposal,
+                    candidate: Some(candidate),
+                },
+                &network.signers[voter],
+            ),
+            Err(OrderedEconomicsError::UnsupportedSuccessorControl)
+        ));
+        assert_eq!(network.revision(voter, &vote_key), before);
+        assert_eq!(network.value(voter, &vote_key), None);
+        assert_eq!(network.value(voter, &state_key), None);
+    }
 }

@@ -24,7 +24,7 @@ use runtime::portable::{PortableBlobRepository, PortableSnapshotError, PortableS
 use runtime::{
     DurableCommitOutcome, DurableCommitRejection, DurableOperationContext,
     IndeterminateCommitReason, ReadinessRecord, ReadinessRetentionRepository, ReadinessSlot,
-    ReadinessSlotObservation,
+    ReadinessSlotObservation, SuccessorServingSlot,
 };
 use std::{
     error::Error,
@@ -80,6 +80,12 @@ pub enum ConditionalReadinessError {
     Rejected(DurableCommitRejection),
     Indeterminate(IndeterminateCommitReason),
     Invalid(&'static str),
+    /// DR-0189: the destination is already a Serving first successor.
+    /// Readiness (new or retained) is an outgoing-epoch control that a
+    /// successor never signs or exposes. Checked explicitly against the
+    /// protected serving slot before any reconstruction, signing or retained
+    /// exposure, never inferred from an inventory or token mismatch.
+    UnsupportedSuccessorControl,
 }
 impl fmt::Display for ConditionalReadinessError {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -97,6 +103,9 @@ impl fmt::Display for ConditionalReadinessError {
                 write!(out, "readiness retention is indeterminate: {error:?}")
             }
             Self::Invalid(message) => out.write_str(message),
+            Self::UnsupportedSuccessorControl => {
+                out.write_str("readiness is unsupported at a Serving first successor")
+            }
         }
     }
 }
@@ -203,6 +212,19 @@ where
 {
     let resolver: &HashSuiteResolver = plan.genesis_root.genesis_resolver();
     let epoch: Epoch = plan.genesis_root.manifest().context().epoch();
+    // DR-0189 explicit early refusal: there is no ordinary namespace guard on
+    // this inactive-target path, so the protected slot is read first.
+    match destination.get_successor_serving(operation, plan.domain) {
+        Ok(SuccessorServingSlot::Inactive) => {}
+        Ok(SuccessorServingSlot::Serving(_)) => {
+            return Err(ConditionalReadinessError::UnsupportedSuccessorControl);
+        }
+        Err(error) => {
+            return Err(ConditionalReadinessError::Node(Box::new(
+                crate::NodeCoreError::from(error),
+            )));
+        }
+    }
     let import: VerifiedImportPlan = verify_saved_business_import(plan, saved)?;
     let (progress, token): (runtime::ImportProgress, PortableSnapshotToken) =
         import.observe_complete(destination, blobs, operation)?;

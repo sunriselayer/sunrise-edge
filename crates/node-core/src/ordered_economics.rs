@@ -94,7 +94,8 @@ pub use engine::{
     decode_ordered_refusal_payload, decode_ordered_status, encode_ordered_event_output,
     encode_ordered_outcome, encode_ordered_proposal, encode_ordered_refusal_payload,
     encode_ordered_status, install_ordered_genesis, observe_proposal, process_certificate,
-    process_proposal, process_tick, propose, query_ordered_outcome, query_status,
+    process_proposal, process_tick, process_tick_successor, propose, query_ordered_outcome,
+    query_status,
 };
 pub use evidence_submission::{
     MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES, OrderedEvidenceSubmission,
@@ -125,6 +126,7 @@ pub use policy::{
     ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE, OrderedEconomicsEnvironment, OrderedEconomicsPolicy,
     OrderedSealComposition, authenticate_candidate, ordered_economics_authority_anchor,
 };
+pub(crate) use policy::{OrderedKeyScope, ordered_economics_successor_anchor};
 pub(crate) use reservation::{
     OrderedCausalRequirements, OrderedLegAdmission, ordered_causal_requirements,
 };
@@ -134,6 +136,7 @@ pub use seal::{
     encode_seal_intent, encode_seal_outcome, seal_certificate_digest, seal_request_id,
     seal_target_digest,
 };
+pub(crate) use seal::{decode_seal_cut_identity, seal_cut_identity_digest, seal_next_members};
 
 /// Maximum address-owned object inputs one admitted candidate may reserve.
 /// DR-0153's closed profile only ever reserves a bond deposit leg's single
@@ -338,6 +341,16 @@ pub enum OrderedEconomicsError {
     /// or re-acquiring the reservations the original invocation already
     /// released. A retained request *header* alone is never completion.
     AlreadyCompleted(Box<OrderedOutcome>),
+    /// DR-0189: a first-successor (epoch-scoped) policy never authenticates,
+    /// signs, votes for or applies an epoch-handoff control candidate
+    /// (`Freeze`, `DrainSet`, `Seal`) or initial `BondRegistration`, and
+    /// never installs a fresh ordered genesis. Recurring handoff is
+    /// separately reviewed future work. Candidates are refused as the first
+    /// check of the one shared pure authentication chokepoint, before any
+    /// context, lane or kind-specific authentication. It is a permanent
+    /// caller-facing refusal rather than a retained rejection or a storage
+    /// stop.
+    UnsupportedSuccessorControl,
 }
 
 impl OrderedEconomicsError {
@@ -381,6 +394,9 @@ impl fmt::Display for OrderedEconomicsError {
             Self::AlreadyCompleted(_) => {
                 f.write_str("ordered candidate request id already completed")
             }
+            Self::UnsupportedSuccessorControl => f.write_str(
+                "epoch-handoff control or initial registration is unsupported at a first successor",
+            ),
         }
     }
 }

@@ -140,6 +140,14 @@ pub(super) fn capture<
                 if descriptor.key() != key {
                     return Err(invalid("source descriptor natural key differs"));
                 }
+                // DR-0189: a cut of a successor store is out of scope. Any
+                // epoch-scoped ordered safety row refuses capture, including
+                // one planted in an inactive import target.
+                if let DurableRecordKey::State(state_key) = key
+                    && crate::ordered_economics::engine::is_successor_scoped_ordered_key(state_key)
+                {
+                    return Err(invalid("epoch-scoped ordered row cannot be captured"));
+                }
                 let value: Option<Vec<u8>> = body(source, operation, domain, &token, &descriptor)?;
                 records.push(SourceSnapshotRecord { descriptor, value });
                 previous = Some(key);

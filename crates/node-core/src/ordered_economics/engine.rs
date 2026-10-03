@@ -50,8 +50,8 @@ use runtime::portable::PortableSnapshotToken;
 use runtime::{
     DurableCommitOutcome, DurableDomainStateStore, DurableObjectHeadRead, OutgoingSealRepository,
     SealBarrier, StateAssemblyError, StateObservationSet, StateTransactionBuilder,
-    StructuredDurableDomainStateStore, StructuredStateReader, TransitionHistoryState,
-    VersionedStateReader,
+    StructuredDurableDomainStateStore, StructuredStateReader, SuccessorServingRepository,
+    TransitionHistoryState, VersionedStateReader,
 };
 
 /// Reserved under [`crate::local_instance_state::INSTANCE_STATE_PREFIX`], so
@@ -474,6 +474,44 @@ fn ordered_state_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
 
 pub(crate) fn ordered_applied_height_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
     durable_keys::key(chain, durable_keys::OrderedKeyFamily::AppliedHeight)
+}
+
+/// DR-0189 policy-scoped consensus-state key. A chain-only scope keeps the
+/// exact historical builder.
+pub(crate) fn scoped_state_key(
+    scope: &OrderedKeyScope,
+    chain: &ChainId,
+) -> Result<Vec<u8>, NodeCoreError> {
+    if scope.is_successor() {
+        durable_keys::scoped_key(scope, chain, durable_keys::OrderedKeyFamily::State)
+    } else {
+        ordered_state_key(chain)
+    }
+}
+
+/// DR-0189 policy-scoped applied-height key.
+pub(crate) fn scoped_applied_height_key(
+    scope: &OrderedKeyScope,
+    chain: &ChainId,
+) -> Result<Vec<u8>, NodeCoreError> {
+    if scope.is_successor() {
+        durable_keys::scoped_key(scope, chain, durable_keys::OrderedKeyFamily::AppliedHeight)
+    } else {
+        ordered_applied_height_key(chain)
+    }
+}
+
+/// DR-0189 policy-scoped vote watermark key, for activation virginity checks.
+pub(crate) fn scoped_vote_high_key(
+    scope: &OrderedKeyScope,
+    chain: &ChainId,
+) -> Result<Vec<u8>, NodeCoreError> {
+    identity::scoped_vote_high_key(scope, chain)
+}
+
+/// Whether a state key lies in any epoch-scoped ordered family.
+pub(crate) fn is_successor_scoped_ordered_key(key: &[u8]) -> bool {
+    durable_keys::is_successor_scoped_key(key)
 }
 
 /// Immutable per-height proof key. This new family does not alter any
@@ -961,7 +999,7 @@ fn load_state<S: StructuredStateReader + ?Sized>(
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
 ) -> Result<LoadedState, OrderedEconomicsError> {
-    let key = ordered_state_key(env.policy.context().chain_id())?;
+    let key = scoped_state_key(env.policy.key_scope(), env.policy.context().chain_id())?;
     let observed = store.read_versioned_state(context, env.policy.domain(), &key)?;
     let bytes = observed
         .value()
@@ -1001,8 +1039,14 @@ pub fn install_ordered_genesis<S: StructuredDurableDomainStateStore>(
     env: &OrderedEconomicsEnvironment<'_>,
     now_unix_millis: u64,
 ) -> Result<(), OrderedEconomicsError> {
+    // DR-0189: the successor epoch-state root is installed only atomically
+    // with the verified activation record, never by this generic entry.
+    if env.policy.key_scope().is_successor() {
+        return Err(OrderedEconomicsError::UnsupportedSuccessorControl);
+    }
+    crate::mutation_fence::refuse_successor_serving(store, context, env.policy.domain())?;
     crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
-    let key = ordered_state_key(env.policy.context().chain_id())?;
+    let key = scoped_state_key(env.policy.key_scope(), env.policy.context().chain_id())?;
     let domain = env.policy.domain();
     let observed = store.read_versioned_state(context, domain, &key)?;
     if let Some(bytes) = observed.value() {
@@ -1044,7 +1088,7 @@ pub(super) fn load_applied_height<S: StructuredStateReader + ?Sized>(
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
 ) -> Result<(u64, Vec<u8>, StateRevision), OrderedEconomicsError> {
-    let key = ordered_applied_height_key(env.policy.context().chain_id())?;
+    let key = scoped_applied_height_key(env.policy.key_scope(), env.policy.context().chain_id())?;
     let observed = store.read_versioned_state(context, env.policy.domain(), &key)?;
     // Virgin absence is genuinely expected here and only here: before the first
     // committed height there is no marker, which is exactly height zero. A
@@ -2695,6 +2739,40 @@ impl PreparedEventCompletion {
             )),
         }
     }
+
+    /// DR-0189 successor confirmation: the one existing prepared event,
+    /// folded with the deciding warrant reads and committed only through the
+    /// protected successor port with the exact warrant observation, which the
+    /// backend rechecks in its own lock. Business completions are not routed
+    /// through this metadata-only adapter and stop.
+    fn confirm_successor(
+        self,
+        repository: &dyn SuccessorServingRepository,
+        warrant: &crate::serving_authority::LiveWarrant<'_>,
+    ) -> Result<OrderedEventOutput, OrderedEconomicsError> {
+        match self.completion {
+            PreparedEventWrite::Unchanged => Ok(self.result),
+            PreparedEventWrite::Metadata(transaction) => {
+                let domain: AtomicityDomainId = transaction.domain();
+                let mut writes: MergedWrites = MergedWrites::new(domain);
+                writes.merge_handler_state(&DurableStateTransaction::from(transaction))?;
+                for (key, revision) in warrant.reads() {
+                    writes.read(key.clone(), *revision)?;
+                }
+                match repository.commit_successor_durable(
+                    warrant.context(),
+                    warrant.serving_observation(),
+                    writes.into_atomic_transaction(domain)?,
+                ) {
+                    DurableCommitOutcome::Committed => Ok(self.result),
+                    outcome => Err(commit_outcome_error(outcome)),
+                }
+            }
+            PreparedEventWrite::Admission(_) | PreparedEventWrite::Original(_) => Err(stop(
+                "successor business completion is not routed through the pacemaker adapter",
+            )),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3770,7 +3848,13 @@ where
                     return Err(stop("Freeze preview candidate context or digest differs"));
                 }
                 authenticate_candidate(env, &committed)
-                    .map_err(|_| stop("Freeze preview candidate authentication failed"))?;
+                    .map_err(|error: OrderedEconomicsError| match error {
+                        // DR-0189: a successor-scoped vote refuses a proposal
+                        // that would commit an unsupported control with the
+                        // typed refusal, unchanged, before any signature.
+                        OrderedEconomicsError::UnsupportedSuccessorControl => error,
+                        _ => stop("Freeze preview candidate authentication failed"),
+                    })?;
                 commits_freeze |= committed.kind == OrderedOperationKind::Freeze;
                 commits_drain_set |= committed.kind == OrderedOperationKind::DrainSet;
                 commits_seal |= committed.kind == OrderedOperationKind::Seal;
@@ -3973,6 +4057,69 @@ pub fn process_certificate<S: StructuredDurableDomainStateStore>(
         )
         .map_err(consensus_to_node)?;
     finalize_event(store, context, env, &loaded, output, None, None)
+}
+
+/// The ordered environment must be exactly the verified successor scope of
+/// this invocation warrant: successor key scope, v3 anchor, e+1 context,
+/// domain and original genesis. No caller epoch or flag selects it.
+fn require_successor_environment(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    env: &OrderedEconomicsEnvironment<'_>,
+) -> Result<(), OrderedEconomicsError> {
+    let inputs: &crate::serving_authority::SuccessorPolicyInputs = warrant.policy_inputs();
+    if !env.policy.key_scope().is_successor()
+        || env.policy.anchor() != inputs.anchor()
+        || env.policy.context() != inputs.context()
+        || env.policy.domain() != inputs.domain()
+        || env.policy.genesis_digest() != inputs.genesis_digest()
+    {
+        return Err(stop(
+            "ordered environment is not the live successor warrant scope",
+        ));
+    }
+    Ok(())
+}
+
+/// DR-0189 migrated successor pacemaker route: the existing Tick handling of
+/// the one consensus engine at the verified e+1 scope.
+///
+/// The caller resolves a fresh [`crate::serving_authority::LiveWarrant`] for
+/// this request. The ordinary-namespace guard is replaced by that warrant and
+/// a fresh namespace-validator check against the local signer; the epoch
+/// scoped safety rows are read through the successor policy key scope; and
+/// the one commit folds the deciding warrant reads and goes only through the
+/// protected successor port. The trusted-clock contract of [`process_tick`]
+/// is unchanged.
+pub fn process_tick_successor<S, C>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    env: &OrderedEconomicsEnvironment<'_>,
+    now_unix_millis: u64,
+    signer: &C,
+) -> Result<OrderedEventOutput, OrderedEconomicsError>
+where
+    S: StructuredDurableDomainStateStore,
+    C: ConsensusSigner,
+{
+    require_successor_environment(warrant, env)?;
+    let context: &DurableOperationContext = warrant.context();
+    let repository: &dyn SuccessorServingRepository =
+        warrant.successor_repository(store, signer.validator_id())?;
+    let loaded = load_state(store, context, env)?;
+    let mut profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    fence_policy(store, context, env, &mut profile_reads)?;
+    let output = env
+        .policy
+        .engine()
+        .on_event(
+            &loaded.state,
+            ConsensusEvent::Tick { now_unix_millis },
+            signer,
+            &Ed25519ConsensusVerifier,
+        )
+        .map_err(consensus_to_node)?;
+    prepare_event(store, context, env, &loaded, output, None, None)?
+        .confirm_successor(repository, warrant)
 }
 
 /// Signerless authenticated replay/recovery of one observed proposal: never

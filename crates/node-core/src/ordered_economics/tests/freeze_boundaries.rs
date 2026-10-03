@@ -60,6 +60,13 @@ impl DurableDomainStateStore for ProposalRace<'_> {
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.race.get_namespace_lifecycle(context, domain)
     }
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.race.get_successor_serving(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,

@@ -1797,6 +1797,13 @@ impl DurableDomainStateStore for PaidHeadRaceStore<'_> {
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.fixture.network.stores[self.replica].get_namespace_lifecycle(context, domain)
     }
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.fixture.network.stores[self.replica].get_successor_serving(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,

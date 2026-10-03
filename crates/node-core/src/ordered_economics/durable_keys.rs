@@ -11,6 +11,7 @@
 //! suffix, attach the wrong one, or mix up which family a view, epoch,
 //! height, digest or request id belongs to.
 use super::*;
+use super::policy::OrderedKeyScope;
 use canonical_encoding::encode_chain_id;
 
 /// One ordered-economics durable key family, carrying the exact payload its
@@ -100,6 +101,62 @@ pub(crate) fn key(chain: &ChainId, family: OrderedKeyFamily) -> Result<Vec<u8>, 
         }
     }
     Ok(bytes)
+}
+
+/// DR-0189 infix marker of the five epoch-scoped live signing-safety
+/// families. No historical infix starts with it, and the vote-high family
+/// does not start with the vote family.
+const SUCCESSOR_SCOPE_INFIX: &[u8] = b"epoch-";
+
+/// The single closed generator of the five live signing-safety keys (state,
+/// applied-height, vote-high, leader-proposal, vote) under one policy key
+/// scope.
+///
+/// A chain-only scope delegates to [`key`], so every existing key byte is
+/// unchanged. A verified first-successor scope builds the prefix, then the
+/// marker and family infix, then the encoded chain id, protocol (u32 BE),
+/// epoch (u64 BE) and encoded v3 anchor digest, then the view (u64 BE) for a
+/// per-view family. It is validated once over the complete key. The
+/// immutable archive families are never epoch-scoped and refuse here.
+pub(crate) fn scoped_key(
+    scope: &OrderedKeyScope,
+    chain: &ChainId,
+    family: OrderedKeyFamily,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let Some(scope_bytes) = scope.successor_scope_bytes()? else {
+        return key(chain, family);
+    };
+    let view: Option<u64> = match family {
+        OrderedKeyFamily::State => None,
+        OrderedKeyFamily::AppliedHeight => None,
+        OrderedKeyFamily::VoteHigh => None,
+        OrderedKeyFamily::LeaderProposal { view } => Some(view),
+        OrderedKeyFamily::Vote { view } => Some(view),
+        _ => {
+            return Err(NodeCoreError::PersistenceInvariant(
+                "immutable ordered archive families have no successor scope",
+            ));
+        }
+    };
+    let mut bytes: Vec<u8> = super::engine::ORDERED_ECONOMICS_STATE_PREFIX.to_vec();
+    bytes.extend_from_slice(SUCCESSOR_SCOPE_INFIX);
+    bytes.extend_from_slice(family.infix());
+    bytes.extend(encode_chain_id(chain)?);
+    bytes.extend(scope_bytes);
+    if let Some(view) = view {
+        bytes.extend_from_slice(&view.to_be_bytes());
+    }
+    validate_transactional_state_key(&bytes)?;
+    Ok(bytes)
+}
+
+/// Whether a key lies in any epoch-scoped ordered family. Cut capture, the
+/// audit projection and successor plan verification refuse every such row.
+pub(crate) fn is_successor_scoped_key(key: &[u8]) -> bool {
+    match key.strip_prefix(super::engine::ORDERED_ECONOMICS_STATE_PREFIX) {
+        Some(suffix) => suffix.starts_with(SUCCESSOR_SCOPE_INFIX),
+        None => false,
+    }
 }
 
 #[cfg(test)]
@@ -283,6 +340,80 @@ mod tests {
                 assert!(!required.starts_with(historical.as_slice()));
                 assert!(!historical.starts_with(required.as_slice()));
             }
+        }
+    }
+
+    fn successor_and_original_policies() -> (OrderedEconomicsPolicy, OrderedEconomicsPolicy, ChainId) {
+        let root: crate::genesis::VerifiedGenesisRoot =
+            crate::serving_authority::tests::causal_root();
+        let inputs: crate::serving_authority::SuccessorPolicyInputs =
+            crate::serving_authority::tests::successor_inputs(
+                &root,
+                Digest32::new(HashAlgorithmId::Sha2_256, [3; 32]),
+            );
+        let successor: OrderedEconomicsPolicy =
+            OrderedEconomicsPolicy::from_successor(&root, &inputs).unwrap();
+        let original: OrderedEconomicsPolicy =
+            OrderedEconomicsPolicy::from_genesis_root(&root, inputs.domain()).unwrap();
+        (successor, original, inputs.context().chain_id().clone())
+    }
+
+    #[test]
+    fn successor_scope_builds_five_distinct_epoch_families() {
+        let (successor, original, chain) = successor_and_original_policies();
+        let view: u64 = 9;
+        let families: [OrderedKeyFamily; 5] = [
+            OrderedKeyFamily::State,
+            OrderedKeyFamily::AppliedHeight,
+            OrderedKeyFamily::VoteHigh,
+            OrderedKeyFamily::LeaderProposal { view },
+            OrderedKeyFamily::Vote { view },
+        ];
+        let mut successor_keys: Vec<Vec<u8>> = Vec::new();
+        for family in families {
+            let scoped: Vec<u8> = scoped_key(successor.key_scope(), &chain, family).unwrap();
+            let historical: Vec<u8> = key(&chain, family).unwrap();
+            assert_eq!(
+                scoped_key(original.key_scope(), &chain, family).unwrap(),
+                historical
+            );
+            assert_ne!(scoped, historical);
+            let mut marker: Vec<u8> = LITERAL_PREFIX.to_vec();
+            marker.extend_from_slice(b"epoch-");
+            marker.extend_from_slice(family.infix());
+            marker.extend(encode_chain_id(&chain).unwrap());
+            assert!(scoped.starts_with(&marker));
+            assert!(is_successor_scoped_key(&scoped));
+            assert!(!is_successor_scoped_key(&historical));
+            successor_keys.push(scoped);
+        }
+        assert!(successor_keys[3].ends_with(&view.to_be_bytes()));
+        assert!(successor_keys[4].ends_with(&view.to_be_bytes()));
+        let unique: std::collections::BTreeSet<Vec<u8>> = successor_keys.iter().cloned().collect();
+        assert_eq!(unique.len(), successor_keys.len());
+        let vote_marker: Vec<u8> = [LITERAL_PREFIX, b"epoch-vote/".as_slice()].concat();
+        assert!(!successor_keys[2].starts_with(&vote_marker));
+    }
+
+    #[test]
+    fn successor_scope_never_scopes_immutable_archive_families() {
+        let (successor, _, chain) = successor_and_original_policies();
+        for archive in [
+            OrderedKeyFamily::CommittedProof {
+                epoch: Epoch::new(1),
+                height: 1,
+            },
+            OrderedKeyFamily::Candidate {
+                digest: Digest32::new(HashAlgorithmId::Sha2_256, [4; 32]),
+            },
+            OrderedKeyFamily::Header {
+                request_id: [5; 32],
+            },
+            OrderedKeyFamily::Outcome {
+                request_id: [6; 32],
+            },
+        ] {
+            assert!(scoped_key(successor.key_scope(), &chain, archive).is_err());
         }
     }
 }

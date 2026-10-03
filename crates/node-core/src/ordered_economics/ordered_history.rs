@@ -287,6 +287,9 @@ fn verify_material(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CompletionFingerprint {
     request_id: [u8; 32],
+    /// The candidate is a DR-0187 Seal. DR-0189 accepts it only as the
+    /// first occurrence at the fixed terminal height.
+    seal: bool,
     origin_height: u64,
     origin_digest: Digest32,
     candidate: Digest32,
@@ -395,6 +398,7 @@ fn verify_completion_companions(
     }
     Ok(CompletionFingerprint {
         request_id: candidate.request_id,
+        seal: candidate.kind == OrderedOperationKind::Seal,
         origin_height: outcome.block_height,
         origin_digest: outcome.block_digest,
         candidate: component_fingerprint(material, Kind::Candidate)?,
@@ -492,6 +496,19 @@ impl OrderedHistoryVerifier {
             return Err(invalid("ordered history fixed target mismatch"));
         }
         if let Some(completion) = &completion {
+            // DR-0189 terminal Seal extension: a Seal is accepted only as
+            // its own first occurrence (five components, no replay origin)
+            // at the fixed target height. A Seal anywhere else, or any
+            // recommit of one, refuses. There is no caller flag.
+            if completion.seal
+                && (block.height != self.identity.through_height
+                    || completion.origin_height != block.height
+                    || self.completions.contains_key(&completion.request_id))
+            {
+                return Err(invalid(
+                    "ordered history Seal is not the terminal first occurrence",
+                ));
+            }
             match self.completions.get(&completion.request_id) {
                 Some(original) if original != completion => {
                     return Err(invalid(

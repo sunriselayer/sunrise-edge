@@ -174,6 +174,14 @@ pub(crate) fn validate_local_rows(
         excluded: BTreeSet::new(),
         internal_receipts: BTreeMap::new(),
     };
+    // DR-0189: no audited source or target may carry an epoch-scoped
+    // successor safety row. A cut of a successor store is out of scope.
+    if rows
+        .keys()
+        .any(|key: &Vec<u8>| engine::is_successor_scoped_ordered_key(key))
+    {
+        return Err(invalid("epoch-scoped ordered row cannot be audited"));
+    }
     let closure_key: Vec<u8> =
         freeze::admission_closure_key(policy.context().chain_id(), policy.context().epoch())?;
     let closure: Option<freeze::AdmissionClosureRecord> = rows

@@ -953,6 +953,14 @@ impl runtime::DurableDomainStateStore for ActivateBetweenEpochReadsStore {
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
     }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -4340,6 +4348,14 @@ impl runtime::DurableDomainStateStore for IndeterminateOnceActivateStore {
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
     }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -4797,6 +4813,14 @@ impl runtime::DurableDomainStateStore for FeePolicyRaceStore {
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
     }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -5030,6 +5054,14 @@ impl runtime::DurableDomainStateStore for BarrierGatedActivateStore {
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
     }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -5231,6 +5263,14 @@ impl runtime::DurableDomainStateStore for ActivateWinsPaidRaceStore {
         domain: runtime::AtomicityDomainId,
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
+    }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
     }
     fn get_versioned_durable(
         &self,

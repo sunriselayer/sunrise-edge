@@ -905,6 +905,14 @@ impl runtime::DurableDomainStateStore for ObservedStore {
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
     }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,

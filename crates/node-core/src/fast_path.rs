@@ -667,12 +667,56 @@ where
     E: PaidContractEngine + ?Sized,
     C: ConsensusSigner,
 {
+    prepare_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        base_policy,
+        fee_policy,
+        engine,
+        signer,
+        signed_bytes,
+        created_checkpoint,
+    )
+}
+
+/// [`prepare`] under one invocation gate. A successor additionally requires
+/// the local signer to be the fresh physical namespace member, derives above
+/// its cut floor and commits through the protected successor port.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_gated<S, E, C>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    base_policy: &LocalExecutionPolicy,
+    fee_policy: &PaidFeePolicy,
+    engine: &E,
+    signer: &C,
+    signed_bytes: &[u8],
+    created_checkpoint: u64,
+) -> FastPathResult<FastVote>
+where
+    S: StructuredDurableDomainStateStore,
+    E: PaidContractEngine + ?Sized,
+    C: ConsensusSigner,
+{
     if history.len() > crate::publication::MAX_PUBLICATION_HISTORY {
         return invalid("resolver history bound");
     }
     let (authenticated, event_digest, request_id) =
         authenticate_and_identify(resolver, expected, signed_bytes)?;
-    mutation_fence::require_ordinary_namespace(store, context, domain)?;
+    gate.require_live(store, context, domain)?;
+    gate.require_local_signer(store, signer.validator_id())?;
     let chain: ChainId = authenticated.intent().context.chain_id().clone();
     let intent_context: PublicationContext = authenticated.intent().context.clone();
     let original_request_id: [u8; 32] = authenticated.intent().request_id;
@@ -812,6 +856,7 @@ where
     )?;
 
     let admission: PaidAdmissionOutput = build_paid_admission(
+        gate,
         store,
         blob_store,
         context,
@@ -1048,7 +1093,7 @@ where
         )?;
     }
     let transaction: DurableInvocationTransaction = build_transaction(mutations)?;
-    match store.commit_invocation(context, transaction) {
+    match gate.commit_invocation(store, context, transaction) {
         DurableCommitOutcome::Committed => Ok(vote),
         DurableCommitOutcome::Rejected(
             DurableCommitRejection::Conflict { .. }
@@ -1107,6 +1152,7 @@ where
     E: PaidContractEngine + ?Sized,
 {
     apply_internal(
+        crate::serving_authority::ServingGate::Original,
         store,
         blob_store,
         context,
@@ -1153,6 +1199,7 @@ where
     E: PaidContractEngine + ?Sized,
 {
     apply_internal(
+        crate::serving_authority::ServingGate::Original,
         store,
         blob_store,
         context,
@@ -1197,6 +1244,7 @@ where
     E: PaidContractEngine + ?Sized,
 {
     apply_internal(
+        crate::serving_authority::ServingGate::Original,
         store,
         blob_store,
         context,
@@ -1242,6 +1290,7 @@ where
     E: PaidContractEngine + ?Sized,
 {
     apply_internal(
+        crate::serving_authority::ServingGate::Original,
         store,
         blob_store,
         context,
@@ -1275,7 +1324,8 @@ fn merge_apply_reads(
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn apply_internal<S, E>(
+pub(crate) fn apply_internal<S, E>(
+    gate: crate::serving_authority::ServingGate<'_>,
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -1305,7 +1355,7 @@ where
     {
         return Ok(output);
     }
-    mutation_fence::require_ordinary_namespace(store, context, domain)?;
+    gate.require_live(store, context, domain)?;
 
     // Historical committed requests reconcile above. Fresh work must also
     // match the trusted, fixed execution-policy epoch, even when the live
@@ -1418,6 +1468,7 @@ where
     }
 
     let admission: PaidAdmissionOutput = build_paid_admission(
+        gate,
         store,
         blob_store,
         context,
@@ -1444,7 +1495,8 @@ where
     // admission derived. Checked here, after the completed-receipt
     // reconciliation above, so exact original completed replay stays
     // receipt-first ahead of any refusal.
-    logical_generation::require_application_admissible(
+    logical_generation::require_application_admissible_gated(
+        gate,
         &admission.logical.profile,
         admission.logical.derived.as_ref(),
     )?;
@@ -1730,7 +1782,7 @@ where
         receipt,
         None,
     )?;
-    match store.commit_invocation(context, transaction) {
+    match gate.commit_invocation(store, context, transaction) {
         DurableCommitOutcome::Committed => Ok(output),
         DurableCommitOutcome::Rejected(
             DurableCommitRejection::Conflict { .. }

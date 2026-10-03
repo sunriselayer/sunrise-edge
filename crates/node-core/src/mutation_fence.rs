@@ -47,7 +47,8 @@ use local_instance_state::{
 #[cfg(test)]
 use local_instance_state::{encode_fastpath_epoch_record, encode_fastpath_lock_record};
 use runtime::{
-    DurableDomainStateStore, NamespaceLifecycle, StructuredStateReader, VersionedStateReader,
+    DurableDomainStateStore, NamespaceLifecycle, StructuredStateReader, SuccessorServingSlot,
+    VersionedStateReader,
 };
 
 /// Entry-specific live admission guard. The backend validates the current
@@ -94,6 +95,22 @@ fn require_unsealed(barrier: &runtime::OutgoingBarrier) -> Result<(), NodeCoreEr
         runtime::OutgoingBarrier::Sealed(_) => Err(NodeCoreError::PersistenceInvariant(
             "outgoing epoch is sealed; live work is forbidden",
         )),
+    }
+}
+
+/// DR-0189 explicit refusal of an outgoing-epoch or genesis control entry
+/// point at a Serving first successor, read from the protected serving slot
+/// before any authentication or signing. Existing ordinary-namespace guards
+/// remain where present. This grants nothing on success: `Inactive` is never
+/// membership, readiness or serving permission.
+pub(crate) fn refuse_successor_serving<S: DurableDomainStateStore + ?Sized>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+) -> Result<(), NodeCoreError> {
+    match store.get_successor_serving(context, domain)? {
+        SuccessorServingSlot::Inactive => Ok(()),
+        SuccessorServingSlot::Serving(_) => Err(NodeCoreError::UnsupportedSuccessorControl),
     }
 }
 

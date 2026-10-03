@@ -37,7 +37,7 @@ use execution::publication::{PublicationContext, encode_publication_context};
 use fee_claims::codec::{FeeClaimOperation, SignedFeeClaimIntent, decode_signed_fee_claim_intent};
 use fee_claims::{fee_claim_intent_digest, fee_claim_receipt_digest, fee_claim_signing_frame};
 use genesis::{GenesisManifest, VerifiedGenesisRoot};
-use protocol_types::{SignatureSchemeId, ValidatorId};
+use protocol_types::{ProtocolVersion, SignatureSchemeId, ValidatorId};
 use runtime::portable::PortableBlobRepository;
 use validator_set::{ValidatorInfo, ValidatorSet};
 
@@ -47,11 +47,15 @@ use validator_set::{ValidatorInfo, ValidatorSet};
 pub const ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE: u16 = 0x6441;
 const ANCHOR_ENCODING_VERSION: u16 = 1;
 const HANDOFF_ANCHOR_ENCODING_VERSION: u16 = 2;
+/// DR-0189 first-successor anchor version: fields 1-9 exactly as v2 plus
+/// field 10, the 0xD054 successor activation subject digest.
+const SUCCESSOR_ANCHOR_ENCODING_VERSION: u16 = 3;
 
 /// Fixed logical-domain label separating this anchor from any other digest
 /// that might one day be derived over the same fields.
 const ANCHOR_DOMAIN_LABEL: &[u8] = b"se/ordered-economics/anchor/v1";
 const HANDOFF_ANCHOR_DOMAIN_LABEL: &[u8] = b"se/ordered-economics/anchor/v2";
+const SUCCESSOR_ANCHOR_DOMAIN_LABEL: &[u8] = b"se/ordered-economics/anchor/v3-successor";
 
 /// Derives the canonical consensus genesis anchor DR-0153 requires: a
 /// domain-separated digest binding the logical ordered-economics domain, the
@@ -77,6 +81,57 @@ pub fn ordered_economics_authority_anchor(
     minimum_freeze_block_height: u64,
     validator_set: &ValidatorSet,
 ) -> Result<Digest32, OrderedEconomicsError> {
+    authority_anchor(
+        resolver,
+        context,
+        domain,
+        genesis_digest,
+        minimum_freeze_block_height,
+        validator_set,
+        None,
+    )
+}
+
+/// DR-0189 v3 first-successor anchor: the v2 preimage at the verified
+/// successor context (field 2 at e+1, field 4 the original pinned genesis
+/// digest, field 5 the verified e+1 set, field 9 the original signed positive
+/// Freeze height) plus field 10, the verified 0xD054 subject digest. It only
+/// hashes the given inputs; it never selects or inspects a key scope, so
+/// every v1/v2 anchor and every existing key byte is unchanged.
+pub(crate) fn ordered_economics_successor_anchor(
+    resolver: &HashSuiteResolver,
+    context: &PublicationContext,
+    domain: AtomicityDomainId,
+    genesis_digest: Digest32,
+    minimum_freeze_block_height: u64,
+    validator_set: &ValidatorSet,
+    subject_digest: Digest32,
+) -> Result<Digest32, OrderedEconomicsError> {
+    if minimum_freeze_block_height == 0 {
+        return Err(OrderedEconomicsError::Policy(
+            "successor anchor requires the original signed positive Freeze height",
+        ));
+    }
+    authority_anchor(
+        resolver,
+        context,
+        domain,
+        genesis_digest,
+        minimum_freeze_block_height,
+        validator_set,
+        Some(subject_digest),
+    )
+}
+
+fn authority_anchor(
+    resolver: &HashSuiteResolver,
+    context: &PublicationContext,
+    domain: AtomicityDomainId,
+    genesis_digest: Digest32,
+    minimum_freeze_block_height: u64,
+    validator_set: &ValidatorSet,
+    successor_subject: Option<Digest32>,
+) -> Result<Digest32, OrderedEconomicsError> {
     if resolver.chain_id() != context.chain_id()
         || resolver.protocol_version() != context.protocol_version()
     {
@@ -94,22 +149,22 @@ pub fn ordered_economics_authority_anchor(
         OrderedEconomicsError::Policy("ordered economics anchor validator set identity")
     })?;
     let handoff_capable: bool = minimum_freeze_block_height != 0;
-    let mut frame: CanonicalStruct = CanonicalStruct::new(
-        ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE,
-        if handoff_capable {
-            HANDOFF_ANCHOR_ENCODING_VERSION
-        } else {
-            ANCHOR_ENCODING_VERSION
-        },
-    );
-    frame.field_bytes(
-        1,
-        if handoff_capable {
-            HANDOFF_ANCHOR_DOMAIN_LABEL.to_vec()
-        } else {
-            ANCHOR_DOMAIN_LABEL.to_vec()
-        },
-    )?;
+    let (version, label): (u16, &[u8]) = match (successor_subject, handoff_capable) {
+        (Some(_), true) => (
+            SUCCESSOR_ANCHOR_ENCODING_VERSION,
+            SUCCESSOR_ANCHOR_DOMAIN_LABEL,
+        ),
+        (Some(_), false) => {
+            return Err(OrderedEconomicsError::Policy(
+                "successor anchor requires a handoff-capable signed genesis",
+            ));
+        }
+        (None, true) => (HANDOFF_ANCHOR_ENCODING_VERSION, HANDOFF_ANCHOR_DOMAIN_LABEL),
+        (None, false) => (ANCHOR_ENCODING_VERSION, ANCHOR_DOMAIN_LABEL),
+    };
+    let mut frame: CanonicalStruct =
+        CanonicalStruct::new(ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE, version);
+    frame.field_bytes(1, label.to_vec())?;
     frame.field_bytes(
         2,
         encode_publication_context(context)
@@ -124,8 +179,61 @@ pub fn ordered_economics_authority_anchor(
     if handoff_capable {
         frame.field_u64(9, minimum_freeze_block_height)?;
     }
+    if let Some(subject) = successor_subject {
+        frame.field_bytes(10, encode_digest32(&subject)?)?;
+    }
     let preimage: Vec<u8> = frame.finish()?;
     Ok(resolver.hash_for_purpose(context.epoch(), HashPurpose::ProtocolConfig, &preimage)?)
+}
+
+/// DR-0189 opaque scope of the five live ordered signing-safety key families
+/// (`state`, `applied-height`, `vote-high`, `leader-proposal`, `vote`).
+///
+/// Only the three [`OrderedEconomicsPolicy`] constructors produce one:
+/// [`OrderedEconomicsPolicy::from_genesis_root`] and
+/// [`OrderedEconomicsPolicy::historical`] build the chain-only scope whose key
+/// bytes are unchanged, and [`OrderedEconomicsPolicy::from_successor`] builds
+/// the successor scope from verified inputs. The inner representation is
+/// private to this module; callers use only the read-only selectors.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OrderedKeyScope(KeyScope);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum KeyScope {
+    Chain,
+    Successor {
+        protocol: ProtocolVersion,
+        epoch: Epoch,
+        anchor: Digest32,
+    },
+}
+
+impl OrderedKeyScope {
+    /// Read-only selector: whether this is a verified first-successor scope.
+    pub(crate) const fn is_successor(&self) -> bool {
+        matches!(self.0, KeyScope::Successor { .. })
+    }
+
+    /// Read-only selector: the exact bytes a successor safety-key builder
+    /// appends after `encode_chain_id(chain)`, namely `protocol u32 BE`,
+    /// `epoch u64 BE`, then `encode_digest32(v3 anchor)`. `None` for the
+    /// chain-only scope, whose historical keys carry no such suffix.
+    pub(crate) fn successor_scope_bytes(&self) -> Result<Option<Vec<u8>>, NodeCoreError> {
+        match &self.0 {
+            KeyScope::Chain => Ok(None),
+            KeyScope::Successor {
+                protocol,
+                epoch,
+                anchor,
+            } => {
+                let mut bytes: Vec<u8> = Vec::with_capacity(4 + 8 + 40);
+                bytes.extend_from_slice(&protocol.get().to_be_bytes());
+                bytes.extend_from_slice(&epoch.get().to_be_bytes());
+                bytes.extend(encode_digest32(anchor)?);
+                Ok(Some(bytes))
+            }
+        }
+    }
 }
 
 /// Fixed-epoch anchor for one closed DR-0153 profile: pins the exact existing
@@ -142,6 +250,7 @@ pub struct OrderedEconomicsPolicy {
     registration_economics: Option<crate::economics::FastPathEconomicsPolicy>,
     minimum_freeze_block_height: u64,
     anchor: Digest32,
+    key_scope: OrderedKeyScope,
     engine: ChainedHotStuff,
     resolver: HashSuiteResolver,
 }
@@ -175,7 +284,60 @@ impl OrderedEconomicsPolicy {
             manifest.minimum_freeze_block_height,
             root.genesis_committee().clone(),
             root.genesis_resolver().clone(),
+            None,
         )
+    }
+
+    /// DR-0189 third constructor: the e+1 ordered profile of a verified
+    /// first successor.
+    ///
+    /// Context, domain, set, subject and anchor come only from the verified
+    /// [`crate::serving_authority::SuccessorPolicyInputs`]. There is no
+    /// separate caller domain or epoch. The root must be the exact original
+    /// pinned genesis of those inputs (digest, chain and protocol). The v3
+    /// anchor is recomputed with the root resolver and the original signed
+    /// minimum Freeze height and must equal the verified anchor. The
+    /// original verified causal admission profile and Freeze height are
+    /// retained, so ordered fencing and external-lane/causal checks stay
+    /// active. Only registration economics is absent. Freeze, DrainSet,
+    /// Seal and initial registration candidates are refused by the shared
+    /// pure authentication chokepoint through the private key scope of this
+    /// policy, never by an absent profile.
+    pub fn from_successor(
+        root: &VerifiedGenesisRoot,
+        inputs: &crate::serving_authority::SuccessorPolicyInputs,
+    ) -> Result<Self, OrderedEconomicsError> {
+        let manifest: &GenesisManifest = root.manifest();
+        let context: &PublicationContext = inputs.context();
+        if root.digest() != inputs.genesis_digest() {
+            return Err(OrderedEconomicsError::Policy(
+                "successor policy root is not the verified original genesis",
+            ));
+        }
+        if root.genesis_context().chain_id() != context.chain_id()
+            || root.genesis_context().protocol_version() != context.protocol_version()
+        {
+            return Err(OrderedEconomicsError::Policy(
+                "successor policy root chain or protocol differs from the verified context",
+            ));
+        }
+        let policy: Self = Self::build(
+            context.clone(),
+            inputs.domain(),
+            root.digest(),
+            Some(root.admission_profile().clone()),
+            None,
+            manifest.minimum_freeze_block_height,
+            inputs.validator_set().clone(),
+            root.genesis_resolver().clone(),
+            Some(inputs.subject_digest()),
+        )?;
+        if policy.anchor != inputs.anchor() {
+            return Err(OrderedEconomicsError::Policy(
+                "successor policy anchor differs from the verified successor anchor",
+            ));
+        }
+        Ok(policy)
     }
 
     /// Creates the canonical anchor for one fixed-epoch profile with no
@@ -201,6 +363,7 @@ impl OrderedEconomicsPolicy {
             0,
             validator_set,
             resolver,
+            None,
         )
     }
 
@@ -214,15 +377,37 @@ impl OrderedEconomicsPolicy {
         minimum_freeze_block_height: u64,
         validator_set: ValidatorSet,
         resolver: HashSuiteResolver,
+        // Supplied only by the DR-0189 successor constructor: selects both
+        // the v3 anchor and the private successor key scope.
+        successor_subject: Option<Digest32>,
     ) -> Result<Self, OrderedEconomicsError> {
-        let anchor: Digest32 = ordered_economics_authority_anchor(
-            &resolver,
-            &context,
-            domain,
-            genesis_digest,
-            minimum_freeze_block_height,
-            &validator_set,
-        )?;
+        let anchor: Digest32 = match successor_subject {
+            None => ordered_economics_authority_anchor(
+                &resolver,
+                &context,
+                domain,
+                genesis_digest,
+                minimum_freeze_block_height,
+                &validator_set,
+            )?,
+            Some(subject) => ordered_economics_successor_anchor(
+                &resolver,
+                &context,
+                domain,
+                genesis_digest,
+                minimum_freeze_block_height,
+                &validator_set,
+                subject,
+            )?,
+        };
+        let key_scope: OrderedKeyScope = match successor_subject {
+            None => OrderedKeyScope(KeyScope::Chain),
+            Some(_) => OrderedKeyScope(KeyScope::Successor {
+                protocol: context.protocol_version(),
+                epoch: context.epoch(),
+                anchor,
+            }),
+        };
         let engine: ChainedHotStuff = ChainedHotStuff::new(
             context.chain_id().clone(),
             context.protocol_version(),
@@ -241,6 +426,7 @@ impl OrderedEconomicsPolicy {
             registration_economics,
             minimum_freeze_block_height,
             anchor,
+            key_scope,
             engine,
             resolver,
         })
@@ -314,6 +500,13 @@ impl OrderedEconomicsPolicy {
     #[must_use]
     pub const fn anchor(&self) -> Digest32 {
         self.anchor
+    }
+
+    /// The private-representation scope of the live ordered signing-safety
+    /// keys this policy reads and writes. Read-only: no caller can select or
+    /// widen it.
+    pub(crate) const fn key_scope(&self) -> &OrderedKeyScope {
+        &self.key_scope
     }
 
     /// Returns the registered authority for `validator_id` in the pinned
@@ -681,6 +874,24 @@ fn authenticate_with_policy(
     env: &CandidateAuthentication<'_>,
     candidate: &OrderedCandidate,
 ) -> Result<(), OrderedEconomicsError> {
+    // DR-0189 single chokepoint, deliberately FIRST: a first-successor scope
+    // never authenticates an epoch-handoff control or initial registration.
+    // Every proposal, vote, committed preview/apply, reservation and HTTP
+    // admission site reaches this function, so none needs its own check.
+    // The retained causal profile and Freeze height would otherwise pass the
+    // kind-specific checks below. Chain scopes, including the historical
+    // epoch-e verifier, are unaffected.
+    if env.policy.key_scope().is_successor()
+        && matches!(
+            candidate.kind,
+            OrderedOperationKind::Freeze
+                | OrderedOperationKind::DrainSet
+                | OrderedOperationKind::Seal
+                | OrderedOperationKind::BondRegistration
+        )
+    {
+        return Err(OrderedEconomicsError::UnsupportedSuccessorControl);
+    }
     if candidate.context != *env.policy.context() {
         return Err(OrderedEconomicsError::Unauthenticated(
             "ordered candidate context does not match the pinned policy",

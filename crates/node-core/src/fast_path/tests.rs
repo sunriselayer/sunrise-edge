@@ -3281,6 +3281,14 @@ impl runtime::DurableDomainStateStore for IndeterminateOnceApplyStore {
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
     }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -5588,6 +5596,14 @@ impl runtime::DurableDomainStateStore for AmbiguousCommitStore<'_> {
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
     }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -6200,6 +6216,14 @@ impl runtime::DurableDomainStateStore for IndeterminateCommitStore {
         domain: runtime::AtomicityDomainId,
     ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
+    }
+
+    fn get_successor_serving(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::SuccessorServingSlot, runtime::DurableReadError> {
+        self.inner.get_successor_serving(context, domain)
     }
     fn get_versioned_durable(
         &self,
