@@ -11,6 +11,12 @@ first-epoch Seal contract, superseding this record's alternative Seal suffix,
 post-Seal progress and companion proposals. Its acceptance does not approve
 the separate successor activation/recurring schemas proposed here.
 
+Clarification, 2026-10-03: DR-0187's first-epoch hard-stop also supersedes the
+post-Seal outgoing transition-vote sketches in this proposal. No new outgoing
+live signature may be created or exposed after committed Seal. The next
+separately reviewed transition and activation contract must preserve that
+boundary; this clarification adopts no replacement producer or schema.
+
 ## Context
 
 [DR-0180](0180-architecture-first-interface-contracts.md) asks for responsibility

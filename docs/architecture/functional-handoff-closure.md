@@ -14,6 +14,13 @@ exact private acceptance terminal and hard-stop outgoing signatures/writes.
 The separate activation and recurring-predecessor proposals below are not
 accepted by that narrower decision.
 
+For first-epoch Seal, DR-0187 also supersedes every sketch below that would
+create or expose an outgoing live signature after committed Seal. The proposed
+post-Seal outgoing transition-vote steps are incompatible with the accepted
+hard-stop and grant no permission. The next separately reviewed transition and
+activation contract must preserve that boundary. This clarification defines no
+replacement producer or schema.
+
 ## Implemented constraints and source evidence
 
 - [DR-0178](decisions/0178-conditional-readiness-wire-and-retention.md) uses

@@ -5,6 +5,9 @@ This is the accepted closed design contract of
 It replaces only the Seal alternatives of
 [functional handoff closure](functional-handoff-closure.md); post-Seal
 transition, successor serving and recurring epochs remain separate contracts.
+Its hard-stop also rules out the older proposal's post-Seal outgoing
+transition-vote sketches. Separate successor design must not assume an
+exception permitting a new outgoing live signature.
 Current status belongs only in [TODO.md](../../TODO.md).
 
 ## Authority and finite composition
