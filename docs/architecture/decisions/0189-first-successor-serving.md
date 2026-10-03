@@ -2,9 +2,10 @@
 
 Date: 2026-10-03 (Asia/Singapore)
 
-Status: **Proposed** for independent review. No implementation approval,
-wire/key allocation, migration, serving activation or deployment is
-authorized. Current work and evidence remain only in
+Status: **Accepted design** after fresh independent Opus review of
+`7124ea9` on 2026-10-03. This authorizes implementing this closed contract,
+not serving activation or deployment before functional acceptance.
+Current work and implementation evidence remain only in
 [TODO.md](../../../TODO.md).
 
 ## Context
@@ -52,12 +53,19 @@ and the SDK could not reach the private verifier. The revised proposal
 uses opaque scopes with module-private inner representations and a public
 read-only wrapper over the one private source-free verifier. Warrants
 retain private fields; shared policy inputs contain no destination member.
-This revision is still subject to independent review, not self-approval.
+Further independent reviews closed the policy's verified domain/subject
+binding and causal profile preservation. The final review explicitly
+approved pre-code implementation at `7124ea9`, including the shared pure
+control-authentication chokepoint. Its implementation obligations are
+preserved: committed-preview must propagate the typed unsupported-control
+error, HTTP must map it to a permanent 4xx refusal, and readiness must
+explicitly reject an already Serving slot before signing or retained
+exposure. None is an implementation-completion claim.
 
 ## Decision
 
 Use [first-successor-serving.md](../first-successor-serving.md) as the
-proposed contract. Its choices, summarized:
+accepted design contract. Its choices, summarized:
 
 1. Keep source-free verified evidence (immutable genesis, outgoing
    committee, ordered history through the committed Seal, readiness
@@ -112,7 +120,7 @@ proposed contract. Its choices, summarized:
 10. Specify every field, phase, digest purpose/epoch, length, bound, port
     signature and schema/namespace allocation, including
     `GenerationScope`/`derive_scoped` constructed only from a warrant, as
-    exact proposed interfaces with named migrated callers.
+    exact accepted interfaces with named migrated callers.
 11. Preserve the original verified causal admission profile and signed
     minimum Freeze height in the successor policy, while its context,
     domain and anchor come only from verified successor inputs. Ordered
@@ -122,15 +130,18 @@ proposed contract. Its choices, summarized:
     the one pure `authenticate_with_policy` dispatch shared by proposal,
     vote, committed preview/apply, reservation and HTTP admission. Other
     unsupported controls refuse at their entry points before signing and
-    retain ordinary-namespace guards, never disabling the profile.
+    retain ordinary-namespace guards where present, never disabling the
+    profile. Readiness returns its corresponding typed error on a Serving
+    slot before signing or retained exposure, not an incidental inventory
+    or token mismatch.
 
 ## Not yet decided
 
 Recurring Freeze/DrainSet/Seal and predecessor reconstruction for a second
 successor, genuine Withdraw/Unbond unlock for a retired validator, PG/DO
 activation production, and independent security audit remain separately
-reviewed next work, out of scope for this record. It remains Proposed
-pending a further independent pass and makes no claim of approval.
+reviewed next work, out of scope for this accepted design record. Design
+approval does not waive their separate implementation and review.
 
 ## Consequences and acceptance
 
@@ -141,5 +152,5 @@ identifiers this record allocates. Require the genuine four-store SQLite
 flow, independent vectors for every new frame, negative/adversarial coverage
 for every refusal listed in the linked contract, and the unchanged full
 validation gate (`./scripts/check-all.sh`, plus `--full` PG for the schema
-change) before acceptance. This Proposed record completes no
+change) before functional acceptance. This design record completes no
 implementation, Delivery 3, independent audit or production qualification.

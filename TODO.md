@@ -161,27 +161,24 @@ target-local activation, serving and successor/predecessor schema allocations
 still require their separate design and functional evidence, without new
 outgoing signatures after Seal. Proposed documentation alone does not complete
 serving, recurring reconstruction or Delivery 3.
-The first-successor design is being closed in proposed
+The first-successor design is accepted in
 [DR-0189](docs/architecture/decisions/0189-first-successor-serving.md) and its
 [detailed contract](docs/architecture/first-successor-serving.md), including
 effective cut-floor provenance and the real per-invocation authority consumers.
-Independent design approval is required before implementing the new producer;
-no activation, serving or schema implementation is claimed by that proposal.
+Fresh independent Opus explicitly approved the closed design for implementation
+at `7124ea9` on 2026-10-03. No activation, serving or schema implementation is
+claimed by design acceptance. PR #266 contains the accepted contract and
+byte-preserving preparatory ordered-key refactor, not the functional producer.
 The preparatory ordered-key refactor now uses one closed family type with the
 required view/epoch/height/digest/request suffixes, preserving every existing
 key byte and caller. Parent verification passed 11 exact-layout tests and all
-240 ordered-core regression tests. The successor design remains under revision
-after an independent BLOCK; no new serving writer or provider schema is
-implemented. The complete local storage-neutral required gate passed at
-`f227c72` on 2026-10-03; that head has independent approval of the key refactor
-but the Proposed successor interfaces are not yet independently approved.
-Subsequent reviews closed the opaque-scope, SDK visibility and policy-input
-binding findings. The latest proposed correction preserves the original causal
-admission profile and signed Freeze height, with unsupported candidate kinds
-refused in the shared pure authenticator before any kind-specific checks and
-other unsupported controls refused at their entry points before signing.
-That correction still requires independent approval;
-no new producer or schema is implemented.
+240 ordered-core regression tests. The complete local storage-neutral required
+gate passed at clean `e16c983` on 2026-10-03; only architecture/TODO prose changed
+since. The independently accepted design preserves the original causal profile
+and signed Freeze height, refusing unsupported candidate kinds in the shared
+pure authenticator and other controls before signing. Real activation, live
+successor commits and operator/SDK/CLI consumers remain implementation work;
+final exact-head local acceptance, fresh Opus and required CI gate PR #266.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.

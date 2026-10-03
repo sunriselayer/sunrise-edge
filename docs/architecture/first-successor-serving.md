@@ -1,6 +1,6 @@
 # First successor target-local activation and authenticated serving
 
-This is the proposed contract of
+This is the accepted design contract of
 [DR-0189](decisions/0189-first-successor-serving.md). It depends on the
 accepted [verified inactive import](verified-inactive-import.md)
 ([DR-0176](decisions/0176-verified-inactive-business-import.md)),
@@ -11,9 +11,9 @@ accepted [verified inactive import](verified-inactive-import.md)
 the successor-activation gap they and the aspirational "Recovery and serving
 authority" section of [epoch-handoff.md](epoch-handoff.md) leave open.
 Current status belongs only in [TODO.md](../../TODO.md). This is a design
-document, not an implementation approval: no wire identifier, key,
-migration, port or serving capability described here exists until a
-reviewed implementation lands.
+document, not evidence of implemented serving: wire identifiers, keys,
+schema and ports described here require the reviewed implementation and
+acceptance below before any serving capability is claimed.
 
 ## 1. Authority chain and the evidence/warrant separation
 
@@ -667,14 +667,21 @@ into its CAS read set and commits only through
 `warrant.serving_observation()`. Cached FastVote, ordered, ACK and
 frontier exposure resolves a fresh warrant per request and requires
 message epoch == warrant epoch and message key scope == warrant anchor;
-no startup-time check substitutes. Original-receipt replay runs first.
+no startup-time check substitutes. On receipt and query routes,
+original-receipt replay runs before ordinary authority or object work;
+the original Seal receipt is replayed through the receipt route, not by
+resubmitting an epoch-e candidate to the epoch-e+1 pure authenticator.
 
 At `Successor` authority, readiness (new and retained),
 Freeze/DrainSet/Seal, initial registration, `install_ordered_genesis` and
-legacy `activate` refuse with a typed error before any signing; these are
-candidate kinds are refused in `authenticate_with_policy` (Section 9),
-and the other controls at their entry points. Historical read-only open, export and query
-stay legal and may relay the Seal and its QCs without signing.
+legacy `activate` refuse with a typed error before any signing. Candidate
+kinds are refused in `authenticate_with_policy` (Section 9), and the other
+controls at their entry points. Readiness signing/retention check the
+protected Serving slot first and return the corresponding
+`ConditionalReadinessError::UnsupportedSuccessorControl` before new or
+retained exposure, not an incidental inventory or token mismatch.
+Historical read-only open, export and query stay legal and may relay the
+Seal and its QCs without signing.
 
 ## 9. Ordered and FastVote policy at e+1
 
@@ -742,8 +749,9 @@ successor replica therefore never signs, votes for or applies such a
 candidate. `Chain`-scope policies, including the epoch-e history verifier
 (`ordered_history.rs:319`), are unchanged. Non-candidate controls
 (readiness signing, `install_ordered_genesis`, legacy `activate`, frontier
-and drain publication) refuse at their entry points with the same typed
-error, retaining their existing `require_ordinary_namespace` refusals.
+and drain publication) refuse at their entry points with a corresponding
+typed unsupported-control error; existing ordinary-namespace guards remain
+where present. Readiness has the explicit Serving-slot check of Section 8.
 A missing profile is not an authorization gate.
 
 FastVote reuses `load_validator_set` at ctx@e+1 against the installed row.
@@ -838,7 +846,7 @@ non-INITIAL singleton root; a token advanced after `observe_complete`; a
 present receipt or must-absent row; an oversized suffix refused whole with
 no write; an e+1 policy row without provenance; tampered Seal closure or
 e+1 rows at live resolution; cached-signature exposure with a stale scope;
-successor-scoped Freeze, DrainSet and Seal candidates refused by the typed
+successor-scoped Freeze, DrainSet, Seal and BondRegistration candidates refused by the typed
 unsupported-control error before authentication or signing, not by a
 missing admission profile.
 Both vote validation of a leader proposal containing any of those four
@@ -865,5 +873,5 @@ schema change (DR-0172).
 Recurring Freeze/DrainSet/Seal and a second successor; e+1 governance
 changes to the installed policy rows; genuine `Unbond`/`Withdraw` unlock
 for D; PostgreSQL or Durable Object activation; public readiness
-production; independent security audit; Delivery 3. This contract remains
-Proposed pending separate independent review.
+production; independent security audit; Delivery 3. Design acceptance is
+not completion of these deferred outcomes or of the implementation.
