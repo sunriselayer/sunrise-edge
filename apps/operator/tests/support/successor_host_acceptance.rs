@@ -478,7 +478,11 @@ fn observe_fee_context(
     let fee_policy_digest: protocol_types::Digest32 =
         execution::paid_execution::paid_fee_policy_digest(&fixture.network.resolver, &policy)
             .unwrap();
-    FeeObservation { coin_ref, nonce, fee_policy_digest }
+    FeeObservation {
+        coin_ref,
+        nonce,
+        fee_policy_digest,
+    }
 }
 
 /// Certifies one real signed paid intent under the e+1 FastVote quorum,
@@ -491,7 +495,8 @@ fn certify_and_apply_paid_intent(
     workflow: &SuccessorWorkflowAuthority,
     signed: &execution::paid_execution::SignedPaidIntent,
 ) -> Vec<sunrise_edge_client::FastVoteApplyAttempt> {
-    let endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> = fastvote_endpoints(fixture, hosts);
+    let endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> =
+        fastvote_endpoints(fixture, hosts);
     let certifier: &consensus::FastPathCertifier = workflow.fastvote_certifier();
     let deadline: Instant = Instant::now() + Duration::from_secs(1800);
     let cap: Duration = Duration::from_secs(300);
@@ -596,16 +601,25 @@ fn paid_publish_and_instantiate_fresh_asset(
 ) -> ([u8; 32], [u8; 32], objects::ObjectId) {
     use abi::package_types::{PackageOrigin, ScopedTypeTag, verify_scoped_type_id};
     use execution::call::CallIntent;
-    use execution::local_execution::{InstanceRecord, generic_object_result_semantics, instance_target};
-    use execution::paid_execution::{FeeSourceConsent, PaidApplication, PaidIntent, ReservationAccessKind};
-    use execution::publication::{ArtifactParts, CodeArtifact, UnverifiedDependencyRef, artifact_commitment};
+    use execution::local_execution::{
+        InstanceRecord, generic_object_result_semantics, instance_target,
+    };
+    use execution::paid_execution::{
+        FeeSourceConsent, PaidApplication, PaidIntent, ReservationAccessKind,
+    };
+    use execution::publication::{
+        ArtifactParts, CodeArtifact, UnverifiedDependencyRef, artifact_commitment,
+    };
 
     let context: execution::publication::PublicationContext = workflow.expected_context().clone();
     // A fresh code origin distinct from the imported epoch-e Standard Asset
     // instance own code; only the fee coin and quorum are shared.
-    let origin: PackageOrigin =
-        PackageOrigin::unverified(fixture.network.chain_id.clone(), fixture.network.sender, [0x73; 32])
-            .unwrap();
+    let origin: PackageOrigin = PackageOrigin::unverified(
+        fixture.network.chain_id.clone(),
+        fixture.network.sender,
+        [0x73; 32],
+    )
+    .unwrap();
     let package: public_standard_asset::StandardAssetPackage =
         public_standard_asset::build_package(&origin).unwrap();
     let semantics: protocol_types::Digest32 =
@@ -701,11 +715,13 @@ fn paid_publish_and_instantiate_fresh_asset(
     // Identify the freshly created Definition (excluding the fee/refund
     // settlement outputs), then prove it is genuinely live by querying it
     // back from a live host.
-    let result: &execution::paid_execution::PaidExecutionResult = applied[0].result.as_ref().unwrap();
+    let result: &execution::paid_execution::PaidExecutionResult =
+        applied[0].result.as_ref().unwrap();
     let charged = result.charged.as_ref().unwrap();
     let fee_id: objects::ObjectId = charged.fee_output.id;
     let refund_id: Option<objects::ObjectId> = charged.refund_output.as_ref().map(|value| value.id);
-    let definition_tag: ScopedTypeTag = public_standard_asset::definition_type_tag(&origin).unwrap();
+    let definition_tag: ScopedTypeTag =
+        public_standard_asset::definition_type_tag(&origin).unwrap();
     let definition_id: objects::ObjectId = result
         .effects
         .object_effects
@@ -714,9 +730,14 @@ fn paid_publish_and_instantiate_fresh_asset(
             execution::ObjectEffect::Created(object)
                 if object.id != fee_id && Some(object.id) != refund_id =>
             {
-                verify_scoped_type_id(&fixture.network.resolver, &object.type_hash, context.epoch(), &definition_tag)
-                    .unwrap_or(false)
-                    .then_some(object.id)
+                verify_scoped_type_id(
+                    &fixture.network.resolver,
+                    &object.type_hash,
+                    context.epoch(),
+                    &definition_tag,
+                )
+                .unwrap_or(false)
+                .then_some(object.id)
             }
             _ => None,
         })
@@ -1244,8 +1265,11 @@ fn accept(
     let call: [u8; 32] = paid_call_on_imported_instance(fixture, &hosts, &workflow);
     let call_receipt = receipts(&all, call);
 
-    let (publish_request, instantiate_request, fresh_definition): ([u8; 32], [u8; 32], objects::ObjectId) =
-        paid_publish_and_instantiate_fresh_asset(fixture, &hosts, &workflow);
+    let (publish_request, instantiate_request, fresh_definition): (
+        [u8; 32],
+        [u8; 32],
+        objects::ObjectId,
+    ) = paid_publish_and_instantiate_fresh_asset(fixture, &hosts, &workflow);
     let publish_receipt = receipts(&all, publish_request);
     let instantiate_receipt = receipts(&all, instantiate_request);
 
@@ -1330,7 +1354,10 @@ fn accept(
     assert_eq!(receipts(&reopened_all, call), call_receipt);
     assert_eq!(receipts(&reopened_all, claim), claim_receipt);
     assert_eq!(receipts(&reopened_all, publish_request), publish_receipt);
-    assert_eq!(receipts(&reopened_all, instantiate_request), instantiate_receipt);
+    assert_eq!(
+        receipts(&reopened_all, instantiate_request),
+        instantiate_receipt
+    );
     let refreshed = Client::new(transport(reopened_all.last().unwrap().address))
         .query_object(fresh_definition)
         .unwrap();

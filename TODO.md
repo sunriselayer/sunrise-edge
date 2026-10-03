@@ -228,11 +228,14 @@ pre-signing refusals on that real returned intent, live artifact replacement
 refusal, exact receipts/replay and paused-peer close/reopen/refencing/catch-up.
 It uses the same eligible committee, not the core A/B/C/D -> A/B/C/E world.
 The fresh-gated inspection corrects both earlier refused fixture attempts without
-weakening history, policy or admission checks. New e+1 Publish/Instantiate process
-coverage is added in a separate test worktree and remains to be integrated/run.
+weakening history, policy or admission checks. The integrated process suite also
+passes fresh generic paid Publish and Instantiate at e+1, repeated certificate
+apply, identical receipts across all four hosts, and live created-Definition
+queries before and after the paused host reopens and catches up.
 Still required: final-head required/selected-PG gates, independent exact-head
-Opus APPROVE and green CI. Latest core changes need full-head lint and regression
-acceptance again. No Delivery 3, recurring lifecycle, PG/DO activation, security
+Opus APPROVE and green CI. Strict all-target/all-feature lint passes with the
+latest core and lifecycle tests; full-head regression acceptance remains pending.
+No Delivery 3, recurring lifecycle, PG/DO activation, security
 audit or network readiness completion is claimed.
 
 The order below supersedes the old chronological slice lists as the active
