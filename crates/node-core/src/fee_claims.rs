@@ -1201,6 +1201,7 @@ where
         let new_settlement: FastPathSettlementRecord =
             preparation::advance_claim_row(&settlement, share_index, None)?;
         return prepare_claim_invocation(
+            mutation_fence::ordered_gate(ordered),
             store,
             context,
             domain,
@@ -1250,6 +1251,7 @@ where
         return Err(FeeClaimError::Invalid("signed payout ref mismatch"));
     }
     prepare_claim_invocation(
+        mutation_fence::ordered_gate(ordered),
         store,
         context,
         domain,
@@ -1276,6 +1278,7 @@ where
 /// sender-nonce range for a positive claim), and the one outer receipt.
 #[allow(clippy::too_many_arguments)]
 fn prepare_claim_invocation<S: VersionedStateReader + ?Sized>(
+    gate: crate::serving_authority::ServingGate<'_>,
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1332,7 +1335,8 @@ fn prepare_claim_invocation<S: VersionedStateReader + ?Sized>(
     // provenance rows covering both are derived here, over the complete write
     // set, before the atomic commit. A handoff-capable store refuses the
     // settlement without that evidence; a historical store is unaffected.
-    logical_generation::admit_application(
+    logical_generation::admit_application_gated(
+        gate,
         store,
         context,
         domain,

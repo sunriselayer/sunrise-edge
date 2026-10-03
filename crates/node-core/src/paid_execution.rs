@@ -1462,24 +1462,6 @@ pub fn reconcile_authenticated_paid_execution<S: StructuredDurableDomainStateSto
     expected_current: &PublicationContext,
     authenticated: AuthenticatedPaidExecution,
 ) -> PaidResult<PaidExecutionPreflight> {
-    reconcile_authenticated_paid_execution_gated(
-        crate::serving_authority::ServingGate::Original,
-        store,
-        context,
-        domain,
-        expected_current,
-        authenticated,
-    )
-}
-
-pub(crate) fn reconcile_authenticated_paid_execution_gated<S: StructuredDurableDomainStateStore>(
-    gate: crate::serving_authority::ServingGate<'_>,
-    store: &S,
-    context: &DurableOperationContext,
-    domain: AtomicityDomainId,
-    expected_current: &PublicationContext,
-    authenticated: AuthenticatedPaidExecution,
-) -> PaidResult<PaidExecutionPreflight> {
     if authenticated.context() != expected_current {
         return Err(PaidExecutionError::ContextMismatch.into());
     }
@@ -1490,7 +1472,7 @@ pub(crate) fn reconcile_authenticated_paid_execution_gated<S: StructuredDurableD
     {
         return Ok(PaidExecutionPreflight::Replayed { request_id, output });
     }
-    gate.require_live(store, context, domain)?;
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
     Ok(PaidExecutionPreflight::Fresh(Box::new(
         FreshPaidExecution { authenticated },
     )))
@@ -1519,40 +1501,6 @@ pub fn handle_preflighted_paid_execution<
     fresh: FreshPaidExecution,
     created_checkpoint: u64,
 ) -> PaidResult<NodeOutput> {
-    handle_preflighted_paid_execution_gated(
-        crate::serving_authority::ServingGate::Original,
-        store,
-        blob_store,
-        context,
-        domain,
-        resolver,
-        history,
-        base_policy,
-        fee_policy,
-        engine,
-        fresh,
-        created_checkpoint,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn handle_preflighted_paid_execution_gated<
-    S: StructuredDurableDomainStateStore,
-    E: PaidContractEngine + ?Sized,
->(
-    gate: crate::serving_authority::ServingGate<'_>,
-    store: &S,
-    blob_store: &dyn BlobStore,
-    context: &DurableOperationContext,
-    domain: AtomicityDomainId,
-    resolver: &HashSuiteResolver,
-    history: &[HashSuiteResolver],
-    base_policy: &LocalExecutionPolicy,
-    fee_policy: &PaidFeePolicy,
-    engine: &E,
-    fresh: FreshPaidExecution,
-    created_checkpoint: u64,
-) -> PaidResult<NodeOutput> {
     if history.len() > publication::MAX_PUBLICATION_HISTORY {
         return invalid("resolver history bound");
     }
@@ -1567,7 +1515,7 @@ pub(crate) fn handle_preflighted_paid_execution_gated<
     {
         return Ok(output);
     }
-    gate.require_live(store, context, domain)?;
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let mut direct_profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     require_historical_direct_writer(
         store,
@@ -1577,7 +1525,7 @@ pub(crate) fn handle_preflighted_paid_execution_gated<
         &mut direct_profile_reads,
     )?;
     let mut admission: PaidAdmissionOutput = build_paid_admission(
-        gate,
+        crate::serving_authority::ServingGate::Original,
         store,
         blob_store,
         context,
@@ -1602,15 +1550,7 @@ pub(crate) fn handle_preflighted_paid_execution_gated<
             return Err(NodeCoreError::StateConflict.into());
         }
     }
-    commit_direct_paid_admission(
-        gate,
-        store,
-        context,
-        domain,
-        request_id,
-        event_digest,
-        admission,
-    )
+    commit_direct_paid_admission(store, context, domain, request_id, event_digest, admission)
 }
 
 /// Authenticates, admits and durably commits one paid invocation.
@@ -1656,7 +1596,6 @@ pub fn handle_paid_execution<
 }
 
 fn commit_direct_paid_admission<S: StructuredDurableDomainStateStore>(
-    gate: crate::serving_authority::ServingGate<'_>,
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1692,11 +1631,7 @@ fn commit_direct_paid_admission<S: StructuredDurableDomainStateStore>(
     // with the authenticated generation this very admission derived; a
     // historical store applies exactly as it always did. Neither can present
     // the other's evidence.
-    logical_generation::require_application_admissible_gated(
-        gate,
-        &logical.profile,
-        logical.derived.as_ref(),
-    )?;
+    logical_generation::require_application_admissible(&logical.profile, logical.derived.as_ref())?;
     let nonce: PendingSenderNonceWrite = nonce_write.ok_or(
         PaidExecutionAdmissionError::Invalid("direct commit always reserves a fresh nonce"),
     )?;
@@ -1745,7 +1680,7 @@ fn commit_direct_paid_admission<S: StructuredDurableDomainStateStore>(
         None,
     )?;
     Ok(durable_reconciliation::committed_output(
-        gate.commit_invocation(store, context, transaction),
+        store.commit_invocation(context, transaction),
         output,
     )?)
 }

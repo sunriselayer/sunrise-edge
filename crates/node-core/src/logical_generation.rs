@@ -882,8 +882,11 @@ fn decode_installed_profile(
 /// profile genesis floor, unchanged. A verified first successor derives
 /// above the verified cut binding floor instead. No module outside this one
 /// can name the inner representation or build a successor variant: the only
-/// successor constructors take a warrant, whose floor, epoch and anchor come
-/// only from verified successor evidence. The floor is the only accessor.
+/// successor constructors take a warrant, whose floor comes only from the
+/// verified cut binding of successor evidence. The floor is the only
+/// accessor. Provenance observation epochs stay the owning row context
+/// epochs, exactly as for the original namespace, so an imported epoch-e row
+/// (for example a fee escrow settlement) keeps its own hash epoch.
 /// The successor anchor binding deliberately does not go through this scope:
 /// activation asserts the scoped epoch-state root and every live successor
 /// commit rechecks the exact protected serving record carrying the anchor.
@@ -895,7 +898,6 @@ enum Scope {
     },
     Successor {
         floor: ExecutionGeneration,
-        epoch: Epoch,
     },
 }
 
@@ -920,29 +922,13 @@ impl GenerationScope {
     fn successor(inputs: &crate::serving_authority::SuccessorPolicyInputs) -> Self {
         Self(Scope::Successor {
             floor: inputs.generation_floor(),
-            epoch: inputs.context().epoch(),
         })
     }
 
     /// The generation floor every derivation under this scope must exceed.
     pub(crate) const fn floor(&self) -> ExecutionGeneration {
         match self.0 {
-            Scope::Original { floor } | Scope::Successor { floor, .. } => floor,
-        }
-    }
-
-    /// A successor scope writes provenance only at its own verified epoch.
-    fn require_write_epoch(&self, epoch: Epoch) -> Result<(), NodeCoreError> {
-        match self.0 {
-            Scope::Original { .. } => Ok(()),
-            Scope::Successor { epoch: scoped, .. } => {
-                if scoped != epoch {
-                    return Err(provenance_error(
-                        "successor provenance epoch differs from its verified scope",
-                    ));
-                }
-                Ok(())
-            }
+            Scope::Original { floor } | Scope::Successor { floor } => floor,
         }
     }
 }
@@ -958,33 +944,10 @@ impl GenerationScope {
 ///
 /// A present input without matching authenticated provenance fails closed, and
 /// overflow is a typed refusal before any signature or commit.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn derive<S: VersionedStateReader + ?Sized>(
-    store: &S,
-    context: &DurableOperationContext,
-    domain: AtomicityDomainId,
-    resolver: &HashSuiteResolver,
-    profile: &LogicalProfileRecord,
-    head_reads: &[DurableObjectHeadRead],
-    nonce: Option<&PendingSenderNonceWrite>,
-    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
-) -> Result<LogicalDerivation, NodeCoreError> {
-    derive_scoped(
-        &GenerationScope::from_profile(profile),
-        store,
-        context,
-        domain,
-        resolver,
-        profile,
-        head_reads,
-        nonce,
-        reads,
-    )
-}
-
-/// [`derive`] under an explicit [`GenerationScope`]: identical except that
-/// the generation floor is the scope floor. The original-profile scope is
-/// byte-identical to [`derive`] for every existing caller and vector.
+///
+/// The floor is the invocation scope floor: the profile genesis floor for
+/// the original namespace (byte-identical to the historical derivation) or
+/// the verified cut binding floor for a successor.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn derive_scoped<S: VersionedStateReader + ?Sized>(
     scope: &GenerationScope,
@@ -1087,9 +1050,9 @@ pub(crate) fn provenance_mutations<S: VersionedStateReader + ?Sized>(
     Ok(out)
 }
 
-/// [`provenance_mutations`] for a derivation made under `scope`. A successor
-/// scope writes provenance only at its own verified epoch. The rows are still
-/// written at the derived generation, exactly like the original path.
+/// [`provenance_mutations`] for a derivation made under `scope`: the derived
+/// generation must strictly exceed the scope floor. The rows are written at
+/// the derived generation, exactly like the original path.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn provenance_mutations_scoped<S: VersionedStateReader + ?Sized>(
     scope: &GenerationScope,
@@ -1103,7 +1066,6 @@ pub(crate) fn provenance_mutations_scoped<S: VersionedStateReader + ?Sized>(
     writes: &[LogicalWrite],
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<Vec<StateMutationEntry>, NodeCoreError> {
-    scope.require_write_epoch(epoch)?;
     if derived.generation <= scope.floor() {
         return Err(NodeCoreError::ExecutionGenerationRegression {
             previous: scope.floor().get(),

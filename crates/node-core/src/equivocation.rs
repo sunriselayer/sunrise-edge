@@ -440,7 +440,7 @@ fn prepare_new_evidence<S: StructuredStateReader + ?Sized>(
     // function and remains legal; fresh submission can resume after the next
     // epoch activates. Fence the current epoch and its admission closure in
     // the same commit as the evidence row, not the offense epoch's closure.
-    mutation_fence::require_ordinary_reader_namespace(store, context, domain)?;
+    mutation_fence::ordered_gate(ordered).require_reader(store, context, domain)?;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     reads.insert(key.clone(), observed_revision);
     match ordered {

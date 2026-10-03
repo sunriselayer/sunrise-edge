@@ -36,6 +36,7 @@ use crate::admission_profile::{
     fence_verified_admission_profile, require_historical_direct_writer,
 };
 use crate::business_reconstruction::BusinessReconstructionPlan;
+use crate::serving_authority::ServingGate;
 use crate::operation_preparation::{
     InvocationPreparation, PreparedBusinessInvocation, PreparedStateOperation,
 };
@@ -50,8 +51,8 @@ use runtime::portable::PortableSnapshotToken;
 use runtime::{
     DurableCommitOutcome, DurableDomainStateStore, DurableObjectHeadRead, OutgoingSealRepository,
     SealBarrier, StateAssemblyError, StateObservationSet, StateTransactionBuilder,
-    StructuredDurableDomainStateStore, StructuredStateReader, SuccessorServingRepository,
-    TransitionHistoryState, VersionedStateReader,
+    StructuredDurableDomainStateStore, StructuredStateReader, TransitionHistoryState,
+    VersionedStateReader,
 };
 
 /// Reserved under [`crate::local_instance_state::INSTANCE_STATE_PREFIX`], so
@@ -2097,6 +2098,7 @@ pub(crate) fn reconstruct_ordered_history_height(
                         request_id: candidate.request_id,
                         objects: &[],
                         nonce: None,
+                        gate: ServingGate::Original,
                     }),
                 };
                 let operation: CommittedOrderedOperation<'_> =
@@ -2130,6 +2132,7 @@ pub(crate) fn reconstruct_ordered_history_height(
     match prepared {
         Some(prepared) => {
             let confirmed: ConfirmedOriginalCompletion = prepared.confirm(
+                ServingGate::Original,
                 store,
                 context,
                 env.policy.domain(),
@@ -2652,6 +2655,7 @@ pub(super) fn build_receipt(
 /// exact replay never rewrites a row or increments a revision.
 #[allow(clippy::too_many_arguments)]
 fn finalize_event<S: StructuredDurableDomainStateStore>(
+    gate: ServingGate<'_>,
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -2661,6 +2665,7 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     vote: Option<(LocalVoteReconciliation, Option<consensus::ConsensusVote>)>,
 ) -> Result<OrderedEventOutput, OrderedEconomicsError> {
     prepare_event(
+        gate,
         store,
         context,
         env,
@@ -2669,7 +2674,7 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
         admitted,
         vote,
     )?
-    .confirm(store, context)
+    .confirm(gate, store, context)
 }
 
 /// An unpublished result and its one explicit completion kind, produced by
@@ -2690,17 +2695,21 @@ enum PreparedEventWrite {
 impl PreparedEventCompletion {
     fn confirm<S: StructuredDurableDomainStateStore>(
         mut self,
+        gate: ServingGate<'_>,
         store: &S,
         context: &DurableOperationContext,
     ) -> Result<OrderedEventOutput, OrderedEconomicsError> {
         let outcome: DurableCommitOutcome = match self.completion {
             PreparedEventWrite::Unchanged => return Ok(self.result),
-            PreparedEventWrite::Metadata(transaction) => store.commit_durable(context, transaction),
+            PreparedEventWrite::Metadata(transaction) => {
+                gate.commit_durable(store, context, transaction)
+            }
             PreparedEventWrite::Admission(transaction) => {
-                store.commit_invocation(context, transaction)
+                gate.commit_invocation(store, context, transaction)
             }
             PreparedEventWrite::Original(prepared) => {
-                let confirmed: ConfirmedOriginalCompletion = prepared.confirm(store, context)?;
+                let confirmed: ConfirmedOriginalCompletion =
+                    prepared.confirm(gate, store, context)?;
                 self.result.committed = vec![confirmed.into_outcome()];
                 return Ok(self.result);
             }
@@ -2739,44 +2748,11 @@ impl PreparedEventCompletion {
             )),
         }
     }
-
-    /// DR-0189 successor confirmation: the one existing prepared event,
-    /// folded with the deciding warrant reads and committed only through the
-    /// protected successor port with the exact warrant observation, which the
-    /// backend rechecks in its own lock. Business completions are not routed
-    /// through this metadata-only adapter and stop.
-    fn confirm_successor(
-        self,
-        repository: &dyn SuccessorServingRepository,
-        warrant: &crate::serving_authority::LiveWarrant<'_>,
-    ) -> Result<OrderedEventOutput, OrderedEconomicsError> {
-        match self.completion {
-            PreparedEventWrite::Unchanged => Ok(self.result),
-            PreparedEventWrite::Metadata(transaction) => {
-                let domain: AtomicityDomainId = transaction.domain();
-                let mut writes: MergedWrites = MergedWrites::new(domain);
-                writes.merge_handler_state(&DurableStateTransaction::from(transaction))?;
-                for (key, revision) in warrant.reads() {
-                    writes.read(key.clone(), *revision)?;
-                }
-                match repository.commit_successor_durable(
-                    warrant.context(),
-                    warrant.serving_observation(),
-                    writes.into_atomic_transaction(domain)?,
-                ) {
-                    DurableCommitOutcome::Committed => Ok(self.result),
-                    outcome => Err(commit_outcome_error(outcome)),
-                }
-            }
-            PreparedEventWrite::Admission(_) | PreparedEventWrite::Original(_) => Err(stop(
-                "successor business completion is not routed through the pacemaker adapter",
-            )),
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn prepare_event<S: StructuredDurableDomainStateStore>(
+    gate: ServingGate<'_>,
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -3043,6 +3019,7 @@ fn prepare_event<S: StructuredDurableDomainStateStore>(
                 request_id: candidate.request_id,
                 objects: plan.objects.as_slice(),
                 nonce: plan.nonce,
+                gate,
             }),
         };
         let operation: CommittedOrderedOperation<'_> =
@@ -3265,14 +3242,31 @@ where
     S: StructuredDurableDomainStateStore,
     C: ConsensusSigner,
 {
+    propose_gated(ServingGate::Original, store, context, env, candidate, signer)
+}
+
+/// [`propose`] under one invocation gate.
+pub(crate) fn propose_gated<S, C>(
+    gate: ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: Option<&OrderedCandidate>,
+    signer: &C,
+) -> Result<OrderedProposal, OrderedEconomicsError>
+where
+    S: StructuredDurableDomainStateStore,
+    C: ConsensusSigner,
+{
     // 1. Pure authentication, before any storage read.
     if let Some(candidate) = candidate {
         authenticate_candidate(env, candidate)?;
     }
     if env.policy.is_causal() {
-        return propose_causal(store, context, env, candidate, signer);
+        return propose_causal(gate, store, context, env, candidate, signer);
     }
-    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
+    gate.require_live(store, context, env.policy.domain())?;
+    gate.require_local_signer(store, signer.validator_id())?;
     let loaded = load_state(store, context, env)?;
     let mut profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     fence_policy(store, context, env, &mut profile_reads)?;
@@ -3351,7 +3345,8 @@ where
     // `propose` applies no consensus event, so it commits only the leader
     // identity, candidate/header bookkeeping and reservations -- atomically.
     if let outcome @ (DurableCommitOutcome::Rejected(_) | DurableCommitOutcome::Indeterminate(_)) =
-        store.commit_durable(
+        gate.commit_durable(
+            store,
             context,
             writes.into_atomic_transaction(env.policy.domain())?,
         )
@@ -3428,6 +3423,7 @@ fn require_seal_signing_capability<S: StructuredDurableDomainStateStore>(
 }
 
 fn propose_causal<S, C>(
+    gate: ServingGate<'_>,
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -3448,7 +3444,7 @@ where
         None => None,
     };
     require_seal_signing_capability(store, candidate, env)?;
-    crate::mutation_fence::require_origin_ordinary_namespace(store, context, env.policy.domain())?;
+    gate.require_origin(store, context, env.policy.domain())?;
     let mut loaded: LoadedState = load_state(store, context, env)?;
     // The current high QC can itself finish the justified prefix. A capacity
     // preview and a retained leader signature must not bypass that completion.
@@ -3462,10 +3458,11 @@ where
         )
         .map_err(consensus_to_node)?;
     if !prefix.committed_blocks.is_empty() {
-        finalize_event(store, context, env, &loaded, prefix, None, None)?;
+        finalize_event(gate, store, context, env, &loaded, prefix, None, None)?;
         loaded = load_state(store, context, env)?;
     }
-    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
+    gate.require_live(store, context, env.policy.domain())?;
+    gate.require_local_signer(store, signer.validator_id())?;
     let transactions: Vec<Digest32> = transactions_for(&loaded.state, preliminary)?;
     let probe: CapacityProbeSigner<'_, C> = CapacityProbeSigner(signer);
     let preview: ConsensusProposal = env
@@ -3491,7 +3488,7 @@ where
                 retained.view,
             )?;
         }
-        crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
+        gate.require_live(store, context, env.policy.domain())?;
         return Ok(OrderedProposal {
             proposal: retained,
             candidate: candidate.cloned(),
@@ -3596,7 +3593,8 @@ where
             writes.into_atomic_transaction(env.policy.domain())?,
         )
     } else if let Some(item) = admitted.as_ref().filter(|item| !item.head_reads.is_empty()) {
-        store.commit_invocation(
+        gate.commit_invocation(
+            store,
             context,
             admission_transaction(
                 env,
@@ -3607,7 +3605,8 @@ where
             )?,
         )
     } else {
-        store.commit_durable(
+        gate.commit_durable(
+            store,
             context,
             writes.into_atomic_transaction(env.policy.domain())?,
         )
@@ -3624,6 +3623,22 @@ where
 /// Applies one leader proposal, voting when safe: the local validator's only
 /// path to sign a new [`consensus::ConsensusVote`].
 pub fn process_proposal<S, C>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    proposal: &OrderedProposal,
+    signer: &C,
+) -> Result<OrderedEventOutput, OrderedEconomicsError>
+where
+    S: StructuredDurableDomainStateStore,
+    C: ConsensusSigner,
+{
+    process_proposal_gated(ServingGate::Original, store, context, env, proposal, signer)
+}
+
+/// [`process_proposal`] under one invocation gate.
+pub(crate) fn process_proposal_gated<S, C>(
+    gate: ServingGate<'_>,
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -3666,7 +3681,8 @@ where
         }
     }
     require_seal_signing_capability(store, proposal.candidate.as_ref(), env)?;
-    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
+    gate.require_live(store, context, env.policy.domain())?;
+    gate.require_local_signer(store, signer.validator_id())?;
     let mut loaded = load_state(store, context, env)?;
     let digest = env
         .policy
@@ -3721,7 +3737,7 @@ where
                 }
             }
             let observed: OrderedEventOutput =
-                finalize_event(store, context, env, &loaded, prefix, None, None)?;
+                finalize_event(gate, store, context, env, &loaded, prefix, None, None)?;
             prefix_committed = observed.committed;
             // Committing either control ends fresh candidate signing. The
             // prefix is genuine progress, not a locally invented refusal.
@@ -3737,7 +3753,7 @@ where
     // A retained vote is still this validator's own live signature. Process
     // justified progress first, then reobserve the outgoing barrier before
     // considering either a retained response or a fresh vote.
-    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
+    gate.require_live(store, context, env.policy.domain())?;
     let retained: LocalVoteReconciliation =
         identity::reconcile_local_vote(store, context, env, proposal.proposal.view, digest)?;
     if let RetainedIdentity::Exact(vote) = retained.retained {
@@ -3767,7 +3783,7 @@ where
         } else if !proposal.proposal.transactions.is_empty() {
             return Err(stop("replayed business proposal lacks candidate bytes"));
         }
-        crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
+        gate.require_live(store, context, env.policy.domain())?;
         return Ok(OrderedEventOutput {
             messages: vec![ConsensusMessage::Vote(vote)],
             committed: prefix_committed,
@@ -3862,7 +3878,8 @@ where
             }
         }
         if commits_freeze || commits_drain_set || commits_seal {
-            let observed: OrderedEventOutput = observe_proposal(store, context, env, proposal)?;
+            let observed: OrderedEventOutput =
+                observe_proposal_gated(gate, store, context, env, proposal)?;
             if commits_freeze
                 && freeze::read_admission_closure(
                     store,
@@ -3923,6 +3940,7 @@ where
         let probe_reconciliation: LocalVoteReconciliation =
             identity::reconcile_local_vote(store, context, env, proposal.proposal.view, digest)?;
         let prepared: PreparedEventCompletion = prepare_event(
+            gate,
             store,
             context,
             env,
@@ -3987,6 +4005,7 @@ where
                 stop("ordered Seal signing capability vanished before commit"),
             )?;
             prepare_event(
+                gate,
                 store,
                 context,
                 env,
@@ -4003,6 +4022,7 @@ where
             )?
         }
         None => finalize_event(
+            gate,
             store,
             context,
             env,
@@ -4024,7 +4044,7 @@ where
         let replay: LocalVoteReconciliation =
             identity::reconcile_local_vote(store, context, env, proposal.proposal.view, digest)?;
         if let RetainedIdentity::Exact(vote) = replay.retained {
-            crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
+            gate.require_live(store, context, env.policy.domain())?;
             result.messages.insert(0, ConsensusMessage::Vote(vote));
         }
     }
@@ -4040,13 +4060,24 @@ pub fn process_certificate<S: StructuredDurableDomainStateStore>(
     env: &OrderedEconomicsEnvironment<'_>,
     certificate: &QuorumCertificate,
 ) -> Result<OrderedEventOutput, OrderedEconomicsError> {
+    process_certificate_gated(ServingGate::Original, store, context, env, certificate)
+}
+
+/// [`process_certificate`] under one invocation gate.
+pub(crate) fn process_certificate_gated<S: StructuredDurableDomainStateStore>(
+    gate: ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    certificate: &QuorumCertificate,
+) -> Result<OrderedEventOutput, OrderedEconomicsError> {
     env.policy
         .engine()
         .verify_certificate(certificate, &Ed25519ConsensusVerifier)
         .map_err(|_| {
             OrderedEconomicsError::Unauthenticated("ordered certificate failed verification")
         })?;
-    crate::mutation_fence::require_origin_ordinary_namespace(store, context, env.policy.domain())?;
+    gate.require_origin(store, context, env.policy.domain())?;
     let loaded = load_state(store, context, env)?;
     let output = env
         .policy
@@ -4057,7 +4088,7 @@ pub fn process_certificate<S: StructuredDurableDomainStateStore>(
             &Ed25519ConsensusVerifier,
         )
         .map_err(consensus_to_node)?;
-    finalize_event(store, context, env, &loaded, output, None, None)
+    finalize_event(gate, store, context, env, &loaded, output, None, None)
 }
 
 /// The ordered environment must be exactly the verified successor scope of
@@ -4073,6 +4104,7 @@ fn require_successor_environment(
         || env.policy.context() != inputs.context()
         || env.policy.domain() != inputs.domain()
         || env.policy.genesis_digest() != inputs.genesis_digest()
+        || env.seal.is_some()
     {
         return Err(stop(
             "ordered environment is not the live successor warrant scope",
@@ -4103,29 +4135,125 @@ where
     C: ConsensusSigner,
 {
     require_successor_environment(warrant, env)?;
-    let context: &DurableOperationContext = warrant.context();
-    let repository: &dyn SuccessorServingRepository =
-        warrant.successor_repository(store, signer.validator_id())?;
-    let loaded = load_state(store, context, env)?;
-    let mut profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
-    fence_policy(store, context, env, &mut profile_reads)?;
-    let output = env
-        .policy
-        .engine()
-        .on_event(
-            &loaded.state,
-            ConsensusEvent::Tick { now_unix_millis },
-            signer,
-            &Ed25519ConsensusVerifier,
-        )
-        .map_err(consensus_to_node)?;
-    prepare_event(store, context, env, &loaded, output, None, None)?
-        .confirm_successor(repository, warrant)
+    process_tick_gated(
+        ServingGate::Successor(warrant),
+        store,
+        warrant.context(),
+        env,
+        now_unix_millis,
+        signer,
+    )
+}
+
+/// DR-0189 successor leader proposal: [`propose`] at the verified e+1 scope,
+/// with the fresh local namespace member as the only permitted signer and
+/// every write through the protected successor port.
+pub fn propose_successor<S, C>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: Option<&OrderedCandidate>,
+    signer: &C,
+) -> Result<OrderedProposal, OrderedEconomicsError>
+where
+    S: StructuredDurableDomainStateStore,
+    C: ConsensusSigner,
+{
+    require_successor_environment(warrant, env)?;
+    propose_gated(
+        ServingGate::Successor(warrant),
+        store,
+        warrant.context(),
+        env,
+        candidate,
+        signer,
+    )
+}
+
+/// DR-0189 successor vote: [`process_proposal`] at the verified e+1 scope.
+/// Retained votes are re-exposed only under this fresh live warrant.
+pub fn process_proposal_successor<S, C>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    env: &OrderedEconomicsEnvironment<'_>,
+    proposal: &OrderedProposal,
+    signer: &C,
+) -> Result<OrderedEventOutput, OrderedEconomicsError>
+where
+    S: StructuredDurableDomainStateStore,
+    C: ConsensusSigner,
+{
+    require_successor_environment(warrant, env)?;
+    process_proposal_gated(
+        ServingGate::Successor(warrant),
+        store,
+        warrant.context(),
+        env,
+        proposal,
+        signer,
+    )
+}
+
+/// DR-0189 successor certificate application and business completion.
+pub fn process_certificate_successor<S: StructuredDurableDomainStateStore>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    env: &OrderedEconomicsEnvironment<'_>,
+    certificate: &QuorumCertificate,
+) -> Result<OrderedEventOutput, OrderedEconomicsError> {
+    require_successor_environment(warrant, env)?;
+    process_certificate_gated(
+        ServingGate::Successor(warrant),
+        store,
+        warrant.context(),
+        env,
+        certificate,
+    )
+}
+
+/// DR-0189 signerless successor observation and recovery.
+pub fn observe_proposal_successor<S: StructuredDurableDomainStateStore>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    env: &OrderedEconomicsEnvironment<'_>,
+    proposal: &OrderedProposal,
+) -> Result<OrderedEventOutput, OrderedEconomicsError> {
+    require_successor_environment(warrant, env)?;
+    observe_proposal_gated(
+        ServingGate::Successor(warrant),
+        store,
+        warrant.context(),
+        env,
+        proposal,
+    )
+}
+
+/// DR-0189 successor status, read from the epoch-scoped state under the
+/// fresh warrant issuer.
+pub fn query_status_successor<S: StructuredDurableDomainStateStore>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    env: &OrderedEconomicsEnvironment<'_>,
+) -> Result<OrderedStatus, OrderedEconomicsError> {
+    require_successor_environment(warrant, env)?;
+    ServingGate::Successor(warrant).require_live(store, warrant.context(), env.policy.domain())?;
+    query_status(store, warrant.context(), env)
 }
 
 /// Signerless authenticated replay/recovery of one observed proposal: never
 /// signs a vote, never manufactures a reservation.
 pub fn observe_proposal<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    proposal: &OrderedProposal,
+) -> Result<OrderedEventOutput, OrderedEconomicsError> {
+    observe_proposal_gated(ServingGate::Original, store, context, env, proposal)
+}
+
+/// [`observe_proposal`] under one invocation gate.
+pub(crate) fn observe_proposal_gated<S: StructuredDurableDomainStateStore>(
+    gate: ServingGate<'_>,
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -4141,7 +4269,7 @@ pub fn observe_proposal<S: StructuredDurableDomainStateStore>(
     if let Some(candidate) = &proposal.candidate {
         authenticate_candidate(env, candidate)?;
     }
-    crate::mutation_fence::require_origin_ordinary_namespace(store, context, env.policy.domain())?;
+    gate.require_origin(store, context, env.policy.domain())?;
     let loaded = load_state(store, context, env)?;
     let admitted = match &proposal.candidate {
         Some(candidate) => {
@@ -4188,7 +4316,7 @@ pub fn observe_proposal<S: StructuredDurableDomainStateStore>(
             &Ed25519ConsensusVerifier,
         )
         .map_err(consensus_to_node)?;
-    finalize_event(store, context, env, &loaded, output, admitted, None)
+    finalize_event(gate, store, context, env, &loaded, output, admitted, None)
 }
 
 /// Bounded read-only status snapshot.
@@ -4225,7 +4353,23 @@ where
     S: StructuredDurableDomainStateStore,
     C: ConsensusSigner,
 {
-    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
+    process_tick_gated(ServingGate::Original, store, context, env, now_unix_millis, signer)
+}
+
+fn process_tick_gated<S, C>(
+    gate: ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    now_unix_millis: u64,
+    signer: &C,
+) -> Result<OrderedEventOutput, OrderedEconomicsError>
+where
+    S: StructuredDurableDomainStateStore,
+    C: ConsensusSigner,
+{
+    gate.require_live(store, context, env.policy.domain())?;
+    gate.require_local_signer(store, signer.validator_id())?;
     let loaded = load_state(store, context, env)?;
     let mut profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     fence_policy(store, context, env, &mut profile_reads)?;
@@ -4239,7 +4383,7 @@ where
             &Ed25519ConsensusVerifier,
         )
         .map_err(consensus_to_node)?;
-    finalize_event(store, context, env, &loaded, output, None, None)
+    finalize_event(gate, store, context, env, &loaded, output, None, None)
 }
 
 #[cfg(test)]

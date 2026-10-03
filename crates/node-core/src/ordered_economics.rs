@@ -93,9 +93,10 @@ pub use engine::{
     decode_ordered_event_output, decode_ordered_outcome, decode_ordered_proposal,
     decode_ordered_refusal_payload, decode_ordered_status, encode_ordered_event_output,
     encode_ordered_outcome, encode_ordered_proposal, encode_ordered_refusal_payload,
-    encode_ordered_status, install_ordered_genesis, observe_proposal, process_certificate,
-    process_proposal, process_tick, process_tick_successor, propose, query_ordered_outcome,
-    query_status,
+    encode_ordered_status, install_ordered_genesis, observe_proposal, observe_proposal_successor,
+    process_certificate, process_certificate_successor, process_proposal,
+    process_proposal_successor, process_tick, process_tick_successor, propose, propose_successor,
+    query_ordered_outcome, query_status, query_status_successor,
 };
 pub use evidence_submission::{
     MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES, OrderedEvidenceSubmission,

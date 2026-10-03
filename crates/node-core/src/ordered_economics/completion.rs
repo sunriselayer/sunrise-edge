@@ -35,6 +35,7 @@ pub(super) struct AssembledOriginalCompletion {
 impl AssembledOriginalCompletion {
     pub(super) fn confirm<S: StructuredDurableDomainStateStore>(
         self,
+        gate: crate::serving_authority::ServingGate<'_>,
         store: &S,
         context: &DurableOperationContext,
     ) -> Result<ConfirmedOriginalCompletion, OrderedEconomicsError> {
@@ -63,7 +64,7 @@ impl AssembledOriginalCompletion {
                     ));
                 }
             },
-            None => store.commit_invocation(context, transaction),
+            None => gate.commit_invocation(store, context, transaction),
         };
         match commit_outcome {
             DurableCommitOutcome::Committed => Ok(ConfirmedOriginalCompletion {
@@ -94,6 +95,7 @@ impl PreparedOriginalCompletion {
     /// preserves original object mutations, receipt and outbox unchanged.
     pub(super) fn confirm<S: StructuredDurableDomainStateStore>(
         self,
+        gate: crate::serving_authority::ServingGate<'_>,
         store: &S,
         context: &DurableOperationContext,
         domain: AtomicityDomainId,
@@ -101,7 +103,7 @@ impl PreparedOriginalCompletion {
         prerequisite_heads: &[DurableObjectHeadRead],
     ) -> Result<ConfirmedOriginalCompletion, OrderedEconomicsError> {
         self.assemble(domain, coordinator, prerequisite_heads)?
-            .confirm(store, context)
+            .confirm(gate, store, context)
     }
 
     pub(super) fn assemble(

@@ -629,6 +629,38 @@ where
     S: StructuredDurableDomainStateStore,
     C: ConsensusSigner,
 {
+    retain_publication_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        bundle_bytes,
+        signer,
+    )
+}
+
+/// [`retain_publication`] under one invocation gate. A successor ACK is
+/// signed only by the fresh namespace member, and a retained ACK is
+/// re-exposed only under the fresh live warrant.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn retain_publication_gated<S, C>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    bundle_bytes: &[u8],
+    signer: &C,
+) -> RetentionResult<AvailabilityVote>
+where
+    S: StructuredDurableDomainStateStore,
+    C: ConsensusSigner,
+{
     if history.len() > crate::publication::MAX_PUBLICATION_HISTORY {
         return Err(PublicationRetentionError::Node(
             NodeCoreError::PersistenceInvariant("resolver history bound"),
@@ -644,7 +676,8 @@ where
     {
         return Err(PublicationRetentionError::ContextMismatch);
     }
-    mutation_fence::require_ordinary_namespace(store, context, domain)?;
+    gate.require_live(store, context, domain)?;
+    gate.require_local_signer(store, signer.validator_id())?;
 
     // Fence the committed epoch record and the active validator set. Unlike
     // a fresh admission, a matching retained ACK may still be replayed after
@@ -892,7 +925,7 @@ where
         AtomicStateReadSet::new(assertions)?,
         AtomicStateMutationSet::new(mutations)?,
     )?;
-    match store.commit_durable(context, transaction) {
+    match gate.commit_durable(store, context, transaction) {
         DurableCommitOutcome::Committed => Ok(vote),
         DurableCommitOutcome::Rejected(
             DurableCommitRejection::Conflict { .. }

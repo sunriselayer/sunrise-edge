@@ -141,6 +141,18 @@ fn read_and_fence<S: VersionedStateReader + ?Sized>(
     Ok(value)
 }
 
+/// The authority an owning handler executes under: the gate carried by the
+/// exact ordered admission, else the unchanged original namespace guards.
+/// Only the ordered engine constructs an admission, from its own invocation
+/// gate, so no direct caller can select successor authority.
+pub(crate) fn ordered_gate<'a>(
+    ordered: Option<&ordered_economics::OrderedLegAdmission<'a>>,
+) -> crate::serving_authority::ServingGate<'a> {
+    ordered.map_or(crate::serving_authority::ServingGate::Original, |admission| {
+        admission.gate
+    })
+}
+
 /// Denies an untracked public business writer in the fresh causal profile.
 /// Only the ordered engine's private, exact committed-operation capability
 /// can admit an embedded economics leg. This does not grant lock reuse: the
@@ -155,7 +167,7 @@ pub(crate) fn fence_direct_or_ordered_writer<S: StructuredStateReader + ?Sized>(
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<(), NodeCoreError> {
-    require_ordinary_reader_namespace(store, context, domain)?;
+    ordered_gate(ordered).require_reader(store, context, domain)?;
     match ordered {
         Some(admission) if &admission.request_id == request_id => {
             fence_installed_external_request_lane(

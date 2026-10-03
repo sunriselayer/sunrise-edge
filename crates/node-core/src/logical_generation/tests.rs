@@ -95,7 +95,8 @@ impl Harness {
         nonce: Option<&PendingSenderNonceWrite>,
         reads: &mut BTreeMap<Vec<u8>, StateRevision>,
     ) -> Result<LogicalDerivation, NodeCoreError> {
-        super::derive(
+        super::derive_scoped(
+            &GenerationScope::from_profile(&self.profile),
             &self.store,
             &self.context,
             self.domain,
@@ -877,13 +878,7 @@ fn successor_scope_derives_above_the_cut_floor_and_original_scope_is_unchanged()
             if previous == inputs.generation_floor().get()
     ));
     assert!(require_application_admissible_scoped(&successor, &installed, Some(&lifted)).is_ok());
-    assert!(
-        successor
-            .require_write_epoch(inputs.context().epoch())
-            .is_ok()
-    );
-    assert!(successor.require_write_epoch(Epoch::new(0)).is_err());
-    assert!(original.require_write_epoch(Epoch::new(0)).is_ok());
+    assert!(require_application_admissible_scoped(&original, &installed, Some(&legacy)).is_ok());
 }
 
 fn resolver() -> HashSuiteResolver {

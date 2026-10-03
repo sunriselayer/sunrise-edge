@@ -41,6 +41,7 @@ use validator_set::ValidatorSet;
 
 mod activation;
 mod closure;
+mod entry;
 mod frames;
 mod gate;
 mod live;
@@ -52,6 +53,10 @@ pub(crate) use gate::ServingGate;
 pub(crate) mod tests;
 
 pub use activation::{SuccessorActivationOutcome, activate_successor};
+pub use entry::{
+    SuccessorFastVoteComposition, apply_successor, prepare_successor,
+    query_request_receipt_successor, retain_publication_successor,
+};
 pub use frames::{
     MAX_SUCCESSOR_ACTIVATION_MANIFEST_BYTES, MAX_SUCCESSOR_ACTIVATION_SUBJECT_BYTES,
     SUCCESSOR_ACTIVATION_MANIFEST_TYPE, SUCCESSOR_ACTIVATION_SUBJECT_TYPE,

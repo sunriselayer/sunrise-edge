@@ -64,6 +64,7 @@ fn ordered_writer_free_registration_preparation_preserves_real_execution_bytes()
         request_id: REGISTER,
         objects: &reservation.objects,
         nonce: reservation.nonce,
+        gate: crate::serving_authority::ServingGate::Original,
     };
     let before: SourceBusinessSnapshot = snapshot(network);
     let blobs: CountedBlobs<'_> = CountedBlobs::new(&network.blobs);
@@ -225,11 +226,13 @@ fn writer_free_registration_commit_matches_direct_with_identical_real_admission(
         request_id: REGISTER,
         objects: &reservation.objects,
         nonce: reservation.nonce,
+        gate: crate::serving_authority::ServingGate::Original,
     };
     let direct_admission: OrderedLegAdmission<'_> = OrderedLegAdmission {
         request_id: REGISTER,
         objects: &direct_reservation.objects,
         nonce: direct_reservation.nonce,
+        gate: crate::serving_authority::ServingGate::Original,
     };
     let blobs: CountedBlobs<'_> = CountedBlobs::new(&network.blobs);
     let direct_blobs: CountedBlobs<'_> = CountedBlobs::new(&direct_network.blobs);

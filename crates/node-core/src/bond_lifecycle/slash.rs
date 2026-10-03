@@ -811,6 +811,7 @@ where
         StateMutation::Put(encode_evidence_consumption_record(&consumption_record)?),
     )?);
     prepare_bond_transition(
+        mutation_fence::ordered_gate(ordered),
         store,
         context,
         domain,
