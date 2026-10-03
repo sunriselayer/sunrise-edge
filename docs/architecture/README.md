@@ -144,7 +144,7 @@ roadmap describes a later target state.
   accepted hard-stop authority, private exact acceptance terminal and permanent
   token-checked outgoing barrier contract; not successor activation or serving.
 - [First successor serving](first-successor-serving.md)
-  ([DR-0189](decisions/0189-first-successor-serving.md), Proposed):
+  ([DR-0189](decisions/0189-first-successor-serving.md)):
   source-free Seal authority, target-local atomic activation and separately
   scoped successor signing/admission, with permanent import origin retained.
   Proposed interfaces and schemas do not create a serving capability.
