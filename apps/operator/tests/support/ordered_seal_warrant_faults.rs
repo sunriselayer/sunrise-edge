@@ -17,12 +17,18 @@ use node_core::ordered_economics::{
 use objects::ObjectId;
 use protocol_types::AtomicityDomainId;
 use runtime::portable::DurableRecordKey;
+use runtime::portable::{
+    DurablePortableRepository, DurablePortableSnapshotRepository, DurableRecordChunkOutcome,
+    DurableRecordChunkRequest, DurableRecordDescriptor, DurableRecordPage, DurableRecordScan,
+    PortableSnapshotError, PortableSnapshotToken,
+};
 use runtime::{
     AtomicStateTransaction, DurableCommitOutcome, DurableDomainStateStore,
     DurableInvocationTransaction, DurableObjectHead, DurableObjectVersion,
     DurableObjectVersionRecord, DurableOperationContext, DurableReadError, DurableRequestId,
-    DurableRequestReceipt, NamespaceLifecycle, OutgoingBarrier, OutgoingSealRepository,
-    StateRevision, StructuredDurableDomainStateStore, VersionedStateValue,
+    DurableRequestReceipt, IndeterminateCommitReason, NamespaceLifecycle, OutgoingBarrier,
+    OutgoingSealRepository, SealBarrier, StateRevision, StructuredDurableDomainStateStore,
+    VersionedStateValue,
 };
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore};
 use std::{
@@ -340,6 +346,170 @@ impl DurableDomainStateStore for SealWarrantFaultStore {
     }
 }
 
+impl StructuredDurableDomainStateStore for SealCompletionReplyLossStore {
+    fn get_object_head(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+    ) -> Result<DurableObjectHead, DurableReadError> {
+        self.inner.get_object_head(context, domain, object_id)
+    }
+
+    fn get_object_version(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+        object_version: DurableObjectVersion,
+    ) -> Result<Option<DurableObjectVersionRecord>, DurableReadError> {
+        self.inner
+            .get_object_version(context, domain, object_id, object_version)
+    }
+
+    fn get_request_receipt(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        request_id: DurableRequestId,
+    ) -> Result<Option<DurableRequestReceipt>, DurableReadError> {
+        self.inner.get_request_receipt(context, domain, request_id)
+    }
+
+    fn commit_invocation(
+        &self,
+        context: &DurableOperationContext,
+        transaction: DurableInvocationTransaction,
+    ) -> DurableCommitOutcome {
+        self.inner.commit_invocation(context, transaction)
+    }
+
+    fn outgoing_seal_repository(&self) -> Option<&dyn OutgoingSealRepository> {
+        Some(self)
+    }
+}
+
+impl DurablePortableRepository for SealCompletionReplyLossStore {
+    fn scan_portable_keys(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        scan: &DurableRecordScan,
+    ) -> Result<DurableRecordPage, DurableReadError> {
+        self.inner.scan_portable_keys(context, domain, scan)
+    }
+
+    fn read_portable_descriptor(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        key: &DurableRecordKey,
+    ) -> Result<Option<DurableRecordDescriptor>, DurableReadError> {
+        self.inner.read_portable_descriptor(context, domain, key)
+    }
+
+    fn read_portable_chunk(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        request: &DurableRecordChunkRequest,
+    ) -> Result<DurableRecordChunkOutcome, DurableReadError> {
+        self.inner.read_portable_chunk(context, domain, request)
+    }
+}
+
+impl DurablePortableSnapshotRepository for SealCompletionReplyLossStore {
+    fn begin_portable_snapshot(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<PortableSnapshotToken, PortableSnapshotError> {
+        self.inner.begin_portable_snapshot(context, domain)
+    }
+
+    fn scan_portable_keys_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        scan: &DurableRecordScan,
+    ) -> Result<DurableRecordPage, PortableSnapshotError> {
+        self.inner
+            .scan_portable_keys_at(context, domain, token, scan)
+    }
+
+    fn read_portable_descriptor_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        key: &DurableRecordKey,
+    ) -> Result<Option<DurableRecordDescriptor>, PortableSnapshotError> {
+        self.inner
+            .read_portable_descriptor_at(context, domain, token, key)
+    }
+
+    fn read_portable_chunk_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        request: &DurableRecordChunkRequest,
+    ) -> Result<DurableRecordChunkOutcome, PortableSnapshotError> {
+        self.inner
+            .read_portable_chunk_at(context, domain, token, request)
+    }
+
+    fn check_portable_outbox_empty_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+    ) -> Result<(), PortableSnapshotError> {
+        self.inner
+            .check_portable_outbox_empty_at(context, domain, token)
+    }
+}
+
+impl OutgoingSealRepository for SealCompletionReplyLossStore {
+    fn commit_seal_retention(
+        &self,
+        context: &DurableOperationContext,
+        token: &PortableSnapshotToken,
+        transaction: AtomicStateTransaction,
+    ) -> DurableCommitOutcome {
+        self.delegate()
+            .commit_seal_retention(context, token, transaction)
+    }
+
+    fn commit_seal_completion(
+        &self,
+        context: &DurableOperationContext,
+        token: &PortableSnapshotToken,
+        transaction: DurableInvocationTransaction,
+        sealed: SealBarrier,
+    ) -> DurableCommitOutcome {
+        match self.current_mode() {
+            SealCompletionReplyLossMode::Healthy => {
+                self.delegate()
+                    .commit_seal_completion(context, token, transaction, sealed)
+            }
+            SealCompletionReplyLossMode::LandedIndeterminate => {
+                let landed: DurableCommitOutcome =
+                    self.delegate()
+                        .commit_seal_completion(context, token, transaction, sealed);
+                assert_eq!(landed, DurableCommitOutcome::Committed);
+                self.hits.fetch_add(1, Ordering::SeqCst);
+                DurableCommitOutcome::Indeterminate(IndeterminateCommitReason::ConnectionLost)
+            }
+            SealCompletionReplyLossMode::UnlandedIndeterminate => {
+                self.hits.fetch_add(1, Ordering::SeqCst);
+                DurableCommitOutcome::Indeterminate(IndeterminateCommitReason::ConnectionLost)
+            }
+        }
+    }
+}
+
 impl StructuredDurableDomainStateStore for SealWarrantFaultStore {
     fn get_object_head(
         &self,
@@ -383,5 +553,100 @@ impl StructuredDurableDomainStateStore for SealWarrantFaultStore {
         // The capability belongs to the same actual SQLite store used by
         // every read and write above; no test writer or portable facade exists.
         self.inner.outgoing_seal_repository()
+    }
+}
+
+/// Genuine landed-versus-unlanded reply-loss fault at the exact same-store
+/// `OutgoingSealRepository::commit_seal_completion` port. Every other port
+/// (reads, retention, portable enumeration) delegates unchanged to the real
+/// inner store; no production behavior is replaced outside this one method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SealCompletionReplyLossMode {
+    /// Passthrough: the real inner completion commits and reports normally.
+    Healthy,
+    /// The real inner completion commits for real; only the reply is lost.
+    LandedIndeterminate,
+    /// The reply is lost before any real inner completion commit.
+    UnlandedIndeterminate,
+}
+
+pub(super) struct SealCompletionReplyLossStore {
+    inner: Arc<SqliteDurableStore>,
+    fault_state: AtomicUsize,
+    hits: AtomicUsize,
+}
+
+impl SealCompletionReplyLossStore {
+    pub(super) fn new(
+        inner: Arc<SqliteDurableStore>,
+        initial: SealCompletionReplyLossMode,
+    ) -> Self {
+        let store: Self = Self {
+            inner,
+            fault_state: AtomicUsize::new(0),
+            hits: AtomicUsize::new(0),
+        };
+        store.reconfigure(initial);
+        store
+    }
+
+    pub(super) fn reconfigure(&self, next: SealCompletionReplyLossMode) {
+        let encoded: usize = match next {
+            SealCompletionReplyLossMode::Healthy => 0,
+            SealCompletionReplyLossMode::LandedIndeterminate => 1,
+            SealCompletionReplyLossMode::UnlandedIndeterminate => 2,
+        };
+        self.fault_state.store(encoded, Ordering::SeqCst);
+    }
+
+    pub(super) fn hits(&self) -> usize {
+        self.hits.load(Ordering::SeqCst)
+    }
+
+    fn current_mode(&self) -> SealCompletionReplyLossMode {
+        match self.fault_state.load(Ordering::SeqCst) {
+            0 => SealCompletionReplyLossMode::Healthy,
+            1 => SealCompletionReplyLossMode::LandedIndeterminate,
+            _ => SealCompletionReplyLossMode::UnlandedIndeterminate,
+        }
+    }
+
+    fn delegate(&self) -> &dyn OutgoingSealRepository {
+        self.inner.outgoing_seal_repository().unwrap()
+    }
+}
+
+impl DurableDomainStateStore for SealCompletionReplyLossStore {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<NamespaceLifecycle, DurableReadError> {
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
+
+    fn get_outgoing_barrier(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<OutgoingBarrier, DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
+    fn get_versioned_durable(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        key: &[u8],
+    ) -> Result<VersionedStateValue, DurableReadError> {
+        self.inner.get_versioned_durable(context, domain, key)
+    }
+
+    fn commit_durable(
+        &self,
+        context: &DurableOperationContext,
+        transaction: AtomicStateTransaction,
+    ) -> DurableCommitOutcome {
+        self.inner.commit_durable(context, transaction)
     }
 }

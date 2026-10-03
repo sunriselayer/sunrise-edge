@@ -226,7 +226,7 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
         ReadinessCertifier::new(&fixture.network.resolver, &expected_subject, &set).unwrap();
     let mut votes: Vec<(Directory, Vec<u8>)> = Vec::new();
     let mut destinations: Vec<Directory> = Vec::new();
-    for (index, validator) in fixture.network.validators.iter().take(3).enumerate() {
+    for (index, validator) in fixture.network.validators.iter().enumerate() {
         let destination: Directory = Directory::new(&format!("ready-import-{index}"));
         let mut importer: Command = Command::new(env!("CARGO_BIN_EXE_business_import"));
         importer.arg("create-sqlite");
@@ -376,7 +376,7 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
     copy_files(&votes[0].0.0, &copied_vote.0);
     assert_eq!(files(&votes[0].0.0), files(&copied_vote.0));
     let certificates: Directory = Directory::new("ready-certificates");
-    let assembly = |count: usize, duplicate: bool| -> Command {
+    let assembly = |count: usize, duplicate: bool, offset: usize, out_dir: &Path| -> Command {
         let mut command: Command = Command::new(env!("CARGO_BIN_EXE_conditional_readiness"));
         command.arg("certificate");
         pins(&mut command, &fixture, &history_root, &cut.0);
@@ -384,10 +384,10 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
             "--next-set",
             next.to_str().unwrap(),
             "--out-dir",
-            certificates.0.to_str().unwrap(),
+            out_dir.to_str().unwrap(),
         ]);
         for index in 0..count {
-            let selected: usize = if duplicate { 0 } else { index };
+            let selected: usize = if duplicate { 0 } else { offset + index };
             let directory: &Path = if selected == 0 {
                 &copied_vote.0
             } else {
@@ -397,17 +397,29 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
         }
         command
     };
-    assert!(!assembly(2, false).output().unwrap().status.success());
-    assert!(!assembly(3, true).output().unwrap().status.success());
+    assert!(
+        !assembly(2, false, 0, &certificates.0)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        !assembly(3, true, 0, &certificates.0)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
     assert!(!certificates.0.join("certificate.bin").exists());
     assert!(
-        success(assembly(3, false).output().unwrap())
+        success(assembly(3, false, 0, &certificates.0).output().unwrap())
             .contains("conditional_readiness=verified-certificate")
     );
     let bytes: Vec<u8> = std::fs::read(certificates.0.join("certificate.bin")).unwrap();
     let certificate: ReadinessCertificate = decode_readiness_certificate(&bytes).unwrap();
     owner.verify_certificate(&certificate).unwrap();
-    success(assembly(3, false).output().unwrap());
+    success(assembly(3, false, 0, &certificates.0).output().unwrap());
     assert_eq!(
         std::fs::read(certificates.0.join("certificate.bin")).unwrap(),
         bytes
@@ -419,29 +431,30 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
             (vote.signer, bytes.clone())
         })
         .collect();
-    assert_eq!(roles.len(), 3);
+    assert_eq!(roles.len(), 4);
     // Reuse the independently reconstructed cut and genuine successor quorum
     // above. Preparation is a separate compiled process, not a raw storage
     // completion, and adding this step does not duplicate the expensive setup.
     let seal_output: Directory = Directory::new("unsigned-seal-preparation");
-    let prepare = |certificate_path: &Path, state: &Path, blobs: &Path| -> Command {
-        let mut command: Command = Command::new(env!("CARGO_BIN_EXE_ordered_seal"));
-        command.arg("prepare-sqlite");
-        pins(&mut command, &fixture, &history_root, &cut.0);
-        command.args([
-            "--certificate",
-            certificate_path.to_str().unwrap(),
-            "--state-db",
-            state.to_str().unwrap(),
-            "--blob-db",
-            blobs.to_str().unwrap(),
-            "--validator-id",
-            &hex(fixture.network.validators[0].validator_id.as_bytes()),
-            "--out-dir",
-            seal_output.0.to_str().unwrap(),
-        ]);
-        command
-    };
+    let prepare =
+        |certificate_path: &Path, state: &Path, blobs: &Path, out_dir: &Path| -> Command {
+            let mut command: Command = Command::new(env!("CARGO_BIN_EXE_ordered_seal"));
+            command.arg("prepare-sqlite");
+            pins(&mut command, &fixture, &history_root, &cut.0);
+            command.args([
+                "--certificate",
+                certificate_path.to_str().unwrap(),
+                "--state-db",
+                state.to_str().unwrap(),
+                "--blob-db",
+                blobs.to_str().unwrap(),
+                "--validator-id",
+                &hex(fixture.network.validators[0].validator_id.as_bytes()),
+                "--out-dir",
+                out_dir.to_str().unwrap(),
+            ]);
+            command
+        };
     let certificate_path: PathBuf = certificates.0.join("certificate.bin");
     let source_state: PathBuf = fixture.directory.0.join("state-0.sqlite");
     let source_blobs: PathBuf = fixture.directory.0.join("blobs.sqlite");
@@ -463,6 +476,7 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
             &certificate_path,
             &destinations[0].0.join("state.db"),
             &destinations[0].0.join("body.db"),
+            &seal_output.0,
         )
         .output()
         .unwrap()
@@ -473,9 +487,14 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
     assert!(!seal_output.0.join("candidate.bin").exists());
     assert!(
         success(
-            prepare(&certificate_path, &source_state, &source_blobs)
-                .output()
-                .unwrap()
+            prepare(
+                &certificate_path,
+                &source_state,
+                &source_blobs,
+                &seal_output.0
+            )
+            .output()
+            .unwrap()
         )
         .contains("ordered_seal=prepared")
     );
@@ -498,9 +517,14 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
         Some(bytes.clone())
     );
     success(
-        prepare(&certificate_path, &source_state, &source_blobs)
-            .output()
-            .unwrap(),
+        prepare(
+            &certificate_path,
+            &source_state,
+            &source_blobs,
+            &seal_output.0,
+        )
+        .output()
+        .unwrap(),
     );
     assert_eq!(
         std::fs::read(seal_output.0.join("candidate.bin")).unwrap(),
@@ -515,11 +539,16 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
     )
     .unwrap();
     assert!(
-        !prepare(&bad_certificate, &source_state, &source_blobs)
-            .output()
-            .unwrap()
-            .status
-            .success()
+        !prepare(
+            &bad_certificate,
+            &source_state,
+            &source_blobs,
+            &seal_output.0
+        )
+        .output()
+        .unwrap()
+        .status
+        .success()
     );
     assert_eq!(
         std::fs::read(seal_output.0.join("candidate.bin")).unwrap(),
@@ -536,10 +565,105 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
         before,
         "local readiness cannot mutate the source"
     );
+    // DR-0187: build a second, genuinely quorum-backed Seal candidate that
+    // shares this exact semantic target but a distinct certificate variant
+    // (a different 3-of-4 successor combination), never a raw-fabricated
+    // protocol proof. The operator acceptance replays it after the first
+    // candidate is accepted to show the Sealed barrier -- not stale
+    // completion bookkeeping -- rejects it.
+    let certificates_b: Directory = Directory::new("ready-certificates-competing");
+    assert!(
+        success(assembly(3, false, 1, &certificates_b.0).output().unwrap())
+            .contains("conditional_readiness=verified-certificate")
+    );
+    let competing_certificate_bytes: Vec<u8> =
+        std::fs::read(certificates_b.0.join("certificate.bin")).unwrap();
+    assert_ne!(competing_certificate_bytes, bytes);
+    let competing_certificate: ReadinessCertificate =
+        decode_readiness_certificate(&competing_certificate_bytes).unwrap();
+    owner.verify_certificate(&competing_certificate).unwrap();
+    let seal_output_b: Directory = Directory::new("unsigned-seal-preparation-competing");
+    let competing_certificate_path: PathBuf = certificates_b.0.join("certificate.bin");
+    assert!(
+        success(
+            prepare(
+                &competing_certificate_path,
+                &source_state,
+                &source_blobs,
+                &seal_output_b.0
+            )
+            .output()
+            .unwrap()
+        )
+        .contains("ordered_seal=prepared")
+    );
+    let competing_candidate_bytes: Vec<u8> =
+        std::fs::read(seal_output_b.0.join("candidate.bin")).unwrap();
+    let competing_candidate =
+        node_core::ordered_economics::decode_ordered_candidate(&competing_candidate_bytes).unwrap();
+    assert_eq!(
+        competing_candidate.kind,
+        node_core::ordered_economics::OrderedOperationKind::Seal
+    );
+    assert_ne!(competing_candidate.request_id, candidate.request_id);
+    assert_eq!(
+        competing_candidate.created_checkpoint,
+        candidate.created_checkpoint
+    );
+    let competing_seal =
+        node_core::ordered_economics::decode_seal_intent(&competing_candidate.intent).unwrap();
+    assert_eq!(competing_seal.readiness_subject, seal.readiness_subject);
+    assert_eq!(competing_seal.predecessor_tag, seal.predecessor_tag);
+    assert_eq!(competing_seal.predecessor_digest, seal.predecessor_digest);
+    assert_ne!(competing_seal.certificate_digest, seal.certificate_digest);
+    let competing_certificate_digest = node_core::ordered_economics::seal_certificate_digest(
+        &fixture.network.resolver,
+        fixture.network.epoch,
+        &competing_certificate_bytes,
+    )
+    .unwrap();
+    assert_eq!(
+        competing_seal.certificate_digest,
+        competing_certificate_digest
+    );
+    let subject_identity = seal
+        .readiness_subject
+        .identity(&fixture.network.resolver)
+        .unwrap();
+    let competing_subject_identity = competing_seal
+        .readiness_subject
+        .identity(&fixture.network.resolver)
+        .unwrap();
+    let target = node_core::ordered_economics::seal_target_digest(
+        &fixture.network.resolver,
+        &fixture.network.context,
+        subject_identity,
+        seal.predecessor_tag,
+        seal.predecessor_digest,
+    )
+    .unwrap();
+    let competing_target = node_core::ordered_economics::seal_target_digest(
+        &fixture.network.resolver,
+        &fixture.network.context,
+        competing_subject_identity,
+        competing_seal.predecessor_tag,
+        competing_seal.predecessor_digest,
+    )
+    .unwrap();
+    assert_eq!(
+        target, competing_target,
+        "the competing branch shares the exact same semantic Seal target"
+    );
+    assert_eq!(
+        fixture.snapshot(),
+        before,
+        "the competing variant's preparation never changes source state or receipts"
+    );
     ordered_seal_sqlite_acceptance::run(
         &mut fixture,
         &seal_output.0.join("candidate.bin"),
         &candidate,
+        &competing_candidate,
     )
     .await;
 }
