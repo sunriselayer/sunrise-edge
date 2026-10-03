@@ -553,6 +553,34 @@ impl OrderedEconomicsPolicy {
         self.engine.validator_set().get(validator_id)
     }
 
+    /// DR-0189 Section 10: the trusted key authority of one validator-signed
+    /// bond lifecycle envelope. A pinned committee member is always its own
+    /// authority. Only a verified first successor additionally recognizes a
+    /// retired member of the verified predecessor committee, and only for the
+    /// historical owner exit operations `Unbond` and `Withdraw`: a retired
+    /// validator is refused as a consensus signer, never as the ordinary
+    /// owner of its imported bond. The owning handler still verifies the
+    /// imported bond row key, resource, generation, row digest, state, unlock
+    /// epoch, legs, nonce and custody.
+    pub(crate) fn bond_owner_authority(
+        &self,
+        validator_id: ValidatorId,
+        operation: &BondLifecycleOperation,
+    ) -> Option<&ValidatorInfo> {
+        if let Some(info) = self.engine.validator_set().get(validator_id) {
+            return Some(info);
+        }
+        match operation {
+            BondLifecycleOperation::Unbond { .. } | BondLifecycleOperation::Withdraw { .. } => self
+                .predecessor_certificates
+                .as_ref()
+                .and_then(|(_, set): &(Epoch, ValidatorSet)| set.get(validator_id)),
+            BondLifecycleOperation::Deposit { .. }
+            | BondLifecycleOperation::Replace { .. }
+            | BondLifecycleOperation::Reactivate { .. } => None,
+        }
+    }
+
     /// Pure authentication under the fixed profile, without a VM, store or clock.
     pub fn authenticate_candidate(
         &self,
@@ -791,12 +819,13 @@ fn trusted_key_in(
     validator_set: &ValidatorSet,
     validator_id: ValidatorId,
 ) -> Result<&[u8], OrderedEconomicsError> {
-    let info: &ValidatorInfo =
-        validator_set
-            .get(validator_id)
-            .ok_or(OrderedEconomicsError::Unauthenticated(
-                "ordered candidate names a validator outside the pinned validator set",
-            ))?;
+    trusted_ed25519_key(validator_set.get(validator_id))
+}
+
+fn trusted_ed25519_key(info: Option<&ValidatorInfo>) -> Result<&[u8], OrderedEconomicsError> {
+    let info: &ValidatorInfo = info.ok_or(OrderedEconomicsError::Unauthenticated(
+        "ordered candidate names a validator outside the pinned validator set",
+    ))?;
     if info.signature_scheme != SignatureSchemeId::Ed25519 {
         return Err(OrderedEconomicsError::Unauthenticated(
             "ordered candidate validator is not registered for Ed25519",
@@ -1266,7 +1295,11 @@ fn authenticate_bond_lifecycle(
             "bond lifecycle candidate context or request id mismatch",
         ));
     }
-    let public_key: Vec<u8> = trusted_registered_key(env, signed.intent.validator_id)?.to_vec();
+    let public_key: Vec<u8> = trusted_ed25519_key(
+        env.policy
+            .bond_owner_authority(signed.intent.validator_id, &signed.intent.operation),
+    )?
+    .to_vec();
     let intent_digest: Digest32 = bond_lifecycle_intent_digest(env.resolver(), &signed.intent)
         .map_err(|_| OrderedEconomicsError::Unauthenticated("bond lifecycle intent digest"))?;
     let framed: Vec<u8> = bond_lifecycle_signing_frame(&signed.intent.context, intent_digest)
