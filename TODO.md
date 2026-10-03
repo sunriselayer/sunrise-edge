@@ -1,6 +1,6 @@
 # Current delivery roadmap
 
-**2026-10-03: one integrated implementation and refactoring queue.**
+**2026-10-04: one integrated implementation and refactoring queue.**
 [DR-0173](docs/architecture/decisions/0173-integrated-implementation-refactoring.md)
 integrates the remaining functions with responsibility-oriented cleanup.
 The user's newer architecture-first direction is recorded in
@@ -207,7 +207,13 @@ provenance above the cut floor on all four replicas, and completed-claim replay
 refusal without reapplication. The archive integration tests pass exact/short/
 oversized certificate and held-directory replacement/symlink checks. A retired
 claimant/consensus-signer distinction still needs the A/B/C/E replacement fixture.
-Successor host and the shipped network workflow remain incomplete. Full
+The real loopback-only successor host now mounts authenticated ordered,
+FastVote, certified paid-execution, publication/ACK and query routes. Its
+per-request authority reconstruction never falls back to original-genesis
+serving. Workspace all-target type checking, strict lint, and 316 native-HTTP,
+SDK and operator library tests pass. Fee-claim preparation currently has only
+a callable Rust helper; the HTTP codec/route, shipped CLI authority composition,
+history routes and four-process replacement workflow remain incomplete. Full
 required/selected-PG acceptance,
 fresh independent exact-head review and CI are still pending. These local
 checks do not complete authenticated serving, Delivery 3 or network readiness.

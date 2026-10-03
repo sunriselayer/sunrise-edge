@@ -238,17 +238,16 @@ pub async fn bind_successor_loopback(address: SocketAddr) -> io::Result<tokio::n
 fn operation_context<S>(
     host: &SuccessorHostComposition<S>,
 ) -> Result<DurableOperationContext, SuccessorInvocationError> {
-    let identity: IndexedOutboxAttemptIdentity =
-        host.identities
-            .next_attempt_identity()
-            .map_err(|error: IndexedOutboxIdentitySourceError| match error {
-                IndexedOutboxIdentitySourceError::Unavailable => {
-                    SuccessorInvocationError::IdentityUnavailable
-                }
-                IndexedOutboxIdentitySourceError::Exhausted => {
-                    SuccessorInvocationError::IdentityExhausted
-                }
-            })?;
+    let identity: IndexedOutboxAttemptIdentity = host.identities.next_attempt_identity().map_err(
+        |error: IndexedOutboxIdentitySourceError| match error {
+            IndexedOutboxIdentitySourceError::Unavailable => {
+                SuccessorInvocationError::IdentityUnavailable
+            }
+            IndexedOutboxIdentitySourceError::Exhausted => {
+                SuccessorInvocationError::IdentityExhausted
+            }
+        },
+    )?;
     let now_unix_millis: u64 = host
         .clock
         .now_unix_millis()
@@ -295,9 +294,10 @@ fn serve<S>(
 where
     S: StructuredDurableDomainStateStore,
 {
-    match with_authority(host, |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
-        Ok(work(warrant, context))
-    }) {
+    match with_authority(
+        host,
+        |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| Ok(work(warrant, context)),
+    ) {
         Ok(response) => response,
         Err(error) => invocation_error_response(&error),
     }
@@ -309,13 +309,15 @@ where
 fn invocation_error_response(error: &SuccessorInvocationError) -> Response {
     match error {
         SuccessorInvocationError::IdentityUnavailable
-        | SuccessorInvocationError::ClockUnavailable => {
-            error_response(StatusCode::SERVICE_UNAVAILABLE, "successor-host-unavailable")
-        }
+        | SuccessorInvocationError::ClockUnavailable => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "successor-host-unavailable",
+        ),
         SuccessorInvocationError::IdentityExhausted
-        | SuccessorInvocationError::DeadlineOverflow => {
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "successor-host-state-invalid")
-        }
+        | SuccessorInvocationError::DeadlineOverflow => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "successor-host-state-invalid",
+        ),
         SuccessorInvocationError::OriginalGenesis => {
             error_response(StatusCode::CONFLICT, "successor-original-genesis-refused")
         }
@@ -332,7 +334,10 @@ fn invocation_error_response(error: &SuccessorInvocationError) -> Response {
                     "successor-evidence-unavailable",
                 ),
                 SuccessorActivationError::Node(error) => node_error_response(error),
-                _ => error_response(StatusCode::INTERNAL_SERVER_ERROR, "successor-evidence-invalid"),
+                _ => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "successor-evidence-invalid",
+                ),
             }
         }
         SuccessorInvocationError::FeeClaim(_) => {
@@ -450,7 +455,10 @@ fn successor_fee_policy<S: StructuredDurableDomainStateStore>(
         .get_versioned_durable(context, warrant.policy_inputs().domain(), &key)
         .map_err(|error| query_node_error(NodeCoreError::from(error)))?;
     let bytes: &[u8] = observed.value().ok_or_else(|| {
-        error_response(StatusCode::INTERNAL_SERVER_ERROR, "paid-fee-policy-not-installed")
+        error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "paid-fee-policy-not-installed",
+        )
     })?;
     match decode_paid_fee_policy(bytes) {
         Ok(policy) if policy.context == *expected => Ok(policy),
@@ -491,7 +499,10 @@ fn require_warrant_context(
     warrant: &LiveWarrant<'_>,
 ) -> Result<(), Response> {
     if *declared != *warrant.policy_inputs().context() {
-        return Err(error_response(StatusCode::CONFLICT, "fastvote-epoch-repin-required"));
+        return Err(error_response(
+            StatusCode::CONFLICT,
+            "fastvote-epoch-repin-required",
+        ));
     }
     Ok(())
 }
@@ -504,11 +515,19 @@ fn request_id_of(signed_bytes: &[u8]) -> Option<RequestId> {
 
 fn node_result_response(request_id: Option<RequestId>, output: &node_core::NodeOutput) -> Response {
     let Some(request_id) = request_id else {
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "fastvote-apply-request-id-invalid");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "fastvote-apply-request-id-invalid",
+        );
     };
-    match HttpNodeResult::new(request_id, output.responses().to_vec()).and_then(|result| result.encode()) {
+    match HttpNodeResult::new(request_id, output.responses().to_vec())
+        .and_then(|result| result.encode())
+    {
         Ok(bytes) => bytes_response(NODE_RESULT_MEDIA_TYPE, bytes),
-        Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "fastvote-apply-result-encoding"),
+        Err(_) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "fastvote-apply-result-encoding",
+        ),
     }
 }
 
@@ -525,10 +544,16 @@ where
 
 fn fastvote_preflight(headers: &HeaderMap, body: &Bytes, maximum: usize) -> Option<Response> {
     if !has_supported_content_type(headers) || has_unsupported_content_encoding(headers) {
-        return Some(error_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported-fastvote-content"));
+        return Some(error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported-fastvote-content",
+        ));
     }
     if body.len() > maximum {
-        return Some(error_response(StatusCode::PAYLOAD_TOO_LARGE, "fastvote-body-too-large"));
+        return Some(error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "fastvote-body-too-large",
+        ));
     }
     None
 }
@@ -560,37 +585,43 @@ async fn ordered_propose<S: SuccessorStore>(
         let candidate = match request.candidate {
             Some(bytes) => match core_ordered::decode_ordered_candidate(&bytes) {
                 Ok(value) => Some(value),
-                Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-candidate"),
+                Err(_) => {
+                    return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-candidate");
+                }
             },
             None => None,
         };
-        serve(host, |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
-            let scope: OrderedScope = match OrderedScope::from_warrant(host, warrant) {
-                Ok(value) => value,
-                Err(response) => return response,
-            };
-            let env: OrderedEconomicsEnvironment<'_> = scope.env(host);
-            if let Some(candidate) = &candidate
-                && let Err(error) = core_ordered::authenticate_candidate(&env, candidate)
-            {
-                return ordered_error(&error);
-            }
-            match core_ordered::propose_successor(
-                warrant,
-                host.store.as_ref(),
-                &env,
-                candidate.as_ref(),
-                &signer(host),
-            ) {
-                Ok(proposal) => match core_ordered::encode_ordered_proposal(&proposal) {
-                    Ok(bytes) => bytes_response(ORDERED_PROPOSAL_MEDIA_TYPE, bytes),
-                    Err(_) => {
-                        error_response(StatusCode::INTERNAL_SERVER_ERROR, "ordered-proposal-encoding")
-                    }
-                },
-                Err(error) => ordered_error(&error),
-            }
-        })
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
+                let scope: OrderedScope = match OrderedScope::from_warrant(host, warrant) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                let env: OrderedEconomicsEnvironment<'_> = scope.env(host);
+                if let Some(candidate) = &candidate
+                    && let Err(error) = core_ordered::authenticate_candidate(&env, candidate)
+                {
+                    return ordered_error(&error);
+                }
+                match core_ordered::propose_successor(
+                    warrant,
+                    host.store.as_ref(),
+                    &env,
+                    candidate.as_ref(),
+                    &signer(host),
+                ) {
+                    Ok(proposal) => match core_ordered::encode_ordered_proposal(&proposal) {
+                        Ok(bytes) => bytes_response(ORDERED_PROPOSAL_MEDIA_TYPE, bytes),
+                        Err(_) => error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "ordered-proposal-encoding",
+                        ),
+                    },
+                    Err(error) => ordered_error(&error),
+                }
+            },
+        )
     })
     .await
 }
@@ -616,41 +647,52 @@ async fn ordered_proposal_route<S: SuccessorStore>(
         let Ok(proposal) = core_ordered::decode_ordered_proposal(&body) else {
             return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-proposal");
         };
-        serve(host, |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
-            let scope: OrderedScope = match OrderedScope::from_warrant(host, warrant) {
-                Ok(value) => value,
-                Err(response) => return response,
-            };
-            let env: OrderedEconomicsEnvironment<'_> = scope.env(host);
-            if env
-                .policy
-                .engine()
-                .verify_proposal(&proposal.proposal, &FastPathEd25519Verifier)
-                .is_err()
-            {
-                return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-proposal-signature");
-            }
-            if let Some(candidate) = &proposal.candidate
-                && let Err(error) = core_ordered::authenticate_candidate(&env, candidate)
-            {
-                return ordered_error(&error);
-            }
-            let result = if vote {
-                core_ordered::process_proposal_successor(
-                    warrant,
-                    host.store.as_ref(),
-                    &env,
-                    &proposal,
-                    &signer(host),
-                )
-            } else {
-                core_ordered::observe_proposal_successor(warrant, host.store.as_ref(), &env, &proposal)
-            };
-            match result {
-                Ok(output) => ordered_economics::encode_event_output_response(&output),
-                Err(error) => ordered_error(&error),
-            }
-        })
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
+                let scope: OrderedScope = match OrderedScope::from_warrant(host, warrant) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                let env: OrderedEconomicsEnvironment<'_> = scope.env(host);
+                if env
+                    .policy
+                    .engine()
+                    .verify_proposal(&proposal.proposal, &FastPathEd25519Verifier)
+                    .is_err()
+                {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        "invalid-ordered-proposal-signature",
+                    );
+                }
+                if let Some(candidate) = &proposal.candidate
+                    && let Err(error) = core_ordered::authenticate_candidate(&env, candidate)
+                {
+                    return ordered_error(&error);
+                }
+                let result = if vote {
+                    core_ordered::process_proposal_successor(
+                        warrant,
+                        host.store.as_ref(),
+                        &env,
+                        &proposal,
+                        &signer(host),
+                    )
+                } else {
+                    core_ordered::observe_proposal_successor(
+                        warrant,
+                        host.store.as_ref(),
+                        &env,
+                        &proposal,
+                    )
+                };
+                match result {
+                    Ok(output) => ordered_economics::encode_event_output_response(&output),
+                    Err(error) => ordered_error(&error),
+                }
+            },
+        )
     })
     .await
 }
@@ -688,55 +730,62 @@ async fn ordered_certificate<S: SuccessorStore>(
         let Ok(certificate) = consensus::decode_quorum_certificate(&body) else {
             return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-certificate");
         };
-        serve(host, |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
-            let scope: OrderedScope = match OrderedScope::from_warrant(host, warrant) {
-                Ok(value) => value,
-                Err(response) => return response,
-            };
-            let env: OrderedEconomicsEnvironment<'_> = scope.env(host);
-            if env
-                .policy
-                .engine()
-                .verify_certificate(&certificate, &FastPathEd25519Verifier)
-                .is_err()
-            {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    "invalid-ordered-certificate-signature",
-                );
-            }
-            match core_ordered::process_certificate_successor(
-                warrant,
-                host.store.as_ref(),
-                &env,
-                &certificate,
-            ) {
-                Ok(output) => ordered_economics::encode_event_output_response(&output),
-                Err(error) => ordered_error(&error),
-            }
-        })
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
+                let scope: OrderedScope = match OrderedScope::from_warrant(host, warrant) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                let env: OrderedEconomicsEnvironment<'_> = scope.env(host);
+                if env
+                    .policy
+                    .engine()
+                    .verify_certificate(&certificate, &FastPathEd25519Verifier)
+                    .is_err()
+                {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        "invalid-ordered-certificate-signature",
+                    );
+                }
+                match core_ordered::process_certificate_successor(
+                    warrant,
+                    host.store.as_ref(),
+                    &env,
+                    &certificate,
+                ) {
+                    Ok(output) => ordered_economics::encode_event_output_response(&output),
+                    Err(error) => ordered_error(&error),
+                }
+            },
+        )
     })
     .await
 }
 
 async fn ordered_status<S: SuccessorStore>(State(host): State<SharedSuccessorHost<S>>) -> Response {
     blocking(host, |host: &SuccessorHostComposition<S>| {
-        serve(host, |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
-            let scope: OrderedScope = match OrderedScope::from_warrant(host, warrant) {
-                Ok(value) => value,
-                Err(response) => return response,
-            };
-            let env: OrderedEconomicsEnvironment<'_> = scope.env(host);
-            match core_ordered::query_status_successor(warrant, host.store.as_ref(), &env) {
-                Ok(status) => match core_ordered::encode_ordered_status(&status) {
-                    Ok(bytes) => bytes_response(ORDERED_STATUS_MEDIA_TYPE, bytes),
-                    Err(_) => {
-                        error_response(StatusCode::INTERNAL_SERVER_ERROR, "ordered-status-encoding")
-                    }
-                },
-                Err(error) => ordered_error(&error),
-            }
-        })
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
+                let scope: OrderedScope = match OrderedScope::from_warrant(host, warrant) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                let env: OrderedEconomicsEnvironment<'_> = scope.env(host);
+                match core_ordered::query_status_successor(warrant, host.store.as_ref(), &env) {
+                    Ok(status) => match core_ordered::encode_ordered_status(&status) {
+                        Ok(bytes) => bytes_response(ORDERED_STATUS_MEDIA_TYPE, bytes),
+                        Err(_) => error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "ordered-status-encoding",
+                        ),
+                    },
+                    Err(error) => ordered_error(&error),
+                }
+            },
+        )
     })
     .await
 }
@@ -745,27 +794,41 @@ async fn ordered_outcome<S: SuccessorStore>(
     State(host): State<SharedSuccessorHost<S>>,
     Path(selector): Path<String>,
 ) -> Response {
-    let Some(request_id) = decode_hex64_selector(&selector).filter(|bytes| *bytes != [0; 32]) else {
+    let Some(request_id) = decode_hex64_selector(&selector).filter(|bytes| *bytes != [0; 32])
+    else {
         return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-request-id");
     };
     blocking(host, move |host: &SuccessorHostComposition<S>| {
-        serve(host, |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
-            let scope: OrderedScope = match OrderedScope::from_warrant(host, warrant) {
-                Ok(value) => value,
-                Err(response) => return response,
-            };
-            let env: OrderedEconomicsEnvironment<'_> = scope.env(host);
-            match core_ordered::query_ordered_outcome(host.store.as_ref(), context, &env, &request_id) {
-                Ok(None) => (StatusCode::NO_CONTENT, [(header::CACHE_CONTROL, "no-store")]).into_response(),
-                Ok(Some(outcome)) => match core_ordered::encode_ordered_outcome(&outcome) {
-                    Ok(bytes) => bytes_response(ORDERED_OUTCOME_MEDIA_TYPE, bytes),
-                    Err(_) => {
-                        error_response(StatusCode::INTERNAL_SERVER_ERROR, "ordered-outcome-encoding")
-                    }
-                },
-                Err(error) => ordered_error(&error),
-            }
-        })
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
+                let scope: OrderedScope = match OrderedScope::from_warrant(host, warrant) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                let env: OrderedEconomicsEnvironment<'_> = scope.env(host);
+                match core_ordered::query_ordered_outcome(
+                    host.store.as_ref(),
+                    context,
+                    &env,
+                    &request_id,
+                ) {
+                    Ok(None) => (
+                        StatusCode::NO_CONTENT,
+                        [(header::CACHE_CONTROL, "no-store")],
+                    )
+                        .into_response(),
+                    Ok(Some(outcome)) => match core_ordered::encode_ordered_outcome(&outcome) {
+                        Ok(bytes) => bytes_response(ORDERED_OUTCOME_MEDIA_TYPE, bytes),
+                        Err(_) => error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "ordered-outcome-encoding",
+                        ),
+                    },
+                    Err(error) => ordered_error(&error),
+                }
+            },
+        )
     })
     .await
 }
@@ -793,23 +856,26 @@ async fn ordered_tick<S: SuccessorStore>(
                 "ordered-economics-clock-unavailable",
             );
         };
-        serve(host, |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
-            let scope: OrderedScope = match OrderedScope::from_warrant(host, warrant) {
-                Ok(value) => value,
-                Err(response) => return response,
-            };
-            let env: OrderedEconomicsEnvironment<'_> = scope.env(host);
-            match core_ordered::process_tick_successor(
-                warrant,
-                host.store.as_ref(),
-                &env,
-                now_unix_millis,
-                &signer(host),
-            ) {
-                Ok(output) => ordered_economics::encode_event_output_response(&output),
-                Err(error) => ordered_error(&error),
-            }
-        })
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
+                let scope: OrderedScope = match OrderedScope::from_warrant(host, warrant) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                let env: OrderedEconomicsEnvironment<'_> = scope.env(host);
+                match core_ordered::process_tick_successor(
+                    warrant,
+                    host.store.as_ref(),
+                    &env,
+                    now_unix_millis,
+                    &signer(host),
+                ) {
+                    Ok(output) => ordered_economics::encode_event_output_response(&output),
+                    Err(error) => ordered_error(&error),
+                }
+            },
+        )
     })
     .await
 }
@@ -826,33 +892,41 @@ async fn fastvote_prepare<S: SuccessorStore>(
         return response;
     }
     blocking(host, move |host: &SuccessorHostComposition<S>| {
-        let declared: PublicationContext = match authenticate_declared_intent(&host.resolver, &body) {
+        let declared: PublicationContext = match authenticate_declared_intent(&host.resolver, &body)
+        {
             Ok(value) => value,
             Err(response) => return response,
         };
-        serve(host, |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
-            if let Err(response) = require_warrant_context(&declared, warrant) {
-                return response;
-            }
-            let scope: FastVoteScope = match FastVoteScope::from_warrant(host, warrant, context) {
-                Ok(value) => value,
-                Err(response) => return response,
-            };
-            match prepare_successor(
-                warrant,
-                host.store.as_ref(),
-                &scope.composition(host),
-                &signer(host),
-                &body,
-                host.created_checkpoint,
-            ) {
-                Ok(vote) => match consensus::encode_fast_vote(&vote) {
-                    Ok(bytes) => bytes_response(NODE_RESULT_MEDIA_TYPE, bytes),
-                    Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "fastvote-vote-encoding"),
-                },
-                Err(error) => fastpath_error_response(&error),
-            }
-        })
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
+                if let Err(response) = require_warrant_context(&declared, warrant) {
+                    return response;
+                }
+                let scope: FastVoteScope = match FastVoteScope::from_warrant(host, warrant, context)
+                {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                match prepare_successor(
+                    warrant,
+                    host.store.as_ref(),
+                    &scope.composition(host),
+                    &signer(host),
+                    &body,
+                    host.created_checkpoint,
+                ) {
+                    Ok(vote) => match consensus::encode_fast_vote(&vote) {
+                        Ok(bytes) => bytes_response(NODE_RESULT_MEDIA_TYPE, bytes),
+                        Err(_) => error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "fastvote-vote-encoding",
+                        ),
+                    },
+                    Err(error) => fastpath_error_response(&error),
+                }
+            },
+        )
     })
     .await
 }
@@ -869,27 +943,30 @@ fn fastvote_apply_with<S: SuccessorStore>(
         Ok(value) => value,
         Err(response) => return response,
     };
-    serve(host, |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
-        if let Err(response) = require_warrant_context(&declared, warrant) {
-            return response;
-        }
-        let scope: FastVoteScope = match FastVoteScope::from_warrant(host, warrant, context) {
-            Ok(value) => value,
-            Err(response) => return response,
-        };
-        match apply_successor(
-            warrant,
-            host.store.as_ref(),
-            &scope.composition(host),
-            signed,
-            certificate,
-            availability,
-            Some(host.created_checkpoint),
-        ) {
-            Ok(output) => node_result_response(request_id_of(signed), &output),
-            Err(error) => fastpath_error_response(&error),
-        }
-    })
+    serve(
+        host,
+        |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
+            if let Err(response) = require_warrant_context(&declared, warrant) {
+                return response;
+            }
+            let scope: FastVoteScope = match FastVoteScope::from_warrant(host, warrant, context) {
+                Ok(value) => value,
+                Err(response) => return response,
+            };
+            match apply_successor(
+                warrant,
+                host.store.as_ref(),
+                &scope.composition(host),
+                signed,
+                certificate,
+                availability,
+                Some(host.created_checkpoint),
+            ) {
+                Ok(output) => node_result_response(request_id_of(signed), &output),
+                Err(error) => fastpath_error_response(&error),
+            }
+        },
+    )
 }
 
 async fn fastvote_apply<S: SuccessorStore>(
@@ -904,7 +981,12 @@ async fn fastvote_apply<S: SuccessorStore>(
         let Ok(request) = FastVoteApplyRequest::decode(&body) else {
             return error_response(StatusCode::BAD_REQUEST, "invalid-fastvote-apply-request");
         };
-        fastvote_apply_with(host, &request.signed_paid_intent, &request.certificate, None)
+        fastvote_apply_with(
+            host,
+            &request.signed_paid_intent,
+            &request.certificate,
+            None,
+        )
     })
     .await
 }
@@ -950,35 +1032,41 @@ async fn fastvote_publication_retain<S: SuccessorStore>(
     }
     blocking(host, move |host: &SuccessorHostComposition<S>| {
         let Ok(bundle) = consensus::bundle::decode_publication_bundle(&body) else {
-            return error_response(StatusCode::BAD_REQUEST, "invalid-fastvote-publication-bundle");
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid-fastvote-publication-bundle",
+            );
         };
         let declared: PublicationContext =
             match authenticate_declared_intent(&host.resolver, &bundle.signed_intent) {
                 Ok(value) => value,
                 Err(response) => return response,
             };
-        serve(host, |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
-            if let Err(response) = require_warrant_context(&declared, warrant) {
-                return response;
-            }
-            match retain_publication_successor(
-                warrant,
-                host.store.as_ref(),
-                &host.resolver,
-                &host.history,
-                &body,
-                &signer(host),
-            ) {
-                Ok(vote) => match consensus::encode_availability_vote(&vote) {
-                    Ok(bytes) => bytes_response(NODE_RESULT_MEDIA_TYPE, bytes),
-                    Err(_) => error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "fastvote-availability-vote-encoding",
-                    ),
-                },
-                Err(error) => publication_retention_error_response(&error),
-            }
-        })
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
+                if let Err(response) = require_warrant_context(&declared, warrant) {
+                    return response;
+                }
+                match retain_publication_successor(
+                    warrant,
+                    host.store.as_ref(),
+                    &host.resolver,
+                    &host.history,
+                    &body,
+                    &signer(host),
+                ) {
+                    Ok(vote) => match consensus::encode_availability_vote(&vote) {
+                        Ok(bytes) => bytes_response(NODE_RESULT_MEDIA_TYPE, bytes),
+                        Err(_) => error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "fastvote-availability-vote-encoding",
+                        ),
+                    },
+                    Err(error) => publication_retention_error_response(&error),
+                }
+            },
+        )
     })
     .await
 }
@@ -1002,30 +1090,33 @@ async fn fastvote_publication_source<S: SuccessorStore>(
                 Ok(value) => value,
                 Err(response) => return response,
             };
-        serve(host, |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
-            if let Err(response) = require_warrant_context(&declared, warrant) {
-                return response;
-            }
-            match node_core::fast_path::publication::assemble_publication_bundle(
-                host.store.as_ref(),
-                context,
-                warrant.policy_inputs().domain(),
-                &host.resolver,
-                &host.history,
-                warrant.policy_inputs().context(),
-                &request.signed_paid_intent,
-                &request.certificate,
-            ) {
-                Ok(bundle) => match consensus::bundle::encode_publication_bundle(&bundle) {
-                    Ok(bytes) => bytes_response(NODE_RESULT_MEDIA_TYPE, bytes),
-                    Err(_) => error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "fastvote-source-bundle-encoding",
-                    ),
-                },
-                Err(error) => publication_retention_error_response(&error),
-            }
-        })
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
+                if let Err(response) = require_warrant_context(&declared, warrant) {
+                    return response;
+                }
+                match node_core::fast_path::publication::assemble_publication_bundle(
+                    host.store.as_ref(),
+                    context,
+                    warrant.policy_inputs().domain(),
+                    &host.resolver,
+                    &host.history,
+                    warrant.policy_inputs().context(),
+                    &request.signed_paid_intent,
+                    &request.certificate,
+                ) {
+                    Ok(bundle) => match consensus::bundle::encode_publication_bundle(&bundle) {
+                        Ok(bytes) => bytes_response(NODE_RESULT_MEDIA_TYPE, bytes),
+                        Err(_) => error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "fastvote-source-bundle-encoding",
+                        ),
+                    },
+                    Err(error) => publication_retention_error_response(&error),
+                }
+            },
+        )
     })
     .await
 }
@@ -1033,34 +1124,42 @@ async fn fastvote_publication_source<S: SuccessorStore>(
 /// Context query at the verified e+1 epoch and domain.
 async fn query_context<S: SuccessorStore>(State(host): State<SharedSuccessorHost<S>>) -> Response {
     blocking(host, |host: &SuccessorHostComposition<S>| {
-        serve(host, |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
-            let context: &PublicationContext = warrant.policy_inputs().context();
-            let profile = match resolve_transaction_auth_profile(&host.protocol_config) {
-                Ok(value) => value,
-                Err(error) => return query_node_error(NodeCoreError::from(error)),
-            };
-            let config_bytes: Vec<u8> = match host.protocol_config.canonical_bytes() {
-                Ok(value) => value,
-                Err(error) => return query_node_error(NodeCoreError::from(error)),
-            };
-            let Ok(result) = HttpContextQueryResult::new(
-                context.chain_id().clone(),
-                context.protocol_version(),
-                context.epoch(),
-                host.protocol_config.hash_suite_id,
-                profile.profile_id(),
-                profile.signature_scheme_id().as_u16(),
-                profile.address_binding().as_u16(),
-                warrant.policy_inputs().domain(),
-                config_bytes,
-            ) else {
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "query-state-invalid");
-            };
-            match result.encode() {
-                Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
-                Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "query-state-invalid"),
-            }
-        })
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
+                let context: &PublicationContext = warrant.policy_inputs().context();
+                let profile = match resolve_transaction_auth_profile(&host.protocol_config) {
+                    Ok(value) => value,
+                    Err(error) => return query_node_error(NodeCoreError::from(error)),
+                };
+                let config_bytes: Vec<u8> = match host.protocol_config.canonical_bytes() {
+                    Ok(value) => value,
+                    Err(error) => return query_node_error(NodeCoreError::from(error)),
+                };
+                let Ok(result) = HttpContextQueryResult::new(
+                    context.chain_id().clone(),
+                    context.protocol_version(),
+                    context.epoch(),
+                    host.protocol_config.hash_suite_id,
+                    profile.profile_id(),
+                    profile.signature_scheme_id().as_u16(),
+                    profile.address_binding().as_u16(),
+                    warrant.policy_inputs().domain(),
+                    config_bytes,
+                ) else {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "query-state-invalid",
+                    );
+                };
+                match result.encode() {
+                    Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
+                    Err(_) => {
+                        error_response(StatusCode::INTERNAL_SERVER_ERROR, "query-state-invalid")
+                    }
+                }
+            },
+        )
     })
     .await
 }
@@ -1073,25 +1172,33 @@ async fn query_object_route<S: SuccessorStore>(
         return error_response(StatusCode::BAD_REQUEST, "invalid-object-id");
     };
     blocking(host, move |host: &SuccessorHostComposition<S>| {
-        serve(host, |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
-            let inputs: &SuccessorPolicyInputs = warrant.policy_inputs();
-            match query_object(
-                host.store.as_ref(),
-                context,
-                inputs.domain(),
-                inputs.context().chain_id(),
-                object_id,
-            ) {
-                Ok(result) if result.object_id() == object_id => {
-                    match HttpObjectQueryResult::from(result).encode() {
-                        Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
-                        Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "query-state-invalid"),
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
+                let inputs: &SuccessorPolicyInputs = warrant.policy_inputs();
+                match query_object(
+                    host.store.as_ref(),
+                    context,
+                    inputs.domain(),
+                    inputs.context().chain_id(),
+                    object_id,
+                ) {
+                    Ok(result) if result.object_id() == object_id => {
+                        match HttpObjectQueryResult::from(result).encode() {
+                            Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
+                            Err(_) => error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "query-state-invalid",
+                            ),
+                        }
                     }
+                    Ok(_) => {
+                        error_response(StatusCode::INTERNAL_SERVER_ERROR, "query-state-invalid")
+                    }
+                    Err(error) => query_node_error(error),
                 }
-                Ok(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "query-state-invalid"),
-                Err(error) => query_node_error(error),
-            }
-        })
+            },
+        )
     })
     .await
 }
@@ -1102,26 +1209,35 @@ async fn query_receipt_route<S: SuccessorStore>(
     State(host): State<SharedSuccessorHost<S>>,
     Path(selector): Path<String>,
 ) -> Response {
-    let Some(request_id) = decode_hex64_selector(&selector).and_then(|bytes| RequestId::new(bytes).ok())
+    let Some(request_id) =
+        decode_hex64_selector(&selector).and_then(|bytes| RequestId::new(bytes).ok())
     else {
         return error_response(StatusCode::BAD_REQUEST, "invalid-request-id");
     };
     blocking(host, move |host: &SuccessorHostComposition<S>| {
-        serve(host, |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
-            match query_request_receipt_successor(warrant, host.store.as_ref(), request_id) {
-                Ok(result) if result.request_id() == request_id => {
-                    match http_receipt_query_result(result) {
-                        Ok(wire) => match wire.encode() {
-                            Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
-                            Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "query-state-invalid"),
-                        },
-                        Err(error) => query_node_error(error),
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
+                match query_request_receipt_successor(warrant, host.store.as_ref(), request_id) {
+                    Ok(result) if result.request_id() == request_id => {
+                        match http_receipt_query_result(result) {
+                            Ok(wire) => match wire.encode() {
+                                Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
+                                Err(_) => error_response(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "query-state-invalid",
+                                ),
+                            },
+                            Err(error) => query_node_error(error),
+                        }
                     }
+                    Ok(_) => {
+                        error_response(StatusCode::INTERNAL_SERVER_ERROR, "query-state-invalid")
+                    }
+                    Err(error) => query_node_error(error),
                 }
-                Ok(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "query-state-invalid"),
-                Err(error) => query_node_error(error),
-            }
-        })
+            },
+        )
     })
     .await
 }
@@ -1134,28 +1250,38 @@ async fn query_next_nonce_route<S: SuccessorStore>(
         return error_response(StatusCode::BAD_REQUEST, "invalid-sender");
     };
     blocking(host, move |host: &SuccessorHostComposition<S>| {
-        serve(host, |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
-            let expected: &PublicationContext = warrant.policy_inputs().context();
-            match query_sender_next_nonce(
-                host.store.as_ref(),
-                context,
-                warrant.policy_inputs().domain(),
-                expected.chain_id().clone(),
-                expected.protocol_version(),
-                expected.epoch(),
-                sender,
-            ) {
-                Ok(next_nonce) => {
-                    match HttpNextNonceQueryResult::new(Address::new(sender), expected.epoch(), next_nonce)
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
+                let expected: &PublicationContext = warrant.policy_inputs().context();
+                match query_sender_next_nonce(
+                    host.store.as_ref(),
+                    context,
+                    warrant.policy_inputs().domain(),
+                    expected.chain_id().clone(),
+                    expected.protocol_version(),
+                    expected.epoch(),
+                    sender,
+                ) {
+                    Ok(next_nonce) => {
+                        match HttpNextNonceQueryResult::new(
+                            Address::new(sender),
+                            expected.epoch(),
+                            next_nonce,
+                        )
                         .encode()
-                    {
-                        Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
-                        Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "query-state-invalid"),
+                        {
+                            Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
+                            Err(_) => error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "query-state-invalid",
+                            ),
+                        }
                     }
+                    Err(error) => query_node_error(error),
                 }
-                Err(error) => query_node_error(error),
-            }
-        })
+            },
+        )
     })
     .await
 }
@@ -1166,33 +1292,48 @@ async fn query_publication_route<S: SuccessorStore>(
     State(host): State<SharedSuccessorHost<S>>,
     Path((publisher, seed)): Path<(String, String)>,
 ) -> Response {
-    let (Some(publisher), Some(seed)) =
-        (decode_hex64_selector(&publisher), decode_hex64_selector(&seed))
+    let (Some(publisher), Some(seed)) = (
+        decode_hex64_selector(&publisher),
+        decode_hex64_selector(&seed),
+    ) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid-publication-selector");
+    };
+    let Ok(origin) = PackageOrigin::unverified(host.resolver.chain_id().clone(), publisher, seed)
     else {
         return error_response(StatusCode::BAD_REQUEST, "invalid-publication-selector");
     };
-    let Ok(origin) = PackageOrigin::unverified(host.resolver.chain_id().clone(), publisher, seed) else {
-        return error_response(StatusCode::BAD_REQUEST, "invalid-publication-selector");
-    };
     blocking(host, move |host: &SuccessorHostComposition<S>| {
-        serve(host, |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
-            match node_core::publication::query_publication_with_history(
-                host.store.as_ref(),
-                context,
-                warrant.policy_inputs().domain(),
-                &host.resolver,
-                &host.history,
-                &origin,
-            ) {
-                Ok(Some(result)) => match node_core::publication::encode_publication_query_result(&result) {
-                    Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
-                    Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "publication-result-encoding"),
-                },
-                Ok(None) => error_response(StatusCode::NOT_FOUND, "publication-not-found"),
-                Err(node_core::publication::PublicationAdmissionError::Node(error)) => query_node_error(error),
-                Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "publication-query-failed"),
-            }
-        })
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
+                match node_core::publication::query_publication_with_history(
+                    host.store.as_ref(),
+                    context,
+                    warrant.policy_inputs().domain(),
+                    &host.resolver,
+                    &host.history,
+                    &origin,
+                ) {
+                    Ok(Some(result)) => {
+                        match node_core::publication::encode_publication_query_result(&result) {
+                            Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
+                            Err(_) => error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "publication-result-encoding",
+                            ),
+                        }
+                    }
+                    Ok(None) => error_response(StatusCode::NOT_FOUND, "publication-not-found"),
+                    Err(node_core::publication::PublicationAdmissionError::Node(error)) => {
+                        query_node_error(error)
+                    }
+                    Err(_) => error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "publication-query-failed",
+                    ),
+                }
+            },
+        )
     })
     .await
 }
@@ -1202,33 +1343,43 @@ async fn query_instance_route<S: SuccessorStore>(
     State(host): State<SharedSuccessorHost<S>>,
     Path((creator, seed)): Path<(String, String)>,
 ) -> Response {
-    let (Some(creator), Some(seed)) = (decode_hex64_selector(&creator), decode_hex64_selector(&seed))
-    else {
+    let (Some(creator), Some(seed)) = (
+        decode_hex64_selector(&creator),
+        decode_hex64_selector(&seed),
+    ) else {
         return error_response(StatusCode::BAD_REQUEST, "invalid-instance-selector");
     };
     blocking(host, move |host: &SuccessorHostComposition<S>| {
-        serve(host, |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
-            match node_core::local_execution::query_local_instance(
-                host.store.as_ref(),
-                context,
-                warrant.policy_inputs().domain(),
-                &host.resolver,
-                &host.history,
-                warrant.policy_inputs().context().chain_id(),
-                creator,
-                seed,
-            ) {
-                Ok(Some(record)) => match encode_instance_record(&record) {
-                    Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
-                    Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "instance-result-encoding"),
-                },
-                Ok(None) => error_response(StatusCode::NOT_FOUND, "instance-not-found"),
-                Err(node_core::local_execution::LocalExecutionAdmissionError::Node(error)) => {
-                    query_node_error(error)
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
+                match node_core::local_execution::query_local_instance(
+                    host.store.as_ref(),
+                    context,
+                    warrant.policy_inputs().domain(),
+                    &host.resolver,
+                    &host.history,
+                    warrant.policy_inputs().context().chain_id(),
+                    creator,
+                    seed,
+                ) {
+                    Ok(Some(record)) => match encode_instance_record(&record) {
+                        Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
+                        Err(_) => error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "instance-result-encoding",
+                        ),
+                    },
+                    Ok(None) => error_response(StatusCode::NOT_FOUND, "instance-not-found"),
+                    Err(node_core::local_execution::LocalExecutionAdmissionError::Node(error)) => {
+                        query_node_error(error)
+                    }
+                    Err(_) => {
+                        error_response(StatusCode::INTERNAL_SERVER_ERROR, "instance-query-failed")
+                    }
                 }
-                Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "instance-query-failed"),
-            }
-        })
+            },
+        )
     })
     .await
 }
@@ -1238,22 +1389,30 @@ async fn query_fee_policy_route<S: SuccessorStore>(
     State(host): State<SharedSuccessorHost<S>>,
 ) -> Response {
     blocking(host, |host: &SuccessorHostComposition<S>| {
-        serve(host, |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
-            let policy: PaidFeePolicy = match successor_fee_policy(host, warrant, context) {
-                Ok(value) => value,
-                Err(response) => return response,
-            };
-            match encode_paid_fee_policy(&policy) {
-                Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
-                Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "paid-fee-policy-invalid"),
-            }
-        })
+        serve(
+            host,
+            |warrant: &LiveWarrant<'_>, context: &DurableOperationContext| {
+                let policy: PaidFeePolicy = match successor_fee_policy(host, warrant, context) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                match encode_paid_fee_policy(&policy) {
+                    Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
+                    Err(_) => {
+                        error_response(StatusCode::INTERNAL_SERVER_ERROR, "paid-fee-policy-invalid")
+                    }
+                }
+            },
+        )
     })
     .await
 }
 
 async fn refused_control() -> Response {
-    error_response(StatusCode::UNPROCESSABLE_ENTITY, "successor-control-unsupported")
+    error_response(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "successor-control-unsupported",
+    )
 }
 
 async fn unimplemented_route() -> Response {
@@ -1273,22 +1432,26 @@ pub fn prepare_successor_fee_claim<S>(
 where
     S: StructuredDurableDomainStateStore + DurableStateKeyScanner,
 {
-    with_authority(host, |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
-        let leg_policy: LocalExecutionPolicy =
-            LocalExecutionPolicy::generic_object_results(warrant.policy_inputs().context().clone());
-        prepare_fee_claim_successor(
-            warrant,
-            host.store.as_ref(),
-            host.blobs.as_ref(),
-            &host.resolver,
-            &host.history,
-            &leg_policy,
-            host.engine.as_ref(),
-            request,
-            created_checkpoint,
-        )
-        .map_err(SuccessorInvocationError::FeeClaim)
-    })
+    with_authority(
+        host,
+        |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
+            let leg_policy: LocalExecutionPolicy = LocalExecutionPolicy::generic_object_results(
+                warrant.policy_inputs().context().clone(),
+            );
+            prepare_fee_claim_successor(
+                warrant,
+                host.store.as_ref(),
+                host.blobs.as_ref(),
+                &host.resolver,
+                &host.history,
+                &leg_policy,
+                host.engine.as_ref(),
+                request,
+                created_checkpoint,
+            )
+            .map_err(SuccessorInvocationError::FeeClaim)
+        },
+    )
 }
 
 /// Builds the first-successor router over the original route paths.
@@ -1299,7 +1462,9 @@ where
 /// tick; FastVote prepare, apply, publication source, availability ACK and
 /// published apply. [SUCCESSOR_REFUSED_CONTROL_PATHS] answer 422 and
 /// [SUCCESSOR_UNIMPLEMENTED_PATHS] answer 501, both before any I/O.
-pub fn successor_router<S>(host: SuccessorHostComposition<S>) -> Result<Router, SuccessorRouterError>
+pub fn successor_router<S>(
+    host: SuccessorHostComposition<S>,
+) -> Result<Router, SuccessorRouterError>
 where
     S: StructuredDurableDomainStateStore + Send + Sync + 'static,
 {
@@ -1317,8 +1482,14 @@ where
         .route(QUERY_RECEIPT_PATH, get(query_receipt_route::<S>))
         .route(QUERY_NEXT_NONCE_PATH, get(query_next_nonce_route::<S>))
         .route(publication::QUERY_PATH, get(query_publication_route::<S>))
-        .route(local_execution::INSTANCE_PATH, get(query_instance_route::<S>))
-        .route(paid_execution::PAID_FEE_POLICY_PATH, get(query_fee_policy_route::<S>))
+        .route(
+            local_execution::INSTANCE_PATH,
+            get(query_instance_route::<S>),
+        )
+        .route(
+            paid_execution::PAID_FEE_POLICY_PATH,
+            get(query_fee_policy_route::<S>),
+        )
         .route(
             ORDERED_ECONOMICS_PROPOSE_PATH,
             post(ordered_propose::<S>)
@@ -1349,7 +1520,8 @@ where
         )
         .route(
             FASTVOTE_CERTIFICATES_PATH,
-            post(fastvote_apply::<S>).layer(DefaultBodyLimit::max(MAX_FASTVOTE_APPLY_REQUEST_BYTES)),
+            post(fastvote_apply::<S>)
+                .layer(DefaultBodyLimit::max(MAX_FASTVOTE_APPLY_REQUEST_BYTES)),
         )
         .route(
             FASTVOTE_PUBLICATION_SOURCE_PATH,
@@ -1358,13 +1530,15 @@ where
         )
         .route(
             FASTVOTE_PUBLICATION_RETAIN_PATH,
-            post(fastvote_publication_retain::<S>)
-                .layer(DefaultBodyLimit::max(consensus::bundle::MAX_ENCODED_BUNDLE_BYTES)),
+            post(fastvote_publication_retain::<S>).layer(DefaultBodyLimit::max(
+                consensus::bundle::MAX_ENCODED_BUNDLE_BYTES,
+            )),
         )
         .route(
             FASTVOTE_PUBLISHED_APPLY_PATH,
-            post(fastvote_published_apply::<S>)
-                .layer(DefaultBodyLimit::max(MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES)),
+            post(fastvote_published_apply::<S>).layer(DefaultBodyLimit::max(
+                MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES,
+            )),
         );
     for path in SUCCESSOR_REFUSED_CONTROL_PATHS {
         router = router.route(path, any(refused_control));

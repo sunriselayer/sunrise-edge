@@ -124,7 +124,13 @@ fn router(decision: Decision) -> (Router, Arc<StubAuthority>) {
     (successor_router(host).unwrap(), authority)
 }
 
-async fn send(router: &Router, method: &str, path: &str, media: Option<&str>, body: Vec<u8>) -> (StatusCode, Vec<u8>) {
+async fn send(
+    router: &Router,
+    method: &str,
+    path: &str,
+    media: Option<&str>,
+    body: Vec<u8>,
+) -> (StatusCode, Vec<u8>) {
     let mut request = Request::builder().method(method).uri(path);
     if let Some(media) = media {
         request = request.header(header::CONTENT_TYPE, media);
@@ -174,8 +180,9 @@ async fn binding_refuses_a_nonloopback_address_before_any_socket() {
     let address: SocketAddr = "0.0.0.0:0".parse().unwrap();
     let error: io::Error = bind_successor_loopback(address).await.unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-    let bound: tokio::net::TcpListener =
-        bind_successor_loopback("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let bound: tokio::net::TcpListener = bind_successor_loopback("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
     assert!(bound.local_addr().unwrap().ip().is_loopback());
 }
 
@@ -185,14 +192,25 @@ async fn permanent_controls_and_unserved_routes_refuse_before_authority() {
     for path in SUCCESSOR_REFUSED_CONTROL_PATHS {
         let concrete: String = path.replace("{validator_id}", &"ab".repeat(32));
         for method in ["POST", "GET"] {
-            let (status, body): (StatusCode, Vec<u8>) =
-                send(&router, method, &concrete, Some(NODE_EVENT_MEDIA_TYPE), b"x".to_vec()).await;
-            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{method} {concrete}");
+            let (status, body): (StatusCode, Vec<u8>) = send(
+                &router,
+                method,
+                &concrete,
+                Some(NODE_EVENT_MEDIA_TYPE),
+                b"x".to_vec(),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{method} {concrete}"
+            );
             assert_eq!(body, b"successor-control-unsupported");
         }
     }
     for path in SUCCESSOR_UNIMPLEMENTED_PATHS {
-        let (status, body): (StatusCode, Vec<u8>) = send(&router, "GET", path, None, Vec::new()).await;
+        let (status, body): (StatusCode, Vec<u8>) =
+            send(&router, "GET", path, None, Vec::new()).await;
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{path}");
         assert_eq!(body, b"successor-route-unimplemented");
     }
@@ -203,13 +221,48 @@ async fn permanent_controls_and_unserved_routes_refuse_before_authority() {
 async fn malformed_requests_refuse_before_identity_clock_or_authority() {
     let (router, authority): (Router, Arc<StubAuthority>) = router(Decision::Original);
     let cases: [(&str, Option<&str>, Vec<u8>, StatusCode); 7] = [
-        (FASTVOTE_PREPARE_PATH, Some(NODE_EVENT_MEDIA_TYPE), b"junk".to_vec(), StatusCode::BAD_REQUEST),
-        (FASTVOTE_PREPARE_PATH, Some("text/plain"), b"junk".to_vec(), StatusCode::UNSUPPORTED_MEDIA_TYPE),
-        (FASTVOTE_CERTIFICATES_PATH, Some(NODE_EVENT_MEDIA_TYPE), b"junk".to_vec(), StatusCode::BAD_REQUEST),
-        (FASTVOTE_PUBLICATION_RETAIN_PATH, Some(NODE_EVENT_MEDIA_TYPE), b"junk".to_vec(), StatusCode::BAD_REQUEST),
-        (ORDERED_ECONOMICS_PROPOSAL_PATH, Some(ORDERED_PROPOSAL_MEDIA_TYPE), b"junk".to_vec(), StatusCode::BAD_REQUEST),
-        (ORDERED_ECONOMICS_PROPOSE_PATH, Some(ORDERED_PROPOSAL_MEDIA_TYPE), b"junk".to_vec(), StatusCode::UNSUPPORTED_MEDIA_TYPE),
-        (ORDERED_ECONOMICS_TICK_PATH, None, b"x".to_vec(), StatusCode::BAD_REQUEST),
+        (
+            FASTVOTE_PREPARE_PATH,
+            Some(NODE_EVENT_MEDIA_TYPE),
+            b"junk".to_vec(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            FASTVOTE_PREPARE_PATH,
+            Some("text/plain"),
+            b"junk".to_vec(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ),
+        (
+            FASTVOTE_CERTIFICATES_PATH,
+            Some(NODE_EVENT_MEDIA_TYPE),
+            b"junk".to_vec(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            FASTVOTE_PUBLICATION_RETAIN_PATH,
+            Some(NODE_EVENT_MEDIA_TYPE),
+            b"junk".to_vec(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            ORDERED_ECONOMICS_PROPOSAL_PATH,
+            Some(ORDERED_PROPOSAL_MEDIA_TYPE),
+            b"junk".to_vec(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            ORDERED_ECONOMICS_PROPOSE_PATH,
+            Some(ORDERED_PROPOSAL_MEDIA_TYPE),
+            b"junk".to_vec(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ),
+        (
+            ORDERED_ECONOMICS_TICK_PATH,
+            None,
+            b"x".to_vec(),
+            StatusCode::BAD_REQUEST,
+        ),
     ];
     for (path, media, body, expected) in cases {
         let (status, _): (StatusCode, Vec<u8>) = send(&router, "POST", path, media, body).await;
@@ -234,12 +287,19 @@ async fn original_genesis_is_an_explicit_refusal_never_a_serving_fallback() {
         ORDERED_ECONOMICS_STATUS_PATH.to_string(),
     ];
     for path in &reads {
-        let (status, body): (StatusCode, Vec<u8>) = send(&router, "GET", path, None, Vec::new()).await;
+        let (status, body): (StatusCode, Vec<u8>) =
+            send(&router, "GET", path, None, Vec::new()).await;
         assert_eq!(status, StatusCode::CONFLICT, "{path}");
         assert_eq!(body, b"successor-original-genesis-refused");
     }
-    let (status, body): (StatusCode, Vec<u8>) =
-        send(&router, "POST", ORDERED_ECONOMICS_TICK_PATH, None, Vec::new()).await;
+    let (status, body): (StatusCode, Vec<u8>) = send(
+        &router,
+        "POST",
+        ORDERED_ECONOMICS_TICK_PATH,
+        None,
+        Vec::new(),
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body, b"successor-original-genesis-refused");
     assert_eq!(authority.calls.load(Ordering::SeqCst), reads.len() + 1);
@@ -248,8 +308,12 @@ async fn original_genesis_is_an_explicit_refusal_never_a_serving_fallback() {
 #[tokio::test]
 async fn refused_authority_is_an_explicit_conflict_without_signing() {
     let (router, authority): (Router, Arc<StubAuthority>) = router(Decision::Refused);
-    for (method, path) in [("GET", ORDERED_ECONOMICS_STATUS_PATH), ("POST", ORDERED_ECONOMICS_TICK_PATH)] {
-        let (status, body): (StatusCode, Vec<u8>) = send(&router, method, path, None, Vec::new()).await;
+    for (method, path) in [
+        ("GET", ORDERED_ECONOMICS_STATUS_PATH),
+        ("POST", ORDERED_ECONOMICS_TICK_PATH),
+    ] {
+        let (status, body): (StatusCode, Vec<u8>) =
+            send(&router, method, path, None, Vec::new()).await;
         assert_eq!(status, StatusCode::CONFLICT, "{path}");
         assert_eq!(body, b"successor-authority-refused");
     }
@@ -264,7 +328,10 @@ fn router_refuses_a_protocol_config_that_differs_from_the_pinned_resolver() {
     let host: SuccessorHostComposition<MemoryDurableStateStore> = SuccessorHostComposition {
         store: Arc::new(MemoryDurableStateStore::new(fence)),
         blobs: Arc::new(MemoryBlobStore::default()),
-        authority: Arc::new(StubAuthority { decision: Decision::Original, calls: AtomicUsize::new(0) }),
+        authority: Arc::new(StubAuthority {
+            decision: Decision::Original,
+            calls: AtomicUsize::new(0),
+        }),
         signer: Arc::new(RefusingSigner),
         clock: Arc::new(SystemClock),
         identities: Arc::new(Identities(AtomicU64::new(1))),

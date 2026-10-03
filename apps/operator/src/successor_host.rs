@@ -20,6 +20,7 @@ use crate::{
 };
 use consensus::ConsensusSigner;
 use ed25519_zebra::{SigningKey, VerificationKey};
+use hashing::HashSuiteResolver;
 use native_http::successor::{
     SuccessorAuthoritySource, SuccessorHostComposition, bind_successor_loopback,
     require_loopback_listen, successor_router,
@@ -38,7 +39,6 @@ use node_core::ordered_economics::{
 };
 use node_core::serving_authority::{LiveAuthority, ServingAuthorityError, resolve_live_authority};
 use protocol_config::{DomainPlacementManifest, ProtocolConfig, TransactionAuthProfile};
-use hashing::HashSuiteResolver;
 use protocol_types::{AtomicityDomainId, Epoch, SignatureSchemeId, ValidatorId};
 use runtime::{
     DurableOperationContext, DurableOutboxLeaseId, StorageCorrelationId, SystemClock,
@@ -157,18 +157,19 @@ impl SuccessorAuthoritySource<SqliteImportTarget> for HostAuthority {
         store: &'inv SqliteImportTarget,
         context: &'inv DurableOperationContext,
     ) -> Result<LiveAuthority<'inv>, ServingAuthorityError> {
-        let unavailable = |_| ServingAuthorityError::Refused("private reconstruction context unavailable");
-        let artifact_operation: DurableOperationContext = private_operation().map_err(unavailable)?;
+        let unavailable =
+            |_| ServingAuthorityError::Refused("private reconstruction context unavailable");
+        let artifact_operation: DurableOperationContext =
+            private_operation().map_err(unavailable)?;
         let plan_operation: DurableOperationContext = private_operation().map_err(unavailable)?;
         // One held directory set: resolutions over it are serialized, and a
         // panic mid-resolution leaves the host refusing, never guessing.
-        let mut held = self
-            .directories
-            .lock()
-            .map_err(|_| ServingAuthorityError::Refused("successor artifact directories poisoned"))?;
-        let (cut, history, certificate): ArtifactDirectories = held
-            .take()
-            .ok_or(ServingAuthorityError::Refused("successor artifact directories unavailable"))?;
+        let mut held = self.directories.lock().map_err(|_| {
+            ServingAuthorityError::Refused("successor artifact directories poisoned")
+        })?;
+        let (cut, history, certificate): ArtifactDirectories = held.take().ok_or(
+            ServingAuthorityError::Refused("successor artifact directories unavailable"),
+        )?;
         let mut artifacts: SuccessorArtifactFiles<'_> = SuccessorArtifactFiles::new(
             self.pins.plan(artifact_operation),
             cut,
@@ -227,12 +228,16 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     let key_path: PathBuf = flags.one("--signer-key-file")?.into();
     let created_checkpoint: u64 = bounded(&flags.one("--created-checkpoint")?, 0, u64::MAX)?;
     let timeout: u64 = bounded(
-        &flags.optional_one("--timeout-seconds")?.unwrap_or_else(|| "30".into()),
+        &flags
+            .optional_one("--timeout-seconds")?
+            .unwrap_or_else(|| "30".into()),
         1,
         3600,
     )?;
     let max_concurrent: u64 = bounded(
-        &flags.optional_one("--max-concurrent")?.unwrap_or_else(|| "16".into()),
+        &flags
+            .optional_one("--max-concurrent")?
+            .unwrap_or_else(|| "16".into()),
         1,
         256,
     )?;
@@ -295,11 +300,10 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
     // target must match when opened; it grants no authority.
     let saved: SavedBusinessCut =
         read_business_cut_archive(&pins.plan(private_operation()?), &cut_archive)?;
-    let verified: VerifiedImportPlan = verify_saved_business_import(
-        pins.plan(private_operation()?),
-        &saved,
-    )
-    .map_err(|error| format!("successor host saved-cut reconstruction failed: {error:?}"))?;
+    let verified: VerifiedImportPlan =
+        verify_saved_business_import(pins.plan(private_operation()?), &saved).map_err(|error| {
+            format!("successor host saved-cut reconstruction failed: {error:?}")
+        })?;
 
     let signing_key: SigningKey = load_signing_key_file(&host.key_path)?;
     let signer_public_key: [u8; 32] = VerificationKey::from(&signing_key).into();
@@ -309,8 +313,9 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
         SqliteImportTarget::open_existing(&host.state_path, namespace, verified.binding())?;
     let blobs: SqliteBlobStore = SqliteBlobStore::open_existing_writable(&host.blob_path)?;
     let previous: WriterFenceGeneration = target.writer_fence()?;
-    let generation: WriterFenceGeneration =
-        previous.checked_next().ok_or("target writer fence exhausted")?;
+    let generation: WriterFenceGeneration = previous
+        .checked_next()
+        .ok_or("target writer fence exhausted")?;
     target.advance_writer_fence(previous, generation)?;
 
     let resolver: HashSuiteResolver = pins.resolver().clone();
@@ -335,8 +340,11 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
 
     let mut protocol_config: ProtocolConfig = ProtocolConfig::genesis();
     protocol_config.protocol_version = resolver.protocol_version();
-    protocol_config.domain_placement =
-        Some(DomainPlacementManifest::single_domain(1, domain, Epoch::new(0))?);
+    protocol_config.domain_placement = Some(DomainPlacementManifest::single_domain(
+        1,
+        domain,
+        Epoch::new(0),
+    )?);
     protocol_config.transaction_auth_profile =
         Some(TransactionAuthProfile::ed25519_canonical_prime_order_address_is_public_key());
     let composition: SuccessorHostComposition<SqliteImportTarget> = SuccessorHostComposition {
@@ -433,18 +441,36 @@ mod tests {
 
     #[test]
     fn nonloopback_listen_is_refused_before_any_file_store_or_socket_io() {
-        for listen in ["0.0.0.0:7000", "127.0.0.2:7000", "[::]:7000", "192.0.2.1:7000"] {
+        for listen in [
+            "0.0.0.0:7000",
+            "127.0.0.2:7000",
+            "[::]:7000",
+            "192.0.2.1:7000",
+        ] {
             let error: String = run(arguments(listen, true)).unwrap_err().to_string();
-            assert_eq!(error, "successor host listens only on 127.0.0.1 or ::1", "{listen}");
+            assert_eq!(
+                error, "successor host listens only on 127.0.0.1 or ::1",
+                "{listen}"
+            );
         }
-        let error: String = run(arguments("localhost:7000", true)).unwrap_err().to_string();
-        assert_eq!(error, "listen address must be a numeric ip:port socket address");
+        let error: String = run(arguments("localhost:7000", true))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "listen address must be a numeric ip:port socket address"
+        );
     }
 
     #[test]
     fn fence_confirmation_is_required_before_any_io() {
-        let error: String = run(arguments("127.0.0.1:0", false)).unwrap_err().to_string();
-        assert!(error.starts_with("requires --confirm-offline-fence-advance"), "{error}");
+        let error: String = run(arguments("127.0.0.1:0", false))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("requires --confirm-offline-fence-advance"),
+            "{error}"
+        );
     }
 
     #[test]
