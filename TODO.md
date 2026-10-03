@@ -177,8 +177,10 @@ implemented. The complete local storage-neutral required gate passed at
 but the Proposed successor interfaces are not yet independently approved.
 Subsequent reviews closed the opaque-scope, SDK visibility and policy-input
 binding findings. The latest proposed correction preserves the original causal
-admission profile and signed Freeze height, using explicit pre-signing refusals
-for unsupported controls. That correction still requires independent approval;
+admission profile and signed Freeze height, with unsupported candidate kinds
+refused in the shared pure authenticator before any kind-specific checks and
+other unsupported controls refused at their entry points before signing.
+That correction still requires independent approval;
 no new producer or schema is implemented.
 
 The order below supersedes the old chronological slice lists as the active

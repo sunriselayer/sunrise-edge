@@ -117,8 +117,12 @@ proposed contract. Its choices, summarized:
     minimum Freeze height in the successor policy, while its context,
     domain and anchor come only from verified successor inputs. Ordered
     fencing and causal/external-lane checks remain active. Registration
-    economics is absent; explicitly unsupported successor controls are
-    refused by typed pre-signing errors, never by disabling the profile.
+    economics is absent. Candidate Freeze/DrainSet/Seal/registration kinds
+    are refused with `UnsupportedSuccessorControl` as the first check in
+    the one pure `authenticate_with_policy` dispatch shared by proposal,
+    vote, committed preview/apply, reservation and HTTP admission. Other
+    unsupported controls refuse at their entry points before signing and
+    retain ordinary-namespace guards, never disabling the profile.
 
 ## Not yet decided
 

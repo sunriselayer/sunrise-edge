@@ -672,7 +672,8 @@ no startup-time check substitutes. Original-receipt replay runs first.
 At `Successor` authority, readiness (new and retained),
 Freeze/DrainSet/Seal, initial registration, `install_ordered_genesis` and
 legacy `activate` refuse with a typed error before any signing; these are
-explicit call-site changes. Historical read-only open, export and query
+candidate kinds are refused in `authenticate_with_policy` (Section 9),
+and the other controls at their entry points. Historical read-only open, export and query
 stay legal and may relay the Seal and its QCs without signing.
 
 ## 9. Ordered and FastVote policy at e+1
@@ -726,10 +727,24 @@ still apply. It carries
 `minimum_freeze_block_height = root.manifest().minimum_freeze_block_height`,
 the original signed value bound into v3 anchor field 9. Only
 `registration_economics` is `None`. The retained profile and Freeze height
-would pass the ordinary Freeze/Seal authentication checks, so Section 8's
-explicit typed pre-signing refusals reject Freeze, DrainSet, Seal, initial
-registration and other unsupported successor controls before any
-authentication or signing. A missing profile is not an authorization gate.
+would pass `authenticate_freeze`, `authenticate_drain_set` and
+`authenticate_seal`, so the refusal is in the one shared pure chokepoint,
+not individual candidate call sites: `authenticate_with_policy`
+(`ordered_economics/policy.rs:680`), as its first check before context,
+lane or kind-specific authentication. It refuses
+`OrderedOperationKind::{Freeze, DrainSet, Seal, BondRegistration}` with a
+new typed `OrderedEconomicsError::UnsupportedSuccessorControl` whenever
+the policy's private `OrderedKeyScope` is `Successor`. This is a
+crate-private read-only selector, so no caller flag skips it. Proposal,
+vote, committed-block preview/apply, reservation and native-http admission
+all reach this function through `authenticate_candidate`; an honest
+successor replica therefore never signs, votes for or applies such a
+candidate. `Chain`-scope policies, including the epoch-e history verifier
+(`ordered_history.rs:319`), are unchanged. Non-candidate controls
+(readiness signing, `install_ordered_genesis`, legacy `activate`, frontier
+and drain publication) refuse at their entry points with the same typed
+error, retaining their existing `require_ordinary_namespace` refusals.
+A missing profile is not an authorization gate.
 
 FastVote reuses `load_validator_set` at ctx@e+1 against the installed row.
 The SDK gains `load_successor_authority(plan, manifest_identity,
@@ -826,6 +841,10 @@ e+1 rows at live resolution; cached-signature exposure with a stale scope;
 successor-scoped Freeze, DrainSet and Seal candidates refused by the typed
 unsupported-control error before authentication or signing, not by a
 missing admission profile.
+Both vote validation of a leader proposal containing any of those four
+candidate kinds and committed-block preview containing one must return
+`UnsupportedSuccessorControl`, not `Unauthenticated`, with no signature
+or state mutation.
 
 **Durability and races:** SQLite restart and refencing; stale fence and
 token; inventory race between plan comparison and commit; both reply-loss
