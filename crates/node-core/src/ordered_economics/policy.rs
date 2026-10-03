@@ -821,6 +821,11 @@ fn authenticate_seal(
     env: &CandidateAuthentication<'_>,
     candidate: &OrderedCandidate,
 ) -> Result<(), OrderedEconomicsError> {
+    if !env.policy.is_causal() {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "seal is not authorized outside the causal admission profile",
+        ));
+    }
     if env.policy.minimum_freeze_block_height() == 0 {
         return Err(OrderedEconomicsError::Unauthenticated(
             "seal is not enabled by the signed genesis profile",
@@ -912,6 +917,10 @@ fn authenticate_seal(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tests/seal_pure_authentication.rs"]
+mod seal_pure_authentication_tests;
 
 fn authenticate_fee_claim(
     env: &CandidateAuthentication<'_>,

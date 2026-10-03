@@ -32,6 +32,12 @@ mod sqlite_handoff_faults;
 mod conditional_readiness;
 #[path = "frozen_completion/ordered_seal.rs"]
 mod ordered_seal;
+#[path = "frozen_completion/seal_acceptance.rs"]
+mod seal_acceptance;
+#[path = "frozen_completion/seal_faults.rs"]
+mod seal_faults;
+#[path = "frozen_completion/seal_signing.rs"]
+mod seal_signing;
 
 pub(super) fn registration_generic_prefix(fixture: &CausalFixture) -> Vec<CertifiedPaidMaterial> {
     preseal_cut_contracts::generic_import_prefix(fixture)

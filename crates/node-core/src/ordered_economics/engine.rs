@@ -1715,6 +1715,10 @@ fn require_seal_selected_ancestry(
 #[path = "tests/seal_selected_ancestry.rs"]
 mod seal_selected_ancestry_tests;
 
+#[cfg(test)]
+#[path = "tests/seal_acceptance_dispatch.rs"]
+pub(super) mod seal_acceptance_dispatch_tests;
+
 fn dispatch_invocation<E>(
     result: Result<InvocationPreparation, E>,
     request_id: [u8; 32],

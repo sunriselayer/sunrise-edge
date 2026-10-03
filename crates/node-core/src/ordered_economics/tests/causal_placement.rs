@@ -73,8 +73,10 @@ fn setup_fixture_configure(
     let context: DurableOperationContext = fixture::context(1);
     let stores: Vec<MemoryDurableStateStore> = (0..REPLICAS)
         .map(|_| {
-            let store: MemoryDurableStateStore =
-                MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+            let store: MemoryDurableStateStore = MemoryDurableStateStore::new_bound(
+                fixture::domain(),
+                WriterFenceGeneration::new(1).unwrap(),
+            );
             genesis::install_genesis(
                 &store,
                 &context,

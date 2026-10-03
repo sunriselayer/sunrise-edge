@@ -805,3 +805,7 @@ pub(super) fn from_overlay_for_seal_acceptance(
 ) -> Result<VerifiedBusinessCut, BusinessCutError> {
     from_overlay(overlay, owned, ordered, controls, carriers, Some(seal))
 }
+
+#[cfg(test)]
+#[path = "tests/seal_terminal.rs"]
+mod seal_terminal_tests;
