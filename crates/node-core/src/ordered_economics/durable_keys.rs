@@ -123,7 +123,10 @@ mod tests {
     fn state_key_matches_literal_bytes() {
         let chain: ChainId = test_chain();
         let expected: Vec<u8> = literal_prefix(b"state/", &chain);
-        assert_eq!(super::super::engine::ordered_state_key_for_tests(&chain), expected);
+        assert_eq!(
+            super::super::engine::ordered_state_key_for_tests(&chain),
+            expected
+        );
     }
 
     #[test]

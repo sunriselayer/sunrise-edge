@@ -33,7 +33,10 @@ pub(crate) fn ordered_leader_record_key(
     chain: &ChainId,
     view: u64,
 ) -> Result<Vec<u8>, NodeCoreError> {
-    super::durable_keys::key(chain, super::durable_keys::OrderedKeyFamily::LeaderProposal { view })
+    super::durable_keys::key(
+        chain,
+        super::durable_keys::OrderedKeyFamily::LeaderProposal { view },
+    )
 }
 
 pub(crate) fn ordered_vote_record_key(
