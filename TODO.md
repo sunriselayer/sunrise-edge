@@ -239,7 +239,10 @@ focused codec
 tests pass; the frozen v1 request vector and transport contract are recorded in
 [DR-0190](docs/architecture/decisions/0190-read-only-fee-claim-preparation-transport.md).
 The positive four-host/CLI workflow, positive HTTP claim and restart/catch-up
-acceptance remain incomplete. Full
+acceptance are added and compile, but have not yet passed. They use the same
+eligible committee; actual A/B/C/D -> A/B/C/E replacement remains core-test
+evidence. New e+1 Publish and Instantiate are not yet covered by this process
+acceptance. Full
 required/selected-PG acceptance,
 fresh independent exact-head review and CI are still pending. These local
 checks do not complete authenticated serving, Delivery 3 or network readiness.
@@ -250,6 +253,12 @@ successor-slot RESTRICT foreign key prevented deleting its parent metadata.
 The fixture now explicitly removes both protected children for its isolated
 orphan-metadata case; production protection is unchanged. This failed full run
 is not acceptance, and the complete selected profile must pass again.
+The `228777e` retry passed that PG conformance fixture, then stopped in the
+real crash/restart scenario because its pinned test URL no longer reached the
+restarted container. A separate Docker reproduction proves automatic host-port
+assignment changes on restart; the disposable local runner now binds an explicit
+port. No production storage or recovery checks are weakened. This second failed
+full run is not acceptance and did not reach the remaining required/selected lanes.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.
