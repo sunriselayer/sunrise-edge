@@ -442,17 +442,20 @@ fn round(
     .unwrap()
 }
 
-/// A genuine certified paid Call at e+1 on the imported epoch-e Standard
-/// Asset instance: every input is observed through a successor host, signed
-/// only after the SDK pins confirm the verified e+1 context, certified by
-/// the e+1 FastVote quorum, published and applied on all four hosts; an
-/// exact re-apply returns the identical original results.
-fn paid_call_on_imported_instance(
+/// One host observed current fee coin, sender nonce and installed e+1 fee
+/// policy digest; re-observed before every genuine paid intent so each one
+/// uses the live successor-host state rather than a value computed once.
+struct FeeObservation {
+    coin_ref: objects::ObjectRef,
+    nonce: u64,
+    fee_policy_digest: protocol_types::Digest32,
+}
+
+fn observe_fee_context(
     fixture: &Fixture,
     hosts: &[HostProcess],
-    workflow: &SuccessorWorkflowAuthority,
-) -> [u8; 32] {
-    let context: execution::publication::PublicationContext = workflow.expected_context().clone();
+    context: &execution::publication::PublicationContext,
+) -> FeeObservation {
     let client: Client<LoopbackHttpTransport> = Client::new(transport(hosts[0].address));
     let coin = client.query_object(fixture.network.fee_coin).unwrap();
     let coin_ref: objects::ObjectRef = sunrise_edge_client::current_inline_object_ref(&coin)
@@ -471,24 +474,24 @@ fn paid_call_on_imported_instance(
     assert_eq!(response.status, 200);
     let policy: execution::paid_execution::PaidFeePolicy =
         execution::paid_execution::decode_paid_fee_policy(&response.body).unwrap();
-    assert_eq!(policy.context, context, "the installed e+1 fee policy row");
+    assert_eq!(&policy.context, context, "the installed e+1 fee policy row");
     let fee_policy_digest: protocol_types::Digest32 =
         execution::paid_execution::paid_fee_policy_digest(&fixture.network.resolver, &policy)
             .unwrap();
-    let request_id: [u8; 32] = [0x6f; 32];
-    workflow.require_signing_context(&context).unwrap();
-    let signed_bytes: Vec<u8> = fixture.network.sign_transfer_with(
-        &context,
-        request_id,
-        nonce,
-        coin_ref,
-        fee_policy_digest,
-        fixture.network.sender,
-    );
-    let signed: execution::paid_execution::SignedPaidIntent =
-        execution::paid_execution::decode_signed_paid_intent(&signed_bytes).unwrap();
-    let endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> =
-        fastvote_endpoints(fixture, hosts);
+    FeeObservation { coin_ref, nonce, fee_policy_digest }
+}
+
+/// Certifies one real signed paid intent under the e+1 FastVote quorum,
+/// publishes its availability, and applies it on all four successor hosts;
+/// an exact re-apply of the identical certificate returns byte-identical
+/// results on every host.
+fn certify_and_apply_paid_intent(
+    fixture: &Fixture,
+    hosts: &[HostProcess],
+    workflow: &SuccessorWorkflowAuthority,
+    signed: &execution::paid_execution::SignedPaidIntent,
+) -> Vec<sunrise_edge_client::FastVoteApplyAttempt> {
+    let endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> = fastvote_endpoints(fixture, hosts);
     let certifier: &consensus::FastPathCertifier = workflow.fastvote_certifier();
     let deadline: Instant = Instant::now() + Duration::from_secs(1800);
     let cap: Duration = Duration::from_secs(300);
@@ -496,7 +499,7 @@ fn paid_call_on_imported_instance(
         &endpoints,
         certifier,
         &fixture.network.resolver,
-        &signed,
+        signed,
         deadline,
         cap,
     )
@@ -507,7 +510,7 @@ fn paid_call_on_imported_instance(
         &fixture.network.resolver,
         &[],
         fixture.network.domain,
-        &signed,
+        signed,
         &certificate,
         deadline,
         cap,
@@ -519,7 +522,7 @@ fn paid_call_on_imported_instance(
             certifier,
             &fixture.network.resolver,
             fixture.network.domain,
-            &signed,
+            signed,
             &certificate,
             &published.availability_certificate,
             deadline,
@@ -536,7 +539,7 @@ fn paid_call_on_imported_instance(
                 result.status,
                 execution::paid_execution::PaidExecutionStatus::Success
             ),
-            "e+1 paid Call on the epoch-e instance succeeded at {}",
+            "e+1 paid application succeeded at {}",
             attempt.validator_id
         );
     }
@@ -548,7 +551,185 @@ fn paid_call_on_imported_instance(
             "exact certified re-apply returns the original result"
         );
     }
+    applied
+}
+
+/// A genuine certified paid Call at e+1 on the imported epoch-e Standard
+/// Asset instance: every input is observed through a successor host, signed
+/// only after the SDK pins confirm the verified e+1 context, certified by
+/// the e+1 FastVote quorum, published and applied on all four hosts; an
+/// exact re-apply returns the identical original results.
+fn paid_call_on_imported_instance(
+    fixture: &Fixture,
+    hosts: &[HostProcess],
+    workflow: &SuccessorWorkflowAuthority,
+) -> [u8; 32] {
+    let context: execution::publication::PublicationContext = workflow.expected_context().clone();
+    let observed: FeeObservation = observe_fee_context(fixture, hosts, &context);
+    let request_id: [u8; 32] = [0x6f; 32];
+    workflow.require_signing_context(&context).unwrap();
+    let signed_bytes: Vec<u8> = fixture.network.sign_transfer_with(
+        &context,
+        request_id,
+        observed.nonce,
+        observed.coin_ref,
+        observed.fee_policy_digest,
+        fixture.network.sender,
+    );
+    let signed: execution::paid_execution::SignedPaidIntent =
+        execution::paid_execution::decode_signed_paid_intent(&signed_bytes).unwrap();
+    certify_and_apply_paid_intent(fixture, hosts, workflow, &signed);
     request_id
+}
+
+/// A genuine certified paid Publish of a freshly originated Standard Asset
+/// package at e+1, followed by a certified paid Instantiate of that fresh
+/// package own instance: every input is observed through a successor host,
+/// signed only after the SDK pins confirm the verified e+1 context,
+/// certified by the e+1 FastVote quorum, published and applied on all four
+/// hosts with byte-identical re-apply; the freshly created Definition is
+/// then queried back from a live host.
+fn paid_publish_and_instantiate_fresh_asset(
+    fixture: &Fixture,
+    hosts: &[HostProcess],
+    workflow: &SuccessorWorkflowAuthority,
+) -> ([u8; 32], [u8; 32], objects::ObjectId) {
+    use abi::package_types::{PackageOrigin, ScopedTypeTag, verify_scoped_type_id};
+    use execution::call::CallIntent;
+    use execution::local_execution::{InstanceRecord, generic_object_result_semantics, instance_target};
+    use execution::paid_execution::{FeeSourceConsent, PaidApplication, PaidIntent, ReservationAccessKind};
+    use execution::publication::{ArtifactParts, CodeArtifact, UnverifiedDependencyRef, artifact_commitment};
+
+    let context: execution::publication::PublicationContext = workflow.expected_context().clone();
+    // A fresh code origin distinct from the imported epoch-e Standard Asset
+    // instance own code; only the fee coin and quorum are shared.
+    let origin: PackageOrigin =
+        PackageOrigin::unverified(fixture.network.chain_id.clone(), fixture.network.sender, [0x73; 32])
+            .unwrap();
+    let package: public_standard_asset::StandardAssetPackage =
+        public_standard_asset::build_package(&origin).unwrap();
+    let semantics: protocol_types::Digest32 =
+        generic_object_result_semantics(&fixture.network.resolver, &context).unwrap();
+    let artifact: CodeArtifact = CodeArtifact::new(ArtifactParts {
+        context: context.clone(),
+        origin: origin.clone(),
+        revision: 1,
+        wasm_profile: execution::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION,
+        semantics,
+        wasm: package.wasm.clone(),
+        unverified_abi: package.encoded_abi.clone(),
+        exports: package.exports.clone(),
+        unverified_dependencies: Vec::new(),
+    })
+    .unwrap();
+    let artifact_digest: protocol_types::Digest32 =
+        artifact_commitment(&fixture.network.resolver, &context, &artifact).unwrap();
+    let code_ref: UnverifiedDependencyRef =
+        UnverifiedDependencyRef::new(origin.clone(), 1, context.clone(), artifact_digest).unwrap();
+
+    let publish_request: [u8; 32] = [0x70; 32];
+    let observed: FeeObservation = observe_fee_context(fixture, hosts, &context);
+    workflow.require_signing_context(&context).unwrap();
+    let publish_intent: PaidIntent = PaidIntent {
+        context: context.clone(),
+        request_id: publish_request,
+        sender: fixture.network.sender,
+        nonce: observed.nonce,
+        fee_policy_digest: observed.fee_policy_digest,
+        consent: FeeSourceConsent {
+            source: observed.coin_ref,
+            access: ReservationAccessKind::Write,
+            max_fee: fees::Amount::new(1_000_000),
+            refund_recipient: fixture.network.sender,
+        },
+        application: PaidApplication::Publish(artifact),
+        gas_limit: 100_000,
+        authorizations: Vec::new(),
+    };
+    let publish_signed_bytes: Vec<u8> = fixture.network.sign_intent(publish_intent);
+    let publish_signed: execution::paid_execution::SignedPaidIntent =
+        execution::paid_execution::decode_signed_paid_intent(&publish_signed_bytes).unwrap();
+    certify_and_apply_paid_intent(fixture, hosts, workflow, &publish_signed);
+
+    let instance_seed: [u8; 32] = [0x74; 32];
+    let instance_record: InstanceRecord = InstanceRecord {
+        context: context.clone(),
+        creator: fixture.network.sender,
+        seed: instance_seed,
+        code: code_ref.clone(),
+        revision: 1,
+        initializer: public_standard_asset::INITIALIZER.to_owned(),
+    };
+    let instance = instance_target(&fixture.network.resolver, &instance_record).unwrap();
+    let instantiate_request: [u8; 32] = [0x71; 32];
+    let observed: FeeObservation = observe_fee_context(fixture, hosts, &context);
+    let instantiate_call: CallIntent = CallIntent {
+        context: context.clone(),
+        request_id: instantiate_request,
+        sender: fixture.network.sender,
+        nonce: observed.nonce,
+        code: code_ref.clone(),
+        instance: instance.clone(),
+        entrypoint: public_standard_asset::INITIALIZER.to_owned(),
+        type_arguments: Vec::new(),
+        access: abi::AccessManifest::new(),
+        arguments: public_standard_asset::no_arguments().unwrap(),
+        gas_limit: 100_000,
+    };
+    workflow.require_signing_context(&context).unwrap();
+    let instantiate_intent: PaidIntent = PaidIntent {
+        context: context.clone(),
+        request_id: instantiate_request,
+        sender: fixture.network.sender,
+        nonce: observed.nonce,
+        fee_policy_digest: observed.fee_policy_digest,
+        consent: FeeSourceConsent {
+            source: observed.coin_ref,
+            access: ReservationAccessKind::Write,
+            max_fee: fees::Amount::new(1_000_000),
+            refund_recipient: fixture.network.sender,
+        },
+        application: PaidApplication::Instantiate(instantiate_call),
+        gas_limit: 100_000,
+        authorizations: Vec::new(),
+    };
+    let instantiate_signed_bytes: Vec<u8> = fixture.network.sign_intent(instantiate_intent);
+    let instantiate_signed: execution::paid_execution::SignedPaidIntent =
+        execution::paid_execution::decode_signed_paid_intent(&instantiate_signed_bytes).unwrap();
+    let applied = certify_and_apply_paid_intent(fixture, hosts, workflow, &instantiate_signed);
+
+    // Identify the freshly created Definition (excluding the fee/refund
+    // settlement outputs), then prove it is genuinely live by querying it
+    // back from a live host.
+    let result: &execution::paid_execution::PaidExecutionResult = applied[0].result.as_ref().unwrap();
+    let charged = result.charged.as_ref().unwrap();
+    let fee_id: objects::ObjectId = charged.fee_output.id;
+    let refund_id: Option<objects::ObjectId> = charged.refund_output.as_ref().map(|value| value.id);
+    let definition_tag: ScopedTypeTag = public_standard_asset::definition_type_tag(&origin).unwrap();
+    let definition_id: objects::ObjectId = result
+        .effects
+        .object_effects
+        .iter()
+        .find_map(|effect: &execution::ObjectEffect| match effect {
+            execution::ObjectEffect::Created(object)
+                if object.id != fee_id && Some(object.id) != refund_id =>
+            {
+                verify_scoped_type_id(&fixture.network.resolver, &object.type_hash, context.epoch(), &definition_tag)
+                    .unwrap_or(false)
+                    .then_some(object.id)
+            }
+            _ => None,
+        })
+        .expect("instantiate must create a Definition");
+    let queried = Client::new(transport(hosts[0].address))
+        .query_object(definition_id)
+        .unwrap();
+    assert!(
+        sunrise_edge_client::current_inline_object_ref(&queried).is_some(),
+        "the freshly instantiated Definition is live on a successor host"
+    );
+
+    (publish_request, instantiate_request, definition_id)
 }
 
 fn successor_cli_flags(
@@ -1063,6 +1244,11 @@ fn accept(
     let call: [u8; 32] = paid_call_on_imported_instance(fixture, &hosts, &workflow);
     let call_receipt = receipts(&all, call);
 
+    let (publish_request, instantiate_request, fresh_definition): ([u8; 32], [u8; 32], objects::ObjectId) =
+        paid_publish_and_instantiate_fresh_asset(fixture, &hosts, &workflow);
+    let publish_receipt = receipts(&all, publish_request);
+    let instantiate_receipt = receipts(&all, instantiate_request);
+
     let network: PathBuf = fixture.directory.0.join("successor-network.conf");
     let peers: String = hosts
         .iter()
@@ -1143,4 +1329,13 @@ fn accept(
     );
     assert_eq!(receipts(&reopened_all, call), call_receipt);
     assert_eq!(receipts(&reopened_all, claim), claim_receipt);
+    assert_eq!(receipts(&reopened_all, publish_request), publish_receipt);
+    assert_eq!(receipts(&reopened_all, instantiate_request), instantiate_receipt);
+    let refreshed = Client::new(transport(reopened_all.last().unwrap().address))
+        .query_object(fresh_definition)
+        .unwrap();
+    assert!(
+        sunrise_edge_client::current_inline_object_ref(&refreshed).is_some(),
+        "the freshly instantiated Definition is live on the caught-up successor host"
+    );
 }
