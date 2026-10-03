@@ -893,12 +893,8 @@ fn decode_installed_profile(
 pub(crate) struct GenerationScope(Scope);
 
 enum Scope {
-    Original {
-        floor: ExecutionGeneration,
-    },
-    Successor {
-        floor: ExecutionGeneration,
-    },
+    Original { floor: ExecutionGeneration },
+    Successor { floor: ExecutionGeneration },
 }
 
 impl GenerationScope {

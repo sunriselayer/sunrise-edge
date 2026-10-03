@@ -120,7 +120,6 @@ fn paid_observed_completion_refuses_conflicting_or_duplicate_contributions_befor
             }
         }
         let refused: PaidResult<NodeOutput> = commit_direct_paid_admission(
-            crate::serving_authority::ServingGate::Original,
             &store,
             &context,
             domain,

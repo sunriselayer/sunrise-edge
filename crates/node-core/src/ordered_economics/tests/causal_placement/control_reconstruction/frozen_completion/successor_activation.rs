@@ -359,8 +359,11 @@ fn activated_world() -> SuccessorWorld {
     let operation: DurableOperationContext = fixture::context(51);
     let mut targets: Vec<(SqliteImportTarget, SqliteBlobStore)> = Vec::new();
     for index in 0..REPLICAS {
-        let namespace: SqliteNamespace =
-            SqliteNamespace::new(fixture::chain(), network.signers[index].id, network.domain());
+        let namespace: SqliteNamespace = SqliteNamespace::new(
+            fixture::chain(),
+            network.signers[index].id,
+            network.domain(),
+        );
         let target: SqliteImportTarget = SqliteImportTarget::create(
             &files.path(&format!("serving-state-{index}.db")),
             namespace,
@@ -460,7 +463,11 @@ impl SuccessorWorld {
         }
     }
 
-    fn reactivate(&self, index: usize) -> Result<SuccessorActivationOutcome, crate::serving_authority::SuccessorActivationError> {
+    fn reactivate(
+        &self,
+        index: usize,
+    ) -> Result<SuccessorActivationOutcome, crate::serving_authority::SuccessorActivationError>
+    {
         let network: &Network = self.network();
         let signer: ReadinessSigningKey =
             ReadinessSigningKey::new(network.signers[index].id, network.signers[index].key);
@@ -573,10 +580,19 @@ fn successor_ordered_round_votes_and_certifies_through_protected_ports() {
         &network.signers[0],
     )
     .unwrap();
-    assert!(replay.messages.iter().any(|message: &consensus::ConsensusMessage| {
-        matches!(message, consensus::ConsensusMessage::Vote(vote) if *vote == votes[0])
-    }));
-    assert_eq!(world.value(0, &vote_key), retained, "exact replay writes nothing");
+    assert!(
+        replay
+            .messages
+            .iter()
+            .any(|message: &consensus::ConsensusMessage| {
+                matches!(message, consensus::ConsensusMessage::Vote(vote) if *vote == votes[0])
+            })
+    );
+    assert_eq!(
+        world.value(0, &vote_key),
+        retained,
+        "exact replay writes nothing"
+    );
     let certificate: consensus::QuorumCertificate = world
         .policy
         .engine()
@@ -629,8 +645,11 @@ fn successor_resolution_and_reconciliation_refuse_tampered_policy_and_epoch_rows
             ])
             .unwrap(),
             runtime::AtomicStateMutationSet::new(vec![
-                runtime::StateMutationEntry::new(key.clone(), runtime::StateMutation::Put(tampered))
-                    .unwrap(),
+                runtime::StateMutationEntry::new(
+                    key.clone(),
+                    runtime::StateMutation::Put(tampered),
+                )
+                .unwrap(),
             ])
             .unwrap(),
         )
@@ -644,8 +663,14 @@ fn successor_resolution_and_reconciliation_refuse_tampered_policy_and_epoch_rows
             runtime::DurableCommitOutcome::Committed
         ));
         drop(warrant);
-        assert!(world.resolve(index).is_err(), "tampered row refuses live authority");
-        assert!(world.reactivate(index).is_err(), "tampered row refuses reconciliation");
+        assert!(
+            world.resolve(index).is_err(),
+            "tampered row refuses live authority"
+        );
+        assert!(
+            world.reactivate(index).is_err(),
+            "tampered row refuses reconciliation"
+        );
     }
     assert!(matches!(
         world.resolve(2).unwrap(),
@@ -749,7 +774,10 @@ fn successor_fastvote_paid_call_on_imported_instance_applies_above_cut_floor() {
     let domain: AtomicityDomainId = network.domain();
     let next: PublicationContext = world.policy.context().clone();
     let fee_bytes: Vec<u8> = world
-        .value(0, &crate::local_instance_state::paid_fee_policy_key(&next).unwrap())
+        .value(
+            0,
+            &crate::local_instance_state::paid_fee_policy_key(&next).unwrap(),
+        )
         .1
         .unwrap();
     let fee_policy: PaidFeePolicy =
@@ -880,21 +908,20 @@ fn successor_fastvote_paid_call_on_imported_instance_applies_above_cut_floor() {
             .unwrap()
         })
         .collect();
-    let availability: consensus::AvailabilityCertificate =
-        consensus::AvailabilityCertifier::new(
-            fixture::chain(),
-            next.protocol_version(),
-            next.epoch(),
-            set,
-        )
-        .unwrap()
-        .try_form_certificate(
-            &acknowledgements[0].identity,
-            &acknowledgements,
-            &crate::fast_path::FastPathEd25519Verifier,
-        )
-        .unwrap()
-        .unwrap();
+    let availability: consensus::AvailabilityCertificate = consensus::AvailabilityCertifier::new(
+        fixture::chain(),
+        next.protocol_version(),
+        next.epoch(),
+        set,
+    )
+    .unwrap()
+    .try_form_certificate(
+        &acknowledgements[0].identity,
+        &acknowledgements,
+        &crate::fast_path::FastPathEd25519Verifier,
+    )
+    .unwrap()
+    .unwrap();
     let availability_bytes: Vec<u8> =
         consensus::encode_availability_certificate(&availability).unwrap();
     let mut outputs: Vec<NodeOutput> = Vec::new();
@@ -930,7 +957,10 @@ fn successor_fastvote_paid_call_on_imported_instance_applies_above_cut_floor() {
         None,
     )
     .unwrap();
-    assert_eq!(replay, outputs[0], "exact replay returns the original receipt");
+    assert_eq!(
+        replay, outputs[0],
+        "exact replay returns the original receipt"
+    );
     assert_eq!(
         world.value(
             0,
@@ -1002,9 +1032,7 @@ fn source_free_verifier_refuses_non_terminal_tampered_and_incomplete_artifacts()
     let reidentified: Vec<OrderedHistoryHeightMaterial> = world
         .history
         .iter()
-        .filter(|material: &&OrderedHistoryHeightMaterial| {
-            material.descriptor.height < seal_height
-        })
+        .filter(|material: &&OrderedHistoryHeightMaterial| material.descriptor.height < seal_height)
         .map(|material: &OrderedHistoryHeightMaterial| {
             let mut copy: OrderedHistoryHeightMaterial = material.clone();
             copy.descriptor.identity = non_terminal.clone();
@@ -1042,16 +1070,20 @@ fn source_free_verifier_refuses_non_terminal_tampered_and_incomplete_artifacts()
         .collect();
     assert!(matches!(
         verify(&world.sealed_history, &gapped, &world.certificate),
-        Err(crate::serving_authority::SuccessorActivationError::Artifact(
-            SuccessorArtifactError::Missing
-        ))
+        Err(
+            crate::serving_authority::SuccessorActivationError::Artifact(
+                SuccessorArtifactError::Missing
+            )
+        )
     ));
     // A certificate of another length is refused at transport.
     let short: &[u8] = &world.certificate[..world.certificate.len() - 1];
     assert!(matches!(
         verify(&world.sealed_history, &world.history, short),
-        Err(crate::serving_authority::SuccessorActivationError::Artifact(
-            SuccessorArtifactError::Malformed
-        ))
+        Err(
+            crate::serving_authority::SuccessorActivationError::Artifact(
+                SuccessorArtifactError::Malformed
+            )
+        )
     ));
 }

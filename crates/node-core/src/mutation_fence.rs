@@ -148,9 +148,10 @@ fn read_and_fence<S: VersionedStateReader + ?Sized>(
 pub(crate) fn ordered_gate<'a>(
     ordered: Option<&ordered_economics::OrderedLegAdmission<'a>>,
 ) -> crate::serving_authority::ServingGate<'a> {
-    ordered.map_or(crate::serving_authority::ServingGate::Original, |admission| {
-        admission.gate
-    })
+    ordered.map_or(
+        crate::serving_authority::ServingGate::Original,
+        |admission| admission.gate,
+    )
 }
 
 /// Denies an untracked public business writer in the fresh causal profile.

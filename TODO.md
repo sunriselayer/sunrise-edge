@@ -178,8 +178,8 @@ gate passed on the final clean `9714797` head on 2026-10-03. Fresh independent
 Opus explicitly approved that exact head; required CI lanes and the aggregate
 `check` all passed. The independently accepted design preserves the original causal profile
 and signed Freeze height, refusing unsupported candidate kinds in the shared
-pure authenticator and other controls before signing. Real activation, live
-successor commits and operator/SDK/CLI consumers remain implementation work.
+pure authenticator and other controls before signing. That preparatory PR
+implements none of the functional producer described below.
 Functional implementation is integrated locally on the in-progress
 `codex/first-successor-serving-implementation-1003` branch, not merged or accepted.
 The required protected slot, codecs, memory/shared-SQL/SQLite storage ports and
@@ -192,8 +192,17 @@ e+1 Tick advancing ordered state, reconciliation preserving that state, and
 close/reopen/refencing. This is not the A/B/C/D -> A/B/C/E host/CLI acceptance.
 Readiness signing refuses the protected Serving slot; native HTTP classifies
 the typed unsupported control as a permanent 4xx, not a retryable 503.
-The full live ordered/FastVote/paid/claim consumers, successor host and shipped
-network workflow remain incomplete. Full required/selected-PG acceptance,
+The shared invocation gate now connects the existing ordered, FastVote,
+availability-ACK, certified paid-execution and receipt handlers to the protected
+successor ports. Five genuine successor tests pass, including an e+1 ordered
+round and quorum-certified paid Call on an imported epoch-e instance, generation
+above the cut floor, exact apply replay, and policy/epoch tamper refusal. These
+are in-process tests over four independent files, not shipped-host acceptance.
+The two new mandatory-slot PostgreSQL tests also pass against a real disposable
+PostgreSQL instance; that focused result is not the full selected PG gate and
+does not add a PG successor-activation capability or PG requirement for other stores.
+Imported-escrow claims, successor host and the shipped network workflow remain
+incomplete. Full required/selected-PG acceptance,
 fresh independent exact-head review and CI are still pending. These local
 checks do not complete authenticated serving, Delivery 3 or network readiness.
 

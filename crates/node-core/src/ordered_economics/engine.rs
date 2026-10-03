@@ -36,10 +36,10 @@ use crate::admission_profile::{
     fence_verified_admission_profile, require_historical_direct_writer,
 };
 use crate::business_reconstruction::BusinessReconstructionPlan;
-use crate::serving_authority::ServingGate;
 use crate::operation_preparation::{
     InvocationPreparation, PreparedBusinessInvocation, PreparedStateOperation,
 };
+use crate::serving_authority::ServingGate;
 use canonical_encoding::{decode_digest32, encode_digest32};
 use consensus::{
     CommittedBlock, ConsensusEngine, ConsensusEvent, ConsensusMessage, ConsensusOutput,
@@ -3242,7 +3242,14 @@ where
     S: StructuredDurableDomainStateStore,
     C: ConsensusSigner,
 {
-    propose_gated(ServingGate::Original, store, context, env, candidate, signer)
+    propose_gated(
+        ServingGate::Original,
+        store,
+        context,
+        env,
+        candidate,
+        signer,
+    )
 }
 
 /// [`propose`] under one invocation gate.
@@ -4353,7 +4360,14 @@ where
     S: StructuredDurableDomainStateStore,
     C: ConsensusSigner,
 {
-    process_tick_gated(ServingGate::Original, store, context, env, now_unix_millis, signer)
+    process_tick_gated(
+        ServingGate::Original,
+        store,
+        context,
+        env,
+        now_unix_millis,
+        signer,
+    )
 }
 
 fn process_tick_gated<S, C>(
