@@ -75,14 +75,25 @@ Adopt [recurring successor serving](../recurring-successor-serving.md):
      issuer-bound `SealPort`.
    - Ordinary guards and `OutgoingSealRepository` are not widened, and
      PostgreSQL and Durable Objects stay unsupported.
-6. **Additive APIs.** Recurring entry points are additive; single-link signatures
+6. **Bounded frontier work (2026-10-04 clarification).** Every physical retained
+   publication consumes the step budget, including exact historical carriers;
+   missing prior carriers refuse. One private current index, logical accumulator
+   and physical cursor share an atomic protected commit. Original and Successor
+   use the same owner. Typed local metadata is validated before exact exclusion
+   from semantic cuts/imports. Pages reverify actual current publications and
+   preserve all public hashes and wire rules. Incomplete pre-index private state
+   refuses; no unbounded or legacy-only fallback is introduced. See Section 4.1
+   of the recurring design for the complete contract.
+7. **Additive APIs.** Recurring entry points are additive; single-link signatures
    and supported operations stay. Explicit new successor controls do not need a
    second legacy-only engine to retain an unreleased unsupported-feature refusal.
 
 ## Compatibility
 
-- **Bytes unchanged.** No existing frame, key, digest, signature payload or
-  stable vector changes.
+- **Public bytes unchanged.** No existing public frame, publication address,
+  digest, signature payload or stable public vector changes. Private frontier
+  progress/index codecs belong to the local owner and do not promise compatibility
+  with incomplete pre-index state.
 - **Tag 2.** SealIntent predecessor tag 2 is newly defined with independent
   vectors. Tag 1 bytes are unchanged, and tags 0 and 3 or above refuse.
 - **Schema and fixtures.** There is no storage schema change. The signed

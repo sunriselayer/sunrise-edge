@@ -578,9 +578,39 @@ impl consensus::ConsensusSigner for NoSignature<'_> {
 
 fn epoch_request(kind: u8, epoch: Epoch) -> [u8; 32] {
     let mut request: [u8; 32] = [0x5f; 32];
-    request[0] = kind;
+    // Every use is an Ordered envelope, including its embedded leg. The
+    // owning causal profile requires that lane's high bit to be set.
+    request[0] = kind | 0x80;
     request[8..16].copy_from_slice(&epoch.get().to_be_bytes());
     request
+}
+
+#[test]
+fn recurring_epoch_requests_use_the_external_ordered_lane() {
+    use crate::admission_profile::{ExternalRequestLane, require_external_request_lane};
+    let root: crate::genesis::VerifiedGenesisRoot = crate::serving_authority::tests::causal_root();
+    for epoch in 1u64..=8 {
+        for kind in [0x70u8, 0x71, 0x72, 0x73, 0x74] {
+            let request: [u8; 32] = epoch_request(kind, Epoch::new(epoch));
+            require_external_request_lane(
+                root.admission_profile(),
+                ExternalRequestLane::Ordered,
+                &request,
+            )
+            .unwrap();
+            assert!(
+                require_external_request_lane(
+                    root.admission_profile(),
+                    ExternalRequestLane::Owned,
+                    &request
+                )
+                .is_err()
+            );
+            assert!(!crate::local_instance_state::is_reserved_paid_request_id(
+                &request
+            ));
+        }
+    }
 }
 
 fn current_entries(policy: &OrderedEconomicsPolicy) -> Vec<FastPathValidatorEntry> {

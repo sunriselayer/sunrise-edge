@@ -363,6 +363,39 @@ Applied at:
   import origin. A successor source is read only through the warrant-bound
   cut producer (Section 7).
 
+### 4.1 Bounded frozen-frontier progress and material
+
+Physical publication traversal and the logical current frontier are separate.
+Every inspected retained row, including a byte-exact prior publication, consumes
+the physical step budget. Historical-only steps persist their physical tail
+without changing the current count, accumulator, logical tail or signature.
+The original publication addresses and full prior-byte authentication stay.
+Traversal also accounts for verified prior keys that disappear from the store:
+an absent or altered prior carrier refuses rather than silently shrinking history.
+
+The same frontier owner in Original and Successor modes maintains a private
+current-epoch index. A current entry's exact index slot, accumulator and physical
+cursor commit atomically through the existing protected gate, deciding CAS reads
+and fence. Tombstoned/conflicting slots, rejection and reply loss cannot expose
+a partially folded entry. Finalization requires complete physical and prior-key
+traversal. Replay creates no signature or independent authority.
+
+Public pages traverse only this bounded current index, validate exact owning
+keys and identities, and reverify each actual publication, certificate, intent,
+ACK and artifact body. The index is a locator, never evidence. Public logical
+cursors, identities, votes, page encoding, signed count and accumulator stay
+unchanged; empty nonterminal pages remain invalid. A complete stream must pass
+the existing frontier verifier. No page refolds the entire history.
+
+Cursor/index rows are closed typed local metadata. The owning projection
+validates exact scope, Freeze binding and publication identity before excluding
+those exact rows from semantic cuts and inactive imports. Unknown fields,
+malformed keys, orphan rows and foreign/future epochs refuse. DrainSet and
+business reconstruction still verify authenticated signer streams independently.
+Pre-index persisted progress is not a compatibility promise: refuse incomplete
+private state rather than serve a partial index or use an unbounded fallback.
+New private progress must survive exact retry, reopen and writer refencing.
+
 ## 5. Closure variants, receipts and provenance
 
 Subject k is transitively semantic: field 6 (Seal target, 0xD051) hashes the

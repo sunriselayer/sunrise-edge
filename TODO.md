@@ -96,7 +96,14 @@ Serving/import origin and Unsealed state before new signatures, separately from
 identity-only exact reconciliation. Both the genuine two-link fixture and the
 full installed seven-epoch-delay fixture compile; actual runtime checks,
 complete committed-source gates and independent exact-head review are pending.
-The scoped node-core dev/test optimization keeps assertions and overflow checks.
+The first actual runs failed: the two-link case reached Seal but independently
+reconstructed cut identity differed from the candidate intent; the eight-epoch
+case refused a fixture request outside the external Ordered lane. The latter
+is a fixture defect, not permission to weaken lane admission. Independent
+review also blocks unbounded historical-publication scanning that can exceed
+the atomic read-set limit. These findings are being repaired before fresh
+exact-head review and complete gates. The scoped node-core dev/test optimization
+keeps assertions and overflow checks.
 SDK/CLI/operator/native HTTP consumers compile together on the downstream
 integration branch, but compiled changed-committee recurrence, later five-member
 participation and eligible process withdrawals remain unchecked. This is not

@@ -842,6 +842,26 @@ fn genuine_file_backed_e0_e1_e2_seal_import_activate_reopen_and_fence() {
             &ordered,
         )
         .unwrap();
+    let current_applied_key: Vec<u8> = crate::ordered_economics::engine::scoped_applied_height_key(
+        world.policy.key_scope(),
+        world.policy.context().chain_id(),
+    )
+    .unwrap();
+    assert!(
+        cut.descriptor(
+            crate::business_reconstruction::cut::BusinessCutCollection::AuthorityCompanions,
+            &[&[1u8][..], current_applied_key.as_slice()].concat(),
+        )
+        .is_ok(),
+        "the actual current applied height is an authority companion, never a business root",
+    );
+    assert!(
+        cut.descriptor(
+            crate::business_reconstruction::cut::BusinessCutCollection::State,
+            &current_applied_key,
+        )
+        .is_err(),
+    );
     let saved: SavedBusinessCut = preseal_cut::transfer(&cut, &network.resolver);
     let operation: DurableOperationContext = fixture::context(61);
     let import: VerifiedImportPlan =
