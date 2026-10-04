@@ -738,9 +738,10 @@ pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
         b"epoch-vote/",
     ];
     const HISTORY: [&[u8]; 4] = [b"header/", b"outcome/", b"freeze/", b"drain-set/"];
-    const LOCAL_PROGRESS: [&[u8]; 7] = [
+    const LOCAL_PROGRESS: [&[u8]; 8] = [
         b"frontier-progress/",
         b"frontier/",
+        b"frontier-entry/",
         b"drain-possession/",
         b"drain-signer-progress/",
         b"drain-signer-entry/",

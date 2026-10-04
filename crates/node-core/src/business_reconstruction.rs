@@ -1376,19 +1376,21 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 .map_err(BusinessReconstructionError::ControlProof)?;
             }
 
-            let environment: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
-                policy: self.plan.ordered_policy,
-                history: self.plan.resolver_history,
-                leg_policy: self.plan.ordered_leg_policy,
-                engine: self.plan.ordered_engine,
-                blobs: &self.blobs,
-                seal: None,
-            };
-            let replay_scope: Option<ReplayScope<'_>> = self.replay_scope();
-            let gate: ServingGate<'_> = replay_scope
-                .as_ref()
-                .map_or(ServingGate::Original, ServingGate::Replay);
-            let outcome =
+            // No replay capability or issuer borrow survives the shared
+            // handler call into the overlay's mutable progress update.
+            let outcome: Option<crate::ordered_economics::OrderedOutcome> = {
+                let environment: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
+                    policy: self.plan.ordered_policy,
+                    history: self.plan.resolver_history,
+                    leg_policy: self.plan.ordered_leg_policy,
+                    engine: self.plan.ordered_engine,
+                    blobs: &self.blobs,
+                    seal: None,
+                };
+                let replay_scope: Option<ReplayScope<'_>> = self.replay_scope();
+                let gate: ServingGate<'_> = replay_scope
+                    .as_ref()
+                    .map_or(ServingGate::Original, ServingGate::Replay);
                 crate::ordered_economics::engine::reconstruct_ordered_history_height_gated(
                     gate,
                     &self.store,
@@ -1400,8 +1402,8 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 .map_err(|source| BusinessReconstructionError::OrderedHistory {
                     height: material.descriptor.height,
                     source: Box::new(source),
-                })?;
-            drop(replay_scope);
+                })?
+            };
             if let Some(outcome) = outcome {
                 // A later certified recommit preserves the original height
                 // and receipt. It is not another business application.
@@ -2678,12 +2680,37 @@ impl ReplayScope<'_> {
     }
 
     pub(crate) fn prior_state_row(&self, key: &[u8]) -> Option<&[u8]> {
-        self.prior
-            .records
-            .iter()
-            .find_map(|row: &SourceSnapshotRecord| match row.descriptor.key() {
-                DurableRecordKey::State(found) if found == key => row.value.as_deref(),
+        let index: usize = self.prior.records.partition_point(|row: &SourceSnapshotRecord| {
+            matches!(row.descriptor.key(), DurableRecordKey::State(found) if found.as_slice() < key)
+        });
+        match self.prior.records.get(index) {
+            Some(row) => match row.descriptor.key() {
+                DurableRecordKey::State(found) if found.as_slice() == key => row.value.as_deref(),
                 _ => None,
-            })
+            },
+            None => None,
+        }
+    }
+
+    pub(crate) fn next_prior_state_row(
+        &self,
+        prefix: &[u8],
+        after: &[u8],
+    ) -> Option<(&[u8], Option<&[u8]>)> {
+        // The private base capture owner authenticates page key ordering and
+        // collects State first. Replay never accepts an arbitrary caller's
+        // SourceBusinessSnapshot as this prior inventory.
+        let index: usize = self.prior.records.partition_point(|row: &SourceSnapshotRecord| {
+            matches!(row.descriptor.key(), DurableRecordKey::State(key) if key.as_slice() <= after)
+        });
+        match self.prior.records.get(index) {
+            Some(row) => match row.descriptor.key() {
+                DurableRecordKey::State(key) if key.starts_with(prefix) => {
+                    Some((key.as_slice(), row.value.as_deref()))
+                }
+                _ => None,
+            },
+            None => None,
+        }
     }
 }

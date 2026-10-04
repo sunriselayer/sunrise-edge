@@ -370,6 +370,9 @@ fn verify_suffix(
 /// Section 3 steps 4 and 5: the exact readiness certificate committed by the
 /// terminal SealIntent (one certificate variant per committed Seal), over a
 /// subject bound to the plan root, domain, outgoing set, cut and schedule.
+// These distinct pins and the private verified base are checked together
+// here; grouping them would not create or simplify an authority owner.
+#[allow(clippy::too_many_arguments)]
 fn verify_seal_certificate(
     resolver: &HashSuiteResolver,
     root: &VerifiedGenesisRoot,

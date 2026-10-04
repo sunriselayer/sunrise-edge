@@ -83,35 +83,54 @@ PostgreSQL profile with its original fault flags. Main was clean and equalled
 origin/main; the source branch was deleted. The earlier cached-interface
 failure was followed by narrow affected-package cache regeneration and a
 successful complete unchanged-source rerun; failed runs are not acceptance.
-Claude's session-limit refusal is recorded; the previously authorized independent
-Codex substitute is used while it is unavailable.
+Claude's earlier session-limit refusal is recorded; the previously authorized
+independent Codex substitute reviewed that slice. Native Opus became usable
+again during this window. Its subsequent design/scope approvals are distinct
+from final exact-head implementation approval.
 
 **Recurring implementation checkpoint, 2026-10-04:** core connects one bounded
 verified chain, the private ordinary-memory replay bootstrap, current registration
 and historical owners, current frontier/drain/cut/readiness, tag-2 Seal and the
 same issuer-bound atomic successor ports. Memory/shared SQL/SQLite bodies retain
 the original fence, token, lifecycle and receipt rules; no backend schema or
-canonical public frame is changed. Held live warrants recheck the same protected
+canonical old frame is changed. Held live warrants recheck the same protected
 Serving/import origin and Unsealed state before new signatures, separately from
-identity-only exact reconciliation. The actual two-link e0 -> e1 -> e2 SQLite
-case passed at `b393846`, including full cut equality, reopen and writer fencing.
-The earlier failure came from selecting the original applied-height companion
-instead of the current policy-scoped key. Focused scope and request-lane
-regressions passed. The full seven-epoch-delay case compiles but remains open:
-fixing its wrong-lane IDs exposed a test assumption that a minimal quorum must
-include every member. The fixture must select a genuine E-containing quorum,
-not change consensus or reduce the installed delay.
+identity-only exact reconciliation. The genuine file-backed e_0/e_1/e_2 Seal,
+import, activation, reopen and fence test passed at `b393846` after correcting
+the owning applied-height key to the actual logical generation. Current
+applied-height is an AuthorityCompanion, not part of the business State root;
+the original namespace and exact identity comparisons remain unchanged.
+The seven-epoch-delay fixture preserves the installed delay and real registered
+E participation. Its request-lane and genuine minimal-QC assumptions were
+corrected without weakening admission or certificate checks. Independent Opus
+clarified the existing boundary: authentic business admission may produce a
+certified proposal whose execution retains an IneligibleState refusal. The
+fixture now checks that real early-Withdraw receipt, unchanged business state and
+nonce, released reservation/lock, and exact replay without a new signature. Its
+complete recurring-to-eligible-withdrawal run is still pending, not acceptance.
 
 Independent review of `97947a1` remains BLOCK for unbounded historical-publication
-scanning. Section 4.1 now defines bounded physical progress plus a private
-current index, preserving public hashes/pages and typed cut/import exclusion;
-its body, regression coverage and fresh exact-head review are pending. The
-scoped node-core dev/test optimization keeps assertions and overflow checks.
-SDK/CLI/operator/native HTTP consumers compile together at the downstream
-checkpoint, including F/D/G process bodies, but compiled changed-committee
-recurrence, genuine five-member participation and eligible process withdrawals
-remain unrun. Complete committed-source gates remain open. None of these
-checkpoints completes Delivery 3 or PostgreSQL/DO/D1/production readiness.
+scanning. Section 4.1 defines bounded physical progress and a private current
+index, with separate material/live guards. Native Opus approved the design and
+its behind-tail scope, not the implementation. The bounded body passes twelve
+focused frontier tests and the material-reader ownership architecture test,
+including SQLite scan mechanics above 4096 priors, exact page bytes, current
+index poisoning, missing prior refusal, CAS/reply-loss and reopen/refencing.
+Mechanics are not authenticated successor-owner acceptance. A genuine smaller
+two-link Seal/import/activation chain passed again in 307.90 seconds before the
+last source-index corpus and historical behind-tail audit additions. The final
+node-core all-target/all-feature strict Clippy check passes. Remaining body
+regressions, fresh exact-head review and complete committed-source gates stay
+open. The scoped node-core dev/test optimization keeps assertions and overflow
+checks.
+
+Downstream SDK/CLI/operator libraries pass 416 tests. The first native HTTP run
+passed 156 tests and failed the retained Original post-Seal material read; the
+core now separates the two material-reader owners without changing the existing
+test or HTTP signature refusal, with downstream rerun still pending. Compiled
+changed-committee recurrence, later five-member
+participation and eligible process withdrawals remain unrun. This is not
+Delivery 3, PostgreSQL/DO/D1 activation or production readiness.
 
 **Completed architecture-first work window, 2026-10-02:** approximately eight
 hours, from 13:50 until 21:50 Asia/Singapore. Establish the

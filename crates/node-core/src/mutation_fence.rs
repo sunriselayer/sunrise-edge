@@ -89,6 +89,17 @@ pub(crate) fn require_ordinary_reader_namespace<S: StructuredStateReader + ?Size
     require_unsealed(&store.read_outgoing_barrier(context, domain)?)
 }
 
+/// Material-only historical reading, never live admission or signing. The
+/// permanent ordinary origin and backend fence/deadline still have to match;
+/// a terminal outgoing Seal does not erase the retained immutable material.
+pub(crate) fn require_origin_ordinary_reader_namespace<S: StructuredStateReader + ?Sized>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+) -> Result<(), NodeCoreError> {
+    require_ordinary_origin(&store.read_namespace_lifecycle(context, domain)?)
+}
+
 fn require_unsealed(barrier: &runtime::OutgoingBarrier) -> Result<(), NodeCoreError> {
     match barrier {
         runtime::OutgoingBarrier::Unsealed => Ok(()),

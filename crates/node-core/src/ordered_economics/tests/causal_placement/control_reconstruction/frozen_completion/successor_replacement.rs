@@ -849,6 +849,28 @@ fn retired_d_keeps_verified_predecessor_bond_and_claim_ownership_only() {
     exited.committed_at_checkpoint = checkpoint;
     exited.lifecycle_epoch = current;
     exited.state = FastPathBondState::Exited;
+    let mut release: SignedLocalExecutionIntent =
+        execution::local_execution::decode_signed_local_execution(&release_leg(
+            &world,
+            d,
+            withdraw_request,
+            &unbonded.custody_object,
+            recipient,
+        ))
+        .unwrap();
+    release.intent.call.nonce = crate::query_sender_next_nonce(
+        &world.targets[0].0,
+        &world.operation,
+        network.domain(),
+        world.policy.context().chain_id().clone(),
+        world.policy.context().protocol_version(),
+        current,
+        *d.id.as_bytes(),
+    )
+    .unwrap();
+    let release_frame: Vec<u8> =
+        local_execution_signing_frame(world.policy.context(), &release.intent).unwrap();
+    release.signature = d.key.sign(&release_frame).into();
     let withdraw: OrderedCandidate = bond_candidate(
         &world,
         d,
@@ -856,13 +878,7 @@ fn retired_d_keeps_verified_predecessor_bond_and_claim_ownership_only() {
         &unbonded_bytes,
         &exited,
         BondLifecycleOperation::Withdraw {
-            leg: release_leg(
-                &world,
-                d,
-                withdraw_request,
-                &unbonded.custody_object,
-                recipient,
-            ),
+            leg: encode_signed_local_execution(&release).unwrap(),
         },
         checkpoint,
     );
@@ -871,37 +887,126 @@ fn retired_d_keeps_verified_predecessor_bond_and_claim_ownership_only() {
     let before: Vec<(StateRevision, Option<Vec<u8>>)> = (0..REPLICAS)
         .map(|index: usize| world.value(index, &bond_key))
         .collect();
+    let nonce_key: Vec<u8> = runtime::PersistenceLayout::new(
+        world.policy.context().chain_id().clone(),
+        world.policy.context().protocol_version(),
+    )
+    .sender_nonce_key(*d.id.as_bytes(), current);
+    let lock_key: Vec<u8> = crate::local_instance_state::fastpath_nonce_lock_key(
+        world.policy.context().chain_id(),
+        d.id.as_bytes(),
+        current,
+    )
+    .unwrap();
+    let reservation_key: Vec<u8> =
+        reservation::ordered_reservation_key(world.policy.context().chain_id(), &withdraw_request)
+            .unwrap();
+    let captured = |index: usize| {
+        crate::test_support::capture::captured_source(
+            &world.targets[index].0,
+            &network.blobs,
+            &world.operation,
+            network.domain(),
+        )
+    };
+    let captures: Vec<crate::business_reconstruction::SourceBusinessSnapshot> =
+        (0..REPLICAS).map(captured).collect();
+    let nonce_before: Vec<(StateRevision, Option<Vec<u8>>)> = (0..REPLICAS)
+        .map(|index: usize| world.value(index, &nonce_key))
+        .collect();
+    let business = |snapshot: &crate::business_reconstruction::SourceBusinessSnapshot| -> Vec<crate::business_reconstruction::SourceSnapshotRecord> {
+        snapshot.records.iter().filter(|row| match row.descriptor.key() {
+            runtime::portable::DurableRecordKey::ObjectHead(_) | runtime::portable::DurableRecordKey::ObjectVersion(_, _) => true,
+            runtime::portable::DurableRecordKey::State(key) => key.starts_with(crate::local_instance_state::FASTPATH_STATE_PREFIX) && key != &lock_key,
+            runtime::portable::DurableRecordKey::Receipt(_) => false,
+        }).cloned().collect()
+    };
     let status: OrderedStatus = crate::ordered_economics::query_status_successor(
         &world.warrant(0),
         &world.targets[0].0,
         &env,
     )
     .unwrap();
-    assert!(matches!(
-        crate::ordered_economics::preflight::preflight(
-            &world.targets[0].0,
-            &world.operation,
-            &env,
-            &withdraw,
-            status.high_qc.height.checked_add(1).unwrap(),
-        ),
-        Err(OrderedEconomicsError::Refused(
-            OrderedRefusal::IneligibleState
-        ))
-    ));
-    let leader: usize = leader_of(&world, status.current_view);
+    for (index, capture) in captures.iter().enumerate() {
+        assert!(matches!(
+            crate::ordered_economics::preflight::preflight(
+                &world.targets[index].0,
+                &world.operation,
+                &env,
+                &withdraw,
+                status.high_qc.height.checked_add(1).unwrap(),
+            ),
+            Err(OrderedEconomicsError::Refused(
+                OrderedRefusal::IneligibleState
+            ))
+        ));
+        assert_eq!(
+            captured(index),
+            *capture,
+            "writer-free eligibility check changes no physical rows"
+        );
+    }
+    // Authentic business is proposed/reserved normally and deterministically
+    // refused at committed execution. Only Seal has a pre-sign semantic gate.
+    let refusal: OrderedOutcome = commit_through_rounds(&world, &env, &withdraw);
+    assert_eq!(
+        refusal.output.responses()[0].status(),
+        crate::NodeResponseStatus::Rejected
+    );
+    assert_eq!(
+        decode_ordered_refusal_payload(refusal.output.responses()[0].payload().unwrap()).unwrap(),
+        OrderedRefusal::IneligibleState
+    );
+    for index in 0..REPLICAS {
+        assert_eq!(business(&captured(index)), business(&captures[index]));
+        assert_eq!(world.value(index, &nonce_key), nonce_before[index]);
+        assert!(world.value(index, &lock_key).1.is_none());
+        assert!(world.value(index, &reservation_key).1.is_none());
+        assert_eq!(
+            query_ordered_outcome(
+                &world.targets[index].0,
+                &world.operation,
+                &env,
+                &withdraw_request
+            )
+            .unwrap(),
+            Some(refusal.clone())
+        );
+        let receipt: runtime::DurableRequestReceipt = world.targets[index]
+            .0
+            .get_request_receipt(
+                &world.operation,
+                network.domain(),
+                runtime::DurableRequestId::new(withdraw_request).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        let record: crate::NodeDedupRecord =
+            crate::NodeDedupRecord::decode(receipt.canonical_bytes()).unwrap();
+        assert_eq!(record.responses(), refusal.output.responses());
+        assert_eq!(receipt.event_digest(), refusal.candidate_digest);
+    }
+    let replay_status: OrderedStatus = crate::ordered_economics::query_status_successor(
+        &world.warrant(0),
+        &world.targets[0].0,
+        &env,
+    )
+    .unwrap();
+    let leader: usize = leader_of(&world, replay_status.current_view);
     let counted: CountingSigner<'_> = CountingSigner::new(&world.members[leader]);
+    let retained: Vec<crate::business_reconstruction::SourceBusinessSnapshot> =
+        (0..REPLICAS).map(captured).collect();
     assert!(
-        crate::ordered_economics::propose_successor(
-            &world.warrant(leader),
-            &world.targets[leader].0,
-            &env,
-            Some(&withdraw),
-            &counted,
-        )
-        .is_err()
+        matches!(crate::ordered_economics::propose_successor(&world.warrant(leader), &world.targets[leader].0, &env, Some(&withdraw), &counted),
+        Err(OrderedEconomicsError::AlreadyCompleted(outcome)) if *outcome == refusal)
     );
     assert_eq!(counted.created.get(), 0);
+    assert_eq!(
+        (0..REPLICAS)
+            .map(captured)
+            .collect::<Vec<crate::business_reconstruction::SourceBusinessSnapshot>>(),
+        retained
+    );
     let after: Vec<(StateRevision, Option<Vec<u8>>)> = (0..REPLICAS)
         .map(|index: usize| world.value(index, &bond_key))
         .collect();

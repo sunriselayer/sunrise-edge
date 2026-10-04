@@ -370,8 +370,15 @@ Every inspected retained row, including a byte-exact prior publication, consumes
 the physical step budget. Historical-only steps persist their physical tail
 without changing the current count, accumulator, logical tail or signature.
 The original publication addresses and full prior-byte authentication stay.
-Traversal also accounts for verified prior keys that disappear from the store:
-an absent or altered prior carrier refuses rather than silently shrinking history.
+Traversal also accounts for verified prior keys that disappear from the store.
+Each bounded step detects missing or changed carriers at the initial position,
+the upcoming merged keys and its exact persisted physical tail. It does not
+rescan every key behind that tail. Freeze and protected writer fencing prevent
+legitimate behind-tail publication changes; hostile backend changes are a
+separate boundary. Current behind-tail entries are reverified by page reads,
+and a fresh whole source-cut audit requires historical carriers to equal the
+verified prior before Seal. No snapshot-token reset or per-step full-scan
+guarantee is implied.
 
 The same frontier owner in Original and Successor modes maintains a private
 current-epoch index. A current entry's exact index slot, accumulator and physical
@@ -386,6 +393,11 @@ ACK and artifact body. The index is a locator, never evidence. Public logical
 cursors, identities, votes, page encoding, signed count and accumulator stay
 unchanged; empty nonterminal pages remain invalid. A complete stream must pass
 the existing frontier verifier. No page refolds the entire history.
+Index values bind a contiguous ordinal and exact availability identity. A page
+cursor must name an index member; page ordinals are consecutive and the terminal
+ordinal equals the signed count. Preserve an exactly full page as nonterminal,
+followed by the empty terminal page, so existing reader page bytes do not change.
+Cut proofs paginate through their independent authenticated material owner.
 
 Cursor/index rows are closed typed local metadata. The owning projection
 validates exact scope, Freeze binding and publication identity before excluding
@@ -395,6 +407,18 @@ business reconstruction still verify authenticated signer streams independently.
 Pre-index persisted progress is not a compatibility promise: refuse incomplete
 private state rather than serve a partial index or use an unbounded fallback.
 New private progress must survive exact retry, reopen and writer refencing.
+Use a new private cursor type or encoding version rather than reinterpreting
+old cursor bytes. Prior tombstones explicitly refuse or require exact absence;
+they never disappear silently from traversal. An `Advanced` result may repeat
+the logical count while physical progress advances; consumers wait for
+`Finalized`, not for a changed count.
+
+Read-only material has a distinct private gate, used only by the frontier page
+and drain signer progress readers. Original mode verifies origin-only lifecycle
+and fencing without forbidding its post-Seal material. Successor mode retains
+the fresh Unsealed warrant; Replay mode retains the exact issuer. Advancing,
+signing, commits and HTTP exposure keep their live/Unsealed guards. This does
+not turn material access into live authority or make a sealed successor serve.
 
 ## 5. Closure variants, receipts and provenance
 

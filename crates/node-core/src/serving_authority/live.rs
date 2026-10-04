@@ -134,16 +134,16 @@ fn successor_warrant<'inv, S: StructuredDurableDomainStateStore>(
                 "store exposes no successor serving repository",
             ))?;
     let namespace_validator: ValidatorId = repository.read_namespace_validator(context, domain)?;
-    require_local_member(&evidence, namespace_validator, signer_public_key)?;
+    require_local_member(evidence, namespace_validator, signer_public_key)?;
     require_installed_record(
-        &evidence,
+        evidence,
         &observation,
         namespace_validator,
         signer_public_key,
     )?;
-    let rows: SuccessorRows = derive_successor_rows(store, context, root, &evidence)?;
+    let rows: SuccessorRows = derive_successor_rows(store, context, root, evidence)?;
     let reads: BTreeMap<Vec<u8>, StateRevision> =
-        require_installed_closure(store, context, &evidence, &rows)?;
+        require_installed_closure(store, context, evidence, &rows)?;
     Ok(LiveWarrant {
         chain,
         issuer: store,

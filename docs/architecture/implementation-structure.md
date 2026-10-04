@@ -146,11 +146,17 @@ own concrete consumer, boundary and evidence, not this inventory as authority.
 
 ## Successor invocation and artifact ownership
 
-The [first-successor contract](first-successor-serving.md) separates immutable
+The [successor contract](recurring-successor-serving.md) separates immutable
 original trust, verified historical evidence and per-invocation live authority.
 The core privately mints an issuer-bound warrant; the runtime's protected port
 checks its observation and the complete atomic write set. Ordered, FastVote,
 ACK and fee handlers consume the same gate, not duplicate successor engines.
+The verified chain owns earlier committee and registered-owner provenance;
+membership never substitutes for ownership. A private genuine import-plan base
+feeds the same reconstruction handlers under issuer-bound memory-only Replay.
+That role creates neither a serving namespace nor a signature or Seal. Physical
+frontier progress and current logical entries also have one atomic owner; local
+indexes are locators, not authority, and typed projection governs their exclusion.
 
 SDK-held archive readers share filename, attachment, symlink, inventory and
 bounded-read rules with the operator writer. Byte transport does not verify

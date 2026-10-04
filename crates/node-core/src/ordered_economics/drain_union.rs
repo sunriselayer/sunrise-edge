@@ -1085,6 +1085,28 @@ pub fn read_drain_signer_progress<S: StructuredDurableDomainStateStore>(
     expected: &PublicationContext,
     signer: ValidatorId,
 ) -> Result<DrainSignerProgress, DrainSignerError> {
+    read_drain_signer_progress_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        context,
+        domain,
+        resolver,
+        expected,
+        signer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_drain_signer_progress_gated<S: StructuredDurableDomainStateStore>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    signer: ValidatorId,
+) -> Result<DrainSignerProgress, DrainSignerError> {
+    gate.require_material_reader(store, context, domain)?;
     let drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
     drain
         .fence
@@ -1142,8 +1164,15 @@ pub fn read_drain_signer_progress_successor<S: StructuredDurableDomainStateStore
     expected: &PublicationContext,
     signer: ValidatorId,
 ) -> Result<DrainSignerProgress, DrainSignerError> {
-    warrant.require_reader(store, context, domain)?;
-    read_drain_signer_progress(store, context, domain, resolver, expected, signer)
+    read_drain_signer_progress_gated(
+        crate::serving_authority::ServingGate::Successor(warrant),
+        store,
+        context,
+        domain,
+        resolver,
+        expected,
+        signer,
+    )
 }
 
 /// The canonical selection this progress/ready row is scoped to: the exact
