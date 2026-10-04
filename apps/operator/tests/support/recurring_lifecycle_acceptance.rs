@@ -75,8 +75,9 @@ fn value_records(
                 runtime::portable::DurableRecordKey::ObjectHead(_)
                 | runtime::portable::DurableRecordKey::ObjectVersion(_, _) => true,
                 runtime::portable::DurableRecordKey::State(key) => {
-                    (key.starts_with(node_core::local_instance_state::FASTPATH_STATE_PREFIX)
-                        || key.as_slice() == nonce_key)
+                    // Independently project the retained private business namespace;
+                    // this external fixture must not widen node-core visibility.
+                    (key.starts_with(b"se/instances/v1/fastpath/") || key.as_slice() == nonce_key)
                         && key.as_slice() != nonce_lock
                 }
                 runtime::portable::DurableRecordKey::Receipt(_) => false,
