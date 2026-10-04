@@ -44,7 +44,7 @@ impl<'w> ServingGate<'w> {
             Self::Original => {
                 crate::mutation_fence::require_ordinary_namespace(store, context, domain)
             }
-            Self::Successor(warrant) => warrant.require_issuer(store, context, domain),
+            Self::Successor(warrant) => warrant.require_live(store, context, domain),
             Self::Replay(scope) => scope.require_issuer(store, context, domain),
         }
     }

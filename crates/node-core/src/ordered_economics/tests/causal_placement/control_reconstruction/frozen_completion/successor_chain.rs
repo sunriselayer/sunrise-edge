@@ -812,6 +812,23 @@ fn genuine_file_backed_e0_e1_e2_seal_import_activate_reopen_and_fence() {
     let prior: VerifiedSuccessorAuthority = chain_authority(&world);
     let (cut_identity, ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
         current_history(&world);
+    let replay_inputs: crate::serving_authority::ReconstructionInputs = prior
+        .reconstruction_inputs(&reconstruction_plan(world.source(), &world.cut_history))
+        .unwrap();
+    let mut replay_plan: BusinessReconstructionPlan<'_> = replay_inputs.plan(
+        reconstruction_plan(world.source(), &world.cut_history),
+        &cut_identity,
+    );
+    replay_plan.operation_context = world.operation;
+    let replay: crate::business_reconstruction::BusinessReconstructionOverlay<'_> =
+        crate::business_reconstruction::BusinessReconstructionOverlay::new_with_base(
+            replay_plan,
+            prior.reconstruction_base(&network.root).unwrap(),
+        )
+        .unwrap();
+    crate::business_reconstruction::replay_authority_tests::assert_replay_authority_is_bounded(
+        &replay,
+    );
     let mut source_plan: BusinessReconstructionPlan<'_> =
         reconstruction_plan(world.source(), &world.cut_history);
     source_plan.operation_context = world.operation;

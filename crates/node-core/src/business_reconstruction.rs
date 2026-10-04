@@ -13,6 +13,9 @@ pub mod inactive_import;
 mod projection;
 mod root_policy_binding;
 
+#[cfg(test)]
+pub(crate) mod replay_authority_tests;
+
 pub use control::{
     DrainSetControlMaterial, DrainSetControlProofError, DrainSetSignerFrontierMaterial,
     drain_control_material_from_source_snapshot,

@@ -1998,6 +1998,7 @@ impl<'a> ExecutionWarrant<'a> {
 /// handlers independently derive effects/receipt, and source companions are
 /// compared before committing anything. A concrete memory store cannot grant
 /// a live provider application or incoming-validator serving capability.
+#[cfg(test)]
 pub(crate) fn reconstruct_ordered_history_height(
     store: &runtime::MemoryDurableStateStore,
     context: &DurableOperationContext,
@@ -4157,7 +4158,9 @@ fn require_successor_environment(
                 inputs.context().clone(),
             );
         if env.leg_policy != &current || composition.paid_base_policy != &current {
-            return Err(stop("successor Seal composition has a foreign execution policy"));
+            return Err(stop(
+                "successor Seal composition has a foreign execution policy",
+            ));
         }
         // The handler still resolves ServingGate::seal_port on the actual
         // issuing store before retention, signing or completion. No generic

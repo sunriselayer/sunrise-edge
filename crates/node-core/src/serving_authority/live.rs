@@ -197,6 +197,22 @@ impl LiveWarrant<'_> {
         Ok(())
     }
 
+    /// Live admission, distinct from identity-only origin reconciliation.
+    /// A warrant held across a terminal Seal or refence cannot reach a new
+    /// signature merely because it still points to the same store. Re-read
+    /// its exact protected observations through that actual issuer before
+    /// any live handler or local signer is admitted. The backend still
+    /// independently checks those observations under its final commit lock.
+    pub(crate) fn require_live<S: ?Sized>(
+        &self,
+        store: &S,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<(), NodeCoreError> {
+        self.require_issuer(store, context, domain)?;
+        self.require_reader(self.issuer, context, domain)
+    }
+
     /// Reader-side binding for writer-free preparation, which may observe the
     /// issuer through a recording view: the reader must report the exact
     /// protected Serving observation, its unchanged origin and Unsealed.
@@ -242,7 +258,7 @@ impl LiveWarrant<'_> {
         store: &'s S,
         signer: ValidatorId,
     ) -> Result<&'s dyn SuccessorServingRepository, NodeCoreError> {
-        self.require_issuer(
+        self.require_live(
             store,
             self.context,
             self.chain.current().policy_inputs.domain,
