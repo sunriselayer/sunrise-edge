@@ -403,6 +403,35 @@ impl SuccessorServingRepository for SqliteImportTarget {
             .engine
             .commit_successor_invocation(context, observation, transaction)
     }
+
+    fn commit_successor_seal_retention(
+        &self,
+        context: &DurableOperationContext,
+        observation: &SuccessorServingObservation,
+        token: &PortableSnapshotToken,
+        transaction: AtomicStateTransaction,
+    ) -> DurableCommitOutcome {
+        self.store
+            .engine
+            .commit_successor_seal_retention(context, observation, token, transaction)
+    }
+
+    fn commit_successor_seal_completion(
+        &self,
+        context: &DurableOperationContext,
+        observation: &SuccessorServingObservation,
+        token: &PortableSnapshotToken,
+        transaction: DurableInvocationTransaction,
+        sealed: runtime::SealBarrier,
+    ) -> DurableCommitOutcome {
+        self.store.engine.commit_successor_seal_completion(
+            context,
+            observation,
+            token,
+            transaction,
+            sealed,
+        )
+    }
 }
 
 #[cfg(test)]
