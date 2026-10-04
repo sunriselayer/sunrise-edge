@@ -38,6 +38,7 @@ objects.workspace = true
 protocol-config.workspace = true
 public-standard-asset = { path = "../../contracts/standard-asset" }
 rcgen.workspace = true
+rusqlite.workspace = true
 sunrise-edge-client.workspace = true
 sunrise-edge-cli.workspace = true
 sunrise-edge-devnet.workspace = true

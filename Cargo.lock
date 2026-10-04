@@ -2033,6 +2033,7 @@ dependencies = [
  "runtime",
  "runtime-postgres",
  "runtime-sqlite",
+ "rusqlite",
  "rustls",
  "sunrise-edge-cli",
  "sunrise-edge-client",
