@@ -78,19 +78,40 @@ process and startup targets passed all eleven cases, including the genuine
 four-host Seal and replay. Fresh exact-head review and committed-source
 validation both passed at final head `d534a37b`. [PR #268](https://github.com/sunriselayer/sunrise-edge/pull/268)
 merged normally on 2026-10-04 as `2034ba9c`, after fresh independent explicit
-APPROVE and all required CI lanes plus the aggregate passed in run
-`37184335287`. The complete same-head selected PostgreSQL profile finished
-successfully at 15:44:29 Asia/Singapore, including its original fault flags.
-An earlier same-head local run failed on a cross-worktree cached runtime
-interface; narrowly regenerating the affected packages made the unchanged
-source build, and the complete profile was then rerun successfully. Failed
-runs and the older `41982fa` pass are not final-head acceptance. Local main
-equals origin/main with a clean tree and the source branch is deleted.
-Recurring core/store bodies and SDK/CLI/host consumers are being integrated;
-neither the signed fixture funding nor an uncompiled process harness closes
-the genuine changed-committee, repeated-epoch or unlocked-withdrawal gates.
+APPROVE, required CI run `37184335287` and the complete same-head selected
+PostgreSQL profile with its original fault flags. Main was clean and equalled
+origin/main; the source branch was deleted. The earlier cached-interface
+failure was followed by narrow affected-package cache regeneration and a
+successful complete unchanged-source rerun; failed runs are not acceptance.
 Claude's session-limit refusal is recorded; the previously authorized independent
 Codex substitute is used while it is unavailable.
+
+**Recurring implementation checkpoint, 2026-10-04:** core connects one bounded
+verified chain, the private ordinary-memory replay bootstrap, current registration
+and historical owners, current frontier/drain/cut/readiness, tag-2 Seal and the
+same issuer-bound atomic successor ports. Memory/shared SQL/SQLite bodies retain
+the original fence, token, lifecycle and receipt rules; no backend schema or
+canonical public frame is changed. Held live warrants recheck the same protected
+Serving/import origin and Unsealed state before new signatures, separately from
+identity-only exact reconciliation. The actual two-link e0 -> e1 -> e2 SQLite
+case passed at `b393846`, including full cut equality, reopen and writer fencing.
+The earlier failure came from selecting the original applied-height companion
+instead of the current policy-scoped key. Focused scope and request-lane
+regressions passed. The full seven-epoch-delay case compiles but remains open:
+fixing its wrong-lane IDs exposed a test assumption that a minimal quorum must
+include every member. The fixture must select a genuine E-containing quorum,
+not change consensus or reduce the installed delay.
+
+Independent review of `97947a1` remains BLOCK for unbounded historical-publication
+scanning. Section 4.1 now defines bounded physical progress plus a private
+current index, preserving public hashes/pages and typed cut/import exclusion;
+its body, regression coverage and fresh exact-head review are pending. The
+scoped node-core dev/test optimization keeps assertions and overflow checks.
+SDK/CLI/operator/native HTTP consumers compile together at the downstream
+checkpoint, including F/D/G process bodies, but compiled changed-committee
+recurrence, genuine five-member participation and eligible process withdrawals
+remain unrun. Complete committed-source gates remain open. None of these
+checkpoints completes Delivery 3 or PostgreSQL/DO/D1/production readiness.
 
 **Completed architecture-first work window, 2026-10-02:** approximately eight
 hours, from 13:50 until 21:50 Asia/Singapore. Establish the

@@ -359,6 +359,14 @@ fn seal_terminal(
     Ok(())
 }
 
+fn applied_height_companion_key(
+    policy: &OrderedEconomicsPolicy,
+) -> Result<DurableRecordKey, BusinessCutError> {
+    engine::scoped_applied_height_key(policy.key_scope(), policy.context().chain_id())
+        .map(DurableRecordKey::State)
+        .map_err(|_| invalid("cut applied height key"))
+}
+
 fn companion_keys(
     overlay: &BusinessReconstructionOverlay<'_>,
     ordered: &[OrderedHistoryHeightMaterial],
@@ -372,9 +380,10 @@ fn companion_keys(
         .cloned()
         .map(DurableRecordKey::State)
         .collect();
-    keys.insert(DurableRecordKey::State(
-        engine::ordered_applied_height_key(chain).map_err(|_| invalid("cut applied height key"))?,
-    ));
+    // Applied height is authority progress of this exact policy scope, not
+    // business State. An earlier epoch's immutable applied-height row must
+    // not stand in for the current row when empty progress extends the cut.
+    keys.insert(applied_height_companion_key(overlay.plan.ordered_policy)?);
     for material in ordered {
         keys.insert(DurableRecordKey::State(
             engine::ordered_committed_proof_key(chain, context.epoch(), material.descriptor.height)
@@ -808,3 +817,41 @@ pub(super) fn from_overlay_for_seal_acceptance(
 #[cfg(test)]
 #[path = "tests/seal_terminal.rs"]
 mod seal_terminal_tests;
+
+#[cfg(test)]
+mod companion_scope_tests {
+    use super::*;
+
+    #[test]
+    fn applied_height_companion_uses_the_current_policy_scope() {
+        let root: crate::genesis::VerifiedGenesisRoot =
+            crate::serving_authority::tests::causal_root();
+        // This is a pure key-classification fixture, not a verified chain or
+        // a capability to install, sign, or mutate a successor namespace.
+        let inputs: crate::serving_authority::SuccessorPolicyInputs =
+            crate::serving_authority::tests::successor_inputs(
+                &root,
+                Digest32::new(protocol_types::HashAlgorithmId::Sha2_256, [3; 32]),
+            );
+        let original: OrderedEconomicsPolicy =
+            OrderedEconomicsPolicy::from_genesis_root(&root, inputs.domain()).unwrap();
+        let successor: OrderedEconomicsPolicy =
+            OrderedEconomicsPolicy::from_successor(&root, &inputs).unwrap();
+        let original_key: Vec<u8> =
+            engine::ordered_applied_height_key(root.genesis_context().chain_id()).unwrap();
+        let current_key: Vec<u8> = engine::scoped_applied_height_key(
+            successor.key_scope(),
+            successor.context().chain_id(),
+        )
+        .unwrap();
+        assert_eq!(
+            applied_height_companion_key(&original).unwrap(),
+            DurableRecordKey::State(original_key.clone()),
+        );
+        assert_eq!(
+            applied_height_companion_key(&successor).unwrap(),
+            DurableRecordKey::State(current_key.clone()),
+        );
+        assert_ne!(current_key, original_key);
+    }
+}
