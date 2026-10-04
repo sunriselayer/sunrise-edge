@@ -4,6 +4,7 @@ mod local_execution_http;
 mod ordered_history_http;
 mod query_codecs;
 mod query_http;
+mod query_protocol_context;
 use super::*;
 use abi::{AccessEntry, AccessManifest};
 use axum::{

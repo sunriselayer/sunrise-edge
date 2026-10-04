@@ -2530,11 +2530,60 @@ fn resolve_query_domain(
         .map_err(QueryInvocationError::Node)
 }
 
+/// Resolves the exact hash suite a host advertises over its read-only query
+/// route from resolver -- the same already-trusted resolver backing this
+/// host's real signing and verification -- at the authoritative epoch the
+/// caller resolved, and returns a protocol configuration whose
+/// hash_suite_id and canonical bytes stay consistent with that resolved
+/// suite. Shared by both the structured-durable context route below and
+/// successor::query_context, so the suite-selection body is never
+/// duplicated.
+///
+/// base's own hash_suite_schedule must agree with resolver.schedules()
+/// entry-for-entry (not merely share the resolved suite id): a schedule
+/// that names the same id with a different algorithm, or activates the
+/// same id at a different epoch, is a false composition, not a valid
+/// alternative representation, and config.validate() alone cannot detect
+/// it (it only checks that hash_suite_id is present in the schedule).
+/// caller_chain_id/caller_protocol_version are the caller's own already
+/// -trusted context (NodeConfig for the structured-durable routes,
+/// PublicationContext for successor), checked against resolver the same
+/// way router construction already does. Fails closed, never defaulting
+/// or silently repairing, on any such mismatch or when resolver has no
+/// suite active at epoch.
+fn resolve_query_protocol_config(
+    resolver: &HashSuiteResolver,
+    caller_chain_id: &protocol_types::ChainId,
+    caller_protocol_version: ProtocolVersion,
+    epoch: protocol_types::Epoch,
+    base: &ProtocolConfig,
+) -> Result<ProtocolConfig, NodeCoreError> {
+    if resolver.chain_id() != caller_chain_id
+        || resolver.protocol_version() != caller_protocol_version
+        || base.protocol_version != caller_protocol_version
+    {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "query resolver or advertised protocol_version does not match the caller's own chain id or protocol version",
+        ));
+    }
+    if base.hash_suite_schedule.entries() != resolver.schedules() {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "advertised query hash-suite schedule does not match the resolver backing this host",
+        ));
+    }
+    let active_suite_id: protocol_types::HashSuiteId = resolver.suite_for_epoch(epoch)?.id;
+    let mut config: ProtocolConfig = base.clone();
+    config.hash_suite_id = active_suite_id;
+    config.validate()?;
+    Ok(config)
+}
+
 fn invoke_query_context<S, B, T, C, I>(
     components: &StructuredDurableNativeComponents<S, B, T, C, I>,
     authority: &StructuredDurableRequestAuthority,
     config: &NodeConfig,
     protocol_config: &ProtocolConfig,
+    resolver: &HashSuiteResolver,
 ) -> Result<Vec<u8>, QueryInvocationError>
 where
     S: StructuredDurableDomainStateStore,
@@ -2547,10 +2596,18 @@ where
         authority,
         config,
     )?;
-    let profile = resolve_transaction_auth_profile(protocol_config)
+    let query_protocol_config: ProtocolConfig = resolve_query_protocol_config(
+        resolver,
+        config.chain_id(),
+        config.protocol_version(),
+        epoch_record.current_epoch,
+        protocol_config,
+    )
+    .map_err(QueryInvocationError::Node)?;
+    let profile = resolve_transaction_auth_profile(&query_protocol_config)
         .map_err(NodeCoreError::from)
         .map_err(QueryInvocationError::Node)?;
-    let protocol_config_bytes = protocol_config
+    let protocol_config_bytes = query_protocol_config
         .canonical_bytes()
         .map_err(NodeCoreError::from)
         .map_err(QueryInvocationError::Node)?;
@@ -2558,7 +2615,7 @@ where
         config.chain_id().clone(),
         config.protocol_version(),
         epoch_record.current_epoch,
-        protocol_config.hash_suite_id,
+        query_protocol_config.hash_suite_id,
         profile.profile_id(),
         profile.signature_scheme_id().as_u16(),
         profile.address_binding().as_u16(),
@@ -2838,6 +2895,7 @@ where
             &state.authority,
             &state.config,
             &state.protocol_config,
+            &state.resolver,
         )
     })
     .await
@@ -2953,6 +3011,7 @@ where
             &state.authority,
             &state.config,
             &state.protocol_config,
+            &state.resolver,
         )
     })
     .await

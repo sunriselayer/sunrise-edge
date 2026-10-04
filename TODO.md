@@ -41,6 +41,45 @@ Independent audit and actual network startup remain Delivery 4.
 
 ## Functional critical path with embedded refactoring
 
+**Active eight-hour window, 2026-10-04:** 11:43:56 until 19:43:56
+Asia/Singapore. The independent pre-code review approved the recurring lifecycle
+contract at `5ee07de` on the separate recurring implementation branch; DR-0191
+records that design and its clarified
+memory bootstrap, registration scope and sole issuer-bound Seal port. That
+approval is not implementation acceptance. Work connects actual core/store
+consumers and genuine recurrence before the separate shipped SDK/CLI/process
+acceptance; the original seven-epoch unbonding delay remains unchanged.
+
+The original SQLite host and per-query effective hash-suite projection are
+being integrated under DR-0192. Parent targeted checks passed eight query
+regressions and all 155 native HTTP tests at `106ba8e`; operator-library tests
+passed 50 cases on the current integration candidate. The compiled source-host
+startup regression also passed missing/deleted/malformed ordered-state refusal
+without row/blob/sequence changes and with one explicit fence claim. A first
+positive process run exposed an invalid 600-second test timeout; fixing that
+setting preserves the existing native 30-second authority bound. The parent
+then passed the genuine four-host compiled Seal workflow, including actual
+signed peer acknowledgements, byte-equal receipts/barriers and unchanged
+snapshot/mutation sequence on exact network replay. Existing in-process
+completion-fault and successor acceptance remain in the same test. The source
+process target passed real EMPTY rounds, stopped-peer catch-up, restart/fresh
+fence and simultaneous-old-writer refusal; the startup target also passed.
+These are compiled hosts with the Rust CLI entry point over TCP, not a compiled
+CLI child or changed-committee recurrence. The complete selected PostgreSQL
+profile and all required CI lanes passed at `41982fa`. Independent review
+nevertheless blocked that head: the compiled Seal snapshot read the original
+fixture's blob file instead of the copy actually served by the hosts. The fix
+uses the served file for every compiled-host snapshot. A separate, explicitly
+raw storage-port control with a nonempty canonical blob closure passed: changing
+only the served copy is detected, deleting its blob refuses, and the untouched
+original remains equal to its baseline. This is observation fidelity, not a
+new authenticated Seal fixture. The corrected conditional-readiness, source
+process and startup targets passed all eleven cases, including the genuine
+four-host Seal and replay. Fresh exact-head review and committed-source
+validation remain required before merging PR #268.
+Claude's session-limit refusal is recorded; the previously authorized independent
+Codex substitute is used while it is unavailable.
+
 **Completed architecture-first work window, 2026-10-02:** approximately eight
 hours, from 13:50 until 21:50 Asia/Singapore. Establish the
 [global contracts](docs/architecture/architecture-contracts.md), independently
@@ -72,7 +111,9 @@ the aggregate check passed in CI `37096536588`. Local `main` matched
 Seal library/test composition, not successor serving or Delivery 3 completion.
 The four-SQLite workflow uses an external compiled preparation binary and the
 Rust CLI entry point in-process over real TCP, not a compiled network-submit
-process. No shipped live host completes Seal: the PG host composes `seal: None`.
+process. At that PR's merge no shipped live host completed Seal: the PG host
+composed `seal: None`. The separate DR-0192 host integration candidate above
+does not gain process acceptance merely from its composition or startup tests.
 Original read-only reconciliation remains separate from fresh admission.
 Successor/recurring and release gates stay open.
 
@@ -360,8 +401,10 @@ Import provides no readiness, Seal, activation or deployed-provider authority.
   bounded EMPTY client alignment under
   [DR-0188](docs/architecture/decisions/0188-ordered-client-empty-alignment.md).
   PostgreSQL Seal completion is still unsupported, not implied by its barrier.
-  Native Seal is library/test host composition only; the shipped PG host has
-  no Seal composition and there is no shipped native SQLite serving executable.
+  At PR #265's merge Native Seal was library/test host composition only: the
+  shipped PG host had no Seal composition and there was no shipped native
+  SQLite serving executable. DR-0192's current integration candidate adds that
+  original SQLite host; actual process and final source gates remain above.
   Read-only original-result reconciliation is now separate from fresh
   admission. Genuine inactive-import/readiness and compiled nondefault-suite
   candidate POST regressions pass without waiving signing/origin/quorum guards.

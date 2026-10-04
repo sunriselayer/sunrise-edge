@@ -3,6 +3,8 @@
 //! Mutable validator stores are independent SQLite files. Public immutable
 //! artifacts share the fixture's blob repository; no completion is seeded.
 use super::{fixture::Fixture, hex};
+#[path = "compiled_source_host_process.rs"]
+mod compiled_source_host_process;
 #[path = "ordered_seal_warrant_faults.rs"]
 mod warrant_faults;
 use consensus::ConsensusSigner;
@@ -21,15 +23,18 @@ use node_core::NodeCoreError;
 use node_core::business_reconstruction::SourceBusinessSnapshot;
 use node_core::ordered_economics::{
     OrderedCandidate, OrderedEconomicsEnvironment, OrderedEconomicsError, OrderedEventOutput,
-    OrderedProposal, decode_ordered_candidate, decode_ordered_event_output,
-    decode_ordered_proposal, decode_seal_outcome, observe_proposal, process_certificate,
-    process_proposal, process_tick, propose, query_ordered_outcome, query_status,
+    OrderedOutcome, OrderedProposal, OrderedStatus, decode_ordered_candidate,
+    decode_ordered_event_output, decode_ordered_proposal, decode_seal_outcome, observe_proposal,
+    process_certificate, process_proposal, process_tick, propose, query_ordered_outcome,
+    query_status,
 };
-use protocol_types::{SignatureSchemeId, ValidatorId};
+use protocol_types::{Digest32, SignatureSchemeId, ValidatorId};
 use runtime::portable::DurableRecordKey;
 use runtime::{
-    Clock, DurableDomainStateStore, DurableRequestId, IndeterminateCommitReason, OutgoingBarrier,
-    StructuredDurableDomainStateStore, SystemClock, WriterFenceGeneration,
+    Clock, DurableDomainStateStore, DurableOperationContext, DurableRequestId,
+    DurableRequestReceipt, IndeterminateCommitReason, OutgoingBarrier, SealBarrier,
+    StorageCorrelationId, StorageDeadline, StructuredDurableDomainStateStore, SystemClock,
+    WriterFenceGeneration,
 };
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 use std::{
@@ -854,6 +859,750 @@ fn verify_completion_reply_loss(
         "the real retry's Seal completion produces no new object-state effect"
     );
 }
+
+/// One real compiled sqlite_source_host process, over its own isolated
+/// clone file; dropping it kills and reaps the child.
+struct CompiledSourceHost {
+    child: std::process::Child,
+    address: std::net::SocketAddr,
+    generation: u64,
+}
+impl Drop for CompiledSourceHost {
+    fn drop(&mut self) {
+        let _ignored = self.child.kill();
+        let _ignored = self.child.wait();
+    }
+}
+
+fn compiled_host_field(line: &str, key: &str) -> String {
+    line.split_whitespace()
+        .find_map(|token: &str| token.strip_prefix(key))
+        .unwrap_or_else(|| panic!("compiled source host line lacks {key}: {line}"))
+        .to_owned()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_compiled_source_host(
+    fixture: &Fixture,
+    genesis: &Path,
+    blob_db: &Path,
+    state_db: &Path,
+    key_file: &Path,
+    validator_id: ValidatorId,
+) -> CompiledSourceHost {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+    command.args([
+        "--chain-id",
+        fixture.network.chain_id.as_str(),
+        "--validator-id",
+        &hex(validator_id.as_bytes()),
+        "--domain",
+        &hex(fixture.network.domain.as_bytes()),
+        "--protocol-version",
+        &fixture.network.protocol_version.get().to_string(),
+        "--epoch",
+        &fixture.network.epoch.get().to_string(),
+        "--suite",
+        "0:1:1:1:1:1:1:1",
+        "--genesis-manifest",
+        genesis.to_str().unwrap(),
+        "--expected-genesis-digest",
+        &hex(&fixture.network.manifest_digest),
+        "--signing-key-file",
+        key_file.to_str().unwrap(),
+        "--state-db",
+        state_db.to_str().unwrap(),
+        "--blob-db",
+        blob_db.to_str().unwrap(),
+        "--listen",
+        "127.0.0.1:0",
+        "--created-checkpoint",
+        "1000",
+        "--timeout-seconds",
+        "30",
+        "--max-concurrent",
+        "4",
+        "--confirm-offline-fence-advance",
+    ]);
+    let startup_deadline: Duration = Duration::from_secs(30);
+    let (mut guard, line) =
+        compiled_source_host_process::spawn_bounded_status_line(command, startup_deadline);
+    if line.is_empty() {
+        panic!(
+            "sqlite-source-host exited before serving: {:?}",
+            guard.try_wait()
+        );
+    }
+    assert!(line.contains("complete=true mode=serving"), "{line}");
+    CompiledSourceHost {
+        address: compiled_host_field(&line, "listen=").parse().unwrap(),
+        generation: compiled_host_field(&line, "writer_generation=")
+            .parse()
+            .unwrap(),
+        child: guard.into_inner(),
+    }
+}
+
+/// Builds a context against this clone's own currently persisted writer
+/// fence, never `fixture.operation`'s original fence: the compiled host's
+/// own exclusive claim has made that original fence genuinely stale for
+/// this clone, and reusing it would make a post-claim read wrongly appear
+/// fenced rather than proving the real current state.
+fn fresh_clone_context(
+    store: &SqliteDurableStore,
+    correlation: [u8; 16],
+) -> DurableOperationContext {
+    let current_fence: WriterFenceGeneration = store.writer_fence().unwrap();
+    let deadline_millis: u64 = SystemClock
+        .now_unix_millis()
+        .unwrap()
+        .checked_add(60_000)
+        .unwrap();
+    DurableOperationContext::new(
+        current_fence,
+        StorageDeadline::new(deadline_millis).unwrap(),
+        StorageCorrelationId::new(correlation).unwrap(),
+    )
+}
+
+/// One complete, independently re-readable snapshot of a compiled source
+/// host clone's real Seal evidence: the full business snapshot (every
+/// record, referenced blob and the backend snapshot token), the exact
+/// receipt, the exact committed outcome and the exact sealed barrier.
+struct CompiledSealCapture {
+    snapshot: SourceBusinessSnapshot,
+    receipt: DurableRequestReceipt,
+    outcome: OrderedOutcome,
+    barrier: SealBarrier,
+}
+
+/// Raw storage-port observation fidelity only. The canonical blob-backed row
+/// is committed through the real SQLite runtime, but this does not claim a
+/// paid producer, Seal execution or authenticated business reconstruction.
+/// In particular, it does not plant new rows in the genuine Seal fixture.
+#[test]
+fn compiled_clone_snapshot_observes_nonempty_actual_blob_closure() {
+    use hashing::{BuiltinHashFunction, HashFunction};
+    use node_core::{NodeDedupRecord, RequestId};
+    use objects::{Address, Object, ObjectId, Owner};
+    use protocol_types::{
+        AtomicityDomainId, ChainId, HashAlgorithmId, HashPurpose, ProtocolVersion,
+    };
+    use runtime::{
+        BlobStore, DurableCommitOutcome, DurableInvocationTransaction, DurableObjectChanges,
+        DurableObjectHead, DurableObjectHeadRead, DurableObjectMutation,
+        DurableObjectMutationEntry, DurableObjectOwnerProjection, DurableObjectProvenance,
+        DurableObjectRoutingProjection, DurableObjectVersion, DurableObjectVersionRecord,
+    };
+    use rusqlite::{Connection, params};
+
+    let directory: super::fixture::Directory =
+        super::fixture::Directory::new("compiled-clone-observer-port");
+    let source_blob_path: PathBuf = directory.0.join("original-blobs.sqlite");
+    let clone_blob_path: PathBuf = directory.0.join("served-blobs.sqlite");
+    let chain: ChainId = ChainId::new("compiled-clone-observer-port").unwrap();
+    let protocol: ProtocolVersion = ProtocolVersion::new(1);
+    let domain: AtomicityDomainId = AtomicityDomainId::new([0xC1; 32]).unwrap();
+    let validator: ValidatorId = ValidatorId::new([0xC2; 32]);
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    let namespace: SqliteNamespace = SqliteNamespace::new(chain.clone(), validator, domain);
+    let store: SqliteDurableStore =
+        SqliteDurableStore::open(directory.0.join("state.sqlite"), namespace, fence).unwrap();
+    let context: DurableOperationContext = fresh_clone_context(&store, [0xC3; 16]);
+    let object_id: ObjectId = ObjectId::new([0xC4; 32]);
+    let owner: Owner = Owner::Address(Address::new([0xC5; 32]));
+    let object: Object = Object {
+        id: object_id,
+        version: 1,
+        owner: owner.clone(),
+        type_hash: Digest32::new(HashAlgorithmId::Sha2_256, [0xC6; 32]),
+        schema_version: 1,
+        data: vec![0xC7; 70 * 1024],
+    };
+    let canonical: Vec<u8> = objects::encode_object(&object).unwrap();
+    let digest: Digest32 = BuiltinHashFunction::new(HashAlgorithmId::Sha2_256)
+        .hash(HashPurpose::Object, protocol, &chain, &canonical)
+        .unwrap();
+    let version: DurableObjectVersionRecord = DurableObjectVersionRecord::from_blob_reference(
+        object_id,
+        DurableObjectVersion::FIRST,
+        digest,
+        object.schema_version,
+        DurableObjectProvenance::new(chain, protocol),
+        10,
+        digest,
+    );
+    let changes: DurableObjectChanges = DurableObjectChanges::new(
+        vec![DurableObjectHeadRead::new(
+            object_id,
+            DurableObjectHead::Absent,
+        )],
+        vec![DurableObjectMutationEntry::new(
+            object_id,
+            DurableObjectMutation::Create {
+                version,
+                owner_projection: DurableObjectOwnerProjection::from_owner(owner).unwrap(),
+                routing_projection: DurableObjectRoutingProjection::new(None).unwrap(),
+            },
+        )],
+    )
+    .unwrap();
+    let request: RequestId = RequestId::new([0xC8; 32]).unwrap();
+    let canonical_receipt: Vec<u8> = NodeDedupRecord::new(request, digest, Vec::new())
+        .unwrap()
+        .encode()
+        .unwrap();
+    let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
+        DurableRequestId::new(*request.as_bytes()).unwrap(),
+        digest,
+        canonical_receipt,
+    )
+    .unwrap();
+    let invocation: DurableInvocationTransaction =
+        DurableInvocationTransaction::new(domain, None, changes, receipt, None).unwrap();
+    let original_writer: SqliteBlobStore = SqliteBlobStore::open(&source_blob_path).unwrap();
+    original_writer.put_blob(digest, canonical.clone()).unwrap();
+    assert_eq!(
+        store.commit_invocation(&context, invocation),
+        DurableCommitOutcome::Committed
+    );
+    drop(original_writer);
+    clone_sqlite_store_files(&source_blob_path, &clone_blob_path);
+    let original: SqliteBlobStore = SqliteBlobStore::open_existing(&source_blob_path).unwrap();
+    let served: SqliteBlobStore = SqliteBlobStore::open_existing(&clone_blob_path).unwrap();
+    let capture =
+        |blobs: &SqliteBlobStore| -> Result<SourceBusinessSnapshot, Box<dyn std::error::Error>> {
+            capture_source_business_snapshot(
+                &store,
+                blobs,
+                &context,
+                domain,
+                NonZeroUsize::new(128).unwrap(),
+            )
+        };
+    let baseline: SourceBusinessSnapshot = capture(&served).unwrap();
+    baseline.validate().unwrap();
+    assert_eq!(
+        baseline.referenced_blobs,
+        BTreeMap::from([(digest, canonical.clone())])
+    );
+    assert_eq!(capture(&original).unwrap(), baseline);
+
+    // Change only the exact served copy. Same-length corruption is observable
+    // data, not an observer-level digest check or authenticated execution.
+    let tamper: Connection = Connection::open(&clone_blob_path).unwrap();
+    let mut corrupted: Vec<u8> = canonical.clone();
+    *corrupted.last_mut().unwrap() ^= 1;
+    assert_eq!(
+        tamper
+            .execute(
+                "UPDATE blobs SET content = ?1 WHERE digest_algorithm = ?2 AND digest_bytes = ?3",
+                params![
+                    corrupted,
+                    i64::from(digest.algorithm().as_u16()),
+                    digest.bytes().as_slice()
+                ],
+            )
+            .unwrap(),
+        1
+    );
+    let changed: SourceBusinessSnapshot = capture(&served).unwrap();
+    assert_eq!(changed.records, baseline.records);
+    assert_eq!(changed.token, baseline.token);
+    assert_ne!(changed.referenced_blobs, baseline.referenced_blobs);
+    assert_eq!(capture(&original).unwrap(), baseline);
+
+    assert_eq!(
+        tamper
+            .execute(
+                "DELETE FROM blobs WHERE digest_algorithm = ?1 AND digest_bytes = ?2",
+                params![
+                    i64::from(digest.algorithm().as_u16()),
+                    digest.bytes().as_slice()
+                ],
+            )
+            .unwrap(),
+        1
+    );
+    let missing: String = capture(&served).unwrap_err().to_string();
+    assert!(missing.contains("referenced blob is missing"), "{missing}");
+    assert_eq!(capture(&original).unwrap(), baseline);
+}
+
+fn capture_compiled_seal_state(
+    store: &SqliteDurableStore,
+    cloned_blobs: &SqliteBlobStore,
+    fixture: &Fixture,
+    env: &OrderedEconomicsEnvironment<'_>,
+    request: DurableRequestId,
+    candidate_request_id: &[u8; 32],
+    correlation: [u8; 16],
+) -> CompiledSealCapture {
+    let context: DurableOperationContext = fresh_clone_context(store, correlation);
+    let barrier = store
+        .get_outgoing_barrier(&context, fixture.network.domain)
+        .unwrap();
+    let OutgoingBarrier::Sealed(sealed) = barrier else {
+        panic!("every real compiled source host must persist the real Seal");
+    };
+    let receipt: DurableRequestReceipt = store
+        .get_request_receipt(&context, fixture.network.domain, request)
+        .unwrap()
+        .expect("the real Seal completion leaves an exact receipt");
+    let outcome: OrderedOutcome = query_ordered_outcome(store, &context, env, candidate_request_id)
+        .unwrap()
+        .expect("the real Seal completion leaves an exact committed outcome");
+    let snapshot: SourceBusinessSnapshot = capture_source_business_snapshot(
+        store,
+        cloned_blobs,
+        &context,
+        fixture.network.domain,
+        NonZeroUsize::new(128).unwrap(),
+    )
+    .unwrap();
+    CompiledSealCapture {
+        snapshot,
+        receipt,
+        outcome,
+        barrier: sealed,
+    }
+}
+
+/// Genuine compiled four-source-host positive Seal acceptance (DR-0192).
+///
+/// The exact readiness-certified Seal candidate conditional_readiness_sqlite
+/// already assembled is driven to completion over four real compiled
+/// sqlite_source_host child processes and the real sunrise_edge_cli library
+/// network-submit/-replay entrypoint, not the separate compiled CLI binary,
+/// which this operator test cannot assume another package build exposes as
+/// a CARGO_BIN_EXE env var. Every host opens its own isolated quiescent
+/// clone of the live post-Drain source plus a shared immutable blob clone,
+/// so the live fixture, which the in-process network below still drives
+/// for itself through SealWarrantFault, completion reply-loss and the
+/// competing branch, is never touched. That is checked here by an exact
+/// pre/post business-snapshot and Unsealed-barrier comparison on the live
+/// stores, not merely on the clones.
+pub(super) fn run_compiled_four_host_seal(
+    fixture: &Fixture,
+    candidate_path: &Path,
+    candidate: &OrderedCandidate,
+) {
+    let before: Vec<SourceBusinessSnapshot> = fixture
+        .stores
+        .iter()
+        .map(|store| {
+            capture_source_business_snapshot(
+                store,
+                &fixture.blobs,
+                &fixture.operation,
+                fixture.network.domain,
+                NonZeroUsize::new(128).unwrap(),
+            )
+            .unwrap()
+        })
+        .collect();
+
+    let root: PathBuf = fixture.directory.0.join("compiled-four-host-seal");
+    std::fs::create_dir(&root).unwrap();
+    let genesis: PathBuf = root.join("genesis.bin");
+    std::fs::write(&genesis, &fixture.network.manifest_bytes).unwrap();
+    let blob_db: PathBuf = root.join("blobs.sqlite");
+    clone_sqlite_store_files(&fixture.directory.0.join("blobs.sqlite"), &blob_db);
+    // Observe the exact file all compiled hosts serve, not the untouched
+    // original fixture. This handle is existing-only and read-only.
+    let cloned_blobs: SqliteBlobStore = SqliteBlobStore::open_existing(&blob_db).unwrap();
+
+    let mut key_files: Vec<PathBuf> = Vec::new();
+    let mut state_dbs: Vec<PathBuf> = Vec::new();
+    for (index, validator) in fixture.network.validators.iter().enumerate() {
+        let key_path: PathBuf = root.join(format!("source-host-{index}.key"));
+        std::fs::write(&key_path, validator.seed).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        key_files.push(key_path);
+        let state_path: PathBuf = root.join(format!("state-{index}.sqlite"));
+        clone_sqlite_store_files(
+            &fixture.directory.0.join(format!("state-{index}.sqlite")),
+            &state_path,
+        );
+        let namespace: SqliteNamespace = SqliteNamespace::new(
+            fixture.network.chain_id.clone(),
+            validator.validator_id,
+            fixture.network.domain,
+        );
+        let cloned: SqliteDurableStore =
+            SqliteDurableStore::open_existing(&state_path, namespace).unwrap();
+        assert_eq!(
+            capture_source_business_snapshot(
+                &cloned,
+                &cloned_blobs,
+                &fixture.operation,
+                fixture.network.domain,
+                NonZeroUsize::new(128).unwrap(),
+            )
+            .unwrap(),
+            before[index],
+            "the isolated clone starts out exactly identical to its live source"
+        );
+        assert_eq!(
+            cloned
+                .get_outgoing_barrier(&fixture.operation, fixture.network.domain)
+                .unwrap(),
+            OutgoingBarrier::Unsealed
+        );
+        drop(cloned);
+        state_dbs.push(state_path);
+    }
+
+    let hosts: Vec<CompiledSourceHost> = (0..4)
+        .map(|index: usize| {
+            start_compiled_source_host(
+                fixture,
+                &genesis,
+                &blob_db,
+                &state_dbs[index],
+                &key_files[index],
+                fixture.network.validators[index].validator_id,
+            )
+        })
+        .collect();
+    for host in &hosts {
+        assert_eq!(
+            host.generation, 2,
+            "the first real claim of each fresh isolated clone is exactly generation 2"
+        );
+    }
+
+    let mut peers: String = String::new();
+    for (validator, host) in fixture.network.validators.iter().zip(&hosts) {
+        peers.push_str(&format!(
+            "{} {} - -\n",
+            hex(validator.validator_id.as_bytes()),
+            host.address
+        ));
+    }
+    let network: PathBuf = root.join("seal-network.conf");
+    std::fs::write(&network, peers).unwrap();
+
+    let prefix: PathBuf = root.join("compiled-seal-submission");
+    let submit_args: Vec<OsString> = arguments(
+        fixture,
+        &network,
+        "network-submit",
+        &[
+            "--candidate".into(),
+            candidate_path.as_os_str().into(),
+            "--out".into(),
+            prefix.as_os_str().into(),
+        ],
+    );
+    sunrise_edge_cli::run(submit_args).unwrap();
+
+    let env: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
+        policy: &fixture.policy,
+        history: &[],
+        leg_policy: &fixture.local_policy,
+        engine: &fixture.engine,
+        blobs: &fixture.blobs,
+        seal: Some(node_core::ordered_economics::OrderedSealComposition {
+            genesis_root: &fixture.root,
+            paid_base_policy: &fixture.local_policy,
+            paid_engine: &fixture.engine,
+            blobs: &fixture.blobs,
+        }),
+    };
+    let initial_status: OrderedStatus =
+        query_status(&fixture.stores[0], &fixture.operation, &env).unwrap();
+    let endpoints: Vec<String> = hosts.iter().map(|host| host.address.to_string()).collect();
+    let rounds: Vec<(OrderedProposal, QuorumCertificate)> = saved_submission_rounds(
+        fixture,
+        candidate_path,
+        &prefix,
+        candidate,
+        &initial_status.high_qc,
+    );
+    let submission_results: BTreeMap<(usize, usize), (String, String)> =
+        saved_peer_results(fixture, &prefix, &endpoints, rounds.len());
+    for (round, (_, certificate)) in rounds.iter().enumerate() {
+        for (index, validator) in fixture.network.validators.iter().enumerate() {
+            let (vote_phase, certificate_phase) = &submission_results[&(round, index)];
+            let voted: OrderedEventOutput = acknowledged_output(vote_phase);
+            assert!(voted.committed.is_empty());
+            assert!(
+                voted.messages.iter().any(|message| {
+                    if let ConsensusMessage::Vote(vote) = message {
+                        fixture
+                            .policy
+                            .engine()
+                            .verify_vote(vote, &Verifier)
+                            .unwrap();
+                        vote.validator == validator.validator_id
+                            && vote.height == certificate.height
+                            && vote.view == certificate.view
+                            && vote.proposal_digest == certificate.proposal_digest
+                    } else {
+                        false
+                    }
+                }),
+                "the saved acknowledgement attributes the actual signed vote to its configured peer and round"
+            );
+            let certified: OrderedEventOutput = acknowledged_output(certificate_phase);
+            assert!(certified.messages.is_empty());
+            if round == rounds.len() - 1 {
+                assert_eq!(certified.committed.len(), 1);
+                assert_eq!(certified.committed[0].request_id, candidate.request_id);
+            } else {
+                assert!(certified.committed.is_empty());
+            }
+        }
+    }
+
+    let request: DurableRequestId = DurableRequestId::new(candidate.request_id).unwrap();
+    let business = |snapshot: &SourceBusinessSnapshot| {
+        snapshot
+            .records
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.descriptor.key(),
+                    DurableRecordKey::ObjectHead(_) | DurableRecordKey::ObjectVersion(_, _)
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    // Captured immediately after network-submit, while the four real
+    // compiled host processes are still running: open_historical bypasses
+    // the live Sealed-open refusal, but every read still goes through a
+    // context built from this clone's own actual current writer fence.
+    let after_submit: Vec<CompiledSealCapture> = state_dbs
+        .iter()
+        .enumerate()
+        .map(|(index, state_path): (usize, &PathBuf)| {
+            let namespace: SqliteNamespace = SqliteNamespace::new(
+                fixture.network.chain_id.clone(),
+                fixture.network.validators[index].validator_id,
+                fixture.network.domain,
+            );
+            let historical: SqliteDurableStore =
+                SqliteDurableStore::open_historical(state_path, namespace).unwrap();
+            capture_compiled_seal_state(
+                &historical,
+                &cloned_blobs,
+                fixture,
+                &env,
+                request,
+                &candidate.request_id,
+                [0x53; 16],
+            )
+        })
+        .collect();
+    let candidate_digest: Digest32 = fixture.policy.candidate_digest(candidate).unwrap();
+    for (index, capture) in after_submit.iter().enumerate() {
+        assert_eq!(capture.barrier.request, candidate.request_id);
+        if index > 0 {
+            assert_eq!(
+                capture.barrier, after_submit[0].barrier,
+                "every real compiled source host agrees on the exact same Seal barrier"
+            );
+            assert_eq!(
+                capture.receipt, after_submit[0].receipt,
+                "all four actual Seal receipts are byte-for-byte identical"
+            );
+        }
+        assert_eq!(capture.outcome.request_id, candidate.request_id);
+        assert_eq!(capture.outcome.candidate_digest, candidate_digest);
+        assert_eq!(capture.outcome.block_height, capture.barrier.height);
+        assert_eq!(capture.outcome.block_digest, capture.barrier.block_digest);
+        let payload = capture.outcome.output.responses()[0].payload().unwrap();
+        let decoded = decode_seal_outcome(payload).unwrap();
+        assert_eq!(decoded.target, capture.barrier.target_digest);
+        assert_eq!(decoded.request, candidate.request_id);
+        assert_eq!(
+            business(&capture.snapshot),
+            business(&before[index]),
+            "Seal has no object or fee effects on the real compiled clone either"
+        );
+        for original in before[index]
+            .records
+            .iter()
+            .filter(|row| matches!(row.descriptor.key(), DurableRecordKey::Receipt(_)))
+        {
+            assert!(
+                capture.snapshot.records.contains(original),
+                "original business receipt never changes"
+            );
+        }
+    }
+
+    let manifest: PathBuf = PathBuf::from(format!("{}.manifest", prefix.display()));
+    let replay_prefix: PathBuf = root.join("compiled-seal-replay");
+    let replay_args: Vec<OsString> = arguments(
+        fixture,
+        &network,
+        "network-replay",
+        &[
+            "--manifest".into(),
+            manifest.as_os_str().into(),
+            "--out".into(),
+            replay_prefix.as_os_str().into(),
+        ],
+    );
+    sunrise_edge_cli::run(replay_args).unwrap();
+    let replay_results: BTreeMap<(usize, usize), (String, String)> =
+        saved_peer_results(fixture, &replay_prefix, &endpoints, rounds.len());
+    for (observe_phase, certificate_phase) in replay_results.values() {
+        let observed: OrderedEventOutput = acknowledged_output(observe_phase);
+        let certified: OrderedEventOutput = acknowledged_output(certificate_phase);
+        assert!(observed.messages.is_empty() && observed.committed.is_empty());
+        assert!(certified.messages.is_empty() && certified.committed.is_empty());
+    }
+
+    // Captured again, still while every host process remains running, with
+    // a distinct correlation id so this is a genuinely independent fresh
+    // read, not a cached one; an exact network-replay must change none of
+    // it.
+    let after_replay: Vec<CompiledSealCapture> = state_dbs
+        .iter()
+        .enumerate()
+        .map(|(index, state_path): (usize, &PathBuf)| {
+            let namespace: SqliteNamespace = SqliteNamespace::new(
+                fixture.network.chain_id.clone(),
+                fixture.network.validators[index].validator_id,
+                fixture.network.domain,
+            );
+            let historical: SqliteDurableStore =
+                SqliteDurableStore::open_historical(state_path, namespace).unwrap();
+            capture_compiled_seal_state(
+                &historical,
+                &cloned_blobs,
+                fixture,
+                &env,
+                request,
+                &candidate.request_id,
+                [0x52; 16],
+            )
+        })
+        .collect();
+    for index in 0..after_replay.len() {
+        assert_eq!(
+            after_replay[index].snapshot.token.mutation_sequence(),
+            after_submit[index].snapshot.token.mutation_sequence(),
+            "exact network-replay does not advance the physical mutation sequence"
+        );
+        assert_eq!(
+            after_replay[index].snapshot, after_submit[index].snapshot,
+            "exact network-replay changes no record, blob or snapshot token"
+        );
+        assert_eq!(
+            after_replay[index].receipt, after_submit[index].receipt,
+            "exact network-replay changes no receipt byte"
+        );
+        assert_eq!(
+            after_replay[index].barrier, after_submit[index].barrier,
+            "exact network-replay changes no barrier byte"
+        );
+        assert_eq!(
+            after_replay[index].outcome, after_submit[index].outcome,
+            "exact network-replay changes no outcome byte"
+        );
+    }
+
+    for host in hosts {
+        drop(host);
+    }
+
+    // DR-0192: a fresh new-source startup against the now-Sealed clone
+    // refuses before serving: no listener, no status line. Bounded: any
+    // timeout, malformed exit or IO error still kills and reaps the real
+    // process instead of hanging, since the child is owned by the shared
+    // guard before its stdout/stderr are even taken.
+    let refusal_key: PathBuf = root.join("fresh-refusal.key");
+    std::fs::write(&refusal_key, fixture.network.validators[0].seed).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&refusal_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let mut refusal_command = std::process::Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+    refusal_command.args([
+        "--chain-id",
+        fixture.network.chain_id.as_str(),
+        "--validator-id",
+        &hex(fixture.network.validators[0].validator_id.as_bytes()),
+        "--domain",
+        &hex(fixture.network.domain.as_bytes()),
+        "--protocol-version",
+        &fixture.network.protocol_version.get().to_string(),
+        "--epoch",
+        &fixture.network.epoch.get().to_string(),
+        "--suite",
+        "0:1:1:1:1:1:1:1",
+        "--genesis-manifest",
+        genesis.to_str().unwrap(),
+        "--expected-genesis-digest",
+        &hex(&fixture.network.manifest_digest),
+        "--signing-key-file",
+        refusal_key.to_str().unwrap(),
+        "--state-db",
+        state_dbs[0].to_str().unwrap(),
+        "--blob-db",
+        blob_db.to_str().unwrap(),
+        "--listen",
+        "127.0.0.1:0",
+        "--created-checkpoint",
+        "1000",
+        "--timeout-seconds",
+        "30",
+        "--max-concurrent",
+        "4",
+        "--confirm-offline-fence-advance",
+    ]);
+    let refusal: std::process::Output = compiled_source_host_process::spawn_bounded_output(
+        refusal_command,
+        Duration::from_secs(30),
+    );
+    assert!(
+        !refusal.status.success(),
+        "a fresh open against an already-Sealed namespace must refuse, not serve"
+    );
+    assert!(
+        refusal.stdout.is_empty(),
+        "a refused startup never reaches its listener status line"
+    );
+    assert!(
+        String::from_utf8_lossy(&refusal.stderr).contains("already Sealed"),
+        "{}",
+        String::from_utf8_lossy(&refusal.stderr)
+    );
+
+    for (index, store) in fixture.stores.iter().enumerate() {
+        assert_eq!(
+            capture_source_business_snapshot(
+                store,
+                &fixture.blobs,
+                &fixture.operation,
+                fixture.network.domain,
+                NonZeroUsize::new(128).unwrap(),
+            )
+            .unwrap(),
+            before[index],
+            "the live post-Drain source is completely untouched by the isolated compiled-host Seal"
+        );
+        assert_eq!(
+            store
+                .get_outgoing_barrier(&fixture.operation, fixture.network.domain)
+                .unwrap(),
+            OutgoingBarrier::Unsealed,
+            "the live source stays Unsealed: only its isolated clone was ever driven to Seal"
+        );
+    }
+}
+
 pub(super) async fn run(
     fixture: &mut Fixture,
     candidate_path: &Path,
