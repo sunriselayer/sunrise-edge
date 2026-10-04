@@ -142,19 +142,43 @@ regression passes on the earlier captured host binary. A real compiled
 changed-committee run has reached e2 after genuine incoming registration,
 Unbond, retained early-Withdraw refusals, e1 Seal and e2 original-escrow claim;
 it has not completed. Later five-member participation, eligible process
-withdrawals and final-head complete host gates remain unproven. This is not
+withdrawals and final-head complete host gates remain unproven. The captured
+`4f0daba` compiled run subsequently failed after 2683.34 seconds, just after
+genuine e2 F registration: receipt query returned
+`Transport(TruncatedResponseHeaders)`. The host/connection cause is not yet
+proved; no automatic retry or wider timeout supplies acceptance. This is not
 Delivery 3, PostgreSQL/DO/D1 activation or production readiness.
 
 The dependent process fixture now explicitly selects the same-committee
 baseline or changed-committee recurrence; a coincidentally unchanged committee
 cannot silently skip the latter. It retains real F-required ordered envelopes
-and posts them to the next actual epoch, expecting signature-domain refusal
+and posts them to the next actual epoch, expecting current-policy signature refusal
 with every replica's physical snapshot and high QC unchanged. Historical
 signer-free hosts also probe all four ordered mutation routes as absent. These
 additional assertions are implemented, not yet executed on the final host
 head. Retired-member fresh admission, authenticated behind-tail scanning,
 live artifact/startup tampering and import/Seal race coverage remain open
 until their actual independent acceptance controls pass.
+
+Core `ef2e5d2` has exact-head independent Opus code APPROVE. Its ongoing
+selected full profile has genuinely passed the corrected pre-index refusal
+and e0/e1/e2 file-backed Seal/import/activation/reopen/fence tests. The complete
+profile and original seven-epoch unlock test remain pending; these individual
+passes do not substitute for the aggregate or PostgreSQL fault profile.
+
+The earlier captured bounded fixture binary passed the genuine seven-epoch
+delay acceptance in 5563.87 seconds: repeated original-rooted Seal/import/
+activation reached the actual U8, then retired D and never-committee G
+withdrew successfully with exact replay/state/fencing checks. Its source was
+captured before the final source-index audit and round-local warrant batching;
+it is not the final `ef2e5d2` full profile. The later five-member F-required
+quorums belong to the still-incomplete process acceptance, not this pass.
+
+The HTTP failure has a reproduced transport phase defect: both actual complete
+GET/POST requests reach the real handler, then lose all response bytes at the
+100 ms ingress idle deadline while that handler waits 750 ms. No timeout was
+increased and no retry was used. A phase-owned fix is under validation; this
+small reproduction is not a successful rerun of the failed e2 process case.
 
 **Completed architecture-first work window, 2026-10-02:** approximately eight
 hours, from 13:50 until 21:50 Asia/Singapore. Establish the

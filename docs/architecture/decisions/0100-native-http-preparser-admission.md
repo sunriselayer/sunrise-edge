@@ -18,7 +18,7 @@ connections cannot bypass the existing synchronous-work admission boundary.
   connection.
 
   **Finite HTTP/1 lifecycle.** The server applies a total header-read deadline,
-  an idle deadline between socket reads, a total deadline while collecting
+  an idle deadline between socket reads during request input, a total deadline while collecting
   the one bounded request body, and an idle deadline while writing the
   response plus a total deadline from the first response write. HTTP/1
   keep-alive is disabled, limiting each
@@ -27,6 +27,14 @@ connections cannot bypass the existing synchronous-work admission boundary.
   so a body timeout cannot abandon a state-machine or database operation that
   has already started. The existing 16 MiB plus 512-byte framing body ceiling
   remains unchanged.
+
+  Amendment, 2026-10-04: request-read idle ends when the bounded body collector
+  resolves, before router work or terminal input refusal. Hyper's actual socket
+  disconnect checks continue, without reapplying an ingress idle timer during
+  application processing. This private per-connection phase changes no header,
+  body, connection, response-write or operation limits and supplies no protocol
+  authority. Real complete GET/POST requests with a delayed handler distinguish
+  this boundary from the retained slow-request and stalled-response controls.
 
   **Policy and compatibility.** `serve` retains its existing public signature
   and uses a conservative bounded default. `serve_with_policy` permits an

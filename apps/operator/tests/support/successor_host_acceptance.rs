@@ -1217,9 +1217,18 @@ fn receipts(
         sunrise_edge_client::RequestId::new(request).unwrap();
     let mut agreed: Option<sunrise_edge_client::HttpReceiptQueryResult> = None;
     for host in hosts {
-        let receipt = Client::new(transport(host.address))
+        let receipt: sunrise_edge_client::HttpReceiptQueryResult = Client::new(transport(host.address))
             .query_receipt(request_id)
-            .unwrap();
+            .unwrap_or_else(|error: sunrise_edge_client::error::ClientError| {
+                panic!(
+                    "receipt query failed: validator={} process={} address={} writer_generation={} request_id={} error={error:?}",
+                    hex(host.validator.as_bytes()),
+                    host.child.id(),
+                    host.address,
+                    host.generation,
+                    hex(&request)
+                )
+            });
         if let Some(previous) = &agreed {
             assert_eq!(
                 previous, &receipt,
