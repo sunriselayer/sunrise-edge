@@ -110,6 +110,9 @@ Adopt [recurring successor serving](../recurring-successor-serving.md):
 
 ## Consequences and acceptance
 
+Amendment, 2026-10-04: the cost and test-profile descriptions below clarify
+the reviewed implementation; they do not change the trust or acceptance contract.
+
 - **Explicit growing cost.** Each link is verified, and replay work includes
   its actual accumulated state and history. The current implementation also
   clones historical owner/committee material across links; total work can
