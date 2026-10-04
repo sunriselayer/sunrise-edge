@@ -89,6 +89,20 @@ contracts; they do not define protocol rules.
 
 ## First-successor serving and immutable transport
 
+- [Host runtime pieces](../../apps/operator/src/host_runtime.rs) own the
+  shared local Ed25519 signer, original-root fee check and generation-bound
+  attempt identities. Each host retains its provider-specific startup order,
+  fence claim and original versus successor authority.
+  [Original SQLite composition](../../apps/operator/src/sqlite_source_host.rs)
+  binds existing paid, FastVote and ordered Seal engines to one owning store;
+  it never installs genesis or activates a successor. The PostgreSQL host
+  still mounts no Seal capability.
+- [Host query configuration](../../apps/operator/src/host_protocol_context.rs)
+  carries the independently pinned complete resolver schedule. The shared
+  native HTTP query projection resolves the effective epoch freshly, and
+  rejects schedule or protocol disagreement. Read-only advertised context
+  does not replace the client's independently expected signing context.
+
 - [Core authority](../../crates/node-core/src/serving_authority.rs) owns the
   source-free verifier, private issuer-bound warrants and shared invocation
   gate. [Protected runtime slot](../../crates/runtime/src/successor_serving.rs)

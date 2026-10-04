@@ -21,13 +21,18 @@ proposal/vote/certificate/observer routes carry the same candidate. SDK reuses
 the owning core codecs; the CLI stages the certificate and constructs the
 candidate under explicit local pins.
 
-The callable native path is a library composition: the host supplies the real
-reconstruction port and the same owning SQLite store's Seal capability.
-`ordered_seal` provides the external preparation executable, not a serving
-host. The supplied PostgreSQL host uses `seal: None`; receiving a candidate
-does not enable it. Four-store acceptance uses the Rust CLI entry point over
-real TCP, with an external preparation binary. Those tests are not an external
-network-submit process or a shipped native SQLite serving executable.
+The callable native path supplies the real reconstruction port and the same
+owning SQLite store's Seal capability. The operator's `sqlite_source_host`
+composes those existing dispatchers over independently pinned original trust
+and existing Ordinary, Unsealed files. It claims one writer generation with
+explicit offline coordination, checks the committed marker, fee policy,
+committee and local key under that generation, and refuses non-loopback
+listeners. It never installs, resets, imports or activates a namespace.
+The [composition contract](decisions/0192-verified-sqlite-source-host.md) keeps
+query projection separate from signing authority and transport lifetime
+separate from protocol correctness. `ordered_seal` remains unsigned preparation.
+The PostgreSQL host supplies `seal: None`; receiving a candidate does not enable
+it. Exact process/test and release evidence remain only in TODO.
 
 The exact `ReadinessSubject` names the separate complete local hash-suite
 schedule, adjacent successor set and semantic cut. Verify all successor keys,

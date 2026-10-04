@@ -23,19 +23,39 @@ does not gain that capability by receiving a candidate.
 
 ## Host composition boundary
 
-The preparation command below is a shipped executable. Seal execution uses
-the `native-http` library with an explicitly composed reconstruction port and
-the same SQLite store's optional Seal capability. The supplied PostgreSQL host
-does not compose that port, and no supplied native SQLite serving executable
-turns preparation plus network submission into a turnkey deployment. Provide
-and verify that host composition before using the submission example; a
-successful preparation does not make an unsupported host capable of Seal.
+Start one `sqlite_source_host` per independently owned outgoing namespace.
+The host consumes original trusted pins and existing Ordinary, Unsealed files;
+it does not bootstrap or repair them. Stop competing writers first. The explicit
+confirmation permits one writer-fence advance, not an authority bypass:
 
-The repository's four-store acceptance harness invokes the Rust CLI entry
-point in-process over real TCP and runs preparation as an external compiled
-binary. It does not demonstrate an external compiled network-submit process
-or authorize a live-provider deployment. Implementation and release gates
-remain in [TODO.md](../../TODO.md).
+```sh
+cargo run -p sunrise-edge-operator --bin sqlite_source_host -- \
+  --chain-id "$chain" --protocol-version "$protocol" --epoch "$epoch" \
+  --domain "$domain" --suite "$suite" \
+  --genesis-manifest genesis.bin --expected-genesis-digest "$genesis_digest" \
+  --validator-id "$validator_id" --signing-key-file "$signer_key" \
+  --state-db "$state_db" --blob-db "$blob_db" \
+  --listen 127.0.0.1:8000 --created-checkpoint "$checkpoint" \
+  --timeout-seconds 30 --max-concurrent 16 \
+  --confirm-offline-fence-advance
+```
+
+Repeat `--suite` for the complete independently configured schedule. The host
+requires `--timeout-seconds` within 1..30, the existing native per-request
+authority bound, and `--max-concurrent` within 1..256. A client's whole-workflow
+deadline is separate; a long deadline does not enlarge a validator's authority.
+The host
+requires the original causal genesis profile, exact installed marker, fee
+policy and original committee, and the local member's actual registered key.
+Deciding storage reads use the newly claimed generation; refusal after that
+claim can still advance the fence, but never installs business state or grants
+serving permission. Listening is loopback-only. Use distinct addresses and
+state/blob/key files for each validator and record those addresses in the
+existing ordered network configuration.
+
+This native process is transport convenience, not a protocol requirement or
+public-provider deployment. The PostgreSQL host does not compose Seal.
+Actual test/process and release evidence remain in [TODO.md](../../TODO.md).
 
 ## Prepare and stage exact material
 
@@ -69,7 +89,7 @@ eligible successor set, empty-prefix extension and selected ancestry.
 
 ## Submit through ordinary ordered consensus
 
-Against validators with the explicit library composition above, use the
+Against validators with the explicit verified composition above, use the
 existing [ordered network client](ordered-economics.md):
 
 ```sh
