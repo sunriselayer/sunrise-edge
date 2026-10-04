@@ -27,6 +27,9 @@ mod successor_replacement;
 #[path = "successor_chain.rs"]
 mod successor_chain;
 
+#[path = "successor_recurring_delay.rs"]
+mod successor_recurring_delay;
+
 struct Artifacts<'a> {
     saved: &'a SavedBusinessCut,
     history: &'a [OrderedHistoryHeightMaterial],

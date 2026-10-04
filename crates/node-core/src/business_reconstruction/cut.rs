@@ -384,6 +384,7 @@ fn derive_source_cut_with_base<
 /// producer: ordinary source export, saved cut, import and readiness keep
 /// their original empty-three-chain check unchanged. The owning original
 /// completion supplies the exact authenticated block being accepted.
+#[cfg(test)]
 pub(crate) fn verify_live_seal_closure<
     S: DurablePortableSnapshotRepository + ?Sized,
     B: PortableBlobRepository + ?Sized,
