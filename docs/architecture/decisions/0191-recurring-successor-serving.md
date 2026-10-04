@@ -2,9 +2,13 @@
 
 Date: 2026-10-04 (Asia/Singapore)
 
-Status: **Proposed**. This is pre-code design awaiting fresh independent
-review. It authorizes no implementation, serving or deployment, and it claims
-no completion. Work status and acceptance evidence remain only in
+Status: **Accepted pre-code design** after fresh independent Opus APPROVE
+at `5ee07de` on 2026-10-04. The review's nonblocking clarifications are
+incorporated: the memory-only constructor is hidden and retains the ordinary
+Seal port but no successor port; only the private gate supplies authority,
+activation puts replace same-key plan rows, and registration owns its derived
+live context. This authorizes implementation, not serving, deployment or
+completion. Work status and acceptance evidence remain only in
 [TODO.md](../../../TODO.md).
 
 ## Context

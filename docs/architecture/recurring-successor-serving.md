@@ -1,14 +1,15 @@
 # Recurring successor serving
 
-This is the **Proposed** design contract of
+This is the **Accepted pre-code** design contract of
 [DR-0191](decisions/0191-recurring-successor-serving.md). It extends, without
 rewriting, the accepted [first successor serving](first-successor-serving.md)
 ([DR-0189](decisions/0189-first-successor-serving.md)) and
 [first-epoch ordered Seal](ordered-seal.md)
 ([DR-0187](decisions/0187-first-epoch-ordered-seal.md)) contracts from one
-link to an ordered chain of links. It is pre-code design awaiting fresh
-independent review and grants no implementation, serving or deployment
-authority. Current status belongs only in [TODO.md](../../TODO.md). Source
+link to an ordered chain of links. Fresh independent Opus approved the design
+at `5ee07de` on 2026-10-04, with the implementation clarifications below. It
+authorizes implementation, not serving or deployment. Current status belongs
+only in [TODO.md](../../TODO.md). Source
 references are to `1b86d4a`.
 
 ## 1. Model and fixed invariants
@@ -208,7 +209,8 @@ The runtime therefore owns one memory-only checked constructor:
 ```rust
 impl MemoryDurableStateStore {
     /// Ordinary in-memory data fixture preloaded from checked import batches.
-    /// Grants no lifecycle, activation, serving or Seal capability.
+    /// Not a restore or authority constructor; successor capability is absent.
+    #[doc(hidden)]
     pub fn new_bound_from_import_batches(
         binding: &ImportBinding, active_writer_fence: WriterFenceGeneration,
         batches: &[ImportBatch],
@@ -235,7 +237,12 @@ It is `pub` only because core is another crate. What it does:
   and byte limits.
 - The resulting lifecycle is Ordinary, the barrier Unsealed, the slot
   Inactive, with no successor validator and no receipt beyond the plan
-  receipt rows.
+  receipt rows. The existing domain-bound memory `outgoing_seal_repository`
+  getter remains `Some`, but `successor_serving_repository` is `None`.
+  The private replay gate refuses Seal. All core Seal consumers resolve
+  through `ServingGate::seal_port`; an architecture regression check forbids
+  direct getter calls outside that owner in non-test core code. Port availability
+  is not verified serving or Seal authority.
 
 SQLite, PostgreSQL and Durable Objects gain nothing: there is no production
 restore, no import-origin bypass, and no provider write capability.
@@ -262,8 +269,10 @@ Core calls it only from the private `ReconstructionBase` bootstrap:
    these mutations and that single real receipt, with no object changes.
 3. **Postcondition.** Capture the overlay with `capture_import_target`. Its
    `raw_rows(&snapshot, false)` must equal the plan rows merged in locator
-   order with the activation mutations and Seal receipt. Referenced blobs
-   must equal the plan blobs.
+   order with the activation mutations and Seal receipt. An activation Put
+   replaces the prior plan State row at the same key; it never creates a
+   second row or silently keeps the old epoch value. Referenced blobs must
+   equal the plan blobs.
    - This is the existing logical equality of `verify_prefix`
      (`inactive_import.rs:291`).
    - It excludes only physical state revisions and head revisions.
@@ -398,7 +407,7 @@ preflight, admission, `require_pristine` and completion.
 pub(crate) struct RegistrationScope<'p> {     // private fields
     profile: &'p VerifiedAdmissionProfile,     // immutable e_0 causal profile
     economics: &'p FastPathEconomicsPolicy,    // signed genesis economics
-    live_context: &'p PublicationContext,      // genuine registration context
+    live_context: PublicationContext,           // owned genuine registration context
     registry: &'p ValidatorSet,                // committee at live_context epoch
     owners: Option<&'p VerifiedOwnerRegistry>, // None exactly at e_0
 }
@@ -413,6 +422,9 @@ impl<'p> RegistrationScope<'p> {
 ```
 
 There is no caller Boolean: the policy private key scope selects the case.
+`for_epoch` derives the owned context from the immutable root's chain/protocol
+and the verified committee epoch; it never borrows a nonexistent history
+context or accepts a peer-provided context.
 
 - **Chain policy** keeps today’s rule: `profile.context() ==
   policy.context()`, live context = profile context, owners None.
