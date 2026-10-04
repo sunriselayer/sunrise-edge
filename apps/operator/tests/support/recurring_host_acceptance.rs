@@ -651,16 +651,24 @@ fn freeze_and_drain(
     }
 }
 
+/// The live authority, physical targets and exported history of one source epoch.
+struct CurrentSource<'a> {
+    authority: &'a SuccessorWorkflowAuthority,
+    targets: &'a CurrentTargets,
+    history: &'a Path,
+}
+
 fn install_next(
     executables: &CompiledExecutableSnapshot,
     fixture: &Fixture,
     links: &[Link],
-    current: &SuccessorWorkflowAuthority,
-    targets: &CurrentTargets,
-    history: &Path,
+    source: CurrentSource<'_>,
     directory: &Path,
     next_members: &[SuccessorProcessMember],
 ) -> (CurrentTargets, PathBuf, PathBuf) {
+    let current: &SuccessorWorkflowAuthority = source.authority;
+    let targets: &CurrentTargets = source.targets;
+    let history: &Path = source.history;
     let cut: PathBuf = directory.join("business-cut");
     std::fs::create_dir(&cut).unwrap();
     let mut flags: Vec<String> = current_operator_pins(fixture, links, history);
@@ -1086,9 +1094,11 @@ pub(super) fn run(
             &inputs.executables,
             fixture,
             &links,
-            &current,
-            &targets,
-            &history,
+            CurrentSource {
+                authority: &current,
+                targets: &targets,
+                history: &history,
+            },
             &directory,
             &next_members,
         );
