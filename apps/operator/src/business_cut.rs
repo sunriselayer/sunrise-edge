@@ -16,11 +16,13 @@ use node_core::business_reconstruction::{
     BusinessReconstructionPlan,
     cut::{
         BUSINESS_CUT_STREAMS, BusinessCutPage, MAX_BUSINESS_CUT_DESCRIPTOR_BYTES,
-        VerifiedBusinessCut, derive_source_business_cut, encode_business_cut_chunk,
-        encode_business_cut_identity, encode_business_cut_package, encode_business_cut_page,
+        VerifiedBusinessCut, derive_source_business_cut, derive_successor_source_business_cut,
+        encode_business_cut_chunk, encode_business_cut_identity, encode_business_cut_package,
+        encode_business_cut_page,
     },
 };
 use node_core::ordered_economics::OrderedHistoryHeightMaterial;
+use node_core::serving_authority::LiveWarrant;
 use protocol_types::{AtomicityDomainId, Digest32};
 use runtime::DurableOperationContext;
 #[cfg(test)]
@@ -158,6 +160,36 @@ pub fn export_source_business_cut<
         let token: &PortableSnapshotToken = cut
             .source_token()
             .ok_or_else(|| invalid("missing source token"))?;
+        source.check_portable_outbox_empty_at(&operation, domain, token)?;
+        Ok(())
+    })
+}
+
+/// The same immutable exporter over a current-epoch cut derived by the
+/// core's warrant-bound successor source owner. Existing original capture
+/// remains in [export_source_business_cut].
+pub fn export_successor_source_business_cut<S, B>(
+    plan: BusinessReconstructionPlan<'_>,
+    warrant: &LiveWarrant<'_>,
+    source: &S,
+    source_blobs: &B,
+    ordered: &[OrderedHistoryHeightMaterial],
+    archive: &ImmutableArchive,
+    limits: CutArchiveLimits,
+) -> Result<CutExportProgress, CutArchiveError>
+where
+    S: DurablePortableSnapshotRepository + runtime::StructuredStateReader,
+    B: PortableBlobRepository,
+{
+    let operation: DurableOperationContext = plan.operation_context;
+    let domain: AtomicityDomainId = plan.domain;
+    let resolver: &HashSuiteResolver = plan.genesis_root.genesis_resolver();
+    let cut: VerifiedBusinessCut =
+        derive_successor_source_business_cut(plan, warrant, source, source_blobs, ordered)?;
+    publish_source_cut(&cut, resolver, archive, limits, || {
+        let token: &PortableSnapshotToken = cut
+            .source_token()
+            .ok_or_else(|| invalid("missing successor source token"))?;
         source.check_portable_outbox_empty_at(&operation, domain, token)?;
         Ok(())
     })

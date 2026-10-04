@@ -82,7 +82,7 @@ pub(in crate::commands) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Res
         println!("{HELP}");
         return Ok(());
     }
-    let specs: Vec<crate::args::FlagSpec> = [
+    let mut specs: Vec<crate::args::FlagSpec> = [
         "--target-validator",
         "--fastvote-network",
         "--fastvote-genesis-manifest",
@@ -105,7 +105,8 @@ pub(in crate::commands) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Res
     .into_iter()
     .map(scalar)
     .collect();
-    let parsed: ParsedArgs = parse_flags(args, &specs)?;
+    specs.extend(super::super::successor_pins::successor_flag_specs(true));
+    let (parsed, schedules) = super::super::hash_suite_pins::parse_pinned_flags(args, &specs)?;
     // One deadline covers manifest/genesis loading through the final mutation.
     let budget: OperationBudget = parse_deadline(&parsed)?;
     // Every cheap, purely local flag (no file I/O) decodes first and fails
@@ -133,7 +134,8 @@ pub(in crate::commands) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Res
     };
     let expected: sunrise_edge_client::ExpectedProtocolContext =
         crate::commands::standard_asset::parse_expected_context(&parsed)?;
-    let resolver: sunrise_edge_client::HashSuiteResolver = local_publication_resolver(&expected)?;
+    let resolver: sunrise_edge_client::HashSuiteResolver =
+        super::super::hash_suite_pins::publication_resolver(&expected, schedules)?;
     let context: sunrise_edge_client::PublicationContext =
         sunrise_edge_client::PublicationContext::new(
             expected.chain_id().clone(),

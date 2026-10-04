@@ -1,5 +1,6 @@
 //! Regressions exercise the production Client methods and mutation flow.
 use super::*;
+use crate::args::parse_flags;
 use crate::net::BudgetedTransport;
 use crate::test_support::{FakeTransport, query_ok};
 use crypto::SignatureSigner;

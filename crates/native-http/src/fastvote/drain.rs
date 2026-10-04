@@ -371,7 +371,7 @@ fn drain_error_class(error: &DrainSignerError) -> DrainErrorClass {
     }
 }
 
-fn drain_error_response(error: &DrainSignerError) -> Response {
+pub(crate) fn drain_error_response(error: &DrainSignerError) -> Response {
     // Only this pre-write proof absence permits a driver to fetch/import.
     // Other NotReady causes (cursor, member, CAS) require fresh progress.
     if matches!(

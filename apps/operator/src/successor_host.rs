@@ -1,4 +1,4 @@
-//! First-successor loopback serving host (DR-0189 Sections 8 and 12).
+//! Recurring-successor loopback serving host (DR-0191 Sections 7 and 12).
 //!
 //! Serves native_http::successor::successor_router for one activated SQLite
 //! import target. Startup pins the original genesis, schedule and domain,
@@ -12,13 +12,11 @@
 #![forbid(unsafe_code)]
 
 use crate::{
-    business_cut::read_business_cut_archive,
     business_pins::{BusinessPinInputs, BusinessPins, bounded, hex, operation, private_operation},
     common::{FlagSet, load_signing_key_file, parse_hex_32},
     host_protocol_context::host_query_protocol_config,
     host_runtime::FileEd25519Signer,
-    immutable_archive::ImmutableArchiveReader,
-    successor_artifacts::SuccessorArtifactFiles,
+    successor_artifacts::{SuccessorChainArtifactFiles, SuccessorChainInputs},
 };
 use ed25519_zebra::{SigningKey, VerificationKey};
 use hashing::HashSuiteResolver;
@@ -30,15 +28,11 @@ use native_http::{
     IndexedOutboxAttemptIdentity, IndexedOutboxIdentitySource, IndexedOutboxIdentitySourceError,
     NativeBlockingExecutor, NativeBlockingPolicy,
 };
-use node_core::business_reconstruction::{
-    cut::SavedBusinessCut,
-    inactive_import::{VerifiedImportPlan, verify_saved_business_import},
-};
 use node_core::genesis::VerifiedGenesisRoot;
-use node_core::ordered_economics::{
-    MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES, OrderedHistoryIdentity, decode_ordered_history_identity,
+use node_core::serving_authority::{
+    LiveAuthority, ServingAuthorityError, SuccessorChainBudget, SuccessorLinkPins,
+    VerifiedSuccessorAuthority, resolve_live_authority_chain, verify_successor_chain_authority,
 };
-use node_core::serving_authority::{LiveAuthority, ServingAuthorityError, resolve_live_authority};
 use protocol_config::ProtocolConfig;
 use protocol_types::{AtomicityDomainId, Epoch, ValidatorId};
 use runtime::{
@@ -51,14 +45,13 @@ use std::{
     ffi::OsString,
     net::SocketAddr,
     num::NonZeroUsize,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
-use sunrise_edge_client::ordered_history_archive::read_regular_archive_file;
 
 const FLAGS: &[&str] = &[
     "--chain-id",
@@ -72,6 +65,7 @@ const FLAGS: &[&str] = &[
     "--cut-dir",
     "--manifest-history-dir",
     "--certificate-dir",
+    "--successor-max-links",
     "--target-state-db",
     "--target-blob-db",
     "--validator-id",
@@ -82,7 +76,7 @@ const FLAGS: &[&str] = &[
     "--max-concurrent",
 ];
 const BOOL_FLAGS: &[&str] = &["--confirm-offline-fence-advance"];
-const HELP: &str = "First-successor loopback host only: serve. Never activates, imports, installs genesis or signs a readiness, Freeze, DrainSet or Seal control.\nRequire the same original pins as successor_activation (--chain-id --protocol-version --epoch --domain --suite --genesis-manifest --expected-genesis-digest --ordered-history-dir --cut-dir --manifest-history-dir --certificate-dir --target-state-db --target-blob-db --validator-id --signer-key-file) plus --listen 127.0.0.1:port or [::1]:port, --created-checkpoint and --confirm-offline-fence-advance (this host claims the target writer fence once and holds it).\nEvery request re-verifies the complete source-free evidence and the installed Serving record before any signing, exposure, read or commit. Optional --timeout-seconds 1..3600 (30), --max-concurrent 1..256 (16).";
+const HELP: &str = "Recurring-successor loopback host only: serve | serve-history. Never activates, imports or installs genesis; current Freeze/frontier/DrainSet/Seal controls enter the existing core owners under a fresh warrant.\nRequire the same original pins, explicit --successor-max-links and complete ordered directory role lists as successor_activation, plus --target-state-db --target-blob-db --validator-id --listen 127.0.0.1:port or [::1]:port. Serve additionally requires --signer-key-file --created-checkpoint --confirm-offline-fence-advance (claims the target writer fence once). Serve-history instead requires explicit --historical-epoch and consumes only post-Seal history material: no key loading, signing, fence advance or other routes.\nBudget and counts refuse before any genesis or artifact I/O. Every request re-verifies every link and exact target metadata. Optional --timeout-seconds 1..3600 (30), --max-concurrent 1..256 (16).";
 
 /// Correlation identities unique within the one writer generation this
 /// process claimed; a restart claims a new generation.
@@ -122,25 +116,25 @@ impl IndexedOutboxIdentitySource for GenerationIdentities {
     }
 }
 
-type ArtifactDirectories = (
-    ImmutableArchiveReader,
-    ImmutableArchiveReader,
-    ImmutableArchiveReader,
-);
-
 /// Owns the original pins, the through-h manifest identity claim, the held
 /// artifact directories and the local signer public key. It stores no
 /// verified evidence or decision: each call reruns resolve_live_authority.
 struct HostAuthority {
     pins: BusinessPins,
-    manifest_identity: OrderedHistoryIdentity,
-    directories: Mutex<Option<ArtifactDirectories>>,
+    links: Vec<SuccessorLinkPins>,
+    budget: SuccessorChainBudget,
+    artifacts: Mutex<SuccessorChainArtifactFiles>,
+    blobs: Arc<SqliteBlobStore>,
     signer_public_key: [u8; 32],
 }
 
 impl SuccessorAuthoritySource<SqliteImportTarget> for HostAuthority {
     fn genesis_root(&self) -> &VerifiedGenesisRoot {
         self.pins.root()
+    }
+
+    fn seal_blob_repository(&self) -> Option<&dyn runtime::portable::PortableBlobRepository> {
+        Some(self.blobs.as_ref())
     }
 
     fn resolve<'inv>(
@@ -150,34 +144,22 @@ impl SuccessorAuthoritySource<SqliteImportTarget> for HostAuthority {
     ) -> Result<LiveAuthority<'inv>, ServingAuthorityError> {
         let unavailable =
             |_| ServingAuthorityError::Refused("private reconstruction context unavailable");
-        let artifact_operation: DurableOperationContext =
-            private_operation().map_err(unavailable)?;
         let plan_operation: DurableOperationContext = private_operation().map_err(unavailable)?;
         // One held directory set: resolutions over it are serialized, and a
         // panic mid-resolution leaves the host refusing, never guessing.
-        let mut held = self.directories.lock().map_err(|_| {
+        let mut artifacts = self.artifacts.lock().map_err(|_| {
             ServingAuthorityError::Refused("successor artifact directories poisoned")
         })?;
-        let (cut, history, certificate): ArtifactDirectories = held.take().ok_or(
-            ServingAuthorityError::Refused("successor artifact directories unavailable"),
-        )?;
-        let mut artifacts: SuccessorArtifactFiles<'_> = SuccessorArtifactFiles::new(
-            self.pins.plan(artifact_operation),
-            cut,
-            history,
-            certificate,
-        );
-        let resolved: Result<LiveAuthority<'inv>, ServingAuthorityError> = resolve_live_authority(
+        resolve_live_authority_chain(
             store,
             context,
             self.pins.domain,
             self.pins.plan(plan_operation),
-            &self.manifest_identity,
-            &mut artifacts,
+            &self.links,
+            self.budget,
+            &mut *artifacts,
             self.signer_public_key,
-        );
-        *held = Some(artifacts.into_directories());
-        resolved
+        )
     }
 }
 
@@ -196,7 +178,14 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         println!("{HELP}");
         return Ok(());
     }
-    if values.is_empty() || values.remove(0) != "serve" {
+    if values.is_empty() {
+        return Err(HELP.into());
+    }
+    let mode: OsString = values.remove(0);
+    if mode == "serve-history" {
+        return historical::run(values);
+    }
+    if mode != "serve" {
         return Err(HELP.into());
     }
     let mut flags: FlagSet = FlagSet::parse(values, FLAGS, BOOL_FLAGS)?;
@@ -206,10 +195,9 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     if !confirmed {
         return Err("requires --confirm-offline-fence-advance: stop every other writer of this target first; this host claims its writer fence once and holds it while serving".into());
     }
-    let inputs: BusinessPinInputs = BusinessPinInputs::parse(&mut flags)?;
-    let cut_directory: PathBuf = flags.one("--cut-dir")?.into();
-    let manifest_history_directory: PathBuf = flags.one("--manifest-history-dir")?.into();
-    let certificate_directory: PathBuf = flags.one("--certificate-dir")?.into();
+    let chain: SuccessorChainInputs = SuccessorChainInputs::parse_required(&mut flags)?;
+    let inputs: BusinessPinInputs =
+        BusinessPinInputs::parse_with_history(&mut flags, chain.first_history().to_path_buf())?;
     let state_path: PathBuf = flags.one("--target-state-db")?.into();
     let blob_path: PathBuf = flags.one("--target-blob-db")?.into();
     let validator: ValidatorId = ValidatorId::new(parse_hex_32(
@@ -239,9 +227,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     serve(SuccessorHostInputs {
         listen,
         inputs,
-        cut_directory,
-        manifest_history_directory,
-        certificate_directory,
+        chain,
         state_path,
         blob_path,
         validator,
@@ -255,9 +241,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
 struct SuccessorHostInputs {
     listen: SocketAddr,
     inputs: BusinessPinInputs,
-    cut_directory: PathBuf,
-    manifest_history_directory: PathBuf,
-    certificate_directory: PathBuf,
+    chain: SuccessorChainInputs,
     state_path: PathBuf,
     blob_path: PathBuf,
     validator: ValidatorId,
@@ -268,41 +252,27 @@ struct SuccessorHostInputs {
 }
 
 fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
-    let cut_archive: ImmutableArchiveReader = ImmutableArchiveReader::open(&host.cut_directory)?;
-    let manifest_history: ImmutableArchiveReader =
-        ImmutableArchiveReader::open(&host.manifest_history_directory)?;
-    let certificate_archive: ImmutableArchiveReader =
-        ImmutableArchiveReader::open(&host.certificate_directory)?;
-    for archive in [&cut_archive, &manifest_history, &certificate_archive] {
-        for path in [&host.state_path, &host.blob_path] {
-            archive.require_output_outside(path)?;
-        }
+    let mut artifacts: SuccessorChainArtifactFiles = host.chain.open()?;
+    for path in [&host.state_path, &host.blob_path] {
+        artifacts.require_output_outside(path)?;
     }
     let pins: BusinessPins = host.inputs.load()?;
-    let manifest_identity_bytes: Vec<u8> = read_regular_archive_file(
-        manifest_history.root(),
-        Path::new("identity.bin"),
-        MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
+    let links: Vec<SuccessorLinkPins> = artifacts.pins();
+    let verified: VerifiedSuccessorAuthority = verify_successor_chain_authority(
+        pins.plan(private_operation()?),
+        &links,
+        host.chain.budget,
+        &mut artifacts,
     )?;
-    // Untrusted transport claim; every resolution re-derives and checks it.
-    let manifest_identity: OrderedHistoryIdentity =
-        decode_ordered_history_identity(&manifest_identity_bytes)?;
-    // The saved cut is re-verified only to recover the immutable binding the
-    // target must match when opened; it grants no authority.
-    let saved: SavedBusinessCut =
-        read_business_cut_archive(&pins.plan(private_operation()?), &cut_archive)?;
-    let verified: VerifiedImportPlan =
-        verify_saved_business_import(pins.plan(private_operation()?), &saved).map_err(|error| {
-            format!("successor host saved-cut reconstruction failed: {error:?}")
-        })?;
 
     let signing_key: SigningKey = load_signing_key_file(&host.key_path)?;
     let signer_public_key: [u8; 32] = VerificationKey::from(&signing_key).into();
     let namespace: SqliteNamespace =
         SqliteNamespace::new(pins.context.chain_id().clone(), host.validator, pins.domain);
     let target: SqliteImportTarget =
-        SqliteImportTarget::open_existing(&host.state_path, namespace, verified.binding())?;
-    let blobs: SqliteBlobStore = SqliteBlobStore::open_existing_writable(&host.blob_path)?;
+        SqliteImportTarget::open_existing(&host.state_path, namespace, verified.import_binding())?;
+    let blobs: Arc<SqliteBlobStore> =
+        Arc::new(SqliteBlobStore::open_existing_writable(&host.blob_path)?);
     let previous: WriterFenceGeneration = target.writer_fence()?;
     let generation: WriterFenceGeneration = previous
         .checked_next()
@@ -315,8 +285,10 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
     let genesis_digest: String = hex(&pins.root().digest().bytes());
     let authority: Arc<HostAuthority> = Arc::new(HostAuthority {
         pins,
-        manifest_identity,
-        directories: Mutex::new(Some((cut_archive, manifest_history, certificate_archive))),
+        links,
+        budget: host.chain.budget,
+        artifacts: Mutex::new(artifacts),
+        blobs: Arc::clone(&blobs),
         signer_public_key,
     });
     let target: Arc<SqliteImportTarget> = Arc::new(target);
@@ -341,7 +313,7 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
             .map_err(|error| format!("successor host query protocol configuration: {error}"))?;
     let composition: SuccessorHostComposition<SqliteImportTarget> = SuccessorHostComposition {
         store: target,
-        blobs: Arc::new(blobs),
+        blobs,
         authority,
         signer: Arc::new(FileEd25519Signer::new(validator, signing_key)),
         clock: Arc::new(SystemClock),
@@ -371,7 +343,8 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
         // Printed only after the bind, with the actual port, and flushed so
         // a supervising harness can parse it before dialing.
         println!(
-            "complete=true mode=successor-serving domain={domain} validator_id={} writer_generation={} listen={bound} genesis_digest={genesis_digest}",
+            "complete=true mode=successor-serving domain={domain} epoch={} validator_id={} writer_generation={} listen={bound} genesis_digest={genesis_digest}",
+            serving_epoch.get(),
             validator,
             generation.get(),
         );
@@ -384,9 +357,12 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+mod historical;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn arguments(listen: &str, confirm: bool) -> Vec<OsString> {
         let mut values: Vec<String> = vec!["serve".into()];
@@ -403,6 +379,7 @@ mod tests {
             ("--cut-dir", missing),
             ("--manifest-history-dir", missing),
             ("--certificate-dir", missing),
+            ("--successor-max-links", "1"),
             ("--target-state-db", "/nonexistent/state.db"),
             ("--target-blob-db", "/nonexistent/blob.db"),
             ("--validator-id", &"33".repeat(32)),

@@ -11,6 +11,7 @@ mod causal;
 #[path = "support/ordered_economics_evidence.rs"]
 mod evidence;
 mod support;
+use support::genesis_fixture;
 
 use abi::call_values::{CallValue, encode_call_value};
 use abi::package_types::PackageOrigin;

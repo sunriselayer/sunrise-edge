@@ -13,40 +13,10 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[path = "../../tests/support/causal_genesis_fixture.rs"]
+mod causal_genesis_fixture;
 #[path = "../../tests/support/genesis_fixture.rs"]
 mod genesis_fixture;
-mod causal_genesis_fixture {
-    use super::genesis_fixture::{FastVoteGenesisFixture, build_economics_fixture};
-    use ed25519_zebra::SigningKey;
-    use node_core::GenesisManifest;
-    use node_core::genesis::genesis_manifest_signing_frame;
-    use node_core::logical_generation::CommitmentProfile;
-    pub struct Fixture {
-        pub network: FastVoteGenesisFixture,
-    }
-    pub fn build(unique: &str) -> Fixture {
-        let mut network: FastVoteGenesisFixture = build_economics_fixture(unique);
-        let mut manifest: GenesisManifest =
-            node_core::decode_genesis_manifest(&network.manifest_bytes).unwrap();
-        manifest.commitment_profile = CommitmentProfile::CausalAdmission;
-        manifest.minimum_freeze_block_height = 1;
-        let key: SigningKey = SigningKey::from(sunrise_edge_devnet::DEVNET_PAID_GENESIS_SEED);
-        manifest.signature = key
-            .sign(&genesis_manifest_signing_frame(&manifest).unwrap())
-            .into();
-        network.manifest_bytes = node_core::encode_genesis_manifest(&manifest).unwrap();
-        network.manifest_digest =
-            node_core::genesis_manifest_commitment(&network.resolver, &manifest)
-                .unwrap()
-                .bytes();
-        network.request_id = [0x47; 32];
-        network.paid_intent_bytes = network.sign_transfer(network.request_id, 0, network.sender);
-        network
-            .validators
-            .sort_by_key(|validator| validator.validator_id);
-        Fixture { network }
-    }
-}
 #[path = "../../tests/business_cut/fixture.rs"]
 // The same genuine source fixture has integration-only executable/history
 // helpers. This unit target deliberately uses only its source construction.

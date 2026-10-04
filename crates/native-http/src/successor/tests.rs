@@ -293,6 +293,162 @@ async fn malformed_requests_refuse_before_identity_clock_or_authority() {
 }
 
 #[tokio::test]
+async fn recurring_controls_keep_exact_body_bounds_and_decode_before_authority() {
+    let (router, authority): (Router, Arc<StubAuthority>) = router(Decision::Original);
+    let controls: [(&str, usize); 9] = [
+        (FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH, 1),
+        (
+            FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
+            node_wire::MAX_FRONTIER_PAGE_REQUEST_BYTES,
+        ),
+        (
+            node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
+            node_wire::MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES,
+        ),
+        (
+            node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+            node_wire::MAX_DRAIN_MEMBER_CONFIRM_REQUEST_BYTES,
+        ),
+        (
+            node_wire::FASTVOTE_DRAIN_IMPORT_PATH,
+            consensus::bundle::MAX_ENCODED_BUNDLE_BYTES,
+        ),
+        (
+            node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH,
+            node_wire::MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES,
+        ),
+        (
+            node_wire::FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH,
+            node_wire::MAX_RETAINED_PUBLICATION_SOURCE_REQUEST_BYTES,
+        ),
+        (
+            node_wire::FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,
+            node_wire::MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES,
+        ),
+        (
+            node_wire::FASTVOTE_DRAIN_APPLY_PATH,
+            node_wire::MAX_DRAIN_MEMBER_APPLY_REQUEST_BYTES,
+        ),
+    ];
+    for (path, maximum) in controls {
+        let path: String = path.replace("{validator_id}", &"ab".repeat(32));
+        let (status, _): (StatusCode, Vec<u8>) =
+            send(&router, "POST", &path, Some(NODE_EVENT_MEDIA_TYPE), vec![1]).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
+        let (status, _): (StatusCode, Vec<u8>) =
+            send(&router, "POST", &path, Some("text/plain"), vec![1]).await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{path}");
+        let (status, _): (StatusCode, Vec<u8>) = send(
+            &router,
+            "POST",
+            &path,
+            Some(NODE_EVENT_MEDIA_TYPE),
+            vec![1; maximum + 1],
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{path}");
+    }
+    assert_eq!(authority.calls.load(Ordering::SeqCst), 0);
+    for _ in 0..2 {
+        let (status, body): (StatusCode, Vec<u8>) = send(
+            &router,
+            "POST",
+            FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
+            Some(NODE_EVENT_MEDIA_TYPE),
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body, b"successor-original-genesis-refused");
+    }
+    assert_eq!(
+        authority.calls.load(Ordering::SeqCst),
+        2,
+        "fresh authority on every valid control invocation"
+    );
+}
+
+struct RefusingHistoricalPolicy(AtomicUsize);
+
+impl SuccessorHistoricalPolicySource<MemoryDurableStateStore> for RefusingHistoricalPolicy {
+    fn ordered_policy(
+        &self,
+        _store: &MemoryDurableStateStore,
+        _context: &DurableOperationContext,
+    ) -> Result<OrderedEconomicsPolicy, ServingAuthorityError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err(ServingAuthorityError::Refused("test history refusal"))
+    }
+}
+
+#[tokio::test]
+async fn historical_material_router_mounts_only_three_read_routes_and_reverifies() {
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    let policy_source: Arc<RefusingHistoricalPolicy> =
+        Arc::new(RefusingHistoricalPolicy(AtomicUsize::new(0)));
+    let router: Router = successor_history_router(SuccessorHistoricalComposition {
+        store: Arc::new(MemoryDurableStateStore::new(fence)),
+        policy_source: policy_source.clone(),
+        blobs: Arc::new(MemoryBlobStore::default()),
+        clock: Arc::new(SystemClock),
+        identities: Arc::new(Identities(AtomicU64::new(1))),
+        writer_fence: fence,
+        operation_timeout: Duration::from_secs(5),
+        domain: AtomicityDomainId::new([1; 32]).unwrap(),
+        blocking_executor: NativeBlockingExecutor::new(NativeBlockingPolicy::new(
+            NonZeroUsize::new(2).unwrap(),
+        )),
+    })
+    .unwrap();
+    for path in [
+        node_wire::ordered_history::ORDERED_HISTORY_HEIGHT_PATH,
+        node_wire::ordered_history::ORDERED_HISTORY_COMPONENT_PATH,
+    ] {
+        let (status, _): (StatusCode, Vec<u8>) =
+            send(&router, "POST", path, Some(NODE_EVENT_MEDIA_TYPE), vec![1]).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(policy_source.0.load(Ordering::SeqCst), 0);
+    for _ in 0..2 {
+        let (status, _): (StatusCode, Vec<u8>) = send(
+            &router,
+            "GET",
+            node_wire::ordered_history::ORDERED_HISTORY_SUMMARY_PATH,
+            None,
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+    assert_eq!(policy_source.0.load(Ordering::SeqCst), 2);
+    for path in [
+        NODE_EVENT_PATH,
+        QUERY_CONTEXT_PATH,
+        FASTVOTE_PREPARE_PATH,
+        FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
+        ORDERED_ECONOMICS_PROPOSE_PATH,
+        node_wire::FEE_CLAIM_PREPARE_PATH,
+        "/v1/receipts/1111111111111111111111111111111111111111111111111111111111111111",
+    ] {
+        for method in ["GET", "POST"] {
+            let response: Response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+        }
+    }
+    assert_eq!(policy_source.0.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn original_genesis_is_an_explicit_refusal_never_a_serving_fallback() {
     let (router, authority): (Router, Arc<StubAuthority>) = router(Decision::Original);
     let selector: String = "11".repeat(32);

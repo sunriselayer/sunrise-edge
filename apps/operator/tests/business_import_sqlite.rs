@@ -1,15 +1,12 @@
 //! Actual compiled import command over a genuinely frozen/drained SQLite source.
 //! This is inactive installation evidence, not provider or activation acceptance.
 
-#[path = "support/genesis_fixture.rs"]
-pub mod genesis_fixture;
-mod support {
-    pub use super::genesis_fixture;
-}
 #[path = "support/causal_genesis_fixture.rs"]
 mod causal_genesis_fixture;
 #[path = "business_cut/fixture.rs"]
 mod fixture;
+#[path = "support/genesis_fixture.rs"]
+pub mod genesis_fixture;
 
 use fixture::{Directory, Fixture, copy_files, files};
 use node_core::business_reconstruction::SourceBusinessSnapshot;

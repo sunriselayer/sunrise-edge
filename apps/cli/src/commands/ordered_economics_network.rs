@@ -710,16 +710,7 @@ fn run_candidate_wrap<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
             &context,
             Some(domain),
         )? {
-            Some(workflow) => {
-                if ordered_kind
-                    == sunrise_edge_client::ordered_economics_core::OrderedOperationKind::BondRegistration
-                {
-                    return Err(invalid(
-                        "successor-control-unsupported: initial bond registration is unavailable at a first successor",
-                    ));
-                }
-                workflow.ordered_policy().clone()
-            }
+            Some(workflow) => workflow.ordered_policy().clone(),
             None => load_trusted_ordered_policy(
                 Path::new(manifest),
                 &resolver,
@@ -765,11 +756,6 @@ fn run_freeze_build<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), Cli
         "--out",
     ]);
     let (parsed, schedules) = super::hash_suite_pins::parse_pinned_flags(args, &specs)?;
-    if super::successor_pins::successor_requested(&parsed) {
-        return Err(invalid(
-            "successor-control-unsupported: Freeze is unavailable at a first successor",
-        ));
-    }
     let inputs: LoadedPolicyInputs = load_policy_and_endpoints(&parsed, schedules)?;
     if inputs.policy.minimum_freeze_block_height() == 0 {
         return Err(invalid(
@@ -827,7 +813,7 @@ fn run_freeze_build<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), Cli
 const MAX_DRAIN_UNION_IDENTITY_REPORT_BYTES: usize = 8 * 1024;
 
 fn drain_set_build_flag_specs() -> Vec<crate::args::FlagSpec> {
-    vec![
+    let mut flags: Vec<crate::args::FlagSpec> = vec![
         scalar("--drain-selection-manifest"),
         scalar("--drain-union-identity"),
         scalar("--request-id"),
@@ -839,7 +825,9 @@ fn drain_set_build_flag_specs() -> Vec<crate::args::FlagSpec> {
         scalar("--ordered-genesis-manifest"),
         scalar("--ordered-expected-genesis-digest"),
         scalar("--out"),
-    ]
+    ];
+    flags.extend(super::successor_pins::successor_flag_specs(false));
+    flags
 }
 
 /// Offline construction of one `OrderedCandidate` of kind `DrainSet` from
@@ -919,14 +907,24 @@ their own durable union marker. Submit with economics network-submit --candidate
     // one this operator actually trusts before any candidate bytes are
     // produced; never contacts a network endpoint.
     let policy: sunrise_edge_client::ordered_economics_core::OrderedEconomicsPolicy =
-        load_trusted_ordered_policy(
-            Path::new(parsed.require("--ordered-genesis-manifest")?),
-            &resolver,
+        match super::successor_pins::load_successor_pins(
+            &parsed,
+            parsed.require("--ordered-genesis-manifest")?,
             expected_digest,
+            &resolver,
             &context,
-            domain,
-        )
-        .map_err(failure)?;
+            Some(domain),
+        )? {
+            Some(workflow) => workflow.ordered_policy().clone(),
+            None => load_trusted_ordered_policy(
+                Path::new(parsed.require("--ordered-genesis-manifest")?),
+                &resolver,
+                expected_digest,
+                &context,
+                domain,
+            )
+            .map_err(failure)?,
+        };
 
     // (a) the bounded, locally supplied selection of already-signed votes --
     // the exact same manifest grammar/bounds `fastvote-drain-local-ready`

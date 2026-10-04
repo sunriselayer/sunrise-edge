@@ -1,10 +1,10 @@
-//! Positive first-successor process acceptance over the genuine sealed
-//! source produced by ordered_seal_sqlite_acceptance.
+//! Shipped successor process acceptance over the genuine sealed source
+//! produced by ordered_seal_sqlite_acceptance.
 //!
-//! Boundary: this operator world stages the SAME four-member committee as
-//! the outgoing epoch (the genuine A/B/C/D source re-certified for e+1).
-//! Real A/B/C/E replacement is owned by the independently passing core
-//! tests. Everything here crosses real process and TCP boundaries: the
+//! The independently staged target identities and keys must exactly match
+//! the committee authenticated by the sealed chain. No original-committee
+//! ordering is used to route successor requests. Every operation crosses real
+//! process and TCP boundaries: the
 //! accepted Seal suffix is exported from the sealed read-only stores by the
 //! shipped CLI, four successor_activation executables install it, four
 //! successor_host processes serve it on loopback, and independently loaded
@@ -39,8 +39,63 @@ use sunrise_edge_client::{
     load_successor_workflow_from_directories,
 };
 
+#[path = "recurring_host_acceptance.rs"]
+mod recurring;
+
 /// Host checkpoint for FastVote preparation and fee-claim preparation.
 const HOST_CHECKPOINT: u64 = 1_000;
+
+fn original_member_index(fixture: &Fixture, seed: [u8; 32]) -> usize {
+    fixture
+        .network
+        .validators
+        .iter()
+        .position(|member| member.seed == seed)
+        .expect("the independently derived original identity must exist")
+}
+
+fn member_from_seed(seed: [u8; 32]) -> SuccessorProcessMember {
+    let key: ed25519_zebra::SigningKey = ed25519_zebra::SigningKey::from(seed);
+    let public: [u8; 32] = ed25519_zebra::VerificationKey::from(&key).into();
+    SuccessorProcessMember {
+        validator_id: ValidatorId::new(public),
+        seed,
+    }
+}
+
+/// A genuine minimal current-member quorum containing the actual later
+/// registrant F when present. Core still verifies every vote and power.
+fn current_quorum_ids(set: &validator_set::ValidatorSet) -> Vec<ValidatorId> {
+    let f: ValidatorId = member_from_seed([0xf6; 32]).validator_id;
+    let mut chosen: Vec<ValidatorId> = Vec::new();
+    let mut power: u64 = 0;
+    if let Some(member) = set.get(f) {
+        chosen.push(f);
+        power = member.voting_power;
+    }
+    for member in set.validators() {
+        if power >= set.quorum_threshold() {
+            break;
+        }
+        if member.id == f {
+            continue;
+        }
+        chosen.push(member.id);
+        power = power.checked_add(member.voting_power).unwrap();
+    }
+    assert!(power >= set.quorum_threshold());
+    chosen.sort_unstable();
+    chosen
+}
+
+/// Independently supplied current member, aligned with its staged target.
+#[derive(Clone)]
+pub struct SuccessorProcessMember {
+    /// Physical namespace and consensus identity of this target.
+    pub validator_id: ValidatorId,
+    /// Actual member signing seed, authenticated against the verified committee.
+    pub seed: [u8; 32],
+}
 
 /// Original directories owned by the conditional readiness caller.
 pub struct SuccessorProcessInputs {
@@ -54,6 +109,8 @@ pub struct SuccessorProcessInputs {
     pub competing_certificate: PathBuf,
     /// Four staged import targets, each with state.db, body.db, private.key.
     pub targets: Vec<PathBuf>,
+    /// Actual successor members in the same order as `targets`.
+    pub members: Vec<SuccessorProcessMember>,
     /// The immutable import binding the targets were staged under.
     pub binding: runtime::inactive_import::ImportBinding,
 }
@@ -88,12 +145,13 @@ fn pins(command: &mut Command, fixture: &Fixture, inputs: &SuccessorProcessInput
         inputs.plan_history.to_str().unwrap(),
         "--cut-dir",
         inputs.cut.to_str().unwrap(),
+        "--successor-max-links",
+        "1",
     ]);
 }
 
 fn target_flags(
     command: &mut Command,
-    fixture: &Fixture,
     inputs: &SuccessorProcessInputs,
     export: &Path,
     certificate: &Path,
@@ -110,7 +168,7 @@ fn target_flags(
         "--target-blob-db",
         target.join("body.db").to_str().unwrap(),
         "--validator-id",
-        &hex(fixture.network.validators[index].validator_id.as_bytes()),
+        &hex(inputs.members[index].validator_id.as_bytes()),
         "--signer-key-file",
         target.join("private.key").to_str().unwrap(),
     ]);
@@ -126,7 +184,7 @@ fn activation(
     let mut command: Command = Command::new(env!("CARGO_BIN_EXE_successor_activation"));
     command.arg("activate");
     pins(&mut command, fixture, inputs);
-    target_flags(&mut command, fixture, inputs, export, certificate, index);
+    target_flags(&mut command, inputs, export, certificate, index);
     command.output().unwrap()
 }
 
@@ -135,6 +193,7 @@ struct HostProcess {
     child: Child,
     address: SocketAddr,
     generation: u64,
+    validator: ValidatorId,
 }
 
 impl Drop for HostProcess {
@@ -159,14 +218,7 @@ fn start_host(
     let mut command: Command = Command::new(env!("CARGO_BIN_EXE_successor_host"));
     command.arg("serve");
     pins(&mut command, fixture, inputs);
-    target_flags(
-        &mut command,
-        fixture,
-        inputs,
-        export,
-        &inputs.certificate,
-        index,
-    );
+    target_flags(&mut command, inputs, export, &inputs.certificate, index);
     command
         .args([
             "--listen",
@@ -193,6 +245,7 @@ fn start_host(
     HostProcess {
         address: field(&line, "listen=").parse().unwrap(),
         generation: field(&line, "writer_generation=").parse().unwrap(),
+        validator: inputs.members[index].validator_id,
         child,
     }
 }
@@ -394,15 +447,13 @@ fn load_workflow(
 }
 
 fn ordered_endpoints(
-    fixture: &Fixture,
     hosts: &[Option<&HostProcess>],
 ) -> Vec<OrderedEconomicsEndpoint<LoopbackHttpTransport>> {
     hosts
         .iter()
-        .zip(&fixture.network.validators)
-        .filter_map(|(host, validator)| {
+        .filter_map(|host: &Option<&HostProcess>| {
             host.map(|host: &HostProcess| OrderedEconomicsEndpoint {
-                validator_id: validator.validator_id,
+                validator_id: host.validator,
                 endpoint_label: host.address.to_string(),
                 client: Client::new(transport(host.address)),
             })
@@ -410,15 +461,11 @@ fn ordered_endpoints(
         .collect()
 }
 
-fn fastvote_endpoints(
-    fixture: &Fixture,
-    hosts: &[HostProcess],
-) -> Vec<FastVoteEndpoint<LoopbackHttpTransport>> {
+fn fastvote_endpoints(hosts: &[HostProcess]) -> Vec<FastVoteEndpoint<LoopbackHttpTransport>> {
     hosts
         .iter()
-        .zip(&fixture.network.validators)
-        .map(|(host, validator)| FastVoteEndpoint {
-            validator_id: validator.validator_id,
+        .map(|host: &HostProcess| FastVoteEndpoint {
+            validator_id: host.validator,
             endpoint_label: host.address.to_string(),
             client: Client::new(transport(host.address)),
         })
@@ -495,13 +542,38 @@ fn certify_and_apply_paid_intent(
     workflow: &SuccessorWorkflowAuthority,
     signed: &execution::paid_execution::SignedPaidIntent,
 ) -> Vec<sunrise_edge_client::FastVoteApplyAttempt> {
-    let endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> =
-        fastvote_endpoints(fixture, hosts);
+    let retained: PathBuf = paid_intent_path(fixture, signed.intent.request_id);
+    let signed_bytes: Vec<u8> =
+        execution::paid_execution::encode_signed_paid_intent(signed).unwrap();
+    match std::fs::read(&retained) {
+        Ok(previous) => assert_eq!(
+            previous, signed_bytes,
+            "an exact paid request never changes its retained bytes"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::write(&retained, &signed_bytes).unwrap();
+        }
+        Err(error) => panic!("cannot retain signed process input: {error}"),
+    }
+    let endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> = fastvote_endpoints(hosts);
     let certifier: &consensus::FastPathCertifier = workflow.fastvote_certifier();
+    let f: ValidatorId = member_from_seed([0xf6; 32]).validator_id;
+    let selected: Vec<ValidatorId> = current_quorum_ids(certifier.validator_set());
+    let certificate_endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> = endpoints
+        .iter()
+        .filter(|endpoint| {
+            certifier.validator_set().get(f).is_none() || selected.contains(&endpoint.validator_id)
+        })
+        .map(|endpoint| FastVoteEndpoint {
+            validator_id: endpoint.validator_id,
+            endpoint_label: endpoint.endpoint_label.clone(),
+            client: Client::new(endpoint.client.transport().clone()),
+        })
+        .collect();
     let deadline: Instant = Instant::now() + Duration::from_secs(1800);
     let cap: Duration = Duration::from_secs(300);
     let (certificate, _attempts) = sunrise_edge_client::collect_fastvote_certificate(
-        &endpoints,
+        &certificate_endpoints,
         certifier,
         &fixture.network.resolver,
         signed,
@@ -509,6 +581,13 @@ fn certify_and_apply_paid_intent(
         cap,
     )
     .unwrap();
+    if certifier.validator_set().get(f).is_some() {
+        assert_eq!(hosts.len(), 5);
+        assert!(
+            certificate.votes.iter().any(|vote| vote.validator == f),
+            "F's own host supplied its real current paid vote"
+        );
+    }
     let published = sunrise_edge_client::collect_fastvote_availability_certificate(
         &endpoints,
         certifier,
@@ -559,6 +638,13 @@ fn certify_and_apply_paid_intent(
     applied
 }
 
+fn paid_intent_path(fixture: &Fixture, request_id: [u8; 32]) -> PathBuf {
+    fixture
+        .directory
+        .0
+        .join(format!("successor-paid-{}.signed", hex(&request_id)))
+}
+
 /// A genuine certified paid Call at e+1 on the imported epoch-e Standard
 /// Asset instance: every input is observed through a successor host, signed
 /// only after the SDK pins confirm the verified e+1 context, certified by
@@ -571,7 +657,7 @@ fn paid_call_on_imported_instance(
 ) -> [u8; 32] {
     let context: execution::publication::PublicationContext = workflow.expected_context().clone();
     let observed: FeeObservation = observe_fee_context(fixture, hosts, &context);
-    let request_id: [u8; 32] = [0x6f; 32];
+    let request_id: [u8; 32] = epoch_request_id(context.epoch().get(), 0x6f);
     workflow.require_signing_context(&context).unwrap();
     let signed_bytes: Vec<u8> = fixture.network.sign_transfer_with(
         &context,
@@ -584,6 +670,15 @@ fn paid_call_on_imported_instance(
     let signed: execution::paid_execution::SignedPaidIntent =
         execution::paid_execution::decode_signed_paid_intent(&signed_bytes).unwrap();
     certify_and_apply_paid_intent(fixture, hosts, workflow, &signed);
+    request_id
+}
+
+/// Distinct deterministic caller-owned identifiers for every actual epoch.
+/// The epoch comes only from the independently verified workflow, never a
+/// network context hint. These identifiers are not authority or state rows.
+fn epoch_request_id(epoch: u64, tag: u8) -> [u8; 32] {
+    let mut request_id: [u8; 32] = [tag; 32];
+    request_id[1..9].copy_from_slice(&epoch.to_be_bytes());
     request_id
 }
 
@@ -617,7 +712,7 @@ fn paid_publish_and_instantiate_fresh_asset(
     let origin: PackageOrigin = PackageOrigin::unverified(
         fixture.network.chain_id.clone(),
         fixture.network.sender,
-        [0x73; 32],
+        epoch_request_id(context.epoch().get(), 0x73),
     )
     .unwrap();
     let package: public_standard_asset::StandardAssetPackage =
@@ -641,7 +736,7 @@ fn paid_publish_and_instantiate_fresh_asset(
     let code_ref: UnverifiedDependencyRef =
         UnverifiedDependencyRef::new(origin.clone(), 1, context.clone(), artifact_digest).unwrap();
 
-    let publish_request: [u8; 32] = [0x70; 32];
+    let publish_request: [u8; 32] = epoch_request_id(context.epoch().get(), 0x70);
     let observed: FeeObservation = observe_fee_context(fixture, hosts, &context);
     workflow.require_signing_context(&context).unwrap();
     let publish_intent: PaidIntent = PaidIntent {
@@ -665,7 +760,7 @@ fn paid_publish_and_instantiate_fresh_asset(
         execution::paid_execution::decode_signed_paid_intent(&publish_signed_bytes).unwrap();
     certify_and_apply_paid_intent(fixture, hosts, workflow, &publish_signed);
 
-    let instance_seed: [u8; 32] = [0x74; 32];
+    let instance_seed: [u8; 32] = epoch_request_id(context.epoch().get(), 0x74);
     let instance_record: InstanceRecord = InstanceRecord {
         context: context.clone(),
         creator: fixture.network.sender,
@@ -675,7 +770,7 @@ fn paid_publish_and_instantiate_fresh_asset(
         initializer: public_standard_asset::INITIALIZER.to_owned(),
     };
     let instance = instance_target(&fixture.network.resolver, &instance_record).unwrap();
-    let instantiate_request: [u8; 32] = [0x71; 32];
+    let instantiate_request: [u8; 32] = epoch_request_id(context.epoch().get(), 0x71);
     let observed: FeeObservation = observe_fee_context(fixture, hosts, &context);
     let instantiate_call: CallIntent = CallIntent {
         context: context.clone(),
@@ -791,6 +886,10 @@ fn successor_cli_flags(
         export.to_str().unwrap().into(),
         "--successor-certificate-dir".into(),
         inputs.certificate.to_str().unwrap().into(),
+        "--successor-max-links".into(),
+        "1".into(),
+        "--suite".into(),
+        "0:1:1:1:1:1:1:1".into(),
         "--deadline-seconds".into(),
         "1800".into(),
         "--per-request-cap-seconds".into(),
@@ -820,10 +919,15 @@ fn inspect_imported_share(
     claimant: usize,
 ) -> node_core::fee_claims::FeeClaimInspection {
     let validator = &fixture.network.validators[claimant];
+    let target_index: usize = inputs
+        .members
+        .iter()
+        .position(|member: &SuccessorProcessMember| member.validator_id == validator.validator_id)
+        .expect("the retained original claimant has a current physical target");
     let public: [u8; 32] = ed25519_zebra::VerificationKey::from(&validator.signing_key).into();
     let target: runtime_sqlite::SqliteImportTarget =
         runtime_sqlite::SqliteImportTarget::open_existing(
-            inputs.targets[claimant].join("state.db"),
+            inputs.targets[target_index].join("state.db"),
             SqliteNamespace::new(
                 fixture.network.chain_id.clone(),
                 validator.validator_id,
@@ -833,7 +937,7 @@ fn inspect_imported_share(
         )
         .unwrap();
     let blobs: SqliteBlobStore =
-        SqliteBlobStore::open_existing(inputs.targets[claimant].join("body.db")).unwrap();
+        SqliteBlobStore::open_existing(inputs.targets[target_index].join("body.db")).unwrap();
     let operation: runtime::DurableOperationContext = runtime::DurableOperationContext::new(
         target.writer_fence().unwrap(),
         runtime::StorageDeadline::new(u64::MAX / 2).unwrap(),
@@ -911,12 +1015,11 @@ fn inspect_imported_share(
 #[allow(clippy::too_many_arguments)]
 fn imported_escrow_fee_claim(
     fixture: &Fixture,
-    inputs: &SuccessorProcessInputs,
-    export: &Path,
-    network: &Path,
     hosts: &[HostProcess],
     workflow: &SuccessorWorkflowAuthority,
     view: &node_core::fee_claims::FeeClaimInspection,
+    claimant_index: usize,
+    flags: Vec<String>,
 ) -> [u8; 32] {
     use abi::call_values::{CallValue, encode_call_value};
     use execution::local_execution::{
@@ -924,11 +1027,12 @@ fn imported_escrow_fee_claim(
         encode_signed_local_execution, local_execution_signing_frame,
     };
     use node_core::fee_claims::{FeeClaimExecutionView, FeeClaimKind};
-    let claimant = &fixture.network.validators[1];
+    let claimant = &fixture.network.validators[claimant_index];
     let public: [u8; 32] = ed25519_zebra::VerificationKey::from(&claimant.signing_key).into();
     let kind: FeeClaimKind = view.entitlement.kind.expect("an unclaimed imported share");
     let next: execution::publication::PublicationContext = workflow.expected_context().clone();
-    let request: [u8; 32] = [0xA5; 32];
+    let request: [u8; 32] = epoch_request_id(next.epoch().get(), 0xA5);
+    workflow.require_signing_context(&next).unwrap();
     let leg: Option<Vec<u8>> = match kind {
         FeeClaimKind::ZeroShare => None,
         FeeClaimKind::Split | FeeClaimKind::FinalTransfer => {
@@ -1048,11 +1152,14 @@ fn imported_escrow_fee_claim(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&seed_file, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let candidate: PathBuf = fixture.directory.0.join("successor-fee-claim.candidate");
-    let mut tail: Vec<String> = successor_cli_flags(fixture, inputs, export, network);
+    let candidate: PathBuf = fixture.directory.0.join(format!(
+        "successor-fee-claim-{}.candidate",
+        next.epoch().get()
+    ));
+    let mut tail: Vec<String> = flags.clone();
     tail.extend([
         "--prepare-peer".to_string(),
-        hex(fixture.network.validators[0].validator_id.as_bytes()),
+        hex(hosts[0].validator.as_bytes()),
         "--escrow-request-id".into(),
         hex(&fixture.network.request_id),
         "--request-id".into(),
@@ -1077,7 +1184,7 @@ fn imported_escrow_fee_claim(
         ]);
     }
     cli(&["economics", "fee-claim-prepare"], tail);
-    let mut submit: Vec<String> = successor_cli_flags(fixture, inputs, export, network);
+    let mut submit: Vec<String> = flags;
     submit.extend([
         "--candidate".to_string(),
         candidate.to_str().unwrap().into(),
@@ -1085,7 +1192,10 @@ fn imported_escrow_fee_claim(
         fixture
             .directory
             .0
-            .join("successor-fee-claim-submission")
+            .join(format!(
+                "successor-fee-claim-submission-{}",
+                next.epoch().get()
+            ))
             .to_str()
             .unwrap()
             .into(),
@@ -1134,6 +1244,29 @@ fn accept(
     export: &Path,
 ) {
     assert_eq!(inputs.targets.len(), 4);
+    assert_eq!(inputs.members.len(), inputs.targets.len());
+    let workflow: SuccessorWorkflowAuthority = load_workflow(fixture, inputs, export);
+    let verified: &validator_set::ValidatorSet = workflow.fastvote_certifier().validator_set();
+    assert_eq!(verified.validators().len(), inputs.members.len());
+    let mut actual_ids: Vec<ValidatorId> = Vec::with_capacity(inputs.members.len());
+    for member in &inputs.members {
+        let current: &validator_set::ValidatorInfo = verified
+            .get(member.validator_id)
+            .expect("every staged target must be an actual verified current member");
+        let key: ed25519_zebra::SigningKey = ed25519_zebra::SigningKey::from(member.seed);
+        let public: [u8; 32] = ed25519_zebra::VerificationKey::from(&key).into();
+        assert_eq!(current.public_key.as_slice(), public.as_slice());
+        actual_ids.push(member.validator_id);
+    }
+    actual_ids.sort_unstable();
+    assert_eq!(
+        actual_ids,
+        verified
+            .validators()
+            .iter()
+            .map(|member: &validator_set::ValidatorInfo| member.id)
+            .collect::<Vec<ValidatorId>>()
+    );
     // Artifact substitution: a genuine but unnamed certificate variant is
     // refused by the source-free verifier before any destination write.
     assert!(
@@ -1159,11 +1292,11 @@ fn accept(
             .contains("successor_activation=already-activated")
     );
 
-    let workflow: SuccessorWorkflowAuthority = load_workflow(fixture, inputs, export);
     // Read-only inspection of the claimant own activated target, before
     // any host claims its writer fence.
+    let claimant_index: usize = original_member_index(fixture, [0xa2; 32]);
     let share: node_core::fee_claims::FeeClaimInspection =
-        inspect_imported_share(fixture, inputs, &workflow, export, 1);
+        inspect_imported_share(fixture, inputs, &workflow, export, claimant_index);
     let mut hosts: Vec<HostProcess> = (0..4)
         .map(|index: usize| start_host(fixture, inputs, export, index))
         .collect();
@@ -1183,7 +1316,7 @@ fn accept(
     let seal_receipt = receipts(&all, seal.request_id);
     let imported_receipt = receipts(&all, fixture.network.request_id);
 
-    // Malformed scope and unsupported controls refuse before any signature.
+    // Malformed scope and unready/malformed controls refuse before any signature.
     let before: OrderedStatus = status(hosts[0].address);
     let stale_request = node_wire::FeeClaimPrepareRequest {
         context: fixture.network.context.clone(),
@@ -1224,9 +1357,9 @@ fn accept(
         "{}",
         String::from_utf8_lossy(&response.body)
     );
-    for path in [
-        node_wire::FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
-        node_wire::FASTVOTE_DRAIN_APPLY_PATH,
+    for (path, expected_status) in [
+        (node_wire::FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH, 409),
+        (node_wire::FASTVOTE_DRAIN_APPLY_PATH, 400),
     ] {
         let response: WireResponse = raw(
             hosts[0].address,
@@ -1235,7 +1368,12 @@ fn accept(
             Some(node_wire::NODE_EVENT_MEDIA_TYPE),
             Vec::new(),
         );
-        assert_eq!(response.status, 422, "{path}");
+        assert_eq!(
+            response.status,
+            expected_status,
+            "{path}: {}",
+            String::from_utf8_lossy(&response.body)
+        );
     }
     assert_eq!(
         status(hosts[0].address),
@@ -1244,15 +1382,12 @@ fn accept(
     );
 
     // Genuine e+1 ordered rounds under independently loaded SDK pins.
-    let endpoints = ordered_endpoints(
-        fixture,
-        &[
-            Some(&hosts[0]),
-            Some(&hosts[1]),
-            Some(&hosts[2]),
-            Some(&hosts[3]),
-        ],
-    );
+    let endpoints = ordered_endpoints(&[
+        Some(&hosts[0]),
+        Some(&hosts[1]),
+        Some(&hosts[2]),
+        Some(&hosts[3]),
+    ]);
     let mut parent: Option<QuorumCertificate> = None;
     for _ in 0..3 {
         let outcome: RoundOutcome = round(&endpoints, &workflow, parent.as_ref());
@@ -1276,18 +1411,19 @@ fn accept(
     let network: PathBuf = fixture.directory.0.join("successor-network.conf");
     let peers: String = hosts
         .iter()
-        .zip(&fixture.network.validators)
-        .map(|(host, validator)| {
-            format!(
-                "{} {} - -\n",
-                hex(validator.validator_id.as_bytes()),
-                host.address
-            )
+        .map(|host: &HostProcess| {
+            format!("{} {} - -\n", hex(host.validator.as_bytes()), host.address)
         })
         .collect();
     std::fs::write(&network, peers).unwrap();
-    let claim: [u8; 32] =
-        imported_escrow_fee_claim(fixture, inputs, export, &network, &hosts, &workflow, &share);
+    let claim: [u8; 32] = imported_escrow_fee_claim(
+        fixture,
+        &hosts,
+        &workflow,
+        &share,
+        claimant_index,
+        successor_cli_flags(fixture, inputs, export, &network),
+    );
     let claim_receipt = receipts(&all, claim);
     drop(all);
 
@@ -1314,10 +1450,7 @@ fn accept(
     let paused: HostProcess = hosts.remove(3);
     let paused_generation: u64 = paused.generation;
     drop(paused);
-    let alive = ordered_endpoints(
-        fixture,
-        &[Some(&hosts[0]), Some(&hosts[1]), Some(&hosts[2]), None],
-    );
+    let alive = ordered_endpoints(&[Some(&hosts[0]), Some(&hosts[1]), Some(&hosts[2]), None]);
     // The paid Call and fee-claim rounds advanced the prefix since the last
     // empty round, so the routing hint (not a stale parent) selects it.
     let missed: RoundOutcome = round(&alive, &workflow, None);
@@ -1328,7 +1461,7 @@ fn accept(
     );
     let deadline: Instant = Instant::now() + Duration::from_secs(1800);
     replay_declared_prefix_with_sink(
-        &ordered_endpoints(fixture, &[None, None, None, Some(&reopened)]),
+        &ordered_endpoints(&[None, None, None, Some(&reopened)]),
         workflow.ordered_policy(),
         &[(
             missed.proposal_bytes.clone(),
@@ -1365,4 +1498,6 @@ fn accept(
         sunrise_edge_client::current_inline_object_ref(&refreshed).is_some(),
         "the freshly instantiated Definition is live on the caught-up successor host"
     );
+    drop(reopened_all);
+    recurring::run(fixture, inputs, export, seal.request_id, hosts);
 }

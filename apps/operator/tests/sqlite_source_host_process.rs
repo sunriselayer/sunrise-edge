@@ -19,11 +19,6 @@
 //! which wraps DurableDomainStateStore from inside the test process with no
 //! compiled-binary equivalent hook; that coverage is left unchanged.
 
-#[path = "support/genesis_fixture.rs"]
-pub mod genesis_fixture;
-mod support {
-    pub use super::genesis_fixture;
-}
 #[path = "support/causal_genesis_fixture.rs"]
 mod causal_genesis_fixture;
 #[path = "support/compiled_source_host_process.rs"]
@@ -31,6 +26,8 @@ mod compiled_source_host_process;
 #[allow(dead_code)]
 #[path = "business_cut/fixture.rs"]
 mod fixture;
+#[path = "support/genesis_fixture.rs"]
+pub mod genesis_fixture;
 
 use consensus::QuorumCertificate;
 use fixture::Fixture;

@@ -76,7 +76,19 @@ original remains equal to its baseline. This is observation fidelity, not a
 new authenticated Seal fixture. The corrected conditional-readiness, source
 process and startup targets passed all eleven cases, including the genuine
 four-host Seal and replay. Fresh exact-head review and committed-source
-validation remain required before merging PR #268.
+validation both passed at final head `d534a37b`. [PR #268](https://github.com/sunriselayer/sunrise-edge/pull/268)
+merged normally on 2026-10-04 as `2034ba9c`, after fresh independent explicit
+APPROVE and all required CI lanes plus the aggregate passed in run
+`37184335287`. The complete same-head selected PostgreSQL profile finished
+successfully at 15:44:29 Asia/Singapore, including its original fault flags.
+An earlier same-head local run failed on a cross-worktree cached runtime
+interface; narrowly regenerating the affected packages made the unchanged
+source build, and the complete profile was then rerun successfully. Failed
+runs and the older `41982fa` pass are not final-head acceptance. Local main
+equals origin/main with a clean tree and the source branch is deleted.
+Recurring core/store bodies and SDK/CLI/host consumers are being integrated;
+neither the signed fixture funding nor an uncompiled process harness closes
+the genuine changed-committee, repeated-epoch or unlocked-withdrawal gates.
 Claude's session-limit refusal is recorded; the previously authorized independent
 Codex substitute is used while it is unavailable.
 

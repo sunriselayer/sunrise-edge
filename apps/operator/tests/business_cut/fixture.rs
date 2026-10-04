@@ -34,6 +34,10 @@ const DRAIN: [u8; 32] = [0xCC; 32];
 const NOW: u64 = 1_700_000_000_000;
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
+#[path = "fixture_registration.rs"]
+#[allow(dead_code)] // The source-only targets do not run replacement acceptance.
+mod registration;
+
 pub struct Directory(pub PathBuf);
 impl Directory {
     pub fn new(label: &str) -> Self {
@@ -99,9 +103,22 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new() -> Self {
+        Self::build(false)
+    }
+
+    #[allow(dead_code)] // Also compiled by source-only acceptance targets.
+    pub fn new_recurring() -> Self {
+        Self::build(true)
+    }
+
+    fn build(recurring: bool) -> Self {
         let directory: Directory = Directory::new("genuine-source");
         let unique: String = format!("cut-{}", NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed));
-        let network: FastVoteGenesisFixture = causal_genesis_fixture::build(&unique).network;
+        let network: FastVoteGenesisFixture = if recurring {
+            causal_genesis_fixture::build_recurring(&unique).network
+        } else {
+            causal_genesis_fixture::build(&unique).network
+        };
         let root: VerifiedGenesisRoot = VerifiedGenesisRoot::verify_bytes(
             &network.resolver,
             &network.manifest_bytes,
@@ -232,7 +249,17 @@ impl Fixture {
         }
     }
 
+    #[allow(dead_code)] // The replacement target selects its actual next members explicitly.
     pub fn freeze_and_complete(&self) {
+        let incoming: Vec<super::genesis_fixture::FastVoteValidator> = self.original_members();
+        self.freeze_and_complete_for(&incoming);
+    }
+
+    pub fn freeze_and_complete_for(&self, incoming: &[super::genesis_fixture::FastVoteValidator]) {
+        let first_view: u64 = query_status(&self.stores[0], &self.operation, &self.environment())
+            .unwrap()
+            .current_view;
+        let freeze_checkpoint: u64 = if first_view == 1 { 12 } else { 21 };
         let signed: &[u8] = &self.network.paid_intent_bytes;
         let votes: Vec<FastVote> = self
             .stores
@@ -302,6 +329,17 @@ impl Fixture {
         }
         // No AvailabilityCertifier or aggregate AV is constructed.
         let mut advisory = self.root.manifest().validator_set.clone();
+        advisory.validators = incoming
+            .iter()
+            .map(
+                |member| node_core::fast_path::records::FastPathValidatorEntry {
+                    id: member.validator_id,
+                    voting_power: 1,
+                    signature_scheme: SignatureSchemeId::Ed25519,
+                    public_key: member.validator_id.as_bytes().to_vec(),
+                },
+            )
+            .collect();
         advisory.validators.sort_by_key(|member| member.id);
         advisory.context = PublicationContext::new(
             self.network.chain_id.clone(),
@@ -319,10 +357,13 @@ impl Fixture {
                 advisory_next_set: advisory,
             })
             .unwrap(),
-            created_checkpoint: 12,
+            created_checkpoint: freeze_checkpoint,
         };
-        for view in 1..=3 {
-            self.round(view, (view == 1).then_some(&freeze));
+        for offset in 0..3 {
+            self.round(
+                first_view.checked_add(offset).unwrap(),
+                (offset == 0).then_some(&freeze),
+            );
         }
         let mut selected: Vec<(FrozenFrontierVote, FrozenFrontierPage)> = Vec::new();
         for (store, validator) in self.stores.iter().zip(&self.network.validators).take(3) {
@@ -445,10 +486,13 @@ impl Fixture {
                 drain_union_identity: union.unwrap(),
             })
             .unwrap(),
-            created_checkpoint: 13,
+            created_checkpoint: freeze_checkpoint.checked_add(1).unwrap(),
         };
-        for view in 4..=6 {
-            self.round(view, (view == 4).then_some(&drain));
+        for offset in 3..6 {
+            self.round(
+                first_view.checked_add(offset).unwrap(),
+                (offset == 3).then_some(&drain),
+            );
         }
         for store in &self.stores {
             node_core::fast_path::drain_apply::apply_drain_member(
@@ -468,8 +512,8 @@ impl Fixture {
             .unwrap();
         }
         // The fixed target and both children are independently certified empty.
-        self.round(7, None);
-        self.round(8, None);
+        self.round(first_view.checked_add(6).unwrap(), None);
+        self.round(first_view.checked_add(7).unwrap(), None);
     }
 
     pub fn history(&self) -> (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) {

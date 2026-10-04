@@ -1,15 +1,12 @@
 //! Genuine compiled operator and production library consumer acceptance.
 //! Local SQLite evidence does not qualify a deployed provider or import.
 
-#[path = "support/genesis_fixture.rs"]
-pub mod genesis_fixture;
-mod support {
-    pub use super::genesis_fixture;
-}
 #[path = "support/causal_genesis_fixture.rs"]
 mod causal_genesis_fixture;
 #[path = "business_cut/fixture.rs"]
 mod fixture;
+#[path = "support/genesis_fixture.rs"]
+pub mod genesis_fixture;
 
 use fixture::{Directory, Fixture, copy_files, files};
 use node_core::business_reconstruction::{

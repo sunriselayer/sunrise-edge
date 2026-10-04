@@ -7,6 +7,7 @@ use crate::{
     business_pins::{BusinessPinInputs, bounded, hex, operation, private_operation},
     common::{FlagSet, load_signing_key_file, parse_hex_32, read_bounded_file},
     immutable_archive::ImmutableArchive,
+    successor_artifacts::{CHAIN_FLAGS, SuccessorChainArtifactFiles, SuccessorChainInputs},
 };
 use consensus::readiness::{
     MAX_READINESS_MEMBERS, MAX_READINESS_SET_BYTES, MAX_READINESS_VOTE_BYTES, ReadinessCertifier,
@@ -16,10 +17,13 @@ use consensus::readiness::{
 use node_core::{
     business_reconstruction::{
         cut::SavedBusinessCut,
-        inactive_import::{VerifiedImportPlan, verify_saved_business_import},
+        inactive_import::{
+            VerifiedImportPlan, verify_saved_business_import, verify_saved_business_import_chain,
+        },
     },
     conditional_readiness::{
         ReadinessSigningKey, readiness_subject_for_candidate, retain_conditional_readiness,
+        retain_conditional_readiness_chain,
     },
     fast_path::records::FastPathValidatorEntry,
 };
@@ -64,7 +68,11 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         Some("certificate") => false,
         _ => return Err("unknown conditional readiness mode; use --help".into()),
     };
-    let mut flags: FlagSet = FlagSet::parse(values, FLAGS, &[])?;
+    let mut accepted: Vec<&'static str> = FLAGS.to_vec();
+    accepted.extend_from_slice(CHAIN_FLAGS);
+    let mut flags: FlagSet = FlagSet::parse(values, &accepted, &[])?;
+    let chain_inputs: Option<SuccessorChainInputs> =
+        SuccessorChainInputs::parse_optional(&mut flags)?;
     let inputs: BusinessPinInputs = BusinessPinInputs::parse(&mut flags)?;
     let cut_directory: PathBuf = flags.one("--cut-dir")?.into();
     let next_path: PathBuf = flags.one("--next-set")?.into();
@@ -98,6 +106,22 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     if !voting && !(1..=MAX_READINESS_MEMBERS).contains(&vote_paths.len()) {
         return Err("certificate requires one to 256 bounded vote files".into());
     }
+    let mut chain_artifacts: Option<SuccessorChainArtifactFiles> = chain_inputs
+        .as_ref()
+        .map(SuccessorChainInputs::open)
+        .transpose()?;
+    if let Some(artifacts) = &chain_artifacts {
+        artifacts.require_output_outside(&output_directory.join(if voting {
+            "vote.bin"
+        } else {
+            "certificate.bin"
+        }))?;
+        if let Some((state, blobs, _, _)) = &target_inputs {
+            for path in [state, blobs] {
+                artifacts.require_output_outside(path)?;
+            }
+        }
+    }
     let history: ImmutableArchive = ImmutableArchive::open_read_only(inputs.history_root())?;
     let cut: ImmutableArchive = ImmutableArchive::open_read_only(&cut_directory)?;
     let filename: &str = if voting {
@@ -122,10 +146,19 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         MAX_READINESS_SET_BYTES,
         "next set",
     )?)?;
-    let pins = inputs.load()?;
+    let pins = match (&chain_inputs, &mut chain_artifacts) {
+        (Some(chain), Some(artifacts)) => inputs.load_with_successor(artifacts, chain.budget)?,
+        (None, None) => inputs.load()?,
+        _ => return Err("successor predecessor artifacts are incomplete".into()),
+    };
     let private = pins.plan(private_operation()?);
     let saved: SavedBusinessCut = read_business_cut_archive(&private, &cut)?;
-    let verified: VerifiedImportPlan = verify_saved_business_import(private, &saved)?;
+    let verified: VerifiedImportPlan = match pins.successor_authority() {
+        Some(authority) => {
+            verify_saved_business_import_chain(private, authority, pins.cut_identity(), &saved)?
+        }
+        None => verify_saved_business_import(private, &saved)?,
+    };
     let subject: ReadinessSubject =
         readiness_subject_for_candidate(verified.binding(), pins.resolver(), &next_set)?;
     let owner: ReadinessCertifier<'_> =
@@ -133,6 +166,9 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     // Recheck held archive identities after reconstruction, before any writes.
     for source in [&history, &cut] {
         source.require_output_outside(&output_directory.join(filename))?;
+    }
+    if let Some(artifacts) = &chain_artifacts {
+        artifacts.require_output_outside(&output_directory.join(filename))?;
     }
     let output: ImmutableArchive = ImmutableArchive::open(&output_directory)?;
     let names = output.names()?;
@@ -193,15 +229,28 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
             .collect();
         let operation = operation(target.writer_fence()?, timeout, [0xBB; 16])?;
         key_directory.ensure_attached()?;
-        let vote: ReadinessVote = retain_conditional_readiness(
-            pins.plan(private_operation()?),
-            &saved,
-            &target,
-            &bodies,
-            &operation,
-            &members,
-            &signer,
-        )?;
+        let vote: ReadinessVote = match pins.successor_authority() {
+            Some(authority) => retain_conditional_readiness_chain(
+                pins.plan(private_operation()?),
+                authority,
+                pins.cut_identity(),
+                &saved,
+                &target,
+                &bodies,
+                &operation,
+                &members,
+                &signer,
+            )?,
+            None => retain_conditional_readiness(
+                pins.plan(private_operation()?),
+                &saved,
+                &target,
+                &bodies,
+                &operation,
+                &members,
+                &signer,
+            )?,
+        };
         encode_readiness_vote(&vote)?
     } else {
         let mut votes: Vec<ReadinessVote> = Vec::with_capacity(vote_paths.len());

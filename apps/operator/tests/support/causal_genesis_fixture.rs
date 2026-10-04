@@ -7,10 +7,10 @@ use node_core::genesis::VerifiedGenesisRoot;
 use node_core::genesis::genesis_manifest_signing_frame;
 use node_core::logical_generation::CommitmentProfile;
 use node_core::{GenesisManifest, GenesisObjectEntry};
-use objects::ObjectId;
+use objects::{Address, ObjectId, Owner};
 use sunrise_edge_devnet::DEVNET_PAID_GENESIS_SEED;
 
-use crate::support::genesis_fixture::{FastVoteGenesisFixture, build_economics_fixture};
+use super::genesis_fixture::{FastVoteGenesisFixture, build_economics_fixture};
 
 pub struct CausalGenesisFixture {
     pub network: FastVoteGenesisFixture,
@@ -20,6 +20,17 @@ pub struct CausalGenesisFixture {
 }
 
 pub fn build(unique: &str) -> CausalGenesisFixture {
+    build_with_recurring_funding(unique, false)
+}
+
+/// Fund future registrants only as ordinary, signed genesis objects.
+/// Registration, custody, bond rows and receipts must be created by handlers.
+#[allow(dead_code)] // Also compiled by archive-only controls without a source fixture.
+pub fn build_recurring(unique: &str) -> CausalGenesisFixture {
+    build_with_recurring_funding(unique, true)
+}
+
+fn build_with_recurring_funding(unique: &str, recurring: bool) -> CausalGenesisFixture {
     let mut network: FastVoteGenesisFixture = build_economics_fixture(unique);
     let mut manifest: GenesisManifest =
         node_core::decode_genesis_manifest(&network.manifest_bytes).unwrap();
@@ -44,10 +55,39 @@ pub fn build(unique: &str) -> CausalGenesisFixture {
     )
     .unwrap();
     manifest.objects.push(coin);
+    let mut added_supply: u64 = 1;
+    if recurring {
+        for (seed, ids) in [
+            ([0xe5; 32], [0x17u8, 0x18u8]),
+            ([0xf6; 32], [0x19u8, 0x1au8]),
+            ([0xe9; 32], [0x1bu8, 0x1cu8]),
+        ] {
+            let key: SigningKey = SigningKey::from(seed);
+            let owner: [u8; 32] = ed25519_zebra::VerificationKey::from(&key).into();
+            for byte in ids {
+                let mut funded: GenesisObjectEntry = manifest
+                    .objects
+                    .iter()
+                    .find(|entry| entry.object.id == network.fee_coin)
+                    .unwrap()
+                    .clone();
+                funded.object.id = ObjectId::new([byte; 32]);
+                funded.authority.object_id = funded.object.id;
+                funded.object.owner = Owner::Address(Address::new(owner));
+                funded.object.data = encode_call_value(
+                    &public_standard_asset::coin_body_layout(),
+                    &CallValue::U64(10_000),
+                )
+                .unwrap();
+                added_supply = added_supply.checked_add(10_000).unwrap();
+                manifest.objects.push(funded);
+            }
+        }
+    }
     let treasury: &mut GenesisObjectEntry = &mut manifest.objects[1];
     let supply: u64 = public_standard_asset::treasury_supply(&treasury.object.data)
         .unwrap()
-        .checked_add(1)
+        .checked_add(added_supply)
         .unwrap();
     treasury.object.data = encode_call_value(
         &public_standard_asset::treasury_cap_body_layout(),

@@ -147,6 +147,7 @@ pub use node_core::fast_path::records::{
 };
 pub use node_core::local_instance_state::is_reserved_paid_request_id;
 pub use node_core::logical_generation::CommitmentProfile;
+pub use node_core::serving_authority::{SuccessorChainBudget, SuccessorLinkPins};
 pub use node_wire::MAX_FASTVOTE_AVAILABILITY_CERTIFICATE_BYTES;
 pub use node_wire::{
     DrainMemberApplyRequest, DrainMemberConfirmRequest, DrainSignerPageRequest,
@@ -173,7 +174,9 @@ pub use signing_view::{
 };
 pub use successor_authority::{
     SuccessorArtifactDirectories, SuccessorWorkflowAuthority, SuccessorWorkflowError,
-    load_successor_authority, load_successor_workflow, load_successor_workflow_from_directories,
+    load_successor_authority, load_successor_chain_authority, load_successor_chain_workflow,
+    load_successor_chain_workflow_from_directories, load_successor_workflow,
+    load_successor_workflow_from_directories,
 };
 pub use support::{
     ED25519_ADDRESS_IS_PUBLIC_KEY_BINDING_ID, ED25519_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,

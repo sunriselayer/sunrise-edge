@@ -78,6 +78,13 @@ Adopt [recurring successor serving](../recurring-successor-serving.md):
 6. **Additive APIs.** Recurring entry points are additive; single-link signatures
    and supported operations stay. Explicit new successor controls do not need a
    second legacy-only engine to retain an unreleased unsupported-feature refusal.
+7. **Post-Seal historical material.** Use the existing bounded history reader
+   and complete fixed-target verifier with a freshly chain-derived policy,
+   exact imported namespace/binding and existing fence/deadline. Keep original
+   source composition and fresh live authority unchanged. A separate historical
+   signing capability establishes no additional artifact-integrity property.
+   Post-Seal attribution checks the real barrier against the terminal exported
+   Seal. Read-only consumption is not effects, readiness or activation proof.
 
 ## Compatibility
 

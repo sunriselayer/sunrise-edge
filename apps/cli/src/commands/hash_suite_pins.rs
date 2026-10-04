@@ -20,8 +20,8 @@ fn invalid(message: impl Into<String>) -> CliError {
     )))
 }
 
-/// Only this explicit schedule flag is repeatable. Every other token still
-/// goes through the existing strict scalar parser before any file access.
+/// Only the explicit schedule and declared successor directory lists are
+/// repeatable. Scalar pins stay strict before any file access.
 pub(super) fn parse_pinned_flags<I: IntoIterator<Item = OsString>>(
     args: I,
     specs: &[FlagSpec],
@@ -30,6 +30,12 @@ pub(super) fn parse_pinned_flags<I: IntoIterator<Item = OsString>>(
     if !args.iter().any(|token: &OsString| token == "--suite") {
         // Keep every historical no-schedule diagnostic and validation order.
         let parsed: ParsedArgs = parse_flags(args, specs)?;
+        if super::successor_pins::successor_requested(&parsed) {
+            super::successor_pins::successor_budget(&parsed)?;
+            return Err(invalid(
+                "successor workflows require one to 64 explicit --suite entries for the independently pinned full schedule",
+            ));
+        }
         return Ok((parsed, Vec::new()));
     }
     let mut scalar_args: Vec<OsString> = Vec::new();
@@ -73,7 +79,40 @@ pub(super) fn parse_pinned_flags<I: IntoIterator<Item = OsString>>(
         schedules.push(parse_suite(value)?);
     }
     let parsed: ParsedArgs = parse_flags(scalar_args, specs)?;
+    if super::successor_pins::successor_requested(&parsed) {
+        super::successor_pins::successor_budget(&parsed)?;
+    }
     Ok((parsed, schedules))
+}
+
+/// A complete locally configured schedule, with the declared current suite
+/// checked independently. An endpoint cannot choose this resolver.
+pub(super) fn publication_resolver(
+    expected: &sunrise_edge_client::ExpectedProtocolContext,
+    schedules: Vec<HashSuiteSchedule>,
+) -> Result<sunrise_edge_client::HashSuiteResolver, CliError> {
+    if schedules.is_empty() {
+        return sunrise_edge_client::local_publication_resolver(expected)
+            .map_err(|error| CliError::LocalExecution(Box::new(error)));
+    }
+    let resolver: sunrise_edge_client::HashSuiteResolver =
+        sunrise_edge_client::HashSuiteResolver::new(
+            expected.chain_id().clone(),
+            expected.protocol_version(),
+            schedules,
+        )
+        .map_err(|error| CliError::LocalExecution(Box::new(error)))?;
+    if resolver
+        .suite_for_epoch(expected.epoch())
+        .map_err(|error| CliError::LocalExecution(Box::new(error)))?
+        .id
+        != expected.hash_suite_id()
+    {
+        return Err(invalid(
+            "--expected-hash-suite-id differs from the independently pinned current hash suite",
+        ));
+    }
+    Ok(resolver)
 }
 
 fn parse_suite(value: &str) -> Result<HashSuiteSchedule, CliError> {

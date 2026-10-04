@@ -18,6 +18,8 @@ pub struct FlagSpec {
     /// Whether this flag takes exactly one following value, or is a
     /// standalone boolean switch.
     pub takes_value: bool,
+    /// Whether an ordered list may repeat this value flag.
+    pub repeatable: bool,
 }
 
 /// A boolean-switch flag spec (`--wait`, not `--wait <value>`).
@@ -26,6 +28,7 @@ pub const fn switch(name: &'static str) -> FlagSpec {
     FlagSpec {
         name,
         takes_value: false,
+        repeatable: false,
     }
 }
 
@@ -35,13 +38,25 @@ pub const fn scalar(name: &'static str) -> FlagSpec {
     FlagSpec {
         name,
         takes_value: true,
+        repeatable: false,
+    }
+}
+
+/// An ordered, repeatable `--flag value` spec. Scalar and switch flags
+/// retain their duplicate refusal.
+#[must_use]
+pub const fn repeated(name: &'static str) -> FlagSpec {
+    FlagSpec {
+        name,
+        takes_value: true,
+        repeatable: true,
     }
 }
 
 /// The result of successfully parsing one subcommand's arguments.
 #[derive(Debug, Default)]
 pub struct ParsedArgs {
-    values: BTreeMap<&'static str, String>,
+    values: BTreeMap<&'static str, Vec<String>>,
 }
 
 impl ParsedArgs {
@@ -55,6 +70,7 @@ impl ParsedArgs {
     pub fn require(&self, name: &'static str) -> Result<&str, ArgsError> {
         self.values
             .get(name)
+            .and_then(|values: &Vec<String>| values.first())
             .map(String::as_str)
             .ok_or(ArgsError::MissingFlag(name))
     }
@@ -63,7 +79,16 @@ impl ParsedArgs {
     /// supplied.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&str> {
-        self.values.get(name).map(String::as_str)
+        self.values
+            .get(name)
+            .and_then(|values: &Vec<String>| values.first())
+            .map(String::as_str)
+    }
+
+    /// Every value of a repeatable flag, in command-line order.
+    #[must_use]
+    pub fn many(&self, name: &str) -> &[String] {
+        self.values.get(name).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -81,7 +106,7 @@ pub fn parse_flags<I>(args: I, specs: &[FlagSpec]) -> Result<ParsedArgs, ArgsErr
 where
     I: IntoIterator<Item = OsString>,
 {
-    let mut values: BTreeMap<&'static str, String> = BTreeMap::new();
+    let mut values: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
     let mut iter = args.into_iter();
 
     while let Some(token_os) = iter.next() {
@@ -96,7 +121,7 @@ where
             .iter()
             .find(|spec| spec.name == token)
             .ok_or_else(|| ArgsError::UnknownFlag(token.clone()))?;
-        if values.contains_key(spec.name) {
+        if values.contains_key(spec.name) && !spec.repeatable {
             return Err(ArgsError::DuplicateFlag(spec.name));
         }
         if spec.takes_value {
@@ -108,9 +133,9 @@ where
             if value.starts_with("--") {
                 return Err(ArgsError::MissingValue(spec.name));
             }
-            values.insert(spec.name, value);
+            values.entry(spec.name).or_default().push(value);
         } else {
-            values.insert(spec.name, String::new());
+            values.insert(spec.name, vec![String::new()]);
         }
     }
 
@@ -181,6 +206,24 @@ mod tests {
     fn rejects_duplicate_flags() {
         let error = parse_flags(os(&["--amount", "1", "--amount", "2"]), SPECS).unwrap_err();
         assert!(matches!(error, ArgsError::DuplicateFlag("--amount")));
+    }
+
+    #[test]
+    fn repeated_values_keep_order_without_weakening_scalar_duplicates() {
+        let specs: &[FlagSpec] = &[repeated("--link"), scalar("--budget")];
+        let parsed: ParsedArgs = parse_flags(
+            os(&["--link", "second", "--budget", "2", "--link", "first"]),
+            specs,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.many("--link"),
+            &["second".to_string(), "first".to_string()]
+        );
+        assert!(matches!(
+            parse_flags(os(&["--budget", "1", "--budget", "2"]), specs),
+            Err(ArgsError::DuplicateFlag("--budget"))
+        ));
     }
 
     #[test]

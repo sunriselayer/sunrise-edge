@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 use crate::common::{FlagSet, parse_hash_suite, parse_hex_32};
+use crate::successor_artifacts::SuccessorChainArtifactFiles;
 use execution::{
     LocalWasmExecutionEngine, local_execution::LocalExecutionPolicy,
     publication::PublicationContext,
@@ -12,6 +13,10 @@ use node_core::business_reconstruction::BusinessReconstructionPlan;
 use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::{
     OrderedEconomicsPolicy, OrderedHistoryHeightMaterial, OrderedHistoryIdentity,
+};
+use node_core::serving_authority::{
+    SuccessorChainBudget, SuccessorLinkPins, VerifiedSuccessorAuthority,
+    verify_successor_chain_authority,
 };
 use protocol_types::{AtomicityDomainId, ChainId, Epoch, HashSuiteSchedule, ProtocolVersion};
 use runtime::{
@@ -55,6 +60,17 @@ impl BusinessPinInputs {
     }
 
     pub(crate) fn parse(flags: &mut FlagSet) -> Result<Self, Box<dyn Error>> {
+        let history_root: PathBuf = flags.one("--ordered-history-dir")?.into();
+        Self::parse_with_history(flags, history_root)
+    }
+
+    /// The recurring activation and host parsers consume an ordered list of
+    /// archive roles before this original-genesis pin parser. Parsing never
+    /// opens a file or adopts a peer's epoch or suite.
+    pub(crate) fn parse_with_history(
+        flags: &mut FlagSet,
+        history_root: PathBuf,
+    ) -> Result<Self, Box<dyn Error>> {
         let chain: ChainId = ChainId::new(flags.one("--chain-id")?)?;
         let protocol: ProtocolVersion = ProtocolVersion::new(u32::try_from(bounded(
             &flags.one("--protocol-version")?,
@@ -83,7 +99,7 @@ impl BusinessPinInputs {
                 &flags.one("--expected-genesis-digest")?,
                 "--expected-genesis-digest",
             )?,
-            history_root: flags.one("--ordered-history-dir")?.into(),
+            history_root,
         })
     }
 
@@ -110,8 +126,84 @@ impl BusinessPinInputs {
             ordered,
             base_policy: LocalExecutionPolicy::generic_object_results(self.context),
             engine: LocalWasmExecutionEngine::new(),
+            authority: None,
+            original: None,
         })
     }
+
+    /// Keeps the original pinned root and derives the current reconstruction
+    /// policy exclusively from the full verified predecessor chain. The
+    /// independent --ordered-history-dir here is the current epoch's cut
+    /// history; the repeated predecessor archives retain their original roles.
+    pub(crate) fn load_with_successor(
+        self,
+        artifacts: &mut SuccessorChainArtifactFiles,
+        budget: SuccessorChainBudget,
+    ) -> Result<BusinessPins, Box<dyn Error>> {
+        let root: VerifiedGenesisRoot = load_verified_genesis_root(
+            &self.genesis_file,
+            &self.resolver,
+            self.genesis_pin,
+            &self.context,
+        )?;
+        if !root.admission_profile().is_causal() {
+            return Err("business reconstruction requires signed causal-admission genesis".into());
+        }
+        let original_policy: OrderedEconomicsPolicy =
+            OrderedEconomicsPolicy::from_genesis_root(&root, self.domain)?;
+        let links: Vec<SuccessorLinkPins> = artifacts.pins();
+        let original_identity: OrderedHistoryIdentity = links
+            .first()
+            .ok_or("successor chain is empty")?
+            .cut_identity
+            .clone();
+        let original_base: LocalExecutionPolicy =
+            LocalExecutionPolicy::generic_object_results(self.context.clone());
+        let engine: LocalWasmExecutionEngine = LocalWasmExecutionEngine::new();
+        let authority: VerifiedSuccessorAuthority = verify_successor_chain_authority(
+            BusinessReconstructionPlan {
+                genesis_root: &root,
+                operation_context: private_operation()?,
+                domain: self.domain,
+                resolver_history: &[],
+                ordered_policy: &original_policy,
+                ordered_history_identity: &original_identity,
+                ordered_leg_policy: &original_base,
+                ordered_engine: &engine,
+                paid_base_policy: &original_base,
+                paid_engine: &engine,
+            },
+            &links,
+            budget,
+            artifacts,
+        )?;
+        let policy: OrderedEconomicsPolicy = authority.ordered_policy(&root)?;
+        let context: PublicationContext = policy.context().clone();
+        let (identity, ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
+            read_verified_ordered_history_archive(&policy, &self.history_root)?;
+        Ok(BusinessPins {
+            context: context.clone(),
+            domain: self.domain,
+            root,
+            policy,
+            identity,
+            ordered,
+            base_policy: LocalExecutionPolicy::generic_object_results(context),
+            engine,
+            authority: Some(authority),
+            original: Some(OriginalReconstructionPins {
+                policy: original_policy,
+                identity: original_identity,
+                base_policy: original_base,
+            }),
+        })
+    }
+}
+
+struct OriginalReconstructionPins {
+    policy: OrderedEconomicsPolicy,
+    identity: OrderedHistoryIdentity,
+    base_policy: LocalExecutionPolicy,
 }
 
 pub(crate) struct BusinessPins {
@@ -123,9 +215,41 @@ pub(crate) struct BusinessPins {
     pub(crate) ordered: Vec<OrderedHistoryHeightMaterial>,
     base_policy: LocalExecutionPolicy,
     engine: LocalWasmExecutionEngine,
+    authority: Option<VerifiedSuccessorAuthority>,
+    original: Option<OriginalReconstructionPins>,
 }
 
 impl BusinessPins {
+    pub(crate) fn successor_authority(&self) -> Option<&VerifiedSuccessorAuthority> {
+        self.authority.as_ref()
+    }
+
+    pub(crate) fn cut_identity(&self) -> &OrderedHistoryIdentity {
+        &self.identity
+    }
+
+    /// The original first-link plan used by a fresh live chain resolution.
+    /// Later policies still come from core, never from this saved plan.
+    pub(crate) fn chain_plan(
+        &self,
+        operation: DurableOperationContext,
+    ) -> BusinessReconstructionPlan<'_> {
+        match &self.original {
+            Some(original) => BusinessReconstructionPlan {
+                genesis_root: &self.root,
+                operation_context: operation,
+                domain: self.domain,
+                resolver_history: &[],
+                ordered_policy: &original.policy,
+                ordered_history_identity: &original.identity,
+                ordered_leg_policy: &original.base_policy,
+                ordered_engine: &self.engine,
+                paid_base_policy: &original.base_policy,
+                paid_engine: &self.engine,
+            },
+            None => self.plan(operation),
+        }
+    }
     pub(crate) fn resolver(&self) -> &HashSuiteResolver {
         self.root.genesis_resolver()
     }

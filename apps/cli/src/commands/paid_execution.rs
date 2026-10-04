@@ -1,7 +1,7 @@
 //! Public paid contract Publish/Instantiate/Call workflow (DR-0126).
 
 use crate::{
-    args::{ParsedArgs, parse_flags, scalar},
+    args::{ParsedArgs, scalar},
     error::CliError,
     hex::decode_hex_32,
     net::{BudgetedTransport, OperationBudget, connect_paid_execution, tls_flag_specs},
@@ -154,7 +154,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         ]),
         _ => return Err(invalid("unknown paid contract action")),
     }
-    let parsed: ParsedArgs = parse_flags(args, &specs)?;
+    let (parsed, schedules) = super::hash_suite_pins::parse_pinned_flags(args, &specs)?;
     // Budget/unsupported combinations are local errors, even when a seed or
     // other input is missing. The single instant starts before preparation.
     let budget: Option<OperationBudget> = if parsed.get("--fastvote-network").is_some() {
@@ -197,7 +197,8 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         None
     };
     let expected: ExpectedProtocolContext = super::standard_asset::parse_expected_context(&parsed)?;
-    let resolver: HashSuiteResolver = local_publication_resolver(&expected)?;
+    let resolver: HashSuiteResolver =
+        super::hash_suite_pins::publication_resolver(&expected, schedules)?;
     let context: PublicationContext = PublicationContext::new(
         expected.chain_id().clone(),
         expected.protocol_version(),

@@ -44,7 +44,7 @@ fn host(root: &Path, listen: &str, confirm: bool) -> Output {
     let validator: String = "33".repeat(32);
     let state: PathBuf = root.join("state.db");
     let blobs: PathBuf = root.join("body.db");
-    let pairs: [(&str, &str); 17] = [
+    let pairs: [(&str, &str); 18] = [
         ("--chain-id", "successor-host-process"),
         ("--protocol-version", "1"),
         ("--epoch", "0"),
@@ -56,6 +56,7 @@ fn host(root: &Path, listen: &str, confirm: bool) -> Output {
         ("--cut-dir", missing.to_str().unwrap()),
         ("--manifest-history-dir", missing.to_str().unwrap()),
         ("--certificate-dir", missing.to_str().unwrap()),
+        ("--successor-max-links", "1"),
         ("--target-state-db", state.to_str().unwrap()),
         ("--target-blob-db", blobs.to_str().unwrap()),
         ("--validator-id", &validator),
@@ -126,13 +127,49 @@ fn compiled_host_refuses_missing_artifact_transport_before_opening_a_target() {
 }
 
 #[test]
+fn compiled_recurring_consumers_refuse_over_budget_before_genesis_or_target_io() {
+    for (binary, mode) in [
+        (env!("CARGO_BIN_EXE_successor_host"), "serve"),
+        (env!("CARGO_BIN_EXE_successor_activation"), "activate"),
+    ] {
+        let root: TempDir = TempDir::new("chain-budget");
+        let mut command: Command = Command::new(binary);
+        command.args([mode, "--successor-max-links", "1"]);
+        if mode == "serve" {
+            command.args(["--listen", "127.0.0.1:0", "--confirm-offline-fence-advance"]);
+        }
+        for _ in 0..2 {
+            for flag in [
+                "--ordered-history-dir",
+                "--cut-dir",
+                "--manifest-history-dir",
+                "--certificate-dir",
+            ] {
+                command.arg(flag).arg(root.0.join("missing"));
+            }
+        }
+        let output: Output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("2 links exceeds the configured budget 1"),
+            "{}",
+            stderr(&output)
+        );
+        assert!(output.stdout.is_empty());
+        no_target_written(&root.0);
+    }
+}
+
+#[test]
 fn compiled_host_help_and_unknown_modes_never_serve() {
     let help: Output = Command::new(env!("CARGO_BIN_EXE_successor_host"))
         .arg("--help")
         .output()
         .unwrap();
     assert!(help.status.success());
-    assert!(String::from_utf8_lossy(&help.stdout).contains("First-successor loopback host only"));
+    assert!(
+        String::from_utf8_lossy(&help.stdout).contains("Recurring-successor loopback host only")
+    );
     for mode in ["activate", "import", "seal"] {
         let output: Output = Command::new(env!("CARGO_BIN_EXE_successor_host"))
             .arg(mode)
@@ -156,7 +193,7 @@ fn shipped_cli_successor_actions_refuse_without_ordinary_fallback() {
         "--successor-genesis-epoch",
         "0",
     ]);
-    assert!(freeze.contains("successor-control-unsupported"), "{freeze}");
+    assert!(freeze.contains("--successor-max-links"), "{freeze}");
     let claim: String = run(&[
         "economics",
         "fee-claim-prepare",

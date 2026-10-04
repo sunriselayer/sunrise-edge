@@ -41,7 +41,7 @@ pub(in crate::commands) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Res
         println!("{HELP}");
         return Ok(());
     }
-    let specs: Vec<crate::args::FlagSpec> = [
+    let mut specs: Vec<crate::args::FlagSpec> = [
         "--manifest",
         "--result-dir",
         "--expected-chain-id",
@@ -58,11 +58,13 @@ pub(in crate::commands) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Res
     .into_iter()
     .map(scalar)
     .collect();
-    let parsed: ParsedArgs = parse_flags(args, &specs)?;
+    specs.extend(super::super::successor_pins::successor_flag_specs(true));
+    let (parsed, schedules) = super::super::hash_suite_pins::parse_pinned_flags(args, &specs)?;
     // One deadline includes all disk/config/authentication work, without renewal.
     let budget: OperationBudget = parse_deadline(&parsed)?;
     let expected = crate::commands::standard_asset::parse_expected_context(&parsed)?;
-    let resolver: HashSuiteResolver = local_publication_resolver(&expected)?;
+    let resolver: HashSuiteResolver =
+        super::super::hash_suite_pins::publication_resolver(&expected, schedules)?;
     let context: PublicationContext = PublicationContext::new(
         expected.chain_id().clone(),
         expected.protocol_version(),

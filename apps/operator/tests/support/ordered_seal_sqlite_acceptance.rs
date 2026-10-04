@@ -379,8 +379,10 @@ fn saved_submission_rounds(
             .iter()
             .map(|(proposal, _)| proposal.proposal.height)
             .collect::<Vec<u64>>(),
-        vec![9, 10, 11, 12],
-        "the actual HTTP/CLI path performs EMPTY9, Seal10 and EMPTY11/12 from original QC8"
+        (1..=4)
+            .map(|offset| initial_parent.height.checked_add(offset).unwrap())
+            .collect::<Vec<u64>>(),
+        "the actual HTTP/CLI path performs alignment, Seal and both certified descendants"
     );
     rounds
 }
@@ -1648,10 +1650,10 @@ pub(super) async fn run(
         node_core::ordered_economics::query_status(&fixture.stores[0], &fixture.operation, &env)
             .unwrap();
     assert_eq!(
-        initial_status.high_qc.height, 8,
-        "the genuine post-Drain source has QC8"
+        initial_status.high_qc.height,
+        initial_status.committed_height.checked_add(2).unwrap(),
+        "the genuine post-Drain source has both certified descendants"
     );
-    assert_eq!(initial_status.committed_height, 6);
     let mut seal_height: u64 = initial_status.high_qc.height.checked_add(1).unwrap();
     while seal_height % 3 != 1 {
         seal_height = seal_height.checked_add(1).unwrap();
@@ -1664,7 +1666,6 @@ pub(super) async fn run(
         SealWarrantFault::IneligibleSuccessor,
     ];
     assert_eq!(fixture.network.validators.len(), fault_plans.len());
-    assert_eq!(seal_height, 10);
     // Genuine landed-versus-unlanded completion reply-loss, entirely on
     // isolated clones of this exact pre-Seal state -- never on the four
     // live validators the rest of this acceptance drives below.
