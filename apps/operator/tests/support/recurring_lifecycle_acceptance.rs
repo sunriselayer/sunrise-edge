@@ -237,8 +237,28 @@ fn signed_leg(
 
 pub(super) fn request(epoch: Epoch, tag: u8, member: &SuccessorProcessMember) -> [u8; 32] {
     let mut id: [u8; 32] = epoch_request_id(epoch.get(), tag);
+    // This helper is only for ordered lifecycle candidates. The shared epoch
+    // helper also generates owned Publish/Instantiate/Call IDs and stays neutral.
+    id[0] |= 0x80;
     id[9..25].copy_from_slice(&member.validator_id.as_bytes()[..16]);
     id
+}
+
+#[test]
+fn ordered_lifecycle_request_ids_preserve_lane_epoch_and_owner() {
+    let g: SuccessorProcessMember = member_from_seed([0xe9; 32]);
+    let f: SuccessorProcessMember = member_from_seed([0xf6; 32]);
+    for epoch in 1u64..=8 {
+        for tag in [0x41u8, 0x42, 0x43] {
+            let id: [u8; 32] = request(Epoch::new(epoch), tag, &g);
+            assert_ne!(id[0] & 0x80, 0, "lifecycle uses the ordered lane");
+            assert_eq!(id[0] & 0x7f, tag);
+            assert_eq!(&id[1..9], &epoch.to_be_bytes());
+            assert_eq!(&id[9..25], &g.validator_id.as_bytes()[..16]);
+            assert_ne!(id, request(Epoch::new(epoch), tag, &f));
+            assert_ne!(id, request(Epoch::new(epoch + 1), tag, &g));
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
