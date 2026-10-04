@@ -696,6 +696,7 @@ async fn run_conditional_readiness(recurring: bool) {
         &competing_candidate,
         &successor_host_acceptance::SuccessorProcessInputs {
             executables: executables.clone(),
+            recur_changed_committee: recurring,
             plan_history: history_root.clone(),
             cut: cut.0.clone(),
             certificate: certificates.0.clone(),

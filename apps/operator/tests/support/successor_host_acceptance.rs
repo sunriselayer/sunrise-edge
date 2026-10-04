@@ -102,6 +102,8 @@ pub struct SuccessorProcessMember {
 pub struct SuccessorProcessInputs {
     /// Exact real compiled children captured before the complete workflow.
     pub executables: CompiledExecutableSnapshot,
+    /// Explicit acceptance selection, never inferred as a silent successful skip.
+    pub recur_changed_committee: bool,
     /// Ordered history through T feeding the plan.
     pub plan_history: PathBuf,
     /// Saved pre-Seal business cut.

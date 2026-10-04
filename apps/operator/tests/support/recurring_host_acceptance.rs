@@ -895,7 +895,7 @@ fn prove_f_ordered_quorum(
     current: &SuccessorWorkflowAuthority,
     hosts: &[HostProcess],
     directory: &Path,
-) {
+) -> (Vec<u8>, Vec<u8>) {
     let f: ValidatorId = member_from_seed([0xf6; 32]).validator_id;
     assert_eq!(hosts.len(), 5);
     assert!(hosts.iter().any(|host| host.validator == f));
@@ -926,6 +926,10 @@ fn prove_f_ordered_quorum(
         &certified.certificate_bytes,
     )
     .unwrap();
+    let retained: (Vec<u8>, Vec<u8>) = (
+        certified.proposal_bytes.clone(),
+        certified.certificate_bytes.clone(),
+    );
     let all: Vec<Option<&HostProcess>> = hosts.iter().map(Some).collect();
     replay_declared_prefix_with_sink(
         &ordered_endpoints(&all),
@@ -941,6 +945,60 @@ fn prove_f_ordered_quorum(
             status(host.address).high_qc,
             certificate,
             "all five hosts replay the same verified certificate bytes"
+        );
+    }
+    retained
+}
+
+/// Genuine former-domain envelopes must refuse before voting or committing.
+/// The rows come from the same idle real target files the child hosts serve.
+fn assert_prior_epoch_envelopes_refused(
+    fixture: &Fixture,
+    targets: &CurrentTargets,
+    hosts: &[HostProcess],
+    retained: &(Vec<u8>, Vec<u8>),
+) {
+    let before: Vec<node_core::business_reconstruction::SourceBusinessSnapshot> =
+        lifecycle::physical_snapshots(fixture, targets);
+    let high_qcs: Vec<QuorumCertificate> = hosts
+        .iter()
+        .map(|host: &HostProcess| status(host.address).high_qc)
+        .collect();
+    for (path, media, body, expected_error) in [
+        (
+            node_wire::ordered_economics::ORDERED_ECONOMICS_PROPOSAL_PATH,
+            node_wire::ordered_economics::ORDERED_PROPOSAL_MEDIA_TYPE,
+            &retained.0,
+            "invalid-ordered-proposal-signature",
+        ),
+        (
+            node_wire::ordered_economics::ORDERED_ECONOMICS_CERTIFICATE_PATH,
+            node_wire::ordered_economics::ORDERED_CERTIFICATE_MEDIA_TYPE,
+            &retained.1,
+            "invalid-ordered-certificate-signature",
+        ),
+    ] {
+        let response: WireResponse = raw(
+            hosts[0].address,
+            Method::Post,
+            path,
+            Some(media),
+            body.clone(),
+        );
+        assert_eq!(response.status, 400);
+        assert!(
+            std::str::from_utf8(&response.body)
+                .unwrap()
+                .contains(expected_error),
+            "canonical former-epoch material reaches the current signature-domain verifier"
+        );
+        assert_eq!(lifecycle::physical_snapshots(fixture, targets), before);
+        assert_eq!(
+            hosts
+                .iter()
+                .map(|host: &HostProcess| status(host.address).high_qc)
+                .collect::<Vec<QuorumCertificate>>(),
+            high_qcs
         );
     }
 }
@@ -965,9 +1023,17 @@ pub(super) fn run(
         .collect();
     original_ids.sort_unstable();
     current_ids.sort_unstable();
-    if original_ids == current_ids {
+    if !inputs.recur_changed_committee {
+        assert_eq!(
+            original_ids, current_ids,
+            "the explicitly selected baseline proves first-link original-committee behavior only"
+        );
         return;
     }
+    assert_ne!(
+        original_ids, current_ids,
+        "the selected recurring case must actually replace the committee"
+    );
     let mut links: Vec<Link> = vec![Link {
         plan_history: inputs.plan_history.clone(),
         cut: inputs.cut.clone(),
@@ -1061,9 +1127,11 @@ pub(super) fn run(
             next_members.push(f);
             next_members.sort_unstable_by_key(|member| member.validator_id);
         }
-        if expected_epoch >= 3 {
-            prove_f_ordered_quorum(&current, &hosts, &directory);
-        }
+        let former_epoch: Option<(Vec<u8>, Vec<u8>)> = if expected_epoch >= 3 {
+            Some(prove_f_ordered_quorum(&current, &hosts, &directory))
+        } else {
+            None
+        };
         freeze_and_drain(
             fixture,
             &links,
@@ -1189,6 +1257,10 @@ pub(super) fn run(
                 node_wire::QUERY_CONTEXT_PATH,
                 node_wire::FASTVOTE_PREPARE_PATH,
                 node_wire::FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
+                node_wire::ordered_economics::ORDERED_ECONOMICS_PROPOSE_PATH,
+                node_wire::ordered_economics::ORDERED_ECONOMICS_PROPOSAL_PATH,
+                node_wire::ordered_economics::ORDERED_ECONOMICS_CERTIFICATE_PATH,
+                node_wire::ordered_economics::ORDERED_ECONOMICS_TICK_PATH,
             ] {
                 let response: WireResponse = raw(
                     host.address,
@@ -1276,6 +1348,9 @@ pub(super) fn run(
                 )
             })
             .collect();
+        if let Some(retained) = &former_epoch {
+            assert_prior_epoch_envelopes_refused(fixture, &targets, &hosts, retained);
+        }
         verify_receipts(&receipt_history, &hosts);
         remember_receipt(&mut receipt_history, &hosts, seal.request_id);
         let next_network: PathBuf = network_file(&directory, &hosts);
@@ -1336,6 +1411,7 @@ pub(super) fn run(
             lifecycle::request(terminal_epoch, 0x43, &owner.member),
         );
     }
-    prove_f_ordered_quorum(&unlocked, &hosts, &final_directory);
+    let _terminal_envelopes: (Vec<u8>, Vec<u8>) =
+        prove_f_ordered_quorum(&unlocked, &hosts, &final_directory);
     verify_receipts(&receipt_history, &hosts);
 }

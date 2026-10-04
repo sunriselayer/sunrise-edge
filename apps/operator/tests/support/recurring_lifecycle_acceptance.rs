@@ -22,7 +22,7 @@ pub(super) struct ExitOwner {
     pub(super) unlock: Epoch,
 }
 
-fn physical_snapshots(
+pub(super) fn physical_snapshots(
     fixture: &Fixture,
     targets: &CurrentTargets,
 ) -> Vec<node_core::business_reconstruction::SourceBusinessSnapshot> {
