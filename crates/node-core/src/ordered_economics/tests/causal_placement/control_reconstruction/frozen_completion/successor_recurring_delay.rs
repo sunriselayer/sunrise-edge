@@ -378,8 +378,9 @@ impl EpochHosts {
 
     /// The leader proposes, every member signs on its own actual file and
     /// a genuine E-required quorum forms its canonical minimal QC, which
-    /// every replica applies. Warrants are fresh for each owner invocation,
-    /// including the final Seal completion.
+    /// every replica applies. Each genuine per-replica warrant is held only
+    /// for this round; each owner still checks runtime freshness, including
+    /// the final Seal completion.
     fn round(
         &self,
         origin: &SuccessorWorld,
@@ -387,12 +388,19 @@ impl EpochHosts {
         env: &OrderedEconomicsEnvironment<'_>,
         candidate: Option<&OrderedCandidate>,
     ) -> (Vec<OrderedEventOutput>, consensus::QuorumCertificate) {
-        let status: OrderedStatus = crate::ordered_economics::query_status_successor(
-            &archive.warrant(origin, self, 0),
-            &self.targets[0].0,
-            env,
-        )
-        .unwrap();
+        // Resolve the complete immutable archive once per real replica in
+        // this round, before status/proposal/vote/certificate processing.
+        // These borrows never cross a round, epoch, reopen or writer-context
+        // change. The archive and replica handles stay fixed here; every
+        // actual handler still executes its unchanged issuer/freshness,
+        // fence/Unsealed/signing and protected CAS checks. A final Seal QC
+        // may retire its own store; no later live handler uses that warrant.
+        let warrants: Vec<LiveWarrant<'_>> = (0..self.targets.len())
+            .map(|index: usize| archive.warrant(origin, self, index))
+            .collect();
+        let status: OrderedStatus =
+            crate::ordered_economics::query_status_successor(&warrants[0], &self.targets[0].0, env)
+                .unwrap();
         let leader_id: ValidatorId = self
             .policy
             .engine()
@@ -406,7 +414,7 @@ impl EpochHosts {
             .unwrap();
         let leader_env: OrderedEconomicsEnvironment<'_> = self.env_for_host(env, leader);
         let proposal: OrderedProposal = propose_successor(
-            &archive.warrant(origin, self, leader),
+            &warrants[leader],
             &self.targets[leader].0,
             &leader_env,
             candidate,
@@ -417,7 +425,7 @@ impl EpochHosts {
             .map(|index: usize| {
                 let local_env: OrderedEconomicsEnvironment<'_> = self.env_for_host(env, index);
                 process_proposal_successor(
-                    &archive.warrant(origin, self, index),
+                    &warrants[index],
                     &self.targets[index].0,
                     &local_env,
                     &proposal,
@@ -462,7 +470,7 @@ impl EpochHosts {
             .map(|index: usize| {
                 let local_env: OrderedEconomicsEnvironment<'_> = self.env_for_host(env, index);
                 process_certificate_successor(
-                    &archive.warrant(origin, self, index),
+                    &warrants[index],
                     &self.targets[index].0,
                     &local_env,
                     &certificate,
@@ -740,6 +748,15 @@ fn complete_preseal(origin: &SuccessorWorld, archive: &CompleteArchive, hosts: &
         outcome.output.responses()[0].status(),
         NodeResponseStatus::Accepted
     );
+    // Batch only this local frontier/drain phase: the complete archive,
+    // replica handles, live epoch and writer context remain unchanged.
+    // Each warrant comes from the same genuine complete-chain resolver;
+    // every step/page/union owner still checks freshness, issuer/fence,
+    // Unsealed/signing prerequisites and protected CAS independently.
+    // No Seal, activation, reopen or archive append occurs in this phase.
+    let warrants: Vec<LiveWarrant<'_>> = (0..hosts.targets.len())
+        .map(|index: usize| archive.warrant(origin, hosts, index))
+        .collect();
     let mut selected: Vec<(FrozenFrontierVote, FrozenFrontierPage)> = Vec::new();
     let frontier_bound: u64 = archive
         .verify(origin)
@@ -759,7 +776,7 @@ fn complete_preseal(origin: &SuccessorWorld, archive: &CompleteArchive, hosts: &
         // one additional step permits genuine terminal finalization.
         for _ in 0..frontier_bound {
             let step: FrozenFrontierStep = advance_frozen_frontier_successor(
-                &archive.warrant(origin, hosts, index),
+                &warrants[index],
                 &hosts.targets[index].0,
                 &hosts.operation,
                 network.domain(),
@@ -786,7 +803,7 @@ fn complete_preseal(origin: &SuccessorWorld, archive: &CompleteArchive, hosts: &
             .expect("the genuine historical-only scan completes within its verified bound");
         let before: SourceBusinessSnapshot = hosts.capture(origin, index);
         let replay: FrozenFrontierStep = advance_frozen_frontier_successor(
-            &archive.warrant(origin, hosts, index),
+            &warrants[index],
             &hosts.targets[index].0,
             &hosts.operation,
             network.domain(),
@@ -804,7 +821,7 @@ fn complete_preseal(origin: &SuccessorWorld, archive: &CompleteArchive, hosts: &
         );
         assert_eq!(hosts.capture(origin, index), before);
         let pair: (FrozenFrontierVote, FrozenFrontierPage) = read_frozen_frontier_page_successor(
-            &archive.warrant(origin, hosts, index),
+            &warrants[index],
             &hosts.targets[index].0,
             &hosts.operation,
             network.domain(),
@@ -828,7 +845,7 @@ fn complete_preseal(origin: &SuccessorWorld, archive: &CompleteArchive, hosts: &
     for index in 0..hosts.targets.len() {
         for (vote, page) in &selected {
             ingest_drain_signer_page_successor(
-                &archive.warrant(origin, hosts, index),
+                &warrants[index],
                 &hosts.targets[index].0,
                 &hosts.operation,
                 network.domain(),
@@ -841,7 +858,7 @@ fn complete_preseal(origin: &SuccessorWorld, archive: &CompleteArchive, hosts: &
             .unwrap();
         }
         let step: DrainUnionStep = advance_drain_union_successor(
-            &archive.warrant(origin, hosts, index),
+            &warrants[index],
             &hosts.targets[index].0,
             &hosts.operation,
             network.domain(),
@@ -861,6 +878,9 @@ fn complete_preseal(origin: &SuccessorWorld, archive: &CompleteArchive, hosts: &
             union = Some(*identity);
         }
     }
+    // End this batch before the separately resolved ordered DrainSet rounds.
+    // Nothing is cached for a later phase, Seal, epoch or writer context.
+    drop(warrants);
     let drain_request: [u8; 32] = epoch_request(0x71, current.epoch());
     let drain: OrderedCandidate = OrderedCandidate {
         context: current.clone(),

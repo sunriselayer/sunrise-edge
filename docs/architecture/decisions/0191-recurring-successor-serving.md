@@ -103,9 +103,15 @@ Adopt [recurring successor serving](../recurring-successor-serving.md):
 
 ## Consequences and acceptance
 
-- **Linear cost.** Per-request verification cost grows linearly with the
-  number of links. That is accepted here; any bounded-cost alternative needs
-  its own decision.
+- **Explicit growing cost.** Each link is verified, and replay work includes
+  its actual accumulated state and history. The current implementation also
+  clones historical owner/committee material across links; total work can
+  grow quadratically with link count. The explicit link budget is not a
+  constant-cost or linear-time guarantee. A verified checkpoint or shared
+  history representation needs its own decision, not an implicit trust cache.
+- **Test execution.** The node-core dev/test profile uses optimization level 1
+  for real cryptographic recurrence fixtures. Assertions and overflow checks
+  remain enabled; no fixture signature, epoch delay or verification is skipped.
 - **Coherent outcomes.** Core plus stores and real recurrence acceptance first;
   shipped hosts/SDK/CLI plus full process acceptance second. A port declaration,
   unused skeleton or test-only claim is not a completed functional outcome.

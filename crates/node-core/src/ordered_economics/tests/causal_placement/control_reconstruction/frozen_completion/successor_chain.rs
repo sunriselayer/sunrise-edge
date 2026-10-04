@@ -922,30 +922,53 @@ fn assert_genuine_source_index_audit(world: &SuccessorWorld) {
         "validated local index rows are absent from the saved components and imported raw rows");
 }
 
-/// Test-only corruption of a real imported earlier carrier behind the
-/// persisted tail. The bounded cached step does not rescan it; the fresh
-/// complete source-cut owner must refuse, with no Seal or signature/write.
-fn assert_historical_behind_tail_cut_refuses(
+/// Test-only corruption of a genuine carried e0 publication after cached
+/// empty e1 frontier finalization. There is no current physical cursor here:
+/// this proves the fresh complete source-cut audit, not behind-tail scanning.
+fn assert_historical_retained_carrier_cut_refuses(
     world: &SuccessorWorld,
     fixed: &OrderedHistoryIdentity,
     ordered: &[OrderedHistoryHeightMaterial],
 ) {
     let network: &Network = world.network();
-    let mut prefix: Vec<u8> = crate::fast_path::publication::fastpath_publication_key(
-        world.policy.context().chain_id(),
-        &[0; 32],
-    )
-    .unwrap();
-    prefix.truncate(prefix.len().checked_sub(32).unwrap());
     let cursor_key: Vec<u8> = frontier::key(
         world.policy.context().chain_id(),
         world.policy.context().epoch(),
         b"frontier-progress/",
     )
     .unwrap();
-    let cursor: frontier::FrontierCursor =
-        frontier::decode_cursor(world.value(0, &cursor_key).1.as_deref().unwrap()).unwrap();
+    assert_eq!(world.value(0, &cursor_key), (StateRevision::INITIAL, None));
+    let final_key: Vec<u8> = frontier::key(
+        world.policy.context().chain_id(),
+        world.policy.context().epoch(),
+        b"frontier/",
+    )
+    .unwrap();
+    let finalized: frontier::FinalFrontier =
+        frontier::decode_final(world.value(0, &final_key).1.as_deref().unwrap()).unwrap();
+    let closure_key: Vec<u8> = freeze::admission_closure_key(
+        world.policy.context().chain_id(),
+        world.policy.context().epoch(),
+    )
+    .unwrap();
+    let closure: freeze::AdmissionClosureRecord =
+        freeze::decode_admission_closure_record(world.value(0, &closure_key).1.as_deref().unwrap())
+            .unwrap();
+    let empty: consensus::FrozenFrontierAccumulator = consensus::FrozenFrontierAccumulator::new(
+        &network.resolver,
+        world.policy.context().chain_id().clone(),
+        world.policy.context().protocol_version(),
+        world.policy.context().epoch(),
+        network.domain(),
+        closure.request_id,
+        closure.closed_at_block_height,
+    )
+    .unwrap();
+    assert!(finalized.indexed);
+    assert_eq!(finalized.identity.entry_count, 0);
+    assert_eq!(finalized.identity, empty.into_identity());
     let historical_epoch: Epoch = network.root.genesis_context().epoch();
+    assert!(historical_epoch < world.policy.context().epoch());
     let mut drain_prefix: Vec<u8> = crate::fast_path::drain_publication::drain_publication_key(
         world.policy.context().chain_id(),
         historical_epoch,
@@ -953,58 +976,31 @@ fn assert_historical_behind_tail_cut_refuses(
     )
     .unwrap();
     drain_prefix.truncate(drain_prefix.len().checked_sub(32).unwrap());
-    let (prior_key, original, request_id): (Vec<u8>, Vec<u8>, [u8; 32]) = {
+    let (prior_key, original): (Vec<u8>, Vec<u8>) = {
         let warrant: crate::serving_authority::LiveWarrant<'_> = world.warrant(0);
-        let families: [(&[u8], bool); 2] = [(&prefix, false), (&drain_prefix, true)];
-        let mut selected: Option<(Vec<u8>, Vec<u8>, [u8; 32])> = None;
-        for (family, imported) in families {
-            let mut after: Vec<u8> = family.to_vec();
-            while let Some((key, bytes)) = warrant.next_prior_state_row(family, &after) {
-                assert!(key > after.as_slice());
-                after = key.to_vec();
-                // The exact import also retains absence/tombstone rows at
-                // ordinary publication addresses. Its genuine replayed full
-                // bodies may instead live at the earlier drain alias.
-                let Some(bytes) = bytes else {
-                    continue;
-                };
-                let publication: crate::fast_path::publication::FastPathPublicationRecord =
-                    crate::fast_path::publication::decode_fastpath_publication_record(bytes)
-                        .unwrap();
-                assert_eq!(publication.context, *network.root.genesis_context());
-                let expected_key: Vec<u8> = if imported {
-                    crate::fast_path::drain_publication::drain_publication_key(
-                        world.policy.context().chain_id(),
-                        historical_epoch,
-                        &publication.request_id,
-                    )
-                    .unwrap()
-                } else {
-                    crate::fast_path::publication::fastpath_publication_key(
-                        world.policy.context().chain_id(),
-                        &publication.request_id,
-                    )
-                    .unwrap()
-                };
-                assert_eq!(key, expected_key.as_slice());
-                if publication.request_id >= cursor.physical_last_request_id {
-                    continue;
-                }
-                selected = Some((key.to_vec(), bytes.to_vec(), publication.request_id));
-                break;
-            }
-            if selected.is_some() {
-                break;
-            }
+        let mut after: Vec<u8> = drain_prefix.clone();
+        loop {
+            let (key, bytes): (&[u8], Option<&[u8]>) = warrant
+                .next_prior_state_row(&drain_prefix, &after)
+                .expect("the verified prior import retains a genuine e0 drain-publication body");
+            assert!(key > after.as_slice());
+            after = key.to_vec();
+            let Some(bytes) = bytes else {
+                continue;
+            };
+            let publication: crate::fast_path::publication::FastPathPublicationRecord =
+                crate::fast_path::publication::decode_fastpath_publication_record(bytes).unwrap();
+            assert_eq!(publication.context, *network.root.genesis_context());
+            let expected_key: Vec<u8> = crate::fast_path::drain_publication::drain_publication_key(
+                world.policy.context().chain_id(),
+                historical_epoch,
+                &publication.request_id,
+            )
+            .unwrap();
+            assert_eq!(key, expected_key.as_slice());
+            break (key.to_vec(), bytes.to_vec());
         }
-        selected.expect(
-            "the verified prior import retains a genuine historical body behind the physical tail",
-        )
     };
-    assert!(
-        request_id < cursor.physical_last_request_id,
-        "the deliberately corrupted historical carrier is behind, not at, the persisted tail"
-    );
     assert_eq!(
         world.value(0, &prior_key).1.as_deref(),
         Some(original.as_slice())
@@ -1062,20 +1058,23 @@ fn assert_historical_behind_tail_cut_refuses(
             inner: &world.members[0],
             signatures: Cell::new(0),
         };
-        assert!(matches!(
-            frontier::advance_frozen_frontier_successor(
-                &world.warrant(0),
-                &world.targets[0].0,
-                &world.operation,
-                network.domain(),
-                &network.resolver,
-                &network.history,
-                world.policy.context(),
-                &signer,
-            )
-            .unwrap(),
-            frontier::FrozenFrontierStep::Finalized(_)
-        ));
+        let step: frontier::FrozenFrontierStep = frontier::advance_frozen_frontier_successor(
+            &world.warrant(0),
+            &world.targets[0].0,
+            &world.operation,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            world.policy.context(),
+            &signer,
+        )
+        .unwrap();
+        match step {
+            frontier::FrozenFrontierStep::Finalized(vote) => {
+                assert_eq!(*vote, finalized.vote);
+            }
+            _ => panic!("the genuine empty frontier was already finalized"),
+        }
         assert_eq!(signer.signatures.get(), 0);
         let mut plan: BusinessReconstructionPlan<'_> =
             reconstruction_plan(world.source(), &world.cut_history);
@@ -1122,7 +1121,7 @@ fn genuine_file_backed_e0_e1_e2_seal_import_activate_reopen_and_fence() {
     let prior: VerifiedSuccessorAuthority = chain_authority(&world);
     let (cut_identity, ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
         current_history(&world);
-    assert_historical_behind_tail_cut_refuses(&world, &cut_identity, &ordered);
+    assert_historical_retained_carrier_cut_refuses(&world, &cut_identity, &ordered);
     let replay_inputs: crate::serving_authority::ReconstructionInputs = prior
         .reconstruction_inputs(&reconstruction_plan(world.source(), &world.cut_history))
         .unwrap();
