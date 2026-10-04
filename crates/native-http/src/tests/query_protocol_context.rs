@@ -264,32 +264,23 @@ fn resolve_query_protocol_config_fails_closed_on_a_base_version_resolver_caller_
 }
 
 /// The advertised protocol_config below claims protocol_version 2 while
-/// both the resolver and the caller's own NodeConfig agree on version 3 --
-/// the same-owner composition disagreeing with itself in a dimension the
-/// schedule-equality check alone does not cover.
-#[tokio::test]
-async fn context_route_fails_closed_when_the_advertised_protocol_version_disagrees_with_the_caller_and_resolver()
+/// both the resolver and the caller's own NodeConfig agree on version 3.
+/// structured_durable_router's own construction-time check
+/// (validate_structured_durable_router_authority) already refuses this
+/// composition before any route is ever mounted, so this proves that exact
+/// typed construction refusal rather than unwrapping into an unreachable
+/// HTTP call.
+#[test]
+fn router_construction_fails_closed_when_the_advertised_protocol_version_disagrees_with_the_caller_and_resolver()
  {
     let fence: WriterFenceGeneration = WriterFenceGeneration::new(3).unwrap();
     let store: Arc<MemoryDurableStateStore> = Arc::new(MemoryDurableStateStore::new(fence));
     store.set_time(10_000);
     let domain: AtomicityDomainId = AtomicityDomainId::new([0xD8; 32]).unwrap();
-    let setup_context: DurableOperationContext = DurableOperationContext::new(
-        fence,
-        StorageDeadline::new(20_000).unwrap(),
-        StorageCorrelationId::new([0xD8; 16]).unwrap(),
-    );
-    install_fastpath_epoch_record_for_epoch(
-        store.as_ref(),
-        &setup_context,
-        domain,
-        Epoch::new(0),
-        None,
-    );
     let mut protocol_config: ProtocolConfig = active_protocol_config(domain);
     protocol_config.protocol_version = ProtocolVersion::new(2);
     let machine: Arc<IncrementMachine> = Arc::new(IncrementMachine::new(config().state_key()));
-    let app: Router = structured_durable_router(
+    let result: Result<Router, StructuredDurableRouterError> = structured_durable_router(
         StructuredDurableNativeComponents::new(
             Arc::clone(&store),
             Arc::new(MemoryBlobStore::default()),
@@ -303,18 +294,16 @@ async fn context_route_fails_closed_when_the_advertised_protocol_version_disagre
         resolver(),
         machine,
         NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
-    )
-    .unwrap();
-
-    let response: Response = app
-        .oneshot(
-            Request::get(QUERY_CONTEXT_PATH)
-                .body(Body::empty())
-                .unwrap(),
+    );
+    assert_eq!(
+        result.err(),
+        Some(
+            StructuredDurableRouterError::ProtocolVersionAuthorityMismatch {
+                node_config: ProtocolVersion::new(3),
+                protocol_config: ProtocolVersion::new(2),
+            }
         )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    );
 }
 
 /// A real, non-default suite activating at epoch zero itself (not a later
