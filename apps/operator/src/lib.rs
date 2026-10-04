@@ -10,6 +10,7 @@ pub mod economics;
 pub mod immutable_archive;
 pub mod ordered_seal;
 pub mod source_sqlite;
+pub mod sqlite_source_host;
 pub mod successor_activation;
 pub mod successor_artifacts;
 pub mod successor_host;
