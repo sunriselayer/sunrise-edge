@@ -7,7 +7,9 @@ use crate::{
     business_reconstruction::{
         BusinessReconstructionPlan,
         cut::SavedBusinessCut,
-        inactive_import::{BusinessImportError, VerifiedImportPlan, verify_saved_business_import},
+        inactive_import::{
+            BusinessImportError, VerifiedImportPlan, verify_saved_business_import_with_base,
+        },
     },
     epoch_transition::{NextSetEligibilityError, check_next_set_eligibility},
     fast_path::records::FastPathValidatorEntry,
@@ -210,8 +212,76 @@ where
     S: ReadinessRetentionRepository,
     B: PortableBlobRepository,
 {
+    let base: crate::serving_authority::ReconstructionBase<'_> =
+        crate::serving_authority::ReconstructionBase::genesis(plan.genesis_root);
+    retain_conditional_readiness_with_base(
+        plan,
+        base,
+        saved,
+        destination,
+        blobs,
+        operation,
+        next_members,
+        signer,
+    )
+}
+
+/// Recurring inactive-target readiness. The prior base and current policies
+/// are privately derived from the complete independently verified chain.
+#[allow(clippy::too_many_arguments)]
+pub fn retain_conditional_readiness_chain<S, B>(
+    plan: BusinessReconstructionPlan<'_>,
+    authority: &crate::serving_authority::VerifiedSuccessorAuthority,
+    cut_identity: &crate::ordered_economics::OrderedHistoryIdentity,
+    saved: &SavedBusinessCut,
+    destination: &S,
+    blobs: &B,
+    operation: &DurableOperationContext,
+    next_members: &[FastPathValidatorEntry],
+    signer: &ReadinessSigningKey,
+) -> Result<ReadinessVote, ConditionalReadinessError>
+where
+    S: ReadinessRetentionRepository,
+    B: PortableBlobRepository,
+{
+    let inputs: crate::serving_authority::ReconstructionInputs =
+        authority.reconstruction_inputs(&plan).map_err(|_| {
+            ConditionalReadinessError::Invalid("readiness plan differs from verified chain")
+        })?;
+    let base: crate::serving_authority::ReconstructionBase<'_> = authority
+        .reconstruction_base(plan.genesis_root)
+        .map_err(|_| {
+            ConditionalReadinessError::Invalid("readiness base differs from verified chain")
+        })?;
+    retain_conditional_readiness_with_base(
+        inputs.plan(plan, cut_identity),
+        base,
+        saved,
+        destination,
+        blobs,
+        operation,
+        next_members,
+        signer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn retain_conditional_readiness_with_base<'p, S, B>(
+    plan: BusinessReconstructionPlan<'p>,
+    base: crate::serving_authority::ReconstructionBase<'p>,
+    saved: &SavedBusinessCut,
+    destination: &S,
+    blobs: &B,
+    operation: &DurableOperationContext,
+    next_members: &[FastPathValidatorEntry],
+    signer: &ReadinessSigningKey,
+) -> Result<ReadinessVote, ConditionalReadinessError>
+where
+    S: ReadinessRetentionRepository,
+    B: PortableBlobRepository,
+{
     let resolver: &HashSuiteResolver = plan.genesis_root.genesis_resolver();
-    let epoch: Epoch = plan.genesis_root.manifest().context().epoch();
+    let epoch: Epoch = base.context().epoch();
     // DR-0189 explicit early refusal: there is no ordinary namespace guard on
     // this inactive-target path, so the protected slot is read first.
     match destination.get_successor_serving(operation, plan.domain) {
@@ -225,7 +295,7 @@ where
             )));
         }
     }
-    let import: VerifiedImportPlan = verify_saved_business_import(plan, saved)?;
+    let import: VerifiedImportPlan = verify_saved_business_import_with_base(plan, base, saved)?;
     let (progress, token): (runtime::ImportProgress, PortableSnapshotToken) =
         import.observe_complete(destination, blobs, operation)?;
     if !(1..=consensus::readiness::MAX_READINESS_MEMBERS).contains(&next_members.len()) {

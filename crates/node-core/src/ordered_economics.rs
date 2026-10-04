@@ -88,6 +88,16 @@ pub use drain_union::{
     read_drain_signer_progress, staged_drain_signer_identity, verify_drain_ready,
     verify_drain_ready_into,
 };
+pub(crate) use drain_union::{
+    advance_drain_union_gated, confirm_drain_signer_entry_gated,
+    import_staged_drain_publication_gated, ingest_drain_signer_page_gated,
+};
+pub use drain_union::{
+    advance_drain_union_successor, confirm_drain_signer_entry_successor,
+    import_staged_drain_publication_successor, ingest_drain_signer_page_successor,
+    read_drain_signer_progress_successor, staged_drain_signer_identity_successor,
+    verify_drain_ready_successor,
+};
 pub use engine::{
     OrderedEventOutput, OrderedOutcome, OrderedProposal, OrderedStatus,
     decode_ordered_event_output, decode_ordered_outcome, decode_ordered_proposal,
@@ -111,6 +121,7 @@ pub use freeze::{
 pub use frontier::{
     FrozenFrontierError, FrozenFrontierStep, advance_frozen_frontier, read_frozen_frontier_page,
 };
+pub use frontier::{advance_frozen_frontier_successor, read_frozen_frontier_page_successor};
 pub(crate) use ordered_history::verified_committed_block;
 pub use ordered_history::{
     MAX_ORDERED_HISTORY_CHUNK_BYTES, MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
@@ -133,9 +144,9 @@ pub(crate) use reservation::{
 };
 pub use seal::{
     MAX_SEAL_CUT_IDENTITY_BYTES, MAX_SEAL_INTENT_BYTES, MAX_SEAL_OUTCOME_BYTES,
-    SEAL_PREDECESSOR_TAG_GENESIS, SealIntent, SealOutcome, decode_seal_intent, decode_seal_outcome,
-    encode_seal_intent, encode_seal_outcome, seal_certificate_digest, seal_request_id,
-    seal_target_digest,
+    SEAL_PREDECESSOR_TAG_GENESIS, SEAL_PREDECESSOR_TAG_SUCCESSOR, SealIntent, SealOutcome,
+    decode_seal_intent, decode_seal_outcome, encode_seal_intent, encode_seal_outcome,
+    seal_certificate_digest, seal_request_id, seal_target_digest,
 };
 pub(crate) use seal::{decode_seal_cut_identity, seal_cut_identity_digest, seal_next_members};
 

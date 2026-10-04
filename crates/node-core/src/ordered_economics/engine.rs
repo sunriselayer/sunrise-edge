@@ -39,7 +39,7 @@ use crate::business_reconstruction::BusinessReconstructionPlan;
 use crate::operation_preparation::{
     InvocationPreparation, PreparedBusinessInvocation, PreparedStateOperation,
 };
-use crate::serving_authority::ServingGate;
+use crate::serving_authority::{SealPort, ServingGate};
 use canonical_encoding::{decode_digest32, encode_digest32};
 use consensus::{
     CommittedBlock, ConsensusEngine, ConsensusEvent, ConsensusMessage, ConsensusOutput,
@@ -49,10 +49,9 @@ use consensus::{
 };
 use runtime::portable::PortableSnapshotToken;
 use runtime::{
-    DurableCommitOutcome, DurableDomainStateStore, DurableObjectHeadRead, OutgoingSealRepository,
-    SealBarrier, StateAssemblyError, StateObservationSet, StateTransactionBuilder,
-    StructuredDurableDomainStateStore, StructuredStateReader, TransitionHistoryState,
-    VersionedStateReader,
+    DurableCommitOutcome, DurableObjectHeadRead, SealBarrier, StateAssemblyError,
+    StateObservationSet, StateTransactionBuilder, StructuredDurableDomainStateStore,
+    StructuredStateReader, TransitionHistoryState, VersionedStateReader,
 };
 
 /// Reserved under [`crate::local_instance_state::INSTANCE_STATE_PREFIX`], so
@@ -513,6 +512,15 @@ pub(crate) fn scoped_vote_high_key(
 /// Whether a state key lies in any epoch-scoped ordered family.
 pub(crate) fn is_successor_scoped_ordered_key(key: &[u8]) -> bool {
     durable_keys::is_successor_scoped_key(key)
+}
+
+/// DR-0191 Section 4: whether `key` is a live safety row of exactly `scope`.
+pub(crate) fn is_ordered_key_of_scope(
+    key: &[u8],
+    chain: &ChainId,
+    scope: &OrderedKeyScope,
+) -> Result<bool, NodeCoreError> {
+    durable_keys::is_key_of_scope(key, chain, scope)
 }
 
 /// Immutable per-height proof key. This new family does not alter any
@@ -1205,14 +1213,12 @@ pub(super) fn execute_candidate<S: StructuredStateReader>(
     operation: &AuthenticatedOrderedOperation<'_>,
     admission: Option<&OrderedLegAdmission<'_>>,
     committed: &CommittedOrderedOperation<'_>,
-    seal_repository: Option<&dyn OutgoingSealRepository>,
+    seal_port: Option<SealPort<'_>>,
 ) -> LegOutcome {
     let candidate: &OrderedCandidate = operation.candidate();
     let block_height: u64 = committed.height();
     let block_digest: Digest32 = committed.block_digest();
-    if candidate.kind == OrderedOperationKind::Seal
-        && (env.seal.is_none() || seal_repository.is_none())
-    {
+    if candidate.kind == OrderedOperationKind::Seal && (env.seal.is_none() || seal_port.is_none()) {
         return LegOutcome::Stop(stop(
             "ordered Seal completion requires the live composition and same-store capability",
         ));
@@ -1319,8 +1325,8 @@ pub(super) fn execute_candidate<S: StructuredStateReader>(
         // DR-0187: the real acceptance-only business closure. A warranted
         // candidate (preflight, above) is necessary but never sufficient by
         // itself: `execute_seal_candidate` additionally requires the live
-        // `env.seal` composition and the store's own `OutgoingSealRepository`
-        // capability, and only ever produces `AcceptedSeal` after the real
+        // `env.seal` composition and the invocation's one issuer-bound
+        // `SealPort`, and only ever produces `AcceptedSeal` after the real
         // independent `verify_live_seal_closure` comparison has matched.
         OrderedOperationKind::Seal => execute_seal_candidate(
             context,
@@ -1328,7 +1334,7 @@ pub(super) fn execute_candidate<S: StructuredStateReader>(
             candidate,
             block_height,
             block_digest,
-            seal_repository,
+            seal_port,
         ),
     }
 }
@@ -1336,7 +1342,7 @@ pub(super) fn execute_candidate<S: StructuredStateReader>(
 /// DR-0187 Seal dispatch. Pure fields (target/request/output) are
 /// derivable from the already pure-authenticated candidate alone, but
 /// producing [`LegOutcome::AcceptedSeal`] additionally requires the live
-/// `env.seal` composition and the stores own [`OutgoingSealRepository`]
+/// `env.seal` composition and the invocation's issuer-bound `SealPort`
 /// capability, and only after the real independent
 /// `business_reconstruction::cut::verify_live_seal_closure` comparison has
 /// matched. Neither a missing composition nor a missing capability ever
@@ -1350,7 +1356,7 @@ fn execute_seal_candidate(
     candidate: &OrderedCandidate,
     block_height: u64,
     block_digest: Digest32,
-    seal_repository: Option<&dyn OutgoingSealRepository>,
+    seal_port: Option<SealPort<'_>>,
 ) -> LegOutcome {
     let intent = match seal::decode_seal_intent(&candidate.intent) {
         Ok(intent) => intent,
@@ -1414,11 +1420,12 @@ fn execute_seal_candidate(
             "ordered Seal acceptance requires a live Seal composition; this environment carries none",
         ));
     };
-    let Some(repository) = seal_repository else {
+    let Some(port) = seal_port else {
         return LegOutcome::Stop(OrderedEconomicsError::Prerequisite(
             "ordered Seal acceptance requires the stores OutgoingSealRepository capability",
         ));
     };
+    let repository: &dyn StructuredDurableDomainStateStore = port.reader();
     // DR-0187: the business-reconstruction target is the actual CURRENT
     // prior tip h-1, never the candidates own possibly-stale declared
     // checkpoint -- empty progress may have extended it since signing.
@@ -1504,9 +1511,15 @@ fn execute_seal_candidate(
         paid_base_policy: composition.paid_base_policy,
         paid_engine: composition.paid_engine,
     };
-    let verified = match crate::business_reconstruction::cut::verify_live_seal_closure(
+    let base: crate::serving_authority::ReconstructionBase<'_> =
+        match port.reconstruction_base(composition.genesis_root) {
+            Ok(base) => base,
+            Err(_) => return LegOutcome::Stop(stop("Seal base differs from its warrant")),
+        };
+    let verified = match crate::business_reconstruction::cut::verify_live_seal_closure_with_base(
         plan,
-        repository,
+        base,
+        port.snapshots(),
         composition.blobs,
         &ordered_material,
         candidate,
@@ -1557,8 +1570,8 @@ fn execute_seal_candidate(
 /// exactly like acceptance, then returns the fresh token this one signing
 /// attempt retains. A missing composition/capability or a disagreeing
 /// reconstruction stops rather than signing on an unverified claim.
-fn require_seal_signing_retention<S: StructuredDurableDomainStateStore + ?Sized>(
-    store: &S,
+fn require_seal_signing_retention(
+    port: SealPort<'_>,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
@@ -1566,8 +1579,12 @@ fn require_seal_signing_retention<S: StructuredDurableDomainStateStore + ?Sized>
     selected: &QuorumCertificate,
     observations: &mut StateObservationSet,
 ) -> Result<PortableSnapshotToken, OrderedEconomicsError> {
+    // Every signing read goes through the same issuer-bound port that will
+    // check the returned token at commit.
+    let repository: &dyn StructuredDurableDomainStateStore = port.reader();
     let current_height: u64 = loaded.state.committed_height;
-    let (applied_height, applied_key, applied_revision) = load_applied_height(store, context, env)?;
+    let (applied_height, applied_key, applied_revision) =
+        load_applied_height(repository, context, env)?;
     if applied_height != current_height {
         return Err(stop(
             "ordered Seal signing requires the applied prefix to match the committed height",
@@ -1588,12 +1605,6 @@ fn require_seal_signing_retention<S: StructuredDurableDomainStateStore + ?Sized>
         .ok_or(OrderedEconomicsError::Prerequisite(
             "ordered Seal signing requires a live Seal composition",
         ))?;
-    let repository: &dyn OutgoingSealRepository =
-        store
-            .outgoing_seal_repository()
-            .ok_or(OrderedEconomicsError::Prerequisite(
-                "ordered Seal signing requires the stores OutgoingSealRepository capability",
-            ))?;
     let intent = seal::decode_seal_intent(&candidate.intent)
         .map_err(|_| stop("seal signing candidate intent does not decode"))?;
     let cut_identity = seal::decode_seal_cut_identity(&intent)
@@ -1657,7 +1668,9 @@ fn require_seal_signing_retention<S: StructuredDurableDomainStateStore + ?Sized>
     let verified =
         crate::business_reconstruction::cut::derive_source_business_cut_for_seal_signing(
             plan,
-            repository,
+            port.reconstruction_base(composition.genesis_root)
+                .map_err(|_| stop("Seal signing base differs from warrant"))?,
+            port.snapshots(),
             composition.blobs,
             &ordered_material,
             &next_members,
@@ -1992,6 +2005,25 @@ pub(crate) fn reconstruct_ordered_history_height(
     verifier: &mut OrderedHistoryVerifier,
     material: &OrderedHistoryHeightMaterial,
 ) -> Result<Option<OrderedOutcome>, OrderedEconomicsError> {
+    reconstruct_ordered_history_height_gated(
+        ServingGate::Original,
+        store,
+        context,
+        env,
+        verifier,
+        material,
+    )
+}
+
+pub(crate) fn reconstruct_ordered_history_height_gated(
+    gate: ServingGate<'_>,
+    store: &runtime::MemoryDurableStateStore,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    verifier: &mut OrderedHistoryVerifier,
+    material: &OrderedHistoryHeightMaterial,
+) -> Result<Option<OrderedOutcome>, OrderedEconomicsError> {
+    gate.require_live(store, context, env.policy.domain())?;
     if !env.policy.is_causal() {
         return Err(stop(
             "business reconstruction requires pinned causal genesis",
@@ -2098,7 +2130,7 @@ pub(crate) fn reconstruct_ordered_history_height(
                         request_id: candidate.request_id,
                         objects: &[],
                         nonce: None,
-                        gate: ServingGate::Original,
+                        gate,
                     }),
                 };
                 let operation: CommittedOrderedOperation<'_> =
@@ -2132,7 +2164,7 @@ pub(crate) fn reconstruct_ordered_history_height(
     match prepared {
         Some(prepared) => {
             let confirmed: ConfirmedOriginalCompletion = prepared.confirm(
-                ServingGate::Original,
+                gate,
                 store,
                 context,
                 env.policy.domain(),
@@ -2142,7 +2174,8 @@ pub(crate) fn reconstruct_ordered_history_height(
             completed = Some(confirmed.into_outcome());
         }
         None => {
-            let outcome: DurableCommitOutcome = store.commit_durable(
+            let outcome: DurableCommitOutcome = gate.commit_durable(
+                store,
                 context,
                 writes.into_atomic_transaction(env.policy.domain())?,
             );
@@ -2721,7 +2754,7 @@ impl PreparedEventCompletion {
     }
     fn confirm_seal_retention(
         self,
-        repository: &dyn OutgoingSealRepository,
+        port: SealPort<'_>,
         context: &DurableOperationContext,
         token: &PortableSnapshotToken,
         observations: &StateObservationSet,
@@ -2732,11 +2765,8 @@ impl PreparedEventCompletion {
                 let mut writes: MergedWrites = MergedWrites::new(domain);
                 writes.merge_handler_state(&DurableStateTransaction::from(transaction))?;
                 writes.merge_observations(observations)?;
-                match repository.commit_seal_retention(
-                    context,
-                    token,
-                    writes.into_atomic_transaction(domain)?,
-                ) {
+                match port.commit_retention(context, token, writes.into_atomic_transaction(domain)?)
+                {
                     DurableCommitOutcome::Committed => Ok(self.result),
                     outcome => Err(commit_outcome_error(outcome)),
                 }
@@ -3030,7 +3060,7 @@ fn prepare_event<S: StructuredDurableDomainStateStore>(
             env,
             &operation,
             &warrant,
-            store.outgoing_seal_repository(),
+            gate.seal_port(store).ok(),
         )?;
         // Successful preparation includes acceptance or a typed no-effect
         // refusal. A stop returns above and releases no reservation.
@@ -3408,19 +3438,20 @@ fn causal_leader_writes<S: StructuredDurableDomainStateStore>(
     Ok(writes)
 }
 
-/// DR-0187: Seal signing requires the live OutgoingSealRepository SAMESTORE
-/// capability and composition before any proposal or vote is produced for
-/// it, not only at eventual acceptance. Every other candidate kind is
-/// unaffected. A missing capability stops; it never silently falls back to
-/// ordinary signing or a fabricated refusal.
+/// DR-0187/DR-0191: Seal signing requires the live composition and the
+/// invocation's one issuer-bound `SealPort` before any proposal or vote is
+/// produced for it, not only at eventual acceptance. Every other candidate
+/// kind is unaffected. A missing capability stops; it never silently falls
+/// back to ordinary signing or a fabricated refusal.
 fn require_seal_signing_capability<S: StructuredDurableDomainStateStore>(
+    gate: ServingGate<'_>,
     store: &S,
     candidate: Option<&OrderedCandidate>,
     env: &OrderedEconomicsEnvironment<'_>,
 ) -> Result<(), OrderedEconomicsError> {
     let is_seal: bool =
         candidate.is_some_and(|candidate| candidate.kind == OrderedOperationKind::Seal);
-    let capable: bool = env.seal.is_some() && store.outgoing_seal_repository().is_some();
+    let capable: bool = env.seal.is_some() && gate.seal_port(store).is_ok();
     if is_seal && !capable {
         return Err(OrderedEconomicsError::Prerequisite(
             "ordered Seal signing requires the live Seal composition and OutgoingSealRepository capability",
@@ -3450,7 +3481,7 @@ where
         },
         None => None,
     };
-    require_seal_signing_capability(store, candidate, env)?;
+    require_seal_signing_capability(gate, store, candidate, env)?;
     gate.require_origin(store, context, env.policy.domain())?;
     let mut loaded: LoadedState = load_state(store, context, env)?;
     // The current high QC can itself finish the justified prefix. A capacity
@@ -3540,7 +3571,7 @@ where
                     ));
                 }
                 Some(require_seal_signing_retention(
-                    store,
+                    gate.seal_port(store)?,
                     context,
                     env,
                     fresh_candidate,
@@ -3591,10 +3622,7 @@ where
             ));
         }
         writes.merge_observations(&seal_signing_observations)?;
-        let repository: &dyn OutgoingSealRepository = store.outgoing_seal_repository().ok_or(
-            stop("ordered Seal signing capability vanished before commit"),
-        )?;
-        repository.commit_seal_retention(
+        gate.seal_port(store)?.commit_retention(
             context,
             token,
             writes.into_atomic_transaction(env.policy.domain())?,
@@ -3687,7 +3715,7 @@ where
             return Err(stop("causal proposal lacks delivered candidate bytes"));
         }
     }
-    require_seal_signing_capability(store, proposal.candidate.as_ref(), env)?;
+    require_seal_signing_capability(gate, store, proposal.candidate.as_ref(), env)?;
     gate.require_live(store, context, env.policy.domain())?;
     gate.require_local_signer(store, signer.validator_id())?;
     let mut loaded = load_state(store, context, env)?;
@@ -3975,7 +4003,7 @@ where
                 ));
             }
             Some(require_seal_signing_retention(
-                store,
+                gate.seal_port(store)?,
                 context,
                 env,
                 seal_candidate,
@@ -4008,9 +4036,7 @@ where
             });
     let mut result = match seal_signing_token {
         Some(token) => {
-            let repository: &dyn OutgoingSealRepository = store.outgoing_seal_repository().ok_or(
-                stop("ordered Seal signing capability vanished before commit"),
-            )?;
+            let port: SealPort<'_> = gate.seal_port(store)?;
             prepare_event(
                 gate,
                 store,
@@ -4022,7 +4048,7 @@ where
                 Some((reconciliation, produced)),
             )?
             .confirm_seal_retention(
-                repository,
+                port,
                 context,
                 &token,
                 &seal_signing_observations,
@@ -4111,11 +4137,31 @@ fn require_successor_environment(
         || env.policy.context() != inputs.context()
         || env.policy.domain() != inputs.domain()
         || env.policy.genesis_digest() != inputs.genesis_digest()
-        || env.seal.is_some()
     {
         return Err(stop(
             "ordered environment is not the live successor warrant scope",
         ));
+    }
+    if let Some(composition) = &env.seal {
+        // DR-0191 connects the SAME Seal owner through this invocation's
+        // issuer-bound SealPort. Merely supplying a composition is still not
+        // authority: its original root and current policies must be the
+        // privately verified reconstruction base of this exact live chain.
+        let base: crate::serving_authority::ReconstructionBase<'_> = warrant
+            .reconstruction_base(composition.genesis_root)
+            .map_err(|_| stop("successor Seal composition has a foreign root"))?;
+        base.require_policy(env.policy, inputs.domain())
+            .map_err(|_| stop("successor Seal composition differs from its verified base"))?;
+        let current: execution::local_execution::LocalExecutionPolicy =
+            execution::local_execution::LocalExecutionPolicy::generic_object_results(
+                inputs.context().clone(),
+            );
+        if env.leg_policy != &current || composition.paid_base_policy != &current {
+            return Err(stop("successor Seal composition has a foreign execution policy"));
+        }
+        // The handler still resolves ServingGate::seal_port on the actual
+        // issuing store before retention, signing or completion. No generic
+        // port or policy-only fallback can complete a successor Seal.
     }
     Ok(())
 }

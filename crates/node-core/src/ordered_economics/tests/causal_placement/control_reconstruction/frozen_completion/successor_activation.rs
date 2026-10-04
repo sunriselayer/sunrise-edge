@@ -24,6 +24,9 @@ use runtime_sqlite::SqliteImportTarget;
 #[path = "successor_replacement.rs"]
 mod successor_replacement;
 
+#[path = "successor_chain.rs"]
+mod successor_chain;
+
 struct Artifacts<'a> {
     saved: &'a SavedBusinessCut,
     history: &'a [OrderedHistoryHeightMaterial],
@@ -439,6 +442,12 @@ fn same_committee_source() -> SealedSource {
 fn replacement_source() -> SealedSource {
     let fixture: crate::ordered_economics::RegisteredCutFixture =
         crate::ordered_economics::registered_cut_fixture();
+    replacement_source_from(fixture)
+}
+
+fn replacement_source_from(
+    fixture: crate::ordered_economics::RegisteredCutFixture,
+) -> SealedSource {
     let network: &Network = &fixture.source().network;
     let saved: SavedBusinessCut = fixture.saved().clone();
     let cut_history: OrderedHistoryIdentity = saved.identity.ordered_history.clone();

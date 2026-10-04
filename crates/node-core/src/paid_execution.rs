@@ -1307,6 +1307,7 @@ pub(crate) fn build_paid_admission<
                 )?;
             }
             effects::translate(
+                gate,
                 store,
                 context,
                 domain,

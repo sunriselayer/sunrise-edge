@@ -46,6 +46,9 @@ use crate::ordered_economics::{
     OrderedHistoryComponentKind, OrderedHistoryHeightMaterial, OrderedHistoryIdentity,
     OrderedHistoryVerifier, OrderedOperationKind, decode_ordered_candidate,
 };
+use crate::serving_authority::{
+    ReconstructionBase, ServingGate, VerifiedCommitteeHistory, VerifiedOwnerRegistry,
+};
 use crate::{MAX_AUTHENTICATED_OBJECT_BODY_BYTES, genesis};
 use canonical_encoding::{CanonicalStruct, decode_canonical_frame};
 use consensus::bundle::{
@@ -289,8 +292,8 @@ pub fn owned_material_from_source_snapshot(
         let body_valid: bool = hashing::verify_digest(
             digest,
             HashPurpose::Object,
-            plan.genesis_root.manifest().context().protocol_version(),
-            plan.genesis_root.manifest().context().chain_id(),
+            plan.ordered_policy.context().protocol_version(),
+            plan.ordered_policy.context().chain_id(),
             bytes,
         )
         .map_err(|_| invalid("referenced source object blob hash is not verifiable"))?;
@@ -306,7 +309,7 @@ pub fn owned_material_from_source_snapshot(
             state.insert(key.clone(), bytes);
         }
     }
-    let chain = plan.genesis_root.manifest().context().chain_id();
+    let chain = plan.ordered_policy.context().chain_id();
     let mut normal: BTreeMap<[u8; 32], FastPathPublicationRecord> = BTreeMap::new();
     let mut drain: BTreeMap<[u8; 32], FastPathPublicationRecord> = BTreeMap::new();
     let mut expected_artifacts: BTreeSet<Vec<u8>> = BTreeSet::new();
@@ -341,7 +344,7 @@ pub fn owned_material_from_source_snapshot(
         let Some(imported) = target else { continue };
         let retained: FastPathPublicationRecord = decode_fastpath_publication_record(bytes)
             .map_err(|_| invalid("retained publication record decoding failed"))?;
-        if retained.context != *plan.genesis_root.manifest().context() {
+        if retained.context != *plan.ordered_policy.context() {
             return Err(invalid(
                 "retained publication context differs from pinned genesis",
             ));
@@ -418,18 +421,18 @@ pub fn owned_material_from_source_snapshot(
     // The root already validated the original committee (DR-0182); no
     // independent reconstruction from the manifest's raw validator-set
     // record is needed or trusted here.
-    let validator_set: ValidatorSet = plan.genesis_root.genesis_committee().clone();
+    let validator_set: ValidatorSet = plan.ordered_policy.engine().validator_set().clone();
     let fast_certifier: FastPathCertifier = FastPathCertifier::new(
         chain.clone(),
-        plan.genesis_root.manifest().context().protocol_version(),
-        plan.genesis_root.manifest().context().epoch(),
+        plan.ordered_policy.context().protocol_version(),
+        plan.ordered_policy.context().epoch(),
         validator_set.clone(),
     )
     .map_err(|_| invalid("signed genesis FastVote authority is malformed"))?;
     let availability_certifier: AvailabilityCertifier = AvailabilityCertifier::new(
         chain.clone(),
-        plan.genesis_root.manifest().context().protocol_version(),
-        plan.genesis_root.manifest().context().epoch(),
+        plan.ordered_policy.context().protocol_version(),
+        plan.ordered_policy.context().epoch(),
         validator_set,
     )
     .map_err(|_| invalid("signed genesis availability authority is malformed"))?;
@@ -588,7 +591,7 @@ pub fn owned_material_from_source_snapshot(
             let settlement = decode_fastpath_settlement_record(state[&settlement_key])
                 .map_err(|_| invalid("applied settlement record malformed"))?;
             if settlement.request_id != request_id
-                || settlement.context != *plan.genesis_root.manifest().context()
+                || settlement.context != *plan.ordered_policy.context()
             {
                 return Err(invalid("applied settlement linkage differs"));
             }
@@ -656,7 +659,7 @@ fn bundle_from_retained_record(
     for entry in &manifest.entries {
         let key: Vec<u8> = if imported {
             drain_publication_artifact_key(
-                plan.genesis_root.manifest().context().chain_id(),
+                plan.ordered_policy.context().chain_id(),
                 record.context.epoch(),
                 &record.request_id,
                 entry,
@@ -664,7 +667,7 @@ fn bundle_from_retained_record(
             .map_err(|_| invalid("DrainSet artifact key derivation failed"))?
         } else {
             fastpath_publication_artifact_key(
-                plan.genesis_root.manifest().context().chain_id(),
+                plan.ordered_policy.context().chain_id(),
                 &record.request_id,
                 entry.kind,
                 &entry.content_digest.bytes(),
@@ -818,9 +821,8 @@ fn owned_material_is_ready(
     let decoded =
         crate::fast_path::publication::witness::decode_logical_witness(&material.bundle.witness)
             .map_err(|_| invalid("owned publication witness decoding failed"))?;
-    let profile_key: Vec<u8> =
-        logical_profile_key(plan.genesis_root.manifest().context().chain_id())
-            .map_err(|_| invalid("logical profile key derivation failed"))?;
+    let profile_key: Vec<u8> = logical_profile_key(plan.ordered_policy.context().chain_id())
+        .map_err(|_| invalid("logical profile key derivation failed"))?;
     let profile_row = overlay
         .store
         .get_versioned_durable(&plan.operation_context, plan.domain, &profile_key)
@@ -874,7 +876,7 @@ fn owned_material_is_ready(
                     .genesis_root
                     .genesis_resolver()
                     .hash_for_purpose(
-                        plan.genesis_root.manifest().context().epoch(),
+                        plan.ordered_policy.context().epoch(),
                         HashPurpose::ExecutionEffects,
                         bytes,
                     )
@@ -1002,7 +1004,7 @@ fn owned_material_is_ready(
 
     let authenticated = execution::paid_execution::authenticate_paid_intent(
         plan.genesis_root.genesis_resolver(),
-        plan.genesis_root.manifest().context(),
+        plan.ordered_policy.context(),
         &material.bundle.signed_intent,
     )
     .map_err(|_| invalid("owned signed intent authentication failed"))?;
@@ -1018,8 +1020,8 @@ fn owned_material_is_ready(
         &overlay.store,
         &plan.operation_context,
         plan.domain,
-        plan.genesis_root.manifest().context().chain_id(),
-        plan.genesis_root.manifest().context().protocol_version(),
+        plan.ordered_policy.context().chain_id(),
+        plan.ordered_policy.context().protocol_version(),
         intent.sender,
         intent.context.epoch(),
     )?;
@@ -1031,8 +1033,8 @@ fn owned_material_is_ready(
         epoch: intent.context.epoch(),
     };
     let nonce_row_key: Vec<u8> = PersistenceLayout::new(
-        plan.genesis_root.manifest().context().chain_id().clone(),
-        plan.genesis_root.manifest().context().protocol_version(),
+        plan.ordered_policy.context().chain_id().clone(),
+        plan.ordered_policy.context().protocol_version(),
     )
     .sender_nonce_key(intent.sender, intent.context.epoch());
     if decoded.nonce.key != nonce_row_key {
@@ -1178,7 +1180,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
             let decoded_outputs: Vec<(LogicalSubject, LogicalObservation)> = logical_outputs(
                 &witness,
                 self.plan.genesis_root.genesis_resolver(),
-                self.plan.genesis_root.manifest().context().epoch(),
+                self.plan.ordered_policy.context().epoch(),
             )?;
             let first_output: LogicalSubject = decoded_outputs
                 .first()
@@ -1379,17 +1381,24 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 blobs: &self.blobs,
                 seal: None,
             };
-            let outcome = crate::ordered_economics::engine::reconstruct_ordered_history_height(
-                &self.store,
-                &self.plan.operation_context,
-                &environment,
-                &mut verifier,
-                material,
-            )
-            .map_err(|source| BusinessReconstructionError::OrderedHistory {
-                height: material.descriptor.height,
-                source: Box::new(source),
-            })?;
+            let replay_scope: Option<ReplayScope<'_>> = self.replay_scope();
+            let gate: ServingGate<'_> = replay_scope
+                .as_ref()
+                .map_or(ServingGate::Original, ServingGate::Replay);
+            let outcome =
+                crate::ordered_economics::engine::reconstruct_ordered_history_height_gated(
+                    gate,
+                    &self.store,
+                    &self.plan.operation_context,
+                    &environment,
+                    &mut verifier,
+                    material,
+                )
+                .map_err(|source| BusinessReconstructionError::OrderedHistory {
+                    height: material.descriptor.height,
+                    source: Box::new(source),
+                })?;
+            drop(replay_scope);
             if let Some(outcome) = outcome {
                 // A later certified recommit preserves the original height
                 // and receipt. It is not another business application.
@@ -1470,8 +1479,9 @@ impl<'a> BusinessReconstructionOverlay<'a> {
             .publication_catalog
             .as_deref()
             .ok_or(invalid("verified publication catalog is absent"))?;
+        let current: SourceBusinessSnapshot = self.current_snapshot(source)?;
         let source_material: Vec<OwnedPublicationMaterial> =
-            owned_material_from_source_snapshot(source, &self.plan)?;
+            owned_material_from_source_snapshot(&current, &self.plan)?;
         let source_catalog: Vec<VerifiedPublicationSemantic> =
             self.validate_owned_inputs(&source_material)?;
         if source_catalog != expected_catalog {
@@ -1507,7 +1517,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
         // The root already validated the original committee (DR-0182); no
         // independent reconstruction from the manifest's raw validator-set
         // record is needed or trusted here.
-        let validator_set: ValidatorSet = self.plan.genesis_root.genesis_committee().clone();
+        let validator_set: ValidatorSet = self.base.committee().clone();
         let fast_certifier: FastPathCertifier = FastPathCertifier::new(
             self.plan
                 .genesis_root
@@ -1520,7 +1530,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 .manifest()
                 .context()
                 .protocol_version(),
-            self.plan.genesis_root.manifest().context().epoch(),
+            self.plan.ordered_policy.context().epoch(),
             validator_set.clone(),
         )
         .map_err(|_| invalid("pinned FastVote authority invalid"))?;
@@ -1536,7 +1546,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 .manifest()
                 .context()
                 .protocol_version(),
-            self.plan.genesis_root.manifest().context().epoch(),
+            self.plan.ordered_policy.context().epoch(),
             validator_set,
         )
         .map_err(|_| invalid("pinned availability authority invalid"))?;
@@ -1572,12 +1582,12 @@ impl<'a> BusinessReconstructionOverlay<'a> {
             }
             let authenticated = execution::paid_execution::authenticate_paid_intent(
                 self.plan.genesis_root.genesis_resolver(),
-                self.plan.genesis_root.manifest().context(),
+                self.plan.ordered_policy.context(),
                 &bundle.signed_intent,
             )
             .map_err(|_| invalid("owned paid intent authentication failed"))?;
             if authenticated.intent().request_id != bundle.request_id
-                || authenticated.intent().context != *self.plan.genesis_root.manifest().context()
+                || authenticated.intent().context != *self.plan.ordered_policy.context()
                 || bundle.request_id[0] & 0x80 != 0
             {
                 return Err(invalid(
@@ -1672,7 +1682,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 &self.store,
                 &self.plan.operation_context,
                 self.plan.domain,
-                self.plan.genesis_root.manifest().context().chain_id(),
+                self.plan.ordered_policy.context().chain_id(),
                 self.plan
                     .genesis_root
                     .manifest()
@@ -1699,7 +1709,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 add_unique_applied_state_producer(works, index, &mut roots)?;
             }
             let instance_key: Vec<u8> = crate::local_instance_state::instance_record_key(
-                self.plan.genesis_root.manifest().context().chain_id(),
+                self.plan.ordered_policy.context().chain_id(),
                 &call.instance.creator,
                 &call.instance.seed,
             )
@@ -1737,7 +1747,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
         }
         if let Some(request_id) = requirements.fee_escrow_request_id {
             let key: Vec<u8> = crate::local_instance_state::fastpath_settlement_key(
-                self.plan.genesis_root.manifest().context().chain_id(),
+                self.plan.ordered_policy.context().chain_id(),
                 &request_id,
             )
             .map_err(|_| invalid("fee escrow producer key derivation failed"))?;
@@ -1844,21 +1854,27 @@ fn apply_owned_closure(
                 let certificate: Vec<u8> =
                     encode_fast_certificate(&work.material.bundle.certificate)
                         .map_err(|_| invalid("owned FastCertificate encoding failed"))?;
-                crate::fast_path::apply_with_recovery_after_publication(
+                let replay_scope: Option<ReplayScope<'_>> = overlay.replay_scope();
+                let gate: ServingGate<'_> = replay_scope
+                    .as_ref()
+                    .map_or(ServingGate::Original, ServingGate::Replay);
+                let fee_policy: execution::paid_execution::PaidFeePolicy = overlay.fee_policy()?;
+                crate::fast_path::apply_internal(
+                    gate,
                     &overlay.store,
                     &overlay.blobs,
                     &overlay.plan.operation_context,
                     overlay.plan.domain,
                     overlay.plan.genesis_root.genesis_resolver(),
                     overlay.plan.resolver_history,
-                    overlay.plan.genesis_root.manifest().context(),
+                    overlay.plan.ordered_policy.context(),
                     overlay.plan.paid_base_policy,
-                    &overlay.plan.genesis_root.manifest().fee_policy,
+                    &fee_policy,
                     overlay.plan.paid_engine,
                     &work.material.bundle.signed_intent,
                     &certificate,
-                    work.material.recovery_created_checkpoint,
-                    availability,
+                    Some(work.material.recovery_created_checkpoint),
+                    Some(availability),
                 )
                 .map_err(|_| {
                     BusinessReconstructionError::Execution(
@@ -1870,16 +1886,22 @@ fn apply_owned_closure(
                 // owning handler reads only privately reconstructed committed
                 // Freeze/DrainSet, exact selected membership and full retained
                 // proof; it refuses before paid execution if any is absent.
-                crate::fast_path::drain_apply::apply_drain_member(
+                let replay_scope: Option<ReplayScope<'_>> = overlay.replay_scope();
+                let gate: ServingGate<'_> = replay_scope
+                    .as_ref()
+                    .map_or(ServingGate::Original, ServingGate::Replay);
+                let fee_policy: execution::paid_execution::PaidFeePolicy = overlay.fee_policy()?;
+                crate::fast_path::drain_apply::apply_drain_member_gated(
+                    gate,
                     &overlay.store,
                     &overlay.blobs,
                     &overlay.plan.operation_context,
                     overlay.plan.domain,
                     overlay.plan.genesis_root.genesis_resolver(),
                     overlay.plan.resolver_history,
-                    overlay.plan.genesis_root.manifest().context(),
+                    overlay.plan.ordered_policy.context(),
                     overlay.plan.paid_base_policy,
-                    &overlay.plan.genesis_root.manifest().fee_policy,
+                    &fee_policy,
                     overlay.plan.paid_engine,
                     work.material.bundle.request_id,
                     work.material.recovery_created_checkpoint,
@@ -2128,7 +2150,7 @@ fn source_retention_keys(
     let mut retained: BTreeSet<Vec<u8>> = BTreeSet::new();
     for material in materials {
         let request: [u8; 32] = material.bundle.request_id;
-        let chain = plan.genesis_root.manifest().context().chain_id();
+        let chain = plan.ordered_policy.context().chain_id();
         let normal_key: Vec<u8> = fastpath_publication_key(chain, &request)
             .map_err(|_| invalid("normal publication key derivation failed"))?;
         let drain_key: Vec<u8> =
@@ -2224,14 +2246,14 @@ fn carrier_keys(
         if item.applied {
             keys.insert(
                 fastpath_certificate_key(
-                    plan.genesis_root.manifest().context().chain_id(),
+                    plan.ordered_policy.context().chain_id(),
                     &item.request_id,
                 )
                 .map_err(|_| invalid("application certificate key derivation failed"))?,
             );
             keys.insert(
                 fastpath_availability_certificate_key(
-                    plan.genesis_root.manifest().context().chain_id(),
+                    plan.ordered_policy.context().chain_id(),
                     &item.request_id,
                 )
                 .map_err(|_| invalid("availability certificate key derivation failed"))?,
@@ -2249,31 +2271,29 @@ fn normalize_carrier_rows(
     // The root already validated the original committee (DR-0182); no
     // independent reconstruction from the manifest's raw validator-set
     // record is needed or trusted here.
-    let validator_set: ValidatorSet = plan.genesis_root.genesis_committee().clone();
+    let validator_set: ValidatorSet = plan.ordered_policy.engine().validator_set().clone();
     let fast: FastPathCertifier = FastPathCertifier::new(
-        plan.genesis_root.manifest().context().chain_id().clone(),
-        plan.genesis_root.manifest().context().protocol_version(),
-        plan.genesis_root.manifest().context().epoch(),
+        plan.ordered_policy.context().chain_id().clone(),
+        plan.ordered_policy.context().protocol_version(),
+        plan.ordered_policy.context().epoch(),
         validator_set.clone(),
     )
     .map_err(|_| invalid("carrier FastVote authority invalid"))?;
     let availability: AvailabilityCertifier = AvailabilityCertifier::new(
-        plan.genesis_root.manifest().context().chain_id().clone(),
-        plan.genesis_root.manifest().context().protocol_version(),
-        plan.genesis_root.manifest().context().epoch(),
+        plan.ordered_policy.context().chain_id().clone(),
+        plan.ordered_policy.context().protocol_version(),
+        plan.ordered_policy.context().epoch(),
         validator_set,
     )
     .map_err(|_| invalid("carrier availability authority invalid"))?;
     let verifier: ReconstructionEd25519Verifier = ReconstructionEd25519Verifier;
     let mut normalized: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
     for item in catalog {
-        let certificate_key: Vec<u8> = fastpath_certificate_key(
-            plan.genesis_root.manifest().context().chain_id(),
-            &item.request_id,
-        )
-        .map_err(|_| invalid("application certificate key derivation failed"))?;
+        let certificate_key: Vec<u8> =
+            fastpath_certificate_key(plan.ordered_policy.context().chain_id(), &item.request_id)
+                .map_err(|_| invalid("application certificate key derivation failed"))?;
         let availability_key: Vec<u8> = fastpath_availability_certificate_key(
-            plan.genesis_root.manifest().context().chain_id(),
+            plan.ordered_policy.context().chain_id(),
             &item.request_id,
         )
         .map_err(|_| invalid("availability certificate key derivation failed"))?;
@@ -2357,6 +2377,8 @@ fn normalize_carrier_rows(
 /// Non-exportable private state and trusted replay composition.
 pub struct BusinessReconstructionOverlay<'a> {
     plan: BusinessReconstructionPlan<'a>,
+    base: ReconstructionBase<'a>,
+    base_snapshot: Option<SourceBusinessSnapshot>,
     store: MemoryDurableStateStore,
     blobs: MemoryBlobStore,
     genesis_digest: Digest32,
@@ -2369,6 +2391,16 @@ impl<'a> BusinessReconstructionOverlay<'a> {
     /// Verifies the signed-v4 causal-admission pin and installs genesis into a
     /// fresh private store. The supplied context/domain cannot select genesis.
     pub fn new(plan: BusinessReconstructionPlan<'a>) -> Result<Self, BusinessReconstructionError> {
+        let base: ReconstructionBase<'a> = ReconstructionBase::genesis(plan.genesis_root);
+        Self::new_with_base(plan, base)
+    }
+
+    pub(crate) fn new_with_base(
+        plan: BusinessReconstructionPlan<'a>,
+        base: ReconstructionBase<'a>,
+    ) -> Result<Self, BusinessReconstructionError> {
+        base.require_policy(plan.ordered_policy, plan.domain)
+            .map_err(|_| invalid("reconstruction policy differs from verified base"))?;
         // `plan.genesis_root` is one immutable `VerifiedGenesisRoot`
         // (DR-0182): its manifest, digest, admission profile, original
         // committee and resolver are already mutually consistent by
@@ -2376,31 +2408,52 @@ impl<'a> BusinessReconstructionOverlay<'a> {
         // unrepresentable here and is no longer independently re-checked.
         // The still-independent policy/history/domain inputs below are not
         // guaranteed by the root and keep their real cross-checks.
-        require_configuration(plan.genesis_root, plan.ordered_policy, plan.domain)
-            .map_err(|_| invalid("trusted genesis/profile/policy pins disagree"))?;
-        if plan.ordered_history_identity.context != *plan.genesis_root.manifest().context()
+        if !base.is_successor() {
+            require_configuration(plan.genesis_root, plan.ordered_policy, plan.domain)
+                .map_err(|_| invalid("trusted genesis/profile/policy pins disagree"))?;
+        }
+        if plan.ordered_history_identity.context != *base.context()
             || plan.ordered_history_identity.domain != plan.domain
             || plan.ordered_history_identity.genesis_digest != plan.genesis_root.digest()
             || plan.ordered_history_identity.anchor != plan.ordered_policy.anchor()
-            || plan.ordered_leg_policy.context() != plan.genesis_root.manifest().context()
-            || plan.paid_base_policy.context() != plan.genesis_root.manifest().context()
+            || plan.ordered_leg_policy.context() != base.context()
+            || plan.paid_base_policy.context() != base.context()
             || plan.genesis_root.manifest().fee_policy.context
-                != *plan.genesis_root.manifest().context()
+                != *plan.genesis_root.genesis_context()
         {
             return Err(invalid("trusted genesis/profile/policy pins disagree"));
         }
         // Companion disagreement keeps its original diagnostic precedence
         // over a policy anchor which differs from the signed root's anchor.
-        require_root_anchor(plan.genesis_root, plan.ordered_policy, plan.domain).map_err(
-            |error: RootAnchorBindingError| match error {
-                RootAnchorBindingError::Derivation => {
-                    invalid("genesis root anchor could not be derived")
-                }
-                RootAnchorBindingError::Mismatch => {
-                    invalid("ordered policy anchor does not match the genesis root")
-                }
-            },
-        )?;
+        if !base.is_successor() {
+            require_root_anchor(plan.genesis_root, plan.ordered_policy, plan.domain).map_err(
+                |error: RootAnchorBindingError| match error {
+                    RootAnchorBindingError::Derivation => {
+                        invalid("genesis root anchor could not be derived")
+                    }
+                    RootAnchorBindingError::Mismatch => {
+                        invalid("ordered policy anchor does not match the genesis root")
+                    }
+                },
+            )?;
+        }
+        if let Some(bootstrapped) = base
+            .bootstrap(&plan.operation_context)
+            .map_err(|_| invalid("verified successor bootstrap refused"))?
+        {
+            let genesis_digest: Digest32 = plan.genesis_root.digest();
+            return Ok(Self {
+                plan,
+                base,
+                base_snapshot: Some(bootstrapped.snapshot),
+                store: bootstrapped.store,
+                blobs: bootstrapped.blobs,
+                genesis_digest,
+                reconstruction_started: false,
+                reconstruction_complete: false,
+                publication_catalog: None,
+            });
+        }
         let store: MemoryDurableStateStore =
             MemoryDurableStateStore::new_bound(plan.domain, plan.operation_context.writer_fence());
         let install: GenesisInstallOutcome = genesis::install_genesis_with_history(
@@ -2425,6 +2478,8 @@ impl<'a> BusinessReconstructionOverlay<'a> {
         let genesis_digest: Digest32 = plan.genesis_root.digest();
         Ok(Self {
             plan,
+            base,
+            base_snapshot: None,
             store,
             blobs: MemoryBlobStore::default(),
             genesis_digest,
@@ -2438,5 +2493,194 @@ impl<'a> BusinessReconstructionOverlay<'a> {
     #[must_use]
     pub const fn genesis_digest(&self) -> Digest32 {
         self.genesis_digest
+    }
+
+    /// A fresh, non-exportable scope per shared handler call. The caller
+    /// drops this borrow before updating mutable overlay progress.
+    fn replay_scope(&self) -> Option<ReplayScope<'_>> {
+        let (committees, owners): (&VerifiedCommitteeHistory, &VerifiedOwnerRegistry) =
+            self.base.histories()?;
+        Some(ReplayScope {
+            issuer: &self.store,
+            context: &self.plan.operation_context,
+            domain: self.plan.domain,
+            floor: self.base.floor()?,
+            committees,
+            owners,
+            prior: self.base_snapshot.as_ref()?,
+            epoch: self.base.context().epoch(),
+        })
+    }
+
+    /// A fresh scope whose borrow cannot escape the one shared handler
+    /// call. Mutable replay progress is updated only after this returns.
+    fn replay_call<T>(&self, call: impl for<'s> FnOnce(ServingGate<'s>) -> T) -> T {
+        let scope: Option<ReplayScope<'_>> = self.replay_scope();
+        let gate: ServingGate<'_> = scope
+            .as_ref()
+            .map_or(ServingGate::Original, ServingGate::Replay);
+        call(gate)
+    }
+
+    fn fee_policy(
+        &self,
+    ) -> Result<execution::paid_execution::PaidFeePolicy, BusinessReconstructionError> {
+        let key: Vec<u8> = crate::local_instance_state::paid_fee_policy_key(self.base.context())
+            .map_err(|_| invalid("replay fee policy key"))?;
+        let row = self
+            .store
+            .get_versioned_durable(&self.plan.operation_context, self.plan.domain, &key)
+            .map_err(|_| invalid("replay fee policy read"))?;
+        execution::paid_execution::decode_paid_fee_policy(
+            row.value().ok_or(invalid("replay fee policy absent"))?,
+        )
+        .map_err(|_| invalid("replay fee policy decode"))
+    }
+
+    /// Earlier immutable rows are retained exactly as the verified base
+    /// installed them. They are never authenticated with the current engine
+    /// or admitted to the current publication replay catalog.
+    fn earlier_rows(
+        &self,
+    ) -> Result<BTreeMap<Vec<u8>, Option<Vec<u8>>>, BusinessReconstructionError> {
+        let mut earlier: BTreeMap<Vec<u8>, Option<Vec<u8>>> = BTreeMap::new();
+        let Some(snapshot) = &self.base_snapshot else {
+            return Ok(earlier);
+        };
+        for row in &snapshot.records {
+            let DurableRecordKey::State(key) = row.descriptor.key() else {
+                continue;
+            };
+            let ordered: bool = key
+                .starts_with(crate::ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX)
+                && !crate::ordered_economics::engine::is_ordered_key_of_scope(
+                    key,
+                    self.base.context().chain_id(),
+                    self.plan.ordered_policy.key_scope(),
+                )
+                .map_err(|_| invalid("base ordered scope classification"))?;
+            let fast: bool = key
+                .strip_prefix(crate::local_instance_state::FASTPATH_STATE_PREFIX)
+                .is_some_and(|tail: &[u8]| {
+                    [
+                        b"publication/".as_slice(),
+                        b"publication-artifact/",
+                        b"drain-publication/",
+                        b"drain-publication-artifact/",
+                        b"certificate/",
+                        b"availability-certificate/",
+                        b"commitment-witness/",
+                    ]
+                    .iter()
+                    .any(|family| tail.starts_with(family))
+                });
+            // A carried settlement is mutable business state: a current
+            // owner may claim its historical-epoch share. It stays in the
+            // exact source/private semantic comparison after the SAME claim
+            // handler independently derives it; it is not an immutable
+            // publication carrier or a current-epoch producer to re-execute.
+            if ordered || fast {
+                earlier.insert(key.clone(), row.value.clone());
+            }
+        }
+        Ok(earlier)
+    }
+
+    fn current_snapshot(
+        &self,
+        snapshot: &SourceBusinessSnapshot,
+    ) -> Result<SourceBusinessSnapshot, BusinessReconstructionError> {
+        let earlier: BTreeMap<Vec<u8>, Option<Vec<u8>>> = self.earlier_rows()?;
+        let mut current: SourceBusinessSnapshot = snapshot.clone();
+        for row in &current.records {
+            if let DurableRecordKey::State(key) = row.descriptor.key()
+                && let Some(expected) = earlier.get(key)
+                && expected != &row.value
+            {
+                return Err(invalid(
+                    "earlier protected row differs from the verified base",
+                ));
+            }
+        }
+        current.records.retain(|row| !matches!(row.descriptor.key(), DurableRecordKey::State(key) if earlier.contains_key(key)));
+        let bounds: ReferencedBlobBounds = referenced_blob_bounds(&current)?;
+        current
+            .referenced_blobs
+            .retain(|digest, _| bounds.contains_key(digest));
+        Ok(current)
+    }
+}
+
+/// Only this module's private overlay method constructs this issuer-bound
+/// per-call replay authority. It never contains a key or signing capability.
+pub(crate) struct ReplayScope<'o> {
+    issuer: &'o MemoryDurableStateStore,
+    context: &'o DurableOperationContext,
+    domain: AtomicityDomainId,
+    floor: ExecutionGeneration,
+    committees: &'o VerifiedCommitteeHistory,
+    owners: &'o VerifiedOwnerRegistry,
+    prior: &'o SourceBusinessSnapshot,
+    epoch: Epoch,
+}
+
+impl ReplayScope<'_> {
+    pub(crate) fn require_issuer<S: ?Sized>(
+        &self,
+        store: &S,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<(), crate::NodeCoreError> {
+        if !std::ptr::addr_eq(
+            store as *const S,
+            self.issuer as *const MemoryDurableStateStore,
+        ) || context != self.context
+            || domain != self.domain
+        {
+            return Err(crate::NodeCoreError::PersistenceInvariant(
+                "replay call differs from its private issuer",
+            ));
+        }
+        let (committee, _digest): (&validator_set::ValidatorSet, Digest32) = self
+            .committees
+            .get(self.epoch)
+            .ok_or(crate::NodeCoreError::PersistenceInvariant(
+                "replay current committee is not verified",
+            ))?;
+        if committee
+            .validators()
+            .iter()
+            .any(|member: &validator_set::ValidatorInfo| {
+                self.owners.owner(member.id).is_none_or(|owner| {
+                    owner.scheme() != member.signature_scheme
+                        || owner.key().as_slice() != member.public_key.as_slice()
+                })
+            })
+        {
+            return Err(crate::NodeCoreError::PersistenceInvariant(
+                "replay current committee has no verified owner provenance",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) const fn floor(&self) -> ExecutionGeneration {
+        self.floor
+    }
+
+    pub(crate) fn predecessor_certificate_anchor(&self, epoch: Epoch) -> Option<Digest32> {
+        (epoch < self.epoch)
+            .then(|| self.committees.get(epoch).map(|(_, digest)| digest))
+            .flatten()
+    }
+
+    pub(crate) fn prior_state_row(&self, key: &[u8]) -> Option<&[u8]> {
+        self.prior
+            .records
+            .iter()
+            .find_map(|row: &SourceSnapshotRecord| match row.descriptor.key() {
+                DurableRecordKey::State(found) if found == key => row.value.as_deref(),
+                _ => None,
+            })
     }
 }

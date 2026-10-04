@@ -477,7 +477,18 @@ impl RegisteredCutFixture {
 /// A->E owned producer, kind7 registration, ABC/E Freeze, complete DrainSet
 /// and empty terminal candidate. Raw inactive plan exceeds one 128-row batch.
 pub(crate) fn registered_cut_fixture() -> RegisteredCutFixture {
-    let source: CausalFixture = fresh_fixture();
+    registered_cut_fixture_configure(|_| {})
+}
+
+/// Test-only signed-genesis variation. All registration, execution and cut
+/// evidence below still runs through the same genuine owning paths.
+pub(super) fn registered_cut_fixture_configure(
+    configure: impl FnOnce(&mut GenesisManifest),
+) -> RegisteredCutFixture {
+    let source: CausalFixture = setup_fixture_configure(
+        crate::logical_generation::CommitmentProfile::CausalAdmission,
+        configure,
+    );
     let mut materials: Vec<CertifiedPaidMaterial> =
         control_reconstruction::registration_generic_prefix(&source);
     materials.push(fund_e(&source, u64::try_from(materials.len()).unwrap()));

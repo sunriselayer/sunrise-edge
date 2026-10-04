@@ -204,6 +204,7 @@ fn put_read(
 }
 
 fn commit_row<S: StructuredDurableDomainStateStore>(
+    gate: crate::serving_authority::ServingGate<'_>,
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -223,7 +224,7 @@ fn commit_row<S: StructuredDurableDomainStateStore>(
             StateMutation::Put(bytes),
         )?])?,
     )?;
-    match store.commit_durable(context, transaction) {
+    match gate.commit_durable(store, context, transaction) {
         DurableCommitOutcome::Committed => Ok(()),
         DurableCommitOutcome::Rejected(reason) => {
             Err(NodeCoreError::DurableCommitRejected(reason).into())
@@ -248,6 +249,63 @@ fn publication_prefix(chain: &ChainId) -> Result<Vec<u8>, FrozenFrontierError> {
     Ok(prefix)
 }
 
+/// Scan the current frontier while carrying only byte-exact immutable
+/// publication rows from the verified prior import. Unknown or altered rows
+/// remain current candidates and must pass the ordinary full verifier.
+fn current_publication_keys<S: DurablePortableRepository>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    prefix: &[u8],
+    after: Vec<u8>,
+    limit: NonZeroUsize,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<(Vec<Vec<u8>>, bool), FrozenFrontierError> {
+    let one: NonZeroUsize = NonZeroUsize::MIN;
+    let mut cursor: Vec<u8> = after;
+    let mut keys: Vec<Vec<u8>> = Vec::with_capacity(limit.get());
+    loop {
+        let scan: DurableRecordScan = DurableRecordScan::new(
+            DurableCollection::State,
+            Some(DurableRecordKey::State(cursor)),
+            one,
+        )?;
+        let page = store.scan_portable_keys(context, domain, &scan)?;
+        let key: &Vec<u8> = match page.keys().first() {
+            None => return Ok((keys, true)),
+            Some(DurableRecordKey::State(key)) => key,
+            Some(_) => return Err(FrozenFrontierError::Invalid("non-state frontier scan row")),
+        };
+        if !key.starts_with(prefix) {
+            return Ok((keys, true));
+        }
+        if key.len()
+            != prefix
+                .len()
+                .checked_add(32)
+                .ok_or(FrozenFrontierError::Invalid("frontier key length overflow"))?
+        {
+            return Err(FrozenFrontierError::Invalid(
+                "malformed frozen publication key",
+            ));
+        }
+        cursor = key.clone();
+        if let Some(prior) = gate.prior_state_row(key) {
+            let observed: VersionedStateValue =
+                store.get_versioned_durable(context, domain, key)?;
+            put_read(reads, key.clone(), observed.revision())?;
+            if observed.value() == Some(prior) {
+                continue;
+            }
+        }
+        keys.push(key.clone());
+        if keys.len() == limit.get() {
+            return Ok((keys, false));
+        }
+    }
+}
+
 /// Advances at most one retained full-certificate row. A caller can safely
 /// repeat this one-event operation after a confirmed prior step. A failed or
 /// ambiguous commit exposes no new signature; an exact finalized retry
@@ -266,9 +324,67 @@ where
     S: DurablePortableRepository + StructuredOutboxExclusionGuard,
     C: ConsensusSigner,
 {
-    // DR-0189: a first successor never produces a frozen frontier vote.
-    mutation_fence::refuse_successor_serving(store, context, domain)?;
-    mutation_fence::require_ordinary_namespace(store, context, domain)?;
+    advance_frozen_frontier_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        signer,
+    )
+}
+
+/// Advances the SAME frontier owner under a freshly resolved invocation.
+#[allow(clippy::too_many_arguments)]
+pub fn advance_frozen_frontier_successor<S, C>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &execution::publication::PublicationContext,
+    signer: &C,
+) -> Result<FrozenFrontierStep, FrozenFrontierError>
+where
+    S: DurablePortableRepository + StructuredOutboxExclusionGuard,
+    C: ConsensusSigner,
+{
+    advance_frozen_frontier_gated(
+        crate::serving_authority::ServingGate::Successor(warrant),
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        signer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn advance_frozen_frontier_gated<S, C>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &execution::publication::PublicationContext,
+    signer: &C,
+) -> Result<FrozenFrontierStep, FrozenFrontierError>
+where
+    S: DurablePortableRepository + StructuredOutboxExclusionGuard,
+    C: ConsensusSigner,
+{
+    // The ordinary entry never grants successor signing authority.
+    if matches!(gate, crate::serving_authority::ServingGate::Original) {
+        mutation_fence::refuse_successor_serving(store, context, domain)?;
+    }
+    gate.require_local_signer(store, signer.validator_id())?;
+    gate.require_live(store, context, domain)?;
     let chain: ChainId = expected.chain_id().clone();
     let epoch: Epoch = expected.epoch();
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
@@ -418,15 +534,10 @@ where
             ));
         }
     }
-    let scan: DurableRecordScan = DurableRecordScan::new(
-        DurableCollection::State,
-        Some(DurableRecordKey::State(after_key)),
-        one,
+    let (keys, _terminal): (Vec<Vec<u8>>, bool) = current_publication_keys(
+        gate, store, context, domain, &prefix, after_key, one, &mut reads,
     )?;
-    let page = store.scan_portable_keys(context, domain, &scan)?;
-    if let Some(DurableRecordKey::State(publication_key)) = page.keys().first()
-        && publication_key.starts_with(&prefix)
-    {
+    if let Some(publication_key) = keys.first() {
         let suffix: &[u8] = &publication_key[prefix.len()..];
         let request_id: [u8; 32] = suffix
             .try_into()
@@ -450,6 +561,7 @@ where
             last_request_id: request_id,
         };
         commit_row(
+            gate,
             store,
             context,
             domain,
@@ -468,6 +580,7 @@ where
         vote: vote.clone(),
     };
     commit_row(
+        gate,
         store,
         context,
         domain,
@@ -497,6 +610,62 @@ pub fn read_frozen_frontier_page<S: DurablePortableRepository>(
     after_request_id: Option<[u8; 32]>,
     limit: NonZeroUsize,
 ) -> Result<(FrozenFrontierVote, FrozenFrontierPage), FrozenFrontierError> {
+    read_frozen_frontier_page_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        local_validator,
+        after_request_id,
+        limit,
+    )
+}
+
+/// Reads the SAME bounded page owner under the exact live invocation.
+#[allow(clippy::too_many_arguments)]
+pub fn read_frozen_frontier_page_successor<S: DurablePortableRepository>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &execution::publication::PublicationContext,
+    local_validator: ValidatorId,
+    after_request_id: Option<[u8; 32]>,
+    limit: NonZeroUsize,
+) -> Result<(FrozenFrontierVote, FrozenFrontierPage), FrozenFrontierError> {
+    read_frozen_frontier_page_gated(
+        crate::serving_authority::ServingGate::Successor(warrant),
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        local_validator,
+        after_request_id,
+        limit,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_frozen_frontier_page_gated<S: DurablePortableRepository>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &execution::publication::PublicationContext,
+    local_validator: ValidatorId,
+    after_request_id: Option<[u8; 32]>,
+    limit: NonZeroUsize,
+) -> Result<(FrozenFrontierVote, FrozenFrontierPage), FrozenFrontierError> {
+    gate.require_reader(store, context, domain)?;
     if limit.get() > MAX_FROZEN_FRONTIER_PAGE_ENTRIES {
         return Err(FrozenFrontierError::InvalidCursor(
             "frontier page limit exceeded",
@@ -629,19 +798,11 @@ pub fn read_frozen_frontier_page<S: DurablePortableRepository>(
             prefix.clone()
         }
     };
-    let scan: DurableRecordScan = DurableRecordScan::new(
-        DurableCollection::State,
-        Some(DurableRecordKey::State(after_key)),
-        limit,
+    let (scanned, mut terminal): (Vec<Vec<u8>>, bool) = current_publication_keys(
+        gate, store, context, domain, &prefix, after_key, limit, &mut reads,
     )?;
-    let scanned = store.scan_portable_keys(context, domain, &scan)?;
-    let mut entries: Vec<consensus::AvailabilityIdentity> =
-        Vec::with_capacity(scanned.keys().len());
-    let mut terminal: bool = scanned.continuation().is_none();
-    for row in scanned.keys() {
-        let DurableRecordKey::State(publication_key) = row else {
-            return Err(FrozenFrontierError::Invalid("non-state frontier scan row"));
-        };
+    let mut entries: Vec<consensus::AvailabilityIdentity> = Vec::with_capacity(scanned.len());
+    for publication_key in &scanned {
         if !publication_key.starts_with(&prefix) {
             terminal = true;
             break;

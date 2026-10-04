@@ -6,7 +6,8 @@ use super::engine::SealRetention;
 use super::engine::{CommittedOrderedOperation, ExecutionWarrant, LegOutcome, MergedWrites};
 use super::observed_read::ObservedBusinessReadView;
 use super::*;
-use runtime::{DurableObjectHeadRead, OutgoingSealRepository, StateObservationSet};
+use crate::serving_authority::SealPort;
+use runtime::{DurableObjectHeadRead, StateObservationSet};
 
 /// An independently evaluated original operation, including refusal-deciding
 /// observations. Fields and construction stay private to the owning evaluator;
@@ -45,20 +46,20 @@ impl AssembledOriginalCompletion {
             seal,
         } = self;
         let commit_outcome: DurableCommitOutcome = match seal {
-            // DR-0187: the actual sealed-record commit is a different port
-            // than the ordinary original-invocation commit; it alone also
-            // retains the protected outgoing barrier. Re-fetched here
-            // (rather than carried inside `SealRetention`) because this is
-            // the one real atomic commit site, and the capability must be
-            // read from the exact same store this transaction commits to.
-            Some(retention) => match store.outgoing_seal_repository() {
-                Some(repository) => repository.commit_seal_completion(
+            // DR-0187/DR-0191: the actual sealed-record commit is a different
+            // port than the ordinary original-invocation commit; it alone
+            // also retains the protected outgoing barrier. Resolved here
+            // through the invocation gate (rather than carried inside
+            // `SealRetention`) because this is the one real atomic commit
+            // site, and the port must be the exact issuing store's own.
+            Some(retention) => match gate.seal_port(store) {
+                Ok(port) => port.commit_completion(
                     context,
                     &retention.token,
                     transaction,
                     retention.barrier,
                 ),
-                None => {
+                Err(_) => {
                     return Err(OrderedEconomicsError::Prerequisite(
                         "ordered Seal completion requires the OutgoingSealRepository capability",
                     ));
@@ -179,13 +180,46 @@ pub(super) fn prepare_original_completion<S: StructuredStateReader>(
     env: &OrderedEconomicsEnvironment<'_>,
     operation: &CommittedOrderedOperation<'_>,
     warrant: &ExecutionWarrant<'_>,
-    seal_repository: Option<&dyn OutgoingSealRepository>,
+    seal_port: Option<SealPort<'_>>,
 ) -> Result<PreparedOriginalCompletion, OrderedEconomicsError> {
     let candidate: &OrderedCandidate = operation.candidate();
     let admission: &OrderedLegAdmission<'_> = warrant.admission(candidate.request_id)?;
-    let observed: ObservedBusinessReadView<'_, S> =
-        ObservedBusinessReadView::new(store, env.policy.domain());
-    let result: LegOutcome = match super::policy::authenticate_ordered_operation(env, candidate) {
+    let (reads, result): (StateObservationSet, LegOutcome) = match admission.gate {
+        crate::serving_authority::ServingGate::Replay(_) => {
+            admission
+                .gate
+                .require_reader(store, context, env.policy.domain())?;
+            let result: LegOutcome =
+                evaluate_original(store, context, env, operation, admission, seal_port);
+            match result {
+                LegOutcome::Stop(error) => return Err(error),
+                result => (StateObservationSet::new(env.policy.domain()), result),
+            }
+        }
+        _ => {
+            let observed: ObservedBusinessReadView<'_, S> =
+                ObservedBusinessReadView::new(store, env.policy.domain());
+            let result: LegOutcome =
+                evaluate_original(&observed, context, env, operation, admission, seal_port);
+            finish_handler_attempt(observed, result)?
+        }
+    };
+    prepare_evaluated_completion(env, operation, reads, result)
+}
+
+/// Exactly one evaluator for the existing owning handlers. Private replay
+/// reads the serial memory issuer directly so address identity remains exact;
+/// live paths additionally collect refusal-deciding physical CAS reads.
+fn evaluate_original<S: StructuredStateReader>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    operation: &CommittedOrderedOperation<'_>,
+    admission: &OrderedLegAdmission<'_>,
+    seal_port: Option<SealPort<'_>>,
+) -> LegOutcome {
+    let candidate: &OrderedCandidate = operation.candidate();
+    match super::policy::authenticate_ordered_operation(env, candidate) {
         Ok(authenticated) => {
             if authenticated.digest() != operation.digest() {
                 LegOutcome::Stop(OrderedEconomicsError::Prerequisite(
@@ -193,13 +227,13 @@ pub(super) fn prepare_original_completion<S: StructuredStateReader>(
                 ))
             } else {
                 super::engine::execute_candidate(
-                    &observed,
+                    store,
                     context,
                     env,
                     &authenticated,
                     Some(admission),
                     operation,
-                    seal_repository,
+                    seal_port,
                 )
             }
         }
@@ -207,9 +241,16 @@ pub(super) fn prepare_original_completion<S: StructuredStateReader>(
         // failure does not issue authenticated evidence; causal admission has
         // already required successful authentication before reaching replay.
         Err(error) => super::engine::disposition(candidate.request_id, error),
-    };
-    let (reads, result): (StateObservationSet, LegOutcome) =
-        finish_handler_attempt(observed, result)?;
+    }
+}
+
+fn prepare_evaluated_completion(
+    env: &OrderedEconomicsEnvironment<'_>,
+    operation: &CommittedOrderedOperation<'_>,
+    reads: StateObservationSet,
+    result: LegOutcome,
+) -> Result<PreparedOriginalCompletion, OrderedEconomicsError> {
+    let candidate: &OrderedCandidate = operation.candidate();
     let digest: Digest32 = operation.digest();
     let domain: AtomicityDomainId = env.policy.domain();
     let (output, business, seal): (

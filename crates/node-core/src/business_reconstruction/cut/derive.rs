@@ -54,7 +54,7 @@ fn complete_drain(
     controls: &[DrainSetControlMaterial],
 ) -> Result<(DrainSetRecord, Digest32, BTreeSet<Vec<u8>>), BusinessCutError> {
     let plan = &overlay.plan;
-    let context: &PublicationContext = plan.genesis_root.manifest().context();
+    let context: &PublicationContext = plan.ordered_policy.context();
     let freeze_key: Vec<u8> = admission_closure_key(context.chain_id(), context.epoch())
         .map_err(|_| invalid("cut Freeze key"))?;
     let freeze = decode_admission_closure_record(&required_state(overlay, &freeze_key)?)
@@ -365,7 +365,7 @@ fn companion_keys(
     controls: &BTreeSet<Vec<u8>>,
     projection: &SemanticProjection,
 ) -> Result<BTreeSet<DurableRecordKey>, BusinessCutError> {
-    let context: &PublicationContext = overlay.plan.genesis_root.manifest().context();
+    let context: &PublicationContext = overlay.plan.ordered_policy.context();
     let chain = context.chain_id();
     let mut keys: BTreeSet<DurableRecordKey> = controls
         .iter()
@@ -464,9 +464,8 @@ fn generation_floor(
     overlay: &BusinessReconstructionOverlay<'_>,
     projection: &SemanticProjection,
 ) -> Result<ExecutionGeneration, BusinessCutError> {
-    let key: Vec<u8> =
-        logical_profile_key(overlay.plan.genesis_root.manifest().context().chain_id())
-            .map_err(|_| invalid("cut logical profile key"))?;
+    let key: Vec<u8> = logical_profile_key(overlay.plan.ordered_policy.context().chain_id())
+        .map_err(|_| invalid("cut logical profile key"))?;
     let profile = decode_logical_profile_record(&required_state(overlay, &key)?)
         .map_err(|_| invalid("cut logical profile schema"))?;
     let mut floor: ExecutionGeneration = profile.genesis_floor;
@@ -512,7 +511,7 @@ pub(super) fn insert(
         length: u64::try_from(bytes.len()).map_err(|_| invalid("cut component length overflow"))?,
         digest: business_cut_component_digest(
             overlay.plan.genesis_root.genesis_resolver(),
-            overlay.plan.genesis_root.manifest().context(),
+            overlay.plan.ordered_policy.context(),
             &bytes,
         )?,
     };
@@ -690,7 +689,7 @@ pub(super) fn from_overlay(
     }
     proof::verify_application_carriers(overlay, carriers)?;
     proof::add_material(overlay, &mut components, owned, ordered, controls, carriers)?;
-    let context: PublicationContext = overlay.plan.genesis_root.manifest().context().clone();
+    let context: PublicationContext = overlay.plan.ordered_policy.context().clone();
     let streams: [BusinessCutCollectionRoot; 7] = transfer::roots(
         overlay.plan.genesis_root.genesis_resolver(),
         &context,

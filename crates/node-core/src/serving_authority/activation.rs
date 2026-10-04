@@ -70,9 +70,65 @@ where
     B: PortableBlobRepository,
 {
     let root: &VerifiedGenesisRoot = plan.genesis_root;
-    // Step 1.
-    let evidence: VerifiedSuccessorActivation =
-        verify::verify_successor_activation(plan, manifest_identity, artifacts)?;
+    // Step 1: the chain owner with budget 1 (DR-0191 Section 7).
+    let chain: chain::VerifiedSuccessorChain =
+        chain::verify_single_link(plan, manifest_identity, artifacts)?;
+    activate_verified(
+        root,
+        chain,
+        destination,
+        destination_blobs,
+        operation,
+        signer,
+        now_unix_millis,
+    )
+}
+
+/// Activate the last link of a fully reverified pinned chain, with the same
+/// inventory comparison, local-member checks and single atomic owner.
+#[allow(clippy::too_many_arguments)]
+pub fn activate_successor_chain<S, B>(
+    plan: BusinessReconstructionPlan<'_>,
+    links: &[SuccessorLinkPins],
+    budget: SuccessorChainBudget,
+    artifacts: &mut dyn SuccessorChainArtifacts,
+    destination: &S,
+    destination_blobs: &B,
+    operation: &DurableOperationContext,
+    signer: &ReadinessSigningKey,
+    now_unix_millis: u64,
+) -> Result<SuccessorActivationOutcome, SuccessorActivationError>
+where
+    S: StructuredDurableDomainStateStore + InactiveImportRepository,
+    B: PortableBlobRepository,
+{
+    let root: &VerifiedGenesisRoot = plan.genesis_root;
+    let chain: chain::VerifiedSuccessorChain = chain::verify_chain(plan, links, budget, artifacts)?;
+    activate_verified(
+        root,
+        chain,
+        destination,
+        destination_blobs,
+        operation,
+        signer,
+        now_unix_millis,
+    )
+}
+
+fn activate_verified<S, B>(
+    root: &VerifiedGenesisRoot,
+    chain: chain::VerifiedSuccessorChain,
+    destination: &S,
+    destination_blobs: &B,
+    operation: &DurableOperationContext,
+    signer: &ReadinessSigningKey,
+    now_unix_millis: u64,
+) -> Result<SuccessorActivationOutcome, SuccessorActivationError>
+where
+    S: StructuredDurableDomainStateStore + InactiveImportRepository,
+    B: PortableBlobRepository,
+{
+    let evidence: &VerifiedSuccessorActivation = chain.current();
     let domain: AtomicityDomainId = evidence.policy_inputs.domain;
     // Step 2.
     if let SuccessorServingSlot::Serving(observation) =
@@ -118,7 +174,7 @@ where
     )?;
     // Step 5.
     let warrant: ActivationWarrant = ActivationWarrant {
-        evidence,
+        chain,
         progress,
         token,
         namespace_validator,
@@ -134,12 +190,12 @@ where
         now_unix_millis,
     )?;
     let record: Vec<u8> = activation_record(&warrant)?;
-    let subject: Digest32 = warrant.evidence.subject_digest;
-    let manifest: Digest32 = warrant.evidence.manifest_digest;
+    let subject: Digest32 = warrant.chain.current().subject_digest;
+    let manifest: Digest32 = warrant.chain.current().manifest_digest;
     let outcome: DurableCommitOutcome = repository.commit_successor_activation(
         operation,
         domain,
-        warrant.evidence.import.binding(),
+        warrant.chain.current().import.binding(),
         &warrant.progress,
         &warrant.token,
         &record,
@@ -160,7 +216,7 @@ where
                 Ok(SuccessorServingSlot::Serving(observation)) if observation.record == record => {
                     reconcile_serving(
                         root,
-                        &warrant.evidence,
+                        warrant.chain.current(),
                         destination,
                         operation,
                         signer,
@@ -310,12 +366,12 @@ fn require_local_bond<S: VersionedStateReader + ?Sized>(
 /// namespace validator and field 8 the local signer key.
 fn activation_record(warrant: &ActivationWarrant) -> Result<Vec<u8>, SuccessorActivationError> {
     let record: SuccessorServingRecord = SuccessorServingRecord {
-        subject: warrant.evidence.subject_digest,
-        manifest: warrant.evidence.manifest_digest,
-        binding: warrant.evidence.import.binding().clone(),
+        subject: warrant.chain.current().subject_digest,
+        manifest: warrant.chain.current().manifest_digest,
+        binding: warrant.chain.current().import.binding().clone(),
         progress: warrant.progress.clone(),
         activation_token: warrant.token.clone(),
-        anchor: warrant.evidence.policy_inputs.anchor,
+        anchor: warrant.chain.current().policy_inputs.anchor,
         validator: warrant.namespace_validator,
         public_key: warrant.public_key,
     };
@@ -331,20 +387,20 @@ fn policy_rows_with_provenance<S: StructuredDurableDomainStateStore + ?Sized>(
     root: &VerifiedGenesisRoot,
     store: &S,
     operation: &DurableOperationContext,
-    warrant: &ActivationWarrant,
+    evidence: &VerifiedSuccessorActivation,
     rows: &SuccessorRows,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<Vec<StateMutationEntry>, SuccessorActivationError> {
-    let inputs: &SuccessorPolicyInputs = warrant.policy_inputs();
+    let inputs: &SuccessorPolicyInputs = &evidence.policy_inputs;
     let domain: AtomicityDomainId = inputs.domain;
     let resolver: &hashing::HashSuiteResolver = root.genesis_resolver();
-    let scope: GenerationScope = GenerationScope::for_activation(warrant);
+    let scope: GenerationScope = GenerationScope::for_evidence(inputs);
     let mut config_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     let InstalledCommitmentProfile::Logical(profile) = fence_commitment_profile(
         store,
         operation,
         domain,
-        warrant.evidence.outgoing_context.chain_id(),
+        evidence.outgoing_context.chain_id(),
         &mut config_reads,
     )?
     else {
@@ -411,22 +467,28 @@ fn policy_rows_with_provenance<S: StructuredDurableDomainStateStore + ?Sized>(
     Ok(mutations)
 }
 
-/// Section 6.3: the one complete activation transaction, built and
-/// preflighted through the existing constructors before any port call.
-fn activation_transaction<S: StructuredDurableDomainStateStore + ?Sized>(
+/// DR-0191 Section 3: the activation state reads, mutations and the one
+/// real Seal receipt, derived from verified evidence and a reader only. It
+/// is shared by the destination activation transaction and the private
+/// reconstruction-base bootstrap so the two cannot drift. No local bond,
+/// namespace validator or key is consulted.
+pub(super) struct ActivationMutations {
+    pub(super) reads: BTreeMap<Vec<u8>, StateRevision>,
+    pub(super) mutations: Vec<StateMutationEntry>,
+    pub(super) receipt: DurableRequestReceipt,
+}
+
+pub(super) fn activation_mutations<S: StructuredDurableDomainStateStore + ?Sized>(
     root: &VerifiedGenesisRoot,
     store: &S,
     operation: &DurableOperationContext,
-    warrant: &ActivationWarrant,
-    bond: (Vec<u8>, StateRevision),
+    evidence: &VerifiedSuccessorActivation,
+    policy: &OrderedEconomicsPolicy,
     now_unix_millis: u64,
-) -> Result<DurableInvocationTransaction, SuccessorActivationError> {
-    let evidence: &VerifiedSuccessorActivation = &warrant.evidence;
+) -> Result<ActivationMutations, SuccessorActivationError> {
     let domain: AtomicityDomainId = evidence.policy_inputs.domain;
     let chain: &protocol_types::ChainId = evidence.outgoing_context.chain_id();
     let outgoing: protocol_types::Epoch = evidence.outgoing_context.epoch();
-    let policy: OrderedEconomicsPolicy =
-        OrderedEconomicsPolicy::from_successor(root, warrant.policy_inputs())?;
     let rows: SuccessorRows = derive_successor_rows(store, operation, root, evidence)?;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     let mut mutations: Vec<StateMutationEntry> = Vec::new();
@@ -453,7 +515,6 @@ fn activation_transaction<S: StructuredDurableDomainStateStore + ?Sized>(
         rows.epoch_record_key.clone(),
         rows.epoch_record.clone(),
     )?);
-    add_read(&mut reads, bond.0, bond.1)?;
     // The e+1 validator set and the three provenance-carrying policy rows.
     let (set_key, set_value): &(Vec<u8>, Vec<u8>) = &rows.next_rows[0];
     require_absent(
@@ -466,13 +527,13 @@ fn activation_transaction<S: StructuredDurableDomainStateStore + ?Sized>(
     )?;
     mutations.push(put(set_key.clone(), set_value.clone())?);
     mutations.extend(policy_rows_with_provenance(
-        root, store, operation, warrant, &rows, &mut reads,
+        root, store, operation, evidence, &rows, &mut reads,
     )?);
     require_absent(
         store,
         operation,
         domain,
-        &fastpath_epoch_transition_key(chain, warrant.policy_inputs().context.epoch())?,
+        &fastpath_epoch_transition_key(chain, evidence.policy_inputs.context.epoch())?,
         &mut reads,
         "legacy transition row exists at the successor epoch",
     )?;
@@ -540,6 +601,38 @@ fn activation_transaction<S: StructuredDurableDomainStateStore + ?Sized>(
         seal.receipt.clone(),
     )
     .map_err(too_large)?;
+    Ok(ActivationMutations {
+        reads,
+        mutations,
+        receipt,
+    })
+}
+
+/// Section 6.3: the one complete activation transaction, built and
+/// preflighted through the existing constructors before any port call: the
+/// shared activation mutations plus the local bond CAS read.
+fn activation_transaction<S: StructuredDurableDomainStateStore + ?Sized>(
+    root: &VerifiedGenesisRoot,
+    store: &S,
+    operation: &DurableOperationContext,
+    warrant: &ActivationWarrant,
+    bond: (Vec<u8>, StateRevision),
+    now_unix_millis: u64,
+) -> Result<DurableInvocationTransaction, SuccessorActivationError> {
+    let domain: AtomicityDomainId = warrant.chain.current().policy_inputs.domain;
+    let ActivationMutations {
+        mut reads,
+        mutations,
+        receipt,
+    } = activation_mutations(
+        root,
+        store,
+        operation,
+        warrant.chain.current(),
+        &warrant.chain.current_policy(root)?,
+        now_unix_millis,
+    )?;
+    add_read(&mut reads, bond.0, bond.1)?;
     let assertions: Vec<StateReadAssertion> = reads
         .into_iter()
         .map(|(key, revision)| StateReadAssertion::new(key, revision))

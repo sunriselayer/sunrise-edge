@@ -2,6 +2,7 @@
 //! Callers supply a genuine engine-produced proof and the actual source store.
 //! This exposes no constructor or verified-proof capability outside tests.
 use super::*;
+use runtime::OutgoingSealRepository;
 
 pub(in crate::ordered_economics) fn assert_execute_seal_stops(
     repository: &dyn OutgoingSealRepository,
@@ -22,7 +23,7 @@ pub(in crate::ordered_economics) fn assert_execute_seal_stops(
         candidate,
         block.height,
         block.digest,
-        Some(repository),
+        Some(SealPort::Original(repository)),
     );
     match outcome {
         LegOutcome::Stop(OrderedEconomicsError::Prerequisite(actual)) => {

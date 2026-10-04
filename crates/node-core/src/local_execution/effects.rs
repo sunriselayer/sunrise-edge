@@ -26,6 +26,7 @@ pub(crate) struct CheckedEffects<'a> {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn translate<S: StructuredStateReader + ?Sized>(
+    gate: crate::serving_authority::ServingGate<'_>,
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -44,7 +45,7 @@ pub(crate) fn translate<S: StructuredStateReader + ?Sized>(
     // genesis bound. `checkpoint` still stamps every new immutable version
     // below, under both profiles; it stops gating admission only under the
     // handoff-capable one, where the authenticated generation replaces it.
-    let minimum: logical_generation::ObjectMinimum = logical_generation::ObjectMinimum::for_profile(
+    let minimum: logical_generation::ObjectMinimum = logical_generation::ObjectMinimum::for_gate(
         &logical_generation::fence_commitment_profile(
             store,
             context,
@@ -53,7 +54,8 @@ pub(crate) fn translate<S: StructuredStateReader + ?Sized>(
             reads,
         )?,
         checkpoint,
-    );
+        gate,
+    )?;
     if view.created_authorities.len() > MAX_LOCAL_CREATED_OBJECTS as usize {
         return Err(LocalExecutionAdmissionError::Invalid("creation count"));
     }

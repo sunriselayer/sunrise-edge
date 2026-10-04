@@ -20,9 +20,11 @@ use crate::ordered_economics::{
     DrainSetIntent, DrainSignerError, DrainUnionStep, OrderedCandidate,
     OrderedEconomicsEnvironment, OrderedEconomicsError, OrderedHistoryComponentKind,
     OrderedHistoryHeightMaterial, OrderedHistoryVerifier, OrderedOperationKind,
-    advance_drain_union, confirm_drain_signer_entry, decode_drain_set_intent,
-    decode_ordered_candidate, drain_signer_entry_key, import_staged_drain_publication,
-    ingest_drain_signer_page, staged_drain_signer_identity,
+    advance_drain_union_gated as advance_drain_union,
+    confirm_drain_signer_entry_gated as confirm_drain_signer_entry, decode_drain_set_intent,
+    decode_ordered_candidate, drain_signer_entry_key,
+    import_staged_drain_publication_gated as import_staged_drain_publication,
+    ingest_drain_signer_page_gated as ingest_drain_signer_page, staged_drain_signer_identity,
 };
 use consensus::bundle::{PublicationBundleError, encode_publication_bundle};
 use consensus::{
@@ -161,6 +163,18 @@ fn candidate_digest(
 }
 
 fn require_plan_binding(plan: &BusinessReconstructionPlan<'_>) -> ControlResult<()> {
+    if plan.ordered_policy.key_scope().is_successor() {
+        if plan.ordered_policy.genesis_digest() != plan.genesis_root.digest()
+            || plan.ordered_policy.domain() != plan.domain
+            || plan.ordered_policy.chain_owners().is_none()
+            || !plan.ordered_policy.is_causal()
+        {
+            return Err(DrainSetControlProofError::Invalid(
+                "successor control policy is not derived from verified history",
+            ));
+        }
+        return Ok(());
+    }
     // `plan.genesis_root` is one immutable `VerifiedGenesisRoot` (DR-0182):
     // disagreement among its own manifest/digest/profile/resolver is
     // unrepresentable, so only the still-independent `ordered_policy`/
@@ -321,8 +335,8 @@ fn available_control_from_source_rows(
         Vec::with_capacity(intent.selected_votes.len());
     for vote in &intent.selected_votes {
         let mut prefix: Vec<u8> = drain_signer_entry_key(
-            plan.genesis_root.manifest().context().chain_id(),
-            plan.genesis_root.manifest().context().epoch(),
+            plan.ordered_policy.context().chain_id(),
+            plan.ordered_policy.context().epoch(),
             vote.validator,
             &[1; 32],
         )?;
@@ -348,8 +362,8 @@ fn available_control_from_source_rows(
                     ))?;
             let identity: AvailabilityIdentity = decode_availability_identity(bytes)?;
             if drain_signer_entry_key(
-                plan.genesis_root.manifest().context().chain_id(),
-                plan.genesis_root.manifest().context().epoch(),
+                plan.ordered_policy.context().chain_id(),
+                plan.ordered_policy.context().epoch(),
                 vote.validator,
                 &identity.request_id,
             )?
@@ -400,9 +414,9 @@ fn validate_bound_control(
         ));
     }
     let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
-        plan.genesis_root.manifest().context().chain_id().clone(),
-        plan.genesis_root.manifest().context().protocol_version(),
-        plan.genesis_root.manifest().context().epoch(),
+        plan.ordered_policy.context().chain_id().clone(),
+        plan.ordered_policy.context().protocol_version(),
+        plan.ordered_policy.context().epoch(),
         plan.ordered_policy.engine().validator_set().clone(),
     )?;
     let mut members: BTreeMap<[u8; 32], AvailabilityIdentity> = BTreeMap::new();
@@ -542,22 +556,25 @@ pub(super) fn prepare_drain_control(
     let mut unique_members: BTreeSet<[u8; 32]> = BTreeSet::new();
     for (vote, frontier) in control.selected_votes.iter().zip(&control.signer_frontiers) {
         for page in &frontier.pages {
-            ingest_drain_signer_page(
-                &overlay.store,
-                &plan.operation_context,
-                plan.domain,
-                plan.genesis_root.genesis_resolver(),
-                plan.genesis_root.manifest().context(),
-                frontier.signer,
-                vote.clone(),
-                page.clone(),
-            )?;
+            overlay.replay_call(|gate| {
+                ingest_drain_signer_page(
+                    gate,
+                    &overlay.store,
+                    &plan.operation_context,
+                    plan.domain,
+                    plan.genesis_root.genesis_resolver(),
+                    plan.ordered_policy.context(),
+                    frontier.signer,
+                    vote.clone(),
+                    page.clone(),
+                )
+            })?;
             for entry in &page.entries {
                 let staged: AvailabilityIdentity = staged_drain_signer_identity(
                     &overlay.store,
                     &plan.operation_context,
                     plan.domain,
-                    plan.genesis_root.manifest().context(),
+                    plan.ordered_policy.context(),
                     frontier.signer,
                 )?;
                 if staged != *entry {
@@ -583,31 +600,37 @@ pub(super) fn prepare_drain_control(
                         "selected full publication material is missing",
                     ))?;
                 let bundle: Vec<u8> = encode_publication_bundle(&material.bundle)?;
-                let imported: AvailabilityIdentity = import_staged_drain_publication(
-                    &overlay.store,
-                    &plan.operation_context,
-                    plan.domain,
-                    plan.genesis_root.genesis_resolver(),
-                    plan.resolver_history,
-                    plan.genesis_root.manifest().context(),
-                    frontier.signer,
-                    &bundle,
-                )?;
+                let imported: AvailabilityIdentity = overlay.replay_call(|gate| {
+                    import_staged_drain_publication(
+                        gate,
+                        &overlay.store,
+                        &plan.operation_context,
+                        plan.domain,
+                        plan.genesis_root.genesis_resolver(),
+                        plan.resolver_history,
+                        plan.ordered_policy.context(),
+                        frontier.signer,
+                        &bundle,
+                    )
+                })?;
                 if imported != staged {
                     return Err(DrainSetControlProofError::Invalid(
                         "private imported identity differs",
                     ));
                 }
-                let confirmed: AvailabilityIdentity = confirm_drain_signer_entry(
-                    &overlay.store,
-                    &plan.operation_context,
-                    plan.domain,
-                    plan.genesis_root.genesis_resolver(),
-                    plan.resolver_history,
-                    plan.genesis_root.manifest().context(),
-                    frontier.signer,
-                    staged.request_id,
-                )?;
+                let confirmed: AvailabilityIdentity = overlay.replay_call(|gate| {
+                    confirm_drain_signer_entry(
+                        gate,
+                        &overlay.store,
+                        &plan.operation_context,
+                        plan.domain,
+                        plan.genesis_root.genesis_resolver(),
+                        plan.resolver_history,
+                        plan.ordered_policy.context(),
+                        frontier.signer,
+                        staged.request_id,
+                    )
+                })?;
                 if confirmed != staged {
                     return Err(DrainSetControlProofError::Invalid(
                         "private confirmed identity differs",
@@ -619,15 +642,18 @@ pub(super) fn prepare_drain_control(
     }
     let mut expected_count: u64 = 0;
     for _ in 0..=unique_members.len() {
-        match advance_drain_union(
-            &overlay.store,
-            &plan.operation_context,
-            plan.domain,
-            plan.genesis_root.genesis_resolver(),
-            plan.resolver_history,
-            plan.genesis_root.manifest().context(),
-            &control.selected_votes,
-        )? {
+        match overlay.replay_call(|gate| {
+            advance_drain_union(
+                gate,
+                &overlay.store,
+                &plan.operation_context,
+                plan.domain,
+                plan.genesis_root.genesis_resolver(),
+                plan.resolver_history,
+                plan.ordered_policy.context(),
+                &control.selected_votes,
+            )
+        })? {
             DrainUnionStep::Advanced { member_count } => {
                 expected_count =
                     expected_count
