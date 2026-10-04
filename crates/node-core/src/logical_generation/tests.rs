@@ -272,7 +272,11 @@ fn ordered_outcome_history_is_not_misclassified_as_consensus_cache() {
         );
         assert!(is_excluded_subject(&key));
     }
-    for suffix in [b"frontier-progress/".as_slice(), b"frontier/"] {
+    for suffix in [
+        b"frontier-progress/".as_slice(),
+        b"frontier/",
+        b"frontier-entry/",
+    ] {
         let local_progress: Vec<u8> = [prefix, suffix, b"example"].concat();
         assert_eq!(
             classify_ordered_row(&local_progress),

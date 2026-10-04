@@ -81,6 +81,25 @@ impl<'w> ServingGate<'w> {
         }
     }
 
+    /// Retained material only, not a cached live signature response. An
+    /// Original origin remains readable after Seal, preserving its existing
+    /// library contract. A successor still needs the exact fresh Unsealed
+    /// reader observation, and Replay remains confined to its private issuer.
+    pub(crate) fn require_material_reader<R: StructuredStateReader + ?Sized>(
+        self,
+        reader: &R,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<(), NodeCoreError> {
+        match self {
+            Self::Original => crate::mutation_fence::require_origin_ordinary_reader_namespace(
+                reader, context, domain,
+            ),
+            Self::Successor(warrant) => warrant.require_reader(reader, context, domain),
+            Self::Replay(scope) => scope.require_issuer(reader, context, domain),
+        }
+    }
+
     /// The local consensus signer must be the fresh physical namespace
     /// member of a successor. The original keeps its existing checks.
     pub(crate) fn require_local_signer<S: StructuredDurableDomainStateStore + ?Sized>(
@@ -251,6 +270,21 @@ impl<'w> ServingGate<'w> {
             Self::Replay(_) => Err(NodeCoreError::PersistenceInvariant(
                 "private replay cannot retain or complete Seal",
             )),
+        }
+    }
+
+    /// Next exact independently verified prior State key, not merely the
+    /// next key physically present now. Frontier traversal merges this with
+    /// its bounded physical scan so disappearance cannot shorten history.
+    pub(crate) fn next_prior_state_row(
+        self,
+        prefix: &[u8],
+        after: &[u8],
+    ) -> Option<(&'w [u8], Option<&'w [u8]>)> {
+        match self {
+            Self::Original => None,
+            Self::Successor(warrant) => warrant.next_prior_state_row(prefix, after),
+            Self::Replay(scope) => scope.next_prior_state_row(prefix, after),
         }
     }
 }
@@ -466,5 +500,55 @@ mod architecture {
             })
             .collect();
         assert!(offenders.is_empty(), "direct Seal getter: {offenders:?}");
+    }
+
+    /// The historical material exception never enters preparation,
+    /// admission, advancement, signing or a writer. Exact public original
+    /// and successor readers compose the same two private material owners.
+    #[test]
+    fn material_reader_gate_is_used_only_by_the_two_retained_material_owners() {
+        const CALL: &str = ".require_material_reader(";
+        let root: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let owners: [(&str, &str); 2] = [
+            (
+                "ordered_economics/frontier.rs",
+                "fn read_frozen_frontier_page_gated",
+            ),
+            (
+                "ordered_economics/drain_union.rs",
+                "fn read_drain_signer_progress_gated",
+            ),
+        ];
+        let mut files: Vec<PathBuf> = Vec::new();
+        sources(&root, &mut files);
+        for path in files {
+            if path.ends_with("serving_authority/gate.rs") {
+                continue;
+            }
+            let contents: String = std::fs::read_to_string(&path).unwrap();
+            match owners
+                .iter()
+                .find(|(owner, _): &&(&str, &str)| path.ends_with(owner))
+            {
+                None => assert!(
+                    !contents.contains(CALL),
+                    "material gate outside an owner: {path:?}"
+                ),
+                Some((_, owner)) => {
+                    let start: usize = contents.find(owner).unwrap();
+                    let body: &str = contents[start..].split("\n}").next().unwrap();
+                    assert_eq!(
+                        contents.matches(CALL).count(),
+                        1,
+                        "unexpected material gate count: {path:?}"
+                    );
+                    assert_eq!(
+                        body.matches(CALL).count(),
+                        1,
+                        "material gate outside its exact reader: {path:?}"
+                    );
+                }
+            }
+        }
     }
 }

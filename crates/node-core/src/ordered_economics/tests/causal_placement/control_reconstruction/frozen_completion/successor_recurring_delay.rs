@@ -4,7 +4,9 @@
 //! acceptance coverage, separate from shipped host/CLI process acceptance.
 
 use super::*;
-use crate::business_reconstruction::{BusinessReconstructionPlan, SourceBusinessSnapshot};
+use crate::business_reconstruction::{
+    BusinessReconstructionPlan, SourceBusinessSnapshot, SourceSnapshotRecord,
+};
 use crate::serving_authority::{
     LiveWarrant, OwnerProvenance, ServingAuthorityError, SuccessorChainArtifacts,
     SuccessorChainBudget, SuccessorLinkPins, VerifiedSuccessorAuthority, activate_successor_chain,
@@ -448,9 +450,12 @@ impl EpochHosts {
             .unwrap()
             .expect("the actual current committee reaches quorum");
         assert!(
-            certificate.votes.iter().any(|vote: &consensus::ConsensusVote| {
-                vote.validator == origin.members[quorum_indices[0]].id
-            }),
+            certificate
+                .votes
+                .iter()
+                .any(|vote: &consensus::ConsensusVote| {
+                    vote.validator == origin.members[quorum_indices[0]].id
+                }),
             "the authentic canonical QC must include registered E's indispensable vote"
         );
         let outputs: Vec<OrderedEventOutput> = (0..self.targets.len())
@@ -635,7 +640,11 @@ fn quorum_member_indices(origin: &SuccessorWorld, current: &ValidatorSet) -> Vec
         .filter(|member: &&validator_set::ValidatorInfo| genesis.get(member.id).is_none())
         .map(|member: &validator_set::ValidatorInfo| member.id)
         .collect();
-    assert_eq!(registered.len(), 1, "the original first handoff introduces E");
+    assert_eq!(
+        registered.len(),
+        1,
+        "the original first handoff introduces E"
+    );
     let e: ValidatorId = registered[0];
     let e_index: usize = origin
         .members
@@ -1083,9 +1092,10 @@ fn handoff(
     let readiness: consensus::readiness::ReadinessCertificate =
         consensus::readiness::decode_readiness_certificate(&certificate).unwrap();
     assert!(
-        readiness.votes.iter().any(|vote: &ReadinessVote| {
-            vote.signer == origin.members[quorum_indices[0]].id
-        }),
+        readiness
+            .votes
+            .iter()
+            .any(|vote: &ReadinessVote| { vote.signer == origin.members[quorum_indices[0]].id }),
         "the genuine readiness certificate includes E's indispensable signature"
     );
     // Retain the same genuine published body in each independent source and
@@ -1529,7 +1539,7 @@ fn withdraw_candidate(
             .unwrap(),
     };
     exited.state = FastPathBondState::Exited;
-    let leg: Vec<u8> = successor_replacement::release_leg_for_scope(
+    let original_leg: Vec<u8> = successor_replacement::release_leg_for_scope(
         origin,
         hosts.policy.context(),
         &hosts.base,
@@ -1538,6 +1548,30 @@ fn withdraw_candidate(
         &owner.unbonded.custody_object,
         *owner.signer.id.as_bytes(),
     );
+    // G's genuine e1 registration already consumed nonce 0. Every attempt
+    // signs the actually committed next nonce at its own live epoch, so an
+    // early ordered refusal tests eligibility, not an unrelated stale leg.
+    let current_nonce: u64 = crate::query_sender_next_nonce(
+        &hosts.targets[0].0,
+        &hosts.operation,
+        network.domain(),
+        hosts.policy.context().chain_id().clone(),
+        hosts.policy.context().protocol_version(),
+        hosts.policy.context().epoch(),
+        *owner.signer.id.as_bytes(),
+    )
+    .unwrap();
+    let leg: Vec<u8> = if current_nonce == 0 {
+        original_leg
+    } else {
+        let mut signed: SignedLocalExecutionIntent =
+            execution::local_execution::decode_signed_local_execution(&original_leg).unwrap();
+        signed.intent.call.nonce = current_nonce;
+        let frame: Vec<u8> =
+            local_execution_signing_frame(hosts.policy.context(), &signed.intent).unwrap();
+        signed.signature = owner.signer.key.sign(&frame).into();
+        encode_signed_local_execution(&signed).unwrap()
+    };
     let candidate: OrderedCandidate = successor_replacement::bond_candidate_for_scope(
         &network.resolver,
         hosts.policy.context(),
@@ -1551,8 +1585,33 @@ fn withdraw_candidate(
     (candidate, exited, released)
 }
 
-/// Every actual epoch below U refuses at the owning preflight and proposer,
-/// before signature, receipt, object, nonce, state revision or sequence moves.
+/// Exact value-bearing objects and all fast-path business/authority rows.
+/// Only this attempt's nonce lock is omitted: actual admission acquires and
+/// releases it, while the original ordinary sender nonce stays unchanged.
+fn early_withdraw_business_records(
+    snapshot: &SourceBusinessSnapshot,
+    nonce_lock: &[u8],
+) -> Vec<SourceSnapshotRecord> {
+    snapshot
+        .records
+        .iter()
+        .filter(|row: &&SourceSnapshotRecord| match row.descriptor.key() {
+            runtime::portable::DurableRecordKey::ObjectHead(_)
+            | runtime::portable::DurableRecordKey::ObjectVersion(_, _) => true,
+            runtime::portable::DurableRecordKey::State(key) => {
+                key.starts_with(crate::local_instance_state::FASTPATH_STATE_PREFIX)
+                    && key.as_slice() != nonce_lock
+            }
+            runtime::portable::DurableRecordKey::Receipt(_) => false,
+        })
+        .cloned()
+        .collect()
+}
+
+/// Every actual epoch below U independently preflights IneligibleState,
+/// then genuinely orders the same authenticated body and retains that exact
+/// refusal. Consensus/audit/receipt rows change; custody, value and nonce do
+/// not. Exact completed replay exposes no new signature or durable effect.
 fn assert_early_withdraw(
     origin: &SuccessorWorld,
     archive: &CompleteArchive,
@@ -1570,12 +1629,35 @@ fn assert_early_withdraw(
     let before: Vec<SourceBusinessSnapshot> = (0..hosts.targets.len())
         .map(|index: usize| hosts.capture(origin, index))
         .collect();
+    let context: &PublicationContext = hosts.policy.context();
+    let sender: [u8; 32] = *owner.signer.id.as_bytes();
+    let nonce_key: Vec<u8> =
+        runtime::PersistenceLayout::new(context.chain_id().clone(), context.protocol_version())
+            .sender_nonce_key(sender, context.epoch());
+    let nonce_lock_key: Vec<u8> = crate::local_instance_state::fastpath_nonce_lock_key(
+        context.chain_id(),
+        &sender,
+        context.epoch(),
+    )
+    .unwrap();
+    let reservation_key: Vec<u8> = crate::ordered_economics::reservation::ordered_reservation_key(
+        context.chain_id(),
+        &candidate.request_id,
+    )
+    .unwrap();
+    let nonce_before: Vec<(StateRevision, Option<Vec<u8>>)> = (0..hosts.targets.len())
+        .map(|index: usize| hosts.value(origin, index, &nonce_key))
+        .collect();
+    let locks_before: Vec<(StateRevision, Option<Vec<u8>>)> = (0..hosts.targets.len())
+        .map(|index: usize| hosts.value(origin, index, &nonce_lock_key))
+        .collect();
     for index in 0..hosts.targets.len() {
+        let local_env: OrderedEconomicsEnvironment<'_> = hosts.env_for_host(&env, index);
         assert!(matches!(
             crate::ordered_economics::preflight::preflight(
                 &hosts.targets[index].0,
                 &hosts.operation,
-                &env,
+                &local_env,
                 &candidate,
                 status.high_qc.height.checked_add(1).unwrap(),
             ),
@@ -1583,42 +1665,16 @@ fn assert_early_withdraw(
                 OrderedRefusal::IneligibleState
             ))
         ));
-    }
-    let leader_id: ValidatorId = hosts
-        .policy
-        .engine()
-        .validator_set()
-        .leader(status.current_view)
-        .unwrap();
-    let leader: usize = origin
-        .members
-        .iter()
-        .position(|member: &TestSigner| member.id == leader_id)
-        .unwrap();
-    let counted: NoSignature<'_> = NoSignature {
-        member: &origin.members[leader],
-        count: Cell::new(0),
-    };
-    assert!(
-        propose_successor(
-            &archive.warrant(origin, hosts, leader),
-            &hosts.targets[leader].0,
-            &env,
-            Some(&candidate),
-            &counted,
-        )
-        .is_err()
-    );
-    assert_eq!(
-        counted.count.get(),
-        0,
-        "an early Withdraw produces no consensus signature"
-    );
-    for (index, expected) in before.iter().enumerate() {
         assert_eq!(
             &hosts.capture(origin, index),
-            expected,
-            "early Withdraw leaves the complete physical/business snapshot unchanged"
+            &before[index],
+            "owning writer-free preflight has no physical effect"
+        );
+        assert!(locks_before[index].1.is_none());
+        assert_eq!(
+            hosts.value(origin, index, &reservation_key),
+            (StateRevision::INITIAL, None),
+            "each early attempt has a genuinely fresh request identity"
         );
         assert!(matches!(
             crate::query_request_receipt(
@@ -1631,6 +1687,86 @@ fn assert_early_withdraw(
             crate::ReceiptQueryResult::Absent { .. }
         ));
     }
+    let (outcome, _): (OrderedOutcome, consensus::QuorumCertificate) =
+        hosts.commit(origin, archive, &env, &candidate);
+    assert_eq!(refusal_of(&outcome), OrderedRefusal::IneligibleState);
+    assert_eq!(outcome.request_id, candidate.request_id);
+    assert_eq!(
+        outcome.candidate_digest,
+        hosts.policy.candidate_digest(&candidate).unwrap()
+    );
+    let expected_receipt: crate::NodeDedupRecord = crate::NodeDedupRecord::new(
+        crate::RequestId::new(candidate.request_id).unwrap(),
+        outcome.candidate_digest,
+        outcome.output.responses().to_vec(),
+    )
+    .unwrap();
+    let canonical_receipt: Vec<u8> = expected_receipt.encode().unwrap();
+    for index in 0..hosts.targets.len() {
+        let after: SourceBusinessSnapshot = hosts.capture(origin, index);
+        assert!(after.token.mutation_sequence() > before[index].token.mutation_sequence());
+        assert_eq!(
+            early_withdraw_business_records(&after, &nonce_lock_key),
+            early_withdraw_business_records(&before[index], &nonce_lock_key),
+            "refusal changes no object, bond, settlement, collateral value or authority row"
+        );
+        assert_eq!(hosts.bond(origin, index, owner.signer.id).0, owner.unbonded);
+        assert_eq!(hosts.value(origin, index, &nonce_key), nonce_before[index]);
+        let nonce_lock: (StateRevision, Option<Vec<u8>>) =
+            hosts.value(origin, index, &nonce_lock_key);
+        assert!(
+            nonce_lock.1.is_none(),
+            "the admitted nonce lock is released"
+        );
+        assert!(nonce_lock.0.get() > locks_before[index].0.get());
+        let reservation: (StateRevision, Option<Vec<u8>>) =
+            hosts.value(origin, index, &reservation_key);
+        assert!(
+            reservation.1.is_none(),
+            "the actual reservation is released"
+        );
+        assert_ne!(reservation.0, StateRevision::INITIAL);
+        assert_eq!(
+            query_ordered_outcome(
+                &hosts.targets[index].0,
+                &hosts.operation,
+                &env,
+                &candidate.request_id
+            )
+            .unwrap()
+            .as_ref(),
+            Some(&outcome)
+        );
+        let raw: DurableRequestReceipt = hosts.targets[index]
+            .0
+            .read_request_receipt(
+                &hosts.operation,
+                origin.network().domain(),
+                DurableRequestId::new(candidate.request_id).unwrap(),
+            )
+            .unwrap()
+            .expect("a real committed refusal retains its original receipt");
+        assert_eq!(raw.event_digest(), outcome.candidate_digest);
+        assert_eq!(raw.canonical_bytes(), canonical_receipt.as_slice());
+        let query: crate::ReceiptQueryResult = crate::query_request_receipt(
+            &hosts.targets[index].0,
+            &hosts.operation,
+            origin.network().domain(),
+            crate::RequestId::new(candidate.request_id).unwrap(),
+        )
+        .unwrap();
+        let crate::ReceiptQueryResult::Present {
+            record,
+            event_digest,
+            ..
+        } = query
+        else {
+            panic!("every host independently reverifies the real refused receipt")
+        };
+        assert_eq!(event_digest, outcome.candidate_digest);
+        assert_eq!(record, expected_receipt);
+    }
+    assert_completed_without_reapplication(origin, archive, hosts, &candidate, &outcome);
 }
 
 fn assert_completed_without_reapplication(

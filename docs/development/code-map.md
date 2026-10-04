@@ -87,7 +87,7 @@ contracts; they do not define protocol rules.
    public paths and exact effects; do not create another crate just to shorten
    a source file.
 
-## First-successor serving and immutable transport
+## Successor invocation and immutable transport
 
 - [Host runtime pieces](../../apps/operator/src/host_runtime.rs) own the
   shared local Ed25519 signer, original-root fee check and generation-bound
@@ -103,10 +103,18 @@ contracts; they do not define protocol rules.
   rejects schedule or protocol disagreement. Read-only advertised context
   does not replace the client's independently expected signing context.
 
-- [Core authority](../../crates/node-core/src/serving_authority.rs) owns the
-  source-free verifier, private issuer-bound warrants and shared invocation
-  gate. [Protected runtime slot](../../crates/runtime/src/successor_serving.rs)
-  and backend completion ports own atomic persistence, not eligibility.
+- [Core authority](../../crates/node-core/src/serving_authority.rs) separates
+  historical evidence from fresh issuer-bound warrants.
+  [Chain verification](../../crates/node-core/src/serving_authority/chain.rs)
+  owns ordered link budgets, committee/owner provenance and the immutable root;
+  [base](../../crates/node-core/src/serving_authority/base.rs) selects the genuine
+  reconstruction base. [The shared gate](../../crates/node-core/src/serving_authority/gate.rs)
+  selects Original, Successor or private memory-only Replay, including the sole
+  Seal port. Replay cannot sign or Seal; no host constructs these private roles.
+  [Protected runtime slots](../../crates/runtime/src/successor_serving.rs) and
+  backend completion ports own atomic persistence, not eligibility. The checked
+  [memory bootstrap](../../crates/runtime/src/inactive_import/memory.rs) is data
+  for private reconstruction, never a serving store or restore credential.
 - [SDK artifact reader](../../clients/rust/src/immutable_archive.rs),
   [saved-cut reader](../../clients/rust/src/business_cut_archive.rs) and
   [successor artifacts](../../clients/rust/src/successor_artifacts.rs) own one

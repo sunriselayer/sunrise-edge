@@ -85,6 +85,42 @@ impl VerifiedImportPlan {
         &self.rows
     }
 
+    /// Exact point lookup in the same canonical locator order as the
+    /// bounded prior traversal, without rescanning the import inventory.
+    pub(crate) fn state_row(&self, key: &[u8]) -> Option<&[u8]> {
+        let index: usize = self.rows.partition_point(|row: &ImportRow| {
+            matches!(row, ImportRow::State { key: found, .. } if found.as_slice() < key)
+        });
+        match self.rows.get(index) {
+            Some(ImportRow::State {
+                key: found,
+                value: Some(bytes),
+            }) if found.as_slice() == key => Some(bytes.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// Bounded successor-local traversal of exact prior State. `raw_rows`
+    /// orders every plan by `ImportRow::locator`: all State locators begin
+    /// with 1 and then the unchanged natural key; every other family sorts
+    /// after them. This lookup therefore does not assume enum ordering or
+    /// inspect a caller-supplied history. A tombstone is returned explicitly.
+    pub(crate) fn next_state_row(
+        &self,
+        prefix: &[u8],
+        after: &[u8],
+    ) -> Option<(&[u8], Option<&[u8]>)> {
+        let index: usize = self.rows.partition_point(|row: &ImportRow| {
+            matches!(row, ImportRow::State { key, .. } if key.as_slice() <= after)
+        });
+        match self.rows.get(index) {
+            Some(ImportRow::State { key, value }) if key.starts_with(prefix) => {
+                Some((key.as_slice(), value.as_deref()))
+            }
+            _ => None,
+        }
+    }
+
     /// DR-0191: the exact verified batches, consumed only by the private
     /// reconstruction-base bootstrap of the next link.
     pub(crate) fn batches(&self) -> &[ImportBatch] {

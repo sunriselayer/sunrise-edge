@@ -134,14 +134,7 @@ where
     if let SuccessorServingSlot::Serving(observation) =
         destination.get_successor_serving(operation, domain)?
     {
-        return reconcile_serving(
-            root,
-            &evidence,
-            destination,
-            operation,
-            signer,
-            &observation,
-        );
+        return reconcile_serving(root, evidence, destination, operation, signer, &observation);
     }
     // Step 3.
     let (progress, token): (ImportProgress, PortableSnapshotToken) = evidence
@@ -164,11 +157,11 @@ where
         ));
     }
     let public_key: [u8; 32] = signer.public_key();
-    require_local_member(&evidence, namespace_validator, public_key)?;
+    require_local_member(evidence, namespace_validator, public_key)?;
     let bond: (Vec<u8>, StateRevision) = require_local_bond(
         destination,
         operation,
-        &evidence,
+        evidence,
         namespace_validator,
         public_key,
     )?;

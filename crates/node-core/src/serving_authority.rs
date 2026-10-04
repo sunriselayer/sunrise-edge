@@ -599,14 +599,14 @@ impl<'inv> LiveWarrant<'inv> {
     }
 
     pub(crate) fn prior_state_row(&self, key: &[u8]) -> Option<&[u8]> {
-        self.chain.current().import.rows().iter().find_map(
-            |row: &runtime::inactive_import::ImportRow| match row {
-                runtime::inactive_import::ImportRow::State {
-                    key: found,
-                    value: Some(bytes),
-                } if found == key => Some(bytes.as_slice()),
-                _ => None,
-            },
-        )
+        self.chain.current().import.state_row(key)
+    }
+
+    pub(crate) fn next_prior_state_row(
+        &self,
+        prefix: &[u8],
+        after: &[u8],
+    ) -> Option<(&[u8], Option<&[u8]>)> {
+        self.chain.current().import.next_state_row(prefix, after)
     }
 }

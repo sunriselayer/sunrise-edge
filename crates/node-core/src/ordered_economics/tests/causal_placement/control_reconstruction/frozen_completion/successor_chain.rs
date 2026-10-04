@@ -704,18 +704,34 @@ fn recurring_preseal(world: &SuccessorWorld) {
     let network: &Network = world.network();
     let mut selected: Vec<(FrozenFrontierVote, FrozenFrontierPage)> = Vec::new();
     for index in 0..3 {
-        let step: FrozenFrontierStep = advance_frozen_frontier_successor(
-            &world.warrant(index),
-            &world.targets[index].0,
-            &world.operation,
-            network.domain(),
-            &network.resolver,
-            &network.history,
-            &current,
-            &world.members[index],
-        )
-        .unwrap();
-        assert!(matches!(step, FrozenFrontierStep::Finalized(_)));
+        let maximum_steps: u64 = chain_authority(world)
+            .import_binding()
+            .row_count
+            .checked_add(1)
+            .unwrap();
+        let mut steps: u64 = 0;
+        loop {
+            steps = steps.checked_add(1).unwrap();
+            assert!(
+                steps <= maximum_steps,
+                "every exact prior publication must consume a bounded physical step"
+            );
+            let step: FrozenFrontierStep = advance_frozen_frontier_successor(
+                &world.warrant(index),
+                &world.targets[index].0,
+                &world.operation,
+                network.domain(),
+                &network.resolver,
+                &network.history,
+                &current,
+                &world.members[index],
+            )
+            .unwrap();
+            match step {
+                FrozenFrontierStep::Finalized(_) => break,
+                FrozenFrontierStep::Advanced { entry_count } => assert_eq!(entry_count, 0),
+            }
+        }
         let pair: (FrozenFrontierVote, FrozenFrontierPage) = read_frozen_frontier_page_successor(
             &world.warrant(index),
             &world.targets[index].0,
@@ -803,15 +819,256 @@ fn recurring_preseal(world: &SuccessorWorld) {
     }
 }
 
+/// The same full-snapshot source audit must reject a poisoned current index
+/// corpus, not just its individually plausible entries. Every identity and
+/// publication in this fixture came through real e0 certificates and ACKs.
+fn assert_genuine_source_index_audit(world: &SuccessorWorld) {
+    let network: &Network = world.network();
+    let snapshot: crate::business_reconstruction::SourceBusinessSnapshot =
+        crate::test_support::capture::captured_source(
+            &network.stores[0],
+            &network.blobs,
+            &network.context,
+            network.domain(),
+        );
+    let indexed: Vec<usize> = snapshot
+        .records
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row)| match row.descriptor.key() {
+            runtime::portable::DurableRecordKey::State(key)
+                if key.starts_with(
+                    &[engine::ORDERED_ECONOMICS_STATE_PREFIX, b"frontier-entry/"].concat(),
+                ) =>
+            {
+                Some(index)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        indexed.len() >= 3,
+        "the genuine e0 publication corpus exercises duplicated earlier ordinals"
+    );
+    let audited = |records: &[crate::business_reconstruction::SourceSnapshotRecord]| {
+        crate::ordered_economics::audit_projection::validate_local_rows(
+            &network.policy,
+            &world.sealed_history,
+            &network.resolver,
+            records,
+            std::collections::BTreeSet::<Vec<u8>>::new(),
+            true,
+        )
+    };
+    let accepted: crate::ordered_economics::audit_projection::AuditLocalRows =
+        audited(&snapshot.records).unwrap();
+    for index in &indexed {
+        let runtime::portable::DurableRecordKey::State(key) =
+            snapshot.records[*index].descriptor.key()
+        else {
+            unreachable!()
+        };
+        assert!(accepted.excluded.contains(key));
+    }
+    let mut duplicate: Vec<crate::business_reconstruction::SourceSnapshotRecord> =
+        snapshot.records.clone();
+    let mut entry: frontier::FrontierEntry =
+        frontier::decode_entry(duplicate[indexed[1]].value.as_deref().unwrap()).unwrap();
+    entry.ordinal = 1;
+    let bytes: Vec<u8> = frontier::encode_entry(&entry).unwrap();
+    let key: runtime::portable::DurableRecordKey = duplicate[indexed[1]].descriptor.key().clone();
+    let runtime::portable::DurableRecordMetadata::State { revision, .. } =
+        duplicate[indexed[1]].descriptor.metadata()
+    else {
+        unreachable!()
+    };
+    duplicate[indexed[1]].descriptor = runtime::portable::DurableRecordDescriptor::new(
+        key,
+        runtime::portable::DurableRecordMetadata::State {
+            revision: *revision,
+            value_length: Some(bytes.len()),
+        },
+    )
+    .unwrap();
+    duplicate[indexed[1]].value = Some(bytes);
+    assert!(
+        audited(&duplicate).is_err(),
+        "two plausible earlier rows cannot share an ordinal"
+    );
+    let mut missing: Vec<crate::business_reconstruction::SourceSnapshotRecord> =
+        snapshot.records.clone();
+    missing.remove(indexed[1]);
+    assert!(
+        audited(&missing).is_err(),
+        "an absent middle index slot cannot be excluded as complete progress"
+    );
+    assert_eq!(
+        crate::test_support::capture::captured_source(
+            &network.stores[0],
+            &network.blobs,
+            &network.context,
+            network.domain()
+        ),
+        snapshot
+    );
+    let first_import: VerifiedImportPlan =
+        crate::business_reconstruction::inactive_import::verify_saved_business_import(
+            reconstruction_plan(world.source(), &world.cut_history),
+            &world.saved,
+        )
+        .unwrap();
+    assert!(!first_import.rows().iter().any(|row| matches!(row,
+        runtime::inactive_import::ImportRow::State { key, .. } if key.starts_with(&[engine::ORDERED_ECONOMICS_STATE_PREFIX, b"frontier-entry/"].concat()))),
+        "validated local index rows are absent from the saved components and imported raw rows");
+}
+
+/// Test-only corruption of a real imported earlier carrier behind the
+/// persisted tail. The bounded cached step does not rescan it; the fresh
+/// complete source-cut owner must refuse, with no Seal or signature/write.
+fn assert_historical_behind_tail_cut_refuses(
+    world: &SuccessorWorld,
+    fixed: &OrderedHistoryIdentity,
+    ordered: &[OrderedHistoryHeightMaterial],
+) {
+    let network: &Network = world.network();
+    let mut prefix: Vec<u8> = crate::fast_path::publication::fastpath_publication_key(
+        world.policy.context().chain_id(),
+        &[0; 32],
+    )
+    .unwrap();
+    prefix.truncate(prefix.len().checked_sub(32).unwrap());
+    let (prior_key, original): (Vec<u8>, Vec<u8>) = {
+        let warrant: crate::serving_authority::LiveWarrant<'_> = world.warrant(0);
+        let (key, bytes): (&[u8], Option<&[u8]>) =
+            warrant.next_prior_state_row(&prefix, &prefix).unwrap();
+        (key.to_vec(), bytes.unwrap().to_vec())
+    };
+    let cursor_key: Vec<u8> = frontier::key(
+        world.policy.context().chain_id(),
+        world.policy.context().epoch(),
+        b"frontier-progress/",
+    )
+    .unwrap();
+    let cursor: frontier::FrontierCursor =
+        frontier::decode_cursor(world.value(0, &cursor_key).1.as_deref().unwrap()).unwrap();
+    assert!(
+        prior_key[prefix.len()..] < cursor.physical_last_request_id[..],
+        "the deliberately corrupted historical carrier is behind, not at, the persisted tail"
+    );
+    let mut altered: crate::fast_path::publication::FastPathPublicationRecord =
+        crate::fast_path::publication::decode_fastpath_publication_record(&original).unwrap();
+    let mut certificate: consensus::FastCertificate =
+        consensus::decode_fast_certificate(&altered.certificate).unwrap();
+    certificate.votes[0].signature[0] ^= 1;
+    altered.certificate = consensus::encode_fast_certificate(&certificate).unwrap();
+    let altered_bytes: Vec<u8> =
+        crate::fast_path::publication::encode_fastpath_publication_record(&altered).unwrap();
+    let write = |mutation: runtime::StateMutation| {
+        let warrant: crate::serving_authority::LiveWarrant<'_> = world.warrant(0);
+        let observed: VersionedStateValue = world.targets[0]
+            .0
+            .get_versioned_durable(&world.operation, network.domain(), &prior_key)
+            .unwrap();
+        let transaction: runtime::AtomicStateTransaction = runtime::AtomicStateTransaction::new(
+            network.domain(),
+            runtime::AtomicStateReadSet::new(vec![
+                runtime::StateReadAssertion::new(prior_key.clone(), observed.revision()).unwrap(),
+            ])
+            .unwrap(),
+            runtime::AtomicStateMutationSet::new(vec![
+                runtime::StateMutationEntry::new(prior_key.clone(), mutation).unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        // This raw-port fault injection is private test plumbing. No
+        // legitimate protocol publication writer exposes this mutation.
+        assert_eq!(
+            crate::serving_authority::ServingGate::Successor(&warrant).commit_durable(
+                &world.targets[0].0,
+                &world.operation,
+                transaction
+            ),
+            runtime::DurableCommitOutcome::Committed
+        );
+    };
+    for mutation in [
+        runtime::StateMutation::Put(altered_bytes),
+        runtime::StateMutation::Delete,
+    ] {
+        write(mutation);
+        let before: crate::business_reconstruction::SourceBusinessSnapshot =
+            crate::test_support::capture::captured_source(
+                &world.targets[0].0,
+                &network.blobs,
+                &world.operation,
+                network.domain(),
+            );
+        let signer: RefusalSigner<'_> = RefusalSigner {
+            inner: &world.members[0],
+            signatures: Cell::new(0),
+        };
+        assert!(matches!(
+            frontier::advance_frozen_frontier_successor(
+                &world.warrant(0),
+                &world.targets[0].0,
+                &world.operation,
+                network.domain(),
+                &network.resolver,
+                &network.history,
+                world.policy.context(),
+                &signer,
+            )
+            .unwrap(),
+            frontier::FrozenFrontierStep::Finalized(_)
+        ));
+        assert_eq!(signer.signatures.get(), 0);
+        let mut plan: BusinessReconstructionPlan<'_> =
+            reconstruction_plan(world.source(), &world.cut_history);
+        plan.operation_context = world.operation;
+        plan.ordered_history_identity = fixed;
+        assert!(
+            crate::business_reconstruction::cut::derive_successor_source_business_cut(
+                plan,
+                &world.warrant(0),
+                &world.targets[0].0,
+                &network.blobs,
+                ordered
+            )
+            .is_err()
+        );
+        assert_eq!(
+            world.targets[0]
+                .0
+                .get_outgoing_barrier(&world.operation, network.domain())
+                .unwrap(),
+            runtime::OutgoingBarrier::Unsealed
+        );
+        assert_eq!(
+            crate::test_support::capture::captured_source(
+                &world.targets[0].0,
+                &network.blobs,
+                &world.operation,
+                network.domain()
+            ),
+            before
+        );
+        assert_eq!(signer.signatures.get(), 0);
+        write(runtime::StateMutation::Put(original.clone()));
+    }
+}
+
 #[test]
 fn genuine_file_backed_e0_e1_e2_seal_import_activate_reopen_and_fence() {
     let world: SuccessorWorld = recurring_world();
+    assert_genuine_source_index_audit(&world);
     let g_anchor: Vec<u8> = register_and_unbond_g(&world);
     recurring_preseal(&world);
     let network: &Network = world.network();
     let prior: VerifiedSuccessorAuthority = chain_authority(&world);
     let (cut_identity, ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
         current_history(&world);
+    assert_historical_behind_tail_cut_refuses(&world, &cut_identity, &ordered);
     let replay_inputs: crate::serving_authority::ReconstructionInputs = prior
         .reconstruction_inputs(&reconstruction_plan(world.source(), &world.cut_history))
         .unwrap();

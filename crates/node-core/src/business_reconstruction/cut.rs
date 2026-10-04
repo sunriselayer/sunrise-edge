@@ -411,6 +411,9 @@ pub(crate) fn verify_live_seal_closure<
     )
 }
 
+// This established private acceptance boundary keeps source, bodies, fixed
+// history, real Seal and independently verified base as distinct inputs.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn verify_live_seal_closure_with_base<
     'p,
     S: DurablePortableSnapshotRepository + ?Sized,
