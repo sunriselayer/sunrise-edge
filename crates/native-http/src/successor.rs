@@ -1120,11 +1120,21 @@ async fn query_context<S: SuccessorStore>(State(host): State<SharedSuccessorHost
             host,
             |warrant: &LiveWarrant<'_>, _: &DurableOperationContext| {
                 let context: &PublicationContext = warrant.policy_inputs().context();
-                let profile = match resolve_transaction_auth_profile(&host.protocol_config) {
+                let query_protocol_config: ProtocolConfig = match resolve_query_protocol_config(
+                    &host.resolver,
+                    context.chain_id(),
+                    context.protocol_version(),
+                    context.epoch(),
+                    &host.protocol_config,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return query_node_error(error),
+                };
+                let profile = match resolve_transaction_auth_profile(&query_protocol_config) {
                     Ok(value) => value,
                     Err(error) => return query_node_error(NodeCoreError::from(error)),
                 };
-                let config_bytes: Vec<u8> = match host.protocol_config.canonical_bytes() {
+                let config_bytes: Vec<u8> = match query_protocol_config.canonical_bytes() {
                     Ok(value) => value,
                     Err(error) => return query_node_error(NodeCoreError::from(error)),
                 };
@@ -1132,7 +1142,7 @@ async fn query_context<S: SuccessorStore>(State(host): State<SharedSuccessorHost
                     context.chain_id().clone(),
                     context.protocol_version(),
                     context.epoch(),
-                    host.protocol_config.hash_suite_id,
+                    query_protocol_config.hash_suite_id,
                     profile.profile_id(),
                     profile.signature_scheme_id().as_u16(),
                     profile.address_binding().as_u16(),

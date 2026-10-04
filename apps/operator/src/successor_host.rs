@@ -15,10 +15,11 @@ use crate::{
     business_cut::read_business_cut_archive,
     business_pins::{BusinessPinInputs, BusinessPins, bounded, hex, operation, private_operation},
     common::{FlagSet, load_signing_key_file, parse_hex_32},
+    host_protocol_context::host_query_protocol_config,
+    host_runtime::FileEd25519Signer,
     immutable_archive::ImmutableArchiveReader,
     successor_artifacts::SuccessorArtifactFiles,
 };
-use consensus::ConsensusSigner;
 use ed25519_zebra::{SigningKey, VerificationKey};
 use hashing::HashSuiteResolver;
 use native_http::successor::{
@@ -38,8 +39,8 @@ use node_core::ordered_economics::{
     MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES, OrderedHistoryIdentity, decode_ordered_history_identity,
 };
 use node_core::serving_authority::{LiveAuthority, ServingAuthorityError, resolve_live_authority};
-use protocol_config::{DomainPlacementManifest, ProtocolConfig, TransactionAuthProfile};
-use protocol_types::{AtomicityDomainId, Epoch, SignatureSchemeId, ValidatorId};
+use protocol_config::ProtocolConfig;
+use protocol_types::{AtomicityDomainId, Epoch, ValidatorId};
 use runtime::{
     DurableOperationContext, DurableOutboxLeaseId, StorageCorrelationId, SystemClock,
     WriterFenceGeneration,
@@ -83,28 +84,14 @@ const FLAGS: &[&str] = &[
 const BOOL_FLAGS: &[&str] = &["--confirm-offline-fence-advance"];
 const HELP: &str = "First-successor loopback host only: serve. Never activates, imports, installs genesis or signs a readiness, Freeze, DrainSet or Seal control.\nRequire the same original pins as successor_activation (--chain-id --protocol-version --epoch --domain --suite --genesis-manifest --expected-genesis-digest --ordered-history-dir --cut-dir --manifest-history-dir --certificate-dir --target-state-db --target-blob-db --validator-id --signer-key-file) plus --listen 127.0.0.1:port or [::1]:port, --created-checkpoint and --confirm-offline-fence-advance (this host claims the target writer fence once and holds it).\nEvery request re-verifies the complete source-free evidence and the installed Serving record before any signing, exposure, read or commit. Optional --timeout-seconds 1..3600 (30), --max-concurrent 1..256 (16).";
 
-/// Real Ed25519 consensus signer over the local namespace key. Core admits
-/// it only when its id is the physical namespace member of the warrant.
-struct FileEd25519Signer {
-    validator_id: ValidatorId,
-    signing_key: SigningKey,
-}
-
-impl ConsensusSigner for FileEd25519Signer {
-    fn validator_id(&self) -> ValidatorId {
-        self.validator_id
-    }
-    fn signature_scheme(&self) -> SignatureSchemeId {
-        SignatureSchemeId::Ed25519
-    }
-    fn sign_framed(&self, framed: &[u8]) -> Result<Vec<u8>, String> {
-        let signature: [u8; 64] = self.signing_key.sign(framed).into();
-        Ok(signature.to_vec())
-    }
-}
-
 /// Correlation identities unique within the one writer generation this
 /// process claimed; a restart claims a new generation.
+///
+/// Intentionally distinct from host_runtime's shared SequentialIdentitySource:
+/// that type reserves sequence `0` as a permanent exhaustion sentinel, while
+/// this type has no sentinel and exhausts only at the natural `u64::MAX`
+/// overflow boundary. That is a real behavioral difference, not incidental
+/// duplication, so this identity source is deliberately left unshared.
 struct GenerationIdentities {
     generation: WriterFenceGeneration,
     sequence: AtomicU64,
@@ -335,30 +322,28 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
     let target: Arc<SqliteImportTarget> = Arc::new(target);
     // Startup gate under the claimed generation, not a cached decision.
     let startup: DurableOperationContext = operation(generation, host.timeout, [0x5E; 16])?;
-    match authority.resolve(target.as_ref(), &startup)? {
-        LiveAuthority::Successor(_) => {}
+    // The verified e+1 successor context from the genuine resolution this
+    // startup gate already performs, never the original pins.context
+    // (which is the predecessor genesis publication context, not the
+    // epoch this host actually serves).
+    let serving_epoch: Epoch = match authority.resolve(target.as_ref(), &startup)? {
+        LiveAuthority::Successor(warrant) => warrant.policy_inputs().context().epoch(),
         LiveAuthority::OriginalGenesis => {
             return Err("target is an ordinary original namespace; successor_host serves only an activated successor".into());
         }
-    }
+    };
 
-    let mut protocol_config: ProtocolConfig = ProtocolConfig::genesis();
-    protocol_config.protocol_version = resolver.protocol_version();
-    protocol_config.domain_placement = Some(DomainPlacementManifest::single_domain(
-        1,
-        domain,
-        Epoch::new(0),
-    )?);
-    protocol_config.transaction_auth_profile =
-        Some(TransactionAuthProfile::ed25519_canonical_prime_order_address_is_public_key());
+    // Advertised over the read-only query route only; never authority. See
+    // host_protocol_context for why this must come from the resolver this
+    // host actually trusts, not a genesis default.
+    let protocol_config: ProtocolConfig =
+        host_query_protocol_config(&resolver, domain, serving_epoch)
+            .map_err(|error| format!("successor host query protocol configuration: {error}"))?;
     let composition: SuccessorHostComposition<SqliteImportTarget> = SuccessorHostComposition {
         store: target,
         blobs: Arc::new(blobs),
         authority,
-        signer: Arc::new(FileEd25519Signer {
-            validator_id: validator,
-            signing_key,
-        }),
+        signer: Arc::new(FileEd25519Signer::new(validator, signing_key)),
         clock: Arc::new(SystemClock),
         identities: Arc::new(GenerationIdentities {
             generation,

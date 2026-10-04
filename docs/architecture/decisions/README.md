@@ -87,6 +87,7 @@
 - [DR-0189: first successor target-local activation and authenticated serving](0189-first-successor-serving.md)
 - [DR-0190: bounded read-only fee-claim preparation transport (Proposed)](0190-read-only-fee-claim-preparation-transport.md)
 - [DR-0191: recurring successor serving over a verified link chain](0191-recurring-successor-serving.md)
+- [DR-0192: verified original SQLite Seal host composition (Proposed)](0192-verified-sqlite-source-host.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong
