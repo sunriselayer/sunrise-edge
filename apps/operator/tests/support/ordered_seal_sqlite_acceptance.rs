@@ -976,8 +976,162 @@ struct CompiledSealCapture {
     barrier: SealBarrier,
 }
 
+/// Raw storage-port observation fidelity only. The canonical blob-backed row
+/// is committed through the real SQLite runtime, but this does not claim a
+/// paid producer, Seal execution or authenticated business reconstruction.
+/// In particular, it does not plant new rows in the genuine Seal fixture.
+#[test]
+fn compiled_clone_snapshot_observes_nonempty_actual_blob_closure() {
+    use hashing::{BuiltinHashFunction, HashFunction};
+    use node_core::{NodeDedupRecord, RequestId};
+    use objects::{Address, Object, ObjectId, Owner};
+    use protocol_types::{
+        AtomicityDomainId, ChainId, HashAlgorithmId, HashPurpose, ProtocolVersion,
+    };
+    use runtime::{
+        BlobStore, DurableCommitOutcome, DurableInvocationTransaction, DurableObjectChanges,
+        DurableObjectHead, DurableObjectHeadRead, DurableObjectMutation,
+        DurableObjectMutationEntry, DurableObjectOwnerProjection, DurableObjectProvenance,
+        DurableObjectRoutingProjection, DurableObjectVersion, DurableObjectVersionRecord,
+    };
+    use rusqlite::{Connection, params};
+
+    let directory: super::fixture::Directory =
+        super::fixture::Directory::new("compiled-clone-observer-port");
+    let source_blob_path: PathBuf = directory.0.join("original-blobs.sqlite");
+    let clone_blob_path: PathBuf = directory.0.join("served-blobs.sqlite");
+    let chain: ChainId = ChainId::new("compiled-clone-observer-port").unwrap();
+    let protocol: ProtocolVersion = ProtocolVersion::new(1);
+    let domain: AtomicityDomainId = AtomicityDomainId::new([0xC1; 32]).unwrap();
+    let validator: ValidatorId = ValidatorId::new([0xC2; 32]);
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    let namespace: SqliteNamespace = SqliteNamespace::new(chain.clone(), validator, domain);
+    let store: SqliteDurableStore =
+        SqliteDurableStore::open(directory.0.join("state.sqlite"), namespace, fence).unwrap();
+    let context: DurableOperationContext = fresh_clone_context(&store, [0xC3; 16]);
+    let object_id: ObjectId = ObjectId::new([0xC4; 32]);
+    let owner: Owner = Owner::Address(Address::new([0xC5; 32]));
+    let object: Object = Object {
+        id: object_id,
+        version: 1,
+        owner: owner.clone(),
+        type_hash: Digest32::new(HashAlgorithmId::Sha2_256, [0xC6; 32]),
+        schema_version: 1,
+        data: vec![0xC7; 70 * 1024],
+    };
+    let canonical: Vec<u8> = objects::encode_object(&object).unwrap();
+    let digest: Digest32 = BuiltinHashFunction::new(HashAlgorithmId::Sha2_256)
+        .hash(HashPurpose::Object, protocol, &chain, &canonical)
+        .unwrap();
+    let version: DurableObjectVersionRecord = DurableObjectVersionRecord::from_blob_reference(
+        object_id,
+        DurableObjectVersion::FIRST,
+        digest,
+        object.schema_version,
+        DurableObjectProvenance::new(chain, protocol),
+        10,
+        digest,
+    );
+    let changes: DurableObjectChanges = DurableObjectChanges::new(
+        vec![DurableObjectHeadRead::new(
+            object_id,
+            DurableObjectHead::Absent,
+        )],
+        vec![DurableObjectMutationEntry::new(
+            object_id,
+            DurableObjectMutation::Create {
+                version,
+                owner_projection: DurableObjectOwnerProjection::from_owner(owner).unwrap(),
+                routing_projection: DurableObjectRoutingProjection::new(None).unwrap(),
+            },
+        )],
+    )
+    .unwrap();
+    let request: RequestId = RequestId::new([0xC8; 32]).unwrap();
+    let canonical_receipt: Vec<u8> = NodeDedupRecord::new(request, digest, Vec::new())
+        .unwrap()
+        .encode()
+        .unwrap();
+    let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
+        DurableRequestId::new(*request.as_bytes()).unwrap(),
+        digest,
+        canonical_receipt,
+    )
+    .unwrap();
+    let invocation: DurableInvocationTransaction =
+        DurableInvocationTransaction::new(domain, None, changes, receipt, None).unwrap();
+    let original_writer: SqliteBlobStore = SqliteBlobStore::open(&source_blob_path).unwrap();
+    original_writer.put_blob(digest, canonical.clone()).unwrap();
+    assert_eq!(
+        store.commit_invocation(&context, invocation),
+        DurableCommitOutcome::Committed
+    );
+    drop(original_writer);
+    clone_sqlite_store_files(&source_blob_path, &clone_blob_path);
+    let original: SqliteBlobStore = SqliteBlobStore::open_existing(&source_blob_path).unwrap();
+    let served: SqliteBlobStore = SqliteBlobStore::open_existing(&clone_blob_path).unwrap();
+    let capture =
+        |blobs: &SqliteBlobStore| -> Result<SourceBusinessSnapshot, Box<dyn std::error::Error>> {
+            capture_source_business_snapshot(
+                &store,
+                blobs,
+                &context,
+                domain,
+                NonZeroUsize::new(128).unwrap(),
+            )
+        };
+    let baseline: SourceBusinessSnapshot = capture(&served).unwrap();
+    baseline.validate().unwrap();
+    assert_eq!(
+        baseline.referenced_blobs,
+        BTreeMap::from([(digest, canonical.clone())])
+    );
+    assert_eq!(capture(&original).unwrap(), baseline);
+
+    // Change only the exact served copy. Same-length corruption is observable
+    // data, not an observer-level digest check or authenticated execution.
+    let tamper: Connection = Connection::open(&clone_blob_path).unwrap();
+    let mut corrupted: Vec<u8> = canonical.clone();
+    *corrupted.last_mut().unwrap() ^= 1;
+    assert_eq!(
+        tamper
+            .execute(
+                "UPDATE blobs SET content = ?1 WHERE digest_algorithm = ?2 AND digest_bytes = ?3",
+                params![
+                    corrupted,
+                    i64::from(digest.algorithm().as_u16()),
+                    digest.bytes().as_slice()
+                ],
+            )
+            .unwrap(),
+        1
+    );
+    let changed: SourceBusinessSnapshot = capture(&served).unwrap();
+    assert_eq!(changed.records, baseline.records);
+    assert_eq!(changed.token, baseline.token);
+    assert_ne!(changed.referenced_blobs, baseline.referenced_blobs);
+    assert_eq!(capture(&original).unwrap(), baseline);
+
+    assert_eq!(
+        tamper
+            .execute(
+                "DELETE FROM blobs WHERE digest_algorithm = ?1 AND digest_bytes = ?2",
+                params![
+                    i64::from(digest.algorithm().as_u16()),
+                    digest.bytes().as_slice()
+                ],
+            )
+            .unwrap(),
+        1
+    );
+    let missing: String = capture(&served).unwrap_err().to_string();
+    assert!(missing.contains("referenced blob is missing"), "{missing}");
+    assert_eq!(capture(&original).unwrap(), baseline);
+}
+
 fn capture_compiled_seal_state(
     store: &SqliteDurableStore,
+    cloned_blobs: &SqliteBlobStore,
     fixture: &Fixture,
     env: &OrderedEconomicsEnvironment<'_>,
     request: DurableRequestId,
@@ -1000,7 +1154,7 @@ fn capture_compiled_seal_state(
         .expect("the real Seal completion leaves an exact committed outcome");
     let snapshot: SourceBusinessSnapshot = capture_source_business_snapshot(
         store,
-        &fixture.blobs,
+        cloned_blobs,
         &context,
         fixture.network.domain,
         NonZeroUsize::new(128).unwrap(),
@@ -1054,6 +1208,9 @@ pub(super) fn run_compiled_four_host_seal(
     std::fs::write(&genesis, &fixture.network.manifest_bytes).unwrap();
     let blob_db: PathBuf = root.join("blobs.sqlite");
     clone_sqlite_store_files(&fixture.directory.0.join("blobs.sqlite"), &blob_db);
+    // Observe the exact file all compiled hosts serve, not the untouched
+    // original fixture. This handle is existing-only and read-only.
+    let cloned_blobs: SqliteBlobStore = SqliteBlobStore::open_existing(&blob_db).unwrap();
 
     let mut key_files: Vec<PathBuf> = Vec::new();
     let mut state_dbs: Vec<PathBuf> = Vec::new();
@@ -1081,7 +1238,7 @@ pub(super) fn run_compiled_four_host_seal(
         assert_eq!(
             capture_source_business_snapshot(
                 &cloned,
-                &fixture.blobs,
+                &cloned_blobs,
                 &fixture.operation,
                 fixture.network.domain,
                 NonZeroUsize::new(128).unwrap(),
@@ -1235,6 +1392,7 @@ pub(super) fn run_compiled_four_host_seal(
                 SqliteDurableStore::open_historical(state_path, namespace).unwrap();
             capture_compiled_seal_state(
                 &historical,
+                &cloned_blobs,
                 fixture,
                 &env,
                 request,
@@ -1321,6 +1479,7 @@ pub(super) fn run_compiled_four_host_seal(
                 SqliteDurableStore::open_historical(state_path, namespace).unwrap();
             capture_compiled_seal_state(
                 &historical,
+                &cloned_blobs,
                 fixture,
                 &env,
                 request,

@@ -65,10 +65,20 @@ completion-fault and successor acceptance remain in the same test. The source
 process target passed real EMPTY rounds, stopped-peer catch-up, restart/fresh
 fence and simultaneous-old-writer refusal; the startup target also passed.
 These are compiled hosts with the Rust CLI entry point over TCP, not a compiled
-CLI child or changed-committee recurrence. Final committed-source required
-validation, selected full PostgreSQL host regression, independent code review
-and CI remain open. Claude's session-limit refusal is recorded; the previously
-authorized independent Codex substitute is used while it is unavailable.
+CLI child or changed-committee recurrence. The complete selected PostgreSQL
+profile and all required CI lanes passed at `41982fa`. Independent review
+nevertheless blocked that head: the compiled Seal snapshot read the original
+fixture's blob file instead of the copy actually served by the hosts. The fix
+uses the served file for every compiled-host snapshot. A separate, explicitly
+raw storage-port control with a nonempty canonical blob closure passed: changing
+only the served copy is detected, deleting its blob refuses, and the untouched
+original remains equal to its baseline. This is observation fidelity, not a
+new authenticated Seal fixture. The corrected conditional-readiness, source
+process and startup targets passed all eleven cases, including the genuine
+four-host Seal and replay. Fresh exact-head review and committed-source
+validation remain required before merging PR #268.
+Claude's session-limit refusal is recorded; the previously authorized independent
+Codex substitute is used while it is unavailable.
 
 **Completed architecture-first work window, 2026-10-02:** approximately eight
 hours, from 13:50 until 21:50 Asia/Singapore. Establish the

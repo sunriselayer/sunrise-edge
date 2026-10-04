@@ -82,8 +82,10 @@ const VALUE_FLAGS: &[&str] = &[
 const BOOL_FLAGS: &[&str] = &["--confirm-offline-fence-advance"];
 const MAX_HOST_TIMEOUT_SECONDS: u64 = native_http::MAX_INDEXED_OUTBOX_OPERATION_MILLIS / 1000;
 
-/// Parses closed argv (no fallbacks), fails closed on any refusal below
-/// before advancing the writer fence, then serves the certified paid/
+/// Parses closed argv (no fallbacks) and refuses invalid local options before
+/// file I/O or fence advancement. After one explicit fence claim, deciding
+/// persisted-state refusals may retain that claim but never repair state or
+/// expose a listener. Successful startup serves the existing certified paid/
 /// ordered/FastVote dispatcher with the ordered Seal composition bound.
 /// All fee/validator-set/signer/committee pins are decided once, strictly
 /// after the single fence claim, under the context this host actually
