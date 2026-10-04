@@ -885,6 +885,7 @@ fn compiled_host_field(line: &str, key: &str) -> String {
 
 #[allow(clippy::too_many_arguments)]
 fn start_compiled_source_host(
+    executables: &super::compiled_executable_snapshot::CompiledExecutableSnapshot,
     fixture: &Fixture,
     genesis: &Path,
     blob_db: &Path,
@@ -892,7 +893,7 @@ fn start_compiled_source_host(
     key_file: &Path,
     validator_id: ValidatorId,
 ) -> CompiledSourceHost {
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+    let mut command = std::process::Command::new(&executables.sqlite_source_host);
     command.args([
         "--chain-id",
         fixture.network.chain_id.as_str(),
@@ -1185,6 +1186,7 @@ fn capture_compiled_seal_state(
 /// pre/post business-snapshot and Unsealed-barrier comparison on the live
 /// stores, not merely on the clones.
 pub(super) fn run_compiled_four_host_seal(
+    executables: &super::compiled_executable_snapshot::CompiledExecutableSnapshot,
     fixture: &Fixture,
     candidate_path: &Path,
     candidate: &OrderedCandidate,
@@ -1262,6 +1264,7 @@ pub(super) fn run_compiled_four_host_seal(
     let hosts: Vec<CompiledSourceHost> = (0..4)
         .map(|index: usize| {
             start_compiled_source_host(
+                executables,
                 fixture,
                 &genesis,
                 &blob_db,
@@ -1530,7 +1533,7 @@ pub(super) fn run_compiled_four_host_seal(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&refusal_key, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let mut refusal_command = std::process::Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+    let mut refusal_command = std::process::Command::new(&executables.sqlite_source_host);
     refusal_command.args([
         "--chain-id",
         fixture.network.chain_id.as_str(),

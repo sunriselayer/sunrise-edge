@@ -296,6 +296,7 @@ fn host_flags(
 }
 
 fn start(
+    executables: &CompiledExecutableSnapshot,
     fixture: &Fixture,
     links: &[Link],
     targets: &CurrentTargets,
@@ -317,7 +318,7 @@ fn start(
             "--confirm-offline-fence-advance".into(),
         ]);
     }
-    let mut command: Command = Command::new(env!("CARGO_BIN_EXE_successor_host"));
+    let mut command: Command = Command::new(&executables.successor_host);
     command
         .arg(if historical { "serve-history" } else { "serve" })
         .args(flags)
@@ -347,6 +348,14 @@ fn start(
 }
 
 fn committed_outcome(hosts: &[HostProcess], request: [u8; 32]) -> OrderedOutcome {
+    agreed_outcome(hosts, request, node_core::NodeResponseStatus::Accepted)
+}
+
+fn agreed_outcome(
+    hosts: &[HostProcess],
+    request: [u8; 32],
+    expected: node_core::NodeResponseStatus,
+) -> OrderedOutcome {
     let mut agreed: Option<OrderedOutcome> = None;
     for host in hosts {
         let response: WireResponse = raw(
@@ -373,8 +382,7 @@ fn committed_outcome(hosts: &[HostProcess], request: [u8; 32]) -> OrderedOutcome
                 .output
                 .responses()
                 .iter()
-                .all(|response: &node_core::NodeResponse| response.status()
-                    == node_core::NodeResponseStatus::Accepted)
+                .all(|response: &node_core::NodeResponse| response.status() == expected)
         );
         if let Some(previous) = &agreed {
             assert_eq!(previous, &outcome);
@@ -644,6 +652,7 @@ fn freeze_and_drain(
 }
 
 fn install_next(
+    executables: &CompiledExecutableSnapshot,
     fixture: &Fixture,
     links: &[Link],
     current: &SuccessorWorkflowAuthority,
@@ -663,8 +672,12 @@ fn install_next(
         "3600".into(),
     ]);
     assert!(
-        operator(env!("CARGO_BIN_EXE_business_cut"), "export-sqlite", flags)
-            .contains("business_cut=complete")
+        operator(
+            executables.business_cut.to_str().unwrap(),
+            "export-sqlite",
+            flags
+        )
+        .contains("business_cut=complete")
     );
     let next_set: validator_set::ValidatorSet = next_set(current, next_members);
     let next_path: PathBuf = directory.join("readiness-next-set.bin");
@@ -701,7 +714,7 @@ fn install_next(
         ]);
         assert!(
             operator(
-                env!("CARGO_BIN_EXE_business_import"),
+                executables.business_import.to_str().unwrap(),
                 "create-sqlite",
                 flags
             )
@@ -722,7 +735,7 @@ fn install_next(
             "3600".into(),
         ]);
         operator(
-            env!("CARGO_BIN_EXE_conditional_readiness"),
+            executables.conditional_readiness.to_str().unwrap(),
             "vote-sqlite",
             flags,
         );
@@ -749,7 +762,7 @@ fn install_next(
         flags.extend(["--vote".into(), vote.to_str().unwrap().into()]);
     }
     operator(
-        env!("CARGO_BIN_EXE_conditional_readiness"),
+        executables.conditional_readiness.to_str().unwrap(),
         "certificate",
         flags,
     );
@@ -1020,6 +1033,13 @@ pub(super) fn run(
         lifecycle::withdrawals(
             fixture, &links, &current, &targets, &hosts, &network, &directory, &owners,
         );
+        for owner in &owners {
+            remember_receipt(
+                &mut receipt_history,
+                &hosts,
+                lifecycle::request(current.expected_context().epoch(), 0x43, &owner.member),
+            );
+        }
         let mut next_members: Vec<SuccessorProcessMember> = targets.members.clone();
         if expected_epoch == 2 {
             let f: SuccessorProcessMember = lifecycle::register(
@@ -1063,6 +1083,7 @@ pub(super) fn run(
             &history,
         );
         let (next, cut, certificate): (CurrentTargets, PathBuf, PathBuf) = install_next(
+            &inputs.executables,
             fixture,
             &links,
             &current,
@@ -1088,7 +1109,11 @@ pub(super) fn run(
                 "--timeout-seconds".into(),
                 "3600".into(),
             ]);
-            operator(env!("CARGO_BIN_EXE_ordered_seal"), "prepare-sqlite", flags);
+            operator(
+                inputs.executables.ordered_seal.to_str().unwrap(),
+                "prepare-sqlite",
+                flags,
+            );
             let candidate: PathBuf = output.join("candidate.bin");
             let bytes: Vec<u8> = std::fs::read(&candidate).unwrap();
             if let Some(previous) = &seal_bytes {
@@ -1133,7 +1158,17 @@ pub(super) fn run(
             .collect();
         hosts.clear();
         let historical: Vec<HostProcess> = (0..targets.paths.len())
-            .map(|index: usize| start(fixture, &links, &targets, index, true, expected_epoch))
+            .map(|index: usize| {
+                start(
+                    &inputs.executables,
+                    fixture,
+                    &links,
+                    &targets,
+                    index,
+                    true,
+                    expected_epoch,
+                )
+            })
             .collect();
         for (host, generation) in historical.iter().zip(&generations) {
             assert_eq!(
@@ -1189,7 +1224,7 @@ pub(super) fn run(
                 host_flags(fixture, &links, &next, index, false, expected_epoch + 1);
             assert!(
                 operator(
-                    env!("CARGO_BIN_EXE_successor_activation"),
+                    inputs.executables.successor_activation.to_str().unwrap(),
                     "activate",
                     flags.clone()
                 )
@@ -1197,7 +1232,7 @@ pub(super) fn run(
             );
             assert!(
                 operator(
-                    env!("CARGO_BIN_EXE_successor_activation"),
+                    inputs.executables.successor_activation.to_str().unwrap(),
                     "activate",
                     flags
                 )
@@ -1219,7 +1254,17 @@ pub(super) fn run(
             };
         targets = next;
         hosts = (0..targets.paths.len())
-            .map(|index: usize| start(fixture, &links, &targets, index, false, expected_epoch + 1))
+            .map(|index: usize| {
+                start(
+                    &inputs.executables,
+                    fixture,
+                    &links,
+                    &targets,
+                    index,
+                    false,
+                    expected_epoch + 1,
+                )
+            })
             .collect();
         verify_receipts(&receipt_history, &hosts);
         remember_receipt(&mut receipt_history, &hosts, seal.request_id);

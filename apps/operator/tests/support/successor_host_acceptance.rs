@@ -10,6 +10,7 @@
 //! successor_host processes serve it on loopback, and independently loaded
 //! SDK and CLI successor pins drive e+1 work before signing anything.
 
+use super::compiled_executable_snapshot::CompiledExecutableSnapshot;
 use super::{fixture::Fixture, hex};
 use consensus::{ConsensusSigner, QuorumCertificate, decode_quorum_certificate};
 use execution::LocalWasmExecutionEngine;
@@ -99,6 +100,8 @@ pub struct SuccessorProcessMember {
 
 /// Original directories owned by the conditional readiness caller.
 pub struct SuccessorProcessInputs {
+    /// Exact real compiled children captured before the complete workflow.
+    pub executables: CompiledExecutableSnapshot,
     /// Ordered history through T feeding the plan.
     pub plan_history: PathBuf,
     /// Saved pre-Seal business cut.
@@ -181,7 +184,7 @@ fn activation(
     certificate: &Path,
     index: usize,
 ) -> Output {
-    let mut command: Command = Command::new(env!("CARGO_BIN_EXE_successor_activation"));
+    let mut command: Command = Command::new(&inputs.executables.successor_activation);
     command.arg("activate");
     pins(&mut command, fixture, inputs);
     target_flags(&mut command, inputs, export, certificate, index);
@@ -215,7 +218,7 @@ fn start_host(
     export: &Path,
     index: usize,
 ) -> HostProcess {
-    let mut command: Command = Command::new(env!("CARGO_BIN_EXE_successor_host"));
+    let mut command: Command = Command::new(&inputs.executables.successor_host);
     command.arg("serve");
     pins(&mut command, fixture, inputs);
     target_flags(&mut command, inputs, export, &inputs.certificate, index);

@@ -448,9 +448,12 @@ impl EpochHosts {
             .unwrap()
             .expect("the actual current committee reaches quorum");
         assert!(
-            certificate.votes.iter().any(|vote: &consensus::ConsensusVote| {
-                vote.validator == origin.members[quorum_indices[0]].id
-            }),
+            certificate
+                .votes
+                .iter()
+                .any(|vote: &consensus::ConsensusVote| {
+                    vote.validator == origin.members[quorum_indices[0]].id
+                }),
             "the authentic canonical QC must include registered E's indispensable vote"
         );
         let outputs: Vec<OrderedEventOutput> = (0..self.targets.len())
@@ -635,7 +638,11 @@ fn quorum_member_indices(origin: &SuccessorWorld, current: &ValidatorSet) -> Vec
         .filter(|member: &&validator_set::ValidatorInfo| genesis.get(member.id).is_none())
         .map(|member: &validator_set::ValidatorInfo| member.id)
         .collect();
-    assert_eq!(registered.len(), 1, "the original first handoff introduces E");
+    assert_eq!(
+        registered.len(),
+        1,
+        "the original first handoff introduces E"
+    );
     let e: ValidatorId = registered[0];
     let e_index: usize = origin
         .members
@@ -1083,9 +1090,10 @@ fn handoff(
     let readiness: consensus::readiness::ReadinessCertificate =
         consensus::readiness::decode_readiness_certificate(&certificate).unwrap();
     assert!(
-        readiness.votes.iter().any(|vote: &ReadinessVote| {
-            vote.signer == origin.members[quorum_indices[0]].id
-        }),
+        readiness
+            .votes
+            .iter()
+            .any(|vote: &ReadinessVote| { vote.signer == origin.members[quorum_indices[0]].id }),
         "the genuine readiness certificate includes E's indispensable signature"
     );
     // Retain the same genuine published body in each independent source and

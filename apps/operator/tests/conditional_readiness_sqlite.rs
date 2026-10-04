@@ -3,6 +3,8 @@
 //! A/B/C/E handoff. No original fixture is relabelled as membership-change proof.
 #[path = "support/causal_genesis_fixture.rs"]
 mod causal_genesis_fixture;
+#[path = "support/compiled_executable_snapshot.rs"]
+mod compiled_executable_snapshot;
 #[path = "business_cut/fixture.rs"]
 mod fixture;
 #[path = "support/genesis_fixture.rs"]
@@ -12,6 +14,7 @@ mod ordered_seal_sqlite_acceptance;
 #[path = "support/successor_host_acceptance.rs"]
 mod successor_host_acceptance;
 
+use compiled_executable_snapshot::CompiledExecutableSnapshot;
 use consensus::readiness::{
     ReadinessCertificate, ReadinessCertifier, ReadinessVote, decode_readiness_certificate,
     decode_readiness_vote,
@@ -134,6 +137,7 @@ fn pins(command: &mut Command, fixture: &Fixture, history: &Path, cut: &Path) {
 }
 #[allow(clippy::too_many_arguments)]
 fn voting(
+    executables: &CompiledExecutableSnapshot,
     fixture: &Fixture,
     history: &Path,
     cut: &Path,
@@ -143,7 +147,7 @@ fn voting(
     validator: ValidatorId,
     key: &Path,
 ) -> Command {
-    let mut command: Command = Command::new(env!("CARGO_BIN_EXE_conditional_readiness"));
+    let mut command: Command = Command::new(&executables.conditional_readiness);
     command.arg("vote-sqlite");
     pins(&mut command, fixture, history, cut);
     command.args([
@@ -174,6 +178,7 @@ async fn compiled_registered_replacement_and_recurring_successor_hosts() {
 }
 
 async fn run_conditional_readiness(recurring: bool) {
+    let executables: CompiledExecutableSnapshot = CompiledExecutableSnapshot::capture();
     let mut fixture: Fixture = if recurring {
         Fixture::new_recurring()
     } else {
@@ -243,7 +248,7 @@ async fn run_conditional_readiness(recurring: bool) {
     let mut destinations: Vec<Directory> = Vec::new();
     for (index, validator) in incoming.iter().enumerate() {
         let destination: Directory = Directory::new(&format!("ready-import-{index}"));
-        let mut importer: Command = Command::new(env!("CARGO_BIN_EXE_business_import"));
+        let mut importer: Command = Command::new(&executables.business_import);
         importer.arg("create-sqlite");
         pins(&mut importer, &fixture, &history_root, &cut.0);
         importer.args([
@@ -272,6 +277,7 @@ async fn run_conditional_readiness(recurring: bool) {
                 std::os::unix::fs::symlink(&destination.0, &alias).unwrap();
                 assert!(
                     !voting(
+                        &executables,
                         &fixture,
                         &history_root,
                         &cut.0,
@@ -291,6 +297,7 @@ async fn run_conditional_readiness(recurring: bool) {
             std::fs::write(output.0.join("vote.bin"), b"invalid retained artifact").unwrap();
             assert!(
                 !voting(
+                    &executables,
                     &fixture,
                     &history_root,
                     &cut.0,
@@ -350,6 +357,7 @@ async fn run_conditional_readiness(recurring: bool) {
         assert!(
             success(
                 voting(
+                    &executables,
                     &fixture,
                     &history_root,
                     &cut.0,
@@ -369,6 +377,7 @@ async fn run_conditional_readiness(recurring: bool) {
         owner.verify_vote(&vote).unwrap();
         assert_eq!(vote.signer, validator.validator_id);
         let mut retry: Command = voting(
+            &executables,
             &fixture,
             &history_root,
             &cut.0,
@@ -392,7 +401,7 @@ async fn run_conditional_readiness(recurring: bool) {
     assert_eq!(files(&votes[0].0.0), files(&copied_vote.0));
     let certificates: Directory = Directory::new("ready-certificates");
     let assembly = |count: usize, duplicate: bool, offset: usize, out_dir: &Path| -> Command {
-        let mut command: Command = Command::new(env!("CARGO_BIN_EXE_conditional_readiness"));
+        let mut command: Command = Command::new(&executables.conditional_readiness);
         command.arg("certificate");
         pins(&mut command, &fixture, &history_root, &cut.0);
         command.args([
@@ -453,7 +462,7 @@ async fn run_conditional_readiness(recurring: bool) {
     let seal_output: Directory = Directory::new("unsigned-seal-preparation");
     let prepare =
         |certificate_path: &Path, state: &Path, blobs: &Path, out_dir: &Path| -> Command {
-            let mut command: Command = Command::new(env!("CARGO_BIN_EXE_ordered_seal"));
+            let mut command: Command = Command::new(&executables.ordered_seal);
             command.arg("prepare-sqlite");
             pins(&mut command, &fixture, &history_root, &cut.0);
             command.args([
@@ -675,6 +684,7 @@ async fn run_conditional_readiness(recurring: bool) {
         "the competing variant's preparation never changes source state or receipts"
     );
     ordered_seal_sqlite_acceptance::run_compiled_four_host_seal(
+        &executables,
         &fixture,
         &seal_output.0.join("candidate.bin"),
         &candidate,
@@ -685,6 +695,7 @@ async fn run_conditional_readiness(recurring: bool) {
         &candidate,
         &competing_candidate,
         &successor_host_acceptance::SuccessorProcessInputs {
+            executables: executables.clone(),
             plan_history: history_root.clone(),
             cut: cut.0.clone(),
             certificate: certificates.0.clone(),

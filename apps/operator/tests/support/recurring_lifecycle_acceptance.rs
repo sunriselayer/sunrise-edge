@@ -22,6 +22,70 @@ pub(super) struct ExitOwner {
     pub(super) unlock: Epoch,
 }
 
+fn physical_snapshots(
+    fixture: &Fixture,
+    targets: &CurrentTargets,
+) -> Vec<node_core::business_reconstruction::SourceBusinessSnapshot> {
+    targets
+        .paths
+        .iter()
+        .enumerate()
+        .map(|(index, path): (usize, &PathBuf)| {
+            let store: SqliteDurableStore = SqliteDurableStore::open_historical(
+                path.join("state.db"),
+                SqliteNamespace::new(
+                    fixture.network.chain_id.clone(),
+                    targets.members[index].validator_id,
+                    fixture.network.domain,
+                ),
+            )
+            .unwrap();
+            let blobs: SqliteBlobStore =
+                SqliteBlobStore::open_existing(path.join("body.db")).unwrap();
+            let operation: runtime::DurableOperationContext = runtime::DurableOperationContext::new(
+                store.writer_fence().unwrap(),
+                runtime::StorageDeadline::new(u64::MAX / 2).unwrap(),
+                runtime::StorageCorrelationId::new([0xc8; 16]).unwrap(),
+            );
+            sunrise_edge_operator::business_snapshot::capture_source_business_snapshot(
+                &store,
+                &blobs,
+                &operation,
+                fixture.network.domain,
+                NonZeroUsize::new(128).unwrap(),
+            )
+            .unwrap()
+        })
+        .collect()
+}
+
+fn value_records(
+    snapshot: &node_core::business_reconstruction::SourceBusinessSnapshot,
+    nonce_lock: &[u8],
+    nonce_key: &[u8],
+) -> Vec<node_core::business_reconstruction::SourceSnapshotRecord> {
+    snapshot
+        .records
+        .iter()
+        .filter(
+            |record: &&node_core::business_reconstruction::SourceSnapshotRecord| match record
+                .descriptor
+                .key()
+            {
+                runtime::portable::DurableRecordKey::ObjectHead(_)
+                | runtime::portable::DurableRecordKey::ObjectVersion(_, _) => true,
+                runtime::portable::DurableRecordKey::State(key) => {
+                    (key.starts_with(node_core::local_instance_state::FASTPATH_STATE_PREFIX)
+                        || key.as_slice() == nonce_key)
+                        && key.as_slice() != nonce_lock
+                }
+                runtime::portable::DurableRecordKey::Receipt(_) => false,
+            },
+        )
+        .cloned()
+        .collect()
+}
+
 fn state(fixture: &Fixture, targets: &CurrentTargets, index: usize, key: &[u8]) -> Option<Vec<u8>> {
     let store: SqliteDurableStore = SqliteDurableStore::open_historical(
         targets.paths[index].join("state.db"),
@@ -646,43 +710,95 @@ pub(super) fn withdrawals(
             &label,
         );
         if current.expected_context().epoch() < owner.unlock {
-            let mut flags: Vec<String> = ordered_network_pins(fixture, links, current, network);
-            flags.extend([
-                "--candidate".into(),
-                candidate.to_str().unwrap().into(),
-                "--out".into(),
-                directory
-                    .join(format!("{label}-refused"))
-                    .to_str()
-                    .unwrap()
-                    .into(),
-            ]);
-            let mut arguments: Vec<OsString> = vec!["economics".into(), "network-submit".into()];
-            arguments.extend(flags.into_iter().map(OsString::from));
-            assert!(
-                tokio::task::block_in_place(|| sunrise_edge_cli::run(arguments)).is_err(),
-                "actual ordered owner must refuse before unlock"
+            let before: Vec<node_core::business_reconstruction::SourceBusinessSnapshot> =
+                physical_snapshots(fixture, targets);
+            let output: PathBuf = directory.join(format!("{label}-refused"));
+            submit(fixture, links, current, network, &candidate, &output);
+            let outcome: OrderedOutcome =
+                agreed_outcome(hosts, id, node_core::NodeResponseStatus::Rejected);
+            assert_eq!(outcome.output.responses().len(), 1);
+            assert_eq!(
+                node_core::ordered_economics::decode_ordered_refusal_payload(
+                    outcome.output.responses()[0].payload().unwrap()
+                )
+                .unwrap(),
+                node_core::ordered_economics::OrderedRefusal::IneligibleState,
             );
+            let expected_receipt: Vec<u8> = node_core::NodeDedupRecord::new(
+                node_core::RequestId::new(id).unwrap(),
+                outcome.candidate_digest,
+                outcome.output.responses().to_vec(),
+            )
+            .unwrap()
+            .encode()
+            .unwrap();
+            let references: Vec<&HostProcess> = hosts.iter().collect();
+            let sunrise_edge_client::HttpReceiptQueryResult::Present {
+                dedup_record_bytes, ..
+            } = receipts(&references, id)
+            else {
+                panic!("actual early withdrawal retains a refusal receipt");
+            };
+            assert_eq!(dedup_record_bytes, expected_receipt);
             assert_eq!(bond(fixture, targets, member.validator_id), previous);
             for host in hosts {
                 assert_eq!(object(host, previous.custody_object.id).0, before_object);
                 assert_eq!(nonce(host, *member.validator_id.as_bytes()), before_nonce);
-                let response: WireResponse = raw(
-                    host.address,
-                    Method::Get,
-                    &format!(
-                        "{}{}",
-                        node_wire::ordered_economics::ORDERED_ECONOMICS_OUTCOME_PATH_PREFIX,
-                        hex(&id)
-                    ),
-                    None,
-                    Vec::new(),
-                );
+            }
+            let nonce_lock: Vec<u8> = node_core::local_instance_state::fastpath_nonce_lock_key(
+                &fixture.network.chain_id,
+                member.validator_id.as_bytes(),
+                current.expected_context().epoch(),
+            )
+            .unwrap();
+            let nonce_key: Vec<u8> = runtime::PersistenceLayout::new(
+                fixture.network.chain_id.clone(),
+                fixture.network.protocol_version,
+            )
+            .sender_nonce_key(
+                *member.validator_id.as_bytes(),
+                current.expected_context().epoch(),
+            );
+            let after: Vec<node_core::business_reconstruction::SourceBusinessSnapshot> =
+                physical_snapshots(fixture, targets);
+            for (index, (before, after)) in before.iter().zip(&after).enumerate() {
                 assert_eq!(
-                    response.status, 204,
-                    "premature withdrawal creates no ordered outcome"
+                    value_records(before, &nonce_lock, &nonce_key),
+                    value_records(after, &nonce_lock, &nonce_key),
+                    "ordered rejection moves no business value or authority"
+                );
+                assert!(
+                    state(fixture, targets, index, &nonce_lock).is_none(),
+                    "the real admitted nonce lock is released"
                 );
             }
+            // Declared proposal/QC replay uses existing non-signing recovery
+            // routes. Whole AFTER-refusal snapshots prove no reapplication;
+            // fresh-signer counters are separately verified by core acceptance.
+            let mut flags: Vec<String> = ordered_network_pins(fixture, links, current, network);
+            flags.extend([
+                "--manifest".into(),
+                format!("{}.manifest", output.display()),
+                "--out".into(),
+                directory
+                    .join(format!("{label}-replay"))
+                    .to_str()
+                    .unwrap()
+                    .into(),
+            ]);
+            cli(&["economics", "network-replay"], flags);
+            assert_eq!(physical_snapshots(fixture, targets), after);
+            assert_eq!(
+                agreed_outcome(hosts, id, node_core::NodeResponseStatus::Rejected),
+                outcome
+            );
+            let sunrise_edge_client::HttpReceiptQueryResult::Present {
+                dedup_record_bytes, ..
+            } = receipts(&references, id)
+            else {
+                panic!("completed replay preserves the actual refusal receipt");
+            };
+            assert_eq!(dedup_record_bytes, expected_receipt);
         } else {
             assert_eq!(
                 current.expected_context().epoch(),
