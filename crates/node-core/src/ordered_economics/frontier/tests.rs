@@ -474,7 +474,7 @@ fn indexed_progress_binds_empty_seed_and_refuses_incomplete_legacy_material() {
             &protocol(),
             &signer,
         ),
-        Err(FrozenFrontierError::NotReady(
+        Err(FrozenFrontierError::Invalid(
             "pre-index frontier cursor has no complete current index"
         ))
     ));

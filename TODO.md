@@ -118,18 +118,31 @@ including SQLite scan mechanics above 4096 priors, exact page bytes, current
 index poisoning, missing prior refusal, CAS/reply-loss and reopen/refencing.
 Mechanics are not authenticated successor-owner acceptance. A genuine smaller
 two-link Seal/import/activation chain passed again in 307.90 seconds before the
-last source-index corpus and historical behind-tail audit additions. The final
-node-core all-target/all-feature strict Clippy check passes. Remaining body
-regressions, fresh exact-head review and complete committed-source gates stay
-open. The scoped node-core dev/test optimization keeps assertions and overflow
-checks.
+last source-index corpus and historical carrier audit additions. Complete
+read-only Opus code reviews approved core `6950f72` and dependent host `3377ea2`;
+this is not execution acceptance. The core full profile at `6950f72` passed
+strict workspace Clippy, then exposed two fixture failures and was stopped:
+the pre-index cursor test still expected NotReady instead of terminal Invalid,
+and the genuine empty-frontier fixture assumed a nonexistent physical cursor.
+Both test premises are corrected for a fresh final-head gate. The latter now
+checks actual empty cached finalization and corrupts a genuinely retained e0
+drain carrier; authenticated behind-tail scanner acceptance remains open.
+The genuine delay fixture resolves each replica's complete immutable archive
+once per round or local frontier/drain phase. Its original handler freshness,
+fence, Unsealed, signing and CAS checks remain; warrants are not cached across
+rounds, Seal, activation or reopen. The scoped node-core dev/test optimization
+keeps assertions and overflow checks. The original seven-epoch acceptance and
+complete final-head profiles are still pending; PR #269/#270 remain drafts.
 
 Downstream SDK/CLI/operator libraries pass 416 tests. The first native HTTP run
 passed 156 tests and failed the retained Original post-Seal material read; the
 core now separates the two material-reader owners without changing the existing
-test or HTTP signature refusal, with downstream rerun still pending. Compiled
-changed-committee recurrence, later five-member
-participation and eligible process withdrawals remain unrun. This is not
+test or HTTP signature refusal. The retained native post-Seal material-reader
+regression passes on the earlier captured host binary. A real compiled
+changed-committee run has reached e2 after genuine incoming registration,
+Unbond, retained early-Withdraw refusals, e1 Seal and e2 original-escrow claim;
+it has not completed. Later five-member participation, eligible process
+withdrawals and final-head complete host gates remain unproven. This is not
 Delivery 3, PostgreSQL/DO/D1 activation or production readiness.
 
 **Completed architecture-first work window, 2026-10-02:** approximately eight

@@ -796,9 +796,12 @@ Pin count is checked against the budget first. Each link keeps the existing
 bounds: 2 KiB subject and manifest, 1 MiB certificate, history, proof and
 activation-transaction bounds, plan row and blob counts. Registry and
 committee entries are bounded by verified plan rows and certificate members.
-Per-request cost is the sum over links of cut re-execution plus history; it
-grows linearly with epochs, stated rather than hidden. A bounded-cost
-successor needs its own reviewed decision; no checkpoint is trusted here.
+Per-request cost is the sum over links of cut re-execution over actual state
+and history. Those inputs accumulate, and the current historical
+owner/committee clones can also make total work quadratic in link count.
+The link budget bounds selected links, not total runtime independently of
+their material sizes. A bounded-cost successor or shared-history representation
+needs its own reviewed decision; no checkpoint is trusted here.
 
 ## 11. Ownership and coherent PRs
 
