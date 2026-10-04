@@ -244,3 +244,10 @@ complete selected PG suite for the actual schema change remain mandatory.
 This contract grants no target serving, post-Seal transition signature,
 recurring epoch, DO/PG Seal production, independent audit or startup approval.
 Ordinary CAS is not consistent whole-database rollback protection.
+
+The proposed [recurring successor serving](recurring-successor-serving.md)
+contract ([DR-0191](decisions/0191-recurring-successor-serving.md)) extends
+this hard-stop to every successor namespace. It adds SealIntent predecessor
+tag 2 with new vectors, keeping tag-1 bytes unchanged. It also adds
+successor-scoped Seal retirement ports that recheck the same token, outbox,
+receipt and barrier rules. `OutgoingSealRepository` stays Ordinary-only.
