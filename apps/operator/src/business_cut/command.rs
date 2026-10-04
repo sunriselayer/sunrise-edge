@@ -131,10 +131,10 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     };
     // Mode-irrelevant source, TLS and signing inputs are never silently ignored.
     flags.finish()?;
-    if let Some(inputs) = &export_inputs {
-        if inputs.state == inputs.blobs {
-            return Err("state and blob database paths must be distinct".into());
-        }
+    if let Some(inputs) = &export_inputs
+        && inputs.state == inputs.blobs
+    {
+        return Err("state and blob database paths must be distinct".into());
     }
     let mut chain_artifacts: Option<SuccessorChainArtifactFiles> = chain_inputs
         .as_ref()
