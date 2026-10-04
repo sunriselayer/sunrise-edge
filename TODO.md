@@ -145,6 +145,17 @@ it has not completed. Later five-member participation, eligible process
 withdrawals and final-head complete host gates remain unproven. This is not
 Delivery 3, PostgreSQL/DO/D1 activation or production readiness.
 
+The dependent process fixture now explicitly selects the same-committee
+baseline or changed-committee recurrence; a coincidentally unchanged committee
+cannot silently skip the latter. It retains real F-required ordered envelopes
+and posts them to the next actual epoch, expecting signature-domain refusal
+with every replica's physical snapshot and high QC unchanged. Historical
+signer-free hosts also probe all four ordered mutation routes as absent. These
+additional assertions are implemented, not yet executed on the final host
+head. Retired-member fresh admission, authenticated behind-tail scanning,
+live artifact/startup tampering and import/Seal race coverage remain open
+until their actual independent acceptance controls pass.
+
 **Completed architecture-first work window, 2026-10-02:** approximately eight
 hours, from 13:50 until 21:50 Asia/Singapore. Establish the
 [global contracts](docs/architecture/architecture-contracts.md), independently
