@@ -714,7 +714,7 @@ where
     if let Some(bytes) = observed_final.value() {
         let final_record: FinalFrontier = decode_final(bytes)?;
         if !final_record.indexed {
-            return Err(FrozenFrontierError::NotReady(
+            return Err(FrozenFrontierError::Invalid(
                 "pre-index final frontier is not complete indexed material",
             ));
         }
@@ -751,7 +751,7 @@ where
         if let Some(bytes) = observed_cursor.value() {
             let cursor: FrontierCursor = decode_cursor(bytes)?;
             if !cursor.indexed {
-                return Err(FrozenFrontierError::NotReady(
+                return Err(FrozenFrontierError::Invalid(
                     "pre-index frontier cursor has no complete current index",
                 ));
             }
@@ -1093,7 +1093,7 @@ pub(crate) fn read_frozen_frontier_page_gated<S: DurablePortableRepository>(
     };
     let final_record: FinalFrontier = decode_final(final_bytes)?;
     if !final_record.indexed {
-        return Err(FrozenFrontierError::NotReady(
+        return Err(FrozenFrontierError::Invalid(
             "pre-index final frontier has no complete current index",
         ));
     }

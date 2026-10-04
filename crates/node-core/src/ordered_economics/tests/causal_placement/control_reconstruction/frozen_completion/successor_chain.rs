@@ -937,12 +937,6 @@ fn assert_historical_behind_tail_cut_refuses(
     )
     .unwrap();
     prefix.truncate(prefix.len().checked_sub(32).unwrap());
-    let (prior_key, original): (Vec<u8>, Vec<u8>) = {
-        let warrant: crate::serving_authority::LiveWarrant<'_> = world.warrant(0);
-        let (key, bytes): (&[u8], Option<&[u8]>) =
-            warrant.next_prior_state_row(&prefix, &prefix).unwrap();
-        (key.to_vec(), bytes.unwrap().to_vec())
-    };
     let cursor_key: Vec<u8> = frontier::key(
         world.policy.context().chain_id(),
         world.policy.context().epoch(),
@@ -951,9 +945,69 @@ fn assert_historical_behind_tail_cut_refuses(
     .unwrap();
     let cursor: frontier::FrontierCursor =
         frontier::decode_cursor(world.value(0, &cursor_key).1.as_deref().unwrap()).unwrap();
+    let historical_epoch: Epoch = network.root.genesis_context().epoch();
+    let mut drain_prefix: Vec<u8> = crate::fast_path::drain_publication::drain_publication_key(
+        world.policy.context().chain_id(),
+        historical_epoch,
+        &[0; 32],
+    )
+    .unwrap();
+    drain_prefix.truncate(drain_prefix.len().checked_sub(32).unwrap());
+    let (prior_key, original, request_id): (Vec<u8>, Vec<u8>, [u8; 32]) = {
+        let warrant: crate::serving_authority::LiveWarrant<'_> = world.warrant(0);
+        let families: [(&[u8], bool); 2] = [(&prefix, false), (&drain_prefix, true)];
+        let mut selected: Option<(Vec<u8>, Vec<u8>, [u8; 32])> = None;
+        for (family, imported) in families {
+            let mut after: Vec<u8> = family.to_vec();
+            while let Some((key, bytes)) = warrant.next_prior_state_row(family, &after) {
+                assert!(key > after.as_slice());
+                after = key.to_vec();
+                // The exact import also retains absence/tombstone rows at
+                // ordinary publication addresses. Its genuine replayed full
+                // bodies may instead live at the earlier drain alias.
+                let Some(bytes) = bytes else {
+                    continue;
+                };
+                let publication: crate::fast_path::publication::FastPathPublicationRecord =
+                    crate::fast_path::publication::decode_fastpath_publication_record(bytes)
+                        .unwrap();
+                assert_eq!(publication.context, *network.root.genesis_context());
+                let expected_key: Vec<u8> = if imported {
+                    crate::fast_path::drain_publication::drain_publication_key(
+                        world.policy.context().chain_id(),
+                        historical_epoch,
+                        &publication.request_id,
+                    )
+                    .unwrap()
+                } else {
+                    crate::fast_path::publication::fastpath_publication_key(
+                        world.policy.context().chain_id(),
+                        &publication.request_id,
+                    )
+                    .unwrap()
+                };
+                assert_eq!(key, expected_key.as_slice());
+                if publication.request_id >= cursor.physical_last_request_id {
+                    continue;
+                }
+                selected = Some((key.to_vec(), bytes.to_vec(), publication.request_id));
+                break;
+            }
+            if selected.is_some() {
+                break;
+            }
+        }
+        selected.expect(
+            "the verified prior import retains a genuine historical body behind the physical tail",
+        )
+    };
     assert!(
-        prior_key[prefix.len()..] < cursor.physical_last_request_id[..],
+        request_id < cursor.physical_last_request_id,
         "the deliberately corrupted historical carrier is behind, not at, the persisted tail"
+    );
+    assert_eq!(
+        world.value(0, &prior_key).1.as_deref(),
+        Some(original.as_slice())
     );
     let mut altered: crate::fast_path::publication::FastPathPublicationRecord =
         crate::fast_path::publication::decode_fastpath_publication_record(&original).unwrap();
