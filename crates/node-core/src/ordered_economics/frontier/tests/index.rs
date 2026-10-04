@@ -225,13 +225,13 @@ fn genuine_pre_index_final_refuses_without_reinterpreting_old_progress_or_signin
     let before: Vec<(DurableRecordDescriptor, Vec<u8>)> = full_snapshot(&replica.store);
     assert!(matches!(
         advance(&replica.store, &signer),
-        Err(FrozenFrontierError::NotReady(
+        Err(FrozenFrontierError::Invalid(
             "pre-index final frontier is not complete indexed material"
         ))
     ));
     assert!(matches!(
         page(&replica, None),
-        Err(FrozenFrontierError::NotReady(
+        Err(FrozenFrontierError::Invalid(
             "pre-index final frontier has no complete current index"
         ))
     ));

@@ -1539,11 +1539,6 @@ fn execute_seal_candidate(
     let mut expected_identity = cut_identity.clone();
     expected_identity.ordered_history = verified.identity().ordered_history.clone();
     if &expected_identity != verified.identity() {
-        #[cfg(test)]
-        eprintln!(
-            "Seal acceptance cut mismatch: expected={expected_identity:#?}; independently verified={:#?}",
-            verified.identity(),
-        );
         return LegOutcome::Stop(OrderedEconomicsError::Prerequisite(
             "ordered Seal acceptance verified business cut differs from the candidates own intent",
         ));
