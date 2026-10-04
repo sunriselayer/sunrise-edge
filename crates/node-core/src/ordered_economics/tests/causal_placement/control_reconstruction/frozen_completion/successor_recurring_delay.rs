@@ -842,10 +842,10 @@ fn complete_preseal(origin: &SuccessorWorld, archive: &CompleteArchive, hosts: &
     selected.sort_by_key(|(vote, _)| vote.validator);
     let votes: Vec<FrozenFrontierVote> = selected.iter().map(|(vote, _)| vote.clone()).collect();
     let mut union: Option<DrainUnionIdentity> = None;
-    for index in 0..hosts.targets.len() {
+    for (index, warrant) in warrants.iter().enumerate() {
         for (vote, page) in &selected {
             ingest_drain_signer_page_successor(
-                &warrants[index],
+                warrant,
                 &hosts.targets[index].0,
                 &hosts.operation,
                 network.domain(),
@@ -858,7 +858,7 @@ fn complete_preseal(origin: &SuccessorWorld, archive: &CompleteArchive, hosts: &
             .unwrap();
         }
         let step: DrainUnionStep = advance_drain_union_successor(
-            &warrants[index],
+            warrant,
             &hosts.targets[index].0,
             &hosts.operation,
             network.domain(),
