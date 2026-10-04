@@ -374,9 +374,10 @@ impl EpochHosts {
         .unwrap()
     }
 
-    /// The leader proposes, every member signs on its own actual file and the
-    /// real current committee forms and applies its QC. Warrants are fresh
-    /// for each owner invocation, including the final Seal completion.
+    /// The leader proposes, every member signs on its own actual file and
+    /// a genuine E-required quorum forms its canonical minimal QC, which
+    /// every replica applies. Warrants are fresh for each owner invocation,
+    /// including the final Seal completion.
     fn round(
         &self,
         origin: &SuccessorWorld,
@@ -430,24 +431,28 @@ impl EpochHosts {
                 .expect("every current member votes on the genuine safe proposal")
             })
             .collect();
+        let quorum_indices: Vec<usize> =
+            quorum_member_indices(origin, self.policy.engine().validator_set());
+        let quorum_votes: Vec<consensus::ConsensusVote> = quorum_indices
+            .iter()
+            .map(|index: &usize| votes[*index].clone())
+            .collect();
         let certificate: consensus::QuorumCertificate = self
             .policy
             .engine()
             .certificate_from_votes(
                 &proposal.proposal,
-                &votes,
+                &quorum_votes,
                 &crate::ordered_economics::policy::Ed25519ConsensusVerifier,
             )
             .unwrap()
             .expect("the actual current committee reaches quorum");
-        for member in &origin.members {
-            assert!(
-                certificate
-                    .votes
-                    .iter()
-                    .any(|vote: &consensus::ConsensusVote| vote.validator == member.id)
-            );
-        }
+        assert!(
+            certificate.votes.iter().any(|vote: &consensus::ConsensusVote| {
+                vote.validator == origin.members[quorum_indices[0]].id
+            }),
+            "the authentic canonical QC must include registered E's indispensable vote"
+        );
         let outputs: Vec<OrderedEventOutput> = (0..self.targets.len())
             .map(|index: usize| {
                 let local_env: OrderedEconomicsEnvironment<'_> = self.env_for_host(env, index);
@@ -613,6 +618,63 @@ fn recurring_epoch_requests_use_the_external_ordered_lane() {
     }
 }
 
+/// Select genuine current members without assuming every supplied vote is
+/// retained by the canonical minimal certificate. E is identified from the
+/// original certified ABCD -> ABCE committee, not an invented signer or row.
+/// Its signature is indispensable because all selected other power remains
+/// below the owning set's quorum threshold. Counts derive from current power,
+/// so a five-member set does not inherit a hardcoded three-member quorum.
+fn quorum_member_indices(origin: &SuccessorWorld, current: &ValidatorSet) -> Vec<usize> {
+    let genesis: &ValidatorSet = origin.network().root.genesis_committee();
+    let registered: Vec<ValidatorId> = origin
+        .policy
+        .engine()
+        .validator_set()
+        .validators()
+        .iter()
+        .filter(|member: &&validator_set::ValidatorInfo| genesis.get(member.id).is_none())
+        .map(|member: &validator_set::ValidatorInfo| member.id)
+        .collect();
+    assert_eq!(registered.len(), 1, "the original first handoff introduces E");
+    let e: ValidatorId = registered[0];
+    let e_index: usize = origin
+        .members
+        .iter()
+        .position(|member: &TestSigner| member.id == e)
+        .unwrap();
+    let e_power: u64 = current
+        .get(e)
+        .expect("E remains a current member")
+        .voting_power;
+    let required: u64 = current.quorum_threshold();
+    let mut power: u64 = e_power;
+    let mut selected: Vec<usize> = vec![e_index];
+    for member in current.validators() {
+        if power >= required {
+            break;
+        }
+        if member.id == e {
+            continue;
+        }
+        let index: usize = origin
+            .members
+            .iter()
+            .position(|signer: &TestSigner| signer.id == member.id)
+            .unwrap();
+        selected.push(index);
+        power = power.checked_add(member.voting_power).unwrap();
+    }
+    assert!(
+        power >= required,
+        "actual current members supply quorum power"
+    );
+    assert!(
+        power.checked_sub(e_power).unwrap() < required,
+        "selected quorum cannot form a certificate without E's real vote"
+    );
+    selected
+}
+
 fn current_entries(policy: &OrderedEconomicsPolicy) -> Vec<FastPathValidatorEntry> {
     policy
         .engine()
@@ -630,8 +692,8 @@ fn current_entries(policy: &OrderedEconomicsPolicy) -> Vec<FastPathValidatorEntr
         .collect()
 }
 
-/// Genuine current Freeze, three current member frontiers, current DrainSet
-/// and EMPTY alignment. Earlier epoch's retained streams are not re-signed.
+/// Genuine current Freeze, an E-required current frontier quorum, current
+/// DrainSet and EMPTY alignment. Earlier retained streams are not re-signed.
 fn complete_preseal(origin: &SuccessorWorld, archive: &CompleteArchive, hosts: &EpochHosts) {
     let network: &Network = origin.network();
     let env: OrderedEconomicsEnvironment<'_> = hosts.env(origin);
@@ -670,8 +732,51 @@ fn complete_preseal(origin: &SuccessorWorld, archive: &CompleteArchive, hosts: &
         NodeResponseStatus::Accepted
     );
     let mut selected: Vec<(FrozenFrontierVote, FrozenFrontierPage)> = Vec::new();
-    for index in 0..3 {
-        let step: FrozenFrontierStep = advance_frozen_frontier_successor(
+    let frontier_bound: u64 = archive
+        .verify(origin)
+        .import_binding()
+        .row_count
+        .checked_add(1)
+        .unwrap();
+    for index in quorum_member_indices(origin, hosts.policy.engine().validator_set()) {
+        let counted: NoSignature<'_> = NoSignature {
+            member: &origin.members[index],
+            count: Cell::new(0),
+        };
+        let mut finalized: Option<Box<FrozenFrontierVote>> = None;
+        // Every physical inherited publication consumes a bounded owner
+        // step even though none enters this current epoch's frontier. The
+        // verified import's complete row count bounds those publications;
+        // one additional step permits genuine terminal finalization.
+        for _ in 0..frontier_bound {
+            let step: FrozenFrontierStep = advance_frozen_frontier_successor(
+                &archive.warrant(origin, hosts, index),
+                &hosts.targets[index].0,
+                &hosts.operation,
+                network.domain(),
+                &network.resolver,
+                &network.history,
+                &current,
+                &counted,
+            )
+            .unwrap();
+            match step {
+                FrozenFrontierStep::Advanced { entry_count } => {
+                    assert_eq!(entry_count, 0, "earlier publications are history only");
+                    assert_eq!(counted.count.get(), 0, "partial progress never signs");
+                }
+                FrozenFrontierStep::Finalized(vote) => {
+                    assert_eq!(vote.identity.entry_count, 0);
+                    assert_eq!(counted.count.get(), 1, "only the complete frontier signs");
+                    finalized = Some(vote);
+                    break;
+                }
+            }
+        }
+        let finalized: Box<FrozenFrontierVote> = finalized
+            .expect("the genuine historical-only scan completes within its verified bound");
+        let before: SourceBusinessSnapshot = hosts.capture(origin, index);
+        let replay: FrozenFrontierStep = advance_frozen_frontier_successor(
             &archive.warrant(origin, hosts, index),
             &hosts.targets[index].0,
             &hosts.operation,
@@ -679,10 +784,16 @@ fn complete_preseal(origin: &SuccessorWorld, archive: &CompleteArchive, hosts: &
             &network.resolver,
             &network.history,
             &current,
-            &origin.members[index],
+            &counted,
         )
         .unwrap();
-        assert!(matches!(step, FrozenFrontierStep::Finalized(_)));
+        assert_eq!(replay, FrozenFrontierStep::Finalized(finalized.clone()));
+        assert_eq!(
+            counted.count.get(),
+            1,
+            "retained completion creates no signature"
+        );
+        assert_eq!(hosts.capture(origin, index), before);
         let pair: (FrozenFrontierVote, FrozenFrontierPage) = read_frozen_frontier_page_successor(
             &archive.warrant(origin, hosts, index),
             &hosts.targets[index].0,
@@ -696,6 +807,7 @@ fn complete_preseal(origin: &SuccessorWorld, archive: &CompleteArchive, hosts: &
             NonZeroUsize::MIN,
         )
         .unwrap();
+        assert_eq!(&pair.0, finalized.as_ref());
         assert_eq!(pair.0.identity.epoch, current.epoch());
         assert_eq!(&pair.0.identity.chain_id, current.chain_id());
         assert!(pair.1.terminal && pair.1.entries.is_empty());
@@ -956,13 +1068,26 @@ fn handoff(
         prior.validator_set().validators().to_vec(),
     )
     .unwrap();
+    let quorum_indices: Vec<usize> = quorum_member_indices(origin, &next_set);
+    let quorum_votes: Vec<ReadinessVote> = quorum_indices
+        .iter()
+        .map(|index: &usize| votes[*index].clone())
+        .collect();
     let (certificate_digest, certificate_length): (Digest32, u32) =
-        seal_signing::stage_votes(network, &subject, &next_set, &votes);
+        seal_signing::stage_votes(network, &subject, &next_set, &quorum_votes);
     let certificate: Vec<u8> = network
         .blobs
         .get_blob(&certificate_digest)
         .unwrap()
         .unwrap();
+    let readiness: consensus::readiness::ReadinessCertificate =
+        consensus::readiness::decode_readiness_certificate(&certificate).unwrap();
+    assert!(
+        readiness.votes.iter().any(|vote: &ReadinessVote| {
+            vote.signer == origin.members[quorum_indices[0]].id
+        }),
+        "the genuine readiness certificate includes E's indispensable signature"
+    );
     // Retain the same genuine published body in each independent source and
     // target body store. This stores artifact bytes only, never an effect,
     // state root, receipt, activation record or capability.
