@@ -905,14 +905,22 @@ impl GenerationScope {
         })
     }
 
-    /// Successor scope of one activation, from verified evidence only.
-    pub(crate) fn for_activation(warrant: &crate::serving_authority::ActivationWarrant) -> Self {
-        Self::successor(warrant.policy_inputs())
+    /// Successor scope of one activation or private reconstruction-base
+    /// bootstrap, from verified evidence inputs only (no public constructor
+    /// of the inputs exists).
+    pub(crate) fn for_evidence(inputs: &crate::serving_authority::SuccessorPolicyInputs) -> Self {
+        Self::successor(inputs)
     }
 
     /// Successor scope of one live invocation, from verified evidence only.
     pub(crate) fn for_live(warrant: &crate::serving_authority::LiveWarrant<'_>) -> Self {
         Self::successor(warrant.policy_inputs())
+    }
+
+    /// DR-0191 replay scope: the floor of the link that activated the
+    /// replayed epoch, from the private reconstruction base only.
+    pub(crate) const fn for_replay(floor: ExecutionGeneration) -> Self {
+        Self(Scope::Successor { floor })
     }
 
     fn successor(inputs: &crate::serving_authority::SuccessorPolicyInputs) -> Self {
@@ -1779,6 +1787,44 @@ pub(crate) enum ObjectMinimum {
 }
 
 impl ObjectMinimum {
+    /// The same monotonicity rule under the owning invocation capability.
+    /// A missing logical profile in successor/replay is corruption, never a
+    /// reason to reinstate a physical checkpoint comparison.
+    pub(crate) fn for_gate(
+        installed: &InstalledCommitmentProfile,
+        local_checkpoint: u64,
+        gate: crate::serving_authority::ServingGate<'_>,
+    ) -> Result<Self, NodeCoreError> {
+        match installed {
+            InstalledCommitmentProfile::Logical(profile) => {
+                Self::for_scope(installed, local_checkpoint, &gate.generation_scope(profile))
+            }
+            InstalledCommitmentProfile::Historical => match gate {
+                crate::serving_authority::ServingGate::Original => {
+                    Ok(Self::CreationCheckpoint(local_checkpoint))
+                }
+                crate::serving_authority::ServingGate::Successor(_)
+                | crate::serving_authority::ServingGate::Replay(_) => Err(invariant(
+                    "successor object admission has no logical profile",
+                )),
+            },
+        }
+    }
+
+    /// Uses the invocation's authenticated generation scope. A successor or
+    /// replay cannot fall back to physical creation checkpoints.
+    pub(crate) fn for_scope(
+        installed: &InstalledCommitmentProfile,
+        local_checkpoint: u64,
+        scope: &GenerationScope,
+    ) -> Result<Self, NodeCoreError> {
+        match (installed, &scope.0) {
+            (InstalledCommitmentProfile::Historical, Scope::Successor { .. }) => Err(invariant(
+                "successor object admission has no logical profile",
+            )),
+            _ => Ok(Self::for_profile(installed, local_checkpoint)),
+        }
+    }
     /// Resolves the rule this store's own signed binding actually implies.
     pub(crate) const fn for_profile(
         installed: &InstalledCommitmentProfile,

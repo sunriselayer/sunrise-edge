@@ -39,7 +39,6 @@ use local_instance_state::{
     fastpath_epoch_record_key, fastpath_equivocation_evidence_key, fastpath_settlement_key,
 };
 use protocol_types::ValidatorId;
-use validator_set::ValidatorInfo;
 
 /// Reads one durable row, requiring it to be present.
 fn require_row<S: StructuredStateReader + ?Sized>(
@@ -248,7 +247,7 @@ fn committed_bond<S: StructuredStateReader>(
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     validator_id: ValidatorId,
-    authority: Option<&ValidatorInfo>,
+    authority: Option<super::policy::BondOwnerKey<'_>>,
     missing: &'static str,
 ) -> Result<(FastPathBondRecord, Vec<u8>), OrderedEconomicsError> {
     let chain: &ChainId = env.policy.context().chain_id();
@@ -270,15 +269,50 @@ fn committed_bond<S: StructuredStateReader>(
     // against. A divergence means the installed row and the pinned set
     // disagree about who controls this validator: an operator/storage
     // inconsistency, never a stale candidate.
-    let registered: &ValidatorInfo = authority.ok_or(OrderedEconomicsError::Prerequisite(
-        "committed bond row names a validator outside the pinned set",
-    ))?;
-    if registered.signature_scheme != bond.authorization_scheme
-        || registered.public_key.as_slice() != bond.authorization_key.as_slice()
+    let registered: super::policy::BondOwnerKey<'_> =
+        authority.ok_or(OrderedEconomicsError::Prerequisite(
+            "committed bond row names a validator outside the pinned set",
+        ))?;
+    if registered.scheme != bond.authorization_scheme
+        || registered.key.as_ref() != bond.authorization_key.as_slice()
     {
         return Err(OrderedEconomicsError::Prerequisite(
             "committed bond row authorization key diverges from the pinned trusted authority",
         ));
+    }
+    // DR-0191 Section 6: a same-epoch never-member registrant's id bytes
+    // are never authority alone. Its committed anchor must verify in
+    // Existing mode under this policy's own scope, through this same
+    // observed reader so every deciding read joins the CAS set.
+    if registered.source == super::policy::BondOwnerSource::SameEpochRegistrant {
+        let scope = crate::bond_lifecycle::registration::RegistrationScope::for_policy(env.policy)
+            .map_err(|_| {
+                OrderedEconomicsError::Prerequisite(
+                    "same-epoch registrant owner requires the verified registration scope",
+                )
+            })?;
+        let rooted: FastPathBondRecord =
+            crate::bond_lifecycle::registration::verify_registered_anchor_chain(
+                store,
+                context,
+                env.policy.domain(),
+                env.history,
+                &scope,
+                env.leg_policy,
+                validator_id,
+            )
+            .map_err(|_| {
+                OrderedEconomicsError::Prerequisite(
+                    "same-epoch registrant has no verified committed registration anchor",
+                )
+            })?;
+        if rooted.authorization_key != bond.authorization_key
+            || rooted.authorization_scheme != bond.authorization_scheme
+        {
+            return Err(OrderedEconomicsError::Prerequisite(
+                "same-epoch registrant bond key differs from its verified anchor",
+            ));
+        }
     }
     Ok((bond, bytes))
 }
@@ -402,7 +436,13 @@ fn preflight_bond_slash<S: StructuredStateReader>(
         context,
         env,
         intent.validator_id,
-        env.policy.registered_validator(intent.validator_id),
+        env.policy.registered_validator(intent.validator_id).map(
+            |validator: &validator_set::ValidatorInfo| super::policy::BondOwnerKey {
+                scheme: validator.signature_scheme,
+                key: std::borrow::Cow::Borrowed(validator.public_key.as_slice()),
+                source: super::policy::BondOwnerSource::Verified,
+            },
+        ),
         "bond slash requires an existing committed bond row",
     )?;
     require_signed_predecessor(

@@ -19,7 +19,9 @@ pub use codec::{
 pub(crate) use handler::handle_bond_registration_ordered;
 pub use handler::verify_registered_bond_chain;
 pub(crate) use handler::{
-    preflight_registration, prepare_bond_registration_ordered, verify_registration_admission,
+    RegisteredOwnerIdentity, preflight_registration, prepare_bond_registration_ordered,
+    verify_chain as verify_registered_anchor_chain, verify_registration_admission,
+    verify_registration_identity,
 };
 
 mod codec;
@@ -270,11 +272,143 @@ pub fn bond_registration_receipt_digest(
     Ok(resolver.hash_for_purpose(context.epoch(), HashPurpose::NodeEvent, signed_bytes)?)
 }
 
+/// DR-0191 Section 6: the one registration authority of a call. The
+/// immutable e_0 causal profile and signed genesis economics stay the
+/// resource authority; the owned live context, its committee and (for a
+/// chain successor) the verified owner registry decide reuse. Built only
+/// from a policy's private scope, a root, or a verified chain; there is no
+/// caller Boolean.
+pub(crate) struct RegistrationScope<'p> {
+    resolver: &'p HashSuiteResolver,
+    profile: &'p VerifiedAdmissionProfile,
+    economics: &'p FastPathEconomicsPolicy,
+    live_context: PublicationContext,
+    registry: &'p ValidatorSet,
+    owners: Option<&'p crate::serving_authority::VerifiedOwnerRegistry>,
+}
+
+/// Whether a registration is a new candidate or a genuine committed anchor
+/// re-verified at its own epoch.
+#[derive(Clone, Copy)]
+pub(crate) enum RegistrationMode<'a> {
+    /// A new candidate: any verified owner id or key match refuses.
+    Admit,
+    /// A committed anchor: only its own byte-identical identity may match.
+    Existing(&'a BondRegistrationAnchor),
+}
+
+impl<'p> RegistrationScope<'p> {
+    /// The policy's own scope: chain policies keep today's first-epoch
+    /// rule; a chain successor uses its live epoch and verified owners.
+    pub(crate) fn for_policy(
+        policy: &'p crate::ordered_economics::OrderedEconomicsPolicy,
+    ) -> Result<Self, BondRegistrationError> {
+        let missing = || {
+            BondRegistrationError::Prerequisite(
+                "registration requires verified first causal genesis policy",
+            )
+        };
+        let profile: &VerifiedAdmissionProfile = policy
+            .admission_profile()
+            .filter(|profile| profile.is_causal())
+            .ok_or_else(missing)?;
+        let economics: &FastPathEconomicsPolicy =
+            policy
+                .registration_economics()
+                .ok_or(BondRegistrationError::Prerequisite(
+                    "registration signed resource authority missing",
+                ))?;
+        let owners = match (policy.key_scope().is_successor(), policy.chain_owners()) {
+            (false, None) if profile.context() == policy.context() => None,
+            (true, Some(owners))
+                if profile.context().chain_id() == policy.context().chain_id()
+                    && profile.context().protocol_version()
+                        == policy.context().protocol_version()
+                    && profile.context().epoch() < policy.context().epoch() =>
+            {
+                Some(owners)
+            }
+            _ => return Err(missing()),
+        };
+        Ok(Self {
+            resolver: policy.resolver(),
+            profile,
+            economics,
+            live_context: policy.context().clone(),
+            registry: policy.engine().validator_set(),
+            owners,
+        })
+    }
+
+    /// The immutable genesis scope at e_0.
+    pub(crate) fn for_genesis(root: &'p VerifiedGenesisRoot) -> Self {
+        Self {
+            resolver: root.genesis_resolver(),
+            profile: root.admission_profile(),
+            economics: &root.manifest().economics_policy,
+            live_context: root.genesis_context().clone(),
+            registry: root.genesis_committee(),
+            owners: None,
+        }
+    }
+
+    /// The verified scope at `epoch`: context from the immutable root's
+    /// chain/protocol and the verified committee epoch, never a peer value.
+    /// e_0 is exactly the genesis scope.
+    pub(crate) fn for_epoch(
+        root: &'p VerifiedGenesisRoot,
+        committees: &'p crate::serving_authority::VerifiedCommitteeHistory,
+        owners: &'p crate::serving_authority::VerifiedOwnerRegistry,
+        epoch: protocol_types::Epoch,
+    ) -> Result<Self, BondRegistrationError> {
+        if epoch == root.genesis_context().epoch() {
+            return Ok(Self::for_genesis(root));
+        }
+        let (registry, _): (&ValidatorSet, Digest32) =
+            committees
+                .get(epoch)
+                .ok_or(BondRegistrationError::Prerequisite(
+                    "registration epoch is not a verified committee epoch",
+                ))?;
+        let live_context: PublicationContext = PublicationContext::new(
+            root.genesis_context().chain_id().clone(),
+            root.genesis_context().protocol_version(),
+            epoch,
+        )?;
+        Ok(Self {
+            resolver: root.genesis_resolver(),
+            profile: root.admission_profile(),
+            economics: &root.manifest().economics_policy,
+            live_context,
+            registry,
+            owners: Some(owners),
+        })
+    }
+
+    /// The owned live registration context.
+    pub(crate) const fn live_context(&self) -> &PublicationContext {
+        &self.live_context
+    }
+
+    /// The immutable e_0 resource profile.
+    pub(crate) const fn profile(&self) -> &'p VerifiedAdmissionProfile {
+        self.profile
+    }
+
+    /// The signed genesis economics.
+    pub(crate) const fn economics(&self) -> &'p FastPathEconomicsPolicy {
+        self.economics
+    }
+
+    /// The generic leg policy at the live context.
+    pub(crate) fn leg_policy(&self) -> LocalExecutionPolicy {
+        LocalExecutionPolicy::generic_object_results(self.live_context.clone())
+    }
+}
+
 pub(crate) fn authenticate_registration(
-    resolver: &HashSuiteResolver,
-    profile: &VerifiedAdmissionProfile,
-    registry: &ValidatorSet,
-    economics: &FastPathEconomicsPolicy,
+    scope: &RegistrationScope<'_>,
+    mode: RegistrationMode<'_>,
     leg_policy: &LocalExecutionPolicy,
     signed_bytes: &[u8],
 ) -> Result<
@@ -286,14 +420,9 @@ pub(crate) fn authenticate_registration(
 > {
     let signed: SignedBondRegistrationIntent =
         decode_signed_bond_registration_intent(signed_bytes)?;
-    let leg: AuthenticatedLocalExecutionIntent = authenticate_intent(
-        resolver,
-        profile,
-        registry,
-        economics,
-        leg_policy,
-        &signed.intent,
-    )?;
+    let resolver: &HashSuiteResolver = scope.resolver;
+    let leg: AuthenticatedLocalExecutionIntent =
+        authenticate_intent(scope, mode, leg_policy, &signed.intent)?;
     let frame: Vec<u8> = bond_registration_signing_frame(
         &signed.intent.context,
         bond_registration_intent_digest(resolver, &signed.intent)?,
@@ -313,20 +442,27 @@ pub(crate) fn authenticate_registration(
 }
 
 fn authenticate_intent(
-    resolver: &HashSuiteResolver,
-    profile: &VerifiedAdmissionProfile,
-    registry: &ValidatorSet,
-    economics: &FastPathEconomicsPolicy,
+    scope: &RegistrationScope<'_>,
+    mode: RegistrationMode<'_>,
     leg_policy: &LocalExecutionPolicy,
     intent: &BondRegistrationIntent,
 ) -> Result<AuthenticatedLocalExecutionIntent, BondRegistrationError> {
+    let resolver: &HashSuiteResolver = scope.resolver;
+    let profile: &VerifiedAdmissionProfile = scope.profile;
+    let registry: &ValidatorSet = scope.registry;
+    let economics: &FastPathEconomicsPolicy = scope.economics;
+    let live: &PublicationContext = &scope.live_context;
+    // The resource context and genesis stay the immutable e_0 values; only
+    // the registration context itself is live.
     if !profile.is_causal()
-        || intent.context != *profile.context()
+        || intent.context != *live
         || intent.resource_context != *profile.context()
         || intent.pinned_genesis_digest != profile.genesis_digest()
         || resolver.chain_id() != profile.context().chain_id()
         || resolver.protocol_version() != profile.context().protocol_version()
-        || registry.epoch() != profile.context().epoch()
+        || live.chain_id() != profile.context().chain_id()
+        || live.protocol_version() != profile.context().protocol_version()
+        || registry.epoch() != live.epoch()
         || *leg_policy != LocalExecutionPolicy::generic_object_results(intent.context.clone())
     {
         return Err(BondRegistrationError::Invalid(
@@ -356,6 +492,7 @@ fn authenticate_intent(
             "registration reuses a signed genesis identity or key",
         ));
     }
+    require_owner_scope(scope, mode, intent)?;
     let resource: &FastPathEconomicsResourcePolicy = initial_resource(economics, intent)?;
     let leg: AuthenticatedLocalExecutionIntent =
         authenticate_local_execution(resolver, leg_policy, &intent.leg)?;
@@ -375,6 +512,65 @@ fn authenticate_intent(
 }
 
 pub(crate) fn initial_resource<'a>(
+    economics: &'a FastPathEconomicsPolicy,
+    intent: &BondRegistrationIntent,
+) -> Result<&'a FastPathEconomicsResourcePolicy, BondRegistrationError> {
+    initial_resource_policy(economics, intent)
+}
+
+/// DR-0191 Section 6 reuse rules against the verified owner registry.
+/// `Admit` refuses any verified id or key (every genesis key and every
+/// verified registration, so a retired key under a new id stays refused).
+/// `Existing(anchor)` accepts only the owner entry whose id, key and
+/// provenance are recomputed from this very anchor; an anchor at the live
+/// epoch not yet in the registry must name no verified owner at all.
+fn require_owner_scope(
+    scope: &RegistrationScope<'_>,
+    mode: RegistrationMode<'_>,
+    intent: &BondRegistrationIntent,
+) -> Result<(), BondRegistrationError> {
+    let Some(owners) = scope.owners else {
+        return Ok(());
+    };
+    let id: ValidatorId = intent.validator_id;
+    let key: &[u8] = intent.authorization_key.as_slice();
+    match mode {
+        RegistrationMode::Admit => {
+            if owners.names(id, key) {
+                return Err(BondRegistrationError::Invalid(
+                    "registration reuses a verified owner identity or key",
+                ));
+            }
+        }
+        RegistrationMode::Existing(anchor) => match owners.owner(id) {
+            Some(entry) => {
+                let expected = crate::serving_authority::OwnerProvenance::Registration {
+                    anchor_epoch: anchor.context.epoch(),
+                    intent_digest: bond_registration_intent_digest(scope.resolver, intent)?,
+                    initial_row_digest: intent.expected_initial_row_digest,
+                };
+                if entry.validator_id() != id
+                    || entry.scheme() != intent.authorization_scheme
+                    || entry.key().as_slice() != key
+                    || *entry.provenance() != expected
+                {
+                    return Err(BondRegistrationError::Invalid(
+                        "registration anchor reuses a verified owner identity or key",
+                    ));
+                }
+            }
+            None if owners.names(id, key) => {
+                return Err(BondRegistrationError::Invalid(
+                    "registration anchor reuses a verified owner key",
+                ));
+            }
+            None => {}
+        },
+    }
+    Ok(())
+}
+
+fn initial_resource_policy<'a>(
     economics: &'a FastPathEconomicsPolicy,
     intent: &BondRegistrationIntent,
 ) -> Result<&'a FastPathEconomicsResourcePolicy, BondRegistrationError> {
@@ -402,17 +598,39 @@ pub fn verify_signed_bond_registration(
     root: &VerifiedGenesisRoot,
     bytes: &[u8],
 ) -> Result<SignedBondRegistrationIntent, BondRegistrationError> {
-    let leg_policy: LocalExecutionPolicy =
-        LocalExecutionPolicy::generic_object_results(root.genesis_context().clone());
-    Ok(authenticate_registration(
-        root.genesis_resolver(),
-        root.admission_profile(),
-        root.genesis_committee(),
-        &root.manifest().economics_policy,
-        &leg_policy,
-        bytes,
-    )?
-    .0)
+    let scope: RegistrationScope<'_> = RegistrationScope::for_genesis(root);
+    let leg_policy: LocalExecutionPolicy = scope.leg_policy();
+    Ok(authenticate_registration(&scope, RegistrationMode::Admit, &leg_policy, bytes)?.0)
+}
+
+/// DR-0191 Section 6: [`verify_signed_bond_registration`] at the current
+/// epoch of a verified successor chain, in Admit mode against its live
+/// committee and every verified owner. Grants no execution authority.
+pub fn verify_signed_bond_registration_successor(
+    root: &VerifiedGenesisRoot,
+    authority: &crate::serving_authority::VerifiedSuccessorAuthority,
+    bytes: &[u8],
+) -> Result<SignedBondRegistrationIntent, BondRegistrationError> {
+    let scope: RegistrationScope<'_> = successor_scope(root, authority)?;
+    let leg_policy: LocalExecutionPolicy = scope.leg_policy();
+    Ok(authenticate_registration(&scope, RegistrationMode::Admit, &leg_policy, bytes)?.0)
+}
+
+fn successor_scope<'a>(
+    root: &'a VerifiedGenesisRoot,
+    authority: &'a crate::serving_authority::VerifiedSuccessorAuthority,
+) -> Result<RegistrationScope<'a>, BondRegistrationError> {
+    if authority.policy_inputs().genesis_digest() != root.digest() {
+        return Err(BondRegistrationError::Prerequisite(
+            "registration successor authority is not of this genesis",
+        ));
+    }
+    RegistrationScope::for_epoch(
+        root,
+        authority.committees(),
+        authority.owners(),
+        authority.policy_inputs().context().epoch(),
+    )
 }
 
 /// Validate a predicted row and signed leg under one immutable
@@ -423,12 +641,27 @@ pub fn prepare_bond_registration(
     root: &VerifiedGenesisRoot,
     request: BondRegistrationPreparationRequest,
 ) -> Result<PreparedBondRegistration, BondRegistrationError> {
-    let resolver: &HashSuiteResolver = root.genesis_resolver();
-    let profile: &VerifiedAdmissionProfile = root.admission_profile();
-    let registry: &ValidatorSet = root.genesis_committee();
-    let economics: &FastPathEconomicsPolicy = &root.manifest().economics_policy;
-    let leg_policy: LocalExecutionPolicy =
-        LocalExecutionPolicy::generic_object_results(root.genesis_context().clone());
+    prepare_scoped(root, &RegistrationScope::for_genesis(root), request)
+}
+
+/// DR-0191 Section 7: [`prepare_bond_registration`] at the current epoch of
+/// a verified successor chain, under the same scoped owner as admission.
+pub fn prepare_bond_registration_successor(
+    root: &VerifiedGenesisRoot,
+    authority: &crate::serving_authority::VerifiedSuccessorAuthority,
+    request: BondRegistrationPreparationRequest,
+) -> Result<PreparedBondRegistration, BondRegistrationError> {
+    prepare_scoped(root, &successor_scope(root, authority)?, request)
+}
+
+fn prepare_scoped(
+    root: &VerifiedGenesisRoot,
+    scope: &RegistrationScope<'_>,
+    request: BondRegistrationPreparationRequest,
+) -> Result<PreparedBondRegistration, BondRegistrationError> {
+    let resolver: &HashSuiteResolver = scope.resolver;
+    let economics: &FastPathEconomicsPolicy = scope.economics;
+    let leg_policy: LocalExecutionPolicy = scope.leg_policy();
     let row: &FastPathBondRecord = &request.predicted_initial_row;
     let row_bytes: Vec<u8> = encode_fastpath_bond_record(row)?;
     if row_bytes.len() > MAX_BOND_REGISTRATION_ROW_BYTES {
@@ -450,7 +683,7 @@ pub fn prepare_bond_registration(
         pinned_genesis_digest: root.digest(),
     };
     let leg: AuthenticatedLocalExecutionIntent =
-        authenticate_intent(resolver, profile, registry, economics, &leg_policy, &intent)?;
+        authenticate_intent(scope, RegistrationMode::Admit, &leg_policy, &intent)?;
     validate_initial_row(&intent, row, &leg, initial_resource(economics, &intent)?)?;
     let signing_frame: Vec<u8> = bond_registration_signing_frame(
         &intent.context,

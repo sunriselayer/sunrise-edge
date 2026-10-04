@@ -75,7 +75,7 @@ fn current_view(world: &SuccessorWorld, env: &OrderedEconomicsEnvironment<'_>) -
 }
 
 /// Places `candidate` through genuine successor rounds until it commits.
-fn commit_through_rounds(
+pub(super) fn commit_through_rounds(
     world: &SuccessorWorld,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
@@ -95,7 +95,7 @@ fn commit_through_rounds(
     panic!("the candidate commits within two economic windows")
 }
 
-fn committed_bond_row(
+pub(super) fn committed_bond_row(
     world: &SuccessorWorld,
     index: usize,
     id: ValidatorId,
@@ -112,7 +112,7 @@ fn committed_bond_row(
 
 /// The exact next row the real `Unbond` handler commits at e+1, using the
 /// imported resource policy's own unbonding delay.
-fn predicted_unbond(
+pub(super) fn predicted_unbond(
     world: &SuccessorWorld,
     bond: &FastPathBondRecord,
     created_checkpoint: u64,
@@ -159,7 +159,7 @@ fn predicted_unbond(
 
 /// `owner`'s own genuinely signed e+1 bond lifecycle candidate over the
 /// exact committed `bond_bytes` and the claimed next row.
-fn bond_candidate(
+pub(super) fn bond_candidate(
     world: &SuccessorWorld,
     owner: &TestSigner,
     request_id: [u8; 32],
@@ -169,7 +169,30 @@ fn bond_candidate(
     created_checkpoint: u64,
 ) -> OrderedCandidate {
     let resolver: &HashSuiteResolver = &world.network().resolver;
-    let next: PublicationContext = world.policy.context().clone();
+    bond_candidate_for_scope(
+        resolver,
+        world.policy.context(),
+        owner,
+        request_id,
+        bond_bytes,
+        next_row,
+        operation,
+        created_checkpoint,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn bond_candidate_for_scope(
+    resolver: &HashSuiteResolver,
+    context: &PublicationContext,
+    owner: &TestSigner,
+    request_id: [u8; 32],
+    bond_bytes: &[u8],
+    next_row: &FastPathBondRecord,
+    operation: BondLifecycleOperation,
+    created_checkpoint: u64,
+) -> OrderedCandidate {
+    let next: PublicationContext = context.clone();
     let bond: FastPathBondRecord = decode_fastpath_bond_record(bond_bytes).unwrap();
     let intent: BondLifecycleIntent = BondLifecycleIntent {
         context: next.clone(),
@@ -203,8 +226,28 @@ fn bond_candidate(
 }
 
 /// `owner`'s own signed release leg moving `custody` to `recipient`.
-fn release_leg(
+pub(super) fn release_leg(
     world: &SuccessorWorld,
+    owner: &TestSigner,
+    request_id: [u8; 32],
+    custody: &ObjectRef,
+    recipient: [u8; 32],
+) -> Vec<u8> {
+    release_leg_for_scope(
+        world,
+        world.policy.context(),
+        &world.next_base,
+        owner,
+        request_id,
+        custody,
+        recipient,
+    )
+}
+
+pub(super) fn release_leg_for_scope(
+    world: &SuccessorWorld,
+    context: &PublicationContext,
+    policy: &LocalExecutionPolicy,
     owner: &TestSigner,
     request_id: [u8; 32],
     custody: &ObjectRef,
@@ -212,10 +255,10 @@ fn release_leg(
 ) -> Vec<u8> {
     let source: &CausalFixture = world.source();
     let network: &Network = &source.network;
-    let next: PublicationContext = world.policy.context().clone();
+    let next: PublicationContext = context.clone();
     let leg: LocalExecutionIntent = LocalExecutionIntent {
         mode: LocalExecutionMode::Call,
-        policy_digest: world.next_base.digest(&network.resolver).unwrap(),
+        policy_digest: policy.digest(&network.resolver).unwrap(),
         call: CallIntent {
             context: next.clone(),
             request_id,

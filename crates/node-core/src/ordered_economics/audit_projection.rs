@@ -47,6 +47,33 @@ fn tail<'a>(
     Ok(Some(suffix))
 }
 
+fn live_tail<'a>(
+    policy: &OrderedEconomicsPolicy,
+    key: &'a [u8],
+    family: &[u8],
+    chain: &[u8],
+    width: usize,
+) -> Result<Option<&'a [u8]>, NodeCoreError> {
+    let Some(scope) = policy.key_scope().successor_scope_bytes()? else {
+        return tail(key, family, chain, width);
+    };
+    let prefix: Vec<u8> = [
+        engine::ORDERED_ECONOMICS_STATE_PREFIX,
+        b"epoch-",
+        family,
+        chain,
+        &scope,
+    ]
+    .concat();
+    let Some(suffix) = key.strip_prefix(prefix.as_slice()) else {
+        return Ok(None);
+    };
+    if suffix.len() != width {
+        return Err(invalid("current ordered safety key suffix"));
+    }
+    Ok(Some(suffix))
+}
+
 fn present(row: &SourceSnapshotRecord) -> Result<&[u8], NodeCoreError> {
     row.value
         .as_deref()
@@ -176,11 +203,18 @@ pub(crate) fn validate_local_rows(
     };
     // DR-0189: no audited source or target may carry an epoch-scoped
     // successor safety row. A cut of a successor store is out of scope.
-    if rows
-        .keys()
-        .any(|key: &Vec<u8>| engine::is_successor_scoped_ordered_key(key))
-    {
-        return Err(invalid("epoch-scoped ordered row cannot be audited"));
+    for key in rows.keys() {
+        if engine::is_successor_scoped_ordered_key(key)
+            && !engine::is_ordered_key_of_scope(
+                key,
+                policy.context().chain_id(),
+                policy.key_scope(),
+            )?
+        {
+            return Err(invalid(
+                "unverified epoch-scoped ordered row cannot be audited",
+            ));
+        }
     }
     let closure_key: Vec<u8> =
         freeze::admission_closure_key(policy.context().chain_id(), policy.context().epoch())?;
@@ -220,7 +254,7 @@ pub(crate) fn validate_local_rows(
         }
     }
     for (key, row) in &rows {
-        if tail(key, b"state/", &chain, 0)?.is_some() {
+        if live_tail(policy, key, b"state/", &chain, 0)?.is_some() {
             let state = decode_consensus_state(present(row)?)
                 .map_err(|_| invalid("source consensus state schema"))?;
             policy
@@ -258,7 +292,7 @@ pub(crate) fn validate_local_rows(
             if !reconstructed.contains(key) {
                 result.excluded.insert(key.clone());
             }
-        } else if let Some(view_bytes) = tail(key, b"leader-proposal/", &chain, 8)? {
+        } else if let Some(view_bytes) = live_tail(policy, key, b"leader-proposal/", &chain, 8)? {
             let view: u64 = u64::from_be_bytes(
                 view_bytes
                     .try_into()
@@ -292,7 +326,7 @@ pub(crate) fn validate_local_rows(
                 ));
             }
             result.excluded.insert(key.clone());
-        } else if let Some(view_bytes) = tail(key, b"vote/", &chain, 8)? {
+        } else if let Some(view_bytes) = live_tail(policy, key, b"vote/", &chain, 8)? {
             let view: u64 = u64::from_be_bytes(
                 view_bytes
                     .try_into()
@@ -311,7 +345,7 @@ pub(crate) fn validate_local_rows(
             // candidate digest and exact view through the dedicated preimage.
             views.push((reservation::OrderedAdmissionStage::Vote, view, None));
             result.excluded.insert(key.clone());
-        } else if tail(key, b"vote-high/", &chain, 0)?.is_some() {
+        } else if live_tail(policy, key, b"vote-high/", &chain, 0)?.is_some() {
             identity::decode_vote_high_water(present(row)?)?;
             result.excluded.insert(key.clone());
         } else if let Some(request) = tail(key, b"reservation/", &chain, 32)? {

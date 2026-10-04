@@ -40,6 +40,8 @@ use std::{error::Error, fmt};
 use validator_set::ValidatorSet;
 
 mod activation;
+mod base;
+mod chain;
 mod closure;
 mod entry;
 mod frames;
@@ -47,12 +49,17 @@ mod gate;
 mod live;
 mod verify;
 
-pub(crate) use gate::ServingGate;
+pub(crate) use base::ReconstructionBase;
+pub(crate) use gate::{SealPort, ServingGate};
 
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub use activation::{SuccessorActivationOutcome, activate_successor};
+pub use activation::{SuccessorActivationOutcome, activate_successor, activate_successor_chain};
+pub(crate) use chain::{
+    CommitteeProvenance, OwnerProvenance, VerifiedCommitteeHistory, VerifiedOwnerRegistry,
+};
+pub use chain::{SuccessorChainArtifacts, SuccessorChainBudget, SuccessorLinkPins};
 pub use entry::{
     SuccessorFastVoteComposition, SuccessorFeeClaimInspection, apply_successor,
     inspect_fee_claim_successor, prepare_fee_claim_successor, prepare_successor,
@@ -66,7 +73,7 @@ pub use frames::{
     encode_successor_activation_subject, successor_activation_manifest_digest,
     successor_activation_subject_digest,
 };
-pub use live::{LiveAuthority, resolve_live_authority};
+pub use live::{LiveAuthority, resolve_live_authority, resolve_live_authority_chain};
 
 /// Untrusted transport of the existing saved-cut, history-export and
 /// readiness-certificate artifacts. Every returned value is a claim: the
@@ -144,6 +151,14 @@ pub enum SuccessorActivationError {
     /// The destination could not prove whether activation committed, and a
     /// fresh slot read did not show this exact record.
     Indeterminate(IndeterminateCommitReason),
+    /// DR-0191: more link pins than the configured local budget. Refused
+    /// before any artifact access; never truncated.
+    ChainBudgetExceeded {
+        /// Supplied link pin count.
+        links: usize,
+        /// Configured maximum link count.
+        budget: u32,
+    },
 }
 
 impl fmt::Display for SuccessorActivationError {
@@ -166,6 +181,10 @@ impl fmt::Display for SuccessorActivationError {
             Self::Indeterminate(reason) => {
                 write!(f, "successor activation remains indeterminate: {reason:?}")
             }
+            Self::ChainBudgetExceeded { links, budget } => write!(
+                f,
+                "successor chain of {links} links exceeds the configured budget {budget}"
+            ),
         }
     }
 }
@@ -356,63 +375,159 @@ struct VerifiedSuccessorActivation {
     seal: SealClosure,
 }
 
-/// Public read-only wrapper over the private verified evidence. It has no
-/// constructor besides [`verify_successor_authority`] and no `Clone`,
-/// `Default` or serialization.
-pub struct VerifiedSuccessorAuthority(VerifiedSuccessorActivation);
+/// Public read-only wrapper over the private verified chain evidence. Its
+/// only constructors are [`verify_successor_authority`] and
+/// [`verify_successor_chain_authority`]; it has no `Clone`, `Default` or
+/// serialization. Accessors report the last (current) link.
+pub struct VerifiedSuccessorAuthority(chain::VerifiedSuccessorChain);
 
 impl VerifiedSuccessorAuthority {
     /// Verified 0xD054 subject digest.
     #[must_use]
     pub const fn subject_digest(&self) -> Digest32 {
-        self.0.subject_digest
+        self.0.current().subject_digest
     }
     /// Verified 0xD055 manifest digest of this verification run.
     #[must_use]
     pub const fn manifest_digest(&self) -> Digest32 {
-        self.0.manifest_digest
+        self.0.current().manifest_digest
+    }
+    /// Exact last-link inactive import identity, independently verified by
+    /// this chain. Read-only transport continuity, never writer authority.
+    #[must_use]
+    pub const fn import_binding(&self) -> &runtime::ImportBinding {
+        self.0.current().import.binding()
     }
     /// Checked-eligible certified e+1 validator set.
     #[must_use]
     pub const fn validator_set(&self) -> &ValidatorSet {
-        &self.0.policy_inputs.validator_set
+        &self.0.current().policy_inputs.validator_set
     }
     /// Verified source-free e+1 policy inputs.
     #[must_use]
     pub const fn policy_inputs(&self) -> &SuccessorPolicyInputs {
-        &self.0.policy_inputs
+        &self.0.current().policy_inputs
+    }
+    /// Number of verified links, at least one.
+    #[must_use]
+    pub const fn link_count(&self) -> u32 {
+        self.0.link_count()
+    }
+    /// Verified committee history e_0 through the current epoch.
+    pub(crate) fn committees(&self) -> &chain::VerifiedCommitteeHistory {
+        self.0.committees()
+    }
+    /// Verified genesis and registered owner registry.
+    pub(crate) fn owners(&self) -> &chain::VerifiedOwnerRegistry {
+        self.0.owners()
+    }
+    /// DR-0191: the current epoch's ordered policy derived privately from
+    /// this verified chain (verified predecessor committee, historical
+    /// certificate scopes, signed genesis registration economics and the
+    /// verified owner registry). `root` must be this chain's own genesis.
+    pub fn ordered_policy(
+        &self,
+        root: &crate::genesis::VerifiedGenesisRoot,
+    ) -> Result<crate::ordered_economics::OrderedEconomicsPolicy, SuccessorActivationError> {
+        self.0.current_policy(root)
+    }
+
+    pub(crate) fn reconstruction_base<'c>(
+        &'c self,
+        root: &'c crate::genesis::VerifiedGenesisRoot,
+    ) -> Result<ReconstructionBase<'c>, SuccessorActivationError> {
+        self.0.reconstruction_base(root)
+    }
+
+    pub(crate) fn reconstruction_inputs(
+        &self,
+        plan: &BusinessReconstructionPlan<'_>,
+    ) -> Result<ReconstructionInputs, SuccessorActivationError> {
+        ReconstructionInputs::new(&self.0, plan)
+    }
+}
+
+/// Owned per-call policies derived only from verified chain evidence.
+pub(crate) struct ReconstructionInputs {
+    ordered: crate::ordered_economics::OrderedEconomicsPolicy,
+    leg: execution::local_execution::LocalExecutionPolicy,
+    paid: execution::local_execution::LocalExecutionPolicy,
+}
+
+impl ReconstructionInputs {
+    fn new(
+        chain: &chain::VerifiedSuccessorChain,
+        plan: &BusinessReconstructionPlan<'_>,
+    ) -> Result<Self, SuccessorActivationError> {
+        if chain.current().policy_inputs.domain != plan.domain {
+            return Err(SuccessorActivationError::Invalid(
+                "reconstruction plan domain differs from verified chain",
+            ));
+        }
+        let ordered = chain.current_policy(plan.genesis_root)?;
+        let leg = execution::local_execution::LocalExecutionPolicy::generic_object_results(
+            ordered.context().clone(),
+        );
+        let paid = execution::local_execution::LocalExecutionPolicy::generic_object_results(
+            ordered.context().clone(),
+        );
+        Ok(Self { ordered, leg, paid })
+    }
+
+    pub(crate) fn plan<'q, 'p: 'q>(
+        &'q self,
+        source: BusinessReconstructionPlan<'p>,
+        identity: &'q OrderedHistoryIdentity,
+    ) -> BusinessReconstructionPlan<'q> {
+        BusinessReconstructionPlan {
+            genesis_root: source.genesis_root,
+            operation_context: source.operation_context,
+            domain: source.domain,
+            resolver_history: source.resolver_history,
+            ordered_policy: &self.ordered,
+            ordered_history_identity: identity,
+            ordered_leg_policy: &self.leg,
+            ordered_engine: source.ordered_engine,
+            paid_base_policy: &self.paid,
+            paid_engine: source.paid_engine,
+        }
     }
 }
 
 /// The one public cross-crate entry: a thin wrapper over the single private
 /// source-free verifier, with no duplicated verification logic and no
-/// destination store, signing key or live-authority input.
+/// destination store, signing key or live-authority input. It is the chain
+/// owner with budget 1.
 pub fn verify_successor_authority(
     plan: BusinessReconstructionPlan<'_>,
     manifest_identity: &OrderedHistoryIdentity,
     artifacts: &mut dyn SuccessorArtifactSource,
 ) -> Result<VerifiedSuccessorAuthority, SuccessorActivationError> {
-    verify::verify_successor_activation(plan, manifest_identity, artifacts)
-        .map(VerifiedSuccessorAuthority)
+    chain::verify_single_link(plan, manifest_identity, artifacts).map(VerifiedSuccessorAuthority)
+}
+
+/// DR-0191 Section 7: the complete pinned ordered chain from the original
+/// genesis, each link through the same private verifier. `links.len()` is
+/// checked against `budget` before any artifact access.
+pub fn verify_successor_chain_authority(
+    plan: BusinessReconstructionPlan<'_>,
+    links: &[SuccessorLinkPins],
+    budget: SuccessorChainBudget,
+    artifacts: &mut dyn SuccessorChainArtifacts,
+) -> Result<VerifiedSuccessorAuthority, SuccessorActivationError> {
+    chain::verify_chain(plan, links, budget, artifacts).map(VerifiedSuccessorAuthority)
 }
 
 /// Built only inside [`activate_successor`] while the destination slot is
 /// Inactive: the evidence plus a full complete-inventory comparison, the
 /// physical namespace validator and the local key. It carries no serving
 /// observation, because none exists yet.
-pub(crate) struct ActivationWarrant {
-    evidence: VerifiedSuccessorActivation,
+struct ActivationWarrant {
+    chain: chain::VerifiedSuccessorChain,
     progress: runtime::ImportProgress,
     token: runtime::portable::PortableSnapshotToken,
     namespace_validator: protocol_types::ValidatorId,
     public_key: [u8; 32],
-}
-
-impl ActivationWarrant {
-    /// Verified source-free e+1 policy inputs.
-    pub(crate) const fn policy_inputs(&self) -> &SuccessorPolicyInputs {
-        &self.evidence.policy_inputs
-    }
 }
 
 /// Per-invocation successor serving authority, built only by
@@ -421,7 +536,7 @@ impl ActivationWarrant {
 /// past the call, and every successor commit rechecks its exact protected
 /// observation in the backend lock.
 pub struct LiveWarrant<'inv> {
-    evidence: VerifiedSuccessorActivation,
+    chain: chain::VerifiedSuccessorChain,
     /// The exact store borrow that issued this warrant. Every successor
     /// write path requires the store it is handed to be this same object;
     /// there is no public identity flag.
@@ -436,7 +551,7 @@ impl<'inv> LiveWarrant<'inv> {
     /// subject and floor). Never a local member or key.
     #[must_use]
     pub const fn policy_inputs(&self) -> &SuccessorPolicyInputs {
-        &self.evidence.policy_inputs
+        &self.chain.current().policy_inputs
     }
 
     /// The exact raw protected observation every successor commit port
@@ -455,5 +570,43 @@ impl<'inv> LiveWarrant<'inv> {
     /// The invocation context this warrant was resolved under.
     pub(crate) const fn context(&self) -> &'inv DurableOperationContext {
         self.context
+    }
+
+    /// Number of fully reverified links in this invocation.
+    pub const fn link_count(&self) -> u32 {
+        self.chain.link_count()
+    }
+
+    pub(crate) fn reconstruction_base<'c>(
+        &'c self,
+        root: &'c crate::genesis::VerifiedGenesisRoot,
+    ) -> Result<ReconstructionBase<'c>, SuccessorActivationError> {
+        self.chain.reconstruction_base(root)
+    }
+
+    pub fn ordered_policy(
+        &self,
+        root: &crate::genesis::VerifiedGenesisRoot,
+    ) -> Result<crate::ordered_economics::OrderedEconomicsPolicy, SuccessorActivationError> {
+        self.chain.current_policy(root)
+    }
+
+    pub(crate) fn reconstruction_inputs(
+        &self,
+        plan: &BusinessReconstructionPlan<'_>,
+    ) -> Result<ReconstructionInputs, SuccessorActivationError> {
+        ReconstructionInputs::new(&self.chain, plan)
+    }
+
+    pub(crate) fn prior_state_row(&self, key: &[u8]) -> Option<&[u8]> {
+        self.chain.current().import.rows().iter().find_map(
+            |row: &runtime::inactive_import::ImportRow| match row {
+                runtime::inactive_import::ImportRow::State {
+                    key: found,
+                    value: Some(bytes),
+                } if found == key => Some(bytes.as_slice()),
+                _ => None,
+            },
+        )
     }
 }

@@ -159,6 +159,33 @@ pub(crate) fn is_successor_scoped_key(key: &[u8]) -> bool {
     }
 }
 
+/// DR-0191 Section 4: whether `key` is one of the five live safety rows of
+/// exactly the successor `scope` (singletons exactly; view families with
+/// exactly one 8-byte view suffix). A chain scope owns no such row.
+pub(crate) fn is_key_of_scope(
+    key: &[u8],
+    chain: &ChainId,
+    scope: &OrderedKeyScope,
+) -> Result<bool, NodeCoreError> {
+    for (family, view_bytes) in [
+        (OrderedKeyFamily::State, 0usize),
+        (OrderedKeyFamily::AppliedHeight, 0),
+        (OrderedKeyFamily::VoteHigh, 0),
+        (OrderedKeyFamily::LeaderProposal { view: 0 }, 8),
+        (OrderedKeyFamily::Vote { view: 0 }, 8),
+    ] {
+        let exact: Vec<u8> = scoped_key(scope, chain, family)?;
+        let prefix: usize = exact
+            .len()
+            .checked_sub(view_bytes)
+            .ok_or(NodeCoreError::PersistenceInvariant("scoped key length"))?;
+        if key.len() == exact.len() && key.get(..prefix) == exact.get(..prefix) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

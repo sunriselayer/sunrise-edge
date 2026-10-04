@@ -117,14 +117,34 @@ fn candidate_for(
     subject: &ReadinessSubject,
     created_checkpoint: u64,
 ) -> OrderedCandidate {
+    candidate_with_predecessor(
+        policy,
+        cut_identity,
+        subject,
+        created_checkpoint,
+        SEAL_PREDECESSOR_TAG_GENESIS,
+        policy.genesis_digest(),
+    )
+}
+
+/// A self-consistent candidate whose target and request are derived from
+/// exactly `predecessor_tag` and `predecessor_digest`.
+fn candidate_with_predecessor(
+    policy: &OrderedEconomicsPolicy,
+    cut_identity: &BusinessCutIdentity,
+    subject: &ReadinessSubject,
+    created_checkpoint: u64,
+    predecessor_tag: u16,
+    predecessor_digest: Digest32,
+) -> OrderedCandidate {
     let resolver: &HashSuiteResolver = policy.resolver();
     let subject_identity: Digest32 = subject.identity(resolver).unwrap();
     let target: Digest32 = seal_target_digest(
         resolver,
         policy.context(),
         subject_identity,
-        SEAL_PREDECESSOR_TAG_GENESIS,
-        policy.genesis_digest(),
+        predecessor_tag,
+        predecessor_digest,
     )
     .unwrap();
     let certificate_digest: Digest32 = Digest32::new(HashAlgorithmId::Blake3_256, [30; 32]);
@@ -133,8 +153,8 @@ fn candidate_for(
     let intent: SealIntent = SealIntent {
         readiness_subject: subject.clone(),
         cut_identity_bytes: encode_business_cut_identity(cut_identity).unwrap(),
-        predecessor_tag: SEAL_PREDECESSOR_TAG_GENESIS,
-        predecessor_digest: policy.genesis_digest(),
+        predecessor_tag,
+        predecessor_digest,
         certificate_digest,
         certificate_length: 64,
     };
@@ -299,5 +319,115 @@ fn seal_rejects_a_predecessor_digest_that_is_not_the_pinned_genesis() {
         Err(OrderedEconomicsError::Unauthenticated(
             "seal predecessor digest is not the pinned genesis"
         ))
+    ));
+}
+
+/// A verified-successor-shaped S_1 policy over the same causal root, built
+/// from `subject` exactly as the chain owner builds later links.
+fn successor_policy(subject: Digest32) -> OrderedEconomicsPolicy {
+    let root: crate::genesis::VerifiedGenesisRoot = crate::serving_authority::tests::causal_root();
+    let inputs: crate::serving_authority::SuccessorPolicyInputs =
+        crate::serving_authority::tests::successor_inputs(&root, subject);
+    OrderedEconomicsPolicy::from_successor(&root, &inputs).unwrap()
+}
+
+/// Calls the Seal arm directly: the blanket DR-0189 successor chokepoint
+/// still runs first in `authenticate_with_policy` until the DR-0191 gate
+/// and Seal port are integrated.
+fn authenticate_seal_arm(
+    policy: &OrderedEconomicsPolicy,
+    candidate: &OrderedCandidate,
+) -> Result<(), OrderedEconomicsError> {
+    let leg_policy: LocalExecutionPolicy =
+        LocalExecutionPolicy::generic_object_results(policy.context().clone());
+    authenticate_seal(
+        &CandidateAuthentication {
+            policy,
+            leg_policy: &leg_policy,
+        },
+        candidate,
+    )
+}
+
+fn scoped_seal(
+    policy: &OrderedEconomicsPolicy,
+    predecessor_tag: u16,
+    predecessor_digest: Digest32,
+) -> OrderedCandidate {
+    let cut_identity: BusinessCutIdentity = cut_identity_for(policy, 7);
+    let cut_digest: Digest32 =
+        crate::ordered_economics::seal::seal_cut_identity_digest(policy.resolver(), &cut_identity)
+            .unwrap();
+    let subject: ReadinessSubject = readiness_subject_for(policy, cut_digest);
+    candidate_with_predecessor(
+        policy,
+        &cut_identity,
+        &subject,
+        7,
+        predecessor_tag,
+        predecessor_digest,
+    )
+}
+
+#[test]
+fn chain_scope_refuses_tag_two_even_with_a_self_consistent_target() {
+    let policy: OrderedEconomicsPolicy = causal_policy();
+    for digest in [
+        policy.genesis_digest(),
+        Digest32::new(HashAlgorithmId::Blake3_256, [0x54; 32]),
+    ] {
+        let candidate: OrderedCandidate =
+            scoped_seal(&policy, SEAL_PREDECESSOR_TAG_SUCCESSOR, digest);
+        assert!(matches!(
+            policy.authenticate_candidate(&candidate),
+            Err(OrderedEconomicsError::Unauthenticated(
+                "seal predecessor tag is unsupported"
+            ))
+        ));
+    }
+}
+
+#[test]
+fn successor_scope_accepts_only_tag_two_naming_its_own_verified_subject() {
+    let subject: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x54; 32]);
+    let policy: OrderedEconomicsPolicy = successor_policy(subject);
+    assert!(policy.key_scope().is_successor());
+    let genuine: OrderedCandidate = scoped_seal(&policy, SEAL_PREDECESSOR_TAG_SUCCESSOR, subject);
+    assert!(authenticate_seal_arm(&policy, &genuine).is_ok());
+    // Tag 1 at S_k, even naming the pinned genesis, refuses.
+    let tag_one: OrderedCandidate = scoped_seal(
+        &policy,
+        SEAL_PREDECESSOR_TAG_GENESIS,
+        policy.genesis_digest(),
+    );
+    assert!(matches!(
+        authenticate_seal_arm(&policy, &tag_one),
+        Err(OrderedEconomicsError::Unauthenticated(
+            "seal predecessor tag is unsupported"
+        ))
+    ));
+    // Tag 2 naming another subject, or the genesis digest, refuses.
+    for wrong in [
+        Digest32::new(HashAlgorithmId::Sha2_256, [0x55; 32]),
+        policy.genesis_digest(),
+    ] {
+        let candidate: OrderedCandidate =
+            scoped_seal(&policy, SEAL_PREDECESSOR_TAG_SUCCESSOR, wrong);
+        assert!(matches!(
+            authenticate_seal_arm(&policy, &candidate),
+            Err(OrderedEconomicsError::Unauthenticated(
+                "seal predecessor digest is not the verified successor subject"
+            ))
+        ));
+    }
+    // Another successor policy with a different subject refuses the same
+    // candidate: the digest is the private policy subject, not a caller pin.
+    let other: OrderedEconomicsPolicy =
+        successor_policy(Digest32::new(HashAlgorithmId::Sha2_256, [0x56; 32]));
+    assert!(authenticate_seal_arm(&other, &genuine).is_err());
+    // Until the DR-0191 gate lands, the shared chokepoint still refuses.
+    assert!(matches!(
+        policy.authenticate_candidate(&genuine),
+        Err(OrderedEconomicsError::UnsupportedSuccessorControl)
     ));
 }

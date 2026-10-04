@@ -650,7 +650,7 @@ where
     // DR-0154: this leg enforces the object monotonicity rule this store's own
     // signed genesis bound, resolved from the authenticated profile row rather
     // than assumed to be the historical physical checkpoint.
-    let minimum: logical_generation::ObjectMinimum = logical_generation::ObjectMinimum::for_profile(
+    let minimum: logical_generation::ObjectMinimum = logical_generation::ObjectMinimum::for_gate(
         &logical_generation::fence_commitment_profile(
             store,
             context,
@@ -659,7 +659,8 @@ where
             reads,
         )?,
         created_checkpoint,
-    );
+        mutation_fence::ordered_gate(ordered),
+    )?;
     let allowed_output: Option<(ObjectId, &ProtocolCustodyScope)> = if is_final {
         None
     } else {
@@ -923,7 +924,8 @@ where
             let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
             let successor_lane: Option<ordered_economics::OrderedLegAdmission<'_>> = match gate {
                 crate::serving_authority::ServingGate::Original => None,
-                crate::serving_authority::ServingGate::Successor(_) => {
+                crate::serving_authority::ServingGate::Successor(_)
+                | crate::serving_authority::ServingGate::Replay(_) => {
                     Some(ordered_economics::OrderedLegAdmission {
                         request_id: request.request_id,
                         objects: &[],

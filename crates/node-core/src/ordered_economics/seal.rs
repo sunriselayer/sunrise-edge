@@ -53,12 +53,22 @@ pub const SEAL_REQUEST_PREIMAGE_TYPE: u16 = 0xD052;
 pub const SEAL_OUTCOME_TYPE: u16 = 0xD053;
 const ENCODING_VERSION: u16 = 1;
 
-/// The sole supported predecessor: the original locally pinned signed
-/// genesis. DR-0187: only predecessor tag 1, original genesis, is
-/// supported; unknown tags stop, no legacy transition certificate is a
-/// fallback. A future authenticated predecessor needs another reviewed tag
-/// and producer; this verifier cannot repin to a peer epoch.
+/// The first-epoch predecessor: the original locally pinned signed genesis.
+/// DR-0187: predecessor tag 1 names the original genesis digest; it is the
+/// only tag a chain-scoped (e_0) policy accepts. Unknown tags stop, no legacy
+/// transition certificate is a fallback.
 pub const SEAL_PREDECESSOR_TAG_GENESIS: u16 = 1;
+
+/// DR-0191 Section 9: the successor predecessor. Field 4 is the private
+/// 0xD054 subject digest of the verified link that activated the sealing
+/// epoch; only a successor-scoped policy accepts it, and only with exactly
+/// that digest. Tags 0 and 3..=u16::MAX stay unknown and refuse.
+pub const SEAL_PREDECESSOR_TAG_SUCCESSOR: u16 = 2;
+
+/// Whether `tag` is one of the two closed predecessor tags.
+const fn is_known_predecessor_tag(tag: u16) -> bool {
+    tag == SEAL_PREDECESSOR_TAG_GENESIS || tag == SEAL_PREDECESSOR_TAG_SUCCESSOR
+}
 
 /// SealIntent 40 KiB.
 pub const MAX_SEAL_INTENT_BYTES: usize = 40 * 1024;
@@ -86,10 +96,11 @@ pub struct SealIntent {
     /// Opaque at this layer by design: only the business-reconstruction
     /// layer that owns BusinessCutIdentity interprets its fields.
     pub cut_identity_bytes: Vec<u8>,
-    /// Predecessor kind; only SEAL_PREDECESSOR_TAG_GENESIS is supported.
+    /// Predecessor kind: SEAL_PREDECESSOR_TAG_GENESIS or
+    /// SEAL_PREDECESSOR_TAG_SUCCESSOR; every other value refuses.
     pub predecessor_tag: u16,
-    /// Digest the predecessor tag names; for genesis, the pinned genesis
-    /// manifest digest.
+    /// Digest the predecessor tag names: for genesis, the pinned genesis
+    /// manifest digest; for a successor, the activating 0xD054 subject digest.
     pub predecessor_digest: Digest32,
     /// Digest of the staged immutable ReadinessCertificate blob.
     pub certificate_digest: Digest32,
@@ -104,7 +115,7 @@ fn validate_seal_intent_structure(intent: &SealIntent) -> Result<(), NodeCoreErr
     {
         return Err(invalid("seal intent cut identity length"));
     }
-    if intent.predecessor_tag != SEAL_PREDECESSOR_TAG_GENESIS {
+    if !is_known_predecessor_tag(intent.predecessor_tag) {
         return Err(invalid("seal intent predecessor tag is unsupported"));
     }
     if intent.certificate_length == 0
@@ -195,7 +206,7 @@ pub fn seal_target_digest(
     predecessor_tag: u16,
     predecessor_digest: Digest32,
 ) -> Result<Digest32, NodeCoreError> {
-    if predecessor_tag != SEAL_PREDECESSOR_TAG_GENESIS {
+    if !is_known_predecessor_tag(predecessor_tag) {
         return Err(invalid("seal target predecessor tag is unsupported"));
     }
     let mut frame: CanonicalStruct =
@@ -774,22 +785,124 @@ mod tests {
 
     #[test]
     fn seal_intent_and_target_reject_every_unsupported_predecessor_tag() {
-        let mut unknown: SealIntent = valid_intent();
-        unknown.predecessor_tag = SEAL_PREDECESSOR_TAG_GENESIS.checked_add(1).unwrap();
-        assert!(encode_seal_intent(&unknown).is_err());
-
+        // DR-0191 Section 9: the closed set is {1, 2}; 0, 3 and u16::MAX
+        // (and everything between) stay unknown and refuse.
         let resolver: HashSuiteResolver = resolver();
         let context: PublicationContext = context();
-        assert!(
-            seal_target_digest(
-                &resolver,
-                &context,
-                digest(30),
-                SEAL_PREDECESSOR_TAG_GENESIS.checked_add(1).unwrap(),
-                digest(1),
+        let unknown_tags: [u16; 4] = [0, 3, 4, u16::MAX];
+        for tag in unknown_tags {
+            let mut unknown: SealIntent = valid_intent();
+            unknown.predecessor_tag = tag;
+            assert!(encode_seal_intent(&unknown).is_err(), "tag {tag} encodes");
+            assert!(
+                seal_target_digest(&resolver, &context, digest(30), tag, digest(1)).is_err(),
+                "tag {tag} targets"
+            );
+        }
+    }
+
+    /// A well-formed intent whose decoded bytes carry `tag` in field 3.
+    fn intent_bytes_with_raw_tag(tag: u16) -> Vec<u8> {
+        let intent: SealIntent = valid_intent();
+        let mut frame: CanonicalStruct = CanonicalStruct::new(SEAL_INTENT_TYPE, ENCODING_VERSION);
+        frame
+            .field_bytes(
+                1,
+                consensus::readiness::encode_readiness_subject(&intent.readiness_subject).unwrap(),
             )
-            .is_err()
+            .unwrap();
+        frame.field_bytes(2, intent.cut_identity_bytes).unwrap();
+        frame.field_u16(3, tag).unwrap();
+        frame
+            .field_bytes(4, encode_digest32(&intent.predecessor_digest).unwrap())
+            .unwrap();
+        frame
+            .field_bytes(5, encode_digest32(&intent.certificate_digest).unwrap())
+            .unwrap();
+        frame.field_u32(6, intent.certificate_length).unwrap();
+        frame.finish().unwrap()
+    }
+
+    #[test]
+    fn seal_intent_decode_rejects_unknown_predecessor_tags_and_accepts_both_known() {
+        for tag in [0u16, 3, u16::MAX] {
+            assert!(
+                decode_seal_intent(&intent_bytes_with_raw_tag(tag)).is_err(),
+                "decoded tag {tag}"
+            );
+        }
+        for tag in [SEAL_PREDECESSOR_TAG_GENESIS, SEAL_PREDECESSOR_TAG_SUCCESSOR] {
+            let decoded: SealIntent = decode_seal_intent(&intent_bytes_with_raw_tag(tag)).unwrap();
+            assert_eq!(decoded.predecessor_tag, tag);
+        }
+    }
+
+    #[test]
+    fn seal_intent_tag_two_round_trips_and_differs_from_tag_one_bytes() {
+        let mut successor: SealIntent = valid_intent();
+        successor.predecessor_tag = SEAL_PREDECESSOR_TAG_SUCCESSOR;
+        successor.predecessor_digest = digest(40);
+        let bytes: Vec<u8> = encode_seal_intent(&successor).unwrap();
+        assert_eq!(decode_seal_intent(&bytes).unwrap(), successor);
+        assert_eq!(bytes, intent_bytes_with_raw_tag_and_digest(2, digest(40)));
+
+        let mut same_digest_tag_one: SealIntent = successor.clone();
+        same_digest_tag_one.predecessor_tag = SEAL_PREDECESSOR_TAG_GENESIS;
+        assert_ne!(encode_seal_intent(&same_digest_tag_one).unwrap(), bytes);
+    }
+
+    fn intent_bytes_with_raw_tag_and_digest(tag: u16, predecessor: Digest32) -> Vec<u8> {
+        let mut intent: SealIntent = valid_intent();
+        intent.predecessor_tag = tag;
+        intent.predecessor_digest = predecessor;
+        encode_seal_intent(&intent).unwrap()
+    }
+
+    #[test]
+    fn seal_target_tag_two_is_domain_separated_from_tag_one_and_by_subject_digest() {
+        let resolver: HashSuiteResolver = resolver();
+        let context: PublicationContext = context();
+        let subject: Digest32 = digest(30);
+        let tag_two: Digest32 = seal_target_digest(
+            &resolver,
+            &context,
+            subject,
+            SEAL_PREDECESSOR_TAG_SUCCESSOR,
+            digest(40),
+        )
+        .unwrap();
+        let again: Digest32 = seal_target_digest(
+            &resolver,
+            &context,
+            subject,
+            SEAL_PREDECESSOR_TAG_SUCCESSOR,
+            digest(40),
+        )
+        .unwrap();
+        assert_eq!(tag_two, again);
+        let tag_one_same_digest: Digest32 = seal_target_digest(
+            &resolver,
+            &context,
+            subject,
+            SEAL_PREDECESSOR_TAG_GENESIS,
+            digest(40),
+        )
+        .unwrap();
+        assert_ne!(tag_two, tag_one_same_digest, "the tag is committed");
+        let other_predecessor: Digest32 = seal_target_digest(
+            &resolver,
+            &context,
+            subject,
+            SEAL_PREDECESSOR_TAG_SUCCESSOR,
+            digest(41),
+        )
+        .unwrap();
+        assert_ne!(
+            tag_two, other_predecessor,
+            "the 0xD054 subject is committed"
         );
+        let request: [u8; 32] = seal_request_id(&resolver, &context, tag_two, digest(20)).unwrap();
+        assert_eq!(request[0] & 0x80, 0x80);
     }
 
     #[test]

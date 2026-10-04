@@ -480,9 +480,19 @@ pub(in crate::business_reconstruction) fn verify_saved_with_overlay<'a>(
     plan: BusinessReconstructionPlan<'a>,
     saved: &SavedBusinessCut,
 ) -> Result<VerifiedSavedReconstruction<'a>, BusinessCutError> {
+    let base: crate::serving_authority::ReconstructionBase<'a> =
+        crate::serving_authority::ReconstructionBase::genesis(plan.genesis_root);
+    verify_saved_with_base(plan, base, saved)
+}
+
+pub(in crate::business_reconstruction) fn verify_saved_with_base<'a>(
+    plan: BusinessReconstructionPlan<'a>,
+    base: crate::serving_authority::ReconstructionBase<'a>,
+    saved: &SavedBusinessCut,
+) -> Result<VerifiedSavedReconstruction<'a>, BusinessCutError> {
     encode_business_cut_identity(&saved.identity)?;
     encode_business_cut_package(&saved.package)?;
-    if saved.identity.context != *plan.genesis_root.manifest().context()
+    if saved.identity.context != *plan.ordered_policy.context()
         || saved.identity.domain != plan.domain
         || saved.identity.genesis_digest != plan.genesis_root.digest()
         || saved.identity.ordered_history != *plan.ordered_history_identity
@@ -500,7 +510,7 @@ pub(in crate::business_reconstruction) fn verify_saved_with_overlay<'a>(
                 != item.descriptor.length
             || business_cut_component_digest(
                 plan.genesis_root.genesis_resolver(),
-                plan.genesis_root.manifest().context(),
+                plan.ordered_policy.context(),
                 &item.bytes,
             )? != item.descriptor.digest
         {
@@ -511,7 +521,8 @@ pub(in crate::business_reconstruction) fn verify_saved_with_overlay<'a>(
         previous = Some(locator);
     }
     let (owned, ordered, controls, carriers) = parsed(&plan, saved)?;
-    let mut overlay: BusinessReconstructionOverlay<'_> = BusinessReconstructionOverlay::new(plan)?;
+    let mut overlay: BusinessReconstructionOverlay<'_> =
+        BusinessReconstructionOverlay::new_with_base(plan, base)?;
     overlay.reconstruct_with_control_material(&owned, &ordered, &controls)?;
     let expected: VerifiedBusinessCut =
         derive::from_overlay(&overlay, &owned, &ordered, &controls, &carriers, None)?;
@@ -546,7 +557,7 @@ pub(super) fn source_application_carriers(
         .filter(|item| item.applied)
     {
         let key: Vec<u8> = crate::local_instance_state::fastpath_certificate_key(
-            overlay.plan.genesis_root.manifest().context().chain_id(),
+            overlay.plan.ordered_policy.context().chain_id(),
             &producer.request_id,
         )
         .map_err(|_| invalid("cut original applied certificate key"))?;
@@ -568,7 +579,7 @@ pub(super) fn verify_application_carriers(
     overlay: &BusinessReconstructionOverlay<'_>,
     carriers: &BTreeMap<[u8; 32], Vec<u8>>,
 ) -> Result<(), BusinessCutError> {
-    let context = overlay.plan.genesis_root.manifest().context();
+    let context = overlay.plan.ordered_policy.context();
     let certifier = consensus::FastPathCertifier::new(
         context.chain_id().clone(),
         context.protocol_version(),

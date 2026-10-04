@@ -105,6 +105,7 @@ fn put_read(
 }
 
 fn commit_reads_and_mutations<S: StructuredDurableDomainStateStore>(
+    gate: crate::serving_authority::ServingGate<'_>,
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -120,7 +121,7 @@ fn commit_reads_and_mutations<S: StructuredDurableDomainStateStore>(
         AtomicStateReadSet::new(assertions)?,
         AtomicStateMutationSet::new(mutations)?,
     )?;
-    match store.commit_durable(context, transaction) {
+    match gate.commit_durable(store, context, transaction) {
         DurableCommitOutcome::Committed => Ok(()),
         DurableCommitOutcome::Rejected(reason) => {
             Err(NodeCoreError::DurableCommitRejected(reason).into())
@@ -517,6 +518,26 @@ where
     Ok(bundle)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn load_retained_publication_bundle_successor<S>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    request_id: [u8; 32],
+) -> DrainResult<PublicationBundle>
+where
+    S: DurablePortableRepository + StructuredDurableDomainStateStore,
+{
+    warrant.require_reader(store, context, domain)?;
+    load_retained_publication_bundle(
+        store, context, domain, resolver, history, expected, request_id,
+    )
+}
+
 /// Verifies and atomically imports one complete bundle after committed
 /// Freeze, against an identity from a signed frontier page. This bounded
 /// event never signs, acknowledges, executes, or mutates the original local
@@ -542,13 +563,65 @@ pub fn retain_drain_publication<S: StructuredDurableDomainStateStore>(
     expected_identity: &AvailabilityIdentity,
     bundle_bytes: &[u8],
 ) -> DrainResult<AvailabilityIdentity> {
+    retain_drain_publication_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        expected_identity,
+        bundle_bytes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn retain_drain_publication_successor<S: StructuredDurableDomainStateStore>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    expected_identity: &AvailabilityIdentity,
+    bundle_bytes: &[u8],
+) -> DrainResult<AvailabilityIdentity> {
+    retain_drain_publication_gated(
+        crate::serving_authority::ServingGate::Successor(warrant),
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        expected_identity,
+        bundle_bytes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn retain_drain_publication_gated<S: StructuredDurableDomainStateStore>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    expected_identity: &AvailabilityIdentity,
+    bundle_bytes: &[u8],
+) -> DrainResult<AvailabilityIdentity> {
     if history.len() > crate::publication::MAX_PUBLICATION_HISTORY {
         return Err(NodeCoreError::PersistenceInvariant("resolver history bound").into());
     }
     let bundle: PublicationBundle = decode_publication_bundle(bundle_bytes)?;
     // DR-0189: drain publication is an outgoing-epoch control.
-    crate::mutation_fence::refuse_successor_serving(store, context, domain)?;
-    crate::mutation_fence::require_ordinary_namespace(store, context, domain)?;
+    if matches!(gate, crate::serving_authority::ServingGate::Original) {
+        crate::mutation_fence::refuse_successor_serving(store, context, domain)?;
+    }
+    gate.require_live(store, context, domain)?;
     let chain: ChainId = expected.chain_id().clone();
     let epoch: Epoch = expected.epoch();
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
@@ -619,6 +692,7 @@ pub fn retain_drain_publication<S: StructuredDurableDomainStateStore>(
             )),
             None if possession_row.revision() == StateRevision::INITIAL => {
                 commit_reads_and_mutations(
+                    gate,
                     store,
                     context,
                     domain,
@@ -688,7 +762,7 @@ pub fn retain_drain_publication<S: StructuredDurableDomainStateStore>(
         possession_key,
         StateMutation::Put(identity_bytes),
     )?);
-    commit_reads_and_mutations(store, context, domain, reads, mutations)?;
+    commit_reads_and_mutations(gate, store, context, domain, reads, mutations)?;
     Ok(identity)
 }
 

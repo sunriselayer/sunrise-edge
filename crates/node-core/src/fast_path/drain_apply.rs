@@ -460,6 +460,43 @@ where
     S: StructuredDurableDomainStateStore,
     E: PaidContractEngine + ?Sized,
 {
+    apply_drain_member_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        base_policy,
+        fee_policy,
+        engine,
+        member_request_id,
+        drain_created_checkpoint,
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub(crate) fn apply_drain_member_gated<S, E>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    base_policy: &LocalExecutionPolicy,
+    fee_policy: &PaidFeePolicy,
+    engine: &E,
+    member_request_id: [u8; 32],
+    drain_created_checkpoint: u64,
+) -> FastPathResult<NodeOutput>
+where
+    S: StructuredDurableDomainStateStore,
+    E: PaidContractEngine + ?Sized,
+{
     if history.len() > crate::publication::MAX_PUBLICATION_HISTORY {
         return invalid("resolver history bound");
     }
@@ -497,7 +534,7 @@ where
     {
         return Ok(output);
     }
-    crate::mutation_fence::require_ordinary_namespace(store, context, domain)?;
+    gate.require_live(store, context, domain)?;
     // Fresh work needs the complete committed DrainSet authority. A completed
     // exact replay is receipt-first and must not be re-blocked by a later
     // epoch transition or by a now-stale local ready marker.
@@ -577,7 +614,7 @@ where
     // object/sender-epoch locks this admission's own inputs touch, instead
     // of failing closed like ordinary `NonceMode::RecoveryApply`.
     let admission: PaidAdmissionOutput = build_paid_admission(
-        crate::serving_authority::ServingGate::Original,
+        gate,
         store,
         blob_store,
         context,
@@ -836,7 +873,7 @@ where
         receipt,
         None,
     )?;
-    match store.commit_invocation(context, transaction) {
+    match gate.commit_invocation(store, context, transaction) {
         DurableCommitOutcome::Committed => Ok(output),
         DurableCommitOutcome::Rejected(
             DurableCommitRejection::Conflict { .. }
@@ -855,6 +892,43 @@ where
             NodeCoreError::DurableCommitIndeterminate(reason),
         )),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn apply_drain_member_successor<S, E>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    base_policy: &LocalExecutionPolicy,
+    fee_policy: &PaidFeePolicy,
+    engine: &E,
+    member_request_id: [u8; 32],
+    drain_created_checkpoint: u64,
+) -> FastPathResult<NodeOutput>
+where
+    S: StructuredDurableDomainStateStore,
+    E: PaidContractEngine + ?Sized,
+{
+    apply_drain_member_gated(
+        crate::serving_authority::ServingGate::Successor(warrant),
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        base_policy,
+        fee_policy,
+        engine,
+        member_request_id,
+        drain_created_checkpoint,
+    )
 }
 
 #[cfg(test)]

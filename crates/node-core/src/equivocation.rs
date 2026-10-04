@@ -650,12 +650,11 @@ fn read_anchored_validator_set<S: runtime::VersionedStateReader + ?Sized>(
     Ok(validator_set)
 }
 
-/// DR-0189: a verified first successor has no legacy transition row for its
-/// predecessor epoch. Its trusted anchor is instead the outgoing committee
-/// digest the verified cut binding and terminal Seal bind, supplied only by
-/// the private successor gate. The live epoch record must be exactly the
-/// successor of `predecessor_epoch`, and the imported set row must hash to
-/// that anchor; both rows are fenced into the caller's commit.
+/// A historical certificate's committee digest is supplied only by the
+/// fresh verified-chain invocation gate, never by the current membership.
+/// The live epoch must be newer than that certificate and the exact imported
+/// set must hash to the historical anchor. Both reads fence the deciding
+/// transaction; the live gate separately checks its exact current epoch row.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn load_successor_predecessor_set_fenced<S: runtime::VersionedStateReader + ?Sized>(
     store: &S,
@@ -677,10 +676,8 @@ pub(crate) fn load_successor_predecessor_set_fenced<S: runtime::VersionedStateRe
         local_instance_state::decode_fastpath_epoch_record(epoch_observed.value().ok_or(
             EquivocationEvidenceError::Invalid("fast-path epoch record not installed"),
         )?)?;
-    if live.previous_epoch != Some(predecessor_epoch)
-        || predecessor_epoch.get().checked_add(1) != Some(live.current_epoch.get())
-    {
-        return invalid("live epoch is not the verified successor of the certificate epoch");
+    if predecessor_epoch >= live.current_epoch {
+        return invalid("certificate epoch is not historical in the verified live epoch");
     }
     let validator_set: ValidatorSet = read_anchored_validator_set(
         store,

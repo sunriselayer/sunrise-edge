@@ -429,7 +429,7 @@ where
     )?;
     // DR-0154: resolve this store's signed binding once, so the forfeiture leg
     // below enforces the monotonicity rule its own genesis bound.
-    let minimum: logical_generation::ObjectMinimum = logical_generation::ObjectMinimum::for_profile(
+    let minimum: logical_generation::ObjectMinimum = logical_generation::ObjectMinimum::for_gate(
         &logical_generation::fence_commitment_profile(
             store,
             context,
@@ -438,7 +438,8 @@ where
             &mut reads,
         )?,
         created_checkpoint,
-    );
+        mutation_fence::ordered_gate(ordered),
+    )?;
 
     // 7. read the committed bond row and cross-check the intent's pins.
     let bond_key: Vec<u8> = local_instance_state::fastpath_bond_record_key(
