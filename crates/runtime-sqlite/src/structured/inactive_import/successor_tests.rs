@@ -9,12 +9,14 @@ use super::*;
 use protocol_types::{ChainId, Epoch, ExecutionGeneration, HashAlgorithmId, ProtocolVersion};
 use runtime::successor_serving::{
     SuccessorServingObservation, SuccessorServingRecord, SuccessorServingRepository,
-    SuccessorServingSlot, encode_successor_serving_record,
+    SuccessorServingSlot, decode_successor_serving_record, encode_successor_serving_record,
+    encode_successor_serving_slot,
 };
 use runtime::{
     AtomicStateMutationSet, AtomicStateReadSet, DurableCommitRejection, DurableObjectChanges,
-    ImportContext, StateMutation, StateMutationEntry, StateReadAssertion, StateRevision,
-    StorageCorrelationId, StorageDeadline,
+    ImportContext, OutgoingBarrier, SealBarrier, StateMutation, StateMutationEntry,
+    StateReadAssertion, StateRevision, StorageCorrelationId, StorageDeadline,
+    TransitionHistoryState,
 };
 use runtime_sql_durable::{SqlBackendError, SqlSession, SqlSessionError};
 use rusqlite::OptionalExtension;
@@ -51,6 +53,55 @@ impl Drop for Database {
             }
         }
     }
+}
+
+/// Compares every structured row and physical revision, including namespace
+/// origin, sequence, permanent barrier, receipts and delivery inventory.
+#[derive(Debug, PartialEq)]
+struct SqliteSealState(Vec<Vec<Vec<rusqlite::types::Value>>>);
+
+fn sqlite_seal_state(db: &Database) -> SqliteSealState {
+    let mut connection: Connection = Connection::open(&db.0).unwrap();
+    let transaction: rusqlite::Transaction<'_> = connection.transaction().unwrap();
+    let mut tables: Vec<Vec<Vec<rusqlite::types::Value>>> = Vec::new();
+    for sql in [
+        "SELECT * FROM durable_metadata ORDER BY id",
+        "SELECT * FROM durable_import_progress ORDER BY id",
+        "SELECT * FROM durable_outgoing_barrier ORDER BY id",
+        "SELECT * FROM durable_successor_serving ORDER BY id",
+        "SELECT * FROM durable_state ORDER BY key",
+        "SELECT * FROM durable_conditional_readiness ORDER BY slot",
+        "SELECT * FROM durable_object_heads ORDER BY object_id",
+        "SELECT * FROM durable_object_versions ORDER BY object_id, object_version",
+        "SELECT * FROM durable_receipts ORDER BY request_id",
+        "SELECT * FROM durable_outbox_messages ORDER BY request_id, message_index",
+        "SELECT * FROM durable_outbox_delivery ORDER BY request_id",
+        "SELECT * FROM durable_outbox_attempts ORDER BY lease_id",
+    ] {
+        let mut statement: rusqlite::Statement<'_> = transaction.prepare(sql).unwrap();
+        let columns: usize = statement.column_count();
+        let rows: Vec<Vec<rusqlite::types::Value>> = statement
+            .query_map([], |row| {
+                let values: Result<Vec<rusqlite::types::Value>, rusqlite::Error> =
+                    (0..columns).map(|index| row.get(index)).collect();
+                values
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        tables.push(rows);
+    }
+    SqliteSealState(tables)
+}
+
+fn assert_sqlite_seal_rejection(
+    db: &Database,
+    reason: DurableCommitRejection,
+    invoke: impl FnOnce() -> DurableCommitOutcome,
+) {
+    let before: SqliteSealState = sqlite_seal_state(db);
+    assert_eq!(invoke(), DurableCommitOutcome::Rejected(reason));
+    assert_eq!(sqlite_seal_state(db), before);
 }
 
 fn digest(byte: u8) -> Digest32 {
@@ -210,10 +261,19 @@ fn ordinary_write(domain: AtomicityDomainId) -> AtomicStateTransaction {
 }
 
 fn durable_write(domain: AtomicityDomainId, key: &[u8], value: u8) -> AtomicStateTransaction {
+    durable_write_at(domain, key, value, StateRevision::INITIAL)
+}
+
+fn durable_write_at(
+    domain: AtomicityDomainId,
+    key: &[u8],
+    value: u8,
+    expected: StateRevision,
+) -> AtomicStateTransaction {
     AtomicStateTransaction::new(
         domain,
         AtomicStateReadSet::new(vec![
-            StateReadAssertion::new(key.to_vec(), StateRevision::INITIAL).unwrap(),
+            StateReadAssertion::new(key.to_vec(), expected).unwrap(),
         ])
         .unwrap(),
         AtomicStateMutationSet::new(vec![
@@ -892,4 +952,1070 @@ fn activation_reply_loss_is_atomic_in_both_directions_and_observable_after_reope
             );
         }
     }
+}
+
+fn seal_request(byte: u8) -> [u8; 32] {
+    let mut request = [byte; 32];
+    request[0] |= 0x80;
+    request
+}
+
+fn sample_sealed(byte: u8) -> SealBarrier {
+    SealBarrier {
+        outgoing_epoch: Epoch::new(8),
+        request: seal_request(byte),
+        height: 13,
+        block_digest: digest(byte.wrapping_add(1)),
+        target_digest: digest(byte.wrapping_add(2)),
+        transition_history: TransitionHistoryState::Virgin,
+    }
+}
+
+fn sealed_invocation(
+    domain: AtomicityDomainId,
+    sealed: &SealBarrier,
+) -> DurableInvocationTransaction {
+    let request_id = DurableRequestId::new(sealed.request).unwrap();
+    let receipt_value = DurableRequestReceipt::new(request_id, digest(0xAB), vec![1]).unwrap();
+    DurableInvocationTransaction::new(
+        domain,
+        None,
+        DurableObjectChanges::empty(),
+        receipt_value,
+        None,
+    )
+    .unwrap()
+}
+
+fn stateful_sealed_invocation(
+    domain: AtomicityDomainId,
+    sealed: &SealBarrier,
+    key: &[u8],
+    value: u8,
+    expected: StateRevision,
+) -> DurableInvocationTransaction {
+    let transaction: AtomicStateTransaction = durable_write_at(domain, key, value, expected);
+    let section: runtime::DurableStateTransaction = transaction.into();
+    DurableInvocationTransaction::new(
+        domain,
+        Some(section),
+        DurableObjectChanges::empty(),
+        sealed_invocation(domain, sealed).receipt().clone(),
+        None,
+    )
+    .unwrap()
+}
+
+#[test]
+fn successor_seal_rejects_wrong_binding_and_progress_with_deciding_positive_controls() {
+    for wrong_progress in [false, true] {
+        let (db, store, context, token, _) = complete_inactive_store(102);
+        let binding: ImportBinding = pin();
+        let observation: SuccessorServingObservation = activate(&store, &context, &token, 170);
+        let mut wrong: SuccessorServingObservation = observation.clone();
+        if wrong_progress {
+            wrong.progress.accumulator = digest(0xFF);
+        } else {
+            wrong.binding.cut_digest = digest(0xFF);
+        }
+        let token: PortableSnapshotToken = store
+            .begin_portable_snapshot(&context, binding.domain)
+            .unwrap();
+        assert_sqlite_seal_rejection(&db, DurableCommitRejection::ImportBindingMismatch, || {
+            store.commit_successor_seal_retention(
+                &context,
+                &wrong,
+                &token,
+                durable_write(binding.domain, b"retention", 1),
+            )
+        });
+        let sealed: SealBarrier = sample_sealed(171);
+        assert_sqlite_seal_rejection(&db, DurableCommitRejection::ImportBindingMismatch, || {
+            store.commit_successor_seal_completion(
+                &context,
+                &wrong,
+                &token,
+                stateful_sealed_invocation(
+                    binding.domain,
+                    &sealed,
+                    b"completion",
+                    2,
+                    StateRevision::INITIAL,
+                ),
+                sealed,
+            )
+        });
+        assert_eq!(
+            store.commit_successor_seal_retention(
+                &context,
+                &observation,
+                &token,
+                durable_write(binding.domain, b"retention", 1),
+            ),
+            DurableCommitOutcome::Committed
+        );
+        let next: PortableSnapshotToken = store
+            .begin_portable_snapshot(&context, binding.domain)
+            .unwrap();
+        assert_eq!(
+            store.commit_successor_seal_completion(
+                &context,
+                &observation,
+                &next,
+                stateful_sealed_invocation(
+                    binding.domain,
+                    &sealed,
+                    b"completion",
+                    2,
+                    StateRevision::INITIAL
+                ),
+                sealed,
+            ),
+            DurableCommitOutcome::Committed
+        );
+        assert_eq!(
+            store
+                .begin_portable_snapshot(&context, binding.domain)
+                .unwrap()
+                .mutation_sequence(),
+            token.mutation_sequence() + 2
+        );
+    }
+}
+
+#[test]
+fn successor_seal_completion_rejects_wrong_serving_epoch_without_any_mutation() {
+    let (db, store, context, token, _) = complete_inactive_store(103);
+    let binding: ImportBinding = pin();
+    let observation: SuccessorServingObservation = activate(&store, &context, &token, 172);
+    let token: PortableSnapshotToken = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    let sealed: SealBarrier = sample_sealed(173);
+    let mut wrong: SealBarrier = sealed;
+    wrong.outgoing_epoch = Epoch::new(9);
+    assert_sqlite_seal_rejection(&db, DurableCommitRejection::ImportConflict, || {
+        store.commit_successor_seal_completion(
+            &context,
+            &observation,
+            &token,
+            stateful_sealed_invocation(
+                binding.domain,
+                &wrong,
+                b"completion",
+                2,
+                StateRevision::INITIAL,
+            ),
+            wrong,
+        )
+    });
+    assert_eq!(
+        store.commit_successor_seal_completion(
+            &context,
+            &observation,
+            &token,
+            stateful_sealed_invocation(
+                binding.domain,
+                &sealed,
+                b"completion",
+                2,
+                StateRevision::INITIAL
+            ),
+            sealed,
+        ),
+        DurableCommitOutcome::Committed
+    );
+}
+
+#[test]
+fn successor_seal_completion_rejects_foreign_physical_validator_with_deciding_positive_control() {
+    let (db, store, context, activation_token, _) = complete_inactive_store(104);
+    let binding: ImportBinding = pin();
+    let observation: SuccessorServingObservation =
+        activate(&store, &context, &activation_token, 174);
+    let mut record: SuccessorServingRecord =
+        decode_successor_serving_record(&observation.record).unwrap();
+    record.validator = ValidatorId::new([0xFF; 32]);
+    let wrong: SuccessorServingObservation = SuccessorServingObservation {
+        record: encode_successor_serving_record(&record).unwrap(),
+        binding: observation.binding.clone(),
+        progress: observation.progress.clone(),
+    };
+    let wrong_slot: Vec<u8> =
+        encode_successor_serving_slot(&SuccessorServingSlot::Serving(Box::new(wrong.clone())))
+            .unwrap();
+    let connection: Connection = Connection::open(&db.0).unwrap();
+    connection
+        .execute(
+            "UPDATE durable_successor_serving SET serving = ?1 WHERE id = 1",
+            rusqlite::params![wrong_slot],
+        )
+        .unwrap();
+    let token: PortableSnapshotToken = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    let sealed: SealBarrier = sample_sealed(175);
+    // Slot, lifecycle, token and CAS all match: only the physical validator
+    // differs from the validator decoded from the exact installed record.
+    assert_sqlite_seal_rejection(&db, DurableCommitRejection::ImportConflict, || {
+        store.commit_successor_seal_completion(
+            &context,
+            &wrong,
+            &token,
+            stateful_sealed_invocation(
+                binding.domain,
+                &sealed,
+                b"completion",
+                2,
+                StateRevision::INITIAL,
+            ),
+            sealed,
+        )
+    });
+    let own_slot: Vec<u8> = encode_successor_serving_slot(&SuccessorServingSlot::Serving(
+        Box::new(observation.clone()),
+    ))
+    .unwrap();
+    connection
+        .execute(
+            "UPDATE durable_successor_serving SET serving = ?1 WHERE id = 1",
+            rusqlite::params![own_slot],
+        )
+        .unwrap();
+    assert_eq!(
+        store.commit_successor_seal_completion(
+            &context,
+            &observation,
+            &token,
+            stateful_sealed_invocation(
+                binding.domain,
+                &sealed,
+                b"completion",
+                2,
+                StateRevision::INITIAL
+            ),
+            sealed,
+        ),
+        DurableCommitOutcome::Committed
+    );
+}
+
+#[test]
+fn successor_seal_retention_and_completion_reject_stale_cas_with_fresh_tokens() {
+    let (db, store, context, activation_token, _) = complete_inactive_store(105);
+    let binding: ImportBinding = pin();
+    let observation: SuccessorServingObservation =
+        activate(&store, &context, &activation_token, 176);
+    assert_eq!(
+        store.commit_successor_durable(
+            &context,
+            &observation,
+            durable_write(binding.domain, b"cut", 1)
+        ),
+        DurableCommitOutcome::Committed
+    );
+    let token: PortableSnapshotToken = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    let conflict: DurableCommitRejection = DurableCommitRejection::Conflict {
+        key: b"cut".to_vec(),
+        current_revision: StateRevision::new(1),
+    };
+    assert_sqlite_seal_rejection(&db, conflict.clone(), || {
+        store.commit_successor_seal_retention(
+            &context,
+            &observation,
+            &token,
+            durable_write(binding.domain, b"cut", 2),
+        )
+    });
+    let sealed: SealBarrier = sample_sealed(177);
+    assert_sqlite_seal_rejection(&db, conflict, || {
+        store.commit_successor_seal_completion(
+            &context,
+            &observation,
+            &token,
+            stateful_sealed_invocation(binding.domain, &sealed, b"cut", 2, StateRevision::INITIAL),
+            sealed,
+        )
+    });
+    assert_eq!(
+        store.commit_successor_seal_retention(
+            &context,
+            &observation,
+            &token,
+            durable_write_at(binding.domain, b"cut", 2, StateRevision::new(1)),
+        ),
+        DurableCommitOutcome::Committed
+    );
+    let next: PortableSnapshotToken = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    assert_eq!(
+        store.commit_successor_seal_completion(
+            &context,
+            &observation,
+            &next,
+            stateful_sealed_invocation(binding.domain, &sealed, b"cut", 3, StateRevision::new(2)),
+            sealed,
+        ),
+        DurableCommitOutcome::Committed
+    );
+}
+
+#[test]
+fn successor_seal_completion_rejects_an_existing_empty_delivery_for_its_request() {
+    let (db, store, context, activation_token, _) = complete_inactive_store(106);
+    let binding: ImportBinding = pin();
+    let observation: SuccessorServingObservation =
+        activate(&store, &context, &activation_token, 178);
+    let sealed: SealBarrier = sample_sealed(179);
+    let connection: Connection = Connection::open(&db.0).unwrap();
+    connection
+        .execute(
+            "INSERT INTO durable_outbox_delivery (
+             request_id, message_count, next_message_index, completed,
+             available_at_unix_millis, active_lease_id, lease_expires_at_unix_millis, attempt_count
+         ) VALUES (?1, 0, 0, 1, ?2, NULL, NULL, ?2)",
+            rusqlite::params![sealed.request.as_slice(), 0u64.to_be_bytes().as_slice()],
+        )
+        .unwrap();
+    let token: PortableSnapshotToken = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    // Empty completed rows pass the inventory guard; this request-specific
+    // orphan must still refuse before state, receipt or barrier changes.
+    assert_sqlite_seal_rejection(&db, DurableCommitRejection::InvalidPersistedState, || {
+        store.commit_successor_seal_completion(
+            &context,
+            &observation,
+            &token,
+            stateful_sealed_invocation(binding.domain, &sealed, b"cut", 2, StateRevision::INITIAL),
+            sealed,
+        )
+    });
+    connection
+        .execute(
+            "DELETE FROM durable_outbox_delivery WHERE request_id = ?1",
+            rusqlite::params![sealed.request.as_slice()],
+        )
+        .unwrap();
+    assert_eq!(
+        store.commit_successor_seal_completion(
+            &context,
+            &observation,
+            &token,
+            stateful_sealed_invocation(binding.domain, &sealed, b"cut", 2, StateRevision::INITIAL),
+            sealed,
+        ),
+        DurableCommitOutcome::Committed
+    );
+}
+
+#[test]
+fn successor_seal_completion_retains_an_explicitly_empty_outbox_across_reopen() {
+    let (db, store, context, activation_token, _) = complete_inactive_store(107);
+    let binding: ImportBinding = pin();
+    let observation: SuccessorServingObservation =
+        activate(&store, &context, &activation_token, 180);
+    let token: PortableSnapshotToken = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    let sealed: SealBarrier = sample_sealed(181);
+    let base: DurableInvocationTransaction =
+        stateful_sealed_invocation(binding.domain, &sealed, b"cut", 2, StateRevision::INITIAL);
+    let receipt: DurableRequestReceipt = base.receipt().clone();
+    let outbox: runtime::DurableOutboxBatch =
+        runtime::DurableOutboxBatch::new(receipt.request_id(), receipt.event_digest(), Vec::new())
+            .unwrap();
+    let invocation: DurableInvocationTransaction = DurableInvocationTransaction::new(
+        binding.domain,
+        base.state().cloned(),
+        DurableObjectChanges::empty(),
+        receipt.clone(),
+        Some(outbox),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_successor_seal_completion(&context, &observation, &token, invocation, sealed),
+        DurableCommitOutcome::Committed
+    );
+    drop(store);
+    let reopened: SqliteImportTarget =
+        SqliteImportTarget::open_existing(&db.0, namespace(&binding), &binding).unwrap();
+    assert_eq!(
+        reopened
+            .get_outgoing_barrier(&context, binding.domain)
+            .unwrap(),
+        OutgoingBarrier::Sealed(sealed)
+    );
+    assert_eq!(
+        reopened
+            .get_successor_serving(&context, binding.domain)
+            .unwrap()
+            .serving(),
+        Some(&observation)
+    );
+    assert_eq!(
+        reopened
+            .get_request_receipt(&context, binding.domain, receipt.request_id())
+            .unwrap(),
+        Some(receipt)
+    );
+    assert_eq!(
+        reopened
+            .get_versioned_durable(&context, binding.domain, b"cut")
+            .unwrap()
+            .value(),
+        Some([2].as_slice())
+    );
+    assert_eq!(
+        reopened
+            .begin_portable_snapshot(&context, binding.domain)
+            .unwrap()
+            .mutation_sequence(),
+        token.mutation_sequence() + 1
+    );
+    let connection: Connection = Connection::open(&db.0).unwrap();
+    let delivery: (i64, i64, i64) = connection.query_row(
+        "SELECT message_count, next_message_index, completed FROM durable_outbox_delivery WHERE request_id = ?1",
+        rusqlite::params![sealed.request.as_slice()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap();
+    assert_eq!(delivery, (0, 0, 1));
+}
+
+#[test]
+fn successor_seal_completion_reply_loss_is_atomic_and_reconciles_after_reopen() {
+    for land in [false, true] {
+        let (db, store, context, activation_token, _) = complete_inactive_store(108);
+        let binding: ImportBinding = pin();
+        let observation: SuccessorServingObservation =
+            activate(&store, &context, &activation_token, 182);
+        let token: PortableSnapshotToken = store
+            .begin_portable_snapshot(&context, binding.domain)
+            .unwrap();
+        let sealed: SealBarrier = sample_sealed(183);
+        let before: SqliteSealState = sqlite_seal_state(&db);
+        drop(store);
+        let connection: Connection = Connection::open(&db.0).unwrap();
+        configure(&connection).unwrap();
+        let engine: SqlDurableEngine<LostActivationReply> = SqlDurableEngine::new(
+            LostActivationReply {
+                inner: NativeSqlBackend::new(connection),
+                armed: AtomicBool::new(true),
+                land,
+            },
+            namespace(&binding),
+        );
+        assert_eq!(
+            engine.commit_successor_seal_completion(
+                &context,
+                &observation,
+                &token,
+                stateful_sealed_invocation(
+                    binding.domain,
+                    &sealed,
+                    b"reply-loss",
+                    3,
+                    StateRevision::INITIAL
+                ),
+                sealed,
+            ),
+            DurableCommitOutcome::Indeterminate(runtime::IndeterminateCommitReason::ConnectionLost)
+        );
+        drop(engine);
+        let reopened: SqliteImportTarget =
+            SqliteImportTarget::open_existing(&db.0, namespace(&binding), &binding).unwrap();
+        assert_eq!(
+            reopened
+                .get_outgoing_barrier(&context, binding.domain)
+                .unwrap(),
+            if land {
+                OutgoingBarrier::Sealed(sealed)
+            } else {
+                OutgoingBarrier::Unsealed
+            }
+        );
+        assert_eq!(
+            reopened
+                .get_namespace_lifecycle(&context, binding.domain)
+                .unwrap(),
+            NamespaceLifecycle::CompleteInactive {
+                binding: binding.clone(),
+                progress: initial()
+            }
+        );
+        assert_eq!(
+            reopened
+                .get_successor_serving(&context, binding.domain)
+                .unwrap()
+                .serving(),
+            Some(&observation)
+        );
+        let request: DurableRequestId = DurableRequestId::new(sealed.request).unwrap();
+        let expected_receipt: DurableRequestReceipt =
+            sealed_invocation(binding.domain, &sealed).receipt().clone();
+        assert_eq!(
+            reopened
+                .get_request_receipt(&context, binding.domain, request)
+                .unwrap(),
+            land.then_some(expected_receipt)
+        );
+        assert_eq!(
+            reopened
+                .get_versioned_durable(&context, binding.domain, b"reply-loss")
+                .unwrap()
+                .value(),
+            land.then_some([3].as_slice())
+        );
+        assert_eq!(
+            reopened
+                .begin_portable_snapshot(&context, binding.domain)
+                .unwrap()
+                .mutation_sequence(),
+            token.mutation_sequence() + u64::from(land)
+        );
+        if !land {
+            assert_eq!(sqlite_seal_state(&db), before);
+            assert_eq!(
+                reopened.commit_successor_seal_completion(
+                    &context,
+                    &observation,
+                    &token,
+                    stateful_sealed_invocation(
+                        binding.domain,
+                        &sealed,
+                        b"reply-loss",
+                        3,
+                        StateRevision::INITIAL
+                    ),
+                    sealed,
+                ),
+                DurableCommitOutcome::Committed
+            );
+        }
+    }
+}
+
+#[test]
+fn successor_seal_retention_and_completion_seal_the_barrier_and_persist_across_reopen() {
+    let (db, store, context, fresh_token, _stale_token) = complete_inactive_store(90);
+    let binding = pin();
+    let observation = activate(&store, &context, &fresh_token, 150);
+
+    let retention_token = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    assert_eq!(
+        store.commit_successor_seal_retention(
+            &context,
+            &observation,
+            &retention_token,
+            durable_write(binding.domain, b"cut", 3),
+        ),
+        DurableCommitOutcome::Committed
+    );
+    assert_eq!(
+        store
+            .get_outgoing_barrier(&context, binding.domain)
+            .unwrap(),
+        OutgoingBarrier::Unsealed
+    );
+
+    let completion_token = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    let sealed = sample_sealed(151);
+    assert_eq!(
+        store.commit_successor_seal_completion(
+            &context,
+            &observation,
+            &completion_token,
+            sealed_invocation(binding.domain, &sealed),
+            sealed,
+        ),
+        DurableCommitOutcome::Committed
+    );
+    assert_eq!(
+        store
+            .get_outgoing_barrier(&context, binding.domain)
+            .unwrap(),
+        OutgoingBarrier::Sealed(sealed)
+    );
+
+    drop(store);
+    let reopened = SqliteImportTarget::open_existing(&db.0, namespace(&binding), &binding).unwrap();
+    assert_eq!(
+        reopened
+            .get_outgoing_barrier(&context, binding.domain)
+            .unwrap(),
+        OutgoingBarrier::Sealed(sealed)
+    );
+    assert_eq!(
+        reopened
+            .get_versioned_durable(&context, binding.domain, b"cut")
+            .unwrap()
+            .value(),
+        Some([3].as_slice())
+    );
+
+    let after_token = reopened
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    assert_eq!(
+        reopened.commit_successor_seal_retention(
+            &context,
+            &observation,
+            &after_token,
+            runtime::AtomicStateTransaction::new(
+                binding.domain,
+                AtomicStateReadSet::new(vec![
+                    StateReadAssertion::new(b"cut".to_vec(), StateRevision::new(1)).unwrap(),
+                ])
+                .unwrap(),
+                AtomicStateMutationSet::new(vec![
+                    StateMutationEntry::new(b"cut".to_vec(), StateMutation::Put(vec![4])).unwrap(),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::NamespaceSealed)
+    );
+    assert_eq!(
+        reopened.commit_successor_durable(
+            &context,
+            &observation,
+            durable_write(binding.domain, b"cut", 5),
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::NamespaceSealed)
+    );
+}
+
+#[test]
+fn successor_seal_retention_rejects_stale_token_before_any_write() {
+    let (_db, store, context, fresh_token, stale_token) = complete_inactive_store(91);
+    let binding = pin();
+    let observation = activate(&store, &context, &fresh_token, 152);
+    let before: SqliteSealState = sqlite_seal_state(&_db);
+    assert_eq!(
+        store.commit_successor_seal_retention(
+            &context,
+            &observation,
+            &stale_token,
+            durable_write(binding.domain, b"stale-cut", 1),
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
+    );
+    assert_eq!(sqlite_seal_state(&_db), before);
+    assert_eq!(
+        store
+            .get_versioned_durable(&context, binding.domain, b"stale-cut")
+            .unwrap()
+            .revision(),
+        StateRevision::INITIAL
+    );
+    assert_eq!(
+        store
+            .get_outgoing_barrier(&context, binding.domain)
+            .unwrap(),
+        OutgoingBarrier::Unsealed
+    );
+}
+
+#[test]
+fn successor_seal_retention_rejects_lifecycle_binding_mismatch_with_positive_control() {
+    let (_db, store, context, fresh_token, _stale_token) = complete_inactive_store(99);
+    let binding = pin();
+    let observation = activate(&store, &context, &fresh_token, 164);
+    // Positive control: the real stored binding/progress commits.
+    let token = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    assert_eq!(
+        store.commit_successor_seal_retention(
+            &context,
+            &observation,
+            &token,
+            durable_write(binding.domain, b"cut", 1),
+        ),
+        DurableCommitOutcome::Committed
+    );
+    // Negative: an observation naming a different binding than the stored
+    // CompleteInactive lifecycle (not merely a different record).
+    let mut wrong_binding: ImportBinding = binding.clone();
+    wrong_binding.row_count = 9;
+    let mismatched_observation = SuccessorServingObservation {
+        record: observation.record.clone(),
+        binding: wrong_binding,
+        progress: initial(),
+    };
+    let next_token = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    let before: SqliteSealState = sqlite_seal_state(&_db);
+    assert_eq!(
+        store.commit_successor_seal_retention(
+            &context,
+            &mismatched_observation,
+            &next_token,
+            durable_write_at(binding.domain, b"cut", 2, StateRevision::new(1)),
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::ImportBindingMismatch)
+    );
+    assert_eq!(sqlite_seal_state(&_db), before);
+    assert_eq!(
+        store
+            .get_versioned_durable(&context, binding.domain, b"cut")
+            .unwrap()
+            .value(),
+        Some([1].as_slice())
+    );
+    assert_eq!(
+        store
+            .get_outgoing_barrier(&context, binding.domain)
+            .unwrap(),
+        OutgoingBarrier::Unsealed
+    );
+    assert_eq!(
+        store.commit_successor_seal_retention(
+            &context,
+            &observation,
+            &next_token,
+            durable_write_at(binding.domain, b"cut", 2, StateRevision::new(1)),
+        ),
+        DurableCommitOutcome::Committed
+    );
+}
+
+#[test]
+fn successor_seal_completion_positive_control_vs_preexisting_outbox_inventory() {
+    let binding = pin();
+
+    // Positive control: a clean store with no pre-existing outbox commits.
+    let (_clean_db, clean_store, clean_context, clean_fresh_token, _) =
+        complete_inactive_store(100);
+    let clean_observation = activate(&clean_store, &clean_context, &clean_fresh_token, 165);
+    let clean_sealed = sample_sealed(166);
+    let clean_token = clean_store
+        .begin_portable_snapshot(&clean_context, binding.domain)
+        .unwrap();
+    assert_eq!(
+        clean_store.commit_successor_seal_retention(
+            &clean_context,
+            &clean_observation,
+            &clean_token,
+            durable_write(binding.domain, b"retention", 1),
+        ),
+        DurableCommitOutcome::Committed
+    );
+    let clean_token: PortableSnapshotToken = clean_store
+        .begin_portable_snapshot(&clean_context, binding.domain)
+        .unwrap();
+    assert_eq!(
+        clean_store.commit_successor_seal_completion(
+            &clean_context,
+            &clean_observation,
+            &clean_token,
+            stateful_sealed_invocation(
+                binding.domain,
+                &clean_sealed,
+                b"cut",
+                2,
+                StateRevision::INITIAL
+            ),
+            clean_sealed,
+        ),
+        DurableCommitOutcome::Committed
+    );
+
+    // Negative: a pending, uncompleted, nonempty outbox row is already
+    // installed from an earlier unrelated invocation; the Seal completion
+    // transaction itself carries no outbox at all, yet the pre-existing
+    // inventory still blocks it.
+    let (_db, store, context, fresh_token, _stale_token) = complete_inactive_store(101);
+    let observation = activate(&store, &context, &fresh_token, 167);
+    let pending_sealed = sample_sealed(168);
+    let pending_request_id = DurableRequestId::new(pending_sealed.request).unwrap();
+    let pending_event_digest = digest(0x5A);
+    let pending_receipt =
+        DurableRequestReceipt::new(pending_request_id, pending_event_digest, vec![1]).unwrap();
+    let pending_message = runtime::DurableOutboxMessage::new(digest(0x5B), vec![9]).unwrap();
+    let pending_outbox = runtime::DurableOutboxBatch::new(
+        pending_request_id,
+        pending_event_digest,
+        vec![pending_message],
+    )
+    .unwrap();
+    let pending_invocation = DurableInvocationTransaction::new(
+        binding.domain,
+        None,
+        DurableObjectChanges::empty(),
+        pending_receipt,
+        Some(pending_outbox),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_successor_invocation(&context, &observation, pending_invocation),
+        DurableCommitOutcome::Committed
+    );
+
+    let sealed = sample_sealed(169);
+    let token = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    assert_sqlite_seal_rejection(&_db, DurableCommitRejection::InvalidPersistedState, || {
+        store.commit_successor_seal_retention(
+            &context,
+            &observation,
+            &token,
+            durable_write(binding.domain, b"retention", 1),
+        )
+    });
+    let before: SqliteSealState = sqlite_seal_state(&_db);
+    assert_eq!(
+        store.commit_successor_seal_completion(
+            &context,
+            &observation,
+            &token,
+            stateful_sealed_invocation(binding.domain, &sealed, b"cut", 2, StateRevision::INITIAL),
+            sealed,
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
+    );
+    assert_eq!(sqlite_seal_state(&_db), before);
+    assert_eq!(
+        store
+            .get_outgoing_barrier(&context, binding.domain)
+            .unwrap(),
+        OutgoingBarrier::Unsealed
+    );
+    assert_eq!(
+        store
+            .get_request_receipt(
+                &context,
+                binding.domain,
+                DurableRequestId::new(sealed.request).unwrap()
+            )
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn successor_seal_completion_rejects_foreign_physical_token_before_any_write() {
+    let (_db, store, context, fresh_token, _stale_token) = complete_inactive_store(92);
+    let (_other_db, other_store, other_context, other_fresh_token, _) = complete_inactive_store(92);
+    let binding = pin();
+    let observation = activate(&store, &context, &fresh_token, 153);
+    let _other_observation = activate(&other_store, &other_context, &other_fresh_token, 153);
+    let foreign_token = other_store
+        .begin_portable_snapshot(&other_context, binding.domain)
+        .unwrap();
+    let own_token = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    assert_ne!(foreign_token.namespace(), own_token.namespace());
+    let sealed = sample_sealed(154);
+    let before: SqliteSealState = sqlite_seal_state(&_db);
+    assert_eq!(
+        store.commit_successor_seal_completion(
+            &context,
+            &observation,
+            &foreign_token,
+            stateful_sealed_invocation(binding.domain, &sealed, b"cut", 2, StateRevision::INITIAL),
+            sealed,
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
+    );
+    assert_eq!(sqlite_seal_state(&_db), before);
+    assert_eq!(
+        store
+            .get_outgoing_barrier(&context, binding.domain)
+            .unwrap(),
+        OutgoingBarrier::Unsealed
+    );
+    assert_eq!(
+        store.commit_successor_seal_completion(
+            &context,
+            &observation,
+            &own_token,
+            stateful_sealed_invocation(binding.domain, &sealed, b"cut", 2, StateRevision::INITIAL),
+            sealed,
+        ),
+        DurableCommitOutcome::Committed
+    );
+}
+
+#[test]
+fn successor_seal_retention_rejects_mismatched_observation_record() {
+    let (_db, store, context, fresh_token, _stale_token) = complete_inactive_store(93);
+    let binding = pin();
+    let _observation = activate(&store, &context, &fresh_token, 155);
+    let wrong_observation = SuccessorServingObservation {
+        record: vec![0xEE; 4],
+        binding: binding.clone(),
+        progress: initial(),
+    };
+    let token = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    let before: SqliteSealState = sqlite_seal_state(&_db);
+    assert_eq!(
+        store.commit_successor_seal_retention(
+            &context,
+            &wrong_observation,
+            &token,
+            durable_write(binding.domain, b"mismatch-cut", 1),
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
+    );
+    assert_eq!(sqlite_seal_state(&_db), before);
+}
+
+#[test]
+fn successor_seal_completion_rejects_stale_generation() {
+    let (_db, store, context, fresh_token, _stale_token) = complete_inactive_store(94);
+    let binding = pin();
+    let observation = activate(&store, &context, &fresh_token, 156);
+    let token = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    let next_context = operation(95);
+    store
+        .advance_writer_fence(context.writer_fence(), next_context.writer_fence())
+        .unwrap();
+    let sealed = sample_sealed(157);
+    let before: SqliteSealState = sqlite_seal_state(&_db);
+    assert_eq!(
+        store.commit_successor_seal_completion(
+            &context,
+            &observation,
+            &token,
+            stateful_sealed_invocation(binding.domain, &sealed, b"cut", 2, StateRevision::INITIAL),
+            sealed,
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::WriterFenced {
+            active_generation: next_context.writer_fence(),
+        })
+    );
+    assert_eq!(sqlite_seal_state(&_db), before);
+    let current_token: PortableSnapshotToken = store
+        .begin_portable_snapshot(&next_context, binding.domain)
+        .unwrap();
+    assert_eq!(
+        store.commit_successor_seal_completion(
+            &next_context,
+            &observation,
+            &current_token,
+            stateful_sealed_invocation(binding.domain, &sealed, b"cut", 2, StateRevision::INITIAL),
+            sealed,
+        ),
+        DurableCommitOutcome::Committed
+    );
+}
+
+#[test]
+fn successor_seal_completion_rejects_occupied_receipt() {
+    let (_db, store, context, fresh_token, _stale_token) = complete_inactive_store(96);
+    let binding = pin();
+    let observation = activate(&store, &context, &fresh_token, 158);
+    let sealed = sample_sealed(159);
+    assert_eq!(
+        store.commit_successor_invocation(
+            &context,
+            &observation,
+            sealed_invocation(binding.domain, &sealed),
+        ),
+        DurableCommitOutcome::Committed
+    );
+    let token = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    let before: SqliteSealState = sqlite_seal_state(&_db);
+    assert_eq!(
+        store.commit_successor_seal_completion(
+            &context,
+            &observation,
+            &token,
+            sealed_invocation(binding.domain, &sealed),
+            sealed,
+        ),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::RequestAlreadyCommitted)
+    );
+    assert_eq!(sqlite_seal_state(&_db), before);
+}
+
+#[test]
+fn successor_seal_completion_rejects_nonempty_outbox_before_any_write() {
+    let (_db, store, context, fresh_token, _stale_token) = complete_inactive_store(97);
+    let binding = pin();
+    let observation = activate(&store, &context, &fresh_token, 160);
+    let sealed = sample_sealed(161);
+    let request_id = DurableRequestId::new(sealed.request).unwrap();
+    let event_digest = digest(0xEE);
+    let receipt_value = DurableRequestReceipt::new(request_id, event_digest, vec![1]).unwrap();
+    let message = runtime::DurableOutboxMessage::new(digest(0xFA), vec![9]).unwrap();
+    let outbox = runtime::DurableOutboxBatch::new(request_id, event_digest, vec![message]).unwrap();
+    let invocation = DurableInvocationTransaction::new(
+        binding.domain,
+        None,
+        DurableObjectChanges::empty(),
+        receipt_value,
+        Some(outbox),
+    )
+    .unwrap();
+    let token = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    let before: SqliteSealState = sqlite_seal_state(&_db);
+    assert_eq!(
+        store.commit_successor_seal_completion(&context, &observation, &token, invocation, sealed),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
+    );
+    assert_eq!(sqlite_seal_state(&_db), before);
+    assert_eq!(
+        store
+            .get_outgoing_barrier(&context, binding.domain)
+            .unwrap(),
+        OutgoingBarrier::Unsealed
+    );
+}
+
+#[test]
+fn successor_seal_completion_rejects_object_changes_before_any_write() {
+    let (_db, store, context, fresh_token, _stale_token) = complete_inactive_store(98);
+    let binding = pin();
+    let observation = activate(&store, &context, &fresh_token, 162);
+    let object_id = ObjectId::new([62; 32]);
+    let sealed = sample_sealed(163);
+    let invocation = DurableInvocationTransaction::new(
+        binding.domain,
+        None,
+        object_create_changes(object_id),
+        DurableRequestReceipt::new(
+            DurableRequestId::new(sealed.request).unwrap(),
+            digest(0xAB),
+            vec![1],
+        )
+        .unwrap(),
+        None,
+    )
+    .unwrap();
+    let token = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    let before: SqliteSealState = sqlite_seal_state(&_db);
+    assert_eq!(
+        store.commit_successor_seal_completion(&context, &observation, &token, invocation, sealed),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
+    );
+    assert_eq!(sqlite_seal_state(&_db), before);
+    assert_eq!(
+        store
+            .get_outgoing_barrier(&context, binding.domain)
+            .unwrap(),
+        OutgoingBarrier::Unsealed
+    );
 }

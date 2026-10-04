@@ -25,6 +25,63 @@ fn successor_authority(
         .ok_or(DurableCommitRejection::InvalidPersistedState)
 }
 
+/// The same local serving continuity checks precede every successor write.
+/// Raw persisted observations never confer protocol or membership authority.
+fn successor_serving_preconditions(
+    data: &MemoryDurableStoreData,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    observation: &SuccessorServingObservation,
+) -> Result<(), DurableCommitRejection> {
+    let validator: ValidatorId = successor_authority(data, context, domain)?;
+    match &data.lifecycle {
+        NamespaceLifecycle::CompleteInactive { binding, progress }
+            if *binding == observation.binding && *progress == observation.progress => {}
+        _ => return Err(DurableCommitRejection::ImportBindingMismatch),
+    }
+    if data.outgoing_barrier.is_sealed() {
+        return Err(DurableCommitRejection::NamespaceSealed);
+    }
+    match &data.successor_serving {
+        SuccessorServingSlot::Serving(current) if current.record == observation.record => {}
+        _ => return Err(DurableCommitRejection::ImportConflict),
+    }
+    let decoded: SuccessorServingRecord = decode_successor_serving_record(&observation.record)
+        .map_err(|_| DurableCommitRejection::InvalidPersistedState)?;
+    if decoded.validator != validator {
+        return Err(DurableCommitRejection::ImportConflict);
+    }
+    Ok(())
+}
+
+/// Seal additionally fences the complete local snapshot and outbox inventory.
+fn successor_seal_preconditions(
+    data: &MemoryDurableStoreData,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    observation: &SuccessorServingObservation,
+    token: &PortableSnapshotToken,
+) -> Result<(), DurableCommitRejection> {
+    successor_serving_preconditions(data, context, domain, observation)?;
+    let current: u64 = data
+        .mutation_sequences
+        .get(domain.as_bytes())
+        .copied()
+        .unwrap_or(0);
+    token
+        .check(
+            &data.portable_namespace,
+            domain,
+            data.active_writer_fence,
+            current,
+        )
+        .map_err(|_| DurableCommitRejection::InvalidPersistedState)?;
+    if !crate::outgoing_seal::seal_outbox_is_empty(data, domain) {
+        return Err(DurableCommitRejection::InvalidPersistedState);
+    }
+    Ok(())
+}
+
 impl SuccessorServingRepository for MemoryDurableStateStore {
     fn read_namespace_validator(
         &self,
@@ -146,25 +203,7 @@ impl SuccessorServingRepository for MemoryDurableStateStore {
         };
         outcome((|| {
             let domain: AtomicityDomainId = transaction.domain();
-            let validator = successor_authority(&data, context, domain)?;
-            match &data.lifecycle {
-                NamespaceLifecycle::CompleteInactive { binding, progress }
-                    if *binding == observation.binding && *progress == observation.progress => {}
-                _ => return Err(DurableCommitRejection::ImportBindingMismatch),
-            }
-            if data.outgoing_barrier.is_sealed() {
-                return Err(DurableCommitRejection::NamespaceSealed);
-            }
-            match &data.successor_serving {
-                SuccessorServingSlot::Serving(current) if current.record == observation.record => {}
-                _ => return Err(DurableCommitRejection::ImportConflict),
-            }
-            let decoded: SuccessorServingRecord =
-                decode_successor_serving_record(&observation.record)
-                    .map_err(|_| DurableCommitRejection::InvalidPersistedState)?;
-            if decoded.validator != validator {
-                return Err(DurableCommitRejection::ImportConflict);
-            }
+            successor_serving_preconditions(&data, context, domain, observation)?;
             let domain_bytes: [u8; 32] = *domain.as_bytes();
             let state = data.state_domains.get(&domain_bytes);
             validate_memory_durable_reads(state, transaction.reads())?;
@@ -189,25 +228,7 @@ impl SuccessorServingRepository for MemoryDurableStateStore {
         };
         outcome((|| {
             let domain: AtomicityDomainId = transaction.domain();
-            let validator = successor_authority(&data, context, domain)?;
-            match &data.lifecycle {
-                NamespaceLifecycle::CompleteInactive { binding, progress }
-                    if *binding == observation.binding && *progress == observation.progress => {}
-                _ => return Err(DurableCommitRejection::ImportBindingMismatch),
-            }
-            if data.outgoing_barrier.is_sealed() {
-                return Err(DurableCommitRejection::NamespaceSealed);
-            }
-            match &data.successor_serving {
-                SuccessorServingSlot::Serving(current) if current.record == observation.record => {}
-                _ => return Err(DurableCommitRejection::ImportConflict),
-            }
-            let decoded: SuccessorServingRecord =
-                decode_successor_serving_record(&observation.record)
-                    .map_err(|_| DurableCommitRejection::InvalidPersistedState)?;
-            if decoded.validator != validator {
-                return Err(DurableCommitRejection::ImportConflict);
-            }
+            successor_serving_preconditions(&data, context, domain, observation)?;
             let domain_bytes: [u8; 32] = *domain.as_bytes();
             let request_key: MemoryDurableInvocationKey =
                 (domain_bytes, *transaction.receipt.request_id.as_bytes());
@@ -252,6 +273,119 @@ impl SuccessorServingRepository for MemoryDurableStateStore {
             if let Some(delivery) = delivery {
                 data.deliveries.insert(request_key, delivery);
             }
+            data.mutation_sequences.insert(domain_bytes, next);
+            Ok(())
+        })())
+    }
+
+    fn commit_successor_seal_retention(
+        &self,
+        context: &DurableOperationContext,
+        observation: &SuccessorServingObservation,
+        token: &PortableSnapshotToken,
+        transaction: AtomicStateTransaction,
+    ) -> DurableCommitOutcome {
+        let Ok(mut data) = self.inner.write() else {
+            return DurableCommitOutcome::Rejected(DurableCommitRejection::UnavailableBeforeCommit);
+        };
+        outcome((|| {
+            let domain: AtomicityDomainId = transaction.domain();
+            successor_seal_preconditions(&data, context, domain, observation, token)?;
+            let domain_bytes: [u8; 32] = *domain.as_bytes();
+            let state = data.state_domains.get(&domain_bytes);
+            validate_memory_durable_reads(state, transaction.reads())?;
+            let revisions = memory_durable_revisions(state, transaction.mutations())?;
+            let next: u64 = memory_next_mutation_sequence(&data, domain)
+                .ok_or(DurableCommitRejection::CommitSequenceOverflow)?;
+            let state = data.state_domains.entry(domain_bytes).or_default();
+            apply_memory_durable_mutations(state, transaction.mutations.mutations, revisions)?;
+            data.mutation_sequences.insert(domain_bytes, next);
+            Ok(())
+        })())
+    }
+
+    fn commit_successor_seal_completion(
+        &self,
+        context: &DurableOperationContext,
+        observation: &SuccessorServingObservation,
+        token: &PortableSnapshotToken,
+        transaction: DurableInvocationTransaction,
+        sealed: SealBarrier,
+    ) -> DurableCommitOutcome {
+        if encode_seal_barrier(&sealed).is_err() {
+            return DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState);
+        }
+        let Ok(mut data) = self.inner.write() else {
+            return DurableCommitOutcome::Rejected(DurableCommitRejection::UnavailableBeforeCommit);
+        };
+        outcome((|| {
+            let domain: AtomicityDomainId = transaction.domain();
+            successor_seal_preconditions(&data, context, domain, observation, token)?;
+            // Structural continuity only: core separately authenticates the
+            // live epoch and verified Seal request before calling this port.
+            if observation.binding.context.epoch.get().checked_add(1)
+                != Some(sealed.outgoing_epoch.get())
+            {
+                return Err(DurableCommitRejection::ImportConflict);
+            }
+            if transaction.receipt().request_id().as_bytes() != &sealed.request {
+                return Err(DurableCommitRejection::InvalidPersistedState);
+            }
+            if !transaction.object_changes().reads().is_empty()
+                || !transaction.object_changes().mutations().is_empty()
+            {
+                return Err(DurableCommitRejection::InvalidPersistedState);
+            }
+            if transaction
+                .outbox()
+                .is_some_and(|outbox| !outbox.messages().is_empty())
+            {
+                return Err(DurableCommitRejection::InvalidPersistedState);
+            }
+            let domain_bytes: [u8; 32] = *domain.as_bytes();
+            let request_key: MemoryDurableInvocationKey =
+                (domain_bytes, *transaction.receipt().request_id().as_bytes());
+            if data.receipts.contains_key(&request_key) {
+                return Err(DurableCommitRejection::RequestAlreadyCommitted);
+            }
+            if data.outboxes.contains_key(&request_key)
+                || data.deliveries.contains_key(&request_key)
+            {
+                return Err(DurableCommitRejection::InvalidPersistedState);
+            }
+            let prepared_revisions = if let Some(section) = transaction.state() {
+                let current_state = data.state_domains.get(&domain_bytes);
+                validate_memory_durable_reads(current_state, section.reads())?;
+                Some(memory_durable_revisions(
+                    current_state,
+                    section.mutations(),
+                )?)
+            } else {
+                None
+            };
+            let next: u64 = memory_next_mutation_sequence(&data, domain)
+                .ok_or(DurableCommitRejection::CommitSequenceOverflow)?;
+            if let (Some(section), Some(revisions)) = (transaction.state(), prepared_revisions) {
+                let mutations: Vec<StateMutationEntry> = section.mutations().to_vec();
+                let state = data.state_domains.entry(domain_bytes).or_default();
+                apply_memory_durable_mutations(state, mutations, revisions)?;
+            }
+            data.receipts
+                .insert(request_key, transaction.receipt().clone());
+            if let Some(outbox) = transaction.outbox() {
+                data.outboxes.insert(request_key, outbox.clone());
+                data.deliveries.insert(
+                    request_key,
+                    MemoryOutboxDelivery {
+                        next_index: 0,
+                        available_at_unix_millis: 0,
+                        active_lease: None,
+                        attempt_count: 0,
+                        completed: true,
+                    },
+                );
+            }
+            data.outgoing_barrier = OutgoingBarrier::Sealed(sealed);
             data.mutation_sequences.insert(domain_bytes, next);
             Ok(())
         })())

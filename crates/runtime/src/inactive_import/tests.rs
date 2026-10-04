@@ -54,6 +54,22 @@ fn batch(binding: &ImportBinding, expected: &ImportProgress, rows: Vec<ImportRow
     )
     .unwrap()
 }
+fn batch_with_digest(
+    binding: &ImportBinding,
+    expected: &ImportProgress,
+    batch_digest_byte: u8,
+    next_accumulator_byte: u8,
+    rows: Vec<ImportRow>,
+) -> ImportBatch {
+    ImportBatch::new(
+        binding.clone(),
+        expected.clone(),
+        digest(batch_digest_byte),
+        digest(next_accumulator_byte),
+        rows,
+    )
+    .unwrap()
+}
 fn ordinary_write(domain: AtomicityDomainId) -> AtomicStateTransaction {
     AtomicStateTransaction::new(
         domain,
@@ -420,5 +436,375 @@ fn inactive_import_memory_ordinary_binding_progress_conflict_and_deadline_refuse
     assert_eq!(
         store.commit_import_batch(&context, pin.domain, &first),
         DurableCommitOutcome::Rejected(DurableCommitRejection::DeadlineExceededBeforeCommit)
+    );
+}
+
+#[test]
+fn new_bound_from_import_batches_reconstructs_exact_rows_across_batches() {
+    let pin: ImportBinding = binding(5);
+    let id: ObjectId = ObjectId::new([21; 32]);
+    let version: DurableObjectVersionRecord = DurableObjectVersionRecord::from_blob_reference(
+        id,
+        DurableObjectVersion::new(3).unwrap(),
+        digest(40),
+        1,
+        DurableObjectProvenance::new(pin.context.chain_id.clone(), pin.context.protocol_version),
+        17,
+        digest(41),
+    );
+    let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
+        DurableRequestId::new([44; 32]).unwrap(),
+        digest(45),
+        vec![0x71; 6],
+    )
+    .unwrap();
+    let first: ImportBatch = batch(
+        &pin,
+        &initial(),
+        vec![state(b"a", Some(b"first")), state(b"z", None)],
+    );
+    let second: ImportBatch = batch(
+        &pin,
+        first.next(),
+        vec![
+            ImportRow::ObjectVersion(version.clone()),
+            ImportRow::ObjectHead {
+                object_id: id,
+                head: ImportObjectHead::Current {
+                    object_version: version.object_version(),
+                    digest: version.digest(),
+                    owner_projection: Default::default(),
+                    routing_projection: Default::default(),
+                },
+            },
+            ImportRow::Receipt(receipt.clone()),
+        ],
+    );
+    let store: MemoryDurableStateStore = MemoryDurableStateStore::new_bound_from_import_batches(
+        &pin,
+        WriterFenceGeneration::new(9).unwrap(),
+        &[first, second],
+    )
+    .unwrap();
+    let context: DurableOperationContext = operation(9);
+    assert_eq!(
+        store.get_namespace_lifecycle(&context, pin.domain).unwrap(),
+        NamespaceLifecycle::Ordinary
+    );
+    assert_eq!(
+        store.get_outgoing_barrier(&context, pin.domain).unwrap(),
+        OutgoingBarrier::Unsealed
+    );
+    assert_eq!(
+        store.get_successor_serving(&context, pin.domain).unwrap(),
+        SuccessorServingSlot::Inactive
+    );
+    assert!(store.outgoing_seal_repository().is_some());
+    assert!(store.successor_serving_repository().is_none());
+    assert_eq!(
+        store
+            .get_versioned_durable(&context, pin.domain, b"a")
+            .unwrap()
+            .value(),
+        Some(b"first".as_slice())
+    );
+    let tombstone = store
+        .get_versioned_durable(&context, pin.domain, b"z")
+        .unwrap();
+    assert!(tombstone.value().is_none());
+    assert_ne!(tombstone.revision(), StateRevision::INITIAL);
+    assert_eq!(
+        store
+            .get_object_version(&context, pin.domain, id, version.object_version())
+            .unwrap(),
+        Some(version.clone())
+    );
+    assert!(matches!(
+        store.get_object_head(&context, pin.domain, id).unwrap(),
+        DurableObjectHead::Current { .. }
+    ));
+    assert_eq!(
+        store
+            .get_request_receipt(&context, pin.domain, receipt.request_id())
+            .unwrap(),
+        Some(receipt)
+    );
+    let data = store.inner.read().unwrap();
+    assert_eq!(data.receipts.len(), 1);
+    assert!(data.outboxes.is_empty());
+    assert!(data.deliveries.is_empty());
+    assert!(data.successor_namespace_validator.is_none());
+    assert!(data.mutation_sequences.is_empty());
+    assert_eq!(
+        data.state_domains[pin.domain.as_bytes()][b"a".as_slice()].revision,
+        StateRevision::new(1)
+    );
+    assert_eq!(
+        data.state_domains[pin.domain.as_bytes()][b"z".as_slice()].revision,
+        StateRevision::new(1)
+    );
+}
+
+#[test]
+fn new_bound_from_import_batches_rejects_binding_mismatch_and_short_count() {
+    let pin: ImportBinding = binding(2);
+    let first: ImportBatch = batch(&pin, &initial(), vec![state(b"a", Some(b"x"))]);
+    let mut wrong_binding: ImportBinding = pin.clone();
+    wrong_binding.cut_digest = digest(77);
+    let mismatched: ImportBatch =
+        batch(&wrong_binding, first.next(), vec![state(b"b", Some(b"y"))]);
+    assert_eq!(
+        MemoryDurableStateStore::new_bound_from_import_batches(
+            &pin,
+            WriterFenceGeneration::new(1).unwrap(),
+            &[first.clone(), mismatched],
+        )
+        .unwrap_err(),
+        DurableCommitRejection::ImportBindingMismatch
+    );
+    let second_bad_expected: ImportBatch = batch(&pin, &initial(), vec![state(b"b", Some(b"y"))]);
+    assert_eq!(
+        MemoryDurableStateStore::new_bound_from_import_batches(
+            &pin,
+            WriterFenceGeneration::new(1).unwrap(),
+            &[first.clone(), second_bad_expected],
+        )
+        .unwrap_err(),
+        DurableCommitRejection::ImportConflict
+    );
+    assert_eq!(
+        MemoryDurableStateStore::new_bound_from_import_batches(
+            &pin,
+            WriterFenceGeneration::new(1).unwrap(),
+            &[first],
+        )
+        .unwrap_err(),
+        DurableCommitRejection::ImportConflict
+    );
+}
+
+#[test]
+fn new_bound_from_import_batches_accepts_a_three_batch_chain_with_distinct_accumulators() {
+    let pin: ImportBinding = binding(3);
+    let first: ImportBatch =
+        batch_with_digest(&pin, &initial(), 70, 80, vec![state(b"a", Some(b"1"))]);
+    let second: ImportBatch =
+        batch_with_digest(&pin, first.next(), 71, 81, vec![state(b"b", Some(b"2"))]);
+    let third: ImportBatch =
+        batch_with_digest(&pin, second.next(), 72, 82, vec![state(b"c", Some(b"3"))]);
+    let store: MemoryDurableStateStore = MemoryDurableStateStore::new_bound_from_import_batches(
+        &pin,
+        WriterFenceGeneration::new(1).unwrap(),
+        &[first, second, third],
+    )
+    .unwrap();
+    let context: DurableOperationContext = operation(1);
+    assert_eq!(
+        store
+            .get_versioned_durable(&context, pin.domain, b"a")
+            .unwrap()
+            .value(),
+        Some(b"1".as_slice())
+    );
+    assert_eq!(
+        store
+            .get_versioned_durable(&context, pin.domain, b"b")
+            .unwrap()
+            .value(),
+        Some(b"2".as_slice())
+    );
+    assert_eq!(
+        store
+            .get_versioned_durable(&context, pin.domain, b"c")
+            .unwrap()
+            .value(),
+        Some(b"3".as_slice())
+    );
+}
+
+#[test]
+fn new_bound_from_import_batches_rejects_substituted_accumulator_mid_chain() {
+    let pin: ImportBinding = binding(2);
+    let first: ImportBatch =
+        batch_with_digest(&pin, &initial(), 70, 80, vec![state(b"a", Some(b"1"))]);
+    // Structurally plausible (ordinal and batch digest both correct) but the
+    // accumulator is a substituted value, not the real chained next().
+    let mut forged_expected: ImportProgress = first.next().clone();
+    forged_expected.accumulator = digest(0xFE);
+    let second: ImportBatch = batch_with_digest(
+        &pin,
+        &forged_expected,
+        71,
+        81,
+        vec![state(b"b", Some(b"2"))],
+    );
+    assert_eq!(
+        MemoryDurableStateStore::new_bound_from_import_batches(
+            &pin,
+            WriterFenceGeneration::new(1).unwrap(),
+            &[first, second],
+        )
+        .unwrap_err(),
+        DurableCommitRejection::ImportConflict
+    );
+}
+
+#[test]
+fn new_bound_from_import_batches_rejects_reversed_locator_across_batch_boundary() {
+    let pin: ImportBinding = binding(2);
+    let first: ImportBatch =
+        batch_with_digest(&pin, &initial(), 70, 80, vec![state(b"m", Some(b"1"))]);
+    // The progress chain is genuinely valid; only the row locator order
+    // regresses across the batch boundary ("a" sorts before "m").
+    let second: ImportBatch =
+        batch_with_digest(&pin, first.next(), 71, 81, vec![state(b"a", Some(b"2"))]);
+    assert_eq!(
+        MemoryDurableStateStore::new_bound_from_import_batches(
+            &pin,
+            WriterFenceGeneration::new(1).unwrap(),
+            &[first, second],
+        )
+        .unwrap_err(),
+        DurableCommitRejection::ImportConflict
+    );
+}
+
+#[test]
+fn new_bound_from_import_batches_rejects_exact_duplicate_row_at_valid_next_progress() {
+    let pin: ImportBinding = binding(2);
+    let first: ImportBatch =
+        batch_with_digest(&pin, &initial(), 70, 80, vec![state(b"a", Some(b"1"))]);
+    // The progress chain is genuinely valid; the second batch repeats a
+    // byte-identical row (same key, same value) from the first batch.
+    let second: ImportBatch =
+        batch_with_digest(&pin, first.next(), 71, 81, vec![state(b"a", Some(b"1"))]);
+    assert_eq!(
+        MemoryDurableStateStore::new_bound_from_import_batches(
+            &pin,
+            WriterFenceGeneration::new(1).unwrap(),
+            &[first, second],
+        )
+        .unwrap_err(),
+        DurableCommitRejection::ImportConflict
+    );
+}
+
+#[test]
+fn new_bound_from_import_batches_reuses_head_and_provenance_validation_across_batches() {
+    let pin: ImportBinding = binding(2);
+    let id: ObjectId = ObjectId::new([22; 32]);
+    let version: DurableObjectVersionRecord = DurableObjectVersionRecord::from_blob_reference(
+        id,
+        DurableObjectVersion::new(3).unwrap(),
+        digest(40),
+        1,
+        DurableObjectProvenance::new(pin.context.chain_id.clone(), pin.context.protocol_version),
+        17,
+        digest(41),
+    );
+    let first: ImportBatch = batch(
+        &pin,
+        &initial(),
+        vec![ImportRow::ObjectVersion(version.clone())],
+    );
+    let correct: ImportRow = ImportRow::ObjectHead {
+        object_id: id,
+        head: ImportObjectHead::Tombstoned {
+            last_object_version: version.object_version(),
+        },
+    };
+    let second: ImportBatch = batch(&pin, first.next(), vec![correct]);
+    let store: MemoryDurableStateStore = MemoryDurableStateStore::new_bound_from_import_batches(
+        &pin,
+        WriterFenceGeneration::new(1).unwrap(),
+        &[first.clone(), second],
+    )
+    .unwrap();
+    assert!(matches!(
+        store.get_object_head(&operation(1), pin.domain, id).unwrap(),
+        DurableObjectHead::Tombstoned { last_object_version, .. } if last_object_version == version.object_version()
+    ));
+    let wrong: ImportBatch = batch(
+        &pin,
+        first.next(),
+        vec![ImportRow::ObjectHead {
+            object_id: id,
+            head: ImportObjectHead::Tombstoned {
+                last_object_version: DurableObjectVersion::new(2).unwrap(),
+            },
+        }],
+    );
+    assert_eq!(
+        MemoryDurableStateStore::new_bound_from_import_batches(
+            &pin,
+            WriterFenceGeneration::new(1).unwrap(),
+            &[first, wrong],
+        )
+        .unwrap_err(),
+        DurableCommitRejection::ImportConflict
+    );
+    let mut foreign: ImportBinding = pin.clone();
+    foreign.context.chain_id = ChainId::new("foreign-import-chain").unwrap();
+    let bad_provenance: ImportBatch = batch(
+        &foreign,
+        &initial(),
+        vec![ImportRow::ObjectVersion(version)],
+    );
+    // State rows precede versions globally, so use a receipt after the
+    // foreign-provenance version to make the provenance check decisive.
+    let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
+        DurableRequestId::new([0x44; 32]).unwrap(),
+        digest(0x45),
+        vec![1],
+    )
+    .unwrap();
+    let final_row: ImportBatch = batch(
+        &foreign,
+        bad_provenance.next(),
+        vec![ImportRow::Receipt(receipt)],
+    );
+    assert_eq!(
+        MemoryDurableStateStore::new_bound_from_import_batches(
+            &foreign,
+            WriterFenceGeneration::new(1).unwrap(),
+            &[bad_provenance, final_row],
+        )
+        .unwrap_err(),
+        DurableCommitRejection::ImportBindingMismatch
+    );
+}
+
+#[test]
+fn new_bound_from_import_batches_rejects_reordered_duplicated_and_conflicting_batches() {
+    let pin: ImportBinding = binding(2);
+    let first: ImportBatch = batch(&pin, &initial(), vec![state(b"a", Some(b"x"))]);
+    let second: ImportBatch = batch(&pin, first.next(), vec![state(b"b", Some(b"y"))]);
+    assert_eq!(
+        MemoryDurableStateStore::new_bound_from_import_batches(
+            &pin,
+            WriterFenceGeneration::new(1).unwrap(),
+            &[second.clone(), first.clone()],
+        )
+        .unwrap_err(),
+        DurableCommitRejection::ImportConflict
+    );
+    assert_eq!(
+        MemoryDurableStateStore::new_bound_from_import_batches(
+            &pin,
+            WriterFenceGeneration::new(1).unwrap(),
+            &[first.clone(), first.clone()],
+        )
+        .unwrap_err(),
+        DurableCommitRejection::ImportConflict
+    );
+    let conflicting: ImportBatch = batch(&pin, first.next(), vec![state(b"a", Some(b"different"))]);
+    assert_eq!(
+        MemoryDurableStateStore::new_bound_from_import_batches(
+            &pin,
+            WriterFenceGeneration::new(1).unwrap(),
+            &[first, conflicting],
+        )
+        .unwrap_err(),
+        DurableCommitRejection::ImportConflict
     );
 }
