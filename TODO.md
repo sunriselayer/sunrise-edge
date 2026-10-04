@@ -76,9 +76,31 @@ original remains equal to its baseline. This is observation fidelity, not a
 new authenticated Seal fixture. The corrected conditional-readiness, source
 process and startup targets passed all eleven cases, including the genuine
 four-host Seal and replay. Fresh exact-head review and committed-source
-validation remain required before merging PR #268.
+validation both passed at final head `d534a37b`. [PR #268](https://github.com/sunriselayer/sunrise-edge/pull/268)
+merged normally on 2026-10-04 as `2034ba9c`, after fresh independent explicit
+APPROVE, required CI run `37184335287` and the complete same-head selected
+PostgreSQL profile with its original fault flags. Main was clean and equalled
+origin/main; the source branch was deleted. The earlier cached-interface
+failure was followed by narrow affected-package cache regeneration and a
+successful complete unchanged-source rerun; failed runs are not acceptance.
 Claude's session-limit refusal is recorded; the previously authorized independent
 Codex substitute is used while it is unavailable.
+
+**Recurring implementation checkpoint, 2026-10-04:** core connects one bounded
+verified chain, the private ordinary-memory replay bootstrap, current registration
+and historical owners, current frontier/drain/cut/readiness, tag-2 Seal and the
+same issuer-bound atomic successor ports. Memory/shared SQL/SQLite bodies retain
+the original fence, token, lifecycle and receipt rules; no backend schema or
+canonical old frame is changed. Held live warrants recheck the same protected
+Serving/import origin and Unsealed state before new signatures, separately from
+identity-only exact reconciliation. Both the genuine two-link fixture and the
+full installed seven-epoch-delay fixture compile; actual runtime checks,
+complete committed-source gates and independent exact-head review are pending.
+The scoped node-core dev/test optimization keeps assertions and overflow checks.
+SDK/CLI/operator/native HTTP consumers compile together on the downstream
+integration branch, but compiled changed-committee recurrence, later five-member
+participation and eligible process withdrawals remain unchecked. This is not
+Delivery 3, PostgreSQL/DO/D1 activation or production readiness.
 
 **Completed architecture-first work window, 2026-10-02:** approximately eight
 hours, from 13:50 until 21:50 Asia/Singapore. Establish the
