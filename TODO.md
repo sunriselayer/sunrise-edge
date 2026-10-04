@@ -177,8 +177,15 @@ quorums belong to the still-incomplete process acceptance, not this pass.
 The HTTP failure has a reproduced transport phase defect: both actual complete
 GET/POST requests reach the real handler, then lose all response bytes at the
 100 ms ingress idle deadline while that handler waits 750 ms. No timeout was
-increased and no retry was used. A phase-owned fix is under validation; this
-small reproduction is not a successful rerun of the failed e2 process case.
+increased and no retry was used. The phase-owned fix at `2f4ec75` passes those
+same two tests, all 159 native HTTP library tests (including the retained
+read/overload/write/one-request controls), all 53 operator library tests, and
+strict all-target/all-feature native HTTP/operator Clippy. Fresh exact-head
+Opus code review explicitly approves `2f4ec75`. The pre-fix test log precedes
+rustfmt's seven-line import expansion only; its handler, limits, request and
+assertions are unchanged. This reproduction and fix are not a successful
+rerun of the failed e2 process case; the complete final process/S12 and
+repository profiles and CI remain mandatory.
 
 **Completed architecture-first work window, 2026-10-02:** approximately eight
 hours, from 13:50 until 21:50 Asia/Singapore. Establish the
