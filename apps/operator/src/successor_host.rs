@@ -16,10 +16,10 @@ use crate::{
     business_pins::{BusinessPinInputs, BusinessPins, bounded, hex, operation, private_operation},
     common::{FlagSet, load_signing_key_file, parse_hex_32},
     host_protocol_context::host_query_protocol_config,
+    host_runtime::FileEd25519Signer,
     immutable_archive::ImmutableArchiveReader,
     successor_artifacts::SuccessorArtifactFiles,
 };
-use consensus::ConsensusSigner;
 use ed25519_zebra::{SigningKey, VerificationKey};
 use hashing::HashSuiteResolver;
 use native_http::successor::{
@@ -40,7 +40,7 @@ use node_core::ordered_economics::{
 };
 use node_core::serving_authority::{LiveAuthority, ServingAuthorityError, resolve_live_authority};
 use protocol_config::ProtocolConfig;
-use protocol_types::{AtomicityDomainId, Epoch, SignatureSchemeId, ValidatorId};
+use protocol_types::{AtomicityDomainId, Epoch, ValidatorId};
 use runtime::{
     DurableOperationContext, DurableOutboxLeaseId, StorageCorrelationId, SystemClock,
     WriterFenceGeneration,
@@ -84,28 +84,14 @@ const FLAGS: &[&str] = &[
 const BOOL_FLAGS: &[&str] = &["--confirm-offline-fence-advance"];
 const HELP: &str = "First-successor loopback host only: serve. Never activates, imports, installs genesis or signs a readiness, Freeze, DrainSet or Seal control.\nRequire the same original pins as successor_activation (--chain-id --protocol-version --epoch --domain --suite --genesis-manifest --expected-genesis-digest --ordered-history-dir --cut-dir --manifest-history-dir --certificate-dir --target-state-db --target-blob-db --validator-id --signer-key-file) plus --listen 127.0.0.1:port or [::1]:port, --created-checkpoint and --confirm-offline-fence-advance (this host claims the target writer fence once and holds it).\nEvery request re-verifies the complete source-free evidence and the installed Serving record before any signing, exposure, read or commit. Optional --timeout-seconds 1..3600 (30), --max-concurrent 1..256 (16).";
 
-/// Real Ed25519 consensus signer over the local namespace key. Core admits
-/// it only when its id is the physical namespace member of the warrant.
-struct FileEd25519Signer {
-    validator_id: ValidatorId,
-    signing_key: SigningKey,
-}
-
-impl ConsensusSigner for FileEd25519Signer {
-    fn validator_id(&self) -> ValidatorId {
-        self.validator_id
-    }
-    fn signature_scheme(&self) -> SignatureSchemeId {
-        SignatureSchemeId::Ed25519
-    }
-    fn sign_framed(&self, framed: &[u8]) -> Result<Vec<u8>, String> {
-        let signature: [u8; 64] = self.signing_key.sign(framed).into();
-        Ok(signature.to_vec())
-    }
-}
-
 /// Correlation identities unique within the one writer generation this
 /// process claimed; a restart claims a new generation.
+///
+/// Intentionally distinct from host_runtime's shared SequentialIdentitySource:
+/// that type reserves sequence `0` as a permanent exhaustion sentinel, while
+/// this type has no sentinel and exhausts only at the natural `u64::MAX`
+/// overflow boundary. That is a real behavioral difference, not incidental
+/// duplication, so this identity source is deliberately left unshared.
 struct GenerationIdentities {
     generation: WriterFenceGeneration,
     sequence: AtomicU64,
@@ -357,10 +343,7 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
         store: target,
         blobs: Arc::new(blobs),
         authority,
-        signer: Arc::new(FileEd25519Signer {
-            validator_id: validator,
-            signing_key,
-        }),
+        signer: Arc::new(FileEd25519Signer::new(validator, signing_key)),
         clock: Arc::new(SystemClock),
         identities: Arc::new(GenerationIdentities {
             generation,

@@ -661,6 +661,11 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
         before,
         "the competing variant's preparation never changes source state or receipts"
     );
+    ordered_seal_sqlite_acceptance::run_compiled_four_host_seal(
+        &fixture,
+        &seal_output.0.join("candidate.bin"),
+        &candidate,
+    );
     ordered_seal_sqlite_acceptance::run(
         &mut fixture,
         &seal_output.0.join("candidate.bin"),

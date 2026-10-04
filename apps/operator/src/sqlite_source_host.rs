@@ -11,176 +11,49 @@
 use crate::common::{
     FlagSet, load_signing_key_file, parse_hash_suite, parse_hex_32, require_live_fastvote_pin,
 };
+use crate::host_protocol_context::host_query_protocol_config;
+use crate::host_runtime::{
+    FileEd25519Signer, NoOutboundTransport, SequentialIdentitySource, fast_path_committee_matches,
+    require_committed_genesis_fee_policy, require_registered_signer,
+};
 use consensus::ConsensusSigner;
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::local_execution::LocalExecutionPolicy;
-use execution::paid_execution::{PaidFeePolicy, decode_paid_fee_policy};
+use execution::paid_execution::PaidFeePolicy;
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
 use native_http::ordered_economics::{
     OrderedEconomicsState, OrderedSealHostComposition, certified_ordered_economics_router,
 };
 use native_http::{
-    FastVoteComposition, IndexedOutboxAttemptIdentity, IndexedOutboxIdentitySource,
-    IndexedOutboxIdentitySourceError, NativeBlockingExecutor, NativeBlockingPolicy,
-    PaidExecutionComposition, StructuredDurableNativeComponents,
-    StructuredDurableRequestAuthority, certified_fastvote_router_with_executor,
+    FastVoteComposition, NativeBlockingExecutor, NativeBlockingPolicy, PaidExecutionComposition,
+    StructuredDurableNativeComponents, StructuredDurableRequestAuthority,
+    certified_fastvote_router_with_executor,
 };
 use node_core::NodeConfig;
 use node_core::fast_path::FastPathValidatorSetRecord;
-use node_core::fast_path::records::{FastPathValidatorEntry, decode_fastpath_validator_set_record};
+use node_core::fast_path::records::decode_fastpath_validator_set_record;
 use node_core::genesis::VerifiedGenesisRoot;
-use node_core::genesis::GenesisInstallMarker;
 use node_core::ordered_economics::OrderedEconomicsPolicy;
-use protocol_config::{DomainPlacementManifest, ProtocolConfig, TransactionAuthProfile};
+use protocol_config::ProtocolConfig;
 use protocol_types::{
-    AtomicityDomainId, ChainId, Epoch, HashSuiteSchedule, ProtocolVersion, SignatureSchemeId,
-    ValidatorId,
+    AtomicityDomainId, ChainId, Epoch, HashSuiteSchedule, ProtocolVersion, ValidatorId,
 };
 use runtime::{
-    Clock, DurableDomainStateStore, DurableOperationContext, DurableOutboxLeaseId, RuntimeError,
-    StorageCorrelationId, StorageDeadline, SystemClock, Transport, VersionedStateValue,
-    WriterFenceGeneration,
+    Clock, DurableDomainStateStore, DurableOperationContext, StorageCorrelationId, StorageDeadline,
+    SystemClock, VersionedStateValue, WriterFenceGeneration,
 };
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 use std::{
-    error::Error,
-    ffi::OsString,
-    num::NonZeroUsize,
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
+    error::Error, ffi::OsString, num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration,
 };
 use sunrise_edge_client::load_verified_genesis_root;
-
-#[derive(Clone)]
-struct FileEd25519Signer {
-    validator_id: ValidatorId,
-    signing_key: SigningKey,
-}
-impl ConsensusSigner for FileEd25519Signer {
-    fn validator_id(&self) -> ValidatorId {
-        self.validator_id
-    }
-    fn signature_scheme(&self) -> SignatureSchemeId {
-        SignatureSchemeId::Ed25519
-    }
-    fn sign_framed(&self, framed: &[u8]) -> Result<Vec<u8>, String> {
-        let signature: [u8; 64] = self.signing_key.sign(framed).into();
-        Ok(signature.to_vec())
-    }
-}
-
-struct NoOutboundTransport;
-impl Transport for NoOutboundTransport {
-    fn send(&self, _message: Vec<u8>) -> Result<(), RuntimeError> {
-        Err(RuntimeError::TransportUnavailable)
-    }
-    fn drain_outbound(&self) -> Result<Vec<Vec<u8>>, RuntimeError> {
-        Ok(Vec::new())
-    }
-}
-
-struct SequentialIdentitySource {
-    generation: WriterFenceGeneration,
-    sequence: AtomicU64,
-}
-impl SequentialIdentitySource {
-    const fn new(generation: WriterFenceGeneration) -> Self {
-        Self {
-            generation,
-            sequence: AtomicU64::new(1),
-        }
-    }
-}
-impl IndexedOutboxIdentitySource for SequentialIdentitySource {
-    fn next_attempt_identity(
-        &self,
-    ) -> Result<IndexedOutboxAttemptIdentity, IndexedOutboxIdentitySourceError> {
-        let sequence = self
-            .sequence
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                if current == 0 { None } else { Some(current.checked_add(1).unwrap_or(0)) }
-            })
-            .map_err(|_| IndexedOutboxIdentitySourceError::Exhausted)?;
-        let mut lease_bytes: [u8; 32] = [0; 32];
-        lease_bytes[..8].copy_from_slice(&self.generation.get().to_be_bytes());
-        lease_bytes[8..16].copy_from_slice(&sequence.to_be_bytes());
-        let mut correlation: [u8; 16] = [0; 16];
-        correlation[..8].copy_from_slice(&self.generation.get().to_be_bytes());
-        correlation[8..].copy_from_slice(&sequence.to_be_bytes());
-        Ok(IndexedOutboxAttemptIdentity::new(
-            DurableOutboxLeaseId::new(lease_bytes)
-                .map_err(|_| IndexedOutboxIdentitySourceError::Unavailable)?,
-            StorageCorrelationId::new(correlation)
-                .ok_or(IndexedOutboxIdentitySourceError::Unavailable)?,
-        ))
-    }
-}
-
-fn require_committed_genesis_fee_policy(
-    store: &SqliteDurableStore,
-    context: &DurableOperationContext,
-    domain: AtomicityDomainId,
-    expected_context: &PublicationContext,
-    root: &VerifiedGenesisRoot,
-) -> Result<PaidFeePolicy, Box<dyn Error>> {
-    let marker_key: Vec<u8> = node_core::genesis_marker_key(expected_context)?;
-    let marker_value: VersionedStateValue = store
-        .get_versioned_durable(context, domain, &marker_key)
-        .map_err(|error| format!("failed to read committed genesis marker: {error:?}"))?;
-    let marker_bytes: &[u8] = marker_value.value().ok_or(
-        "no committed genesis install marker for expected context; this namespace was never bootstrapped",
-    )?;
-    let marker: GenesisInstallMarker = node_core::decode_genesis_install_marker(marker_bytes)?;
-    if marker.context != *expected_context
-        || marker.manifest_digest != root.digest()
-        || marker.genesis_authority != root.manifest().genesis_authority
-    {
-        return Err("committed genesis marker differs from the trusted verified root".into());
-    }
-    let policy_key: Vec<u8> =
-        node_core::local_instance_state::paid_fee_policy_key(expected_context)?;
-    let policy_value: VersionedStateValue = store
-        .get_versioned_durable(context, domain, &policy_key)
-        .map_err(|error| format!("failed to read committed fee policy: {error:?}"))?;
-    let policy_bytes: &[u8] = policy_value
-        .value()
-        .ok_or("no committed paid fee policy for expected context")?;
-    let policy: PaidFeePolicy = decode_paid_fee_policy(policy_bytes)?;
-    if policy != root.manifest().fee_policy {
-        return Err("committed fee policy differs from the trusted verified root".into());
-    }
-    Ok(policy)
-}
-
-fn require_registered_signer<'a>(
-    record: &'a FastPathValidatorSetRecord,
-    validator_id: ValidatorId,
-    public_key: &[u8; 32],
-) -> Result<&'a FastPathValidatorEntry, String> {
-    let entry: &FastPathValidatorEntry = record
-        .validators
-        .iter()
-        .find(|candidate| candidate.id == validator_id)
-        .ok_or("configured --validator-id is not a member of the committed current validator set")?;
-    if entry.signature_scheme != SignatureSchemeId::Ed25519 || entry.public_key != public_key {
-        return Err(
-            "local signing key does not match the committed validator's registered public key"
-                .into(),
-        );
-    }
-    Ok(entry)
-}
 
 fn require_committed_record_matches_root_committee(
     record: &FastPathValidatorSetRecord,
     root_committee: &FastPathValidatorSetRecord,
 ) -> Result<(), String> {
-    if record != root_committee {
+    if !fast_path_committee_matches(record, root_committee) {
         return Err(
             "committed fast-path validator set does not match the trusted verified root's original signed committee/context; refusing to bind the ordered Seal composition"
             .into(),
@@ -207,6 +80,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--max-concurrent",
 ];
 const BOOL_FLAGS: &[&str] = &["--confirm-offline-fence-advance"];
+const MAX_HOST_TIMEOUT_SECONDS: u64 = native_http::MAX_INDEXED_OUTBOX_OPERATION_MILLIS / 1000;
 
 /// Parses closed argv (no fallbacks), fails closed on any refusal below
 /// before advancing the writer fence, then serves the certified paid/
@@ -217,9 +91,12 @@ const BOOL_FLAGS: &[&str] = &["--confirm-offline-fence-advance"];
 pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>> {
     let mut flags: FlagSet = FlagSet::parse(tokens, VALUE_FLAGS, BOOL_FLAGS)?;
     let confirmed: bool = flags.bool("--confirm-offline-fence-advance");
-    let chain: ChainId = ChainId::new(flags.one("--chain-id")?).map_err(|_| "invalid --chain-id")?;
-    let validator: ValidatorId =
-        ValidatorId::new(parse_hex_32(&flags.one("--validator-id")?, "--validator-id")?);
+    let chain: ChainId =
+        ChainId::new(flags.one("--chain-id")?).map_err(|_| "invalid --chain-id")?;
+    let validator: ValidatorId = ValidatorId::new(parse_hex_32(
+        &flags.one("--validator-id")?,
+        "--validator-id",
+    )?);
     let domain: AtomicityDomainId =
         AtomicityDomainId::new(parse_hex_32(&flags.one("--domain")?, "--domain")?)
             .map_err(|_| "zero --domain")?;
@@ -231,8 +108,12 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         return Err("zero --protocol-version".into());
     }
     let protocol_version: ProtocolVersion = ProtocolVersion::new(protocol_raw);
-    let epoch: Epoch =
-        Epoch::new(flags.one("--epoch")?.parse().map_err(|_| "invalid --epoch")?);
+    let epoch: Epoch = Epoch::new(
+        flags
+            .one("--epoch")?
+            .parse()
+            .map_err(|_| "invalid --epoch")?,
+    );
     let suite_inputs: Vec<String> = flags.many("--suite");
     if suite_inputs.is_empty() || suite_inputs.len() > 64 {
         return Err("one to 64 explicit --suite entries required".into());
@@ -258,8 +139,8 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         .one("--timeout-seconds")?
         .parse()
         .map_err(|_| "invalid --timeout-seconds")?;
-    if !(1..=3600).contains(&timeout_seconds) {
-        return Err("--timeout-seconds must be 1..=3600".into());
+    if !(1..=MAX_HOST_TIMEOUT_SECONDS).contains(&timeout_seconds) {
+        return Err(format!("--timeout-seconds must be 1..={MAX_HOST_TIMEOUT_SECONDS}").into());
     }
     let max_concurrent: usize = flags
         .one("--max-concurrent")?
@@ -276,8 +157,9 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         );
     }
 
-    let listen_addr: std::net::SocketAddr =
-        listen.parse().map_err(|_| "invalid --listen socket address")?;
+    let listen_addr: std::net::SocketAddr = listen
+        .parse()
+        .map_err(|_| "invalid --listen socket address")?;
     if !listen_addr.ip().is_loopback() {
         return Err("--listen must be a loopback address".into());
     }
@@ -286,8 +168,12 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         HashSuiteResolver::new(chain.clone(), protocol_version, schedule)?;
     let expected_context: PublicationContext =
         PublicationContext::new(chain.clone(), protocol_version, epoch)?;
-    let root: VerifiedGenesisRoot =
-        load_verified_genesis_root(&manifest_path, &resolver, expected_digest, &expected_context)?;
+    let root: VerifiedGenesisRoot = load_verified_genesis_root(
+        &manifest_path,
+        &resolver,
+        expected_digest,
+        &expected_context,
+    )?;
     if !root.admission_profile().is_causal() {
         return Err(
             "sqlite-source-host requires a causal-admission genesis to bind the ordered Seal composition"
@@ -298,7 +184,9 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     let namespace: SqliteNamespace = SqliteNamespace::new(chain.clone(), validator, domain);
     let store: SqliteDurableStore = SqliteDurableStore::open_existing(&state_db, namespace)?;
     let previous: WriterFenceGeneration = store.writer_fence()?;
-    let timeout_millis: u64 = timeout_seconds.checked_mul(1000).ok_or("timeout overflow")?;
+    let timeout_millis: u64 = timeout_seconds
+        .checked_mul(1000)
+        .ok_or("timeout overflow")?;
     let startup_deadline: u64 = SystemClock
         .now_unix_millis()?
         .checked_add(timeout_millis)
@@ -368,32 +256,27 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     let base_policy: LocalExecutionPolicy =
         LocalExecutionPolicy::generic_object_results(expected_context.clone());
     let ordered_leg_policy: LocalExecutionPolicy = base_policy.clone();
-    let execution: PaidExecutionComposition = PaidExecutionComposition::new(base_policy, fee_policy);
-    let file_signer: FileEd25519Signer = FileEd25519Signer {
-        validator_id: validator,
-        signing_key,
-    };
+    let execution: PaidExecutionComposition =
+        PaidExecutionComposition::new(base_policy, fee_policy);
+    let file_signer: FileEd25519Signer = FileEd25519Signer::new(validator, signing_key);
     let ordered_signer: FileEd25519Signer = file_signer.clone();
     let signer: Arc<dyn ConsensusSigner + Send + Sync> = Arc::new(file_signer);
-    let fastvote: FastVoteComposition = FastVoteComposition::new(execution, signer, created_checkpoint);
+    let fastvote: FastVoteComposition =
+        FastVoteComposition::new(execution, signer, created_checkpoint);
 
-    let mut protocol_config: ProtocolConfig = ProtocolConfig::genesis();
-    protocol_config.protocol_version = protocol_version;
-    protocol_config.domain_placement =
-        Some(DomainPlacementManifest::single_domain(1, domain, Epoch::new(0))?);
-    protocol_config.transaction_auth_profile =
-        Some(TransactionAuthProfile::ed25519_canonical_prime_order_address_is_public_key());
+    // Advertised over the read-only query route only; never authority.
+    // See host_protocol_context for why this must come from the resolver
+    // this host actually trusts, not a genesis default.
+    let protocol_config: ProtocolConfig = host_query_protocol_config(&resolver, domain, epoch)
+        .map_err(|error| format!("sqlite source host query protocol configuration: {error}"))?;
     let node_config: NodeConfig = NodeConfig::new(
         chain.clone(),
         protocol_version,
         epoch,
         b"sqlite-source-host/node-state".to_vec(),
     )?;
-    let authority: StructuredDurableRequestAuthority = StructuredDurableRequestAuthority::new(
-        generation,
-        timeout_millis,
-        lease_millis,
-    )?;
+    let authority: StructuredDurableRequestAuthority =
+        StructuredDurableRequestAuthority::new(generation, timeout_millis, lease_millis)?;
 
     let store_arc: Arc<SqliteDurableStore> = Arc::new(store);
     let blob_arc: Arc<SqliteBlobStore> = Arc::new(blobs);
@@ -417,26 +300,25 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         identities_arc.clone(),
     );
 
-    let ordered_policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::from_genesis_root(&root, domain)
-        .map_err(|error| format!("failed to compose ordered economics policy: {error}"))?;
+    let ordered_policy: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(&root, domain)
+            .map_err(|error| format!("failed to compose ordered economics policy: {error}"))?;
     let genesis_engine: execution::LocalWasmExecutionEngine =
         execution::LocalWasmExecutionEngine::new();
     let ordered_env: node_core::ordered_economics::OrderedEconomicsEnvironment<'_> =
         node_core::ordered_economics::OrderedEconomicsEnvironment {
-        policy: &ordered_policy,
-        history: &[],
-        leg_policy: &ordered_leg_policy,
-        engine: &genesis_engine,
-        blobs: blob_arc.as_ref(),
-        seal: None,
-    };
-    node_core::ordered_economics::install_ordered_genesis(
-        store_arc.as_ref(),
-        &serving_context,
-        &ordered_env,
-        SystemClock.now_unix_millis()?,
-    )
-    .map_err(|error| format!("failed to install ordered economics genesis: {error}"))?;
+            policy: &ordered_policy,
+            history: &[],
+            leg_policy: &ordered_leg_policy,
+            engine: &genesis_engine,
+            blobs: blob_arc.as_ref(),
+            seal: None,
+        };
+    // This serving composition must never initialize a missing consensus
+    // row. Bootstrap is a separate operation; status reads re-verify the
+    // installed state and refuse missing, deleted or malformed rows.
+    node_core::ordered_economics::query_status(store_arc.as_ref(), &serving_context, &ordered_env)
+        .map_err(|error| format!("existing ordered economics state is not valid: {error}"))?;
 
     let seal = OrderedSealHostComposition {
         genesis_root: root.clone(),
@@ -476,7 +358,9 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     .map_err(|error| format!("failed to compose certified FastVote router: {error}"))?
     .merge(ordered_router);
 
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     runtime.block_on(async move {
         let listener = tokio::net::TcpListener::bind(listen_addr).await?;
         let bound_addr = listener.local_addr()?;
@@ -499,27 +383,44 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
 #[cfg(test)]
 mod tests {
     use super::*;
+    use node_core::fast_path::records::FastPathValidatorEntry;
+    use protocol_types::SignatureSchemeId;
 
     fn args_with(listen: &str, confirmed: bool) -> Vec<OsString> {
         let validator_id = "00".repeat(32);
         let domain = format!("{}01", "00".repeat(31));
         let digest = "00".repeat(32);
         let mut values: Vec<OsString> = [
-            "--chain-id", "test-chain",
-            "--validator-id", validator_id.as_str(),
-            "--domain", domain.as_str(),
-            "--protocol-version", "1",
-            "--epoch", "0",
-            "--suite", "0:1:1:1:1:1:1:1",
-            "--genesis-manifest", "/nonexistent/genesis.manifest",
-            "--expected-genesis-digest", digest.as_str(),
-            "--signing-key-file", "/nonexistent/key",
-            "--state-db", "/nonexistent/state.sqlite",
-            "--blob-db", "/nonexistent/blob.sqlite",
-            "--listen", listen,
-            "--created-checkpoint", "0",
-            "--timeout-seconds", "30",
-            "--max-concurrent", "4",
+            "--chain-id",
+            "test-chain",
+            "--validator-id",
+            validator_id.as_str(),
+            "--domain",
+            domain.as_str(),
+            "--protocol-version",
+            "1",
+            "--epoch",
+            "0",
+            "--suite",
+            "0:1:1:1:1:1:1:1",
+            "--genesis-manifest",
+            "/nonexistent/genesis.manifest",
+            "--expected-genesis-digest",
+            digest.as_str(),
+            "--signing-key-file",
+            "/nonexistent/key",
+            "--state-db",
+            "/nonexistent/state.sqlite",
+            "--blob-db",
+            "/nonexistent/blob.sqlite",
+            "--listen",
+            listen,
+            "--created-checkpoint",
+            "0",
+            "--timeout-seconds",
+            "30",
+            "--max-concurrent",
+            "4",
         ]
         .into_iter()
         .map(OsString::from)
@@ -539,13 +440,34 @@ mod tests {
     #[test]
     fn missing_confirm_flag_refuses_before_any_file_access() {
         let error = run(args_with("127.0.0.1:0", false)).unwrap_err();
-        assert!(error.to_string().contains("--confirm-offline-fence-advance"));
+        assert!(
+            error
+                .to_string()
+                .contains("--confirm-offline-fence-advance")
+        );
     }
 
     #[test]
     fn non_loopback_listen_is_refused_before_genesis_load() {
         let error = run(args_with("0.0.0.0:0", true)).unwrap_err();
         assert!(error.to_string().contains("loopback"));
+    }
+
+    #[test]
+    fn timeout_outside_native_authority_bounds_refuses_before_any_io() {
+        for seconds in [0, MAX_HOST_TIMEOUT_SECONDS + 1, u64::MAX] {
+            let mut args: Vec<OsString> = args_with("127.0.0.1:0", true);
+            let index: usize = args
+                .iter()
+                .position(|value: &OsString| value == "--timeout-seconds")
+                .unwrap();
+            args[index + 1] = seconds.to_string().into();
+            let diagnostic: String = run(args).unwrap_err().to_string();
+            assert!(
+                diagnostic.contains("--timeout-seconds must be"),
+                "invalid timeout must refuse before nonexistent genesis/store/key IO: {diagnostic}"
+            );
+        }
     }
 
     fn test_context() -> PublicationContext {
@@ -574,8 +496,7 @@ mod tests {
         };
         let mismatched_key = [1u8; 32];
         assert!(
-            require_registered_signer(&record, ValidatorId::new([7; 32]), &mismatched_key)
-                .is_err()
+            require_registered_signer(&record, ValidatorId::new([7; 32]), &mismatched_key).is_err()
         );
     }
 
@@ -586,9 +507,7 @@ mod tests {
             validators: vec![entry(7)],
         };
         let key = [7u8; 32];
-        assert!(
-            require_registered_signer(&record, ValidatorId::new([9; 32]), &key).is_err()
-        );
+        assert!(require_registered_signer(&record, ValidatorId::new([9; 32]), &key).is_err());
     }
 
     #[test]

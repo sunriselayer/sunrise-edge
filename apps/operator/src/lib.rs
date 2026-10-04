@@ -8,6 +8,7 @@ pub mod common;
 pub mod conditional_readiness;
 pub mod economics;
 pub mod host_protocol_context;
+pub mod host_runtime;
 pub mod immutable_archive;
 pub mod ordered_seal;
 pub mod source_sqlite;

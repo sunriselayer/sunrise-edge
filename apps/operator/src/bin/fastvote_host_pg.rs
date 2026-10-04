@@ -54,11 +54,15 @@ use sunrise_edge_operator::common::{
     FlagSet, connect_pool, load_signing_key_file, parse_hex_32, require_live_fastvote_pin,
 };
 use sunrise_edge_operator::host_protocol_context::host_query_protocol_config;
+use sunrise_edge_operator::host_runtime::{
+    FileEd25519Signer, NoOutboundTransport, SequentialIdentitySource, fast_path_committee_matches,
+    require_committed_genesis_fee_policy, require_registered_signer,
+};
 
 use consensus::ConsensusSigner;
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::local_execution::LocalExecutionPolicy;
-use execution::paid_execution::{PaidFeePolicy, decode_paid_fee_policy};
+use execution::paid_execution::PaidFeePolicy;
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
 use native_http::ordered_economics::{OrderedEconomicsState, certified_ordered_economics_router};
@@ -68,39 +72,28 @@ use native_http::{
     certified_fastvote_router_with_executor,
 };
 use node_core::fast_path::FastPathValidatorSetRecord;
-use node_core::fast_path::records::{FastPathValidatorEntry, decode_fastpath_validator_set_record};
+use node_core::fast_path::records::decode_fastpath_validator_set_record;
 use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::OrderedEconomicsPolicy;
-use node_core::{
-    NodeConfig, decode_genesis_install_marker, genesis_marker_key, local_instance_state,
-};
+use node_core::{NodeConfig, local_instance_state};
 use postgres_rustls::MakeTlsConnector;
 use protocol_config::ProtocolConfig;
 use protocol_types::{
     AtomicityDomainId, ChainId, Epoch, HashAlgorithmId, HashSuite, HashSuiteId, HashSuiteSchedule,
-    ProtocolVersion, SignatureSchemeId, ValidatorId,
+    ProtocolVersion, ValidatorId,
 };
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
 use runtime::{
-    Clock, DurableDomainStateStore, DurableOperationContext, DurableOutboxLeaseId, RuntimeError,
-    StorageCorrelationId, StorageDeadline, SystemClock, Transport, WriterFenceGeneration,
+    Clock, DurableDomainStateStore, DurableOperationContext, StorageCorrelationId, StorageDeadline,
+    SystemClock, WriterFenceGeneration,
 };
 use runtime_postgres::{
     PostgresBlobStore, PostgresDurableStore, PostgresNamespace, PostgresTransactionPolicy,
     advance_writer_fence, inspect_namespace,
 };
 use std::{
-    error::Error,
-    ffi::OsString,
-    num::NonZeroU32,
-    num::NonZeroUsize,
-    path::PathBuf,
-    process::ExitCode,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
+    error::Error, ffi::OsString, num::NonZeroU32, num::NonZeroUsize, path::PathBuf,
+    process::ExitCode, sync::Arc, time::Duration,
 };
 use sunrise_edge_client::load_verified_genesis_root;
 
@@ -192,88 +185,9 @@ fn to_hex(bytes: &[u8]) -> String {
     text
 }
 
-/// A real (non-mocked) `ConsensusSigner` backed by a locally loaded Ed25519
-/// signing key. Never logs or exposes the key material.
-#[derive(Clone)]
-struct FileEd25519Signer {
-    validator_id: ValidatorId,
-    signing_key: SigningKey,
-}
-
-impl ConsensusSigner for FileEd25519Signer {
-    fn validator_id(&self) -> ValidatorId {
-        self.validator_id
-    }
-    fn signature_scheme(&self) -> SignatureSchemeId {
-        SignatureSchemeId::Ed25519
-    }
-    fn sign_framed(&self, framed: &[u8]) -> Result<Vec<u8>, String> {
-        let signature_bytes: [u8; 64] = self.signing_key.sign(framed).into();
-        Ok(signature_bytes.to_vec())
-    }
-}
-
 // ---------------------------------------------------------------------
 // Genesis manifest trust: identical to `fastvote_pg`'s own loader.
 // ---------------------------------------------------------------------
-
-/// Reads the already-committed genesis marker and fee policy and requires
-/// them to match the trusted verified root exactly. Never installs anything.
-fn require_committed_genesis_fee_policy(
-    store: &PostgresDurableStore<PostgresConnectionManager<MakeTlsConnector>>,
-    context: &DurableOperationContext,
-    domain: AtomicityDomainId,
-    expected_context: &PublicationContext,
-    root: &VerifiedGenesisRoot,
-) -> Result<PaidFeePolicy, Box<dyn Error>> {
-    let marker_key: Vec<u8> = genesis_marker_key(expected_context)?;
-    let marker_value = store
-        .get_versioned_durable(context, domain, &marker_key)
-        .map_err(|error| format!("failed to read committed genesis marker: {error:?}"))?;
-    let marker_bytes: &[u8] = marker_value
-        .value()
-        .ok_or("no committed genesis install marker for expected context; this namespace was never bootstrapped")?;
-    let marker = decode_genesis_install_marker(marker_bytes)?;
-    if marker.context != *expected_context
-        || marker.manifest_digest != root.digest()
-        || marker.genesis_authority != root.manifest().genesis_authority
-    {
-        return Err("committed genesis marker differs from the trusted verified root".into());
-    }
-    let policy_key: Vec<u8> = local_instance_state::paid_fee_policy_key(expected_context)?;
-    let policy_value = store
-        .get_versioned_durable(context, domain, &policy_key)
-        .map_err(|error| format!("failed to read committed fee policy: {error:?}"))?;
-    let policy_bytes: &[u8] = policy_value
-        .value()
-        .ok_or("no committed paid fee policy for expected context")?;
-    let policy: PaidFeePolicy = decode_paid_fee_policy(policy_bytes)?;
-    if policy != root.manifest().fee_policy {
-        return Err("committed fee policy differs from the trusted verified root".into());
-    }
-    Ok(policy)
-}
-
-fn require_registered_signer<'a>(
-    record: &'a FastPathValidatorSetRecord,
-    validator_id: ValidatorId,
-    public_key: &[u8; 32],
-) -> Result<&'a FastPathValidatorEntry, String> {
-    let entry: &FastPathValidatorEntry = record
-        .validators
-        .iter()
-        .find(|candidate| candidate.id == validator_id)
-        .ok_or(
-            "configured --validator-id is not a member of the committed current validator set",
-        )?;
-    if entry.signature_scheme != SignatureSchemeId::Ed25519 || entry.public_key != public_key {
-        return Err(
-            "local signing key does not match the committed validator's registered public key"
-                .into(),
-        );
-    }
-    Ok(entry)
-}
 
 /// Required only when `--enable-ordered-economics` is set, before claiming
 /// the writer-fence generation or exposing any listener.
@@ -291,7 +205,7 @@ fn require_committed_record_matches_root_committee(
     record: &FastPathValidatorSetRecord,
     root_committee: &FastPathValidatorSetRecord,
 ) -> Result<(), String> {
-    if record != root_committee {
+    if !fast_path_committee_matches(record, root_committee) {
         return Err(
             "committed fast-path validator set does not match the trusted verified root's original signed committee/context; refusing to enable the opt-in ordered-economics path"
                 .into(),
@@ -351,83 +265,6 @@ fn claim_fresh_writer_fence_once(
         StorageCorrelationId::new(correlation).ok_or("invalid correlation id")?,
     );
     Ok((context, generation))
-}
-
-// ---------------------------------------------------------------------
-// Minimal real `Transport`/`IndexedOutboxIdentitySource` for a
-// certified-only host: no route this router ever mounts sends outbound
-// transport messages or claims an outbox lease, so these exist only to
-// satisfy the shared component types' generic bounds.
-// ---------------------------------------------------------------------
-
-/// A `Transport` that accepts nothing to send and never claims to have
-/// delivered anything. Correct because the certified-only FastVote router
-/// never mounts a route that calls `Transport::send`.
-struct NoOutboundTransport;
-impl Transport for NoOutboundTransport {
-    fn send(&self, _message: Vec<u8>) -> Result<(), RuntimeError> {
-        Err(RuntimeError::TransportUnavailable)
-    }
-    fn drain_outbound(&self) -> Result<Vec<Vec<u8>>, RuntimeError> {
-        Ok(Vec::new())
-    }
-}
-
-/// Restart-safe-within-one-process attempt identities: unique for the
-/// lifetime of one claimed writer generation, which is exactly this
-/// process's own serving lifetime (a fresh process claims a fresh
-/// generation, so identities never repeat across restarts either).
-struct SequentialIdentitySource {
-    generation: WriterFenceGeneration,
-    sequence: AtomicU64,
-}
-impl SequentialIdentitySource {
-    const fn new(generation: WriterFenceGeneration) -> Self {
-        Self::with_initial_sequence(generation, 1)
-    }
-
-    const fn with_initial_sequence(
-        generation: WriterFenceGeneration,
-        initial_sequence: u64,
-    ) -> Self {
-        Self {
-            generation,
-            sequence: AtomicU64::new(initial_sequence),
-        }
-    }
-}
-impl native_http::IndexedOutboxIdentitySource for SequentialIdentitySource {
-    fn next_attempt_identity(
-        &self,
-    ) -> Result<
-        native_http::IndexedOutboxAttemptIdentity,
-        native_http::IndexedOutboxIdentitySourceError,
-    > {
-        let sequence = self
-            .sequence
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                if current == 0 {
-                    None
-                } else {
-                    Some(current.checked_add(1).unwrap_or(0))
-                }
-            })
-            .map_err(|_| native_http::IndexedOutboxIdentitySourceError::Exhausted)?;
-        let mut lease_bytes: [u8; 32] = [0; 32];
-        lease_bytes[..8].copy_from_slice(&self.generation.get().to_be_bytes());
-        lease_bytes[8..16].copy_from_slice(&sequence.to_be_bytes());
-        let lease_id = DurableOutboxLeaseId::new(lease_bytes)
-            .map_err(|_| native_http::IndexedOutboxIdentitySourceError::Unavailable)?;
-        let mut correlation: [u8; 16] = [0; 16];
-        correlation[..8].copy_from_slice(&self.generation.get().to_be_bytes());
-        correlation[8..].copy_from_slice(&sequence.to_be_bytes());
-        let correlation_id = StorageCorrelationId::new(correlation)
-            .ok_or(native_http::IndexedOutboxIdentitySourceError::Unavailable)?;
-        Ok(native_http::IndexedOutboxAttemptIdentity::new(
-            lease_id,
-            correlation_id,
-        ))
-    }
 }
 
 const VALUE_FLAGS: &[&str] = &[
@@ -610,10 +447,7 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
     let ordered_leg_policy: LocalExecutionPolicy = base_policy.clone();
     let execution: PaidExecutionComposition =
         PaidExecutionComposition::new(base_policy, fee_policy);
-    let file_signer: FileEd25519Signer = FileEd25519Signer {
-        validator_id: validator,
-        signing_key,
-    };
+    let file_signer: FileEd25519Signer = FileEd25519Signer::new(validator, signing_key);
     let ordered_signer: FileEd25519Signer = file_signer.clone();
     let signer: Arc<dyn ConsensusSigner + Send + Sync> = Arc::new(file_signer);
     let fastvote: FastVoteComposition =
@@ -767,7 +601,8 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use native_http::IndexedOutboxIdentitySource;
+    use node_core::fast_path::records::FastPathValidatorEntry;
+    use protocol_types::SignatureSchemeId;
 
     fn signer_entry(seed: u8) -> FastPathValidatorEntry {
         let signing_key: SigningKey = SigningKey::from([seed; 32]);
@@ -844,40 +679,5 @@ mod tests {
             require_committed_record_matches_root_committee(&foreign_record, &root_committee)
                 .is_err()
         );
-    }
-
-    #[test]
-    fn sequential_identity_source_exhaustion_is_sticky_near_u64_max() {
-        let generation: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
-        let source = SequentialIdentitySource::with_initial_sequence(generation, u64::MAX - 1);
-
-        let first = source
-            .next_attempt_identity()
-            .expect("sequence u64::MAX - 1 should succeed");
-        let second = source
-            .next_attempt_identity()
-            .expect("sequence u64::MAX should succeed");
-
-        assert_ne!(first, second, "consecutive identities must not repeat");
-
-        for _ in 0..10 {
-            assert!(
-                matches!(
-                    source.next_attempt_identity(),
-                    Err(native_http::IndexedOutboxIdentitySourceError::Exhausted)
-                ),
-                "identity source must remain exhausted"
-            );
-        }
-    }
-
-    #[test]
-    fn sequential_identity_source_zero_sequence_is_immediately_exhausted() {
-        let generation: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
-        let source = SequentialIdentitySource::with_initial_sequence(generation, 0);
-        assert!(matches!(
-            source.next_attempt_identity(),
-            Err(native_http::IndexedOutboxIdentitySourceError::Exhausted)
-        ));
     }
 }
