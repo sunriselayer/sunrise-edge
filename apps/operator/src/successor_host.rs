@@ -15,6 +15,7 @@ use crate::{
     business_cut::read_business_cut_archive,
     business_pins::{BusinessPinInputs, BusinessPins, bounded, hex, operation, private_operation},
     common::{FlagSet, load_signing_key_file, parse_hex_32},
+    host_protocol_context::host_query_protocol_config,
     immutable_archive::ImmutableArchiveReader,
     successor_artifacts::SuccessorArtifactFiles,
 };
@@ -38,7 +39,7 @@ use node_core::ordered_economics::{
     MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES, OrderedHistoryIdentity, decode_ordered_history_identity,
 };
 use node_core::serving_authority::{LiveAuthority, ServingAuthorityError, resolve_live_authority};
-use protocol_config::{DomainPlacementManifest, ProtocolConfig, TransactionAuthProfile};
+use protocol_config::ProtocolConfig;
 use protocol_types::{AtomicityDomainId, Epoch, SignatureSchemeId, ValidatorId};
 use runtime::{
     DurableOperationContext, DurableOutboxLeaseId, StorageCorrelationId, SystemClock,
@@ -335,22 +336,23 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
     let target: Arc<SqliteImportTarget> = Arc::new(target);
     // Startup gate under the claimed generation, not a cached decision.
     let startup: DurableOperationContext = operation(generation, host.timeout, [0x5E; 16])?;
-    match authority.resolve(target.as_ref(), &startup)? {
-        LiveAuthority::Successor(_) => {}
+    // The verified e+1 successor context from the genuine resolution this
+    // startup gate already performs, never the original pins.context
+    // (which is the predecessor genesis publication context, not the
+    // epoch this host actually serves).
+    let serving_epoch: Epoch = match authority.resolve(target.as_ref(), &startup)? {
+        LiveAuthority::Successor(warrant) => warrant.policy_inputs().context().epoch(),
         LiveAuthority::OriginalGenesis => {
             return Err("target is an ordinary original namespace; successor_host serves only an activated successor".into());
         }
-    }
+    };
 
-    let mut protocol_config: ProtocolConfig = ProtocolConfig::genesis();
-    protocol_config.protocol_version = resolver.protocol_version();
-    protocol_config.domain_placement = Some(DomainPlacementManifest::single_domain(
-        1,
-        domain,
-        Epoch::new(0),
-    )?);
-    protocol_config.transaction_auth_profile =
-        Some(TransactionAuthProfile::ed25519_canonical_prime_order_address_is_public_key());
+    // Advertised over the read-only query route only; never authority. See
+    // host_protocol_context for why this must come from the resolver this
+    // host actually trusts, not a genesis default.
+    let protocol_config: ProtocolConfig =
+        host_query_protocol_config(&resolver, domain, serving_epoch)
+            .map_err(|error| format!("successor host query protocol configuration: {error}"))?;
     let composition: SuccessorHostComposition<SqliteImportTarget> = SuccessorHostComposition {
         store: target,
         blobs: Arc::new(blobs),

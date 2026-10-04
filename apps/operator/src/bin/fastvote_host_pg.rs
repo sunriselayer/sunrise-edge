@@ -53,6 +53,7 @@
 use sunrise_edge_operator::common::{
     FlagSet, connect_pool, load_signing_key_file, parse_hex_32, require_live_fastvote_pin,
 };
+use sunrise_edge_operator::host_protocol_context::host_query_protocol_config;
 
 use consensus::ConsensusSigner;
 use ed25519_zebra::{SigningKey, VerificationKey};
@@ -74,7 +75,7 @@ use node_core::{
     NodeConfig, decode_genesis_install_marker, genesis_marker_key, local_instance_state,
 };
 use postgres_rustls::MakeTlsConnector;
-use protocol_config::{DomainPlacementManifest, ProtocolConfig, TransactionAuthProfile};
+use protocol_config::ProtocolConfig;
 use protocol_types::{
     AtomicityDomainId, ChainId, Epoch, HashAlgorithmId, HashSuite, HashSuiteId, HashSuiteSchedule,
     ProtocolVersion, SignatureSchemeId, ValidatorId,
@@ -618,18 +619,14 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
     let fastvote: FastVoteComposition =
         FastVoteComposition::new(execution, signer, created_checkpoint);
 
-    let mut protocol_config: ProtocolConfig = ProtocolConfig::genesis();
-    protocol_config.protocol_version = protocol_version;
-    protocol_config.domain_placement = Some(DomainPlacementManifest::single_domain(
-        1,
-        domain,
-        Epoch::new(0),
-    )?);
-    // Matches the ordinary CLI's fixed expected transaction-auth profile
+    // Advertised over the read-only query route only; never authority. See
+    // host_protocol_context for why this must come from the resolver this
+    // host actually trusts, not a genesis default. Matches the ordinary
+    // CLI fixed expected transaction-auth profile
     // (apps/cli/src/commands/standard_asset.rs::parse_expected_context) and
-    // devnet's own genesis convention (apps/devnet/src/genesis.rs).
-    protocol_config.transaction_auth_profile =
-        Some(TransactionAuthProfile::ed25519_canonical_prime_order_address_is_public_key());
+    // devnet own genesis convention (apps/devnet/src/genesis.rs).
+    let protocol_config: ProtocolConfig = host_query_protocol_config(&resolver, domain, epoch)
+        .map_err(|error| format!("fastvote host query protocol configuration: {error}"))?;
     let node_config: NodeConfig = NodeConfig::new(
         chain.clone(),
         protocol_version,
