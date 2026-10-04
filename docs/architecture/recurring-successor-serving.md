@@ -83,9 +83,16 @@ enum CommitteeProvenance { Genesis, Link { index: u32, subject_digest: Digest32 
 pub(crate) struct VerifiedCommitteeHistory { // private fields; built only in chain.rs
     by_epoch: BTreeMap<Epoch, (ValidatorSet, Digest32, CommitteeProvenance)>,
 }
-enum OwnerProvenance { GenesisBond, Registration { epoch: Epoch } }
+enum OwnerProvenance {
+    Genesis { genesis_digest: Digest32 },             // signed manifest validator
+    Registration { anchor_epoch: Epoch,               // anchor.context epoch
+                   intent_digest: Digest32,           // bond_registration_intent_digest
+                   initial_row_digest: Digest32 },    // signed expected_initial_row_digest
+}
+pub(crate) struct OwnerEntry { validator_id: ValidatorId, scheme: SignatureSchemeId,
+                               key: [u8; 32], provenance: OwnerProvenance }
 pub(crate) struct VerifiedOwnerRegistry {    // private fields; built only in chain.rs
-    by_id: BTreeMap<ValidatorId, (SignatureSchemeId, [u8; 32], OwnerProvenance)>,
+    by_id: BTreeMap<ValidatorId, OwnerEntry>, by_key: BTreeMap<[u8; 32], ValidatorId>,
 }
 struct LinkInputs { ordered_policy: OrderedEconomicsPolicy,   // owned per iteration
                     leg_policy: LocalExecutionPolicy, paid_policy: LocalExecutionPolicy }
@@ -113,11 +120,20 @@ struct LinkInputs { ordered_policy: OrderedEconomicsPolicy,   // owned per itera
 - Link 0 uses the existing defining verifier's policy checks in both entry
   paths. A new wrapper must not introduce stricter first-link policy checks
   which make an existing supported first link unverifiable.
-- Link k uses `generic_object_results(e_k)` for both, and
-  `OrderedEconomicsPolicy::from_successor_chain(root,
-  &links[k-1].policy_inputs, &committees, &owners)`. That crate-private
-  constructor shares the `from_successor` body; historical sets reach it only
-  from chain.rs.
+- Link k uses `generic_object_results(e_k)` for both, and the crate-private
+  `OrderedEconomicsPolicy::from_successor_chain(root, inputs, committees,
+  owners)` with `inputs = &links[k-1].policy_inputs`. It runs the
+  `from_successor` body, except that its genesis-only predecessor block
+  (`policy.rs:348-360`) becomes a scoped verified-predecessor check:
+  - the predecessor epoch is `inputs.context.epoch() - 1` (checked);
+  - the predecessor committee comes from `committees` at that epoch;
+  - its digest must equal `inputs.predecessor_set_digest()`.
+  For one link this is exactly the current check against the genesis
+  committee.
+- The policy keeps the verified subject digest in a new private field,
+  `successor_subject: Option<Digest32>`. It is the value `build` already
+  receives, and the tag-2 chokepoint compares against it. The key scope bytes
+  are unchanged.
 - Both engines are borrowed once from the caller plan; they are
   deterministic and hold no state across links.
 - `BusinessReconstructionPlan` is unchanged, so public literal construction
@@ -141,10 +157,20 @@ struct LinkInputs { ordered_policy: OrderedEconomicsPolicy,   // owned per itera
 
 **Provenance.** Committee history maps e_0 to `root.genesis_committee`
 (Genesis) and e_{k+1} to link k certificate `next_set` after eligibility
-(`Link{k, subject_k}`). The owner registry holds each genesis validator bond
-scheme and key from the signed manifest, plus each `bond-registration/`
-anchor in link k plan rows that passes the scoped registered-chain check
-(Section 6), tagged with its anchor epoch. A conflicting id or key refuses.
+(`Link{k, subject_k}`).
+
+The owner registry starts with each genesis validator bond scheme and key
+from the signed manifest. Then, in ascending anchor epoch and id order, each
+`bond-registration/` anchor in link k plan rows is verified in **Existing**
+mode (Section 6) and inserted with its full identity and digests.
+
+Insertion rules:
+
+- Re-encountering an anchor whose id, key and provenance are byte-identical
+  is the same identity carried forward, not a conflict.
+- Any other repeat of an id or key refuses.
+
+Membership in a set never stands in for provenance.
 
 ## 3. Reconstruction base and scope-aware replay
 
@@ -171,24 +197,84 @@ New crate-private seams: `BusinessReconstructionOverlay::new_with_base`,
 `plan.genesis_root` stays the original root for resolver, digest and signed
 economics at every link.
 
-**Successor bootstrap.** One fresh `MemoryDurableStateStore::new_bound`
-overlay receives exactly two inputs, installed through the generic memory
-ports while the private overlay is Ordinary:
+**Successor bootstrap.** Generic `commit_invocation` cannot load a plan:
 
-1. Link k-1 verified import plan rows (state, receipts, object heads and
-   versions, referenced blobs), byte for byte.
-2. Link k-1 destination-free activation rows from one private
-   `activation_rows(root, evidence, now)`, shared with `activate_successor`
-   so the two cannot drift: the four e_k set and policy rows, the e_k epoch
-   record, the T+1..h suffix proofs, the Seal candidate, header, outcome and
-   original receipt, the Logical provenance rows, and the S_k epoch-state
-   root with `now = 0` (as `install_genesis_with_history` uses 0).
+- every invocation needs its own receipt (`runtime/src/lib.rs:1941`);
+- object versions must advance one step at a time (`lib.rs:1780`);
+- a staged import ends non-Ordinary, and generic commits then refuse.
+
+The runtime therefore owns one memory-only checked constructor:
+
+```rust
+impl MemoryDurableStateStore {
+    /// Ordinary in-memory data fixture preloaded from checked import batches.
+    /// Grants no lifecycle, activation, serving or Seal capability.
+    pub fn new_bound_from_import_batches(
+        binding: &ImportBinding, active_writer_fence: WriterFenceGeneration,
+        batches: &[ImportBatch],
+    ) -> Result<Self, DurableCommitRejection>;
+}
+```
+
+It is `pub` only because core is another crate. What it does:
+
+- Domain comes from `binding.domain`.
+- Every batch must name `binding`.
+- Progress must be continuous: the first `expected` is ordinal 0 with no
+  previous digest, each `expected` equals the previous `next`, and the final
+  `next_ordinal == binding.row_count`.
+- Rows are validated and installed by the existing private
+  `inactive_import/memory.rs` owners:
+  - `validate_rows` checks the chain id, version provenance and conflicts;
+  - `expected_head` checks heads against their versions;
+  - `install_rows` writes state at revision 1, head revision FIRST, receipts
+    exactly as given, and versions with their own provenance, checkpoint and
+    payload.
+  These are refactored to take domain and chain instead of an in-progress
+  batch. `ImportBatch::new` already enforced per-batch count, locator order
+  and byte limits.
+- The resulting lifecycle is Ordinary, the barrier Unsealed, the slot
+  Inactive, with no successor validator and no receipt beyond the plan
+  receipt rows.
+
+SQLite, PostgreSQL and Durable Objects gain nothing: there is no production
+restore, no import-origin bypass, and no provider write capability.
+
+Core calls it only from the private `ReconstructionBase` bootstrap:
+
+1. **Plan.** Build the fixture from `links[k-1].import`, using its batches and
+   binding. Put its referenced blobs into the overlay `MemoryBlobStore`
+   through `put_blob`.
+2. **Activation rows.** One private
+   `activation_mutations(root, evidence, reader, now)` is shared with
+   `activation_transaction` so the two cannot drift. Here it reads through
+   the fixture as a `VersionedStateReader` over exactly the plan rows; that
+   covers `derive_activation_set`, `fence_commitment_profile`,
+   `derive_scoped`, `provenance_mutations_scoped` and the outgoing-epoch
+   check. It returns:
+   - the four e_k set and policy rows, the e_k epoch record and the Logical
+     provenance rows;
+   - the suffix proofs and the Seal candidate, header and outcome;
+   - the S_k epoch-state root with `now = 0`, as genesis install uses 0;
+   - the real Seal receipt.
+   Their reads are checked, then discarded. No local-bond read, namespace
+   validator or key is consulted. One `commit_invocation` applies exactly
+   these mutations and that single real receipt, with no object changes.
+3. **Postcondition.** Capture the overlay with `capture_import_target`. Its
+   `raw_rows(&snapshot, false)` must equal the plan rows merged in locator
+   order with the activation mutations and Seal receipt. Referenced blobs
+   must equal the plan blobs.
+   - This is the existing logical equality of `verify_prefix`
+     (`inactive_import.rs:291`).
+   - It excludes only physical state revisions and head revisions.
+   - Values, tombstones, receipts (event digest and bytes), heads, and full
+     version records (digest, schema, provenance, created checkpoint,
+     payload) all compare.
 
 Never installed: a Serving slot, a 0x64D5 record, a CompleteInactive
 lifecycle, a namespace validator, a local key or a local bond revision. The
-link k-1 import origin travels as its typed `ImportBinding` inside the replay
-scope, never as fake protected state. Postcondition: a portable snapshot of
-the overlay equals (1) plus (2) exactly, else refuse.
+link k-1 import origin travels only as its typed `ImportBinding` in the
+base.
 
 **Replay gate.** New variant `ServingGate::Replay(&'w ReplayScope<'w>)`:
 
@@ -200,8 +286,17 @@ pub(crate) struct ReplayScope<'o> {   // private fields; no Clone/Default/serde
 }
 ```
 
-Only `ReconstructionBase::replay_scope(&self, overlay)` builds one, and only
-for the overlay that base bootstrapped. It is not exportable.
+`BusinessReconstructionOverlay` owns its private `store` and the
+`ReconstructionBase` it was built with.
+
+- **Minting.** A private overlay method mints a fresh `ReplayScope` for each
+  replay call, from `&self.store` (store methods take `&self`) and the base
+  floor, committees and owners.
+- **Lifetime.** The scope lives only inside that call. It is dropped before
+  any `&mut self` progress update, so no long-lived borrow conflicts with
+  overlay mutation.
+- **Visibility.** No other constructor exists, and the scope is not
+  exportable.
 
 | Gate method | Replay behavior |
 | --- | --- |
@@ -291,41 +386,97 @@ suffix proofs. 0x64D5 of N_{k+1} persists only link k digests. Therefore:
 | Kind | Chain scope (e_0) | Successor scope S_k |
 | --- | --- | --- |
 | Freeze, DrainSet | Unchanged | Unchanged kind checks against the e_k engine and the signed minimum Freeze height |
-| Seal | Tag 1 with the genesis digest only; tag 2 refused | Tag 2 with digest equal to the policy’s own subject digest only; tag 1 refused |
+| Seal | Tag 1 with the genesis digest only; tag 2 refused | Tag 2 with digest equal to the policy private `successor_subject` only; tag 1 refused |
 | BondRegistration | Unchanged | RegistrationScope (below) |
 | FeeClaim, BondLifecycle, BondSlash, Evidence | Unchanged | Unchanged, using the authorities below |
 
-**Registration (same owner, `bond_lifecycle/registration`).** A crate-private
-`RegistrationScope { profile, live_context, registry, owners, economics }`
-is built from the policy. `authenticate_intent` (`registration.rs:323`)
-requires:
+**Registration: one owner, `bond_lifecycle/registration`.** A crate-private
+scope replaces `handler.rs:11-26` (`policy_inputs`) at every caller:
+preflight, admission, `require_pristine` and completion.
 
-- `intent.context == live_context`; at e_0 this is `profile.context()`, so
-  e_0 is unchanged;
-- `resource_context == profile.context()` and signed genesis economics, as
-  today, plus the original genesis digest;
-- `registry.epoch()` equal to the live epoch, and Ed25519 id equal to key;
-- the reused-identity check (`registration.rs:351`) against the registry
-  plus `owners` (every genesis and verified registered key). Today it sees
-  only the current committee, so a retired genesis key could otherwise be
-  registered under a new id.
+```rust
+pub(crate) struct RegistrationScope<'p> {     // private fields
+    profile: &'p VerifiedAdmissionProfile,     // immutable e_0 causal profile
+    economics: &'p FastPathEconomicsPolicy,    // signed genesis economics
+    live_context: &'p PublicationContext,      // genuine registration context
+    registry: &'p ValidatorSet,                // committee at live_context epoch
+    owners: Option<&'p VerifiedOwnerRegistry>, // None exactly at e_0
+}
+pub(crate) enum RegistrationMode<'a> { Admit, Existing(&'a BondRegistrationAnchor) }
+impl<'p> RegistrationScope<'p> {
+    fn for_policy(policy: &'p OrderedEconomicsPolicy) -> Result<Self, BondRegistrationError>;
+    fn for_genesis(root: &'p VerifiedGenesisRoot) -> Self;
+    fn for_epoch(root: &'p VerifiedGenesisRoot, committees: &'p VerifiedCommitteeHistory,
+                 owners: &'p VerifiedOwnerRegistry, epoch: Epoch)
+        -> Result<Self, BondRegistrationError>;
+}
+```
 
-`from_successor_chain` keeps signed genesis economics as
-`registration_economics` and the original admission profile. Completion keeps
-every existing check under the gate: receipt reconciliation, ordered
-admission, `fence_verified_admission_profile`, `fence_current_epoch`,
-current-set exclusion, `require_pristine`, economics row equality and nonce
-reservation. It replaces only `ObjectMinimum::for_profile`
-(`handler.rs:483`) with the gate generation scope.
+There is no caller Boolean: the policy private key scope selects the case.
+
+- **Chain policy** keeps today’s rule: `profile.context() ==
+  policy.context()`, live context = profile context, owners None.
+- **Successor policy** requires `profile.context() ==
+  root.genesis_context()` (still e_0) and `live_context ==
+  policy.context()` (e_k). It takes economics only from
+  `from_successor_chain`, which keeps the signed genesis economics and
+  admission profile.
+
+In both cases, resource context and economics stay the immutable e_0 values
+(`handler.rs:425-438`).
+
+`authenticate_intent(scope, mode, intent)` (`registration.rs:323`) requires:
+
+- `intent.context == live_context`;
+- `resource_context == profile.context()` and the original genesis digest;
+- `registry.epoch() == live_context.epoch()`;
+- Ed25519 id equal to key;
+- the generic leg policy at `live_context`.
+
+Then, by mode:
+
+- **Admit** (a new candidate). Refuse if the id or key matches any `registry`
+  entry or any `owners` entry. This set covers every genesis key and every
+  verified registration, so re-registering a retired key under a new id
+  stays refused.
+- **Existing(anchor)** (re-verifying a genuine committed anchor). The anchor
+  epoch selects the scope.
+  - A `registry` id or key match refuses, as today.
+  - An `owners` entry with the same id, key and provenance (anchor epoch,
+    intent digest and initial row digest, all recomputed from this anchor) is
+    the identity itself.
+  - Any other id or key match is reuse and refuses.
+  - An anchor at the live epoch that is not yet in `owners` is reconciled
+    the same way, so a same-epoch registration still refuses as
+    `AlreadyRegistered` from its valid anchor.
+
+`verify_chain` (`handler.rs:71`) takes `(scope, Existing(anchor))`, and its
+`anchor.context` check compares against `live_context`. The public
+`verify_registered_bond_chain` stays as is: genesis scope, Existing mode.
+
+Public routes for SDK and hosts, all in the same handler:
+
+```rust
+pub fn verify_signed_bond_registration_successor(root: &VerifiedGenesisRoot,
+    authority: &VerifiedSuccessorAuthority, bytes: &[u8],
+) -> Result<SignedBondRegistrationIntent, BondRegistrationError>; // Admit, authority epoch
+```
+
+`prepare_bond_registration_successor` (Section 7) uses the same scope.
+Projection and the chain registry build use `for_epoch` with Existing mode.
+Completion keeps every other existing check under the gate: receipt
+reconciliation, ordered admission, `fence_verified_admission_profile`,
+`fence_current_epoch`, current-set exclusion, `require_pristine`, economics
+row equality and nonce reservation. It also replaces
+`ObjectMinimum::for_profile` (`handler.rs:483`) with the gate generation
+scope.
 
 Next-epoch eligibility is real: the handler writes `lifecycle_epoch = e_k`
 and `slashable_from = e_k + 1` (`handler.rs:551-576`), and
 `check_next_set_eligibility` at e_k accepts `slashable_from <= e_k + 1` and
 `lifecycle_epoch <= e_k` (`epoch_transition.rs:393-398`). A registration
 committed before the e_k Freeze is therefore eligible for the certified
-e_{k+1} set. `verify_registered_bond_chain` gains a crate-private scoped
-variant accepting an anchor context in any verified epoch with that epoch’s
-registry; the public function is unchanged.
+e_{k+1} set.
 
 **Bond owner authority** (`policy.rs:568`):
 
@@ -335,9 +486,10 @@ registry; the public function is unchanged.
   verified signed registration, never the latest committee membership. A
   registered sender that never voted can exit its own bond.
 - A registration committed in e_k after the cut is not yet in the registry.
-  Its pure key is the id bytes (registration forces id == key), and preflight
-  and handler require that id’s committed `bond-registration/` anchor to pass
-  the scoped verification with that key.
+  Its pure key is the id bytes, since registration forces id == key. Preflight
+  and the handler then require that id’s committed `bond-registration/`
+  anchor to pass `verify_chain(for_policy, Existing)`, with its reads folded
+  into the CAS set. The id bytes alone are never authority.
 - The handler still verifies the signature with the committed bond row key
   (`bond_lifecycle.rs:989`), checks row identity, generation, previous digest
   and state, and for Withdraw requires absence from the live set. Deposit,
@@ -474,16 +626,49 @@ No schema change.
   a definite no-write rejection; `Indeterminate` keeps the existing
   reconciliation boundary.
 
-**Core routing.** `ServingGate::commit_seal_retention(self, store, context,
-token, tx)` and `commit_seal_completion(self, store, context, token, tx,
-sealed)` replace the direct calls at `completion.rs:54` and
-`engine.rs:2735,3597`. `Original` uses `outgoing_seal_repository()`
-unchanged. `Successor` uses the issuing store’s port after `require_issuer`,
-with warrant reads folded. `Replay` refuses. The token comes only from
-`begin_portable_snapshot` of that same store; core never calls
-`PortableSnapshotToken::new`. Before dispatch, core checks
-`sealed.outgoing_epoch == e_n` and that the request is the verified Seal
-request.
+**Core routing: one issuer-bound Seal port.**
+
+```rust
+pub(crate) enum SealPort<'s> {                      // private; Copy
+    Original(&'s dyn OutgoingSealRepository),
+    Successor { port: &'s dyn SuccessorServingRepository, warrant: &'s LiveWarrant<'s> },
+}
+impl ServingGate<'_> {
+    pub(crate) fn seal_port<'s, S: StructuredDurableDomainStateStore + ?Sized>(
+        self, store: &'s S) -> Result<SealPort<'s>, NodeCoreError>;
+}
+// SealPort methods:
+//   reader() -> &dyn DurablePortableSnapshotRepository
+//   commit_retention(context, token, tx)
+//   commit_completion(context, token, tx, sealed)
+```
+
+How `seal_port` resolves:
+
+| Gate | Port |
+| --- | --- |
+| `Original` | `store.outgoing_seal_repository()`, exactly as today |
+| `Successor` | `warrant.require_issuer(store)`, then the store’s own successor port; reads go through its `InactiveImportRepository: DurablePortableSnapshotRepository` supertrait |
+| `Replay` | Refused |
+
+Every current Seal consumer moves to this one value:
+
+- signing history reads and identity (`engine.rs:1591-1618`);
+- the Seal signing capability check (`engine.rs:3423`), which becomes
+  `env.seal.is_some() && gate.seal_port(store).is_ok()`;
+- the completion preparation argument (`engine.rs:3033`), which becomes
+  `Option<SealPort>`;
+- the vote retention confirmation (`engine.rs:4011` into
+  `confirm_seal_retention`, `:2722`), which takes `SealPort`;
+- retention commits at `engine.rs:2735,3597`;
+- completion at `completion.rs:54`.
+
+Successor commits fold the warrant reads.
+
+The token comes only from `reader().begin_portable_snapshot` of that same
+store; core never calls `PortableSnapshotToken::new`. Before dispatch, core
+checks `sealed.outgoing_epoch == e_n` and that the request is the verified
+Seal request.
 
 **After completion.** `resolve_live_authority(_chain)` on N_n sees `Sealed`
 and refuses, so N_n creates no further vote, QC, FastVote signature or
@@ -519,7 +704,7 @@ successor needs its own reviewed decision; no checkpoint is trusted here.
 
 | PR | Owner | Content | Acceptance inside the PR |
 | --- | --- | --- | --- |
-| 1 | Core and runtime/store | Chain/base/replay, scoped reconstruction and registration, historical owners/committees, current source controls, the same two atomic Seal methods, tag 2 and vectors | Genuine file-backed recurrence plus actual callers of the ports; all in-lock refusals, reply-loss/reopen, ABCD to ABCE, later registration, e_0 escrow claim at e_2 and the negatives below. A declaration-only store PR is not this feature |
+| 1 | Core and runtime/store | Chain/base/replay, the memory-only import-batch fixture constructor, scoped reconstruction, RegistrationScope with Admit/Existing modes, historical owners/committees, current source controls, SealPort for every Seal consumer, the same two atomic Seal methods, tag 2 and vectors | Genuine file-backed recurrence plus actual callers of the ports; all in-lock refusals, reply-loss/reopen, ABCD to ABCE, later registration, e_0 escrow claim at e_2 and the negatives below. A declaration-only store PR is not this feature |
 | 2 | Host, SDK, CLI and real acceptance | The same owners through shipped routes and binaries; ordered link pins and explicit budget, no cloned lifecycle engine | Real process recurrence and Section 12 including the unchanged configured unlock epoch. Missing final acceptance remains open; an ignored skeleton does not complete it |
 
 Core and process negatives:
@@ -555,8 +740,15 @@ unchanged.
 3. **Every e_k with k >= 1.** Genuine Freeze, DrainSet and cut on N_k through
    the chain producer, readiness on new targets, Seal tag 2, and activation of
    N_{k+1} from pins for links 0..k.
-4. **Later registration.** F registers at e_2 before Freeze, is certified into
-   e_3 (ABCEF) and votes at e_3.
+4. **Later registration.** F registers at e_2 before Freeze and is certified
+   into e_3 (ABCEF).
+   - From e_3 on, every namespace runs five independently stored SQLite
+     hosts.
+   - Membership evidence is real: the e_3 readiness certificate and the
+     ordered QCs and FastVote certificates carry F’s signature from F’s own
+     host.
+   - That host’s namespace validator and Active bond key equal F’s verified
+     registration.
 5. **Older fee claim.** An e_0 escrow share is claimed at e_2 or later.
 6. **Paid contracts and receipts, every epoch.** FastVote-certified paid
    Publish, Instantiate and Call, including Calls on e_0 instances. Later
@@ -580,14 +772,13 @@ changes, which this contract forbids.
 
 ## 13. Selected boundaries for independent review
 
-- **Bootstrap mechanism.** Use the private issuer-bound Ordinary memory overlay
-  and exact snapshot postcondition in Section 3. It grants no live authority
-  and no fake protected serving slot. Add a port only if an actual invariant
-  cannot be expressed with those existing private reconstruction owners.
-- **Same-epoch registrant exit.** Permit only the Section 6 path that verifies
-  the actual signed registration anchor and bond chain under the independently
-  verified current scope, folds those reads into preflight and completion, and
-  checks the committed bond key. Id bytes alone are never owner authority.
+- **Bootstrap mechanism.** Use exactly the runtime
+  `new_bound_from_import_batches` constructor, the shared activation
+  mutations and the `raw_rows` postcondition of Section 3. No other port,
+  restore path or serving slot is added.
+- **Same-epoch registrant exit.** Use exactly the Section 6
+  `verify_chain(for_policy, Existing)` path, with folded reads and the
+  committed bond key. The id bytes alone are never owner authority.
 - **Budget.** No default value; operators configure it explicitly. Linear
   per-request cost remains until a separately reviewed bounded-cost design.
 - **Policy strictness.** Link 0 uses the same owning verification in both entry

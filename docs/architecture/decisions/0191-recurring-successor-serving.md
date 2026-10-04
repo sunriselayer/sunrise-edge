@@ -34,25 +34,43 @@ Adopt [recurring successor serving](../recurring-successor-serving.md):
    DR-0189 verifier over a privately derived base. A local
    `SuccessorChainBudget` is checked before any artifact access; it is not a
    consensus cutoff, and nothing is checkpointed or reset.
-2. **Private base and replay gate.** A crate-private `ReconstructionBase`
-   bootstraps a private memory overlay from the previous link’s verified plan
-   and destination-free activation rows. The same handlers then replay under
-   a non-exportable, issuer-bound `ServingGate::Replay`. Later policies are
-   derived from verified evidence, never supplied by the caller.
+2. **Private base and replay gate.**
+   - **Bootstrap.** A crate-private `ReconstructionBase` bootstraps a memory
+     overlay through one runtime constructor,
+     `MemoryDurableStateStore::new_bound_from_import_batches`. It is
+     memory-only and Ordinary, reuses the staged-import row validation, and
+     grants no serving or provider capability.
+   - **Activation rows.** The previous link’s activation mutations, derived
+     through that fixture, are applied with its single real Seal receipt.
+   - **Postcondition.** The existing `raw_rows` logical equality is required;
+     it excludes only physical revisions.
+   - **Replay.** The same handlers replay under a per-call, issuer-bound
+     `ServingGate::Replay` minted by the overlay.
+   - **Policies.** Later policies come from verified evidence: scoped
+     predecessor checks, plus the subject digest held privately in the policy.
 3. **Scope classification.** Rows of the current scope keep the original
    typed local-progress exclusion. Rows of earlier scopes are retained and
    must match the base byte for byte. Incoming or unknown scopes refuse.
    Earlier QC and manifest variants are each link’s own authenticated bytes,
    never normalized.
-4. **Successor-scope policy.** Freeze, DrainSet, Seal with the new
-   predecessor tag 2, and registration are authorized through the same
-   owners. Bond owner authority for Unbond and Withdraw comes from verified
-   genesis bonds and signed registrations, not committee membership.
-   Historical certificate sets cover every verified earlier epoch.
-5. **Successor Seal ports.** Two Seal retirement methods join the existing
-   opt-in `SuccessorServingRepository`. Ordinary guards and
-   `OutgoingSealRepository` are not widened, and PostgreSQL and Durable
-   Objects stay unsupported.
+4. **Successor-scope policy.**
+   - Freeze, DrainSet and Seal with the new predecessor tag 2 are authorized
+     through the same owners.
+   - Registration uses one `RegistrationScope`: immutable e_0 profile and
+     resource context, genuine live context.
+   - It has two modes. Admit refuses any id or key reuse against the
+     registry and the provenance-bound owner registry. Existing accepts only
+     a committed anchor’s own identity and reconciles same-epoch anchors.
+   - Unbond and Withdraw authority comes from verified genesis bonds and
+     signed registrations, not committee membership.
+   - Historical certificate sets cover every verified earlier epoch.
+5. **Successor Seal ports.**
+   - Two Seal retirement methods join the existing opt-in
+     `SuccessorServingRepository`.
+   - Every Seal reader, capability check and commit resolves through one
+     issuer-bound `SealPort`.
+   - Ordinary guards and `OutgoingSealRepository` are not widened, and
+     PostgreSQL and Durable Objects stay unsupported.
 6. **Additive APIs.** Recurring entry points are additive; single-link signatures
    and supported operations stay. Explicit new successor controls do not need a
    second legacy-only engine to retain an unreleased unsupported-feature refusal.
