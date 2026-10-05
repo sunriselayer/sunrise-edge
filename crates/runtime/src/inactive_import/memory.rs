@@ -17,6 +17,86 @@ impl MemoryDurableStateStore {
             .lifecycle = NamespaceLifecycle::FreshImport(binding);
         Ok(store)
     }
+
+    /// Reconstruction-only ordinary ephemeral data fixture, preloaded from
+    /// already-checked import batches (DR-0191 Section 3). Never a provider
+    /// restore or a fake Serving/protected import origin: the resulting
+    /// lifecycle is Ordinary, the barrier Unsealed, the slot Inactive, with
+    /// no successor namespace validator. The bound-domain ordinary
+    /// outgoing_seal_repository getter stays available; the successor
+    /// serving port stays absent. Core private issuer-bound replay gate
+    /// alone supplies replay scope; this raw data is never protocol
+    /// authority on its own.
+    #[doc(hidden)]
+    pub fn new_bound_from_import_batches(
+        binding: &ImportBinding,
+        active_writer_fence: WriterFenceGeneration,
+        batches: &[ImportBatch],
+    ) -> Result<Self, DurableCommitRejection> {
+        encode_import_binding(binding)
+            .map_err(|_| DurableCommitRejection::InvalidPersistedState)?;
+        let chain: &ChainId = &binding.context.chain_id;
+        let mut previous_next: Option<ImportProgress> = None;
+        let mut last_locator: Option<Vec<u8>> = None;
+        let mut counted_rows: u64 = 0;
+        for batch in batches {
+            if batch.binding() != binding {
+                return Err(DurableCommitRejection::ImportBindingMismatch);
+            }
+            match &previous_next {
+                // The first batch's accumulator is the core-supplied genesis
+                // value; runtime never invents or authenticates that hash,
+                // so only the structural ordinal/digest fields are checked.
+                None => {
+                    if batch.expected().next_ordinal != 0
+                        || batch.expected().last_batch_digest.is_some()
+                    {
+                        return Err(DurableCommitRejection::ImportConflict);
+                    }
+                }
+                // Every later batch's expected progress, including the
+                // accumulator, must equal the previous batch's actual next()
+                // byte for byte; a substituted accumulator refuses.
+                Some(previous) => {
+                    if batch.expected() != previous {
+                        return Err(DurableCommitRejection::ImportConflict);
+                    }
+                }
+            }
+            for row in batch.rows() {
+                let locator: Vec<u8> = row.locator();
+                if last_locator
+                    .as_ref()
+                    .is_some_and(|before| *before >= locator)
+                {
+                    return Err(DurableCommitRejection::ImportConflict);
+                }
+                last_locator = Some(locator);
+            }
+            let batch_rows: u64 = u64::try_from(batch.rows().len())
+                .map_err(|_| DurableCommitRejection::InvalidPersistedState)?;
+            counted_rows = counted_rows
+                .checked_add(batch_rows)
+                .ok_or(DurableCommitRejection::InvalidPersistedState)?;
+            previous_next = Some(batch.next().clone());
+        }
+        let final_ordinal: u64 = previous_next.as_ref().map_or(0, |next| next.next_ordinal);
+        if final_ordinal != binding.row_count || counted_rows != binding.row_count {
+            return Err(DurableCommitRejection::ImportConflict);
+        }
+        let store: Self = Self::new_bound(binding.domain, active_writer_fence);
+        {
+            let mut data = store
+                .inner
+                .write()
+                .map_err(|_| DurableCommitRejection::UnavailableBeforeCommit)?;
+            for batch in batches {
+                validate_rows(&data, binding.domain, chain, batch.rows(), false)?;
+                install_rows(&mut data, binding.domain, batch.rows())?;
+            }
+        }
+        Ok(store)
+    }
 }
 
 fn authority(
@@ -102,34 +182,36 @@ fn expected_head(
 
 fn validate_rows(
     data: &MemoryDurableStoreData,
-    batch: &ImportBatch,
+    domain: AtomicityDomainId,
+    chain: &ChainId,
+    rows: &[ImportRow],
     retry: bool,
 ) -> Result<(), DurableCommitRejection> {
-    let domain: [u8; 32] = *batch.binding().domain.as_bytes();
-    for row in batch.rows() {
+    let domain_bytes: [u8; 32] = *domain.as_bytes();
+    for row in rows {
         let identical: Option<bool> = match row {
             ImportRow::State { key, value } => data
                 .state_domains
-                .get(&domain)
-                .and_then(|rows| rows.get(key))
+                .get(&domain_bytes)
+                .and_then(|entries| entries.get(key))
                 .map(|stored| stored.value == *value),
             ImportRow::Receipt(receipt) => data
                 .receipts
-                .get(&(domain, *receipt.request_id().as_bytes()))
+                .get(&(domain_bytes, *receipt.request_id().as_bytes()))
                 .map(|stored| stored == receipt),
             ImportRow::ObjectVersion(version) => {
-                if version.provenance().chain_id() != &batch.binding().context.chain_id {
+                if version.provenance().chain_id() != chain {
                     return Err(DurableCommitRejection::ImportBindingMismatch);
                 }
                 data.object_versions
-                    .get(&(domain, version.object_id(), version.object_version()))
+                    .get(&(domain_bytes, version.object_id(), version.object_version()))
                     .map(|stored| stored == version)
             }
             ImportRow::ObjectHead { object_id, head } => {
                 let expected: MemoryStoredObjectHead =
-                    expected_head(data, batch.binding().domain, *object_id, head, batch.rows())?;
+                    expected_head(data, domain, *object_id, head, rows)?;
                 data.object_heads
-                    .get(&(domain, *object_id))
+                    .get(&(domain_bytes, *object_id))
                     .map(|stored| *stored == expected)
             }
         };
@@ -142,28 +224,29 @@ fn validate_rows(
 
 fn install_rows(
     data: &mut MemoryDurableStoreData,
-    batch: &ImportBatch,
+    domain: AtomicityDomainId,
+    rows: &[ImportRow],
 ) -> Result<(), DurableCommitRejection> {
     // All fallible checks precede the first insertion, including heads whose
     // immutable versions are contained in this same bounded batch.
     let mut heads: BTreeMap<ObjectId, MemoryStoredObjectHead> = BTreeMap::new();
-    for row in batch.rows() {
+    for row in rows {
         if let ImportRow::ObjectHead { object_id, head } = row {
             heads.insert(
                 *object_id,
-                expected_head(data, batch.binding().domain, *object_id, head, batch.rows())?,
+                expected_head(data, domain, *object_id, head, rows)?,
             );
         }
     }
-    let domain: [u8; 32] = *batch.binding().domain.as_bytes();
+    let domain_bytes: [u8; 32] = *domain.as_bytes();
     let revision: StateRevision = StateRevision::INITIAL
         .checked_next()
         .map_err(|_| DurableCommitRejection::StateRevisionOverflow)?;
-    for row in batch.rows() {
+    for row in rows {
         match row {
             ImportRow::State { key, value } => {
                 data.state_domains
-                    .entry(domain)
+                    .entry(domain_bytes)
                     .or_default()
                     .entry(key.clone())
                     .or_insert_with(|| StoredStateValue {
@@ -173,19 +256,19 @@ fn install_rows(
             }
             ImportRow::Receipt(receipt) => {
                 data.receipts
-                    .entry((domain, *receipt.request_id().as_bytes()))
+                    .entry((domain_bytes, *receipt.request_id().as_bytes()))
                     .or_insert_with(|| receipt.clone());
             }
             ImportRow::ObjectVersion(version) => {
                 data.object_versions
-                    .entry((domain, version.object_id(), version.object_version()))
+                    .entry((domain_bytes, version.object_id(), version.object_version()))
                     .or_insert_with(|| version.clone());
             }
             ImportRow::ObjectHead { .. } => {}
         }
     }
     for (id, head) in heads {
-        data.object_heads.entry((domain, id)).or_insert(head);
+        data.object_heads.entry((domain_bytes, id)).or_insert(head);
     }
     Ok(())
 }
@@ -257,14 +340,26 @@ impl InactiveImportRepository for MemoryDurableStateStore {
                 return Err(DurableCommitRejection::ImportConflict);
             };
             if progress == batch.next() {
-                return validate_rows(&data, batch, true);
+                return validate_rows(
+                    &data,
+                    domain,
+                    &batch.binding().context.chain_id,
+                    batch.rows(),
+                    true,
+                );
             }
             if progress != batch.expected() {
                 return Err(DurableCommitRejection::ImportConflict);
             }
-            validate_rows(&data, batch, false)?;
+            validate_rows(
+                &data,
+                domain,
+                &batch.binding().context.chain_id,
+                batch.rows(),
+                false,
+            )?;
             let next: u64 = sequence(&data, domain)?;
-            install_rows(&mut data, batch)?;
+            install_rows(&mut data, domain, batch.rows())?;
             data.lifecycle = NamespaceLifecycle::Importing {
                 binding: batch.binding().clone(),
                 progress: batch.next().clone(),

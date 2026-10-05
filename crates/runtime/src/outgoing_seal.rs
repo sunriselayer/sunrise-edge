@@ -176,6 +176,16 @@ pub(crate) fn sealed_outbox_is_consistent(
 ) -> bool {
     !data.outgoing_barrier.is_sealed() || memory::seal_outbox_is_empty(data, domain)
 }
+
+/// One owner for "this domain's Seal outbox is empty", reused by both the
+/// Ordinary Seal commits in this module and the successor Seal commits in
+/// `successor_serving`. Never re-implemented at a second call site.
+pub(crate) fn seal_outbox_is_empty(
+    data: &MemoryDurableStoreData,
+    domain: AtomicityDomainId,
+) -> bool {
+    memory::seal_outbox_is_empty(data, domain)
+}
 #[cfg(test)]
 mod tests;
 

@@ -247,23 +247,62 @@ pub fn derive_source_business_cut<
     source_blobs: &B,
     ordered: &[OrderedHistoryHeightMaterial],
 ) -> Result<VerifiedBusinessCut, BusinessCutError> {
-    derive_source_cut(plan, source, source_blobs, ordered, None, None)
+    let base: crate::serving_authority::ReconstructionBase<'_> =
+        crate::serving_authority::ReconstructionBase::genesis(plan.genesis_root);
+    derive_source_cut_with_base(plan, base, source, source_blobs, ordered, None, None)
+}
+
+/// Source cut for the current epoch of a freshly resolved issuer-bound
+/// warrant. The base and current policies come only from its verified chain.
+pub fn derive_successor_source_business_cut<S, B>(
+    plan: BusinessReconstructionPlan<'_>,
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    source: &S,
+    source_blobs: &B,
+    ordered: &[OrderedHistoryHeightMaterial],
+) -> Result<VerifiedBusinessCut, BusinessCutError>
+where
+    S: DurablePortableSnapshotRepository + runtime::StructuredStateReader + ?Sized,
+    B: PortableBlobRepository + ?Sized,
+{
+    warrant
+        .require_reader(source, &plan.operation_context, plan.domain)
+        .map_err(|_| invalid("successor source differs from warrant issuer"))?;
+    let inputs: crate::serving_authority::ReconstructionInputs = warrant
+        .reconstruction_inputs(&plan)
+        .map_err(|_| invalid("source plan differs from verified chain"))?;
+    let base: crate::serving_authority::ReconstructionBase<'_> = warrant
+        .reconstruction_base(plan.genesis_root)
+        .map_err(|_| invalid("source base differs from verified chain"))?;
+    let identity: OrderedHistoryIdentity = plan.ordered_history_identity.clone();
+    derive_source_cut_with_base(
+        inputs.plan(plan, &identity),
+        base,
+        source,
+        source_blobs,
+        ordered,
+        None,
+        None,
+    )
 }
 
 /// Seal signing retains the ordinary empty-three-chain terminal while
 /// additionally deciding successor eligibility on that exact private replay.
 pub(crate) fn derive_source_business_cut_for_seal_signing<
+    'p,
     S: DurablePortableSnapshotRepository + ?Sized,
     B: PortableBlobRepository + ?Sized,
 >(
-    plan: BusinessReconstructionPlan<'_>,
+    plan: BusinessReconstructionPlan<'p>,
+    base: crate::serving_authority::ReconstructionBase<'p>,
     source: &S,
     source_blobs: &B,
     ordered: &[OrderedHistoryHeightMaterial],
     next_members: &[FastPathValidatorEntry],
 ) -> Result<VerifiedBusinessCut, BusinessCutError> {
-    derive_source_cut(
+    derive_source_cut_with_base(
         plan,
+        base,
         source,
         source_blobs,
         ordered,
@@ -274,27 +313,43 @@ pub(crate) fn derive_source_business_cut_for_seal_signing<
 
 /// One source capture and one independent reconstruction for every source
 /// cut consumer. Eligibility and the acceptance terminal remain private.
-fn derive_source_cut<
+fn derive_source_cut_with_base<
+    'p,
     S: DurablePortableSnapshotRepository + ?Sized,
     B: PortableBlobRepository + ?Sized,
 >(
-    plan: BusinessReconstructionPlan<'_>,
+    plan: BusinessReconstructionPlan<'p>,
+    base: crate::serving_authority::ReconstructionBase<'p>,
     source: &S,
     source_blobs: &B,
     ordered: &[OrderedHistoryHeightMaterial],
     next_members: Option<&[FastPathValidatorEntry]>,
     seal: Option<derive::SealAcceptanceCandidate<'_>>,
 ) -> Result<VerifiedBusinessCut, BusinessCutError> {
-    let snapshot: super::SourceBusinessSnapshot =
-        source::capture(source, source_blobs, &plan.operation_context, plan.domain)?;
-    let owned: Vec<OwnedPublicationMaterial> =
-        super::owned_material_from_source_snapshot(&snapshot, &plan)?;
-    let controls: Vec<DrainSetControlMaterial> =
-        super::drain_control_material_from_source_snapshot(&snapshot, &plan, ordered)
-            .map_err(|_| invalid("source control closure could not be authenticated"))?;
+    let verified_scopes: Vec<crate::ordered_economics::OrderedKeyScope> = base
+        .scopes(plan.domain)
+        .map_err(|_| invalid("source scopes differ from verified chain"))?;
+    let scopes: source::CaptureScopes<'_> = source::CaptureScopes {
+        chain: base.context().chain_id(),
+        verified: &verified_scopes,
+    };
+    let snapshot: super::SourceBusinessSnapshot = source::capture_scoped(
+        source,
+        source_blobs,
+        &plan.operation_context,
+        plan.domain,
+        Some(&scopes),
+    )?;
     let operation = plan.operation_context;
     let domain: AtomicityDomainId = plan.domain;
-    let mut overlay: BusinessReconstructionOverlay<'_> = BusinessReconstructionOverlay::new(plan)?;
+    let mut overlay: BusinessReconstructionOverlay<'_> =
+        BusinessReconstructionOverlay::new_with_base(plan, base)?;
+    let current: super::SourceBusinessSnapshot = overlay.current_snapshot(&snapshot)?;
+    let owned: Vec<OwnedPublicationMaterial> =
+        super::owned_material_from_source_snapshot(&current, &overlay.plan)?;
+    let controls: Vec<DrainSetControlMaterial> =
+        super::drain_control_material_from_source_snapshot(&current, &overlay.plan, ordered)
+            .map_err(|_| invalid("source control closure could not be authenticated"))?;
     overlay.reconstruct_with_control_material(&owned, ordered, &controls)?;
     overlay.compare_source(&snapshot)?;
     if let Some(next_members) = next_members {
@@ -329,6 +384,7 @@ fn derive_source_cut<
 /// producer: ordinary source export, saved cut, import and readiness keep
 /// their original empty-three-chain check unchanged. The owning original
 /// completion supplies the exact authenticated block being accepted.
+#[cfg(test)]
 pub(crate) fn verify_live_seal_closure<
     S: DurablePortableSnapshotRepository + ?Sized,
     B: PortableBlobRepository + ?Sized,
@@ -341,12 +397,44 @@ pub(crate) fn verify_live_seal_closure<
     seal_block_digest: Digest32,
     next_members: &[FastPathValidatorEntry],
 ) -> Result<VerifiedBusinessCut, BusinessCutError> {
+    let base: crate::serving_authority::ReconstructionBase<'_> =
+        crate::serving_authority::ReconstructionBase::genesis(plan.genesis_root);
+    verify_live_seal_closure_with_base(
+        plan,
+        base,
+        source,
+        source_blobs,
+        ordered,
+        seal_candidate,
+        seal_block_digest,
+        next_members,
+    )
+}
+
+// This established private acceptance boundary keeps source, bodies, fixed
+// history, real Seal and independently verified base as distinct inputs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_live_seal_closure_with_base<
+    'p,
+    S: DurablePortableSnapshotRepository + ?Sized,
+    B: PortableBlobRepository + ?Sized,
+>(
+    plan: BusinessReconstructionPlan<'p>,
+    base: crate::serving_authority::ReconstructionBase<'p>,
+    source: &S,
+    source_blobs: &B,
+    ordered: &[OrderedHistoryHeightMaterial],
+    seal_candidate: &OrderedCandidate,
+    seal_block_digest: Digest32,
+    next_members: &[FastPathValidatorEntry],
+) -> Result<VerifiedBusinessCut, BusinessCutError> {
     let seal_candidate_digest: Digest32 = plan
         .ordered_policy
         .candidate_digest(seal_candidate)
         .map_err(|_| invalid("seal acceptance candidate digest"))?;
-    derive_source_cut(
+    derive_source_cut_with_base(
         plan,
+        base,
         source,
         source_blobs,
         ordered,
@@ -368,9 +456,10 @@ pub fn verify_saved_business_cut(
     proof::verify_saved(plan, saved)
 }
 
-/// Private capture seam shared with inactive target verification. This is not
-/// a constructor from source claims and does not grant live authority.
-pub(super) fn capture_import_target<
+/// DR-0191 scope-aware capture seam for the private reconstruction-base
+/// postcondition: rows of exactly the verified successor scopes are
+/// admitted, every other epoch-scoped row refuses.
+pub(crate) fn capture_scoped_target<
     S: DurablePortableSnapshotRepository + ?Sized,
     B: PortableBlobRepository + ?Sized,
 >(
@@ -378,9 +467,12 @@ pub(super) fn capture_import_target<
     blobs: &B,
     operation: &runtime::DurableOperationContext,
     domain: AtomicityDomainId,
+    scopes: &source::CaptureScopes<'_>,
 ) -> Result<super::SourceBusinessSnapshot, BusinessCutError> {
-    source::capture(store, blobs, operation, domain)
+    source::capture_scoped(store, blobs, operation, domain, Some(scopes))
 }
+
+pub(crate) use source::CaptureScopes;
 
 /// NodeEvent-purpose digest under the pinned committed suite. This authenticates
 /// neither a supplied identity nor a response; it is exact transfer integrity.

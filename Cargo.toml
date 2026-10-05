@@ -105,3 +105,11 @@ wat = "=1.257.1"
 opt-level = 3
 debug-assertions = true
 overflow-checks = true
+
+# Recurring handoff acceptance executes the same bounded verifier for each
+# physical invocation and historical link. Optimize that owning package while
+# retaining the development/test safety checks and exact acceptance workload.
+[profile.dev.package.node-core]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true

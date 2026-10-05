@@ -42,6 +42,36 @@ pub fn resolve_live_authority<'inv, S: StructuredDurableDomainStateStore>(
     artifacts: &mut dyn SuccessorArtifactSource,
     signer_public_key: [u8; 32],
 ) -> Result<LiveAuthority<'inv>, ServingAuthorityError> {
+    let links: [SuccessorLinkPins; 1] = [SuccessorLinkPins {
+        cut_identity: plan.ordered_history_identity.clone(),
+        manifest_identity: manifest_identity.clone(),
+    }];
+    let mut single: chain::SingleLinkArtifacts<'_> = chain::SingleLinkArtifacts(artifacts);
+    resolve_live_authority_chain(
+        store,
+        context,
+        domain,
+        plan,
+        &links,
+        SuccessorChainBudget::ONE,
+        &mut single,
+        signer_public_key,
+    )
+}
+
+/// Resolve a successor after a fresh rerun of every pinned link. The warrant
+/// keeps the complete verified chain for this invocation only.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_live_authority_chain<'inv, S: StructuredDurableDomainStateStore>(
+    store: &'inv S,
+    context: &'inv DurableOperationContext,
+    domain: AtomicityDomainId,
+    plan: BusinessReconstructionPlan<'_>,
+    links: &[SuccessorLinkPins],
+    budget: SuccessorChainBudget,
+    artifacts: &mut dyn SuccessorChainArtifacts,
+    signer_public_key: [u8; 32],
+) -> Result<LiveAuthority<'inv>, ServingAuthorityError> {
     let lifecycle: NamespaceLifecycle = store.get_namespace_lifecycle(context, domain)?;
     let barrier: OutgoingBarrier = store.get_outgoing_barrier(context, domain)?;
     let slot: SuccessorServingSlot = store.get_successor_serving(context, domain)?;
@@ -70,7 +100,7 @@ pub fn resolve_live_authority<'inv, S: StructuredDurableDomainStateStore>(
                 context,
                 domain,
                 root,
-                verify::verify_successor_activation(plan, manifest_identity, artifacts)?,
+                chain::verify_chain(plan, links, budget, artifacts)?,
                 *observation,
                 signer_public_key,
             )?;
@@ -87,10 +117,11 @@ fn successor_warrant<'inv, S: StructuredDurableDomainStateStore>(
     context: &'inv DurableOperationContext,
     domain: AtomicityDomainId,
     root: &VerifiedGenesisRoot,
-    evidence: VerifiedSuccessorActivation,
+    chain: chain::VerifiedSuccessorChain,
     observation: SuccessorServingObservation,
     signer_public_key: [u8; 32],
 ) -> Result<LiveWarrant<'inv>, ServingAuthorityError> {
+    let evidence: &VerifiedSuccessorActivation = chain.current();
     if evidence.policy_inputs.domain != domain {
         return Err(ServingAuthorityError::Refused(
             "verified successor domain differs from the invocation domain",
@@ -103,18 +134,18 @@ fn successor_warrant<'inv, S: StructuredDurableDomainStateStore>(
                 "store exposes no successor serving repository",
             ))?;
     let namespace_validator: ValidatorId = repository.read_namespace_validator(context, domain)?;
-    require_local_member(&evidence, namespace_validator, signer_public_key)?;
+    require_local_member(evidence, namespace_validator, signer_public_key)?;
     require_installed_record(
-        &evidence,
+        evidence,
         &observation,
         namespace_validator,
         signer_public_key,
     )?;
-    let rows: SuccessorRows = derive_successor_rows(store, context, root, &evidence)?;
+    let rows: SuccessorRows = derive_successor_rows(store, context, root, evidence)?;
     let reads: BTreeMap<Vec<u8>, StateRevision> =
-        require_installed_closure(store, context, &evidence, &rows)?;
+        require_installed_closure(store, context, evidence, &rows)?;
     Ok(LiveWarrant {
-        evidence,
+        chain,
         issuer: store,
         context,
         observation,
@@ -129,8 +160,14 @@ impl LiveWarrant<'_> {
         &self,
         certificate_epoch: protocol_types::Epoch,
     ) -> Option<Digest32> {
-        (certificate_epoch == self.evidence.outgoing_context.epoch())
-            .then_some(self.evidence.policy_inputs.predecessor_set_digest)
+        (certificate_epoch < self.policy_inputs().context().epoch())
+            .then(|| {
+                self.chain
+                    .committees()
+                    .get(certificate_epoch)
+                    .map(|(_, digest)| digest)
+            })
+            .flatten()
     }
 
     /// Writer-side issuer binding: the store must be the exact object that
@@ -151,13 +188,29 @@ impl LiveWarrant<'_> {
             store as *const S,
             self.issuer as *const dyn runtime::StructuredStateReader,
         ) || context != self.context
-            || domain != self.evidence.policy_inputs.domain
+            || domain != self.chain.current().policy_inputs.domain
         {
             return Err(NodeCoreError::PersistenceInvariant(
                 "successor invocation is not bound to the warrant issuer",
             ));
         }
         Ok(())
+    }
+
+    /// Live admission, distinct from identity-only origin reconciliation.
+    /// A warrant held across a terminal Seal or refence cannot reach a new
+    /// signature merely because it still points to the same store. Re-read
+    /// its exact protected observations through that actual issuer before
+    /// any live handler or local signer is admitted. The backend still
+    /// independently checks those observations under its final commit lock.
+    pub(crate) fn require_live<S: ?Sized>(
+        &self,
+        store: &S,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<(), NodeCoreError> {
+        self.require_issuer(store, context, domain)?;
+        self.require_reader(self.issuer, context, domain)
     }
 
     /// Reader-side binding for writer-free preparation, which may observe the
@@ -169,7 +222,7 @@ impl LiveWarrant<'_> {
         context: &DurableOperationContext,
         domain: AtomicityDomainId,
     ) -> Result<(), NodeCoreError> {
-        if context != self.context || domain != self.evidence.policy_inputs.domain {
+        if context != self.context || domain != self.chain.current().policy_inputs.domain {
             return Err(NodeCoreError::PersistenceInvariant(
                 "successor preparation is not bound to the warrant scope",
             ));
@@ -205,17 +258,22 @@ impl LiveWarrant<'_> {
         store: &'s S,
         signer: ValidatorId,
     ) -> Result<&'s dyn SuccessorServingRepository, NodeCoreError> {
-        self.require_issuer(store, self.context, self.evidence.policy_inputs.domain)?;
+        self.require_live(
+            store,
+            self.context,
+            self.chain.current().policy_inputs.domain,
+        )?;
         let repository: &'s dyn SuccessorServingRepository = store
             .successor_serving_repository()
             .ok_or(
             NodeCoreError::PersistenceInvariant("store exposes no successor serving repository"),
         )?;
         let namespace_validator: ValidatorId = repository
-            .read_namespace_validator(self.context, self.evidence.policy_inputs.domain)?;
+            .read_namespace_validator(self.context, self.chain.current().policy_inputs.domain)?;
         if namespace_validator != signer
             || self
-                .evidence
+                .chain
+                .current()
                 .policy_inputs
                 .validator_set
                 .get(namespace_validator)

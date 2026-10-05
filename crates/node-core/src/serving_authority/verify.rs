@@ -3,16 +3,17 @@
 //! reruns completely on every call: there is no cache or memo.
 
 use super::*;
-use crate::business_reconstruction::inactive_import::verify_saved_business_import;
+use crate::business_reconstruction::inactive_import::verify_saved_business_import_with_base;
 use crate::epoch_transition::check_next_set_eligibility;
 use crate::genesis::VerifiedGenesisRoot;
 use crate::local_instance_state::FASTPATH_STATE_PREFIX;
 use crate::ordered_economics::{
     OrderedCandidate, OrderedEconomicsPolicy, OrderedHistoryComponentKind, OrderedHistoryVerifier,
-    OrderedOperationKind, SEAL_PREDECESSOR_TAG_GENESIS, SealIntent, SealOutcome,
-    VerifiedOrderedHistory, decode_ordered_candidate, decode_seal_cut_identity, decode_seal_intent,
-    decode_seal_outcome, ordered_economics_successor_anchor, ordered_history_component_digest,
-    seal_certificate_digest, seal_cut_identity_digest, seal_next_members, seal_target_digest,
+    OrderedOperationKind, SEAL_PREDECESSOR_TAG_GENESIS, SEAL_PREDECESSOR_TAG_SUCCESSOR, SealIntent,
+    SealOutcome, VerifiedOrderedHistory, decode_ordered_candidate, decode_seal_cut_identity,
+    decode_seal_intent, decode_seal_outcome, ordered_economics_successor_anchor,
+    ordered_history_component_digest, seal_certificate_digest, seal_cut_identity_digest,
+    seal_next_members, seal_target_digest,
 };
 use crate::{NodeDedupRecord, NodeResponseStatus};
 use consensus::readiness::{
@@ -83,7 +84,12 @@ fn decode_proof(bytes: &[u8]) -> Result<CommittedBlockProof, SuccessorActivation
 
 /// Section 3 step 7: the raw plan must carry no epoch-scoped ordered row and
 /// no live fast-path object or sender-nonce lock before activation.
-fn refuse_plan_rows(rows: &[ImportRow]) -> Result<(), SuccessorActivationError> {
+fn refuse_plan_rows_with_base(
+    rows: &[ImportRow],
+    base: ReconstructionBase<'_>,
+    domain: AtomicityDomainId,
+) -> Result<(), SuccessorActivationError> {
+    let scopes: Vec<crate::ordered_economics::OrderedKeyScope> = base.scopes(domain)?;
     let lock_prefix: Vec<u8> = [FASTPATH_STATE_PREFIX, b"lock/"].concat();
     let nonce_lock_prefix: Vec<u8> = [FASTPATH_STATE_PREFIX, b"nonce-lock/"].concat();
     for row in rows {
@@ -91,7 +97,22 @@ fn refuse_plan_rows(rows: &[ImportRow]) -> Result<(), SuccessorActivationError> 
             continue;
         };
         if crate::ordered_economics::engine::is_successor_scoped_ordered_key(key) {
-            return Err(invalid("raw plan carries an epoch-scoped ordered row"));
+            let mut found: bool = false;
+            for scope in &scopes {
+                if crate::ordered_economics::engine::is_ordered_key_of_scope(
+                    key,
+                    base.context().chain_id(),
+                    scope,
+                )? {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return Err(invalid(
+                    "raw plan carries an unverified epoch-scoped ordered row",
+                ));
+            }
         }
         if value.is_some() && (key.starts_with(&lock_prefix) || key.starts_with(&nonce_lock_prefix))
         {
@@ -109,9 +130,11 @@ fn require_predecessor(
     policy: &OrderedEconomicsPolicy,
     domain: AtomicityDomainId,
     binding: &ImportBinding,
+    base: ReconstructionBase<'_>,
 ) -> Result<(), SuccessorActivationError> {
-    let context: &PublicationContext = root.genesis_context();
-    if policy.key_scope().is_successor()
+    let context: &PublicationContext = base.context();
+    base.require_policy(policy, domain)?;
+    if policy.key_scope().is_successor() != base.is_successor()
         || policy.genesis_digest() != root.digest()
         || policy.context() != context
         || policy.domain() != domain
@@ -347,6 +370,9 @@ fn verify_suffix(
 /// Section 3 steps 4 and 5: the exact readiness certificate committed by the
 /// terminal SealIntent (one certificate variant per committed Seal), over a
 /// subject bound to the plan root, domain, outgoing set, cut and schedule.
+// These distinct pins and the private verified base are checked together
+// here; grouping them would not create or simplify an authority owner.
+#[allow(clippy::too_many_arguments)]
 fn verify_seal_certificate(
     resolver: &HashSuiteResolver,
     root: &VerifiedGenesisRoot,
@@ -355,8 +381,10 @@ fn verify_seal_certificate(
     cut_identity: &OrderedHistoryIdentity,
     intent: &SealIntent,
     artifacts: &mut dyn SuccessorArtifactSource,
+    base: ReconstructionBase<'_>,
+    policy: &OrderedEconomicsPolicy,
 ) -> Result<ReadinessCertificate, SuccessorActivationError> {
-    let context: &PublicationContext = root.genesis_context();
+    let context: &PublicationContext = base.context();
     let subject: &ReadinessSubject = &intent.readiness_subject;
     let cut = decode_seal_cut_identity(intent)?;
     let cut_digest: Digest32 = seal_cut_identity_digest(resolver, &cut)?;
@@ -375,9 +403,16 @@ fn verify_seal_certificate(
     {
         return Err(invalid("Seal readiness subject differs from the plan root"));
     }
-    if intent.predecessor_tag != SEAL_PREDECESSOR_TAG_GENESIS
-        || intent.predecessor_digest != root.digest()
-    {
+    let expected_predecessor: (u16, Digest32) = match policy.successor_subject() {
+        Some(subject) if base.is_successor() => (SEAL_PREDECESSOR_TAG_SUCCESSOR, subject),
+        None if !base.is_successor() => (SEAL_PREDECESSOR_TAG_GENESIS, root.digest()),
+        _ => {
+            return Err(invalid(
+                "Seal predecessor policy differs from verified base",
+            ));
+        }
+    };
+    if (intent.predecessor_tag, intent.predecessor_digest) != expected_predecessor {
         return Err(invalid("Seal predecessor is not the pinned genesis"));
     }
     let length: usize = usize::try_from(intent.certificate_length)
@@ -416,6 +451,16 @@ pub(super) fn verify_successor_activation(
     manifest_identity: &OrderedHistoryIdentity,
     artifacts: &mut dyn SuccessorArtifactSource,
 ) -> Result<VerifiedSuccessorActivation, SuccessorActivationError> {
+    let base: ReconstructionBase<'_> = ReconstructionBase::genesis(plan.genesis_root);
+    verify_successor_activation_with_base(plan, base, manifest_identity, artifacts)
+}
+
+pub(super) fn verify_successor_activation_with_base<'p>(
+    plan: BusinessReconstructionPlan<'p>,
+    base: ReconstructionBase<'p>,
+    manifest_identity: &OrderedHistoryIdentity,
+    artifacts: &mut dyn SuccessorArtifactSource,
+) -> Result<VerifiedSuccessorActivation, SuccessorActivationError> {
     // Copy every borrowed reference needed after `plan` moves.
     let root: &VerifiedGenesisRoot = plan.genesis_root;
     let policy: &OrderedEconomicsPolicy = plan.ordered_policy;
@@ -423,13 +468,23 @@ pub(super) fn verify_successor_activation(
     let domain: AtomicityDomainId = plan.domain;
     let operation: DurableOperationContext = plan.operation_context;
     let resolver: HashSuiteResolver = root.genesis_resolver().clone();
-    let outgoing_context: PublicationContext = root.genesis_context().clone();
+    let outgoing_context: PublicationContext = base.context().clone();
     let outgoing_epoch: Epoch = outgoing_context.epoch();
     // Step 1: independent saved-cut re-execution and exact raw plan.
     let saved: SavedBusinessCut = artifacts.saved_business_cut()?;
-    let import: VerifiedImportPlan = verify_saved_business_import(plan, &saved)?;
+    let import: VerifiedImportPlan = verify_saved_business_import_with_base(plan, base, &saved)?;
     let binding: ImportBinding = import.binding().clone();
-    require_predecessor(root, policy, domain, &binding)?;
+    require_predecessor(root, policy, domain, &binding, base)?;
+    if binding.validator_set_digest
+        != base
+            .committee()
+            .digest(root.genesis_resolver())
+            .map_err(|_| invalid("base committee digest"))?
+    {
+        return Err(invalid(
+            "cut binding differs from the verified outgoing committee",
+        ));
+    }
     // Steps 2 and 3: history through the terminal Seal.
     let suffix: VerifiedSuffix =
         verify_suffix(policy, &cut_identity, manifest_identity, artifacts)?;
@@ -454,6 +509,8 @@ pub(super) fn verify_successor_activation(
         &cut_identity,
         &intent,
         artifacts,
+        base,
+        policy,
     )?;
     let subject_identity: Digest32 = intent.readiness_subject.identity(&resolver)?;
     let seal_target: Digest32 = seal_target_digest(
@@ -475,7 +532,7 @@ pub(super) fn verify_successor_activation(
         &next_members,
     )?;
     // Step 7.
-    refuse_plan_rows(import.rows())?;
+    refuse_plan_rows_with_base(import.rows(), base, domain)?;
     let receipt_bytes: &[u8] =
         component(seal_material, OrderedHistoryComponentKind::OriginalReceipt)?;
     let receipt: NodeDedupRecord = NodeDedupRecord::decode(receipt_bytes)?;
@@ -542,6 +599,11 @@ mod tests {
             key: key.to_vec(),
             value: value.map(<[u8]>::to_vec),
         }
+    }
+
+    fn refuse_plan_rows(rows: &[ImportRow]) -> Result<(), SuccessorActivationError> {
+        let root: VerifiedGenesisRoot = crate::serving_authority::tests::causal_root();
+        refuse_plan_rows_with_base(rows, ReconstructionBase::genesis(&root), fixture::domain())
     }
 
     #[test]

@@ -5,9 +5,16 @@
 ci_require_exact_ignored_test() {
   local test_name="$1"
   shift
-  if ! cargo test --quiet "$@" "$test_name" -- --ignored --list | grep -Fqx "$test_name: test"; then
-    echo "missing expected ignored repository test: $test_name" >&2
-    exit 1
+  local listed test_line matches=0
+  listed="$(cargo test --quiet "$@" "$test_name" -- --ignored --exact --list)" || return "$?"
+  while IFS= read -r test_line; do
+    if [[ "$test_line" == "$test_name: test" ]]; then
+      matches=$((matches + 1))
+    fi
+  done <<< "$listed"
+  if [[ "$matches" -ne 1 ]]; then
+    echo "expected exactly one ignored repository test: $test_name (found $matches)" >&2
+    return 1
   fi
 }
 
@@ -57,13 +64,58 @@ ci_check_sqlite_inventory() {
   bash scripts/check-fee-escrow-inventory.sh
 }
 
+# Validate the complete closed inventory before executing any selected row.
+# Ownership is the package/target/exact selector, never an inferred name filter.
+ci_run_required_extended_group() {
+  if [[ "$#" -ne 1 || -z "$1" ]]; then
+    echo 'malformed required extended gate group' >&2
+    return 1
+  fi
+  local requested="$1" row case_group package target test_name nocapture identity previous profile plan
+  local -a selected=() seen=()
+  profile="$(ci_execution_profile "$requested")" || return "$?"
+  plan="$(ci_execution_plan "$requested")" || return "$?"
+  [[ "$profile" == required && "$plan" == "$requested" ]] || return 1
+  for row in "${CI_REQUIRED_EXTENDED_CASES[@]}"; do
+    if [[ ! "$row" =~ ^[^\|]+\|[^\|]+\|[^\|]+\|[^\|]+\|(yes|no)$ ]]; then
+      echo 'malformed required extended test ownership row' >&2
+      return 1
+    fi
+    IFS='|' read -r case_group package target test_name nocapture <<< "$row"
+    profile="$(ci_execution_profile "$case_group")" || return "$?"
+    plan="$(ci_execution_plan "$case_group")" || return "$?"
+    [[ "$profile" == required && "$plan" == "$case_group" ]] || return 1
+    [[ "$package" =~ ^[a-z][a-z0-9-]*$ && "$test_name" =~ ^[a-zA-Z0-9_:]+$ ]] || return 1
+    [[ "$target" == --lib || "$target" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]] || return 1
+    identity="$package|$target|$test_name"
+    for previous in "${seen[@]}"; do
+      if [[ "$identity" == "$previous" ]]; then
+        echo 'duplicate required extended test ownership' >&2
+        return 1
+      fi
+    done
+    seen+=("$identity")
+    if [[ "$case_group" == "$requested" ]]; then selected+=("$row"); fi
+  done
+  if [[ "${#selected[@]}" -eq 0 ]]; then
+    echo 'required extended gate group has no registered test' >&2
+    return 1
+  fi
+  for row in "${selected[@]}"; do
+    IFS='|' read -r case_group package target test_name nocapture <<< "$row"
+    local -a args=(-p "$package")
+    if [[ "$target" == --lib ]]; then args+=(--lib); else args+=(--test "$target"); fi
+    ci_run_exact_ignored_test "$test_name" "$nocapture" "${args[@]}" || return "$?"
+  done
+}
+
 ci_check_vectors() {
   local vector
   for vector in \
     call-value call-intent publication-submission local-execution \
     call-authorization paid-execution fast-vote availability frozen-frontier \
     drainset fast-path fastvote-apply-request fastvote-published-apply \
-    ordered-history business-cut business-import bond-registration conditional-readiness ordered-seal successor-serving; do
+    ordered-history business-cut business-import bond-registration conditional-readiness ordered-seal ordered-seal-successor successor-serving; do
     node "scripts/$vector-vectors.mjs" || return "$?"
   done
 }
@@ -91,6 +143,7 @@ ci_run_action() {
       ;;
     rust-tests-full) cargo test --workspace --all-targets --all-features ;;
     sqlite-inventory) ci_check_sqlite_inventory ;;
+    core-recurrence|readiness-sqlite) ci_run_required_extended_group "$1" ;;
     pg-storage-tests)
       # Keep native feature anchors and USB-HID identical to the former lane.
       cargo test -p runtime-postgres -p sunrise-edge-operator \

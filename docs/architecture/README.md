@@ -148,6 +148,10 @@ roadmap describes a later target state.
   source-free Seal authority, target-local atomic activation and separately
   scoped successor signing/admission, with permanent import origin retained.
   Design acceptance does not create a serving capability.
+- [Recurring successor serving](recurring-successor-serving.md)
+  ([DR-0191](decisions/0191-recurring-successor-serving.md), Proposed):
+  one verified link chain, private base replay, scope-retaining audit and
+  successor Seal retirement; pre-code design, no serving capability.
 - [Initial validator bond registration](initial-validator-bond.md)
   ([DR-0179](decisions/0179-initial-validator-bond-registration.md)):
   self-authenticated first collateral through generic custody and ordered

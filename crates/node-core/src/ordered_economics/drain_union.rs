@@ -41,8 +41,7 @@ use super::freeze::{admission_closure_key, decode_admission_closure_record};
 use super::*;
 use crate::fast_path::FastPathEd25519Verifier;
 use crate::fast_path::drain_publication::{
-    fence_closed_epoch, retain_drain_publication, verify_drain_possession_into,
-    verify_or_stage_drain_possession_rebuild,
+    fence_closed_epoch, verify_drain_possession_into, verify_or_stage_drain_possession_rebuild,
 };
 use canonical_encoding::{
     decode_canonical_frame, decode_digest32, encode_chain_id, encode_digest32,
@@ -371,6 +370,7 @@ fn put_read(
 }
 
 fn commit_row<S: StructuredDurableDomainStateStore>(
+    gate: crate::serving_authority::ServingGate<'_>,
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -386,7 +386,7 @@ fn commit_row<S: StructuredDurableDomainStateStore>(
         AtomicStateReadSet::new(assertions)?,
         AtomicStateMutationSet::new(mutations)?,
     )?;
-    match store.commit_durable(context, transaction) {
+    match gate.commit_durable(store, context, transaction) {
         DurableCommitOutcome::Committed => Ok(()),
         DurableCommitOutcome::Rejected(reason) => {
             Err(NodeCoreError::DurableCommitRejected(reason).into())
@@ -488,7 +488,57 @@ pub fn ingest_drain_signer_page<S: StructuredDurableDomainStateStore>(
     vote: FrozenFrontierVote,
     page: FrozenFrontierPage,
 ) -> Result<(), DrainSignerError> {
-    crate::mutation_fence::require_ordinary_namespace(store, context, domain)?;
+    ingest_drain_signer_page_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        context,
+        domain,
+        resolver,
+        expected,
+        signer,
+        vote,
+        page,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn ingest_drain_signer_page_successor<S: StructuredDurableDomainStateStore>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    signer: ValidatorId,
+    vote: FrozenFrontierVote,
+    page: FrozenFrontierPage,
+) -> Result<(), DrainSignerError> {
+    ingest_drain_signer_page_gated(
+        crate::serving_authority::ServingGate::Successor(warrant),
+        store,
+        context,
+        domain,
+        resolver,
+        expected,
+        signer,
+        vote,
+        page,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ingest_drain_signer_page_gated<S: StructuredDurableDomainStateStore>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    signer: ValidatorId,
+    vote: FrozenFrontierVote,
+    page: FrozenFrontierPage,
+) -> Result<(), DrainSignerError> {
+    gate.require_live(store, context, domain)?;
     let mut drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
     if vote.identity.chain_id != drain.fence.chain
         || vote.identity.protocol_version != expected.protocol_version()
@@ -625,6 +675,7 @@ pub fn ingest_drain_signer_page<S: StructuredDurableDomainStateStore>(
         complete,
     };
     commit_row(
+        gate,
         store,
         context,
         domain,
@@ -684,6 +735,23 @@ pub fn staged_drain_signer_identity<S: StructuredDurableDomainStateStore>(
         ))
 }
 
+pub fn staged_drain_signer_identity_successor<S: StructuredDurableDomainStateStore>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    expected: &PublicationContext,
+    signer: ValidatorId,
+) -> Result<AvailabilityIdentity, DrainSignerError> {
+    warrant.require_reader(store, context, domain)?;
+    if expected != warrant.policy_inputs().context() {
+        return Err(DrainSignerError::Invalid(
+            "staged identity context differs from current verified epoch",
+        ));
+    }
+    staged_drain_signer_identity(store, context, domain, expected, signer)
+}
+
 /// Re-verifies the complete imported proof and possession marker from
 /// storage against the exact next staged identity, then atomically commits
 /// the advanced signer progress together with a new immutable
@@ -711,7 +779,57 @@ pub fn confirm_drain_signer_entry<S: StructuredDurableDomainStateStore>(
     signer: ValidatorId,
     expected_request_id: [u8; 32],
 ) -> Result<AvailabilityIdentity, DrainSignerError> {
-    crate::mutation_fence::require_ordinary_namespace(store, context, domain)?;
+    confirm_drain_signer_entry_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        signer,
+        expected_request_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn confirm_drain_signer_entry_successor<S: StructuredDurableDomainStateStore>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    signer: ValidatorId,
+    expected_request_id: [u8; 32],
+) -> Result<AvailabilityIdentity, DrainSignerError> {
+    confirm_drain_signer_entry_gated(
+        crate::serving_authority::ServingGate::Successor(warrant),
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        signer,
+        expected_request_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn confirm_drain_signer_entry_gated<S: StructuredDurableDomainStateStore>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    signer: ValidatorId,
+    expected_request_id: [u8; 32],
+) -> Result<AvailabilityIdentity, DrainSignerError> {
+    gate.require_live(store, context, domain)?;
     let mut drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
     let progress_key: Vec<u8> =
         drain_signer_progress_key(&drain.fence.chain, drain.fence.epoch, signer)?;
@@ -843,7 +961,7 @@ pub fn confirm_drain_signer_entry<S: StructuredDurableDomainStateStore>(
             StateMutation::Put(marker_bytes),
         )?);
     }
-    commit_row(store, context, domain, drain.reads, mutations)?;
+    commit_row(gate, store, context, domain, drain.reads, mutations)?;
     Ok(pending)
 }
 
@@ -863,19 +981,72 @@ pub fn import_staged_drain_publication<S: StructuredDurableDomainStateStore>(
     signer: ValidatorId,
     bundle_bytes: &[u8],
 ) -> Result<AvailabilityIdentity, DrainSignerError> {
-    crate::mutation_fence::require_ordinary_namespace(store, context, domain)?;
-    let expected_identity: AvailabilityIdentity =
-        staged_drain_signer_identity(store, context, domain, expected, signer)?;
-    Ok(retain_drain_publication(
+    import_staged_drain_publication_gated(
+        crate::serving_authority::ServingGate::Original,
         store,
         context,
         domain,
         resolver,
         history,
         expected,
-        &expected_identity,
+        signer,
         bundle_bytes,
-    )?)
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn import_staged_drain_publication_successor<S: StructuredDurableDomainStateStore>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    signer: ValidatorId,
+    bundle_bytes: &[u8],
+) -> Result<AvailabilityIdentity, DrainSignerError> {
+    import_staged_drain_publication_gated(
+        crate::serving_authority::ServingGate::Successor(warrant),
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        signer,
+        bundle_bytes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn import_staged_drain_publication_gated<S: StructuredDurableDomainStateStore>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    signer: ValidatorId,
+    bundle_bytes: &[u8],
+) -> Result<AvailabilityIdentity, DrainSignerError> {
+    gate.require_live(store, context, domain)?;
+    let expected_identity: AvailabilityIdentity =
+        staged_drain_signer_identity(store, context, domain, expected, signer)?;
+    Ok(
+        crate::fast_path::drain_publication::retain_drain_publication_gated(
+            gate,
+            store,
+            context,
+            domain,
+            resolver,
+            history,
+            expected,
+            &expected_identity,
+            bundle_bytes,
+        )?,
+    )
 }
 
 /// Bounded read-only snapshot of one signer's durable drain progress
@@ -914,6 +1085,28 @@ pub fn read_drain_signer_progress<S: StructuredDurableDomainStateStore>(
     expected: &PublicationContext,
     signer: ValidatorId,
 ) -> Result<DrainSignerProgress, DrainSignerError> {
+    read_drain_signer_progress_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        context,
+        domain,
+        resolver,
+        expected,
+        signer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_drain_signer_progress_gated<S: StructuredDurableDomainStateStore>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    signer: ValidatorId,
+) -> Result<DrainSignerProgress, DrainSignerError> {
+    gate.require_material_reader(store, context, domain)?;
     let drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
     drain
         .fence
@@ -960,6 +1153,26 @@ pub fn read_drain_signer_progress<S: StructuredDurableDomainStateStore>(
         staged_page: record.staged_page,
         complete: record.complete,
     })
+}
+
+pub fn read_drain_signer_progress_successor<S: StructuredDurableDomainStateStore>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    signer: ValidatorId,
+) -> Result<DrainSignerProgress, DrainSignerError> {
+    read_drain_signer_progress_gated(
+        crate::serving_authority::ServingGate::Successor(warrant),
+        store,
+        context,
+        domain,
+        resolver,
+        expected,
+        signer,
+    )
 }
 
 /// The canonical selection this progress/ready row is scoped to: the exact
@@ -1233,7 +1446,57 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
     expected: &PublicationContext,
     selected_votes: &[FrozenFrontierVote],
 ) -> Result<DrainUnionStep, DrainSignerError> {
-    crate::mutation_fence::require_ordinary_namespace(store, context, domain)?;
+    advance_drain_union_gated(
+        crate::serving_authority::ServingGate::Original,
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        selected_votes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn advance_drain_union_successor<
+    S: DurablePortableRepository + StructuredDurableDomainStateStore,
+>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    selected_votes: &[FrozenFrontierVote],
+) -> Result<DrainUnionStep, DrainSignerError> {
+    advance_drain_union_gated(
+        crate::serving_authority::ServingGate::Successor(warrant),
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        selected_votes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn advance_drain_union_gated<
+    S: DurablePortableRepository + StructuredDurableDomainStateStore,
+>(
+    gate: crate::serving_authority::ServingGate<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    selected_votes: &[FrozenFrontierVote],
+) -> Result<DrainUnionStep, DrainSignerError> {
+    gate.require_live(store, context, domain)?;
     let mut drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
     verify_selection(&drain.fence, expected, domain, selected_votes)?;
     require_selected_signers_complete(store, context, domain, &mut drain, selected_votes)?;
@@ -1360,6 +1623,7 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
                 last_request_id: Some(identity.request_id),
             };
             commit_row(
+                gate,
                 store,
                 context,
                 domain,
@@ -1379,6 +1643,7 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
                 selected_votes: selected_votes.to_vec(),
             };
             commit_row(
+                gate,
                 store,
                 context,
                 domain,
@@ -1563,6 +1828,19 @@ pub fn verify_drain_ready<S: VersionedStateReader + ?Sized>(
         selected_votes,
         &mut reads,
     )
+}
+
+pub fn verify_drain_ready_successor<S: StructuredStateReader + ?Sized>(
+    warrant: &crate::serving_authority::LiveWarrant<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    selected_votes: &[FrozenFrontierVote],
+) -> Result<DrainUnionIdentity, DrainSignerError> {
+    warrant.require_reader(store, context, domain)?;
+    verify_drain_ready(store, context, domain, resolver, expected, selected_votes)
 }
 
 #[cfg(test)]

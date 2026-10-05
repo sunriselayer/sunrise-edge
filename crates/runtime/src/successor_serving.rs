@@ -292,6 +292,33 @@ pub trait SuccessorServingRepository: InactiveImportRepository {
         observation: &SuccessorServingObservation,
         transaction: DurableInvocationTransaction,
     ) -> DurableCommitOutcome;
+
+    /// Commits one token-checked state transaction while the outgoing
+    /// barrier of this successor namespace is still `Unsealed`, after
+    /// rechecking the exact installed `Serving` observation inside this
+    /// same lock. This never selects or installs the Seal target, exactly
+    /// as the Ordinary `OutgoingSealRepository::commit_seal_retention`.
+    fn commit_successor_seal_retention(
+        &self,
+        context: &DurableOperationContext,
+        observation: &SuccessorServingObservation,
+        token: &PortableSnapshotToken,
+        transaction: AtomicStateTransaction,
+    ) -> DurableCommitOutcome;
+
+    /// Commits the Seal invocation that retires this successor namespace
+    /// and installs `sealed` as the permanent barrier record, atomically
+    /// with the invocation and the checked mutation-sequence advance.
+    /// `sealed` never becomes `Unsealed`. No object reads or mutations are
+    /// ever accepted here.
+    fn commit_successor_seal_completion(
+        &self,
+        context: &DurableOperationContext,
+        observation: &SuccessorServingObservation,
+        token: &PortableSnapshotToken,
+        transaction: DurableInvocationTransaction,
+        sealed: SealBarrier,
+    ) -> DurableCommitOutcome;
 }
 
 mod memory;

@@ -816,8 +816,12 @@ struct Preamble<'a, S: StructuredStateReader, E: LocalContractEngine + ?Sized> {
 
 impl<S: StructuredStateReader, E: LocalContractEngine + ?Sized> Preamble<'_, S, E> {
     /// Returns the object monotonicity rule this store's signed genesis bound.
-    const fn object_minimum(&self) -> logical_generation::ObjectMinimum {
-        logical_generation::ObjectMinimum::for_profile(&self.profile, self.created_checkpoint)
+    fn object_minimum(&self) -> Result<logical_generation::ObjectMinimum, NodeCoreError> {
+        logical_generation::ObjectMinimum::for_gate(
+            &self.profile,
+            self.created_checkpoint,
+            mutation_fence::ordered_gate(self.ordered),
+        )
     }
 }
 
@@ -1494,7 +1498,7 @@ where
             owner_before: &owner_before,
             owner_after: &owner_after,
         },
-        preamble.object_minimum(),
+        preamble.object_minimum()?,
         snapshot,
         &admitted.effects,
     )?;
@@ -1756,7 +1760,7 @@ where
             owner_before: &deposit_owner_before,
             owner_after: &deposit_owner_after,
         },
-        preamble.object_minimum(),
+        preamble.object_minimum()?,
         deposit_snapshot,
         &admitted_deposit.effects,
     )?;
@@ -1807,7 +1811,7 @@ where
             owner_before: &release_owner_before,
             owner_after: &release_owner_after,
         },
-        preamble.object_minimum(),
+        preamble.object_minimum()?,
         release_snapshot,
         &admitted_release.effects,
     )?;
@@ -2092,7 +2096,7 @@ where
             owner_before: &owner_before,
             owner_after: &owner_after,
         },
-        preamble.object_minimum(),
+        preamble.object_minimum()?,
         snapshot,
         &admitted.effects,
     )?;

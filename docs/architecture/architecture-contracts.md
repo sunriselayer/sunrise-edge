@@ -178,6 +178,10 @@ successor safety keys, non-circular activation commitments, protected
 target-local activation retention and recurring reconstruction still need
 their owning detailed contracts. The architecture outline does not approve
 a wire format or fill those gaps with placeholder authority.
+The proposed [recurring successor serving](recurring-successor-serving.md)
+contract ([DR-0191](decisions/0191-recurring-successor-serving.md)) is the
+pre-code proposal for recurring reconstruction. It extends DR-0187 and
+DR-0189 additively and is not accepted authority.
 
 [Functional handoff closure](functional-handoff-closure.md) and
 [DR-0186](decisions/0186-functional-handoff-closure.md) propose concrete closures

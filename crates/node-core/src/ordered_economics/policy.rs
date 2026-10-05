@@ -256,11 +256,68 @@ pub struct OrderedEconomicsPolicy {
     /// genesis committee at its own epoch e. `None` for every chain-scoped
     /// policy, whose fee claims stay pinned to the policy epoch.
     predecessor_certificates: Option<(Epoch, ValidatorSet)>,
+    /// DR-0191 Section 2: the verified 0xD054 subject digest a successor
+    /// policy was built from (v3 anchor field 10). The Seal chokepoint
+    /// requires exactly this digest under predecessor tag 2. `None` for
+    /// every chain-scoped policy, which accepts only tag 1 and genesis.
+    successor_subject: Option<Digest32>,
+    /// DR-0191 Section 6: every verified committee e_0..e_k-1 below a chain
+    /// successor policy. Set only by `from_successor_chain`; it answers
+    /// historical certificate scopes and never grants current membership.
+    chain_committees: Option<std::sync::Arc<crate::serving_authority::VerifiedCommitteeHistory>>,
+    /// DR-0191 Section 6: every genesis owner and verified registration of
+    /// the chain that activated this epoch. Set only by
+    /// `from_successor_chain`; never a membership stand-in.
+    chain_owners: Option<std::sync::Arc<crate::serving_authority::VerifiedOwnerRegistry>>,
     engine: ChainedHotStuff,
     resolver: HashSuiteResolver,
 }
 
 impl OrderedEconomicsPolicy {
+    /// Safety-key scope derived exclusively from a verified committee and
+    /// its exact activating subject. This does not grant serving authority.
+    pub(crate) fn scope_for_verified_epoch(
+        root: &VerifiedGenesisRoot,
+        history: &crate::serving_authority::VerifiedCommitteeHistory,
+        epoch: Epoch,
+        domain: AtomicityDomainId,
+    ) -> Result<OrderedKeyScope, OrderedEconomicsError> {
+        let (set, _): (&ValidatorSet, Digest32) = history
+            .get(epoch)
+            .ok_or(OrderedEconomicsError::Policy("scope epoch is not verified"))?;
+        match history.provenance(epoch) {
+            Some(crate::serving_authority::CommitteeProvenance::Genesis)
+                if epoch == root.genesis_context().epoch() =>
+            {
+                Ok(OrderedKeyScope(KeyScope::Chain))
+            }
+            Some(crate::serving_authority::CommitteeProvenance::Link {
+                subject_digest, ..
+            }) => {
+                let context: PublicationContext = PublicationContext::new(
+                    root.genesis_context().chain_id().clone(),
+                    root.genesis_context().protocol_version(),
+                    epoch,
+                )
+                .map_err(|_| OrderedEconomicsError::Policy("scope context"))?;
+                let anchor: Digest32 = ordered_economics_successor_anchor(
+                    root.genesis_resolver(),
+                    &context,
+                    domain,
+                    root.digest(),
+                    root.manifest().minimum_freeze_block_height,
+                    set,
+                    subject_digest,
+                )?;
+                Ok(OrderedKeyScope(KeyScope::Successor {
+                    protocol: context.protocol_version(),
+                    epoch,
+                    anchor,
+                }))
+            }
+            _ => Err(OrderedEconomicsError::Policy("scope committee provenance")),
+        }
+    }
     /// Derives the fixed-epoch profile directly from one immutable
     /// [`VerifiedGenesisRoot`] (DR-0182).
     ///
@@ -449,9 +506,106 @@ impl OrderedEconomicsPolicy {
             anchor,
             key_scope,
             predecessor_certificates: None,
+            successor_subject,
+            chain_committees: None,
+            chain_owners: None,
             engine,
             resolver,
         })
+    }
+
+    /// DR-0191 Section 2: the e_k ordered profile of verified chain link
+    /// k-1. It runs the `from_successor` body except that the predecessor
+    /// committee is the verified committee at `e_k - 1` from the chain
+    /// history (exactly the genesis committee for one link), and that the
+    /// signed genesis registration economics and the verified owner registry
+    /// are retained for the scoped registration owner. Crate-private: only
+    /// the chain owner holds the verified history.
+    pub(crate) fn from_successor_chain(
+        root: &VerifiedGenesisRoot,
+        inputs: &crate::serving_authority::SuccessorPolicyInputs,
+        committees: std::sync::Arc<crate::serving_authority::VerifiedCommitteeHistory>,
+        owners: std::sync::Arc<crate::serving_authority::VerifiedOwnerRegistry>,
+    ) -> Result<Self, OrderedEconomicsError> {
+        let manifest: &GenesisManifest = root.manifest();
+        let context: &PublicationContext = inputs.context();
+        if root.digest() != inputs.genesis_digest()
+            || root.genesis_context().chain_id() != context.chain_id()
+            || root.genesis_context().protocol_version() != context.protocol_version()
+        {
+            return Err(OrderedEconomicsError::Policy(
+                "successor policy root is not the verified original genesis",
+            ));
+        }
+        let registration_economics: Option<crate::economics::FastPathEconomicsPolicy> = (manifest
+            .commitment_profile
+            == crate::logical_generation::CommitmentProfile::CausalAdmission)
+            .then(|| manifest.economics_policy.clone());
+        let mut policy: Self = Self::build(
+            context.clone(),
+            inputs.domain(),
+            root.digest(),
+            Some(root.admission_profile().clone()),
+            registration_economics,
+            manifest.minimum_freeze_block_height,
+            inputs.validator_set().clone(),
+            root.genesis_resolver().clone(),
+            Some(inputs.subject_digest()),
+        )?;
+        if policy.anchor != inputs.anchor() {
+            return Err(OrderedEconomicsError::Policy(
+                "successor policy anchor differs from the verified successor anchor",
+            ));
+        }
+        let predecessor_epoch: Epoch = context.epoch().get().checked_sub(1).map(Epoch::new).ok_or(
+            OrderedEconomicsError::Policy("successor policy epoch has no predecessor"),
+        )?;
+        let (committee, digest): (&ValidatorSet, Digest32) = committees
+            .get(predecessor_epoch)
+            .ok_or(OrderedEconomicsError::Policy(
+                "successor predecessor committee is not in the verified history",
+            ))?;
+        if committee.epoch() != predecessor_epoch
+            || digest != inputs.predecessor_set_digest()
+            || committees
+                .get(context.epoch())
+                .is_some_and(|(set, _)| set != inputs.validator_set())
+        {
+            return Err(OrderedEconomicsError::Policy(
+                "successor predecessor committee differs from the verified outgoing set",
+            ));
+        }
+        // The current committee must be the one certified by exactly the
+        // verified link whose subject this policy is built from.
+        match committees.provenance(context.epoch()) {
+            Some(crate::serving_authority::CommitteeProvenance::Link {
+                index,
+                subject_digest,
+            }) if subject_digest == inputs.subject_digest()
+                && Some(u64::from(index))
+                    == predecessor_epoch
+                        .get()
+                        .checked_sub(root.genesis_context().epoch().get()) => {}
+            _ => {
+                return Err(OrderedEconomicsError::Policy(
+                    "successor committee provenance differs from the verified subject",
+                ));
+            }
+        }
+        policy.predecessor_certificates = Some((predecessor_epoch, committee.clone()));
+        policy.chain_committees = Some(committees);
+        policy.chain_owners = Some(owners);
+        Ok(policy)
+    }
+
+    /// The verified owner registry of a chain successor policy; `None` for
+    /// every chain-scoped and single-link policy.
+    pub(crate) fn chain_owners(&self) -> Option<&crate::serving_authority::VerifiedOwnerRegistry> {
+        self.chain_owners.as_deref()
+    }
+
+    pub(crate) const fn successor_subject(&self) -> Option<Digest32> {
+        self.successor_subject
     }
 
     /// Returns the sole current active hash suite resolver this policy was
@@ -542,6 +696,14 @@ impl OrderedEconomicsPolicy {
         if certificate_epoch == self.context.epoch() {
             return Some(self.engine.validator_set());
         }
+        // DR-0191: a chain successor answers any verified earlier epoch
+        // from its verified committee history (e_0 escrow claimed at e_2+).
+        if let Some(history) = self.chain_committees.as_deref() {
+            return (certificate_epoch < self.context.epoch())
+                .then(|| history.get(certificate_epoch))
+                .flatten()
+                .map(|(set, _)| set);
+        }
         match &self.predecessor_certificates {
             Some((epoch, set)) if *epoch == certificate_epoch => Some(set),
             _ => None,
@@ -569,15 +731,37 @@ impl OrderedEconomicsPolicy {
         &self,
         validator_id: ValidatorId,
         operation: &BondLifecycleOperation,
-    ) -> Option<&ValidatorInfo> {
+    ) -> Option<BondOwnerKey<'_>> {
         if let Some(info) = self.engine.validator_set().get(validator_id) {
-            return Some(info);
+            return Some(BondOwnerKey::member(info));
         }
         match operation {
-            BondLifecycleOperation::Unbond { .. } | BondLifecycleOperation::Withdraw { .. } => self
-                .predecessor_certificates
-                .as_ref()
-                .and_then(|(_, set): &(Epoch, ValidatorSet)| set.get(validator_id)),
+            // DR-0191 Section 6: a chain successor resolves a non-member
+            // owner only from the verified owner registry (genesis key or
+            // verified signed registration), never from latest membership.
+            BondLifecycleOperation::Unbond { .. } | BondLifecycleOperation::Withdraw { .. } => {
+                match self.chain_owners.as_deref() {
+                    Some(owners) => match owners.owner(validator_id) {
+                        Some(entry) => Some(BondOwnerKey {
+                            scheme: entry.scheme(),
+                            key: std::borrow::Cow::Borrowed(entry.key().as_slice()),
+                            source: BondOwnerSource::Verified,
+                        }),
+                        // Never an existing owner's key under another id.
+                        None if owners.names(validator_id, validator_id.as_bytes()) => None,
+                        None => Some(BondOwnerKey {
+                            scheme: SignatureSchemeId::Ed25519,
+                            key: std::borrow::Cow::Owned(validator_id.as_bytes().to_vec()),
+                            source: BondOwnerSource::SameEpochRegistrant,
+                        }),
+                    },
+                    None => self
+                        .predecessor_certificates
+                        .as_ref()
+                        .and_then(|(_, set): &(Epoch, ValidatorSet)| set.get(validator_id))
+                        .map(BondOwnerKey::verified),
+                }
+            }
             BondLifecycleOperation::Deposit { .. }
             | BondLifecycleOperation::Replace { .. }
             | BondLifecycleOperation::Reactivate { .. } => None,
@@ -825,6 +1009,49 @@ fn trusted_key_in(
     trusted_ed25519_key(validator_set.get(validator_id))
 }
 
+/// The trusted key authority of one validator-signed envelope: a pinned set
+/// entry, or (Unbond/Withdraw only) a verified chain owner. Never a voter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BondOwnerKey<'a> {
+    /// Authorization scheme of the trusted key.
+    pub(crate) scheme: SignatureSchemeId,
+    /// Canonical trusted key bytes.
+    pub(crate) key: std::borrow::Cow<'a, [u8]>,
+    /// Where the key came from; a same-epoch registrant is only a pure key
+    /// until its committed anchor verifies in preflight and the handler.
+    pub(crate) source: BondOwnerSource,
+}
+
+/// Provenance of a [`BondOwnerKey`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BondOwnerSource {
+    /// A pinned current-set entry.
+    Member,
+    /// A verified predecessor committee entry or verified chain owner.
+    Verified,
+    /// DR-0191: an Unbond/Withdraw sender registered in this epoch after
+    /// the cut. Registration forces id == key, but the id bytes are never
+    /// authority alone: the committed anchor must verify under the policy
+    /// scope, with its reads folded into the CAS set.
+    SameEpochRegistrant,
+}
+
+impl<'a> BondOwnerKey<'a> {
+    fn member(info: &'a ValidatorInfo) -> Self {
+        Self {
+            scheme: info.signature_scheme,
+            key: std::borrow::Cow::Borrowed(info.public_key.as_slice()),
+            source: BondOwnerSource::Member,
+        }
+    }
+    fn verified(info: &'a ValidatorInfo) -> Self {
+        Self {
+            source: BondOwnerSource::Verified,
+            ..Self::member(info)
+        }
+    }
+}
+
 fn trusted_ed25519_key(info: Option<&ValidatorInfo>) -> Result<&[u8], OrderedEconomicsError> {
     let info: &ValidatorInfo = info.ok_or(OrderedEconomicsError::Unauthenticated(
         "ordered candidate names a validator outside the pinned validator set",
@@ -835,6 +1062,18 @@ fn trusted_ed25519_key(info: Option<&ValidatorInfo>) -> Result<&[u8], OrderedEco
         ));
     }
     Ok(info.public_key.as_slice())
+}
+
+fn trusted_owner_key(owner: Option<BondOwnerKey<'_>>) -> Result<Vec<u8>, OrderedEconomicsError> {
+    let owner: BondOwnerKey<'_> = owner.ok_or(OrderedEconomicsError::Unauthenticated(
+        "ordered candidate names a validator outside the pinned validator set",
+    ))?;
+    if owner.scheme != SignatureSchemeId::Ed25519 {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "ordered candidate validator is not registered for Ed25519",
+        ));
+    }
+    Ok(owner.key.into_owned())
 }
 
 /// Verifies one already domain-framed outer envelope signature against the
@@ -951,14 +1190,13 @@ fn authenticate_with_policy(
     env: &CandidateAuthentication<'_>,
     candidate: &OrderedCandidate,
 ) -> Result<(), OrderedEconomicsError> {
-    // DR-0189 single chokepoint, deliberately FIRST: a first-successor scope
-    // never authenticates an epoch-handoff control or initial registration.
-    // Every proposal, vote, committed preview/apply, reservation and HTTP
-    // admission site reaches this function, so none needs its own check.
-    // The retained causal profile and Freeze height would otherwise pass the
-    // kind-specific checks below. Chain scopes, including the historical
-    // epoch-e verifier, are unaffected.
+    // The legacy first-link policy has no complete committee/owner history
+    // and keeps its original early refusal. Only the private verified-chain
+    // constructor connects the authorities that recurring controls and
+    // registration require. The owning live/replay gate and Seal capability
+    // still decide every handler call; a policy alone never permits a write.
     if env.policy.key_scope().is_successor()
+        && (env.policy.chain_committees.is_none() || env.policy.chain_owners.is_none())
         && matches!(
             candidate.kind,
             OrderedOperationKind::Freeze
@@ -1121,15 +1359,29 @@ fn authenticate_seal(
     }
     let intent = seal::decode_seal_intent(&candidate.intent)
         .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid seal candidate intent"))?;
-    if intent.predecessor_tag != seal::SEAL_PREDECESSOR_TAG_GENESIS {
+    // DR-0191 Section 6: the private scope alone selects the predecessor.
+    // Chain (e_0): tag 1 naming the pinned genesis only. Successor S_k: tag 2
+    // naming exactly the verified subject this policy was built from.
+    let (expected_tag, expected_digest, digest_refusal): (u16, Digest32, &'static str) =
+        match env.policy.successor_subject {
+            None => (
+                seal::SEAL_PREDECESSOR_TAG_GENESIS,
+                env.policy.genesis_digest(),
+                "seal predecessor digest is not the pinned genesis",
+            ),
+            Some(subject) => (
+                seal::SEAL_PREDECESSOR_TAG_SUCCESSOR,
+                subject,
+                "seal predecessor digest is not the verified successor subject",
+            ),
+        };
+    if intent.predecessor_tag != expected_tag {
         return Err(OrderedEconomicsError::Unauthenticated(
             "seal predecessor tag is unsupported",
         ));
     }
-    if intent.predecessor_digest != env.policy.genesis_digest() {
-        return Err(OrderedEconomicsError::Unauthenticated(
-            "seal predecessor digest is not the pinned genesis",
-        ));
+    if intent.predecessor_digest != expected_digest {
+        return Err(OrderedEconomicsError::Unauthenticated(digest_refusal));
     }
     let cut_identity = seal::decode_seal_cut_identity(&intent).map_err(|_| {
         OrderedEconomicsError::Unauthenticated("invalid seal candidate cut identity")
@@ -1298,11 +1550,10 @@ fn authenticate_bond_lifecycle(
             "bond lifecycle candidate context or request id mismatch",
         ));
     }
-    let public_key: Vec<u8> = trusted_ed25519_key(
+    let public_key: Vec<u8> = trusted_owner_key(
         env.policy
             .bond_owner_authority(signed.intent.validator_id, &signed.intent.operation),
-    )?
-    .to_vec();
+    )?;
     let intent_digest: Digest32 = bond_lifecycle_intent_digest(env.resolver(), &signed.intent)
         .map_err(|_| OrderedEconomicsError::Unauthenticated("bond lifecycle intent digest"))?;
     let framed: Vec<u8> = bond_lifecycle_signing_frame(&signed.intent.context, intent_digest)
@@ -1361,23 +1612,13 @@ fn authenticate_bond_registration(
     env: &CandidateAuthentication<'_>,
     candidate: &OrderedCandidate,
 ) -> Result<(), OrderedEconomicsError> {
-    let profile: &VerifiedAdmissionProfile =
-        env.policy
-            .admission_profile()
-            .ok_or(OrderedEconomicsError::Unauthenticated(
-                "registration requires pinned causal genesis",
-            ))?;
-    let economics =
-        env.policy
-            .registration_economics()
-            .ok_or(OrderedEconomicsError::Unauthenticated(
-                "registration signed resource policy missing",
-            ))?;
+    let scope: bond_lifecycle::registration::RegistrationScope<'_> =
+        bond_lifecycle::registration::RegistrationScope::for_policy(env.policy).map_err(|_| {
+            OrderedEconomicsError::Unauthenticated("registration verified scope unavailable")
+        })?;
     let (signed, _) = bond_lifecycle::registration::authenticate_registration(
-        env.resolver(),
-        profile,
-        env.policy.engine().validator_set(),
-        economics,
+        &scope,
+        bond_lifecycle::registration::RegistrationMode::Admit,
         env.leg_policy,
         &candidate.intent,
     )

@@ -47,6 +47,33 @@ fn tail<'a>(
     Ok(Some(suffix))
 }
 
+fn live_tail<'a>(
+    policy: &OrderedEconomicsPolicy,
+    key: &'a [u8],
+    family: &[u8],
+    chain: &[u8],
+    width: usize,
+) -> Result<Option<&'a [u8]>, NodeCoreError> {
+    let Some(scope) = policy.key_scope().successor_scope_bytes()? else {
+        return tail(key, family, chain, width);
+    };
+    let prefix: Vec<u8> = [
+        engine::ORDERED_ECONOMICS_STATE_PREFIX,
+        b"epoch-",
+        family,
+        chain,
+        &scope,
+    ]
+    .concat();
+    let Some(suffix) = key.strip_prefix(prefix.as_slice()) else {
+        return Ok(None);
+    };
+    if suffix.len() != width {
+        return Err(invalid("current ordered safety key suffix"));
+    }
+    Ok(Some(suffix))
+}
+
 fn present(row: &SourceSnapshotRecord) -> Result<&[u8], NodeCoreError> {
     row.value
         .as_deref()
@@ -151,6 +178,58 @@ fn union_progress_for_exclusion(
     Ok(record)
 }
 
+/// A source cut already owns the complete captured corpus. Validate its
+/// current index as one contiguous logical prefix before excluding any of
+/// that private metadata. This is not a live scan or DrainSet evidence.
+fn validate_index_corpus(
+    resolver: &HashSuiteResolver,
+    cursor: &frontier::FrontierCursor,
+    entries: &[frontier::FrontierEntry],
+) -> Result<(), NodeCoreError> {
+    if !cursor.indexed {
+        return if entries.is_empty() {
+            Ok(())
+        } else {
+            Err(invalid("pre-index progress cannot own index entries"))
+        };
+    }
+    let identity: &FrozenFrontierIdentity = &cursor.identity;
+    let mut accumulator: consensus::FrozenFrontierAccumulator =
+        consensus::FrozenFrontierAccumulator::new(
+            resolver,
+            identity.chain_id.clone(),
+            identity.protocol_version,
+            identity.epoch,
+            identity.domain,
+            identity.closure_request_id,
+            identity.closure_height,
+        )
+        .map_err(|_| invalid("frontier index corpus seed"))?;
+    for entry in entries {
+        let ordinal: u64 = accumulator
+            .identity()
+            .entry_count
+            .checked_add(1)
+            .ok_or(invalid("frontier index corpus ordinal overflow"))?;
+        if entry.ordinal != ordinal {
+            return Err(invalid(
+                "frontier index corpus ordinals are not consecutive",
+            ));
+        }
+        accumulator
+            .push(resolver, &entry.publication)
+            .map_err(|_| invalid("frontier index corpus publication order or scope differs"))?;
+    }
+    if accumulator.last_request_id() != cursor.last_request_id
+        || accumulator.into_identity() != cursor.identity
+    {
+        return Err(invalid(
+            "frontier index corpus count, tail or fold differs from progress",
+        ));
+    }
+    Ok(())
+}
+
 /// All source-local exclusions are typed, exact-key checked and inert. The
 /// reconstructed key set identifies which immutable admission header/candidate
 /// actually belongs to the independently certified committed prefix.
@@ -174,13 +253,21 @@ pub(crate) fn validate_local_rows(
         excluded: BTreeSet::new(),
         internal_receipts: BTreeMap::new(),
     };
-    // DR-0189: no audited source or target may carry an epoch-scoped
-    // successor safety row. A cut of a successor store is out of scope.
-    if rows
-        .keys()
-        .any(|key: &Vec<u8>| engine::is_successor_scoped_ordered_key(key))
-    {
-        return Err(invalid("epoch-scoped ordered row cannot be audited"));
+    // Only this independently verified current policy may authenticate a
+    // live epoch-scoped safety row. Earlier protected rows are separated
+    // by the verified reconstruction base before this current-row audit.
+    for key in rows.keys() {
+        if engine::is_successor_scoped_ordered_key(key)
+            && !engine::is_ordered_key_of_scope(
+                key,
+                policy.context().chain_id(),
+                policy.key_scope(),
+            )?
+        {
+            return Err(invalid(
+                "unverified epoch-scoped ordered row cannot be audited",
+            ));
+        }
     }
     let closure_key: Vec<u8> =
         freeze::admission_closure_key(policy.context().chain_id(), policy.context().epoch())?;
@@ -197,6 +284,8 @@ pub(crate) fn validate_local_rows(
     let mut candidates: BTreeMap<Digest32, OrderedCandidate> = BTreeMap::new();
     let mut views: Vec<(reservation::OrderedAdmissionStage, u64, Option<Digest32>)> = Vec::new();
     let mut source_state_seen: bool = false;
+    let mut frontier_cursor: Option<frontier::FrontierCursor> = None;
+    let mut frontier_entries: Vec<frontier::FrontierEntry> = Vec::new();
     // Build authenticated candidate identities before checking their local
     // header/receipt associations; input enumeration order is not authority.
     for (key, row) in &rows {
@@ -220,7 +309,7 @@ pub(crate) fn validate_local_rows(
         }
     }
     for (key, row) in &rows {
-        if tail(key, b"state/", &chain, 0)?.is_some() {
+        if live_tail(policy, key, b"state/", &chain, 0)?.is_some() {
             let state = decode_consensus_state(present(row)?)
                 .map_err(|_| invalid("source consensus state schema"))?;
             policy
@@ -258,7 +347,7 @@ pub(crate) fn validate_local_rows(
             if !reconstructed.contains(key) {
                 result.excluded.insert(key.clone());
             }
-        } else if let Some(view_bytes) = tail(key, b"leader-proposal/", &chain, 8)? {
+        } else if let Some(view_bytes) = live_tail(policy, key, b"leader-proposal/", &chain, 8)? {
             let view: u64 = u64::from_be_bytes(
                 view_bytes
                     .try_into()
@@ -292,7 +381,7 @@ pub(crate) fn validate_local_rows(
                 ));
             }
             result.excluded.insert(key.clone());
-        } else if let Some(view_bytes) = tail(key, b"vote/", &chain, 8)? {
+        } else if let Some(view_bytes) = live_tail(policy, key, b"vote/", &chain, 8)? {
             let view: u64 = u64::from_be_bytes(
                 view_bytes
                     .try_into()
@@ -311,7 +400,7 @@ pub(crate) fn validate_local_rows(
             // candidate digest and exact view through the dedicated preimage.
             views.push((reservation::OrderedAdmissionStage::Vote, view, None));
             result.excluded.insert(key.clone());
-        } else if tail(key, b"vote-high/", &chain, 0)?.is_some() {
+        } else if live_tail(policy, key, b"vote-high/", &chain, 0)?.is_some() {
             identity::decode_vote_high_water(present(row)?)?;
             result.excluded.insert(key.clone());
         } else if let Some(request) = tail(key, b"reservation/", &chain, 32)? {
@@ -341,17 +430,91 @@ pub(crate) fn validate_local_rows(
             let cursor = frontier::decode_cursor(present(row)?)
                 .map_err(|_| invalid("frontier progress schema"))?;
             validate_frontier(policy, closure, &cursor.identity)?;
-            if cursor.last_request_id == [0; 32]
-                || frontier::key(
-                    policy.context().chain_id(),
-                    policy.context().epoch(),
-                    b"frontier-progress/",
-                )
-                .map_err(|_| invalid("frontier progress key"))?
-                    != *key
+            consensus::FrozenFrontierAccumulator::resume(
+                resolver,
+                cursor.identity.clone(),
+                cursor.last_request_id,
+            )
+            .map_err(|_| invalid("frontier progress logical tail or empty seed differs"))?;
+            if frontier::key(
+                policy.context().chain_id(),
+                policy.context().epoch(),
+                b"frontier-progress/",
+            )
+            .map_err(|_| invalid("frontier progress key"))?
+                != *key
             {
                 return Err(invalid("frontier progress key/cursor differs"));
             }
+            frontier_cursor = Some(cursor);
+            result.excluded.insert(key.clone());
+        } else if tail(key, b"frontier-entry/", &chain, 40)?.is_some() {
+            let closure = closure
+                .as_ref()
+                .ok_or(invalid("frontier entry has no committed Freeze"))?;
+            let entry: frontier::FrontierEntry = frontier::decode_entry(present(row)?)
+                .map_err(|_| invalid("frontier entry schema"))?;
+            frontier::validate_entry(&entry, policy.context(), policy.domain(), closure)
+                .map_err(|_| invalid("frontier entry scope or Freeze differs"))?;
+            if frontier::entry_key(
+                policy.context().chain_id(),
+                policy.context().epoch(),
+                &entry.publication.request_id,
+            )
+            .map_err(|_| invalid("frontier entry natural key"))?
+                != *key
+            {
+                return Err(invalid("frontier entry exact key differs"));
+            }
+            let cursor_key: Vec<u8> = frontier::key(
+                policy.context().chain_id(),
+                policy.context().epoch(),
+                b"frontier-progress/",
+            )
+            .map_err(|_| invalid("frontier entry progress key"))?;
+            let cursor: frontier::FrontierCursor = frontier::decode_cursor(present(
+                rows.get(&cursor_key)
+                    .ok_or(invalid("frontier entry is orphaned"))?,
+            )?)
+            .map_err(|_| invalid("frontier entry progress schema"))?;
+            validate_frontier(policy, closure, &cursor.identity)?;
+            consensus::FrozenFrontierAccumulator::resume(
+                resolver,
+                cursor.identity.clone(),
+                cursor.last_request_id,
+            )
+            .map_err(|_| invalid("frontier entry progress consistency"))?;
+            if !cursor.indexed
+                || entry.ordinal > cursor.identity.entry_count
+                || cursor
+                    .last_request_id
+                    .is_none_or(|last: [u8; 32]| entry.publication.request_id > last)
+                || ((entry.ordinal == cursor.identity.entry_count)
+                    != (cursor.last_request_id == Some(entry.publication.request_id)))
+            {
+                return Err(invalid("frontier entry and indexed progress differ"));
+            }
+            let publication_key: Vec<u8> = crate::fast_path::publication::fastpath_publication_key(
+                policy.context().chain_id(),
+                &entry.publication.request_id,
+            )?;
+            let publication: crate::fast_path::publication::FastPathPublicationRecord =
+                crate::fast_path::publication::decode_fastpath_publication_record(present(
+                    rows.get(&publication_key)
+                        .ok_or(invalid("frontier entry publication is absent"))?,
+                )?)
+                .map_err(|_| invalid("frontier entry publication schema"))?;
+            if publication.context != *policy.context()
+                || publication.request_id != entry.publication.request_id
+                || decode_availability_identity(&publication.identity)
+                    .map_err(|_| invalid("frontier entry publication identity schema"))?
+                    != entry.publication
+            {
+                return Err(invalid("frontier entry differs from current publication"));
+            }
+            // `rows` is a natural-key BTreeMap. Exact current epoch/key
+            // validation above means this is the index's request-ID order.
+            frontier_entries.push(entry);
             result.excluded.insert(key.clone());
         } else if tail(key, b"frontier/", &chain, 8)?.is_some() {
             let closure = closure
@@ -360,6 +523,32 @@ pub(crate) fn validate_local_rows(
             let final_record = frontier::decode_final(present(row)?)
                 .map_err(|_| invalid("final frontier schema"))?;
             validate_frontier(policy, closure, &final_record.identity)?;
+            if final_record.indexed {
+                let cursor_key: Vec<u8> = frontier::key(
+                    policy.context().chain_id(),
+                    policy.context().epoch(),
+                    b"frontier-progress/",
+                )
+                .map_err(|_| invalid("indexed final frontier progress key"))?;
+                match rows.get(&cursor_key) {
+                    Some(cursor_row) => {
+                        let cursor: frontier::FrontierCursor =
+                            frontier::decode_cursor(present(cursor_row)?)
+                                .map_err(|_| invalid("indexed final frontier progress schema"))?;
+                        if !cursor.indexed || cursor.identity != final_record.identity {
+                            return Err(invalid(
+                                "indexed final frontier differs from its complete progress",
+                            ));
+                        }
+                    }
+                    None if final_record.identity.entry_count == 0 => {}
+                    None => {
+                        return Err(invalid(
+                            "indexed final frontier lacks its complete progress",
+                        ));
+                    }
+                }
+            }
             let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
                 policy.context().chain_id().clone(),
                 policy.context().protocol_version(),
@@ -514,6 +703,11 @@ pub(crate) fn validate_local_rows(
             }
         }
     }
+    if let Some(cursor) = frontier_cursor {
+        validate_index_corpus(resolver, &cursor, &frontier_entries)?;
+    } else if !frontier_entries.is_empty() {
+        return Err(invalid("frontier index corpus has no progress"));
+    }
     if is_source && !source_state_seen {
         return Err(invalid(
             "source has no independently validated consensus tip",
@@ -662,6 +856,68 @@ mod tests {
             .verify_vote(&vote, &super::Ed25519ConsensusVerifier)
             .unwrap();
         (resolver, seed, vote, member)
+    }
+
+    #[test]
+    fn complete_index_corpus_refuses_duplicate_gap_missing_tail_and_changed_fold() {
+        // This is only a private metadata consistency fixture. These inert
+        // selectors never become certificates, cuts or verified authority.
+        let (resolver, seed, _, member): (
+            HashSuiteResolver,
+            FrozenFrontierIdentity,
+            FrozenFrontierVote,
+            AvailabilityIdentity,
+        ) = progress_fixture();
+        let mut accumulator: FrozenFrontierAccumulator = FrozenFrontierAccumulator::new(
+            &resolver,
+            seed.chain_id.clone(),
+            seed.protocol_version,
+            seed.epoch,
+            seed.domain,
+            seed.closure_request_id,
+            seed.closure_height,
+        )
+        .unwrap();
+        let mut entries: Vec<super::frontier::FrontierEntry> = Vec::new();
+        for index in 1u8..=3 {
+            let mut publication: AvailabilityIdentity = member.clone();
+            publication.request_id = [index; 32];
+            accumulator.push(&resolver, &publication).unwrap();
+            entries.push(super::frontier::FrontierEntry {
+                closure_request_id: seed.closure_request_id,
+                closure_height: seed.closure_height,
+                ordinal: u64::from(index),
+                publication,
+            });
+        }
+        let cursor: super::frontier::FrontierCursor = super::frontier::FrontierCursor {
+            identity: accumulator.into_identity(),
+            last_request_id: Some([3; 32]),
+            physical_last_request_id: [4; 32],
+            indexed: true,
+        };
+        super::validate_index_corpus(&resolver, &cursor, &entries).unwrap();
+        let mut duplicate: Vec<super::frontier::FrontierEntry> = entries.clone();
+        duplicate[1].ordinal = 1;
+        assert!(super::validate_index_corpus(&resolver, &cursor, &duplicate).is_err());
+        let mut gap: Vec<super::frontier::FrontierEntry> = entries.clone();
+        gap.remove(1);
+        assert!(super::validate_index_corpus(&resolver, &cursor, &gap).is_err());
+        let mut missing_tail: Vec<super::frontier::FrontierEntry> = entries.clone();
+        missing_tail.pop();
+        assert!(super::validate_index_corpus(&resolver, &cursor, &missing_tail).is_err());
+        let mut changed: Vec<super::frontier::FrontierEntry> = entries.clone();
+        changed[1].publication.execution_commitment = resolver
+            .hash_for_purpose(
+                seed.epoch,
+                HashPurpose::ExecutionEffects,
+                b"different inert selector",
+            )
+            .unwrap();
+        assert!(super::validate_index_corpus(&resolver, &cursor, &changed).is_err());
+        let mut wrong_tail: super::frontier::FrontierCursor = cursor.clone();
+        wrong_tail.last_request_id = Some([2; 32]);
+        assert!(super::validate_index_corpus(&resolver, &wrong_tail, &entries).is_err());
     }
 
     fn signer_bytes(record: &super::drain_union::SignerProgressRecord) -> Vec<u8> {

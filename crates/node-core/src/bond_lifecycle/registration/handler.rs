@@ -8,24 +8,6 @@ use abi::call_values::CallValue;
 use execution::ObjectEffect;
 use runtime::VersionedStateReader;
 
-fn policy_inputs(
-    policy: &OrderedEconomicsPolicy,
-) -> Result<(&VerifiedAdmissionProfile, &FastPathEconomicsPolicy), BondRegistrationError> {
-    let profile: &VerifiedAdmissionProfile = policy
-        .admission_profile()
-        .filter(|profile| profile.is_causal() && profile.context() == policy.context())
-        .ok_or(BondRegistrationError::Prerequisite(
-            "registration requires verified first causal genesis policy",
-        ))?;
-    let economics: &FastPathEconomicsPolicy =
-        policy
-            .registration_economics()
-            .ok_or(BondRegistrationError::Prerequisite(
-                "registration signed resource authority missing",
-            ))?;
-    Ok((profile, economics))
-}
-
 fn record_read(
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
     key: Vec<u8>,
@@ -51,72 +33,40 @@ pub fn verify_registered_bond_chain<S: VersionedStateReader + ?Sized>(
     history: &[HashSuiteResolver],
     validator_id: ValidatorId,
 ) -> Result<FastPathBondRecord, BondRegistrationError> {
-    let leg_policy: LocalExecutionPolicy =
-        LocalExecutionPolicy::generic_object_results(root.genesis_context().clone());
+    let scope: RegistrationScope<'_> = RegistrationScope::for_genesis(root);
+    let leg_policy: LocalExecutionPolicy = scope.leg_policy();
     verify_chain(
         store,
         context,
         domain,
-        root.genesis_resolver(),
         history,
-        root.admission_profile(),
-        root.genesis_committee(),
-        &root.manifest().economics_policy,
+        &scope,
         &leg_policy,
         validator_id,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn verify_chain<S: VersionedStateReader + ?Sized>(
+/// The committed anchor of `validator_id` in Existing mode under `scope`,
+/// whose live context the anchor context must equal, then its unchanged
+/// bond chain. Public routes use the genesis scope; same-epoch registrant
+/// owner resolution uses the policy scope.
+pub(crate) fn verify_chain<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
-    resolver: &HashSuiteResolver,
     history: &[HashSuiteResolver],
-    profile: &VerifiedAdmissionProfile,
-    registry: &ValidatorSet,
-    economics: &FastPathEconomicsPolicy,
+    scope: &RegistrationScope<'_>,
     leg_policy: &LocalExecutionPolicy,
     validator_id: ValidatorId,
 ) -> Result<FastPathBondRecord, BondRegistrationError> {
-    let chain: &ChainId = profile.context().chain_id();
+    let resolver: &HashSuiteResolver = scope.resolver;
+    let chain: &ChainId = scope.live_context().chain_id();
     let key: Vec<u8> = bond_registration_anchor_key(chain, &validator_id)?;
     let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     let anchor: BondRegistrationAnchor = decode_bond_registration_anchor(observed.value().ok_or(
         BondRegistrationError::Prerequisite("registration anchor missing"),
     )?)?;
-    let (signed, leg) = authenticate_registration(
-        resolver,
-        profile,
-        registry,
-        economics,
-        leg_policy,
-        &anchor.signed_registration,
-    )?;
-    if anchor.context != *profile.context()
-        || anchor.validator_id != validator_id
-        || signed.intent.validator_id != validator_id
-        || signed.intent.context != anchor.context
-    {
-        return Err(BondRegistrationError::Prerequisite(
-            "registration anchor natural identity differs",
-        ));
-    }
-    let root: FastPathBondRecord = decode_fastpath_bond_record(&anchor.resulting_row)?;
-    validate_initial_row(
-        &signed.intent,
-        &root,
-        &leg,
-        initial_resource(economics, &signed.intent)?,
-    )?;
-    if bond_row_digest(resolver, root.lifecycle_epoch, &anchor.resulting_row)?
-        != signed.intent.expected_initial_row_digest
-    {
-        return Err(BondRegistrationError::Prerequisite(
-            "registration anchor resulting digest differs",
-        ));
-    }
+    authenticate_anchor(scope, leg_policy, &anchor, validator_id)?;
     let first_transition: Vec<u8> =
         local_instance_state::fastpath_bond_transition_key(chain, &validator_id, 1)?;
     let first: VersionedStateValue =
@@ -143,12 +93,98 @@ fn verify_chain<S: VersionedStateReader + ?Sized>(
     )?)?)
 }
 
+/// The one Existing-mode authentication of a committed anchor: its signed
+/// envelope, natural identity, independently validated generation-one row
+/// and that row's signed digest. Shared by [`verify_chain`] and the DR-0191
+/// owner registry so the two cannot drift. Reads nothing.
+fn authenticate_anchor(
+    scope: &RegistrationScope<'_>,
+    leg_policy: &LocalExecutionPolicy,
+    anchor: &BondRegistrationAnchor,
+    validator_id: ValidatorId,
+) -> Result<(SignedBondRegistrationIntent, FastPathBondRecord), BondRegistrationError> {
+    let resolver: &HashSuiteResolver = scope.resolver;
+    let economics: &FastPathEconomicsPolicy = scope.economics();
+    let (signed, leg) = authenticate_registration(
+        scope,
+        RegistrationMode::Existing(anchor),
+        leg_policy,
+        &anchor.signed_registration,
+    )?;
+    if anchor.context != *scope.live_context()
+        || anchor.validator_id != validator_id
+        || signed.intent.validator_id != validator_id
+        || signed.intent.context != anchor.context
+    {
+        return Err(BondRegistrationError::Prerequisite(
+            "registration anchor natural identity differs",
+        ));
+    }
+    let root: FastPathBondRecord = decode_fastpath_bond_record(&anchor.resulting_row)?;
+    validate_initial_row(
+        &signed.intent,
+        &root,
+        &leg,
+        initial_resource(economics, &signed.intent)?,
+    )?;
+    if bond_row_digest(resolver, root.lifecycle_epoch, &anchor.resulting_row)?
+        != signed.intent.expected_initial_row_digest
+    {
+        return Err(BondRegistrationError::Prerequisite(
+            "registration anchor resulting digest differs",
+        ));
+    }
+    Ok((signed, root))
+}
+
+/// DR-0191 Section 2 owner provenance of one committed registration anchor,
+/// recomputed from the anchor bytes alone. Never a membership stand-in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RegisteredOwnerIdentity {
+    pub(crate) validator_id: ValidatorId,
+    pub(crate) key: [u8; 32],
+    pub(crate) anchor_epoch: Epoch,
+    pub(crate) intent_digest: Digest32,
+    pub(crate) initial_row_digest: Digest32,
+}
+
+/// Existing-mode identity of one committed anchor at its own epoch: the
+/// genesis scope at e_0, otherwise the verified committee and owner history
+/// at the anchor epoch. Exactly the anchor half of
+/// [`verify_registered_bond_chain`], without any store read, because the
+/// owner registry must not depend on later transitions of the same bond.
+pub(crate) fn verify_registration_identity(
+    root: &crate::genesis::VerifiedGenesisRoot,
+    history: Option<(
+        &crate::serving_authority::VerifiedCommitteeHistory,
+        &crate::serving_authority::VerifiedOwnerRegistry,
+    )>,
+    anchor_bytes: &[u8],
+) -> Result<RegisteredOwnerIdentity, BondRegistrationError> {
+    let anchor: BondRegistrationAnchor = decode_bond_registration_anchor(anchor_bytes)?;
+    let scope: RegistrationScope<'_> = match history {
+        Some((committees, owners)) => {
+            RegistrationScope::for_epoch(root, committees, owners, anchor.context.epoch())?
+        }
+        None => RegistrationScope::for_genesis(root),
+    };
+    let leg_policy: LocalExecutionPolicy = scope.leg_policy();
+    let (signed, _row): (SignedBondRegistrationIntent, FastPathBondRecord) =
+        authenticate_anchor(&scope, &leg_policy, &anchor, anchor.validator_id)?;
+    Ok(RegisteredOwnerIdentity {
+        validator_id: signed.intent.validator_id,
+        key: signed.intent.authorization_key,
+        anchor_epoch: anchor.context.epoch(),
+        intent_digest: bond_registration_intent_digest(root.genesis_resolver(), &signed.intent)?,
+        initial_row_digest: signed.intent.expected_initial_row_digest,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn require_pristine<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
-    resolver: &HashSuiteResolver,
     history: &[HashSuiteResolver],
     policy: &OrderedEconomicsPolicy,
     leg_policy: &LocalExecutionPolicy,
@@ -181,16 +217,13 @@ fn require_pristine<S: VersionedStateReader + ?Sized>(
             Ok(())
         }
         (Some(_), Some(_)) => {
-            let (profile, economics) = policy_inputs(policy)?;
+            let scope: RegistrationScope<'_> = RegistrationScope::for_policy(policy)?;
             verify_chain(
                 store,
                 context,
                 domain,
-                resolver,
                 history,
-                profile,
-                policy.engine().validator_set(),
-                economics,
+                &scope,
                 leg_policy,
                 intent.validator_id,
             )?;
@@ -226,12 +259,10 @@ pub(crate) fn verify_registration_admission<S: StructuredStateReader>(
     candidate: &OrderedCandidate,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<(), BondRegistrationError> {
-    let (profile, economics) = policy_inputs(env.policy)?;
+    let scope: RegistrationScope<'_> = RegistrationScope::for_policy(env.policy)?;
     let (signed, _) = authenticate_registration(
-        env.resolver(),
-        profile,
-        env.policy.engine().validator_set(),
-        economics,
+        &scope,
+        RegistrationMode::Admit,
         env.leg_policy,
         &candidate.intent,
     )?;
@@ -239,7 +270,6 @@ pub(crate) fn verify_registration_admission<S: StructuredStateReader>(
         store,
         context,
         env.policy.domain(),
-        env.resolver(),
         env.history,
         env.policy,
         env.leg_policy,
@@ -346,12 +376,12 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
 ) -> Result<InvocationPreparation, BondRegistrationError> {
     let policy: &OrderedEconomicsPolicy = env.policy;
     let domain: AtomicityDomainId = policy.domain();
-    let (profile, economics) = policy_inputs(policy)?;
+    let scope: RegistrationScope<'_> = RegistrationScope::for_policy(policy)?;
+    let (profile, economics): (&VerifiedAdmissionProfile, &FastPathEconomicsPolicy) =
+        (scope.profile(), scope.economics());
     let (signed, leg) = authenticate_registration(
-        env.resolver(),
-        profile,
-        policy.engine().validator_set(),
-        economics,
+        &scope,
+        RegistrationMode::Admit,
         env.leg_policy,
         &candidate.intent,
     )?;
@@ -415,7 +445,6 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
         store,
         context,
         domain,
-        env.resolver(),
         env.history,
         policy,
         env.leg_policy,
@@ -480,10 +509,20 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
         intent.context.chain_id(),
         &mut reads,
     )?;
-    let minimum = logical_generation::ObjectMinimum::for_profile(
+    let logical_generation::InstalledCommitmentProfile::Logical(profile_record) =
+        &installed_profile
+    else {
+        return Err(BondRegistrationError::Prerequisite(
+            "registration requires logical generation provenance",
+        ));
+    };
+    let generation_scope: logical_generation::GenerationScope =
+        admission.gate.generation_scope(profile_record);
+    let minimum = logical_generation::ObjectMinimum::for_scope(
         &installed_profile,
         candidate.created_checkpoint,
-    );
+        &generation_scope,
+    )?;
     let mut heads: Vec<DurableObjectHeadRead> = Vec::new();
     let mut mutations: Vec<StateMutationEntry> = Vec::new();
     let admitted: AdmittedLeg = admit_and_execute_leg(
@@ -618,7 +657,8 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
         StateMutation::Put(encode_bond_registration_anchor(&anchor)?),
     )?);
     let object_mutations: Vec<DurableObjectMutationEntry> = vec![object_mutation];
-    logical_generation::admit_application(
+    logical_generation::admit_application_gated(
+        admission.gate,
         store,
         context,
         domain,

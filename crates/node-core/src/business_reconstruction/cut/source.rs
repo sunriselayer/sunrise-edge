@@ -95,7 +95,15 @@ fn blob<B: PortableBlobRepository + ?Sized>(
     Ok(bytes)
 }
 
-pub(super) fn capture<
+/// DR-0191 Section 4 admitted live-safety scopes of one capture: the chain
+/// and the verified successor scopes S_1..S_n. Any other epoch-scoped row
+/// (incoming, unknown or planted) still refuses.
+pub(crate) struct CaptureScopes<'s> {
+    pub(crate) chain: &'s protocol_types::ChainId,
+    pub(crate) verified: &'s [crate::ordered_economics::OrderedKeyScope],
+}
+
+pub(super) fn capture_scoped<
     S: DurablePortableSnapshotRepository + ?Sized,
     B: PortableBlobRepository + ?Sized,
 >(
@@ -103,6 +111,7 @@ pub(super) fn capture<
     blobs: &B,
     operation: &DurableOperationContext,
     domain: AtomicityDomainId,
+    scopes: Option<&CaptureScopes<'_>>,
 ) -> Result<SourceBusinessSnapshot, BusinessCutError> {
     let token: PortableSnapshotToken = source
         .begin_portable_snapshot(operation, domain)
@@ -140,13 +149,35 @@ pub(super) fn capture<
                 if descriptor.key() != key {
                     return Err(invalid("source descriptor natural key differs"));
                 }
-                // DR-0189: a cut of a successor store is out of scope. Any
+                // DR-0189/DR-0191: without verified scopes every
                 // epoch-scoped ordered safety row refuses capture, including
-                // one planted in an inactive import target.
+                // one planted in an inactive import target. With them, only
+                // rows of exactly a verified scope are admitted.
                 if let DurableRecordKey::State(state_key) = key
                     && crate::ordered_economics::engine::is_successor_scoped_ordered_key(state_key)
                 {
-                    return Err(invalid("epoch-scoped ordered row cannot be captured"));
+                    let admitted: bool = match scopes {
+                        None => false,
+                        Some(scopes) => {
+                            let mut found: bool = false;
+                            for scope in scopes.verified {
+                                if crate::ordered_economics::engine::is_ordered_key_of_scope(
+                                    state_key,
+                                    scopes.chain,
+                                    scope,
+                                )
+                                .map_err(|_| invalid("epoch-scoped row classification"))?
+                                {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            found
+                        }
+                    };
+                    if !admitted {
+                        return Err(invalid("epoch-scoped ordered row cannot be captured"));
+                    }
                 }
                 let value: Option<Vec<u8>> = body(source, operation, domain, &token, &descriptor)?;
                 records.push(SourceSnapshotRecord { descriptor, value });

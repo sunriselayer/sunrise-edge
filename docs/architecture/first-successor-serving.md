@@ -900,3 +900,9 @@ changes to the installed policy rows; genuine `Unbond`/`Withdraw` unlock
 for D; PostgreSQL or Durable Object activation; public readiness
 production; independent security audit; Delivery 3. Design acceptance is
 not completion of these deferred outcomes or of the implementation.
+
+The proposed [recurring successor serving](recurring-successor-serving.md)
+contract ([DR-0191](decisions/0191-recurring-successor-serving.md)) extends
+this contract additively. Link 0 stays exactly this contract. Later links
+reuse its verifier, frames, warrants and ports over a privately verified
+base. It does not change any rule here until that design is accepted.

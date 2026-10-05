@@ -66,6 +66,7 @@ pub struct VerifiedImportPlan {
     rows: Vec<ImportRow>,
     blobs: BTreeMap<Digest32, Vec<u8>>,
     batches: Vec<ImportBatch>,
+    scopes: Vec<crate::ordered_economics::OrderedKeyScope>,
 }
 
 impl VerifiedImportPlan {
@@ -82,6 +83,53 @@ impl VerifiedImportPlan {
     /// lock rows. It is never a destination observation or admission token.
     pub(crate) fn rows(&self) -> &[ImportRow] {
         &self.rows
+    }
+
+    /// Exact point lookup in the same canonical locator order as the
+    /// bounded prior traversal, without rescanning the import inventory.
+    pub(crate) fn state_row(&self, key: &[u8]) -> Option<&[u8]> {
+        let index: usize = self.rows.partition_point(|row: &ImportRow| {
+            matches!(row, ImportRow::State { key: found, .. } if found.as_slice() < key)
+        });
+        match self.rows.get(index) {
+            Some(ImportRow::State {
+                key: found,
+                value: Some(bytes),
+            }) if found.as_slice() == key => Some(bytes.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// Bounded successor-local traversal of exact prior State. `raw_rows`
+    /// orders every plan by `ImportRow::locator`: all State locators begin
+    /// with 1 and then the unchanged natural key; every other family sorts
+    /// after them. This lookup therefore does not assume enum ordering or
+    /// inspect a caller-supplied history. A tombstone is returned explicitly.
+    pub(crate) fn next_state_row(
+        &self,
+        prefix: &[u8],
+        after: &[u8],
+    ) -> Option<(&[u8], Option<&[u8]>)> {
+        let index: usize = self.rows.partition_point(|row: &ImportRow| {
+            matches!(row, ImportRow::State { key, .. } if key.as_slice() <= after)
+        });
+        match self.rows.get(index) {
+            Some(ImportRow::State { key, value }) if key.starts_with(prefix) => {
+                Some((key.as_slice(), value.as_deref()))
+            }
+            _ => None,
+        }
+    }
+
+    /// DR-0191: the exact verified batches, consumed only by the private
+    /// reconstruction-base bootstrap of the next link.
+    pub(crate) fn batches(&self) -> &[ImportBatch] {
+        &self.batches
+    }
+
+    /// DR-0191: the exact verified referenced bodies of this plan.
+    pub(crate) const fn blobs(&self) -> &BTreeMap<Digest32, Vec<u8>> {
+        &self.blobs
     }
 
     /// DR-0189: the exact progress a complete installation of this verified
@@ -313,11 +361,16 @@ impl VerifiedImportPlan {
                 return Err(invalid("destination required immutable body is missing"));
             }
         }
-        let snapshot: SourceBusinessSnapshot = cut::capture_import_target(
+        let scopes: cut::CaptureScopes<'_> = cut::CaptureScopes {
+            chain: &self.binding.context.chain_id,
+            verified: &self.scopes,
+        };
+        let snapshot: SourceBusinessSnapshot = cut::capture_scoped_target(
             destination,
             destination_blobs,
             operation,
             self.binding.domain,
+            &scopes,
         )?;
         let actual: Vec<ImportRow> = raw_rows(&snapshot, false)?;
         if actual != expected {
@@ -381,9 +434,22 @@ pub fn verify_saved_business_import(
     plan: BusinessReconstructionPlan<'_>,
     saved: &SavedBusinessCut,
 ) -> Result<VerifiedImportPlan, BusinessImportError> {
+    let base: crate::serving_authority::ReconstructionBase<'_> =
+        crate::serving_authority::ReconstructionBase::genesis(plan.genesis_root);
+    verify_saved_business_import_with_base(plan, base, saved)
+}
+
+pub(crate) fn verify_saved_business_import_with_base<'p>(
+    plan: BusinessReconstructionPlan<'p>,
+    base: crate::serving_authority::ReconstructionBase<'p>,
+    saved: &SavedBusinessCut,
+) -> Result<VerifiedImportPlan, BusinessImportError> {
     let resolver: &HashSuiteResolver = plan.genesis_root.genesis_resolver();
-    let context: PublicationContext = plan.genesis_root.manifest().context().clone();
-    let (cut, overlay, carriers) = cut::proof::verify_saved_with_overlay(plan, saved)?;
+    let scopes: Vec<crate::ordered_economics::OrderedKeyScope> = base
+        .scopes(plan.domain)
+        .map_err(|_| invalid("import scopes differ from verified base"))?;
+    let context: PublicationContext = plan.ordered_policy.context().clone();
+    let (cut, overlay, carriers) = cut::proof::verify_saved_with_base(plan, base, saved)?;
     let snapshot: SourceBusinessSnapshot = projection::private_import_snapshot(&overlay)?;
     let mut rows: Vec<ImportRow> = raw_rows(&snapshot, true)?;
     for (request, bytes) in carriers {
@@ -471,14 +537,33 @@ pub fn verify_saved_business_import(
         rows,
         blobs: snapshot.referenced_blobs,
         batches,
+        scopes,
     })
+}
+
+/// Verify an e_n cut from the complete privately verified predecessor chain.
+/// The caller plan supplies engines and immutable root; current policies are
+/// derived from the opaque authority.
+pub fn verify_saved_business_import_chain(
+    plan: BusinessReconstructionPlan<'_>,
+    authority: &crate::serving_authority::VerifiedSuccessorAuthority,
+    cut_identity: &crate::ordered_economics::OrderedHistoryIdentity,
+    saved: &SavedBusinessCut,
+) -> Result<VerifiedImportPlan, BusinessImportError> {
+    let inputs: crate::serving_authority::ReconstructionInputs = authority
+        .reconstruction_inputs(&plan)
+        .map_err(|_| invalid("import plan differs from verified chain"))?;
+    let base: crate::serving_authority::ReconstructionBase<'_> = authority
+        .reconstruction_base(plan.genesis_root)
+        .map_err(|_| invalid("import genesis differs from verified chain"))?;
+    verify_saved_business_import_with_base(inputs.plan(plan, cut_identity), base, saved)
 }
 
 /// Physical revisions are absent from the storage-only rows. Only this fresh
 /// logical inactive profile rebases the runtime-owned version checkpoint to 0;
 /// original State, logical observations and signed/hash-linked checkpoints
 /// inside their owning bytes remain untouched.
-fn raw_rows(
+pub(crate) fn raw_rows(
     snapshot: &SourceBusinessSnapshot,
     rebase_physical_checkpoint: bool,
 ) -> Result<Vec<ImportRow>, BusinessImportError> {

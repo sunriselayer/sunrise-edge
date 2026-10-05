@@ -970,6 +970,7 @@ pub(crate) fn admit_and_execute_leg<
     };
     let object_mutations: Vec<DurableObjectMutationEntry> = if should_translate {
         effects::translate(
+            mutation_fence::ordered_gate(ordered),
             store,
             context,
             domain,

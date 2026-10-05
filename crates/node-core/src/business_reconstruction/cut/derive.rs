@@ -54,7 +54,7 @@ fn complete_drain(
     controls: &[DrainSetControlMaterial],
 ) -> Result<(DrainSetRecord, Digest32, BTreeSet<Vec<u8>>), BusinessCutError> {
     let plan = &overlay.plan;
-    let context: &PublicationContext = plan.genesis_root.manifest().context();
+    let context: &PublicationContext = plan.ordered_policy.context();
     let freeze_key: Vec<u8> = admission_closure_key(context.chain_id(), context.epoch())
         .map_err(|_| invalid("cut Freeze key"))?;
     let freeze = decode_admission_closure_record(&required_state(overlay, &freeze_key)?)
@@ -359,22 +359,31 @@ fn seal_terminal(
     Ok(())
 }
 
+fn applied_height_companion_key(
+    policy: &OrderedEconomicsPolicy,
+) -> Result<DurableRecordKey, BusinessCutError> {
+    engine::scoped_applied_height_key(policy.key_scope(), policy.context().chain_id())
+        .map(DurableRecordKey::State)
+        .map_err(|_| invalid("cut applied height key"))
+}
+
 fn companion_keys(
     overlay: &BusinessReconstructionOverlay<'_>,
     ordered: &[OrderedHistoryHeightMaterial],
     controls: &BTreeSet<Vec<u8>>,
     projection: &SemanticProjection,
 ) -> Result<BTreeSet<DurableRecordKey>, BusinessCutError> {
-    let context: &PublicationContext = overlay.plan.genesis_root.manifest().context();
+    let context: &PublicationContext = overlay.plan.ordered_policy.context();
     let chain = context.chain_id();
     let mut keys: BTreeSet<DurableRecordKey> = controls
         .iter()
         .cloned()
         .map(DurableRecordKey::State)
         .collect();
-    keys.insert(DurableRecordKey::State(
-        engine::ordered_applied_height_key(chain).map_err(|_| invalid("cut applied height key"))?,
-    ));
+    // Applied height is authority progress of this exact policy scope, not
+    // business State. An earlier epoch's immutable applied-height row must
+    // not stand in for the current row when empty progress extends the cut.
+    keys.insert(applied_height_companion_key(overlay.plan.ordered_policy)?);
     for material in ordered {
         keys.insert(DurableRecordKey::State(
             engine::ordered_committed_proof_key(chain, context.epoch(), material.descriptor.height)
@@ -464,9 +473,8 @@ fn generation_floor(
     overlay: &BusinessReconstructionOverlay<'_>,
     projection: &SemanticProjection,
 ) -> Result<ExecutionGeneration, BusinessCutError> {
-    let key: Vec<u8> =
-        logical_profile_key(overlay.plan.genesis_root.manifest().context().chain_id())
-            .map_err(|_| invalid("cut logical profile key"))?;
+    let key: Vec<u8> = logical_profile_key(overlay.plan.ordered_policy.context().chain_id())
+        .map_err(|_| invalid("cut logical profile key"))?;
     let profile = decode_logical_profile_record(&required_state(overlay, &key)?)
         .map_err(|_| invalid("cut logical profile schema"))?;
     let mut floor: ExecutionGeneration = profile.genesis_floor;
@@ -512,7 +520,7 @@ pub(super) fn insert(
         length: u64::try_from(bytes.len()).map_err(|_| invalid("cut component length overflow"))?,
         digest: business_cut_component_digest(
             overlay.plan.genesis_root.genesis_resolver(),
-            overlay.plan.genesis_root.manifest().context(),
+            overlay.plan.ordered_policy.context(),
             &bytes,
         )?,
     };
@@ -690,7 +698,7 @@ pub(super) fn from_overlay(
     }
     proof::verify_application_carriers(overlay, carriers)?;
     proof::add_material(overlay, &mut components, owned, ordered, controls, carriers)?;
-    let context: PublicationContext = overlay.plan.genesis_root.manifest().context().clone();
+    let context: PublicationContext = overlay.plan.ordered_policy.context().clone();
     let streams: [BusinessCutCollectionRoot; 7] = transfer::roots(
         overlay.plan.genesis_root.genesis_resolver(),
         &context,
@@ -809,3 +817,41 @@ pub(super) fn from_overlay_for_seal_acceptance(
 #[cfg(test)]
 #[path = "tests/seal_terminal.rs"]
 mod seal_terminal_tests;
+
+#[cfg(test)]
+mod companion_scope_tests {
+    use super::*;
+
+    #[test]
+    fn applied_height_companion_uses_the_current_policy_scope() {
+        let root: crate::genesis::VerifiedGenesisRoot =
+            crate::serving_authority::tests::causal_root();
+        // This is a pure key-classification fixture, not a verified chain or
+        // a capability to install, sign, or mutate a successor namespace.
+        let inputs: crate::serving_authority::SuccessorPolicyInputs =
+            crate::serving_authority::tests::successor_inputs(
+                &root,
+                Digest32::new(protocol_types::HashAlgorithmId::Sha2_256, [3; 32]),
+            );
+        let original: OrderedEconomicsPolicy =
+            OrderedEconomicsPolicy::from_genesis_root(&root, inputs.domain()).unwrap();
+        let successor: OrderedEconomicsPolicy =
+            OrderedEconomicsPolicy::from_successor(&root, &inputs).unwrap();
+        let original_key: Vec<u8> =
+            engine::ordered_applied_height_key(root.genesis_context().chain_id()).unwrap();
+        let current_key: Vec<u8> = engine::scoped_applied_height_key(
+            successor.key_scope(),
+            successor.context().chain_id(),
+        )
+        .unwrap();
+        assert_eq!(
+            applied_height_companion_key(&original).unwrap(),
+            DurableRecordKey::State(original_key.clone()),
+        );
+        assert_eq!(
+            applied_height_companion_key(&successor).unwrap(),
+            DurableRecordKey::State(current_key.clone()),
+        );
+        assert_ne!(current_key, original_key);
+    }
+}

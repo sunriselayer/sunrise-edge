@@ -166,6 +166,7 @@ fn voting(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "compiles and runs the real conditional_readiness CLI through a four-validator SQLite retain/restart/distinct-certificate cycle; owned by the dedicated readiness-sqlite required CI lane, not ordinary cargo test"]
 async fn compiled_conditional_readiness_real_retention_restart_and_distinct_certificate() {
     let mut fixture: Fixture = Fixture::new();
     fixture.freeze_and_complete();

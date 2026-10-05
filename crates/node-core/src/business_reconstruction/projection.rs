@@ -142,7 +142,7 @@ fn local_fastpath_rows(
     publications: &AuthenticatedPublicationProjection,
 ) -> Result<LocalFastpathRows, BusinessReconstructionError> {
     let plan = &overlay.plan;
-    let chain = plan.genesis_root.manifest().context().chain_id();
+    let chain = plan.ordered_policy.context().chain_id();
     let encoded_chain: Vec<u8> =
         encode_chain_id(chain).map_err(|_| invalid("projection chain key encoding"))?;
     let view: CapturedStateView<'_> = CapturedStateView {
@@ -152,15 +152,15 @@ fn local_fastpath_rows(
     let validators = plan.ordered_policy.engine().validator_set().clone();
     let fast: FastPathCertifier = FastPathCertifier::new(
         chain.clone(),
-        plan.genesis_root.manifest().context().protocol_version(),
-        plan.genesis_root.manifest().context().epoch(),
+        plan.ordered_policy.context().protocol_version(),
+        plan.ordered_policy.context().epoch(),
         validators.clone(),
     )
     .map_err(|_| invalid("projection FastVote authority"))?;
     let availability: AvailabilityCertifier = AvailabilityCertifier::new(
         chain.clone(),
-        plan.genesis_root.manifest().context().protocol_version(),
-        plan.genesis_root.manifest().context().epoch(),
+        plan.ordered_policy.context().protocol_version(),
+        plan.ordered_policy.context().epoch(),
         validators,
     )
     .map_err(|_| invalid("projection availability authority"))?;
@@ -176,7 +176,7 @@ fn local_fastpath_rows(
             let prepared = records::decode_fastpath_prepared_record(bytes)
                 .map_err(|_| invalid("local prepared schema"))?;
             if prepared.request_id != request
-                || prepared.context != *plan.genesis_root.manifest().context()
+                || prepared.context != *plan.ordered_policy.context()
                 || prepared.prepared_generation.is_none()
                 || fastpath_prepared_record_key(chain, &request)
                     .map_err(|_| invalid("prepared key"))?
@@ -250,7 +250,7 @@ fn local_fastpath_rows(
                 if fastpath_lock_key(chain, lock.object.id)
                     .map_err(|_| invalid("local object lock key"))?
                     != *key
-                    || lock.locked_epoch != plan.genesis_root.manifest().context().epoch()
+                    || lock.locked_epoch != plan.ordered_policy.context().epoch()
                     || is_reserved_paid_request_id(&lock.request_id)
                     || lock.request_id == [0; 32]
                 {
@@ -265,7 +265,7 @@ fn local_fastpath_rows(
                 if fastpath_nonce_lock_key(chain, &lock.sender, lock.epoch)
                     .map_err(|_| invalid("local nonce lock key"))?
                     != *key
-                    || lock.epoch != plan.genesis_root.manifest().context().epoch()
+                    || lock.epoch != plan.ordered_policy.context().epoch()
                     || is_reserved_paid_request_id(&lock.request_id)
                     || lock.request_id == [0; 32]
                 {
@@ -313,7 +313,7 @@ fn local_fastpath_rows(
             )
             .map_err(|_| invalid("drain resolution key"))?
                 != *key
-                || resolution.epoch != plan.genesis_root.manifest().context().epoch()
+                || resolution.epoch != plan.ordered_policy.context().epoch()
             {
                 return Err(invalid("local drain resolution key differs"));
             }
@@ -454,6 +454,21 @@ fn normalized_state(
     {
         let mut epoch =
             decode_fastpath_epoch_record(bytes).map_err(|_| invalid("epoch record schema"))?;
+        if overlay.base.is_successor() {
+            let retained: &SourceBusinessSnapshot = overlay
+                .base_snapshot
+                .as_ref()
+                .ok_or(invalid("successor base inventory absent"))?;
+            let expected_bytes: Option<&[u8]> = retained.records.iter().find_map(|row| {
+                matches!(row.descriptor.key(), DurableRecordKey::State(natural) if natural.as_slice() == key).then(|| row.value.as_deref()).flatten()
+            });
+            if expected_bytes != Some(bytes) {
+                return Err(invalid(
+                    "successor epoch record differs from its exact verified activation",
+                ));
+            }
+            return Ok(Some(bytes.to_vec()));
+        }
         if epoch.current_epoch != expected.epoch() || epoch.previous_epoch.is_some() {
             // There is no implicit import/activation in this fixed outgoing
             // profile. A genuine transition requires its separate history.
@@ -608,9 +623,8 @@ fn project(
     // normalization. Validate the complete owning natural key and signed
     // generation-one root before comparing their exact independently derived
     // bytes, including later old-format chain records.
-    let encoded_chain: Vec<u8> =
-        encode_chain_id(overlay.plan.genesis_root.manifest().context().chain_id())
-            .map_err(|_| invalid("registration projection chain encoding"))?;
+    let encoded_chain: Vec<u8> = encode_chain_id(overlay.plan.ordered_policy.context().chain_id())
+        .map_err(|_| invalid("registration projection chain encoding"))?;
     let registered_view: CapturedStateView<'_> = CapturedStateView {
         domain: overlay.plan.domain,
         rows: state_rows(&snapshot.records),
@@ -623,24 +637,49 @@ fn project(
             if row.value.is_none() {
                 return Err(invalid("registration anchor is tombstoned"));
             }
-            crate::bond_lifecycle::registration::verify_registered_bond_chain(
+            let registration_scope: crate::bond_lifecycle::registration::RegistrationScope<'_> =
+                match overlay.base.histories() {
+                    None => crate::bond_lifecycle::registration::RegistrationScope::for_genesis(
+                        overlay.plan.genesis_root,
+                    ),
+                    Some((committees, owners)) => {
+                        let anchor =
+                            crate::bond_lifecycle::registration::decode_bond_registration_anchor(
+                                row.value
+                                    .as_deref()
+                                    .ok_or(invalid("registration anchor absent"))?,
+                            )
+                            .map_err(|_| invalid("registration anchor schema"))?;
+                        crate::bond_lifecycle::registration::RegistrationScope::for_epoch(
+                            overlay.plan.genesis_root,
+                            committees,
+                            owners,
+                            anchor.context.epoch(),
+                        )
+                        .map_err(|_| invalid("registration anchor epoch not verified"))?
+                    }
+                };
+            crate::bond_lifecycle::registration::verify_registered_anchor_chain(
                 &registered_view,
                 &overlay.plan.operation_context,
                 overlay.plan.domain,
-                overlay.plan.genesis_root,
                 overlay.plan.resolver_history,
+                &registration_scope,
+                &registration_scope.leg_policy(),
                 protocol_types::ValidatorId::new(id),
             )
             .map_err(|_| invalid("registered root key, signature or bond chain differs"))?;
         }
     }
+    let current: SourceBusinessSnapshot = overlay.current_snapshot(snapshot)?;
+    let earlier: BTreeMap<Vec<u8>, Option<Vec<u8>>> = overlay.earlier_rows()?;
     let (local_rows, mut internal_receipts) =
-        local_fastpath_rows(overlay, &snapshot.records, publications)?;
+        local_fastpath_rows(overlay, &current.records, publications)?;
     let ordered = crate::ordered_economics::audit_projection::validate_local_rows(
         overlay.plan.ordered_policy,
         overlay.plan.ordered_history_identity,
         overlay.plan.genesis_root.genesis_resolver(),
-        &snapshot.records,
+        &current.records,
         reconstructed_state.keys().cloned().collect(),
         is_source,
     )
@@ -655,6 +694,18 @@ fn project(
         let key = row.descriptor.key();
         let fact: SemanticRecord = match (key, row.descriptor.metadata()) {
             (DurableRecordKey::State(key), DurableRecordMetadata::State { .. }) => {
+                if let Some(expected) = earlier.get(key) {
+                    if expected != &row.value || !reconstructed_state.contains_key(key) {
+                        return Err(invalid(
+                            "earlier row differs from the verified reconstructed lineage",
+                        ));
+                    }
+                    projected.insert(
+                        row.descriptor.key().clone(),
+                        SemanticRecord::State(row.value.clone()),
+                    );
+                    continue;
+                }
                 if local_rows.contains_key(key) || ordered.excluded.contains(key) {
                     continue;
                 }
@@ -773,8 +824,7 @@ fn project(
                 if object.id != *object_id
                     || object.version != version.get()
                     || object.schema_version != *schema_version
-                    || provenance.chain_id()
-                        != overlay.plan.genesis_root.manifest().context().chain_id()
+                    || provenance.chain_id() != overlay.plan.ordered_policy.context().chain_id()
                     || !hashing::verify_digest(
                         digest,
                         HashPurpose::Object,
@@ -812,8 +862,9 @@ fn private_retention_keys(
     overlay: &BusinessReconstructionOverlay<'_>,
     reconstructed: &SourceBusinessSnapshot,
 ) -> Result<BTreeSet<Vec<u8>>, BusinessReconstructionError> {
+    let current: SourceBusinessSnapshot = overlay.current_snapshot(reconstructed)?;
     let material: Vec<OwnedPublicationMaterial> =
-        owned_material_from_source_snapshot(reconstructed, &overlay.plan)?;
+        owned_material_from_source_snapshot(&current, &overlay.plan)?;
     let private_catalog: Vec<VerifiedPublicationSemantic> =
         overlay.validate_owned_inputs(&material)?;
     let verified_catalog: &[VerifiedPublicationSemantic] =
@@ -888,7 +939,7 @@ pub(super) fn check_reconstructed_next_set_eligibility(
         rows: state_rows(&reconstructed.records),
     };
     let context: &execution::publication::PublicationContext =
-        overlay.plan.genesis_root.manifest().context();
+        overlay.plan.ordered_policy.context();
     crate::epoch_transition::check_next_set_eligibility(
         &view,
         &overlay.plan.operation_context,
