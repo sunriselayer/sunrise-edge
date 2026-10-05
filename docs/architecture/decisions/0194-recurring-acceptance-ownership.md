@@ -103,6 +103,24 @@ consensus/Tick/replay rounds and fault-injection/capture windows also retain
 their original sequential ownership. Concurrent scheduling is not reduced
 coverage, changed network input, a shorter unbonding delay or acceptance proof.
 
+### Safe development/test runtime compilation
+
+Repeated bounded replay is also a development/test runtime cost. Use dev
+opt-level 1 with explicit debug assertions and overflow checks enabled; Cargo's
+test profile inherits these settings. Retain the curve package's opt-level 3
+override and the verifier package's explicit safety settings, whose opt-level 1
+matches the workspace default. Release and build-override profiles are unchanged.
+This changes compilation, not proof ownership, canonical inputs or capabilities.
+
+A paired read-only saved-cut measurement is evidence about that workload only,
+not compilation time, whole-case completion, CI duration or network throughput.
+The new committed configuration still needs every actual required owner and
+selected original PostgreSQL group. Keep original-root e0..e8, the installed
+seven-epoch delay, F-required quorums, historical/tamper/restart/replay/fault
+controls, the existing 360-minute CI budget and 600-second child bounds. Do not
+replace repeated verification with a trusted cache/checkpoint or count a retired
+old-profile run as a pass under the new configuration.
+
 ### Actual imported publication families
 
 The verified genesis-to-successor import does not contain historical ordinary
@@ -152,3 +170,4 @@ startup remain separate work; this partition certifies none of them.
 - [Recurring successor serving](../recurring-successor-serving.md)
 - [DR-0191](0191-recurring-successor-serving.md)
 - [DR-0193](0193-required-recurring-acceptance.md)
+- [Cargo profile inheritance and overrides](https://doc.rust-lang.org/cargo/reference/profiles.html)

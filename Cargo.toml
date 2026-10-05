@@ -98,17 +98,24 @@ wasmparser = { version = "=0.239.0", default-features = false, features = ["std"
 # WAT-to-WASM output is protocol-relevant. Bumps require regenerated artifact vectors.
 wat = "=1.257.1"
 
-# Genuine multi-replica replay is signature-heavy. Optimize only curve math;
-# workspace code, assertions, overflow checks and the release profile stay intact.
+# Reduce measured repeated codec/interpreter/replay runtime
+# cost without dropping development/test assertions or overflow checks.
+# Cargo's test profile inherits dev; the release profile is unchanged.
+[profile.dev]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true
+
+# Genuine multi-replica replay is signature-heavy. Keep the stronger curve-only
+# override while retaining the same safety checks and exact acceptance workload.
 # Cargo's test profile inherits dev, including this named-package override.
 [profile.dev.package.curve25519-dalek]
 opt-level = 3
 debug-assertions = true
 overflow-checks = true
 
-# Recurring handoff acceptance executes the same bounded verifier for each
-# physical invocation and historical link. Optimize that owning package while
-# retaining the development/test safety checks and exact acceptance workload.
+# Keep the recurring verifier's package-level safety settings explicit. This
+# opt-level matches the workspace dev default; no test or proof is omitted.
 [profile.dev.package.node-core]
 opt-level = 1
 debug-assertions = true
