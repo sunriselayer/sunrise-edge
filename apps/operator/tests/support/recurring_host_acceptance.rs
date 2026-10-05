@@ -3,15 +3,22 @@
 //! obtains genuine successor readiness, commits its own Seal, then activates
 //! from the entire ordered chain rooted in the original signed genesis.
 
+use super::super::ordered_seal_sqlite_acceptance::{
+    acknowledged_output, saved_configured_peer_results, saved_policy_submission_rounds,
+};
 use super::*;
 use consensus::readiness::ReadinessCertificate;
+use consensus::{ConsensusMessage, ConsensusVote};
+use node_core::fast_path::FastPathEd25519Verifier;
 use node_core::fast_path::records::{FastPathValidatorEntry, FastPathValidatorSetRecord};
-use node_core::ordered_economics::{OrderedOutcome, decode_ordered_outcome};
+use node_core::ordered_economics::{
+    OrderedEventOutput, OrderedOutcome, OrderedProposal, decode_ordered_outcome,
+};
 use node_core::serving_authority::{
     LiveAuthority, SuccessorChainBudget, resolve_live_authority_chain,
 };
 use protocol_types::Epoch;
-use runtime::DurableDomainStateStore;
+use runtime::{DurableDomainStateStore, StructuredDurableDomainStateStore};
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 use sunrise_edge_client::load_successor_chain_workflow_from_directories;
@@ -1011,6 +1018,198 @@ fn submit(
     cli(&["economics", "network-submit"], flags);
 }
 
+/// Proves actual signing and completion from the CLI's persisted canonical
+/// re-encodings of HTTP acknowledgements, not membership in its trimmed QC.
+/// The real four-peer submit, rotating leaders and delivery remain unchanged.
+fn reopened_host_submission(
+    fixture: &Fixture,
+    current: &SuccessorWorkflowAuthority,
+    targets: &CurrentTargets,
+    hosts: &[HostProcess],
+    candidate_path: &Path,
+    prefix: &Path,
+    initial_parent: &QuorumCertificate,
+) -> OrderedOutcome {
+    assert_eq!(current.expected_context().epoch(), Epoch::new(2));
+    assert_eq!(hosts.len(), 4);
+    assert_eq!(targets.members.len(), hosts.len());
+    assert_eq!(targets.paths.len(), hosts.len());
+    let set: &validator_set::ValidatorSet = current.ordered_policy().engine().validator_set();
+    assert_eq!(set.validators().len(), hosts.len());
+    assert_eq!(set.quorum_threshold(), 3);
+    let validator_ids: Vec<ValidatorId> = hosts
+        .iter()
+        .enumerate()
+        .map(|(index, host): (usize, &HostProcess)| {
+            let member: &SuccessorProcessMember = &targets.members[index];
+            let pinned: &validator_set::ValidatorInfo = set.get(host.validator).unwrap();
+            assert_eq!(host.validator, member.validator_id);
+            assert_eq!(pinned.voting_power, 1);
+            let key: ed25519_zebra::SigningKey = ed25519_zebra::SigningKey::from(member.seed);
+            let public: [u8; 32] = ed25519_zebra::VerificationKey::from(&key).into();
+            assert_eq!(pinned.signature_scheme, SignatureSchemeId::Ed25519);
+            assert_eq!(pinned.public_key.as_slice(), public.as_slice());
+            host.validator
+        })
+        .collect();
+    let endpoints: Vec<String> = hosts
+        .iter()
+        .map(|host: &HostProcess| host.address.to_string())
+        .collect();
+    let candidate: OrderedCandidate = node_core::ordered_economics::decode_ordered_candidate(
+        &std::fs::read(candidate_path).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        candidate.kind,
+        node_core::ordered_economics::OrderedOperationKind::Freeze
+            | node_core::ordered_economics::OrderedOperationKind::Seal
+    ));
+    let rounds: Vec<(OrderedProposal, QuorumCertificate)> = saved_policy_submission_rounds(
+        current.ordered_policy(),
+        candidate_path,
+        prefix,
+        &candidate,
+        initial_parent,
+    );
+    let candidate_round: usize = rounds
+        .iter()
+        .position(|(proposal, _): &(OrderedProposal, QuorumCertificate)| {
+            proposal.candidate.as_ref() == Some(&candidate)
+        })
+        .unwrap();
+    let candidate_digest: protocol_types::Digest32 = current
+        .ordered_policy()
+        .candidate_digest(&candidate)
+        .unwrap();
+    let results: BTreeMap<(usize, usize), (String, String)> =
+        saved_configured_peer_results(&validator_ids, prefix, &endpoints, rounds.len());
+    let mut completed: Option<OrderedOutcome> = None;
+    for (round, (proposal, certificate)) in rounds.iter().enumerate() {
+        let mut actual_votes: Vec<ConsensusVote> = Vec::with_capacity(hosts.len());
+        for (index, host) in hosts.iter().enumerate() {
+            let (vote_phase, certificate_phase): &(String, String) = &results[&(round, index)];
+            let voted: OrderedEventOutput = acknowledged_output(vote_phase);
+            let certified: OrderedEventOutput = acknowledged_output(certificate_phase);
+            assert!(voted.committed.is_empty());
+            assert!(certified.messages.is_empty());
+            let votes: Vec<&ConsensusVote> = voted
+                .messages
+                .iter()
+                .filter_map(|message: &ConsensusMessage| match message {
+                    ConsensusMessage::Vote(vote) => Some(vote),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                votes.len(),
+                1,
+                "one real signed vote per attributed HTTP reply"
+            );
+            let vote: &ConsensusVote = votes[0];
+            assert_eq!(vote.validator, host.validator);
+            assert_eq!(vote.proposal_digest, certificate.proposal_digest);
+            assert_eq!(vote.height, proposal.proposal.height);
+            assert_eq!(vote.view, proposal.proposal.view);
+            current
+                .ordered_policy()
+                .engine()
+                .verify_vote(vote, &FastPathEd25519Verifier)
+                .unwrap();
+            actual_votes.push(vote.clone());
+            if round == rounds.len() - 1 {
+                assert_eq!(certified.committed.len(), 1);
+                let outcome: &OrderedOutcome = &certified.committed[0];
+                assert_eq!(outcome.request_id, candidate.request_id);
+                assert_eq!(outcome.candidate_digest, candidate_digest);
+                assert_eq!(
+                    outcome.block_height,
+                    rounds[candidate_round].0.proposal.height
+                );
+                assert_eq!(
+                    outcome.block_digest,
+                    rounds[candidate_round].1.proposal_digest
+                );
+                assert_eq!(outcome.output.responses().len(), 1);
+                assert_eq!(
+                    outcome.output.responses()[0].status(),
+                    node_core::NodeResponseStatus::Accepted
+                );
+                if let Some(previous) = &completed {
+                    assert_eq!(previous, outcome);
+                }
+                completed = Some(outcome.clone());
+            } else {
+                assert!(
+                    certified.committed.is_empty(),
+                    "alignment and earlier suffix certificates cannot acknowledge completion"
+                );
+            }
+        }
+        assert_eq!(
+            actual_votes[3].validator, targets.members[3].validator_id,
+            "the reopened fourth really signs the candidate and both certified descendants"
+        );
+        let reconstructed: QuorumCertificate = current
+            .ordered_policy()
+            .engine()
+            .certificate_from_votes(&proposal.proposal, &actual_votes, &FastPathEd25519Verifier)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reconstructed.votes.len(), 3);
+        assert_eq!(
+            consensus::encode_quorum_certificate(&reconstructed).unwrap(),
+            std::fs::read(format!("{}.round-{round}.certificate", prefix.display())).unwrap(),
+            "all four verified returned votes reproduce the exact saved minimal QC"
+        );
+    }
+    let completed: OrderedOutcome = completed.unwrap();
+    let last_certificate: &QuorumCertificate = &rounds.last().unwrap().1;
+    let request: runtime::DurableRequestId =
+        runtime::DurableRequestId::new(candidate.request_id).unwrap();
+    let mut agreed_receipt: Option<runtime::DurableRequestReceipt> = None;
+    for (index, host) in hosts.iter().enumerate() {
+        assert_eq!(
+            &status(host.address).high_qc,
+            last_certificate,
+            "every real endpoint applied the exact final certified suffix"
+        );
+        let store: SqliteDurableStore = SqliteDurableStore::open_historical(
+            targets.paths[index].join("state.db"),
+            SqliteNamespace::new(
+                fixture.network.chain_id.clone(),
+                host.validator,
+                fixture.network.domain,
+            ),
+        )
+        .unwrap();
+        let operation: runtime::DurableOperationContext = runtime::DurableOperationContext::new(
+            store.writer_fence().unwrap(),
+            runtime::StorageDeadline::new(u64::MAX / 2).unwrap(),
+            runtime::StorageCorrelationId::new([0xd3; 16]).unwrap(),
+        );
+        let receipt: runtime::DurableRequestReceipt = store
+            .get_request_receipt(&operation, fixture.network.domain, request)
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.request_id(), request);
+        assert_eq!(receipt.event_digest(), candidate_digest);
+        let record: node_core::NodeDedupRecord =
+            node_core::NodeDedupRecord::decode(receipt.canonical_bytes()).unwrap();
+        assert_eq!(record.request_id().as_bytes(), &candidate.request_id);
+        assert_eq!(record.event_digest(), candidate_digest);
+        assert_eq!(record.responses(), completed.output.responses());
+        if let Some(previous) = &agreed_receipt {
+            assert_eq!(
+                previous, &receipt,
+                "all four durable canonical receipts agree"
+            );
+        }
+        agreed_receipt = Some(receipt);
+    }
+    completed
+}
+
 /// Like `cli`, but reports failure instead of panicking: used only to prove
 /// that a genuinely malformed-authority submission is never admitted.
 fn cli_attempt(prefix: &[&str], tail: Vec<String>) -> Result<(), String> {
@@ -1137,23 +1336,31 @@ fn freeze_and_drain(
         freeze_path.to_str().unwrap().into(),
     ]);
     cli(&["economics", "ordered-freeze-build"], flags);
+    let freeze_submission: PathBuf = directory.join("freeze-submission");
+    let freeze_parent: Option<QuorumCertificate> =
+        (epoch == 2).then(|| status(hosts[0].address).high_qc);
     submit(
         fixture,
         links,
         current,
         network,
         &freeze_path,
-        &directory.join("freeze-submission"),
+        &freeze_submission,
     );
     let freeze: OrderedOutcome = committed_outcome(hosts, freeze_request);
-    if epoch == 2 {
-        assert!(
-            status(hosts[3].address)
-                .high_qc
-                .votes
-                .iter()
-                .any(|vote| { vote.validator == targets.members[3].validator_id }),
-            "the reopened fourth host signs the next real Freeze certified suffix"
+    if let Some(initial_parent) = &freeze_parent {
+        assert_eq!(
+            reopened_host_submission(
+                fixture,
+                current,
+                targets,
+                hosts,
+                &freeze_path,
+                &freeze_submission,
+                initial_parent,
+            ),
+            freeze,
+            "actual HTTP completion acknowledgements match every host's retained Freeze outcome"
         );
     }
     let mut votes: Vec<PathBuf> = Vec::new();
@@ -1974,22 +2181,31 @@ pub(super) fn run(
             intent.predecessor_digest,
             current.authority().subject_digest()
         );
+        let seal_path: PathBuf = seal_path.unwrap();
+        let seal_submission: PathBuf = directory.join("seal-submission");
+        let seal_parent: Option<QuorumCertificate> =
+            (expected_epoch == 2).then(|| status(hosts[0].address).high_qc);
         submit(
             fixture,
             &links,
             &current,
             &network,
-            &seal_path.unwrap(),
-            &directory.join("seal-submission"),
+            &seal_path,
+            &seal_submission,
         );
-        if expected_epoch == 2 {
-            assert!(
-                status(hosts[3].address)
-                    .high_qc
-                    .votes
-                    .iter()
-                    .any(|vote| { vote.validator == targets.members[3].validator_id }),
-                "the same reopened fourth host signs the genuine outgoing Seal suffix"
+        if let Some(initial_parent) = &seal_parent {
+            assert_eq!(
+                reopened_host_submission(
+                    fixture,
+                    &current,
+                    &targets,
+                    &hosts,
+                    &seal_path,
+                    &seal_submission,
+                    initial_parent,
+                ),
+                committed_outcome(&hosts, seal.request_id),
+                "actual HTTP completion acknowledgements match every host's retained Seal outcome"
             );
         }
         for host in &hosts {
