@@ -30,6 +30,12 @@ mod successor_chain;
 #[path = "successor_recurring_delay.rs"]
 mod successor_recurring_delay;
 
+#[path = "successor_registration_reuse.rs"]
+mod successor_registration_reuse;
+
+#[path = "successor_seal_faults.rs"]
+mod successor_seal_faults;
+
 struct Artifacts<'a> {
     saved: &'a SavedBusinessCut,
     history: &'a [OrderedHistoryHeightMaterial],
@@ -695,6 +701,30 @@ impl SuccessorWorld {
         match self.resolve(index).unwrap() {
             LiveAuthority::Successor(warrant) => *warrant,
             LiveAuthority::OriginalGenesis => panic!("an activated target is a successor"),
+        }
+    }
+
+    /// The actual adapter is the issuer. A warrant from the underlying
+    /// handle would correctly refuse an invocation through this wrapper.
+    fn warrant_on<'a, S: StructuredDurableDomainStateStore>(
+        &'a self,
+        store: &'a S,
+        index: usize,
+    ) -> crate::serving_authority::LiveWarrant<'a> {
+        let mut artifacts: Artifacts<'_> = self.artifacts();
+        match resolve_live_authority(
+            store,
+            &self.operation,
+            self.network().domain(),
+            reconstruction_plan(self.source(), &self.cut_history),
+            &self.sealed_history,
+            &mut artifacts,
+            self.public_key(index),
+        )
+        .unwrap()
+        {
+            LiveAuthority::Successor(warrant) => *warrant,
+            LiveAuthority::OriginalGenesis => panic!("an activated adapter is a successor"),
         }
     }
 
