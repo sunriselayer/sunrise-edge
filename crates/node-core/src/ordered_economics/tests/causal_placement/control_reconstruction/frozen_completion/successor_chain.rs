@@ -92,59 +92,15 @@ fn g_registration(
     request_id: [u8; 32],
     nonce: u64,
 ) -> (OrderedCandidate, FastPathBondRecord) {
+    use super::successor_registration_reuse::{RegistrationAttempt, registration_attempt};
     use crate::bond_lifecycle::registration::{
-        BondRegistrationPreparationRequest, PreparedBondRegistration, SignedBondRegistrationIntent,
-        encode_signed_bond_registration_intent, prepare_bond_registration_successor,
+        PreparedBondRegistration, encode_bond_registration_intent,
+        prepare_bond_registration_successor,
     };
     let g: TestSigner = never_member_g();
     let network: &Network = world.network();
-    let live: PublicationContext = world.policy.context().clone();
     let (source, reference): (Object, ObjectRef) = current_imported_object(world, id);
     assert_eq!(source.owner, Owner::Address(Address::new(*g.id.as_bytes())));
-    let resource: &crate::economics::FastPathEconomicsResourcePolicy =
-        &network.root.manifest().economics_policy.resources[0];
-    let scope: objects::ProtocolCustodyScope = objects::ProtocolCustodyScope {
-        purpose: objects::ProtocolCustodyPurpose::BondCollateral,
-        chain_id: live.chain_id().clone(),
-        subject: *g.id.as_bytes(),
-        resource: *resource.resource_id.value(),
-    };
-    let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
-        &network.resolver,
-        &live,
-        source.id,
-        &scope,
-    )
-    .unwrap();
-    let leg: LocalExecutionIntent = LocalExecutionIntent {
-        mode: LocalExecutionMode::Call,
-        policy_digest: world.next_base.digest(&network.resolver).unwrap(),
-        call: CallIntent {
-            context: live.clone(),
-            request_id,
-            sender: *g.id.as_bytes(),
-            nonce,
-            code: resource.code.clone(),
-            instance: resource.instance.clone(),
-            entrypoint: resource.transfer_entrypoint.clone(),
-            type_arguments: world.source().manifest.fee_policy.type_arguments.clone(),
-            access: abi::AccessManifest {
-                entries: vec![abi::AccessEntry {
-                    object_ref: reference,
-                    mode: AccessMode::Write,
-                }],
-            },
-            arguments: public_standard_asset::transfer_arguments(&token).unwrap(),
-            gas_limit: 500_000,
-        },
-        authorizations: Vec::new(),
-    };
-    let frame: Vec<u8> = local_execution_signing_frame(&live, &leg).unwrap();
-    let signed_leg: Vec<u8> = encode_signed_local_execution(&SignedLocalExecutionIntent {
-        signature: g.key.sign(&frame).into(),
-        intent: leg,
-    })
-    .unwrap();
     let authority_bytes: Vec<u8> = world
         .value(
             0,
@@ -152,68 +108,33 @@ fn g_registration(
         )
         .1
         .unwrap();
-    let authority: execution::local_execution::ObjectAuthority =
+    let object_authority: execution::local_execution::ObjectAuthority =
         execution::local_execution::decode_object_authority(&authority_bytes).unwrap();
-    let mut predicted: Object = source;
-    predicted.version = predicted.version.checked_add(1).unwrap();
-    predicted.owner = Owner::ProtocolCustody(scope);
-    let row: FastPathBondRecord = FastPathBondRecord {
-        context: resource.context.clone(),
-        validator_id: g.id,
-        resource_domain: resource.resource_id.domain(),
-        resource: *resource.resource_id.value(),
-        custody_object: ObjectRef {
-            id: predicted.id,
-            version: predicted.version,
-            digest: network
-                .resolver
-                .hash_for_purpose(
-                    live.epoch(),
-                    HashPurpose::Object,
-                    &objects::encode_object(&predicted).unwrap(),
-                )
-                .unwrap(),
-        },
-        custody_object_epoch: live.epoch(),
-        authority,
-        amount: 10_000,
-        committed_at_checkpoint: 20,
-        generation: 1,
-        lifecycle_epoch: live.epoch(),
-        slashable_from_epoch: Epoch::new(live.epoch().get().checked_add(1).unwrap()),
-        required_minimum: resource.bond.as_ref().unwrap().min_bond.get(),
-        state: FastPathBondState::Active,
-        authorization_scheme: SignatureSchemeId::Ed25519,
-        authorization_key: *g.id.as_bytes(),
-    };
-    let prepared: PreparedBondRegistration = prepare_bond_registration_successor(
+    let authority: VerifiedSuccessorAuthority = chain_authority(world);
+    let attempt: RegistrationAttempt = registration_attempt(
         &network.root,
-        &chain_authority(world),
-        BondRegistrationPreparationRequest {
-            context: live.clone(),
-            request_id,
-            authorization_key: *g.id.as_bytes(),
-            resource_context: resource.context.clone(),
-            resource: resource.resource_id,
-            leg: signed_leg,
-            predicted_initial_row: row.clone(),
-        },
-    )
-    .unwrap();
-    let signed: SignedBondRegistrationIntent = SignedBondRegistrationIntent {
-        intent: prepared.intent,
-        signature: g.key.sign(&prepared.signing_frame).into(),
-    };
-    (
-        OrderedCandidate {
-            context: live,
-            request_id,
-            kind: OrderedOperationKind::BondRegistration,
-            intent: encode_signed_bond_registration_intent(&signed).unwrap(),
-            created_checkpoint: 20,
-        },
-        row,
-    )
+        &authority,
+        &network.resolver,
+        &world.next_base,
+        &g,
+        source,
+        reference,
+        object_authority,
+        request_id,
+        nonce,
+        20,
+    );
+    let prepared: PreparedBondRegistration =
+        prepare_bond_registration_successor(&network.root, &authority, attempt.request.clone())
+            .unwrap();
+    assert_eq!(prepared.intent, attempt.intent);
+    assert_eq!(
+        encode_bond_registration_intent(&prepared.intent).unwrap(),
+        encode_bond_registration_intent(&attempt.intent).unwrap(),
+        "the generic current-context builder has the actual positive preparation bytes"
+    );
+    assert_eq!(prepared.signing_frame, attempt.signing_frame);
+    (attempt.candidate, attempt.request.predicted_initial_row)
 }
 
 /// A current-e1 registrant may exit through its real anchor and bond chain
@@ -1111,45 +1032,45 @@ fn assert_historical_retained_carrier_cut_refuses(
     }
 }
 
-#[test]
-fn genuine_file_backed_e0_e1_e2_seal_import_activate_reopen_and_fence() {
-    let world: SuccessorWorld = recurring_world();
-    assert_genuine_source_index_audit(&world);
-    let g_anchor: Vec<u8> = register_and_unbond_g(&world);
-    recurring_preseal(&world);
-    let network: &Network = world.network();
-    let prior: VerifiedSuccessorAuthority = chain_authority(&world);
+pub(super) struct PreparedSuccessorSeal {
+    pub(super) saved: SavedBusinessCut,
+    pub(super) operation: DurableOperationContext,
+    pub(super) import: VerifiedImportPlan,
+    pub(super) files: conditional_readiness::Files,
+    pub(super) targets: Vec<(SqliteImportTarget, SqliteBlobStore)>,
+    pub(super) digest: Digest32,
+    pub(super) seal: OrderedCandidate,
+}
+
+/// Real preseal, source cut, complete SQLite imports and retained readiness.
+/// Fault tests use this same tag-2 preparation without rerunning unrelated
+/// source-index corruption controls.
+pub(super) fn prepare_current_successor_seal(world: &SuccessorWorld) -> PreparedSuccessorSeal {
+    recurring_preseal(world);
+    let prior: VerifiedSuccessorAuthority = chain_authority(world);
     let (cut_identity, ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
-        current_history(&world);
-    assert_historical_retained_carrier_cut_refuses(&world, &cut_identity, &ordered);
-    let replay_inputs: crate::serving_authority::ReconstructionInputs = prior
-        .reconstruction_inputs(&reconstruction_plan(world.source(), &world.cut_history))
-        .unwrap();
-    let mut replay_plan: BusinessReconstructionPlan<'_> = replay_inputs.plan(
-        reconstruction_plan(world.source(), &world.cut_history),
-        &cut_identity,
-    );
-    replay_plan.operation_context = world.operation;
-    let replay: crate::business_reconstruction::BusinessReconstructionOverlay<'_> =
-        crate::business_reconstruction::BusinessReconstructionOverlay::new_with_base(
-            replay_plan,
-            prior.reconstruction_base(&network.root).unwrap(),
-        )
-        .unwrap();
-    crate::business_reconstruction::replay_authority_tests::assert_replay_authority_is_bounded(
-        &replay,
-    );
+        current_history(world);
+    prepare_successor_seal(world, &prior, &cut_identity, &ordered)
+}
+
+fn prepare_successor_seal(
+    world: &SuccessorWorld,
+    prior: &VerifiedSuccessorAuthority,
+    cut_identity: &OrderedHistoryIdentity,
+    ordered: &[OrderedHistoryHeightMaterial],
+) -> PreparedSuccessorSeal {
+    let network: &Network = world.network();
     let mut source_plan: BusinessReconstructionPlan<'_> =
         reconstruction_plan(world.source(), &world.cut_history);
     source_plan.operation_context = world.operation;
-    source_plan.ordered_history_identity = &cut_identity;
+    source_plan.ordered_history_identity = cut_identity;
     let cut: crate::business_reconstruction::cut::VerifiedBusinessCut =
         crate::business_reconstruction::cut::derive_successor_source_business_cut(
             source_plan,
             &world.warrant(0),
             &world.targets[0].0,
             &network.blobs,
-            &ordered,
+            ordered,
         )
         .unwrap();
     let current_applied_key: Vec<u8> = crate::ordered_economics::engine::scoped_applied_height_key(
@@ -1177,8 +1098,8 @@ fn genuine_file_backed_e0_e1_e2_seal_import_activate_reopen_and_fence() {
     let import: VerifiedImportPlan =
         crate::business_reconstruction::inactive_import::verify_saved_business_import_chain(
             reconstruction_plan(world.source(), &world.cut_history),
-            &prior,
-            &cut_identity,
+            prior,
+            cut_identity,
             &saved,
         )
         .unwrap();
@@ -1211,8 +1132,8 @@ fn genuine_file_backed_e0_e1_e2_seal_import_activate_reopen_and_fence() {
             let vote: ReadinessVote =
                 crate::conditional_readiness::retain_conditional_readiness_chain(
                     reconstruction_plan(world.source(), &world.cut_history),
-                    &prior,
-                    &cut_identity,
+                    prior,
+                    cut_identity,
                     &saved,
                     target,
                     blobs,
@@ -1225,8 +1146,8 @@ fn genuine_file_backed_e0_e1_e2_seal_import_activate_reopen_and_fence() {
             let replay: ReadinessVote =
                 crate::conditional_readiness::retain_conditional_readiness_chain(
                     reconstruction_plan(world.source(), &world.cut_history),
-                    &prior,
-                    &cut_identity,
+                    prior,
+                    cut_identity,
                     &saved,
                     target,
                     blobs,
@@ -1276,6 +1197,55 @@ fn genuine_file_backed_e0_e1_e2_seal_import_activate_reopen_and_fence() {
         })
         .unwrap(),
     };
+    PreparedSuccessorSeal {
+        saved,
+        operation,
+        import,
+        files,
+        targets,
+        digest,
+        seal,
+    }
+}
+
+#[test]
+fn genuine_file_backed_e0_e1_e2_seal_import_activate_reopen_and_fence() {
+    let world: SuccessorWorld = recurring_world();
+    assert_genuine_source_index_audit(&world);
+    let g_anchor: Vec<u8> = register_and_unbond_g(&world);
+    recurring_preseal(&world);
+    let network: &Network = world.network();
+    let prior: VerifiedSuccessorAuthority = chain_authority(&world);
+    let (cut_identity, ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
+        current_history(&world);
+    assert_historical_retained_carrier_cut_refuses(&world, &cut_identity, &ordered);
+    let replay_inputs: crate::serving_authority::ReconstructionInputs = prior
+        .reconstruction_inputs(&reconstruction_plan(world.source(), &world.cut_history))
+        .unwrap();
+    let mut replay_plan: BusinessReconstructionPlan<'_> = replay_inputs.plan(
+        reconstruction_plan(world.source(), &world.cut_history),
+        &cut_identity,
+    );
+    replay_plan.operation_context = world.operation;
+    let replay: crate::business_reconstruction::BusinessReconstructionOverlay<'_> =
+        crate::business_reconstruction::BusinessReconstructionOverlay::new_with_base(
+            replay_plan,
+            prior.reconstruction_base(&network.root).unwrap(),
+        )
+        .unwrap();
+    crate::business_reconstruction::replay_authority_tests::assert_replay_authority_is_bounded(
+        &replay,
+    );
+    let PreparedSuccessorSeal {
+        saved,
+        operation,
+        import,
+        files,
+        targets,
+        digest,
+        seal,
+    } = prepare_successor_seal(&world, &prior, &cut_identity, &ordered);
+    let request_id: [u8; 32] = seal.request_id;
     let env: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
         seal: Some(OrderedSealComposition {
             genesis_root: &network.root,
@@ -1444,21 +1414,208 @@ fn genuine_file_backed_e0_e1_e2_seal_import_activate_reopen_and_fence() {
     assert!(artifacts.accesses.contains(&0) && artifacts.accesses.contains(&1));
     for (index, ((target, blobs), member)) in targets.iter().zip(&world.members).enumerate() {
         let signer: ReadinessSigningKey = ReadinessSigningKey::new(member.id, member.key);
-        assert!(matches!(
-            crate::serving_authority::activate_successor_chain(
-                reconstruction_plan(world.source(), &world.cut_history),
-                &pins,
-                budget(2),
-                &mut artifacts,
-                target,
-                blobs,
-                &operation,
-                &signer,
-                1
-            )
-            .unwrap(),
-            SuccessorActivationOutcome::Activated { .. }
-        ));
+        if index < 3 {
+            use super::super::sqlite_handoff_faults::{HandoffFaultPlan, SqliteHandoffFaults};
+            let before: crate::business_reconstruction::SourceBusinessSnapshot =
+                crate::test_support::capture::captured_source(
+                    target,
+                    blobs,
+                    &operation,
+                    network.domain(),
+                );
+            let faults: SqliteHandoffFaults<'_> = match index {
+                0 => {
+                    SqliteHandoffFaults::new(target, HandoffFaultPlan::LoseCommittedActivationReply)
+                }
+                1 => SqliteHandoffFaults::new(
+                    target,
+                    HandoffFaultPlan::ActivationUndispatchedAmbiguity,
+                ),
+                2 => SqliteHandoffFaults::competing_activation(target, |competing_operation| {
+                    assert_eq!(*competing_operation, operation);
+                    let competitor: SqliteImportTarget = SqliteImportTarget::open_existing(
+                        files.path(&format!("serving-{index}-state.db")),
+                        SqliteNamespace::new(fixture::chain(), member.id, network.domain()),
+                        authority.import_binding(),
+                    )
+                    .unwrap();
+                    let competing_signer: ReadinessSigningKey =
+                        ReadinessSigningKey::new(member.id, member.key);
+                    let mut competing_artifacts: RecurringArtifacts<'_> = RecurringArtifacts {
+                        first: world.artifacts(),
+                        second: Artifacts {
+                            saved: &saved,
+                            history: &history,
+                            certificate: &certificate,
+                        },
+                        accesses: Vec::new(),
+                    };
+                    assert!(matches!(
+                        crate::serving_authority::activate_successor_chain(
+                            reconstruction_plan(world.source(), &world.cut_history),
+                            &pins, budget(2), &mut competing_artifacts, &competitor, blobs,
+                            competing_operation, &competing_signer, 1,
+                        )
+                        .unwrap(),
+                        SuccessorActivationOutcome::Activated { subject, manifest }
+                            if subject == authority.subject_digest()
+                                && manifest == authority.manifest_digest()
+                    ));
+                    assert_eq!(competing_signer.signatures_created(), 0);
+                    crate::test_support::capture::captured_source(
+                        &competitor,
+                        blobs,
+                        competing_operation,
+                        network.domain(),
+                    )
+                }),
+                _ => unreachable!("three closed e2 activation fault targets"),
+            };
+            let outcome: Result<SuccessorActivationOutcome, SuccessorActivationError> =
+                crate::serving_authority::activate_successor_chain(
+                    reconstruction_plan(world.source(), &world.cut_history),
+                    &pins,
+                    budget(2),
+                    &mut artifacts,
+                    &faults,
+                    blobs,
+                    &operation,
+                    &signer,
+                    1,
+                );
+            assert!(
+                faults.pending_faults().is_empty(),
+                "the actual activation consumed its fault"
+            );
+            assert_eq!(faults.successor_activation_calls.get(), 1);
+            assert_eq!(signer.signatures_created(), 0);
+            assert_eq!(faults.outgoing_getter_calls.get(), 0);
+            assert_eq!(faults.ordinary_durable_calls.get(), 0);
+            assert_eq!(faults.ordinary_invocation_calls.get(), 0);
+            match index {
+                0 => {
+                    assert!(matches!(
+                        outcome,
+                        Ok(SuccessorActivationOutcome::Activated { subject, manifest })
+                            if subject == authority.subject_digest()
+                                && manifest == authority.manifest_digest()
+                    ));
+                    assert!(matches!(
+                        target
+                            .get_successor_serving(&operation, network.domain())
+                            .unwrap(),
+                        SuccessorServingSlot::Serving(_)
+                    ));
+                }
+                1 => {
+                    assert!(matches!(
+                        outcome,
+                        Err(SuccessorActivationError::Indeterminate(
+                            runtime::IndeterminateCommitReason::ConnectionLost
+                        ))
+                    ));
+                    assert_eq!(
+                        crate::test_support::capture::captured_source(
+                            target,
+                            blobs,
+                            &operation,
+                            network.domain(),
+                        ),
+                        before,
+                        "undispatched activation ambiguity has no physical effect"
+                    );
+                    assert_eq!(
+                        target
+                            .get_successor_serving(&operation, network.domain())
+                            .unwrap(),
+                        SuccessorServingSlot::Inactive
+                    );
+                    assert!(matches!(
+                        crate::serving_authority::activate_successor_chain(
+                            reconstruction_plan(world.source(), &world.cut_history),
+                            &pins,
+                            budget(2),
+                            &mut artifacts,
+                            target,
+                            blobs,
+                            &operation,
+                            &signer,
+                            1,
+                        )
+                        .unwrap(),
+                        SuccessorActivationOutcome::Activated { .. }
+                    ));
+                }
+                2 => {
+                    assert!(matches!(
+                        outcome,
+                        Err(SuccessorActivationError::Rejected(
+                            runtime::DurableCommitRejection::InvalidPersistedState
+                        ))
+                    ));
+                    assert_eq!(faults.competing_activation_calls.get(), 1);
+                    assert_eq!(
+                        crate::test_support::capture::captured_source(
+                            target,
+                            blobs,
+                            &operation,
+                            network.domain(),
+                        ),
+                        faults
+                            .after_competing_activation
+                            .borrow()
+                            .as_ref()
+                            .unwrap()
+                            .clone(),
+                        "stale activation adds no write beyond the competitor's real commit"
+                    );
+                }
+                _ => unreachable!("three closed e2 activation fault targets"),
+            }
+            let settled: crate::business_reconstruction::SourceBusinessSnapshot =
+                crate::test_support::capture::captured_source(
+                    target,
+                    blobs,
+                    &operation,
+                    network.domain(),
+                );
+            assert!(matches!(
+                crate::serving_authority::activate_successor_chain(
+                    reconstruction_plan(world.source(), &world.cut_history),
+                    &pins, budget(2), &mut artifacts, target, blobs, &operation, &signer, 1,
+                )
+                .unwrap(),
+                SuccessorActivationOutcome::AlreadyActivated { subject, manifest }
+                    if subject == authority.subject_digest()
+                        && manifest == authority.manifest_digest()
+            ));
+            assert_eq!(
+                crate::test_support::capture::captured_source(
+                    target,
+                    blobs,
+                    &operation,
+                    network.domain(),
+                ),
+                settled,
+                "full plain activation reconciliation changes no physical state"
+            );
+        } else {
+            assert!(matches!(
+                crate::serving_authority::activate_successor_chain(
+                    reconstruction_plan(world.source(), &world.cut_history),
+                    &pins,
+                    budget(2),
+                    &mut artifacts,
+                    target,
+                    blobs,
+                    &operation,
+                    &signer,
+                    1
+                )
+                .unwrap(),
+                SuccessorActivationOutcome::Activated { .. }
+            ));
+        }
         assert_eq!(signer.signatures_created(), 0);
         let policy: OrderedEconomicsPolicy = authority.ordered_policy(&network.root).unwrap();
         let genesis_epoch: Epoch = network.root.genesis_context().epoch();
