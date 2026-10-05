@@ -699,10 +699,13 @@ Import provides no readiness, Seal, activation or deployed-provider authority.
   implementation/acceptance evidence above. The outgoing source stays permanently
   Sealed; import origin and outgoing history remain unchanged. This is not
   recurring replacement, all-provider activation or Delivery 3 completion.
-- [x] **Integrated membership/recovery acceptance:** real compiled CLI and
-  authenticated hosts passed the complete original-root e0..e8 workflow at
+- [x] **Integrated membership/recovery acceptance:** real Cargo-built
+  operator/host processes and the Rust CLI entry point over authenticated TCP
+  passed the complete original-root e0..e8 workflow at
   functional head `65b2ee8`, including both actual e8 withdrawals and subsequent
-  retired-owner refusals. Fresh documentation-head approval and current CI
+  retired-owner refusals. This owning case calls the CLI entry point inside
+  the test process, not a standalone CLI child executable. Fresh
+  documentation-head approval and current CI
   remain normal-merge prerequisites, not provider or audit certification.
 - [ ] **Before live exposure:** close the independently scoped economics and
   ingress security gates and the selected initial-network release profile.
