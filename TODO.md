@@ -92,6 +92,15 @@ acceptance. C2's retired-D custody leg proves the exact Admit owner-gate refusal
 not an otherwise executable alternative deposit; compiled post-withdrawal owner
 controls remain a separate proof.
 
+The corrected frontier candidate `4456a96` also has independent source approval
+and genuinely executed its exact one test successfully in 353.99 seconds. It
+verifies the current two-publication frontier, independently replayed intact
+saved cut, historical drain-carrier corruption/tombstone/physical-deletion
+refusals and exact reopened material. Its ordinary prior prefix is explicitly
+empty; it does not claim the impossible historical-prefix traversal passed.
+Final integrated required, selected PG, compiled recurrence and CI acceptance
+remain pending below.
+
 - [ ] Authenticated successor frontier with two genuine current paid
   publications: bounded monotonic physical progress, current behind-tail
   carrier/index/cursor refusals, reopen/refence and exact full-page/empty-terminal

@@ -1893,3 +1893,6 @@ fn chain_policy_keeps_verified_history_owners_and_scoped_registration() {
     assert_eq!(identity.validator_id, world.members[e].id);
     assert_eq!(identity.anchor_epoch, e0);
 }
+
+#[path = "successor_frontier_acceptance.rs"]
+mod successor_frontier_acceptance;
