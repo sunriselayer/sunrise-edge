@@ -64,6 +64,45 @@ subset. A saved high-QC status or fixture-signed replacement is not this proof.
 The restart itself and the declared signerless missed-prefix recovery remain
 separate actual process requirements before fresh signing resumes.
 
+### A sealed host is material, not live authority
+
+Committing Seal retires the outgoing namespace. Its live HTTP status and
+outcome routes correctly return `409 successor-authority-refused`, just like
+fresh signing/control routes; being read-only does not make a route exempt
+from the live serving gate. Do not widen those routes to make an acceptance
+assertion succeed.
+
+After actual e2 Seal completion, compare each endpoint's final acknowledged
+outcome with its own actually served database through the existing bounded
+`query_ordered_outcome` reader, which cross-checks the retained outcome against
+its immutable header and receipt. Read and independently re-verify that
+database's current scoped consensus state through `query_status` and compare
+its high QC with the final actual submission certificate. Neither material
+reader grants a live warrant, advances a fence, signs or writes. Keep the
+canonical receipt equality and actual sealed live-route refusals. Freeze
+remains unsealed and retains its positive live HTTP status/outcome checks.
+Saved acknowledgements alone are not durable read-back evidence, and the
+untouched original fixture is not the served successor database.
+
+### Independent process stages may run concurrently
+
+Within one receipt check, query the existing four/five endpoints concurrently
+using copied endpoint/validator/process/generation identifiers, never the
+live child/store owners. After one common business cut is complete, each
+independent target may run its existing create-then-readiness sequence with
+distinct databases and outputs. After Seal, historical teardown and verified
+next workflow construction, each target may run activate-then-exact-repeat.
+Keep the existing 600-second child bounds and kill/reap guards. Join every
+worker before propagating failures or checking results in original host order.
+Directories, 0600 keys, pins, quorum selection and certificate assembly remain
+under the parent owner.
+
+Do not parallelize drain preparation: its targets also serve one another's
+retained publication reads. Seal preparation, common source-cut writing,
+consensus/Tick/replay rounds and fault-injection/capture windows also retain
+their original sequential ownership. Concurrent scheduling is not reduced
+coverage, changed network input, a shorter unbonding delay or acceptance proof.
+
 ### Actual imported publication families
 
 The verified genesis-to-successor import does not contain historical ordinary

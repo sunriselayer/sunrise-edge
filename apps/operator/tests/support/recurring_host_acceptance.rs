@@ -358,13 +358,14 @@ fn network_file(directory: &Path, hosts: &[HostProcess]) -> PathBuf {
     path
 }
 
-fn operator(binary: &str, mode: &str, flags: Vec<String>) -> String {
+fn operator_output(binary: &str, mode: &str, flags: Vec<String>) -> Output {
     let mut command: Command = Command::new(binary);
     command.arg(mode).args(flags);
-    success(process::spawn_bounded_output(
-        command,
-        Duration::from_secs(600),
-    ))
+    process::spawn_bounded_output(command, Duration::from_secs(600))
+}
+
+fn operator(binary: &str, mode: &str, flags: Vec<String>) -> String {
+    success(operator_output(binary, mode, flags))
 }
 
 fn target_flags(targets: &CurrentTargets, index: usize, signer: bool) -> Vec<String> {
@@ -1169,11 +1170,6 @@ fn reopened_host_submission(
         runtime::DurableRequestId::new(candidate.request_id).unwrap();
     let mut agreed_receipt: Option<runtime::DurableRequestReceipt> = None;
     for (index, host) in hosts.iter().enumerate() {
-        assert_eq!(
-            &status(host.address).high_qc,
-            last_certificate,
-            "every real endpoint applied the exact final certified suffix"
-        );
         let store: SqliteDurableStore = SqliteDurableStore::open_historical(
             targets.paths[index].join("state.db"),
             SqliteNamespace::new(
@@ -1187,6 +1183,62 @@ fn reopened_host_submission(
             store.writer_fence().unwrap(),
             runtime::StorageDeadline::new(u64::MAX / 2).unwrap(),
             runtime::StorageCorrelationId::new([0xd3; 16]).unwrap(),
+        );
+        let blobs: SqliteBlobStore =
+            SqliteBlobStore::open_existing(targets.paths[index].join("body.db")).unwrap();
+        let leg_policy: execution::local_execution::LocalExecutionPolicy =
+            execution::local_execution::LocalExecutionPolicy::generic_object_results(
+                current.expected_context().clone(),
+            );
+        let engine: LocalWasmExecutionEngine = LocalWasmExecutionEngine::new();
+        let environment: node_core::ordered_economics::OrderedEconomicsEnvironment<'_> =
+            node_core::ordered_economics::OrderedEconomicsEnvironment {
+                policy: current.ordered_policy(),
+                history: &[],
+                leg_policy: &leg_policy,
+                engine: &engine,
+                blobs: &blobs,
+                seal: None,
+            };
+        // Seal deliberately retires every live route, including status and
+        // outcome queries. Read and re-verify the actually served database
+        // through the existing bounded material readers, not a live warrant.
+        let high_qc: QuorumCertificate =
+            if candidate.kind == node_core::ordered_economics::OrderedOperationKind::Seal {
+                for path in [
+                    node_wire::ordered_economics::ORDERED_ECONOMICS_STATUS_PATH.to_owned(),
+                    format!(
+                        "{}{}",
+                        node_wire::ordered_economics::ORDERED_ECONOMICS_OUTCOME_PATH_PREFIX,
+                        hex(&candidate.request_id)
+                    ),
+                ] {
+                    let response: WireResponse =
+                        raw(host.address, Method::Get, &path, None, Vec::new());
+                    assert_eq!(response.status, 409, "a sealed namespace is not live");
+                    assert_eq!(response.body, b"successor-authority-refused");
+                }
+                node_core::ordered_economics::query_status(&store, &operation, &environment)
+                    .unwrap()
+                    .high_qc
+            } else {
+                status(host.address).high_qc
+            };
+        assert_eq!(
+            &high_qc, last_certificate,
+            "every real endpoint persisted the exact final certified suffix"
+        );
+        let retained: OrderedOutcome = node_core::ordered_economics::query_ordered_outcome(
+            &store,
+            &operation,
+            &environment,
+            &candidate.request_id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            retained, completed,
+            "each actual HTTP completion matches its host's durable outcome, header and receipt"
         );
         let receipt: runtime::DurableRequestReceipt = store
             .get_request_receipt(&operation, fixture.network.domain, request)
@@ -1554,7 +1606,12 @@ fn install_next(
             .collect(),
         members: next_members.to_vec(),
     };
-    let mut votes: Vec<PathBuf> = Vec::new();
+    struct NextTargetFlags {
+        create: Vec<String>,
+        vote: Vec<String>,
+    }
+    let mut flags_by_target: Vec<NextTargetFlags> = Vec::with_capacity(next.members.len());
+    let mut vote_files: Vec<PathBuf> = Vec::with_capacity(next.members.len());
     for (index, member) in next.members.iter().enumerate() {
         std::fs::create_dir(&next.paths[index]).unwrap();
         let key: PathBuf = next.paths[index].join("private.key");
@@ -1564,27 +1621,19 @@ fn install_next(
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        let mut flags: Vec<String> = current_operator_pins(fixture, links, history);
-        flags.extend(target_flags(&next, index, false));
-        flags.extend([
+        let mut create_flags: Vec<String> = current_operator_pins(fixture, links, history);
+        create_flags.extend(target_flags(&next, index, false));
+        create_flags.extend([
             "--cut-dir".into(),
             cut.to_str().unwrap().into(),
             "--timeout-seconds".into(),
             "3600".into(),
         ]);
-        assert!(
-            operator(
-                executables.business_import.to_str().unwrap(),
-                "create-sqlite",
-                flags
-            )
-            .contains("business_import=complete-inactive")
-        );
         let vote: PathBuf = directory.join(format!("readiness-{index}"));
         std::fs::create_dir(&vote).unwrap();
-        let mut flags: Vec<String> = current_operator_pins(fixture, links, history);
-        flags.extend(target_flags(&next, index, true));
-        flags.extend([
+        let mut vote_flags: Vec<String> = current_operator_pins(fixture, links, history);
+        vote_flags.extend(target_flags(&next, index, true));
+        vote_flags.extend([
             "--cut-dir".into(),
             cut.to_str().unwrap().into(),
             "--next-set".into(),
@@ -1594,12 +1643,48 @@ fn install_next(
             "--timeout-seconds".into(),
             "3600".into(),
         ]);
-        operator(
-            executables.conditional_readiness.to_str().unwrap(),
-            "vote-sqlite",
-            flags,
-        );
-        votes.push(vote.join("vote.bin"));
+        vote_files.push(vote.join("vote.bin"));
+        flags_by_target.push(NextTargetFlags {
+            create: create_flags,
+            vote: vote_flags,
+        });
+    }
+    // The common cut is already complete and immutable. Each worker owns
+    // different target databases and output paths; create precedes its vote.
+    let import_binary: &str = executables.business_import.to_str().unwrap();
+    let readiness_binary: &str = executables.conditional_readiness.to_str().unwrap();
+    let outcomes: Vec<(Output, Option<Output>)> = std::thread::scope(|scope| {
+        let handles: Vec<std::thread::ScopedJoinHandle<'_, (Output, Option<Output>)>> =
+            flags_by_target
+                .into_iter()
+                .map(|target: NextTargetFlags| {
+                    scope.spawn(move || {
+                        let create: Output =
+                            operator_output(import_binary, "create-sqlite", target.create);
+                        let vote: Option<Output> = create
+                            .status
+                            .success()
+                            .then(|| operator_output(readiness_binary, "vote-sqlite", target.vote));
+                        (create, vote)
+                    })
+                })
+                .collect();
+        let joined: Vec<std::thread::Result<(Output, Option<Output>)>> =
+            handles.into_iter().map(|handle| handle.join()).collect();
+        let mut collected: Vec<(Output, Option<Output>)> = Vec::with_capacity(joined.len());
+        for outcome in joined {
+            match outcome {
+                Ok(pair) => collected.push(pair),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        collected
+    });
+    let mut votes: Vec<PathBuf> = Vec::with_capacity(vote_files.len());
+    for (vote_file, (create, vote)) in vote_files.into_iter().zip(outcomes) {
+        assert!(success(create).contains("business_import=complete-inactive"));
+        success(vote.expect("successful create-sqlite precedes vote-sqlite"));
+        votes.push(vote_file);
     }
     let certificate: PathBuf = directory.join("readiness-certificate");
     std::fs::create_dir(&certificate).unwrap();
@@ -2194,19 +2279,19 @@ pub(super) fn run(
             &seal_submission,
         );
         if let Some(initial_parent) = &seal_parent {
-            assert_eq!(
-                reopened_host_submission(
-                    fixture,
-                    &current,
-                    &targets,
-                    &hosts,
-                    &seal_path,
-                    &seal_submission,
-                    initial_parent,
-                ),
-                committed_outcome(&hosts, seal.request_id),
-                "actual HTTP completion acknowledgements match every host's retained Seal outcome"
+            // The helper compares every final HTTP ACK against the retained
+            // outcome in each actual database. A live outcome query after
+            // Seal would correctly refuse, just like a live status query.
+            let completion: OrderedOutcome = reopened_host_submission(
+                fixture,
+                &current,
+                &targets,
+                &hosts,
+                &seal_path,
+                &seal_submission,
+                initial_parent,
             );
+            assert_eq!(completion.request_id, seal.request_id);
         }
         for host in &hosts {
             let response: WireResponse = raw(
@@ -2304,24 +2389,44 @@ pub(super) fn run(
             activated.expected_context().epoch().get(),
             expected_epoch + 1
         );
-        for index in 0..next.paths.len() {
-            let flags: Vec<String> =
-                host_flags(fixture, &links, &next, index, false, expected_epoch + 1);
+        let activation_binary: &str = inputs.executables.successor_activation.to_str().unwrap();
+        let activation_flags: Vec<Vec<String>> = (0..next.paths.len())
+            .map(|index: usize| {
+                host_flags(fixture, &links, &next, index, false, expected_epoch + 1)
+            })
+            .collect();
+        let activation_outcomes: Vec<(Output, Option<Output>)> = std::thread::scope(|scope| {
+            let handles: Vec<std::thread::ScopedJoinHandle<'_, (Output, Option<Output>)>> =
+                activation_flags
+                    .into_iter()
+                    .map(|flags: Vec<String>| {
+                        scope.spawn(move || {
+                            let first: Output =
+                                operator_output(activation_binary, "activate", flags.clone());
+                            let second: Option<Output> = first
+                                .status
+                                .success()
+                                .then(|| operator_output(activation_binary, "activate", flags));
+                            (first, second)
+                        })
+                    })
+                    .collect();
+            let joined: Vec<std::thread::Result<(Output, Option<Output>)>> =
+                handles.into_iter().map(|handle| handle.join()).collect();
+            let mut collected: Vec<(Output, Option<Output>)> = Vec::with_capacity(joined.len());
+            for outcome in joined {
+                match outcome {
+                    Ok(pair) => collected.push(pair),
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            }
+            collected
+        });
+        for (first, second) in activation_outcomes {
+            assert!(success(first).contains("successor_activation=activated"));
             assert!(
-                operator(
-                    inputs.executables.successor_activation.to_str().unwrap(),
-                    "activate",
-                    flags.clone()
-                )
-                .contains("successor_activation=activated")
-            );
-            assert!(
-                operator(
-                    inputs.executables.successor_activation.to_str().unwrap(),
-                    "activate",
-                    flags
-                )
-                .contains("successor_activation=already-activated")
+                success(second.expect("successful activation precedes the idempotent repeat"))
+                    .contains("successor_activation=already-activated")
             );
         }
         let old_claimant: usize = original_member_index(fixture, [0xa1; 32]);

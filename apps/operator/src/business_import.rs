@@ -1,4 +1,5 @@
-//! Callable first-epoch verified installation, permanently inactive.
+//! Callable verified installation. The command leaves an inactive import;
+//! later activation belongs to the separate successor activation owner.
 #![forbid(unsafe_code)]
 
 use crate::{
@@ -37,7 +38,7 @@ const FLAGS: &[&str] = &[
     "--timeout-seconds",
     "--max-new-batches",
 ];
-const HELP: &str = "Verified business installation only; permanently inactive, never readiness, Seal, activation or signing.\nModes: create-sqlite | resume-sqlite.\nRequire local pins: --chain-id --protocol-version --epoch --domain --suite epoch:id:tx:object:effects:code:config:certificate --genesis-manifest --expected-genesis-digest --ordered-history-dir.\nRequire: --cut-dir (complete saved cut), --state-db, --blob-db, --validator-id (destination-local namespace, not membership authority).\nOptional: --timeout-seconds 1..3600 (300), --max-new-batches 1..4096 (4096).\nCreation requires two fresh database paths outside the pinned cut and ordered-history archives; resumption opens existing verified import-origin state and writable blob schemas only. No normal bootstrap, source writer copying, repair, reset, private key or network endpoint. Every invocation independently reexecutes saved proofs and verifies the complete destination before CompleteInactive. Missing, corrupt, foreign or ordinary targets refuse.";
+const HELP: &str = "Verified business installation only; leaves a CompleteInactive import and never performs readiness, Seal, activation or signing.\nModes: create-sqlite | resume-sqlite.\nRequire local pins: --chain-id --protocol-version --epoch --domain --suite epoch:id:tx:object:effects:code:config:certificate --genesis-manifest --expected-genesis-digest --ordered-history-dir.\nRequire: --cut-dir (complete saved cut), --state-db, --blob-db, --validator-id (destination-local namespace, not membership authority).\nOptional: --timeout-seconds 1..3600 (300), --max-new-batches 1..4096 (4096), and a successor chain (all five or none): --successor-max-links once plus one or more equal-count repeated --successor-plan-history-dir --successor-cut-dir --successor-manifest-history-dir --successor-certificate-dir links, up to that budget, pinning the saved cut's successor authority; no signer key is accepted here.\nCreation requires two fresh database paths outside the pinned cut and ordered-history archives; resumption opens existing verified import-origin state and writable blob schemas only. No normal bootstrap, source writer copying, repair, reset, private key or network endpoint. Every invocation independently reexecutes saved proofs and verifies the complete destination before CompleteInactive. Missing, corrupt, foreign or ordinary targets refuse.";
 
 /// Runs the same strictly pinned composition as the `business_import` binary.
 /// Destination file I/O starts only after independent raw-plan verification.
