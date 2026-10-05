@@ -5,6 +5,8 @@
 mod causal_genesis_fixture;
 #[path = "support/compiled_executable_snapshot.rs"]
 mod compiled_executable_snapshot;
+#[path = "support/compiled_source_host_process.rs"]
+mod compiled_source_host_process;
 #[path = "business_cut/fixture.rs"]
 mod fixture;
 #[path = "support/genesis_fixture.rs"]

@@ -826,13 +826,49 @@ fn prove_historical_artifact_controls(
     // their observed source values; no private key builder or filename guess.
     let seal_bytes: Vec<u8> = node_core::ordered_economics::encode_ordered_candidate(seal).unwrap();
     let mut changed_seal: OrderedCandidate = seal.clone();
-    changed_seal.created_checkpoint = changed_seal.created_checkpoint.checked_add(1).unwrap();
+    // Pure Seal authentication bounds certificate_length, but the staged
+    // certificate owner checks its actual length only under a live warrant.
+    // Changing only this non-secret field preserves the cut checkpoint,
+    // certificate digest and derived request id, so the genuine companions
+    // remain readable and the history owner must reject the candidate digest.
+    // This negative is policy-valid, not a verified certificate or Seal warrant.
+    let mut changed_intent: node_core::ordered_economics::SealIntent =
+        node_core::ordered_economics::decode_seal_intent(&seal.intent).unwrap();
+    let original_length: u32 = changed_intent.certificate_length;
+    let maximum_length: u32 =
+        u32::try_from(consensus::readiness::MAX_READINESS_CERTIFICATE_BYTES).unwrap();
+    assert!((1..=maximum_length).contains(&original_length));
+    changed_intent.certificate_length = if original_length < maximum_length {
+        original_length.checked_add(1).unwrap()
+    } else {
+        original_length.checked_sub(1).unwrap()
+    };
+    assert!((1..=maximum_length).contains(&changed_intent.certificate_length));
+    assert_ne!(changed_intent.certificate_length, original_length);
+    changed_seal.intent =
+        node_core::ordered_economics::encode_seal_intent(&changed_intent).unwrap();
+    assert_eq!(
+        node_core::ordered_economics::decode_seal_intent(&changed_seal.intent).unwrap(),
+        changed_intent
+    );
     current
         .ordered_policy()
         .authenticate_candidate(&changed_seal)
         .unwrap();
     let changed_candidate: Vec<u8> =
         node_core::ordered_economics::encode_ordered_candidate(&changed_seal).unwrap();
+    assert_eq!(
+        node_core::ordered_economics::decode_ordered_candidate(&changed_candidate).unwrap(),
+        changed_seal
+    );
+    assert_ne!(changed_candidate, seal_bytes);
+    assert_ne!(
+        current
+            .ordered_policy()
+            .candidate_digest(&changed_seal)
+            .unwrap(),
+        current.ordered_policy().candidate_digest(seal).unwrap()
+    );
     for proof_fault in [true, false] {
         assert_eq!(historical_material(current, hosts), identity);
         let mut faults: Vec<HistoricalRowChange> = Vec::with_capacity(targets.paths.len());

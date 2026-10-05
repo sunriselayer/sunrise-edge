@@ -11,6 +11,7 @@
 //! SDK and CLI successor pins drive e+1 work before signing anything.
 
 use super::compiled_executable_snapshot::CompiledExecutableSnapshot;
+use super::compiled_source_host_process as process;
 use super::{fixture::Fixture, hex};
 use consensus::{ConsensusSigner, QuorumCertificate, decode_quorum_certificate};
 use execution::LocalWasmExecutionEngine;
@@ -39,8 +40,6 @@ use sunrise_edge_client::{
     load_successor_workflow_from_directories,
 };
 
-#[path = "compiled_source_host_process.rs"]
-mod process;
 #[path = "recurring_host_acceptance.rs"]
 mod recurring;
 
