@@ -10,12 +10,12 @@ import { requiredGateGroups, postgresGateGroups, requireSuccessfulGateResults } 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const registry = join(root, "scripts/ci-gates.sh");
 const execution = join(root, "scripts/ci-execution.sh");
-const requiredGroups = ["lint", "rust-tests", "portable-tools", "cloudflare", "core-recurrence", "readiness-sqlite"];
+const requiredGroups = ["lint", "rust-tests", "portable-tools", "cloudflare", "core-recurrence", "readiness-sqlite", "recurring-sqlite"];
 const postgresGroups = ["pg-storage", "pg-lifecycle", "pg-drain-history", "pg-business-audit", "pg-recovery-economics"];
 const groups = [
   "lint", "rust-tests", "pg-storage", "pg-lifecycle", "pg-drain-history",
   "pg-business-audit", "pg-recovery-economics", "portable-tools", "cloudflare",
-  "core-recurrence", "readiness-sqlite",
+  "core-recurrence", "readiness-sqlite", "recurring-sqlite",
 ];
 assert.deepEqual(requiredGateGroups, requiredGroups);
 assert.deepEqual(postgresGateGroups, postgresGroups);
@@ -27,8 +27,8 @@ function registryRows(array) {
 // Fixed independent plan expectations accompany, not replace, the command
 // coverage baselines below. The implementation registry cannot certify itself.
 const expectedPlans = [
-  ["required", "required", "gate-contract rust-style rust-tests-required sqlite-inventory core-recurrence readiness-sqlite soak-cli vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene"],
-  ["full", "postgres", "gate-contract rust-style rust-tests-full sqlite-inventory core-recurrence readiness-sqlite pg-inventory pg-protocol-all soak-cli pg-soak vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene"],
+  ["required", "required", "gate-contract rust-style rust-tests-required sqlite-inventory core-recurrence readiness-sqlite recurring-sqlite soak-cli vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene"],
+  ["full", "postgres", "gate-contract rust-style rust-tests-full sqlite-inventory core-recurrence readiness-sqlite recurring-sqlite pg-inventory pg-protocol-all soak-cli pg-soak vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene"],
   ["lint", "required", "gate-contract rust-style diff-hygiene"],
   ["rust-tests", "required", "rust-tests-required sqlite-inventory"],
   ["pg-storage", "postgres", "pg-storage-tests"],
@@ -40,6 +40,7 @@ const expectedPlans = [
   ["cloudflare", "required", "cloudflare-build cloudflare-check"],
   ["core-recurrence", "required", "core-recurrence"],
   ["readiness-sqlite", "required", "readiness-sqlite"],
+  ["recurring-sqlite", "required", "recurring-sqlite"],
 ];
 function checkPlans(rows) { assert.deepEqual(rows, expectedPlans); }
 const plans = registryRows("CI_EXECUTION_PLANS");
@@ -80,6 +81,7 @@ const recurringCases = registryRows("CI_REQUIRED_EXTENDED_CASES");
 const expectedRecurringCases = [
   ["core-recurrence", "node-core", "--lib", "ordered_economics::tests::causal_placement::control_reconstruction::frozen_completion::successor_activation::successor_recurring_delay::genuine_recurring_sqlite_handoffs_reach_configured_seven_epoch_withdrawal_unlock", "no"],
   ["readiness-sqlite", "sunrise-edge-operator", "conditional_readiness_sqlite", "compiled_conditional_readiness_real_retention_restart_and_distinct_certificate", "no"],
+  ["recurring-sqlite", "sunrise-edge-operator", "conditional_readiness_sqlite", "compiled_registered_replacement_and_recurring_successor_hosts", "no"],
 ];
 const expectedCases = [
   "fastvote_pg_operator_multivalidator_e2e",
@@ -99,12 +101,12 @@ const expectedCases = [
 ];
 assert.deepEqual(cases.map((row) => row[3]), expectedCases);
 assert.deepEqual(recurringCases, expectedRecurringCases);
-assert(!recurringCases.some((row) => row[3].includes("compiled_registered_replacement_and_recurring_successor_hosts")));
 const recurringSourcePaths = ["crates/node-core/src/ordered_economics/tests/causal_placement/control_reconstruction/frozen_completion/successor_recurring_delay.rs", "apps/operator/tests/conditional_readiness_sqlite.rs"];
 const coreRecurrenceSource = readFileSync(join(root, recurringSourcePaths[0]), "utf8");
 assert.match(coreRecurrenceSource, new RegExp(`#\\[ignore[^\\n]*\\]\\s*\\n\\s*fn ${recurringCases[0][3].split("::").at(-1)}\\s*\\(`));
 const readinessSqliteSource = readFileSync(join(root, recurringSourcePaths[1]), "utf8");
 assert.match(readinessSqliteSource, new RegExp(`#\\[ignore[^\\n]*\\]\\s*\\n\\s*async fn ${recurringCases[1][3].split("::").at(-1)}\\s*\\(`));
+assert.match(readinessSqliteSource, new RegExp(`#\\[ignore[^\\n]*\\]\\s*\\n\\s*async fn ${recurringCases[2][3].split("::").at(-1)}\\s*\\(`));
 for (const row of recurringCases) { assert(groups.includes(row[0])); }
 assert.deepEqual(cases.map((row) => row[0]), [
   ...Array(6).fill("pg-lifecycle"), "pg-drain-history", "pg-business-audit",
@@ -183,6 +185,7 @@ function checkWorkflow(text, profile) {
       String(name === "pg-business-audit" ? 90
         : name === "lint" || name === "portable-tools" ? 45
         : name === "core-recurrence" || name === "readiness-sqlite" ? 120
+        : name === "recurring-sqlite" ? 360
         : 60));
     if (pg) assert(job.includes(`image: ${image}`));
     for (const fault of faults) {
@@ -486,6 +489,8 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     ["test", "--quiet", "-p", "node-core", "--lib", recurringCases[0][3], "--", "--ignored", "--exact"],
     ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[1][2], recurringCases[1][3], "--", "--ignored", "--exact", "--list"],
     ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[1][2], recurringCases[1][3], "--", "--ignored", "--exact"],
+    ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[2][2], recurringCases[2][3], "--", "--ignored", "--exact", "--list"],
+    ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[2][2], recurringCases[2][3], "--", "--ignored", "--exact"],
   ]);
   for (const [group, pkg, target, name, capture] of cases) {
     const log = lanes.get(group);
@@ -602,14 +607,12 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     assert(!ignoredExecutions(missing.log).some(({ args }) => args.includes(name)));
     assert.notEqual(run("scripts/check-all.sh", ["--group", group], { ...pgEnvironment, CI_MOCK_FAIL_TEST: name }).status, 0);
   }
-  const missingCoreRecurrence = run("scripts/check-all.sh", ["--group", "core-recurrence"], { CI_MOCK_MISSING_TEST: recurringCases[0][3] });
-  assert.notEqual(missingCoreRecurrence.status, 0);
-  assert(!ignoredExecutions(missingCoreRecurrence.log).some((event) => ignoredName(event) === recurringCases[0][3]));
-  assert.notEqual(run("scripts/check-all.sh", ["--group", "core-recurrence"], { CI_MOCK_FAIL_TEST: recurringCases[0][3] }).status, 0);
-  const missingReadinessSqlite = run("scripts/check-all.sh", ["--group", "readiness-sqlite"], { CI_MOCK_MISSING_TEST: recurringCases[1][3] });
-  assert.notEqual(missingReadinessSqlite.status, 0);
-  assert(!ignoredExecutions(missingReadinessSqlite.log).some((event) => ignoredName(event) === recurringCases[1][3]));
-  assert.notEqual(run("scripts/check-all.sh", ["--group", "readiness-sqlite"], { CI_MOCK_FAIL_TEST: recurringCases[1][3] }).status, 0);
+  for (const [group, , , name] of recurringCases) {
+    const missing = run("scripts/check-all.sh", ["--group", group], { CI_MOCK_MISSING_TEST: name });
+    assert.notEqual(missing.status, 0);
+    assert(!ignoredExecutions(missing.log).some((event) => ignoredName(event) === name));
+    assert.notEqual(run("scripts/check-all.sh", ["--group", group], { CI_MOCK_FAIL_TEST: name }).status, 0);
+  }
   for (const [group, , , name] of recurringCases) {
     const duplicate = run("scripts/check-all.sh", ["--group", group], { CI_MOCK_DUPLICATE_TEST: name });
     assert.notEqual(duplicate.status, 0);
@@ -678,4 +681,4 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }
-console.log("CI gate contract passed: 6 required lanes, 5 explicit PostgreSQL lanes, 19 retained plus 2 new required-recurrence ignored selectors, complete required/full coverage and fail-closed dispatch/results");
+console.log("CI gate contract passed: 7 required lanes, 5 explicit PostgreSQL lanes, 19 retained plus 3 new required-recurrence ignored selectors, complete required/full coverage and fail-closed dispatch/results");

@@ -70,7 +70,27 @@ real selector and its measured cost exist here. Adding it is: add
 under a new third group, add that group to `CI_EXECUTION_PLANS` and the
 `required`/`full` action lists, and add its matching workflow job and
 `check` dependency, mirroring exactly how `core-recurrence`/`readiness-sqlite`
-were added.
+were added. The independent fixed dispatch expectations in
+`scripts/test-ci-gates.mjs` must also change; the registry cannot certify itself.
+
+### Dependent host amendment, 2026-10-05
+
+On the dependent host branch the already-existing
+`compiled_registered_replacement_and_recurring_successor_hosts` now has the
+third unconditional owner `recurring-sqlite`, a separate job with a finite
+360-minute upper budget. This completes the registry, `#[ignore]`, action-plan,
+workflow and independent fixed-mock changes above. Local `required` and `full`
+each run it exactly once; ordinary Cargo cannot silently replace the owner.
+The host branch consequently has seven required jobs and twenty-two accounted
+ignored cases (the original nineteen plus three required extended cases).
+No PostgreSQL service, optional profile, skipped result or tolerated failure is
+introduced. Full inventory duplicate identity validation is across groups as
+well as within a group.
+
+The upper budget is not measured completion evidence. Record the complete
+compiled run's actual wall time and cold CI build before claiming Delivery 3;
+the earlier interrupted logs do not count. The preceding six-job descriptions
+record the core-only decision and remain its historical context.
 
 ## Consequences
 

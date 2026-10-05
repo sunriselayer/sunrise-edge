@@ -174,6 +174,7 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "runs real changed-committee SQLite hosts through the configured seven-epoch withdrawal delay; owned by the unconditional recurring-sqlite required CI lane"]
 async fn compiled_registered_replacement_and_recurring_successor_hosts() {
     run_conditional_readiness(true).await;
 }

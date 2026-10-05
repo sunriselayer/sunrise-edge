@@ -104,6 +104,15 @@ jobs:
       - name: Run repository gate
         run: ./scripts/check-all.sh --group readiness-sqlite
 
+  recurring-sqlite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run repository gate
+        run: ./scripts/check-all.sh --group recurring-sqlite
+
   # Stable branch-protection name: no failed, cancelled, missing or skipped
   # lane can become success through needs/if defaults.
   check:
@@ -115,6 +124,7 @@ jobs:
       - cloudflare
       - core-recurrence
       - readiness-sqlite
+      - recurring-sqlite
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
