@@ -3,6 +3,7 @@
 //! Physical reads are untrusted construction inputs only; no row is seeded.
 
 use super::*;
+use crypto::{SignatureSigner, SignatureVerifier};
 use node_core::bond_lifecycle::{
     BondLifecycleIntent, BondLifecycleOperation, SignedBondLifecycleIntent,
     bond_lifecycle_intent_digest, bond_lifecycle_signing_frame, bond_row_digest,
@@ -292,6 +293,158 @@ fn wrap(
     candidate
 }
 
+struct RegistrationConstruction {
+    leg: Vec<u8>,
+    predicted: FastPathBondRecord,
+    intent: sunrise_edge_client::bond_registration::BondRegistrationIntent,
+    signed: Vec<u8>,
+}
+
+/// The same real-current construction is compared byte-for-byte with SDK
+/// preparation in each positive registration before it is used for reuse
+/// negatives. It grants no admission or owner authority.
+#[allow(clippy::too_many_arguments)]
+fn registration_construction(
+    fixture: &Fixture,
+    current: &SuccessorWorkflowAuthority,
+    host: &HostProcess,
+    member: &SuccessorProcessMember,
+    id: [u8; 32],
+    resource: &node_core::economics::FastPathEconomicsResourcePolicy,
+    source: Object,
+    reference: ObjectRef,
+    authority: execution::local_execution::ObjectAuthority,
+) -> RegistrationConstruction {
+    let context: execution::publication::PublicationContext = current.expected_context().clone();
+    current.require_signing_context(&context).unwrap();
+    let signer: sunrise_edge_client::LocalSigner =
+        sunrise_edge_client::LocalSigner::from_seed(member.seed);
+    let public: [u8; 32] = *signer.address().as_bytes();
+    assert_eq!(
+        member.validator_id,
+        ValidatorId::new(public),
+        "this fixture identity is proved from its actual signing seed"
+    );
+    assert_eq!(source.owner, Owner::Address(Address::new(public)));
+    assert_eq!(source.id, reference.id);
+    assert_eq!(source.version, reference.version);
+    assert_eq!(authority.object_id, source.id);
+    assert_eq!(authority.instance_context, resource.context);
+    assert_eq!(authority.code, resource.code);
+    assert_eq!(authority.instance, resource.instance);
+    assert_eq!(authority.ty, resource.ty);
+    let amount: u64 = public_standard_asset::coin_amount(&source.data).unwrap();
+    let scope: ProtocolCustodyScope = ProtocolCustodyScope {
+        purpose: ProtocolCustodyPurpose::BondCollateral,
+        chain_id: fixture.network.chain_id.clone(),
+        subject: *member.validator_id.as_bytes(),
+        resource: *resource.resource_id.value(),
+    };
+    let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
+        &fixture.network.resolver,
+        &context,
+        source.id,
+        &scope,
+    )
+    .unwrap();
+    let leg: Vec<u8> = signed_leg(
+        fixture, current, host, member, id, resource, reference, token,
+    );
+    let leg_policy: execution::local_execution::LocalExecutionPolicy =
+        execution::local_execution::LocalExecutionPolicy::generic_object_results(context.clone());
+    let authenticated: execution::local_execution::AuthenticatedLocalExecutionIntent =
+        execution::local_execution::authenticate_local_execution(
+            &fixture.network.resolver,
+            &leg_policy,
+            &leg,
+        )
+        .unwrap();
+    assert_eq!(authenticated.intent().call.sender, public);
+    assert_eq!(authenticated.intent().call.request_id, id);
+    assert_eq!(authenticated.intent().call.nonce, nonce(host, public));
+    let mut deposited: Object = source;
+    deposited.version = deposited.version.checked_add(1).unwrap();
+    deposited.owner = Owner::ProtocolCustody(scope);
+    let predicted: FastPathBondRecord = FastPathBondRecord {
+        context: resource.context.clone(),
+        validator_id: member.validator_id,
+        resource_domain: resource.resource_id.domain(),
+        resource: *resource.resource_id.value(),
+        custody_object: ObjectRef {
+            id: deposited.id,
+            version: deposited.version,
+            digest: fixture
+                .network
+                .resolver
+                .hash_for_purpose(
+                    context.epoch(),
+                    HashPurpose::Object,
+                    &objects::encode_object(&deposited).unwrap(),
+                )
+                .unwrap(),
+        },
+        custody_object_epoch: context.epoch(),
+        authority,
+        amount,
+        committed_at_checkpoint: HOST_CHECKPOINT,
+        generation: 1,
+        lifecycle_epoch: context.epoch(),
+        slashable_from_epoch: Epoch::new(context.epoch().get().checked_add(1).unwrap()),
+        required_minimum: resource.bond.as_ref().unwrap().min_bond.get(),
+        state: FastPathBondState::Active,
+        authorization_scheme: SignatureSchemeId::Ed25519,
+        authorization_key: public,
+    };
+    let intent: sunrise_edge_client::bond_registration::BondRegistrationIntent =
+        sunrise_edge_client::bond_registration::BondRegistrationIntent {
+            context: context.clone(),
+            request_id: id,
+            validator_id: member.validator_id,
+            authorization_scheme: SignatureSchemeId::Ed25519,
+            authorization_key: public,
+            resource_context: resource.context.clone(),
+            resource: resource.resource_id,
+            leg: leg.clone(),
+            expected_initial_row_digest: bond_row_digest(
+                &fixture.network.resolver,
+                context.epoch(),
+                &encode_fastpath_bond_record(&predicted).unwrap(),
+            )
+            .unwrap(),
+            pinned_genesis_digest: current.genesis_root().digest(),
+        };
+    let frame: Vec<u8> = node_core::bond_lifecycle::registration::bond_registration_signing_frame(
+        &context,
+        node_core::bond_lifecycle::registration::bond_registration_intent_digest(
+            &fixture.network.resolver,
+            &intent,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let signature: [u8; 64] = signer.sign_framed(&frame).unwrap().try_into().unwrap();
+    assert!(
+        crypto::Ed25519Verifier::from_verifying_key_bytes(&public)
+            .unwrap()
+            .verify_framed(&frame, &signature)
+            .unwrap()
+    );
+    let signed: Vec<u8> =
+        sunrise_edge_client::bond_registration::encode_signed_bond_registration_intent(
+            &sunrise_edge_client::bond_registration::SignedBondRegistrationIntent {
+                intent: intent.clone(),
+                signature,
+            },
+        )
+        .unwrap();
+    RegistrationConstruction {
+        leg,
+        predicted,
+        intent,
+        signed,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn register(
     fixture: &Fixture,
@@ -343,56 +496,20 @@ pub(super) fn register(
     assert_eq!(&installed, resource);
     let context: execution::publication::PublicationContext = current.expected_context().clone();
     current.require_signing_context(&context).unwrap();
-    let scope: ProtocolCustodyScope = ProtocolCustodyScope {
-        purpose: ProtocolCustodyPurpose::BondCollateral,
-        chain_id: fixture.network.chain_id.clone(),
-        subject: *member.validator_id.as_bytes(),
-        resource: *resource.resource_id.value(),
-    };
-    let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
-        &fixture.network.resolver,
-        &context,
-        source.id,
-        &scope,
-    )
-    .unwrap();
     let id: [u8; 32] = request(context.epoch(), 0x41, &member);
-    let leg: Vec<u8> = signed_leg(
-        fixture, current, &hosts[0], &member, id, resource, reference, token,
+    let construction: RegistrationConstruction = registration_construction(
+        fixture,
+        current,
+        &hosts[0],
+        &member,
+        id,
+        resource,
+        source,
+        reference,
+        entry.authority.clone(),
     );
-    let mut predicted_object: Object = source;
-    predicted_object.version = predicted_object.version.checked_add(1).unwrap();
-    predicted_object.owner = Owner::ProtocolCustody(scope);
-    let predicted: FastPathBondRecord = FastPathBondRecord {
-        context: resource.context.clone(),
-        validator_id: member.validator_id,
-        resource_domain: resource.resource_id.domain(),
-        resource: *resource.resource_id.value(),
-        custody_object: ObjectRef {
-            id: predicted_object.id,
-            version: predicted_object.version,
-            digest: fixture
-                .network
-                .resolver
-                .hash_for_purpose(
-                    context.epoch(),
-                    HashPurpose::Object,
-                    &objects::encode_object(&predicted_object).unwrap(),
-                )
-                .unwrap(),
-        },
-        custody_object_epoch: context.epoch(),
-        authority: entry.authority.clone(),
-        amount: 10_000,
-        committed_at_checkpoint: HOST_CHECKPOINT,
-        generation: 1,
-        lifecycle_epoch: context.epoch(),
-        slashable_from_epoch: Epoch::new(context.epoch().get().checked_add(1).unwrap()),
-        required_minimum: resource.bond.as_ref().unwrap().min_bond.get(),
-        state: FastPathBondState::Active,
-        authorization_scheme: SignatureSchemeId::Ed25519,
-        authorization_key: *member.validator_id.as_bytes(),
-    };
+    let leg: Vec<u8> = construction.leg.clone();
+    let predicted: FastPathBondRecord = construction.predicted.clone();
     let signer: sunrise_edge_client::LocalSigner =
         sunrise_edge_client::LocalSigner::from_seed(seed);
     let prepared: sunrise_edge_client::bond_registration::PreparedSuccessorBondRegistration<'_> =
@@ -406,21 +523,31 @@ pub(super) fn register(
         )
         .unwrap();
     assert_eq!(prepared.validator_id(), member.validator_id);
+    assert_eq!(prepared.intent(), &construction.intent);
     let sdk_signed: Vec<u8> = prepared.sign(&signer, &context).unwrap();
+    assert_eq!(
+        sdk_signed, construction.signed,
+        "the raw-negative constructor matches genuine positive SDK signing bytes"
+    );
     assert!(
-        prepared.sign(&signer, &fixture.network.context).is_err(),
+        matches!(
+            prepared.sign(&signer, &fixture.network.context),
+            Err(sunrise_edge_client::bond_registration::LocalBondRegistrationError::CurrentContextMismatch)
+        ),
         "a retained preparation never signs in an old context"
     );
     assert!(
-        sunrise_edge_client::bond_registration::prepare_successor_bond_registration(
-            current,
-            &fixture.network.context,
-            &signer,
-            id,
-            leg.clone(),
-            predicted.clone()
-        )
-        .is_err(),
+        matches!(
+            sunrise_edge_client::bond_registration::prepare_successor_bond_registration(
+                current,
+                &fixture.network.context,
+                &signer,
+                id,
+                leg.clone(),
+                predicted.clone()
+            ),
+            Err(sunrise_edge_client::bond_registration::LocalBondRegistrationError::CurrentContextMismatch)
+        ),
         "a genesis context cannot authorize a current registration signature"
     );
     let leg_path: PathBuf = directory.join(format!("registration-{coin_byte}.leg"));
@@ -844,5 +971,384 @@ pub(super) fn withdrawals(
                 );
             }
         }
+    }
+}
+
+/// A retired member's committee authority ended at exit; only its historical
+/// bond owner authority survives (Unbond/Withdraw, proven above). Ordinary
+/// client/signature authority is independent of this membership check. Deposit stays
+/// members-only, so a non-member's otherwise well-formed, correctly-signed
+/// Deposit candidate must never be admitted into the ordered sequence, and
+/// the exited row must never move.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn assert_retired_member_cannot_redeposit(
+    fixture: &Fixture,
+    links: &[Link],
+    current: &SuccessorWorkflowAuthority,
+    targets: &CurrentTargets,
+    hosts: &[HostProcess],
+    network: &Path,
+    directory: &Path,
+    owner: &ExitOwner,
+) {
+    let member: &SuccessorProcessMember = &owner.member;
+    assert!(
+        current
+            .fastvote_certifier()
+            .validator_set()
+            .get(member.validator_id)
+            .is_none()
+    );
+    let previous: FastPathBondRecord = bond(fixture, targets, member.validator_id);
+    assert_eq!(previous.state, FastPathBondState::Exited);
+    let installed: node_core::economics::FastPathEconomicsResourcePolicy = resource(
+        fixture,
+        targets,
+        &previous.context,
+        bonds::BondResourceId::new(previous.resource_domain, previous.resource).unwrap(),
+    );
+    let (source, reference): (Object, ObjectRef) = object(&hosts[0], previous.custody_object.id);
+    assert_eq!(reference, previous.custody_object);
+    let id: [u8; 32] = request(current.expected_context().epoch(), 0x44, member);
+    let construction: RegistrationConstruction = registration_construction(
+        fixture,
+        current,
+        &hosts[0],
+        member,
+        id,
+        &installed,
+        source,
+        reference,
+        previous.authority.clone(),
+    );
+    let mut next: FastPathBondRecord = construction.predicted;
+    next.generation = previous.generation.checked_add(1).unwrap();
+    let bytes: Vec<u8> = sign_lifecycle(
+        fixture,
+        current,
+        member,
+        &previous,
+        &next,
+        id,
+        BondLifecycleOperation::Deposit {
+            leg: construction.leg,
+        },
+    );
+    let label: String = format!("redeposit-{}", hex(member.validator_id.as_bytes()));
+    assert_candidate_refused_locally_and_at_ingress(
+        fixture,
+        links,
+        current,
+        targets,
+        hosts,
+        network,
+        directory,
+        &bytes,
+        id,
+        node_core::ordered_economics::OrderedOperationKind::BondLifecycle,
+        "bond-lifecycle",
+        &label,
+        "ordered candidate names a validator outside the pinned validator set",
+    );
+    assert_eq!(
+        bond(fixture, targets, member.validator_id),
+        previous,
+        "a refused non-member Deposit never reactivates the exited bond"
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assert_candidate_refused_locally_and_at_ingress(
+    fixture: &Fixture,
+    links: &[Link],
+    current: &SuccessorWorkflowAuthority,
+    targets: &CurrentTargets,
+    hosts: &[HostProcess],
+    network: &Path,
+    directory: &Path,
+    bytes: &[u8],
+    id: [u8; 32],
+    kind: node_core::ordered_economics::OrderedOperationKind,
+    cli_kind: &str,
+    label: &str,
+    policy_reason: &str,
+) {
+    let before: ProtectedState = protected_state(fixture, targets);
+    let statuses: Vec<OrderedStatus> = hosts.iter().map(|host| status(host.address)).collect();
+    let references: Vec<&HostProcess> = hosts.iter().collect();
+    let absent: sunrise_edge_client::HttpReceiptQueryResult = receipts(&references, id);
+    assert!(matches!(
+        &absent,
+        sunrise_edge_client::HttpReceiptQueryResult::Absent { .. }
+    ));
+    let candidate: OrderedCandidate = OrderedCandidate {
+        context: current.expected_context().clone(),
+        request_id: id,
+        kind,
+        intent: bytes.to_vec(),
+        created_checkpoint: HOST_CHECKPOINT,
+    };
+    let policy_error: node_core::ordered_economics::OrderedEconomicsError = current
+        .ordered_policy()
+        .authenticate_candidate(&candidate)
+        .unwrap_err();
+    assert!(
+        matches!(&policy_error, node_core::ordered_economics::OrderedEconomicsError::Unauthenticated(reason) if *reason == policy_reason),
+        "{policy_error}"
+    );
+    let signed_path: PathBuf = directory.join(format!("{label}.signed"));
+    let wrapped: PathBuf = directory.join(format!("{label}-cli-wrapped.candidate"));
+    std::fs::write(&signed_path, bytes).unwrap();
+    let mut wrap_flags: Vec<String> = ordered_pins(fixture, links, current);
+    wrap_flags.extend([
+        "--intent".into(),
+        signed_path.to_str().unwrap().into(),
+        "--kind".into(),
+        cli_kind.into(),
+        "--request-id".into(),
+        hex(&id),
+        "--created-checkpoint".into(),
+        HOST_CHECKPOINT.to_string(),
+        "--out".into(),
+        wrapped.to_str().unwrap().into(),
+    ]);
+    let wrap_error: String = cli_attempt(&["economics", "candidate-wrap"], wrap_flags)
+        .expect_err("CLI wrapping must refuse the intended current policy violation");
+    assert!(wrap_error.contains(policy_reason), "{wrap_error}");
+    assert!(
+        !wrapped.exists(),
+        "the refused local wrapper writes no candidate"
+    );
+    // This is an explicitly constructed negative transport claim, never a
+    // successful CLI wrap or admitted request. Local SDK/CLI validation stops
+    // it before TCP; the real ingress proof below is a separate exchange.
+    let candidate_bytes: Vec<u8> =
+        node_core::ordered_economics::encode_ordered_candidate(&candidate).unwrap();
+    assert_eq!(
+        node_core::ordered_economics::decode_ordered_candidate(&candidate_bytes).unwrap(),
+        candidate
+    );
+    let candidate_path: PathBuf = directory.join(format!("{label}-negative.candidate"));
+    std::fs::write(&candidate_path, &candidate_bytes).unwrap();
+    let mut submit_flags: Vec<String> = ordered_network_pins(fixture, links, current, network);
+    submit_flags.extend([
+        "--candidate".into(),
+        candidate_path.to_str().unwrap().into(),
+        "--out".into(),
+        directory
+            .join(format!("{label}-locally-refused-submission"))
+            .to_str()
+            .unwrap()
+            .into(),
+    ]);
+    let submission_error: String = cli_attempt(&["economics", "network-submit"], submit_flags)
+        .expect_err("the SDK prevalidates this negative candidate before sending it");
+    assert!(
+        submission_error.contains(policy_reason),
+        "{submission_error}"
+    );
+    assert_eq!(
+        protected_state(fixture, targets),
+        before,
+        "local refusals change no current physical state"
+    );
+    let request: node_wire::ordered_economics::OrderedProposeRequest =
+        node_wire::ordered_economics::OrderedProposeRequest {
+            candidate: Some(candidate_bytes),
+        };
+    let request_bytes: Vec<u8> = request.encode().unwrap();
+    assert_eq!(
+        node_wire::ordered_economics::OrderedProposeRequest::decode(&request_bytes).unwrap(),
+        request
+    );
+    for host in hosts {
+        let response: WireResponse = raw(
+            host.address,
+            Method::Post,
+            node_wire::ordered_economics::ORDERED_ECONOMICS_PROPOSE_PATH,
+            Some(node_wire::ordered_economics::ORDERED_PROPOSE_REQUEST_MEDIA_TYPE),
+            request_bytes.clone(),
+        );
+        assert_eq!(response.status, 400);
+        assert!(
+            std::str::from_utf8(&response.body)
+                .unwrap()
+                .contains("ordered-economics-rejected"),
+            "canonical current candidate reaches each real HTTP authentication owner: {}",
+            String::from_utf8_lossy(&response.body)
+        );
+    }
+    assert_eq!(
+        protected_state(fixture, targets),
+        before,
+        "actual ingress refusal preserves every row, receipt, blob, fence and origin"
+    );
+    assert_eq!(
+        hosts
+            .iter()
+            .map(|host| status(host.address))
+            .collect::<Vec<OrderedStatus>>(),
+        statuses
+    );
+    assert_eq!(receipts(&references, id), absent);
+}
+
+/// Admit-mode registration reuse after legal Withdraw is distinct from
+/// non-member Deposit, and from ordinary client or historical bond rights.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn assert_retired_owner_cannot_register(
+    fixture: &Fixture,
+    links: &[Link],
+    current: &SuccessorWorkflowAuthority,
+    targets: &CurrentTargets,
+    hosts: &[HostProcess],
+    network: &Path,
+    directory: &Path,
+    owner: &ExitOwner,
+) {
+    const OWNER_REUSE: &str = "registration reuses a verified owner identity or key";
+    let member: &SuccessorProcessMember = &owner.member;
+    let previous: FastPathBondRecord = bond(fixture, targets, member.validator_id);
+    assert_eq!(previous.state, FastPathBondState::Exited);
+    assert!(
+        current
+            .fastvote_certifier()
+            .validator_set()
+            .get(member.validator_id)
+            .is_none()
+    );
+    let signer: sunrise_edge_client::LocalSigner =
+        sunrise_edge_client::LocalSigner::from_seed(member.seed);
+    let public: [u8; 32] = *signer.address().as_bytes();
+    assert_eq!(
+        previous.authorization_key, public,
+        "the historical owner is bound to the actual signing seed"
+    );
+    assert_eq!(previous.authorization_scheme, SignatureSchemeId::Ed25519);
+    if let Some(genesis) = fixture.root.genesis_committee().get(member.validator_id) {
+        assert_eq!(genesis.public_key.as_slice(), public.as_slice());
+    } else {
+        let key: Vec<u8> = node_core::bond_lifecycle::registration::bond_registration_anchor_key(
+            &fixture.network.chain_id,
+            &member.validator_id,
+        )
+        .unwrap();
+        let anchor: node_core::bond_lifecycle::registration::BondRegistrationAnchor =
+            node_core::bond_lifecycle::registration::decode_bond_registration_anchor(
+                &state(fixture, targets, 0, &key)
+                    .expect("the real registered owner anchor is retained"),
+            )
+            .unwrap();
+        let registration: sunrise_edge_client::bond_registration::SignedBondRegistrationIntent =
+            sunrise_edge_client::bond_registration::decode_signed_bond_registration_intent(
+                &anchor.signed_registration,
+            )
+            .unwrap();
+        assert_eq!(anchor.validator_id, member.validator_id);
+        assert_eq!(registration.intent.authorization_key, public);
+    }
+    let installed: node_core::economics::FastPathEconomicsResourcePolicy = resource(
+        fixture,
+        targets,
+        &previous.context,
+        bonds::BondResourceId::new(previous.resource_domain, previous.resource).unwrap(),
+    );
+    let (funding, reference): (Object, ObjectRef) = object(&hosts[0], previous.custody_object.id);
+    assert_eq!(reference, previous.custody_object);
+    assert_eq!(
+        funding.owner,
+        Owner::Address(Address::new(public)),
+        "lawful Withdraw restored ordinary ownership"
+    );
+    assert_eq!(
+        public_standard_asset::coin_amount(&funding.data).unwrap(),
+        previous.amount
+    );
+    let before_nonce: u64 = nonce(&hosts[0], public);
+    let id: [u8; 32] = request(current.expected_context().epoch(), 0x45, member);
+    let construction: RegistrationConstruction = registration_construction(
+        fixture,
+        current,
+        &hosts[0],
+        member,
+        id,
+        &installed,
+        funding.clone(),
+        reference.clone(),
+        previous.authority.clone(),
+    );
+    match sunrise_edge_client::bond_registration::prepare_successor_bond_registration(
+        current,
+        current.expected_context(),
+        &signer,
+        id,
+        construction.leg.clone(),
+        construction.predicted.clone(),
+    ) {
+        Err(sunrise_edge_client::bond_registration::LocalBondRegistrationError::Registration(
+            sunrise_edge_client::bond_registration::BondRegistrationError::Invalid(reason),
+        )) => assert_eq!(reason, OWNER_REUSE),
+        Err(error) => panic!("SDK preparation refused an unrelated cause: {error}"),
+        Ok(_) => panic!("Admit-mode preparation cannot reuse a verified retired owner"),
+    }
+    let core_error: sunrise_edge_client::bond_registration::BondRegistrationError =
+        node_core::bond_lifecycle::registration::verify_signed_bond_registration_successor(
+            current.genesis_root(),
+            current.authority(),
+            &construction.signed,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&core_error, sunrise_edge_client::bond_registration::BondRegistrationError::Invalid(reason) if *reason == OWNER_REUSE),
+        "{core_error}"
+    );
+    let label: String = format!("reregister-{}", hex(member.validator_id.as_bytes()));
+    let leg_path: PathBuf = directory.join(format!("{label}.leg"));
+    let row_path: PathBuf = directory.join(format!("{label}.row"));
+    let seed_path: PathBuf = directory.join(format!("{label}.seed"));
+    let prepared_path: PathBuf = directory.join(format!("{label}-cli-prepared.signed"));
+    std::fs::write(&leg_path, &construction.leg).unwrap();
+    std::fs::write(
+        &row_path,
+        encode_fastpath_bond_record(&construction.predicted).unwrap(),
+    )
+    .unwrap();
+    private_seed(&seed_path, member.seed);
+    let mut flags: Vec<String> = ordered_pins(fixture, links, current);
+    flags.extend([
+        "--request-id".into(),
+        hex(&id),
+        "--signed-leg".into(),
+        leg_path.to_str().unwrap().into(),
+        "--expected-bond-row".into(),
+        row_path.to_str().unwrap().into(),
+        "--seed-file".into(),
+        seed_path.to_str().unwrap().into(),
+        "--out".into(),
+        prepared_path.to_str().unwrap().into(),
+    ]);
+    let error: String = cli_attempt(&["economics", "bond-registration-prepare"], flags)
+        .expect_err("the actual CLI preparation rejects retired-owner reuse");
+    assert!(error.contains(OWNER_REUSE), "{error}");
+    assert!(!prepared_path.exists());
+    assert_candidate_refused_locally_and_at_ingress(
+        fixture,
+        links,
+        current,
+        targets,
+        hosts,
+        network,
+        directory,
+        &construction.signed,
+        id,
+        node_core::ordered_economics::OrderedOperationKind::BondRegistration,
+        "bond-registration",
+        &label,
+        "invalid initial bond registration authentication",
+    );
+    assert_eq!(bond(fixture, targets, member.validator_id), previous);
+    for host in hosts {
+        assert_eq!(object(host, reference.id).0, funding);
+        assert_eq!(nonce(host, public), before_nonce);
     }
 }

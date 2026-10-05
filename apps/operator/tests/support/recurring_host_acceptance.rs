@@ -11,6 +11,7 @@ use node_core::serving_authority::{
     LiveAuthority, SuccessorChainBudget, resolve_live_authority_chain,
 };
 use protocol_types::Epoch;
+use runtime::DurableDomainStateStore;
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 use sunrise_edge_client::load_successor_chain_workflow_from_directories;
@@ -43,6 +44,116 @@ impl Link {
 struct CurrentTargets {
     paths: Vec<PathBuf>,
     members: Vec<SuccessorProcessMember>,
+}
+
+type SqlRows = Vec<Vec<Vec<rusqlite::types::Value>>>;
+
+/// Every physical durable row, blob, source token, fence and permanent origin.
+/// A refusal compares against the state captured AFTER the fault is injected.
+#[derive(Debug, PartialEq)]
+struct ProtectedState {
+    business: Vec<node_core::business_reconstruction::SourceBusinessSnapshot>,
+    metadata: Vec<(
+        WriterFenceGeneration,
+        runtime::NamespaceLifecycle,
+        runtime::OutgoingBarrier,
+        runtime::successor_serving::SuccessorServingSlot,
+    )>,
+    state_rows: Vec<SqlRows>,
+    blob_rows: Vec<SqlRows>,
+}
+
+fn sql_rows(path: &Path, statements: &[&str]) -> SqlRows {
+    let mut connection: rusqlite::Connection =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let transaction: rusqlite::Transaction<'_> = connection.transaction().unwrap();
+    let mut tables: SqlRows = Vec::with_capacity(statements.len());
+    for sql in statements {
+        let mut statement: rusqlite::Statement<'_> = transaction.prepare(sql).unwrap();
+        let columns: usize = statement.column_count();
+        let rows: Vec<Vec<rusqlite::types::Value>> = statement
+            .query_map([], |row: &rusqlite::Row<'_>| {
+                (0..columns)
+                    .map(|index: usize| row.get::<usize, rusqlite::types::Value>(index))
+                    .collect::<Result<Vec<rusqlite::types::Value>, rusqlite::Error>>()
+            })
+            .unwrap()
+            .collect::<Result<Vec<Vec<rusqlite::types::Value>>, rusqlite::Error>>()
+            .unwrap();
+        tables.push(rows);
+    }
+    tables
+}
+
+fn protected_state(fixture: &Fixture, targets: &CurrentTargets) -> ProtectedState {
+    let mut metadata: Vec<(
+        WriterFenceGeneration,
+        runtime::NamespaceLifecycle,
+        runtime::OutgoingBarrier,
+        runtime::successor_serving::SuccessorServingSlot,
+    )> = Vec::with_capacity(targets.paths.len());
+    let mut state_rows: Vec<SqlRows> = Vec::with_capacity(targets.paths.len());
+    let mut blob_rows: Vec<SqlRows> = Vec::with_capacity(targets.paths.len());
+    for (index, path) in targets.paths.iter().enumerate() {
+        let store: SqliteDurableStore = SqliteDurableStore::open_historical(
+            path.join("state.db"),
+            SqliteNamespace::new(
+                fixture.network.chain_id.clone(),
+                targets.members[index].validator_id,
+                fixture.network.domain,
+            ),
+        )
+        .unwrap();
+        let fence: WriterFenceGeneration = store.writer_fence().unwrap();
+        let operation: runtime::DurableOperationContext = runtime::DurableOperationContext::new(
+            fence,
+            runtime::StorageDeadline::new(u64::MAX / 2).unwrap(),
+            runtime::StorageCorrelationId::new([0xcf; 16]).unwrap(),
+        );
+        metadata.push((
+            fence,
+            store
+                .get_namespace_lifecycle(&operation, fixture.network.domain)
+                .unwrap(),
+            store
+                .get_outgoing_barrier(&operation, fixture.network.domain)
+                .unwrap(),
+            store
+                .get_successor_serving(&operation, fixture.network.domain)
+                .unwrap(),
+        ));
+        state_rows.push(sql_rows(
+            &path.join("state.db"),
+            &[
+                "SELECT * FROM durable_metadata ORDER BY id",
+                "SELECT * FROM durable_import_progress ORDER BY id",
+                "SELECT * FROM durable_outgoing_barrier ORDER BY id",
+                "SELECT * FROM durable_successor_serving ORDER BY id",
+                "SELECT * FROM durable_state ORDER BY key",
+                "SELECT * FROM durable_conditional_readiness ORDER BY slot",
+                "SELECT * FROM durable_object_heads ORDER BY object_id",
+                "SELECT * FROM durable_object_versions ORDER BY object_id, object_version",
+                "SELECT * FROM durable_receipts ORDER BY request_id",
+                "SELECT * FROM durable_outbox_messages ORDER BY request_id, message_index",
+                "SELECT * FROM durable_outbox_delivery ORDER BY request_id",
+                "SELECT * FROM durable_outbox_attempts ORDER BY lease_id",
+            ],
+        ));
+        blob_rows.push(sql_rows(
+            &path.join("body.db"),
+            &[
+                "SELECT * FROM blob_metadata ORDER BY id",
+                "SELECT * FROM blobs ORDER BY digest_algorithm, digest_bytes",
+            ],
+        ));
+    }
+    ProtectedState {
+        business: lifecycle::physical_snapshots(fixture, targets),
+        metadata,
+        state_rows,
+        blob_rows,
+    }
 }
 
 fn budget() -> SuccessorChainBudget {
@@ -243,7 +354,10 @@ fn network_file(directory: &Path, hosts: &[HostProcess]) -> PathBuf {
 fn operator(binary: &str, mode: &str, flags: Vec<String>) -> String {
     let mut command: Command = Command::new(binary);
     command.arg(mode).args(flags);
-    success(command.output().unwrap())
+    success(process::spawn_bounded_output(
+        command,
+        Duration::from_secs(600),
+    ))
 }
 
 fn target_flags(targets: &CurrentTargets, index: usize, signer: bool) -> Vec<String> {
@@ -324,14 +438,13 @@ fn start(
         .args(flags)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
-    let mut child: Child = command.spawn().unwrap();
-    let mut line: String = String::new();
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    if line.is_empty() {
-        panic!("recurring host failed: {:?}", child.wait());
-    }
+    let (mut guard, line): (process::ChildGuard, String) =
+        process::spawn_bounded_status_line(command, Duration::from_secs(600));
+    assert!(
+        !line.is_empty(),
+        "recurring host failed: {:?}",
+        guard.try_wait()
+    );
     let mode: &str = if historical {
         "mode=successor-history-material-only"
     } else {
@@ -339,12 +452,464 @@ fn start(
     };
     assert!(line.contains(mode), "{line}");
     assert_eq!(field(&line, "epoch="), epoch.to_string());
+    let address: SocketAddr = field(&line, "listen=").parse().unwrap();
+    let generation: u64 = field(&line, "writer_generation=").parse().unwrap();
     HostProcess {
-        child,
-        address: field(&line, "listen=").parse().unwrap(),
-        generation: field(&line, "writer_generation=").parse().unwrap(),
+        child: guard.into_inner(),
+        address,
+        generation,
         validator: targets.members[index].validator_id,
     }
+}
+
+fn historical_startup_flags(
+    fixture: &Fixture,
+    links: &[Link],
+    targets: &CurrentTargets,
+    epoch: u64,
+) -> Vec<String> {
+    let mut flags: Vec<String> = host_flags(fixture, links, targets, 0, true, epoch);
+    flags.extend([
+        "--listen".into(),
+        "127.0.0.1:0".into(),
+        "--timeout-seconds".into(),
+        "600".into(),
+    ]);
+    flags
+}
+
+fn assert_historical_startup_refused(
+    executables: &CompiledExecutableSnapshot,
+    fixture: &Fixture,
+    targets: &CurrentTargets,
+    flags: Vec<String>,
+    reason: &str,
+) {
+    let after_injection: ProtectedState = protected_state(fixture, targets);
+    let mut command: Command = Command::new(&executables.successor_host);
+    command.arg("serve-history").args(flags);
+    let output: Output = process::spawn_bounded_output(command, Duration::from_secs(600));
+    assert!(!output.status.success(), "startup must refuse {reason}");
+    assert!(
+        output.stdout.is_empty(),
+        "a refused startup never binds or prints serving status"
+    );
+    let error: String = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        error.contains(&format!("successor-host: {reason}")),
+        "the actual startup reader must refuse the injected cause: {error}"
+    );
+    assert_eq!(protected_state(fixture, targets), after_injection);
+}
+
+/// Logical artifact-byte faults only. Missing files are held outside every
+/// input archive, and Drop restores the original attachment or exact bytes.
+struct ArtifactChange {
+    path: PathBuf,
+    original: Vec<u8>,
+    held: Option<PathBuf>,
+}
+
+impl ArtifactChange {
+    fn inject(path: &Path, held: &Path, missing: bool) -> Self {
+        let original: Vec<u8> = std::fs::read(path).unwrap();
+        let held: Option<PathBuf> = if missing {
+            assert!(!held.exists());
+            std::fs::rename(path, held).unwrap();
+            Some(held.to_path_buf())
+        } else {
+            // None of these owning canonical codecs accepts a one-byte frame.
+            std::fs::write(path, [0xff]).unwrap();
+            None
+        };
+        Self {
+            path: path.to_path_buf(),
+            original,
+            held,
+        }
+    }
+}
+
+impl Drop for ArtifactChange {
+    fn drop(&mut self) {
+        match &self.held {
+            Some(held) => std::fs::rename(held, &self.path).unwrap(),
+            None => std::fs::write(&self.path, &self.original).unwrap(),
+        }
+    }
+}
+
+/// Corrupts only the bytes of an observed real record. It never seeds rows,
+/// rewrites revisions, advances a mutation sequence or repairs an origin.
+struct HistoricalRowChange {
+    path: PathBuf,
+    key: Vec<u8>,
+    original: Vec<u8>,
+}
+
+impl HistoricalRowChange {
+    fn inject(path: &Path, key: Vec<u8>, original: Vec<u8>, corrupted: &[u8]) -> Self {
+        let connection: rusqlite::Connection = rusqlite::Connection::open(path).unwrap();
+        let actual: Vec<u8> = connection
+            .query_row(
+                "SELECT value FROM durable_state WHERE key = ?1",
+                [&key],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            actual, original,
+            "the fault targets the observed live historical record"
+        );
+        assert_eq!(
+            connection
+                .execute(
+                    "UPDATE durable_state SET value = ?1 WHERE key = ?2",
+                    rusqlite::params![corrupted, &key],
+                )
+                .unwrap(),
+            1
+        );
+        Self {
+            path: path.to_path_buf(),
+            key,
+            original,
+        }
+    }
+}
+
+impl Drop for HistoricalRowChange {
+    fn drop(&mut self) {
+        let connection: rusqlite::Connection = rusqlite::Connection::open(&self.path).unwrap();
+        assert_eq!(
+            connection
+                .execute(
+                    "UPDATE durable_state SET value = ?1 WHERE key = ?2",
+                    rusqlite::params![&self.original, &self.key],
+                )
+                .unwrap(),
+            1
+        );
+    }
+}
+
+fn historical_material(
+    current: &SuccessorWorkflowAuthority,
+    hosts: &[HostProcess],
+) -> node_core::ordered_economics::OrderedHistoryIdentity {
+    let mut agreed: Option<node_core::ordered_economics::OrderedHistoryIdentity> = None;
+    for host in hosts {
+        let summary: WireResponse = raw(
+            host.address,
+            Method::Get,
+            node_wire::ORDERED_HISTORY_SUMMARY_PATH,
+            None,
+            Vec::new(),
+        );
+        assert_eq!(
+            summary.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&summary.body)
+        );
+        let identity: node_core::ordered_economics::OrderedHistoryIdentity =
+            node_core::ordered_economics::decode_ordered_history_summary(&summary.body)
+                .unwrap()
+                .identity;
+        assert_eq!(identity.context, *current.expected_context());
+        let request: node_wire::ordered_history::OrderedHistoryHeightRequest =
+            node_wire::ordered_history::OrderedHistoryHeightRequest {
+                height: identity.through_height,
+                identity: identity.clone(),
+            };
+        let material: WireResponse = raw(
+            host.address,
+            Method::Post,
+            node_wire::ORDERED_HISTORY_HEIGHT_PATH,
+            Some(node_wire::NODE_EVENT_MEDIA_TYPE),
+            request.encode().unwrap(),
+        );
+        assert_eq!(
+            material.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&material.body)
+        );
+        let descriptor: node_core::ordered_economics::OrderedHistoryHeightDescriptor =
+            node_core::ordered_economics::decode_ordered_history_height_descriptor(&material.body)
+                .unwrap();
+        assert_eq!(descriptor.identity, identity);
+        assert_eq!(descriptor.height, identity.through_height);
+        assert!(descriptor.components.iter().any(|reference| {
+            reference.kind == node_core::ordered_economics::OrderedHistoryComponentKind::Candidate
+        }));
+        if let Some(previous) = &agreed {
+            assert_eq!(&identity, previous);
+        }
+        agreed = Some(identity);
+    }
+    agreed.unwrap()
+}
+
+fn assert_historical_material_refused(hosts: &[HostProcess]) {
+    for host in hosts {
+        let response: WireResponse = raw(
+            host.address,
+            Method::Get,
+            node_wire::ORDERED_HISTORY_SUMMARY_PATH,
+            None,
+            Vec::new(),
+        );
+        assert_eq!(response.status, 503);
+        assert!(
+            std::str::from_utf8(&response.body)
+                .unwrap()
+                .contains("ordered-history-unavailable"),
+            "the existing history reader refuses unavailable authenticated material"
+        );
+    }
+}
+
+fn terminal_descriptor(
+    fixture: &Fixture,
+    current: &SuccessorWorkflowAuthority,
+    targets: &CurrentTargets,
+    identity: &node_core::ordered_economics::OrderedHistoryIdentity,
+) -> Result<
+    node_core::ordered_economics::OrderedHistoryHeightDescriptor,
+    node_core::ordered_economics::OrderedEconomicsError,
+> {
+    let store: SqliteDurableStore = SqliteDurableStore::open_historical(
+        targets.paths[0].join("state.db"),
+        SqliteNamespace::new(
+            fixture.network.chain_id.clone(),
+            targets.members[0].validator_id,
+            fixture.network.domain,
+        ),
+    )
+    .unwrap();
+    let operation: runtime::DurableOperationContext = runtime::DurableOperationContext::new(
+        store.writer_fence().unwrap(),
+        runtime::StorageDeadline::new(u64::MAX / 2).unwrap(),
+        runtime::StorageCorrelationId::new([0xce; 16]).unwrap(),
+    );
+    let blobs: SqliteBlobStore =
+        SqliteBlobStore::open_existing(targets.paths[0].join("body.db")).unwrap();
+    let leg_policy: execution::local_execution::LocalExecutionPolicy =
+        execution::local_execution::LocalExecutionPolicy::generic_object_results(
+            current.expected_context().clone(),
+        );
+    let engine: LocalWasmExecutionEngine = LocalWasmExecutionEngine::new();
+    let environment: node_core::ordered_economics::OrderedEconomicsEnvironment<'_> =
+        node_core::ordered_economics::OrderedEconomicsEnvironment {
+            policy: current.ordered_policy(),
+            history: &[],
+            leg_policy: &leg_policy,
+            engine: &engine,
+            blobs: &blobs,
+            seal: None,
+        };
+    node_core::ordered_economics::read_ordered_history_height_descriptor(
+        &store,
+        &operation,
+        &environment,
+        identity,
+        identity.through_height,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prove_historical_artifact_controls(
+    executables: &CompiledExecutableSnapshot,
+    fixture: &Fixture,
+    links: &[Link],
+    current: &SuccessorWorkflowAuthority,
+    targets: &CurrentTargets,
+    hosts: &[HostProcess],
+    directory: &Path,
+    seal: &OrderedCandidate,
+) {
+    assert_eq!(current.expected_context().epoch().get(), 1);
+    let intact: ProtectedState = protected_state(fixture, targets);
+    for (_, origin, barrier, slot) in &intact.metadata {
+        assert!(matches!(
+            origin,
+            runtime::NamespaceLifecycle::CompleteInactive { .. }
+        ));
+        assert!(
+            matches!(barrier, runtime::OutgoingBarrier::Sealed(sealed) if sealed.outgoing_epoch == current.expected_context().epoch() && sealed.request == seal.request_id)
+        );
+        assert!(
+            slot.is_serving(),
+            "permanent import origin and activation are retained after Seal"
+        );
+    }
+    let identity: node_core::ordered_economics::OrderedHistoryIdentity =
+        historical_material(current, hosts);
+    let _: node_core::ordered_economics::OrderedHistoryHeightDescriptor =
+        terminal_descriptor(fixture, current, targets, &identity).unwrap();
+    let positive_host: HostProcess = start(executables, fixture, links, targets, 0, true, 1);
+    assert_eq!(
+        historical_material(current, std::slice::from_ref(&positive_host)),
+        identity
+    );
+    drop(positive_host);
+    assert_eq!(protected_state(fixture, targets), intact);
+    let wrong_epoch: Vec<String> = historical_startup_flags(fixture, links, targets, 2);
+    assert_historical_startup_refused(
+        executables,
+        fixture,
+        targets,
+        wrong_epoch,
+        "historical current namespace pins differ from verified chain",
+    );
+    let mut foreign: Vec<String> = historical_startup_flags(fixture, links, targets, 1);
+    let validator_flag: usize = foreign
+        .iter()
+        .position(|flag| flag == "--validator-id")
+        .unwrap();
+    foreign[validator_flag + 1] = hex(targets.members[1].validator_id.as_bytes());
+    assert_historical_startup_refused(
+        executables,
+        fixture,
+        targets,
+        foreign,
+        "SQLite database already has a different bound chain/validator/domain",
+    );
+    let link: &Link = links.last().unwrap();
+    let cut_identity: PathBuf = link.cut.join("identity.bin");
+    let certificate: PathBuf = link.certificate.join("certificate.bin");
+    let history_pin: PathBuf = link.manifest_history.join("identity.bin");
+    node_core::business_reconstruction::cut::decode_business_cut_identity(
+        &std::fs::read(&cut_identity).unwrap(),
+    )
+    .unwrap();
+    consensus::readiness::decode_readiness_certificate(&std::fs::read(&certificate).unwrap())
+        .unwrap();
+    node_core::ordered_economics::decode_ordered_history_identity(
+        &std::fs::read(&history_pin).unwrap(),
+    )
+    .unwrap();
+    for (label, file, missing_reason) in [
+        ("cut", cut_identity, "successor artifact could not be read"),
+        ("certificate", certificate, "successor artifact is missing"),
+        (
+            "history-pin",
+            history_pin,
+            "successor artifact could not be read",
+        ),
+    ] {
+        for missing in [true, false] {
+            assert_eq!(historical_material(current, hosts), identity);
+            let held: PathBuf = directory.join(format!("{label}-{missing}.held"));
+            let fault: ArtifactChange = ArtifactChange::inject(&file, &held, missing);
+            let after_injection: ProtectedState = protected_state(fixture, targets);
+            assert_historical_startup_refused(
+                executables,
+                fixture,
+                targets,
+                historical_startup_flags(fixture, links, targets, 1),
+                if missing {
+                    missing_reason
+                } else {
+                    "successor artifact is malformed"
+                },
+            );
+            assert_historical_material_refused(hosts);
+            assert_eq!(protected_state(fixture, targets), after_injection);
+            drop(fault);
+            assert_eq!(protected_state(fixture, targets), intact);
+            assert_eq!(historical_material(current, hosts), identity);
+        }
+    }
+    // Locate the actual current terminal proof and candidate by decoding
+    // their observed source values; no private key builder or filename guess.
+    let seal_bytes: Vec<u8> = node_core::ordered_economics::encode_ordered_candidate(seal).unwrap();
+    let mut changed_seal: OrderedCandidate = seal.clone();
+    changed_seal.created_checkpoint = changed_seal.created_checkpoint.checked_add(1).unwrap();
+    current
+        .ordered_policy()
+        .authenticate_candidate(&changed_seal)
+        .unwrap();
+    let changed_candidate: Vec<u8> =
+        node_core::ordered_economics::encode_ordered_candidate(&changed_seal).unwrap();
+    for proof_fault in [true, false] {
+        assert_eq!(historical_material(current, hosts), identity);
+        let mut faults: Vec<HistoricalRowChange> = Vec::with_capacity(targets.paths.len());
+        for (index, snapshot) in intact.business.iter().enumerate() {
+            let matching: Vec<&node_core::business_reconstruction::SourceSnapshotRecord> = snapshot
+                .records
+                .iter()
+                .filter(|record| {
+                    if !matches!(
+                        record.descriptor.key(),
+                        runtime::portable::DurableRecordKey::State(_)
+                    ) {
+                        return false;
+                    }
+                    let Some(bytes) = &record.value else {
+                        return false;
+                    };
+                    if proof_fault {
+                        consensus::decode_committed_block_proof(bytes).is_ok_and(|proof| {
+                            proof.committed.epoch == identity.context.epoch()
+                                && proof.committed.height == identity.through_height
+                        })
+                    } else {
+                        *bytes == seal_bytes
+                    }
+                })
+                .collect();
+            assert_eq!(
+                matching.len(),
+                1,
+                "exactly one real current terminal record is targeted"
+            );
+            let record: &node_core::business_reconstruction::SourceSnapshotRecord = matching[0];
+            let runtime::portable::DurableRecordKey::State(key) = record.descriptor.key() else {
+                unreachable!();
+            };
+            let original: Vec<u8> = record.value.clone().unwrap();
+            faults.push(HistoricalRowChange::inject(
+                &targets.paths[index].join("state.db"),
+                key.clone(),
+                original,
+                if proof_fault {
+                    &[0xff]
+                } else {
+                    &changed_candidate
+                },
+            ));
+        }
+        let after_injection: ProtectedState = protected_state(fixture, targets);
+        assert_eq!(
+            after_injection.metadata, intact.metadata,
+            "corruption changes neither fence nor permanent Seal origin"
+        );
+        let expected: &str = if proof_fault {
+            "ordered history archived proof encoding"
+        } else {
+            "ordered history candidate digest mismatch"
+        };
+        let error: node_core::ordered_economics::OrderedEconomicsError =
+            terminal_descriptor(fixture, current, targets, &identity).unwrap_err();
+        assert!(
+            matches!(&error, node_core::ordered_economics::OrderedEconomicsError::Prerequisite(reason) if *reason == expected),
+            "actual terminal reader refusal: {error}"
+        );
+        assert_historical_material_refused(hosts);
+        assert_eq!(protected_state(fixture, targets), after_injection);
+        drop(faults);
+        assert_eq!(protected_state(fixture, targets), intact);
+        assert_eq!(historical_material(current, hosts), identity);
+    }
+    let positive_host: HostProcess = start(executables, fixture, links, targets, 0, true, 1);
+    assert_eq!(
+        historical_material(current, std::slice::from_ref(&positive_host)),
+        identity
+    );
+    drop(positive_host);
+    assert_eq!(protected_state(fixture, targets), intact);
 }
 
 fn committed_outcome(hosts: &[HostProcess], request: [u8; 32]) -> OrderedOutcome {
@@ -408,6 +973,15 @@ fn submit(
         output.to_str().unwrap().into(),
     ]);
     cli(&["economics", "network-submit"], flags);
+}
+
+/// Like `cli`, but reports failure instead of panicking: used only to prove
+/// that a genuinely malformed-authority submission is never admitted.
+fn cli_attempt(prefix: &[&str], tail: Vec<String>) -> Result<(), String> {
+    let mut arguments: Vec<OsString> = prefix.iter().map(OsString::from).collect();
+    arguments.extend(tail.into_iter().map(OsString::from));
+    tokio::task::block_in_place(|| sunrise_edge_cli::run(arguments))
+        .map_err(|error| error.to_string())
 }
 
 fn export_history(
@@ -483,7 +1057,7 @@ fn freeze_and_drain(
     directory: &Path,
     network: &Path,
     next_members: &[SuccessorProcessMember],
-) {
+) -> (Vec<u8>, Vec<u8>) {
     let epoch: u64 = current.expected_context().epoch().get();
     let next_context: execution::publication::PublicationContext =
         execution::publication::PublicationContext::new(
@@ -536,9 +1110,23 @@ fn freeze_and_drain(
         &directory.join("freeze-submission"),
     );
     let freeze: OrderedOutcome = committed_outcome(hosts, freeze_request);
+    if epoch == 2 {
+        assert!(
+            status(hosts[3].address)
+                .high_qc
+                .votes
+                .iter()
+                .any(|vote| { vote.validator == targets.members[3].validator_id }),
+            "the reopened fourth host signs the next real Freeze certified suffix"
+        );
+    }
     let mut votes: Vec<PathBuf> = Vec::new();
-    let selected_ids: Vec<ValidatorId> =
+    let mut selected_ids: Vec<ValidatorId> =
         current_quorum_ids(current.fastvote_certifier().validator_set());
+    if epoch == 2 && !selected_ids.contains(&targets.members[3].validator_id) {
+        selected_ids.push(targets.members[3].validator_id);
+        selected_ids.sort_unstable();
+    }
     for (index, member) in targets
         .members
         .iter()
@@ -560,6 +1148,22 @@ fn freeze_and_drain(
             vote_path.to_str().unwrap().into(),
         ]);
         cli(&["contract", "fastvote-frontier-advance"], flags);
+        let actual_vote: sunrise_edge_client::FrozenFrontierVote =
+            sunrise_edge_client::decode_frozen_frontier_vote(&std::fs::read(&vote_path).unwrap())
+                .unwrap();
+        assert_eq!(actual_vote.validator, member.validator_id);
+        assert_eq!(
+            actual_vote.identity.chain_id,
+            *current.expected_context().chain_id()
+        );
+        assert_eq!(
+            actual_vote.identity.protocol_version,
+            current.expected_context().protocol_version()
+        );
+        assert_eq!(
+            actual_vote.identity.epoch,
+            current.expected_context().epoch()
+        );
         votes.push(vote_path);
     }
     let selection: PathBuf = directory.join("selection.manifest");
@@ -646,9 +1250,14 @@ fn freeze_and_drain(
             .map(Some)
             .collect::<Vec<Option<&HostProcess>>>(),
     );
+    let mut last_round: Option<(Vec<u8>, Vec<u8>)> = None;
     for _ in 0..2 {
-        round(&endpoints, current, None);
+        let outcome: RoundOutcome = round(&endpoints, current, None);
+        last_round = Some((outcome.proposal_bytes, outcome.certificate_bytes));
     }
+    // A genuine EMPTY-round envelope (no business candidate), reused below as
+    // authentic stale material instead of being discarded.
+    last_round.unwrap()
 }
 
 /// The live authority, physical targets and exported history of one source epoch.
@@ -950,6 +1559,97 @@ fn prove_f_ordered_quorum(
     retained
 }
 
+#[allow(clippy::too_many_arguments)]
+fn restart_fourth_current_host(
+    executables: &CompiledExecutableSnapshot,
+    fixture: &Fixture,
+    links: &[Link],
+    current: &SuccessorWorkflowAuthority,
+    targets: &CurrentTargets,
+    hosts: &mut Vec<HostProcess>,
+    receipt_history: &BTreeMap<[u8; 32], Vec<u8>>,
+) {
+    assert_eq!(current.expected_context().epoch().get(), 2);
+    assert_eq!(hosts.len(), 4);
+    for tag in [0x70, 0x71] {
+        assert!(
+            receipt_history.contains_key(&epoch_request_id(2, tag)),
+            "paid e2 Publish/Instantiate preceded the real restart"
+        );
+    }
+    verify_receipts(receipt_history, hosts);
+    let paused: HostProcess = hosts.remove(3);
+    assert_eq!(paused.validator, targets.members[3].validator_id);
+    let generation: u64 = paused.generation;
+    let paused_status: OrderedStatus = status(paused.address);
+    drop(paused);
+    let before_miss: ProtectedState = protected_state(fixture, targets);
+    let alive: Vec<Option<&HostProcess>> = hosts.iter().map(Some).collect();
+    let missed: RoundOutcome = round(&ordered_endpoints(&alive), current, None);
+    assert_eq!(missed.qc_formed_from.len(), 3);
+    assert!(
+        !missed
+            .qc_formed_from
+            .contains(&targets.members[3].validator_id)
+    );
+    let missed_qc: QuorumCertificate =
+        consensus::decode_quorum_certificate(&missed.certificate_bytes).unwrap();
+    assert!(missed_qc.height > paused_status.high_qc.height);
+    for host in hosts.iter() {
+        assert_eq!(status(host.address).high_qc, missed_qc);
+    }
+    let after_miss: ProtectedState = protected_state(fixture, targets);
+    assert_eq!(
+        after_miss.business[3], before_miss.business[3],
+        "the stopped fourth host really missed the current round"
+    );
+    assert_eq!(after_miss.metadata[3], before_miss.metadata[3]);
+    assert_eq!(after_miss.state_rows[3], before_miss.state_rows[3]);
+    assert_eq!(after_miss.blob_rows[3], before_miss.blob_rows[3]);
+    let reopened: HostProcess = start(executables, fixture, links, targets, 3, false, 2);
+    assert!(
+        reopened.generation > generation,
+        "the SAME target state/body files reopen under a higher writer generation"
+    );
+    assert_eq!(
+        status(reopened.address).high_qc,
+        paused_status.high_qc,
+        "before replay the reopened file has the old high QC"
+    );
+    let replayed: Vec<sunrise_edge_client::ordered_economics_client::ReplayRoundOutcome> =
+        replay_declared_prefix_with_sink(
+            &ordered_endpoints(&[Some(&reopened)]),
+            current.ordered_policy(),
+            &[(missed.proposal_bytes, missed.certificate_bytes)],
+            Instant::now() + Duration::from_secs(1800),
+            Duration::from_secs(300),
+            &mut Sink,
+        )
+        .unwrap();
+    assert_eq!(replayed.len(), 1);
+    for phase in [&replayed[0].observe_phase, &replayed[0].certificate_phase] {
+        assert_eq!(phase.len(), 1);
+        assert_eq!(phase[0].0, reopened.validator);
+        let sunrise_edge_client::ordered_economics_client::PeerPhaseOutcome::Applied(output) =
+            &phase[0].1
+        else {
+            panic!(
+                "the reopened peer must acknowledge each declared signerless recovery phase: {:?}",
+                phase[0].1
+            );
+        };
+        assert!(
+            output.messages.is_empty(),
+            "declared-prefix recovery creates no fresh proposal or vote"
+        );
+    }
+    assert_eq!(status(reopened.address).high_qc, missed_qc);
+    hosts.push(reopened);
+    verify_receipts(receipt_history, hosts);
+    // The caller now uses all four independent hosts for the next genuine
+    // Freeze, every local frontier/drain and the outgoing Seal.
+}
+
 /// Genuine former-domain envelopes must refuse before voting or committing.
 /// The rows come from the same idle real target files the child hosts serve.
 fn assert_prior_epoch_envelopes_refused(
@@ -958,49 +1658,46 @@ fn assert_prior_epoch_envelopes_refused(
     hosts: &[HostProcess],
     retained: &(Vec<u8>, Vec<u8>),
 ) {
-    let before: Vec<node_core::business_reconstruction::SourceBusinessSnapshot> =
-        lifecycle::physical_snapshots(fixture, targets);
+    let before: ProtectedState = protected_state(fixture, targets);
     let high_qcs: Vec<QuorumCertificate> = hosts
         .iter()
         .map(|host: &HostProcess| status(host.address).high_qc)
         .collect();
-    for (path, media, body, expected_error) in [
-        (
-            node_wire::ordered_economics::ORDERED_ECONOMICS_PROPOSAL_PATH,
-            node_wire::ordered_economics::ORDERED_PROPOSAL_MEDIA_TYPE,
-            &retained.0,
-            "invalid-ordered-proposal-signature",
-        ),
-        (
-            node_wire::ordered_economics::ORDERED_ECONOMICS_CERTIFICATE_PATH,
-            node_wire::ordered_economics::ORDERED_CERTIFICATE_MEDIA_TYPE,
-            &retained.1,
-            "invalid-ordered-certificate-signature",
-        ),
-    ] {
-        let response: WireResponse = raw(
-            hosts[0].address,
-            Method::Post,
-            path,
-            Some(media),
-            body.clone(),
-        );
-        assert_eq!(response.status, 400);
-        assert!(
-            std::str::from_utf8(&response.body)
-                .unwrap()
-                .contains(expected_error),
-            "canonical former-epoch material reaches the current signature-domain verifier"
-        );
-        assert_eq!(lifecycle::physical_snapshots(fixture, targets), before);
-        assert_eq!(
-            hosts
-                .iter()
-                .map(|host: &HostProcess| status(host.address).high_qc)
-                .collect::<Vec<QuorumCertificate>>(),
-            high_qcs
-        );
+    for host in hosts {
+        for (path, media, body, expected_error) in [
+            (
+                node_wire::ordered_economics::ORDERED_ECONOMICS_PROPOSAL_PATH,
+                node_wire::ordered_economics::ORDERED_PROPOSAL_MEDIA_TYPE,
+                &retained.0,
+                "invalid-ordered-proposal-signature",
+            ),
+            (
+                node_wire::ordered_economics::ORDERED_ECONOMICS_CERTIFICATE_PATH,
+                node_wire::ordered_economics::ORDERED_CERTIFICATE_MEDIA_TYPE,
+                &retained.1,
+                "invalid-ordered-certificate-signature",
+            ),
+        ] {
+            let response: WireResponse =
+                raw(host.address, Method::Post, path, Some(media), body.clone());
+            assert_eq!(response.status, 400);
+            assert!(
+                std::str::from_utf8(&response.body)
+                    .unwrap()
+                    .contains(expected_error),
+                "canonical former-epoch material reaches the current signature-domain verifier \
+             on every live host"
+            );
+        }
     }
+    assert_eq!(protected_state(fixture, targets), before);
+    assert_eq!(
+        hosts
+            .iter()
+            .map(|host: &HostProcess| status(host.address).high_qc)
+            .collect::<Vec<QuorumCertificate>>(),
+        high_qcs
+    );
 }
 
 pub(super) fn run(
@@ -1008,6 +1705,7 @@ pub(super) fn run(
     inputs: &SuccessorProcessInputs,
     initial_history: &Path,
     original_seal_request: [u8; 32],
+    original_round: &(Vec<u8>, Vec<u8>),
     mut hosts: Vec<HostProcess>,
 ) {
     let mut original_ids: Vec<ValidatorId> = fixture
@@ -1102,8 +1800,30 @@ pub(super) fn run(
             .0
             .join(format!("recurring-epoch-{expected_epoch}"));
         std::fs::create_dir(&directory).unwrap();
+        if expected_epoch == 2 {
+            restart_fourth_current_host(
+                &inputs.executables,
+                fixture,
+                &links,
+                &current,
+                &targets,
+                &mut hosts,
+                &receipt_history,
+            );
+        }
         let network: PathBuf = network_file(&directory, &hosts);
         verify_receipts(&receipt_history, &hosts);
+        if expected_epoch == 1 {
+            // Correct chain, epoch, member, completed import and live files;
+            // only the actual outgoing barrier is still Unsealed.
+            assert_historical_startup_refused(
+                &inputs.executables,
+                fixture,
+                &targets,
+                historical_startup_flags(fixture, &links, &targets, expected_epoch),
+                "historical namespace has not sealed its current epoch",
+            );
+        }
         lifecycle::withdrawals(
             fixture, &links, &current, &targets, &hosts, &network, &directory, &owners,
         );
@@ -1132,7 +1852,7 @@ pub(super) fn run(
         } else {
             None
         };
-        freeze_and_drain(
+        let round_envelope: (Vec<u8>, Vec<u8>) = freeze_and_drain(
             fixture,
             &links,
             &current,
@@ -1142,6 +1862,15 @@ pub(super) fn run(
             &network,
             &next_members,
         );
+        // The earliest epochs this module observes (before F exists) are not
+        // covered by `prove_f_ordered_quorum`'s dedicated quorum; a genuine
+        // EMPTY-round envelope from the same freeze/drain window fills that
+        // gap one epoch later, exactly like the e3+ case below.
+        let stale_envelope: Option<(Vec<u8>, Vec<u8>)> = if expected_epoch < 3 {
+            Some(round_envelope)
+        } else {
+            None
+        };
         for tag in [0xb1, 0xb2] {
             remember_receipt(
                 &mut receipt_history,
@@ -1217,6 +1946,16 @@ pub(super) fn run(
             &seal_path.unwrap(),
             &directory.join("seal-submission"),
         );
+        if expected_epoch == 2 {
+            assert!(
+                status(hosts[3].address)
+                    .high_qc
+                    .votes
+                    .iter()
+                    .any(|vote| { vote.validator == targets.members[3].validator_id }),
+                "the same reopened fourth host signs the genuine outgoing Seal suffix"
+            );
+        }
         for host in &hosts {
             let response: WireResponse = raw(
                 host.address,
@@ -1278,6 +2017,18 @@ pub(super) fn run(
                     "historical material has no serving or signing route"
                 );
             }
+        }
+        if expected_epoch == 1 {
+            prove_historical_artifact_controls(
+                &inputs.executables,
+                fixture,
+                &links,
+                &current,
+                &targets,
+                &historical,
+                &directory,
+                &seal,
+            );
         }
         let historical_network: PathBuf = network_file(&directory.join("historical"), &historical);
         let through_seal: PathBuf = directory.join("history-through-seal");
@@ -1351,6 +2102,24 @@ pub(super) fn run(
         if let Some(retained) = &former_epoch {
             assert_prior_epoch_envelopes_refused(fixture, &targets, &hosts, retained);
         }
+        if let Some(retained) = &stale_envelope {
+            assert_prior_epoch_envelopes_refused(fixture, &targets, &hosts, retained);
+        }
+        if expected_epoch + 1 == 2 {
+            let original: node_core::ordered_economics::OrderedProposal =
+                node_core::ordered_economics::decode_ordered_proposal(&original_round.0).unwrap();
+            let original_qc: QuorumCertificate =
+                consensus::decode_quorum_certificate(&original_round.1).unwrap();
+            assert_eq!(original.proposal.epoch, fixture.network.epoch);
+            assert_eq!(original_qc.epoch, fixture.network.epoch);
+            assert_eq!(original.proposal.chain_id, fixture.network.chain_id);
+            assert_eq!(original_qc.chain_id, fixture.network.chain_id);
+            assert_prior_epoch_envelopes_refused(fixture, &targets, &hosts, original_round);
+            // The same hosts still vote and deliver a valid current-domain
+            // round after refusing both the actual e0 and e1 envelopes.
+            let all: Vec<Option<&HostProcess>> = hosts.iter().map(Some).collect();
+            let _current_positive: RoundOutcome = round(&ordered_endpoints(&all), &activated, None);
+        }
         verify_receipts(&receipt_history, &hosts);
         remember_receipt(&mut receipt_history, &hosts, seal.request_id);
         let next_network: PathBuf = network_file(&directory, &hosts);
@@ -1409,6 +2178,28 @@ pub(super) fn run(
             &mut receipt_history,
             &hosts,
             lifecycle::request(terminal_epoch, 0x43, &owner.member),
+        );
+    }
+    for owner in &owners {
+        lifecycle::assert_retired_owner_cannot_register(
+            fixture,
+            &links,
+            &unlocked,
+            &targets,
+            &hosts,
+            &final_network,
+            &final_directory,
+            owner,
+        );
+        lifecycle::assert_retired_member_cannot_redeposit(
+            fixture,
+            &links,
+            &unlocked,
+            &targets,
+            &hosts,
+            &final_network,
+            &final_directory,
+            owner,
         );
     }
     let _terminal_envelopes: (Vec<u8>, Vec<u8>) =
