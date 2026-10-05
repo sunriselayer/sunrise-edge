@@ -42,6 +42,85 @@ to omit a required fault, replace it with malformed authentication, repeat only
 the original-epoch engine, or infer a library signer counter from a process.
 No production fault endpoint or unchecked result hook is added.
 
+### Real rejoin signing is not minimal-certificate membership
+
+Ordered consensus verifies all supplied votes, then canonical-sorts validators
+and retains only the minimal quorum. An all-four endpoint submission therefore
+does not guarantee that a particular fourth signer appears in its three-vote
+certificate. Do not change production quorum selection, manufacture a vote,
+or remove the positive rejoin proof to satisfy that false premise.
+
+The compiled caller can prove actual participation using the CLI's saved
+per-endpoint vote acknowledgements and chronological proposal/certificate
+artifacts. Verify the actual returned vote's current pinned committee/key,
+endpoint and validator attribution, signature and exact proposal context,
+digest, view and height. The saved acknowledgement is the canonical re-encoding
+of a decoded HTTP response, not a byte-level transport capture; the actual vote
+signature supplies authenticity. Bind the Freeze or Seal candidate and both certified
+descendants; reconstruct the exact deterministic minimal certificate from the
+recorded valid votes. Keep every host's actual completion acknowledgement and
+byte-equal receipts, rather than replacing all-host delivery with a forced
+subset. A saved high-QC status or fixture-signed replacement is not this proof.
+The restart itself and the declared signerless missed-prefix recovery remain
+separate actual process requirements before fresh signing resumes.
+
+### A sealed host is material, not live authority
+
+Committing Seal retires the outgoing namespace. Its live HTTP status and
+outcome routes correctly return `409 successor-authority-refused`, just like
+fresh signing/control routes; being read-only does not make a route exempt
+from the live serving gate. Do not widen those routes to make an acceptance
+assertion succeed.
+
+After actual e2 Seal completion, compare each endpoint's final acknowledged
+outcome with its own actually served database through the existing bounded
+`query_ordered_outcome` reader, which cross-checks the retained outcome against
+its immutable header and receipt. Read and independently re-verify that
+database's current scoped consensus state through `query_status` and compare
+its high QC with the final actual submission certificate. Neither material
+reader grants a live warrant, advances a fence, signs or writes. Keep the
+canonical receipt equality and actual sealed live-route refusals. Freeze
+remains unsealed and retains its positive live HTTP status/outcome checks.
+Saved acknowledgements alone are not durable read-back evidence, and the
+untouched original fixture is not the served successor database.
+
+### Independent process stages may run concurrently
+
+Within one receipt check, query the existing four/five endpoints concurrently
+using copied endpoint/validator/process/generation identifiers, never the
+live child/store owners. After one common business cut is complete, each
+independent target may run its existing create-then-readiness sequence with
+distinct databases and outputs. After Seal, historical teardown and verified
+next workflow construction, each target may run activate-then-exact-repeat.
+Keep the existing 600-second child bounds and kill/reap guards. Join every
+worker before propagating failures or checking results in original host order.
+Directories, 0600 keys, pins, quorum selection and certificate assembly remain
+under the parent owner.
+
+Do not parallelize drain preparation: its targets also serve one another's
+retained publication reads. Seal preparation, common source-cut writing,
+consensus/Tick/replay rounds and fault-injection/capture windows also retain
+their original sequential ownership. Concurrent scheduling is not reduced
+coverage, changed network input, a shorter unbonding delay or acceptance proof.
+
+### Safe development/test runtime compilation
+
+Repeated bounded replay is also a development/test runtime cost. Use dev
+opt-level 1 with explicit debug assertions and overflow checks enabled; Cargo's
+test profile inherits these settings. Retain the curve package's opt-level 3
+override and the verifier package's explicit safety settings, whose opt-level 1
+matches the workspace default. Release and build-override profiles are unchanged.
+This changes compilation, not proof ownership, canonical inputs or capabilities.
+
+A paired read-only saved-cut measurement is evidence about that workload only,
+not compilation time, whole-case completion, CI duration or network throughput.
+The new committed configuration still needs every actual required owner and
+selected original PostgreSQL group. Keep original-root e0..e8, the installed
+seven-epoch delay, F-required quorums, historical/tamper/restart/replay/fault
+controls, the existing 360-minute CI budget and 600-second child bounds. Do not
+replace repeated verification with a trusted cache/checkpoint or count a retired
+old-profile run as a pass under the new configuration.
+
 ### Actual imported publication families
 
 The verified genesis-to-successor import does not contain historical ordinary
@@ -91,3 +170,4 @@ startup remain separate work; this partition certifies none of them.
 - [Recurring successor serving](../recurring-successor-serving.md)
 - [DR-0191](0191-recurring-successor-serving.md)
 - [DR-0193](0193-required-recurring-acceptance.md)
+- [Cargo profile inheritance and overrides](https://doc.rust-lang.org/cargo/reference/profiles.html)

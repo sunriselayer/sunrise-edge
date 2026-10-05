@@ -283,8 +283,9 @@ DR-0100 adds an independent bound before HTTP parsing. The repository-owned
 `serve` entrypoint acquires one connection permit immediately after TCP
 `accept`, closes excess connections without parsing or application queueing,
 and holds the permit until that connection ends. It applies a total header-read
-deadline, an idle deadline between socket reads, a total deadline while
-collecting the existing bounded body before invoking Axum, plus idle and total
+deadline, an idle deadline between socket reads while collecting request
+input, a total deadline while collecting the existing bounded body before
+invoking Axum, plus idle and total
 deadlines while writing the response. HTTP/1 keep-alive is
 disabled, so one accepted connection carries at most one request; header count
 and parser buffer size are fixed as well. `serve_with_policy` exposes smaller
@@ -293,6 +294,15 @@ uses bounded defaults. Because this wraps the completed `Router`, all four
 native event router families and query routes receive the same pre-parser
 controls. An embedding host that does not use this server entrypoint must
 provide equivalent connection/read/write/lifecycle controls itself.
+
+The private connection owner ends the request-read phase when the bounded
+body collector resolves, before dispatching the router or a terminal input
+refusal. Waiting for application work is not idle request input: Hyper's
+disconnect checks still read the real socket, but must not apply the expired
+ingress timer then. The one-request connection, header/body caps and deadlines,
+connection/blocking permits, EOF/errors and independent response-write timers
+remain unchanged. This phase marker is transport metadata, not execution,
+signing or storage authority; operation deadlines remain with their owners.
 
 Canonical event decoding, node-core invocation, synchronous runtime/store
 calls, request-scoped outbox delivery, and canonical result encoding run as one

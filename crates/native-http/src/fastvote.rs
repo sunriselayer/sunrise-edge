@@ -50,7 +50,7 @@ use protocol_types::{SignatureSchemeId, ValidatorId};
 use runtime::{outbox_guard::StructuredOutboxExclusionGuard, portable::DurablePortableRepository};
 use std::num::NonZeroUsize;
 
-mod drain;
+pub(super) mod drain;
 
 /// Production mutation-route inventory excluded by certified-only hosting.
 /// Derived from the actual handler constants so route renames remain covered.

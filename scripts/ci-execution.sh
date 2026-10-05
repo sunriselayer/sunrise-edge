@@ -143,7 +143,7 @@ ci_run_action() {
       ;;
     rust-tests-full) cargo test --workspace --all-targets --all-features ;;
     sqlite-inventory) ci_check_sqlite_inventory ;;
-    core-recurrence|readiness-sqlite) ci_run_required_extended_group "$1" ;;
+    core-recurrence|readiness-sqlite|recurring-sqlite) ci_run_required_extended_group "$1" ;;
     pg-storage-tests)
       # Keep native feature anchors and USB-HID identical to the former lane.
       cargo test -p runtime-postgres -p sunrise-edge-operator \

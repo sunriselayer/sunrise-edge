@@ -1,19 +1,22 @@
 //! Compiled local readiness over a genuinely frozen/drained SQLite source.
-//! Core separately verifies actual initial E registration and A/B/C/E staging.
-#[path = "support/genesis_fixture.rs"]
-pub mod genesis_fixture;
-mod support {
-    pub use super::genesis_fixture;
-}
+//! Distinct cases retain the original committee and register E before a real
+//! A/B/C/E handoff. No original fixture is relabelled as membership-change proof.
 #[path = "support/causal_genesis_fixture.rs"]
 mod causal_genesis_fixture;
+#[path = "support/compiled_executable_snapshot.rs"]
+mod compiled_executable_snapshot;
+#[path = "support/compiled_source_host_process.rs"]
+mod compiled_source_host_process;
 #[path = "business_cut/fixture.rs"]
 mod fixture;
+#[path = "support/genesis_fixture.rs"]
+pub mod genesis_fixture;
 #[path = "support/ordered_seal_sqlite_acceptance.rs"]
 mod ordered_seal_sqlite_acceptance;
 #[path = "support/successor_host_acceptance.rs"]
 mod successor_host_acceptance;
 
+use compiled_executable_snapshot::CompiledExecutableSnapshot;
 use consensus::readiness::{
     ReadinessCertificate, ReadinessCertifier, ReadinessVote, decode_readiness_certificate,
     decode_readiness_vote,
@@ -136,6 +139,7 @@ fn pins(command: &mut Command, fixture: &Fixture, history: &Path, cut: &Path) {
 }
 #[allow(clippy::too_many_arguments)]
 fn voting(
+    executables: &CompiledExecutableSnapshot,
     fixture: &Fixture,
     history: &Path,
     cut: &Path,
@@ -145,7 +149,7 @@ fn voting(
     validator: ValidatorId,
     key: &Path,
 ) -> Command {
-    let mut command: Command = Command::new(env!("CARGO_BIN_EXE_conditional_readiness"));
+    let mut command: Command = Command::new(&executables.conditional_readiness);
     command.arg("vote-sqlite");
     pins(&mut command, fixture, history, cut);
     command.args([
@@ -168,8 +172,29 @@ fn voting(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "compiles and runs the real conditional_readiness CLI through a four-validator SQLite retain/restart/distinct-certificate cycle; owned by the dedicated readiness-sqlite required CI lane, not ordinary cargo test"]
 async fn compiled_conditional_readiness_real_retention_restart_and_distinct_certificate() {
-    let mut fixture: Fixture = Fixture::new();
-    fixture.freeze_and_complete();
+    run_conditional_readiness(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "runs real changed-committee SQLite hosts through the configured seven-epoch withdrawal delay; owned by the unconditional recurring-sqlite required CI lane"]
+async fn compiled_registered_replacement_and_recurring_successor_hosts() {
+    run_conditional_readiness(true).await;
+}
+
+async fn run_conditional_readiness(recurring: bool) {
+    let executables: CompiledExecutableSnapshot = CompiledExecutableSnapshot::capture();
+    let mut fixture: Fixture = if recurring {
+        Fixture::new_recurring()
+    } else {
+        Fixture::new()
+    };
+    let incoming: Vec<genesis_fixture::FastVoteValidator> = if recurring {
+        fixture.register_incoming_e();
+        fixture.replacement_members()
+    } else {
+        fixture.original_members()
+    };
+    fixture.freeze_and_complete_for(&incoming);
     std::fs::write(
         fixture.directory.0.join("genesis.bin"),
         &fixture.network.manifest_bytes,
@@ -202,17 +227,13 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
     let before: SourceBusinessSnapshot = fixture.snapshot();
     let set: ValidatorSet = ValidatorSet::new(
         protocol_types::Epoch::new(fixture.network.epoch.get() + 1),
-        fixture
-            .root
-            .manifest()
-            .validator_set
-            .validators
+        incoming
             .iter()
             .map(|member| ValidatorInfo {
-                id: member.id,
-                voting_power: member.voting_power,
-                signature_scheme: member.signature_scheme,
-                public_key: member.public_key.clone(),
+                id: member.validator_id,
+                voting_power: 1,
+                signature_scheme: protocol_types::SignatureSchemeId::Ed25519,
+                public_key: member.validator_id.as_bytes().to_vec(),
             })
             .collect(),
     )
@@ -229,9 +250,9 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
         ReadinessCertifier::new(&fixture.network.resolver, &expected_subject, &set).unwrap();
     let mut votes: Vec<(Directory, Vec<u8>)> = Vec::new();
     let mut destinations: Vec<Directory> = Vec::new();
-    for (index, validator) in fixture.network.validators.iter().enumerate() {
+    for (index, validator) in incoming.iter().enumerate() {
         let destination: Directory = Directory::new(&format!("ready-import-{index}"));
-        let mut importer: Command = Command::new(env!("CARGO_BIN_EXE_business_import"));
+        let mut importer: Command = Command::new(&executables.business_import);
         importer.arg("create-sqlite");
         pins(&mut importer, &fixture, &history_root, &cut.0);
         importer.args([
@@ -260,6 +281,7 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
                 std::os::unix::fs::symlink(&destination.0, &alias).unwrap();
                 assert!(
                     !voting(
+                        &executables,
                         &fixture,
                         &history_root,
                         &cut.0,
@@ -279,6 +301,7 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
             std::fs::write(output.0.join("vote.bin"), b"invalid retained artifact").unwrap();
             assert!(
                 !voting(
+                    &executables,
                     &fixture,
                     &history_root,
                     &cut.0,
@@ -338,6 +361,7 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
         assert!(
             success(
                 voting(
+                    &executables,
                     &fixture,
                     &history_root,
                     &cut.0,
@@ -357,6 +381,7 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
         owner.verify_vote(&vote).unwrap();
         assert_eq!(vote.signer, validator.validator_id);
         let mut retry: Command = voting(
+            &executables,
             &fixture,
             &history_root,
             &cut.0,
@@ -380,7 +405,7 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
     assert_eq!(files(&votes[0].0.0), files(&copied_vote.0));
     let certificates: Directory = Directory::new("ready-certificates");
     let assembly = |count: usize, duplicate: bool, offset: usize, out_dir: &Path| -> Command {
-        let mut command: Command = Command::new(env!("CARGO_BIN_EXE_conditional_readiness"));
+        let mut command: Command = Command::new(&executables.conditional_readiness);
         command.arg("certificate");
         pins(&mut command, &fixture, &history_root, &cut.0);
         command.args([
@@ -441,7 +466,7 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
     let seal_output: Directory = Directory::new("unsigned-seal-preparation");
     let prepare =
         |certificate_path: &Path, state: &Path, blobs: &Path, out_dir: &Path| -> Command {
-            let mut command: Command = Command::new(env!("CARGO_BIN_EXE_ordered_seal"));
+            let mut command: Command = Command::new(&executables.ordered_seal);
             command.arg("prepare-sqlite");
             pins(&mut command, &fixture, &history_root, &cut.0);
             command.args([
@@ -663,6 +688,7 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
         "the competing variant's preparation never changes source state or receipts"
     );
     ordered_seal_sqlite_acceptance::run_compiled_four_host_seal(
+        &executables,
         &fixture,
         &seal_output.0.join("candidate.bin"),
         &candidate,
@@ -673,6 +699,8 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
         &candidate,
         &competing_candidate,
         &successor_host_acceptance::SuccessorProcessInputs {
+            executables: executables.clone(),
+            recur_changed_committee: recurring,
             plan_history: history_root.clone(),
             cut: cut.0.clone(),
             certificate: certificates.0.clone(),
@@ -680,6 +708,13 @@ async fn compiled_conditional_readiness_real_retention_restart_and_distinct_cert
             targets: destinations
                 .iter()
                 .map(|destination: &Directory| destination.0.clone())
+                .collect(),
+            members: incoming
+                .iter()
+                .map(|member| successor_host_acceptance::SuccessorProcessMember {
+                    validator_id: member.validator_id,
+                    seed: member.seed,
+                })
                 .collect(),
             binding: verified.binding().clone(),
         },

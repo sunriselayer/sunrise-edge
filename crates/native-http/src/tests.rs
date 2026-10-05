@@ -1,3 +1,4 @@
+mod connection_phase;
 mod fastvote_router;
 mod fastvote_sealed_frontier;
 mod local_execution_http;

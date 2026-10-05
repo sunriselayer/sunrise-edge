@@ -1,4 +1,5 @@
-//! Callable first-epoch verified installation, permanently inactive.
+//! Callable verified installation. The command leaves an inactive import;
+//! later activation belongs to the separate successor activation owner.
 #![forbid(unsafe_code)]
 
 use crate::{
@@ -6,11 +7,15 @@ use crate::{
     business_pins::{BusinessPinInputs, BusinessPins, bounded, hex, operation, private_operation},
     common::{FlagSet, parse_hex_32},
     immutable_archive::ImmutableArchive,
+    successor_artifacts::{CHAIN_FLAGS, SuccessorChainArtifactFiles, SuccessorChainInputs},
 };
 use node_core::business_reconstruction::{
     BusinessReconstructionPlan,
     cut::SavedBusinessCut,
-    inactive_import::{BusinessImportAdvance, VerifiedImportPlan, verify_saved_business_import},
+    inactive_import::{
+        BusinessImportAdvance, VerifiedImportPlan, verify_saved_business_import,
+        verify_saved_business_import_chain,
+    },
 };
 use protocol_types::ValidatorId;
 use runtime::{DurableOperationContext, WriterFenceGeneration};
@@ -33,7 +38,7 @@ const FLAGS: &[&str] = &[
     "--timeout-seconds",
     "--max-new-batches",
 ];
-const HELP: &str = "Verified business installation only; permanently inactive, never readiness, Seal, activation or signing.\nModes: create-sqlite | resume-sqlite.\nRequire local pins: --chain-id --protocol-version --epoch --domain --suite epoch:id:tx:object:effects:code:config:certificate --genesis-manifest --expected-genesis-digest --ordered-history-dir.\nRequire: --cut-dir (complete saved cut), --state-db, --blob-db, --validator-id (destination-local namespace, not membership authority).\nOptional: --timeout-seconds 1..3600 (300), --max-new-batches 1..4096 (4096).\nCreation requires two fresh database paths outside the pinned cut and ordered-history archives; resumption opens existing verified import-origin state and writable blob schemas only. No normal bootstrap, source writer copying, repair, reset, private key or network endpoint. Every invocation independently reexecutes saved proofs and verifies the complete destination before CompleteInactive. Missing, corrupt, foreign or ordinary targets refuse.";
+const HELP: &str = "Verified business installation only; leaves a CompleteInactive import and never performs readiness, Seal, activation or signing.\nModes: create-sqlite | resume-sqlite.\nRequire local pins: --chain-id --protocol-version --epoch --domain --suite epoch:id:tx:object:effects:code:config:certificate --genesis-manifest --expected-genesis-digest --ordered-history-dir.\nRequire: --cut-dir (complete saved cut), --state-db, --blob-db, --validator-id (destination-local namespace, not membership authority).\nOptional: --timeout-seconds 1..3600 (300), --max-new-batches 1..4096 (4096), and a successor chain (all five or none): --successor-max-links once plus one or more equal-count repeated --successor-plan-history-dir --successor-cut-dir --successor-manifest-history-dir --successor-certificate-dir links, up to that budget, pinning the saved cut's successor authority; no signer key is accepted here.\nCreation requires two fresh database paths outside the pinned cut and ordered-history archives; resumption opens existing verified import-origin state and writable blob schemas only. No normal bootstrap, source writer copying, repair, reset, private key or network endpoint. Every invocation independently reexecutes saved proofs and verifies the complete destination before CompleteInactive. Missing, corrupt, foreign or ordinary targets refuse.";
 
 /// Runs the same strictly pinned composition as the `business_import` binary.
 /// Destination file I/O starts only after independent raw-plan verification.
@@ -51,7 +56,11 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         Some("resume-sqlite") => false,
         _ => return Err("unknown business import mode; use --help".into()),
     };
-    let mut flags: FlagSet = FlagSet::parse(values, FLAGS, &[])?;
+    let mut accepted: Vec<&'static str> = FLAGS.to_vec();
+    accepted.extend_from_slice(CHAIN_FLAGS);
+    let mut flags: FlagSet = FlagSet::parse(values, &accepted, &[])?;
+    let chain_inputs: Option<SuccessorChainInputs> =
+        SuccessorChainInputs::parse_optional(&mut flags)?;
     let pin_inputs: BusinessPinInputs = BusinessPinInputs::parse(&mut flags)?;
     let cut_directory: PathBuf = flags.one("--cut-dir")?.into();
     let state_file: PathBuf = flags.one("--state-db")?.into();
@@ -79,6 +88,15 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     if state_file == blob_file {
         return Err("state and blob database paths must be distinct".into());
     }
+    let mut chain_artifacts: Option<SuccessorChainArtifactFiles> = chain_inputs
+        .as_ref()
+        .map(SuccessorChainInputs::open)
+        .transpose()?;
+    if let Some(artifacts) = &chain_artifacts {
+        for path in [&state_file, &blob_file] {
+            artifacts.require_output_outside(path)?;
+        }
+    }
     let history_archive: ImmutableArchive =
         ImmutableArchive::open_read_only(pin_inputs.history_root())?;
     let archive: ImmutableArchive = ImmutableArchive::open_read_only(&cut_directory)?;
@@ -86,10 +104,21 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         archive.require_output_outside(path)?;
         history_archive.require_output_outside(path)?;
     }
-    let pins: BusinessPins = pin_inputs.load()?;
+    let pins: BusinessPins = match (&chain_inputs, &mut chain_artifacts) {
+        (Some(chain), Some(artifacts)) => {
+            pin_inputs.load_with_successor(artifacts, chain.budget)?
+        }
+        (None, None) => pin_inputs.load()?,
+        _ => return Err("successor predecessor artifacts are incomplete".into()),
+    };
     let private: BusinessReconstructionPlan<'_> = pins.plan(private_operation()?);
     let saved: SavedBusinessCut = read_business_cut_archive(&private, &archive)?;
-    let verified: VerifiedImportPlan = verify_saved_business_import(private, &saved)?;
+    let verified: VerifiedImportPlan = match pins.successor_authority() {
+        Some(authority) => {
+            verify_saved_business_import_chain(private, authority, pins.cut_identity(), &saved)?
+        }
+        None => verify_saved_business_import(private, &saved)?,
+    };
     let namespace: SqliteNamespace =
         SqliteNamespace::new(pins.context.chain_id().clone(), validator, pins.domain);
     // Recheck the held input identities after reconstruction, before any
@@ -98,6 +127,9 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     for path in [&state_file, &blob_file] {
         archive.require_output_outside(path)?;
         history_archive.require_output_outside(path)?;
+        if let Some(artifacts) = &chain_artifacts {
+            artifacts.require_output_outside(path)?;
+        }
     }
     let (target, blobs): (SqliteImportTarget, SqliteBlobStore) = if creating {
         // Neither a preexisting ordinary state file nor a preexisting body file

@@ -2,9 +2,7 @@
 //! and four actual TCP routers; its return value is not captured stdout.
 //! Mutable validator stores are independent SQLite files. Public immutable
 //! artifacts share the fixture's blob repository; no completion is seeded.
-use super::{fixture::Fixture, hex};
-#[path = "compiled_source_host_process.rs"]
-mod compiled_source_host_process;
+use super::{compiled_source_host_process, fixture::Fixture, hex};
 #[path = "ordered_seal_warrant_faults.rs"]
 mod warrant_faults;
 use consensus::ConsensusSigner;
@@ -302,6 +300,36 @@ fn saved_submission_rounds(
     candidate: &OrderedCandidate,
     initial_parent: &QuorumCertificate,
 ) -> Vec<(OrderedProposal, QuorumCertificate)> {
+    let rounds: Vec<(OrderedProposal, QuorumCertificate)> = saved_policy_submission_rounds(
+        &fixture.policy,
+        candidate_path,
+        prefix,
+        candidate,
+        initial_parent,
+    );
+    assert_eq!(rounds[1].0.candidate.as_ref(), Some(candidate));
+    assert_eq!(
+        rounds
+            .iter()
+            .map(|(proposal, _)| proposal.proposal.height)
+            .collect::<Vec<u64>>(),
+        (1..=4)
+            .map(|offset| initial_parent.height.checked_add(offset).unwrap())
+            .collect::<Vec<u64>>(),
+        "the actual HTTP/CLI path performs alignment, Seal and both certified descendants"
+    );
+    rounds
+}
+
+/// Reads the actual CLI manifest under the caller's authenticated epoch policy.
+/// Candidate placement comes from the saved proposals, never an assumed round.
+pub(super) fn saved_policy_submission_rounds(
+    policy: &node_core::ordered_economics::OrderedEconomicsPolicy,
+    candidate_path: &Path,
+    prefix: &Path,
+    candidate: &OrderedCandidate,
+    initial_parent: &QuorumCertificate,
+) -> Vec<(OrderedProposal, QuorumCertificate)> {
     let saved_candidate: Vec<u8> =
         std::fs::read(format!("{}.round-0.candidate", prefix.display())).unwrap();
     assert_eq!(saved_candidate, std::fs::read(candidate_path).unwrap());
@@ -311,8 +339,19 @@ fn saved_submission_rounds(
     );
     let manifest_text: String =
         std::fs::read_to_string(format!("{}.manifest", prefix.display())).unwrap();
+    let round_count: usize = manifest_text.lines().count();
+    assert!(
+        (3..=sunrise_edge_client::ordered_economics_client::MAX_SUBMISSION_ROUNDS)
+            .contains(&round_count)
+    );
     let mut rounds: Vec<(OrderedProposal, QuorumCertificate)> = Vec::new();
     let mut parent: QuorumCertificate = initial_parent.clone();
+    let mut candidate_round: Option<usize> = None;
+    policy.authenticate_candidate(candidate).unwrap();
+    policy
+        .engine()
+        .verify_certificate(initial_parent, &Verifier)
+        .unwrap();
     for (round, line) in manifest_text.lines().enumerate() {
         let fields: Vec<&str> = line.split_whitespace().collect();
         let [proposal_path, certificate_path] = fields.as_slice() else {
@@ -333,20 +372,16 @@ fn saved_submission_rounds(
             decode_ordered_proposal(&std::fs::read(proposal_path).unwrap()).unwrap();
         let certificate: QuorumCertificate =
             decode_quorum_certificate(&std::fs::read(certificate_path).unwrap()).unwrap();
-        fixture
-            .policy
+        policy
             .engine()
             .verify_proposal(&proposal.proposal, &Verifier)
             .unwrap();
-        fixture
-            .policy
+        policy
             .engine()
             .verify_certificate(&certificate, &Verifier)
             .unwrap();
         let justify: &QuorumCertificate = &proposal.proposal.justify;
-        assert_eq!(justify.proposal_digest, parent.proposal_digest);
-        assert_eq!(justify.height, parent.height);
-        assert_eq!(justify.view, parent.view);
+        assert_eq!(justify, &parent);
         assert_eq!(
             proposal.proposal.height,
             parent.height.checked_add(1).unwrap()
@@ -356,36 +391,36 @@ fn saved_submission_rounds(
         assert_eq!(certificate.view, proposal.proposal.view);
         assert_eq!(
             certificate.proposal_digest,
-            fixture
-                .policy
-                .engine()
-                .proposal_digest(&proposal.proposal)
-                .unwrap()
+            policy.engine().proposal_digest(&proposal.proposal).unwrap()
         );
-        if round == 1 {
+        if proposal.candidate.is_some() {
+            assert!(
+                candidate_round.replace(round).is_none(),
+                "the exact submitted candidate occurs in only one certified round"
+            );
             assert_eq!(proposal.candidate.as_ref(), Some(candidate));
             assert_eq!(
                 proposal.proposal.transactions,
-                vec![fixture.policy.candidate_digest(candidate).unwrap()]
+                vec![policy.candidate_digest(candidate).unwrap()]
             );
+            assert_eq!(proposal.proposal.height % 3, 1);
         } else {
             assert!(proposal.candidate.is_none() && proposal.proposal.transactions.is_empty());
         }
         parent = certificate.clone();
         rounds.push((proposal, certificate));
     }
+    let candidate_round: usize = candidate_round.expect("a real certified candidate round");
+    assert!(candidate_round <= 2, "at most two EMPTY alignment rounds");
     assert_eq!(
-        rounds
-            .iter()
-            .map(|(proposal, _)| proposal.proposal.height)
-            .collect::<Vec<u64>>(),
-        vec![9, 10, 11, 12],
-        "the actual HTTP/CLI path performs EMPTY9, Seal10 and EMPTY11/12 from original QC8"
+        candidate_round.checked_add(3).unwrap(),
+        rounds.len(),
+        "the candidate has exactly two genuinely certified EMPTY descendants"
     );
     rounds
 }
 
-fn acknowledged_output(phase: &str) -> OrderedEventOutput {
+pub(super) fn acknowledged_output(phase: &str) -> OrderedEventOutput {
     let encoded: &str = phase
         .strip_prefix("acknowledged:")
         .expect("an actual acknowledged phase");
@@ -404,13 +439,33 @@ fn saved_peer_results(
     endpoints: &[String],
     rounds: usize,
 ) -> BTreeMap<(usize, usize), (String, String)> {
+    let validator_ids: Vec<ValidatorId> = fixture
+        .network
+        .validators
+        .iter()
+        .map(|member| member.validator_id)
+        .collect();
+    saved_configured_peer_results(&validator_ids, prefix, endpoints, rounds)
+}
+
+pub(super) fn saved_configured_peer_results(
+    validator_ids: &[ValidatorId],
+    prefix: &Path,
+    endpoints: &[String],
+    rounds: usize,
+) -> BTreeMap<(usize, usize), (String, String)> {
     let results_text: String =
         std::fs::read_to_string(format!("{}.results", prefix.display())).unwrap();
     let mut reports: BTreeMap<(usize, usize), (String, String)> = BTreeMap::new();
     let mut pre_certificate_votes: BTreeMap<(usize, usize), String> = BTreeMap::new();
-    let validator_count: usize = fixture.network.validators.len();
+    let validator_count: usize = validator_ids.len();
     assert!(validator_count > 0);
     assert_eq!(endpoints.len(), validator_count);
+    let unique_validators: std::collections::BTreeSet<ValidatorId> =
+        validator_ids.iter().copied().collect();
+    let unique_endpoints: std::collections::BTreeSet<&String> = endpoints.iter().collect();
+    assert_eq!(unique_validators.len(), validator_count);
+    assert_eq!(unique_endpoints.len(), validator_count);
     let expected_pairs: usize = rounds.checked_mul(validator_count).unwrap();
     let pre_certificate_phase: String = format!("skipped:{}", hex(b"certificate not sent yet"));
     let mut pre_certificate_count: usize = 0;
@@ -432,11 +487,9 @@ fn saved_peer_results(
         }
         previous_round = round;
         let validator: &str = validator.strip_prefix("validator=").unwrap();
-        let index: usize = fixture
-            .network
-            .validators
+        let index: usize = validator_ids
             .iter()
-            .position(|member| hex(member.validator_id.as_bytes()) == validator)
+            .position(|validator_id: &ValidatorId| hex(validator_id.as_bytes()) == validator)
             .unwrap();
         assert_eq!(
             endpoint.strip_prefix("endpoint_hex=").unwrap(),
@@ -883,6 +936,7 @@ fn compiled_host_field(line: &str, key: &str) -> String {
 
 #[allow(clippy::too_many_arguments)]
 fn start_compiled_source_host(
+    executables: &super::compiled_executable_snapshot::CompiledExecutableSnapshot,
     fixture: &Fixture,
     genesis: &Path,
     blob_db: &Path,
@@ -890,7 +944,7 @@ fn start_compiled_source_host(
     key_file: &Path,
     validator_id: ValidatorId,
 ) -> CompiledSourceHost {
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+    let mut command = std::process::Command::new(&executables.sqlite_source_host);
     command.args([
         "--chain-id",
         fixture.network.chain_id.as_str(),
@@ -1183,6 +1237,7 @@ fn capture_compiled_seal_state(
 /// pre/post business-snapshot and Unsealed-barrier comparison on the live
 /// stores, not merely on the clones.
 pub(super) fn run_compiled_four_host_seal(
+    executables: &super::compiled_executable_snapshot::CompiledExecutableSnapshot,
     fixture: &Fixture,
     candidate_path: &Path,
     candidate: &OrderedCandidate,
@@ -1260,6 +1315,7 @@ pub(super) fn run_compiled_four_host_seal(
     let hosts: Vec<CompiledSourceHost> = (0..4)
         .map(|index: usize| {
             start_compiled_source_host(
+                executables,
                 fixture,
                 &genesis,
                 &blob_db,
@@ -1528,7 +1584,7 @@ pub(super) fn run_compiled_four_host_seal(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&refusal_key, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let mut refusal_command = std::process::Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+    let mut refusal_command = std::process::Command::new(&executables.sqlite_source_host);
     refusal_command.args([
         "--chain-id",
         fixture.network.chain_id.as_str(),
@@ -1648,10 +1704,10 @@ pub(super) async fn run(
         node_core::ordered_economics::query_status(&fixture.stores[0], &fixture.operation, &env)
             .unwrap();
     assert_eq!(
-        initial_status.high_qc.height, 8,
-        "the genuine post-Drain source has QC8"
+        initial_status.high_qc.height,
+        initial_status.committed_height.checked_add(2).unwrap(),
+        "the genuine post-Drain source has both certified descendants"
     );
-    assert_eq!(initial_status.committed_height, 6);
     let mut seal_height: u64 = initial_status.high_qc.height.checked_add(1).unwrap();
     while seal_height % 3 != 1 {
         seal_height = seal_height.checked_add(1).unwrap();
@@ -1664,7 +1720,6 @@ pub(super) async fn run(
         SealWarrantFault::IneligibleSuccessor,
     ];
     assert_eq!(fixture.network.validators.len(), fault_plans.len());
-    assert_eq!(seal_height, 10);
     // Genuine landed-versus-unlanded completion reply-loss, entirely on
     // isolated clones of this exact pre-Seal state -- never on the four
     // live validators the rest of this acceptance drives below.
@@ -2420,5 +2475,20 @@ pub(super) async fn run(
     // Every outgoing assertion above stays intact; the sealed files are now
     // only historical. The positive first-successor process acceptance runs
     // inside this lifetime over the same genuine sealed source.
-    super::successor_host_acceptance::run(&*fixture, successor, candidate, fence).await;
+    let (original_proposal, original_certificate): &(OrderedProposal, QuorumCertificate) = rounds
+        .last()
+        .expect("the actual original TCP submission retained its certified suffix");
+    assert_eq!(original_proposal.proposal.epoch, fixture.network.epoch);
+    assert_eq!(original_certificate.epoch, fixture.network.epoch);
+    assert_eq!(
+        original_proposal.proposal.chain_id,
+        fixture.network.chain_id
+    );
+    assert_eq!(original_certificate.chain_id, fixture.network.chain_id);
+    let original_round: (Vec<u8>, Vec<u8>) = (
+        node_core::ordered_economics::encode_ordered_proposal(original_proposal).unwrap(),
+        consensus::encode_quorum_certificate(original_certificate).unwrap(),
+    );
+    super::successor_host_acceptance::run(&*fixture, successor, candidate, fence, &original_round)
+        .await;
 }

@@ -4,8 +4,8 @@
 # Full preserves the former serial order and full-workspace feature union;
 # it is deliberately not concatenation of the isolated CI lane plans.
 readonly CI_EXECUTION_PLANS=(
-  'required|required|gate-contract rust-style rust-tests-required sqlite-inventory core-recurrence readiness-sqlite soak-cli vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene'
-  'full|postgres|gate-contract rust-style rust-tests-full sqlite-inventory core-recurrence readiness-sqlite pg-inventory pg-protocol-all soak-cli pg-soak vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene'
+  'required|required|gate-contract rust-style rust-tests-required sqlite-inventory core-recurrence readiness-sqlite recurring-sqlite soak-cli vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene'
+  'full|postgres|gate-contract rust-style rust-tests-full sqlite-inventory core-recurrence readiness-sqlite recurring-sqlite pg-inventory pg-protocol-all soak-cli pg-soak vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene'
   'lint|required|gate-contract rust-style diff-hygiene'
   'rust-tests|required|rust-tests-required sqlite-inventory'
   'pg-storage|postgres|pg-storage-tests'
@@ -17,6 +17,7 @@ readonly CI_EXECUTION_PLANS=(
   'cloudflare|required|cloudflare-build cloudflare-check'
   'core-recurrence|required|core-recurrence'
   'readiness-sqlite|required|readiness-sqlite'
+  'recurring-sqlite|required|recurring-sqlite'
 )
 
 # group | package | existing test target (or --lib) | exact ignored name | nocapture
@@ -58,6 +59,7 @@ readonly CI_AUXILIARY_IGNORED_CASES=(
 readonly CI_REQUIRED_EXTENDED_CASES=(
   'core-recurrence|node-core|--lib|ordered_economics::tests::causal_placement::control_reconstruction::frozen_completion::successor_activation::successor_recurring_delay::genuine_recurring_sqlite_handoffs_reach_configured_seven_epoch_withdrawal_unlock|no'
   'readiness-sqlite|sunrise-edge-operator|conditional_readiness_sqlite|compiled_conditional_readiness_real_retention_restart_and_distinct_certificate|no'
+  'recurring-sqlite|sunrise-edge-operator|conditional_readiness_sqlite|compiled_registered_replacement_and_recurring_successor_hosts|no'
 )
 
 ci_gate_groups() {

@@ -1,4 +1,4 @@
-//! Shared first-successor client pins (DR-0189 Sections 9 and 12).
+//! Shared ordered successor-chain client pins (DR-0191 Sections 9 and 12).
 //!
 //! A successor workflow is selected only by explicit local artifact flags,
 //! never by an endpoint response or an epoch hint. When selected, the SDK
@@ -8,19 +8,19 @@
 //! verified e+1 context before anything is signed. Partial flag sets refuse;
 //! there is no ordinary-genesis fallback once any successor flag appears.
 
-use std::path::Path;
+use std::{num::NonZeroU32, path::Path};
 
 use protocol_types::{AtomicityDomainId, Epoch};
 use sunrise_edge_client::{
-    HashSuiteResolver, PublicationContext, SuccessorArtifactDirectories,
-    SuccessorWorkflowAuthority, load_successor_workflow_from_directories,
+    HashSuiteResolver, PublicationContext, SuccessorArtifactDirectories, SuccessorChainBudget,
+    SuccessorWorkflowAuthority, load_successor_chain_workflow_from_directories,
 };
 
 use crate::{
-    args::{FlagSpec, ParsedArgs, scalar},
+    args::{FlagSpec, ParsedArgs, repeated, scalar},
     error::CliError,
     hex::decode_hex_32,
-    parse::parse_u64,
+    parse::{parse_u32, parse_u64},
 };
 
 const GENESIS_EPOCH: &str = "--successor-genesis-epoch";
@@ -29,6 +29,7 @@ const PLAN_HISTORY: &str = "--successor-plan-history-dir";
 const CUT: &str = "--successor-cut-dir";
 const MANIFEST_HISTORY: &str = "--successor-manifest-history-dir";
 const CERTIFICATE: &str = "--successor-certificate-dir";
+const MAX_LINKS: &str = "--successor-max-links";
 
 fn invalid(message: impl Into<String>) -> CliError {
     CliError::LocalExecution(Box::new(std::io::Error::new(
@@ -41,10 +42,11 @@ fn invalid(message: impl Into<String>) -> CliError {
 pub(super) fn successor_flag_specs(with_domain: bool) -> Vec<FlagSpec> {
     let mut flags: Vec<FlagSpec> = vec![
         scalar(GENESIS_EPOCH),
-        scalar(PLAN_HISTORY),
-        scalar(CUT),
-        scalar(MANIFEST_HISTORY),
-        scalar(CERTIFICATE),
+        scalar(MAX_LINKS),
+        repeated(PLAN_HISTORY),
+        repeated(CUT),
+        repeated(MANIFEST_HISTORY),
+        repeated(CERTIFICATE),
     ];
     if with_domain {
         flags.push(scalar(DOMAIN));
@@ -62,6 +64,7 @@ pub(super) fn successor_requested(parsed: &ParsedArgs) -> bool {
         CUT,
         MANIFEST_HISTORY,
         CERTIFICATE,
+        MAX_LINKS,
     ]
     .iter()
     .any(|flag: &&str| parsed.get(flag).is_some())
@@ -82,6 +85,25 @@ pub(super) fn load_successor_pins(
     if !successor_requested(parsed) {
         return Ok(None);
     }
+    let budget: SuccessorChainBudget = successor_budget(parsed)?;
+    let plan_histories: &[String] = parsed.many(PLAN_HISTORY);
+    let cuts: &[String] = parsed.many(CUT);
+    let manifest_histories: &[String] = parsed.many(MANIFEST_HISTORY);
+    let certificates: &[String] = parsed.many(CERTIFICATE);
+    let directories: Vec<SuccessorArtifactDirectories<'_>> = plan_histories
+        .iter()
+        .zip(cuts)
+        .zip(manifest_histories)
+        .zip(certificates)
+        .map(
+            |(((history, cut), manifest), certificate)| SuccessorArtifactDirectories {
+                plan_history: Path::new(history),
+                cut: Path::new(cut),
+                manifest_history: Path::new(manifest),
+                certificate: Path::new(certificate),
+            },
+        )
+        .collect();
     let genesis_epoch: Epoch =
         Epoch::new(parse_u64(GENESIS_EPOCH, parsed.require(GENESIS_EPOCH)?)?);
     let domain: AtomicityDomainId = match domain {
@@ -95,19 +117,14 @@ pub(super) fn load_successor_pins(
         genesis_epoch,
     )
     .map_err(|_| invalid("successor genesis context is invalid"))?;
-    let directories: SuccessorArtifactDirectories<'_> = SuccessorArtifactDirectories {
-        plan_history: Path::new(parsed.require(PLAN_HISTORY)?),
-        cut: Path::new(parsed.require(CUT)?),
-        manifest_history: Path::new(parsed.require(MANIFEST_HISTORY)?),
-        certificate: Path::new(parsed.require(CERTIFICATE)?),
-    };
-    let workflow: SuccessorWorkflowAuthority = load_successor_workflow_from_directories(
+    let workflow: SuccessorWorkflowAuthority = load_successor_chain_workflow_from_directories(
         Path::new(genesis_manifest),
         resolver,
         expected_genesis_digest,
         &genesis_context,
         domain,
         &directories,
+        budget,
     )
     .map_err(|error| CliError::LocalExecution(Box::new(error)))?;
     workflow
@@ -118,6 +135,27 @@ pub(super) fn load_successor_pins(
             )
         })?;
     Ok(Some(workflow))
+}
+
+/// Argument-only all-or-none/count/budget checks. Commands call this before
+/// reading signed intent files, keys, genesis or output inventories.
+pub(super) fn successor_budget(parsed: &ParsedArgs) -> Result<SuccessorChainBudget, CliError> {
+    let max_links: NonZeroU32 = NonZeroU32::new(parse_u32(MAX_LINKS, parsed.require(MAX_LINKS)?)?)
+        .ok_or_else(|| invalid("--successor-max-links must be nonzero"))?;
+    let budget: SuccessorChainBudget = SuccessorChainBudget::new(max_links);
+    let count: usize = parsed.many(PLAN_HISTORY).len();
+    if count == 0
+        || [CUT, MANIFEST_HISTORY, CERTIFICATE]
+            .iter()
+            .any(|flag: &&str| parsed.many(flag).len() != count)
+    {
+        return Err(invalid(
+            "successor archive directory flags must be repeated as complete ordered link sets with equal nonzero counts",
+        ));
+    }
+    sunrise_edge_client::successor_artifacts::require_successor_chain_budget(count, budget)
+        .map_err(|error| CliError::LocalExecution(Box::new(error)))?;
+    Ok(budget)
 }
 
 #[cfg(test)]
@@ -189,7 +227,76 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_successor_controls_refuse_explicitly_before_io() {
+    fn repeated_pins_require_equal_counts_and_explicit_budget_before_io() {
+        let complete: [&str; 12] = [
+            GENESIS_EPOCH,
+            "0",
+            MAX_LINKS,
+            "1",
+            PLAN_HISTORY,
+            "/nonexistent/h0",
+            CUT,
+            "/nonexistent/c0",
+            MANIFEST_HISTORY,
+            "/nonexistent/m0",
+            CERTIFICATE,
+            "/nonexistent/r0",
+        ];
+        let mut values: Vec<OsString> = arguments(&complete);
+        values.extend(arguments(&[
+            PLAN_HISTORY,
+            "/nonexistent/h1",
+            CUT,
+            "/nonexistent/c1",
+            MANIFEST_HISTORY,
+            "/nonexistent/m1",
+            CERTIFICATE,
+            "/nonexistent/r1",
+        ]));
+        let parsed: ParsedArgs =
+            crate::args::parse_flags(values, &successor_flag_specs(true)).unwrap();
+        let error: String = successor_budget(&parsed).unwrap_err().to_string();
+        assert!(
+            error.contains("2 links exceeds the configured budget 1"),
+            "{error}"
+        );
+        let parsed: ParsedArgs = crate::args::parse_flags(
+            arguments(&[
+                MAX_LINKS,
+                "2",
+                PLAN_HISTORY,
+                "/nonexistent/h0",
+                CUT,
+                "/nonexistent/c0",
+            ]),
+            &successor_flag_specs(true),
+        )
+        .unwrap();
+        assert!(
+            successor_budget(&parsed)
+                .unwrap_err()
+                .to_string()
+                .contains("equal nonzero counts")
+        );
+        let parsed: ParsedArgs =
+            crate::args::parse_flags(arguments(&[MAX_LINKS, "0"]), &successor_flag_specs(true))
+                .unwrap();
+        assert!(
+            successor_budget(&parsed)
+                .unwrap_err()
+                .to_string()
+                .contains("must be nonzero")
+        );
+        let parsed: ParsedArgs = crate::args::parse_flags(
+            arguments(&[PLAN_HISTORY, "/nonexistent/h0"]),
+            &successor_flag_specs(true),
+        )
+        .unwrap();
+        assert!(successor_budget(&parsed).is_err());
+    }
+
+    #[test]
+    fn successor_controls_require_budget_before_io() {
         let freeze: String = super::super::ordered_economics_network::run(arguments(&[
             "ordered-freeze-build",
             "--successor-cut-dir",
@@ -197,7 +304,7 @@ mod tests {
         ]))
         .unwrap_err()
         .to_string();
-        assert!(freeze.contains("successor-control-unsupported"), "{freeze}");
+        assert!(freeze.contains("--successor-max-links"), "{freeze}");
         let claim: String = super::super::ordered_economics_network::run(arguments(&[
             "fee-claim-prepare",
             "--out",

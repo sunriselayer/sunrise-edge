@@ -60,7 +60,10 @@ use std::{
     io,
     num::{NonZeroU64, NonZeroUsize},
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -1406,8 +1409,8 @@ where
 /// A connection permit is acquired immediately after `accept` and before
 /// Hyper parses request bytes. Connections above the limit are closed without
 /// parsing or queueing application work. Header reads have one total deadline,
-/// every socket read has an idle deadline, collecting the one allowed request
-/// body has a separate total deadline, and response writes have idle and total
+/// request-input socket reads have an idle deadline, collecting the one allowed
+/// request body has a separate total deadline, and response writes have idle and total
 /// deadlines. HTTP/1 keep-alive is disabled,
 /// bounding every accepted connection to one request. These controls are
 /// independent of, and preserve, [`NativeBlockingExecutor`] admission for
@@ -1500,11 +1503,12 @@ async fn serve_connection(
     policy: NativeHttpServePolicy,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let stream = IoIdleTimeoutStream::new(
+    let stream: IoIdleTimeoutStream<tokio::net::TcpStream> = IoIdleTimeoutStream::new(
         stream,
         policy.body_idle_timeout,
         policy.response_total_timeout,
     );
+    let request_read_complete: Arc<AtomicBool> = Arc::clone(&stream.request_read_complete);
     let io = TokioIo::new(stream);
     let service = service_fn(move |request: Request<Incoming>| {
         dispatch_bounded_request(
@@ -1513,6 +1517,7 @@ async fn serve_connection(
             policy.body_total_timeout,
             policy.local_publication,
             policy.local_execution,
+            Arc::clone(&request_read_complete),
         )
     });
     let mut builder = http1::Builder::new();
@@ -1540,6 +1545,7 @@ async fn dispatch_bounded_request(
     body_total_timeout: Duration,
     local_publication: bool,
     local_execution: bool,
+    request_read_complete: Arc<AtomicBool>,
 ) -> Result<Response, Infallible> {
     let (parts, incoming) = request.into_parts();
     let body = Body::new(incoming);
@@ -1556,7 +1562,13 @@ async fn dispatch_bounded_request(
     } else {
         MAX_HTTP_EVENT_BODY_BYTES
     };
-    let bytes = match timeout(body_total_timeout, to_bytes(body, limit)).await {
+    let collected: Result<Result<Bytes, axum::Error>, tokio::time::error::Elapsed> =
+        timeout(body_total_timeout, to_bytes(body, limit)).await;
+    // Only this connection's bounded collector ends its ingress-read phase.
+    // Terminal size/read/total-time refusals end it too: their response writes
+    // remain bounded, and no router work or second request can follow them.
+    request_read_complete.store(true, Ordering::Release);
+    let bytes: Bytes = match collected {
         Err(_) => {
             return Ok(error_response(
                 StatusCode::REQUEST_TIMEOUT,
@@ -1586,6 +1598,8 @@ struct IoIdleTimeoutStream<S> {
     stream: S,
     idle_timeout: Duration,
     response_total_timeout: Duration,
+    // Fresh for the one permitted request; never supplied by a router/caller.
+    request_read_complete: Arc<AtomicBool>,
     read_deadline: Pin<Box<Sleep>>,
     write_idle_deadline: Option<Pin<Box<Sleep>>>,
     write_total_deadline: Option<Pin<Box<Sleep>>>,
@@ -1597,6 +1611,7 @@ impl<S> IoIdleTimeoutStream<S> {
             stream,
             idle_timeout,
             response_total_timeout,
+            request_read_complete: Arc::new(AtomicBool::new(false)),
             read_deadline: Box::pin(tokio::time::sleep(idle_timeout)),
             write_idle_deadline: None,
             write_total_deadline: None,
@@ -1623,6 +1638,10 @@ where
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(result) => Poll::Ready(result),
+            // Hyper may poll for disconnect while a fully collected request
+            // awaits application work. Actual socket EOF/errors above still
+            // propagate, but an ingress idle timer cannot cancel that phase.
+            Poll::Pending if this.request_read_complete.load(Ordering::Acquire) => Poll::Pending,
             Poll::Pending => match this.read_deadline.as_mut().poll(context) {
                 Poll::Ready(()) => Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::TimedOut,

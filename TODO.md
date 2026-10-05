@@ -1,6 +1,6 @@
 # Current delivery roadmap
 
-**2026-10-04: one integrated implementation and refactoring queue.**
+**2026-10-05: one integrated implementation and refactoring queue.**
 [DR-0173](docs/architecture/decisions/0173-integrated-implementation-refactoring.md)
 integrates the remaining functions with responsibility-oriented cleanup.
 The user's newer architecture-first direction is recorded in
@@ -21,25 +21,70 @@ Only this file owns current status, sequencing and deferred work.
 | Generic paid contracts and Standard Asset | DR-0121–0128 implement Publish/Instantiate/Call, ordinary contract-defined fees and asset create/transfer/split/merge/mint/burn; no Standard Asset privilege in node-core |
 | Delivery 1: certified network contract lifecycle | PR #228 merged on 2026-09-27 after the full gate, fresh exact-head Opus approval and CI; paid lifecycle, assets, replay and declared catch-up, not complete state handoff |
 | Delivery 2: fixed-epoch ordered economics | PR #232 merged on 2026-09-27; shared ordering for claims, bonds and evidence/slash/reactivation, with four-namespace CLI evidence. Genuine membership-dependent Deposit/Withdraw positives remain in Delivery 3 |
-| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250/#252/#255/#256 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history, genuine frozen-member source reconstruction, persistent verified inactive import, first incoming-validator bonding and conditional readiness. Native outgoing Seal library/test composition and first-successor acceptance are implemented below; recurring lifecycle acceptance remains open |
+| Delivery 3 functional handoff | PR #237/#238/#239/#242/#244/#245/#250/#252/#255/#256 merged the prerequisites. PR #269 merged core/store recurrence; PR #270 implements the real SDK/CLI/HTTP recurring membership/recovery workflow. All local owners passed at functional head `65b2ee8`; its final documentation-head review and current required CI remain normal-merge prerequisites, not provider activation or independent audit evidence |
 | First Seal-derived successor | [PR #267](https://github.com/sunriselayer/sunrise-edge/pull/267): source-free SQLite activation and authenticated e+1 serving through existing engines, real compiled activation/host processes and SDK/CLI paid Publish/Instantiate/Call and imported claims. Default-suite same-committee process acceptance is distinct from the A/B/C/D -> A/B/C/E core evidence and from recurring membership/release acceptance |
 | Authenticated pre-Seal business cut | PR #251 merged normally on 2026-10-02 after the full local gate, independent exact-head approval and required CI. Complete core derivation, immutable SQLite export/resumption and source-free independent saved verification; not import or activation evidence |
 | Shared artifact/configuration primitives | PR #249 merged: bounded local genesis and held-handle artifact I/O, with authority/error semantics retained by the callers |
-| Required validation | PR #247 implements DR-0172: four unconditional DB-free lanes. PostgreSQL integration/fault acceptance is retained and explicitly selected, not run on every PR |
+| Required validation | DR-0172 keeps PostgreSQL explicitly selected and optional. Merged PR #269 adds mandatory core recurrence and SQLite readiness to the original four DB-free owners; PR #270 adds the separate real recurring-process owner. No functional case becomes optional |
 
-FastVote remains incomplete: validator-set changes, slashing and reward/claim
-distribution are completion criteria, not optional production deferrals.
-Fixed-epoch economics implements much of that work; complete membership and
-epoch handoff plus independent security gates still remain.
+Validator-set changes, slashing and reward/claim distribution remain FastVote
+completion criteria, not optional production deferrals. Fixed-epoch economics
+and the bounded functional handoff below implement those paths; independent
+security gates and an accepted real-network activation profile still remain.
+Functional acceptance does not certify a FastVote network release.
 
-**Delivery 3 remaining, 2026-10-04:** the first Seal-derived successor is
-implemented and verified in the bounded profile below. The remaining functional
-unit is shipped membership/recovery composition and recurring handoffs through
-the real withdrawal unlock, including live outgoing control exposure. This
-supersedes the 2026-10-02 time forecast; no unverified completion date is promised.
-Independent audit and actual network startup remain Delivery 4.
+**Delivery 3 functional implementation and local acceptance, 2026-10-05:**
+recurring core/store composition merged in
+[PR #269](https://github.com/sunriselayer/sunrise-edge/pull/269).
+[PR #270](https://github.com/sunriselayer/sunrise-edge/pull/270) completes the
+shipped membership/recovery process flow through the real withdrawal unlock,
+including later five-member committees and live outgoing control exposure.
+The complete local required and selected PostgreSQL owners passed on functional
+head `65b2ee8ecca4766d414f30b41086aefeea128848`. A TODO-only descendant records
+that actual ancestor execution; it is not relabelled as a descendant-head local
+run. Fresh exact-documentation-head source approval and every required current
+CI owner plus `check` are mandatory before normal merge. Independent audit and
+actual network startup remain Delivery 4; no further protocol mechanism or
+cleanup milestone is added to this functional gate.
 
 ## Functional critical path with embedded refactoring
+
+### Current acceptance checkpoint, 2026-10-05
+
+| Owner | Actual result and remaining boundary |
+| --- | --- |
+| Final functional host, exact `65b2ee8ecca4766d414f30b41086aefeea128848` | All seven required local groups and all five original selected PostgreSQL groups completed with exit zero. Ordinary Rust had 3,628 successful executions; genuine core recurrence passed in 534.90 seconds and SQLite readiness in 27.17 seconds. The real compiled recurring-process owner passed one test, zero failures in 9,740.19 seconds; its wrapper ran 12:20:28–15:04:54 UTC. Actual original-root e0..e8, installed seven-epoch delay, later F-required five-host committees, both D/G eligible withdrawals at their equal computed e8 unlock, lawful owner restoration, retired registration/Deposit refusals and final receipt equality completed. Paid, early-refusal and member-drain replay controls remain distinct from core/store successful-Withdraw replay; no separate compiled successful-Withdraw replay is claimed |
+| Final functional review and selected profile | Fresh native Opus explicitly returned COMPLETE PR APPROVE for source only on the full 66-file PR at `65b2ee8`, including the safe compiler-profile delta. All six genuine PostgreSQL storage faults and the original eight-escrow/two-cycle smoke passed; PostgreSQL stays optional, and the smoke is not representative capacity certification. These complete owner-group executions are not a literal HOST `--full` invocation |
+| Documentation and merge boundary | Only TODO content may differ from the tested functional ancestor, with every other tracked input and TODO runtime/test reference independently checked. The documentation descendant needs fresh explicit complete exact-head review and its own seven required CI owners plus success-only `check` before normal merge. At the 15:05 UTC functional-head checkpoint, CI `37308710261` had six successes and recurring-sqlite still running; that partial run is not a passed full CI claim or future merge evidence |
+| Core/store, exact `11fafacdb0dca295a9d7a2bd02253860c7d9a2f1` | Original literal `./scripts/check-all.sh --full` completed successfully from 05:03:03 to 06:24:34 UTC. Genuine original-root e0..e8/delay7 eligible withdrawals passed in 2,975.42 seconds, with C1/C2/C3/B1 controls, the complete selected original PostgreSQL profile and all six real storage faults retained |
+| Core merge | Fresh independent exact-head Codex fallback APPROVE and all six required CI owners plus success-only aggregate passed in run `37265910956`. PR #269 merged normally as `bfdf6154825c1b0274095f77e2ae973651592c55` at 06:35:09 UTC; its tree equals the reviewed head. Local main equalled origin/main with a clean tree |
+| Host candidate `768403670ff874c930b6724dc571fcebd3389e30` | Strict lint, ordinary Rust with nonempty SQLite inventory, genuine core recurrence and all five selected original PostgreSQL groups passed. Its other six CI owners passed, but the real compiled recurring-process owner is not accepted |
+| Actual host failure | The owning process case failed after 3,647.98 seconds at the e2 Freeze assertion that a minimal 3-of-4 QC includes the reopened fourth host. Actual consensus canonical-sorts all collected valid votes and stops at quorum; this assertion did not establish the intended required participation. The repair must prove genuine fourth-host signing of the committed Freeze and outgoing Seal suffix without weakening all-host receipt equality, original-root recurrence, F-required quorum or delay7 withdrawals |
+| Recorded-vote candidate `983890d41cc9dacd3fb6da9f771f747c4e0b6c67` | Fresh native Opus reviewed the complete 65-file diff and owning APIs, verified clean exact HEAD at both ends and explicitly APPROVE for source only. All other six required local groups and all five retained selected PostgreSQL groups passed, including the actual core recurrence in 2,891.06 seconds and all six real PG storage faults. These selected-profile results are not a literal HOST `--full` result |
+| Actual `983890d` process failure | Zero passed/one failed in 5,239.30 seconds, wrapper exit 101 at 08:35:21 UTC. The e2 Freeze participation proof, genuine nonempty drain, F-required five-target readiness and four-round e2 Seal through height 28 completed. The next status query wrongly expected live HTTP 200 after Seal; the real host correctly returned 409. Post-Seal durable read-back and e3..e8 consumer acceptance did not complete. Current CI `37275747247` has six successful owners, but recurring-sqlite and aggregate failure |
+| Post-Seal proof and independent-stage repair | Native Sonnet diagnosed the intended sealed live-authority refusal and proposed the existing material reader; parent also corrected the caller's post-Seal live outcome query. Actual scoped consensus/high-QC, retained outcome/header/receipt and all-four canonical receipt equality are freshly read from each served database, with sealed live status/outcome refusal retained. Only independent per-target import/readiness/activation and per-request receipt queries run concurrently; drain, Seal preparation, consensus and fault windows remain sequential |
+| Exact host `03dd8aa803718df8bd816a4047e24c0f8da7bac6` | Fresh native Opus completed all 65 changed files and owning APIs, verified clean exact HEAD at both ends and explicitly returned COMPLETE PR APPROVE for source only. All other six required local groups and all five original selected PostgreSQL groups passed, including genuine core recurrence in 2,951.67 seconds and all six real PG storage faults. Required CI run `37287437401` had six successful owners, but its recurring-process owner remained pending |
+| Deliberately interrupted `03dd8aa` process run | Wrapper exit 143, 09:03:12 to 12:07:20 UTC. The genuine e2 Seal through height 28, four-database material read-back, five-host e3 Seal through height 19 and historical export completed; five e4 hosts started. The owning case did not finish e4..e8 or actual unlock. Only its verified task-owned process descendants were retired so the measured compilation candidate can run the unchanged whole workload. This is interrupted/unaccepted, not passed |
+| Measured development/test compilation candidate | Three interleaved fresh-process pairs reverified the same genuine e2 saved cut, original genesis and two-link history using identical public pins. All successful output bytes matched. Median runtime was 4,875.317 ms at the old profile versus 782.103 ms with dev opt-level 1, a 6.234-fold improvement for this read-only workload only; compilation is excluded and no whole-case/CI/throughput speedup is claimed. A leaf-only experiment improved only about 1.5% and was discarded |
+| New-profile acceptance boundary | Native Opus returned PLAN APPROVE for dev opt-level 1 with explicit debug assertions/overflow checks retained, existing curve opt-level 3 and explicit node-core settings, and unchanged release/build-override profiles. This is not approval of the final implementation. Every required local group, all five original selected PG groups, the complete original-root e0..e8/delay7/F-required/retired-owner workflow, fresh complete exact-head review and current CI must pass on the new committed head. No previous-profile result is relabelled as new-profile execution |
+
+The host's fresh independent source review approved `7684036`, but execution
+subsequently failed. That review is not runtime acceptance or approval of its
+next repair. Its Rust result was zero passed/one failed; wrapper status 143
+does not turn it into a merely interrupted or successful run. No final HOST
+`--full` success is claimed. Native Claude was quota-limited during these
+reviews; the explicitly authorized Codex fallback was used, not attributed to
+Opus. Native Claude subsequently returned, and its complete `983890d` source
+approval likewise preceded a runtime failure. Separate design approvals do not
+approve the next implementation or establish runtime acceptance.
+The later repaired `65b2ee8` source review and complete local owning process
+passed as recorded above. Its TODO-only documentation descendant still requires
+fresh complete exact-head source approval and current required CI before
+PR #270 can merge; old-head approval or partial CI is not substituted.
+
+The dated attempts below are historical context, not current completion claims.
+This checkpoint and the closure checklist take precedence over their pending
+candidate observations; failed, cancelled and interrupted runs stay unaccepted.
 
 **Completed eight-hour window, 2026-10-04:** 11:43:56 until 19:43:56
 Asia/Singapore. The independent pre-code review approved the recurring lifecycle
@@ -50,8 +95,8 @@ approval is not implementation acceptance. Work connects actual core/store
 consumers and genuine recurrence before the separate shipped SDK/CLI/process
 acceptance; the original seven-epoch unbonding delay remains unchanged.
 
-**Delivery 3 resumption, 2026-10-05:** continue the functional closure rather
-than another time-boxed cleanup slice. The exact final `ef2e5d2` node-core
+**Earlier Delivery 3 resumption attempts, 2026-10-05:** functional closure
+continued rather than another time-boxed cleanup slice. The then-final `ef2e5d2` node-core
 library passed 1,174 tests, zero failures and five existing profile-owned
 ignored cases in 2,870.48 seconds, including genuine original-root e0..e8,
 the configured seven-epoch delay and eligible retired-D/noncommittee-G
@@ -60,7 +105,7 @@ five-member compiled-process result. The later local full-profile and corrected
 `62172d6` process logs have no terminal result and their processes are no longer
 present; record them as interrupted, not passed. Required CI runs
 `37196701234` and `37198409538` cancelled `rust-tests` at its 60-minute budget;
-their success-only aggregates failed. PR #269/#270 remain Draft.
+their success-only aggregates failed. PR #269/#270 were Draft at those attempts.
 
 Independent Opus read-only closure inspection confirms that the remaining
 acceptance below already follows DR-0191; no new protocol mechanism is needed.
@@ -101,7 +146,9 @@ empty; it does not claim the impossible historical-prefix traversal passed.
 Final integrated required, selected PG, compiled recurrence and CI acceptance
 remain pending below.
 
-- [ ] Authenticated successor frontier with two genuine current paid
+### Delivery 3 closure checklist
+
+- [x] Authenticated successor frontier with two genuine current paid
   publications: bounded monotonic physical progress, current behind-tail
   carrier/index/cursor refusals, reopen/refence and exact full-page/empty-terminal
   bytes. Separately prove historical drain-carrier corruption, tombstone and
@@ -109,28 +156,43 @@ remain pending below.
   importer has no ordinary historical publication prefix; the initially proposed
   historical physical-traversal fixture is unrepresentable, not passed.
   DR-0194 retains the generic prior-prefix algorithm tests at their true scope.
-- [ ] Fresh retired-D and unbonded-G registration in Admit mode through core
+  The genuine owning case passed on integrated core `11fafac` before PR #269
+  merged; no synthetic ordinary historical prefix is asserted.
+- [x] Fresh retired-D and unbonded-G registration in Admit mode through core
   preparation/admission and the real CLI, plus genuine Deposit refusal.
   Validator membership is not user/account authority: ordinary client contracts
   and legitimate historical claim/Unbond/Withdraw remain allowed.
-- [ ] Successor Seal retention/completion indeterminate-result reconciliation
+  The compiled owner at `65b2ee8` verifies SDK/core/CLI policy refusals and
+  separate real HTTP rejection on every host, with rows, receipts, nonce,
+  origin, fence and consensus status unchanged after lawful e8 Withdraw.
+- [x] Successor Seal retention/completion indeterminate-result reconciliation
   without a second signature, and live-commit versus completion-token fencing.
   Original-only engine faults and raw successor storage controls do not
   substitute for the successor engine composition.
-- [ ] Complete the changed-committee five-host workflow through the actual
+  The actual successor owner passed on integrated core `11fafac` before
+  PR #269 merged, including zero extra signing on exact reconciliation.
+- [x] Complete the changed-committee five-host workflow through the actual
   withdrawal unlock. Send authentic former-domain proposals/QCs to every current
   host, including F, and retain a genuine e0-at-e2 refusal; preserve all existing
   F-required quorum/readiness/FastVote and receipt/state equality assertions.
-- [ ] Genuine historical signer-free host startup/live-artifact refusals:
+  The complete compiled owner at `65b2ee8` passed through both computed e8
+  withdrawals, preserving genuine E/F registration and the original genesis.
+- [x] Genuine historical signer-free host startup/live-artifact refusals:
   changed cut/certificate/history pins, wrong epoch, foreign/non-Sealed source,
   and altered served history/terminal candidate without fence or state changes.
-- [ ] Recurring mid-epoch restart/refencing, stale-writer and import/activation
+  These existing controls passed in that same complete compiled owner.
+- [x] Recurring mid-epoch restart/refencing, stale-writer and import/activation
   inventory races, activation/Seal reply loss and live-commit/Seal-token races
   through their actual owning capabilities and consumed faults.
-- [ ] Complete final-source required gates, selected original PG profile,
-  explicit independent exact-head approval and all required CI before normal
-  dependency-ordered merges. No shortened delay, fabricated state, trusted cache,
-  path-filter skip or optionalization of functional acceptance.
+  Observable host restart/catch-up/fencing and the distinct typed
+  engine/activation/import/store-port faults passed at their actual owners;
+  process observations do not stand in for injected capability races.
+- [x] Complete functional-head local required gates, selected original PG
+  profile and explicit independent complete source approval at `65b2ee8`.
+  Normal merge of its documentation-only descendant additionally requires
+  fresh complete exact-head approval and every current required CI owner plus
+  `check`. No shortened delay, fabricated state, trusted cache, path-filter
+  skip or optionalization of functional acceptance.
 
 Delivery 4 remains independent security audit and actual first-network startup.
 Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
@@ -173,7 +235,10 @@ independent Codex substitute reviewed that slice. Native Opus became usable
 again during this window. Its subsequent design/scope approvals are distinct
 from final exact-head implementation approval.
 
-**Recurring implementation checkpoint, 2026-10-04:** core connects one bounded
+**Historical recurring implementation checkpoint, 2026-10-04:** the pending
+and failed observations in this dated section are superseded by the actual
+final functional-owner checkpoint above, not silently counted as passes.
+Core connects one bounded
 verified chain, the private ordinary-memory replay bootstrap, current registration
 and historical owners, current frontier/drain/cut/readiness, tag-2 Seal and the
 same issuer-bound atomic successor ports. Memory/shared SQL/SQLite bodies retain
@@ -217,7 +282,9 @@ once per round or local frontier/drain phase. Its original handler freshness,
 fence, Unsealed, signing and CAS checks remain; warrants are not cached across
 rounds, Seal, activation or reopen. The scoped node-core dev/test optimization
 keeps assertions and overflow checks. The original seven-epoch acceptance and
-complete final-head profiles are still pending; PR #269/#270 remain drafts.
+complete final-head profiles were still pending at that attempt, and both PRs
+were then drafts. PR #269 subsequently merged; PR #270 follows the current
+documentation-head review/CI merge boundary above.
 
 Downstream SDK/CLI/operator libraries pass 416 tests. The first native HTTP run
 passed 156 tests and failed the retained Original post-Seal material read; the
@@ -227,8 +294,51 @@ regression passes on the earlier captured host binary. A real compiled
 changed-committee run has reached e2 after genuine incoming registration,
 Unbond, retained early-Withdraw refusals, e1 Seal and e2 original-escrow claim;
 it has not completed. Later five-member participation, eligible process
-withdrawals and final-head complete host gates remain unproven. This is not
+withdrawals and final-head complete host gates remain unproven. The captured
+`4f0daba` compiled run subsequently failed after 2683.34 seconds, just after
+genuine e2 F registration: receipt query returned
+`Transport(TruncatedResponseHeaders)`. The cause was not proved at that failed
+attempt; the later phase-owned reproduction and fix are recorded below. No
+automatic retry or wider timeout supplies acceptance for the failed run. This is not
 Delivery 3, PostgreSQL/DO/D1 activation or production readiness.
+
+The dependent process fixture now explicitly selects the same-committee
+baseline or changed-committee recurrence; a coincidentally unchanged committee
+cannot silently skip the latter. It retains real F-required ordered envelopes
+and posts them to the next actual epoch, expecting current-policy signature refusal
+with every replica's physical snapshot and high QC unchanged. Historical
+signer-free hosts also probe all four ordered mutation routes as absent. These
+additional assertions are implemented, not yet executed on the final host
+head. Retired-member fresh admission, authenticated behind-tail scanning,
+live artifact/startup tampering and import/Seal race coverage remain open
+until their actual independent acceptance controls pass.
+
+Core `ef2e5d2` has exact-head independent Opus code APPROVE. Its ongoing
+selected full profile has genuinely passed the corrected pre-index refusal
+and e0/e1/e2 file-backed Seal/import/activation/reopen/fence tests. The complete
+profile and original seven-epoch unlock test remain pending; these individual
+passes do not substitute for the aggregate or PostgreSQL fault profile.
+
+The earlier captured bounded fixture binary passed the genuine seven-epoch
+delay acceptance in 5563.87 seconds: repeated original-rooted Seal/import/
+activation reached the actual U8, then retired D and never-committee G
+withdrew successfully with exact replay/state/fencing checks. Its source was
+captured before the final source-index audit and round-local warrant batching;
+it is not the final `ef2e5d2` full profile. The later five-member F-required
+quorums belong to the still-incomplete process acceptance, not this pass.
+
+The HTTP failure has a reproduced transport phase defect: both actual complete
+GET/POST requests reach the real handler, then lose all response bytes at the
+100 ms ingress idle deadline while that handler waits 750 ms. No timeout was
+increased and no retry was used. The phase-owned fix at `2f4ec75` passes those
+same two tests, all 159 native HTTP library tests (including the retained
+read/overload/write/one-request controls), all 53 operator library tests, and
+strict all-target/all-feature native HTTP/operator Clippy. Fresh exact-head
+Opus code review explicitly approves `2f4ec75`. The pre-fix test log precedes
+rustfmt's seven-line import expansion only; its handler, limits, request and
+assertions are unchanged. This reproduction and fix are not a successful
+rerun of the failed e2 process case; the complete final process/S12 and
+repository profiles and CI remain mandatory.
 
 **Completed architecture-first work window, 2026-10-02:** approximately eight
 hours, from 13:50 until 21:50 Asia/Singapore. Establish the
@@ -457,8 +567,11 @@ HTTP/SDK/CLI, tests and documentation; do not split merely by codec or file.
 
 | Order | Remaining outcome | Refactoring included where needed | Acceptance boundary |
 | --- | --- | --- | --- |
-| 1 | Recurring add/replace/recover/epoch lifecycle | Verified predecessor reconstruction plus actual HTTP/SDK/CLI composition, including outgoing Seal and subsequent control exposure; share only needed artifact/configuration primitives | Real A/B/C/D → A/B/C/E process flow: Deposit E, Unbond absent D, verified replacement, new-epoch paid contracts/claims, repeat genuine handoffs to the configured unlock epoch, Withdraw D; restart/replay, retired-key, early withdrawal, stale writer and inventory-race negatives. Same-committee e+1 processes or an unbond-delay=1 fixture do not waive repeated epochs |
-| 2 | Delivery 4: independent audit and initial-network startup | Only deployment-facing composition/dispatch cleanup needed for the chosen profile; reuse capability tests rather than copy PG-only fixtures | Explicit reviewed initial-network activation profile, independently controlled stores, executable auth/TLS/startup/recovery instructions, separate economics and ingress audits and remediation before live exposure |
+| 1 | Delivery 4: independent audit and initial-network startup | Only deployment-facing composition/dispatch cleanup needed for the chosen profile; reuse capability tests rather than copy PG-only fixtures | Explicit reviewed initial-network activation profile, independently controlled stores, executable auth/TLS/startup/recovery instructions, separate economics and ingress audits and remediation before live exposure |
+
+Delivery 3's bounded recurring add/replace/recover/epoch implementation and local
+acceptance are complete at `65b2ee8`; the current PR's exact-head review and CI
+remain mandatory merge conditions as recorded above, not another feature slice.
 
 - [x] **Frozen-member source reconstruction gap:**
   [DR-0174](docs/architecture/decisions/0174-frozen-member-business-reconstruction.md)
@@ -586,8 +699,14 @@ Import provides no readiness, Seal, activation or deployed-provider authority.
   implementation/acceptance evidence above. The outgoing source stays permanently
   Sealed; import origin and outgoing history remain unchanged. This is not
   recurring replacement, all-provider activation or Delivery 3 completion.
-- [ ] **Next:** integrated membership/recovery acceptance through real compiled
-  CLI and authenticated hosts; keep Delivery 3 unchecked until it passes.
+- [x] **Integrated membership/recovery acceptance:** real Cargo-built
+  operator/host processes and the Rust CLI entry point over authenticated TCP
+  passed the complete original-root e0..e8 workflow at
+  functional head `65b2ee8`, including both actual e8 withdrawals and subsequent
+  retired-owner refusals. This owning case calls the CLI entry point inside
+  the test process, not a standalone CLI child executable. Fresh
+  documentation-head approval and current CI
+  remain normal-merge prerequisites, not provider or audit certification.
 - [ ] **Before live exposure:** close the independently scoped economics and
   ingress security gates and the selected initial-network release profile.
   Review the locked Cloudflare development toolchain's dependency advisories
@@ -727,8 +846,8 @@ The detailed existing evidence and remaining criteria follow:
   Independent economics/ingress audits, provider conformance and deployment
   remain open; no production or initial-network activation is claimed.
 
-- [ ] **Delivery 3: complete handoff and usable epoch changes**, with one
-  integrated usable-feature gate following the accepted design in
+- [x] **Delivery 3: bounded functional handoff and usable epoch changes**, with
+  the implemented and locally verified integrated gate following the design in
   [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md).
   The independent foundation slice adds bounded, stateless availability
   identity/vote/certificate codecs and weighted-quorum verification
@@ -741,20 +860,22 @@ The detailed existing evidence and remaining criteria follow:
   publication before apply, closed full-certificate frontiers and ordered
   Freeze/DrainSet/Seal controls, with complete artifact retention before
   DrainSet votes and repeatable conditional next-set readiness before Seal.
-  It also needs a logical commitment independent
+  The composed implementation uses a logical commitment independent
   of physical CAS counters, complete bounded portable enumeration and artifact
   replay in the correct epoch order. Minority-only application is not permission
-  to silently discard authenticated effects or redefine finality. Add durable
-  one-outgoing-epoch vote identity before exposing a signature, separate the
-  genesis pin from verified serving epoch, and initialize shared consensus
-  safely for the new set. Defining-code economics authority must not be
+  to silently discard authenticated effects or redefine finality. Durable
+  one-outgoing-epoch vote identity precedes exposed signatures; the genesis
+  pin stays separate from verified serving epoch and shared consensus is
+  initialized for the verified new set. Defining-code economics authority is not
   blindly rewritten to the live epoch. Acceptance includes a fresh namespace,
   genuine Unbond/remove/epoch advance/Withdraw, actual new-epoch paid user
   contracts and fee claims, restart/exact replay, retired-signer rejection,
   missing/forged/divergent cut refusal and real stale-writer controls. The
   initial design review/stateless foundation did not implement those rules;
-  later checked capabilities below supply partial runtime enforcement, not
-  complete cut/import, activation or integrated Delivery 3 acceptance.
+  later capabilities now compose complete cut/import, bounded native SQLite
+  activation and integrated core/store/compiled-process acceptance at `65b2ee8`,
+  as recorded in the current checkpoint. This checkbox does not certify
+  independent security, real network startup or PostgreSQL/DO/D1 activation.
   Logical-generation admission below implements the same semantic substitution
   in ordered bond/fee-claim minimum checks, not only fast-path commitments;
   checked overflow must refuse before mutation or exposed signatures.
@@ -1151,8 +1272,9 @@ The detailed existing evidence and remaining criteria follow:
     or validated support for other platforms.
 - [x] expose fixed-epoch bond/equivocation/reward/claim operations through
   authenticated ordered network surfaces (Delivery 2, DR-0153, PR #232).
-  Genuine membership-dependent Deposit/Withdraw, complete handoff and epoch
-  activation remain the separate unchecked Delivery 3 gate above.
+  Genuine membership-dependent Deposit/Withdraw, complete handoff and bounded
+  activation were originally separate; their actual functional acceptance is
+  now recorded in Delivery 3 above, not inferred from logical generation alone.
   - [x] [DR-0149](docs/architecture/decisions/0149-offline-signed-fee-claims.md):
     offline single-namespace PostgreSQL escrow listing/inspection, generic
     signed claim preparation, apply/exact replay and independent persisted
@@ -1176,12 +1298,14 @@ The detailed existing evidence and remaining criteria follow:
     ordering/certification and the corresponding surfaces. Complete state/
     settlement handoff, membership-dependent operations and independent
     security gates remain open.
-- [ ] owned-state and settlement handoff correctness, activation-bound state
-  verification, and validator catch-up before live epoch/set changes or
-  validator replacement/activation. Local epoch CAS and lock-reclamation
-  tests alone do not establish cross-validator state convergence. Keep the
-  initial host fixed to one configured epoch/set until this gate is reviewed
-  and verified; do not expose a live activation route in DR-0148.
+- [x] bounded owned-state/settlement handoff correctness, activation-bound
+  verification and validator catch-up: the actual complete core/store and
+  compiled recurring workflow at `65b2ee8` supplies this functional evidence.
+  Local epoch CAS or lock-reclamation alone still does not establish convergence.
+  Successor serving uses verified cut/history/import/activation capabilities,
+  not an ungated live epoch mutation or activation route in DR-0148. Real initial
+  network exposure and all-provider activation still require Delivery 4's
+  independent audit and explicitly reviewed deployment profile.
   - [x] [DR-0150](docs/architecture/decisions/0150-certified-call-catch-up.md):
     certificate-first, signerless recovery of declared same-epoch certified
     Calls is implemented and locally validated. The new core entrypoint

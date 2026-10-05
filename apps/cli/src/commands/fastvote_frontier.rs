@@ -4,7 +4,7 @@
 
 use super::fastvote_network::{build_frontier_endpoints, parse_deadline, parse_network_config};
 use crate::{
-    args::{ParsedArgs, parse_flags, scalar},
+    args::{ParsedArgs, scalar},
     error::CliError,
     hex::{decode_hex_32, encode_hex},
     net::{BudgetedTransport, CliTransport, OperationBudget},
@@ -19,8 +19,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use sunrise_edge_client::{
-    AtomicityDomainId, ChainId, Client, Epoch, FastPathEd25519Verifier, FastVoteEndpoint,
-    FrozenFrontierCertifier, FrozenFrontierPage, FrozenFrontierPageRequest,
+    AtomicityDomainId, ChainId, Client, Epoch, FastPathCertifier, FastPathEd25519Verifier,
+    FastVoteEndpoint, FrozenFrontierCertifier, FrozenFrontierPage, FrozenFrontierPageRequest,
     FrozenFrontierPageResponse, FrozenFrontierPageVerifier, FrozenFrontierVote, HashSuite,
     HashSuiteResolver, HashSuiteSchedule, MAX_FRONTIER_PAGE_LIMIT,
     MAX_FRONTIER_PAGE_RESPONSE_BYTES, MAX_FRONTIER_VOTE_BYTES, ProtocolVersion, ValidatorId,
@@ -74,10 +74,11 @@ fn flags(action: &str) -> Vec<crate::args::FlagSpec> {
         &["--output-dir", "--page-limit", "--max-pages"]
     };
     specs.extend(extra.iter().map(|flag| scalar(flag)));
+    specs.extend(super::successor_pins::successor_flag_specs(true));
     specs
 }
 
-fn load(parsed: &ParsedArgs) -> Result<Inputs, CliError> {
+fn load(parsed: &ParsedArgs, schedules: Vec<HashSuiteSchedule>) -> Result<Inputs, CliError> {
     let chain: ChainId =
         ChainId::new(parsed.require("--expected-chain-id")?.to_owned()).map_err(failure)?;
     let version: u32 = u32::try_from(parse_u64(
@@ -97,31 +98,71 @@ fn load(parsed: &ParsedArgs) -> Result<Inputs, CliError> {
     let resolver: HashSuiteResolver = HashSuiteResolver::new(
         chain,
         context.protocol_version(),
-        vec![HashSuiteSchedule {
-            activation_epoch: Epoch::new(0),
-            suite: HashSuite::genesis(),
-        }],
+        if schedules.is_empty() {
+            vec![HashSuiteSchedule {
+                activation_epoch: Epoch::new(0),
+                suite: HashSuite::genesis(),
+            }]
+        } else {
+            schedules
+        },
     )
     .map_err(failure)?;
     let digest: [u8; 32] = decode_hex_32(
         "--fastvote-expected-genesis-digest",
         parsed.require("--fastvote-expected-genesis-digest")?,
     )?;
-    let trusted = load_trusted_fastvote_genesis_with_profile(
-        Path::new(parsed.require("--fastvote-genesis-manifest")?),
-        &resolver,
-        digest,
-        &context,
-    )
-    .map_err(failure)?;
-    if !trusted.commitment_profile().is_logical() || trusted.minimum_freeze_block_height() == 0 {
+    let (committee, minimum): (FastPathCertifier, u64) =
+        match super::successor_pins::load_successor_pins(
+            parsed,
+            parsed.require("--fastvote-genesis-manifest")?,
+            digest,
+            &resolver,
+            &context,
+            None,
+        )? {
+            Some(workflow) => {
+                if !workflow
+                    .admission_profile()
+                    .commitment_profile()
+                    .is_logical()
+                {
+                    return Err(invalid(
+                        "frozen frontier requires a signed logical commitment profile",
+                    ));
+                }
+                (
+                    workflow.fastvote_certifier().clone(),
+                    workflow.ordered_policy().minimum_freeze_block_height(),
+                )
+            }
+            None => {
+                let trusted = load_trusted_fastvote_genesis_with_profile(
+                    Path::new(parsed.require("--fastvote-genesis-manifest")?),
+                    &resolver,
+                    digest,
+                    &context,
+                )
+                .map_err(failure)?;
+                if !trusted.commitment_profile().is_logical() {
+                    return Err(invalid(
+                        "frozen frontier requires a signed logical commitment profile",
+                    ));
+                }
+                (
+                    trusted.certifier().clone(),
+                    trusted.minimum_freeze_block_height(),
+                )
+            }
+        };
+    if minimum == 0 {
         return Err(invalid(
             "frozen frontier requires locally pinned signed genesis authorizing Freeze",
         ));
     }
     let peers = parse_network_config(parsed.require("--fastvote-network")?)?;
     let mut endpoints: Vec<FastVoteEndpoint<CliTransport>> = build_frontier_endpoints(&peers)?;
-    validate_fastvote_endpoints(&endpoints, trusted.certifier()).map_err(failure)?;
+    validate_fastvote_endpoints(&endpoints, &committee).map_err(failure)?;
     let validator: ValidatorId = ValidatorId::new(decode_hex_32(
         "--validator-id",
         parsed.require("--validator-id")?,
@@ -135,7 +176,7 @@ fn load(parsed: &ParsedArgs) -> Result<Inputs, CliError> {
         context.chain_id().clone(),
         context.protocol_version(),
         context.epoch(),
-        trusted.certifier().validator_set().clone(),
+        committee.validator_set().clone(),
     )
     .map_err(failure)?;
     let domain: AtomicityDomainId = AtomicityDomainId::new(decode_hex_32(
@@ -148,7 +189,7 @@ fn load(parsed: &ParsedArgs) -> Result<Inputs, CliError> {
         parsed.require("--freeze-request-id")?,
     )?;
     let freeze_height: u64 = parse_u64("--freeze-height", parsed.require("--freeze-height")?)?;
-    if freeze_request == [0; 32] || freeze_height < trusted.minimum_freeze_block_height() {
+    if freeze_request == [0; 32] || freeze_height < minimum {
         return Err(invalid(
             "Freeze pin must name a nonzero request and an eligible actual block height",
         ));
@@ -490,8 +531,8 @@ fn export(parsed: &ParsedArgs, inputs: &Inputs) -> Result<(), CliError> {
 }
 
 pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Result<(), CliError> {
-    let parsed: ParsedArgs = parse_flags(args, &flags(action))?;
-    let inputs: Inputs = load(&parsed)?;
+    let (parsed, schedules) = super::hash_suite_pins::parse_pinned_flags(args, &flags(action))?;
+    let inputs: Inputs = load(&parsed, schedules)?;
     if action == "fastvote-frontier-advance" {
         advance(&parsed, &inputs)
     } else {

@@ -1,16 +1,13 @@
 //! The compiled serving host must refuse, not initialize or repair, ordered
 //! consensus state. Other committed genesis/business rows remain byte-exact.
 
-#[path = "support/genesis_fixture.rs"]
-pub mod genesis_fixture;
-mod support {
-    pub use super::genesis_fixture;
-}
 #[path = "support/causal_genesis_fixture.rs"]
 mod causal_genesis_fixture;
 #[allow(dead_code)]
 #[path = "business_cut/fixture.rs"]
 mod fixture;
+#[path = "support/genesis_fixture.rs"]
+pub mod genesis_fixture;
 
 use fixture::Fixture;
 use node_core::business_reconstruction::{SourceBusinessSnapshot, SourceSnapshotRecord};

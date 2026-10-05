@@ -47,7 +47,7 @@ fn invalid(reason: impl Into<String>) -> CliError {
 }
 
 fn flag_specs() -> Vec<crate::args::FlagSpec> {
-    [
+    let mut specs: Vec<crate::args::FlagSpec> = [
         "--ordered-network",
         "--ordered-genesis-manifest",
         "--ordered-expected-genesis-digest",
@@ -66,7 +66,9 @@ fn flag_specs() -> Vec<crate::args::FlagSpec> {
     ]
     .into_iter()
     .map(scalar)
-    .collect()
+    .collect();
+    specs.extend(super::super::successor_pins::successor_flag_specs(false));
+    specs
 }
 
 // The client borrows transport from the selected endpoint, so construct and

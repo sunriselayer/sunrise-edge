@@ -1,14 +1,11 @@
-//! Thin SDK wrapper over the node-core first-successor evidence verifier
-//! (DR-0189 Section 3.2, Section 9). This is the one entry point
+//! Thin SDK wrapper over the node-core bounded successor-chain verifier
+//! (DR-0191 Sections 2 and 9). This is the one entry point
 //! `clients/rust` uses to reach it, since the module-private verifier
 //! lives in a different module that this crate cannot name directly.
 
-use crate::immutable_archive::ImmutableArchiveReader;
 use crate::load_verified_genesis_root;
-use crate::ordered_history_archive::{
-    read_regular_archive_file, read_verified_ordered_history_archive,
-};
-use crate::successor_artifacts::SuccessorArtifactFiles;
+pub use crate::successor_artifacts::SuccessorLinkArchiveDirectories as SuccessorArtifactDirectories;
+use crate::successor_artifacts::{SuccessorChainArtifactFiles, require_successor_chain_budget};
 use consensus::FastPathCertifier;
 use execution::LocalWasmExecutionEngine;
 use execution::local_execution::LocalExecutionPolicy;
@@ -18,17 +15,18 @@ use node_core::admission_profile::VerifiedAdmissionProfile;
 use node_core::business_reconstruction::BusinessReconstructionPlan;
 use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::{
-    MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES, OrderedEconomicsError, OrderedEconomicsPolicy,
-    OrderedHistoryHeightMaterial, OrderedHistoryIdentity, decode_ordered_history_identity,
+    OrderedEconomicsError, OrderedEconomicsPolicy, OrderedHistoryIdentity,
 };
 use node_core::serving_authority::{
-    SuccessorActivationError, SuccessorArtifactSource, VerifiedSuccessorAuthority,
-    verify_successor_authority,
+    SuccessorActivationError, SuccessorArtifactSource, SuccessorChainArtifacts,
+    SuccessorChainBudget, SuccessorLinkPins, VerifiedSuccessorAuthority,
+    verify_successor_authority, verify_successor_chain_authority,
 };
 use protocol_types::AtomicityDomainId;
 use runtime::{
     DurableOperationContext, StorageCorrelationId, StorageDeadline, WriterFenceGeneration,
 };
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::{error::Error, fmt};
 
@@ -44,12 +42,24 @@ pub fn load_successor_authority(
     verify_successor_authority(plan, manifest_identity, artifacts)
 }
 
+/// Verifies every pinned link from the original genesis through the current
+/// successor. The local budget is checked by core before any artifact call.
+pub fn load_successor_chain_authority(
+    plan: BusinessReconstructionPlan<'_>,
+    links: &[SuccessorLinkPins],
+    budget: SuccessorChainBudget,
+    artifacts: &mut dyn SuccessorChainArtifacts,
+) -> Result<VerifiedSuccessorAuthority, SuccessorActivationError> {
+    verify_successor_chain_authority(plan, links, budget, artifacts)
+}
+
 /// Source-free e+1 workflow composition for successor clients. The ordered
 /// policy feeds the existing ordered submission workflow, the certifier the
 /// existing FastVote quorum and apply workflow, and the expected context is
 /// checked before any signature is created. Nothing here comes from an
 /// endpoint response or a caller epoch flag.
 pub struct SuccessorWorkflowAuthority {
+    root: VerifiedGenesisRoot,
     authority: VerifiedSuccessorAuthority,
     ordered_policy: OrderedEconomicsPolicy,
     certifier: FastPathCertifier,
@@ -96,13 +106,36 @@ pub fn load_successor_workflow(
     artifacts: &mut dyn SuccessorArtifactSource,
 ) -> Result<SuccessorWorkflowAuthority, SuccessorWorkflowError> {
     let root: &VerifiedGenesisRoot = plan.genesis_root;
-    let admission_profile: VerifiedAdmissionProfile = root.admission_profile().clone();
     let authority: VerifiedSuccessorAuthority =
         load_successor_authority(plan, manifest_identity, artifacts)
             .map_err(SuccessorWorkflowError::Authority)?;
-    let ordered_policy: OrderedEconomicsPolicy =
-        OrderedEconomicsPolicy::from_successor(root, authority.policy_inputs())
-            .map_err(SuccessorWorkflowError::Policy)?;
+    compose_successor_workflow(root, authority)
+}
+
+/// Composes the current policy and signing context from the opaque verified
+/// chain, preserving original admission and economics and all owner/history
+/// provenance. No caller-supplied current epoch or policy participates.
+pub fn load_successor_chain_workflow(
+    plan: BusinessReconstructionPlan<'_>,
+    links: &[SuccessorLinkPins],
+    budget: SuccessorChainBudget,
+    artifacts: &mut dyn SuccessorChainArtifacts,
+) -> Result<SuccessorWorkflowAuthority, SuccessorWorkflowError> {
+    let root: &VerifiedGenesisRoot = plan.genesis_root;
+    let authority: VerifiedSuccessorAuthority =
+        load_successor_chain_authority(plan, links, budget, artifacts)
+            .map_err(SuccessorWorkflowError::Authority)?;
+    compose_successor_workflow(root, authority)
+}
+
+fn compose_successor_workflow(
+    root: &VerifiedGenesisRoot,
+    authority: VerifiedSuccessorAuthority,
+) -> Result<SuccessorWorkflowAuthority, SuccessorWorkflowError> {
+    let admission_profile: VerifiedAdmissionProfile = root.admission_profile().clone();
+    let ordered_policy: OrderedEconomicsPolicy = authority
+        .ordered_policy(root)
+        .map_err(SuccessorWorkflowError::Authority)?;
     let context: &PublicationContext = authority.policy_inputs().context();
     let certifier: FastPathCertifier = FastPathCertifier::new(
         context.chain_id().clone(),
@@ -112,6 +145,7 @@ pub fn load_successor_workflow(
     )
     .map_err(|error| SuccessorWorkflowError::Certifier(error.to_string()))?;
     Ok(SuccessorWorkflowAuthority {
+        root: root.clone(),
         authority,
         ordered_policy,
         certifier,
@@ -120,6 +154,11 @@ pub fn load_successor_workflow(
 }
 
 impl SuccessorWorkflowAuthority {
+    /// The independently pinned original root retained by this composition.
+    #[must_use]
+    pub fn genesis_root(&self) -> &VerifiedGenesisRoot {
+        &self.root
+    }
     /// The verified e+1 publication context every new intent must declare.
     #[must_use]
     pub fn expected_context(&self) -> &PublicationContext {
@@ -163,17 +202,6 @@ impl SuccessorWorkflowAuthority {
     }
 }
 
-/// The four existing read-only artifact transports a successor client
-/// verifies: the ordered history through T feeding the plan, the saved
-/// pre-Seal cut, the full history_export through the Seal height h and the
-/// retained readiness certificate directory.
-pub struct SuccessorArtifactDirectories<'p> {
-    pub plan_history: &'p Path,
-    pub cut: &'p Path,
-    pub manifest_history: &'p Path,
-    pub certificate: &'p Path,
-}
-
 /// Loads the original pinned genesis (manifest, digest, schedule, context)
 /// and domain, composes the private reconstruction plan exactly as the
 /// operator does, and runs [load_successor_workflow] over held read-only
@@ -187,6 +215,32 @@ pub fn load_successor_workflow_from_directories(
     domain: AtomicityDomainId,
     directories: &SuccessorArtifactDirectories<'_>,
 ) -> Result<SuccessorWorkflowAuthority, SuccessorWorkflowError> {
+    load_successor_chain_workflow_from_directories(
+        genesis_manifest,
+        resolver,
+        expected_genesis_digest,
+        genesis_context,
+        domain,
+        std::slice::from_ref(directories),
+        SuccessorChainBudget::new(NonZeroU32::MIN),
+    )
+}
+
+/// Loads an ordered chain of the existing archive directory roles. The
+/// explicit budget and nonempty count are checked before any genesis or
+/// artifact I/O. Each link is verified with core's privately derived policy.
+#[allow(clippy::too_many_arguments)]
+pub fn load_successor_chain_workflow_from_directories(
+    genesis_manifest: &Path,
+    resolver: &HashSuiteResolver,
+    expected_genesis_digest: [u8; 32],
+    genesis_context: &PublicationContext,
+    domain: AtomicityDomainId,
+    directories: &[SuccessorArtifactDirectories<'_>],
+    budget: SuccessorChainBudget,
+) -> Result<SuccessorWorkflowAuthority, SuccessorWorkflowError> {
+    require_successor_chain_budget(directories.len(), budget)
+        .map_err(SuccessorWorkflowError::Authority)?;
     let load = |reason: &str, error: &dyn fmt::Display| {
         SuccessorWorkflowError::Load(format!("{reason}: {error}"))
     };
@@ -205,52 +259,30 @@ pub fn load_successor_workflow_from_directories(
     let genesis_policy: OrderedEconomicsPolicy =
         OrderedEconomicsPolicy::from_genesis_root(&root, domain)
             .map_err(SuccessorWorkflowError::Policy)?;
-    let (identity, _ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
-        read_verified_ordered_history_archive(&genesis_policy, directories.plan_history)
-            .map_err(|error| load("plan ordered history", &error))?;
-    let cut: ImmutableArchiveReader = ImmutableArchiveReader::open(directories.cut)
-        .map_err(|error| load("saved cut directory", &error))?;
-    let manifest_history: ImmutableArchiveReader =
-        ImmutableArchiveReader::open(directories.manifest_history)
-            .map_err(|error| load("manifest history directory", &error))?;
-    let certificate: ImmutableArchiveReader = ImmutableArchiveReader::open(directories.certificate)
-        .map_err(|error| load("certificate directory", &error))?;
-    let identity_bytes: Vec<u8> = read_regular_archive_file(
-        manifest_history.root(),
-        Path::new("identity.bin"),
-        MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
-    )
-    .map_err(|error| load("manifest identity", &error))?;
-    // Untrusted transport claim; the core verifier re-derives it.
-    let manifest_identity: OrderedHistoryIdentity =
-        decode_ordered_history_identity(&identity_bytes)
-            .map_err(|error| load("manifest identity", &error))?;
+    let mut artifacts: SuccessorChainArtifactFiles =
+        SuccessorChainArtifactFiles::open(directories, budget)
+            .map_err(SuccessorWorkflowError::Authority)?;
+    let links: Vec<SuccessorLinkPins> = artifacts.pins();
+    let identity: &OrderedHistoryIdentity = &links
+        .first()
+        .ok_or_else(|| SuccessorWorkflowError::Load("successor chain is empty".into()))?
+        .cut_identity;
     let base_policy: LocalExecutionPolicy =
         LocalExecutionPolicy::generic_object_results(genesis_context.clone());
     let engine: LocalWasmExecutionEngine = LocalWasmExecutionEngine::new();
-    let plan = |operation: DurableOperationContext| BusinessReconstructionPlan {
+    let plan: BusinessReconstructionPlan<'_> = BusinessReconstructionPlan {
         genesis_root: &root,
-        operation_context: operation,
+        operation_context: private_reconstruction_operation()?,
         domain,
         resolver_history: &[],
         ordered_policy: &genesis_policy,
-        ordered_history_identity: &identity,
+        ordered_history_identity: identity,
         ordered_leg_policy: &base_policy,
         ordered_engine: &engine,
         paid_base_policy: &base_policy,
         paid_engine: &engine,
     };
-    let mut artifacts: SuccessorArtifactFiles<'_> = SuccessorArtifactFiles::new(
-        plan(private_reconstruction_operation()?),
-        cut,
-        manifest_history,
-        certificate,
-    );
-    load_successor_workflow(
-        plan(private_reconstruction_operation()?),
-        &manifest_identity,
-        &mut artifacts,
-    )
+    load_successor_chain_workflow(plan, &links, budget, &mut artifacts)
 }
 
 /// Exists only for private source-free reconstruction, never authority
@@ -269,4 +301,58 @@ fn private_reconstruction_operation() -> Result<DurableOperationContext, Success
             .ok_or_else(invalid)?,
         StorageCorrelationId::new([0xB9; 16]).ok_or_else(invalid)?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol_types::{ChainId, Epoch, HashSuite, HashSuiteSchedule, ProtocolVersion};
+
+    #[test]
+    fn directory_chain_budget_refuses_before_genesis_or_artifact_io() {
+        let context: PublicationContext = PublicationContext::new(
+            ChainId::new("successor-sdk-budget").unwrap(),
+            ProtocolVersion::new(1),
+            Epoch::new(0),
+        )
+        .unwrap();
+        let resolver: HashSuiteResolver = HashSuiteResolver::new(
+            context.chain_id().clone(),
+            context.protocol_version(),
+            vec![HashSuiteSchedule {
+                activation_epoch: Epoch::new(0),
+                suite: HashSuite::genesis(),
+            }],
+        )
+        .unwrap();
+        let missing: &Path = Path::new("/nonexistent/successor-sdk-budget-before-genesis");
+        let directories: Vec<SuccessorArtifactDirectories<'_>> = (0..2)
+            .map(|_| SuccessorArtifactDirectories {
+                plan_history: missing,
+                cut: missing,
+                manifest_history: missing,
+                certificate: missing,
+            })
+            .collect();
+        let result: Result<SuccessorWorkflowAuthority, SuccessorWorkflowError> =
+            load_successor_chain_workflow_from_directories(
+                missing,
+                &resolver,
+                [0; 32],
+                &context,
+                AtomicityDomainId::new([1; 32]).unwrap(),
+                &directories,
+                SuccessorChainBudget::new(NonZeroU32::MIN),
+            );
+        assert!(matches!(
+            result,
+            Err(SuccessorWorkflowError::Authority(
+                SuccessorActivationError::ChainBudgetExceeded {
+                    links: 2,
+                    budget: 1
+                }
+            ))
+        ));
+        assert!(!missing.exists());
+    }
 }

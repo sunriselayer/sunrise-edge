@@ -671,6 +671,33 @@ unchanged. `refuse_successor_serving` at `frontier.rs:270`,
 as today, `Successor` after issuer and signer checks, `Replay` refuses to
 sign. Legacy `epoch_transition.rs:648,812` stays refused.
 
+### Historical material export is not live authority
+
+After its own Seal, a successor cannot obtain a fresh `LiveWarrant`. It may
+still expose immutable ordered-history material through the existing bounded
+summary, descriptor and chunk owners. No historical signing warrant, new
+verification engine or relaxation of the live gate is needed.
+
+The thin imported-source composition freshly verifies the independently pinned
+chain through activation of the source epoch, derives the policy from that
+authority and checks the explicit epoch/domain/physical validator namespace
+and exact completed import binding. It reads the current fence and uses a
+bounded operation context without advancing the fence, installing or repairing
+state. Original-only `ExistingSqliteSource` remains unchanged. Historical
+SQLite open permits imported/Sealed consumption but is not an OS-enforced
+read-only connection; this composition invokes only read methods.
+
+Freeze one target identity, reuse the existing material/export format and
+verify the complete fixed prefix before marking export complete. A post-Seal
+export also observes `Sealed` at the expected epoch and compares the terminal
+Seal height, block digest and request to that barrier. Corruption, missing
+material, changed target, expiry or fencing refuse. Public materials prove
+ordering/material consistency only, not business effects, accepted Seal,
+readiness or activation. Those claims remain with reconstruction and the full
+chain verifier. If mounted over HTTP, only the three history-query routes use
+this read composition; no signer, control or mutation route bypasses its fresh
+live authority check.
+
 ## 8. Seal retirement of N_k (runtime/store)
 
 Two methods join the existing opt-in `SuccessorServingRepository`
@@ -693,12 +720,16 @@ No schema change.
 - **Both, in one lock or transaction:** writer fence and deadline; domain;
   lifecycle `CompleteInactive` with binding and progress equal to the
   observation; slot `Serving` with record byte-equal to `observation.record`;
+  the physical namespace validator equals the record's local validator;
   barrier `Unsealed`; `token.check(namespace, domain, fence, current
   sequence)`; empty Seal outbox; every read assertion, including folded
   warrant reads.
 - **Completion also:** receipt id equals `sealed.request`; no object reads or
   mutations; outbox absent or empty; no existing receipt, outbox or delivery
-  for the request; encodable `SealBarrier`.
+  for the request; encodable `SealBarrier`; the checked successor epoch
+  `binding.context.epoch + 1` equals `sealed.outgoing_epoch`. This structural
+  check is in the same storage transaction and supplements, not substitutes
+  for, core verification of the current epoch and exact Seal request.
 - **Then atomically:** apply state; on completion insert the receipt and
   install `Sealed(sealed)` (`transition_history` Virgin, as this is the
   namespace’s first Seal); advance the sequence once. A pre-commit failure is
@@ -847,7 +878,13 @@ unchanged.
    assigns typed-port injection to actual successor engine/activation callers
    and observable restart/catch-up to the compiled process. All owners remain
    in the mandatory profile; no behavior is dropped or inferred from another
-   boundary's result.
+   boundary's result. After the real restart and signerless missed-prefix
+   recovery, verify the restored host's actual returned votes over the Freeze
+   and outgoing Seal candidate plus both certified descendants. Bind the
+   saved endpoint acknowledgements to the chronological proposal/QC artifacts
+   and locally pinned policy; retain every host's completion and equal receipts.
+   A minimal quorum need not contain every responding voter, so status QC
+   membership alone does not prove or disprove actual signing participation.
 9. **Sealed namespaces.** Every Sealed N_k refuses live controls, ordered
    votes, FastVote signatures and paid admission; e_{k-1} votes and QCs are
    refused at e_{k+1}.

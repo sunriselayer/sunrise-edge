@@ -2,15 +2,27 @@
 #![forbid(unsafe_code)]
 
 use crate::{
-    business_cut::{CutArchiveLimits, export_source_business_cut, verify_business_cut_archive},
-    business_pins::{BusinessPinInputs, BusinessPins, bounded, hex, private_operation},
-    common::{FlagSet, parse_hex_32},
+    business_cut::{
+        CutArchiveLimits, export_source_business_cut, export_successor_source_business_cut,
+        read_business_cut_archive, verify_business_cut_archive,
+    },
+    business_pins::{BusinessPinInputs, BusinessPins, bounded, hex, operation, private_operation},
+    common::{FlagSet, load_signing_key_file, parse_hex_32},
     immutable_archive::ImmutableArchive,
     source_sqlite::ExistingSqliteSource,
+    successor_artifacts::{CHAIN_FLAGS, SuccessorChainArtifactFiles, SuccessorChainInputs},
 };
 use node_core::business_reconstruction::BusinessReconstructionPlan;
+use node_core::business_reconstruction::cut::SavedBusinessCut;
+use node_core::business_reconstruction::inactive_import::{
+    VerifiedImportPlan, verify_saved_business_import_chain,
+};
+use node_core::serving_authority::{
+    LiveAuthority, SuccessorLinkPins, resolve_live_authority_chain,
+};
 use protocol_types::ValidatorId;
 use runtime::DurableOperationContext;
+use runtime_sqlite::{SqliteBlobStore, SqliteImportTarget, SqliteNamespace};
 use std::{error::Error, ffi::OsString, path::PathBuf};
 
 const FLAGS: &[&str] = &[
@@ -30,8 +42,9 @@ const FLAGS: &[&str] = &[
     "--page-size",
     "--chunk-size",
     "--max-new-work",
+    "--signer-key-file",
 ];
-const HELP: &str = "Pre-Seal business candidate only; no import, readiness, Seal or activation.\nModes: export-sqlite | verify-saved.\nBoth require: --chain-id --protocol-version --epoch --domain --suite epoch:id:tx:object:effects:code:config:certificate --genesis-manifest --expected-genesis-digest --ordered-history-dir --out-dir (existing directory).\nExport additionally requires: --state-db --blob-db --validator-id. Optional export bounds: --page-size 1..128 (128), --chunk-size 1..1048576 (1048576), --max-new-work 1..4096 (4096), --timeout-seconds 1..3600 (300).\nExport opens existing initialized SQLite files only, never creates or advances a fence. Changed source/token or saved bytes refuse. Resume uses the same pins, source, directory and transfer sizing. Saved verification reconstructs all original proofs without opening the source DB and grants no serving/signing authority.";
+const HELP: &str = "Pre-Seal business candidate only; no import, readiness, Seal or activation.\nModes: export-sqlite | verify-saved.\nBoth require: --chain-id --protocol-version --epoch --domain --suite epoch:id:tx:object:effects:code:config:certificate --genesis-manifest --expected-genesis-digest --ordered-history-dir --out-dir (existing directory). Optional successor chain (all five or none, either mode): --successor-max-links once plus one or more equal-count repeated --successor-plan-history-dir --successor-cut-dir --successor-manifest-history-dir --successor-certificate-dir links, up to that budget.\nExport additionally requires: --state-db --blob-db --validator-id, and in successor mode --signer-key-file to pin (not sign with) the successor's public key. Optional export bounds: --page-size 1..128 (128), --chunk-size 1..1048576 (1048576), --max-new-work 1..4096 (4096), --timeout-seconds 1..3600 (300).\nExport opens existing initialized SQLite files only, never creates or advances a fence. Changed source/token or saved bytes refuse. Resume uses the same pins, source, directory and transfer sizing. Saved verification reconstructs all original proofs without opening the source DB or a signer key, and grants no serving/signing authority.";
 
 struct ExportInputs {
     state: PathBuf,
@@ -39,6 +52,7 @@ struct ExportInputs {
     validator: ValidatorId,
     timeout: u64,
     limits: CutArchiveLimits,
+    signer_key_file: Option<PathBuf>,
 }
 
 /// Runs the same pinned local composition as the `business_cut` executable.
@@ -58,7 +72,11 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         Some("verify-saved") => false,
         _ => return Err("unknown business cut mode; use --help".into()),
     };
-    let mut flags: FlagSet = FlagSet::parse(values, FLAGS, &[])?;
+    let mut accepted: Vec<&'static str> = FLAGS.to_vec();
+    accepted.extend_from_slice(CHAIN_FLAGS);
+    let mut flags: FlagSet = FlagSet::parse(values, &accepted, &[])?;
+    let chain_inputs: Option<SuccessorChainInputs> =
+        SuccessorChainInputs::parse_optional(&mut flags)?;
     let pin_inputs: BusinessPinInputs = BusinessPinInputs::parse(&mut flags)?;
     let output: PathBuf = flags.one("--out-dir")?.into();
     let export_inputs: Option<ExportInputs> = if exporting {
@@ -102,18 +120,127 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
             validator,
             timeout,
             limits: CutArchiveLimits::new(page, chunk, new_work)?,
+            signer_key_file: if chain_inputs.is_some() {
+                Some(flags.one("--signer-key-file")?.into())
+            } else {
+                None
+            },
         })
     } else {
         None
     };
     // Mode-irrelevant source, TLS and signing inputs are never silently ignored.
     flags.finish()?;
-    let pins: BusinessPins = pin_inputs.load()?;
+    if let Some(inputs) = &export_inputs
+        && inputs.state == inputs.blobs
+    {
+        return Err("state and blob database paths must be distinct".into());
+    }
+    let mut chain_artifacts: Option<SuccessorChainArtifactFiles> = chain_inputs
+        .as_ref()
+        .map(SuccessorChainInputs::open)
+        .transpose()?;
+    if let Some(artifacts) = &chain_artifacts {
+        artifacts.require_output_outside(&output.join("complete"))?;
+        if let Some(inputs) = &export_inputs {
+            for path in [&inputs.state, &inputs.blobs] {
+                artifacts.require_output_outside(path)?;
+            }
+        }
+    }
+    let pins: BusinessPins = match (&chain_inputs, &mut chain_artifacts) {
+        (Some(chain), Some(artifacts)) => {
+            pin_inputs.load_with_successor(artifacts, chain.budget)?
+        }
+        (None, None) => pin_inputs.load()?,
+        _ => return Err("successor predecessor artifacts are incomplete".into()),
+    };
     let archive: ImmutableArchive = if exporting {
         ImmutableArchive::open(&output)?
     } else {
         ImmutableArchive::open_read_only(&output)?
     };
+    if let Some(authority) = pins.successor_authority() {
+        if let Some(inputs) = export_inputs {
+            if pins.policy.registered_validator(inputs.validator).is_none() {
+                return Err("source validator is absent from verified current committee".into());
+            }
+            let key_path: PathBuf = inputs
+                .signer_key_file
+                .ok_or("successor source requires --signer-key-file")?;
+            let key: ed25519_zebra::SigningKey = load_signing_key_file(&key_path)?;
+            let public_key: [u8; 32] = ed25519_zebra::VerificationKey::from(&key).into();
+            let source: SqliteImportTarget = SqliteImportTarget::open_existing(
+                &inputs.state,
+                SqliteNamespace::new(
+                    pins.context.chain_id().clone(),
+                    inputs.validator,
+                    pins.domain,
+                ),
+                authority.import_binding(),
+            )?;
+            let blobs: SqliteBlobStore = SqliteBlobStore::open_existing(&inputs.blobs)?;
+            let context: DurableOperationContext =
+                operation(source.writer_fence()?, inputs.timeout, [0xBC; 16])?;
+            let artifacts: &mut SuccessorChainArtifactFiles = chain_artifacts
+                .as_mut()
+                .ok_or("successor artifacts unavailable")?;
+            let links: Vec<SuccessorLinkPins> = artifacts.pins();
+            let chain: &SuccessorChainInputs =
+                chain_inputs.as_ref().ok_or("successor pins unavailable")?;
+            let warrant = match resolve_live_authority_chain(
+                &source,
+                &context,
+                pins.domain,
+                pins.chain_plan(private_operation()?),
+                &links,
+                chain.budget,
+                artifacts,
+                public_key,
+            )? {
+                LiveAuthority::Successor(warrant) => warrant,
+                LiveAuthority::OriginalGenesis => {
+                    return Err("successor cut source is an ordinary namespace".into());
+                }
+            };
+            artifacts.require_output_outside(&output.join("complete"))?;
+            let progress = export_successor_source_business_cut(
+                pins.plan(context),
+                &warrant,
+                &source,
+                &blobs,
+                &pins.ordered,
+                &archive,
+                inputs.limits,
+            )?;
+            println!(
+                "business_cut={} cut={} package={} newly_saved_files={} meaning=pre-seal-candidate-not-import-readiness-seal-or-activation",
+                if progress.complete {
+                    "complete"
+                } else {
+                    "partial"
+                },
+                hex(&progress.cut_digest.bytes()),
+                hex(&progress.package_digest.bytes()),
+                progress.newly_saved_files
+            );
+        } else {
+            let saved: SavedBusinessCut =
+                read_business_cut_archive(&pins.plan(private_operation()?), &archive)?;
+            let verified: VerifiedImportPlan = verify_saved_business_import_chain(
+                pins.plan(private_operation()?),
+                authority,
+                pins.cut_identity(),
+                &saved,
+            )?;
+            println!(
+                "business_cut=independently-verified cut={} package={} meaning=pre-seal-candidate-not-import-readiness-seal-or-activation",
+                hex(&verified.binding().cut_digest.bytes()),
+                hex(&verified.binding().package_digest.bytes())
+            );
+        }
+        return Ok(());
+    }
     let source: Option<ExistingSqliteSource> = if let Some(inputs) = &export_inputs {
         if pins.policy.registered_validator(inputs.validator).is_none() {
             return Err("source validator is absent from pinned genesis".into());

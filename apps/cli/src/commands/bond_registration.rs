@@ -8,7 +8,8 @@ use sunrise_edge_client::{
     bond_registration::{
         BondRegistrationContext, FastPathBondRecord, MAX_BOND_REGISTRATION_ROW_BYTES,
         MAX_LOCAL_EXECUTION_INTENT_BYTES, PreparedLocalBondRegistration,
-        decode_fastpath_bond_record,
+        PreparedSuccessorBondRegistration, decode_fastpath_bond_record,
+        prepare_successor_bond_registration,
     },
 };
 
@@ -56,8 +57,10 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
         println!("{HELP}");
         return Ok(());
     }
+    let mut flags: Vec<FlagSpec> = FLAGS.to_vec();
+    flags.extend(super::successor_pins::successor_flag_specs(false));
     let (parsed, schedules): (ParsedArgs, Vec<HashSuiteSchedule>) =
-        parse_pinned_flags(args, FLAGS)?;
+        parse_pinned_flags(args, &flags)?;
     if schedules.is_empty() {
         return Err(invalid("one to 64 explicit --suite entries are required"));
     }
@@ -90,22 +93,62 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
             .map_err(failure)?;
     let resolver: HashSuiteResolver =
         HashSuiteResolver::new(chain_id, protocol_version, schedules).map_err(failure)?;
-    let trusted: BondRegistrationContext = BondRegistrationContext::load(
-        Path::new(manifest_path),
-        &resolver,
-        expected_digest,
-        &context,
-        domain,
-    )
-    .map_err(failure)?;
+    let workflow: Option<sunrise_edge_client::SuccessorWorkflowAuthority> =
+        super::successor_pins::load_successor_pins(
+            &parsed,
+            manifest_path,
+            expected_digest,
+            &resolver,
+            &context,
+            Some(domain),
+        )?;
+    let trusted: Option<BondRegistrationContext> = if workflow.is_none() {
+        Some(
+            BondRegistrationContext::load(
+                Path::new(manifest_path),
+                &resolver,
+                expected_digest,
+                &context,
+                domain,
+            )
+            .map_err(failure)?,
+        )
+    } else {
+        None
+    };
     let leg: Vec<u8> = read_bounded(signed_leg_path, MAX_LOCAL_EXECUTION_INTENT_BYTES)?;
     let row_bytes: Vec<u8> = read_bounded(predicted_row_path, MAX_BOND_REGISTRATION_ROW_BYTES)?;
     let predicted_initial_row: FastPathBondRecord =
         decode_fastpath_bond_record(&row_bytes).map_err(failure)?;
     let signer: LocalSigner = LocalSigner::from_seed(load_dev_seed(Path::new(seed_path))?);
-    let prepared: PreparedLocalBondRegistration = trusted
-        .prepare(&signer, request_id, leg, predicted_initial_row)
-        .map_err(failure)?;
+    let (prepared, successor_prepared): (
+        Option<PreparedLocalBondRegistration>,
+        Option<PreparedSuccessorBondRegistration<'_>>,
+    ) = match (&trusted, &workflow) {
+        (Some(trusted), None) => (
+            Some(
+                trusted
+                    .prepare(&signer, request_id, leg, predicted_initial_row)
+                    .map_err(failure)?,
+            ),
+            None,
+        ),
+        (None, Some(workflow)) => (
+            None,
+            Some(
+                prepare_successor_bond_registration(
+                    workflow,
+                    &context,
+                    &signer,
+                    request_id,
+                    leg,
+                    predicted_initial_row,
+                )
+                .map_err(failure)?,
+            ),
+        ),
+        _ => return Err(invalid("registration authority composition is incomplete")),
+    };
     let mut outputs: Vec<ReservedArtifact> = reserve_artifacts(
         &[(out_path, "signed-bond-registration")],
         &[
@@ -119,13 +162,24 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
         .pop()
         .ok_or_else(|| invalid("registration output reservation is missing"))?;
     output.ensure_attached()?;
-    let bytes: Vec<u8> = prepared.sign(&signer).map_err(failure)?;
+    let (validator, bytes): (sunrise_edge_client::ValidatorId, Vec<u8>) =
+        match (&prepared, &successor_prepared) {
+            (Some(prepared), None) => (
+                prepared.validator_id(),
+                prepared.sign(&signer).map_err(failure)?,
+            ),
+            (None, Some(prepared)) => (
+                prepared.validator_id(),
+                prepared.sign(&signer, &context).map_err(failure)?,
+            ),
+            _ => return Err(invalid("registration preparation is incomplete")),
+        };
     output.persist(&bytes)?;
     println!("preparation=structural_registration_claim");
     println!("executed=false");
     println!(
         "validator_id={}",
-        crate::hex::encode_hex(prepared.validator_id().as_bytes())
+        crate::hex::encode_hex(validator.as_bytes())
     );
     println!("request_id={}", crate::hex::encode_hex(&request_id));
     println!("signed_registration_bytes={}", bytes.len());

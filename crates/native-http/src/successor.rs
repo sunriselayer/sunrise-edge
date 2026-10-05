@@ -1,7 +1,7 @@
-//! DR-0189 first-successor native HTTP surface (Sections 8, 9 and 12).
+//! DR-0191 recurring-successor native HTTP surface (Sections 7, 9 and 12).
 //!
 //! [successor_router] mounts the original native route paths and wire bytes
-//! for a destination whose namespace serves a verified first successor. It is
+//! for a destination whose namespace serves a verified successor chain. It is
 //! a separate constructor: it never mounts the node event route or a direct
 //! mutation route, and never consults an ordinary-genesis policy. Every
 //! storage-touching request allocates a fresh operation context and resolves
@@ -13,9 +13,10 @@
 //! chain/protocol/epoch still run before identity, clock or storage access.
 //! Ordered envelope and candidate authentication need the verified e+1
 //! committee, so they run after resolution and before the owning core entry.
-//! Permanent epoch-handoff, drain and direct-mutation paths answer the
-//! existing explicit 422 successor-control-unsupported. Ordered history
-//! reads serve only the successor-scoped e+1 history under a fresh warrant.
+//! Frontier, drain and ordered Seal controls enter the same core owners with
+//! a fresh warrant. Direct-mutation paths keep the existing explicit 422
+//! successor-control-unsupported. Ordered history reads serve only the
+//! verified current epoch under a fresh warrant.
 
 use super::*;
 use abi::package_types::PackageOrigin;
@@ -50,27 +51,19 @@ use node_wire::ordered_economics::{
     ORDERED_ECONOMICS_TICK_PATH, ORDERED_OUTCOME_MEDIA_TYPE, ORDERED_PROPOSAL_MEDIA_TYPE,
     ORDERED_PROPOSE_REQUEST_MEDIA_TYPE, ORDERED_STATUS_MEDIA_TYPE, OrderedProposeRequest,
 };
-use runtime::DurableStateKeyScanner;
+use runtime::{
+    DurableStateKeyScanner, outbox_guard::StructuredOutboxExclusionGuard,
+    portable::DurablePortableRepository,
+};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-/// Paths that are permanently unsupported at a first successor: Freeze
-/// frontier and drain controls (DR-0189 Section 8) and every direct/legacy
-/// mutation route certified hosting already excludes. They refuse before
+/// Direct/legacy mutation routes certified hosting already excludes. They refuse before
 /// identity, clock, storage or authority access.
 pub const SUCCESSOR_REFUSED_CONTROL_PATHS: &[&str] = &[
     NODE_EVENT_PATH,
     publication::PUBLICATION_PATH,
     local_execution::EXECUTION_PATH,
     paid_execution::PAID_EXECUTION_PATH,
-    FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
-    FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
-    node_wire::FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH,
-    node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
-    node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
-    node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH,
-    node_wire::FASTVOTE_DRAIN_IMPORT_PATH,
-    node_wire::FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,
-    node_wire::FASTVOTE_DRAIN_APPLY_PATH,
 ];
 
 /// Host-owned resolution of one invocation authority.
@@ -78,11 +71,17 @@ pub const SUCCESSOR_REFUSED_CONTROL_PATHS: &[&str] = &[
 /// Implementations pin the original genesis, schedule and domain, own the
 /// writer-fenced store, the retained artifact directories and the local
 /// signer public key, and call
-/// node_core::serving_authority::resolve_live_authority afresh on every
+/// node_core::serving_authority::resolve_live_authority_chain afresh on every
 /// call. They never cache a warrant, verified evidence or a decision.
 pub trait SuccessorAuthoritySource<S>: Send + Sync {
     /// The original pinned verified genesis root, never a replacement.
     fn genesis_root(&self) -> &VerifiedGenesisRoot;
+    /// The same namespace's portable blob repository for core's independent
+    /// live Seal closure. A composition without this existing capability
+    /// keeps Seal unavailable; the repository itself grants no authority.
+    fn seal_blob_repository(&self) -> Option<&dyn runtime::portable::PortableBlobRepository> {
+        None
+    }
     /// One full fresh resolution under exactly this store and context.
     fn resolve<'inv>(
         &self,
@@ -371,11 +370,13 @@ impl OrderedScope {
         host: &SuccessorHostComposition<S>,
         warrant: &LiveWarrant<'_>,
     ) -> Result<Self, Response> {
-        let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::from_successor(
-            host.authority.genesis_root(),
-            warrant.policy_inputs(),
-        )
-        .map_err(|error: OrderedEconomicsError| ordered_error(&error))?;
+        let policy: OrderedEconomicsPolicy = warrant
+            .ordered_policy(host.authority.genesis_root())
+            .map_err(|error: SuccessorActivationError| {
+                invocation_error_response(&SuccessorInvocationError::Authority(
+                    ServingAuthorityError::from(error),
+                ))
+            })?;
         let leg_policy: LocalExecutionPolicy =
             LocalExecutionPolicy::generic_object_results(warrant.policy_inputs().context().clone());
         Ok(Self { policy, leg_policy })
@@ -391,7 +392,14 @@ impl OrderedScope {
             leg_policy: &self.leg_policy,
             engine: host.engine.as_ref(),
             blobs: host.blobs.as_ref(),
-            seal: None,
+            seal: host.authority.seal_blob_repository().map(|blobs| {
+                core_ordered::OrderedSealComposition {
+                    genesis_root: host.authority.genesis_root(),
+                    paid_base_policy: &self.leg_policy,
+                    paid_engine: host.engine.as_ref(),
+                    blobs,
+                }
+            }),
         }
     }
 }
@@ -550,8 +558,25 @@ fn fastvote_preflight(headers: &HeaderMap, body: &Bytes, maximum: usize) -> Opti
     None
 }
 
-trait SuccessorStore: DurableStateKeyScanner + Send + Sync + 'static {}
-impl<S: DurableStateKeyScanner + Send + Sync + 'static> SuccessorStore for S {}
+trait SuccessorStore:
+    DurableStateKeyScanner
+    + DurablePortableRepository
+    + StructuredOutboxExclusionGuard
+    + Send
+    + Sync
+    + 'static
+{
+}
+impl<
+    S: DurableStateKeyScanner
+        + DurablePortableRepository
+        + StructuredOutboxExclusionGuard
+        + Send
+        + Sync
+        + 'static,
+> SuccessorStore for S
+{
+}
 
 fn signer<S>(host: &SuccessorHostComposition<S>) -> DynConsensusSigner<'_> {
     DynConsensusSigner(host.signer.as_ref())
@@ -1524,19 +1549,26 @@ where
     )
 }
 
-/// Builds the first-successor router over the original route paths.
+/// Builds the recurring-successor router over the original route paths.
 ///
 /// Served through a fresh warrant: liveness (no storage), the context,
 /// object, receipt, next-nonce, publication, instance and fee-policy
 /// queries; ordered propose, vote, certificate, observe, status, outcome and
 /// tick; FastVote prepare, apply, publication source, availability ACK and
-/// published apply; fee-claim preparation; and successor-scoped ordered
-/// history reads. [SUCCESSOR_REFUSED_CONTROL_PATHS] answer 422 before I/O.
+/// published apply; fee-claim preparation; frontier, drain and Seal controls;
+/// and successor-scoped ordered history reads. The store must provide the
+/// existing portable repository and outbox exclusion capabilities required
+/// by those same core owners. [SUCCESSOR_REFUSED_CONTROL_PATHS] answer 422 before I/O.
 pub fn successor_router<S>(
     host: SuccessorHostComposition<S>,
 ) -> Result<Router, SuccessorRouterError>
 where
-    S: DurableStateKeyScanner + Send + Sync + 'static,
+    S: DurableStateKeyScanner
+        + DurablePortableRepository
+        + StructuredOutboxExclusionGuard
+        + Send
+        + Sync
+        + 'static,
 {
     if host.resolver.protocol_version() != host.protocol_config.protocol_version {
         return Err(SuccessorRouterError::ProtocolVersionMismatch);
@@ -1616,14 +1648,20 @@ where
                 node_wire::MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES,
             )),
         )
-        .merge(history::routes::<S>());
+        .merge(history::routes::<S>())
+        .merge(controls::routes::<S>());
     for path in SUCCESSOR_REFUSED_CONTROL_PATHS {
         router = router.route(path, any(refused_control));
     }
     Ok(router.with_state(shared))
 }
 
+mod controls;
+mod historical;
 mod history;
+pub use historical::{
+    SuccessorHistoricalComposition, SuccessorHistoricalPolicySource, successor_history_router,
+};
 
 #[cfg(test)]
 mod tests;

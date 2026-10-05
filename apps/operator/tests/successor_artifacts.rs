@@ -4,13 +4,10 @@
 //! These prove transport bound and local-attachment behavior only -- never
 //! committed-proof, Seal or consensus verification, which stays with the
 //! one node-core source-free verifier this adapter feeds.
-#[path = "support/genesis_fixture.rs"]
-pub mod genesis_fixture;
-mod support {
-    pub use super::genesis_fixture;
-}
 #[path = "support/causal_genesis_fixture.rs"]
 mod causal_genesis_fixture;
+#[path = "support/genesis_fixture.rs"]
+pub mod genesis_fixture;
 
 use execution::{LocalWasmExecutionEngine, local_execution::LocalExecutionPolicy};
 use node_core::business_reconstruction::BusinessReconstructionPlan;

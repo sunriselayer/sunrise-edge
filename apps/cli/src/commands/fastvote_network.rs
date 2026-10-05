@@ -63,11 +63,11 @@ use sunrise_edge_client::{
     decode_signed_paid_intent, encode_availability_certificate, encode_fast_certificate,
     encode_signed_paid_intent, load_trusted_fastvote_genesis_with_profile,
     local_execution::{encode_instance_record, instance_target},
-    local_publication_resolver, require_external_request_lane, validate_fastvote_endpoints,
+    require_external_request_lane, validate_fastvote_endpoints,
 };
 
 use crate::{
-    args::{ParsedArgs, parse_flags, scalar},
+    args::{ParsedArgs, scalar},
     error::CliError,
     hex::{decode_hex_32, encode_hex},
     net::{CliTransport, OperationBudget, TLS_CA_CERT_DER_FILE, TLS_SERVER_NAME, build_transport},
@@ -343,15 +343,31 @@ pub(super) fn load_drain_endpoints_and_certifier(
     resolver: &sunrise_edge_client::HashSuiteResolver,
     context: &sunrise_edge_client::PublicationContext,
 ) -> Result<(Vec<FastVoteEndpoint<CliTransport>>, FastPathCertifier, u64), CliError> {
-    if super::successor_pins::successor_requested(parsed) {
-        return Err(invalid(
-            "successor-control-unsupported: drain and Freeze frontier actions are unavailable at a first successor",
-        ));
-    }
     let digest: [u8; 32] = decode_hex_32(
         "--fastvote-expected-genesis-digest",
         parsed.require("--fastvote-expected-genesis-digest")?,
     )?;
+    if let Some(workflow) = super::successor_pins::load_successor_pins(
+        parsed,
+        parsed.require("--fastvote-genesis-manifest")?,
+        digest,
+        resolver,
+        context,
+        None,
+    )? {
+        let profile: CommitmentProfile = workflow.admission_profile().commitment_profile();
+        let minimum: u64 = workflow.ordered_policy().minimum_freeze_block_height();
+        if !profile.is_logical() || minimum == 0 {
+            return Err(invalid(
+                "drain requires locally pinned signed genesis authorizing Freeze",
+            ));
+        }
+        let peers: Vec<PeerConfig> = parse_network_config(parsed.require("--fastvote-network")?)?;
+        let endpoints: Vec<FastVoteEndpoint<CliTransport>> = build_endpoints(&peers, profile)?;
+        let certifier: FastPathCertifier = workflow.fastvote_certifier().clone();
+        validate_fastvote_endpoints(&endpoints, &certifier).map_err(failure)?;
+        return Ok((endpoints, certifier, minimum));
+    }
     let trusted: sunrise_edge_client::TrustedFastVoteGenesis =
         load_trusted_fastvote_genesis_with_profile(
             Path::new(parsed.require("--fastvote-genesis-manifest")?),
@@ -905,7 +921,7 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
     ];
     specs.extend(network_flag_specs());
     specs.extend(REPLAY_VALUE_FLAGS_EXTRA.iter().map(|name| scalar(name)));
-    let parsed: ParsedArgs = parse_flags(args, &specs)?;
+    let (parsed, schedules) = super::hash_suite_pins::parse_pinned_flags(args, &specs)?;
     let budget: OperationBudget = parse_deadline(&parsed)?;
     if parsed.get("--fastvote-signed-intent-out").is_some() {
         return Err(invalid(
@@ -969,7 +985,7 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
         .transpose()?;
 
     let expected = super::standard_asset::parse_expected_context(&parsed)?;
-    let resolver = local_publication_resolver(&expected)?;
+    let resolver = super::hash_suite_pins::publication_resolver(&expected, schedules)?;
     let context = sunrise_edge_client::PublicationContext::new(
         expected.chain_id().clone(),
         expected.protocol_version(),
