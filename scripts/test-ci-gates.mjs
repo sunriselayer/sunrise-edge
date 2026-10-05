@@ -10,11 +10,12 @@ import { requiredGateGroups, postgresGateGroups, requireSuccessfulGateResults } 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const registry = join(root, "scripts/ci-gates.sh");
 const execution = join(root, "scripts/ci-execution.sh");
-const requiredGroups = ["lint", "rust-tests", "portable-tools", "cloudflare"];
+const requiredGroups = ["lint", "rust-tests", "portable-tools", "cloudflare", "core-recurrence", "readiness-sqlite", "recurring-sqlite"];
 const postgresGroups = ["pg-storage", "pg-lifecycle", "pg-drain-history", "pg-business-audit", "pg-recovery-economics"];
 const groups = [
   "lint", "rust-tests", "pg-storage", "pg-lifecycle", "pg-drain-history",
   "pg-business-audit", "pg-recovery-economics", "portable-tools", "cloudflare",
+  "core-recurrence", "readiness-sqlite", "recurring-sqlite",
 ];
 assert.deepEqual(requiredGateGroups, requiredGroups);
 assert.deepEqual(postgresGateGroups, postgresGroups);
@@ -26,8 +27,8 @@ function registryRows(array) {
 // Fixed independent plan expectations accompany, not replace, the command
 // coverage baselines below. The implementation registry cannot certify itself.
 const expectedPlans = [
-  ["required", "required", "gate-contract rust-style rust-tests-required sqlite-inventory soak-cli vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene"],
-  ["full", "postgres", "gate-contract rust-style rust-tests-full sqlite-inventory pg-inventory pg-protocol-all soak-cli pg-soak vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene"],
+  ["required", "required", "gate-contract rust-style rust-tests-required sqlite-inventory core-recurrence readiness-sqlite recurring-sqlite soak-cli vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene"],
+  ["full", "postgres", "gate-contract rust-style rust-tests-full sqlite-inventory core-recurrence readiness-sqlite recurring-sqlite pg-inventory pg-protocol-all soak-cli pg-soak vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene"],
   ["lint", "required", "gate-contract rust-style diff-hygiene"],
   ["rust-tests", "required", "rust-tests-required sqlite-inventory"],
   ["pg-storage", "postgres", "pg-storage-tests"],
@@ -37,6 +38,9 @@ const expectedPlans = [
   ["pg-recovery-economics", "postgres", "pg-inventory pg-protocol-recovery-economics pg-soak"],
   ["portable-tools", "required", "soak-cli vectors deno-adapters"],
   ["cloudflare", "required", "cloudflare-build cloudflare-check"],
+  ["core-recurrence", "required", "core-recurrence"],
+  ["readiness-sqlite", "required", "readiness-sqlite"],
+  ["recurring-sqlite", "required", "recurring-sqlite"],
 ];
 function checkPlans(rows) { assert.deepEqual(rows, expectedPlans); }
 const plans = registryRows("CI_EXECUTION_PLANS");
@@ -73,6 +77,12 @@ for (const args of [["unknown"], [""], ["full"], ["required", "extra"]]) {
 }
 const cases = registryRows("CI_FASTVOTE_PG_CASES");
 const auxiliary = registryRows("CI_AUXILIARY_IGNORED_CASES");
+const recurringCases = registryRows("CI_REQUIRED_EXTENDED_CASES");
+const expectedRecurringCases = [
+  ["core-recurrence", "node-core", "--lib", "ordered_economics::tests::causal_placement::control_reconstruction::frozen_completion::successor_activation::successor_recurring_delay::genuine_recurring_sqlite_handoffs_reach_configured_seven_epoch_withdrawal_unlock", "no"],
+  ["readiness-sqlite", "sunrise-edge-operator", "conditional_readiness_sqlite", "compiled_conditional_readiness_real_retention_restart_and_distinct_certificate", "no"],
+  ["recurring-sqlite", "sunrise-edge-operator", "conditional_readiness_sqlite", "compiled_registered_replacement_and_recurring_successor_hosts", "no"],
+];
 const expectedCases = [
   "fastvote_pg_operator_multivalidator_e2e",
   "fastvote_pg_operator_credential_isolated_multivalidator_e2e",
@@ -90,6 +100,14 @@ const expectedCases = [
   "fast_path::capacity_tests::live_postgres::live_postgres_concurrent_positive_claims_measure_retained_bytes_and_writer_fence_recovery",
 ];
 assert.deepEqual(cases.map((row) => row[3]), expectedCases);
+assert.deepEqual(recurringCases, expectedRecurringCases);
+const recurringSourcePaths = ["crates/node-core/src/ordered_economics/tests/causal_placement/control_reconstruction/frozen_completion/successor_recurring_delay.rs", "apps/operator/tests/conditional_readiness_sqlite.rs"];
+const coreRecurrenceSource = readFileSync(join(root, recurringSourcePaths[0]), "utf8");
+assert.match(coreRecurrenceSource, new RegExp(`#\\[ignore[^\\n]*\\]\\s*\\n\\s*fn ${recurringCases[0][3].split("::").at(-1)}\\s*\\(`));
+const readinessSqliteSource = readFileSync(join(root, recurringSourcePaths[1]), "utf8");
+assert.match(readinessSqliteSource, new RegExp(`#\\[ignore[^\\n]*\\]\\s*\\n\\s*async fn ${recurringCases[1][3].split("::").at(-1)}\\s*\\(`));
+assert.match(readinessSqliteSource, new RegExp(`#\\[ignore[^\\n]*\\]\\s*\\n\\s*async fn ${recurringCases[2][3].split("::").at(-1)}\\s*\\(`));
+for (const row of recurringCases) { assert(groups.includes(row[0])); }
 assert.deepEqual(cases.map((row) => row[0]), [
   ...Array(6).fill("pg-lifecycle"), "pg-drain-history", "pg-business-audit",
   ...Array(6).fill("pg-recovery-economics"),
@@ -164,7 +182,11 @@ function checkWorkflow(text, profile) {
     assert.equal(/services:/.test(job), pg);
     assert.equal(/SUNRISE_EDGE_TEST_POSTGRES_URL:/.test(job), pg);
     assert.equal([...job.matchAll(/^    timeout-minutes: (\d+)$/gm)].map((match) => Number(match[1])).join(),
-      String(name === "pg-business-audit" ? 90 : name === "lint" || name === "portable-tools" ? 45 : 60));
+      String(name === "pg-business-audit" ? 90
+        : name === "lint" || name === "portable-tools" ? 45
+        : name === "core-recurrence" || name === "readiness-sqlite" ? 120
+        : name === "recurring-sqlite" ? 360
+        : 60));
     if (pg) assert(job.includes(`image: ${image}`));
     for (const fault of faults) {
       assert.equal(job.includes(`SUNRISE_EDGE_TEST_POSTGRES_${fault}_REQUIRED: "1"`), name === "pg-storage");
@@ -287,6 +309,7 @@ if(tool==='bash'&&(['check-fastvote-pg.sh','check-fee-escrow-inventory-pg.sh'].i
 if(tool==='cargo'&&args[0]==='test'&&args.includes('--ignored')&&args.includes('--list')){
  const name=args[args.indexOf('--')-1];
  if(name!==process.env.CI_MOCK_MISSING_TEST)console.log(name+': test');
+ if(name===process.env.CI_MOCK_DUPLICATE_TEST)console.log(name+': test');
 }
 if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')&&args.includes(process.env.CI_MOCK_FAIL_TEST))process.exit(18);
 // Only shell-dispatch sentinels, never authentic fixture material/test bodies.
@@ -362,6 +385,9 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     ["ci_require_postgres", "ci_run_gate", ["full"]],
     ["ci_execution_profile", "ci_run_gate", ["required"]],
     ["ci_execution_plan", "ci_run_gate", ["required"]],
+    ["ci_require_exact_ignored_test", "ci_run_required_extended_group", ["core-recurrence"]],
+    ["ci_execution_profile", "ci_run_required_extended_group", ["core-recurrence"]],
+    ["ci_execution_plan", "ci_run_required_extended_group", ["core-recurrence"]],
   ]) {
     const refused = runFunction(fn, args, { CI_MOCK_FAIL_PREREQUISITE: prerequisite });
     assert.equal(refused.status, 9, `${fn} must propagate ${prerequisite}'s returned failure`);
@@ -442,23 +468,42 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   }
   const fullIgnored = ignoredExecutions(full);
   function ignoredName({ args }) {
-    return args.find((arg) => [...expectedCases, ...auxiliary.map((row) => row[2])].includes(arg));
+    return args.find((arg) => [...expectedCases, ...auxiliary.map((row) => row[2]), ...recurringCases.map((row) => row[3])].includes(arg));
   }
   const expectedPgOrder = [...auxiliary.slice(1, 3).map((row) => row[2]), ...expectedCases, ...auxiliary.slice(3).map((row) => row[2])];
-  assert.deepEqual(fullIgnored.map(ignoredName), expectedPgOrder);
-  assert.deepEqual(ignoredExecutions(union).map(ignoredName).sort(), [...expectedPgOrder].sort());
+  const expectedIgnoredOrder = [...recurringCases.map((row) => row[3]), ...expectedPgOrder];
+  assert.deepEqual(fullIgnored.map(ignoredName), expectedIgnoredOrder);
+  assert.deepEqual(ignoredExecutions(union).map(ignoredName).sort(), [...expectedIgnoredOrder].sort());
   for (const log of [full, union]) {
     assert.deepEqual(ignoredExecutions(log).map(ignoredName).filter((name) => expectedCases.includes(name)), expectedCases);
   }
-  assert.equal(ignoredExecutions(required).length, 0);
+  assert.equal(ignoredExecutions(required).length, recurringCases.length);
+  assert.deepEqual(ignoredExecutions(required).map(ignoredName).sort(), recurringCases.map((row) => row[3]).sort());
   assert.deepEqual(required.filter(({ tool, args }) => tool === "bash").map(({ args }) => args), [
     ["scripts/check-fee-escrow-inventory.sh"], ["scripts/check-postgres-soak.sh", "--self-test-cli"], ["scripts/build-cloudflare-validator.sh"],
   ]);
   assert.deepEqual(required.filter(({ tool, args }) => tool === "cargo" && args[0] === "test").map(({ args }) => args), [
     ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"],
-    ["test", "--quiet", "-p", "node-core", "--lib", auxiliary[0][2], "--", "--ignored", "--list"],
+    ["test", "--quiet", "-p", "node-core", "--lib", auxiliary[0][2], "--", "--ignored", "--exact", "--list"],
+    ["test", "--quiet", "-p", "node-core", "--lib", recurringCases[0][3], "--", "--ignored", "--exact", "--list"],
+    ["test", "--quiet", "-p", "node-core", "--lib", recurringCases[0][3], "--", "--ignored", "--exact"],
+    ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[1][2], recurringCases[1][3], "--", "--ignored", "--exact", "--list"],
+    ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[1][2], recurringCases[1][3], "--", "--ignored", "--exact"],
+    ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[2][2], recurringCases[2][3], "--", "--ignored", "--exact", "--list"],
+    ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[2][2], recurringCases[2][3], "--", "--ignored", "--exact"],
   ]);
   for (const [group, pkg, target, name, capture] of cases) {
+    const log = lanes.get(group);
+    const checks = log.filter(({ tool, args }) => tool === "cargo" && args.includes(name));
+    assert.equal(checks.length, 2, `${name} needs discovery and execution`);
+    assert(checks[0].args.includes("--list"));
+    assert(!checks[1].args.includes("--list"));
+    assert(checks[1].args.includes("--exact"));
+    assert.equal(checks[1].args[checks[1].args.indexOf("-p") + 1], pkg);
+    assert.equal(checks[1].args.includes("--nocapture"), capture === "yes");
+    assert(target === "--lib" ? checks[1].args.includes("--lib") : checks[1].args.includes(target));
+  }
+  for (const [group, pkg, target, name, capture] of recurringCases) {
     const log = lanes.get(group);
     const checks = log.filter(({ tool, args }) => tool === "cargo" && args.includes(name));
     assert.equal(checks.length, 2, `${name} needs discovery and execution`);
@@ -562,6 +607,44 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     assert(!ignoredExecutions(missing.log).some(({ args }) => args.includes(name)));
     assert.notEqual(run("scripts/check-all.sh", ["--group", group], { ...pgEnvironment, CI_MOCK_FAIL_TEST: name }).status, 0);
   }
+  for (const [group, , , name] of recurringCases) {
+    const missing = run("scripts/check-all.sh", ["--group", group], { CI_MOCK_MISSING_TEST: name });
+    assert.notEqual(missing.status, 0);
+    assert(!ignoredExecutions(missing.log).some((event) => ignoredName(event) === name));
+    assert.notEqual(run("scripts/check-all.sh", ["--group", group], { CI_MOCK_FAIL_TEST: name }).status, 0);
+  }
+  for (const [group, , , name] of recurringCases) {
+    const duplicate = run("scripts/check-all.sh", ["--group", group], { CI_MOCK_DUPLICATE_TEST: name });
+    assert.notEqual(duplicate.status, 0);
+    assert.equal(ignoredExecutions(duplicate.log).length, 0, "ambiguous discovery must not execute a test");
+  }
+  for (const args of [[], ["unknown"], ["lint"], ["core-recurrence", "extra"]]) {
+    const invalid = runFunction("ci_run_required_extended_group", args);
+    assert.notEqual(invalid.status, 0);
+    assert.deepEqual(invalid.log, []);
+  }
+  const requiredInventoryText = readFileSync(registry, "utf8");
+  const requiredInventoryPattern = /readonly CI_REQUIRED_EXTENDED_CASES=\(\n[\s\S]*?\n\)/;
+  const registryMutations = [
+    [...recurringCases, recurringCases[0]],
+    [...recurringCases, ["readiness-sqlite", ...recurringCases[0].slice(1)]],
+    recurringCases.slice(1),
+    [...recurringCases, ["unknown", ...recurringCases[0].slice(1)]],
+    [...recurringCases, ["pg-storage", ...recurringCases[0].slice(1)]],
+    [...recurringCases, [...recurringCases[0], "unexpected"]],
+    [...recurringCases, [...recurringCases[0].slice(0, 4), "invalid"]],
+  ];
+  for (const [index, rows] of registryMutations.entries()) {
+    const changedRegistry = requiredInventoryText.replace(requiredInventoryPattern,
+      `readonly CI_REQUIRED_EXTENDED_CASES=(\n${rows.map((row) => `  '${row.join("|")}'`).join("\n")}\n)`);
+    assert.notEqual(changedRegistry, requiredInventoryText);
+    const changedRegistryPath = join(directory, `required-inventory-mutation-${index}.sh`);
+    writeFileSync(changedRegistryPath, changedRegistry, { flag: "wx", mode: 0o600 });
+    const refused = runBash([functionScript, changedRegistryPath, execution,
+      "ci_run_required_extended_group", "core-recurrence"]);
+    assert.notEqual(refused.status, 0);
+    assert.deepEqual(refused.log, [], "invalid complete inventory must fail before any selected test");
+  }
   for (const [group, , name] of auxiliary.slice(1)) {
     const missing = run("scripts/check-all.sh", ["--group", group], { ...pgEnvironment, CI_MOCK_MISSING_TEST: name });
     assert.notEqual(missing.status, 0);
@@ -598,4 +681,4 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }
-console.log("CI gate contract passed: 4 required lanes, 5 explicit PostgreSQL lanes, 19 retained ignored selectors, complete required/full coverage and fail-closed dispatch/results");
+console.log("CI gate contract passed: 7 required lanes, 5 explicit PostgreSQL lanes, 19 retained plus 3 new required-recurrence ignored selectors, complete required/full coverage and fail-closed dispatch/results");

@@ -380,6 +380,16 @@ and a fresh whole source-cut audit requires historical carriers to equal the
 verified prior before Seal. No snapshot-token reset or per-step full-scan
 guarantee is implied.
 
+The currently accepted verified-import pipeline reconstructs historical
+epoch-scoped drain-publication carriers, not source-local ordinary publication
+retention aliases. Its ordinary prior publication prefix is empty. Genuine
+integration acceptance therefore proves current behind-tail carriers and
+historical drain-carrier full-cut refusal separately; the latter rows are outside
+the frontier's physical scan. Generic physical-merge tests still cover bounded
+prior-key traversal and disappearance, but do not imply a genuine imported prior
+ordinary-prefix scenario. [DR-0194](decisions/0194-recurring-acceptance-ownership.md)
+records this correction of the fixture premise; no raw-row restoration is added.
+
 The same frontier owner in Original and Successor modes maintains a private
 current-epoch index. A current entry's exact index slot, accumulator and physical
 cursor commit atomically through the existing protected gate, deciding CAS reads
@@ -864,7 +874,17 @@ unchanged.
 8. **Faults.** Restart and refence a host mid-epoch. A stale writer is
    refused. An import/activation inventory race is refused. A live commit
    racing Seal completion is rejected by the token. Activation and
-   Seal-completion reply loss are reconciled.
+   Seal-completion reply loss are reconciled. [DR-0194](decisions/0194-recurring-acceptance-ownership.md)
+   assigns typed-port injection to actual successor engine/activation callers
+   and observable restart/catch-up to the compiled process. All owners remain
+   in the mandatory profile; no behavior is dropped or inferred from another
+   boundary's result. After the real restart and signerless missed-prefix
+   recovery, verify the restored host's actual returned votes over the Freeze
+   and outgoing Seal candidate plus both certified descendants. Bind the
+   saved endpoint acknowledgements to the chronological proposal/QC artifacts
+   and locally pinned policy; retain every host's completion and equal receipts.
+   A minimal quorum need not contain every responding voter, so status QC
+   membership alone does not prove or disprove actual signing participation.
 9. **Sealed namespaces.** Every Sealed N_k refuses live controls, ordered
    votes, FastVote signatures and paid admission; e_{k-1} votes and QCs are
    refused at e_{k+1}.
