@@ -16,9 +16,28 @@ plans and command baselines check the actual dispatch, including failures
 inside a recipe. Workflow jobs and success-only aggregates remain separate
 consumers, not a second definition of gate execution.
 
+[DR-0193](decisions/0193-required-recurring-acceptance.md) gives two heavy,
+always-ignored cases their own unconditional (never PostgreSQL-gated) lane
+each, rather than letting either share `rust-tests`' budget or drop out of
+required coverage. `CI_REQUIRED_EXTENDED_CASES` in `scripts/ci-gates.sh`
+closes this registry by group/package/target/exact selector, shaped like the
+existing PostgreSQL case registries; a single registry-driven dispatcher in
+`ci-execution.sh` (`ci_run_required_extended_group`) owns every row, through
+the same exact discovery/execution helper used everywhere else, never a
+second engine. An unknown or empty group, or a group whose rows duplicate one
+exact selector, fails before any test runs. Discovery itself lists with
+`--ignored --exact --list` and requires exactly one matching line: zero or
+more than one both fail the gate.
+
+`required` and `full` each run every `CI_REQUIRED_EXTENDED_CASES` case exactly
+once as part of that serial local invocation. Separately, each case's
+matching standalone group (`core-recurrence`/`readiness-sqlite`) runs that
+same case exactly once when selected on its own; it is never run twice
+within one invocation.
+
 ## Required storage-neutral checks
 
-Every PR and main update runs these four unconditional lanes:
+Every PR and main update runs these six unconditional lanes:
 
 | Lane | Required coverage |
 | --- | --- |
@@ -26,6 +45,8 @@ Every PR and main update runs these four unconditional lanes:
 | `rust-tests` | All nonignored workspace targets/features except `runtime-postgres`, including core/SDK/CLI, memory and file-backed SQLite tests, plus the exact SQLite inventory fixture |
 | `portable-tools` | All independent protocol vectors, DB-free soak CLI argument tests and all four Deno/Vercel/Supabase/AWS adapter suites |
 | `cloudflare` | Pinned release WASM and canonical oracle, locked npm dependencies and the complete type/lint/workerd suite |
+| `core-recurrence` | The genuine seven-epoch recurring SQLite successor handoff case, moved out of `rust-tests` into its own 120-minute budget |
+| `readiness-sqlite` | The compiled multi-process `conditional_readiness` CLI/SQLite acceptance case, moved out of `rust-tests` into its own 120-minute budget |
 
 Run the same complete required set locally:
 
@@ -43,7 +64,7 @@ still compile under full-workspace Clippy.
 
 The required workflow has no path filters or conditional/tolerated failures.
 Stable `check` runs with `always()` and accepts explicit success from exactly
-these four dependencies. Missing, failed, cancelled, skipped and unknown
+these six dependencies. Missing, failed, cancelled, skipped and unknown
 results are errors.
 
 ## Explicit PostgreSQL acceptance
@@ -66,10 +87,14 @@ PG storage preserves the existing operator/Cloudflare/claim feature anchors
 and CLI USB-HID; their ordinary tests intentionally repeat to preserve native
 feature unions. Repeat feature comparisons if dependencies/membership change.
 
-All nineteen ignored fixtures remain accounted for: one required SQLite case
-and eighteen explicit PG cases. Exact discovery guards reject a misspelled or
-zero-test selector. Independent dispatch baselines verify the four-lane
-default and the retained full suite rather than comparing two reduced lists.
+All nineteen previously retained ignored fixtures remain accounted for: one
+required SQLite case and eighteen explicit PG cases. Two further required
+cases (the `core-recurrence` and `readiness-sqlite` lanes) bring the total
+accounted-for ignored fixture count to twenty-one. Exact `--ignored --exact
+--list` discovery guards reject a misspelled, zero-match or ambiguous
+multiple-match selector. Independent dispatch baselines
+verify the six-lane required default and the retained full suite rather than
+comparing two reduced lists.
 
 To run the previous complete serial extended suite, explicitly configure a
 disposable PG URL and the desired real fault configuration, then run:

@@ -1980,6 +1980,7 @@ fn claim_original_d_share(
 }
 
 #[test]
+#[ignore = "exercises the full seven-epoch recurring SQLite successor handoff chain; owned by the dedicated core-recurrence required CI lane, not ordinary cargo test"]
 fn genuine_recurring_sqlite_handoffs_reach_configured_seven_epoch_withdrawal_unlock() {
     let origin: SuccessorWorld = successor_chain::recurring_world();
     let g_anchor: Vec<u8> = successor_chain::register_and_unbond_g(&origin);
