@@ -2,9 +2,7 @@
 //! and four actual TCP routers; its return value is not captured stdout.
 //! Mutable validator stores are independent SQLite files. Public immutable
 //! artifacts share the fixture's blob repository; no completion is seeded.
-use super::{fixture::Fixture, hex};
-#[path = "compiled_source_host_process.rs"]
-mod compiled_source_host_process;
+use super::{compiled_source_host_process, fixture::Fixture, hex};
 #[path = "ordered_seal_warrant_faults.rs"]
 mod warrant_faults;
 use consensus::ConsensusSigner;
