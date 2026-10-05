@@ -1,6 +1,7 @@
 //! Prepare a proof-checked Seal candidate and stage its immutable certificate.
 //! Selection still requires ordinary outgoing ordered consensus. This command
-//! has no signing key, raw Seal-completion port, activation or serving authority.
+//! produces no signatures and has no raw Seal-completion port, activation or
+//! serving authority. Successor preparation uses a key only to pin public identity.
 #![forbid(unsafe_code)]
 
 use crate::{
@@ -56,7 +57,7 @@ const FLAGS: &[&str] = &[
     "--timeout-seconds",
     "--signer-key-file",
 ];
-const HELP: &str = "Prepare only: prepare-sqlite. Stages the exact readiness certificate in an existing local blob store and writes candidate.bin for the ordinary economics network-submit command. No consensus selection, signing, Seal completion, activation or serving is performed here.\nRequire local --chain-id --protocol-version --epoch --domain --suite epoch:id:tx:object:effects:code:config:certificate --genesis-manifest --expected-genesis-digest --ordered-history-dir --cut-dir --certificate --state-db --blob-db --validator-id --out-dir.\nThe complete local hash schedule is a separate authority pin, not authenticated merely by genesis. The saved cut is independently reconstructed; the certificate must have its exact subject and genuine weighted successor quorum. Each outgoing validator independently checks current cut, eligibility and selected ancestry before signing. The existing source must be Ordinary and Unsealed; this command neither bootstraps nor advances a writer fence. Output is immutable and permits only exact retries. Optional --timeout-seconds 1..3600 (300).";
+const HELP: &str = "Prepare only: prepare-sqlite. Stages the exact readiness certificate in an existing local blob store and writes candidate.bin for the ordinary economics network-submit command. No consensus selection, Seal completion, activation or serving is performed here; this command produces no signature, and a successor --signer-key-file, when required, only pins a public identity.\nRequire local --chain-id --protocol-version --epoch --domain --suite epoch:id:tx:object:effects:code:config:certificate --genesis-manifest --expected-genesis-digest --ordered-history-dir --cut-dir --certificate --state-db --blob-db --validator-id --out-dir. Optional successor chain (all five or none): --successor-max-links once plus one or more equal-count repeated --successor-plan-history-dir --successor-cut-dir --successor-manifest-history-dir --successor-certificate-dir links, up to that budget, then --signer-key-file is also required.\nThe complete local hash schedule is a separate authority pin, not authenticated merely by genesis. The saved cut is independently reconstructed; the certificate must have its exact subject and genuine weighted successor quorum. Each outgoing validator independently checks current cut, eligibility and selected ancestry before signing. Without the successor chain flags the existing source must be Ordinary and Unsealed; with them it must instead be the verified live Successor the chain names. This command neither bootstraps nor advances a writer fence. Output is immutable and permits only exact retries. Optional --timeout-seconds 1..3600 (300).";
 
 /// Runs the same explicitly pinned, unsigned preparation as the executable.
 pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>> {

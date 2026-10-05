@@ -1214,19 +1214,62 @@ fn receipts(
     hosts: &[&HostProcess],
     request: [u8; 32],
 ) -> sunrise_edge_client::HttpReceiptQueryResult {
+    struct ReceiptTarget {
+        validator: ValidatorId,
+        process_id: u32,
+        address: SocketAddr,
+        generation: u64,
+    }
+    type ReceiptResult = Result<
+        sunrise_edge_client::HttpReceiptQueryResult,
+        Box<sunrise_edge_client::error::ClientError>,
+    >;
     let request_id: sunrise_edge_client::RequestId =
         sunrise_edge_client::RequestId::new(request).unwrap();
+    let targets: Vec<ReceiptTarget> = hosts
+        .iter()
+        .map(|host: &&HostProcess| ReceiptTarget {
+            validator: host.validator,
+            process_id: host.child.id(),
+            address: host.address,
+            generation: host.generation,
+        })
+        .collect();
+    let results: Vec<ReceiptResult> = std::thread::scope(|scope| {
+        let handles: Vec<std::thread::ScopedJoinHandle<'_, ReceiptResult>> = targets
+            .iter()
+            .map(|target: &ReceiptTarget| {
+                let address: SocketAddr = target.address;
+                scope.spawn(move || {
+                    Client::new(transport(address))
+                        .query_receipt(request_id)
+                        .map_err(Box::new)
+                })
+            })
+            .collect();
+        let joined: Vec<std::thread::Result<ReceiptResult>> =
+            handles.into_iter().map(|handle| handle.join()).collect();
+        let mut collected: Vec<ReceiptResult> = Vec::with_capacity(joined.len());
+        for outcome in joined {
+            match outcome {
+                Ok(result) => collected.push(result),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        collected
+    });
+    // Every query has ended before diagnostics or comparisons run, retaining
+    // host order without sharing the live Child/store owners with workers.
     let mut agreed: Option<sunrise_edge_client::HttpReceiptQueryResult> = None;
-    for host in hosts {
-        let receipt: sunrise_edge_client::HttpReceiptQueryResult = Client::new(transport(host.address))
-            .query_receipt(request_id)
-            .unwrap_or_else(|error: sunrise_edge_client::error::ClientError| {
+    for (target, result) in targets.into_iter().zip(results) {
+        let receipt: sunrise_edge_client::HttpReceiptQueryResult = result
+            .unwrap_or_else(|error: Box<sunrise_edge_client::error::ClientError>| {
                 panic!(
                     "receipt query failed: validator={} process={} address={} writer_generation={} request_id={} error={error:?}",
-                    hex(host.validator.as_bytes()),
-                    host.child.id(),
-                    host.address,
-                    host.generation,
+                    hex(target.validator.as_bytes()),
+                    target.process_id,
+                    target.address,
+                    target.generation,
                     hex(&request)
                 )
             });
