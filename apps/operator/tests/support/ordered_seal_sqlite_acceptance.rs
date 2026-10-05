@@ -300,6 +300,36 @@ fn saved_submission_rounds(
     candidate: &OrderedCandidate,
     initial_parent: &QuorumCertificate,
 ) -> Vec<(OrderedProposal, QuorumCertificate)> {
+    let rounds: Vec<(OrderedProposal, QuorumCertificate)> = saved_policy_submission_rounds(
+        &fixture.policy,
+        candidate_path,
+        prefix,
+        candidate,
+        initial_parent,
+    );
+    assert_eq!(rounds[1].0.candidate.as_ref(), Some(candidate));
+    assert_eq!(
+        rounds
+            .iter()
+            .map(|(proposal, _)| proposal.proposal.height)
+            .collect::<Vec<u64>>(),
+        (1..=4)
+            .map(|offset| initial_parent.height.checked_add(offset).unwrap())
+            .collect::<Vec<u64>>(),
+        "the actual HTTP/CLI path performs alignment, Seal and both certified descendants"
+    );
+    rounds
+}
+
+/// Reads the actual CLI manifest under the caller's authenticated epoch policy.
+/// Candidate placement comes from the saved proposals, never an assumed round.
+pub(super) fn saved_policy_submission_rounds(
+    policy: &node_core::ordered_economics::OrderedEconomicsPolicy,
+    candidate_path: &Path,
+    prefix: &Path,
+    candidate: &OrderedCandidate,
+    initial_parent: &QuorumCertificate,
+) -> Vec<(OrderedProposal, QuorumCertificate)> {
     let saved_candidate: Vec<u8> =
         std::fs::read(format!("{}.round-0.candidate", prefix.display())).unwrap();
     assert_eq!(saved_candidate, std::fs::read(candidate_path).unwrap());
@@ -309,8 +339,19 @@ fn saved_submission_rounds(
     );
     let manifest_text: String =
         std::fs::read_to_string(format!("{}.manifest", prefix.display())).unwrap();
+    let round_count: usize = manifest_text.lines().count();
+    assert!(
+        (3..=sunrise_edge_client::ordered_economics_client::MAX_SUBMISSION_ROUNDS)
+            .contains(&round_count)
+    );
     let mut rounds: Vec<(OrderedProposal, QuorumCertificate)> = Vec::new();
     let mut parent: QuorumCertificate = initial_parent.clone();
+    let mut candidate_round: Option<usize> = None;
+    policy.authenticate_candidate(candidate).unwrap();
+    policy
+        .engine()
+        .verify_certificate(initial_parent, &Verifier)
+        .unwrap();
     for (round, line) in manifest_text.lines().enumerate() {
         let fields: Vec<&str> = line.split_whitespace().collect();
         let [proposal_path, certificate_path] = fields.as_slice() else {
@@ -331,20 +372,16 @@ fn saved_submission_rounds(
             decode_ordered_proposal(&std::fs::read(proposal_path).unwrap()).unwrap();
         let certificate: QuorumCertificate =
             decode_quorum_certificate(&std::fs::read(certificate_path).unwrap()).unwrap();
-        fixture
-            .policy
+        policy
             .engine()
             .verify_proposal(&proposal.proposal, &Verifier)
             .unwrap();
-        fixture
-            .policy
+        policy
             .engine()
             .verify_certificate(&certificate, &Verifier)
             .unwrap();
         let justify: &QuorumCertificate = &proposal.proposal.justify;
-        assert_eq!(justify.proposal_digest, parent.proposal_digest);
-        assert_eq!(justify.height, parent.height);
-        assert_eq!(justify.view, parent.view);
+        assert_eq!(justify, &parent);
         assert_eq!(
             proposal.proposal.height,
             parent.height.checked_add(1).unwrap()
@@ -354,38 +391,36 @@ fn saved_submission_rounds(
         assert_eq!(certificate.view, proposal.proposal.view);
         assert_eq!(
             certificate.proposal_digest,
-            fixture
-                .policy
-                .engine()
-                .proposal_digest(&proposal.proposal)
-                .unwrap()
+            policy.engine().proposal_digest(&proposal.proposal).unwrap()
         );
-        if round == 1 {
+        if proposal.candidate.is_some() {
+            assert!(
+                candidate_round.replace(round).is_none(),
+                "the exact submitted candidate occurs in only one certified round"
+            );
             assert_eq!(proposal.candidate.as_ref(), Some(candidate));
             assert_eq!(
                 proposal.proposal.transactions,
-                vec![fixture.policy.candidate_digest(candidate).unwrap()]
+                vec![policy.candidate_digest(candidate).unwrap()]
             );
+            assert_eq!(proposal.proposal.height % 3, 1);
         } else {
             assert!(proposal.candidate.is_none() && proposal.proposal.transactions.is_empty());
         }
         parent = certificate.clone();
         rounds.push((proposal, certificate));
     }
+    let candidate_round: usize = candidate_round.expect("a real certified candidate round");
+    assert!(candidate_round <= 2, "at most two EMPTY alignment rounds");
     assert_eq!(
-        rounds
-            .iter()
-            .map(|(proposal, _)| proposal.proposal.height)
-            .collect::<Vec<u64>>(),
-        (1..=4)
-            .map(|offset| initial_parent.height.checked_add(offset).unwrap())
-            .collect::<Vec<u64>>(),
-        "the actual HTTP/CLI path performs alignment, Seal and both certified descendants"
+        candidate_round.checked_add(3).unwrap(),
+        rounds.len(),
+        "the candidate has exactly two genuinely certified EMPTY descendants"
     );
     rounds
 }
 
-fn acknowledged_output(phase: &str) -> OrderedEventOutput {
+pub(super) fn acknowledged_output(phase: &str) -> OrderedEventOutput {
     let encoded: &str = phase
         .strip_prefix("acknowledged:")
         .expect("an actual acknowledged phase");
@@ -404,13 +439,33 @@ fn saved_peer_results(
     endpoints: &[String],
     rounds: usize,
 ) -> BTreeMap<(usize, usize), (String, String)> {
+    let validator_ids: Vec<ValidatorId> = fixture
+        .network
+        .validators
+        .iter()
+        .map(|member| member.validator_id)
+        .collect();
+    saved_configured_peer_results(&validator_ids, prefix, endpoints, rounds)
+}
+
+pub(super) fn saved_configured_peer_results(
+    validator_ids: &[ValidatorId],
+    prefix: &Path,
+    endpoints: &[String],
+    rounds: usize,
+) -> BTreeMap<(usize, usize), (String, String)> {
     let results_text: String =
         std::fs::read_to_string(format!("{}.results", prefix.display())).unwrap();
     let mut reports: BTreeMap<(usize, usize), (String, String)> = BTreeMap::new();
     let mut pre_certificate_votes: BTreeMap<(usize, usize), String> = BTreeMap::new();
-    let validator_count: usize = fixture.network.validators.len();
+    let validator_count: usize = validator_ids.len();
     assert!(validator_count > 0);
     assert_eq!(endpoints.len(), validator_count);
+    let unique_validators: std::collections::BTreeSet<ValidatorId> =
+        validator_ids.iter().copied().collect();
+    let unique_endpoints: std::collections::BTreeSet<&String> = endpoints.iter().collect();
+    assert_eq!(unique_validators.len(), validator_count);
+    assert_eq!(unique_endpoints.len(), validator_count);
     let expected_pairs: usize = rounds.checked_mul(validator_count).unwrap();
     let pre_certificate_phase: String = format!("skipped:{}", hex(b"certificate not sent yet"));
     let mut pre_certificate_count: usize = 0;
@@ -432,11 +487,9 @@ fn saved_peer_results(
         }
         previous_round = round;
         let validator: &str = validator.strip_prefix("validator=").unwrap();
-        let index: usize = fixture
-            .network
-            .validators
+        let index: usize = validator_ids
             .iter()
-            .position(|member| hex(member.validator_id.as_bytes()) == validator)
+            .position(|validator_id: &ValidatorId| hex(validator_id.as_bytes()) == validator)
             .unwrap();
         assert_eq!(
             endpoint.strip_prefix("endpoint_hex=").unwrap(),
