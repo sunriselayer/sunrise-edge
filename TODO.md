@@ -41,7 +41,7 @@ Independent audit and actual network startup remain Delivery 4.
 
 ## Functional critical path with embedded refactoring
 
-**Active eight-hour window, 2026-10-04:** 11:43:56 until 19:43:56
+**Completed eight-hour window, 2026-10-04:** 11:43:56 until 19:43:56
 Asia/Singapore. The independent pre-code review approved the recurring lifecycle
 contract at `5ee07de` on the separate recurring implementation branch; DR-0191
 records that design and its clarified
@@ -49,6 +49,82 @@ memory bootstrap, registration scope and sole issuer-bound Seal port. That
 approval is not implementation acceptance. Work connects actual core/store
 consumers and genuine recurrence before the separate shipped SDK/CLI/process
 acceptance; the original seven-epoch unbonding delay remains unchanged.
+
+**Delivery 3 resumption, 2026-10-05:** continue the functional closure rather
+than another time-boxed cleanup slice. The exact final `ef2e5d2` node-core
+library passed 1,174 tests, zero failures and five existing profile-owned
+ignored cases in 2,870.48 seconds, including genuine original-root e0..e8,
+the configured seven-epoch delay and eligible retired-D/noncommittee-G
+withdrawals. That library result is not the complete repository/profile or
+five-member compiled-process result. The later local full-profile and corrected
+`62172d6` process logs have no terminal result and their processes are no longer
+present; record them as interrupted, not passed. Required CI runs
+`37196701234` and `37198409538` cancelled `rust-tests` at its 60-minute budget;
+their success-only aggregates failed. PR #269/#270 remain Draft.
+
+Independent Opus read-only closure inspection confirms that the remaining
+acceptance below already follows DR-0191; no new protocol mechanism is needed.
+Implementation approval, actual test completion and release readiness remain
+different claims. The required CI scheduling amendment must keep every functional
+case mandatory, the old ignored-case inventory and the selected PG fault suite.
+The isolated six-lane CI delta `40b9254` has exact-head independent Opus APPROVE;
+its contract, duplicate/malformed inventory and failure-propagation controls
+passed locally. This is scheduling approval, not a functional or whole-PR pass.
+[DR-0194](docs/architecture/decisions/0194-recurring-acceptance-ownership.md)
+records the unchanged behaviors at their actual engine, store and process owners.
+
+The dependent host's clean committed scheduling candidate `34c5577` completed
+the required ordinary Rust group on 2026-10-05 in 9m15s: 125 completed targets,
+3,626 successful test executions and no failures, including the required exact
+SQLite inventory selector. Its portable group also passed all protocol vectors
+and 44 adapter cases. These runs precede the additional adversarial test fixes:
+they establish ordinary-lane scheduling evidence, not final-source acceptance
+or completion of either long recurring owner. The host candidate adds a third
+unconditional `recurring-sqlite` owner, bringing its required fan-in to seven;
+the 360-minute budget is an upper bound, not a completed run.
+
+The separate test-only owner/fault candidate `5f31b4e` has independent
+source-level approval for C2/C3/B1. Its exact new successor Seal engine selector
+executed one test and passed in 198.99 seconds: actual retained/completion reply
+loss, zero extra signing on reconciliation, and a real protected live-write
+token race. This is C3 candidate evidence, not final integrated required/PG/CI
+acceptance. C2's retired-D custody leg proves the exact Admit owner-gate refusal,
+not an otherwise executable alternative deposit; compiled post-withdrawal owner
+controls remain a separate proof.
+
+- [ ] Authenticated successor frontier with two genuine current paid
+  publications: bounded monotonic physical progress, current behind-tail
+  carrier/index/cursor refusals, reopen/refence and exact full-page/empty-terminal
+  bytes. Separately prove historical drain-carrier corruption, tombstone and
+  actual physical absence through the full source-cut owner. The current
+  importer has no ordinary historical publication prefix; the initially proposed
+  historical physical-traversal fixture is unrepresentable, not passed.
+  DR-0194 retains the generic prior-prefix algorithm tests at their true scope.
+- [ ] Fresh retired-D and unbonded-G registration in Admit mode through core
+  preparation/admission and the real CLI, plus genuine Deposit refusal.
+  Validator membership is not user/account authority: ordinary client contracts
+  and legitimate historical claim/Unbond/Withdraw remain allowed.
+- [ ] Successor Seal retention/completion indeterminate-result reconciliation
+  without a second signature, and live-commit versus completion-token fencing.
+  Original-only engine faults and raw successor storage controls do not
+  substitute for the successor engine composition.
+- [ ] Complete the changed-committee five-host workflow through the actual
+  withdrawal unlock. Send authentic former-domain proposals/QCs to every current
+  host, including F, and retain a genuine e0-at-e2 refusal; preserve all existing
+  F-required quorum/readiness/FastVote and receipt/state equality assertions.
+- [ ] Genuine historical signer-free host startup/live-artifact refusals:
+  changed cut/certificate/history pins, wrong epoch, foreign/non-Sealed source,
+  and altered served history/terminal candidate without fence or state changes.
+- [ ] Recurring mid-epoch restart/refencing, stale-writer and import/activation
+  inventory races, activation/Seal reply loss and live-commit/Seal-token races
+  through their actual owning capabilities and consumed faults.
+- [ ] Complete final-source required gates, selected original PG profile,
+  explicit independent exact-head approval and all required CI before normal
+  dependency-ordered merges. No shortened delay, fabricated state, trusted cache,
+  path-filter skip or optionalization of functional acceptance.
+
+Delivery 4 remains independent security audit and actual first-network startup.
+Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
 
 The original SQLite host and per-query effective hash-suite projection are
 being integrated under DR-0192. Parent targeted checks passed eight query

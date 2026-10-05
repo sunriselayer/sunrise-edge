@@ -19,8 +19,9 @@ cases: the genuine seven-epoch recurring SQLite successor handoff in
 `apps/operator/tests/conditional_readiness_sqlite.rs`. Neither is a
 benchmark; both are required correctness coverage that must keep running on
 every PR, not be dropped to fit a shared timeout. The standalone recurring
-case has separately been measured at roughly 93 minutes under an earlier
-compilation profile, so any new per-case budget must stay above both known
+case has separately been measured at roughly 93 minutes in an earlier run
+whose build settings were not retained. A profile change is not a verified
+explanation for the difference. Any new per-case budget must stay above both known
 figures with real margin, not an unmeasured undersized guess.
 
 ## Decision
