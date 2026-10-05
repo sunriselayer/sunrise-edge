@@ -1,5 +1,5 @@
-//! Genuine authenticated behind-tail successor-frontier acceptance
-//! (DR-0191 Section 4.1).
+//! Genuine current behind-tail successor-frontier acceptance, with separate
+//! complete-source audit of authenticated prior drain-publication carriers.
 use super::*;
 use crate::business_reconstruction::SourceBusinessSnapshot;
 use crate::business_reconstruction::cut::{BusinessCutError, VerifiedBusinessCut};
@@ -608,23 +608,56 @@ fn genuine_successor_frontier_authenticates_behind_tail_current_entries() {
             blobs.put_blob(*digest, body.clone()).unwrap();
         }
     }
-    let mut prefix: Vec<u8> =
+    let mut normal_prefix: Vec<u8> =
         crate::fast_path::publication::fastpath_publication_key(current.chain_id(), &[0; 32])
             .unwrap();
-    prefix.truncate(prefix.len().checked_sub(32).unwrap());
-    let prior: Vec<(Vec<u8>, Vec<u8>)> = {
+    normal_prefix.truncate(normal_prefix.len().checked_sub(32).unwrap());
+    assert!(
+        world
+            .warrant(0)
+            .next_prior_state_row(&normal_prefix, &normal_prefix)
+            .is_none(),
+        "verified replay does not import the origin's ordinary publication log"
+    );
+    assert!(
+        !imported.records.iter().any(
+            |row: &crate::business_reconstruction::SourceSnapshotRecord| matches!(row.descriptor.key(),
+                runtime::portable::DurableRecordKey::State(key) if key.starts_with(&normal_prefix)
+            )
+        ),
+        "the actual imported store has no historical normal-publication prefix"
+    );
+    // Replay retains the independently verified selected e0 bundles under
+    // their owning epoch-scoped drain addresses. These rows are not physical
+    // inputs of the ordinary publication-prefix frontier scan below.
+    let historical_epoch: Epoch = network.root.genesis_context().epoch();
+    assert!(historical_epoch < current.epoch());
+    let mut drain_prefix: Vec<u8> = crate::fast_path::drain_publication::drain_publication_key(
+        current.chain_id(),
+        historical_epoch,
+        &[0; 32],
+    )
+    .unwrap();
+    drain_prefix.truncate(drain_prefix.len().checked_sub(32).unwrap());
+    let prior_drain: Vec<(Vec<u8>, Vec<u8>)> = {
         let warrant: crate::serving_authority::LiveWarrant<'_> = world.warrant(0);
         let mut rows: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        let mut after: Vec<u8> = prefix.clone();
-        while let Some((key, bytes)) = warrant.next_prior_state_row(&prefix, &after) {
+        let mut after: Vec<u8> = drain_prefix.clone();
+        while let Some((key, bytes)) = warrant.next_prior_state_row(&drain_prefix, &after) {
             assert!(key > after.as_slice());
             after = key.to_vec();
             let bytes: &[u8] = bytes.expect("the genuine retained prior carrier is present");
             let record: crate::fast_path::publication::FastPathPublicationRecord =
                 crate::fast_path::publication::decode_fastpath_publication_record(bytes).unwrap();
             assert_eq!(record.context, *network.root.genesis_context());
-            let expected_key: Vec<u8> = crate::fast_path::publication::fastpath_publication_key(
+            assert_eq!(
+                crate::fast_path::publication::encode_fastpath_publication_record(&record).unwrap(),
+                bytes,
+                "the genuine prior drain carrier uses its canonical owning codec"
+            );
+            let expected_key: Vec<u8> = crate::fast_path::drain_publication::drain_publication_key(
                 current.chain_id(),
+                historical_epoch,
                 &record.request_id,
             )
             .unwrap();
@@ -635,10 +668,12 @@ fn genuine_successor_frontier_authenticates_behind_tail_current_entries() {
         rows
     };
     assert!(
-        prior.len() >= 2,
-        "multiple actual historical carriers precede current work"
+        prior_drain.len() >= 2,
+        "verified e0 replay retains multiple actual drain-publication carriers"
     );
-    let last_prior: [u8; 32] = prior.last().unwrap().0[prefix.len()..].try_into().unwrap();
+    let last_prior: [u8; 32] = prior_drain.last().unwrap().0[drain_prefix.len()..]
+        .try_into()
+        .unwrap();
     let request_id_1: [u8; 32] = next_owned_id(&world, last_prior);
     let request_id_2: [u8; 32] = next_owned_id(&world, request_id_1);
     let fee_bytes: Vec<u8> = world
@@ -688,85 +723,38 @@ fn genuine_successor_frontier_authenticates_behind_tail_current_entries() {
             signer,
         )
     };
-    let (prior_key, prior_bytes): &(Vec<u8>, Vec<u8>) = &prior[0];
-    let before_prior: SourceBusinessSnapshot = source_snapshot(&world);
-    write_row(
-        &world,
-        prior_key,
-        StateMutation::Put(altered_publication(prior_bytes)),
-    );
-    let injected_prior: SourceBusinessSnapshot = source_snapshot(&world);
-    assert!(matches!(
-        advance(&signer),
-        Err(FrozenFrontierError::Invalid(
-            "prior frozen publication is missing or altered"
-        ))
-    ));
-    assert_refusal_unchanged(&world, &injected_prior, &signer, 0);
-    write_row(&world, prior_key, StateMutation::Put(prior_bytes.clone()));
-    assert_logical_restore(&world, &before_prior);
-    let maximum_steps: u64 = chain_authority(&world)
-        .import_binding()
-        .row_count
-        .checked_add(4)
-        .unwrap();
-    let mut steps: u64 = 0;
     let closure_key: Vec<u8> =
         freeze::admission_closure_key(current.chain_id(), current.epoch()).unwrap();
     let closure: freeze::AdmissionClosureRecord =
         freeze::decode_admission_closure_record(world.value(0, &closure_key).1.as_deref().unwrap())
             .unwrap();
-    let empty: consensus::FrozenFrontierIdentity = consensus::FrozenFrontierAccumulator::new(
-        &network.resolver,
-        current.chain_id().clone(),
-        current.protocol_version(),
-        current.epoch(),
-        domain,
-        closure.request_id,
-        closure.closed_at_block_height,
-    )
-    .unwrap()
-    .into_identity();
-    let mut physical_last: Option<[u8; 32]> = None;
-    let mut historical_steps: usize = 0;
-    loop {
-        steps = steps.checked_add(1).unwrap();
-        assert!(
-            steps <= maximum_steps,
-            "a bounded cursor must not rescan beyond its retained corpus"
-        );
-        let step: FrozenFrontierStep = advance(&signer).unwrap();
-        let cursor: frontier::FrontierCursor = physical_cursor(&world);
-        assert!(cursor.indexed);
-        assert!(physical_last.is_none_or(|last| cursor.physical_last_request_id > last));
-        physical_last = Some(cursor.physical_last_request_id);
-        assert_eq!(
-            signer.signatures.get(),
-            0,
-            "partial physical progress never signs"
-        );
-        match step {
-            FrozenFrontierStep::Finalized(_) => panic!("too early"),
-            FrozenFrontierStep::Advanced { entry_count: 0 } => {
-                let expected: [u8; 32] = prior[historical_steps].0[prefix.len()..]
-                    .try_into()
-                    .unwrap();
-                assert_eq!(cursor.physical_last_request_id, expected);
-                assert_eq!(cursor.identity, empty);
-                assert_eq!(cursor.last_request_id, None);
-                historical_steps = historical_steps.checked_add(1).unwrap();
-            }
-            FrozenFrontierStep::Advanced { entry_count: 1 } => {
-                assert_eq!(historical_steps, prior.len());
-                assert_eq!(cursor.physical_last_request_id, request_id_1);
-                assert_eq!(cursor.last_request_id, Some(request_id_1));
-                assert_eq!(cursor.identity.entry_count, 1);
-                break;
-            }
-            FrozenFrontierStep::Advanced { entry_count } => panic!("bad {entry_count}"),
-        }
-    }
-    assert!(historical_steps >= 2);
+    let mut expected_frontier: consensus::FrozenFrontierAccumulator =
+        consensus::FrozenFrontierAccumulator::new(
+            &network.resolver,
+            current.chain_id().clone(),
+            current.protocol_version(),
+            current.epoch(),
+            domain,
+            closure.request_id,
+            closure.closed_at_block_height,
+        )
+        .unwrap();
+    // With the actual verified normal prefix empty, exactly two bounded
+    // one-publication steps precede finalization. Each current identity is
+    // folded once; no drain-family row is claimed as a physical scan input.
+    assert_eq!(
+        advance(&signer).unwrap(),
+        FrozenFrontierStep::Advanced { entry_count: 1 }
+    );
+    expected_frontier
+        .push(&network.resolver, &identities[0])
+        .unwrap();
+    let cursor: frontier::FrontierCursor = physical_cursor(&world);
+    assert!(cursor.indexed);
+    assert_eq!(cursor.physical_last_request_id, request_id_1);
+    assert_eq!(cursor.last_request_id, Some(request_id_1));
+    assert_eq!(&cursor.identity, expected_frontier.identity());
+    let physical_last: [u8; 32] = cursor.physical_last_request_id;
     assert_eq!(signer.signatures.get(), 0);
     let before_tail_fault: SourceBusinessSnapshot = source_snapshot(&world);
     write_row(&world, &publication_key_1, StateMutation::Delete);
@@ -788,12 +776,21 @@ fn genuine_successor_frontier_authenticates_behind_tail_current_entries() {
         advance(&signer).unwrap(),
         FrozenFrontierStep::Advanced { entry_count: 2 }
     );
+    expected_frontier
+        .push(&network.resolver, &identities[1])
+        .unwrap();
     let cursor: frontier::FrontierCursor = physical_cursor(&world);
-    assert!(cursor.physical_last_request_id > physical_last.unwrap());
+    assert!(cursor.indexed);
+    assert!(cursor.physical_last_request_id > physical_last);
     assert_eq!(cursor.physical_last_request_id, request_id_2);
     assert_eq!(cursor.last_request_id, Some(request_id_2));
-    assert_eq!(cursor.identity.entry_count, 2);
+    assert_eq!(&cursor.identity, expected_frontier.identity());
     assert!(request_id_1 < cursor.physical_last_request_id);
+    assert_eq!(
+        signer.signatures.get(),
+        0,
+        "bounded current progress never signs"
+    );
     let final_step: FrozenFrontierStep = advance(&signer).unwrap();
     let final_vote: FrozenFrontierVote = match final_step {
         FrozenFrontierStep::Finalized(vote) => *vote,
@@ -801,6 +798,7 @@ fn genuine_successor_frontier_authenticates_behind_tail_current_entries() {
     };
     assert_eq!(signer.signatures.get(), 1);
     assert_eq!(final_vote.identity.entry_count, 2);
+    assert_eq!(&final_vote.identity, expected_frontier.identity());
     let (vote, first_page): (FrozenFrontierVote, FrozenFrontierPage) =
         page(&world, 0, None).unwrap();
     assert_eq!(vote, final_vote);
@@ -941,11 +939,12 @@ fn genuine_successor_frontier_authenticates_behind_tail_current_entries() {
         assert_eq!(restored.identity(), cut.identity());
         assert_eq!(restored.package_identity(), cut.package_identity());
     }
-    // This real prior row is behind the strictly advanced physical tail.
-    // The bounded reader may reuse completed current material; the fresh
-    // whole-source owner still authenticates every historical carrier.
-    let prior_id: [u8; 32] = prior_key[prefix.len()..].try_into().unwrap();
-    assert!(prior_id < physical_cursor(&world).physical_last_request_id);
+    // The whole-source owner separately authenticates this actual prior e0
+    // drain carrier. Its request ID precedes the chosen current IDs, but its
+    // epoch-scoped key is not traversed by the frontier's physical prefix.
+    let (prior_key, prior_bytes): &(Vec<u8>, Vec<u8>) = &prior_drain[0];
+    let prior_id: [u8; 32] = prior_key[drain_prefix.len()..].try_into().unwrap();
+    assert!(prior_id <= last_prior && last_prior < request_id_1);
     for fault in 0u8..3 {
         let before: SourceBusinessSnapshot = source_snapshot(&world);
         match fault {
