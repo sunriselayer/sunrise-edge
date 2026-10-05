@@ -42,6 +42,28 @@ to omit a required fault, replace it with malformed authentication, repeat only
 the original-epoch engine, or infer a library signer counter from a process.
 No production fault endpoint or unchecked result hook is added.
 
+### Real rejoin signing is not minimal-certificate membership
+
+Ordered consensus verifies all supplied votes, then canonical-sorts validators
+and retains only the minimal quorum. An all-four endpoint submission therefore
+does not guarantee that a particular fourth signer appears in its three-vote
+certificate. Do not change production quorum selection, manufacture a vote,
+or remove the positive rejoin proof to satisfy that false premise.
+
+The compiled caller can prove actual participation using the CLI's saved
+per-endpoint vote acknowledgements and chronological proposal/certificate
+artifacts. Verify the actual returned vote's current pinned committee/key,
+endpoint and validator attribution, signature and exact proposal context,
+digest, view and height. The saved acknowledgement is the canonical re-encoding
+of a decoded HTTP response, not a byte-level transport capture; the actual vote
+signature supplies authenticity. Bind the Freeze or Seal candidate and both certified
+descendants; reconstruct the exact deterministic minimal certificate from the
+recorded valid votes. Keep every host's actual completion acknowledgement and
+byte-equal receipts, rather than replacing all-host delivery with a forced
+subset. A saved high-QC status or fixture-signed replacement is not this proof.
+The restart itself and the declared signerless missed-prefix recovery remain
+separate actual process requirements before fresh signing resumes.
+
 ### Actual imported publication families
 
 The verified genesis-to-successor import does not contain historical ordinary

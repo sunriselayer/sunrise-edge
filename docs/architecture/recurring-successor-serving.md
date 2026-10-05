@@ -878,7 +878,13 @@ unchanged.
    assigns typed-port injection to actual successor engine/activation callers
    and observable restart/catch-up to the compiled process. All owners remain
    in the mandatory profile; no behavior is dropped or inferred from another
-   boundary's result.
+   boundary's result. After the real restart and signerless missed-prefix
+   recovery, verify the restored host's actual returned votes over the Freeze
+   and outgoing Seal candidate plus both certified descendants. Bind the
+   saved endpoint acknowledgements to the chronological proposal/QC artifacts
+   and locally pinned policy; retain every host's completion and equal receipts.
+   A minimal quorum need not contain every responding voter, so status QC
+   membership alone does not prove or disprove actual signing participation.
 9. **Sealed namespaces.** Every Sealed N_k refuses live controls, ordered
    votes, FastVote signatures and paid admission; e_{k-1} votes and QCs are
    refused at e_{k+1}.

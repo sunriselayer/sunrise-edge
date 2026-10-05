@@ -1,6 +1,6 @@
 # Current delivery roadmap
 
-**2026-10-04: one integrated implementation and refactoring queue.**
+**2026-10-05: one integrated implementation and refactoring queue.**
 [DR-0173](docs/architecture/decisions/0173-integrated-implementation-refactoring.md)
 integrates the remaining functions with responsibility-oriented cleanup.
 The user's newer architecture-first direction is recorded in
@@ -25,21 +25,46 @@ Only this file owns current status, sequencing and deferred work.
 | First Seal-derived successor | [PR #267](https://github.com/sunriselayer/sunrise-edge/pull/267): source-free SQLite activation and authenticated e+1 serving through existing engines, real compiled activation/host processes and SDK/CLI paid Publish/Instantiate/Call and imported claims. Default-suite same-committee process acceptance is distinct from the A/B/C/D -> A/B/C/E core evidence and from recurring membership/release acceptance |
 | Authenticated pre-Seal business cut | PR #251 merged normally on 2026-10-02 after the full local gate, independent exact-head approval and required CI. Complete core derivation, immutable SQLite export/resumption and source-free independent saved verification; not import or activation evidence |
 | Shared artifact/configuration primitives | PR #249 merged: bounded local genesis and held-handle artifact I/O, with authority/error semantics retained by the callers |
-| Required validation | PR #247 implements DR-0172: four unconditional DB-free lanes. PostgreSQL integration/fault acceptance is retained and explicitly selected, not run on every PR |
+| Required validation | DR-0172 keeps PostgreSQL explicitly selected and optional. Merged PR #269 adds mandatory core recurrence and SQLite readiness to the original four DB-free owners; PR #270 adds the separate real recurring-process owner. No functional case becomes optional |
 
 FastVote remains incomplete: validator-set changes, slashing and reward/claim
 distribution are completion criteria, not optional production deferrals.
 Fixed-epoch economics implements much of that work; complete membership and
 epoch handoff plus independent security gates still remain.
 
-**Delivery 3 remaining, 2026-10-04:** the first Seal-derived successor is
-implemented and verified in the bounded profile below. The remaining functional
-unit is shipped membership/recovery composition and recurring handoffs through
-the real withdrawal unlock, including live outgoing control exposure. This
-supersedes the 2026-10-02 time forecast; no unverified completion date is promised.
-Independent audit and actual network startup remain Delivery 4.
+**Delivery 3 remaining, 2026-10-05:** recurring core/store composition has
+merged in [PR #269](https://github.com/sunriselayer/sunrise-edge/pull/269).
+The remaining functional unit is the shipped membership/recovery process flow
+through the real withdrawal unlock, including later five-member committees
+and live outgoing control exposure. Do not replace this with another cleanup
+milestone or promise an unverified completion date. Independent audit and
+actual network startup remain Delivery 4.
 
 ## Functional critical path with embedded refactoring
+
+### Current acceptance checkpoint, 2026-10-05
+
+| Owner | Actual result and remaining boundary |
+| --- | --- |
+| Core/store, exact `11fafacdb0dca295a9d7a2bd02253860c7d9a2f1` | Original literal `./scripts/check-all.sh --full` completed successfully from 05:03:03 to 06:24:34 UTC. Genuine original-root e0..e8/delay7 eligible withdrawals passed in 2,975.42 seconds, with C1/C2/C3/B1 controls, the complete selected original PostgreSQL profile and all six real storage faults retained |
+| Core merge | Fresh independent exact-head Codex fallback APPROVE and all six required CI owners plus success-only aggregate passed in run `37265910956`. PR #269 merged normally as `bfdf6154825c1b0274095f77e2ae973651592c55` at 06:35:09 UTC; its tree equals the reviewed head. Local main equalled origin/main with a clean tree |
+| Host candidate `768403670ff874c930b6724dc571fcebd3389e30` | Strict lint, ordinary Rust with nonempty SQLite inventory, genuine core recurrence and all five selected original PostgreSQL groups passed. Its other six CI owners passed, but the real compiled recurring-process owner is not accepted |
+| Actual host failure | The owning process case failed after 3,647.98 seconds at the e2 Freeze assertion that a minimal 3-of-4 QC includes the reopened fourth host. Actual consensus canonical-sorts all collected valid votes and stops at quorum; this assertion did not establish the intended required participation. The repair must prove genuine fourth-host signing of the committed Freeze and outgoing Seal suffix without weakening all-host receipt equality, original-root recurrence, F-required quorum or delay7 withdrawals |
+| Recorded-vote repair | Source backed up at `dfacfc50d79567b96bcd71a77f9491bc3c5cc14f` and integrated into PR #270. Both e2 Freeze and Seal check actual attributed current-key votes, the unique candidate and two descendants, exact reconstructed minimal QCs, all-host completion/high-QC agreement and independent durable receipts. The strict parsers retain the original controls. Native Opus returned conditional PLAN APPROVE for this evidence design; compile-only checks passed, but implementation review and the final-source process/repository/CI gates remain pending |
+
+The host's fresh independent source review approved `7684036`, but execution
+subsequently failed. That review is not runtime acceptance or approval of its
+next repair. Its Rust result was zero passed/one failed; wrapper status 143
+does not turn it into a merely interrupted or successful run. No final HOST
+`--full` success is claimed. Native Claude was quota-limited during these
+reviews; the explicitly authorized Codex fallback was used, not attributed to
+Opus. The later native design review is not whole-PR implementation approval.
+Final repaired-head review, owning process completion and current required
+CI remain mandatory before PR #270 can merge.
+
+The dated attempts below are historical context, not current completion claims.
+This checkpoint and the closure checklist take precedence over their pending
+candidate observations; failed, cancelled and interrupted runs stay unaccepted.
 
 **Completed eight-hour window, 2026-10-04:** 11:43:56 until 19:43:56
 Asia/Singapore. The independent pre-code review approved the recurring lifecycle
@@ -50,8 +75,8 @@ approval is not implementation acceptance. Work connects actual core/store
 consumers and genuine recurrence before the separate shipped SDK/CLI/process
 acceptance; the original seven-epoch unbonding delay remains unchanged.
 
-**Delivery 3 resumption, 2026-10-05:** continue the functional closure rather
-than another time-boxed cleanup slice. The exact final `ef2e5d2` node-core
+**Earlier Delivery 3 resumption attempts, 2026-10-05:** functional closure
+continued rather than another time-boxed cleanup slice. The then-final `ef2e5d2` node-core
 library passed 1,174 tests, zero failures and five existing profile-owned
 ignored cases in 2,870.48 seconds, including genuine original-root e0..e8,
 the configured seven-epoch delay and eligible retired-D/noncommittee-G
@@ -60,7 +85,7 @@ five-member compiled-process result. The later local full-profile and corrected
 `62172d6` process logs have no terminal result and their processes are no longer
 present; record them as interrupted, not passed. Required CI runs
 `37196701234` and `37198409538` cancelled `rust-tests` at its 60-minute budget;
-their success-only aggregates failed. PR #269/#270 remain Draft.
+their success-only aggregates failed. PR #269/#270 were Draft at those attempts.
 
 Independent Opus read-only closure inspection confirms that the remaining
 acceptance below already follows DR-0191; no new protocol mechanism is needed.
@@ -101,7 +126,9 @@ empty; it does not claim the impossible historical-prefix traversal passed.
 Final integrated required, selected PG, compiled recurrence and CI acceptance
 remain pending below.
 
-- [ ] Authenticated successor frontier with two genuine current paid
+### Delivery 3 closure checklist
+
+- [x] Authenticated successor frontier with two genuine current paid
   publications: bounded monotonic physical progress, current behind-tail
   carrier/index/cursor refusals, reopen/refence and exact full-page/empty-terminal
   bytes. Separately prove historical drain-carrier corruption, tombstone and
@@ -109,14 +136,18 @@ remain pending below.
   importer has no ordinary historical publication prefix; the initially proposed
   historical physical-traversal fixture is unrepresentable, not passed.
   DR-0194 retains the generic prior-prefix algorithm tests at their true scope.
+  The genuine owning case passed on integrated core `11fafac` before PR #269
+  merged; no synthetic ordinary historical prefix is asserted.
 - [ ] Fresh retired-D and unbonded-G registration in Admit mode through core
   preparation/admission and the real CLI, plus genuine Deposit refusal.
   Validator membership is not user/account authority: ordinary client contracts
   and legitimate historical claim/Unbond/Withdraw remain allowed.
-- [ ] Successor Seal retention/completion indeterminate-result reconciliation
+- [x] Successor Seal retention/completion indeterminate-result reconciliation
   without a second signature, and live-commit versus completion-token fencing.
   Original-only engine faults and raw successor storage controls do not
   substitute for the successor engine composition.
+  The actual successor owner passed on integrated core `11fafac` before
+  PR #269 merged, including zero extra signing on exact reconciliation.
 - [ ] Complete the changed-committee five-host workflow through the actual
   withdrawal unlock. Send authentic former-domain proposals/QCs to every current
   host, including F, and retain a genuine e0-at-e2 refusal; preserve all existing
