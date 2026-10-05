@@ -603,6 +603,79 @@ fn epoch_request(kind: u8, epoch: Epoch) -> [u8; 32] {
     request
 }
 
+/// Fresh current-context registrations stop at Admit's verified owner gate.
+/// D's actual custody object is sufficient: the owner gate precedes leg
+/// execution, so this creates no new address-owned collateral for retired D.
+#[allow(clippy::too_many_arguments)]
+fn assert_historical_owner_registration_refused(
+    origin: &SuccessorWorld,
+    archive: &CompleteArchive,
+    hosts: &EpochHosts,
+    authority: &VerifiedSuccessorAuthority,
+    owner: &ExitingOwner,
+    source_id: ObjectId,
+    request_kind: u8,
+) {
+    use super::successor_registration_reuse::{
+        RegistrationAttempt, assert_owner_reuse_refused, registration_attempt,
+    };
+    let network: &Network = origin.network();
+    let source: Object = hosts.object(origin, 0, source_id);
+    let head: DurableObjectHead = hosts.targets[0]
+        .0
+        .get_object_head(&hosts.operation, network.domain(), source_id)
+        .unwrap();
+    let reference: ObjectRef = ObjectRef {
+        id: source_id,
+        version: source.version,
+        digest: head.digest().unwrap(),
+    };
+    let authority_key: Vec<u8> = crate::local_instance_state::object_authority_key(source_id);
+    let object_authority: execution::local_execution::ObjectAuthority =
+        execution::local_execution::decode_object_authority(
+            &hosts.value(origin, 0, &authority_key).1.unwrap(),
+        )
+        .unwrap();
+    let nonce: u64 = crate::query_sender_next_nonce(
+        &hosts.targets[0].0,
+        &hosts.operation,
+        network.domain(),
+        hosts.policy.context().chain_id().clone(),
+        hosts.policy.context().protocol_version(),
+        hosts.policy.context().epoch(),
+        *owner.signer.id.as_bytes(),
+    )
+    .unwrap();
+    let checkpoint: u64 = hosts
+        .status(origin, archive)
+        .high_qc
+        .height
+        .checked_add(1)
+        .unwrap();
+    let attempt: RegistrationAttempt = registration_attempt(
+        &network.root,
+        authority,
+        &network.resolver,
+        &hosts.base,
+        &owner.signer,
+        source,
+        reference,
+        object_authority,
+        epoch_request(request_kind, hosts.policy.context().epoch()),
+        nonce,
+        checkpoint,
+    );
+    assert_owner_reuse_refused(
+        &network.root,
+        authority,
+        &attempt,
+        &hosts.targets,
+        &hosts.operation,
+        &hosts.env(origin),
+        checkpoint,
+    );
+}
+
 #[test]
 fn recurring_epoch_requests_use_the_external_ordered_lane() {
     use crate::admission_profile::{ExternalRequestLane, require_external_request_lane};
@@ -2049,6 +2122,36 @@ fn genuine_recurring_sqlite_handoffs_reach_configured_seven_epoch_withdrawal_unl
             assert_eq!(
                 current.value(&origin, index, &g_key).1.as_ref(),
                 Some(&g_anchor)
+            );
+        }
+        if epoch == first_successor {
+            assert_historical_owner_registration_refused(
+                &origin,
+                &archive,
+                &current,
+                &authority,
+                &d,
+                d.unbonded.custody_object.id,
+                0x75,
+            );
+        } else if epoch.get() == first_successor.get().checked_add(1).unwrap() {
+            assert_historical_owner_registration_refused(
+                &origin,
+                &archive,
+                &current,
+                &authority,
+                &d,
+                d.unbonded.custody_object.id,
+                0x75,
+            );
+            assert_historical_owner_registration_refused(
+                &origin,
+                &archive,
+                &current,
+                &authority,
+                &g,
+                ObjectId::new([0x24; 32]),
+                0x76,
             );
         }
         for owner in [&d, &g] {
