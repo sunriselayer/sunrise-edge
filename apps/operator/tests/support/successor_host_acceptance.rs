@@ -22,7 +22,6 @@ use runtime::{SystemClock, WriterFenceGeneration};
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 use std::{
     ffi::OsString,
-    io::{BufRead, BufReader},
     net::SocketAddr,
     num::NonZeroUsize,
     path::{Path, PathBuf},
@@ -40,6 +39,8 @@ use sunrise_edge_client::{
     load_successor_workflow_from_directories,
 };
 
+#[path = "compiled_source_host_process.rs"]
+mod process;
 #[path = "recurring_host_acceptance.rs"]
 mod recurring;
 
@@ -190,7 +191,7 @@ fn activation(
     command.arg("activate");
     pins(&mut command, fixture, inputs);
     target_flags(&mut command, inputs, export, certificate, index);
-    command.output().unwrap()
+    process::spawn_bounded_output(command, Duration::from_secs(600))
 }
 
 /// One real successor_host process. Dropping it kills and reaps the child.
@@ -236,22 +237,23 @@ fn start_host(
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
-    let mut child: Child = command.spawn().unwrap();
-    let mut line: String = String::new();
+    let (mut guard, line): (process::ChildGuard, String) =
+        process::spawn_bounded_status_line(command, Duration::from_secs(600));
     // The host prints exactly one flushed line after its startup gate and
     // the actual bind; a failed startup closes stdout without it.
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    if line.is_empty() {
-        panic!("successor host {index} exited: {:?}", child.wait());
-    }
+    assert!(
+        !line.is_empty(),
+        "successor host {index} exited: {:?}",
+        guard.try_wait()
+    );
     assert!(line.contains("mode=successor-serving"), "{line}");
+    let address: SocketAddr = field(&line, "listen=").parse().unwrap();
+    let generation: u64 = field(&line, "writer_generation=").parse().unwrap();
     HostProcess {
-        address: field(&line, "listen=").parse().unwrap(),
-        generation: field(&line, "writer_generation=").parse().unwrap(),
+        address,
+        generation,
         validator: inputs.members[index].validator_id,
-        child,
+        child: guard.into_inner(),
     }
 }
 
@@ -1246,9 +1248,10 @@ pub async fn run(
     inputs: &SuccessorProcessInputs,
     seal: &OrderedCandidate,
     fence: WriterFenceGeneration,
+    original_round: &(Vec<u8>, Vec<u8>),
 ) {
     let export: PathBuf = export_sealed_history(fixture, fence).await;
-    tokio::task::block_in_place(|| accept(fixture, inputs, seal, &export));
+    tokio::task::block_in_place(|| accept(fixture, inputs, seal, &export, original_round));
 }
 
 fn accept(
@@ -1256,6 +1259,7 @@ fn accept(
     inputs: &SuccessorProcessInputs,
     seal: &OrderedCandidate,
     export: &Path,
+    original_round: &(Vec<u8>, Vec<u8>),
 ) {
     assert_eq!(inputs.targets.len(), 4);
     assert_eq!(inputs.members.len(), inputs.targets.len());
@@ -1513,5 +1517,12 @@ fn accept(
         "the freshly instantiated Definition is live on the caught-up successor host"
     );
     drop(reopened_all);
-    recurring::run(fixture, inputs, export, seal.request_id, hosts);
+    recurring::run(
+        fixture,
+        inputs,
+        export,
+        seal.request_id,
+        original_round,
+        hosts,
+    );
 }

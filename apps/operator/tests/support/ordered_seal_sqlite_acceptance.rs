@@ -2424,5 +2424,20 @@ pub(super) async fn run(
     // Every outgoing assertion above stays intact; the sealed files are now
     // only historical. The positive first-successor process acceptance runs
     // inside this lifetime over the same genuine sealed source.
-    super::successor_host_acceptance::run(&*fixture, successor, candidate, fence).await;
+    let (original_proposal, original_certificate): &(OrderedProposal, QuorumCertificate) = rounds
+        .last()
+        .expect("the actual original TCP submission retained its certified suffix");
+    assert_eq!(original_proposal.proposal.epoch, fixture.network.epoch);
+    assert_eq!(original_certificate.epoch, fixture.network.epoch);
+    assert_eq!(
+        original_proposal.proposal.chain_id,
+        fixture.network.chain_id
+    );
+    assert_eq!(original_certificate.chain_id, fixture.network.chain_id);
+    let original_round: (Vec<u8>, Vec<u8>) = (
+        node_core::ordered_economics::encode_ordered_proposal(original_proposal).unwrap(),
+        consensus::encode_quorum_certificate(original_certificate).unwrap(),
+    );
+    super::successor_host_acceptance::run(&*fixture, successor, candidate, fence, &original_round)
+        .await;
 }
