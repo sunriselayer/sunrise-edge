@@ -1,14 +1,15 @@
-//! Independent pre-change controls for the two real generic HTTP core paths.
+//! Independent pre-change public-library transactional preparation controls.
+//! Legacy public HTTP is closed; these are not network-acceptance claims.
 //! Builders create untrusted input; expected errors and I/O remain test-owned.
 
-use canonical_encoding::{CanonicalStruct, decode_canonical_frame};
+use canonical_encoding::{CanonicalDecodingError, CanonicalStruct, decode_canonical_frame};
 use hashing::HashSuiteResolver;
 use node_core::{
     NodeConfig, NodeCoreError, NodeDedupRecord, NodeEvent, NodeEventKind, NodeOutboxBatch,
     NodeOutput, NodeResponse, NodeResponseStatus, NodeStateAccess, NodeStateAccessMode,
     NodeStateAccessPlan, NodeStateSnapshot, NodeStateUpdate, OutboundMessage, RequestId,
     TransactionalNodeStateMachine, TransactionalNodeTransition, handle_domain_idempotent_event,
-    handle_idempotent_event,
+    handle_domain_transactional_event, handle_idempotent_event, handle_transactional_event,
 };
 use protocol_types::{
     ChainId, Digest32, Epoch, HashAlgorithmId, HashSuite, HashSuiteSchedule, ProtocolVersion,
@@ -18,8 +19,8 @@ use runtime::{
     AtomicStateWriteSet, AtomicityDomainId, CompareAndSwapResult, ComposedRuntime,
     DomainTransactionalStateStore, ManualClock, MemoryBlobStore, MemoryScheduler, MemorySigner,
     MemoryStateStore, MemoryTransport, PersistenceLayout, Runtime, RuntimeError, StateMutation,
-    StateMutationEntry, StateReadAssertion, StateStore, TransactionalStateStore, ValidatorId,
-    VersionedStateValue,
+    StateMutationEntry, StateReadAssertion, StateStore, StateWrite, TransactionalStateStore,
+    ValidatorId, VersionedStateValue,
 };
 use std::sync::{
     Mutex,
@@ -48,6 +49,8 @@ struct RecordingStore {
     inner: MemoryStateStore,
     reads: Mutex<ReadTrace>,
     commits: AtomicUsize,
+    write_sets: Mutex<Vec<AtomicStateWriteSet>>,
+    transactions: Mutex<Vec<AtomicStateTransaction>>,
 }
 
 impl RecordingStore {
@@ -59,10 +62,23 @@ impl RecordingStore {
     }
 
     fn seed(&self, scope: Scope, key: Vec<u8>, value: Vec<u8>) {
+        self.seed_mutation(scope, key, StateMutation::Put(value));
+    }
+
+    fn seed_mutation(&self, scope: Scope, key: Vec<u8>, mutation: StateMutation) {
+        let observed: VersionedStateValue = self.raw_read(scope, &key);
         match scope.domain() {
-            None => self.inner.put(key, value).unwrap(),
+            None => {
+                let writes: AtomicStateWriteSet = AtomicStateWriteSet::new(vec![
+                    StateWrite::new(key, observed.revision(), mutation).unwrap(),
+                ])
+                .unwrap();
+                assert_eq!(
+                    self.inner.commit_atomic(writes).unwrap(),
+                    AtomicStateWriteResult::Committed
+                );
+            }
             Some(domain) => {
-                let observed: VersionedStateValue = self.raw_read(scope, &key);
                 let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
                     domain,
                     AtomicStateReadSet::new(vec![
@@ -70,7 +86,7 @@ impl RecordingStore {
                     ])
                     .unwrap(),
                     AtomicStateMutationSet::new(vec![
-                        StateMutationEntry::new(key, StateMutation::Put(value)).unwrap(),
+                        StateMutationEntry::new(key, mutation).unwrap(),
                     ])
                     .unwrap(),
                 )
@@ -114,6 +130,7 @@ impl TransactionalStateStore for RecordingStore {
         writes: AtomicStateWriteSet,
     ) -> Result<AtomicStateWriteResult, RuntimeError> {
         self.commits.fetch_add(1, Ordering::SeqCst);
+        self.write_sets.lock().unwrap().push(writes.clone());
         self.inner.commit_atomic(writes)
     }
 }
@@ -136,6 +153,7 @@ impl DomainTransactionalStateStore for RecordingStore {
         transaction: AtomicStateTransaction,
     ) -> Result<AtomicStateWriteResult, RuntimeError> {
         self.commits.fetch_add(1, Ordering::SeqCst);
+        self.transactions.lock().unwrap().push(transaction.clone());
         self.inner.commit_transaction(transaction)
     }
 }
@@ -628,5 +646,185 @@ fn legacy_slot_limit_precedes_metadata_collision_but_not_nonce_namespace() {
         assert!(runtime.state_store().reads.lock().unwrap().is_empty());
         assert_eq!(machine.transitions.load(Ordering::SeqCst), 0);
         assert_eq!(runtime.state_store().commits.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Dispatch {
+    Transactional,
+    DomainTransactional,
+    Idempotent,
+    DomainIdempotent,
+}
+
+impl Dispatch {
+    fn scope(self) -> Scope {
+        match self {
+            Self::Transactional | Self::Idempotent => Scope::Unscoped,
+            Self::DomainTransactional | Self::DomainIdempotent => Scope::Domain,
+        }
+    }
+
+    fn has_metadata(self) -> bool {
+        matches!(self, Self::Idempotent | Self::DomainIdempotent)
+    }
+
+    fn invoke(
+        self,
+        runtime: &TestRuntime,
+        machine: &ProbeMachine,
+    ) -> Result<NodeOutput, NodeCoreError> {
+        match self {
+            Self::Transactional => handle_transactional_event(runtime, &config(), event(), machine),
+            Self::DomainTransactional => handle_domain_transactional_event(
+                runtime,
+                self.scope().domain().unwrap(),
+                &config(),
+                event(),
+                machine,
+            ),
+            Self::Idempotent | Self::DomainIdempotent => invoke(self.scope(), runtime, machine),
+        }
+    }
+}
+
+const DISPATCHES: [Dispatch; 4] = [
+    Dispatch::Transactional,
+    Dispatch::DomainTransactional,
+    Dispatch::Idempotent,
+    Dispatch::DomainIdempotent,
+];
+
+fn expected_application_reads(dispatch: Dispatch, keys: &[&[u8]]) -> ReadTrace {
+    let mut expected: ReadTrace = Vec::new();
+    if dispatch.has_metadata() {
+        expected.extend(
+            metadata_keys()
+                .into_iter()
+                .map(|key| (dispatch.scope().domain(), key)),
+        );
+    }
+    expected.extend(
+        keys.iter()
+            .map(|key| (dispatch.scope().domain(), key.to_vec())),
+    );
+    expected
+}
+
+#[test]
+fn declared_reads_stay_sorted_complete_and_assert_absence_and_tombstones() {
+    for dispatch in DISPATCHES {
+        let runtime: TestRuntime = runtime();
+        let store: &RecordingStore = runtime.state_store();
+        let scope: Scope = dispatch.scope();
+        store.seed(scope, b"state/a".to_vec(), frame(0xef01, 12));
+        store.seed(scope, b"state/c".to_vec(), frame(0xef01, 13));
+        store.seed_mutation(scope, b"state/c".to_vec(), StateMutation::Delete);
+        let keys: [&[u8]; 3] = [b"state/a", b"state/b", b"state/c"];
+        let observations: Vec<VersionedStateValue> =
+            keys.iter().map(|key| store.raw_read(scope, key)).collect();
+        assert_eq!(observations[1].revision(), runtime::StateRevision::INITIAL);
+        assert!(observations[1].value().is_none());
+        assert_eq!(observations[2].revision(), runtime::StateRevision::new(2));
+        assert!(observations[2].value().is_none());
+        let machine: ProbeMachine = ProbeMachine::new(vec![
+            b"state/c".to_vec(),
+            b"state/b".to_vec(),
+            b"state/a".to_vec(),
+        ]);
+        let _output: NodeOutput = dispatch.invoke(&runtime, &machine).unwrap();
+        assert_eq!(
+            *store.reads.lock().unwrap(),
+            expected_application_reads(dispatch, &keys),
+            "{dispatch:?}"
+        );
+        assert_eq!(machine.transitions.load(Ordering::SeqCst), 1);
+        assert_eq!(store.commits.load(Ordering::SeqCst), 1);
+        match scope {
+            Scope::Unscoped => {
+                let writes = store.write_sets.lock().unwrap();
+                assert_eq!(writes.len(), 1);
+                assert!(store.transactions.lock().unwrap().is_empty());
+                for (key, observed) in keys.iter().zip(&observations) {
+                    let actual: &StateWrite = writes[0]
+                        .writes()
+                        .iter()
+                        .find(|write| write.key() == *key)
+                        .unwrap();
+                    assert_eq!(actual.expected_revision(), observed.revision());
+                    if *key != b"state/c" {
+                        assert_eq!(actual.mutation(), &StateMutation::Assert);
+                    }
+                }
+            }
+            Scope::Domain => {
+                let transactions = store.transactions.lock().unwrap();
+                assert_eq!(transactions.len(), 1);
+                assert!(store.write_sets.lock().unwrap().is_empty());
+                assert_eq!(transactions[0].domain(), scope.domain().unwrap());
+                for (key, observed) in keys.iter().zip(&observations) {
+                    let actual: &StateReadAssertion = transactions[0]
+                        .reads()
+                        .iter()
+                        .find(|read| read.key() == *key)
+                        .unwrap();
+                    assert_eq!(actual.expected_revision(), observed.revision());
+                    if *key != b"state/c" {
+                        assert!(
+                            transactions[0]
+                                .mutations()
+                                .iter()
+                                .all(|mutation| mutation.key() != *key)
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(store.raw_read(scope, b"state/a"), observations[0]);
+        assert_eq!(store.raw_read(scope, b"state/b"), observations[1]);
+        assert_eq!(
+            store.raw_read(scope, b"state/c").revision(),
+            runtime::StateRevision::new(3)
+        );
+    }
+}
+
+#[test]
+fn corrupt_declared_state_stops_at_first_sorted_key_without_transition_or_commit() {
+    for dispatch in DISPATCHES {
+        let runtime: TestRuntime = runtime();
+        let store: &RecordingStore = runtime.state_store();
+        let scope: Scope = dispatch.scope();
+        store.seed(scope, b"state/a".to_vec(), vec![0]);
+        store.seed(scope, b"state/c".to_vec(), frame(0xef01, 13));
+        let before: VersionedStateValue = store.raw_read(scope, b"state/a");
+        let machine: ProbeMachine = ProbeMachine::new(vec![
+            b"state/c".to_vec(),
+            b"state/b".to_vec(),
+            b"state/a".to_vec(),
+        ]);
+        assert_eq!(
+            dispatch.invoke(&runtime, &machine),
+            Err(NodeCoreError::CanonicalDecoding(
+                CanonicalDecodingError::Truncated {
+                    offset: 0,
+                    needed: 4,
+                    remaining: 1
+                }
+            )),
+            "{dispatch:?}"
+        );
+        assert_eq!(
+            *store.reads.lock().unwrap(),
+            expected_application_reads(dispatch, &[b"state/a"])
+        );
+        assert_eq!(machine.transitions.load(Ordering::SeqCst), 0);
+        assert_eq!(store.commits.load(Ordering::SeqCst), 0);
+        assert_eq!(store.raw_read(scope, b"state/a"), before);
+        assert!(store.transactions.lock().unwrap().is_empty());
+        assert!(store.write_sets.lock().unwrap().is_empty());
+        for key in metadata_keys() {
+            assert!(store.raw_read(scope, &key).value().is_none());
+        }
     }
 }
