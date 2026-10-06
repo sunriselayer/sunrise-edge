@@ -107,8 +107,14 @@ Only bounded Rust process setup is shared; the original GET/POST/204/late-failur
 JavaScript fixture is unchanged. The bridge's second leg is numeric loopback
 HTTP, not upstream TLS, provider deployment, quorum or business execution proof.
 Fresh complete PLAN approval required eight corrections before source acceptance;
-they are implemented here. Combined execution, final source review, the complete
-required gate and hosted CI remain open until their actual terminal results.
+they are implemented here. Exact functional `388a2a88` passed combined owning
+native HTTP 166/0 and SDK 246/0 at 22:55:30 UTC, including the real native-relay
+queries and unchanged original TLS failure controls. Whole-workspace all-target/
+all-feature Clippy passed at 22:56:39 UTC. Exact npm-ci, all four actual portable
+tasks on Node 22.20.0/Deno 2.9.4, 654 changed-document links, formatting and gate
+dispatch/mutation controls passed. These are scoped execution results, not this
+combined head's complete required gate, hosted CI or independent security audit.
+Final full-source review, exact final acceptance and integration remain open.
 
 ### Responsibility-oriented refactoring queue
 
