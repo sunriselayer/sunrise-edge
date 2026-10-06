@@ -5,10 +5,8 @@ use rcgen::{CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair,
 
 pub struct DisposableTlsIdentity {
     pub ca_der: Vec<u8>,
-    pub leaf_der: Vec<u8>,
-    pub key_der: Vec<u8>,
-    pub leaf_pem: String,
-    pub key_pem: String,
+    pub leaf: rcgen::Certificate,
+    pub key: KeyPair,
 }
 
 pub fn issue_identity(dns_name: &str) -> DisposableTlsIdentity {
@@ -37,9 +35,7 @@ pub fn issue_identity(dns_name: &str) -> DisposableTlsIdentity {
     let leaf_cert: rcgen::Certificate = leaf_params.signed_by(&leaf_key, &issuer).unwrap();
     DisposableTlsIdentity {
         ca_der: ca_cert.der().to_vec(),
-        leaf_der: leaf_cert.der().to_vec(),
-        key_der: leaf_key.serialize_der(),
-        leaf_pem: leaf_cert.pem(),
-        key_pem: leaf_key.serialize_pem(),
+        leaf: leaf_cert,
+        key: leaf_key,
     }
 }

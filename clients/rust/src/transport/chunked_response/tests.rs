@@ -105,6 +105,10 @@ fn every_wire_split_and_single_byte_fragmentation_have_independent_literal_resul
     let chunks: Vec<Vec<u8>> = bytes.iter().map(|byte: &u8| vec![*byte]).collect();
     assert_eq!(run(chunks, 5, None, false).unwrap().body, b"hello");
     assert!(decode(b"0\r\n\r\n", 1).unwrap().body.is_empty());
+    assert_eq!(
+        decode(b"3\r\n\x00\xff\x80\r\n0\r\n\r\n", 3).unwrap().body,
+        [0, 255, 128]
+    );
 }
 
 #[test]

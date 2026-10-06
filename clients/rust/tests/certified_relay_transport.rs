@@ -96,8 +96,8 @@ fn start(identity: &disposable_tls::DisposableTlsIdentity) -> (OwnedServer, Sock
     let pem_escape = |value: &str| -> String { value.replace('\\', "\\\\").replace('\n', "\\n") };
     let configuration: String = format!(
         "{{\"cert\":\"{}\",\"key\":\"{}\"}}\n",
-        pem_escape(&identity.leaf_pem),
-        pem_escape(&identity.key_pem)
+        pem_escape(&identity.leaf.pem()),
+        pem_escape(&identity.key.serialize_pem())
     );
     server
         .child
@@ -134,7 +134,6 @@ fn request(method: Method, path: &str) -> WireRequest {
 fn pinned_node_certified_https_get_post_empty_and_late_failure() {
     let identity: disposable_tls::DisposableTlsIdentity =
         disposable_tls::issue_identity("relay.test");
-    let _rustls_inputs: (&[u8], &[u8]) = (&identity.leaf_der, &identity.key_der);
     let (mut server, addr): (OwnedServer, SocketAddr) = start(&identity);
     let transport: RemoteTlsHttpTransport = RemoteTlsHttpTransport::new(
         addr,

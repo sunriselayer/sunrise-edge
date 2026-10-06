@@ -35,12 +35,11 @@ struct TestCertificate {
 fn issue_certificate(leaf_dns_name: &str) -> TestCertificate {
     let identity: disposable_tls::DisposableTlsIdentity =
         disposable_tls::issue_identity(leaf_dns_name);
-    // These PEM inputs belong to the separate Node fixture, not this rustls server.
-    let _pem_inputs: (&str, &str) = (&identity.leaf_pem, &identity.key_pem);
-    let private_key: PrivateKeyDer<'static> = PrivatePkcs8KeyDer::from(identity.key_der).into();
+    let private_key: PrivateKeyDer<'static> =
+        PrivatePkcs8KeyDer::from(identity.key.serialize_der()).into();
     let server_config: ServerConfig = ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(vec![identity.leaf_der.into()], private_key)
+        .with_single_cert(vec![identity.leaf.der().clone()], private_key)
         .unwrap();
 
     TestCertificate {

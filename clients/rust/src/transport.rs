@@ -172,7 +172,7 @@ pub enum TransportError {
     InvalidStatusCode,
     /// A header line was not `"Name: value"`.
     MalformedHeaderLine,
-    /// A response other than bodyless HTTP 204 had no `Content-Length` header.
+    /// An ordinary response had neither length nor supported chunked framing.
     MissingContentLength,
     /// The response had more than one `Content-Length` header.
     DuplicateContentLength,
@@ -215,7 +215,7 @@ pub enum TransportError {
         /// Body bytes actually received before the connection closed.
         received: usize,
     },
-    /// The server sent bytes beyond its own declared `Content-Length`.
+    /// The server sent bytes beyond its complete length or chunked framing.
     TrailingResponseBytes,
     /// The server did not close the `Connection: close` response after the
     /// exact declared body within the configured read timeout.
