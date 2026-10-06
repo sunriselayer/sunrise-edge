@@ -69,8 +69,8 @@ made release-ready merely by its accepted design.
 
 | Pending prerequisite | Actual head and remaining acceptance |
 | --- | --- |
-| PR #277: one plan and mainnet gate inventory | `7a9d391`; complete exact-head Opus source approval; remaining CI/integration still pending |
-| PR #278: pure envelope/list and SDK binding owner | `aab0389`; complete exact-head Opus source approval; literal full local required gate passed at 19:02:54 UTC; remaining CI/integration still pending |
+| PR #277: one plan and mainnet gate inventory | `7a9d391`; complete exact-head Opus source approval and all seven hosted CI owners plus `check` passed; integration still pending |
+| PR #278: pure envelope/list and SDK binding owner | `aab0389`; complete exact-head Opus source approval, literal full local required gate passed at 19:02:54 UTC and all seven hosted CI owners plus `check` passed; integration still pending |
 | PR #279: private observations of genuine recurrence | `3f2b9e1`; complete exact-head Opus source approval; actual owning observer units 4/0 and all seven hosted CI owners plus `check` passed; integration still pending |
 | PR #280: real host/signer/store capability map | `4d5507d`; complete exact-head Opus source approval; remaining CI/integration still pending |
 | PR #281: closed certified HTTPS relay | `7424d72`; complete exact-head Opus source approval and exact npm-ci passed; ancestor native oracle, genuine drain, generated-WASM Cloudflare and portable tests passed, not a latest full local gate or deployed-provider qualification |
@@ -121,8 +121,13 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   host constructors are replaced by one explicit closed event endpoint; actual
   authenticated execution, queries and standalone recovery remain separate.
   The pre-change native suite passed 161/0 and exact `24fa651` received complete
-  independent PLAN APPROVE. Implementation acceptance and integration remain
-  pending; no full native/core cleanup or security gate is implied.
+  independent PLAN APPROVE. Functional head `0515b67` passed the entire native
+  HTTP suite 164/0, including the original authenticated/recovery tests and
+  three added refusal/admission controls; its npm-ci also passed. Follow-up
+  unused-import cleanup, latest exact-source review, full acceptance and
+  integration remain pending. No full native/core cleanup or security gate is
+  implied. Ordinary GitHub authentication is currently unavailable; leave PRs
+  open instead of using the PR-creation-only credential for updates or merge.
   [DR-0203](docs/architecture/decisions/0203-declared-state-transition-preparation.md)
   has independent PLAN APPROVE at `d2be439` after actual pre-change public-library
   8/0 and durable/authenticated 11/0 controls. Its private preparation owner now
