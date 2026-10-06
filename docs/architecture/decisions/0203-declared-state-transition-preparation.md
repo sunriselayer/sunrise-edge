@@ -33,6 +33,8 @@ declared-state preparation rules:
   assembler calls it while visiting updates in its original order, before its
   own original mutation construction/insertion. Do not eagerly normalize all
   mutations or move a fallible constructor past another refusal.
+  Public transition constructors already sort updates by key; keep that
+  canonical ordering and its refusal priority, not the caller's input order.
 - One declared-revision accessor owns the missing-snapshot invariant. Both
   assemblers invoke it before their original read/write constructor.
 - `asserted_transition_writes` and `domain_transition_parts` keep their distinct

@@ -225,6 +225,8 @@ fn event() -> NodeEvent {
 
 struct ProbeMachine {
     keys: Vec<Vec<u8>>,
+    mode: NodeStateAccessMode,
+    update_keys: Option<Vec<Vec<u8>>>,
     plans: AtomicUsize,
     transitions: AtomicUsize,
     snapshots: Mutex<Vec<SnapshotEntries>>,
@@ -234,6 +236,8 @@ impl ProbeMachine {
     fn new(keys: Vec<Vec<u8>>) -> Self {
         Self {
             keys,
+            mode: NodeStateAccessMode::ReadWrite,
+            update_keys: None,
             plans: AtomicUsize::new(0),
             transitions: AtomicUsize::new(0),
             snapshots: Mutex::new(Vec::new()),
@@ -247,9 +251,7 @@ impl TransactionalNodeStateMachine for ProbeMachine {
         let accesses: Vec<NodeStateAccess> = self
             .keys
             .iter()
-            .map(|key: &Vec<u8>| {
-                NodeStateAccess::new(key.clone(), NodeStateAccessMode::ReadWrite).unwrap()
-            })
+            .map(|key: &Vec<u8>| NodeStateAccess::new(key.clone(), self.mode).unwrap())
             .collect();
         NodeStateAccessPlan::new(accesses)
     }
@@ -266,11 +268,18 @@ impl TransactionalNodeStateMachine for ProbeMachine {
             .collect();
         self.snapshots.lock().unwrap().push(observed);
         assert!(snapshot.resolved_objects().is_empty());
-        TransactionalNodeTransition::new(
-            vec![NodeStateUpdate::put(
+        let updates: Vec<NodeStateUpdate> = match &self.update_keys {
+            None => vec![NodeStateUpdate::put(
                 self.keys[0].clone(),
                 frame(0xef01, 99),
             )?],
+            Some(keys) => keys
+                .iter()
+                .map(|key: &Vec<u8>| NodeStateUpdate::put(key.clone(), frame(0xef01, 99)))
+                .collect::<Result<Vec<NodeStateUpdate>, NodeCoreError>>()?,
+        };
+        TransactionalNodeTransition::new(
+            updates,
             NodeOutput::new(
                 vec![NodeResponse::new(
                     event.request_id(),
@@ -842,6 +851,72 @@ fn corrupt_declared_state_stops_at_first_sorted_key_without_transition_or_commit
         assert!(store.write_sets.lock().unwrap().is_empty());
         for key in metadata_keys() {
             assert!(store.raw_read(scope, &key).value().is_none());
+        }
+    }
+}
+
+#[test]
+fn forbidden_updates_refuse_in_canonical_update_order_without_commit_or_output() {
+    for dispatch in DISPATCHES {
+        let cases: [(Vec<Vec<u8>>, NodeCoreError); 6] = [
+            (
+                vec![b"state/a".to_vec()],
+                NodeCoreError::ReadOnlyStateUpdate(b"state/a".to_vec()),
+            ),
+            (
+                vec![b"state/z".to_vec()],
+                NodeCoreError::UndeclaredStateUpdate(b"state/z".to_vec()),
+            ),
+            (
+                vec![b"state/z".to_vec(), b"state/a".to_vec()],
+                NodeCoreError::ReadOnlyStateUpdate(b"state/a".to_vec()),
+            ),
+            (
+                vec![b"state/a".to_vec(), b"state/z".to_vec()],
+                NodeCoreError::ReadOnlyStateUpdate(b"state/a".to_vec()),
+            ),
+            (
+                vec![b"state/a".to_vec(), b"state/0".to_vec()],
+                NodeCoreError::UndeclaredStateUpdate(b"state/0".to_vec()),
+            ),
+            (
+                vec![b"state/0".to_vec(), b"state/a".to_vec()],
+                NodeCoreError::UndeclaredStateUpdate(b"state/0".to_vec()),
+            ),
+        ];
+        for (update_keys, expected_error) in cases {
+            let runtime: TestRuntime = runtime();
+            let store: &RecordingStore = runtime.state_store();
+            let scope: Scope = dispatch.scope();
+            store.seed(scope, b"state/a".to_vec(), frame(0xef01, 12));
+            let before: VersionedStateValue = store.raw_read(scope, b"state/a");
+            let absent_before: VersionedStateValue = store.raw_read(scope, b"state/b");
+            assert_eq!(absent_before.revision(), runtime::StateRevision::INITIAL);
+            assert!(absent_before.value().is_none());
+            let mut machine: ProbeMachine =
+                ProbeMachine::new(vec![b"state/b".to_vec(), b"state/a".to_vec()]);
+            machine.mode = NodeStateAccessMode::ReadOnly;
+            machine.update_keys = Some(update_keys);
+            assert_eq!(
+                dispatch.invoke(&runtime, &machine),
+                Err(expected_error),
+                "{dispatch:?}"
+            );
+            assert_eq!(
+                *store.reads.lock().unwrap(),
+                expected_application_reads(dispatch, &[b"state/a", b"state/b"])
+            );
+            assert_eq!(machine.transitions.load(Ordering::SeqCst), 1);
+            assert_eq!(store.commits.load(Ordering::SeqCst), 0);
+            assert!(store.write_sets.lock().unwrap().is_empty());
+            assert!(store.transactions.lock().unwrap().is_empty());
+            assert_eq!(store.raw_read(scope, b"state/a"), before);
+            assert_eq!(store.raw_read(scope, b"state/b"), absent_before);
+            assert!(store.raw_read(scope, b"state/z").value().is_none());
+            assert!(store.raw_read(scope, b"state/0").value().is_none());
+            for key in metadata_keys() {
+                assert!(store.raw_read(scope, &key).value().is_none());
+            }
         }
     }
 }
