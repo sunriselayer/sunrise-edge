@@ -5,6 +5,11 @@ independent code-security audit. It is an audit-entry artifact, not evidence
 that the audit, production gate, or mainnet gate has completed. The reviewed
 revision is fixed only by the final validation procedure below.
 
+This is the original limited engagement, not the final network-release scope.
+Later certified contracts, ordered economics and original-root recurring
+handoff require the [network code-audit input contract](network-code-audit-scope.md)
+and the delta rule below; these exclusions must not be treated as their approval.
+
 ## Included source
 
 The first engagement includes these path and component families:

@@ -11,13 +11,17 @@
 //! and the operator-only failover seams. It never duplicates the shared
 //! engine's SQL text or validation rules.
 //!
-//! This adapter is for the single-node Developer MVP only. It is bound at
+//! This native adapter also serves the independently stored validators in
+//! local network and successor/recovery acceptance. It is bound at
 //! construction to exactly one trusted `(chain, validator, atomicity
 //! domain)` namespace and serializes every operation behind one
-//! process-local [`Mutex`] plus one SQLite transaction. It has none of
-//! `runtime-postgres`'s connection pooling, serialization-conflict
-//! retries, or live fault-injected evidence, and is not suitable for
-//! multi-writer or production deployments.
+//! process-local [`Mutex`] plus one SQLite transaction. Separate validator
+//! files are not independent concurrent writers to the same namespace.
+//! It does not supply PostgreSQL-style connection pooling or application
+//! serialization retries, nor does local acceptance certify public deployment,
+//! storage failure recovery, HA or multi-writer operation. The store contract
+//! is backend-neutral; production qualification belongs to the selected host
+//! profile rather than the database name.
 
 use crate::native_files;
 use crate::rusqlite_backend::NativeSqlBackend;

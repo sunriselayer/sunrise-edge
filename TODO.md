@@ -120,6 +120,10 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   inventory and executable startup/stop/restart/recovery evidence for the audit.
   Remove misleading unsupported advertised compositions and stale architecture
   claims; do not build another consensus or general orchestration framework.
+  The [composition inventory](docs/architecture/compositions-and-capabilities.md)
+  and [network audit input contract](docs/security/network-code-audit-scope.md)
+  identify actual surfaces and required final-review inputs. Their existence is
+  not a completed audit, selected public host or release qualification.
 
 Sequence R0 and the ready startup integrations first; review R1's contract
 before implementation. R2/R3 may run in parallel only with disjoint owners and

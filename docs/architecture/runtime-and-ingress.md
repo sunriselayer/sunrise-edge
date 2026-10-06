@@ -27,36 +27,45 @@ fault recovery. Native HTTP now places synchronous work behind bounded blocking
 admission, but production runtime composition, storage-aware deadlines,
 cancellation, and capacity evidence remain open.
 
-SQLite is not the selected production database. Its single opaque
-`sunrise_state` table intentionally proves the minimal versioned key-value
-contract, but it does not provide the normalized object, receipt, outbox,
-checkpoint, migration, retention, or operational indexes required by the
-accepted production persistence architecture.
+The opaque `SqliteStateStore` is not the structured validator store. Its single
+`sunrise_state` table proves the minimal versioned key-value contract, not the
+normalized object, receipt and outbox repository. Do not infer missing
+structured capabilities from that opaque store, or use its conformance as
+evidence for a different backend or host composition.
 
 This describes the existing implementation, not a permanent PostgreSQL-only
 protocol requirement. [DR-0151](decisions/0151-integrated-network-delivery-and-lightweight-stores.md)
 accepts a separately verified native SQLite host and SQLite-backed Cloudflare
-DO as lightweight deployment targets. The current developer adapter and
-stateless provider relays do not yet establish either target's production
-support; the same runtime-neutral atomicity/fencing/replay contract remains.
+DO as lightweight deployment targets. PostgreSQL remains an optional adapter,
+not a consensus or protocol prerequisite. Native and embedded store acceptance
+does not establish either target's public-deployment qualification; the same
+runtime-neutral atomicity/fencing/replay contract remains. See the actual
+[composition and capability boundary](compositions-and-capabilities.md) before
+selecting a host.
 
 `runtime-sqlite` additionally exposes `SqliteDurableStore`
 ([DR-0079](decisions/0076-0080-developer-mvp-foundation.md)): an
-additive, local-only, non-production implementation of
+local native implementation of
 `StructuredDurableDomainStateStore`/`IndexedOutboxRepository` in a separate
 module, its own `PRAGMA application_id`, and separate SQLite tables from the
 opaque `SqliteStateStore` above; because `application_id` is a whole-file
 SQLite property, the two stores require separate database files, not a shared
 one. It normalizes state, immutable object versions, receipts, and outbox
-delivery/lease-attempt state, matching the shared contract that
-`runtime-postgres` implements for production, but with none of that crate's
-connection pooling, multi-writer serialization retries, or live fault
-evidence — every operation is serialized behind one process-local mutex and
+delivery/lease-attempt state through the backend-neutral
+[`SqlDurableEngine`](../../crates/runtime-sql-durable/src/lib.rs). Native
+rusqlite and the embedded DO backend reuse its SQL, decoding and commit rules;
+PostgreSQL implements the shared runtime contracts independently. The native
+adapter does not provide PostgreSQL-style connection pooling or application
+serialization retries. Every operation is serialized behind one process-local mutex and
 one SQLite transaction (`Deferred` for a multi-statement read's consistent
 snapshot, `Immediate` for a write's `BEGIN IMMEDIATE` write lock), with the
 caller's remaining deadline propagated into that connection's `busy_timeout`
-before each transaction starts. It is a Developer MVP prerequisite for the
-preinstalled-WASM native devnet, not a production persistence candidate.
+before each transaction starts. Actual native acceptance includes separate
+validator files, compiled hosts, successor import/readiness/Seal/activation,
+restart and fencing. Those capabilities do not certify production filesystems,
+power-loss recovery, HA, PKI or provider activation. A selected lightweight host
+still has to satisfy the release contract; PostgreSQL's implementation or tests
+cannot qualify it by substitution.
 
 `ComposedRuntime` owns explicitly supplied state, blob, signer, transport,
 clock, and scheduler components and implements the same runtime trait without

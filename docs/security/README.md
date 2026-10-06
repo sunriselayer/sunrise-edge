@@ -11,6 +11,9 @@ the complete software is production-ready or mainnet-ready.
 - [Initial code-audit scope](initial-code-audit-scope.md): exact source scope,
   exclusions, revision binding, validation commands, and delta-audit rule for
   the first independent engagement.
+- [Network code-audit input contract](network-code-audit-scope.md): actual
+  reachable lifecycle/consensus/economic/handoff owners, selected composition
+  and exact source/build/configuration evidence required for final review.
 - [Audit evidence](audits/README.md): immutable target revisions, canonical
   scan artifacts, limitations, and finding dispositions.
 
