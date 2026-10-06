@@ -89,6 +89,21 @@ contracts; they do not define protocol rules.
 
 ## Successor invocation and immutable transport
 
+- [Offline Standard Asset author](../../apps/operator/src/standard_asset_genesis.rs)
+  owns the named explicitly configured operator preset, not template authority
+  in node-core. Its [public inputs](../../apps/operator/src/standard_asset_genesis/input.rs)
+  and [ordinary manifest builder](../../apps/operator/src/standard_asset_genesis/build.rs)
+  are separate from the [fresh single-file output owner](../../apps/operator/src/genesis_output.rs).
+  The [actual process tests](../../apps/operator/tests/standard_asset_genesis.rs)
+  consume that output through the shipped prepare/preflight/host executables.
+- [SQLite genesis orchestration](../../apps/operator/src/sqlite_genesis.rs)
+  separates fresh preparation from advisory public-key inspection. The private
+  [shared installer composition](../../apps/operator/src/original_genesis_install.rs)
+  only calls defining core installers; the
+  [shared original startup checks](../../apps/operator/src/sqlite_genesis_checks.rs)
+  own committed root/fee/committee agreement and stable advisory observation.
+  Serving retains fence acquisition and protected-key derivation. Neither
+  author output nor preflight grants network activation authority.
 - [Host runtime pieces](../../apps/operator/src/host_runtime.rs) own the
   shared local Ed25519 signer, original-root fee check and generation-bound
   attempt identities. Each host retains its provider-specific startup order,

@@ -109,7 +109,9 @@ pub const MAX_PAID_FEE_POLICY_BYTES: usize = 16 * 1024;
 // phase coordinator (which enforces them). The wire boundary therefore never
 // makes the private coordinator module a public prerequisite, and there is
 // no second independent ceiling.
-use crate::phase_limits::{
+// Public read-only caps for composing an ordinary policy. The coordinator and
+// wire validator consume these same definitions; the VM remains private.
+pub use crate::phase_limits::{
     PHASE_CALLS, PHASE_CREATIONS, PHASE_EVENTS, PHASE_HANDLES, PHASE_MEMORY_BYTES,
     PHASE_OUTPUT_BYTES,
 };
