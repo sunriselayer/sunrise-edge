@@ -59,7 +59,7 @@ readonly CI_AUXILIARY_IGNORED_CASES=(
 readonly CI_REQUIRED_EXTENDED_CASES=(
   'core-recurrence|node-core|--lib|ordered_economics::tests::causal_placement::control_reconstruction::frozen_completion::successor_activation::successor_recurring_delay::genuine_recurring_sqlite_handoffs_reach_configured_seven_epoch_withdrawal_unlock|no'
   'readiness-sqlite|sunrise-edge-operator|conditional_readiness_sqlite|compiled_conditional_readiness_real_retention_restart_and_distinct_certificate|no'
-  'recurring-sqlite|sunrise-edge-operator|conditional_readiness_sqlite|compiled_registered_replacement_and_recurring_successor_hosts|no'
+  'recurring-sqlite|sunrise-edge-operator|conditional_readiness_sqlite|compiled_registered_replacement_and_recurring_successor_hosts|yes'
 )
 
 ci_gate_groups() {

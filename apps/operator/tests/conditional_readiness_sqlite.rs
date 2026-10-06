@@ -1,6 +1,8 @@
 //! Compiled local readiness over a genuinely frozen/drained SQLite source.
 //! Distinct cases retain the original committee and register E before a real
 //! A/B/C/E handoff. No original fixture is relabelled as membership-change proof.
+#[path = "support/acceptance_timing.rs"]
+mod acceptance_timing;
 #[path = "support/causal_genesis_fixture.rs"]
 mod causal_genesis_fixture;
 #[path = "support/compiled_executable_snapshot.rs"]
@@ -182,6 +184,8 @@ async fn compiled_registered_replacement_and_recurring_successor_hosts() {
 }
 
 async fn run_conditional_readiness(recurring: bool) {
+    let initial_readiness: acceptance_timing::AcceptanceSpan =
+        acceptance_timing::AcceptanceSpan::start(acceptance_timing::Stage::InitialReadiness, None);
     let executables: CompiledExecutableSnapshot = CompiledExecutableSnapshot::capture();
     let mut fixture: Fixture = if recurring {
         Fixture::new_recurring()
@@ -687,6 +691,7 @@ async fn run_conditional_readiness(recurring: bool) {
         before,
         "the competing variant's preparation never changes source state or receipts"
     );
+    drop(initial_readiness);
     ordered_seal_sqlite_acceptance::run_compiled_four_host_seal(
         &executables,
         &fixture,
