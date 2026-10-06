@@ -192,7 +192,7 @@ described in [persistence.md §41](persistence.md#41-production-persistence-arch
 to `NodeEvent`, and the structured durable native route requires the resulting
 private-field `AuthenticatedSubmitTransaction` before deriving an access plan
 or entering its persistence/dispatch path. Generic node-core handlers and the
-legacy native routes reject `SubmitTransaction`. The authenticated wrapper also
+capability-free closed native route reject `SubmitTransaction`. The authenticated wrapper also
 derives the private sender-nonce reservation. Exact next-nonce equality and its
 checked increment now commit atomically with the structured invocation. Signed
 read-only object manifests are loaded from exact heads and immutable inline
@@ -237,14 +237,18 @@ other seven kinds — `ReceiveVote`, `ReceiveCertificate`,
 a typed private native-http error before identity allocation, any clock read,
 storage I/O, machine `access_plan`/transition, outbox work, or transport send.
 Every one of those seven kinds maps to the same fixed, opaque
-`501 event-family-requires-authenticated-route` response on all four native
-router families (`router`, `resolved_domain_router`, `structured_durable_router`,
-and `preinstalled_wasm_structured_durable_router`, including each
-`_with_executor` constructor), so the response never leaks which specific kind
-was sent. The two legacy routes (`router`, `resolved_domain_router`) authenticate
-no event at all, so they additionally keep rejecting `SubmitTransaction` itself
+`501 event-family-requires-authenticated-route` response on the closed,
+structured durable and preinstalled-WASM event routers, including their
+`_with_executor` forms, so the response never leaks which specific kind
+was sent. `closed_event_router` authenticates
+no event at all, so it additionally keeps rejecting `SubmitTransaction` itself
 with the pre-existing, unchanged `501 submit-transaction-requires-authenticated-route`
-response — both legacy routes are therefore closed for every known kind. The
+response. [DR-0206](decisions/0206-unauthenticated-ingress-without-execution-capabilities.md)
+replaces the two unreleased legacy constructors with this one refusal-only
+composition: its state has only bounded blocking admission, no runtime, store,
+signer, clock, placement, configuration, callback or lease source. The event
+decoder can return only a refusal, never application output. Neither query nor
+recovery routes are mounted. The
 structured and preinstalled-WASM routes still accept a validly authenticated
 `SubmitTransaction`; their generic non-`SubmitTransaction` branch is now
 unreachable from HTTP and has been removed from native-http, but node-core's
@@ -304,8 +308,8 @@ deadlines while writing the response. HTTP/1 keep-alive is
 disabled, so one accepted connection carries at most one request; header count
 and parser buffer size are fixed as well. `serve_with_policy` exposes smaller
 validated limits under hard ceilings while `serve` preserves its signature and
-uses bounded defaults. Because this wraps the completed `Router`, all four
-native event router families and query routes receive the same pre-parser
+uses bounded defaults. Because this wraps the completed `Router`, the closed and authenticated
+native event routers and query routes receive the same pre-parser
 controls. An embedding host that does not use this server entrypoint must
 provide equivalent connection/read/write/lifecycle controls itself.
 
@@ -328,8 +332,9 @@ blocking jobs: Tokio cannot abort `spawn_blocking` work after it starts, so
 returning a timeout while a database commit may continue would create ambiguous
 client semantics. The structured durable route supplies a storage-aware deadline
 and checks an explicit cooperative cancellation signal before blocking dispatch,
-at blocking-job entry, and immediately before its first storage call. Legacy
-routes, client-disconnect wiring after complete request admission, shutdown
+at blocking-job entry, and immediately before its first storage call. The closed
+event route holds a permit over canonical decoding only and cannot start
+storage or application work. Client-disconnect wiring after complete request admission, shutdown
 budgets, cancellation of started transport/storage work, measured load
 capacity, and circuit breaking remain required.
 
@@ -359,20 +364,20 @@ before expiry, and redelivers at expiry with the attempt counter retained.
 These are orderly connection close/reopen tests. They are evidence for durable
 state continuity, not kill -9, torn-write, filesystem, or power-loss safety.
 
-The default native route now requires a `TransactionalNodeStateMachine`, a hash
-suite resolver, a transactional store, and an injected outbox lease-ID source.
-Application updates, replayable responses, request/event deduplication, the
-ordered outbox batch, and its delivery cursor commit atomically. The request
-then claims one message at a time with a 30-second persisted lease, sends it,
-and atomically acknowledges the matching lease and index. A transport failure
-returns 503 while retaining the lease; retry after expiry deliberately
-redelivers the message, while a fully acknowledged duplicate request replays
-only its response and does not rerun the transition or resend the outbox.
+The generic library's independently composed recoverable invocation commits
+application updates, replayable responses, request/event deduplication and the
+ordered outbox batch atomically. It is not exposed by a default native route.
+Standalone native recovery retains its separately injected transactional
+runtime, configuration and lease-ID source; it claims one message with a
+30-second persisted lease, sends it, and atomically acknowledges the matching
+lease and index. A failed send retains that lease and is reported through the
+recovery error, not a nonexistent legacy HTTP success path. Retry after expiry
+deliberately redelivers; fully acknowledged requests are not resent.
 
 Lease-ID sources must prevent reuse for the same request across process
 restarts, because a delayed acknowledgement from an expired attempt must not
-match a newer lease. This closes the old native commit-before-enqueue loss
-window for request-scoped retries, but it is not the complete production
+match a newer lease. Durable publication precedes this standalone recovery,
+but the closed event endpoint cannot create a batch or dispatch it. This is not the complete production
 delivery architecture. A local durable SQLite store, bounded native blocking
 seam, and scheduler-callable one-shot discovery/recovery operation exist, but
 no production runtime composition, real provider trigger, poison-message

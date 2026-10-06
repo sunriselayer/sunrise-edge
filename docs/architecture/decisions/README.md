@@ -100,6 +100,7 @@
 - [DR-0201: one envelope codec and acknowledgement binding owner](0201-envelope-and-acknowledgement-ownership.md)
 - [DR-0202: private observations of genuine recurring acceptance work](0202-private-recurring-acceptance-observations.md)
 - [DR-0203: one declared-state transition preparation owner](0203-declared-state-transition-preparation.md)
+- [DR-0206: closed event ingress without execution capabilities](0206-unauthenticated-ingress-without-execution-capabilities.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

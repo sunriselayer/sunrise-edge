@@ -7,7 +7,7 @@ Date: 2026-10-07 (Asia/Singapore).
 An ingress that cannot authenticate any event must not own execution or
 storage capabilities. Replace the unreleased `router` and
 `resolved_domain_router` constructors, including their `_with_executor`
-forms, with one explicit `unauthenticated_event_router` and its shared-executor
+forms, with one explicit `closed_event_router` and its shared-executor
 form. The result mounts liveness and the closed canonical event endpoint;
 it is not a query, execution, recovery or validator host.
 
@@ -60,10 +60,18 @@ certifies those compositions nor promises indefinite compatibility for them.
 
 ## Implementation and verification contract
 
+The pre-implementation exact `24fa651` plan received complete independent
+Opus PLAN APPROVE. The accepted advisory naming change makes refusal explicit:
+`closed_event_router` cannot be mistaken for an unauthenticated execution host.
+Plan approval does not accept implementation or waive execution gates.
+
 1. Capture the existing native HTTP suite before implementation. Its actual
    all-feature baseline on parent `7853869165124b4a4dfe81d5b05eb081fa027dce`
-   is preserved in the ongoing complete required gate; do not claim the whole
-   gate has finished merely because the native suite passed.
+   is preserved in the ongoing complete required gate. Before implementation,
+   the actual parent-built native suite was also re-executed at byte-identical
+   crate inputs: 161 passed, zero failed, binary SHA-256 unchanged
+   `15032aab1959235e86216094928f10555a27bce6000fa0a0db0336e1655f06b1`.
+   Do not claim the whole gate has finished merely because the native suite passed.
 2. Replace both legacy host states and dispatchers with one capability-free
    closed ingress. Remove dead invocation/delivery references and public
    compatibility wrappers, not the independently used recovery functions.

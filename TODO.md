@@ -115,6 +115,14 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   separate object/receipt/outbox repositories and memory implementations by
   semantic owner. Remove obsolete duplicate paths only after their callers move.
   A move with unchanged bodies is mechanical progress, not semantic completion.
+  [DR-0206](docs/architecture/decisions/0206-unauthenticated-ingress-without-execution-capabilities.md)
+  additionally removes the two unreachable legacy native invocation pipelines
+  and their runtime/configuration/callback/lease capabilities. The unreleased
+  host constructors are replaced by one explicit closed event endpoint; actual
+  authenticated execution, queries and standalone recovery remain separate.
+  The pre-change native suite passed 161/0 and exact `24fa651` received complete
+  independent PLAN APPROVE. Implementation acceptance and integration remain
+  pending; no full native/core cleanup or security gate is implied.
   [DR-0203](docs/architecture/decisions/0203-declared-state-transition-preparation.md)
   has independent PLAN APPROVE at `d2be439` after actual pre-change public-library
   8/0 and durable/authenticated 11/0 controls. Its private preparation owner now
