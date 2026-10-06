@@ -46,7 +46,7 @@ design/security owners; this file tracks every remaining completion group.
   all seven CI owners and `check`; PR #274's preserved normal merge `734f6454`
   was automatically recognized as merged. No public deployment is claimed.
 - [x] Storage-neutral startup guide and exact local evidence (PR #276, normal
-  merge `b878d2e` at 16:09:07 UTC); complete `c89acfdd` source approval and all
+  merge `b878d2e`, GitHub `mergedAt` 16:09:07 UTC); complete `c89acfdd` source approval and all
   seven required CI owners plus `check`. Public activation remains separate.
 
 Validator-set changes, slashing and reward/claim distribution remain FastVote

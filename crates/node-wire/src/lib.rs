@@ -261,7 +261,9 @@ pub enum HttpResultBindingError {
     Contract(HttpContractError),
     /// The decoded outer result belongs to another request.
     RequestMismatch {
+        /// Locally expected request identifier supplied by the caller.
         expected: RequestId,
+        /// Identifier carried by the decoded outer result.
         actual: RequestId,
     },
 }

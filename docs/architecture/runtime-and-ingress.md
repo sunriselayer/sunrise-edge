@@ -44,7 +44,7 @@ runtime-neutral atomicity/fencing/replay contract remains. See the actual
 selecting a host.
 
 `runtime-sqlite` additionally exposes `SqliteDurableStore`
-([DR-0079](decisions/0076-0080-developer-mvp-foundation.md)): an
+([DR-0079](decisions/0076-0080-developer-mvp-foundation.md)): a
 local native implementation of
 `StructuredDurableDomainStateStore`/`IndexedOutboxRepository` in a separate
 module, its own `PRAGMA application_id`, and separate SQLite tables from the
