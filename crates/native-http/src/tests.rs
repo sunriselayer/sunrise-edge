@@ -21,7 +21,7 @@ use node_core::{
     NodeOutput, NodeResponse, NodeResponseStatus, NodeStateAccess, NodeStateAccessMode,
     NodeStateAccessPlan, NodeStateSnapshot, NodeStateUpdate, OutboundMessage,
     PreinstalledModuleCatalogEntry, PreinstalledModuleSemanticsEnvelope,
-    TransactionalNodeTransition, encode_preinstalled_semantics_envelope,
+    TransactionalNodeTransition, encode_preinstalled_semantics_envelope, handle_idempotent_event,
     handle_resolved_durable_idempotent_event,
 };
 use objects::{
@@ -33,19 +33,17 @@ use protocol_types::{
     HashSuiteSchedule, ProtocolVersion, SignatureSchemeId, ValidatorId,
 };
 use runtime::{
-    AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, AtomicStateWriteResult,
-    AtomicStateWriteSet, CompareAndSwapResult, ComposedRuntime, DurableCommitOutcome,
-    DurableCommitRejection, DurableDomainStateStore, DurableInvocationTransaction,
-    DurableObjectChanges, DurableObjectHead, DurableObjectHeadRead, DurableObjectMutation,
-    DurableObjectMutationEntry, DurableObjectOwnerProjection, DurableObjectPayload,
-    DurableObjectProvenance, DurableObjectRoutingProjection, DurableObjectVersion,
-    DurableObjectVersionRecord, DurableOutboxClaim, DurableReadError, DurableRequestId,
-    DurableRequestReceipt, IndexedOutboxRepository, ManualClock, MemoryBlobStore,
+    AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, CompareAndSwapResult,
+    ComposedRuntime, DurableCommitOutcome, DurableCommitRejection, DurableDomainStateStore,
+    DurableInvocationTransaction, DurableObjectChanges, DurableObjectHead, DurableObjectHeadRead,
+    DurableObjectMutation, DurableObjectMutationEntry, DurableObjectOwnerProjection,
+    DurableObjectPayload, DurableObjectProvenance, DurableObjectRoutingProjection,
+    DurableObjectVersion, DurableObjectVersionRecord, DurableOutboxClaim, DurableReadError,
+    DurableRequestId, DurableRequestReceipt, IndexedOutboxRepository, ManualClock, MemoryBlobStore,
     MemoryDurableStateStore, MemoryRuntime, MemoryScheduler, MemorySigner, MemoryStateStore,
     MemoryTransport, ObjectHeadRevision, OutboxRequestId, RequestOutboxClaimRequest, RuntimeError,
     StateMutation, StateMutationEntry, StateReadAssertion, StateRevision, StateStore,
-    StructuredDurableDomainStateStore, SystemClock, TransactionalStateStore, Transport,
-    VersionedStateValue,
+    StructuredDurableDomainStateStore, SystemClock, Transport, VersionedStateValue,
 };
 use runtime_sqlite::{SqliteDurableStore, SqliteNamespace, SqliteStateStore};
 use std::{
@@ -1045,90 +1043,6 @@ impl TransactionalNodeStateMachine for BlockingMachine {
 }
 
 #[derive(Default)]
-struct CountingStateStore {
-    inner: MemoryStateStore,
-    calls: AtomicUsize,
-}
-
-impl CountingStateStore {
-    fn calls(&self) -> usize {
-        self.calls.load(Ordering::SeqCst)
-    }
-}
-
-impl StateStore for CountingStateStore {
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, RuntimeError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.get(key)
-    }
-
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), RuntimeError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.put(key, value)
-    }
-
-    fn compare_and_swap(
-        &self,
-        key: Vec<u8>,
-        expected: Option<Vec<u8>>,
-        new_value: Vec<u8>,
-    ) -> Result<CompareAndSwapResult, RuntimeError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.compare_and_swap(key, expected, new_value)
-    }
-}
-
-impl TransactionalStateStore for CountingStateStore {
-    fn get_versioned(&self, key: &[u8]) -> Result<VersionedStateValue, RuntimeError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.get_versioned(key)
-    }
-
-    fn commit_atomic(
-        &self,
-        write_set: AtomicStateWriteSet,
-    ) -> Result<AtomicStateWriteResult, RuntimeError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.commit_atomic(write_set)
-    }
-}
-
-impl runtime::DomainTransactionalStateStore for CountingStateStore {
-    fn get_versioned_in_domain(
-        &self,
-        domain: AtomicityDomainId,
-        key: &[u8],
-    ) -> Result<VersionedStateValue, RuntimeError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.get_versioned_in_domain(domain, key)
-    }
-
-    fn commit_transaction(
-        &self,
-        transaction: AtomicStateTransaction,
-    ) -> Result<AtomicStateWriteResult, RuntimeError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.commit_transaction(transaction)
-    }
-}
-
-#[derive(Default)]
-struct CountingTransport {
-    send_calls: AtomicUsize,
-}
-
-impl Transport for CountingTransport {
-    fn send(&self, _message: Vec<u8>) -> Result<(), RuntimeError> {
-        self.send_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    fn drain_outbound(&self) -> Result<Vec<Vec<u8>>, RuntimeError> {
-        Ok(Vec::new())
-    }
-}
-
-#[derive(Default)]
 struct SequenceLeaseIds {
     next: Mutex<u64>,
 }
@@ -1148,21 +1062,6 @@ impl OutboxLeaseIdSource for SequenceLeaseIds {
         let mut bytes = [0_u8; 32];
         bytes[..8].copy_from_slice(&next.to_le_bytes());
         OutboxLeaseId::new(bytes).map_err(|_| OutboxLeaseIdSourceError::Exhausted)
-    }
-}
-
-#[derive(Default)]
-struct CountingLeaseIds {
-    calls: AtomicUsize,
-}
-
-impl OutboxLeaseIdSource for CountingLeaseIds {
-    fn next_lease_id(
-        &self,
-        _request_id: RequestId,
-    ) -> Result<OutboxLeaseId, OutboxLeaseIdSourceError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        OutboxLeaseId::new([0x73; 32]).map_err(|_| OutboxLeaseIdSourceError::Exhausted)
     }
 }
 
@@ -1744,57 +1643,14 @@ fn indexed_authority() -> IndexedOutboxRecoveryAuthority {
     .unwrap()
 }
 
-fn app<R>(runtime: Arc<R>, config: NodeConfig) -> Router
-where
-    R: Runtime + Send + Sync + 'static,
-    R::State: TransactionalStateStore,
-{
-    let machine = Arc::new(IncrementMachine::new(config.state_key()));
-    router(
-        runtime,
-        config,
-        resolver(),
-        machine,
-        Arc::new(SequenceLeaseIds::default()),
-        NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
-    )
+fn closed_app() -> Router {
+    closed_event_router(NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()))
 }
 
-type ObservedLegacyRuntime = ComposedRuntime<
-    CountingStateStore,
-    CountingBlobStore,
-    MemorySigner,
-    CountingTransport,
-    CountingClock,
-    MemoryScheduler,
->;
-
-fn observed_legacy_runtime() -> Arc<ObservedLegacyRuntime> {
-    Arc::new(ComposedRuntime::new(
-        CountingStateStore::default(),
-        CountingBlobStore::default(),
-        MemorySigner::new(ValidatorId::new([0x44; 32])),
-        CountingTransport::default(),
-        CountingClock::new(10_000),
-        MemoryScheduler::default(),
-    ))
-}
-
-fn resolved_app(
-    runtime: Arc<MemoryRuntime>,
-    placement: DomainPlacementManifest,
-    config: NodeConfig,
-) -> Router {
-    let machine = Arc::new(IncrementMachine::new(config.state_key()));
-    resolved_domain_router(
-        runtime,
-        placement,
-        config,
-        resolver(),
-        machine,
-        Arc::new(SequenceLeaseIds::default()),
-        NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
-    )
+fn closed_app_with_executor() -> Router {
+    closed_event_router_with_executor(NativeBlockingExecutor::new(NativeBlockingPolicy::new(
+        NonZeroUsize::new(4).unwrap(),
+    )))
 }
 
 fn structured_request_authority() -> StructuredDurableRequestAuthority {
@@ -3042,62 +2898,176 @@ async fn structured_route_rejects_canonical_non_transaction_payload_before_every
 }
 
 #[tokio::test]
-async fn legacy_native_routes_reject_submit_without_machine_or_storage_work() {
+async fn closed_native_routes_reject_submit_without_injectable_execution_capabilities() {
     let signing_key = dev_signing_key(0x33);
     let submit = signed_submit_transaction_event(&signing_key, request_id(0x3D), 1);
 
-    let runtime = Arc::new(MemoryRuntime::new(ValidatorId::new([0x44; 32])));
-    let node_config = config();
-    let legacy = app(Arc::clone(&runtime), node_config.clone());
-    let response = legacy
-        .oneshot(
-            Request::post(NODE_EVENT_PATH)
-                .header(header::CONTENT_TYPE, NODE_EVENT_MEDIA_TYPE)
-                .body(Body::from(submit.encode().unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(
-        to_bytes(response.into_body(), 128).await.unwrap(),
-        "submit-transaction-requires-authenticated-route"
-    );
-    assert_eq!(
-        runtime.state_store().get(node_config.state_key()).unwrap(),
-        None
-    );
+    // Both public constructors have no authority-bearing input. These are
+    // real HTTP refusal vectors, not counters attached to an unrelated store.
+    let plain: fn(NativeBlockingPolicy) -> Router = closed_event_router;
+    let shared: fn(NativeBlockingExecutor) -> Router = closed_event_router_with_executor;
+    for app in [
+        plain(NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap())),
+        shared(NativeBlockingExecutor::new(NativeBlockingPolicy::new(
+            NonZeroUsize::new(4).unwrap(),
+        ))),
+    ] {
+        let response: Response = app
+            .oneshot(
+                Request::post(NODE_EVENT_PATH)
+                    .header(header::CONTENT_TYPE, NODE_EVENT_MEDIA_TYPE)
+                    .body(Body::from(submit.encode().unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            to_bytes(response.into_body(), 128).await.unwrap(),
+            "submit-transaction-requires-authenticated-route"
+        );
+    }
+}
 
-    let resolved_runtime = Arc::new(MemoryRuntime::new(ValidatorId::new([0x45; 32])));
-    let placement = placement(0x88, 7);
-    let domain = placement.domain();
-    let resolved = resolved_app(
-        Arc::clone(&resolved_runtime),
-        placement,
-        node_config.clone(),
-    );
-    let response = resolved
+#[tokio::test]
+async fn closed_ingress_exhaustion_precedes_decode_and_liveness_bypasses_admission() {
+    let executor: NativeBlockingExecutor =
+        NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(1).unwrap()));
+    let held: tokio::sync::OwnedSemaphorePermit = executor.try_acquire().unwrap();
+    let app: Router = closed_event_router_with_executor(executor);
+    let liveness: Response = app
+        .clone()
+        .oneshot(Request::get(LIVENESS_PATH).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(liveness.status(), StatusCode::NO_CONTENT);
+    let overloaded: Response = app
+        .clone()
         .oneshot(
             Request::post(NODE_EVENT_PATH)
                 .header(header::CONTENT_TYPE, NODE_EVENT_MEDIA_TYPE)
-                .body(Body::from(submit.encode().unwrap()))
+                .body(Body::from(vec![1, 2, 3]))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(overloaded.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(overloaded.headers()[header::CACHE_CONTROL], "no-store");
     assert_eq!(
-        to_bytes(response.into_body(), 128).await.unwrap(),
-        "submit-transaction-requires-authenticated-route"
+        to_bytes(overloaded.into_body(), 128).await.unwrap(),
+        "blocking-capacity-exhausted"
     );
+    drop(held);
+    let malformed: Response = app
+        .clone()
+        .oneshot(
+            Request::post(NODE_EVENT_PATH)
+                .header(header::CONTENT_TYPE, NODE_EVENT_MEDIA_TYPE)
+                .body(Body::from(vec![1, 2, 3]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
     assert_eq!(
-        resolved_runtime
-            .state_store()
-            .get_versioned_in_domain(domain, node_config.state_key())
-            .unwrap()
-            .value(),
-        None
+        to_bytes(malformed.into_body(), 128).await.unwrap(),
+        "invalid-node-event"
     );
+    // Completion released the sole permit; the next request reaches real
+    // canonical classification, not a leaked-capacity 429.
+    assert_event_family_rejected(app, event(request_id(0x75))).await;
+}
+
+#[tokio::test]
+async fn closed_ingress_preserves_http_rejection_priority_before_closed_admission() {
+    let executor: NativeBlockingExecutor =
+        NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(1).unwrap()));
+    executor.permits.close();
+    let app: Router = closed_event_router_with_executor(executor);
+    let cases: Vec<(&str, &str, Vec<u8>, StatusCode, &str)> = vec![
+        (
+            "application/json",
+            "gzip",
+            vec![0; MAX_HTTP_EVENT_BODY_BYTES + 1],
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported-content-type",
+        ),
+        (
+            NODE_EVENT_MEDIA_TYPE,
+            "gzip",
+            vec![0; MAX_HTTP_EVENT_BODY_BYTES + 1],
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported-content-encoding",
+        ),
+        (
+            NODE_EVENT_MEDIA_TYPE,
+            "identity",
+            vec![0; MAX_HTTP_EVENT_BODY_BYTES + 1],
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "body-rejected",
+        ),
+        (
+            NODE_EVENT_MEDIA_TYPE,
+            "identity",
+            vec![1, 2, 3],
+            StatusCode::SERVICE_UNAVAILABLE,
+            "blocking-admission-closed",
+        ),
+    ];
+    for (media_type, encoding, body, status, opaque_code) in cases {
+        let response: Response = app
+            .clone()
+            .oneshot(
+                Request::post(NODE_EVENT_PATH)
+                    .header(header::CONTENT_TYPE, media_type)
+                    .header(header::CONTENT_ENCODING, encoding)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            to_bytes(response.into_body(), 128).await.unwrap(),
+            opaque_code
+        );
+    }
+    let liveness: Response = app
+        .oneshot(Request::get(LIVENESS_PATH).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(liveness.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn closed_ingress_has_no_query_or_certified_execution_surface() {
+    for app in [closed_app(), closed_app_with_executor()] {
+        for path in [
+            QUERY_CONTEXT_PATH.to_owned(),
+            format!("/v1/objects/{}", "00".repeat(32)),
+            format!("/v1/receipts/{}", "00".repeat(32)),
+            format!("/v1/senders/{}/next-nonce", "00".repeat(32)),
+        ] {
+            let response: Response = app
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+        let response: Response = app
+            .oneshot(
+                Request::post(FASTVOTE_PREPARE_PATH)
+                    .header(header::CONTENT_TYPE, NODE_EVENT_MEDIA_TYPE)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 }
 
 async fn assert_event_family_rejected(app: Router, event: NodeEvent) {
@@ -3119,10 +3089,10 @@ async fn assert_event_family_rejected(app: Router, event: NodeEvent) {
 
 #[tokio::test]
 async fn every_native_event_route_rejects_all_unauthenticated_families_before_side_effects() {
-    // The four plain constructors delegate directly to their corresponding
-    // `_with_executor` constructors and install the same handler state, so
-    // this matrix covers both public constructor forms without duplicating
-    // the 28 request/side-effect assertions.
+    // Both closed constructor forms retain the seven opaque refusal vectors.
+    // The authenticated constructors delegate to their `_with_executor`
+    // forms; their original storage, identity, clock, callback and transport
+    // tripwires below remain independently observable and unchanged.
     for (index, kind) in externally_unsupported_event_kinds().into_iter().enumerate() {
         let request_byte: u8 = u8::try_from(0x60_usize + index).unwrap();
         let event: NodeEvent = event_with_kind(
@@ -3131,57 +3101,9 @@ async fn every_native_event_route_rejects_all_unauthenticated_families_before_si
             ChainId::new("sunrise-test").unwrap(),
         );
 
-        let legacy_runtime: Arc<ObservedLegacyRuntime> = observed_legacy_runtime();
-        let legacy_machine: Arc<CountingMachine> =
-            Arc::new(CountingMachine::new(config().state_key()));
-        let legacy_lease_ids: Arc<CountingLeaseIds> = Arc::new(CountingLeaseIds::default());
-        let legacy: Router = router(
-            Arc::clone(&legacy_runtime),
-            config(),
-            resolver(),
-            Arc::clone(&legacy_machine),
-            Arc::clone(&legacy_lease_ids),
-            NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
-        );
-        assert_event_family_rejected(legacy, event.clone()).await;
-        assert_eq!(legacy_runtime.state_store().calls(), 0);
-        assert_eq!(legacy_runtime.blob_store().get_calls(), 0);
-        assert_eq!(legacy_runtime.clock().calls.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            legacy_runtime.transport().send_calls.load(Ordering::SeqCst),
-            0
-        );
-        assert_eq!(legacy_lease_ids.calls.load(Ordering::SeqCst), 0);
-        assert_eq!(legacy_machine.access_plan_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(legacy_machine.transition_calls.load(Ordering::SeqCst), 0);
-
-        let resolved_runtime: Arc<ObservedLegacyRuntime> = observed_legacy_runtime();
-        let resolved_machine: Arc<CountingMachine> =
-            Arc::new(CountingMachine::new(config().state_key()));
-        let resolved_lease_ids: Arc<CountingLeaseIds> = Arc::new(CountingLeaseIds::default());
-        let resolved: Router = resolved_domain_router(
-            Arc::clone(&resolved_runtime),
-            placement(0x88, 7),
-            config(),
-            resolver(),
-            Arc::clone(&resolved_machine),
-            Arc::clone(&resolved_lease_ids),
-            NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
-        );
-        assert_event_family_rejected(resolved, event.clone()).await;
-        assert_eq!(resolved_runtime.state_store().calls(), 0);
-        assert_eq!(resolved_runtime.blob_store().get_calls(), 0);
-        assert_eq!(resolved_runtime.clock().calls.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            resolved_runtime
-                .transport()
-                .send_calls
-                .load(Ordering::SeqCst),
-            0
-        );
-        assert_eq!(resolved_lease_ids.calls.load(Ordering::SeqCst), 0);
-        assert_eq!(resolved_machine.access_plan_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(resolved_machine.transition_calls.load(Ordering::SeqCst), 0);
+        for closed in [closed_app(), closed_app_with_executor()] {
+            assert_event_family_rejected(closed, event.clone()).await;
+        }
 
         let structured_store: Arc<ScriptedIndexedStore> =
             Arc::new(ScriptedIndexedStore::new(Vec::new(), Vec::new()));
@@ -5397,8 +5319,7 @@ async fn sqlite_send_failure_lease_survives_reopen_and_redelivers_only_after_exp
 
 #[tokio::test]
 async fn native_route_rejects_media_type_and_malformed_event() {
-    let runtime = Arc::new(MemoryRuntime::new(ValidatorId::new([0x44; 32])));
-    let app = app(runtime.clone(), config());
+    let app: Router = closed_app();
 
     let wrong_type = app
         .clone()
@@ -5471,13 +5392,11 @@ async fn native_route_rejects_media_type_and_malformed_event() {
         to_bytes(unknown_kind.into_body(), 128).await.unwrap(),
         "invalid-node-event"
     );
-    assert_eq!(runtime.state_store().get(b"http/node-state").unwrap(), None);
 }
 
 #[tokio::test]
 async fn native_route_enforces_body_limit() {
-    let runtime = Arc::new(MemoryRuntime::new(ValidatorId::new([0x44; 32])));
-    let app = app(runtime, config());
+    let app: Router = closed_app();
     let oversized = app
         .oneshot(
             Request::post(NODE_EVENT_PATH)
@@ -5822,12 +5741,12 @@ async fn serve_bounds_body_idle_and_total_time_without_reusing_connections() {
 
 #[tokio::test]
 async fn liveness_does_not_touch_protocol_state() {
-    let runtime = Arc::new(MemoryRuntime::new(ValidatorId::new([0x44; 32])));
-    let response = app(runtime.clone(), config())
-        .oneshot(Request::get(LIVENESS_PATH).body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    assert_eq!(runtime.state_store().get(b"http/node-state").unwrap(), None);
+    for app in [closed_app(), closed_app_with_executor()] {
+        let response: Response = app
+            .oneshot(Request::get(LIVENESS_PATH).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(to_bytes(response.into_body(), 1).await.unwrap().is_empty());
+    }
 }
