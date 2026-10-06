@@ -107,3 +107,117 @@ where
     }
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol_types::{ChainId, ValidatorId};
+    use runtime::{
+        AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, Clock,
+        DurableCommitOutcome, StateMutation, StateMutationEntry, StateReadAssertion,
+        StorageCorrelationId, StorageDeadline, SystemClock, WriterFenceGeneration,
+    };
+    use runtime_sqlite::{SqliteDurableStore, SqliteNamespace};
+    use std::{
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    struct Database(PathBuf);
+
+    impl Database {
+        fn new() -> Self {
+            let nonce: u128 = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path: PathBuf = std::env::temp_dir().join(format!(
+                "sunrise-preflight-token-{}-{nonce}.sqlite",
+                std::process::id(),
+            ));
+            Self(path)
+        }
+    }
+
+    impl Drop for Database {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                let mut path = self.0.as_os_str().to_owned();
+                path.push(suffix);
+                match std::fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => panic!("temporary SQLite cleanup: {error}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn advisory_observation_refuses_a_real_writer_commit_between_tokens() {
+        let database: Database = Database::new();
+        let domain: AtomicityDomainId = AtomicityDomainId::new([73; 32]).unwrap();
+        let namespace: SqliteNamespace = SqliteNamespace::new(
+            ChainId::new("preflight-real-writer").unwrap(),
+            ValidatorId::new([74; 32]),
+            domain,
+        );
+        let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+        let store: SqliteDurableStore =
+            SqliteDurableStore::create_new(&database.0, namespace.clone(), fence).unwrap();
+        let deadline: u64 = SystemClock
+            .now_unix_millis()
+            .unwrap()
+            .checked_add(60_000)
+            .unwrap();
+        let operation: DurableOperationContext = DurableOperationContext::new(
+            fence,
+            StorageDeadline::new(deadline).unwrap(),
+            StorageCorrelationId::new([75; 16]).unwrap(),
+        );
+        let unchanged: u64 = read_stable_advisory(&store, &operation, domain, || Ok(7u64)).unwrap();
+        assert_eq!(unchanged, 7);
+
+        let result: Result<(), Box<dyn Error>> =
+            read_stable_advisory(&store, &operation, domain, || {
+                let writer_path: PathBuf = database.0.clone();
+                let writer_operation: DurableOperationContext = operation.clone();
+                let writer = std::thread::spawn(move || {
+                    let writer_store: SqliteDurableStore =
+                        SqliteDurableStore::open_existing(writer_path, namespace).unwrap();
+                    let key: Vec<u8> = b"preflight/concurrent-write".to_vec();
+                    let observed: VersionedStateValue = writer_store
+                        .get_versioned_durable(&writer_operation, domain, &key)
+                        .unwrap();
+                    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+                        domain,
+                        AtomicStateReadSet::new(vec![
+                            StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+                        ])
+                        .unwrap(),
+                        AtomicStateMutationSet::new(vec![
+                            StateMutationEntry::new(key, StateMutation::Put(vec![1])).unwrap(),
+                        ])
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        writer_store.commit_durable(&writer_operation, transaction),
+                        DurableCommitOutcome::Committed
+                    );
+                });
+                writer.join().unwrap();
+                Ok(())
+            });
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("source changed during preflight")
+        );
+        let observed: VersionedStateValue = store
+            .get_versioned_durable(&operation, domain, b"preflight/concurrent-write")
+            .unwrap();
+        assert_eq!(observed.value(), Some([1u8].as_slice()));
+    }
+}

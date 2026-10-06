@@ -11,6 +11,74 @@ Current completion and release gates remain only in [TODO](../../TODO.md).
 Local startup does not approve public exposure, a genesis ceremony or custody
 of real assets.
 
+## Local commands
+
+Build the shipped executables from the repository root:
+
+```sh
+cargo build --locked -p sunrise-edge-operator \
+  --bin sqlite_genesis --bin sqlite_source_host
+```
+
+The following Bash example expects independently approved public inputs in
+the environment. There is no network, credential or genesis fallback. Set
+`SUITE_SPECS` to the complete approved schedule; the single entry shown is
+only the format example used by local fixtures, not a production default.
+Each specification is `epoch:object:transaction:event:module:validator:state:checkpoint`.
+
+```bash
+: "${CHAIN_ID:?}" "${VALIDATOR_ID_HEX:?}" "${DOMAIN_HEX:?}"
+: "${PROTOCOL_VERSION:?}" "${EPOCH:?}"
+: "${GENESIS_MANIFEST:?}" "${EXPECTED_GENESIS_DIGEST_HEX:?}"
+: "${STATE_DB:?}" "${BLOB_DB:?}" "${CREATED_CHECKPOINT:?}"
+SUITE_SPECS=('0:1:1:1:1:1:1:1')
+ROOT_PINS=(
+  --chain-id "$CHAIN_ID"
+  --validator-id "$VALIDATOR_ID_HEX"
+  --domain "$DOMAIN_HEX"
+  --protocol-version "$PROTOCOL_VERSION"
+  --epoch "$EPOCH"
+  --genesis-manifest "$GENESIS_MANIFEST"
+  --expected-genesis-digest "$EXPECTED_GENESIS_DIGEST_HEX"
+)
+for suite in "${SUITE_SPECS[@]}"; do
+  ROOT_PINS+=(--suite "$suite")
+done
+DATABASE_PINS=(--state-db "$STATE_DB" --blob-db "$BLOB_DB")
+
+target/debug/sqlite_genesis prepare \
+  "${ROOT_PINS[@]}" "${DATABASE_PINS[@]}" \
+  --created-checkpoint "$CREATED_CHECKPOINT"
+
+: "${VALIDATOR_PUBLIC_KEY_HEX:?}"
+target/debug/sqlite_genesis preflight \
+  "${ROOT_PINS[@]}" "${DATABASE_PINS[@]}" \
+  --validator-public-key "$VALIDATOR_PUBLIC_KEY_HEX"
+```
+
+Require exit zero and exactly one `complete=true` line. Preparation reports
+`mode=prepare writer_fence=1`; preflight reports `mode=preflight advisory=true`
+and the observed generation. Do not infer a guarantee from output left by a
+failed process. Both local operations have a bounded 60-second storage context.
+
+Only after stopping every competing writer, start the existing host:
+
+```bash
+: "${VALIDATOR_SIGNING_KEY_FILE:?}"
+target/debug/sqlite_source_host \
+  "${ROOT_PINS[@]}" "${DATABASE_PINS[@]}" \
+  --signing-key-file "$VALIDATOR_SIGNING_KEY_FILE" \
+  --listen 127.0.0.1:8701 \
+  --created-checkpoint "$CREATED_CHECKPOINT" \
+  --timeout-seconds 30 --max-concurrent 4 \
+  --confirm-offline-fence-advance
+```
+
+The key-file loader requires a regular, protected local file, not a seed in
+argv. Stop this process before running the same command again. Compare the
+host's advertised generation with the previous one; it must increase. Use
+different state/blob destinations and validator/key pins for each validator.
+
 ## Inputs and custody
 
 Obtain the already signed original genesis manifest and its independently

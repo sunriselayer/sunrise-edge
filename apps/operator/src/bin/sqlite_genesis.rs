@@ -1,13 +1,13 @@
 #![forbid(unsafe_code)]
 
 fn main() -> std::process::ExitCode {
-    let result = sunrise_edge_operator::sqlite_genesis::run(std::env::args_os().skip(1));
-    if let Ok(()) = result {
-        return std::process::ExitCode::SUCCESS;
+    let result: Result<(), Box<dyn std::error::Error>> =
+        sunrise_edge_operator::sqlite_genesis::run(std::env::args_os().skip(1));
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("sqlite-genesis: {error}");
+            std::process::ExitCode::FAILURE
+        }
     }
-    let Err(error) = &result else {
-        return std::process::ExitCode::FAILURE;
-    };
-    eprintln!("sqlite-genesis: {error}");
-    std::process::ExitCode::FAILURE
 }
