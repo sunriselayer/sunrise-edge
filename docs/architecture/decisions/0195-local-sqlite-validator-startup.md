@@ -51,7 +51,11 @@ are explicitly excluded.
    any main/sidecar alias between the two normalized destinations. Check these
    fresh-only constraints before intentionally creating either resource. Add
    `SqliteDurableStore::create_new` using the existing held-file/ancestor checks
-   used by the import factory; use the existing blob `create_new`. Do not use
+   used by the import factory; add the narrow blob `create_new_fresh` entry point
+   sharing the existing blob initializer while leaving import `create_new`'s
+   separately scoped sidecar policy unchanged. Both fresh handles retain the
+   original created-file and ancestor ownership through final synchronization;
+   reopening a pathname cannot substitute for that evidence. Do not use
    auto-bootstrap `open` against arbitrary existing files. Initialize the
    ordinary schema under its own initial writer fence **1**, then call the defining
    `install_genesis` and `install_ordered_genesis` owners. No new storage schema,

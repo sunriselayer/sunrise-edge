@@ -75,6 +75,7 @@ impl SqliteImportTarget {
         Ok(Self {
             store: SqliteDurableStore {
                 engine: SqlDurableEngine::new(backend, namespace),
+                created_file: None,
             },
         })
     }
@@ -118,6 +119,7 @@ impl SqliteImportTarget {
         Ok(Self {
             store: SqliteDurableStore {
                 engine: SqlDurableEngine::new(backend, namespace),
+                created_file: None,
             },
         })
     }
