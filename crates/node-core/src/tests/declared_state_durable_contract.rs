@@ -123,10 +123,10 @@ impl DurableDomainStateStore for RecordingDurableStore {
             .unwrap()
             .push(RecordedOperation::State((key.to_vec(), domain, *context)));
         let failing: Option<(Vec<u8>, DurableReadError)> = self.fail_key.lock().unwrap().clone();
-        if let Some(failing_entry) = failing {
-            if failing_entry.0 == key {
-                return Err(failing_entry.1);
-            }
+        if let Some(failing_entry) = failing
+            && failing_entry.0 == key
+        {
+            return Err(failing_entry.1);
         }
         self.inner.get_versioned_durable(context, domain, key)
     }
