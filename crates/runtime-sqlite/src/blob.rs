@@ -182,7 +182,7 @@ impl SqliteBlobStore {
         let held: &native_files::ImportFile = self.created_file.as_ref().ok_or_else(|| {
             SqliteBlobStoreError::File(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "blob store was not opened through a fresh-only factory",
+                "blob store does not retain a newly reserved file",
             ))
         })?;
         native_files::sync_owned(held).map_err(SqliteBlobStoreError::File)

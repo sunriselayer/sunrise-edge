@@ -209,15 +209,22 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   bootstrap into the serving host. Add snapshot-bound non-signing preflight
   reusing actual startup checks, plus compiled prepare/query/restart/refusal
   evidence and an executable operator guide. Fresh independent Opus returned
-  DESIGN APPROVE on 2026-10-06; source implementation and acceptance remain open.
+  DESIGN APPROVE on 2026-10-06. Source implemented through `320f738`; focused
+  actual operator tests passed 17 cases and fresh-file tests passed five cases
+  at `f7f3647`. Full unshortened gate, independent exact-head source review and
+  required CI acceptance remain open in PR #271; design approval is not release
+  acceptance.
 - [ ] **Offline original-genesis authoring:** accepted
   [DR-0196](docs/architecture/decisions/0196-standard-asset-genesis-authoring.md)
   adds an explicitly configured Standard Asset operator preset, using the
   ordinary public template and existing generic installers. Temporary-key real
-  author/prepare/preflight tests passed three cases at `3f17c2a`: four independent
+  author/prepare/preflight tests passed seven cases at `0c5574d`, alongside 56
+  operator-library tests: four independent
   pairs prepared and one original host queried/restarted. No raw row seeding or
-  devnet seed/defaults in the shipped author. Expanded refusals, full required
-  gate, independent exact-head source review and CI remain open; merge DR-0195
+  devnet seed/defaults in the shipped author. Expanded refusals cover duplicate
+  identities/objects, bonds, malformed/excess tables, supply overflow, unsafe
+  destinations and protected-key defects. Full required gate, independent
+  exact-head source review and CI remain open; merge DR-0195
   first. Key custody, independent ceremony/economic approval and actual network
   activation are not completed by this tool.
 - [ ] **Independent release audits and selected activation profile:** retain
@@ -230,10 +237,11 @@ Do not run production D1 writes, call deployed Workers, deploy a provider or
 upgrade a paid plan. PostgreSQL remains an optional explicitly selected profile,
 not the default development prerequisite.
 
-The original SQLite host and per-query effective hash-suite projection are
-being integrated under DR-0192. Parent targeted checks passed eight query
+The original SQLite host and per-query effective hash-suite projection were
+integrated under DR-0192 and normally merged in PR #268, as recorded below.
+Historical parent targeted checks passed eight query
 regressions and all 155 native HTTP tests at `106ba8e`; operator-library tests
-passed 50 cases on the current integration candidate. The compiled source-host
+passed 50 cases on that integration candidate. The compiled source-host
 startup regression also passed missing/deleted/malformed ordered-state refusal
 without row/blob/sequence changes and with one explicit fence claim. A first
 positive process run exposed an invalid 600-second test timeout; fixing that
@@ -701,8 +709,8 @@ Import provides no readiness, Seal, activation or deployed-provider authority.
   PostgreSQL Seal completion is still unsupported, not implied by its barrier.
   At PR #265's merge Native Seal was library/test host composition only: the
   shipped PG host had no Seal composition and there was no shipped native
-  SQLite serving executable. DR-0192's current integration candidate adds that
-  original SQLite host; actual process and final source gates remain above.
+  SQLite serving executable. DR-0192 added that original SQLite host in merged
+  PR #268; its completed actual process and final source gates are recorded above.
   Read-only original-result reconciliation is now separate from fresh
   admission. Genuine inactive-import/readiness and compiled nondefault-suite
   candidate POST regressions pass without waiving signing/origin/quorum guards.

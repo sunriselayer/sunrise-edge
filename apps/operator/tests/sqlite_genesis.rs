@@ -664,6 +664,52 @@ fn prepare_checks_both_parents_before_reserving_either_destination() {
 }
 
 #[test]
+fn prepare_refuses_a_verified_non_causal_genesis_before_creating_either_destination() {
+    let directory: Directory = Directory::new("sqlite-genesis-non-causal");
+    let unique: String = directory
+        .0
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let network: genesis_fixture::FastVoteGenesisFixture =
+        genesis_fixture::build_network_fixture(&unique);
+    let genesis_path: PathBuf = directory.0.join("genesis.bin");
+    fs::write(&genesis_path, &network.manifest_bytes).unwrap();
+    let built: Built = Built {
+        directory,
+        network,
+        genesis_path,
+    };
+
+    // Root verification (signature/digest/context) must succeed on its own
+    // terms; only the causal-admission gate is exercised below.
+    let root: VerifiedGenesisRoot = verified_root(&built);
+    assert!(
+        !root.admission_profile().is_causal(),
+        "this regression requires a genuinely non-causal verified root"
+    );
+
+    let state_db: PathBuf = built.directory.0.join("non-causal-state.sqlite");
+    let blob_db: PathBuf = built.directory.0.join("non-causal-blob.sqlite");
+    let output: Output = run_sqlite_genesis(prepare_args(&built, 0, &state_db, &blob_db));
+
+    assert!(
+        !output.status.success(),
+        "a verified but non-causal genesis must still be refused"
+    );
+    assert!(
+        stderr_text(&output).contains("sqlite-genesis requires a causal-admission genesis"),
+        "{}",
+        stderr_text(&output)
+    );
+    assert!(output.stdout.is_empty());
+    assert!(!state_db.exists());
+    assert!(!blob_db.exists());
+}
+
+#[test]
 fn preflight_reports_success_and_leaves_rows_objects_receipts_blobs_fence_and_sequence_unchanged() {
     let built: Built = build();
     let state_db: PathBuf = built.directory.0.join("state.sqlite");
@@ -1061,6 +1107,16 @@ fn preflight_refuses_missing_or_wrong_fee_committee_and_marker_without_repair() 
                 "{which} wrong={wrong_value} accepted"
             );
             assert!(output.stdout.is_empty());
+            let error: String = stderr_text(&output);
+            let expected: &str = match which {
+                "fee" => "fee policy",
+                "committee" => "validator",
+                _ => "genesis",
+            };
+            assert!(
+                error.contains(expected),
+                "{which} wrong={wrong_value}: {error}"
+            );
             assert_eq!(before, (logical_tables(&state), logical_tables(&blobs)));
         }
     }
