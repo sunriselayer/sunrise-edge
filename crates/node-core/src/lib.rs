@@ -70,6 +70,7 @@ mod preinstalled_wasm;
 pub mod publication;
 mod query;
 pub mod serving_authority;
+mod state_transition;
 pub mod transaction_auth;
 
 use authenticated_object_effects::{
@@ -82,6 +83,7 @@ use preinstalled_wasm::{
     check_preinstalled_module_gas_limit, normalize_trapped_preinstalled_execution,
     resolve_preinstalled_module,
 };
+use state_transition::{asserted_transition_writes, domain_transition_parts, load_declared_values};
 
 pub use envelope::{
     EnvelopeError, MAX_CHAIN_ID_BYTES, MAX_NODE_OUTPUT_BYTES, MAX_NODE_OUTPUT_ITEMS,
@@ -3198,76 +3200,6 @@ pub trait NodeStateMachine {
     ) -> Result<NodeTransition, NodeCoreError>;
 }
 
-fn asserted_transition_writes(
-    plan: &NodeStateAccessPlan,
-    snapshot: &NodeStateSnapshot,
-    updates: Vec<NodeStateUpdate>,
-) -> Result<Vec<StateWrite>, NodeCoreError> {
-    let mut mutations = BTreeMap::new();
-    for update in updates {
-        let Some(access) = plan.access(update.key()) else {
-            return Err(NodeCoreError::UndeclaredStateUpdate(update.key));
-        };
-        if access.mode() != NodeStateAccessMode::ReadWrite {
-            return Err(NodeCoreError::ReadOnlyStateUpdate(update.key));
-        }
-        mutations.insert(update.key, update.mutation);
-    }
-
-    let mut writes = Vec::with_capacity(plan.accesses().len());
-    for access in plan.accesses() {
-        let observed = snapshot
-            .get(access.key())
-            .ok_or(NodeCoreError::PersistenceInvariant(
-                "declared access missing from snapshot",
-            ))?;
-        let mutation = mutations
-            .remove(access.key())
-            .unwrap_or(StateMutation::Assert);
-        writes.push(StateWrite::new(
-            access.key().to_vec(),
-            observed.revision(),
-            mutation,
-        )?);
-    }
-    Ok(writes)
-}
-
-fn domain_transition_parts(
-    plan: &NodeStateAccessPlan,
-    snapshot: &NodeStateSnapshot,
-    updates: Vec<NodeStateUpdate>,
-) -> Result<(Vec<StateReadAssertion>, Vec<StateMutationEntry>), NodeCoreError> {
-    let mut mutations = Vec::with_capacity(updates.len());
-    for update in updates {
-        let Some(access) = plan.access(update.key()) else {
-            return Err(NodeCoreError::UndeclaredStateUpdate(update.key));
-        };
-        if access.mode() != NodeStateAccessMode::ReadWrite {
-            return Err(NodeCoreError::ReadOnlyStateUpdate(update.key));
-        }
-        mutations.push(StateMutationEntry::new(update.key, update.mutation)?);
-    }
-
-    let reads = plan
-        .accesses()
-        .iter()
-        .map(|access| {
-            let observed =
-                snapshot
-                    .get(access.key())
-                    .ok_or(NodeCoreError::PersistenceInvariant(
-                        "declared access missing from snapshot",
-                    ))?;
-            Ok(StateReadAssertion::new(
-                access.key().to_vec(),
-                observed.revision(),
-            )?)
-        })
-        .collect::<Result<Vec<_>, NodeCoreError>>()?;
-    Ok((reads, mutations))
-}
-
 fn validate_generic_event(event: &NodeEvent, config: &NodeConfig) -> Result<(), NodeCoreError> {
     event.validate_context(config)?;
     if event.kind() == NodeEventKind::SubmitTransaction {
@@ -3355,16 +3287,12 @@ where
 {
     let layout = PersistenceLayout::new(config.chain_id.clone(), config.protocol_version);
     validate_sender_nonce_namespace(&plan, &layout)?;
-    let mut values = BTreeMap::new();
-    for access in plan.accesses() {
-        let observed = runtime
+    let values: BTreeMap<Vec<u8>, VersionedStateValue> = load_declared_values(&plan, |key| {
+        runtime
             .state_store()
-            .get_versioned_in_domain(domain, access.key())?;
-        if let Some(value) = observed.value() {
-            validate_state(value)?;
-        }
-        values.insert(access.key.clone(), observed);
-    }
+            .get_versioned_in_domain(domain, key)
+            .map_err(NodeCoreError::Runtime)
+    })?;
     let snapshot = NodeStateSnapshot {
         values,
         resolved_objects: Vec::new(),
@@ -3406,14 +3334,12 @@ where
     let plan = machine.access_plan(&event)?;
     let layout = PersistenceLayout::new(config.chain_id.clone(), config.protocol_version);
     validate_sender_nonce_namespace(&plan, &layout)?;
-    let mut values = BTreeMap::new();
-    for access in plan.accesses() {
-        let observed = runtime.state_store().get_versioned(access.key())?;
-        if let Some(value) = observed.value() {
-            validate_state(value)?;
-        }
-        values.insert(access.key.clone(), observed);
-    }
+    let values: BTreeMap<Vec<u8>, VersionedStateValue> = load_declared_values(&plan, |key| {
+        runtime
+            .state_store()
+            .get_versioned(key)
+            .map_err(NodeCoreError::Runtime)
+    })?;
     let snapshot = NodeStateSnapshot {
         values,
         resolved_objects: Vec::new(),
@@ -3516,14 +3442,12 @@ where
         ));
     }
 
-    let mut values = BTreeMap::new();
-    for access in plan.accesses() {
-        let observed = runtime.state_store().get_versioned(access.key())?;
-        if let Some(value) = observed.value() {
-            validate_state(value)?;
-        }
-        values.insert(access.key.clone(), observed);
-    }
+    let values: BTreeMap<Vec<u8>, VersionedStateValue> = load_declared_values(&plan, |key| {
+        runtime
+            .state_store()
+            .get_versioned(key)
+            .map_err(NodeCoreError::Runtime)
+    })?;
     let snapshot = NodeStateSnapshot {
         values,
         resolved_objects: Vec::new(),
@@ -5158,14 +5082,11 @@ where
             NodeCoreError::PersistenceInvariant("preinstalled treasury object resolved twice")
         })?;
     }
-    let mut values = BTreeMap::new();
-    for access in plan.accesses() {
-        let observed = store.get_versioned_durable(context, domain, access.key())?;
-        if let Some(value) = observed.value() {
-            validate_state(value)?;
-        }
-        values.insert(access.key.clone(), observed);
-    }
+    let values: BTreeMap<Vec<u8>, VersionedStateValue> = load_declared_values(&plan, |key| {
+        store
+            .get_versioned_durable(context, domain, key)
+            .map_err(NodeCoreError::DurableRead)
+    })?;
     let snapshot = NodeStateSnapshot {
         values,
         resolved_objects: loaded_objects.resolved_objects(),
@@ -5813,14 +5734,11 @@ where
         ));
     }
 
-    let mut values = BTreeMap::new();
-    for access in plan.accesses() {
-        let observed = store.get_versioned_in_domain(domain, access.key())?;
-        if let Some(value) = observed.value() {
-            validate_state(value)?;
-        }
-        values.insert(access.key.clone(), observed);
-    }
+    let values: BTreeMap<Vec<u8>, VersionedStateValue> = load_declared_values(&plan, |key| {
+        store
+            .get_versioned_in_domain(domain, key)
+            .map_err(NodeCoreError::Runtime)
+    })?;
     let snapshot = NodeStateSnapshot {
         values,
         resolved_objects: Vec::new(),

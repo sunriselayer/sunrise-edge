@@ -45,9 +45,6 @@ design/security owners; this file tracks every remaining completion group.
   `725e4a14` at 14:05:45 UTC after exact `13b0b766` complete source approval,
   all seven CI owners and `check`; PR #274's preserved normal merge `734f6454`
   was automatically recognized as merged. No public deployment is claimed.
-- [x] Storage-neutral startup guide and exact local evidence (PR #276, normal
-  merge `b878d2e`, GitHub `mergedAt` 16:09:07 UTC); complete `c89acfdd` source approval and all
-  seven required CI owners plus `check`. Public activation remains separate.
 
 Validator-set changes, slashing and reward/claim distribution remain FastVote
 completion requirements. Their functional implementation does not close the
@@ -65,22 +62,25 @@ PR #273 subsequently merged normally as `587fe587` at 13:44:23 UTC after
 its exact `77090388` complete source approval and all required CI passed.
 PR #275 then merged as `725e4a14`; local main was verified clean and equal to
 origin/main at that merge.
-The planning branch originally stacked on PR #276 at `c89acfdd`. After its
-normal merge, PR #277 was explicitly retargeted to main at unchanged source
-`7a9d391`; the interrupted earlier CI remains interrupted evidence, not a pass.
+PR #276 merged normally as `b878d2e1` at 16:09:07 UTC after exact `c89acfdd`
+complete source approval and all seven required CI owners plus `check` passed.
+The plan, common envelope and private acceptance observations were integrated
+with normal merge commits at 21:59:04–22:00:28 UTC: PR #277 as `9e07194e`,
+PR #278 as `3b8796ed`, and PR #279 as `1432cb85`. Each exact head had complete
+independent source approval and all seven required CI owners plus `check`
+passing; PR #278 also passed the literal full local required gate. The merged
+trees retain the exact approved source contents, and GitHub independently
+reports all three PRs merged. This closes those slices, not a release gate.
 
-| Pending integration | Actual head and remaining acceptance |
+| Integration inventory | Actual head and remaining acceptance |
 | --- | --- |
-| PR #277: consolidated plan | `7a9d391`; complete exact-head documentation source approval; latest own required CI still pending |
-| PR #278: envelope and acknowledgement ownership | `aab0389`; complete fresh exact-source Opus APPROVE; exact full local required gate passed at 19:02:54 UTC; final CI/integration pending |
-| PR #279: private acceptance timing | `3f2b9e1`; complete fresh source Opus APPROVE; owning local acceptance and final required CI pending; no speedup claim |
-| PR #280: actual composition and audit-input map | `4d5507d`; complete fresh exact-source Opus APPROVE; own final required CI pending; no independent security audit or release qualification |
-| PR #281: portable certified relay, stacked on #280 | Accepted DR-0204 and independently approved pinned-workerd redirect amendment; complete source review found an incorrect native test replay assumption, now corrected; native Node construction regression added; owning native/full required gate and fresh complete source approval still pending |
-
-At 2026-10-07 02:59 SGT, GitHub access prevented fresh CI verification. Later
-CI state and merges remain unverified; local implementation and checks continue
-without cloud writes. Credential-handling instructions remain in `AGENTS.md`,
-not a release-acceptance claim.
+| PR #277: one plan and mainnet gate inventory | `7a9d391`; merged normally as `9e07194e` after complete source approval and all required CI passed |
+| PR #278: pure envelope/list and SDK binding owner | `aab0389`; merged normally as `3b8796ed`; complete source approval, literal full local required gate and all required CI passed |
+| PR #279: private observations of genuine recurrence | `3f2b9e1`; merged normally as `1432cb85`; complete source approval, owning observer units 4/0 and all required CI passed |
+| PR #280: real host/signer/store capability map | `4d5507d`; complete exact-head Opus source approval and all required CI passed; integration still pending |
+| PR #281: closed certified HTTPS relay | `7424d72`; complete exact-head Opus source approval and exact npm-ci passed; ancestor native oracle, genuine drain, generated-WASM Cloudflare and portable tests passed, not a latest full local gate or deployed-provider qualification |
+| PR #282: shared declared-state preparation | `7853869`; complete exact-head Opus source approval; literal full required gate and hosted recurrence still running, not passed |
+| PR #283: bounded SDK chunked-response owner | `9c7543a`; complete exact-head Opus source approval; SDK 246/0, workspace Clippy and all four pinned portable tasks passed; full required acceptance and integration remain open |
 
 Recheck live heads and required checks before integrating; pending never means
 passed. Preserve Draft #235 as extraction material and do not auto-merge
@@ -92,7 +92,7 @@ The contracts and acceptance for R0–R4 are in
 [implementation structure](docs/architecture/implementation-structure.md#maintainability-work-packages).
 These are coherent outcomes, not one obligatory PR per helper or file.
 
-- [ ] **R0 — one truthful plan and gate inventory:** consolidate this queue,
+- [x] **R0 — one truthful plan and gate inventory:** consolidate this queue,
   preserve original requirements/evidence, repair links, reconcile merged and
   pending startup work, and obtain independent plan/source review. Current
   status stays here; README does not acquire progress reports.
@@ -114,18 +114,38 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   wire-bound views and all four actual SDK consumers, including native,
   successor, DO and CLI flat mappings. Pre-move literal vectors are unchanged;
   focused wire/core and full Rust-client iterations passed. Exact `aab0389`
-  completed the literal full local required gate at 19:02:54 UTC with its source
-  still clean and unchanged. Final CI/integration remains pending despite
-  complete exact-source Opus APPROVE; R1 is not complete and this does not close
-  the remaining core/SDK dependency work.
+  complete source review approved; its literal full local required gate passed
+  at 19:02:54 UTC without skipping the original e8/five-host recurrence. All
+  required hosted acceptance passed and the slice merged normally as
+  `3b8796ed`. Remaining core/SDK dependency work is not closed.
 - [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
   admission, evaluation, completion, reconciliation and storage contracts;
   separate object/receipt/outbox repositories and memory implementations by
   semantic owner. Remove obsolete duplicate paths only after their callers move.
   A move with unchanged bodies is mechanical progress, not semantic completion.
-  DR-0203's committed pre-change declared-state controls passed on exact
-  `ecd8247`: legacy Cargo integration 7/0 and actual durable handler 8/0.
-  Fresh design review remains required before production migration.
+  [DR-0206](docs/architecture/decisions/0206-unauthenticated-ingress-without-execution-capabilities.md)
+  additionally removes the two unreachable legacy native invocation pipelines
+  and their runtime/configuration/callback/lease capabilities. The unreleased
+  host constructors are replaced by one explicit closed event endpoint; actual
+  authenticated execution, queries and standalone recovery remain separate.
+  The pre-change native suite passed 161/0; the independently design-reviewed
+  implementation retains every authenticated/recovery test and adds three
+  refusal/admission controls. Functional `f5d6863` received complete independent
+  source approval, native tests 164/0, whole-workspace all-feature Clippy,
+  npm-ci and native rustdoc. One remaining single-caller recovery callback
+  abstraction is removed without changing lease/time/claim/encode/send/ack
+  or failure order. Source approval and scoped checks do not close its full
+  required gate, CI, combined-source integration or security audit.
+  [DR-0203](docs/architecture/decisions/0203-declared-state-transition-preparation.md)
+  has independent PLAN APPROVE at `d2be439` after actual pre-change public-library
+  8/0 and durable/authenticated 11/0 controls. Its private preparation owner now
+  replaces all five sorted loading loops and the duplicated writable/revision
+  rules, while retaining two deliberately distinct assemblers and original
+  caller ordering. Exact `7853869` has complete source approval; its ordinary
+  node-core suite, private priority controls, genuine core e8 and local
+  readiness passed. The literal full required gate is still running the real
+  operator recurrence; hosted acceptance and integration are open, not passed.
+  R2 as a whole remains open. Its R3 observation prerequisite is now in main.
 - [ ] **R3 — attributable tests and economical CI:** reuse bounded signed input
   and environment builders while keeping expected outcomes independent; separate
   pure, real-store, HTTP and compiled-CLI owners. Remove duplicate setup/work
@@ -136,25 +156,16 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   The independent timing slice adds test-private closed-stage observations to
   the actual SQLite/compiled-CLI recurrence without changing original work,
   delay or assertions. It exposes the existing recurring selector's output;
-  no cache, skipped owner or speedup is claimed. Exact-source review and full
-  required acceptance remain pending. Other setup/reuse improvements are open.
+  no cache, skipped owner or speedup is claimed. Exact `3f2b9e1` complete source
+  review and hosted required CI passed; actual owning observer units passed
+  4/0 locally and the slice merged normally as `1432cb85`. No separately
+  exact-head full local recurrence is claimed. Other setup/reuse improvements
+  remain open; no workflow validation was removed on an unproved equivalence.
 - [ ] **R4 — audit and launch seams:** assemble exact source/build/configuration
   provenance, exposed-family authorization inventory, signer/store capability
   inventory and executable startup/stop/restart/recovery evidence for the audit.
   Remove misleading unsupported advertised compositions and stale architecture
   claims; do not build another consensus or general orchestration framework.
-  The [composition inventory](docs/architecture/compositions-and-capabilities.md)
-  and [network audit input contract](docs/security/network-code-audit-scope.md)
-  identify actual surfaces and required final-review inputs. Their existence is
-  not a completed audit, selected public host or release qualification.
-  The explicit [certified relay](docs/architecture/decisions/0204-portable-certified-relay.md)
-  adds closed FastVote/publication/frontier/drain/query transport to Deno/Vercel
-  and a separate stateless Worker. It does not add ordered/successor/DO lifecycle
-  authority. All four portable checks and focused workerd controls passed locally;
-  real native oracle/204 regression, full generated-artifact checks, exact-source
-  review and final CI remain open. The SDK already has CA/DNS-pinned TLS; keep
-  bounded streamed-response framing and actual relay transport integration,
-  provider deployment/size/concurrency qualification and public readiness open.
 
 Sequence R0 and the ready startup integrations first; review R1's contract
 before implementation. R2/R3 may run in parallel only with disjoint owners and
