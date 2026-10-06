@@ -8,4 +8,5 @@ include!("tests/preinstalled_execution.rs");
 include!("tests/durable_handlers.rs");
 include!("tests/queries.rs");
 include!("tests/fees.rs");
-include!("tests/envelope_vectors.rs");
+#[path = "tests/envelope_vectors.rs"]
+mod envelope_vectors;

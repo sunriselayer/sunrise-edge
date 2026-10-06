@@ -1,3 +1,5 @@
+use super::*;
+
 // DR-0201 phase A baseline. These tests freeze `NodeResponse`'s
 // omitted-payload encoding and `NodeDedupRecord`'s zero/two-response list
 // framing *before* any envelope-ownership migration.
