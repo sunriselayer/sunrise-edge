@@ -249,7 +249,7 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   PR #271 normally merged as `54d9c3f780cbd5adf9f43d84275ee02e553694b6`
   at 10:36:18 UTC. Its tree equals the reviewed head; local main was clean and
   equalled origin/main. This scoped acceptance does not certify a network release.
-- [ ] **Offline original-genesis authoring:** accepted
+- [x] **Offline original-genesis authoring:** accepted
   [DR-0196](docs/architecture/decisions/0196-standard-asset-genesis-authoring.md)
   adds an explicitly configured Standard Asset operator preset, using the
   ordinary public template and existing generic installers. Temporary-key real
@@ -259,10 +259,13 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   devnet seed/defaults in the shipped author. Expanded refusals cover duplicate
   identities/objects, bonds, malformed/excess tables, supply overflow, unsafe
   destinations and protected-key defects. Independent Opus approved the
-  complete authoring source at `da53884`; its required CI has six successful
-  owners and genuine recurring SQLite still running. DR-0195 is merged and
-  its exact baseline full local gate passed; this author's own complete required
-  CI remains open, and no author-head full local gate is claimed.
+  complete authoring source at `da53884`. All seven required CI owners and
+  success-only `check` passed in `37419313168`, including the actual unchanged
+  recurring-process case in 18,821.02 seconds. PR #272 normally merged as
+  `eae9e6972baa293e4ad3ffde5d3ed931b85a6ef5` at 10:57:53 UTC;
+  its tree equals the reviewed source, local main was clean and equalled
+  origin/main, and the remote branch was removed. DR-0195's exact baseline
+  full local gate passed; no author-head literal full local gate is claimed.
   Key custody, independent ceremony/economic approval and actual network
   activation are not completed by this tool.
 - [ ] **Pinned read-only original-genesis inspection:** accepted design
@@ -332,7 +335,7 @@ individual evidence; this interrupted run is not full acceptance. No shortened
 recurrence or optionalized group was used for the required rerun. The fresh
 exact-`7dc4193` literal `./scripts/check-all.sh` rerun passed from 07:35:45 to
 10:34:49 UTC, with the source clean and unchanged before/after execution.
-PR #271 is merged; the separate author, inspector, reference correction,
+PRs #271 and #272 are merged; the separate inspector, reference correction,
 TLS integration and guide PRs remain subject to their own complete required
 CI and exact-head approval. No ancestor execution is relabelled as their
 same-head whole-gate result.
