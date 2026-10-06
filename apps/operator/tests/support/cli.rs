@@ -553,25 +553,14 @@ pub fn current_fee_coin_ref(
 /// Locates the separately compiled `sunrise-edge-cli` binary next to this
 /// test binary's own executable. `apps/cli` is a distinct package from
 /// `sunrise-edge-operator`, so cargo does not expose a `CARGO_BIN_EXE_*`
-/// variable for it here the way it does for `fastvote_pg`/`fastvote_host_pg`
-/// (both real `src/bin/` targets of this very crate): the caller's harness
-/// script must build it first
-/// (`scripts/check-fastvote-pg.sh` runs `cargo build -p sunrise-edge-cli
-/// --bin sunrise-edge-cli` before any test that calls this).
+/// variable for it here the way it does for `fastvote_pg`/`fastvote_host_pg`.
+/// The required Rust and selected PostgreSQL harnesses explicitly build it
+/// first. A storage-neutral helper owns discovery; retained PG call sites
+/// delegate to it without another binary-selection policy.
+#[path = "compiled_cli_process.rs"]
+mod compiled_cli_process;
 pub fn edge_cli_binary() -> PathBuf {
-    let binary: PathBuf = env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("sunrise-edge-cli");
-    assert!(
-        binary.is_file(),
-        "build sunrise-edge-cli before running this test (scripts/check-fastvote-pg.sh does this): {}",
-        binary.display()
-    );
-    binary
+    compiled_cli_process::edge_cli_binary()
 }
 
 /// A ready-to-run `Command` for the separately compiled `sunrise-edge-cli`
@@ -585,7 +574,5 @@ where
     I: IntoIterator<Item = A>,
     A: AsRef<std::ffi::OsStr>,
 {
-    let mut command: Command = Command::new(edge_cli_binary());
-    command.args(args);
-    command
+    compiled_cli_process::edge_cli_command(args)
 }
