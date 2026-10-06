@@ -247,11 +247,15 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   question; existing economics bindings already close a context-only mismatch.
   inspection must display the two signed records separately, not repair or
   imply their equality.
-- [ ] **Actual local TLS startup and certified CLI composition:** proposed
+- [ ] **Actual local TLS startup and certified CLI composition:** accepted-design
   [DR-0199](docs/architecture/decisions/0199-local-tls-validator-startup-acceptance.md)
   combines real author/inspection/preparation, four independently stored
   original validators, per-peer explicit TLS trust and the compiled CLI's
-  causal certified transfer/replay. Design review precedes implementation.
+  causal certified transfer/replay. Independent Codex fallback approved the
+  corrected design at `b62193c`; unavailable Claude/Grok supplied no approval.
+  Test implementation, execution, full gates and fresh source review remain
+  open. Key loading is not signing: absent-key controls cover local refusals,
+  while TLS/remote-context negatives use valid protected disposable test keys.
   Required negatives cover TLS versus protocol pins, conflicting request-ID
   reuse and unchanged full namespace snapshots; replay also crosses actual
   host restarts/fencing. This is local acceptance only, not deployed

@@ -2,10 +2,12 @@
 
 Date: 2026-10-06 (Asia/Singapore)
 
-Status: Proposed. Independent design review precedes implementation. This is
-local acceptance evidence, not a public-network activation decision or an
-independent release security audit. Current implementation status belongs only
-in TODO.md.
+Status: Accepted design after independent Codex fallback DESIGN APPROVE at
+`b62193c` on 2026-10-06, correcting the distinction between key loading and
+actual signing. Claude and Grok subscription limits supplied no approval.
+This is local acceptance evidence, not a public-network activation decision or
+an independent release security audit. Source review and executed acceptance
+are separate; current implementation status belongs only in TODO.md.
 
 ## Context
 
