@@ -71,12 +71,15 @@ mechanism or cleanup milestone is added to this functional gate.
   reconstruction with every captured record/blob and sequence unchanged.
   Closing/reopening preserved that refusal baseline. Neither test fabricates
   current-owner rows, and an absent old export remains an error.
-  Complete required local/CI gates remain open. The earlier #271 local gate
-  ended with SIGTERM during genuine recurring-process acceptance and is not
-  a pass; a fresh run is required. This documentation-only refresh requires
-  fresh exact-head source review; independent Opus subsequently approved the
-  complete documentation/source head `ffbd9ed`. This reproduction is not a privilege exploit, severity
-  judgment, released-store survey or independent release audit.
+  This correction's complete required CI remains open. The earlier #271 local
+  gate ended with SIGTERM during genuine recurring-process acceptance and is
+  not a pass; its separate exact-`7dc4193` rerun subsequently passed all required
+  local owners. That baseline execution is not a correction-head whole-gate
+  run. Independent Opus subsequently approved the
+  complete documentation/source head `ffbd9ed`. The nonignored corrected
+  owner also passed normal Rust CI at that exact head. This reproduction is
+  not a privilege exploit, severity judgment, released-store survey or
+  independent release audit.
 
 ### Completed Delivery 3 acceptance checkpoint, 2026-10-05
 
@@ -229,7 +232,7 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
 
 ### Active Delivery 4 local startup work, 2026-10-06
 
-- [ ] **Explicit SQLite preparation and advisory preflight:** accepted
+- [x] **Explicit SQLite preparation and advisory preflight:** accepted
   [DR-0195](docs/architecture/decisions/0195-local-sqlite-validator-startup.md)
   consumes an already signed original genesis into fresh independent local
   SQLite namespaces, without reopening/resetting existing files or moving
@@ -238,10 +241,15 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   evidence and an executable operator guide. Fresh independent Opus returned
   DESIGN APPROVE on 2026-10-06. Source implemented at `7dc4193`, with fresh
   complete exact-head Opus source APPROVE and 18 actual operator tests passed.
-  Fresh-file tests passed five cases at `f7f3647`. The full unshortened gate and
-  required CI acceptance remain open in PR #271; source/design approval is not
-  release acceptance.
-- [ ] **Offline original-genesis authoring:** accepted
+  Fresh-file tests passed five cases at `f7f3647`. The literal complete required
+  local gate passed on clean exact `7dc4193` from 07:35:45 to 10:34:49 UTC;
+  the unchanged compiled recurring-process case passed in 9,868.23 seconds.
+  All seven required CI owners and success-only `check` passed in
+  `37417926920`, including the actual recurring case in 15,360.10 seconds.
+  PR #271 normally merged as `54d9c3f780cbd5adf9f43d84275ee02e553694b6`
+  at 10:36:18 UTC. Its tree equals the reviewed head; local main was clean and
+  equalled origin/main. This scoped acceptance does not certify a network release.
+- [x] **Offline original-genesis authoring:** accepted
   [DR-0196](docs/architecture/decisions/0196-standard-asset-genesis-authoring.md)
   adds an explicitly configured Standard Asset operator preset, using the
   ordinary public template and existing generic installers. Temporary-key real
@@ -251,10 +259,14 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   devnet seed/defaults in the shipped author. Expanded refusals cover duplicate
   identities/objects, bonds, malformed/excess tables, supply overflow, unsafe
   destinations and protected-key defects. Independent Opus approved the
-  complete authoring source at `da53884`; its required CI has six successful
-  owners and genuine recurring SQLite still running. Full local required gate
-  and completed CI remain open; merge DR-0195
-  first. Key custody, independent ceremony/economic approval and actual network
+  complete authoring source at `da53884`. All seven required CI owners and
+  success-only `check` passed in `37419313168`, including the actual unchanged
+  recurring-process case in 18,821.02 seconds. PR #272 normally merged as
+  `eae9e6972baa293e4ad3ffde5d3ed931b85a6ef5` at 10:57:53 UTC;
+  its tree equals the reviewed source, local main was clean and equalled
+  origin/main, and the remote branch was removed. DR-0195's exact baseline
+  full local gate passed; no author-head literal full local gate is claimed.
+  Key custody, independent ceremony/economic approval and actual network
   activation are not completed by this tool.
 - [ ] **Pinned read-only original-genesis inspection:** accepted design
   [DR-0197](docs/architecture/decisions/0197-offline-original-genesis-inspection.md)
@@ -289,12 +301,28 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   rejected incomplete Sonnet proposals; Opus supplied a corrected implementation,
   and parent review additionally strengthened per-refusal complete snapshots,
   existing-policy fee settlement and ordinary Coin output comparisons. This is
-  implementation, not executed process evidence or independent source approval.
+  implementation; its execution and independent approval are recorded below.
   The actual CLI prerequisite compiled at `2c2656e`; both exact request-framing
   cases passed at `694d224`. Those same unchanged framing cases are now owned
   once by the complete TLS integration target instead of a duplicate target.
-  Process execution, complete gates and fresh independent source review remain
-  open. Key loading is not signing: absent-key controls cover local refusals,
+  The complete real TLS target actually passed all three nonignored cases in
+  15.86 seconds at exact `13b0b766b72299fc98897821a538032c40f6e2f4`
+  in CI `37437984279`, Rust job `112184614209`. That normal Rust owner
+  completed at 09:03:24 UTC on 2026-10-06; all 133 completed test targets
+  reported zero failures. Independent Opus explicitly approved the complete
+  16-file exact-head source, including the verified Bugbot/Fixooly repair
+  that builds the CLI before the explicitly selected PG storage tests.
+  The local mocked gate contract passed all three required/full/PG binary
+  prerequisites at the same head; this is not a PostgreSQL execution claim.
+  Local adapter dependency installation also passed at that exact clean head.
+  The complete local TLS target also passed all three nonignored cases in
+  12.52 seconds on clean exact `5f404d5117d8d81cecda50b8ca4b5c3c9c0c7906`
+  from 10:43:58 to 10:44:22 UTC. Only TODO and the network guide differ from
+  reviewed `13b0b76`; all executable/build/test inputs are byte-identical.
+  This is actual documentation-ancestor execution, not a later-head run or a
+  complete TLS-branch whole-gate. The mandatory unshortened recurring CI owner
+  plus `check` remain open; no TLS PR merge is claimed. Key loading is not signing: absent-key
+  controls cover local refusals,
   while TLS/remote-context negatives use valid protected disposable test keys.
   Required negatives cover TLS versus protocol pins, conflicting request-ID
   reuse and unchanged full namespace snapshots; replay also crosses actual
@@ -304,7 +332,13 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
 The earlier exact-`7dc4193` local required run ended with SIGTERM during its
 genuine recurring-process owner on 2026-10-06. Completed individual owners remain
 individual evidence; this interrupted run is not full acceptance. No shortened
-recurrence or optionalized group is used for the required rerun.
+recurrence or optionalized group was used for the required rerun. The fresh
+exact-`7dc4193` literal `./scripts/check-all.sh` rerun passed from 07:35:45 to
+10:34:49 UTC, with the source clean and unchanged before/after execution.
+PRs #271 and #272 are merged; the separate inspector, reference correction,
+TLS integration and guide PRs remain subject to their own complete required
+CI and exact-head approval. No ancestor execution is relabelled as their
+same-head whole-gate result.
 - [ ] **Independent release audits and selected activation profile:** retain
   the economics and ingress audit gates, independently controlled stores,
   genesis/key ceremony, auth/TLS and actual startup/recovery evidence. Local

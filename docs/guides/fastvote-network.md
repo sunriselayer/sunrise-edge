@@ -1,25 +1,35 @@
 # Certified-only FastVote HTTP network and CLI quorum client
 
-This guide runs the DR-0148 opt-in FastVote network: one long-running,
-certified-only HTTP host per validator (`fastvote_host_pg`, PostgreSQL-backed)
-and the ordinary Rust CLI's paid Publish/Instantiate/Call, Standard Asset and
-`contract fastvote-replay` actions. DR-0151 extends DR-0148's original
-Call-only surface. It is a development implementation. The
-independent Phase 3 and ingress security review gates remain open; this guide
-does not authorize live exposure, deployment, or custody of real assets, and
-`fastvote_host_pg` never terminates TLS itself (loopback listen only --
-front it with your own TLS-terminating proxy for anything beyond a single
-trusted host).
+This guide runs the DR-0148 opt-in FastVote network and the ordinary Rust
+CLI's paid Publish/Instantiate/Call, Standard Asset and
+`contract fastvote-replay` actions. DR-0151 extends the original Call-only
+surface. Choose one certified-only original host per validator:
 
-`fastvote_host_pg` never installs, resets, or migrates genesis and never
-advances a live epoch. Bootstrap every validator's PostgreSQL namespace and
-install its signed genesis manifest first, exactly as in
-[the closed-PostgreSQL FastVote rehearsal](../operations/fastvote-pg-rehearsal.md),
-using the same `fastvote_pg namespace-init`/`install-genesis` subcommands.
-This guide picks up once every validator's namespace already has that
-genesis manifest committed.
+- SQLite: `sqlite_source_host`, prepared with `sqlite_genesis` as in
+  [local SQLite validator startup](sqlite-validator-startup.md).
+- PostgreSQL: `fastvote_host_pg`, bootstrapped with the explicit
+  `fastvote_pg namespace-init`/`install-genesis` commands in
+  [the PostgreSQL rehearsal](../operations/fastvote-pg-rehearsal.md).
+
+Both hosts serve the same certified router. Neither host installs, resets or
+migrates genesis, advances a live epoch, or terminates TLS. Prepare each
+validator's independent storage and install the exact independently approved
+signed original genesis before serving. Preparation is not a serving action.
+Keep listeners on loopback; remote access needs an independently configured
+TLS-terminating proxy and a reviewed ingress/authentication policy.
+
+Local rehearsal does not authorize public exposure or real-asset custody.
+Before activation, satisfy the independent economics/ingress audits, custody
+and explicitly reviewed activation profile in [TODO](../../TODO.md).
 
 ## Start one validator's host
+
+For SQLite, follow [serving and restart](sqlite-validator-startup.md#serving-and-restart)
+with the prepared state/blob files, exact root/domain/validator pins and
+protected signing-key file. The explicit offline-fence confirmation is still
+required. Stop competing writers before either backend starts or restarts.
+
+### Explicit PostgreSQL profile
 
 Run this once per validator, each against its own PostgreSQL namespace and
 its own signing-key file. It claims the namespace's writer fence exactly
@@ -44,20 +54,26 @@ cargo run --release -p sunrise-edge-operator --bin fastvote_host_pg -- \
   --confirm-offline-fence-advance
 ```
 
+Each PostgreSQL operator holds a separate credential and namespace; this
+binary never assumes a shared database role across validators. The database
+TLS root above is separate from each client-facing peer's TLS trust below.
+
+### Common original-host boundary
+
 `--protocol-version` must be at or above the transaction-auth-profile
 activation floor (3): the ordinary CLI paid-call path queries `/v1/context`,
 which fails closed below that floor. On success the process prints one
 `complete=true mode=serving ... listen=<addr> manifest_digest=<digest>` line
 to stdout and then serves `certified_fastvote_router` until `ctrl-C`. Only
-the certified prepare, historical apply, publication source/retention and
-published-apply routes, liveness, and a handful
-of bounded read queries (context, fee policy, instance, code interface) are
-mounted -- no generic event-submission route exists on this router at all,
+the certified prepare, historical apply, publication source/retention,
+published apply and frozen-frontier routes, liveness, and bounded read queries
+for context, object, receipt, next nonce, fee policy, instance and publication
+are mounted -- no generic event-submission route exists on this router at all,
 regardless of configuration. `--listen` must be a loopback address; put your
 own TLS-terminating reverse proxy in front of it for anything beyond a
-single trusted host on the same machine. Each validator's operator holds a
-separate PostgreSQL credential and namespace -- this binary never assumes a
-shared database role across validators.
+single trusted host on the same machine. The original host is not the
+verified successor host or an epoch-transition command; use the separately
+verified [successor workflow](first-successor.md) for those actions.
 
 ## Configure the network for the CLI
 
@@ -278,6 +294,20 @@ certified Publish/Instantiate/Call against exact local prerequisites without a n
 or speculative locks; it is not full-state handoff or epoch activation.
 
 ## Executable regression
+
+### SQLite and actual TLS CLI processes
+
+Use the [local startup acceptance commands](sqlite-validator-startup.md#local-tls-and-compiled-cli-acceptance).
+They build the actual operator and CLI binaries and run the nonignored
+`local_tls_startup` target with four independently stored SQLite validators
+and four per-peer loopback TLS terminators. The real CLI sends a certified
+transfer, refuses bad trust/context pins and a conflicting request ID, and
+replays the saved artifacts before and after all hosts restart. The fixture
+also verifies stale-writer fencing and unchanged complete logical snapshots
+on refusal/replay. All keys are disposable; the TLS helper is test-only, not
+shipped ingress. No PostgreSQL or provider service is required.
+
+### Explicit PostgreSQL regression
 
 ```sh
 # Supply SUNRISE_EDGE_TEST_POSTGRES_URL through a protected environment first.
