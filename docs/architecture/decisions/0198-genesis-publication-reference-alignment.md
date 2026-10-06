@@ -2,9 +2,11 @@
 
 Date: 2026-10-06 (Asia/Singapore)
 
-Status: Proposed. Independent design review and actual regression execution
-precede acceptance. Source inspection is not a demonstrated exploit or a
-security-audit result. Current implementation status belongs only in TODO.md.
+Status: Accepted design after independent Opus DESIGN APPROVE on 2026-10-06,
+with corrected context scope and validation/reconciliation ordering. Source
+inspection is not a demonstrated exploit or a security-audit result. Actual
+reproduction precedes the implementation fix; source review and executed
+acceptance remain separate. Current implementation status belongs only in TODO.md.
 
 ## Context
 

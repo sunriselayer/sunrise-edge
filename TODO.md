@@ -51,15 +51,16 @@ cleanup milestone is added to this functional gate.
 
 ### Original-genesis reference correctness, 2026-10-06
 
-- [ ] Proposed [DR-0198](docs/architecture/decisions/0198-genesis-publication-reference-alignment.md)
+- [ ] Accepted-design [DR-0198](docs/architecture/decisions/0198-genesis-publication-reference-alignment.md)
   reuses the ordinary execution owner's complete published-code reference
   equality at the original installer. Source inspection identified that the
   current genesis check compares origin/digest but omits exact revision equality;
   existing economics bindings already close the context-only case. Independent
   design review required correction of that distinction and the actual
   validation-before-reconciliation/reconstruction ordering. A coherently
-  re-signed revision reproduction, design acceptance, fail-closed fix and real
-  fresh/restart/private-reconstruction unchanged-state evidence remain required. This is
+  re-signed revision reproduction, fail-closed fix and real fresh/restart/private-
+  reconstruction unchanged-state evidence remain required. Opus approved the
+  corrected design only; no implementation or executed acceptance is claimed. This is
   not a demonstrated exploit, severity judgment or independent release audit.
 
 ### Current acceptance checkpoint, 2026-10-05
