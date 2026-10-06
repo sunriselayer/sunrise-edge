@@ -49,6 +49,7 @@ type SnapshotEntries = Vec<(Vec<u8>, VersionedStateValue)>;
 struct RecordingStore {
     inner: MemoryStateStore,
     reads: Mutex<ReadTrace>,
+    failed_key: Mutex<Option<Vec<u8>>>,
     commits: AtomicUsize,
     write_sets: Mutex<Vec<AtomicStateWriteSet>>,
     transactions: Mutex<Vec<AtomicStateTransaction>>,
@@ -123,6 +124,9 @@ impl StateStore for RecordingStore {
 impl TransactionalStateStore for RecordingStore {
     fn get_versioned(&self, key: &[u8]) -> Result<VersionedStateValue, RuntimeError> {
         self.reads.lock().unwrap().push((None, key.to_vec()));
+        if self.failed_key.lock().unwrap().as_deref() == Some(key) {
+            return Err(RuntimeError::DurableStoreUnavailable);
+        }
         self.inner.get_versioned(key)
     }
 
@@ -146,6 +150,9 @@ impl DomainTransactionalStateStore for RecordingStore {
             .lock()
             .unwrap()
             .push((Some(domain), key.to_vec()));
+        if self.failed_key.lock().unwrap().as_deref() == Some(key) {
+            return Err(RuntimeError::DurableStoreUnavailable);
+        }
         self.inner.get_versioned_in_domain(domain, key)
     }
 
@@ -852,6 +859,50 @@ fn corrupt_declared_state_stops_at_first_sorted_key_without_transition_or_commit
         for key in metadata_keys() {
             assert!(store.raw_read(scope, &key).value().is_none());
         }
+    }
+}
+
+#[test]
+fn legacy_application_read_failure_keeps_runtime_mapping_and_stops_every_dispatch() {
+    for dispatch in DISPATCHES {
+        let runtime: TestRuntime = runtime();
+        let store: &RecordingStore = runtime.state_store();
+        let scope: Scope = dispatch.scope();
+        store.seed(scope, b"state/a".to_vec(), frame(0xef01, 10));
+        store.seed(scope, b"state/b".to_vec(), frame(0xef01, 11));
+        store.seed(scope, b"state/c".to_vec(), frame(0xef01, 12));
+        let keys: [&[u8]; 3] = [b"state/a", b"state/b", b"state/c"];
+        let before: Vec<VersionedStateValue> = keys
+            .iter()
+            .map(|key: &&[u8]| store.raw_read(scope, key))
+            .collect();
+        *store.failed_key.lock().unwrap() = Some(b"state/b".to_vec());
+        let machine: ProbeMachine = ProbeMachine::new(vec![
+            b"state/c".to_vec(),
+            b"state/b".to_vec(),
+            b"state/a".to_vec(),
+        ]);
+        assert_eq!(
+            dispatch.invoke(&runtime, &machine),
+            Err(NodeCoreError::Runtime(
+                RuntimeError::DurableStoreUnavailable
+            )),
+            "{dispatch:?}",
+        );
+        assert_eq!(
+            *store.reads.lock().unwrap(),
+            expected_application_reads(dispatch, &[b"state/a", b"state/b"])
+        );
+        assert_eq!(machine.transitions.load(Ordering::SeqCst), 0);
+        assert!(machine.snapshots.lock().unwrap().is_empty());
+        assert_eq!(store.commits.load(Ordering::SeqCst), 0);
+        assert!(store.write_sets.lock().unwrap().is_empty());
+        assert!(store.transactions.lock().unwrap().is_empty());
+        let after: Vec<VersionedStateValue> = keys
+            .iter()
+            .map(|key: &&[u8]| store.raw_read(scope, key))
+            .collect();
+        assert_eq!(before, after);
     }
 }
 

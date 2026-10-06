@@ -410,6 +410,10 @@ fn durable_sorted_application_reads_follow_profile_and_epoch_and_keep_exact_revi
         .find(|read| read.key() == KEY_APP_TOMBSTONE)
         .unwrap();
     assert_eq!(tombstone_read.expected_revision(), tombstone_revision);
+    assert!(
+        state.mutations().is_empty(),
+        "read-only observations are not mutations"
+    );
 }
 
 /// DR-0203 control 2 (negative): a corrupt value at the first sorted
@@ -797,8 +801,8 @@ impl TransactionalNodeStateMachine for MixedUpdateMachine {
 /// construction) still runs exactly once; nothing is committed.
 #[test]
 fn durable_undeclared_update_wins_canonical_priority_over_read_only_when_it_sorts_first() {
-    let store = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
-    let original_state: ScriptedStateReads = store.preloaded.lock().unwrap().clone();
+    let store: RecordingDurableStore = RecordingDurableStore::new(DurableCommitOutcome::Committed);
+    let original_state: ScriptedStateReads = store.inner().preloaded.lock().unwrap().clone();
     let machine = MixedUpdateMachine {
         declared_key: KEY_MIX_Z_READONLY.to_vec(),
         first_update_key: KEY_MIX_Z_READONLY.to_vec(),
@@ -820,9 +824,10 @@ fn durable_undeclared_update_wins_canonical_priority_over_read_only_when_it_sort
         error,
         NodeCoreError::UndeclaredStateUpdate(KEY_MIX_A_UNDECLARED.to_vec())
     );
-    assert!(store.commits.lock().unwrap().is_empty());
-    assert!(store.receipt.lock().unwrap().is_none());
-    assert_eq!(*store.preloaded.lock().unwrap(), original_state);
+    assert_post_application_profile_read(&store, KEY_MIX_Z_READONLY);
+    assert!(store.inner().commits.lock().unwrap().is_empty());
+    assert!(store.inner().receipt.lock().unwrap().is_none());
+    assert_eq!(*store.inner().preloaded.lock().unwrap(), original_state);
 }
 
 /// DR-0203 control 3 (negative, read-only wins): mirrors
@@ -835,8 +840,8 @@ fn durable_undeclared_update_wins_canonical_priority_over_read_only_when_it_sort
 /// response/outbound-message construction and no commit.
 #[test]
 fn durable_read_only_update_wins_canonical_priority_over_undeclared_when_it_sorts_first() {
-    let store = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
-    let original_state: ScriptedStateReads = store.preloaded.lock().unwrap().clone();
+    let store: RecordingDurableStore = RecordingDurableStore::new(DurableCommitOutcome::Committed);
+    let original_state: ScriptedStateReads = store.inner().preloaded.lock().unwrap().clone();
     let machine = MixedUpdateMachine {
         declared_key: KEY_MIX_A_READONLY.to_vec(),
         first_update_key: KEY_MIX_Z_UNDECLARED.to_vec(),
@@ -858,9 +863,26 @@ fn durable_read_only_update_wins_canonical_priority_over_undeclared_when_it_sort
         error,
         NodeCoreError::ReadOnlyStateUpdate(KEY_MIX_A_READONLY.to_vec())
     );
-    assert!(store.commits.lock().unwrap().is_empty());
-    assert!(store.receipt.lock().unwrap().is_none());
-    assert_eq!(*store.preloaded.lock().unwrap(), original_state);
+    assert_post_application_profile_read(&store, KEY_MIX_A_READONLY);
+    assert!(store.inner().commits.lock().unwrap().is_empty());
+    assert!(store.inner().receipt.lock().unwrap().is_none());
+    assert_eq!(*store.inner().preloaded.lock().unwrap(), original_state);
+}
+
+fn assert_post_application_profile_read(store: &RecordingDurableStore, application_key: &[u8]) {
+    let keys: Vec<Vec<u8>> = store.recorded_keys();
+    let app_index: usize = keys
+        .iter()
+        .position(|key: &Vec<u8>| key.as_slice() == application_key)
+        .unwrap();
+    let profile_key: Vec<u8> =
+        logical_generation::logical_profile_key(&ChainId::new(CHAIN).unwrap()).unwrap();
+    assert!(
+        keys.iter()
+            .skip(app_index + 1)
+            .any(|key: &Vec<u8>| *key == profile_key),
+        "the late logical-profile fence still precedes writable-update refusal"
+    );
 }
 
 /// DR-0203 control 3 (positive control): the same owning path, the same
@@ -927,7 +949,7 @@ fn durable_declared_read_write_update_commits_state_receipt_and_outbox() {
 /// point-read maps to NodeCoreError::DurableRead, not
 /// NodeCoreError::Runtime (the legacy TransactionalStateStore/
 /// DomainTransactionalStateStore mapping, unchanged by this slice and
-/// exercised independently by the existing legacy-handler suite). The
+/// pinned by the explicit injected-failure legacy dispatch matrix). The
 /// machine's transition never runs and nothing is committed.
 #[test]
 fn durable_application_point_read_failure_maps_to_durable_read_not_runtime() {

@@ -93,6 +93,13 @@ versus `DurableRead` mapping, not a generic conversion bound. Private owner
 tests additionally pin the otherwise-unreachable missing-observation invariant
 and per-item refusal/fallible-builder ordering.
 
+Keep writable-update checking at each original assembler call, not at the start
+of evaluation: durable controls pin the post-application logical-profile read
+before either mixed-update refusal. The legacy injected point-read failure
+matrix covers all four dispatches, retaining exact `Runtime` error mapping,
+read-stop order and zero transitions/commits, separately from the durable
+`DurableRead` control.
+
 Test undeclared/read-only updates, complete read assertions including absence
 and tombstones, missing declared observations, corrupt-state early refusal and
 the distinct unscoped versus domain envelopes. Preserve partial builder failure
