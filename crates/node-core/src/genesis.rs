@@ -90,6 +90,9 @@ pub mod tests;
 #[cfg(test)]
 mod root_baseline_tests;
 
+#[cfg(test)]
+mod code_reference_tests;
+
 mod root;
 
 pub use root::{GenesisRootError, VerifiedGenesisRoot};

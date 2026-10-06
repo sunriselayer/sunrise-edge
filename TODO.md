@@ -62,6 +62,11 @@ cleanup milestone is added to this functional gate.
   reconstruction unchanged-state evidence remain required. Opus approved the
   corrected design only; no implementation or executed acceptance is claimed. This is
   not a demonstrated exploit, severity judgment or independent release audit.
+  The baseline-only test commit adds coherent signed revision data, ordinary
+  fresh/reconcile/private-reconstruction probes, unchanged context-control
+  refusal and an explicit genuine old-owner SQLite export. Production remains
+  unchanged until actual old-owner acceptance is reproduced. These new tests
+  are not yet executed locally; the shared warm target remains owned by #271.
 
 ### Current acceptance checkpoint, 2026-10-05
 
