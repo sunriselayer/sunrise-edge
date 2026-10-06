@@ -30,7 +30,8 @@ use protocol_types::{
 const DRAIN_UNION_ACCUMULATOR_TYPE_ID: u16 = 0xD03A;
 const DRAIN_UNION_IDENTITY_TYPE_ID: u16 = 0xD03B;
 const ENCODING_VERSION: u16 = 1;
-const MAX_DRAIN_UNION_IDENTITY_BYTES: usize = 4 * 1024;
+/// Complete encoded union identity ceiling, reusable by transport guards.
+pub const MAX_DRAIN_UNION_IDENTITY_BYTES: usize = 4 * 1024;
 /// Matches `validator_set::MAX_VALIDATORS`; a selected quorum can never
 /// legitimately name more signers than exist in one outgoing epoch's set.
 pub const MAX_DRAIN_UNION_SIGNERS: usize = 10_000;

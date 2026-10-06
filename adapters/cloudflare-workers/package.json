@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "types": "wrangler types --include-runtime false",
-    "typecheck": "wrangler types --include-runtime false --check && wrangler types --config=wrangler.validator.jsonc --include-runtime=false --strict-vars=false --env-interface=ValidatorEnv validator-configuration.d.ts --check && wrangler types --config=test/validator/wrangler.sql-test.jsonc --include-runtime=false --env-interface=SqlProbeEnv test/validator/sql-env.d.ts --check && wrangler types --config=test/validator/wrangler.contract-test.jsonc --include-runtime=false --env-interface=ContractTestEnv test/validator/contract-env.d.ts --check && node ./node_modules/typescript-7/bin/tsc --noEmit",
-    "lint": "cd .. && cloudflare-workers/node_modules/.bin/eslint --config cloudflare-workers/eslint.config.js cloudflare-workers/src cloudflare-workers/test shared cloudflare-workers/vitest.config.ts cloudflare-workers/vitest.sql.config.ts cloudflare-workers/vitest.contract.config.ts",
-    "test": "vitest run && vitest run --config vitest.sql.config.ts && vitest run --config vitest.contract.config.ts",
+    "typecheck": "wrangler types --include-runtime false --check && wrangler types --config=wrangler.validator.jsonc --include-runtime=false --strict-vars=false --env-interface=ValidatorEnv validator-configuration.d.ts --check && wrangler types --config=wrangler.certified.jsonc --include-runtime=false --strict-vars=false --env-interface=CertifiedRelayEnv certified-configuration.d.ts --check && wrangler types --config=test/validator/wrangler.sql-test.jsonc --include-runtime=false --env-interface=SqlProbeEnv test/validator/sql-env.d.ts --check && wrangler types --config=test/validator/wrangler.contract-test.jsonc --include-runtime=false --env-interface=ContractTestEnv test/validator/contract-env.d.ts --check && node ./node_modules/typescript-7/bin/tsc --noEmit",
+    "lint": "cd .. && cloudflare-workers/node_modules/.bin/eslint --config cloudflare-workers/eslint.config.js cloudflare-workers/src cloudflare-workers/test shared cloudflare-workers/vitest.config.ts cloudflare-workers/vitest.sql.config.ts cloudflare-workers/vitest.contract.config.ts cloudflare-workers/vitest.certified.config.ts",
+    "test": "vitest run && vitest run --config vitest.certified.config.ts && vitest run --config vitest.sql.config.ts && vitest run --config vitest.contract.config.ts",
     "check": "npm run typecheck && npm run lint && npm test"
   },
   "devDependencies": {

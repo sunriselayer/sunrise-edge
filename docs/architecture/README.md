@@ -19,6 +19,9 @@ roadmap describes a later target state.
 - [Host compositions and capabilities](compositions-and-capabilities.md):
   actual router/executable/store/signer boundaries, closed versus accepted
   surfaces, and the distinction between component and provider qualification.
+- [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
+  an explicitly configured closed HTTPS transport, separate from default
+  event-only relays, embedded DO policy and core authority.
 - [Persistence](persistence.md): section 41 and the runtime-neutral durable
   state boundary.
 - [Developer product surfaces](product-surfaces.md): sections 42–46, covering

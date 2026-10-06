@@ -440,6 +440,34 @@ the security envelope. A lower provider limit is an explicit compatibility gap
 that remains visible in Phase 17 production criteria rather than being called
 full protocol conformance.
 
+### Explicit portable certified profile
+
+The default event-only Web constructor stays unchanged. The separate
+`createCertifiedWebIngressHandler` implements the closed [DR-0204](decisions/0204-portable-certified-relay.md)
+transport. Trusted configuration pins the HTTPS origin, Bearer token and provider
+ceilings. A single route owner supplies certified FastVote/publication/frontier/
+drain/query methods and limits to ingress and forwarding; it does not mount
+ordered economics, successor fee-claim preparation or any direct mutation.
+The embedded DO's ingress and authority contracts remain separate.
+
+Certified responses have full-body byte guards, pull backpressure and a timeout
+covering dispatch and consumption. All 3xx refuse without following Location;
+native refusals have closed status/media and a completely read 1 KiB budget.
+A failed dispatched POST is outcome-unknown, not definitely uncommitted. A late
+stream failure cannot be rewritten as rollback, a new receipt or automatic retry.
+Validated upstream Content-Length is dropped. The Rust SDK already has loopback
+HTTP and CA/DNS-pinned TLS transports; both use strict length-bound response
+framing and are not qualified against this lengthless streamed relay profile.
+
+Cloudflare uses a separate HTTPS certified entrypoint, not the default binding
+or an embedded store, with 8 MiB requests and streamed 32 MiB responses. Deno's
+certified constructor defaults to the same bounds; only trusted configuration
+may choose a request cap up to 32 MiB. Vercel's opt-in template and constructor
+retain a conservative 4 MiB request/response cap. Larger native envelopes are
+explicitly outside a narrowed profile. Tests run locally with no cloud writes;
+provider capacity, actual rewrite/TLS/PKI behavior and full lifecycle remain
+selected-profile release requirements. Supabase/AWS stay event-only.
+
 ## 34. Deno Web ingress adapter
 
 The Deno Phase 17 adapter uses the current Deno 2 default `fetch` export and
@@ -447,12 +475,14 @@ passes every public request to the portable Web ingress core. Its only runtime
 capability is an immutable node-core fetcher configured from named environment
 variables. The wrapper does not decode canonical bytes or own protocol state.
 
-The As-Is node-core transport requires an exact HTTPS `/v1/events` URL and a
+The default node-core transport requires an exact HTTPS `/v1/events` URL and a
 bounded Bearer token stored as a Deno Deploy secret. It reconstructs an
 allow-listed upstream request, forbids redirects to prevent cross-origin
 credential forwarding, and applies a bounded deadline through the shared
 `authenticated-node-core.ts` capability. Configuration errors fail at startup;
-network and timeout failures become the shared sanitized 503.
+network and timeout failures become the shared sanitized 503. The distinct
+certified profile above requires an HTTPS origin and keeps the legacy
+constructor's behavior unchanged.
 
 This authenticated public relay is an incremental conformance adapter, not the
 production trust boundary. Phase 17 still requires a fixed private transport,
@@ -463,7 +493,7 @@ tests, observability, incident response, and rollback rehearsal.
 ## 35. Vercel Web ingress adapter
 
 The Vercel Phase 17 adapter is a Node.js Function with the Web `fetch` export.
-Two same-application rewrites expose the canonical event and liveness paths to
+The default two same-application rewrites expose canonical event and liveness paths to
 one handler, which delegates request semantics to the portable ingress core and
 uses the shared authenticated node-core capability. The function has a
 ten-second maximum duration and a bounded downstream deadline.
