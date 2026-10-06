@@ -9,6 +9,11 @@ Moving this evidence does not complete, waive or narrow any release criterion.
 Relative repository links are rebased to this archive's location; the original
 body and all original checklist marks otherwise remain unchanged.
 
+Referenced original production, release, coding, integration-test and security
+criteria remain binding until an accepted later decision explicitly supersedes
+them. Historical observations and aspirational sketches confer no authority;
+their chronological placement is not implementation or release acceptance.
+
 # Current delivery roadmap
 
 **2026-10-06: one integrated implementation and refactoring queue.**

@@ -2,17 +2,21 @@
 
 Date: 2026-10-06 (Asia/Singapore)
 
-Status: Independent Opus PLAN APPROVE, conditional on fixed pre-change vectors,
-flat error mapping, HTTP classification coverage and complete required
-acceptance. This is not implementation, source or security-audit approval.
+Status: Initial independent Opus PLAN APPROVE was conditional on fixed
+pre-change vectors, flat error mapping, HTTP classification coverage and
+complete required acceptance. The corrected generic-submit consumer scope
+below requires tech-lead reconfirmation before migration. This is not
+implementation, source or security-audit approval.
 
 ## Context
 
 The node-core root defines request/event/response/receipt envelope contracts
 alongside execution and storage orchestration. Node-wire duplicates response
-list decoding and carries the whole node-core error enum. Five Rust SDK paths
-repeat outer request ID, response cardinality, inner ID and payload checks;
-their check order already differs. A new pure-contract crate would currently
+list decoding and carries the whole node-core error enum. Four Rust SDK families
+repeat single-response acknowledgement checks; their check order already
+differs. Generic submit checks only the outer request ID and returns the whole
+HTTP result, including valid zero/multiple-response results. A new pure-contract
+crate would currently
 remove no Cargo edge because clients/wire still consume owning core verifiers
 and other contracts. Moving those verifiers into foundations is not justified.
 
@@ -25,11 +29,15 @@ and other contracts. Moving those verifiers into foundations is not justified.
   Its conversion into `NodeCoreError` maps to existing flat variants, preserving
   the host classification vocabulary. No nested catch-all changes a 413/500
   into the native handler's default 400 invalid-event response.
-- Node-wire owns HTTP frames and one bounded acknowledgement decoder. It binds
-  the outer ID, exactly one response, the inner ID and payload presence. Typed
+- Node-wire owns HTTP frames and a bounded outer-result decoder. It binds the
+  outer ID while retaining the generic submit whole-result return contract,
+  without new response-cardinality, inner-ID or payload requirements.
+- Its single-acknowledgement decoder additionally binds exactly one response,
+  the inner ID and payload presence. Typed
   acknowledgement errors carry no execution or authorization capability.
-- Generic submit, paid submit, FastVote submit/apply, publication and local
-  instance SDK paths use that binding primitive. Each caller still decodes and
+- Paid submit, FastVote submit/apply, publication and local-instance SDK families
+  use that single-acknowledgement primitive; generic submit uses the outer-only
+  decoder. Each caller still decodes and
   verifies its owning outcome, transaction hash, request and status semantics.
   A syntactically bound response is not a verified successful operation.
 - Wire/query envelope errors use the narrow envelope type instead of the
@@ -67,9 +75,11 @@ Retain count/bounds, malformed/truncated/trailing/noncanonical nested frames,
 unknown kind/status and zero/mismatched ID negatives.
 
 Test unchanged native `(status, code)` mappings exhaustively for the migrated
-error subset; preserve valid large HTTP-output encoding. Every migrated SDK
+error subset; preserve valid large HTTP-output encoding. Every single-ack SDK
 family keeps authentic positive outcomes and outer/inner mismatch, zero/two
-responses and missing-payload refusals with its intended typed errors.
+responses and missing-payload refusals with its intended typed errors. Generic
+submit preserves valid zero/multiple-response results and refuses only its
+existing malformed framing and outer-ID mismatch cases.
 
 Migrate real callers, delete duplicated list parsing and binding mechanisms,
 review the actual full source, and pass the complete storage-neutral gate plus

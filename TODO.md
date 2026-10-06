@@ -11,6 +11,12 @@ defines this consolidation. The [preserved roadmap](docs/development/history/roa
 retains original criteria, exact revisions, failed/interrupted attempts and
 scoped validation. Archiving evidence does not waive a gate.
 
+The referenced original security, coding, integration-test and release
+requirements remain binding until explicitly superseded by an accepted
+decision. Old execution observations and aspirational design sketches are not
+new authority. The architecture documents and `SECURITY.md` remain their live
+design/security owners; this file tracks every remaining completion group.
+
 ## Established baseline
 
 - [x] CLI Developer MVP: local Rust CLI, object queries, generic paid contract
@@ -34,6 +40,11 @@ scoped validation. Archiving evidence does not waive a gate.
 - [x] Explicit local SQLite prepare/preflight (PR #271, normal merge `54d9c3f`)
   and offline public Standard Asset genesis authoring (PR #272, normal merge
   `eae9e69`). Local preparation does not select a production provider.
+- [x] Exact original publication-reference validation and real four-validator
+  SQLite/TLS/compiled-CLI startup (PR #274/#275). PR #275 merged normally as
+  `725e4a14` at 14:05:45 UTC after exact `13b0b766` complete source approval,
+  all seven CI owners and `check`; PR #274's preserved normal merge `734f6454`
+  was automatically recognized as merged. No public deployment is claimed.
 
 Validator-set changes, slashing and reward/claim distribution remain FastVote
 completion requirements. Their functional implementation does not close the
@@ -49,13 +60,13 @@ implementation budget, not a promise that external mainnet gates will pass.
 The planning baseline was `eae9e6972baa293e4ad3ffde5d3ed931b85a6ef5`.
 PR #273 subsequently merged normally as `587fe587` at 13:44:23 UTC after
 its exact `77090388` complete source approval and all required CI passed.
+PR #275 then merged as `725e4a14`; local main was verified clean and equal to
+origin/main at that merge.
 This planning branch explicitly stacks on PR #276 at `c89acfdd`; it must not be
 described as already merged or independently validated runtime code.
 
 | Pending prerequisite | Actual head and remaining acceptance |
 | --- | --- |
-| PR #274: complete published-code reference comparison | `ffbd9ed0`; complete source approval and required CI passed; TODO-only standalone conflict is already resolved in the reviewed PR #275 normal-merge history |
-| PR #275: real four-validator SQLite/TLS/compiled-CLI startup | `13b0b76`; complete exact-head source approval and actual three-case TLS process target passed in CI; final recurring-sqlite/check still pending |
 | PR #276: storage-neutral startup guide and truthful evidence | `c89acfdd`; complete exact-head two-file Opus source approval; its own final recurring-sqlite/check still pending |
 
 Recheck live heads and required checks before integrating; pending never means
@@ -81,8 +92,10 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   Complete SDK decoupling is not assumed from one migrated boundary.
   [DR-0201](docs/architecture/decisions/0201-envelope-and-acknowledgement-ownership.md)
   has independent conditional Opus PLAN APPROVE: one envelope/list codec,
-  narrow errors with unchanged host classification, and one SDK acknowledgement
-  binder with five real consumers. Pre-change literal vectors come first.
+  narrow errors with unchanged host classification, an outer-bound generic
+  result decoder and one single-ack binder for four actual SDK families.
+  Generic submit retains its whole-result return contract. This corrected
+  consumer scope needs tech-lead reconfirmation. Pre-change vectors come first.
 - [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
   admission, evaluation, completion, reconciliation and storage contracts;
   separate object/receipt/outbox repositories and memory implementations by
@@ -111,12 +124,24 @@ unchecked item; do not reopen completed Delivery 3 without a relevant change.
 This is a separately reviewed bounded release profile, not mainnet. Each item
 needs real evidence for the selected profile, not fixtures from a different one.
 
+The accepted [protocol-v3 live-activation constraint](docs/architecture/core-protocol.md)
+still forbids activation on any live chain until complete atomic composition,
+authentication/authorization of every accepted external family, S4/S5 and
+independent security/release gates are satisfied. This includes public testnet;
+Ledger deferral currently leaves that original gate open. A bounded testnet
+exception requires an explicit human-approved decision and release review,
+not this roadmap or successful local startup.
+
 - [ ] Integrate the reviewed operator/startup prerequisites and pass the actual
   required gates. Reproduce author → independent inspection → four separate
   stores → authenticated TLS → compiled CLI → restart/exact replay/refusal.
 - [ ] Complete independent economics/FastVote and ingress/lifecycle delta
   audits of the final implemented scope; remediate and independently verify
   findings. Tech-lead APPROVE is not the independent security audit.
+- [ ] Review the locked production and build/tooling dependency advisories
+  before exposure. The preserved 2026-10-06 observation of seven high tooling
+  advisories and zero `npm audit --omit=dev` findings is not release clearance;
+  establish actual exposure and remediation without a forced bulk upgrade.
 - [ ] Human selects the initial hosting/store profile, independent validator
   operators and administrative/key boundaries, genesis authority/chain pins,
   economic configuration, supported routes and release artifact. Keep PG optional.
@@ -174,7 +199,10 @@ explicitly approves a documented scope change.
   source/compiler/dependencies/build provenance, reproduce release artifacts,
   preserve canonical bytes/digests/effects/consensus/proof parity, complete
   conformance/property/fuzz/adversarial/long-running coverage and tested upgrade/
-  migration/restore instructions. Actual Phase 16/17 provider criteria remain
+  migration/restore instructions. Retain the original Coding Requirements,
+  Required Integration Tests and Security Invariants; review locked production
+  and build/tooling advisories and historical claims before protocol-version
+  activation. Actual Phase 16/17 provider criteria remain
   required for advertised supported profiles; a local adapter test is not provider
   certification. Narrowing historical all-provider release scope needs approval.
 - [ ] **M8 — public testnet and final go/no-go:** complete Delivery 4 and collect
@@ -195,7 +223,7 @@ in the [archived production gate](docs/development/history/roadmap-through-2026-
 | S4 physical/HIL/UI/release and production key management | M2, unchanged; alternate signer/scope needs human-reviewed decision |
 | S5 and Phase 15 To-Be exit criteria 1–10 | M1–M5/M7; exposed-family auth, durable contracts, operations and certification are not completed by refactoring |
 | Post-MVP persistence order and production correctness contract | M3/M4/M5/M7; all fault/checkpoint/backup/capacity criteria retained, implementation follows selected profile capabilities |
-| Cross-phase production release gate | M1/M2/M5/M6/M7/M8; experimental/deferred criteria must be closed or explicitly respecified, not hidden |
+| Cross-phase production release gate, Coding Requirements, Required Integration Tests and Security Invariants | M1–M8; disaster recovery/capacity/key/validator documentation and experimental/deferred criteria must be closed or explicitly respecified, not hidden |
 | Phase 16/17 production-provider criteria | M3/M5/M7; local adapters are insufficient, supported-profile scope must be explicit |
 | Phase 3 economic audit and initial-network profile | Delivery 4/M1/M6/M8; claims/bonds/slash/membership remain FastVote completion requirements |
 | PG rehearsal and retained optional PG faults/workload | Selected PG acceptance, M3/M4/M5 when PG is selected; never a generic every-PR dependency |
@@ -208,6 +236,9 @@ in the [archived production gate](docs/development/history/roadmap-through-2026-
   separately reviewed protected-signing scope. Do not silently choose one.
 - Supported-provider release scope and any deliberate revision of historical
   all-provider criteria; budget/SLO and production economic/genesis values.
+- Any bounded initial-network exception to the protocol-v3 live-activation
+  constraint. Until explicitly approved, public testnet activation is blocked
+  by the original incomplete production/signing gates.
 
 These future release choices do not block local refactoring or audit preparation.
 
