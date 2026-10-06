@@ -68,6 +68,7 @@ impl Drop for Directory {
 }
 
 use compiled_source_host_process::{spawn_bounded_output, spawn_bounded_status_line};
+use ed25519_zebra::VerificationKey;
 use execution::LocalWasmExecutionEngine;
 use execution::local_execution::LocalExecutionPolicy;
 use node_core::business_reconstruction::SourceBusinessSnapshot;
