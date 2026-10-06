@@ -22,14 +22,27 @@ HTTPS/Fetch bridge and the CA/DNS-pinned Rust TLS transport.
 Only the bridge's injected upstream capability may translate its fixed HTTPS
 test origin to the numeric loopback HTTP native listener. Validate the local
 scheme/host/port and closed four GET paths; forward actual native response bytes,
-not fixture-generated canonical answers. This second leg is explicitly HTTP,
-not upstream TLS/PKI, provider deployment, quorum or business execution evidence.
+not fixture-generated canonical answers. This second leg is explicitly a plain
+loopback HTTP request to `http://127.0.0.1:<port>`, built from a literal IP and
+the given numeric port — never upstream TLS/PKI, DNS resolution, a provider
+deployment, quorum, or business execution evidence.
 
-Keep the original framing fixture's GET/POST/204/late-error cases unchanged.
-Share only its bounded process/stdio/TLS setup in a test-private owner, not a
-general process framework or production dependency. Disposable keys travel on
-stdin, never logs. Pin Node 22.20.0, numeric loopback listeners, request/response
-bounds, watchdog and owned child/task cleanup, including failure paths.
+A second, separate fixture script
+(`clients/rust/tests/support/native-certified-relay-server.mjs`) owns this
+native-forwarding bridge. The original framing fixture
+(`clients/rust/tests/support/certified-relay-server.mjs`) keeps its unchanged
+canonical GET/POST/204/late-error cases byte-for-byte; it is not extended or
+branched to also talk to native. Both Rust integration tests share only one
+test-private process owner (`clients/rust/tests/support/certified_relay_process.rs`)
+for the bounded process/stdio/TLS-identity-delivery/shutdown lifecycle common to
+both fixtures — a closed `start(script, cert_pem, key_pem, native_port)` entry
+point and a `stop(expected_outcomes)` exit point, not a general process
+framework or production dependency. The expected outcome lines stay each
+test's own closed contract with its fixture; the shared owner never infers or
+relaxes them. Disposable keys travel on stdin, never logs. Pin Node 22.20.0,
+numeric loopback listeners, request/response bounds, a bounded stdout
+reader (per-line and whole-stream), a <=30s watchdog, and owned child/task
+cleanup on both ordinary completion and a test panic's unwind.
 
 ## Acceptance
 

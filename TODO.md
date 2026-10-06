@@ -79,7 +79,7 @@ reports all three PRs merged. This closes those slices, not a release gate.
 | PR #279: private observations of genuine recurrence | `3f2b9e1`; merged normally as `1432cb85`; complete source approval, owning observer units 4/0 and all required CI passed |
 | PR #280: real host/signer/store capability map | `4d5507d`; complete exact-head Opus source approval and all required CI passed; merged normally as `c19bd0d3`. Primary `main` is clean and equal to `origin/main` at `c19bd0d3` (verified 22:09 UTC). |
 | PR #281: closed certified HTTPS relay | `7424d72`; complete exact-head Opus source approval; owning relay checks and npm-ci passed; hosted recurrence still running, not passed. Included in the isolated integration candidate below, not merged into `main`. |
-| PR #282: shared declared-state preparation | `7853869`; complete exact-head Opus source approval; genuine ordinary/core e8 and local readiness passed; the literal full required gate (run 25053) was still running at 22:28 UTC during the actual epoch-7 Seal, not passed. Included in the candidate, not merged into `main`. |
+| PR #282: shared declared-state preparation | `7853869`; complete exact-head Opus source approval; literal full local required gate passed at 22:44:41 UTC, including genuine recurring e8 unlock, Cloudflare and portable owners. Hosted recurrence and integration remain open. Included in the candidate, not merged into `main`. |
 | PR #283: bounded SDK chunked-response owner | `9c7543a`; complete exact-head Opus source approval; SDK 246/0, workspace Clippy and all four pinned portable tasks passed; hosted recurrence still running, full required acceptance and integration remain open. Included in the candidate, not merged into `main`. |
 | PR #284: authority-free native ingress (DR-0206) | `e7b02f4`; complete exact-head Opus source approval; native 164/0, workspace Clippy, npm-ci, rustdoc, fmt and 415 doc links passed; hosted CI run `37538727944` still running, not passed. Included in the candidate, not merged into `main`. |
 
@@ -98,6 +98,17 @@ mechanical conflicts, keeping both sides' decision-record/code-map entries and
 the current criteria text. Combined host/SDK tests, exact-source review of the
 integrated tree and all required CI must still complete before any merge into
 `main`.
+
+[DR-0207](docs/architecture/decisions/0207-local-native-sdk-relay-integration.md)
+adds a local acceptance seam: retain the real SQLite/native TCP query scenario
+and its original assertions, then run all four queries through the actual
+certified Vercel handler, a test-owned TLS bridge and the CA/DNS-pinned SDK.
+Only bounded Rust process setup is shared; the original GET/POST/204/late-failure
+JavaScript fixture is unchanged. The bridge's second leg is numeric loopback
+HTTP, not upstream TLS, provider deployment, quorum or business execution proof.
+Fresh complete PLAN approval required eight corrections before source acceptance;
+they are implemented here. Combined execution, final source review, the complete
+required gate and hosted CI remain open until their actual terminal results.
 
 ### Responsibility-oriented refactoring queue
 
@@ -156,8 +167,9 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   rules, while retaining two deliberately distinct assemblers and original
   caller ordering. Exact `7853869` has complete source approval; its ordinary
   node-core suite, private priority controls, genuine core e8 and local
-  readiness passed. The literal full required gate is still running the real
-  operator recurrence; hosted acceptance and integration are open, not passed.
+  readiness passed. The literal full local required gate passed at 22:44:41 UTC,
+  retaining the real operator recurrence through terminal e8 unlock. Hosted
+  acceptance and integration are open, not passed.
   R2 as a whole remains open. Its R3 observation prerequisite is now in main.
 - [ ] **R3 — attributable tests and economical CI:** reuse bounded signed input
   and environment builders while keeping expected outcomes independent; separate
@@ -186,20 +198,19 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   The explicit [certified relay](docs/architecture/decisions/0204-portable-certified-relay.md)
   adds closed FastVote/publication/frontier/drain/query transport to Deno/Vercel
   and a separate stateless Worker. It does not add ordered/successor/DO lifecycle
-  authority. All four portable checks and focused workerd controls passed locally;
-  real native oracle/204 regression, full generated-artifact checks, exact-source
-  review and final CI remain open. The SDK already has CA/DNS-pinned TLS; keep
-  bounded streamed-response framing and actual relay transport integration,
-  provider deployment/size/concurrency qualification and public readiness open.
+  authority. Exact `7424d72` has complete independent source approval; owning
+  portable/workerd checks, the actual native oracle/genuine 204 regression and
+  generated-artifact checks passed at their recorded functional inputs. Full
+  exact-head acceptance, hosted recurrence and combined integration remain open.
   [DR-0205](docs/architecture/decisions/0205-bounded-sdk-streamed-response-framing.md)
-  now has conditional independent PLAN approval with explicit header-priority,
-  framing-budget, wire-fragmentation and pinned Node CI corrections. The SDK
-  branch implements the shared bounded chunk decoder and local real HTTPS
-  relay fixture. The whole owning SDK package/all-target tests passed on exact
-  `936d069`, including the actual Node 22.20.0 TLS relay fixture, original
-  length/204 controls and new fragmentation/termination/budget failures.
-  The runtime's removal/wrong-version CI mutation controls also passed.
-  Complete final source review and required CI/integration remain pending.
+  implements one bounded chunk decoder with header-priority, framing-budget,
+  wire-fragmentation and pinned-Node CI controls. Exact `9c7543a` has complete
+  independent source approval, SDK all-targets 246/0, workspace Clippy and all
+  four actual pinned portable tasks passed. Original length/204 controls and
+  late-failure/refusal/budget cases remain. The runtime removal/wrong-version
+  CI mutation controls also passed. Complete required CI and combined integration
+  remain pending; DR-0207 adds actual native-to-relay-to-SDK query evidence,
+  not another mock-backed execution or provider qualification claim.
   TLS identity is not protocol authority, and
   this local fixture does not qualify a deployed provider or public network.
 
