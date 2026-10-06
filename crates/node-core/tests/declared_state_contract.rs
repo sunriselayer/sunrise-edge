@@ -43,6 +43,7 @@ impl Scope {
 }
 
 type ReadTrace = Vec<(Option<AtomicityDomainId>, Vec<u8>)>;
+type SnapshotEntries = Vec<(Vec<u8>, VersionedStateValue)>;
 
 #[derive(Default)]
 struct RecordingStore {
@@ -226,7 +227,7 @@ struct ProbeMachine {
     keys: Vec<Vec<u8>>,
     plans: AtomicUsize,
     transitions: AtomicUsize,
-    snapshots: Mutex<Vec<Vec<(Vec<u8>, VersionedStateValue)>>>,
+    snapshots: Mutex<Vec<SnapshotEntries>>,
 }
 
 impl ProbeMachine {
@@ -259,7 +260,7 @@ impl TransactionalNodeStateMachine for ProbeMachine {
         event: &NodeEvent,
     ) -> Result<TransactionalNodeTransition, NodeCoreError> {
         self.transitions.fetch_add(1, Ordering::SeqCst);
-        let observed: Vec<(Vec<u8>, VersionedStateValue)> = snapshot
+        let observed: SnapshotEntries = snapshot
             .iter()
             .map(|(key, value)| (key.to_vec(), value.clone()))
             .collect();
@@ -753,7 +754,7 @@ fn declared_reads_stay_sorted_complete_and_assert_absence_and_tombstones() {
                 .iter()
                 .zip(&observations)
                 .map(|(key, value)| (key.to_vec(), value.clone()))
-                .collect::<Vec<(Vec<u8>, VersionedStateValue)>>()]
+                .collect::<SnapshotEntries>()]
         );
         assert_eq!(store.commits.load(Ordering::SeqCst), 1);
         match scope {
