@@ -668,14 +668,14 @@ fn operation(fence: WriterFenceGeneration, tag: u8) -> DurableOperationContext {
 }
 
 fn open_store(network: &Network, index: usize) -> SqliteDurableStore {
-    SqliteDurableStore::open_existing(&network.state_db(index), network.namespace(index)).unwrap()
+    SqliteDurableStore::open_existing(network.state_db(index), network.namespace(index)).unwrap()
 }
 
 /// Complete business collections and referenced blobs of one namespace,
 /// read through a fresh handle at the currently active fence.
 fn snapshot(network: &Network, index: usize) -> SourceBusinessSnapshot {
     let store: SqliteDurableStore = open_store(network, index);
-    let blobs: SqliteBlobStore = SqliteBlobStore::open_existing(&network.blob_db(index)).unwrap();
+    let blobs: SqliteBlobStore = SqliteBlobStore::open_existing(network.blob_db(index)).unwrap();
     let fence: WriterFenceGeneration = store.writer_fence().unwrap();
     let captured: SourceBusinessSnapshot = capture_source_business_snapshot(
         &store,
