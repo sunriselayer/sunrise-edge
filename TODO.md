@@ -49,6 +49,16 @@ cleanup milestone is added to this functional gate.
 
 ## Functional critical path with embedded refactoring
 
+### Original-genesis reference correctness, 2026-10-06
+
+- [ ] Proposed [DR-0198](docs/architecture/decisions/0198-genesis-publication-reference-alignment.md)
+  reuses the ordinary execution owner's complete published-code reference
+  equality at the original installer. Source inspection identified that the
+  current genesis check compares origin/digest but not revision/context.
+  A coherently re-signed reproduction, independent design acceptance, fail-closed
+  fix and real unchanged-state regression evidence remain required. This is
+  not a demonstrated exploit, severity judgment or independent release audit.
+
 ### Current acceptance checkpoint, 2026-10-05
 
 | Owner | Actual result and remaining boundary |

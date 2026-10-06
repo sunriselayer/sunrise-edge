@@ -91,6 +91,8 @@
 - [DR-0193: required recurring acceptance over isolated owners](0193-required-recurring-acceptance.md)
 - [DR-0194: recurring handoff acceptance by owning boundary](0194-recurring-acceptance-ownership.md)
 
+- [DR-0198: exact original-genesis published-code reference (Proposed)](0198-genesis-publication-reference-alignment.md)
+
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong
 in [`TODO.md`](../../../TODO.md).
