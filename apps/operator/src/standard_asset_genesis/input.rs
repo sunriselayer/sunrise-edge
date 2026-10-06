@@ -288,6 +288,19 @@ impl Config {
         }
         validators.sort_by_key(|validator: &Validator| validator.id);
         allocations.sort_by_key(|allocation: &Allocation| allocation.coin_id);
+        // Public arithmetic refuses before the authority key is loaded. The
+        // package builder independently rechecks its exact encoded bodies.
+        let mut supply: u64 = 0;
+        for validator in &validators {
+            supply = supply
+                .checked_add(validator.bond_amount)
+                .ok_or("collateral supply overflow")?;
+        }
+        for allocation in &allocations {
+            supply = supply
+                .checked_add(allocation.amount)
+                .ok_or("allocation supply overflow")?;
+        }
         Ok((validators, allocations))
     }
 }
