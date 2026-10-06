@@ -226,6 +226,7 @@ struct ProbeMachine {
     keys: Vec<Vec<u8>>,
     plans: AtomicUsize,
     transitions: AtomicUsize,
+    snapshots: Mutex<Vec<Vec<(Vec<u8>, VersionedStateValue)>>>,
 }
 
 impl ProbeMachine {
@@ -234,6 +235,7 @@ impl ProbeMachine {
             keys,
             plans: AtomicUsize::new(0),
             transitions: AtomicUsize::new(0),
+            snapshots: Mutex::new(Vec::new()),
         }
     }
 }
@@ -253,10 +255,16 @@ impl TransactionalNodeStateMachine for ProbeMachine {
 
     fn transition(
         &self,
-        _: &NodeStateSnapshot,
+        snapshot: &NodeStateSnapshot,
         event: &NodeEvent,
     ) -> Result<TransactionalNodeTransition, NodeCoreError> {
         self.transitions.fetch_add(1, Ordering::SeqCst);
+        let observed: Vec<(Vec<u8>, VersionedStateValue)> = snapshot
+            .iter()
+            .map(|(key, value)| (key.to_vec(), value.clone()))
+            .collect();
+        self.snapshots.lock().unwrap().push(observed);
+        assert!(snapshot.resolved_objects().is_empty());
         TransactionalNodeTransition::new(
             vec![NodeStateUpdate::put(
                 self.keys[0].clone(),
@@ -739,6 +747,14 @@ fn declared_reads_stay_sorted_complete_and_assert_absence_and_tombstones() {
             "{dispatch:?}"
         );
         assert_eq!(machine.transitions.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            machine.snapshots.lock().unwrap().as_slice(),
+            &[keys
+                .iter()
+                .zip(&observations)
+                .map(|(key, value)| (key.to_vec(), value.clone()))
+                .collect::<Vec<(Vec<u8>, VersionedStateValue)>>()]
+        );
         assert_eq!(store.commits.load(Ordering::SeqCst), 1);
         match scope {
             Scope::Unscoped => {
