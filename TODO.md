@@ -223,10 +223,31 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   pairs prepared and one original host queried/restarted. No raw row seeding or
   devnet seed/defaults in the shipped author. Expanded refusals cover duplicate
   identities/objects, bonds, malformed/excess tables, supply overflow, unsafe
-  destinations and protected-key defects. Full required gate, independent
-  exact-head source review and CI remain open; merge DR-0195
+  destinations and protected-key defects. Independent Opus approved the
+  complete authoring source at `da53884`; its required CI has six successful
+  owners and genuine recurring SQLite still running. Full local required gate
+  and completed CI remain open; merge DR-0195
   first. Key custody, independent ceremony/economic approval and actual network
   activation are not completed by this tool.
+- [ ] **Pinned read-only original-genesis inspection:** accepted design
+  [DR-0197](docs/architecture/decisions/0197-offline-original-genesis-inspection.md)
+  describes secret-free, DB-free inspection of signed owners, policies and
+  original committee after the actual generic installers validate in isolated
+  memory. Independent Opus DESIGN APPROVE precedes implementation. The command,
+  shared private memory-validation owner, closed public configuration and
+  bounded escaped renderer are implemented on this branch; real compiled
+  author/inspector tests and three escaping/output-bound tests passed the
+  normal Rust CI owner at `c256f4d`. Fresh independent Opus review identified
+  missing required U+009B and U+202E vectors. Exact UTF-8 byte expectations and
+  real signed-chain/no-raw-control assertions are now added; execution of these
+  additions, final source review and all required gates remain open.
+  This cannot
+  substitute for custody, independent economic approval or release audit.
+  Design review additionally identified original-installer publication versus
+  exact code-reference revision alignment as a separate core correctness
+  question; existing economics bindings already close a context-only mismatch.
+  Inspection must display the two signed records separately, not repair or
+  imply their equality.
 - [ ] **Independent release audits and selected activation profile:** retain
   the economics and ingress audit gates, independently controlled stores,
   genesis/key ceremony, auth/TLS and actual startup/recovery evidence. Local

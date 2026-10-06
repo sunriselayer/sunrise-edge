@@ -87,7 +87,7 @@ contracts; they do not define protocol rules.
    public paths and exact effects; do not create another crate just to shorten
    a source file.
 
-## Successor invocation and immutable transport
+## Original genesis and local startup
 
 - [Offline Standard Asset author](../../apps/operator/src/standard_asset_genesis.rs)
   owns the named explicitly configured operator preset, not template authority
@@ -104,6 +104,16 @@ contracts; they do not define protocol rules.
   own committed root/fee/committee agreement and stable advisory observation.
   Serving retains fence acquisition and protected-key derivation. Neither
   author output nor preflight grants network activation authority.
+- [Pinned genesis inspection](../../apps/operator/src/genesis_inspection.rs)
+  owns closed public pins and secret-free dispatch; its private input/render
+  helpers are not authentication owners. Author and inspector reuse one
+  [private in-memory installer composition](../../apps/operator/src/original_genesis_install.rs).
+  [Disposable signed inputs](../../apps/operator/tests/support/offline_genesis_fixture.rs)
+  are shared by genuine author/inspector process tests, without sharing their
+  production decisions or fabricating durable rows.
+
+## Successor invocation and immutable transport
+
 - [Host runtime pieces](../../apps/operator/src/host_runtime.rs) own the
   shared local Ed25519 signer, original-root fee check and generation-bound
   attempt identities. Each host retains its provider-specific startup order,

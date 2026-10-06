@@ -8,18 +8,13 @@ mod input;
 
 use crate::common::load_signing_key_file;
 use crate::genesis_output::{FreshGenesisOutput, PublishedGenesis};
-use crate::original_genesis_install::{OriginalGenesisInstallation, install_original_genesis};
+use crate::original_genesis_install::validate_original_genesis_in_memory;
 use ed25519_zebra::{SigningKey, VerificationKey};
 use input::{Allocation, Config, Validator};
 use node_core::genesis::{
     GenesisManifest, VerifiedGenesisRoot, encode_genesis_manifest, genesis_manifest_commitment,
 };
-use node_core::ordered_economics::OrderedEconomicsPolicy;
 use protocol_types::Digest32;
-use runtime::{
-    Clock, DurableOperationContext, MemoryBlobStore, MemoryDurableStateStore, StorageCorrelationId,
-    StorageDeadline, SystemClock, WriterFenceGeneration,
-};
 use std::{error::Error, ffi::OsString, io::Write};
 
 /// Runs the closed offline `author` command, publishing one fresh signed
@@ -53,33 +48,14 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         digest.bytes(),
         &config.context,
     )?;
-    let policy: OrderedEconomicsPolicy =
-        OrderedEconomicsPolicy::from_genesis_root(&root, config.validation_domain)?;
-    let fence: WriterFenceGeneration =
-        WriterFenceGeneration::new(1).ok_or("invalid initial validation fence")?;
-    let store: MemoryDurableStateStore =
-        MemoryDurableStateStore::new_bound(config.validation_domain, fence);
-    let blobs: MemoryBlobStore = MemoryBlobStore::default();
-    let deadline: u64 = SystemClock
-        .now_unix_millis()?
-        .checked_add(config.timeout_millis)
-        .ok_or("validation deadline overflow")?;
-    let context: DurableOperationContext = DurableOperationContext::new(
-        fence,
-        StorageDeadline::new(deadline).ok_or("invalid validation deadline")?,
-        StorageCorrelationId::new([0x61; 16]).ok_or("invalid validation correlation ID")?,
-    );
-    let installation: OriginalGenesisInstallation<'_> = OriginalGenesisInstallation {
-        context: &context,
-        domain: config.validation_domain,
-        resolver: &config.resolver,
-        root: &root,
-        policy: &policy,
-        checkpoint: config.validation_checkpoint,
-    };
     // Signature self-consistency is insufficient. Full ordinary installation
     // verifies nested signatures, ABI, policy, object and bond constraints.
-    install_original_genesis(&store, &blobs, &installation)?;
+    validate_original_genesis_in_memory(
+        &root,
+        config.validation_domain,
+        config.validation_checkpoint,
+        config.timeout_millis,
+    )?;
     let published: PublishedGenesis = output.publish(&bytes)?;
     published.ensure_attached()?;
     println!(
