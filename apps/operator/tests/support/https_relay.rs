@@ -411,3 +411,49 @@ fn read_response<R: Read>(source: &mut R) -> io::Result<Vec<u8>> {
         response.extend_from_slice(&chunk[..read]);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn fixture_framing_preserves_request_bytes_including_opaque_body() {
+        let bytes: &[u8] =
+            b"POST /ordinary HTTP/1.1\r\nHost: fixture.invalid\r\nContent-Length: 3\r\n\r\na\0b";
+        let (observed, is_post): (Vec<u8>, bool) = read_request(&mut Cursor::new(bytes)).unwrap();
+        assert_eq!(observed, bytes);
+        assert!(is_post);
+        let get: &[u8] = b"GET /ordinary HTTP/1.1\r\nHost: fixture.invalid\r\n\r\n";
+        let (observed, is_post): (Vec<u8>, bool) = read_request(&mut Cursor::new(get)).unwrap();
+        assert_eq!(observed, get);
+        assert!(!is_post);
+    }
+
+    #[test]
+    fn fixture_framing_refuses_ambiguous_truncated_and_oversized_requests() {
+        let oversized: String = format!(
+            "POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            MAX_REQUEST_BODY_BYTES + 1
+        );
+        let overflow: String =
+            format!("POST / HTTP/1.1\r\nContent-Length: {}0\r\n\r\n", usize::MAX);
+        for bytes in [
+            b"POST / HTTP/1.1\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n".as_slice(),
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n".as_slice(),
+            b"POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n".as_slice(),
+            b"POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\n\r\nextra".as_slice(),
+            b"GET / HTTP/1.1\r\nBad Header: value\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\nX: \x1b[31m\r\n\r\n".as_slice(),
+            oversized.as_bytes(),
+            overflow.as_bytes(),
+        ] {
+            assert!(read_request(&mut Cursor::new(bytes)).is_err());
+        }
+        let mut too_large: Vec<u8> = b"GET / HTTP/1.1\r\nX: ".to_vec();
+        too_large.resize(MAX_HEADER_BYTES, b'a');
+        too_large.extend_from_slice(b"\r\n\r\n");
+        assert!(read_request(&mut Cursor::new(too_large)).is_err());
+    }
+}
