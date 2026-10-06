@@ -220,15 +220,7 @@ where
         };
         let response = self.transport.send(&wire_request)?;
         let body = expect_success(response, NODE_RESULT_MEDIA_TYPE)?;
-        let result = HttpNodeResult::decode(&body)?;
-
-        if result.request_id() != request.request_id {
-            return Err(ClientError::SubmitResponseRequestIdMismatch {
-                expected: request.request_id,
-                actual: result.request_id(),
-            });
-        }
-        Ok(result)
+        Ok(HttpNodeResult::decode_bound(&body, request.request_id)?.into_result())
     }
 
     /// Polls `query_receipt` until a present receipt is observed or one of
@@ -772,6 +764,32 @@ mod tests {
         assert_eq!(requests[0].method, Method::Post);
         assert_eq!(requests[0].path, NODE_EVENT_PATH);
         assert_eq!(requests[0].content_type, Some(NODE_EVENT_MEDIA_TYPE));
+    }
+
+    #[test]
+    fn generic_submit_preserves_multiple_responses_without_single_ack_requirements() {
+        let id: RequestId = RequestId::new([0x03; 32]).unwrap();
+        let response: node_core::NodeResponse =
+            node_core::NodeResponse::new(id, node_core::NodeResponseStatus::Rejected, None)
+                .unwrap();
+        let expected: HttpNodeResult =
+            HttpNodeResult::new(id, vec![response.clone(), response]).unwrap();
+        let client: Client<FakeTransport> = Client::new(FakeTransport::new(vec![ok_response(
+            NODE_RESULT_MEDIA_TYPE,
+            expected.encode().unwrap(),
+        )]));
+        assert_eq!(
+            client
+                .submit_transaction(SubmitTransactionRequest {
+                    chain_id: ChainId::new("sunrise-devnet").unwrap(),
+                    protocol_version: ProtocolVersion::new(3),
+                    epoch: Epoch::new(5),
+                    request_id: id,
+                    signed_transaction_bytes: sample_signed_transaction_bytes(),
+                })
+                .unwrap(),
+            expected
+        );
     }
 
     #[test]

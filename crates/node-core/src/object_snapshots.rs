@@ -269,6 +269,12 @@ impl std::error::Error for BoundSnapshotError {
     }
 }
 
+impl From<crate::EnvelopeError> for BoundSnapshotError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for BoundSnapshotError {
     fn from(error: NodeCoreError) -> Self {
         BoundSnapshotError::Node(error)

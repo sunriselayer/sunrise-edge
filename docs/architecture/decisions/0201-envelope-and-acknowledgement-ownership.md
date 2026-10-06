@@ -92,6 +92,16 @@ Paid retains status before target validation; local execution retains result
 validation before status. Remove only unreachable repeated inner-ID checks;
 caller-specific semantic verifiers and their error order do not move into wire.
 
+The concrete staged interfaces are `HttpNodeResult::decode_bound`,
+`HttpNodeResult::bind_request`, `BoundHttpNodeResult::into_result` and
+`single_acknowledgement`. Ordinary HTTP decoding precedes construction of the
+locally expected `RequestId` in the four existing caller paths; keep this order
+rather than move fallible local preparation into the decoder's arguments.
+The pure list decoder distinguishes prefix/item truncation and offset overflow
+from a decoded item's own `EnvelopeError`, so wire can retain
+`TruncatedResponseList` while core keeps its original canonical/nested errors.
+One data codec does not require one cross-layer catch-all error category.
+
 ## Acceptance
 
 Before migration, fix literal vectors for NodeEvent, NodeResponse,

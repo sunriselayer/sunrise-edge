@@ -191,8 +191,164 @@ fn http_node_result_decode_propagates_a_malformed_nested_response() {
 
     assert_eq!(
         HttpNodeResult::decode(&bytes),
-        Err(HttpContractError::NodeCore(
-            NodeCoreError::UnknownResponseStatus(0x00FF)
+        Err(HttpContractError::Envelope(
+            EnvelopeError::UnknownResponseStatus(0x00FF)
+        ))
+    );
+}
+
+fn raw_result(outer: RequestId, responses: &[NodeResponse]) -> Vec<u8> {
+    let mut list: Vec<u8> = Vec::new();
+    for response in responses {
+        let bytes: Vec<u8> = response.encode().unwrap();
+        list.extend_from_slice(&u32::try_from(bytes.len()).unwrap().to_le_bytes());
+        list.extend_from_slice(&bytes);
+    }
+    let mut frame: CanonicalStruct =
+        CanonicalStruct::new(HTTP_RESULT_TYPE_ID, HTTP_RESULT_ENCODING_VERSION);
+    frame.field_bytes(1, outer.as_bytes().to_vec()).unwrap();
+    frame
+        .field_u32(2, u32::try_from(responses.len()).unwrap())
+        .unwrap();
+    frame.field_bytes(3, list).unwrap();
+    frame.finish().unwrap()
+}
+
+#[test]
+fn outer_bound_generic_result_preserves_zero_and_multiple_responses() {
+    let id: RequestId = RequestId::new([0x8B; 32]).unwrap();
+    let response: NodeResponse = NodeResponse::new(id, NodeResponseStatus::Rejected, None).unwrap();
+    for responses in [vec![], vec![response.clone(), response]] {
+        let result: HttpNodeResult = HttpNodeResult::new(id, responses).unwrap();
+        let bound: BoundHttpNodeResult =
+            HttpNodeResult::decode_bound(&result.encode().unwrap(), id).unwrap();
+        assert_eq!(bound.into_result(), result);
+    }
+}
+
+#[test]
+fn outer_binding_keeps_nested_id_failure_before_outer_mismatch() {
+    let expected: RequestId = RequestId::new([0x8B; 32]).unwrap();
+    let outer: RequestId = RequestId::new([0x8C; 32]).unwrap();
+    let inner: RequestId = RequestId::new([0x8D; 32]).unwrap();
+    let response: NodeResponse =
+        NodeResponse::new(inner, NodeResponseStatus::Accepted, Some(payload_frame(7))).unwrap();
+    assert_eq!(
+        HttpNodeResult::decode_bound(&raw_result(outer, &[response]), expected),
+        Err(HttpResultBindingError::Contract(
+            HttpContractError::RequestMismatch {
+                expected: outer,
+                actual: inner
+            }
+        ))
+    );
+    assert_eq!(
+        HttpNodeResult::decode_bound(&raw_result(outer, &[]), expected),
+        Err(HttpResultBindingError::RequestMismatch {
+            expected,
+            actual: outer
+        })
+    );
+}
+
+#[test]
+fn single_ack_view_checks_only_cardinality_and_payload_presence() {
+    let id: RequestId = RequestId::new([0x8B; 32]).unwrap();
+    let payload: Vec<u8> = payload_frame(7);
+    let rejected: NodeResponse =
+        NodeResponse::new(id, NodeResponseStatus::Rejected, Some(payload.clone())).unwrap();
+    let bound: BoundHttpNodeResult = HttpNodeResult::new(id, vec![rejected.clone()])
+        .unwrap()
+        .bind_request(id)
+        .unwrap();
+    let acknowledgement: SingleAcknowledgement<'_> = bound.single_acknowledgement().unwrap();
+    // A syntactic view must never reinterpret Rejected as successful authority.
+    assert_eq!(acknowledgement.status(), NodeResponseStatus::Rejected);
+    assert_eq!(acknowledgement.payload(), payload);
+    for (responses, expected) in [
+        (vec![], SingleAcknowledgementError::ResponseCount(0)),
+        (
+            vec![rejected.clone(), rejected],
+            SingleAcknowledgementError::ResponseCount(2),
+        ),
+        (
+            vec![NodeResponse::new(id, NodeResponseStatus::Accepted, None).unwrap()],
+            SingleAcknowledgementError::MissingPayload,
+        ),
+    ] {
+        let bound: BoundHttpNodeResult = HttpNodeResult::new(id, responses)
+            .unwrap()
+            .bind_request(id)
+            .unwrap();
+        assert_eq!(bound.single_acknowledgement().unwrap_err(), expected);
+    }
+}
+
+#[test]
+fn shared_list_preserves_http_list_and_nested_item_error_categories() {
+    assert_eq!(
+        HttpContractError::from(NestedListDecodeError::OffsetOverflow),
+        HttpContractError::TruncatedResponseList
+    );
+    assert_eq!(
+        HttpContractError::from(NestedListDecodeError::LengthOverflow(usize::MAX)),
+        HttpContractError::ResponseLengthOverflow(usize::MAX)
+    );
+    let mut list: Vec<u8> = 3_u32.to_le_bytes().to_vec();
+    list.extend_from_slice(&[1, 2, 3]);
+    let mut frame: CanonicalStruct =
+        CanonicalStruct::new(HTTP_RESULT_TYPE_ID, HTTP_RESULT_ENCODING_VERSION);
+    frame.field_bytes(1, [0x8B; 32]).unwrap();
+    frame.field_u32(2, 1).unwrap();
+    frame.field_bytes(3, list).unwrap();
+    assert!(matches!(
+        HttpNodeResult::decode(&frame.finish().unwrap()),
+        Err(HttpContractError::Envelope(
+            EnvelopeError::CanonicalDecoding(_)
+        ))
+    ));
+}
+
+fn sized_payload(length: usize) -> Vec<u8> {
+    // One-field canonical payload: 10-byte header and 6-byte field framing.
+    let mut frame: CanonicalStruct = CanonicalStruct::new(PAYLOAD_WIRE_TYPE_ID, 1);
+    frame.field_bytes(1, vec![0xAA; length - 16]).unwrap();
+    let bytes: Vec<u8> = frame.finish().unwrap();
+    assert_eq!(bytes.len(), length);
+    bytes
+}
+
+#[test]
+fn http_encoding_retains_canonical_frame_bound_not_a_new_state_budget() {
+    use canonical_encoding::MAX_CANONICAL_FRAME_BYTES;
+    use node_core::MAX_NODE_PAYLOAD_BYTES;
+
+    let id: RequestId = RequestId::new([0x8B; 32]).unwrap();
+    // The HTTP frame has 64 bytes of outer framing; each of these two
+    // payload-bearing responses adds 62 bytes plus its four-byte list length.
+    // This independently specified 196-byte overhead places the result at
+    // the actual canonical frame limit, not a fictitious >32MiB valid frame.
+    let payload: Vec<u8> = sized_payload((MAX_CANONICAL_FRAME_BYTES - 196) / 2);
+    let response: NodeResponse =
+        NodeResponse::new(id, NodeResponseStatus::Accepted, Some(payload)).unwrap();
+    let result: HttpNodeResult = HttpNodeResult::new(id, vec![response.clone(), response]).unwrap();
+    let encoded: Vec<u8> = result.encode().unwrap();
+    assert_eq!(encoded.len(), MAX_CANONICAL_FRAME_BYTES);
+    assert_eq!(HttpNodeResult::decode(&encoded).unwrap(), result);
+    drop(encoded);
+    drop(result);
+
+    let response: NodeResponse = NodeResponse::new(
+        id,
+        NodeResponseStatus::Accepted,
+        Some(sized_payload(MAX_NODE_PAYLOAD_BYTES)),
+    )
+    .unwrap();
+    let result: HttpNodeResult = HttpNodeResult::new(id, vec![response.clone(), response]).unwrap();
+    assert_eq!(
+        result.encode(),
+        Err(HttpContractError::CanonicalEncoding(
+            CanonicalEncodingError::FrameTooLarge(MAX_CANONICAL_FRAME_BYTES + 196)
         ))
     );
 }

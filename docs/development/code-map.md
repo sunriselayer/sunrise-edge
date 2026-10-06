@@ -27,11 +27,19 @@ protocol crate. The Rust client also depends on `node-core`. Review those
 couplings before treating either as a minimal standalone protocol SDK.
 HTTP, clients and provider adapters cannot replace core authorization.
 
+The pure [`node-core::envelope`](../../crates/node-core/src/envelope.rs)
+owner defines request/event/response/dedup data, canonical nested lists and
+their bounds. The core facade reexports existing type paths and retains event
+digest/context authority. `node-wire` consumes that list codec and owns only
+HTTP result framing, outer-request binding and the single-acknowledgement view.
+Its narrow errors do not remove the remaining real core verifier Cargo edges.
+
 ## Find the owner
 
 | Capability | Entry and wire | Decision and effects | Storage and representative tests |
 | --- | --- | --- | --- |
 | Canonical identities, transactions and access | [`protocol-types`](../../crates/protocol-types), [`canonical-encoding`](../../crates/canonical-encoding), [`objects`](../../crates/objects), [`abi`](../../crates/abi); HTTP frames in [`node-wire`](../../crates/node-wire) | Each defining crate owns its type IDs, encoders, bounds and stable vectors | Encoding tests in the defining crates and [`node-wire`](../../crates/node-wire/src/lib.rs) |
+| Node envelopes and SDK acknowledgement syntax | [Pure envelope/list owner](../../crates/node-core/src/envelope.rs), [HTTP frame and bound views](../../crates/node-wire/src/lib.rs), actual paid/FastVote/publication/local SDK consumers | Core-owned context/hash checks and each SDK family's outcome/hash/status verifiers remain separate; flat error conversion preserves host classification | [Pre-move literal vectors](../../crates/node-core/src/tests/envelope_vectors.rs), [envelope ordering tests](../../crates/node-core/src/tests/envelope_contract.rs), [wire bound tests](../../crates/node-wire/src/http_node_result_tests.rs), [native mapping](../../crates/native-http/src/tests/envelope_classification.rs) and shared SDK [untrusted inputs](../../clients/rust/tests/support/acknowledgement.rs). Input builders are not expected-result oracles |
 | Publish, Instantiate and Call | [CLI contract commands](../../apps/cli/src/commands/contract.rs), [Rust publication client](../../clients/rust/src/publication_client.rs), [native HTTP](../../crates/native-http/src/publication.rs) | [`node-core` publication](../../crates/node-core/src/publication.rs) and [local execution](../../crates/node-core/src/local_execution.rs) coordinate [execution publication](../../crates/execution/src/publication) and [call](../../crates/execution/src/call.rs) | [`runtime` transaction contract](../../crates/runtime/src/lib.rs); [publication tests](../../crates/node-core/src/publication/tests.rs), [local execution tests](../../crates/node-core/src/local_execution/tests.rs), [HTTP tests](../../crates/native-http/src/tests/local_execution_http.rs) |
 | Standard Asset and paid execution | [contract package](../../contracts/standard-asset), [CLI paid commands](../../apps/cli/src/commands/paid_execution.rs), [HTTP paid route](../../crates/native-http/src/paid_execution.rs) | [execution fee/effect logic](../../crates/execution/src/paid_execution.rs) and [node-core paid admission](../../crates/node-core/src/paid_execution.rs); the contract owns asset semantics | [paid core tests](../../crates/node-core/src/paid_execution/tests.rs) and durable store conformance |
 | Owned-object FastVote | [HTTP routes](../../crates/native-http/src/fastvote.rs), [Rust quorum client](../../clients/rust/src/fastvote_client.rs) | [consensus certificate rules](../../crates/consensus/src/fast_vote.rs) and [node-core prepare/apply](../../crates/node-core/src/fast_path.rs) | [`runtime` atomic commit](../../crates/runtime/src/lib.rs); [core tests](../../crates/node-core/src/fast_path/tests.rs), [HTTP tests](../../crates/native-http/src/tests/fastvote_router.rs) |

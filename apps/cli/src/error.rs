@@ -5,8 +5,8 @@ use std::net::{AddrParseError, SocketAddr};
 use std::num::ParseIntError;
 
 use sunrise_edge_client::{
-    CanonicalEncodingError, ClientError, ExpectedProtocolContextError, NodeCoreError,
-    TransportError, TypeError,
+    CanonicalEncodingError, ClientError, EnvelopeError, ExpectedProtocolContextError,
+    NodeCoreError, TransportError, TypeError,
 };
 
 use crate::args::ArgsError;
@@ -309,6 +309,12 @@ impl From<TransportError> for CliError {
 impl From<NodeCoreError> for CliError {
     fn from(value: NodeCoreError) -> Self {
         Self::NodeCore(value)
+    }
+}
+
+impl From<EnvelopeError> for CliError {
+    fn from(value: EnvelopeError) -> Self {
+        Self::from(NodeCoreError::from(value))
     }
 }
 

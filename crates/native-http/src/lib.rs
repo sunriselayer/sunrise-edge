@@ -1946,9 +1946,13 @@ where
     {
         return Err(IndexedOutboxRecoveryError::ClaimIdentityMismatch);
     }
-    let event =
-        NodeEvent::decode(claim.canonical_payload()).map_err(IndexedOutboxRecoveryError::Node)?;
-    let canonical_payload = event.encode().map_err(IndexedOutboxRecoveryError::Node)?;
+    let event = NodeEvent::decode(claim.canonical_payload())
+        .map_err(NodeCoreError::from)
+        .map_err(IndexedOutboxRecoveryError::Node)?;
+    let canonical_payload = event
+        .encode()
+        .map_err(NodeCoreError::from)
+        .map_err(IndexedOutboxRecoveryError::Node)?;
     if canonical_payload != claim.canonical_payload() {
         return Err(IndexedOutboxRecoveryError::Node(
             NodeCoreError::PersistenceInvariant("indexed outbox payload is not canonical"),
@@ -1966,8 +1970,9 @@ where
         claim.lease_id(),
     );
     reconcile_indexed_acknowledgement(runtime.state_store(), &context, acknowledgement)?;
-    let request_id =
-        RequestId::new(*claim.request_id().as_bytes()).map_err(IndexedOutboxRecoveryError::Node)?;
+    let request_id = RequestId::new(*claim.request_id().as_bytes())
+        .map_err(NodeCoreError::from)
+        .map_err(IndexedOutboxRecoveryError::Node)?;
     Ok(NativeOutboxRecoveryReport {
         outcome: NativeOutboxRecoveryOutcome::Recovered(request_id),
         continuation_cursor: None,
@@ -2849,7 +2854,9 @@ where
             ),
         ));
     }
-    let wire = http_receipt_query_result(result).map_err(QueryInvocationError::Node)?;
+    let wire = http_receipt_query_result(result)
+        .map_err(NodeCoreError::from)
+        .map_err(QueryInvocationError::Node)?;
     wire.encode()
         .map_err(|_| QueryInvocationError::ResultEncoding)
 }
@@ -3200,7 +3207,9 @@ where
     M: TransactionalNodeStateMachine,
     L: OutboxLeaseIdSource,
 {
-    let event = NodeEvent::decode(body).map_err(InvocationError::Node)?;
+    let event = NodeEvent::decode(body)
+        .map_err(NodeCoreError::from)
+        .map_err(InvocationError::Node)?;
     reject_unauthenticated_event_family(&event)?;
     reject_unauthenticated_submit_transaction(&event)?;
     let request_id = event.request_id();
@@ -3234,7 +3243,9 @@ where
     M: TransactionalNodeStateMachine,
     L: OutboxLeaseIdSource,
 {
-    let event = NodeEvent::decode(body).map_err(InvocationError::Node)?;
+    let event = NodeEvent::decode(body)
+        .map_err(NodeCoreError::from)
+        .map_err(InvocationError::Node)?;
     reject_unauthenticated_event_family(&event)?;
     reject_unauthenticated_submit_transaction(&event)?;
     let request_id = event.request_id();
@@ -3355,7 +3366,9 @@ where
     if components.is_cancelled() {
         return Err(InvocationError::CancelledBeforeStorage);
     }
-    let event = NodeEvent::decode(body).map_err(InvocationError::Node)?;
+    let event = NodeEvent::decode(body)
+        .map_err(NodeCoreError::from)
+        .map_err(InvocationError::Node)?;
     reject_unauthenticated_event_family(&event)?;
     validate_native_event_chain_and_protocol(&event, config).map_err(InvocationError::Node)?;
     // The signed epoch is not accepted as current authority here. It is used
@@ -3482,11 +3495,13 @@ where
             ));
         }
         let outbound = NodeEvent::decode(claim.canonical_payload())
+            .map_err(NodeCoreError::from)
             .map_err(|error| InvocationError::Indexed(IndexedOutboxRecoveryError::Node(error)))?;
         validate_native_event_against_trusted_context(&outbound, &committed_context)
             .map_err(|error| InvocationError::Indexed(IndexedOutboxRecoveryError::Node(error)))?;
         let canonical_payload = outbound
             .encode()
+            .map_err(NodeCoreError::from)
             .map_err(|error| InvocationError::Indexed(IndexedOutboxRecoveryError::Node(error)))?;
         if canonical_payload != claim.canonical_payload() {
             return Err(InvocationError::Indexed(IndexedOutboxRecoveryError::Node(
@@ -3802,7 +3817,11 @@ where
         let Some(claim) = claim_next(&layout, request_id, lease_id, now_unix_millis)? else {
             return Ok(delivered_messages);
         };
-        let encoded = claim.message().event().encode()?;
+        let encoded = claim
+            .message()
+            .event()
+            .encode()
+            .map_err(NodeCoreError::from)?;
         runtime
             .transport()
             .send(encoded)

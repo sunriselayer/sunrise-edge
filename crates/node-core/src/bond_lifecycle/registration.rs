@@ -86,6 +86,12 @@ impl fmt::Display for BondRegistrationError {
     }
 }
 impl Error for BondRegistrationError {}
+impl From<crate::EnvelopeError> for BondRegistrationError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for BondRegistrationError {
     fn from(error: NodeCoreError) -> Self {
         Self::Node(error)

@@ -415,6 +415,12 @@ impl fmt::Display for OrderedEconomicsError {
 
 impl Error for OrderedEconomicsError {}
 
+impl From<crate::EnvelopeError> for OrderedEconomicsError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for OrderedEconomicsError {
     fn from(value: NodeCoreError) -> Self {
         Self::Node(value)

@@ -7,6 +7,9 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use sunrise_edge_client::{call::CallIntent, local_execution::*, publication::*, *};
 
+#[path = "support/acknowledgement.rs"]
+mod acknowledgement;
+
 fn expected() -> ExpectedProtocolContext {
     ExpectedProtocolContext::new(
         ChainId::new("local-client-test").unwrap(),
@@ -557,6 +560,35 @@ fn execution_acknowledgement_requires_matching_status_target_and_request() {
             gas_used: 10,
         },
     };
+    let id: RequestId = RequestId::new(signed.intent.call.request_id).unwrap();
+    let payload: Vec<u8> = encode_local_execution_result(&result).unwrap();
+    for shape in acknowledgement::ACK_SHAPES {
+        let bytes: Vec<u8> = acknowledgement::acknowledgement_bytes(
+            id,
+            NodeResponseStatus::Accepted,
+            &payload,
+            shape,
+        );
+        let client: Client<Fake> = Client::new(Fake(RefCell::new(VecDeque::from([response(
+            bytes,
+            NODE_RESULT_MEDIA_TYPE,
+        )]))));
+        let outcome: Result<LocalExecutionResult, ClientError> =
+            client.submit_local_execution(&signed, &resolver, &resolver);
+        match shape {
+            acknowledgement::AckShape::Exact => assert_eq!(outcome.unwrap(), result),
+            acknowledgement::AckShape::OuterMismatch => assert!(
+                matches!(outcome, Err(ClientError::SubmitResponseRequestIdMismatch { expected, actual }) if expected == id && actual == RequestId::new([0xFA; 32]).unwrap())
+            ),
+            acknowledgement::AckShape::NestedMismatch => assert!(
+                matches!(outcome, Err(ClientError::Contract(node_wire::HttpContractError::RequestMismatch { expected, actual })) if expected == id && actual == RequestId::new([0xFA; 32]).unwrap())
+            ),
+            _ => assert!(
+                matches!(outcome, Err(ClientError::ExecutionAcknowledgementMismatch)),
+                "shape: {shape:?}"
+            ),
+        }
+    }
     for case in 0..5 {
         let mut changed = result.clone();
         let status = if case == 1 {
@@ -597,6 +629,25 @@ fn execution_acknowledgement_requires_matching_status_target_and_request() {
             assert!(received.is_err());
         }
     }
+
+    let mut changed: LocalExecutionResult = result.clone();
+    changed.effects.tx_hash = Digest32::new(HashAlgorithmId::Sha2_256, [8; 32]);
+    let bytes: Vec<u8> = acknowledgement::acknowledgement_bytes(
+        id,
+        NodeResponseStatus::Rejected,
+        &encode_local_execution_result(&changed).unwrap(),
+        acknowledgement::AckShape::Exact,
+    );
+    let client: Client<Fake> = Client::new(Fake(RefCell::new(VecDeque::from([response(
+        bytes,
+        NODE_RESULT_MEDIA_TYPE,
+    )]))));
+    assert!(matches!(
+        client.submit_local_execution(&signed, &resolver, &resolver),
+        Err(ClientError::LocalExecution(LocalExecutionError::Invalid(
+            "result selector or effects mismatch"
+        )))
+    ));
 }
 
 #[test]

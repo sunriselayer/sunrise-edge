@@ -5,6 +5,9 @@ use execution::paid_execution::{
     paid_intent_signing_frame,
 };
 use std::cell::RefCell;
+
+#[path = "support/acknowledgement.rs"]
+mod acknowledgement;
 use std::collections::VecDeque;
 use sunrise_edge_client::publication::{PublicationRequest, encode_publication_submission};
 use sunrise_edge_client::*;
@@ -408,6 +411,48 @@ fn reference_bytes(submission: &PublicationSubmission) -> Vec<u8> {
     )
     .unwrap();
     publication::encode_dependency_ref(&reference).unwrap()
+}
+
+#[test]
+fn publication_uses_shared_shape_checks_without_losing_whole_result_or_errors() {
+    let submission: PublicationSubmission = signed(2);
+    let id: RequestId = RequestId::new(*submission.request_id()).unwrap();
+    let payload: Vec<u8> = reference_bytes(&submission);
+    for shape in acknowledgement::ACK_SHAPES {
+        let bytes: Vec<u8> = acknowledgement::acknowledgement_bytes(
+            id,
+            NodeResponseStatus::Accepted,
+            &payload,
+            shape,
+        );
+        let client: Client<FakeTransport> = Client::new(FakeTransport {
+            responses: RefCell::new(VecDeque::from([response(
+                200,
+                NODE_RESULT_MEDIA_TYPE,
+                bytes.clone(),
+            )])),
+            requests: RefCell::new(Vec::new()),
+        });
+        let outcome: Result<HttpNodeResult, ClientError> = client.submit_publication(&submission);
+        match shape {
+            acknowledgement::AckShape::Exact => {
+                assert_eq!(outcome.unwrap().encode().unwrap(), bytes)
+            }
+            acknowledgement::AckShape::OuterMismatch => assert!(
+                matches!(outcome, Err(ClientError::SubmitResponseRequestIdMismatch { expected, actual }) if expected == id && actual == RequestId::new([0xFA; 32]).unwrap())
+            ),
+            acknowledgement::AckShape::NestedMismatch => assert!(
+                matches!(outcome, Err(ClientError::Contract(node_wire::HttpContractError::RequestMismatch { expected, actual })) if expected == id && actual == RequestId::new([0xFA; 32]).unwrap())
+            ),
+            _ => assert!(
+                matches!(
+                    outcome,
+                    Err(ClientError::PublicationSubmitAcknowledgementMismatch)
+                ),
+                "shape: {shape:?}"
+            ),
+        }
+    }
 }
 
 #[test]

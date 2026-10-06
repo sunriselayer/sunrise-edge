@@ -37,7 +37,7 @@ fn node_response_decode_rejects_unknown_status() {
 
     assert_eq!(
         NodeResponse::decode(&bytes).unwrap_err(),
-        NodeCoreError::UnknownResponseStatus(0x00FF)
+        EnvelopeError::UnknownResponseStatus(0x00FF)
     );
 }
 
@@ -73,8 +73,7 @@ fn node_dedup_record_two_responses_has_independent_stable_vector() {
     )
     .unwrap();
     let dedup =
-        NodeDedupRecord::new(request_id, digest, vec![accepted.clone(), rejected.clone()])
-            .unwrap();
+        NodeDedupRecord::new(request_id, digest, vec![accepted.clone(), rejected.clone()]).unwrap();
     let encoded = dedup.encode().unwrap();
 
     assert_eq!(NodeDedupRecord::decode(&encoded).unwrap(), dedup);
@@ -112,7 +111,7 @@ fn node_dedup_record_decode_rejects_truncated_response_list() {
 
     assert!(matches!(
         NodeDedupRecord::decode(&bytes),
-        Err(NodeCoreError::CanonicalDecoding(
+        Err(EnvelopeError::CanonicalDecoding(
             CanonicalDecodingError::Truncated { .. }
         ))
     ));
@@ -132,7 +131,7 @@ fn node_dedup_record_decode_rejects_trailing_response_list_bytes() {
 
     assert_eq!(
         NodeDedupRecord::decode(&trailing_bytes),
-        Err(NodeCoreError::TrailingNestedListBytes(1))
+        Err(EnvelopeError::TrailingNestedListBytes(1))
     );
 }
 
@@ -152,7 +151,7 @@ fn node_dedup_record_decode_rejects_response_count_over_the_shared_bound() {
 
     assert_eq!(
         NodeDedupRecord::decode(&overflow_bytes),
-        Err(NodeCoreError::TooManyOutputItems {
+        Err(EnvelopeError::TooManyOutputItems {
             collection: "dedup responses",
             count: expected_overflow_count,
         })
@@ -186,7 +185,7 @@ fn node_dedup_record_decode_rejects_a_response_bound_to_another_request() {
 
     assert_eq!(
         NodeDedupRecord::decode(&mismatch_bytes),
-        Err(NodeCoreError::ResponseRequestMismatch {
+        Err(EnvelopeError::ResponseRequestMismatch {
             expected: outer_request,
             actual: inner_request,
         })

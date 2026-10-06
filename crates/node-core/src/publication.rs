@@ -146,6 +146,12 @@ impl fmt::Display for PublicationAdmissionError {
     }
 }
 impl Error for PublicationAdmissionError {}
+impl From<crate::EnvelopeError> for PublicationAdmissionError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for PublicationAdmissionError {
     fn from(value: NodeCoreError) -> Self {
         Self::Node(value)

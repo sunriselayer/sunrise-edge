@@ -400,22 +400,11 @@ impl<T: Transport> Client<T> {
             NODE_RESULT_MEDIA_TYPE,
         )?)?;
         let id: RequestId = RequestId::new(signed.intent.call.request_id)?;
-        if result.request_id() != id {
-            return Err(ClientError::SubmitResponseRequestIdMismatch {
-                expected: id,
-                actual: result.request_id(),
-            });
-        }
-        let [ack] = result.responses() else {
-            return Err(ClientError::ExecutionAcknowledgementMismatch);
-        };
-        if ack.request_id() != id {
-            return Err(ClientError::ExecutionAcknowledgementMismatch);
-        }
-        let decoded: LocalExecutionResult = decode_local_execution_result(
-            ack.payload()
-                .ok_or(ClientError::ExecutionAcknowledgementMismatch)?,
-        )?;
+        let bound: node_wire::BoundHttpNodeResult = result.bind_request(id)?;
+        let ack: node_wire::SingleAcknowledgement<'_> = bound
+            .single_acknowledgement()
+            .map_err(|_| ClientError::ExecutionAcknowledgementMismatch)?;
+        let decoded: LocalExecutionResult = decode_local_execution_result(ack.payload())?;
         validate_local_execution_result(resolver, instance_resolver, signed, &decoded)?;
         let expected_status: NodeResponseStatus = match decoded.effects.status {
             execution::ExecutionStatus::Success => NodeResponseStatus::Accepted,
