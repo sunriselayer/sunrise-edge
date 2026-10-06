@@ -75,8 +75,10 @@ mechanism or cleanup milestone is added to this functional gate.
   ended with SIGTERM during genuine recurring-process acceptance and is not
   a pass; a fresh run is required. This documentation-only refresh requires
   fresh exact-head source review; independent Opus subsequently approved the
-  complete documentation/source head `ffbd9ed`. This reproduction is not a privilege exploit, severity
-  judgment, released-store survey or independent release audit.
+  complete documentation/source head `ffbd9ed`. The nonignored corrected
+  owner also passed normal Rust CI at that exact head. This reproduction is
+  not a privilege exploit, severity judgment, released-store survey or
+  independent release audit.
 
 ### Completed Delivery 3 acceptance checkpoint, 2026-10-05
 
@@ -289,12 +291,24 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   rejected incomplete Sonnet proposals; Opus supplied a corrected implementation,
   and parent review additionally strengthened per-refusal complete snapshots,
   existing-policy fee settlement and ordinary Coin output comparisons. This is
-  implementation, not executed process evidence or independent source approval.
+  implementation; its execution and independent approval are recorded below.
   The actual CLI prerequisite compiled at `2c2656e`; both exact request-framing
   cases passed at `694d224`. Those same unchanged framing cases are now owned
   once by the complete TLS integration target instead of a duplicate target.
-  Process execution, complete gates and fresh independent source review remain
-  open. Key loading is not signing: absent-key controls cover local refusals,
+  The complete real TLS target actually passed all three nonignored cases in
+  15.86 seconds at exact `13b0b766b72299fc98897821a538032c40f6e2f4`
+  in CI `37437984279`, Rust job `112184614209`. That normal Rust owner
+  completed at 09:03:24 UTC on 2026-10-06; all 133 completed test targets
+  reported zero failures. Independent Opus explicitly approved the complete
+  16-file exact-head source, including the verified Bugbot/Fixooly repair
+  that builds the CLI before the explicitly selected PG storage tests.
+  The local mocked gate contract passed all three required/full/PG binary
+  prerequisites at the same head; this is not a PostgreSQL execution claim.
+  Local adapter dependency installation also passed at that exact clean head.
+  The complete required local rerun and the mandatory unshortened recurring
+  CI owner plus `check` remain open; no whole-gate, local complete-TLS-target
+  execution or merge is claimed. Key loading is not signing: absent-key
+  controls cover local refusals,
   while TLS/remote-context negatives use valid protected disposable test keys.
   Required negatives cover TLS versus protocol pins, conflicting request-ID
   reuse and unchanged full namespace snapshots; replay also crosses actual
@@ -304,7 +318,10 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
 The earlier exact-`7dc4193` local required run ended with SIGTERM during its
 genuine recurring-process owner on 2026-10-06. Completed individual owners remain
 individual evidence; this interrupted run is not full acceptance. No shortened
-recurrence or optionalized group is used for the required rerun.
+recurrence or optionalized group is used for the required rerun. Its fresh
+exact-`7dc4193` rerun began at 07:35:45 UTC, with the source frozen, and remains
+in progress rather than accepted. The current roadmap keeps the separately
+approved original startup slices awaiting those same required merge gates.
 - [ ] **Independent release audits and selected activation profile:** retain
   the economics and ingress audit gates, independently controlled stores,
   genesis/key ceremony, auth/TLS and actual startup/recovery evidence. Local
