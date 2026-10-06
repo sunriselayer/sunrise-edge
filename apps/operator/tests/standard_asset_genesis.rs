@@ -462,7 +462,7 @@ fn valid_outer_signature_does_not_make_a_bad_nested_publication_installable() {
         execution::publication::PublicationRequest::new(
             request.artifact().clone(),
             request.nonce(),
-            request.artifact_digest(),
+            *request.artifact_digest(),
             [0; 64],
         );
     manifest.publication = execution::publication::PublicationSubmission::new(
