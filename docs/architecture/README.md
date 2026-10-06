@@ -158,6 +158,10 @@ roadmap describes a later target state.
 - [Local SQLite validator startup](decisions/0195-local-sqlite-validator-startup.md):
   separate fresh signed-manifest preparation, snapshot-bound advisory
   preflight and independently reverified serving; no public activation authority.
+- [Offline Standard Asset genesis authoring](decisions/0196-standard-asset-genesis-authoring.md):
+  explicitly configured public-contract preset, protected expected-authority
+  signing and defining-installer validation, without native balances or custody
+  approval.
 - [Initial validator bond registration](initial-validator-bond.md)
   ([DR-0179](decisions/0179-initial-validator-bond-registration.md)):
   self-authenticated first collateral through generic custody and ordered

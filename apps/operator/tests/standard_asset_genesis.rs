@@ -489,3 +489,170 @@ fn valid_outer_signature_does_not_make_a_bad_nested_publication_installable() {
         .args(["--created-checkpoint", "10"]);
     refused(spawn_bounded_output(command, Duration::from_secs(30)));
 }
+
+#[test]
+fn real_author_refuses_duplicate_cross_object_and_bond_violations() {
+    let fixture: Fixture = Fixture::new();
+    let row =
+        |id: [u8; 32], key: [u8; 32], power: u64, bond: u64, collateral: [u8; 32]| -> String {
+            format!(
+                "{} {} {power} {bond} {}\n",
+                hex(&id),
+                hex(&key),
+                hex(&collateral)
+            )
+        };
+    let variants: Vec<(&str, String)> = vec![
+        (
+            "duplicate validator ID",
+            row([0x10; 32], fixture.validators[0], 1, 100, [0x81; 32])
+                + row([0x10; 32], fixture.validators[1], 1, 100, [0x82; 32]).as_str(),
+        ),
+        (
+            "registered public key",
+            row([0x10; 32], fixture.validators[0], 1, 100, [0x81; 32])
+                + row([0x11; 32], fixture.validators[0], 1, 100, [0x82; 32]).as_str(),
+        ),
+        (
+            "object ID",
+            row([0x10; 32], fixture.validators[0], 1, 100, [1; 32]),
+        ),
+        (
+            "eligible bounded bond",
+            row([0x10; 32], fixture.validators[0], 1, 0, [0x81; 32]),
+        ),
+        (
+            "eligible bounded bond",
+            row([0x10; 32], fixture.validators[0], 1, 50, [0x81; 32]),
+        ),
+    ];
+    let validators_file: PathBuf = fixture.directory.join("validators.txt");
+    for (expected, content) in variants {
+        fs::write(&validators_file, &content).unwrap();
+        let output: Output = fixture.author(&fixture.args);
+        assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
+        refused(output);
+        assert!(!fixture.directory.join("genesis.bin").exists());
+        assert_eq!(fs::read(&validators_file).unwrap(), content.into_bytes());
+    }
+}
+
+#[test]
+fn real_author_refuses_malformed_oversized_and_overflowing_tables() {
+    let fixture: Fixture = Fixture::new();
+    let validators_file: PathBuf = fixture.directory.join("validators.txt");
+
+    let malformed: String = format!(
+        "{} {} 1 100\n",
+        hex(&fixture.validators[0]),
+        hex(&fixture.validators[0])
+    );
+    fs::write(&validators_file, &malformed).unwrap();
+    refused(fixture.author(&fixture.args));
+    assert!(!fixture.directory.join("genesis.bin").exists());
+    assert_eq!(fs::read(&validators_file).unwrap(), malformed.into_bytes());
+
+    let oversized: Vec<u8> = vec![b'x'; 16 * 1024 + 1];
+    fs::write(&validators_file, &oversized).unwrap();
+    refused(fixture.author(&fixture.args));
+    assert!(!fixture.directory.join("genesis.bin").exists());
+    assert_eq!(fs::read(&validators_file).unwrap(), oversized);
+
+    let overflow: String = format!(
+        "{} {} 1 {} {}\n{} {} 1 100 {}\n",
+        hex(&fixture.validators[0]),
+        hex(&fixture.validators[0]),
+        u64::MAX,
+        hex(&[0x81; 32]),
+        hex(&fixture.validators[1]),
+        hex(&fixture.validators[1]),
+        hex(&[0x82; 32])
+    );
+    fs::write(&validators_file, &overflow).unwrap();
+    refused(fixture.author(&fixture.args));
+    assert!(!fixture.directory.join("genesis.bin").exists());
+    assert_eq!(fs::read(&validators_file).unwrap(), overflow.into_bytes());
+}
+
+#[test]
+fn real_author_refuses_invalid_or_excess_allocation_objects() {
+    let fixture: Fixture = Fixture::new();
+    let allocations: PathBuf = fixture.directory.join("allocations.txt");
+    let excess: String = (0xa0u8..0xbb)
+        .map(|id: u8| format!("{} 1 {}\n", hex(&fixture.owner), hex(&[id; 32])))
+        .collect();
+    for (expected, content) in [
+        ("allocation row", format!("{} 1\n", hex(&fixture.owner))),
+        (
+            "positive amount",
+            format!("{} 0 {}\n", hex(&fixture.owner), hex(&[0x21; 32])),
+        ),
+        (
+            "distinct Coin ID",
+            format!("{} 1 {}\n", hex(&fixture.owner), hex(&[0x11; 32])),
+        ),
+        ("too many genesis objects", excess),
+    ] {
+        fs::write(&allocations, &content).unwrap();
+        let output: Output = fixture.author(&fixture.args);
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        refused(output);
+        assert!(!fixture.directory.join("genesis.bin").exists());
+        assert_eq!(fs::read(&allocations).unwrap(), content.into_bytes());
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn real_author_refuses_unsafe_output_locations_and_protected_key_defects() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let fixture: Fixture = Fixture::new();
+
+    let real_parent: PathBuf = fixture.directory.join("real-parent");
+    fs::create_dir(&real_parent).unwrap();
+    let link_parent: PathBuf = fixture.directory.join("link-parent");
+    symlink(&real_parent, &link_parent).unwrap();
+    let via_symlink: PathBuf = link_parent.join("genesis.bin");
+    let mut args: Vec<OsString> = fixture.args.clone();
+    replace(&mut args, "--output", via_symlink.clone().into_os_string());
+    refused(fixture.author(&args));
+    assert!(!via_symlink.exists());
+    assert!(!real_parent.join("genesis.bin").exists());
+
+    let symlink_target: PathBuf = fixture.directory.join("symlink-target.bin");
+    let symlinked_output: PathBuf = fixture.directory.join("symlinked-output.bin");
+    symlink(&symlink_target, &symlinked_output).unwrap();
+    let mut args: Vec<OsString> = fixture.args.clone();
+    replace(
+        &mut args,
+        "--output",
+        symlinked_output.clone().into_os_string(),
+    );
+    refused(fixture.author(&args));
+    assert!(!symlink_target.exists());
+
+    let key_file: PathBuf = fixture.directory.join("authority.key");
+    let authority_seed: [u8; 32] = [0x55; 32];
+    fs::set_permissions(&key_file, fs::Permissions::from_mode(0o644)).unwrap();
+    refused(fixture.author(&fixture.args));
+    assert!(!fixture.directory.join("genesis.bin").exists());
+    assert_eq!(fs::read(&key_file).unwrap(), authority_seed);
+
+    fs::write(&key_file, [0x55; 31]).unwrap();
+    fs::set_permissions(&key_file, fs::Permissions::from_mode(0o600)).unwrap();
+    refused(fixture.author(&fixture.args));
+    assert!(!fixture.directory.join("genesis.bin").exists());
+    assert_eq!(fs::read(&key_file).unwrap(), [0x55; 31]);
+
+    fs::remove_file(&key_file).unwrap();
+    let real_key: PathBuf = fixture.directory.join("real.key");
+    fs::write(&real_key, authority_seed).unwrap();
+    fs::set_permissions(&real_key, fs::Permissions::from_mode(0o600)).unwrap();
+    symlink(&real_key, &key_file).unwrap();
+    refused(fixture.author(&fixture.args));
+    assert!(!fixture.directory.join("genesis.bin").exists());
+}

@@ -210,6 +210,16 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   reusing actual startup checks, plus compiled prepare/query/restart/refusal
   evidence and an executable operator guide. Fresh independent Opus returned
   DESIGN APPROVE on 2026-10-06; source implementation and acceptance remain open.
+- [ ] **Offline original-genesis authoring:** accepted
+  [DR-0196](docs/architecture/decisions/0196-standard-asset-genesis-authoring.md)
+  adds an explicitly configured Standard Asset operator preset, using the
+  ordinary public template and existing generic installers. Temporary-key real
+  author/prepare/preflight tests passed three cases at `3f17c2a`: four independent
+  pairs prepared and one original host queried/restarted. No raw row seeding or
+  devnet seed/defaults in the shipped author. Expanded refusals, full required
+  gate, independent exact-head source review and CI remain open; merge DR-0195
+  first. Key custody, independent ceremony/economic approval and actual network
+  activation are not completed by this tool.
 - [ ] **Independent release audits and selected activation profile:** retain
   the economics and ingress audit gates, independently controlled stores,
   genesis/key ceremony, auth/TLS and actual startup/recovery evidence. Local

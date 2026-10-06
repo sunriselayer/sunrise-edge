@@ -37,6 +37,7 @@ detailed design, operator guides, and specialist references live here.
 
 - [Local devnet and Rust CLI](guides/devnet.md)
 - [Prepare, inspect and restart an original SQLite validator](guides/sqlite-validator-startup.md)
+- [Author an offline Standard Asset genesis](guides/standard-asset-genesis.md)
 - [Local contract validation](guides/contracts.md)
 - [Production persistence requirements](operations/persistence.md)
 - [PostgreSQL reference design](operations/postgres.md)

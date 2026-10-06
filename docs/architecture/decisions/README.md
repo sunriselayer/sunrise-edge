@@ -91,6 +91,7 @@
 - [DR-0193: required recurring acceptance over isolated owners](0193-required-recurring-acceptance.md)
 - [DR-0194: recurring handoff acceptance by owning boundary](0194-recurring-acceptance-ownership.md)
 - [DR-0195: explicit local SQLite validator preparation and preflight](0195-local-sqlite-validator-startup.md)
+- [DR-0196: offline Standard Asset genesis authoring](0196-standard-asset-genesis-authoring.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

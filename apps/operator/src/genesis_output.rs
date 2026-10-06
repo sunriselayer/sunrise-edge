@@ -165,3 +165,66 @@ impl PublishedGenesis {
         ImmutableArchiveReader::ensure_file_attached(&self.planned.path, &self.file)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct Directory(PathBuf);
+    impl Directory {
+        fn new(label: &str) -> Self {
+            let nonce: u128 = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path: PathBuf = std::env::temp_dir().join(format!(
+                "sunrise-genesis-output-{label}-{}-{nonce}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn output_reservation_refuses_an_intervening_file_without_overwrite() {
+        let directory: Directory = Directory::new("reservation");
+        let path: PathBuf = directory.0.join("manifest.bin");
+        let planned: FreshGenesisOutput = FreshGenesisOutput::plan(&path, &[]).unwrap();
+        std::fs::write(&path, b"intervening owner").unwrap();
+        assert!(planned.publish(b"author output").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"intervening owner");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_claim_retains_leaf_and_ancestor_identity_through_success_line() {
+        let directory: Directory = Directory::new("identity");
+        for parent_swap in [false, true] {
+            let parent: PathBuf = directory.0.join(format!("parent-{parent_swap}"));
+            std::fs::create_dir(&parent).unwrap();
+            let path: PathBuf = parent.join("manifest.bin");
+            let published: PublishedGenesis = FreshGenesisOutput::plan(&path, &[])
+                .unwrap()
+                .publish(b"manifest")
+                .unwrap();
+            published.ensure_attached().unwrap();
+            if parent_swap {
+                let detached: PathBuf = parent.with_extension("detached");
+                std::fs::rename(&parent, &detached).unwrap();
+                std::fs::create_dir(&parent).unwrap();
+                std::fs::hard_link(detached.join("manifest.bin"), &path).unwrap();
+            } else {
+                std::fs::rename(&path, parent.join("original.bin")).unwrap();
+                std::fs::write(&path, b"replacement").unwrap();
+            }
+            assert!(published.ensure_attached().is_err());
+        }
+    }
+}
