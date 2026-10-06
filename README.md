@@ -162,8 +162,8 @@ the same state-machine boundary without becoming protocol trust roots.
 - [`docs/README.md`](docs/README.md) is the documentation index.
 - [`docs/architecture/`](docs/architecture/README.md) records the implemented
   architecture and decision records by subsystem.
-- [`TODO.md`](TODO.md) is the detailed design brief, completion criteria, and
-  roadmap.
+- [`TODO.md`](TODO.md) owns current status, remaining completion criteria and
+  the implementation roadmap; subsystem design belongs in architecture.
 - [`docs/operations/persistence.md`](docs/operations/persistence.md) defines
   provider-neutral production persistence requirements.
 - [`docs/operations/postgres.md`](docs/operations/postgres.md) defines the

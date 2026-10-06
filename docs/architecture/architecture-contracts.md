@@ -245,7 +245,7 @@ decisions rather than claiming that entrypoint sharing is new. The aggregate
 fails closed for a missing, skipped,
 cancelled or failing member. Independent gate-contract tests retain fixed
 expectations so one edited registry cannot certify its own omissions. The
-four required DB-free lanes and separately selected complete PG acceptance
+seven required DB-free owners and separately selected complete PG acceptance
 remain distinct. Reorganization cannot reduce assertions or provider claims.
 
 Acceptance for a redesigned boundary includes the actual migrated callers,

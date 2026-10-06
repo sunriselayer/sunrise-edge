@@ -2,8 +2,9 @@
 
 Install adapter dependencies with `npm ci --prefix adapters/cloudflare-workers`,
 then run `./scripts/check-all.sh` for the unconditional storage-neutral gate.
-The four required lanes cover style, native Rust/SQLite, portable adapters and
-the embedded Cloudflare validator. They do not require a PostgreSQL service.
+The seven required owners cover style, native Rust/SQLite, portable adapters,
+the embedded Cloudflare validator, core recurrence, readiness SQLite and
+recurring SQLite. They do not require a PostgreSQL service.
 Explicit PostgreSQL acceptance remains required for affected storage/schema
 changes and provider claims; it is not restored as an every-PR prerequisite.
 Current acceptance results and pending work belong in [TODO.md](../../TODO.md).

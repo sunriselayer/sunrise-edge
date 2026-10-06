@@ -23,6 +23,9 @@ plan in implementation-structure.md, actual locations in development/code-map.md
 and dated rationale here. Preserve the old roadmap and original criteria under
 development/history, clearly marked historical, with repository links rebased.
 Do not erase failed/interrupted evidence or reinterpret old pending statuses.
+The human's requested documentation/plan consolidation also covers aligning
+the contributor orientation in AGENTS.md with these owners. This changes no
+authority, security, validation or original release requirement.
 
 Use R0–R4 work packages: plan/gate reconciliation; public contract/dependency
 ownership; core/runtime semantic responsibilities; attributable tests and
