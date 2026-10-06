@@ -202,6 +202,22 @@ The default event-only Worker still uses its service binding. Wiring the legacy
 HTTPS constructor into this pinned Worker would fail closed on `error`; no such
 composition is introduced here.
 
+### Native Node request-construction amendment, 2026-10-07
+
+An actual native Node Request rejects a ReadableStream request body without
+`duplex: "half"`; Deno's Request does not expose this failure. The incoming
+certified body is already fully bounded, but constructing a Request represents
+it as a stream. Supply the standard Undici half-duplex option only when the
+certified fetcher forwards a non-null body. Do not buffer it again, widen a byte
+ceiling, retry, change the event-only constructor or claim deployed Vercel parity.
+Exercise every literal certified route through the actual Vercel factory using
+native Node globals and an intercepted fetch, then retain the workerd and Deno
+checks to catch incompatible options. Node's type-erasure path also requires
+ordinary declared fields and assignments instead of TypeScript parameter
+properties in the shared framing error; preserve its fields, messages and
+classification. This is a narrow transport/test portability correction, not new
+business authority or production qualification.
+
 Add explicit Deno/Vercel composition selection and a separate Cloudflare
 certified entrypoint/configuration rather than silently widening the existing
 default Worker. The existing Supabase and AWS Lambda adapters remain event-only;

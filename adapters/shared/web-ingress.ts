@@ -19,11 +19,16 @@ export interface WebIngressOptions {
 
 /** A pre-dispatch framing refusal; never evidence of an upstream outcome. */
 export class IngressError extends Error {
+  readonly status: number;
+  readonly code: string;
+
   constructor(
-    readonly status: number,
-    readonly code: string,
+    status: number,
+    code: string,
   ) {
     super(code);
+    this.status = status;
+    this.code = code;
     this.name = "IngressError";
   }
 }

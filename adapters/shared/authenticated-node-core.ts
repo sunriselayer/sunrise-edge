@@ -78,7 +78,7 @@ class AuthenticatedNodeCoreFetcher implements NodeCoreFetcher {
       );
     }
 
-    const upstreamRequest = new Request(endpoint, {
+    const upstreamInit: RequestInit & { readonly duplex?: "half" } = {
       method: this.#certified ? request.method : "POST",
       headers: {
         "authorization": `Bearer ${this.#bearerToken}`,
@@ -88,6 +88,9 @@ class AuthenticatedNodeCoreFetcher implements NodeCoreFetcher {
           : {}),
       },
       body: request.body,
+      // Undici requires half-duplex when an already-bounded Request body is
+      // represented as a stream. Keep the event-only constructor unchanged.
+      ...(this.#certified && request.body !== null ? { duplex: "half" } : {}),
       // Pinned workerd rejects "error". Certified ingress rejects every 3xx
       // after this no-follow request; legacy HTTPS behavior stays unchanged.
       redirect: this.#certified ? "manual" : "error",
@@ -97,7 +100,8 @@ class AuthenticatedNodeCoreFetcher implements NodeCoreFetcher {
           AbortSignal.timeout(this.#timeoutMilliseconds),
         ])
         : AbortSignal.timeout(this.#timeoutMilliseconds),
-    });
+    };
+    const upstreamRequest: Request = new Request(endpoint, upstreamInit);
     return this.#fetch(upstreamRequest);
   }
 }

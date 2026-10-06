@@ -48,8 +48,8 @@ use node_core::ordered_economics::{
     AdmissionClosureRecord, DrainSignerProgress, FreezeIntent, FrozenFrontierStep,
     OrderedCandidate, OrderedEconomicsEnvironment, OrderedEconomicsPolicy, OrderedEventOutput,
     OrderedOperationKind, OrderedOutcome, OrderedProposal, advance_frozen_frontier,
-    decode_admission_closure_record, encode_freeze_intent, ingest_drain_signer_page,
-    install_ordered_genesis, process_certificate, process_proposal, propose, query_ordered_outcome,
+    decode_admission_closure_record, encode_freeze_intent, install_ordered_genesis,
+    process_certificate, process_proposal, propose, query_ordered_outcome,
     read_drain_signer_progress, read_frozen_frontier_page,
 };
 use objects::{ProtocolCustodyPurpose, ProtocolCustodyScope};
@@ -650,27 +650,6 @@ async fn cached_frontier_and_drain_progress_are_genuine_before_sealing_and_block
     )
     .unwrap();
     assert_eq!(page_vote, finalized_vote);
-    ingest_drain_signer_page(
-        &store,
-        &operation,
-        domain(),
-        &resolver(),
-        &context,
-        signer.validator_id(),
-        page_vote.clone(),
-        page.clone(),
-    )
-    .unwrap();
-    let direct_progress: DrainSignerProgress = read_drain_signer_progress(
-        &store,
-        &operation,
-        domain(),
-        &resolver(),
-        &context,
-        signer.validator_id(),
-    )
-    .unwrap();
-    assert!(direct_progress.complete);
     let signer_id: ValidatorId = signer.validator_id();
     let fastvote_execution: PaidExecutionComposition =
         PaidExecutionComposition::new(leg_policy.clone(), fastvote_fee_policy());
@@ -742,9 +721,9 @@ async fn cached_frontier_and_drain_progress_are_genuine_before_sealing_and_block
         decode_frozen_frontier_page(&frontier_wire.page).unwrap(),
         page
     );
-    // Route-table probes alone cannot prove genuine 204 progress. Re-submit
-    // this real, verified cached vote/page through the certified HTTP handler;
-    // core's idempotent ingestion must return an actually empty success.
+    // Route-table probes alone cannot prove genuine 204 progress. The first
+    // ingestion of this verified vote/page goes through the actual HTTP/core
+    // handler, not a direct store call or a fabricated response.
     let signer_page_request: Vec<u8> = node_wire::DrainSignerPageRequest {
         epoch: config().epoch(),
         vote: frontier_wire.vote.clone(),
@@ -759,7 +738,7 @@ async fn cached_frontier_and_drain_progress_are_genuine_before_sealing_and_block
                 .method("POST")
                 .uri(node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH)
                 .header(header::CONTENT_TYPE, NODE_EVENT_MEDIA_TYPE)
-                .body(Body::from(signer_page_request))
+                .body(Body::from(signer_page_request.clone()))
                 .unwrap(),
         )
         .await
@@ -776,6 +755,44 @@ async fn cached_frontier_and_drain_progress_are_genuine_before_sealing_and_block
             .unwrap()
             .is_empty()
     );
+    let direct_progress: DrainSignerProgress = read_drain_signer_progress(
+        store.as_ref(),
+        &operation,
+        domain(),
+        &resolver(),
+        &context,
+        signer_id,
+    )
+    .unwrap();
+    assert!(direct_progress.complete);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    // A completed signer frontier intentionally refuses another submission.
+    // Preserve that real definite refusal instead of assuming idempotency.
+    let repeated_page_response: Response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH)
+                .header(header::CONTENT_TYPE, NODE_EVENT_MEDIA_TYPE)
+                .body(Body::from(signer_page_request))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(repeated_page_response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        repeated_page_response.headers()[header::CONTENT_TYPE],
+        "text/plain; charset=utf-8"
+    );
+    assert_eq!(
+        to_bytes(repeated_page_response.into_body(), 1024)
+            .await
+            .unwrap()
+            .as_ref(),
+        b"drain-not-ready"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
     let drain_response: Response = router
         .clone()
         .oneshot(

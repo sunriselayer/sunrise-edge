@@ -72,15 +72,15 @@ normal merge, PR #277 was explicitly retargeted to main at unchanged source
 | Pending integration | Actual head and remaining acceptance |
 | --- | --- |
 | PR #277: consolidated plan | `7a9d391`; complete exact-head documentation source approval; latest own required CI still pending |
-| PR #278: envelope and acknowledgement ownership | `aab0389`; complete fresh exact-source Opus APPROVE; own full local required gate and final CI pending |
+| PR #278: envelope and acknowledgement ownership | `aab0389`; complete fresh exact-source Opus APPROVE; exact full local required gate passed at 19:02:54 UTC; final CI/integration pending |
 | PR #279: private acceptance timing | `3f2b9e1`; complete fresh source Opus APPROVE; owning local acceptance and final required CI pending; no speedup claim |
 | PR #280: actual composition and audit-input map | `4d5507d`; complete fresh exact-source Opus APPROVE; own final required CI pending; no independent security audit or release qualification |
-| Portable certified relay, stacked on #280 | Accepted DR-0204 and independently approved pinned-workerd redirect amendment; implementation committed, portable and focused workerd checks passed; native oracle/full required gate and complete source review still pending |
+| PR #281: portable certified relay, stacked on #280 | Accepted DR-0204 and independently approved pinned-workerd redirect amendment; complete source review found an incorrect native test replay assumption, now corrected; native Node construction regression added; owning native/full required gate and fresh complete source approval still pending |
 
-At 2026-10-07 02:59 SGT, the existing GitHub CLI credential was invalid and the
-anonymous API budget exhausted. Later CI state and merges are unverified until
-ordinary authentication or read access recovers. Senna's PAT remains scoped to
-PR creation only; local implementation and checks continue without cloud writes.
+At 2026-10-07 02:59 SGT, GitHub access prevented fresh CI verification. Later
+CI state and merges remain unverified; local implementation and checks continue
+without cloud writes. Credential-handling instructions remain in `AGENTS.md`,
+not a release-acceptance claim.
 
 Recheck live heads and required checks before integrating; pending never means
 passed. Preserve Draft #235 as extraction material and do not auto-merge
@@ -113,14 +113,19 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   The current implementation branch has migrated the pure envelope/list owner,
   wire-bound views and all four actual SDK consumers, including native,
   successor, DO and CLI flat mappings. Pre-move literal vectors are unchanged;
-  focused wire/core and full Rust-client iterations passed. Full required
-  acceptance and CI are still pending despite complete exact-source Opus APPROVE; R1 is
-  not complete and this does not close the remaining core/SDK dependency work.
+  focused wire/core and full Rust-client iterations passed. Exact `aab0389`
+  completed the literal full local required gate at 19:02:54 UTC with its source
+  still clean and unchanged. Final CI/integration remains pending despite
+  complete exact-source Opus APPROVE; R1 is not complete and this does not close
+  the remaining core/SDK dependency work.
 - [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
   admission, evaluation, completion, reconciliation and storage contracts;
   separate object/receipt/outbox repositories and memory implementations by
   semantic owner. Remove obsolete duplicate paths only after their callers move.
   A move with unchanged bodies is mechanical progress, not semantic completion.
+  DR-0203's committed pre-change declared-state controls passed on exact
+  `ecd8247`: legacy Cargo integration 7/0 and actual durable handler 8/0.
+  Fresh design review remains required before production migration.
 - [ ] **R3 — attributable tests and economical CI:** reuse bounded signed input
   and environment builders while keeping expected outcomes independent; separate
   pure, real-store, HTTP and compiled-CLI owners. Remove duplicate setup/work
