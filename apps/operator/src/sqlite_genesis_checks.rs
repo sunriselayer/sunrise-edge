@@ -29,7 +29,8 @@ pub(crate) struct OriginalHostPins<'a> {
     pub resolver: &'a HashSuiteResolver,
 }
 
-/// One definition of committed root/fee/committee/key/status agreement.
+/// Shared committed root/fee/current-committee checks. Signer and ordered
+/// status checks have their separate owners below and at the caller.
 pub(crate) fn read_original_host_state<S: DurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
