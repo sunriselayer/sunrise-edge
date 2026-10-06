@@ -2,7 +2,8 @@
 
 Date: 2026-10-06 (Asia/Singapore)
 
-Status: Proposed. Independent design review is required before implementation.
+Status: Accepted design. Claude Opus returned DESIGN APPROVE on 2026-10-06
+after the byte-escape grammar and separate signed code records were specified.
 This record grants no custody, ceremony, audit or network-activation approval.
 Current work and verification status belong only in TODO.md.
 
@@ -151,12 +152,11 @@ or call a provider. Private in-memory installation is discarded after validation
   manifest, unsupported or duplicate flags, missing/wrong subcommand,
   noncanonical numbers, zero domain and out-of-bound timeout. Keep inputs
   unchanged and stdout empty.
-- Cover output escaping and bounds with direct rendering tests. Rerun the
+- Cover output escaping and bounds with direct rendering tests. Exercise the
   byte grammar against newline, ESC, U+009B, U+202E, equals and backslash.
   Add a genuinely signed supported non-causal manifest to prove generic
   inspection does not inherit SQLite serving preparation's causal restriction.
-  Rerun the
-  real author and SQLite startup/refusal suites after extracting the shared
+  Rerun the real author and SQLite startup/refusal suites after extracting the shared
   memory validator; preserve their canonical output and actual installer paths.
 - Require fresh complete exact-head source review and all required validation
   owners. This remains local evidence, not a real-provider/network audit.

@@ -227,11 +227,11 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   exact-head source review and CI remain open; merge DR-0195
   first. Key custody, independent ceremony/economic approval and actual network
   activation are not completed by this tool.
-- [ ] **Pinned read-only original-genesis inspection:** proposed
+- [ ] **Pinned read-only original-genesis inspection:** accepted design
   [DR-0197](docs/architecture/decisions/0197-offline-original-genesis-inspection.md)
   describes secret-free, DB-free inspection of signed owners, policies and
   original committee after the actual generic installers validate in isolated
-  memory. Independent design approval precedes implementation. This cannot
+  memory. Independent Opus DESIGN APPROVE precedes implementation. This cannot
   substitute for custody, independent economic approval or release audit.
   Design review additionally identified original-installer publication versus
   code-reference revision/context alignment as a separate core audit question;
