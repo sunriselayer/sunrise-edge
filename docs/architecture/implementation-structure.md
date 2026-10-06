@@ -67,6 +67,31 @@ seams in the same feature; import can clarify runtime/store seams; epoch
 rollover can clarify ordered commit and serving-context ownership. Unrelated
 core/SQL facade extraction is optional parallel work, not a new activation gate.
 
+## Maintainability work packages
+
+[DR-0200](decisions/0200-maintainability-and-mainnet-roadmap.md) combines the
+architecture-first direction with the mainnet gate inventory. The following
+contracts organize that work; scheduling and completion stay only in TODO.
+
+| Package | Design result and owner | What must disappear | Acceptance |
+| --- | --- | --- | --- |
+| R0: documentation and gate ownership | TODO owns current status/remaining gates; architecture owns contracts; code-map owns locations; decisions/history retain rationale and immutable evidence | Parallel live queues, repeated aspirational design brief and stale pending attempts presented as current requirements | All original release criteria mapped, archive content retained, working links and independent review; no implicit gate waiver |
+| R1: public contract and dependency boundary | Pure bounded data/codec/error contracts have one defining owner shared by core, wire, SDK and host; the transport owns only envelope framing | Copied canonical bounds/validation, cross-layer rules and unnecessary reverse dependencies for each migrated consumer | Real consumer migration and removed old definitions, unchanged bytes/error precedence, vectors/bounds/adversarial tests; any new crate justified by actual consumers without orchestration |
+| R2: semantic core/runtime responsibilities | Admission decides authority; evaluation produces a proposal; completion assembles one transaction; reconciliation exposes only confirmed exact output; repository ports describe their real capability | Competing evaluators, fake successful writes, unused compatibility wrappers and facades containing unrelated decisions | One owner per decision, explicit typed inputs/results, real callers and rejected/indeterminate/replay behavior preserved; memory reconstruction remains genuinely available |
+| R3: tests and CI | Fixtures own signed inputs/environment, independent assertions own expected behavior, gate registry owns mandatory recipes | Repeated unrelated fixture setup and duplicate equivalent execution; hidden prerequisite assumptions and self-certifying inventories | Positive/negative controls and every real functional case retained, coverage attributable to engine/store/HTTP/CLI, truthful exact-input reuse and measured runtime/build claims |
+| R4: audit/launch integration | Source/build/configuration manifests and exposed route/signer/store capability inventories connect actual released compositions | Misleading advertised unsupported profiles, stale authority descriptions and hand-maintained copies of executable operator steps | Audit scope bound to exact artifacts; selected-profile restart/recovery evidence; unsupported families fail closed; no automatic deployment authority |
+
+Do not require one crate per package or extract every long facade before a useful
+change. Establish each changing boundary first, migrate its actual consumers,
+then delete the superseded implementation in the same coherent slice. Preserve
+necessary original/live/historical/physical trust distinctions rather than
+flattening them into a generic checked flag.
+
+Evaluate improvement by the number of owners needed for one specification
+change, independent implementations of the same rule, public dependency/API
+surface and attributable nonredundant tests. File count is not acceptance;
+compilation, runtime and whole-CI speedups require actual measurement.
+
 ## Handoff-specific ownership
 
 Use the accepted [epoch-handoff](epoch-handoff.md) authority chain:
@@ -118,7 +143,7 @@ independent valid positive control and check both receipts and business state.
 Moving an existing real-store test to a mock is a coverage change, not cleanup.
 
 [Repository validation](repository-validation.md) and DR-0172 define the gate.
-Focused iterations and the four required DB-free lanes are distinct from
+Focused iterations and the seven required DB-free owners are distinct from
 explicit full PostgreSQL acceptance. Generic authority changes still need
 integration evidence proportional to their actual effects; a modularization
 does not exempt them. No new heavy backend-every-PR gate is introduced here.
