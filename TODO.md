@@ -240,8 +240,10 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   normal Rust CI owner at `c256f4d`. Fresh independent Opus review identified
   missing required U+009B and U+202E vectors. Exact UTF-8 byte expectations and
   real signed-chain/no-raw-control assertions are now added. Independent Opus
-  approved the complete corrected source at `7709038`; execution of the new
-  vectors and complete required local/CI gates remain open.
+  approved the complete corrected source at `7709038`. Actual local execution
+  at that exact head passed all 59 operator-library tests, seven compiled
+  inspector cases including the new Unicode vectors, and all seven author
+  process cases. Complete required local/CI gates remain open.
   This cannot
   substitute for custody, independent economic approval or release audit.
   Design review additionally identified original-installer publication versus
@@ -262,6 +264,11 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   reuse and unchanged full namespace snapshots; replay also crosses actual
   host restarts/fencing. This is local acceptance only, not deployed
   authenticated ingress, independent custody, production or provider readiness.
+
+The earlier exact-`7dc4193` local required run ended with SIGTERM during its
+genuine recurring-process owner on 2026-10-06. Completed individual owners remain
+individual evidence; this interrupted run is not full acceptance. No shortened
+recurrence or optionalized group is used for the required rerun.
 - [ ] **Independent release audits and selected activation profile:** retain
   the economics and ingress audit gates, independently controlled stores,
   genesis/key ceremony, auth/TLS and actual startup/recovery evidence. Local
