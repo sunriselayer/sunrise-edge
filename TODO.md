@@ -53,20 +53,21 @@ cleanup milestone is added to this functional gate.
 
 - [ ] Accepted-design [DR-0198](docs/architecture/decisions/0198-genesis-publication-reference-alignment.md)
   reuses the ordinary execution owner's complete published-code reference
-  equality at the original installer. Source inspection identified that the
-  current genesis check compares origin/digest but omits exact revision equality;
-  existing economics bindings already close the context-only case. Independent
-  design review required correction of that distinction and the actual
-  validation-before-reconciliation/reconstruction ordering. A coherently
-  re-signed revision reproduction, fail-closed fix and real fresh/restart/private-
-  reconstruction unchanged-state evidence remain required. Opus approved the
-  corrected design only; no implementation or executed acceptance is claimed. This is
-  not a demonstrated exploit, severity judgment or independent release audit.
-  The baseline-only test commit adds coherent signed revision data, ordinary
-  fresh/reconcile/private-reconstruction probes, unchanged context-control
-  refusal and an explicit genuine old-owner SQLite export. Production remains
-  unchanged until actual old-owner acceptance is reproduced. These new tests
-  are not yet executed locally; the shared warm target remains owned by #271.
+  equality at the original installer. Independent Opus approved the corrected
+  design and validation-before-reconciliation/private-constructor ordering.
+  The nonignored Rust CI owner at unchanged baseline `8c91a680` actually passed
+  coherent signed revision-only acceptance at fresh/reconciled installation and
+  private reconstruction, plus valid v1/v2/v3/v4 profiles. The context-only
+  control passed its existing economics refusal; it is not another gap.
+  The source now uses the existing exact reference owner before any writes,
+  with fresh memory/SQLite and private-constructor refusal tests. Current
+  corrected tests and complete gates/source review are not yet executed.
+  Real retained SQLite evidence additionally requires first exporting with
+  the genuine old owner, then opening that exact stored baseline with the
+  corrected owner; its explicit test must fail rather than manufacture a
+  baseline if the export is absent. The shared warm target remains owned by
+  #271. This correctness reproduction is not a privilege exploit, severity
+  judgment, released-store survey or independent release audit.
 
 ### Current acceptance checkpoint, 2026-10-05
 

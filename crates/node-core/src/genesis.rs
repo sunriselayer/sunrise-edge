@@ -1075,15 +1075,13 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     {
         return Err(GenesisError::Invalid("initializer designation mismatch"));
     }
-    if manifest.initialization.intent.call.code.origin()
-        != manifest.publication.request().artifact().origin()
-    {
-        return Err(GenesisError::Invalid("initialization code origin mismatch"));
-    }
-    if manifest.initialization.intent.call.code.artifact_digest()
-        != manifest.publication.request().artifact_digest()
-    {
-        return Err(GenesisError::Invalid("initialization code digest mismatch"));
+    if !crate::local_execution::reference_matches(
+        &manifest.initialization.intent.call.code,
+        &interface,
+    ) {
+        return Err(GenesisError::Invalid(
+            "initialization code reference mismatch",
+        ));
     }
 
     let execution_policy: LocalExecutionPolicy =

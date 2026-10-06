@@ -1,4 +1,4 @@
-//! DR-0198 baseline probe. Production remains unchanged in this commit.
+//! DR-0198 exact published-code binding, following actual old-owner acceptance.
 //! Signed nested/outer data and all dependent instance bindings are genuine;
 //! neither fresh nor retained stores are populated by raw test rows.
 
@@ -15,7 +15,11 @@ use execution::publication::UnverifiedDependencyRef;
 use protocol_types::ProtocolVersion;
 use runtime::{MemoryBlobStore, MemoryDurableStateStore};
 use runtime_sqlite::{SqliteDurableStore, SqliteNamespace};
-use std::{fs, io::Write, path::PathBuf};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 fn root(manifest: &GenesisManifest) -> VerifiedGenesisRoot {
     let bytes: Vec<u8> = encode_genesis_manifest(manifest).unwrap();
@@ -109,7 +113,7 @@ fn private_reconstruction(
 }
 
 #[test]
-fn revision_reference_old_owner_accepts_fresh_and_exact_retained_genesis() {
+fn revision_reference_is_refused_before_any_fresh_memory_business_writes() {
     let manifest: GenesisManifest = revision_manifest();
     let verified: VerifiedGenesisRoot = root(&manifest);
     assert_eq!(manifest.publication.request().artifact().revision(), 1);
@@ -117,22 +121,9 @@ fn revision_reference_old_owner_accepts_fresh_and_exact_retained_genesis() {
     let store: MemoryDurableStateStore =
         MemoryDurableStateStore::new_bound(tests::domain(), tests::context(1).writer_fence());
     let blobs: MemoryBlobStore = MemoryBlobStore::default();
-    assert!(matches!(
-        install_genesis_with_history(
-            &store,
-            &tests::context(1),
-            tests::domain(),
-            verified.genesis_resolver(),
-            &[],
-            verified.manifest(),
-            0
-        )
-        .unwrap(),
-        GenesisInstallOutcome::FreshInstall { .. }
-    ));
     let before: SourceBusinessSnapshot =
         captured_source(&store, &blobs, &tests::context(1), tests::domain());
-    assert!(!before.records.is_empty());
+    assert!(before.records.is_empty());
     assert!(matches!(
         install_genesis_with_history(
             &store,
@@ -142,21 +133,99 @@ fn revision_reference_old_owner_accepts_fresh_and_exact_retained_genesis() {
             &[],
             verified.manifest(),
             0
-        )
-        .unwrap(),
-        GenesisInstallOutcome::VerifiedExisting { .. }
+        ),
+        Err(GenesisError::Invalid(
+            "initialization code reference mismatch"
+        ))
     ));
     let after: SourceBusinessSnapshot =
         captured_source(&store, &blobs, &tests::context(1), tests::domain());
     assert_same_records_and_blobs(&after, &before);
     assert_eq!(after.token, before.token);
-    let report: BusinessReconstructionReport = private_reconstruction(&verified).unwrap();
-    assert_eq!(report.genesis_digest, verified.digest());
-    assert_eq!(report.ordered_height, 0);
-    assert_eq!(report.owned_originals_replayed, 0);
+    assert!(matches!(
+        private_reconstruction(&verified),
+        Err(BusinessReconstructionError::Invalid(
+            "private signed-genesis installation failed"
+        ))
+    ));
     assert_same_records_and_blobs(
         &captured_source(&store, &blobs, &tests::context(1), tests::domain()),
         &before,
+    );
+}
+
+struct FreshDirectory(PathBuf);
+
+impl FreshDirectory {
+    fn new() -> Self {
+        let nanos: u128 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path: PathBuf = std::env::temp_dir().join(format!(
+            "sunrise-genesis-reference-refusal-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for FreshDirectory {
+    fn drop(&mut self) {
+        let _ignored = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn revision_reference_fresh_sqlite_refusal_survives_close_reopen_without_mutation() {
+    let directory: FreshDirectory = FreshDirectory::new();
+    let path: PathBuf = directory.0.join("state.sqlite");
+    let namespace: SqliteNamespace = SqliteNamespace::new(
+        tests::chain(),
+        ValidatorId::new(tests::sender()),
+        tests::domain(),
+    );
+    let verified: VerifiedGenesisRoot = root(&revision_manifest());
+    let blobs: MemoryBlobStore = MemoryBlobStore::default();
+    let before: SourceBusinessSnapshot;
+    {
+        let store: SqliteDurableStore =
+            SqliteDurableStore::open(&path, namespace.clone(), tests::context(1).writer_fence())
+                .unwrap();
+        before = captured_source(&store, &blobs, &tests::context(1), tests::domain());
+        assert!(before.records.is_empty());
+        assert!(matches!(
+            install_genesis_with_history(
+                &store,
+                &tests::context(1),
+                tests::domain(),
+                verified.genesis_resolver(),
+                &[],
+                verified.manifest(),
+                0
+            ),
+            Err(GenesisError::Invalid(
+                "initialization code reference mismatch"
+            ))
+        ));
+        let after: SourceBusinessSnapshot =
+            captured_source(&store, &blobs, &tests::context(1), tests::domain());
+        assert_same_records_and_blobs(&after, &before);
+        assert_eq!(after.token, before.token);
+        assert_eq!(
+            store.writer_fence().unwrap(),
+            tests::context(1).writer_fence()
+        );
+    }
+    let reopened: SqliteDurableStore = SqliteDurableStore::open_existing(&path, namespace).unwrap();
+    let persisted: SourceBusinessSnapshot =
+        captured_source(&reopened, &blobs, &tests::context(1), tests::domain());
+    assert_same_records_and_blobs(&persisted, &before);
+    assert_eq!(persisted.token, before.token);
+    assert_eq!(
+        reopened.writer_fence().unwrap(),
+        tests::context(1).writer_fence()
     );
 }
 
@@ -231,99 +300,102 @@ fn valid_original_profiles_still_install_and_reconcile_without_reapplication() {
     }
 }
 
-fn export_file(path: PathBuf, bytes: &[u8]) {
-    let mut file: fs::File = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .unwrap();
-    file.write_all(bytes).unwrap();
-    file.sync_all().unwrap();
-}
-
 #[test]
-#[ignore = "explicit offline old-owner fixture export; run only this unchanged baseline commit"]
-fn revision_reference_export_genuine_old_owner_sqlite() {
+#[ignore = "requires genuine SQLite exported by unchanged old owner at 8c91a680; never seeds current-state rows"]
+fn revision_reference_retained_old_owner_sqlite_is_refused_without_repair() {
     let directory: PathBuf = PathBuf::from(
         std::env::var_os("SUNRISE_GENESIS_REFERENCE_BASELINE_DIR")
-            .expect("explicit empty local export directory required"),
+            .expect("explicit genuine old-owner export directory required"),
     );
     assert!(directory.is_absolute() && directory.is_dir());
-    assert!(fs::read_dir(&directory).unwrap().next().is_none());
     let manifest: GenesisManifest = revision_manifest();
-    let verified: VerifiedGenesisRoot = root(&manifest);
+    let expected: VerifiedGenesisRoot = root(&manifest);
+    let bytes: Vec<u8> = fs::read(directory.join("manifest.bin")).unwrap();
+    assert_eq!(bytes, encode_genesis_manifest(&manifest).unwrap());
+    assert_eq!(
+        fs::read(directory.join("digest.bin")).unwrap(),
+        expected.digest().bytes()
+    );
+    let verified: VerifiedGenesisRoot = VerifiedGenesisRoot::verify_bytes(
+        &tests::resolver(),
+        &bytes,
+        expected.digest().bytes(),
+        &tests::protocol(),
+    )
+    .unwrap();
     let namespace: SqliteNamespace = SqliteNamespace::new(
         tests::chain(),
         ValidatorId::new(tests::sender()),
         tests::domain(),
     );
     let state_path: PathBuf = directory.join("state.sqlite");
-    assert!(!state_path.exists());
+    assert!(
+        state_path.is_file(),
+        "missing baseline must fail, not bootstrap"
+    );
+    let blobs: MemoryBlobStore = MemoryBlobStore::default();
+    let before: SourceBusinessSnapshot;
+    // The current owner can only open the already-installed baseline. Its
+    // explicit restart fence is claimed before observing the no-write refusal.
     {
-        let store: SqliteDurableStore = SqliteDurableStore::open(
-            &state_path,
-            namespace.clone(),
-            tests::context(1).writer_fence(),
-        )
-        .unwrap();
-        assert!(matches!(
-            install_genesis_with_history(
-                &store,
-                &tests::context(1),
-                tests::domain(),
-                verified.genesis_resolver(),
-                &[],
-                verified.manifest(),
-                0
-            )
-            .unwrap(),
-            GenesisInstallOutcome::FreshInstall { .. }
-        ));
+        let store: SqliteDurableStore =
+            SqliteDurableStore::open_existing(&state_path, namespace.clone()).unwrap();
         assert_eq!(
             store.writer_fence().unwrap(),
             tests::context(1).writer_fence()
         );
-    }
-    // Closing and reopening exercise real persistence, not a synthetic marker.
-    {
-        let store: SqliteDurableStore =
-            SqliteDurableStore::open_existing(&state_path, namespace).unwrap();
-        let blobs: MemoryBlobStore = MemoryBlobStore::default();
-        let before: SourceBusinessSnapshot =
-            captured_source(&store, &blobs, &tests::context(1), tests::domain());
+        store
+            .advance_writer_fence(
+                tests::context(1).writer_fence(),
+                tests::context(2).writer_fence(),
+            )
+            .unwrap();
+        before = captured_source(&store, &blobs, &tests::context(2), tests::domain());
         assert!(!before.records.is_empty());
         assert!(matches!(
             install_genesis_with_history(
                 &store,
-                &tests::context(1),
+                &tests::context(2),
                 tests::domain(),
                 verified.genesis_resolver(),
                 &[],
                 verified.manifest(),
                 0
-            )
-            .unwrap(),
-            GenesisInstallOutcome::VerifiedExisting { .. }
+            ),
+            Err(GenesisError::Invalid(
+                "initialization code reference mismatch"
+            ))
         ));
         let after: SourceBusinessSnapshot =
-            captured_source(&store, &blobs, &tests::context(1), tests::domain());
+            captured_source(&store, &blobs, &tests::context(2), tests::domain());
         assert_same_records_and_blobs(&after, &before);
         assert_eq!(after.token, before.token);
         println!(
-            "old_owner_sqlite=true records={} writer_generation={} mutation_sequence={} digest={}",
+            "retained_refusal=true records={} writer_generation={} mutation_sequence={} digest={}",
             before.records.len(),
             before.token.writer_fence().get(),
             before.token.mutation_sequence(),
             verified.digest()
         );
     }
-    export_file(
-        directory.join("manifest.bin"),
-        &encode_genesis_manifest(verified.manifest()).unwrap(),
-    );
-    export_file(directory.join("digest.bin"), &verified.digest().bytes());
+    let reopened: SqliteDurableStore =
+        SqliteDurableStore::open_existing(&state_path, namespace).unwrap();
     assert_eq!(
-        private_reconstruction(&verified).unwrap().genesis_digest,
-        verified.digest()
+        reopened.writer_fence().unwrap(),
+        tests::context(2).writer_fence()
     );
+    let persisted: SourceBusinessSnapshot =
+        captured_source(&reopened, &blobs, &tests::context(2), tests::domain());
+    assert_same_records_and_blobs(&persisted, &before);
+    assert_eq!(persisted.token, before.token);
+    assert!(matches!(
+        private_reconstruction(&verified),
+        Err(BusinessReconstructionError::Invalid(
+            "private signed-genesis installation failed"
+        ))
+    ));
+    let after_private: SourceBusinessSnapshot =
+        captured_source(&reopened, &blobs, &tests::context(2), tests::domain());
+    assert_same_records_and_blobs(&after_private, &before);
+    assert_eq!(after_private.token, before.token);
 }
