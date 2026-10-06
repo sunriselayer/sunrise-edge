@@ -34,17 +34,17 @@ Response limits describe the complete HTTP body, never just a nested payload.
 | POST | `/v1/fastvote/prepare` | `execution::paid_execution::MAX_SIGNED_PAID_INTENT_BYTES` | `node_wire::MAX_FASTVOTE_VOTE_BYTES` |
 | POST | `/v1/fastvote/certificates` | `node_wire::MAX_FASTVOTE_APPLY_REQUEST_BYTES` | canonical, outer `HttpNodeResult` |
 | POST | `/v1/fastvote/publications/source` | `node_wire::MAX_FASTVOTE_APPLY_REQUEST_BYTES` | `consensus::bundle::MAX_ENCODED_BUNDLE_BYTES` |
-| POST | `/v1/fastvote/publications/retain` | `consensus::bundle::MAX_ENCODED_BUNDLE_BYTES` | `consensus::availability::MAX_ENCODED_VOTE_BYTES` |
+| POST | `/v1/fastvote/publications/retain` | `consensus::bundle::MAX_ENCODED_BUNDLE_BYTES` | `consensus::MAX_ENCODED_AVAILABILITY_VOTE_BYTES` |
 | POST | `/v1/fastvote/publications/apply` | `node_wire::MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES` | canonical, outer `HttpNodeResult` |
 | POST | `/v1/fastvote/publications/retained-source` | `node_wire::MAX_RETAINED_PUBLICATION_SOURCE_REQUEST_BYTES` | `consensus::bundle::MAX_ENCODED_BUNDLE_BYTES` |
 | POST | `/v1/fastvote/frontier/page` | `node_wire::MAX_FRONTIER_PAGE_REQUEST_BYTES` | `node_wire::MAX_FRONTIER_PAGE_RESPONSE_BYTES` |
 | POST | `/v1/fastvote/frontier/advance` | native frontier route, one-byte ceiling and semantically empty body | `node_wire::MAX_FRONTIER_VOTE_BYTES`, or zero for 204 |
 | POST | `/v1/fastvote/drain/signer-page` | `node_wire::MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES` | zero, 204 only |
 | POST | `/v1/fastvote/drain/member-confirm` | `node_wire::MAX_DRAIN_MEMBER_CONFIRM_REQUEST_BYTES` | zero, 204 only |
-| POST | `/v1/fastvote/drain/union-advance` | `node_wire::MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES` | `consensus::availability::union::MAX_DRAIN_UNION_IDENTITY_BYTES`, or zero for 204 |
+| POST | `/v1/fastvote/drain/union-advance` | `node_wire::MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES` | `consensus::MAX_DRAIN_UNION_IDENTITY_BYTES`, or zero for 204 |
 | POST | `/v1/fastvote/drain/signer-progress` | `node_wire::MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES` | `node_wire::MAX_DRAIN_SIGNER_PROGRESS_RESPONSE_BYTES` |
 | POST | `/v1/fastvote/drain/apply` | `node_wire::MAX_DRAIN_MEMBER_APPLY_REQUEST_BYTES` | canonical, outer `HttpNodeResult` |
-| POST | `/v1/fastvote/drain/import/{validator_id}` | `consensus::bundle::MAX_ENCODED_BUNDLE_BYTES` | `consensus::availability::MAX_ENCODED_IDENTITY_BYTES` |
+| POST | `/v1/fastvote/drain/import/{validator_id}` | `consensus::bundle::MAX_ENCODED_BUNDLE_BYTES` | `consensus::MAX_ENCODED_AVAILABILITY_IDENTITY_BYTES` |
 | GET | `/v1/context` | no request body | canonical, `HttpQueryResult` |
 | GET | `/v1/objects/{object_id}` | no request body | canonical, `HttpQueryResult` |
 | GET | `/v1/receipts/{request_id}` | no request body | canonical, `HttpQueryResult` |
@@ -53,8 +53,11 @@ Response limits describe the complete HTTP body, never just a nested payload.
 | GET | `/v1/contracts/publications/{publisher}/{origin_seed}` | no request body | `node_core::publication::MAX_PUBLICATION_QUERY_RESULT_BYTES` |
 | GET | `/v1/contracts/instances/{creator}/{seed}` | no request body | canonical, `encode_instance_record` |
 
-Expose the three existing private consensus identity/vote/union byte constants
-above for reuse by the native test oracle; their values and enforcement do not
+Expose the three existing private consensus byte constants as the exact
+crate-root aliases `MAX_ENCODED_AVAILABILITY_IDENTITY_BYTES`,
+`MAX_ENCODED_AVAILABILITY_VOTE_BYTES` and `MAX_DRAIN_UNION_IDENTITY_BYTES` above
+for reuse by the native test oracle. `availability` stays private; the distinct
+durable vote bound remains untouched. Their values and enforcement do not
 change. A paid apply's inner `MAX_PAID_EXECUTION_RESULT_BYTES` is not its HTTP
 ceiling: native wraps that result in `NodeResponse` and `HttpNodeResult`, adding
 framing. Keep the complete canonical outer cap rather than truncating a valid
