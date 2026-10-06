@@ -162,6 +162,9 @@ roadmap describes a later target state.
   explicitly configured public-contract preset, protected expected-authority
   signing and defining-installer validation, without native balances or custody
   approval.
+- [Offline original-genesis inspection](decisions/0197-offline-original-genesis-inspection.md):
+  independently pinned, secret-free diagnostics after the defining generic
+  installers validate in isolated memory; no serving or ceremony authority.
 - [Initial validator bond registration](initial-validator-bond.md)
   ([DR-0179](decisions/0179-initial-validator-bond-registration.md)):
   self-authenticated first collateral through generic custody and ordered

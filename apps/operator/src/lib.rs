@@ -7,6 +7,7 @@ pub mod business_snapshot;
 pub mod common;
 pub mod conditional_readiness;
 pub mod economics;
+pub mod genesis_inspection;
 mod genesis_output;
 pub mod host_protocol_context;
 pub mod host_runtime;

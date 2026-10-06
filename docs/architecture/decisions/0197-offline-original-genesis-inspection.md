@@ -93,7 +93,8 @@ dependency or machine authority witness is introduced. Include:
   `encode_dependency_ref(&initialization.intent.call.code)` and instance via
   `encode_instance_target(&call.instance)`. The defining installer compares
   publication/reference origin and digest, but currently does not establish
-  their revision/context equality. Inspection adds no stronger core rule or
+  their exact revision equality; existing economics-context bindings separately
+  close a context-only mismatch. Inspection adds no stronger core rule or
   mislabels one record as the other; installer alignment is a separate core
   audit/correctness question, not silently repaired by this command.
 - The original committee's identity, public key, signature scheme and voting
@@ -156,7 +157,8 @@ or call a provider. Private in-memory installation is discarded after validation
   byte grammar against newline, ESC, U+009B, U+202E, equals and backslash.
   Add a genuinely signed supported non-causal manifest to prove generic
   inspection does not inherit SQLite serving preparation's causal restriction.
-  Rerun the real author and SQLite startup/refusal suites after extracting the shared
-  memory validator; preserve their canonical output and actual installer paths.
+  Rerun the real author and SQLite startup/refusal suites after extracting the
+  shared memory validator; preserve their canonical output and actual installer
+  paths.
 - Require fresh complete exact-head source review and all required validation
   owners. This remains local evidence, not a real-provider/network audit.

@@ -223,18 +223,27 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   pairs prepared and one original host queried/restarted. No raw row seeding or
   devnet seed/defaults in the shipped author. Expanded refusals cover duplicate
   identities/objects, bonds, malformed/excess tables, supply overflow, unsafe
-  destinations and protected-key defects. Full required gate, independent
-  exact-head source review and CI remain open; merge DR-0195
+  destinations and protected-key defects. Independent Opus approved the
+  complete authoring source at `da53884`; its required CI has six successful
+  owners and genuine recurring SQLite still running. Full local required gate
+  and completed CI remain open; merge DR-0195
   first. Key custody, independent ceremony/economic approval and actual network
   activation are not completed by this tool.
 - [ ] **Pinned read-only original-genesis inspection:** accepted design
   [DR-0197](docs/architecture/decisions/0197-offline-original-genesis-inspection.md)
   describes secret-free, DB-free inspection of signed owners, policies and
   original committee after the actual generic installers validate in isolated
-  memory. Independent Opus DESIGN APPROVE precedes implementation. This cannot
+  memory. Independent Opus DESIGN APPROVE precedes implementation. The command,
+  shared private memory-validation owner, closed public configuration and
+  bounded escaped renderer are implemented on this branch; real compiled
+  author/inspector tests, including signed control-character text, and focused
+  escaping/output-bound tests are added but
+  not yet executed. Exact source review and all required gates remain open.
+  This cannot
   substitute for custody, independent economic approval or release audit.
   Design review additionally identified original-installer publication versus
-  code-reference revision/context alignment as a separate core audit question;
+  exact code-reference revision alignment as a separate core correctness
+  question; existing economics bindings already close a context-only mismatch.
   inspection must display the two signed records separately, not repair or
   imply their equality.
 - [ ] **Independent release audits and selected activation profile:** retain
