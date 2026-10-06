@@ -91,11 +91,18 @@ importing PostgreSQL fixture helpers.
    vote records and physical snapshot tokens are not claimed equal.
 3. Wrong independently configured protocol/domain pin, wrong leaf DNS name,
    wrong per-peer CA and a mixed plaintext/TLS cohort refuse before signing or
-   any mutating POST. Use an intentionally absent seed in these cases and
-   require the actual pin/TLS/cohort refusal, not merely an unavailable-key
-   failure. Assert no new signed/certificate/result artifact, no forwarded
-   POST and complete unchanged durable snapshots on every namespace. Read-only
-   context queries are allowed where required to detect the mismatch.
+   any mutating POST. An intentionally absent seed proves only the existing
+   **local** signed-genesis/context-pin and mixed-cohort refusals which precede
+   signer loading. Selected-peer CA/DNS and remotely observed context/domain
+   negatives instead use a valid protected disposable seed and select the
+   affected peer as `--endpoint`, so an unavailable-key error cannot mask the
+   actual trust refusal. The existing seed loader derives keys without signing;
+   the fee-policy query verifies remote context before the actual paid signing
+   call. Review that real ordering rather than claim a measured in-memory
+   signature count from absent output files. Assert the precise pin/TLS/cohort
+   diagnostic, no new signed/certificate/availability/result artifact, no
+   forwarded POST and complete unchanged durable snapshots on every namespace.
+   Read-only context queries are allowed where needed to detect the mismatch.
 4. After the original commitment exists, a legitimately different signed
    transaction reusing its request ID refuses without changing the original
    receipt, objects, nonce or any durable rows/blobs. Do not treat a saved exact
