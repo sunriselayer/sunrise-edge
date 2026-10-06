@@ -302,19 +302,25 @@ typed payload parsing. These syntactic types confer no inclusion proof.
 The initial transport is synchronous and deliberately local-development-only.
 A small transport trait permits deterministic tests; the provided HTTP/1.1
 implementation (`LoopbackHttpTransport`) connects only to an explicit loopback
-address, opens one bounded `TcpStream` per request, applies connect/read/write
-timeouts and header/body limits, requires an exact `Content-Length` except
-for bodyless HTTP 204, and
-rejects transfer encoding, ambiguous lengths, truncated or trailing bodies,
-unexpected content types, and non-loopback targets. It provides no TLS,
-authentication, proxy, redirect, persistent connection, async runtime, or
+address, opens one bounded `TcpStream` per request, and applies connect/read/write
+timeouts and header/body limits. Both transports accept exactly one valid
+`Content-Length` or a single `Transfer-Encoding: chunked`, with the independent
+decoded-body/metadata/line bounds in [DR-0205](decisions/0205-bounded-sdk-streamed-response-framing.md).
+They refuse mixed, duplicate or unsupported framing, incomplete terminators,
+trailing data and original total-deadline expiry. Response media/semantic binding
+belongs to the owning client, not the transport. Loopback additionally refuses
+non-loopback targets. It provides no TLS,
+proxy, redirect, persistent connection, async runtime, or
 production remote-node claim. (A separate, later-added `RemoteTlsHttpTransport`
 lifts the loopback-only and no-TLS restrictions within S1's documented
 bounds — see [DR-0085](decisions/0081-0087-cli-first-roadmap.md) — without changing this transport's own scope.)
-Both transports complete HTTP 204 at the header boundary, require absent
-Content-Length, reject already-buffered payload, and drop their one-shot
-connection without waiting for EOF or inspecting later bytes. Other statuses
-retain their exact-length, truncation and bounded trailing-byte checks.
+An optional bounded Bearer credential is transport authentication, never signing
+or protocol authority. Both transports complete HTTP 204 at the header boundary,
+require absent Content-Length and Transfer-Encoding, reject already-buffered
+payload, and drop their one-shot connection without waiting for EOF or inspecting
+later bytes. Other statuses require complete length/chunked framing and the
+bounded close probe. The local Node HTTPS relay fixture does not qualify a
+deployed provider or a backend quorum.
 
 `/v1/context` remains authoritative for chain, epoch, protocol-version, hash-
 suite, authentication-profile, signature-scheme, binding, and atomicity-domain

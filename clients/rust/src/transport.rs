@@ -270,7 +270,9 @@ impl fmt::Display for TransportError {
             }
             Self::InvalidStatusCode => f.write_str("response status code was not a valid integer"),
             Self::MalformedHeaderLine => f.write_str("malformed response header line"),
-            Self::MissingContentLength => f.write_str("response had no Content-Length header"),
+            Self::MissingContentLength => {
+                f.write_str("response had neither length nor supported chunked framing")
+            }
             Self::DuplicateContentLength => {
                 f.write_str("response had more than one Content-Length header")
             }
@@ -278,7 +280,7 @@ impl fmt::Display for TransportError {
                 f.write_str("response Content-Length was invalid for its status")
             }
             Self::TransferEncodingUnsupported => {
-                f.write_str("response declared Transfer-Encoding, which is unsupported")
+                f.write_str("response transfer coding was unsupported or forbidden for its status")
             }
             Self::AmbiguousResponseFraming => {
                 f.write_str("response declared conflicting length and transfer coding")

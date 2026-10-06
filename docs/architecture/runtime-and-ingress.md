@@ -456,8 +456,15 @@ native refusals have closed status/media and a completely read 1 KiB budget.
 A failed dispatched POST is outcome-unknown, not definitely uncommitted. A late
 stream failure cannot be rewritten as rollback, a new receipt or automatic retry.
 Validated upstream Content-Length is dropped. The Rust SDK already has loopback
-HTTP and CA/DNS-pinned TLS transports; both use strict length-bound response
-framing and are not qualified against this lengthless streamed relay profile.
+HTTP and CA/DNS-pinned TLS transports. Both accept exactly one valid Content-Length
+or one `Transfer-Encoding: chunked` under [DR-0205](decisions/0205-bounded-sdk-streamed-response-framing.md)'s
+independent body/metadata/line and original total-deadline bounds. Mixed,
+duplicate and unsupported codings, incomplete termination and all coding on
+204 refuse. Their local native Node HTTPS interoperability fixture mounts the
+actual certified constructor through a test-owned bridge; it does not qualify
+a deployed provider, Vercel runtime or genuine backend quorum. TLS server
+identity remains separate from locally pinned expected protocol context before
+signing, application decoding and proof verification.
 
 Cloudflare uses a separate HTTPS certified entrypoint, not the default binding
 or an embedded store, with 8 MiB requests and streamed 32 MiB responses. Deno's
