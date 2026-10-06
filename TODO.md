@@ -150,6 +150,13 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   review and final CI remain open. The SDK already has CA/DNS-pinned TLS; keep
   bounded streamed-response framing and actual relay transport integration,
   provider deployment/size/concurrency qualification and public readiness open.
+  [DR-0205](docs/architecture/decisions/0205-bounded-sdk-streamed-response-framing.md)
+  now has conditional independent PLAN approval with explicit header-priority,
+  framing-budget, wire-fragmentation and pinned Node CI corrections. The SDK
+  branch implements the shared bounded chunk decoder and local real HTTPS
+  relay fixture; owning migrated execution, complete source review and final
+  CI/integration remain pending. TLS identity is not protocol authority, and
+  this local fixture does not qualify a deployed provider or public network.
 
 Sequence R0 and the ready startup integrations first; review R1's contract
 before implementation. R2/R3 may run in parallel only with disjoint owners and

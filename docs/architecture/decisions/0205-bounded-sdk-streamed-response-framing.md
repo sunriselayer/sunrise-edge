@@ -2,8 +2,9 @@
 
 Date: 2026-10-07 (Asia/Singapore)
 
-Status: Proposed. Independent PLAN approval precedes production migration;
-source, execution, integration and release acceptance belong in TODO.
+Status: Accepted after independent conditional PLAN approval. The five required
+corrections below are part of the implementation contract; source, execution,
+integration and release acceptance belong in TODO.
 
 ## Existing boundary
 
@@ -45,11 +46,16 @@ not another transport, HTTP client framework or protocol crate:
   decoded prefix is already a valid canonical frame.
 - Ignore bounded opaque chunk extensions, rejecting embedded control/newline
   ambiguity; never treat them as checksums or authority. Limit each size/extension
-  line to 1 KiB and aggregate framing/trailers to 512 KiB. That independent
-  budget also bounds tiny-chunk work; decoded bytes stay separately bounded.
+  line to 1 KiB and aggregate framing/trailers to 16 KiB plus eight times the
+  configured decoded-body maximum, using checked arithmetic. This permits
+  ordinary one-byte chunks across the full body budget while independently
+  bounding excessive extensions/trailers and tiny-chunk work. It is not unlimited
+  extension support; test immediately inside and outside both budgets.
 - Validate trailer syntax with existing token/safe-value rules, consume and
   discard every trailer without merging headers. Refuse framing or content-type
-  trailers, malformed fields and exhausted framing budgets.
+  trailers, malformed fields and exhausted framing budgets. The closed forbidden
+  names are Content-Length, Transfer-Encoding, Content-Type, Content-Encoding,
+  Connection and Trailer. Require exact CRLF, never bare CR or LF.
 - Keep only bounded unread wire bytes and the bounded decoded body. Reject
   buffered trailing bytes, then use the same bounded Connection: close probe as
   length framing. Keep timeout/deadline distinctions and the original deadline
@@ -60,6 +66,13 @@ ambiguous/duplicate coding, malformed/incomplete chunks and metadata exhaustion;
 they do not add canonical statuses, bytes or receipts. Preserve existing length
 refusal priority and caller status/media binding. A dispatched POST's transport
 failure is not evidence of rollback; existing SDK workflows own reconciliation.
+Collect header facts before choosing framing. Fixed refusal precedence is:
+malformed syntax, duplicate Content-Length, invalid Content-Length, duplicate
+Content-Type; then on 204 any Transfer-Encoding before the forbidden length;
+on ordinary responses mixed length/coding before duplicate coding and unsupported
+coding. Test each combination in both header orders. Existing single-failure
+length and 204 error variants remain unchanged.
+
 TLS identity and expected protocol-context validation before signing remain
 separate. No CLI signing, provider policy or consensus path changes.
 
@@ -82,8 +95,24 @@ Node HTTPS fixture. That fixture mounts the actual certified Vercel constructor
 on numeric loopback, with locally issued TLS and a completely intercepted fixed
 upstream. The Rust transport exercises GET, POST and genuine 204 with native
 Node chunked streaming, plus a late stream failure that cannot become success.
-Verify actual wire chunking and owned bounded process/file cleanup. Existing
-Node 22.20.0 is the required runtime; no hosted resource or external socket.
+The test-owned Node HTTP/Fetch bridge is not a Vercel runtime. It must destroy
+the response/socket on a stream error, never send a clean final chunk. Gate the
+failure after a real data chunk's write callback, not an assumed sleep. Incomplete
+chunking, a connection-reset Read error or trailing-byte refusal are the closed
+allowed failure outcomes; a provider converting an error to a clean end cannot
+be detected by framing alone. Application decoding/authentication stay separate.
+
+Assert native Node's actual chunkedEncoding and absence of Content-Length on
+each streamed fixture response. Socket tests prove interoperability/deadlines;
+private scripted bounded I/O covers every fragmentation boundary deterministically.
+Pass disposable certificate/key PEM through stdin, not persistent key files.
+Use a DNS SAN/SNI identity with a numeric loopback listening address.
+
+The owning nonignored Rust SDK integration test runs in the rust-tests lane.
+Add the existing pinned setup-node action with Node 22.20.0 to that lane and
+make the fixture fail, not skip, when process.version differs or Node is absent.
+The literal required/full gates retain that same owning test. Verify owned
+bounded process cleanup; no hosted resource or external socket is used.
 
 This is local transport interoperability, not a genuine backend quorum,
 deployed-provider qualification, production custody or public activation.
