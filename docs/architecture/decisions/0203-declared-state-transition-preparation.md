@@ -67,6 +67,18 @@ errors, read traces and unchanged records/state are test-owned. Keep every
 original canonical vector, conflict, read-only/absence, object, durable,
 receipt/nonce/fence and native HTTP refusal test.
 
+The structured durable baseline calls the actual public
+`handle_resolved_durable_idempotent_event` against the existing scripted store,
+wrapped only to record exact point-read keys, context/domain and an injected
+read failure. It pins admission epoch/profile/root reads before application
+reads; complete sorted snapshots and read sets with absent/tombstoned revisions;
+first-corrupt-key early refusal; canonical undeclared/read-only update priority
+with genuine response/outbox construction; and `DurableRead`, not legacy
+`Runtime`, error mapping. Negative controls retain the original rows and no
+receipt/commit; paired positive controls must reach transition and commit.
+Adding these tests or checking their syntax alone does not authorize migration:
+execute the pre-change controls and obtain a fresh independent PLAN approval.
+
 Test undeclared/read-only updates, complete read assertions including absence
 and tombstones, missing declared observations, corrupt-state early refusal and
 the distinct unscoped versus domain envelopes. Preserve partial builder failure
