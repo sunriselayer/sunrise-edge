@@ -209,8 +209,17 @@ function checkWorkflow(text, profile) {
     "denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed", "deno-version: 2.9.4",
     "cargo install wasm-bindgen-cli --version 0.2.127 --locked", "npm ci --prefix adapters/cloudflare-workers",
   ]) assert(text.includes(value));
+  if (!pg) {
+    const sdkOwner = jobs.get("rust-tests");
+    assert(sdkOwner.includes(sdkNodeSetup));
+    assert(sdkOwner.indexOf(sdkNodeSetup) < sdkOwner.indexOf("run: ./scripts/check-all.sh"));
+  }
   return jobs;
 }
+const sdkNodeSetup = "      - name: Set up Node.js for real SDK relay interoperability\n" +
+  "        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0\n" +
+  "        with:\n" +
+  "          node-version: 22.20.0\n";
 const profiles = [["required", requiredGroups, ".github/workflows/ci.yml"], ["postgres", postgresGroups, ".github/workflows/postgres.yml"]];
 for (const [profile, members, path] of profiles) {
   const workflow = readFileSync(join(root, path), "utf8");
@@ -239,6 +248,9 @@ for (const [profile, members, path] of profiles) {
     assert.throws(() => checkWorkflow(workflow.replace("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request:\n"), profile));
     assert.throws(() => checkWorkflow(workflow.replace(" --profile postgres", ""), profile));
   } else {
+    assert.throws(() => checkWorkflow(workflow.replace(sdkNodeSetup, ""), profile));
+    assert.throws(() => checkWorkflow(workflow.replace(sdkNodeSetup,
+      sdkNodeSetup.replace("22.20.0", "26.9.0")), profile));
     for (const extra of ["  SUNRISE_EDGE_TEST_POSTGRES_URL: unused\n", "  services:\n    postgres: unused\n"]) {
       assert.throws(() => checkWorkflow(workflow.replace("env:\n", `env:\n${extra}`), profile));
     }

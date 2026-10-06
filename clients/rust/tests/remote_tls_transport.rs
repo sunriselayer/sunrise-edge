@@ -17,7 +17,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rcgen::{CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose};
+#[path = "support/disposable_tls.rs"]
+mod disposable_tls;
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use sunrise_edge_client::{
@@ -32,39 +33,17 @@ struct TestCertificate {
 }
 
 fn issue_certificate(leaf_dns_name: &str) -> TestCertificate {
-    let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
-    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    ca_params
-        .distinguished_name
-        .push(DnType::CommonName, "sunrise-edge remote-tls test CA");
-    ca_params.key_usages = vec![
-        KeyUsagePurpose::DigitalSignature,
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::CrlSign,
-    ];
-    let ca_key = KeyPair::generate().unwrap();
-    let ca_cert = ca_params.self_signed(&ca_key).unwrap();
-    let issuer = Issuer::new(ca_params, ca_key);
-
-    let mut leaf_params = CertificateParams::new(vec![leaf_dns_name.to_owned()]).unwrap();
-    leaf_params
-        .distinguished_name
-        .push(DnType::CommonName, leaf_dns_name);
-    leaf_params.use_authority_key_identifier_extension = true;
-    leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-    leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    let leaf_key = KeyPair::generate().unwrap();
-    let leaf_cert = leaf_params.signed_by(&leaf_key, &issuer).unwrap();
-
+    let identity: disposable_tls::DisposableTlsIdentity =
+        disposable_tls::issue_identity(leaf_dns_name);
     let private_key: PrivateKeyDer<'static> =
-        PrivatePkcs8KeyDer::from(leaf_key.serialize_der()).into();
-    let server_config = ServerConfig::builder()
+        PrivatePkcs8KeyDer::from(identity.key.serialize_der()).into();
+    let server_config: ServerConfig = ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(vec![leaf_cert.der().clone()], private_key)
+        .with_single_cert(vec![identity.leaf.der().clone()], private_key)
         .unwrap();
 
     TestCertificate {
-        ca_der: ca_cert.der().to_vec(),
+        ca_der: identity.ca_der,
         server_config: Arc::new(server_config),
     }
 }
@@ -279,6 +258,32 @@ fn succeeds_with_the_correct_hostname_and_ca() {
         raw_request.contains(&expected_host_line),
         "expected exact Host header {expected_host_line:?} in request:\n{raw_request}"
     );
+}
+
+#[test]
+fn tls_accepts_complete_chunks_and_refuses_a_missing_zero_terminator() {
+    for complete in [true, false] {
+        let cert: TestCertificate = issue_certificate("validator.test");
+        let (sender, _receiver): (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>) = mpsc::channel();
+        let response: Vec<u8> = if complete {
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nhe\r\n3\r\nllo\r\n0\r\nX-Test: ignored\r\n\r\n".to_vec()
+        } else {
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n".to_vec()
+        };
+        let addr: SocketAddr = serve_tls_once(cert.server_config, response, sender);
+        let transport: RemoteTlsHttpTransport =
+            remote_transport(addr, "validator.test", &cert.ca_der).unwrap();
+        let result: Result<sunrise_edge_client::WireResponse, TransportError> =
+            transport.send(&get_request());
+        if complete {
+            assert_eq!(result.unwrap().body, b"hello");
+        } else {
+            assert!(matches!(
+                result,
+                Err(TransportError::TruncatedChunkedResponse)
+            ));
+        }
+    }
 }
 
 #[test]

@@ -170,12 +170,82 @@ fn rejects_a_non_numeric_content_length() {
 }
 
 #[test]
-fn rejects_transfer_encoding() {
+fn accepts_complete_bounded_chunked_framing() {
     let addr = serve_once(
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n".to_vec(),
     );
-    let error = transport(addr).send(&get_request()).unwrap_err();
-    assert!(matches!(error, TransportError::TransferEncodingUnsupported));
+    let response: sunrise_edge_client::WireResponse = transport(addr).send(&get_request()).unwrap();
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body, b"hello");
+}
+
+#[test]
+fn real_tcp_refuses_incomplete_and_conflicting_chunk_framing() {
+    let incomplete: SocketAddr =
+        serve_once(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n".to_vec());
+    assert!(matches!(
+        transport(incomplete).send(&get_request()),
+        Err(TransportError::TruncatedChunkedResponse)
+    ));
+    for headers in [
+        "Content-Length: 0\r\nTransfer-Encoding: chunked",
+        "Transfer-Encoding: chunked\r\nContent-Length: 0",
+    ] {
+        let addr: SocketAddr =
+            serve_once(format!("HTTP/1.1 200 OK\r\n{headers}\r\n\r\n").into_bytes());
+        assert!(matches!(
+            transport(addr).send(&get_request()),
+            Err(TransportError::AmbiguousResponseFraming)
+        ));
+    }
+}
+
+#[test]
+fn real_tcp_chunked_close_probe_and_caller_deadline_remain_bounded() {
+    for held_after_complete in [true, false] {
+        let listener: TcpListener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        let server: thread::JoinHandle<()> = thread::spawn(move || {
+            let (mut stream, _): (std::net::TcpStream, SocketAddr) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut request: [u8; 4096] = [0; 4096];
+            let _ = stream.read(&mut request);
+            let bytes: &[u8] = if held_after_complete {
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+            } else {
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n"
+            };
+            stream.write_all(bytes).unwrap();
+            stream.flush().unwrap();
+            thread::sleep(Duration::from_millis(250));
+        });
+        let bounded: LoopbackHttpTransport = LoopbackHttpTransport::new(
+            addr,
+            Duration::from_secs(1),
+            Duration::from_millis(100),
+            Duration::from_secs(1),
+            NonZeroUsize::new(8192).unwrap(),
+            NonZeroUsize::new(8192).unwrap(),
+        )
+        .unwrap();
+        let mut request: WireRequest = get_request();
+        if !held_after_complete {
+            request.deadline = Some(Instant::now() + Duration::from_millis(50));
+        }
+        let result: Result<sunrise_edge_client::WireResponse, TransportError> =
+            bounded.send(&request);
+        assert!(
+            if held_after_complete {
+                matches!(result, Err(TransportError::ResponseDidNotClose))
+            } else {
+                matches!(result, Err(TransportError::RequestDeadlineExceeded))
+            },
+            "{result:?}"
+        );
+        server.join().unwrap();
+    }
 }
 
 #[test]

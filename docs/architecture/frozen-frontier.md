@@ -81,9 +81,12 @@ The opt-in native certified host exposes:
   final vote. This read never advances or applies state.
 
 The shared loopback/TLS HTTP parser accepts a bodyless 204 only without
-Content-Length and completes at the header boundary. It rejects
+Content-Length or Transfer-Encoding and completes at the header boundary. It rejects
 already-buffered payload, then drops the one-shot connection without reading
-later bytes. Non-204 exact-length and bounded trailing-byte checks are unchanged.
+later bytes. Non-204 responses require complete exact-length or bounded chunked
+framing and the original trailing-byte/close checks; see
+[DR-0205](decisions/0205-bounded-sdk-streamed-response-framing.md). Framing does
+not replace the frontier signature, context or complete accumulator checks.
 
 The SDK pins the outgoing committee and endpoint signer. The compiled CLI
 additionally pins signed-v3 genesis, chain/protocol/epoch, atomicity domain

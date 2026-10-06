@@ -9,6 +9,13 @@ Explicit PostgreSQL acceptance remains required for affected storage/schema
 changes and provider claims; it is not restored as an every-PR prerequisite.
 Current acceptance results and pending work belong in [TODO.md](../../TODO.md).
 
+The SDK's real [certified relay interoperability test](../../clients/rust/tests/certified_relay_transport.rs)
+requires Node 22.20.0 even when only Rust tests are selected. The required
+`rust-tests` workflow installs that exact runtime; a missing/wrong version fails
+the test, never silently skips it. Its test-owned HTTPS bridge uses numeric
+loopback, disposable TLS inputs and an intercepted fixed upstream. It proves
+local shared framing, not a deployed Vercel runtime or backend quorum.
+
 ## Owning fixtures and observation evidence
 
 Business fixtures keep genuine signing, genesis, quorum and execution with their

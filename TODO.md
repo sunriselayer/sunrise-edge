@@ -166,6 +166,29 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   inventory and executable startup/stop/restart/recovery evidence for the audit.
   Remove misleading unsupported advertised compositions and stale architecture
   claims; do not build another consensus or general orchestration framework.
+  The [composition inventory](docs/architecture/compositions-and-capabilities.md)
+  and [network audit input contract](docs/security/network-code-audit-scope.md)
+  identify actual surfaces and required final-review inputs. Their existence is
+  not a completed audit, selected public host or release qualification.
+  The explicit [certified relay](docs/architecture/decisions/0204-portable-certified-relay.md)
+  adds closed FastVote/publication/frontier/drain/query transport to Deno/Vercel
+  and a separate stateless Worker. It does not add ordered/successor/DO lifecycle
+  authority. All four portable checks and focused workerd controls passed locally;
+  real native oracle/204 regression, full generated-artifact checks, exact-source
+  review and final CI remain open. The SDK already has CA/DNS-pinned TLS; keep
+  bounded streamed-response framing and actual relay transport integration,
+  provider deployment/size/concurrency qualification and public readiness open.
+  [DR-0205](docs/architecture/decisions/0205-bounded-sdk-streamed-response-framing.md)
+  now has conditional independent PLAN approval with explicit header-priority,
+  framing-budget, wire-fragmentation and pinned Node CI corrections. The SDK
+  branch implements the shared bounded chunk decoder and local real HTTPS
+  relay fixture. The whole owning SDK package/all-target tests passed on exact
+  `936d069`, including the actual Node 22.20.0 TLS relay fixture, original
+  length/204 controls and new fragmentation/termination/budget failures.
+  The runtime's removal/wrong-version CI mutation controls also passed.
+  Complete final source review and required CI/integration remain pending.
+  TLS identity is not protocol authority, and
+  this local fixture does not qualify a deployed provider or public network.
 
 Sequence R0 and the ready startup integrations first; review R1's contract
 before implementation. R2/R3 may run in parallel only with disjoint owners and
