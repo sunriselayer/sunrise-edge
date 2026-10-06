@@ -455,8 +455,9 @@ covering dispatch and consumption. All 3xx refuse without following Location;
 native refusals have closed status/media and a completely read 1 KiB budget.
 A failed dispatched POST is outcome-unknown, not definitely uncommitted. A late
 stream failure cannot be rewritten as rollback, a new receipt or automatic retry.
-Validated upstream Content-Length is dropped; the current plaintext/length-bound
-Rust SDK is not qualified against this streamed HTTPS profile.
+Validated upstream Content-Length is dropped. The Rust SDK already has loopback
+HTTP and CA/DNS-pinned TLS transports; both use strict length-bound response
+framing and are not qualified against this lengthless streamed relay profile.
 
 Cloudflare uses a separate HTTPS certified entrypoint, not the default binding
 or an embedded store, with 8 MiB requests and streamed 32 MiB responses. Deno's

@@ -49,4 +49,6 @@ The test-only literal `certified-route-contract.tsv` is read by portable and
 Worker tests and independently checked against native Rust owners. It is not
 production configuration. Providers deliberately narrow native limits. These
 tests do not qualify deployed TLS, memory/concurrency, a complete host lifecycle,
-or the current plaintext/Content-Length-required Rust SDK against this relay.
+or the Rust SDK against this lengthless streamed relay. The SDK already has
+CA/DNS-pinned TLS as well as loopback HTTP, but both require Content-Length
+except for bodyless 204 and reject Transfer-Encoding.

@@ -179,9 +179,14 @@ bytes, fixed media/no-store and backpressure; cancel/release the upstream reader
 on disconnect, oversize, failure or completion. SDKs still decode/authenticate.
 Validate an upstream Content-Length when present, then drop it from the streamed
 downstream response rather than asserting a length before consumption completes.
-The current Rust SDK's plaintext-loopback, Content-Length-required transport is
-not qualified against this HTTPS streamed profile. No SDK integration is claimed
-by transport fixture success; that transport expansion remains separate work.
+The Rust SDK already provides both `LoopbackHttpTransport` and CA/DNS-pinned
+`RemoteTlsHttpTransport` in [`transport.rs`](../../../clients/rust/src/transport.rs),
+and the CLI selects the latter with its paired TLS flags. Both share strict
+HTTP/1.1 framing that requires Content-Length except for bodyless 204 and rejects
+Transfer-Encoding. They are not qualified against this lengthless streamed
+relay profile. Do not describe TLS itself as missing or reimplement it; the
+remaining work is bounded streamed-response framing and actual relay integration.
+Transport fixture success does not establish that integration.
 
 ### Local runtime amendment, 2026-10-07
 

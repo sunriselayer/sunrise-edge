@@ -147,7 +147,8 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   and a separate stateless Worker. It does not add ordered/successor/DO lifecycle
   authority. All four portable checks and focused workerd controls passed locally;
   real native oracle/204 regression, full generated-artifact checks, exact-source
-  review and final CI remain open. Keep SDK HTTPS/stream transport integration,
+  review and final CI remain open. The SDK already has CA/DNS-pinned TLS; keep
+  bounded streamed-response framing and actual relay transport integration,
   provider deployment/size/concurrency qualification and public readiness open.
 
 Sequence R0 and the ready startup integrations first; review R1's contract
