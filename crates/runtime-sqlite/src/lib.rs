@@ -22,7 +22,7 @@ mod structured;
 pub use blob::{SQLITE_BLOB_SCHEMA_IDENTITY, SqliteBlobStore, SqliteBlobStoreError};
 pub use structured::{
     SQLITE_STRUCTURED_SCHEMA_IDENTITY, SqliteDurableStore, SqliteDurableStoreError,
-    SqliteImportTarget, SqliteNamespace,
+    SqliteImportTarget, SqliteNamespace, sync_freshly_created_destination,
 };
 
 use runtime::{
