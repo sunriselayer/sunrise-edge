@@ -1712,3 +1712,6 @@ mod fastvote_apply_request_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod http_node_result_tests;

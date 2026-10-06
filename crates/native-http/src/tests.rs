@@ -1,4 +1,5 @@
 mod connection_phase;
+mod envelope_classification;
 mod fastvote_router;
 mod fastvote_sealed_frontier;
 mod local_execution_http;
