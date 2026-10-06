@@ -10,6 +10,15 @@ The [implementation structure](../architecture/implementation-structure.md)
 describes intended responsibility boundaries, not existing file locations.
 Its integrated implementation/refactoring queue remains only in TODO.
 
+The private [declared-state preparation owner](../../crates/node-core/src/state_transition.rs)
+shares the five legacy/structured-durable snapshot loaders and the two distinct
+state assembly strategies. The facade retains admission and commit ordering,
+object authority and caller-local read errors. Independent [public-library
+baselines](../../crates/node-core/tests/declared_state_contract.rs), [actual durable
+caller controls](../../crates/node-core/src/tests/declared_state_durable_contract.rs)
+and [private priority controls](../../crates/node-core/src/tests/state_transition.rs)
+separately pin those boundaries; generic legacy HTTP routes remain closed.
+
 ## Follow a request
 
 ```text

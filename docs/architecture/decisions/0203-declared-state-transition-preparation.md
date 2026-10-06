@@ -2,7 +2,8 @@
 
 Date: 2026-10-07 (Asia/Singapore)
 
-Status: Proposed, awaiting independent design review before production changes.
+Status: Design accepted after exact pre-change baseline execution and independent
+PLAN APPROVE on 2026-10-07. Implementation/source acceptance remains in TODO.
 This grants no generic-ingress or authenticated-object authority.
 
 ## Context
@@ -20,7 +21,7 @@ are not successful production ingress. Preserve their internal/public-library
 contracts without counting their cleanup as a network capability. Factoring
 legacy metadata replay alone is not the priority.
 
-## Proposed boundary
+## Accepted boundary
 
 Add one private `state_transition` owner inside node-core for the identical
 declared-state preparation rules:
@@ -92,6 +93,12 @@ existing exact global read-count controls unchanged. The callback returns
 versus `DurableRead` mapping, not a generic conversion bound. Private owner
 tests additionally pin the otherwise-unreachable missing-observation invariant
 and per-item refusal/fallible-builder ordering.
+
+The private owner also pins size rejection before canonical decoding and stops
+the point-read callback at its first failure. Runtime observation construction
+already enforces the same 32 MiB size bound: exercise the unchanged core
+validator directly for the over-size/invalid-frame priority rather than
+loosening the runtime observation contract to fabricate an impossible value.
 
 Keep writable-update checking at each original assembler call, not at the start
 of evaluation: durable controls pin the post-application logical-profile read

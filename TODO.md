@@ -1,6 +1,6 @@
 # Sunrise Edge implementation and mainnet roadmap
 
-Updated: 2026-10-06 (Asia/Singapore).
+Updated: 2026-10-07 (Asia/Singapore).
 
 This is the only live implementation queue and readiness tracker. Design and
 responsibility contracts belong in [architecture](docs/architecture/README.md),
@@ -62,12 +62,18 @@ PR #273 subsequently merged normally as `587fe587` at 13:44:23 UTC after
 its exact `77090388` complete source approval and all required CI passed.
 PR #275 then merged as `725e4a14`; local main was verified clean and equal to
 origin/main at that merge.
-This planning branch explicitly stacks on PR #276 at `c89acfdd`; it must not be
-described as already merged or independently validated runtime code.
+PR #276 merged normally as `b878d2e1` at 16:09:07 UTC after exact `c89acfdd`
+complete source approval and all seven required CI owners plus `check` passed.
+The independent refactoring PRs below are still pending integration; none is
+made release-ready merely by its accepted design.
 
 | Pending prerequisite | Actual head and remaining acceptance |
 | --- | --- |
-| PR #276: storage-neutral startup guide and truthful evidence | `c89acfdd`; complete exact-head two-file Opus source approval; its own final recurring-sqlite/check still pending |
+| PR #277: one plan and mainnet gate inventory | `7a9d391`; complete exact-head Opus source approval; remaining CI/integration still pending |
+| PR #278: pure envelope/list and SDK binding owner | `aab0389`; complete exact-head Opus source approval; literal full local required gate passed at 19:02:54 UTC; remaining CI/integration still pending |
+| PR #279: private observations of genuine recurrence | `3f2b9e1`; complete exact-head Opus source approval; actual owning observer units 4/0 and all seven hosted CI owners plus `check` passed; integration still pending |
+| PR #280: real host/signer/store capability map | `4d5507d`; complete exact-head Opus source approval; remaining CI/integration still pending |
+| PR #281: closed certified HTTPS relay | `7424d72`; complete exact-head Opus source approval and exact npm-ci passed; ancestor native oracle, genuine drain, generated-WASM Cloudflare and portable tests passed, not a latest full local gate or deployed-provider qualification |
 
 Recheck live heads and required checks before integrating; pending never means
 passed. Preserve Draft #235 as extraction material and do not auto-merge
@@ -100,14 +106,24 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   The current implementation branch has migrated the pure envelope/list owner,
   wire-bound views and all four actual SDK consumers, including native,
   successor, DO and CLI flat mappings. Pre-move literal vectors are unchanged;
-  focused wire/core and full Rust-client iterations passed. Full required
-  acceptance, exact-source independent review and CI are still pending; R1 is
-  not complete and this does not close the remaining core/SDK dependency work.
+  focused wire/core and full Rust-client iterations passed. Exact `aab0389`
+  complete source review approved; its literal full local required gate passed
+  at 19:02:54 UTC without skipping the original e8/five-host recurrence. Hosted
+  acceptance/integration and remaining core/SDK dependency work are not closed.
 - [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
   admission, evaluation, completion, reconciliation and storage contracts;
   separate object/receipt/outbox repositories and memory implementations by
   semantic owner. Remove obsolete duplicate paths only after their callers move.
   A move with unchanged bodies is mechanical progress, not semantic completion.
+  [DR-0203](docs/architecture/decisions/0203-declared-state-transition-preparation.md)
+  has independent PLAN APPROVE at `d2be439` after actual pre-change public-library
+  8/0 and durable/authenticated 11/0 controls. Its private preparation owner now
+  replaces all five sorted loading loops and the duplicated writable/revision
+  rules, while retaining two deliberately distinct assemblers and original
+  caller ordering. Private priority controls, focused migrated-caller tests,
+  complete source review and full required acceptance are pending; R2 as a
+  whole is still open. The approved R3 observation prerequisite is merged into
+  this implementation branch only, not publicly integrated.
 - [ ] **R3 — attributable tests and economical CI:** reuse bounded signed input
   and environment builders while keeping expected outcomes independent; separate
   pure, real-store, HTTP and compiled-CLI owners. Remove duplicate setup/work
@@ -118,8 +134,10 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   The independent timing slice adds test-private closed-stage observations to
   the actual SQLite/compiled-CLI recurrence without changing original work,
   delay or assertions. It exposes the existing recurring selector's output;
-  no cache, skipped owner or speedup is claimed. Exact-source review and full
-  required acceptance remain pending. Other setup/reuse improvements are open.
+  no cache, skipped owner or speedup is claimed. Exact `3f2b9e1` complete source
+  review and hosted required CI passed; actual owning observer units passed
+  4/0 locally. No separately exact-head full local recurrence or public merge
+  is claimed. Other setup/reuse improvements remain open.
 - [ ] **R4 — audit and launch seams:** assemble exact source/build/configuration
   provenance, exposed-family authorization inventory, signer/store capability
   inventory and executable startup/stop/restart/recovery evidence for the audit.
