@@ -64,16 +64,23 @@ PR #275 then merged as `725e4a14`; local main was verified clean and equal to
 origin/main at that merge.
 PR #276 merged normally as `b878d2e1` at 16:09:07 UTC after exact `c89acfdd`
 complete source approval and all seven required CI owners plus `check` passed.
-The independent refactoring PRs below are still pending integration; none is
-made release-ready merely by its accepted design.
+The plan, common envelope and private acceptance observations were integrated
+with normal merge commits at 21:59:04–22:00:28 UTC: PR #277 as `9e07194e`,
+PR #278 as `3b8796ed`, and PR #279 as `1432cb85`. Each exact head had complete
+independent source approval and all seven required CI owners plus `check`
+passing; PR #278 also passed the literal full local required gate. The merged
+trees retain the exact approved source contents, and GitHub independently
+reports all three PRs merged. This closes those slices, not a release gate.
 
-| Pending prerequisite | Actual head and remaining acceptance |
+| Integration inventory | Actual head and remaining acceptance |
 | --- | --- |
-| PR #277: one plan and mainnet gate inventory | `7a9d391`; complete exact-head Opus source approval and all seven hosted CI owners plus `check` passed; integration still pending |
-| PR #278: pure envelope/list and SDK binding owner | `aab0389`; complete exact-head Opus source approval, literal full local required gate passed at 19:02:54 UTC and all seven hosted CI owners plus `check` passed; integration still pending |
-| PR #279: private observations of genuine recurrence | `3f2b9e1`; complete exact-head Opus source approval; actual owning observer units 4/0 and all seven hosted CI owners plus `check` passed; integration still pending |
-| PR #280: real host/signer/store capability map | `4d5507d`; complete exact-head Opus source approval; remaining CI/integration still pending |
+| PR #277: one plan and mainnet gate inventory | `7a9d391`; merged normally as `9e07194e` after complete source approval and all required CI passed |
+| PR #278: pure envelope/list and SDK binding owner | `aab0389`; merged normally as `3b8796ed`; complete source approval, literal full local required gate and all required CI passed |
+| PR #279: private observations of genuine recurrence | `3f2b9e1`; merged normally as `1432cb85`; complete source approval, owning observer units 4/0 and all required CI passed |
+| PR #280: real host/signer/store capability map | `4d5507d`; complete exact-head Opus source approval and all required CI passed; integration still pending |
 | PR #281: closed certified HTTPS relay | `7424d72`; complete exact-head Opus source approval and exact npm-ci passed; ancestor native oracle, genuine drain, generated-WASM Cloudflare and portable tests passed, not a latest full local gate or deployed-provider qualification |
+| PR #282: shared declared-state preparation | `7853869`; complete exact-head Opus source approval; literal full required gate and hosted recurrence still running, not passed |
+| PR #283: bounded SDK chunked-response owner | `9c7543a`; complete exact-head Opus source approval; SDK 246/0, workspace Clippy and all four pinned portable tasks passed; full required acceptance and integration remain open |
 
 Recheck live heads and required checks before integrating; pending never means
 passed. Preserve Draft #235 as extraction material and do not auto-merge
@@ -85,7 +92,7 @@ The contracts and acceptance for R0–R4 are in
 [implementation structure](docs/architecture/implementation-structure.md#maintainability-work-packages).
 These are coherent outcomes, not one obligatory PR per helper or file.
 
-- [ ] **R0 — one truthful plan and gate inventory:** consolidate this queue,
+- [x] **R0 — one truthful plan and gate inventory:** consolidate this queue,
   preserve original requirements/evidence, repair links, reconcile merged and
   pending startup work, and obtain independent plan/source review. Current
   status stays here; README does not acquire progress reports.
@@ -108,8 +115,9 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   successor, DO and CLI flat mappings. Pre-move literal vectors are unchanged;
   focused wire/core and full Rust-client iterations passed. Exact `aab0389`
   complete source review approved; its literal full local required gate passed
-  at 19:02:54 UTC without skipping the original e8/five-host recurrence. Hosted
-  acceptance/integration and remaining core/SDK dependency work are not closed.
+  at 19:02:54 UTC without skipping the original e8/five-host recurrence. All
+  required hosted acceptance passed and the slice merged normally as
+  `3b8796ed`. Remaining core/SDK dependency work is not closed.
 - [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
   admission, evaluation, completion, reconciliation and storage contracts;
   separate object/receipt/outbox repositories and memory implementations by
@@ -120,26 +128,24 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   and their runtime/configuration/callback/lease capabilities. The unreleased
   host constructors are replaced by one explicit closed event endpoint; actual
   authenticated execution, queries and standalone recovery remain separate.
-  The pre-change native suite passed 161/0 and exact `24fa651` received complete
-  independent PLAN APPROVE. Functional head `0515b67` passed the entire native
-  HTTP suite 164/0, including the original authenticated/recovery tests and
-  three added refusal/admission controls; its npm-ci also passed. Follow-up
-  unused-import cleanup passed exact `93fdf436` native tests 164/0, whole-workspace
-  all-feature Clippy, npm-ci and native rustdoc; complete source review approved
-  that head. The remaining single-caller recovery callback abstraction is also
-  simplified without changing lease/claim/send/ack behavior. Its latest exact
-  review, full acceptance and integration remain pending. No full native/core cleanup or security gate is
-  implied. Ordinary GitHub authentication is currently unavailable; leave PRs
-  open instead of using the PR-creation-only credential for updates or merge.
+  The pre-change native suite passed 161/0; the independently design-reviewed
+  implementation retains every authenticated/recovery test and adds three
+  refusal/admission controls. Functional `f5d6863` received complete independent
+  source approval, native tests 164/0, whole-workspace all-feature Clippy,
+  npm-ci and native rustdoc. One remaining single-caller recovery callback
+  abstraction is removed without changing lease/time/claim/encode/send/ack
+  or failure order. Source approval and scoped checks do not close its full
+  required gate, CI, combined-source integration or security audit.
   [DR-0203](docs/architecture/decisions/0203-declared-state-transition-preparation.md)
   has independent PLAN APPROVE at `d2be439` after actual pre-change public-library
   8/0 and durable/authenticated 11/0 controls. Its private preparation owner now
   replaces all five sorted loading loops and the duplicated writable/revision
   rules, while retaining two deliberately distinct assemblers and original
-  caller ordering. Private priority controls, focused migrated-caller tests,
-  complete source review and full required acceptance are pending; R2 as a
-  whole is still open. The approved R3 observation prerequisite is merged into
-  this implementation branch only, not publicly integrated.
+  caller ordering. Exact `7853869` has complete source approval; its ordinary
+  node-core suite, private priority controls, genuine core e8 and local
+  readiness passed. The literal full required gate is still running the real
+  operator recurrence; hosted acceptance and integration are open, not passed.
+  R2 as a whole remains open. Its R3 observation prerequisite is now in main.
 - [ ] **R3 — attributable tests and economical CI:** reuse bounded signed input
   and environment builders while keeping expected outcomes independent; separate
   pure, real-store, HTTP and compiled-CLI owners. Remove duplicate setup/work
@@ -152,8 +158,9 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   delay or assertions. It exposes the existing recurring selector's output;
   no cache, skipped owner or speedup is claimed. Exact `3f2b9e1` complete source
   review and hosted required CI passed; actual owning observer units passed
-  4/0 locally. No separately exact-head full local recurrence or public merge
-  is claimed. Other setup/reuse improvements remain open.
+  4/0 locally and the slice merged normally as `1432cb85`. No separately
+  exact-head full local recurrence is claimed. Other setup/reuse improvements
+  remain open; no workflow validation was removed on an unproved equivalence.
 - [ ] **R4 — audit and launch seams:** assemble exact source/build/configuration
   provenance, exposed-family authorization inventory, signer/store capability
   inventory and executable startup/stop/restart/recovery evidence for the audit.
