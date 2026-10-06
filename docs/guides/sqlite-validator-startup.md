@@ -24,7 +24,7 @@ The following Bash example expects independently approved public inputs in
 the environment. There is no network, credential or genesis fallback. Set
 `SUITE_SPECS` to the complete approved schedule; the single entry shown is
 only the format example used by local fixtures, not a production default.
-Each specification is `epoch:object:transaction:event:module:validator:state:checkpoint`.
+Each specification is `epoch:id:transaction:object:effects:code:config:certificate`.
 
 ```bash
 : "${CHAIN_ID:?}" "${VALIDATOR_ID_HEX:?}" "${DOMAIN_HEX:?}"
