@@ -74,7 +74,9 @@ where
     S: StructuredDurableDomainStateStore,
 {
     let result = query_request_receipt(store, context, domain, request_id)?;
-    Ok(http_receipt_query_result(result)?.encode()?)
+    Ok(http_receipt_query_result(result)
+        .map_err(NodeCoreError::from)?
+        .encode()?)
 }
 
 /// Queries the persisted next nonce for `sender` and encodes it as the

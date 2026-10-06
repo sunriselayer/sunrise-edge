@@ -1066,6 +1066,58 @@ mod tests {
     use protocol_types::Epoch;
 
     #[test]
+    fn every_envelope_refusal_retains_flat_fastpath_and_query_classification() {
+        use super::QueryDispatchError;
+        use canonical_encoding::{CanonicalDecodingError, CanonicalEncodingError};
+        use node_core::{EnvelopeError, RequestId};
+
+        let outer: RequestId = RequestId::new([0x91; 32]).unwrap();
+        let inner: RequestId = RequestId::new([0x92; 32]).unwrap();
+        let cases: Vec<EnvelopeError> = vec![
+            EnvelopeError::CanonicalEncoding(CanonicalEncodingError::DuplicateField(1)),
+            EnvelopeError::CanonicalDecoding(CanonicalDecodingError::MissingField(1)),
+            EnvelopeError::InvalidChainId(protocol_types::TypeError::EmptyChainId),
+            EnvelopeError::InvalidHashAlgorithm(protocol_types::TypeError::UnknownHashAlgorithmId(
+                0xFFFF,
+            )),
+            EnvelopeError::InvalidDigestLength(31),
+            EnvelopeError::ChainIdTooLong(node_core::MAX_CHAIN_ID_BYTES + 1),
+            EnvelopeError::ZeroRequestId,
+            EnvelopeError::InvalidRequestIdLength(31),
+            EnvelopeError::UnknownEventKind(0xFFFF),
+            EnvelopeError::UnknownResponseStatus(0xFFFF),
+            EnvelopeError::PayloadTooLarge(node_core::MAX_NODE_PAYLOAD_BYTES + 1),
+            EnvelopeError::StateTooLarge(node_core::MAX_NODE_STATE_BYTES + 1),
+            EnvelopeError::TooManyOutputItems {
+                collection: "responses",
+                count: node_core::MAX_NODE_OUTPUT_ITEMS + 1,
+            },
+            EnvelopeError::OutputTooLarge(node_core::MAX_NODE_OUTPUT_BYTES + 1),
+            EnvelopeError::ResponseRequestMismatch {
+                expected: outer,
+                actual: inner,
+            },
+            EnvelopeError::NestedItemLengthOverflow(usize::MAX),
+            EnvelopeError::TrailingNestedListBytes(1),
+        ];
+        assert_eq!(cases.len(), 17);
+        for envelope in cases {
+            let flat: NodeCoreError = NodeCoreError::from(envelope);
+            assert_eq!(
+                categorize_node_core_error(&flat),
+                (503, "fastpath-node-error")
+            );
+            let query: AdapterError = AdapterError::Query(QueryDispatchError::from(flat));
+            assert_eq!(query.http_status(), 503);
+            assert_eq!(query.code(), "query-failed");
+            assert!(matches!(
+                query,
+                AdapterError::Query(QueryDispatchError::Node(_))
+            ));
+        }
+    }
+
+    #[test]
     fn publication_error_mapping_is_fail_closed_and_preserves_distinct_conflicts() {
         assert_eq!(
             categorize_publication_error(&PublicationRetentionError::ConflictingRetainedIdentity),

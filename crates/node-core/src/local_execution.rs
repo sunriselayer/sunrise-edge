@@ -51,6 +51,7 @@ macro_rules! conversion {
     };
 }
 conversion!(NodeCoreError, Node);
+conversion!(EnvelopeError, Node);
 conversion!(RuntimeError, Node);
 conversion!(DurableReadError, Node);
 conversion!(DurableInvocationError, Node);

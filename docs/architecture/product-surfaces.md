@@ -283,6 +283,22 @@ their encoders and reject unknown identifiers, malformed nesting, trailing
 bytes, and non-canonical representations. The transaction signature message
 type is exported from node-core rather than duplicated by a client.
 
+[DR-0201](decisions/0201-envelope-and-acknowledgement-ownership.md) keeps
+canonical response-list framing in `node-core::envelope`, rather than a second
+wire implementation. `HttpNodeResult::decode_bound` performs ordinary HTTP
+decoding, including all nested-ID checks, before outer-request binding.
+Generic submit returns its whole valid zero/multiple-response result.
+`bind_request` also supports caller-local preparation after ordinary decoding.
+`BoundHttpNodeResult::single_acknowledgement` checks exactly one response and
+payload presence, not success or authorization. The paid, FastVote,
+publication and local-execution clients use this view but retain typed
+outcome/status/request/hash checks; publication still returns the whole result.
+Publication builds its expected reference before cardinality checks, FastVote
+computes its expected digest before HTTP decoding, paid checks status before
+target validation, and local execution validates the result before status.
+Malformed nested IDs retain the existing wire `RequestMismatch` refusal before
+typed payload parsing. These syntactic types confer no inclusion proof.
+
 The initial transport is synchronous and deliberately local-development-only.
 A small transport trait permits deterministic tests; the provided HTTP/1.1
 implementation (`LoopbackHttpTransport`) connects only to an explicit loopback

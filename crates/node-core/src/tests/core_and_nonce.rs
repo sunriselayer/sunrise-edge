@@ -630,7 +630,7 @@ fn event_decode_rejects_unknown_kind_and_schema_fields() {
     unknown_kind.field_bytes(6, payload.clone()).unwrap();
     assert_eq!(
         NodeEvent::decode(&unknown_kind.finish().unwrap()).unwrap_err(),
-        NodeCoreError::UnknownEventKind(0xFFFF)
+        EnvelopeError::UnknownEventKind(0xFFFF)
     );
 
     let mut extra_field = CanonicalStruct::new(NODE_EVENT_TYPE_ID, ENCODING_VERSION);
@@ -643,7 +643,7 @@ fn event_decode_rejects_unknown_kind_and_schema_fields() {
     extra_field.field_u16(7, 0).unwrap();
     assert!(matches!(
         NodeEvent::decode(&extra_field.finish().unwrap()),
-        Err(NodeCoreError::CanonicalDecoding(
+        Err(EnvelopeError::CanonicalDecoding(
             CanonicalDecodingError::UnexpectedField(7)
         ))
     ));
@@ -651,7 +651,7 @@ fn event_decode_rejects_unknown_kind_and_schema_fields() {
 
 #[test]
 fn event_requires_non_zero_request_and_canonical_payload() {
-    assert_eq!(RequestId::new([0; 32]), Err(NodeCoreError::ZeroRequestId));
+    assert_eq!(RequestId::new([0; 32]), Err(EnvelopeError::ZeroRequestId));
     assert!(matches!(
         NodeEvent::new(
             ChainId::new("sunrise-test").unwrap(),
@@ -661,7 +661,7 @@ fn event_requires_non_zero_request_and_canonical_payload() {
             NodeEventKind::Tick,
             vec![1, 2, 3],
         ),
-        Err(NodeCoreError::CanonicalDecoding(_))
+        Err(EnvelopeError::CanonicalDecoding(_))
     ));
 }
 

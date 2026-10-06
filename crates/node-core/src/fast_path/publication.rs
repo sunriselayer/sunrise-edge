@@ -274,6 +274,12 @@ impl From<ConsensusError> for PublicationRetentionError {
         Self::Consensus(error)
     }
 }
+impl From<crate::EnvelopeError> for PublicationRetentionError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for PublicationRetentionError {
     fn from(error: NodeCoreError) -> Self {
         Self::Node(error)

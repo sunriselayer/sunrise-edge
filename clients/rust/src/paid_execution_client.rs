@@ -289,20 +289,13 @@ impl<T: Transport> Client<T> {
         let body: Vec<u8> = crate::client::expect_success(response, NODE_RESULT_MEDIA_TYPE)?;
         let outer: HttpNodeResult = HttpNodeResult::decode(&body)?;
         let request_id: RequestId = RequestId::new(signed.intent.request_id)?;
-        if outer.request_id() != request_id {
-            return Err(ClientError::SubmitResponseRequestIdMismatch {
-                expected: request_id,
-                actual: outer.request_id(),
-            });
-        }
-        let [ack] = outer.responses() else {
-            return Err(ClientError::PaidExecutionAcknowledgementMismatch);
-        };
-        let payload: &[u8] = ack
-            .payload()
-            .ok_or(ClientError::PaidExecutionAcknowledgementMismatch)?;
+        let bound: node_wire::BoundHttpNodeResult = outer.bind_request(request_id)?;
+        let ack: node_wire::SingleAcknowledgement<'_> = bound
+            .single_acknowledgement()
+            .map_err(|_| ClientError::PaidExecutionAcknowledgementMismatch)?;
+        let payload: &[u8] = ack.payload();
         let result: PaidExecutionResult = decode_paid_execution_result(payload)?;
-        if ack.request_id() != request_id || result.request_id != signed.intent.request_id {
+        if result.request_id != signed.intent.request_id {
             return Err(ClientError::PaidExecutionAcknowledgementMismatch);
         }
         let expected_status: NodeResponseStatus = if result.status == PaidExecutionStatus::Success {

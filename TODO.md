@@ -97,6 +97,12 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   Generic submit retains its whole-result return contract; the HTTP decoder
   remains the existing nested-ID owner. Caller-local preparation and semantic
   error order stay unchanged. Pre-change vectors come first.
+  The current implementation branch has migrated the pure envelope/list owner,
+  wire-bound views and all four actual SDK consumers, including native,
+  successor, DO and CLI flat mappings. Pre-move literal vectors are unchanged;
+  focused wire/core and full Rust-client iterations passed. Full required
+  acceptance, exact-source independent review and CI are still pending; R1 is
+  not complete and this does not close the remaining core/SDK dependency work.
 - [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
   admission, evaluation, completion, reconciliation and storage contracts;
   separate object/receipt/outbox repositories and memory implementations by

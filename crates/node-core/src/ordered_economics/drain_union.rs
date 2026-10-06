@@ -110,6 +110,12 @@ impl fmt::Display for DrainSignerError {
 
 impl Error for DrainSignerError {}
 
+impl From<crate::EnvelopeError> for DrainSignerError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for DrainSignerError {
     fn from(value: NodeCoreError) -> Self {
         Self::Node(value)

@@ -132,6 +132,12 @@ impl From<LocalExecutionError> for BondLifecycleError {
         Self::Execution(error)
     }
 }
+impl From<crate::EnvelopeError> for BondLifecycleError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for BondLifecycleError {
     fn from(error: NodeCoreError) -> Self {
         Self::Node(error)
