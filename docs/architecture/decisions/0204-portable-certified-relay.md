@@ -86,13 +86,29 @@ Read-only GET failure remains an unavailable transport result. Preserve the
 event-only profile's existing status/error mapping unchanged. A stream failure
 after headers remains a transport error, not a definite rollback or new receipt.
 
+Native refusal responses may pass through only for the closed status set 400,
+401, 403, 404, 405, 409, 413, 415 and 422, with exactly
+`text/plain; charset=utf-8`. Read their entire body before returning headers,
+with a fixed 1 KiB guard and the same consumption timeout. An unsupported
+status/media, invalid length, oversized body or failed read becomes outcome
+unknown for a dispatched POST and unavailable for GET. These are definite
+HTTP refusal responses, not proof that an earlier attempt never committed:
+receipt/frontier/drain reconciliation remains core-defined. Do not copy the
+legacy unbounded error-body forwarding into the certified profile.
+
 Fully bound request bodies before dispatch using the existing bounded reader.
 The certified profile validates provider ceilings against its 32 MiB maximum,
 then narrows each route's own ceiling; the legacy 16 MiB + 512 cap and its error
 remain unchanged. Full publication/import frames keep their existing 32 MiB
 native ceiling, not an unconditional claim for every provider.
 
-The separate certified Cloudflare Worker explicitly caps requests at 8 MiB.
+The separate certified Cloudflare Worker uses the configured HTTPS/Bearer
+fetcher to a native certified host, not the default Worker's `NODE_CORE`
+service binding. Its trusted origin and token come from configuration/secrets;
+the same closed-route revalidation and synthesized-header isolation apply.
+The original binding-based, synthetic-origin event-only Worker is unchanged.
+No conformant certified service-binding implementation is claimed or required.
+The certified Worker explicitly caps requests at 8 MiB.
 This accommodates current ordinary intent/certificate envelopes but intentionally
 refuses larger publication/import bundles. The bounded reader holds chunks plus
 a contiguous copy, so a 32 MiB request could require roughly twice that memory.
@@ -109,6 +125,23 @@ qualified by an undeployed Fetch handler. Larger native results/bundles are
 outside the initial Vercel profile, and a mid-stream size/timeout failure is
 tested as a transport error, not a definitely-aborted operation.
 
+Deno's certified composition also explicitly defaults to an 8 MiB request
+ceiling. A trusted operator may narrow it or opt into at most the native 32 MiB
+maximum, but larger buffered requests are not qualified for provider memory or
+concurrency. Its certified response ceiling is explicitly 32 MiB with streaming;
+the event-only Deno constructor keeps its original defaults.
+
+Provider ceilings narrow coverage, not protocol constants. Cloudflare's and
+Deno's 8 MiB defaults accommodate the current maximum signed intent, certificate
+apply and published apply frames, but not maximum 32 MiB retain/import bundles.
+Vercel's 4 MiB ceiling can refuse maximum Publish-bearing `prepare`,
+`certificates`, `publications/source` and `publications/apply` requests as well
+as large retain/import bundles and query/results. Smaller non-Publish frames
+fit, subject to their native route limits. A provider-side 413 for an explicitly
+unsupported size is expected; no provider claims complete native-size parity.
+A slow bounded response may exceed the configured full-consumption timeout;
+that is an expected transport failure, not proof of a failed commit.
+
 Every successful stream has a mandatory route-specific byte guard, narrowed by
 the provider response ceiling. Use existing small vote/frontier/progress bounds
 where available and at most the 32 MiB canonical frame bound for general query,
@@ -124,8 +157,7 @@ default Worker. The existing Supabase and AWS Lambda adapters remain event-only;
 their `/v1/events` upstream URL validation and HTTP mapping remain unchanged.
 Use an explicit shared certified composition factory without widening those
 legacy constructors or accepting a profile from an HTTP request.
-A service binding must actually implement the certified core
-profile; the current Durable Object subset is not equivalent. No provider DB,
+The current Durable Object subset is not the certified native profile. No provider DB,
 D1 write, deployment, public listener or resource creation is part of this work.
 
 ## Verification and limits
