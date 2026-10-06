@@ -45,6 +45,9 @@ design/security owners; this file tracks every remaining completion group.
   `725e4a14` at 14:05:45 UTC after exact `13b0b766` complete source approval,
   all seven CI owners and `check`; PR #274's preserved normal merge `734f6454`
   was automatically recognized as merged. No public deployment is claimed.
+- [x] Storage-neutral startup guide and exact local evidence (PR #276, normal
+  merge `b878d2e`, GitHub `mergedAt` 16:09:07 UTC); complete `c89acfdd` source approval and all
+  seven required CI owners plus `check`. Public activation remains separate.
 
 Validator-set changes, slashing and reward/claim distribution remain FastVote
 completion requirements. Their functional implementation does not close the
@@ -62,12 +65,16 @@ PR #273 subsequently merged normally as `587fe587` at 13:44:23 UTC after
 its exact `77090388` complete source approval and all required CI passed.
 PR #275 then merged as `725e4a14`; local main was verified clean and equal to
 origin/main at that merge.
-This planning branch explicitly stacks on PR #276 at `c89acfdd`; it must not be
-described as already merged or independently validated runtime code.
+The planning branch originally stacked on PR #276 at `c89acfdd`. After its
+normal merge, PR #277 was explicitly retargeted to main at unchanged source
+`7a9d391`; the interrupted earlier CI remains interrupted evidence, not a pass.
 
-| Pending prerequisite | Actual head and remaining acceptance |
+| Pending integration | Actual head and remaining acceptance |
 | --- | --- |
-| PR #276: storage-neutral startup guide and truthful evidence | `c89acfdd`; complete exact-head two-file Opus source approval; its own final recurring-sqlite/check still pending |
+| PR #277: consolidated plan | `7a9d391`; complete exact-head documentation source approval; latest own required CI still pending |
+| PR #278: envelope and acknowledgement ownership | `aab0389`; fresh complete implementation review and final required acceptance still pending |
+| PR #279: private acceptance timing | `3f2b9e1`; fresh complete source review, owning local acceptance and final required CI pending; no speedup claim |
+| PR #280: actual composition and audit-input map | Documentation/module comments only; complete source review and own final required CI pending; no independent security audit or release qualification |
 
 Recheck live heads and required checks before integrating; pending never means
 passed. Preserve Draft #235 as extraction material and do not auto-merge
@@ -125,6 +132,10 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   inventory and executable startup/stop/restart/recovery evidence for the audit.
   Remove misleading unsupported advertised compositions and stale architecture
   claims; do not build another consensus or general orchestration framework.
+  The [composition inventory](docs/architecture/compositions-and-capabilities.md)
+  and [network audit input contract](docs/security/network-code-audit-scope.md)
+  identify actual surfaces and required final-review inputs. Their existence is
+  not a completed audit, selected public host or release qualification.
 
 Sequence R0 and the ready startup integrations first; review R1's contract
 before implementation. R2/R3 may run in parallel only with disjoint owners and
