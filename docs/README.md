@@ -10,6 +10,8 @@ detailed design, operator guides, and specialist references live here.
 - [Validation and build profiles](development/validation.md): storage-neutral
   required checks, selected PostgreSQL acceptance and assertion-preserving
   signature-heavy test builds.
+- [Preserved roadmap and execution history](development/history/roadmap-through-2026-10-06.md):
+  original release criteria and scoped historical evidence, not a live queue.
 
 ## Architecture
 

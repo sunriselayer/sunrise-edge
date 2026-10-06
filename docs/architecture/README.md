@@ -171,7 +171,7 @@ roadmap describes a later target state.
   execution; no fabricated predecessor, membership or activation authority.
 - [Repository validation](repository-validation.md)
   ([DR-0172](decisions/0172-storage-neutral-required-validation.md)):
-  four required storage-neutral lanes and separately selected complete PG
+  seven required storage-neutral owners and separately selected complete PG
   acceptance, each with a success-only result; no mandatory database product.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are

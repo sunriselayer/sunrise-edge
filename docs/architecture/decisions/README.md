@@ -96,6 +96,8 @@
 - [DR-0199: local TLS validator startup acceptance](0199-local-tls-validator-startup-acceptance.md)
 
 - [DR-0198: exact original-genesis published-code reference](0198-genesis-publication-reference-alignment.md)
+- [DR-0200: semantic maintainability and one mainnet roadmap](0200-maintainability-and-mainnet-roadmap.md)
+- [DR-0201: one envelope codec and acknowledgement binding owner](0201-envelope-and-acknowledgement-ownership.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong
