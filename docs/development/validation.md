@@ -49,3 +49,26 @@ report build time, test time and whole-gate time. A focused local speedup is not
 a hosted-CI, provider, load or production performance claim. Keep Cargo's shared
 target under one build owner; branch switches that expose stale package outputs
 require a narrow package rebuild, not deleting the repository or its databases.
+
+## Recurring acceptance observations
+
+The compiled SQLite acceptance uses a test-private closed-stage observer.
+Records distinguish initial readiness and Seal, the first successor, each
+actual recurring epoch, freeze/drain, history through cut/Seal, cut import and
+readiness, activation, the real fourth-host restart and computed terminal
+unlock. The existing recurring CI selector uses `--nocapture`; the selectors,
+seven required owners and all actual assertions are unchanged.
+
+Each record contains only a fixed stage label, an actual public epoch or `-`,
+the observation kind and monotonic elapsed milliseconds. `start` and `end`
+identify scope lifetime, not a passed test. `unwind` identifies panic unwinding;
+ordinary diagnostic write errors do not change acceptance. Enclosing epoch
+durations include nested observations and remaining checks, so do not sum them
+as independent costs. Some setup/reconstruction outside these coarse seams is
+not individually attributed.
+
+The terminal epoch still comes from real committed unlock rows and the signed
+configured delay. Full original-genesis history, every receipt, five-member
+quorum and restart/fencing/refusal checks remain active. No cache, shortened
+delay or performance improvement is established by the observer. See
+[DR-0202](../architecture/decisions/0202-private-recurring-acceptance-observations.md).

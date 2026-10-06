@@ -1242,6 +1242,11 @@ pub(super) fn run_compiled_four_host_seal(
     candidate_path: &Path,
     candidate: &OrderedCandidate,
 ) {
+    let _compiled_seal: crate::acceptance_timing::AcceptanceSpan =
+        crate::acceptance_timing::AcceptanceSpan::start(
+            crate::acceptance_timing::Stage::CompiledSeal,
+            Some(fixture.network.epoch),
+        );
     let before: Vec<SourceBusinessSnapshot> = fixture
         .stores
         .iter()
@@ -1666,6 +1671,11 @@ pub(super) async fn run(
     competing_candidate: &OrderedCandidate,
     successor: &super::successor_host_acceptance::SuccessorProcessInputs,
 ) {
+    let initial_seal: crate::acceptance_timing::AcceptanceSpan =
+        crate::acceptance_timing::AcceptanceSpan::start(
+            crate::acceptance_timing::Stage::InitialSeal,
+            Some(fixture.network.epoch),
+        );
     let fence: WriterFenceGeneration = fixture.operation.writer_fence();
     let mut stores: Vec<Arc<SqliteDurableStore>> = Vec::new();
     let mut ports: Vec<Arc<SealWarrantFaultStore>> = Vec::new();
@@ -2489,6 +2499,7 @@ pub(super) async fn run(
         node_core::ordered_economics::encode_ordered_proposal(original_proposal).unwrap(),
         consensus::encode_quorum_certificate(original_certificate).unwrap(),
     );
+    drop(initial_seal);
     super::successor_host_acceptance::run(&*fixture, successor, candidate, fence, &original_round)
         .await;
 }

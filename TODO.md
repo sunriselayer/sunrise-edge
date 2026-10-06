@@ -115,6 +115,11 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   restart/fencing/fault and optional selected-PG case. Prove any CI reuse from
   exact relevant executable/build inputs; do not add path-filter skips or call
   partial/ancestor/interrupted tests exact-head passes.
+  The independent timing slice adds test-private closed-stage observations to
+  the actual SQLite/compiled-CLI recurrence without changing original work,
+  delay or assertions. It exposes the existing recurring selector's output;
+  no cache, skipped owner or speedup is claimed. Exact-source review and full
+  required acceptance remain pending. Other setup/reuse improvements are open.
 - [ ] **R4 — audit and launch seams:** assemble exact source/build/configuration
   provenance, exposed-family authorization inventory, signer/store capability
   inventory and executable startup/stop/restart/recovery evidence for the audit.

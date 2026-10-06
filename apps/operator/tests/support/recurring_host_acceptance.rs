@@ -7,6 +7,7 @@ use super::super::ordered_seal_sqlite_acceptance::{
     acknowledged_output, saved_configured_peer_results, saved_policy_submission_rounds,
 };
 use super::*;
+use crate::acceptance_timing::{AcceptanceSpan, Stage};
 use consensus::readiness::ReadinessCertificate;
 use consensus::{ConsensusMessage, ConsensusVote};
 use node_core::fast_path::FastPathEd25519Verifier;
@@ -1345,6 +1346,8 @@ fn freeze_and_drain(
     network: &Path,
     next_members: &[SuccessorProcessMember],
 ) -> (Vec<u8>, Vec<u8>) {
+    let _freeze_drain: AcceptanceSpan =
+        AcceptanceSpan::start(Stage::FreezeDrain, Some(current.expected_context().epoch()));
     let epoch: u64 = current.expected_context().epoch().get();
     let next_context: execution::publication::PublicationContext =
         execution::publication::PublicationContext::new(
@@ -1571,6 +1574,10 @@ fn install_next(
     next_members: &[SuccessorProcessMember],
 ) -> (CurrentTargets, PathBuf, PathBuf) {
     let current: &SuccessorWorkflowAuthority = source.authority;
+    let _cut_import: AcceptanceSpan = AcceptanceSpan::start(
+        Stage::CutImportReadiness,
+        Some(current.expected_context().epoch()),
+    );
     let targets: &CurrentTargets = source.targets;
     let history: &Path = source.history;
     let cut: PathBuf = directory.join("business-cut");
@@ -1897,6 +1904,10 @@ fn restart_fourth_current_host(
     hosts: &mut Vec<HostProcess>,
     receipt_history: &BTreeMap<[u8; 32], Vec<u8>>,
 ) {
+    let _restart: AcceptanceSpan = AcceptanceSpan::start(
+        Stage::FourthHostRestart,
+        Some(current.expected_context().epoch()),
+    );
     assert_eq!(current.expected_context().epoch().get(), 2);
     assert_eq!(hosts.len(), 4);
     for tag in [0x70, 0x71] {
@@ -2123,6 +2134,10 @@ pub(super) fn run(
     while expected_epoch < terminal_epoch.get() {
         let current: SuccessorWorkflowAuthority = workflow(fixture, &links);
         assert_eq!(current.expected_context().epoch().get(), expected_epoch);
+        let _epoch: AcceptanceSpan = AcceptanceSpan::start(
+            Stage::RecurringEpoch,
+            Some(current.expected_context().epoch()),
+        );
         let directory: PathBuf = fixture
             .directory
             .0
@@ -2207,6 +2222,8 @@ pub(super) fn run(
             );
         }
         let history: PathBuf = directory.join("history-through-cut");
+        let cut_history: AcceptanceSpan =
+            AcceptanceSpan::start(Stage::HistoryCut, Some(current.expected_context().epoch()));
         export_history(
             fixture,
             &links,
@@ -2215,6 +2232,7 @@ pub(super) fn run(
             hosts[0].validator,
             &history,
         );
+        drop(cut_history);
         let (next, cut, certificate): (CurrentTargets, PathBuf, PathBuf) = install_next(
             &inputs.executables,
             fixture,
@@ -2227,6 +2245,8 @@ pub(super) fn run(
             &directory,
             &next_members,
         );
+        let ordered_seal: AcceptanceSpan =
+            AcceptanceSpan::start(Stage::OrderedSeal, Some(current.expected_context().epoch()));
         let mut seal_bytes: Option<Vec<u8>> = None;
         let mut seal_path: Option<PathBuf> = None;
         for index in 0..targets.paths.len() {
@@ -2369,6 +2389,9 @@ pub(super) fn run(
         }
         let historical_network: PathBuf = network_file(&directory.join("historical"), &historical);
         let through_seal: PathBuf = directory.join("history-through-seal");
+        drop(ordered_seal);
+        let seal_history: AcceptanceSpan =
+            AcceptanceSpan::start(Stage::HistorySeal, Some(current.expected_context().epoch()));
         export_history(
             fixture,
             &links,
@@ -2377,6 +2400,7 @@ pub(super) fn run(
             historical[0].validator,
             &through_seal,
         );
+        drop(seal_history);
         drop(historical);
         links.push(Link {
             plan_history: history,
@@ -2388,6 +2412,10 @@ pub(super) fn run(
         assert_eq!(
             activated.expected_context().epoch().get(),
             expected_epoch + 1
+        );
+        let activation: AcceptanceSpan = AcceptanceSpan::start(
+            Stage::SuccessorActivation,
+            Some(activated.expected_context().epoch()),
         );
         let activation_binary: &str = inputs.executables.successor_activation.to_str().unwrap();
         let activation_flags: Vec<Vec<String>> = (0..next.paths.len())
@@ -2429,6 +2457,7 @@ pub(super) fn run(
                     .contains("successor_activation=already-activated")
             );
         }
+        drop(activation);
         let old_claimant: usize = original_member_index(fixture, [0xa1; 32]);
         let old_share: Option<node_core::fee_claims::FeeClaimInspection> =
             if expected_epoch + 1 == 2 {
@@ -2507,6 +2536,10 @@ pub(super) fn run(
     }
     let unlocked: SuccessorWorkflowAuthority = workflow(fixture, &links);
     assert_eq!(unlocked.expected_context().epoch(), terminal_epoch);
+    let _terminal_unlock: AcceptanceSpan = AcceptanceSpan::start(
+        Stage::TerminalUnlock,
+        Some(unlocked.expected_context().epoch()),
+    );
     assert_eq!(
         links.len(),
         usize::try_from(

@@ -1306,6 +1306,11 @@ fn accept(
     assert_eq!(inputs.targets.len(), 4);
     assert_eq!(inputs.members.len(), inputs.targets.len());
     let workflow: SuccessorWorkflowAuthority = load_workflow(fixture, inputs, export);
+    let first_successor: crate::acceptance_timing::AcceptanceSpan =
+        crate::acceptance_timing::AcceptanceSpan::start(
+            crate::acceptance_timing::Stage::FirstSuccessor,
+            Some(workflow.expected_context().epoch()),
+        );
     let verified: &validator_set::ValidatorSet = workflow.fastvote_certifier().validator_set();
     assert_eq!(verified.validators().len(), inputs.members.len());
     let mut actual_ids: Vec<ValidatorId> = Vec::with_capacity(inputs.members.len());
@@ -1559,6 +1564,7 @@ fn accept(
         "the freshly instantiated Definition is live on the caught-up successor host"
     );
     drop(reopened_all);
+    drop(first_successor);
     recurring::run(
         fixture,
         inputs,

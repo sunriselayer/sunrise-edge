@@ -81,7 +81,7 @@ const recurringCases = registryRows("CI_REQUIRED_EXTENDED_CASES");
 const expectedRecurringCases = [
   ["core-recurrence", "node-core", "--lib", "ordered_economics::tests::causal_placement::control_reconstruction::frozen_completion::successor_activation::successor_recurring_delay::genuine_recurring_sqlite_handoffs_reach_configured_seven_epoch_withdrawal_unlock", "no"],
   ["readiness-sqlite", "sunrise-edge-operator", "conditional_readiness_sqlite", "compiled_conditional_readiness_real_retention_restart_and_distinct_certificate", "no"],
-  ["recurring-sqlite", "sunrise-edge-operator", "conditional_readiness_sqlite", "compiled_registered_replacement_and_recurring_successor_hosts", "no"],
+  ["recurring-sqlite", "sunrise-edge-operator", "conditional_readiness_sqlite", "compiled_registered_replacement_and_recurring_successor_hosts", "yes"],
 ];
 const expectedCases = [
   "fastvote_pg_operator_multivalidator_e2e",
@@ -498,7 +498,7 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[1][2], recurringCases[1][3], "--", "--ignored", "--exact", "--list"],
     ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[1][2], recurringCases[1][3], "--", "--ignored", "--exact"],
     ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[2][2], recurringCases[2][3], "--", "--ignored", "--exact", "--list"],
-    ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[2][2], recurringCases[2][3], "--", "--ignored", "--exact"],
+    ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[2][2], recurringCases[2][3], "--", "--ignored", "--exact", "--nocapture"],
   ]);
   for (const [group, pkg, target, name, capture] of cases) {
     const log = lanes.get(group);
