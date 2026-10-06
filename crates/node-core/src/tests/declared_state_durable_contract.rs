@@ -645,7 +645,7 @@ fn authenticated_nonce_fences_and_object_load_precede_each_application_read_and_
         commits[0].object_changes().reads(),
         &[DurableObjectHeadRead::new(object_id, head)]
     );
-    let state: &AtomicStateTransaction = commits[0].state().unwrap();
+    let state: &runtime::DurableStateTransaction = commits[0].state().unwrap();
     let nonce: &StateMutationEntry = state
         .mutations()
         .iter()
