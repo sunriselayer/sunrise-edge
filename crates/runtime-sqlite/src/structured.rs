@@ -57,9 +57,6 @@ pub const SQLITE_STRUCTURED_SCHEMA_IDENTITY: &[u8] =
 const STRUCTURED_APPLICATION_ID: i64 = 0x5352_4453;
 const STRUCTURED_SCHEMA_VERSION: i64 = 5;
 const STRUCTURED_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const WAL_SUFFIX: &str = "-wal";
-const SHM_SUFFIX: &str = "-shm";
-const JOURNAL_SUFFIX: &str = "-journal";
 
 /// Fail-closed errors opening, bootstrapping, or operating a structured
 /// SQLite database outside the request-path traits.
@@ -212,6 +209,9 @@ impl From<schema::SchemaError> for SqliteDurableStoreError {
 /// when used from an asynchronous request runtime.
 pub struct SqliteDurableStore {
     engine: SqlDurableEngine<NativeSqlBackend>,
+    // Only a freshly created handle may flush its original file identity.
+    // This is native ownership, never a persisted serving authorization.
+    created_file: Option<native_files::ImportFile>,
 }
 
 impl fmt::Debug for SqliteDurableStore {
@@ -240,23 +240,6 @@ fn run_operator_step<T>(
     outcome
         .map_err(|_| SqliteDurableStoreError::Unavailable)?
         .map_err(SqliteDurableStoreError::from)
-}
-
-/// Rechecks that no `-wal`/`-shm`/`-journal` sidecar appeared in the brief
-/// window between exclusive main-file reservation and enabling WAL
-/// journaling, since enabling WAL is the first operation that would itself
-/// create one.
-fn check_no_sidecar_appeared(path: &Path) -> Result<(), SqliteDurableStoreError> {
-    for suffix in [WAL_SUFFIX, SHM_SUFFIX, JOURNAL_SUFFIX] {
-        let mut sidecar = path.as_os_str().to_owned();
-        sidecar.push(suffix);
-        if std::fs::symlink_metadata(&sidecar).is_ok() {
-            return Err(SqliteDurableStoreError::File(std::io::Error::from(
-                std::io::ErrorKind::AlreadyExists,
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// Opens an existing file with the exact native connection checks live
@@ -312,6 +295,7 @@ impl SqliteDurableStore {
         })?;
         Ok(Self {
             engine: SqlDurableEngine::new(backend, namespace),
+            created_file: None,
         })
     }
 
@@ -400,6 +384,7 @@ impl SqliteDurableStore {
         })?;
         Ok(Self {
             engine: SqlDurableEngine::new(backend, namespace),
+            created_file: None,
         })
     }
 
@@ -419,6 +404,7 @@ impl SqliteDurableStore {
         })?;
         Ok(Self {
             engine: SqlDurableEngine::new(backend, namespace),
+            created_file: None,
         })
     }
 
@@ -437,10 +423,12 @@ impl SqliteDurableStore {
         namespace: SqliteNamespace,
         initial_writer_fence: WriterFenceGeneration,
     ) -> Result<Self, SqliteDurableStoreError> {
-        let path: &Path = path.as_ref();
+        let path: std::path::PathBuf =
+            native_files::validate_fresh(path.as_ref()).map_err(SqliteDurableStoreError::File)?;
+        let path: &Path = &path;
         let reserved: native_files::ImportFile =
             native_files::create_new(path).map_err(SqliteDurableStoreError::File)?;
-        check_no_sidecar_appeared(path)?;
+        native_files::require_no_sidecars(path).map_err(SqliteDurableStoreError::File)?;
         let connection: Connection = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -478,7 +466,20 @@ impl SqliteDurableStore {
         native_files::sync_created(path, &reserved).map_err(SqliteDurableStoreError::File)?;
         Ok(Self {
             engine: SqlDurableEngine::new(backend, namespace),
+            created_file: Some(reserved),
         })
+    }
+
+    /// Rechecks and flushes the original freshly reserved main file and
+    /// directory identity. Reopened handles cannot claim fresh ownership.
+    pub fn sync_created(&self) -> Result<(), SqliteDurableStoreError> {
+        let held: &native_files::ImportFile = self.created_file.as_ref().ok_or_else(|| {
+            SqliteDurableStoreError::File(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "store was not opened through the fresh-only factory",
+            ))
+        })?;
+        native_files::sync_owned(held).map_err(SqliteDurableStoreError::File)
     }
 
     /// Atomically advances the persisted writer fence.
@@ -566,18 +567,6 @@ impl DurableDomainStateStore for SqliteDurableStore {
 
 mod inactive_import;
 pub use inactive_import::SqliteImportTarget;
-
-/// Re-verifies and flushes a freshly created local file and its parent
-/// directory entry, immediately before a fresh-preparation caller declares
-/// one closed success. Not specific to the structured schema: it works for
-/// any regular file created through this crate's fresh-only factories
-/// (including the blob store's own file), since all rely on the same
-/// native file identity guard. Never repairs, resumes or deletes anything.
-pub fn sync_freshly_created_destination(path: impl AsRef<Path>) -> std::io::Result<()> {
-    let path: &Path = path.as_ref();
-    let held: native_files::ImportFile = native_files::open_existing(path)?;
-    native_files::sync_created(path, &held)
-}
 
 impl StructuredDurableDomainStateStore for SqliteDurableStore {
     fn get_object_head(
@@ -765,42 +754,6 @@ impl runtime::OutgoingSealRepository for SqliteDurableStore {
     ) -> DurableCommitOutcome {
         self.engine
             .commit_seal_completion(context, token, transaction, sealed)
-    }
-}
-
-#[cfg(test)]
-mod create_new_tests {
-    use super::*;
-    use protocol_types::{ChainId, ValidatorId};
-    use std::{
-        fs,
-        sync::atomic::{AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
-
-    fn fresh_path(label: &str) -> std::path::PathBuf {
-        let nonce = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "sunrise-edge-sqlite-create-new-{label}-{}-{nanos}-{nonce}.db",
-            std::process::id()
-        ))
-    }
-
-    fn cleanup(path: &std::path::Path) {
-        for suffix in ["", WAL_SUFFIX, SHM_SUFFIX, JOURNAL_SUFFIX] {
-            let mut full = path.as_os_str().to_owned();
-            full.push(suffix);
-            let full = std::path::PathBuf::from(full);
-            if full.exists() {
-                let _ = fs::remove_file(full);
-            }
-        }
     }
 }
 

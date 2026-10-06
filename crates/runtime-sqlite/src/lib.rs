@@ -22,7 +22,7 @@ mod structured;
 pub use blob::{SQLITE_BLOB_SCHEMA_IDENTITY, SqliteBlobStore, SqliteBlobStoreError};
 pub use structured::{
     SQLITE_STRUCTURED_SCHEMA_IDENTITY, SqliteDurableStore, SqliteDurableStoreError,
-    SqliteImportTarget, SqliteNamespace, sync_freshly_created_destination,
+    SqliteImportTarget, SqliteNamespace,
 };
 
 use runtime::{
@@ -42,6 +42,16 @@ use std::{
 const SCHEMA_VERSION: i64 = 1;
 const APPLICATION_ID: i64 = 0x5352_4544;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Checks an original-genesis destination and its SQLite sidecars without
+/// creating anything. Parents must already be regular, non-symlink
+/// directories. The returned absolute path contains no parent traversal.
+/// A later fresh factory still reserves and rechecks its own file identity.
+pub fn validate_fresh_sqlite_destination(
+    path: impl AsRef<Path>,
+) -> std::io::Result<std::path::PathBuf> {
+    native_files::validate_fresh(path.as_ref())
+}
 
 /// Errors produced while opening or inspecting a durable SQLite store.
 #[derive(Debug)]

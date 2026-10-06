@@ -5,10 +5,50 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+#[derive(Debug)]
 pub(crate) struct ImportFile {
     path: PathBuf,
     file: File,
     ancestors: Vec<(PathBuf, File)>,
+}
+
+pub(crate) const SIDECAR_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
+
+fn require_absent(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "fresh SQLite destination or sidecar already exists",
+        )),
+    }
+}
+
+/// Checks prospective ownership without creating a main file or a sidecar.
+/// Existing import factories retain their separately defined policy.
+pub(crate) fn validate_fresh(path: &Path) -> io::Result<PathBuf> {
+    let normalized: PathBuf = absolute(path)?;
+    let ancestors: Vec<(PathBuf, File)> = pin_ancestors(&normalized)?;
+    require_absent(&normalized)?;
+    require_no_sidecars(&normalized)?;
+    for (ancestor, file) in ancestors {
+        directory_attached(&ancestor, &file)?;
+    }
+    Ok(normalized)
+}
+
+pub(crate) fn require_no_sidecars(path: &Path) -> io::Result<()> {
+    for suffix in SIDECAR_SUFFIXES {
+        let mut sidecar = path.as_os_str().to_owned();
+        sidecar.push(suffix);
+        require_absent(Path::new(&sidecar))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn sync_owned(held: &ImportFile) -> io::Result<()> {
+    sync_created(&held.path, held)
 }
 
 fn absolute(path: &Path) -> io::Result<PathBuf> {

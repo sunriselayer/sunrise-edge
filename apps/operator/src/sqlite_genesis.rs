@@ -11,6 +11,9 @@
 #![forbid(unsafe_code)]
 
 use crate::common::{FlagSet, parse_hash_suite, parse_hex_32};
+use crate::sqlite_genesis_checks::{
+    OriginalHostPins, read_original_host_state, read_stable_advisory, verify_original_signer,
+};
 use execution::LocalWasmExecutionEngine;
 use execution::local_execution::LocalExecutionPolicy;
 use execution::publication::PublicationContext;
@@ -39,15 +42,11 @@ const ZERO_WRITER_FENCE: &str = "zero initial writer fence";
 const DEADLINE_OVERFLOW: &str = "preparation deadline overflow";
 const INVALID_DEADLINE: &str = "invalid preparation deadline";
 const INVALID_CORRELATION: &str = "invalid preparation correlation id";
-const PARENT_TRAVERSAL: &str = "fresh destination cannot traverse parent components";
 const SIDECAR_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
 const DESTINATION_ALIAS: &str =
     "a fresh destination or its -wal/-shm/-journal sidecar aliases another destination";
-const DESTINATION_EXISTS: &str = "a fresh destination, or its -wal/-shm/-journal sidecar, already exists; preparation is fresh-only";
 const PREFLIGHT_REQUIRES_CAUSAL: &str =
     "sqlite-genesis preflight requires a causal-admission genesis";
-const TOKEN_CHANGED: &str =
-    "source changed during preflight; refusing to report an advisory success";
 
 const PREPARE_VALUE_FLAGS: &[&str] = &[
     "--chain-id",
@@ -138,13 +137,19 @@ fn run_prepare(tokens: impl Iterator<Item = OsString>) -> Result<(), Box<dyn Err
     if root.genesis_committee().get(validator).is_none() {
         return Err(NOT_COMMITTEE_MEMBER.into());
     }
-    require_fresh_destination_set(&state_db, &blob_db)?;
+    // Pure policy composition must refuse unsupported input before either
+    // destination is reserved. Installation failures later preserve partial
+    // files and never report success or attempt automatic repair.
+    let ordered_policy: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(&root, domain)?;
+    let (state_db, blob_db): (PathBuf, PathBuf) =
+        require_fresh_destination_set(&state_db, &blob_db)?;
     let namespace: SqliteNamespace = SqliteNamespace::new(chain.clone(), validator, domain);
     let initial_fence: WriterFenceGeneration =
         WriterFenceGeneration::new(1).ok_or(ZERO_WRITER_FENCE)?;
     let store: SqliteDurableStore =
         SqliteDurableStore::create_new(&state_db, namespace, initial_fence)?;
-    let blobs: SqliteBlobStore = SqliteBlobStore::create_new(&blob_db)?;
+    let blobs: SqliteBlobStore = SqliteBlobStore::create_new_fresh(&blob_db)?;
     let deadline: u64 = SystemClock
         .now_unix_millis()?
         .checked_add(60_000)
@@ -162,8 +167,6 @@ fn run_prepare(tokens: impl Iterator<Item = OsString>) -> Result<(), Box<dyn Err
         root.manifest(),
         created_checkpoint,
     )?;
-    let ordered_policy: OrderedEconomicsPolicy =
-        OrderedEconomicsPolicy::from_genesis_root(&root, domain)?;
     let leg_policy: LocalExecutionPolicy =
         LocalExecutionPolicy::generic_object_results(expected_context.clone());
     let engine: LocalWasmExecutionEngine = LocalWasmExecutionEngine::new();
@@ -182,8 +185,8 @@ fn run_prepare(tokens: impl Iterator<Item = OsString>) -> Result<(), Box<dyn Err
         &env,
         now_unix_millis,
     )?;
-    runtime_sqlite::sync_freshly_created_destination(&state_db)?;
-    runtime_sqlite::sync_freshly_created_destination(&blob_db)?;
+    store.sync_created()?;
+    blobs.sync_created()?;
     println!(
         "complete=true mode=prepare chain_id={chain} validator_id={validator} domain={domain} protocol_version={} epoch={} writer_fence={}",
         protocol_version.get(),
@@ -195,29 +198,14 @@ fn run_prepare(tokens: impl Iterator<Item = OsString>) -> Result<(), Box<dyn Err
     Ok(())
 }
 
-/// Normalizes a destination path without touching the filesystem: resolves
-/// against the current directory if relative, strips `.` components, and
-/// refuses `..` traversal. Does not require the path to exist.
-fn normalize_fresh_path(path: &Path) -> Result<PathBuf, Box<dyn Error>> {
-    let absolute: PathBuf = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    let mut result: PathBuf = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            std::path::Component::ParentDir => return Err(PARENT_TRAVERSAL.into()),
-            std::path::Component::CurDir => {}
-            other => result.push(other),
-        }
-    }
-    Ok(result)
-}
-
-fn require_fresh_destination_set(state_db: &Path, blob_db: &Path) -> Result<(), Box<dyn Error>> {
-    let state_main: PathBuf = normalize_fresh_path(state_db)?;
-    let blob_main: PathBuf = normalize_fresh_path(blob_db)?;
+fn require_fresh_destination_set(
+    state_db: &Path,
+    blob_db: &Path,
+) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
+    // Both prospective parents, main files and sidecars are checked before
+    // creation of either file. Only NotFound proves a prospective leaf absent.
+    let state_main: PathBuf = runtime_sqlite::validate_fresh_sqlite_destination(state_db)?;
+    let blob_main: PathBuf = runtime_sqlite::validate_fresh_sqlite_destination(blob_db)?;
     let mut candidates: Vec<PathBuf> = vec![state_main.clone(), blob_main.clone()];
     for main in [&state_main, &blob_main] {
         for suffix in SIDECAR_SUFFIXES {
@@ -233,12 +221,7 @@ fn require_fresh_destination_set(state_db: &Path, blob_db: &Path) -> Result<(), 
             }
         }
     }
-    for candidate in &candidates {
-        if std::fs::symlink_metadata(candidate).is_ok() {
-            return Err(DESTINATION_EXISTS.into());
-        }
-    }
-    Ok(())
+    Ok((state_main, blob_main))
 }
 
 pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>> {
@@ -330,19 +313,6 @@ fn run_preflight(tokens: impl Iterator<Item = OsString>) -> Result<(), Box<dyn E
         StorageDeadline::new(deadline).ok_or(INVALID_DEADLINE)?,
         StorageCorrelationId::new([0x50; 16]).ok_or(INVALID_CORRELATION)?,
     );
-    node_core::require_ordinary_namespace(&store, &operation, domain)?;
-    use runtime::portable::{DurablePortableSnapshotRepository, PortableSnapshotToken};
-    let token_before: PortableSnapshotToken = store.begin_portable_snapshot(&operation, domain)?;
-    crate::sqlite_genesis_checks::verify_original_host_pins(
-        &store,
-        &operation,
-        domain,
-        &expected_context,
-        &root,
-        &resolver,
-        validator,
-        &public_key,
-    )?;
     let ordered_policy: OrderedEconomicsPolicy =
         OrderedEconomicsPolicy::from_genesis_root(&root, domain)?;
     let leg_policy: LocalExecutionPolicy =
@@ -356,11 +326,18 @@ fn run_preflight(tokens: impl Iterator<Item = OsString>) -> Result<(), Box<dyn E
         blobs: &blobs,
         seal: None,
     };
-    node_core::ordered_economics::query_status(&store, &operation, &env)?;
-    let token_after: PortableSnapshotToken = store.begin_portable_snapshot(&operation, domain)?;
-    if token_before != token_after {
-        return Err(TOKEN_CHANGED.into());
-    }
+    let pins: OriginalHostPins<'_> = OriginalHostPins {
+        domain,
+        expected_context: &expected_context,
+        root: &root,
+        resolver: &resolver,
+    };
+    read_stable_advisory(&store, &operation, domain, || {
+        let (_, record) = read_original_host_state(&store, &operation, &pins)?;
+        verify_original_signer(&record, &root, validator, &public_key)?;
+        node_core::ordered_economics::query_status(&store, &operation, &env)?;
+        Ok(())
+    })?;
     println!(
         "complete=true mode=preflight advisory=true chain_id={chain} validator_id={validator} domain={domain} protocol_version={} epoch={} writer_fence={}",
         protocol_version.get(),

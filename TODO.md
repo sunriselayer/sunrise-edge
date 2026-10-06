@@ -145,8 +145,9 @@ verifies the current two-publication frontier, independently replayed intact
 saved cut, historical drain-carrier corruption/tombstone/physical-deletion
 refusals and exact reopened material. Its ordinary prior prefix is explicitly
 empty; it does not claim the impossible historical-prefix traversal passed.
-Final integrated required, selected PG, compiled recurrence and CI acceptance
-remain pending below.
+These ancestor-scoped fixes do not by themselves prove final acceptance. The
+completed integrated required, selected PG, compiled recurrence and exact-head
+CI evidence is recorded in the Delivery 3 closure above.
 
 ### Delivery 3 closure checklist
 
@@ -734,8 +735,8 @@ Import provides no readiness, Seal, activation or deployed-provider authority.
 - [ ] **Before live exposure:** close the independently scoped economics and
   ingress security gates and the selected initial-network release profile.
   Review the locked Cloudflare development toolchain's dependency advisories
-  separately from chain exploit findings: on 2026-10-02 `npm ci` and `npm audit`
-  reported six high-severity affected packages including propagated tooling
+  separately from chain exploit findings: on 2026-10-06 `npm ci` reported
+  seven high-severity affected packages including propagated tooling
   dependencies; `npm audit --omit=dev` reported zero. No forced audit-fix or
   unrelated dependency PR was merged, and development-tool exposure still
   needs review before a release claim.

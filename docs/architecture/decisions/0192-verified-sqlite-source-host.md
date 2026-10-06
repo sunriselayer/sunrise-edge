@@ -2,8 +2,9 @@
 
 Date: 2026-10-04 (Asia/Singapore)
 
-Status: Proposed implementation composition; independent review and functional
-acceptance are required. Current evidence and remaining work belong in
+Status: Accepted composition following the independently reviewed and merged
+Delivery 3 implementation. This records the composition boundary, not release
+or security-audit readiness. Current evidence and remaining work belong in
 [TODO.md](../../../TODO.md).
 
 ## Context

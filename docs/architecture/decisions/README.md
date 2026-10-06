@@ -87,9 +87,10 @@
 - [DR-0189: first successor target-local activation and authenticated serving](0189-first-successor-serving.md)
 - [DR-0190: bounded read-only fee-claim preparation transport (Proposed)](0190-read-only-fee-claim-preparation-transport.md)
 - [DR-0191: recurring successor serving over a verified link chain](0191-recurring-successor-serving.md)
-- [DR-0192: verified original SQLite Seal host composition (Proposed)](0192-verified-sqlite-source-host.md)
+- [DR-0192: verified original SQLite Seal host composition](0192-verified-sqlite-source-host.md)
 - [DR-0193: required recurring acceptance over isolated owners](0193-required-recurring-acceptance.md)
 - [DR-0194: recurring handoff acceptance by owning boundary](0194-recurring-acceptance-ownership.md)
+- [DR-0195: explicit local SQLite validator preparation and preflight](0195-local-sqlite-validator-startup.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

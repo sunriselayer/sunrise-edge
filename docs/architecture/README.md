@@ -155,8 +155,8 @@ roadmap describes a later target state.
 - [Original SQLite source hosting](decisions/0192-verified-sqlite-source-host.md):
   existing Ordinary/Unsealed namespace, one fresh writer fence, locally pinned
   original-root composition and verified ordered state without implicit repair.
-- [Local SQLite validator startup](decisions/0195-local-sqlite-validator-startup.md)
-  : separate fresh signed-manifest preparation, snapshot-bound advisory
+- [Local SQLite validator startup](decisions/0195-local-sqlite-validator-startup.md):
+  separate fresh signed-manifest preparation, snapshot-bound advisory
   preflight and independently reverified serving; no public activation authority.
 - [Initial validator bond registration](initial-validator-bond.md)
   ([DR-0179](decisions/0179-initial-validator-bond-registration.md)):
