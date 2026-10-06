@@ -1,6 +1,6 @@
 # Current delivery roadmap
 
-**2026-10-05: one integrated implementation and refactoring queue.**
+**2026-10-06: one integrated implementation and refactoring queue.**
 [DR-0173](docs/architecture/decisions/0173-integrated-implementation-refactoring.md)
 integrates the remaining functions with responsibility-oriented cleanup.
 The user's newer architecture-first direction is recorded in
@@ -21,7 +21,7 @@ Only this file owns current status, sequencing and deferred work.
 | Generic paid contracts and Standard Asset | DR-0121–0128 implement Publish/Instantiate/Call, ordinary contract-defined fees and asset create/transfer/split/merge/mint/burn; no Standard Asset privilege in node-core |
 | Delivery 1: certified network contract lifecycle | PR #228 merged on 2026-09-27 after the full gate, fresh exact-head Opus approval and CI; paid lifecycle, assets, replay and declared catch-up, not complete state handoff |
 | Delivery 2: fixed-epoch ordered economics | PR #232 merged on 2026-09-27; shared ordering for claims, bonds and evidence/slash/reactivation, with four-namespace CLI evidence. Genuine membership-dependent Deposit/Withdraw positives remain in Delivery 3 |
-| Delivery 3 functional handoff | PR #237/#238/#239/#242/#244/#245/#250/#252/#255/#256 merged the prerequisites. PR #269 merged core/store recurrence; PR #270 implements the real SDK/CLI/HTTP recurring membership/recovery workflow. All local owners passed at functional head `65b2ee8`; its final documentation-head review and current required CI remain normal-merge prerequisites, not provider activation or independent audit evidence |
+| Delivery 3 functional handoff | PR #237/#238/#239/#242/#244/#245/#250/#252/#255/#256 merged the prerequisites. PR #269 merged core/store recurrence; PR #270 normally merged the real SDK/CLI/HTTP recurring membership/recovery workflow as `952c77f` on 2026-10-05 after fresh complete exact-head Opus approval and all seven required CI owners plus `check`. All local owners passed at functional ancestor `65b2ee8`; this is neither provider activation nor independent audit evidence |
 | First Seal-derived successor | [PR #267](https://github.com/sunriselayer/sunrise-edge/pull/267): source-free SQLite activation and authenticated e+1 serving through existing engines, real compiled activation/host processes and SDK/CLI paid Publish/Instantiate/Call and imported claims. Default-suite same-committee process acceptance is distinct from the A/B/C/D -> A/B/C/E core evidence and from recurring membership/release acceptance |
 | Authenticated pre-Seal business cut | PR #251 merged normally on 2026-10-02 after the full local gate, independent exact-head approval and required CI. Complete core derivation, immutable SQLite export/resumption and source-free independent saved verification; not import or activation evidence |
 | Shared artifact/configuration primitives | PR #249 merged: bounded local genesis and held-handle artifact I/O, with authority/error semantics retained by the callers |
@@ -42,20 +42,22 @@ including later five-member committees and live outgoing control exposure.
 The complete local required and selected PostgreSQL owners passed on functional
 head `65b2ee8ecca4766d414f30b41086aefeea128848`. A TODO-only descendant records
 that actual ancestor execution; it is not relabelled as a descendant-head local
-run. Fresh exact-documentation-head source approval and every required current
-CI owner plus `check` are mandatory before normal merge. Independent audit and
-actual network startup remain Delivery 4; no further protocol mechanism or
-cleanup milestone is added to this functional gate.
+run. Final documentation head `b7c034b` received fresh complete exact-head Opus
+approval, all seven required CI owners and the success-only `check`. PR #270
+normally merged as `952c77f778cacd8ee5c2f4e24deb549391498920` at
+2026-10-05 18:37:09 UTC; its merge tree equals that reviewed head. Independent
+audit and actual network startup remain Delivery 4; no further protocol
+mechanism or cleanup milestone is added to this functional gate.
 
 ## Functional critical path with embedded refactoring
 
-### Current acceptance checkpoint, 2026-10-05
+### Completed Delivery 3 acceptance checkpoint, 2026-10-05
 
 | Owner | Actual result and remaining boundary |
 | --- | --- |
 | Final functional host, exact `65b2ee8ecca4766d414f30b41086aefeea128848` | All seven required local groups and all five original selected PostgreSQL groups completed with exit zero. Ordinary Rust had 3,628 successful executions; genuine core recurrence passed in 534.90 seconds and SQLite readiness in 27.17 seconds. The real compiled recurring-process owner passed one test, zero failures in 9,740.19 seconds; its wrapper ran 12:20:28–15:04:54 UTC. Actual original-root e0..e8, installed seven-epoch delay, later F-required five-host committees, both D/G eligible withdrawals at their equal computed e8 unlock, lawful owner restoration, retired registration/Deposit refusals and final receipt equality completed. Paid, early-refusal and member-drain replay controls remain distinct from core/store successful-Withdraw replay; no separate compiled successful-Withdraw replay is claimed |
 | Final functional review and selected profile | Fresh native Opus explicitly returned COMPLETE PR APPROVE for source only on the full 66-file PR at `65b2ee8`, including the safe compiler-profile delta. All six genuine PostgreSQL storage faults and the original eight-escrow/two-cycle smoke passed; PostgreSQL stays optional, and the smoke is not representative capacity certification. These complete owner-group executions are not a literal HOST `--full` invocation |
-| Documentation and merge boundary | Only TODO content may differ from the tested functional ancestor, with every other tracked input and TODO runtime/test reference independently checked. The documentation descendant needs fresh explicit complete exact-head review and its own seven required CI owners plus success-only `check` before normal merge. At the 15:05 UTC functional-head checkpoint, CI `37308710261` had six successes and recurring-sqlite still running; that partial run is not a passed full CI claim or future merge evidence |
+| Documentation and merge boundary | Only TODO content differs from the tested functional ancestor, with every other tracked input and TODO runtime/test reference independently checked. Final head `b7c034b` received fresh explicit complete exact-head Opus approval and all seven required CI owners plus success-only `check` in CI `37331447718`. Its actual recurring-sqlite owner passed one case, zero failures in 11,604.66 seconds. PR #270 normally merged as `952c77f` with the reviewed head's exact tree; local main was clean and equalled origin/main. The earlier 15:05 UTC partial CI run is retained as historical progress, not final acceptance |
 | Core/store, exact `11fafacdb0dca295a9d7a2bd02253860c7d9a2f1` | Original literal `./scripts/check-all.sh --full` completed successfully from 05:03:03 to 06:24:34 UTC. Genuine original-root e0..e8/delay7 eligible withdrawals passed in 2,975.42 seconds, with C1/C2/C3/B1 controls, the complete selected original PostgreSQL profile and all six real storage faults retained |
 | Core merge | Fresh independent exact-head Codex fallback APPROVE and all six required CI owners plus success-only aggregate passed in run `37265910956`. PR #269 merged normally as `bfdf6154825c1b0274095f77e2ae973651592c55` at 06:35:09 UTC; its tree equals the reviewed head. Local main equalled origin/main with a clean tree |
 | Host candidate `768403670ff874c930b6724dc571fcebd3389e30` | Strict lint, ordinary Rust with nonempty SQLite inventory, genuine core recurrence and all five selected original PostgreSQL groups passed. Its other six CI owners passed, but the real compiled recurring-process owner is not accepted |
@@ -189,13 +191,33 @@ remain pending below.
   process observations do not stand in for injected capability races.
 - [x] Complete functional-head local required gates, selected original PG
   profile and explicit independent complete source approval at `65b2ee8`.
-  Normal merge of its documentation-only descendant additionally requires
-  fresh complete exact-head approval and every current required CI owner plus
-  `check`. No shortened delay, fabricated state, trusted cache, path-filter
-  skip or optionalization of functional acceptance.
+  Documentation descendant `b7c034b` additionally passed fresh complete
+  exact-head approval and every current required CI owner plus `check`; PR #270
+  normally merged as `952c77f`. No shortened delay, fabricated state, trusted
+  cache, path-filter skip or optionalization of functional acceptance.
 
 Delivery 4 remains independent security audit and actual first-network startup.
 Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
+
+### Active Delivery 4 local startup work, 2026-10-06
+
+- [ ] **Explicit SQLite preparation and advisory preflight:** accepted
+  [DR-0195](docs/architecture/decisions/0195-local-sqlite-validator-startup.md)
+  consumes an already signed original genesis into fresh independent local
+  SQLite namespaces, without reopening/resetting existing files or moving
+  bootstrap into the serving host. Add snapshot-bound non-signing preflight
+  reusing actual startup checks, plus compiled prepare/query/restart/refusal
+  evidence and an executable operator guide. Fresh independent Opus returned
+  DESIGN APPROVE on 2026-10-06; source implementation and acceptance remain open.
+- [ ] **Independent release audits and selected activation profile:** retain
+  the economics and ingress audit gates, independently controlled stores,
+  genesis/key ceremony, auth/TLS and actual startup/recovery evidence. Local
+  SQLite preparation does not select or activate a production provider.
+
+Development/reproduction for this continuation is local SQLite/loopback only.
+Do not run production D1 writes, call deployed Workers, deploy a provider or
+upgrade a paid plan. PostgreSQL remains an optional explicitly selected profile,
+not the default development prerequisite.
 
 The original SQLite host and per-query effective hash-suite projection are
 being integrated under DR-0192. Parent targeted checks passed eight query
@@ -570,8 +592,10 @@ HTTP/SDK/CLI, tests and documentation; do not split merely by codec or file.
 | 1 | Delivery 4: independent audit and initial-network startup | Only deployment-facing composition/dispatch cleanup needed for the chosen profile; reuse capability tests rather than copy PG-only fixtures | Explicit reviewed initial-network activation profile, independently controlled stores, executable auth/TLS/startup/recovery instructions, separate economics and ingress audits and remediation before live exposure |
 
 Delivery 3's bounded recurring add/replace/recover/epoch implementation and local
-acceptance are complete at `65b2ee8`; the current PR's exact-head review and CI
-remain mandatory merge conditions as recorded above, not another feature slice.
+acceptance are complete at `65b2ee8`; its documentation descendant passed the
+separate exact-head review and required CI, and PR #270 normally merged as
+`952c77f`. The next functional/release work is Delivery 4, not another Delivery 3
+feature or repeated closure gate.
 
 - [x] **Frozen-member source reconstruction gap:**
   [DR-0174](docs/architecture/decisions/0174-frozen-member-business-reconstruction.md)
