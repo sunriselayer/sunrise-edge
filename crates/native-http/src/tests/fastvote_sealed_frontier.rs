@@ -742,6 +742,40 @@ async fn cached_frontier_and_drain_progress_are_genuine_before_sealing_and_block
         decode_frozen_frontier_page(&frontier_wire.page).unwrap(),
         page
     );
+    // Route-table probes alone cannot prove genuine 204 progress. Re-submit
+    // this real, verified cached vote/page through the certified HTTP handler;
+    // core's idempotent ingestion must return an actually empty success.
+    let signer_page_request: Vec<u8> = node_wire::DrainSignerPageRequest {
+        epoch: config().epoch(),
+        vote: frontier_wire.vote.clone(),
+        page: frontier_wire.page.clone(),
+    }
+    .encode()
+    .unwrap();
+    let signer_page_response: Response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH)
+                .header(header::CONTENT_TYPE, NODE_EVENT_MEDIA_TYPE)
+                .body(Body::from(signer_page_request))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(signer_page_response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        !signer_page_response
+            .headers()
+            .contains_key(header::CONTENT_TYPE)
+    );
+    assert!(
+        to_bytes(signer_page_response.into_body(), 1)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let drain_response: Response = router
         .clone()
         .oneshot(

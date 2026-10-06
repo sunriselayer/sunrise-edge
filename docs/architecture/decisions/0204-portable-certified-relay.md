@@ -2,9 +2,9 @@
 
 Date: 2026-10-07 (Asia/Singapore)
 
-Status: Initial design accepted after independent Opus review. The locally
-observed Worker redirect amendment below awaits fresh design review before its
-implementation. This is transport qualification, not deployment, requester
+Status: Design and locally observed Worker redirect amendment accepted after
+fresh independent Opus reviews. Implementation acceptance remains separate.
+This is transport qualification, not deployment, requester
 authority or launch approval.
 
 ## Context
@@ -192,12 +192,15 @@ status checking. The current [Request reference](https://developers.cloudflare.c
 lists `error`, but that does not establish support in this pinned runtime. Use
 portable `manual` plus the existing closed status guard in the certified profile
 only, retaining no-follow, header isolation and ambiguous POST outcome semantics.
-A test redirect target returns an otherwise valid success, so accepting it would
+A returned 3xx body is cancelled under the existing full-consumption timeout,
+never forwarded. A test redirect target returns an otherwise valid success, so accepting it would
 fail the test rather than produce a false-positive refusal. No runtime/dependency
 upgrade or legacy constructor widening is needed to resolve this discrepancy.
 Use the existing supported compatibility date `2026-08-20` and the explicit
 [incoming request signal flag](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#enable-requestsignal-for-incoming-requests).
-Review this amendment before changing the certified production fetcher.
+The default event-only Worker still uses its service binding. Wiring the legacy
+HTTPS constructor into this pinned Worker would fail closed on `error`; no such
+composition is introduced here.
 
 Add explicit Deno/Vercel composition selection and a separate Cloudflare
 certified entrypoint/configuration rather than silently widening the existing

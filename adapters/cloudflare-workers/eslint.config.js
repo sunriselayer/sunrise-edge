@@ -8,6 +8,8 @@ export default tseslint.config(
       "cloudflare-workers/test/env.d.ts",
       "worker-configuration.d.ts",
       "validator-configuration.d.ts",
+      "certified-configuration.d.ts",
+      "cloudflare-workers/certified-configuration.d.ts",
       "cloudflare-workers/validator-configuration.d.ts",
       "cloudflare-workers/worker-configuration.d.ts",
       "cloudflare-workers/test/validator/sql-env.d.ts",

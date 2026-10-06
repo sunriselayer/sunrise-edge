@@ -11,6 +11,6 @@
     }
   },
   "tasks": {
-    "check": "deno fmt --check && deno lint && deno check src/main.ts test/adapter_test.ts && deno test --no-check test"
+    "check": "deno fmt --check && deno lint && deno check src/main.ts test/adapter_test.ts test/certified_test.ts && deno test --allow-read=../shared/certified-route-contract.tsv --no-check test"
   }
 }
