@@ -77,14 +77,27 @@ reports all three PRs merged. This closes those slices, not a release gate.
 | PR #277: one plan and mainnet gate inventory | `7a9d391`; merged normally as `9e07194e` after complete source approval and all required CI passed |
 | PR #278: pure envelope/list and SDK binding owner | `aab0389`; merged normally as `3b8796ed`; complete source approval, literal full local required gate and all required CI passed |
 | PR #279: private observations of genuine recurrence | `3f2b9e1`; merged normally as `1432cb85`; complete source approval, owning observer units 4/0 and all required CI passed |
-| PR #280: real host/signer/store capability map | `4d5507d`; complete exact-head Opus source approval and all required CI passed; integration still pending |
-| PR #281: closed certified HTTPS relay | `7424d72`; complete exact-head Opus source approval and exact npm-ci passed; ancestor native oracle, genuine drain, generated-WASM Cloudflare and portable tests passed, not a latest full local gate or deployed-provider qualification |
-| PR #282: shared declared-state preparation | `7853869`; complete exact-head Opus source approval; literal full required gate and hosted recurrence still running, not passed |
-| PR #283: bounded SDK chunked-response owner | `9c7543a`; complete exact-head Opus source approval; SDK 246/0, workspace Clippy and all four pinned portable tasks passed; full required acceptance and integration remain open |
+| PR #280: real host/signer/store capability map | `4d5507d`; complete exact-head Opus source approval and all required CI passed; merged normally as `c19bd0d3`. Primary `main` is clean and equal to `origin/main` at `c19bd0d3` (verified 22:09 UTC). |
+| PR #281: closed certified HTTPS relay | `7424d72`; complete exact-head Opus source approval; owning relay checks and npm-ci passed; hosted recurrence still running, not passed. Included in the isolated integration candidate below, not merged into `main`. |
+| PR #282: shared declared-state preparation | `7853869`; complete exact-head Opus source approval; genuine ordinary/core e8 and local readiness passed; the literal full required gate (run 25053) was still running at 22:28 UTC during the actual epoch-7 Seal, not passed. Included in the candidate, not merged into `main`. |
+| PR #283: bounded SDK chunked-response owner | `9c7543a`; complete exact-head Opus source approval; SDK 246/0, workspace Clippy and all four pinned portable tasks passed; hosted recurrence still running, full required acceptance and integration remain open. Included in the candidate, not merged into `main`. |
+| PR #284: authority-free native ingress (DR-0206) | `e7b02f4`; complete exact-head Opus source approval; native 164/0, workspace Clippy, npm-ci, rustdoc, fmt and 415 doc links passed; hosted CI run `37538727944` still running, not passed. Included in the candidate, not merged into `main`. |
 
 Recheck live heads and required checks before integrating; pending never means
 passed. Preserve Draft #235 as extraction material and do not auto-merge
 dependency PRs. Avoid duplicate builds and long tests already running elsewhere.
+
+### Isolated integration candidate (branch `codex/native-client-integration-1006`)
+
+A separate worktree branch, based on `main` at `c19bd0d3`, has locally merged
+the four approved source heads above (`7424d72`, `7853869`, `9c7543a`,
+`e7b02f4`) with four normal local merge commits. This is a candidate only; it
+is not a `main` integration and has not passed combined acceptance. Each local
+merge retained its original source parent's content and resolved only
+mechanical conflicts, keeping both sides' decision-record/code-map entries and
+the current criteria text. Combined host/SDK tests, exact-source review of the
+integrated tree and all required CI must still complete before any merge into
+`main`.
 
 ### Responsibility-oriented refactoring queue
 
