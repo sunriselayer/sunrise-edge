@@ -46,9 +46,12 @@ object-authority frames are included for public-codec comparisons. Object bodies
 stay opaque contract state, not privileged chain balances.
 
 Published artifact origin/revision/context/digest and initialization code
-reference are labelled separately. Do not infer equality just from installer
-acceptance. Defining-installer alignment is a separate core audit/correctness
-question, not an inspector-specific repair rule.
+reference are labelled separately. The defining original installer checks all
+four fields through the same exact published-code reference owner as ordinary
+execution ([DR-0198](../architecture/decisions/0198-genesis-publication-reference-alignment.md)).
+Inspection does not replace that check with a display comparison or repair a
+retained inconsistent root. Separately labelled signed records remain useful
+for independent review; their presentation is not a second authority owner.
 
 String values use a byte-defined escape grammar: printable ASCII passes through
 except backslash and equals; backslash is doubled; spaces, equals, controls and

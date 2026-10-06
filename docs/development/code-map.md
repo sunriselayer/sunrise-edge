@@ -111,6 +111,16 @@ contracts; they do not define protocol rules.
   [Disposable signed inputs](../../apps/operator/tests/support/offline_genesis_fixture.rs)
   are shared by genuine author/inspector process tests, without sharing their
   production decisions or fabricating durable rows.
+- [Actual local TLS startup](../../apps/operator/tests/local_tls_startup.rs)
+  composes those real binaries with four independent SQLite namespaces and the
+  ordinary compiled CLI. Its local observation/certificate assertions reuse
+  public codec, certifier, fee-quote and complete snapshot owners. The
+  [bounded transparent TLS fixture](../../apps/operator/tests/support/https_relay.rs)
+  owns only forwarding and transport counters, never a protocol response; its
+  two framing cases run once through this integration target. The
+  [neutral compiled-CLI locator](../../apps/operator/tests/support/compiled_cli_process.rs)
+  is also reused by existing optional PostgreSQL tests, without importing their
+  fixture/deployment authority into local acceptance.
 
 ## Successor invocation and immutable transport
 

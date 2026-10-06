@@ -160,3 +160,38 @@ confirmation. The new generation must be strictly greater than the previous
 one. Never replace a running or previously prepared database with a fresh
 genesis as a recovery shortcut. Subsequent epoch recovery and serving use the
 existing verified successor path, not another original-genesis preparation.
+
+## Local TLS and compiled CLI acceptance
+
+The storage-neutral process acceptance composes the real author, public
+inspector, four independent prepared SQLite pairs and four serving processes.
+Private loopback TLS terminators forward the actual host responses unchanged;
+each peer has its own ephemeral CA and DNS identity. The separately compiled
+CLI performs an ordinary paid Standard Asset transfer and replays its saved
+intent/certificate/availability artifacts in the same boot and after all four
+hosts restart. The logical domain is the same across these replicas; the file
+coordinates, validator identities, signing keys and TLS pins are distinct.
+
+Build the actual executables before running this focused acceptance:
+
+```sh
+cargo build --locked -p sunrise-edge-operator --bins
+cargo build --locked -p sunrise-edge-cli --bin sunrise-edge-cli --all-features
+cargo test --locked -p sunrise-edge-operator --test local_tls_startup \
+  --all-features -- --nocapture
+```
+
+These commands use disposable local fixtures, SQLite and numeric loopback
+listeners. They need no PostgreSQL service or Cloudflare account. An absent
+CLI binary is a failure, not a skip. Read-only public-pin negatives use an
+absent key; actual selected-peer TLS and remote-context negatives use a valid
+protected disposable key, so a missing-key error cannot mask a trust refusal.
+Key derivation is not transaction signing, and missing output artifacts alone
+are not a signature-count measurement.
+
+See [DR-0199](../architecture/decisions/0199-local-tls-validator-startup-acceptance.md)
+for full-state replay, request-ID conflict and fencing requirements. Passing
+this focused test does not substitute for all required CI/local groups,
+independent economics/ingress audits, real custody, a selected reviewed
+activation profile or authorized network startup. The test TLS terminator is
+not shipped authenticated ingress and must not be used to expose a validator.

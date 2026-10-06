@@ -395,9 +395,17 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   }
   const refusedInventory = runFunction("ci_run_gate", ["rust-tests"], { CI_MOCK_FAIL_PREREQUISITE: "ci_require_exact_ignored_test" });
   assert.equal(refusedInventory.status, 9);
-  assert.deepEqual(refusedInventory.log.map(({ tool, args }) => [tool, args]), [[
-    "cargo", ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"],
-  ]], "failed discovery must stop the nested gate before the inventory consumer");
+  const compiledCliBuild = ["build", "-p", "sunrise-edge-cli", "--bin", "sunrise-edge-cli", "--all-features"];
+  assert.deepEqual(refusedInventory.log.map(({ tool, args }) => [tool, args]), [
+    ["cargo", compiledCliBuild],
+    ["cargo", ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"]],
+  ], "failed discovery must stop the nested gate before the inventory consumer");
+  for (const action of ["rust-tests-required", "rust-tests-full", "pg-storage-tests"]) {
+    const failedBuild = runFunction("ci_run_action", [action], { CI_MOCK_FAIL_ARG: "build" });
+    assert.equal(failedBuild.status, 19);
+    assert.deepEqual(failedBuild.log.map(({ tool, args }) => [tool, args]), [["cargo", compiledCliBuild]],
+      "a failed actual CLI build must prevent every process test");
+  }
   for (const group of groups) {
     const result = runFunction("ci_fastvote_pg_group_is_known", [group]);
     assert.equal(result.status, ["pg-lifecycle", "pg-drain-history", "pg-business-audit", "pg-recovery-economics"].includes(group) ? 0 : 1);
@@ -546,7 +554,13 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   )).map((event) => event.tool === "cargo" && event.args[0] === "test" && event.args.includes("--workspace")
     ? { ...event, args: [...event.args, "--exclude", "runtime-postgres"] } : event);
   assert.deepEqual(gateEvents(required), gateEvents(commonFull));
-  const storageEvent = lanes.get("pg-storage")[0];
+  // The isolated storage lane runs operator --all-targets on a fresh runner, so
+  // it must build the actual CLI exactly once before those process tests.
+  const storageLane = lanes.get("pg-storage");
+  assert.deepEqual(storageLane.map(({ tool, args }) => [tool, args[0]]), [["cargo", "build"], ["cargo", "test"]],
+    "the actual CLI must be built before storage-lane operator process acceptance");
+  assert.deepEqual(storageLane[0].args, compiledCliBuild);
+  const storageEvent = storageLane[1];
   for (const anchor of ["runtime-postgres", "sunrise-edge-operator", "sunrise-edge-cloudflare-validator", "sunrise-claim"]) {
     const withoutAnchor = storageEvent.args.slice();
     const index = withoutAnchor.indexOf(anchor);
@@ -554,7 +568,15 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     withoutAnchor.splice(index - 1, 2);
     assert.throws(() => gateEvents([{ ...storageEvent, args: withoutAnchor }]));
   }
-  assert.deepEqual(lanes.get("rust-tests")[0].args, ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"]);
+  assert.deepEqual(lanes.get("rust-tests")[0].args, compiledCliBuild);
+  assert.deepEqual(lanes.get("rust-tests")[1].args, ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"]);
+  for (const log of [required, full, lanes.get("rust-tests")]) {
+    const buildIndex = log.findIndex(({ tool, args }) => tool === "cargo" && JSON.stringify(args) === JSON.stringify(compiledCliBuild));
+    const testIndex = log.findIndex(({ tool, args }) => tool === "cargo" && args[0] === "test" && args.includes("--workspace"));
+    assert(buildIndex >= 0 && buildIndex < testIndex,
+      "the actual CLI must be built before ordinary operator process acceptance");
+    assert.equal(log.filter(({ tool, args }) => tool === "cargo" && JSON.stringify(args) === JSON.stringify(compiledCliBuild)).length, 1);
+  }
   for (const group of ["pg-lifecycle", "pg-drain-history", "pg-business-audit", "pg-recovery-economics"]) {
     assert(lanes.get(group).some(({ tool, args }) => tool === "cargo" && args.includes("build") && args.includes("sunrise-edge-cli")));
   }

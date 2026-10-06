@@ -51,6 +51,33 @@ mechanism or cleanup milestone is added to this functional gate.
 
 ## Functional critical path with embedded refactoring
 
+### Original-genesis reference correctness, 2026-10-06
+
+- [ ] Accepted-design [DR-0198](docs/architecture/decisions/0198-genesis-publication-reference-alignment.md)
+  reuses the ordinary execution owner's complete published-code reference
+  equality at the original installer. Independent Opus approved the corrected
+  design and validation-before-reconciliation/private-constructor ordering.
+  The nonignored Rust CI owner at unchanged baseline `8c91a680` actually passed
+  coherent signed revision-only acceptance at fresh/reconciled installation and
+  private reconstruction, plus valid v1/v2/v3/v4 profiles. The context-only
+  control passed its existing economics refusal; it is not another gap.
+  The source now uses the existing exact reference owner before any writes,
+  with fresh memory/SQLite and private-constructor refusal tests. The four
+  nonignored corrected cases passed normal Rust CI at `be7b5a5`, and independent
+  Opus approved its complete source. Actual local retained-SQLite acceptance
+  also passed: unchanged old owner `8c91a680` exported 35 genuine records at
+  generation 1/sequence 1; corrected `be7b5a5` reopened that exact pair,
+  explicitly refenced to generation 2, then refused installation and private
+  reconstruction with every captured record/blob and sequence unchanged.
+  Closing/reopening preserved that refusal baseline. Neither test fabricates
+  current-owner rows, and an absent old export remains an error.
+  Complete required local/CI gates remain open. The earlier #271 local gate
+  ended with SIGTERM during genuine recurring-process acceptance and is not
+  a pass; a fresh run is required. This documentation-only refresh requires
+  fresh exact-head source review; independent Opus subsequently approved the
+  complete documentation/source head `ffbd9ed`. This reproduction is not a privilege exploit, severity
+  judgment, released-store survey or independent release audit.
+
 ### Completed Delivery 3 acceptance checkpoint, 2026-10-05
 
 | Owner | Actual result and remaining boundary |
@@ -239,8 +266,11 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   author/inspector tests and three escaping/output-bound tests passed the
   normal Rust CI owner at `c256f4d`. Fresh independent Opus review identified
   missing required U+009B and U+202E vectors. Exact UTF-8 byte expectations and
-  real signed-chain/no-raw-control assertions are now added; execution of these
-  additions, final source review and all required gates remain open.
+  real signed-chain/no-raw-control assertions are now added. Independent Opus
+  approved the complete corrected source at `7709038`. Actual local execution
+  at that exact head passed all 59 operator-library tests, seven compiled
+  inspector cases including the new Unicode vectors, and all seven author
+  process cases. Complete required local/CI gates remain open.
   This cannot
   substitute for custody, independent economic approval or release audit.
   Design review additionally identified original-installer publication versus
@@ -248,6 +278,33 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   question; existing economics bindings already close a context-only mismatch.
   Inspection must display the two signed records separately, not repair or
   imply their equality.
+- [ ] **Actual local TLS startup and certified CLI composition:** accepted-design
+  [DR-0199](docs/architecture/decisions/0199-local-tls-validator-startup-acceptance.md)
+  combines real author/inspection/preparation, four independently stored
+  original validators, per-peer explicit TLS trust and the compiled CLI's
+  causal certified transfer/replay. Independent Codex fallback approved the
+  corrected design at `b62193c`; unavailable Claude/Grok supplied no approval.
+  Test implementation now composes the real compiled commands and all four
+  original hosts through independently configured CA/DNS peers. Parent review
+  rejected incomplete Sonnet proposals; Opus supplied a corrected implementation,
+  and parent review additionally strengthened per-refusal complete snapshots,
+  existing-policy fee settlement and ordinary Coin output comparisons. This is
+  implementation, not executed process evidence or independent source approval.
+  The actual CLI prerequisite compiled at `2c2656e`; both exact request-framing
+  cases passed at `694d224`. Those same unchanged framing cases are now owned
+  once by the complete TLS integration target instead of a duplicate target.
+  Process execution, complete gates and fresh independent source review remain
+  open. Key loading is not signing: absent-key controls cover local refusals,
+  while TLS/remote-context negatives use valid protected disposable test keys.
+  Required negatives cover TLS versus protocol pins, conflicting request-ID
+  reuse and unchanged full namespace snapshots; replay also crosses actual
+  host restarts/fencing. This is local acceptance only, not deployed
+  authenticated ingress, independent custody, production or provider readiness.
+
+The earlier exact-`7dc4193` local required run ended with SIGTERM during its
+genuine recurring-process owner on 2026-10-06. Completed individual owners remain
+individual evidence; this interrupted run is not full acceptance. No shortened
+recurrence or optionalized group is used for the required rerun.
 - [ ] **Independent release audits and selected activation profile:** retain
   the economics and ingress audit gates, independently controlled stores,
   genesis/key ceremony, auth/TLS and actual startup/recovery evidence. Local
