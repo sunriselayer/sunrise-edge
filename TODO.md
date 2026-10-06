@@ -154,8 +154,12 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   now has conditional independent PLAN approval with explicit header-priority,
   framing-budget, wire-fragmentation and pinned Node CI corrections. The SDK
   branch implements the shared bounded chunk decoder and local real HTTPS
-  relay fixture; owning migrated execution, complete source review and final
-  CI/integration remain pending. TLS identity is not protocol authority, and
+  relay fixture. The whole owning SDK package/all-target tests passed on exact
+  `936d069`, including the actual Node 22.20.0 TLS relay fixture, original
+  length/204 controls and new fragmentation/termination/budget failures.
+  The runtime's removal/wrong-version CI mutation controls also passed.
+  Complete final source review and required CI/integration remain pending.
+  TLS identity is not protocol authority, and
   this local fixture does not qualify a deployed provider or public network.
 
 Sequence R0 and the ready startup integrations first; review R1's contract
