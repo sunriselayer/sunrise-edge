@@ -8,13 +8,11 @@
 //! admission genesis before claiming that fence.
 #![forbid(unsafe_code)]
 
-use crate::common::{
-    FlagSet, load_signing_key_file, parse_hash_suite, parse_hex_32, require_live_fastvote_pin,
-};
+use crate::common::{FlagSet, load_signing_key_file, parse_hash_suite, parse_hex_32};
 use crate::host_protocol_context::host_query_protocol_config;
-use crate::host_runtime::{
-    FileEd25519Signer, NoOutboundTransport, SequentialIdentitySource, fast_path_committee_matches,
-    require_committed_genesis_fee_policy, require_registered_signer,
+use crate::host_runtime::{FileEd25519Signer, NoOutboundTransport, SequentialIdentitySource};
+use crate::sqlite_genesis_checks::{
+    OriginalHostPins, read_original_host_state, verify_original_signer,
 };
 use consensus::ConsensusSigner;
 use ed25519_zebra::{SigningKey, VerificationKey};
@@ -32,7 +30,6 @@ use native_http::{
 };
 use node_core::NodeConfig;
 use node_core::fast_path::FastPathValidatorSetRecord;
-use node_core::fast_path::records::decode_fastpath_validator_set_record;
 use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::OrderedEconomicsPolicy;
 use protocol_config::ProtocolConfig;
@@ -40,27 +37,14 @@ use protocol_types::{
     AtomicityDomainId, ChainId, Epoch, HashSuiteSchedule, ProtocolVersion, ValidatorId,
 };
 use runtime::{
-    Clock, DurableDomainStateStore, DurableOperationContext, StorageCorrelationId, StorageDeadline,
-    SystemClock, VersionedStateValue, WriterFenceGeneration,
+    Clock, DurableOperationContext, StorageCorrelationId, StorageDeadline, SystemClock,
+    WriterFenceGeneration,
 };
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 use std::{
     error::Error, ffi::OsString, num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration,
 };
 use sunrise_edge_client::load_verified_genesis_root;
-
-fn require_committed_record_matches_root_committee(
-    record: &FastPathValidatorSetRecord,
-    root_committee: &FastPathValidatorSetRecord,
-) -> Result<(), String> {
-    if !fast_path_committee_matches(record, root_committee) {
-        return Err(
-            "committed fast-path validator set does not match the trusted verified root's original signed committee/context; refusing to bind the ordered Seal composition"
-            .into(),
-        );
-    }
-    Ok(())
-}
 
 const VALUE_FLAGS: &[&str] = &[
     "--chain-id",
@@ -219,39 +203,20 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         StorageDeadline::new(serving_deadline).ok_or("invalid deadline")?,
         StorageCorrelationId::new(serving_correlation).ok_or("invalid correlation id")?,
     );
-    node_core::require_ordinary_namespace(&store, &serving_context, domain)?;
-    let fee_policy: PaidFeePolicy = require_committed_genesis_fee_policy(
-        &store,
-        &serving_context,
+    let pins: OriginalHostPins<'_> = OriginalHostPins {
         domain,
-        &expected_context,
-        &root,
-    )?;
-
-    let validator_set_key: Vec<u8> =
-        node_core::local_instance_state::fastpath_validator_set_key(&expected_context)?;
-    let observed: VersionedStateValue = store
-        .get_versioned_durable(&serving_context, domain, &validator_set_key)
-        .map_err(|error| format!("failed to read fast-path validator set: {error:?}"))?;
-    let record_bytes: &[u8] = observed
-        .value()
-        .ok_or("no committed fast-path validator set for the expected genesis context")?;
-    let record: FastPathValidatorSetRecord = decode_fastpath_validator_set_record(record_bytes)?;
-    require_live_fastvote_pin(
-        &store,
-        &serving_context,
-        domain,
-        &expected_context,
-        &record,
-        &resolver,
-    )?;
+        expected_context: &expected_context,
+        root: &root,
+        resolver: &resolver,
+    };
+    let (fee_policy, record): (PaidFeePolicy, FastPathValidatorSetRecord) =
+        read_original_host_state(&store, &serving_context, &pins)?;
 
     let signing_key: SigningKey =
         load_signing_key_file(&signing_key_path).map_err(|error| error.to_string())?;
     let verification_key: VerificationKey = VerificationKey::from(&signing_key);
     let derived_public_key: [u8; 32] = verification_key.into();
-    require_registered_signer(&record, validator, &derived_public_key)?;
-    require_committed_record_matches_root_committee(&record, &root.manifest().validator_set)?;
+    verify_original_signer(&record, &root, validator, &derived_public_key)?;
 
     let blobs: SqliteBlobStore = SqliteBlobStore::open_existing_writable(&blob_db)?;
 
@@ -385,6 +350,8 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host_runtime::require_registered_signer;
+    use crate::sqlite_genesis_checks::require_committed_record_matches_root_committee;
     use node_core::fast_path::records::FastPathValidatorEntry;
     use protocol_types::SignatureSchemeId;
 

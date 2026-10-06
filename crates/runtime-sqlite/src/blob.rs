@@ -128,6 +128,7 @@ impl From<rusqlite::Error> for SqliteBlobStoreError {
 #[derive(Debug)]
 pub struct SqliteBlobStore {
     connection: Mutex<Connection>,
+    created_file: Option<native_files::ImportFile>,
 }
 
 impl SqliteBlobStore {
@@ -136,6 +137,25 @@ impl SqliteBlobStore {
     pub fn create_new(path: impl AsRef<Path>) -> Result<Self, SqliteBlobStoreError> {
         let path: &Path = path.as_ref();
         let held = native_files::create_new(path).map_err(SqliteBlobStoreError::File)?;
+        Self::initialize_reserved(path, held)
+    }
+
+    /// Fresh original-genesis factory. Unlike the import artifact factory,
+    /// this refuses all pre-existing SQLite sidecars before creating a main
+    /// file, and rechecks them before enabling WAL.
+    pub fn create_new_fresh(path: impl AsRef<Path>) -> Result<Self, SqliteBlobStoreError> {
+        let path: std::path::PathBuf =
+            native_files::validate_fresh(path.as_ref()).map_err(SqliteBlobStoreError::File)?;
+        let held: native_files::ImportFile =
+            native_files::create_new(&path).map_err(SqliteBlobStoreError::File)?;
+        native_files::require_no_sidecars(&path).map_err(SqliteBlobStoreError::File)?;
+        Self::initialize_reserved(&path, held)
+    }
+
+    fn initialize_reserved(
+        path: &Path,
+        held: native_files::ImportFile,
+    ) -> Result<Self, SqliteBlobStoreError> {
         let mut connection: Connection = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -148,11 +168,24 @@ impl SqliteBlobStore {
             return Err(SqliteBlobStoreError::UnsupportedJournalMode(journal));
         }
         initialize_blob_schema(&mut connection)?;
-        verify_writable_shape(&connection)?;
+        verify_access_shape(&connection)?;
         native_files::sync_created(path, &held).map_err(SqliteBlobStoreError::File)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            created_file: Some(held),
         })
+    }
+
+    /// Flushes only the originally reserved file and held parent identity;
+    /// a pathname reopened after replacement is never accepted as evidence.
+    pub fn sync_created(&self) -> Result<(), SqliteBlobStoreError> {
+        let held: &native_files::ImportFile = self.created_file.as_ref().ok_or_else(|| {
+            SqliteBlobStoreError::File(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "blob store does not retain a newly reserved file",
+            ))
+        })?;
+        native_files::sync_owned(held).map_err(SqliteBlobStoreError::File)
     }
 
     /// Opens an initialized writable destination without creating a file,
@@ -179,10 +212,11 @@ impl SqliteBlobStore {
             return Err(SqliteBlobStoreError::UnsupportedJournalMode(journal));
         }
         verify_schema_identity(&connection)?;
-        verify_writable_shape(&connection)?;
+        verify_access_shape(&connection)?;
         native_files::check_attached(path, &held).map_err(SqliteBlobStoreError::File)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            created_file: None,
         })
     }
 
@@ -205,8 +239,10 @@ impl SqliteBlobStore {
             return Err(SqliteBlobStoreError::SchemaVersion(schema_version));
         }
         verify_schema_identity(&connection)?;
+        verify_access_shape(&connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            created_file: None,
         })
     }
 
@@ -228,6 +264,7 @@ impl SqliteBlobStore {
         initialize_blob_schema(&mut connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            created_file: None,
         })
     }
 
@@ -245,7 +282,7 @@ fn configure_writable(connection: &Connection) -> Result<(), SqliteBlobStoreErro
     connection.pragma_update(None, "synchronous", "FULL")?;
     Ok(())
 }
-fn verify_writable_shape(connection: &Connection) -> Result<(), SqliteBlobStoreError> {
+fn verify_access_shape(connection: &Connection) -> Result<(), SqliteBlobStoreError> {
     connection.prepare("SELECT digest_algorithm, digest_bytes, content FROM blobs LIMIT 0")?;
     Ok(())
 }

@@ -19,6 +19,7 @@
 //! retries, or live fault-injected evidence, and is not suitable for
 //! multi-writer or production deployments.
 
+use crate::native_files;
 use crate::rusqlite_backend::NativeSqlBackend;
 use runtime::outbox_guard::{StructuredOutboxExclusionGuard, StructuredOutboxInventory};
 use runtime::portable::{
@@ -208,6 +209,9 @@ impl From<schema::SchemaError> for SqliteDurableStoreError {
 /// when used from an asynchronous request runtime.
 pub struct SqliteDurableStore {
     engine: SqlDurableEngine<NativeSqlBackend>,
+    // Only a freshly created handle may flush its original file identity.
+    // This is native ownership, never a persisted serving authorization.
+    created_file: Option<native_files::ImportFile>,
 }
 
 impl fmt::Debug for SqliteDurableStore {
@@ -291,6 +295,7 @@ impl SqliteDurableStore {
         })?;
         Ok(Self {
             engine: SqlDurableEngine::new(backend, namespace),
+            created_file: None,
         })
     }
 
@@ -379,6 +384,7 @@ impl SqliteDurableStore {
         })?;
         Ok(Self {
             engine: SqlDurableEngine::new(backend, namespace),
+            created_file: None,
         })
     }
 
@@ -398,6 +404,7 @@ impl SqliteDurableStore {
         })?;
         Ok(Self {
             engine: SqlDurableEngine::new(backend, namespace),
+            created_file: None,
         })
     }
 
@@ -405,6 +412,74 @@ impl SqliteDurableStore {
     #[must_use]
     pub const fn namespace(&self) -> &SqliteNamespace {
         self.engine.namespace()
+    }
+
+    /// Reserves and initializes a genuinely fresh local structured database
+    /// (DR-0195). Unlike [`Self::open`], an existing destination is refused
+    /// before any schema or namespace content is written, using the same
+    /// held-file/ancestor checks the import factory already uses.
+    pub fn create_new(
+        path: impl AsRef<Path>,
+        namespace: SqliteNamespace,
+        initial_writer_fence: WriterFenceGeneration,
+    ) -> Result<Self, SqliteDurableStoreError> {
+        let path: std::path::PathBuf =
+            native_files::validate_fresh(path.as_ref()).map_err(SqliteDurableStoreError::File)?;
+        let path: &Path = &path;
+        let reserved: native_files::ImportFile =
+            native_files::create_new(path).map_err(SqliteDurableStoreError::File)?;
+        native_files::require_no_sidecars(path).map_err(SqliteDurableStoreError::File)?;
+        let connection: Connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.busy_timeout(STRUCTURED_BUSY_TIMEOUT)?;
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        connection.pragma_update(None, "trusted_schema", "OFF")?;
+        native_files::check_attached(path, &reserved).map_err(SqliteDurableStoreError::File)?;
+        let journal_mode: String =
+            connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
+        if !journal_mode.eq_ignore_ascii_case("wal") {
+            return Err(SqliteDurableStoreError::UnsupportedJournalMode(
+                journal_mode,
+            ));
+        }
+        connection.pragma_update(None, "synchronous", "FULL")?;
+        connection.pragma_update(None, "wal_autocheckpoint", 1_000_i64)?;
+        let backend = NativeSqlBackend::new(connection);
+        run_operator_step(&backend, |session, _now| {
+            session
+                .exec(
+                    &format!("PRAGMA application_id = {STRUCTURED_APPLICATION_ID}"),
+                    &[],
+                )
+                .map_err(schema::SchemaError::from)?;
+            session
+                .exec(
+                    &format!("PRAGMA user_version = {STRUCTURED_SCHEMA_VERSION}"),
+                    &[],
+                )
+                .map_err(schema::SchemaError::from)?;
+            schema::bootstrap_namespace(session, &namespace, initial_writer_fence)
+        })?;
+        native_files::check_attached(path, &reserved).map_err(SqliteDurableStoreError::File)?;
+        native_files::sync_created(path, &reserved).map_err(SqliteDurableStoreError::File)?;
+        Ok(Self {
+            engine: SqlDurableEngine::new(backend, namespace),
+            created_file: Some(reserved),
+        })
+    }
+
+    /// Rechecks and flushes the original freshly reserved main file and
+    /// directory identity. Reopened handles cannot claim fresh ownership.
+    pub fn sync_created(&self) -> Result<(), SqliteDurableStoreError> {
+        let held: &native_files::ImportFile = self.created_file.as_ref().ok_or_else(|| {
+            SqliteDurableStoreError::File(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "store was not opened through the fresh-only factory",
+            ))
+        })?;
+        native_files::sync_owned(held).map_err(SqliteDurableStoreError::File)
     }
 
     /// Atomically advances the persisted writer fence.
