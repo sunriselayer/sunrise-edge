@@ -16,6 +16,9 @@ roadmap describes a later target state.
   cryptography through consensus, execution, governance, and security.
 - [Runtime and ingress](runtime-and-ingress.md): sections 28–40, including the
   node invocation boundary and provider adapters.
+- [Host compositions and capabilities](compositions-and-capabilities.md):
+  actual router/executable/store/signer boundaries, closed versus accepted
+  surfaces, and the distinction between component and provider qualification.
 - [Persistence](persistence.md): section 41 and the runtime-neutral durable
   state boundary.
 - [Developer product surfaces](product-surfaces.md): sections 42–46, covering

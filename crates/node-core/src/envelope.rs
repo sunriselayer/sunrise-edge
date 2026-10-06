@@ -28,28 +28,49 @@ pub const MAX_NODE_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 /// Closed construction, framing and bounds failures; never execution authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvelopeError {
+    /// A canonical frame or field could not be encoded.
     CanonicalEncoding(CanonicalEncodingError),
+    /// A canonical frame or field could not be decoded.
     CanonicalDecoding(CanonicalDecodingError),
+    /// The chain identifier does not satisfy its defining type.
     InvalidChainId(TypeError),
+    /// A digest names an unsupported hash algorithm identifier.
     InvalidHashAlgorithm(TypeError),
+    /// A decoded digest has this byte length instead of 32.
     InvalidDigestLength(usize),
+    /// A chain identifier exceeds the node envelope's byte bound.
     ChainIdTooLong(usize),
+    /// A request identifier contains only zero bytes.
     ZeroRequestId,
+    /// A decoded request identifier has this byte length instead of 32.
     InvalidRequestIdLength(usize),
+    /// An event discriminant is not one of the closed known kinds.
     UnknownEventKind(u16),
+    /// A response discriminant is not one of the closed known statuses.
     UnknownResponseStatus(u16),
+    /// An event or response payload exceeds its defining byte bound.
     PayloadTooLarge(usize),
+    /// A persisted node state exceeds its defining byte bound.
     StateTooLarge(usize),
+    /// An output collection exceeds the common item-count bound.
     TooManyOutputItems {
+        /// Owning collection's nonsecret diagnostic label.
         collection: &'static str,
+        /// Actual number of items, not a byte length.
         count: usize,
     },
+    /// A node output exceeds its aggregate payload byte bound.
     OutputTooLarge(usize),
+    /// A nested response does not belong to the enclosing request.
     ResponseRequestMismatch {
+        /// Request identifier required by the enclosing result.
         expected: RequestId,
+        /// Request identifier found in the nested response.
         actual: RequestId,
     },
+    /// An item length cannot be represented by the list framing.
     NestedItemLengthOverflow(usize),
+    /// This many bytes remain after all declared list items.
     TrailingNestedListBytes(usize),
 }
 
@@ -137,8 +158,11 @@ pub enum NestedListDecodeError {
     OffsetOverflow,
     /// The list ended before its declared item or length prefix.
     Truncated {
+        /// Byte offset of the incomplete length prefix or item.
         offset: usize,
+        /// Bytes required at that offset.
         needed: usize,
+        /// Bytes actually available at that offset.
         remaining: usize,
     },
     /// All declared items decoded but unconsumed bytes remain.
@@ -689,6 +713,12 @@ pub(crate) fn encode_nested_items(
 }
 
 /// Decodes all items before the owning result checks request binding.
+///
+/// The common item-count bound is enforced here. A caller needing its own
+/// collection-specific `EnvelopeError::TooManyOutputItems` label must check
+/// that count before decoding; converting this helper's `TooManyItems` directly
+/// uses the generic `"nested items"` diagnostic label. Framing failures remain
+/// distinct from a decoded item's envelope failure.
 pub fn decode_response_list(
     bytes: &[u8],
     count: usize,
