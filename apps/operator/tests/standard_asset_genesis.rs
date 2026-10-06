@@ -487,7 +487,13 @@ fn valid_outer_signature_does_not_make_a_bad_nested_publication_installable() {
         .arg("prepare")
         .args(fixture.root_pins(&path, digest, 0, domain))
         .args(["--created-checkpoint", "10"]);
-    refused(spawn_bounded_output(command, Duration::from_secs(30)));
+    let output: Output = spawn_bounded_output(command, Duration::from_secs(30));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("invalid publication signature"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    refused(output);
 }
 
 #[test]
@@ -524,6 +530,10 @@ fn real_author_refuses_duplicate_cross_object_and_bond_violations() {
         (
             "eligible bounded bond",
             row([0x10; 32], fixture.validators[0], 1, 50, [0x81; 32]),
+        ),
+        (
+            "positive power",
+            row([0x10; 32], fixture.validators[0], 0, 100, [0x81; 32]),
         ),
     ];
     let validators_file: PathBuf = fixture.directory.join("validators.txt");
@@ -569,7 +579,22 @@ fn real_author_refuses_malformed_oversized_and_overflowing_tables() {
         hex(&[0x82; 32])
     );
     fs::write(&validators_file, &overflow).unwrap();
-    refused(fixture.author(&fixture.args));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            fixture.directory.join("authority.key"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+    }
+    let output: Output = fixture.author(&fixture.args);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("supply overflow"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    refused(output);
     assert!(!fixture.directory.join("genesis.bin").exists());
     assert_eq!(fs::read(&validators_file).unwrap(), overflow.into_bytes());
 }

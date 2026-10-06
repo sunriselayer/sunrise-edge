@@ -1110,8 +1110,9 @@ fn preflight_refuses_missing_or_wrong_fee_committee_and_marker_without_repair() 
             let error: String = stderr_text(&output);
             let expected: &str = match which {
                 "fee" => "fee policy",
-                "committee" => "validator",
-                _ => "genesis",
+                "committee" if wrong_value => "validator-set digest",
+                "committee" => "no committed fast-path validator set",
+                _ => "marker",
             };
             assert!(
                 error.contains(expected),

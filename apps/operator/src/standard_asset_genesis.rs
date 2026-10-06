@@ -22,6 +22,8 @@ use runtime::{
 };
 use std::{error::Error, ffi::OsString, io::Write};
 
+/// Runs the closed offline `author` command, publishing one fresh signed
+/// manifest only after generic installer validation; never activates a network.
 pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>> {
     let mut tokens = tokens.into_iter();
     if tokens.next().as_deref() != Some(std::ffi::OsStr::new("author")) {

@@ -209,11 +209,11 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   bootstrap into the serving host. Add snapshot-bound non-signing preflight
   reusing actual startup checks, plus compiled prepare/query/restart/refusal
   evidence and an executable operator guide. Fresh independent Opus returned
-  DESIGN APPROVE on 2026-10-06. Source implemented through `320f738`; focused
-  actual operator tests passed 17 cases and fresh-file tests passed five cases
-  at `f7f3647`. Full unshortened gate, independent exact-head source review and
-  required CI acceptance remain open in PR #271; design approval is not release
-  acceptance.
+  DESIGN APPROVE on 2026-10-06. Source implemented at `7dc4193`, with fresh
+  complete exact-head Opus source APPROVE and 18 actual operator tests passed.
+  Fresh-file tests passed five cases at `f7f3647`. The full unshortened gate and
+  required CI acceptance remain open in PR #271; source/design approval is not
+  release acceptance.
 - [ ] **Offline original-genesis authoring:** accepted
   [DR-0196](docs/architecture/decisions/0196-standard-asset-genesis-authoring.md)
   adds an explicitly configured Standard Asset operator preset, using the

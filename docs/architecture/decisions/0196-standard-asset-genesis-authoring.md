@@ -3,7 +3,8 @@
 Date: 2026-10-06 (Asia/Singapore)
 
 Status: Accepted design. Claude Opus returned DESIGN APPROVE on 2026-10-06
-after checking the defining phase limits and ephemeral validation environment. This record does not approve custody, a key ceremony, audit or
+after checking the defining phase limits and ephemeral validation environment.
+This record does not approve custody, a key ceremony, audit or
 real-network activation. Current implementation and release status belong only
 in TODO.md.
 
