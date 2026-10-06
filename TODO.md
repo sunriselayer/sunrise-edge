@@ -1,6 +1,6 @@
 # Sunrise Edge implementation and mainnet roadmap
 
-Updated: 2026-10-06 (Asia/Singapore).
+Updated: 2026-10-07 (Asia/Singapore).
 
 This is the only live implementation queue and readiness tracker. Design and
 responsibility contracts belong in [architecture](docs/architecture/README.md),
@@ -72,9 +72,15 @@ normal merge, PR #277 was explicitly retargeted to main at unchanged source
 | Pending integration | Actual head and remaining acceptance |
 | --- | --- |
 | PR #277: consolidated plan | `7a9d391`; complete exact-head documentation source approval; latest own required CI still pending |
-| PR #278: envelope and acknowledgement ownership | `aab0389`; fresh complete implementation review and final required acceptance still pending |
-| PR #279: private acceptance timing | `3f2b9e1`; fresh complete source review, owning local acceptance and final required CI pending; no speedup claim |
-| PR #280: actual composition and audit-input map | Documentation/module comments only; complete source review and own final required CI pending; no independent security audit or release qualification |
+| PR #278: envelope and acknowledgement ownership | `aab0389`; complete fresh exact-source Opus APPROVE; own full local required gate and final CI pending |
+| PR #279: private acceptance timing | `3f2b9e1`; complete fresh source Opus APPROVE; owning local acceptance and final required CI pending; no speedup claim |
+| PR #280: actual composition and audit-input map | `4d5507d`; complete fresh exact-source Opus APPROVE; own final required CI pending; no independent security audit or release qualification |
+| Portable certified relay, stacked on #280 | Accepted DR-0204 and independently approved pinned-workerd redirect amendment; implementation committed, portable and focused workerd checks passed; native oracle/full required gate and complete source review still pending |
+
+At 2026-10-07 02:59 SGT, the existing GitHub CLI credential was invalid and the
+anonymous API budget exhausted. Later CI state and merges are unverified until
+ordinary authentication or read access recovers. Senna's PAT remains scoped to
+PR creation only; local implementation and checks continue without cloud writes.
 
 Recheck live heads and required checks before integrating; pending never means
 passed. Preserve Draft #235 as extraction material and do not auto-merge
@@ -108,7 +114,7 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   wire-bound views and all four actual SDK consumers, including native,
   successor, DO and CLI flat mappings. Pre-move literal vectors are unchanged;
   focused wire/core and full Rust-client iterations passed. Full required
-  acceptance, exact-source independent review and CI are still pending; R1 is
+  acceptance and CI are still pending despite complete exact-source Opus APPROVE; R1 is
   not complete and this does not close the remaining core/SDK dependency work.
 - [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
   admission, evaluation, completion, reconciliation and storage contracts;
@@ -131,6 +137,13 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   and [network audit input contract](docs/security/network-code-audit-scope.md)
   identify actual surfaces and required final-review inputs. Their existence is
   not a completed audit, selected public host or release qualification.
+  The explicit [certified relay](docs/architecture/decisions/0204-portable-certified-relay.md)
+  adds closed FastVote/publication/frontier/drain/query transport to Deno/Vercel
+  and a separate stateless Worker. It does not add ordered/successor/DO lifecycle
+  authority. All four portable checks and focused workerd controls passed locally;
+  real native oracle/204 regression, full generated-artifact checks, exact-source
+  review and final CI remain open. Keep SDK HTTPS/stream transport integration,
+  provider deployment/size/concurrency qualification and public readiness open.
 
 Sequence R0 and the ready startup integrations first; review R1's contract
 before implementation. R2/R3 may run in parallel only with disjoint owners and
