@@ -67,12 +67,24 @@ failure mapping and existing ordering around storage/lifecycle checks.
 The root authenticates the manifest and original committee; it does not prove
 that publication, initialization, custody or installed objects are valid or
 present. `install_genesis_with_history` still verifies all bootstrap semantics,
-origin, writer fencing and atomic durable completion. Reconstruction still
-performs a real private installation. Authentication is not installation.
+origin, writer fencing and atomic durable completion. Its initialization code
+reference uses the same private `local_execution::reference_matches` owner as
+ordinary execution: origin, publication context, revision and self-describing
+artifact digest all name the actual verified publication interface. Equality
+among initializer, fee/resource and object-authority references alone cannot
+prove that relationship. Reconstruction still performs a real private
+installation. Authentication is not installation.
 
 Installed profile checks must still observe and fence actual rows. They cannot
-replace fresh storage evidence with a copied root. Retained original receipts
-continue to reconcile before fresh module/policy/object I/O.
+replace fresh storage evidence with a copied root. Ordinary transaction replay
+continues to reconcile retained receipts before fresh module/policy/object I/O.
+Original-genesis installation has a distinct ordering: it verifies signed
+publication, initialization, policies and objects before its installed-marker
+and receipt reconciliation. The exact code-reference check therefore also
+runs on retained-root restart verification and private original-genesis
+reconstruction. An inconsistently revisioned retained root is refused without
+repair or migration; valid retained roots keep their existing reconciliation.
+See [DR-0198](decisions/0198-genesis-publication-reference-alignment.md).
 
 `VerifiedAdmissionProfile::from_pinned_genesis` is removed as an independent
 public authenticator. The root constructs its profile through a crate-private

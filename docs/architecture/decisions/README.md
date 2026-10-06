@@ -95,6 +95,8 @@
 - [DR-0197: offline original-genesis inspection](0197-offline-original-genesis-inspection.md)
 - [DR-0199: local TLS validator startup acceptance](0199-local-tls-validator-startup-acceptance.md)
 
+- [DR-0198: exact original-genesis published-code reference](0198-genesis-publication-reference-alignment.md)
+
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong
 in [`TODO.md`](../../../TODO.md).

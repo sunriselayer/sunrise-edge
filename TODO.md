@@ -51,6 +51,32 @@ mechanism or cleanup milestone is added to this functional gate.
 
 ## Functional critical path with embedded refactoring
 
+### Original-genesis reference correctness, 2026-10-06
+
+- [ ] Accepted-design [DR-0198](docs/architecture/decisions/0198-genesis-publication-reference-alignment.md)
+  reuses the ordinary execution owner's complete published-code reference
+  equality at the original installer. Independent Opus approved the corrected
+  design and validation-before-reconciliation/private-constructor ordering.
+  The nonignored Rust CI owner at unchanged baseline `8c91a680` actually passed
+  coherent signed revision-only acceptance at fresh/reconciled installation and
+  private reconstruction, plus valid v1/v2/v3/v4 profiles. The context-only
+  control passed its existing economics refusal; it is not another gap.
+  The source now uses the existing exact reference owner before any writes,
+  with fresh memory/SQLite and private-constructor refusal tests. The four
+  nonignored corrected cases passed normal Rust CI at `be7b5a5`, and independent
+  Opus approved its complete source. Actual local retained-SQLite acceptance
+  also passed: unchanged old owner `8c91a680` exported 35 genuine records at
+  generation 1/sequence 1; corrected `be7b5a5` reopened that exact pair,
+  explicitly refenced to generation 2, then refused installation and private
+  reconstruction with every captured record/blob and sequence unchanged.
+  Closing/reopening preserved that refusal baseline. Neither test fabricates
+  current-owner rows, and an absent old export remains an error.
+  Complete required local/CI gates remain open. The earlier #271 local gate
+  ended with SIGTERM during genuine recurring-process acceptance and is not
+  a pass; a fresh run is required. This documentation-only refresh requires
+  fresh exact-head source review. This reproduction is not a privilege exploit, severity
+  judgment, released-store survey or independent release audit.
+
 ### Completed Delivery 3 acceptance checkpoint, 2026-10-05
 
 | Owner | Actual result and remaining boundary |
