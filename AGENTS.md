@@ -22,12 +22,16 @@ provider as a protocol assumption.
 1. Read [`README.md`](README.md) for project orientation and setup.
 2. Use the [architecture index](docs/architecture/README.md) to read the
    relevant subsystem and decision records.
-3. Read the relevant requirements and implementation phase in [`TODO.md`](TODO.md).
+3. Read current completion requirements and sequencing in [`TODO.md`](TODO.md),
+   subsystem contracts in architecture, and any referenced original criteria
+   in the preserved development/history roadmap.
 4. Inspect the affected crate APIs, tests, and dependency direction.
 5. Search the workspace for existing type IDs, enum tags, hash domains, error
    patterns, and canonical encoders before defining new ones.
 
-`TODO.md` contains both implemented and aspirational design. Existing canonical
+`TODO.md` owns status and remaining gates, not subsystem design. The preserved
+roadmap distinguishes original binding criteria from historical observations
+and aspirational examples. Existing canonical
 bytes, stable test vectors, accepted decision records, and released protocol
 behavior are compatibility constraints. Do not rewrite them merely to match an
 aspirational example.
@@ -207,8 +211,9 @@ environmental limitation precisely.
 - Keep this file focused on durable agent/contributor instructions.
 - Keep the documents under `docs/architecture/` synchronized with implemented
   behavior and accepted decision records.
-- Keep `TODO.md` as the detailed design brief and roadmap; do not mark work
-  complete unless the implementation and validation exist.
+- Keep `TODO.md` as the current-status, completion-gate and roadmap owner;
+  subsystem design belongs in `docs/architecture/`. Do not mark work complete
+  unless the implementation and validation exist.
 - In PR descriptions, separate implemented scope, compatibility impact,
   deferred work, and exact validation commands.
 - Do not mix unrelated cleanup into a protocol change.

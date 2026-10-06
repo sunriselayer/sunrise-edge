@@ -91,11 +91,12 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   once; adapter framing overhead and local resource budgets remain distinct.
   Complete SDK decoupling is not assumed from one migrated boundary.
   [DR-0201](docs/architecture/decisions/0201-envelope-and-acknowledgement-ownership.md)
-  has independent conditional Opus PLAN APPROVE: one envelope/list codec,
+  has corrected independent conditional Opus PLAN APPROVE: one envelope/list codec,
   narrow errors with unchanged host classification, an outer-bound generic
   result decoder and one single-ack binder for four actual SDK families.
-  Generic submit retains its whole-result return contract. This corrected
-  consumer scope needs tech-lead reconfirmation. Pre-change vectors come first.
+  Generic submit retains its whole-result return contract; the HTTP decoder
+  remains the existing nested-ID owner. Caller-local preparation and semantic
+  error order stay unchanged. Pre-change vectors come first.
 - [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
   admission, evaluation, completion, reconciliation and storage contracts;
   separate object/receipt/outbox repositories and memory implementations by
