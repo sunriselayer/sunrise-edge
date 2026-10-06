@@ -3437,55 +3437,26 @@ where
     R::State: TransactionalStateStore,
     L: OutboxLeaseIdSource,
 {
-    deliver_request_outbox_inner(
-        runtime,
-        config,
-        lease_ids,
-        request_id,
-        |layout, request_id, lease_id, now_unix_millis| {
-            claim_next_outbox_message(
-                runtime.state_store(),
-                layout,
-                request_id,
-                lease_id,
-                now_unix_millis,
-                NATIVE_OUTBOX_LEASE_MILLIS,
-            )
-        },
-        |layout, request_id, index, lease_id| {
-            acknowledge_outbox_message(runtime.state_store(), layout, request_id, index, lease_id)
-        },
-    )
-}
-
-fn deliver_request_outbox_inner<R, L, C, A>(
-    runtime: &R,
-    config: &NodeConfig,
-    lease_ids: &L,
-    request_id: RequestId,
-    mut claim_next: C,
-    mut acknowledge: A,
-) -> Result<usize, OutboxDeliveryError>
-where
-    R: Runtime,
-    L: OutboxLeaseIdSource,
-    C: FnMut(
-        &PersistenceLayout,
-        RequestId,
-        OutboxLeaseId,
-        u64,
-    ) -> Result<Option<OutboxClaim>, NodeCoreError>,
-    A: FnMut(&PersistenceLayout, RequestId, u32, OutboxLeaseId) -> Result<(), NodeCoreError>,
-{
-    let layout = PersistenceLayout::new(config.chain_id().clone(), config.protocol_version());
-    let mut delivered_messages = 0_usize;
+    // With the unreachable domain-dispatch branch removed, standalone
+    // recovery has one concrete claim/ack owner, not injectable closures.
+    let layout: PersistenceLayout =
+        PersistenceLayout::new(config.chain_id().clone(), config.protocol_version());
+    let mut delivered_messages: usize = 0;
     for _ in 0..MAX_NODE_OUTPUT_ITEMS {
-        let lease_id = lease_ids.next_lease_id(request_id)?;
-        let now_unix_millis = runtime.clock().now_unix_millis()?;
-        let Some(claim) = claim_next(&layout, request_id, lease_id, now_unix_millis)? else {
+        let lease_id: OutboxLeaseId = lease_ids.next_lease_id(request_id)?;
+        let now_unix_millis: u64 = runtime.clock().now_unix_millis()?;
+        let claim: Option<OutboxClaim> = claim_next_outbox_message(
+            runtime.state_store(),
+            &layout,
+            request_id,
+            lease_id,
+            now_unix_millis,
+            NATIVE_OUTBOX_LEASE_MILLIS,
+        )?;
+        let Some(claim) = claim else {
             return Ok(delivered_messages);
         };
-        let encoded = claim
+        let encoded: Vec<u8> = claim
             .message()
             .event()
             .encode()
@@ -3494,7 +3465,13 @@ where
             .transport()
             .send(encoded)
             .map_err(|_| OutboxDeliveryError::Send)?;
-        acknowledge(&layout, claim.request_id(), claim.index(), claim.lease_id())?;
+        acknowledge_outbox_message(
+            runtime.state_store(),
+            &layout,
+            claim.request_id(),
+            claim.index(),
+            claim.lease_id(),
+        )?;
         delivered_messages = delivered_messages
             .checked_add(1)
             .ok_or(NodeCoreError::OutboxArithmeticOverflow)?;

@@ -38,6 +38,10 @@ changing one classification branch.
 The generic node-core library entrypoints and standalone legacy outbox
 recovery remain separate, unchanged capabilities. This decision neither
 certifies those compositions nor promises indefinite compatibility for them.
+With the dead domain-delivery caller removed, standalone recovery directly
+owns its sole claim/ack sequence rather than injecting two generic callbacks.
+Its public API, lease/time/claim/send/ack order, persisted bytes, bounds and
+error conversion are unchanged.
 
 ## Required observable contract
 

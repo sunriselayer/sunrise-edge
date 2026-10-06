@@ -192,7 +192,8 @@ described in [persistence.md §41](persistence.md#41-production-persistence-arch
 to `NodeEvent`, and the structured durable native route requires the resulting
 private-field `AuthenticatedSubmitTransaction` before deriving an access plan
 or entering its persistence/dispatch path. Generic node-core handlers and the
-capability-free closed native route reject `SubmitTransaction`. The authenticated wrapper also
+capability-free closed native route reject `SubmitTransaction`. The
+authenticated wrapper also
 derives the private sender-nonce reservation. Exact next-nonce equality and its
 checked increment now commit atomically with the structured invocation. Signed
 read-only object manifests are loaded from exact heads and immutable inline
@@ -308,8 +309,8 @@ deadlines while writing the response. HTTP/1 keep-alive is
 disabled, so one accepted connection carries at most one request; header count
 and parser buffer size are fixed as well. `serve_with_policy` exposes smaller
 validated limits under hard ceilings while `serve` preserves its signature and
-uses bounded defaults. Because this wraps the completed `Router`, the closed and authenticated
-native event routers and query routes receive the same pre-parser
+uses bounded defaults. Because this wraps the completed `Router`, the closed
+and authenticated native event routers and query routes receive the same pre-parser
 controls. An embedding host that does not use this server entrypoint must
 provide equivalent connection/read/write/lifecycle controls itself.
 
@@ -334,7 +335,8 @@ client semantics. The structured durable route supplies a storage-aware deadline
 and checks an explicit cooperative cancellation signal before blocking dispatch,
 at blocking-job entry, and immediately before its first storage call. The closed
 event route holds a permit over canonical decoding only and cannot start
-storage or application work. Client-disconnect wiring after complete request admission, shutdown
+storage or application work. Client-disconnect wiring after complete request
+admission, shutdown
 budgets, cancellation of started transport/storage work, measured load
 capacity, and circuit breaking remain required.
 
@@ -377,7 +379,8 @@ deliberately redelivers; fully acknowledged requests are not resent.
 Lease-ID sources must prevent reuse for the same request across process
 restarts, because a delayed acknowledgement from an expired attempt must not
 match a newer lease. Durable publication precedes this standalone recovery,
-but the closed event endpoint cannot create a batch or dispatch it. This is not the complete production
+but the closed event endpoint cannot create a batch or dispatch it. This is not
+the complete production
 delivery architecture. A local durable SQLite store, bounded native blocking
 seam, and scheduler-callable one-shot discovery/recovery operation exist, but
 no production runtime composition, real provider trigger, poison-message

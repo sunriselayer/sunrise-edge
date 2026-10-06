@@ -124,8 +124,11 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   independent PLAN APPROVE. Functional head `0515b67` passed the entire native
   HTTP suite 164/0, including the original authenticated/recovery tests and
   three added refusal/admission controls; its npm-ci also passed. Follow-up
-  unused-import cleanup, latest exact-source review, full acceptance and
-  integration remain pending. No full native/core cleanup or security gate is
+  unused-import cleanup passed exact `93fdf436` native tests 164/0, whole-workspace
+  all-feature Clippy, npm-ci and native rustdoc; complete source review approved
+  that head. The remaining single-caller recovery callback abstraction is also
+  simplified without changing lease/claim/send/ack behavior. Its latest exact
+  review, full acceptance and integration remain pending. No full native/core cleanup or security gate is
   implied. Ordinary GitHub authentication is currently unavailable; leave PRs
   open instead of using the PR-creation-only credential for updates or merge.
   [DR-0203](docs/architecture/decisions/0203-declared-state-transition-preparation.md)
