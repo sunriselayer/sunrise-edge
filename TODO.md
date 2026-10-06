@@ -237,8 +237,9 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   shared private memory-validation owner, closed public configuration and
   bounded escaped renderer are implemented on this branch; real compiled
   author/inspector tests, including signed control-character text, and focused
-  escaping/output-bound tests are added but
-  not yet executed. Exact source review and all required gates remain open.
+  escaping/output-bound tests passed the nonignored Rust CI owner at `c256f4d`.
+  The full local required gate, complete CI and exact source review remain
+  open; Claude's review attempt hit its session limit and supplied no approval.
   This cannot
   substitute for custody, independent economic approval or release audit.
   Design review additionally identified original-installer publication versus
@@ -246,6 +247,15 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   question; existing economics bindings already close a context-only mismatch.
   inspection must display the two signed records separately, not repair or
   imply their equality.
+- [ ] **Actual local TLS startup and certified CLI composition:** proposed
+  [DR-0199](docs/architecture/decisions/0199-local-tls-validator-startup-acceptance.md)
+  combines real author/inspection/preparation, four independently stored
+  original validators, per-peer explicit TLS trust and the compiled CLI's
+  causal certified transfer/replay. Design review precedes implementation.
+  Required negatives cover TLS versus protocol pins, conflicting request-ID
+  reuse and unchanged full namespace snapshots; replay also crosses actual
+  host restarts/fencing. This is local acceptance only, not deployed
+  authenticated ingress, independent custody, production or provider readiness.
 - [ ] **Independent release audits and selected activation profile:** retain
   the economics and ingress audit gates, independently controlled stores,
   genesis/key ceremony, auth/TLS and actual startup/recovery evidence. Local
