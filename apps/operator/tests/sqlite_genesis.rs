@@ -815,8 +815,10 @@ fn preflight_refuses_deleted_and_malformed_ordered_state_without_repair() {
                 StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
             ])
             .unwrap(),
-            AtomicStateMutationSet::new(vec![StateMutationEntry::new(key, mutation).unwrap()])
-                .unwrap(),
+            AtomicStateMutationSet::new(vec![
+                StateMutationEntry::new(key.clone(), mutation).unwrap(),
+            ])
+            .unwrap(),
         )
         .unwrap();
         if case == "missing" {
