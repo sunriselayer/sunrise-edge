@@ -71,11 +71,14 @@ later reject its absence. The manifest canonically commits its non-zero rule
 version, logical domain, closed rule tag, and activation epoch; resolution
 rejects empty plans and pre-activation events. Additive node-core resolved
 handlers now derive the access plan once, resolve before storage reads, and
-return the committed domain beside output. `native-http` exposes an additive
-resolved-domain router only when the runtime store implements
-`DomainTransactionalStateStore`. It accepts no HTTP domain input and carries
-the node-core result into request-scoped outbox claim/ack. The legacy SQLite
-router and scan-based unattended recovery remain compatibility paths.
+return the committed domain beside output. These remain node-core library
+capabilities, not an unauthenticated HTTP execution path.
+[DR-0206](decisions/0206-unauthenticated-ingress-without-execution-capabilities.md)
+retires the unused legacy and resolved-domain native execution constructors.
+The replacement closed event router owns only bounded blocking admission and
+preserves canonical decode/refusal responses; it has no store, runtime or
+delivery authority. Scan-based standalone outbox recovery remains a separate
+capability, not a successful branch of that HTTP endpoint.
 
 The runtime now models that boundary explicitly with a non-zero 32-byte
 `AtomicityDomainId`, a separately validated `AtomicStateReadSet`, a put/delete
@@ -100,9 +103,10 @@ in that same domain transaction. Domain-aware outbox claim/ack reuses one
 storage-neutral validation and cursor-transition implementation: only point
 reads and the final transaction commit differ between legacy and domain stores.
 The immutable batch observation and delivery-cursor mutation remain one domain
-transaction. An additive native request path now composes these operations.
-Normalized PostgreSQL implements the structured store and indexed unattended
-recovery As-Is; other durable providers remain pending.
+transaction. These library operations are separate from the closed native
+event endpoint. Authenticated structured native composition uses the distinct
+durable boundary below. Normalized PostgreSQL implements the structured store
+and indexed unattended recovery As-Is; other durable providers remain pending.
 
 The additive `DurableDomainStateStore` boundary makes production operation
 authority and uncertainty explicit without changing the legacy or domain
