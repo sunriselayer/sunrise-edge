@@ -2,8 +2,10 @@
 
 Date: 2026-10-07 (Asia/Singapore)
 
-Status: Proposed. Independent design review precedes implementation. This is
-transport qualification, not deployment, requester authority or launch approval.
+Status: Initial design accepted after independent Opus review. The locally
+observed Worker redirect amendment below awaits fresh design review before its
+implementation. This is transport qualification, not deployment, requester
+authority or launch approval.
 
 ## Context
 
@@ -15,7 +17,7 @@ retention/publication, frozen-frontier/drain and bounded query routes instead.
 Merely adding a path prefix passthrough would make unrelated future routes
 reachable without an explicit capability decision.
 
-## Decision proposed
+## Decision
 
 Keep the existing event-only profile and its public defaults unchanged. Add an
 explicit `certified-fastvote` profile, selected by trusted composition, never a
@@ -89,7 +91,11 @@ profile, with no credentials, query, fragment or base-path. Revalidate the
 selected closed route, synthesize only that method/path and fixed no-store/media
 headers, and supply only its configured Bearer token. Never forward caller
 Authorization, cookies, Host, redirect targets or forwarding identity headers.
-Keep redirects disabled, the existing 5-second default/30-second maximum timeout
+For the new certified profile, use `redirect: "manual"` in every provider and
+reject every returned 3xx through the closed response classifier below. No
+redirect is followed and no Location header is exposed. Keep the event-only
+HTTPS constructor's existing `redirect: "error"` unchanged. Keep the existing
+5-second default/30-second maximum timeout
 and no automatic retry. That abort signal covers response consumption too; a
 late timeout can fail a partially delivered stream.
 Transport authentication is distinct from signatures, quorum and protocol pins.
@@ -126,6 +132,9 @@ the same closed-route revalidation and synthesized-header isolation apply.
 The original binding-based, synthetic-origin event-only Worker is unchanged.
 No conformant certified service-binding implementation is claimed or required.
 The certified Worker explicitly caps requests at 8 MiB.
+Its configuration enables the documented `enable_request_signal` compatibility
+flag so an incoming client disconnect can abort response consumption. Local
+signal/cancellation tests are not a deployed proxy-chain disconnect proof.
 This accommodates current ordinary intent/certificate envelopes but intentionally
 refuses larger publication/import bundles. The bounded reader holds chunks plus
 a contiguous copy, so a 32 MiB request could require roughly twice that memory.
@@ -168,6 +177,27 @@ otherwise stop before an over-budget chunk is emitted. No whole-response
 buffering, detached pump, automatic retry or new provider state. Preserve exact
 bytes, fixed media/no-store and backpressure; cancel/release the upstream reader
 on disconnect, oversize, failure or completion. SDKs still decode/authenticate.
+Validate an upstream Content-Length when present, then drop it from the streamed
+downstream response rather than asserting a length before consumption completes.
+The current Rust SDK's plaintext-loopback, Content-Length-required transport is
+not qualified against this HTTPS streamed profile. No SDK integration is claimed
+by transport fixture success; that transport expansion remains separate work.
+
+### Local runtime amendment, 2026-10-07
+
+The pinned Wrangler 4.125.0/workerd runtime, exercised through its local Vitest
+pool with every outbound request intercepted, rejects `redirect: "error"` while
+constructing a Request. Its diagnostic explicitly requires `manual` and response
+status checking. The current [Request reference](https://developers.cloudflare.com/workers/runtime-apis/request/)
+lists `error`, but that does not establish support in this pinned runtime. Use
+portable `manual` plus the existing closed status guard in the certified profile
+only, retaining no-follow, header isolation and ambiguous POST outcome semantics.
+A test redirect target returns an otherwise valid success, so accepting it would
+fail the test rather than produce a false-positive refusal. No runtime/dependency
+upgrade or legacy constructor widening is needed to resolve this discrepancy.
+Use the existing supported compatibility date `2026-08-20` and the explicit
+[incoming request signal flag](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#enable-requestsignal-for-incoming-requests).
+Review this amendment before changing the certified production fetcher.
 
 Add explicit Deno/Vercel composition selection and a separate Cloudflare
 certified entrypoint/configuration rather than silently widening the existing
