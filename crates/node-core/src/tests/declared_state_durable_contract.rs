@@ -11,6 +11,13 @@ use super::*;
 
 type RecordedDurableRead = (Vec<u8>, AtomicityDomainId, DurableOperationContext);
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RecordedOperation {
+    State(RecordedDurableRead),
+    ObjectHead(ObjectId),
+    ObjectVersion(ObjectId, DurableObjectVersion),
+}
+
 const CHAIN: &str = "sunrise-test";
 const KEY_APP_ABSENT: &[u8] = b"state/app-absent";
 const KEY_APP_TOMBSTONE: &[u8] = b"state/app-tombstone";
@@ -32,7 +39,7 @@ const KEY_DURABLE_READ_FAIL: &[u8] = b"state/durable-read-fail";
 /// for every other test.
 struct RecordingDurableStore {
     inner: ScriptedDurableStore,
-    calls: Mutex<Vec<RecordedDurableRead>>,
+    calls: Mutex<Vec<RecordedOperation>>,
     fail_key: Mutex<Option<(Vec<u8>, DurableReadError)>>,
 }
 
@@ -59,17 +66,24 @@ impl RecordingDurableStore {
 
     /// Returns every recorded call in order, exactly as observed.
     fn calls(&self) -> Vec<RecordedDurableRead> {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|operation: &RecordedOperation| match operation {
+                RecordedOperation::State(read) => Some(read.clone()),
+                RecordedOperation::ObjectHead(_) | RecordedOperation::ObjectVersion(_, _) => None,
+            })
+            .collect()
+    }
+
+    fn trace(&self) -> Vec<RecordedOperation> {
         self.calls.lock().unwrap().clone()
     }
 
     /// Returns only the recorded keys, in call order.
     fn recorded_keys(&self) -> Vec<Vec<u8>> {
-        self.calls
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|entry| entry.0.clone())
-            .collect()
+        self.calls().iter().map(|entry| entry.0.clone()).collect()
     }
 }
 
@@ -107,7 +121,7 @@ impl DurableDomainStateStore for RecordingDurableStore {
         self.calls
             .lock()
             .unwrap()
-            .push((key.to_vec(), domain, *context));
+            .push(RecordedOperation::State((key.to_vec(), domain, *context)));
         let failing: Option<(Vec<u8>, DurableReadError)> = self.fail_key.lock().unwrap().clone();
         if let Some(failing_entry) = failing {
             if failing_entry.0 == key {
@@ -150,6 +164,10 @@ impl StructuredDurableDomainStateStore for RecordingDurableStore {
         domain: AtomicityDomainId,
         object_id: ObjectId,
     ) -> Result<DurableObjectHead, DurableReadError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(RecordedOperation::ObjectHead(object_id));
         self.inner.get_object_head(context, domain, object_id)
     }
 
@@ -160,6 +178,10 @@ impl StructuredDurableDomainStateStore for RecordingDurableStore {
         object_id: ObjectId,
         object_version: DurableObjectVersion,
     ) -> Result<Option<DurableObjectVersionRecord>, DurableReadError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(RecordedOperation::ObjectVersion(object_id, object_version));
         self.inner
             .get_object_version(context, domain, object_id, object_version)
     }
@@ -173,6 +195,17 @@ struct TwoKeyReadOnlyMachine {
     second_key: Vec<u8>,
     calls: AtomicUsize,
     snapshot: Mutex<Option<NodeStateSnapshot>>,
+}
+
+impl TwoKeyReadOnlyMachine {
+    fn new(first_key: &[u8], second_key: &[u8]) -> Self {
+        Self {
+            first_key: first_key.to_vec(),
+            second_key: second_key.to_vec(),
+            calls: AtomicUsize::new(0),
+            snapshot: Mutex::new(None),
+        }
+    }
 }
 
 impl TransactionalNodeStateMachine for TwoKeyReadOnlyMachine {
@@ -344,6 +377,15 @@ fn durable_sorted_application_reads_follow_profile_and_epoch_and_keep_exact_revi
     assert!(manifest_index < absent_index);
     assert!(marker_index < absent_index);
     assert!(absent_index < tombstone_index);
+    for application_key in [KEY_APP_ABSENT, KEY_APP_TOMBSTONE] {
+        assert_eq!(
+            keys.iter()
+                .filter(|key| key.as_slice() == application_key)
+                .count(),
+            1,
+            "each declared application key is read exactly once"
+        );
+    }
 
     // Every recorded call shares the one invocation context and domain: the
     // application loop never substitutes a different backend/context/domain
@@ -406,7 +448,14 @@ fn durable_corrupt_first_sorted_application_value_stops_before_later_read_transi
     )
     .unwrap_err();
 
-    assert!(matches!(error, NodeCoreError::CanonicalDecoding(_)));
+    assert_eq!(
+        error,
+        NodeCoreError::CanonicalDecoding(canonical_encoding::CanonicalDecodingError::Truncated {
+            offset: 0,
+            needed: 4,
+            remaining: 3,
+        })
+    );
     assert_eq!(machine.calls.load(Ordering::SeqCst), 0);
     assert!(
         !recording
@@ -470,6 +519,228 @@ fn durable_two_valid_sorted_application_values_both_read_and_commit() {
             .any(|key| key.as_slice() == KEY_APP_B)
     );
     assert_eq!(recording.inner().commits.lock().unwrap().len(), 1);
+}
+
+/// A real signed read-only object manifest, using the established test signer
+/// and authentication helper. Loading/authentication is left to the public core.
+fn object_submission(
+    recording: &RecordingDurableStore,
+    owner: Owner,
+    request_byte: u8,
+) -> (AuthenticatedSubmitTransaction, ObjectId, DurableObjectHead) {
+    let key: SigningKey = dev_signing_key(0xB7);
+    let object_id: ObjectId = ObjectId::new([0x87; 32]);
+    let (object_ref, head): (ObjectRef, DurableObjectHead) =
+        preload_inline_object(recording.inner(), CHAIN, object_id, owner, 0x87);
+    let manifest: AccessManifest = manifest_with(vec![AccessEntry {
+        object_ref,
+        mode: AccessMode::Read,
+    }]);
+    let submission: AuthenticatedSubmitTransaction = authenticated_submission_with_manifest(
+        CHAIN,
+        request(request_byte),
+        &key,
+        Epoch::new(7),
+        0,
+        manifest,
+        &config(CHAIN),
+        &active_protocol_config(0xE7),
+    );
+    (submission, object_id, head)
+}
+
+#[test]
+fn authenticated_nonce_fences_and_object_load_precede_each_application_read_and_commit() {
+    let recording: RecordingDurableStore =
+        RecordingDurableStore::new(DurableCommitOutcome::Committed);
+    let sender: Address = dev_sender_address(&dev_signing_key(0xB7));
+    let (submission, object_id, head): (
+        AuthenticatedSubmitTransaction,
+        ObjectId,
+        DurableObjectHead,
+    ) = object_submission(&recording, Owner::Address(sender), 0xE7);
+    recording.inner().preload(
+        KEY_APP_A.to_vec(),
+        StateRevision::new(3),
+        canonical(TEST_STATE_TYPE_ID, 9),
+    );
+    let machine: TwoKeyReadOnlyMachine = TwoKeyReadOnlyMachine::new(KEY_APP_B, KEY_APP_A);
+    let result: ResolvedNodeOutput = handle_authenticated_resolved_durable_submit_transaction(
+        &MemoryBlobStore::default(),
+        &recording,
+        &durable_context(),
+        &resolver(CHAIN),
+        submission,
+        &machine,
+    )
+    .unwrap();
+    assert_eq!(result.domain(), domain(0xE7));
+    assert_eq!(machine.calls.load(Ordering::SeqCst), 1);
+    let snapshot: NodeStateSnapshot = machine.snapshot.lock().unwrap().clone().unwrap();
+    assert_eq!(snapshot.resolved_objects().len(), 1);
+    assert_eq!(
+        snapshot.get(KEY_APP_A).unwrap().revision(),
+        StateRevision::new(3)
+    );
+    assert_eq!(
+        snapshot.get(KEY_APP_B).unwrap().revision(),
+        StateRevision::INITIAL
+    );
+
+    let chain: ChainId = ChainId::new(CHAIN).unwrap();
+    let nonce_key: Vec<u8> = PersistenceLayout::new(chain.clone(), ProtocolVersion::new(3))
+        .sender_nonce_key(*sender.as_bytes(), Epoch::new(7));
+    let nonce_lock_key: Vec<u8> =
+        local_instance_state::fastpath_nonce_lock_key(&chain, sender.as_bytes(), Epoch::new(7))
+            .unwrap();
+    let epoch_key: Vec<u8> = local_instance_state::fastpath_epoch_record_key(&chain).unwrap();
+    let trace: Vec<RecordedOperation> = recording.trace();
+    let state_index = |key: &[u8]| -> usize {
+        trace.iter().position(|operation: &RecordedOperation| {
+            matches!(operation, RecordedOperation::State((actual, _, _)) if actual.as_slice() == key)
+        }).unwrap()
+    };
+    let head_index: usize = trace
+        .iter()
+        .position(|operation: &RecordedOperation| {
+            *operation == RecordedOperation::ObjectHead(object_id)
+        })
+        .unwrap();
+    let version_index: usize = trace
+        .iter()
+        .position(|operation: &RecordedOperation| {
+            *operation == RecordedOperation::ObjectVersion(object_id, DurableObjectVersion::FIRST)
+        })
+        .unwrap();
+    assert!(state_index(&nonce_key) < state_index(&nonce_lock_key));
+    assert!(state_index(&nonce_lock_key) < head_index);
+    assert!(head_index < version_index);
+    assert!(version_index < state_index(KEY_APP_A));
+    assert!(state_index(KEY_APP_A) < state_index(KEY_APP_B));
+    let epoch_reads: Vec<usize> = trace
+        .iter()
+        .enumerate()
+        .filter_map(|(index, operation)| {
+            matches!(operation, RecordedOperation::State((actual, _, _)) if *actual == epoch_key)
+                .then_some(index)
+        })
+        .collect();
+    assert!(
+        epoch_reads.len() >= 2,
+        "direct admission and current-epoch fencing both run"
+    );
+    assert!(epoch_reads.iter().all(|index| *index < head_index));
+    let keys: Vec<Vec<u8>> = recording.recorded_keys();
+    for key in [KEY_APP_A, KEY_APP_B] {
+        assert_eq!(
+            keys.iter()
+                .filter(|actual| actual.as_slice() == key)
+                .count(),
+            1
+        );
+    }
+    let commits = recording.inner().commits.lock().unwrap();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(
+        commits[0].object_changes().reads(),
+        &[DurableObjectHeadRead::new(object_id, head)]
+    );
+    let state: &AtomicStateTransaction = commits[0].state().unwrap();
+    let nonce: &StateMutationEntry = state
+        .mutations()
+        .iter()
+        .find(|mutation| mutation.key() == nonce_key)
+        .unwrap();
+    let StateMutation::Put(bytes) = nonce.mutation() else {
+        panic!("nonce must advance atomically");
+    };
+    assert_eq!(SenderNonceRecord::decode(bytes).unwrap().next_nonce, 1);
+}
+
+#[test]
+fn authenticated_object_owner_refusal_wins_over_corrupt_declared_state_without_application_io() {
+    let recording: RecordingDurableStore =
+        RecordingDurableStore::new(DurableCommitOutcome::Committed);
+    let wrong_owner: Address = Address::new([0xEE; 32]);
+    assert_ne!(wrong_owner, dev_sender_address(&dev_signing_key(0xB7)));
+    let (submission, object_id, _): (AuthenticatedSubmitTransaction, ObjectId, DurableObjectHead) =
+        object_submission(&recording, Owner::Address(wrong_owner), 0xE8);
+    recording
+        .inner()
+        .preload(KEY_APP_A.to_vec(), StateRevision::new(3), vec![0xFF]);
+    let original: ScriptedStateReads = recording.inner().preloaded.lock().unwrap().clone();
+    let machine: TwoKeyReadOnlyMachine = TwoKeyReadOnlyMachine::new(KEY_APP_A, KEY_APP_B);
+    let error: NodeCoreError = handle_authenticated_resolved_durable_submit_transaction(
+        &MemoryBlobStore::default(),
+        &recording,
+        &durable_context(),
+        &resolver(CHAIN),
+        submission,
+        &machine,
+    )
+    .unwrap_err();
+    assert_eq!(error, NodeCoreError::ObjectOwnerMismatch { object_id });
+    assert_eq!(machine.calls.load(Ordering::SeqCst), 0);
+    assert!(machine.snapshot.lock().unwrap().is_none());
+    let keys: Vec<Vec<u8>> = recording.recorded_keys();
+    assert!(
+        !keys
+            .iter()
+            .any(|key| [KEY_APP_A, KEY_APP_B].contains(&key.as_slice()))
+    );
+    assert_eq!(
+        recording.inner().object_head_reads.load(Ordering::SeqCst),
+        1
+    );
+    assert!(recording.inner().commits.lock().unwrap().is_empty());
+    assert!(recording.inner().receipt.lock().unwrap().is_none());
+    assert_eq!(*recording.inner().preloaded.lock().unwrap(), original);
+}
+
+#[test]
+fn authenticated_correct_owner_reaches_the_corrupt_state_refusal_after_real_object_load() {
+    let recording: RecordingDurableStore =
+        RecordingDurableStore::new(DurableCommitOutcome::Committed);
+    let sender: Address = dev_sender_address(&dev_signing_key(0xB7));
+    let (submission, object_id, _): (AuthenticatedSubmitTransaction, ObjectId, DurableObjectHead) =
+        object_submission(&recording, Owner::Address(sender), 0xE9);
+    recording
+        .inner()
+        .preload(KEY_APP_A.to_vec(), StateRevision::new(3), vec![0xFF]);
+    let original: ScriptedStateReads = recording.inner().preloaded.lock().unwrap().clone();
+    let machine: TwoKeyReadOnlyMachine = TwoKeyReadOnlyMachine::new(KEY_APP_A, KEY_APP_B);
+    let error: NodeCoreError = handle_authenticated_resolved_durable_submit_transaction(
+        &MemoryBlobStore::default(),
+        &recording,
+        &durable_context(),
+        &resolver(CHAIN),
+        submission,
+        &machine,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        NodeCoreError::CanonicalDecoding(canonical_encoding::CanonicalDecodingError::Truncated {
+            offset: 0,
+            needed: 4,
+            remaining: 1,
+        })
+    );
+    let trace: Vec<RecordedOperation> = recording.trace();
+    assert!(trace.contains(&RecordedOperation::ObjectVersion(
+        object_id,
+        DurableObjectVersion::FIRST
+    )));
+    let application_reads: Vec<Vec<u8>> = recording
+        .recorded_keys()
+        .into_iter()
+        .filter(|key| [KEY_APP_A, KEY_APP_B].contains(&key.as_slice()))
+        .collect();
+    assert_eq!(application_reads, vec![KEY_APP_A.to_vec()]);
+    assert_eq!(machine.calls.load(Ordering::SeqCst), 0);
+    assert!(recording.inner().commits.lock().unwrap().is_empty());
+    assert!(recording.inner().receipt.lock().unwrap().is_none());
+    assert_eq!(*recording.inner().preloaded.lock().unwrap(), original);
 }
 
 /// Declares one ReadOnly key, so any returned update to it is a read-only

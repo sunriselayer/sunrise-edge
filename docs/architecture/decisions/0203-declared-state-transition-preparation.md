@@ -50,7 +50,8 @@ context framework.
 
 The durable caller retains receipt-first replay, admission/profile/nonce and
 lock fences, module resolution, object authorization/loading and output/object
-effect validation. It supplies its already-authorized object slice separately
+effect validation. It loads and authorizes objects before the state loader runs,
+then attaches that already-authorized slice while constructing the snapshot
 after state loading. The shared loader never resolves a domain, authenticates
 anything, supplies object authority, commits or exposes output.
 
@@ -78,6 +79,19 @@ with genuine response/outbox construction; and `DurableRead`, not legacy
 receipt/commit; paired positive controls must reach transition and commit.
 Adding these tests or checking their syntax alone does not authorize migration:
 execute the pre-change controls and obtain a fresh independent PLAN approval.
+
+The authenticated pre-change controls invoke the actual read-only object
+SubmitTransaction entrypoint with real signed manifests. One interleaved state/
+object I/O trace pins nonce, current-epoch/nonce-lock fences and head/version
+loading before each application key is read exactly once. A wrong-owner object
+refuses before corrupt declared state and any application read/transition/commit;
+the paired valid-owner controls reach both the real corrupt-state refusal and
+a successful canonical state/nonce/object-head assertion commit. Keep the
+existing exact global read-count controls unchanged. The callback returns
+`Result<VersionedStateValue, NodeCoreError>` with explicit caller-local `Runtime`
+versus `DurableRead` mapping, not a generic conversion bound. Private owner
+tests additionally pin the otherwise-unreachable missing-observation invariant
+and per-item refusal/fallible-builder ordering.
 
 Test undeclared/read-only updates, complete read assertions including absence
 and tombstones, missing declared observations, corrupt-state early refusal and
