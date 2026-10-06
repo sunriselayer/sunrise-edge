@@ -233,6 +233,10 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   original committee after the actual generic installers validate in isolated
   memory. Independent design approval precedes implementation. This cannot
   substitute for custody, independent economic approval or release audit.
+  Design review additionally identified original-installer publication versus
+  code-reference revision/context alignment as a separate core audit question;
+  inspection must display the two signed records separately, not repair or
+  imply their equality.
 - [ ] **Independent release audits and selected activation profile:** retain
   the economics and ingress audit gates, independently controlled stores,
   genesis/key ceremony, auth/TLS and actual startup/recovery evidence. Local

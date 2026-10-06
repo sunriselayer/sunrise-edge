@@ -84,8 +84,17 @@ dependency or machine authority witness is introduced. Include:
 - Self-describing manifest digest, expected chain/protocol/epoch, manifest
   encoding version, signature family, commitment profile and minimum Freeze
   height, plus the authenticated public genesis authority.
-- Exact published code origin/revision/artifact digest and initialization
-  instance target, encoded through their existing public canonical encoders.
+- Published code origin via `encode_package_origin(artifact.origin())`, actual
+  `artifact.revision()`, publication context via `encode_publication_context`
+  and digest via `publication.request().artifact_digest()`. These describe the
+  signed artifact, not an initializer-selected reference.
+- Separately labelled initialization code reference via
+  `encode_dependency_ref(&initialization.intent.call.code)` and instance via
+  `encode_instance_target(&call.instance)`. The defining installer compares
+  publication/reference origin and digest, but currently does not establish
+  their revision/context equality. Inspection adds no stronger core rule or
+  mislabels one record as the other; installer alignment is a separate core
+  audit/correctness question, not silently repaired by this command.
 - The original committee's identity, public key, signature scheme and voting
   power. Keep bond/custody information in the separate economic policy and
   object entries; never derive power from amounts.
@@ -100,9 +109,12 @@ dependency or machine authority witness is introduced. Include:
 - A final `complete=true mode=inspect evidence=none` line. This states only that
   this invocation completed pinned-root and defining-installer inspection.
 
-Public string values are explicitly escaped before rendering; chain identifiers
-and entrypoint names must not inject terminal controls or extra lines. Fixed
-labels come from exhaustive enum matches, not `Debug` formatting. Hex uses
+Public strings use one explicit byte grammar over their UTF-8 bytes: pass
+through bytes `0x21..=0x7e` except backslash and equals; render backslash as
+`\\`, and every other byte (including space, equals, controls and all non-ASCII
+bytes) as lowercase `\xHH`. Chain identifiers, custody chain identifiers and
+all entrypoint names use this rule. No value uses `Debug`, `escape_debug` or
+`escape_default`; fixed labels come from exhaustive enum matches. Hex uses
 existing canonical encoders for fee/economics/committee/code/instance/object
 authority records. Bound the complete diagnostic text to four times
 `MAX_GENESIS_MANIFEST_BYTES` plus 32 KiB, rejecting excess before stdout.
@@ -140,6 +152,10 @@ or call a provider. Private in-memory installation is discarded after validation
   noncanonical numbers, zero domain and out-of-bound timeout. Keep inputs
   unchanged and stdout empty.
 - Cover output escaping and bounds with direct rendering tests. Rerun the
+  byte grammar against newline, ESC, U+009B, U+202E, equals and backslash.
+  Add a genuinely signed supported non-causal manifest to prove generic
+  inspection does not inherit SQLite serving preparation's causal restriction.
+  Rerun the
   real author and SQLite startup/refusal suites after extracting the shared
   memory validator; preserve their canonical output and actual installer paths.
 - Require fresh complete exact-head source review and all required validation
