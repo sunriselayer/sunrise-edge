@@ -350,7 +350,7 @@ decodes event records, object effects, and complete execution effects;
 `clients/rust` re-exports those decoders for response consumers. The client
 checks every returned object/request/sender selector against the exact query,
 and the loopback transport rejects request framing injection, over-bound
-headers/bodies, transfer encoding, ambiguous lengths, malformed status/header
+headers/bodies, unsupported transfer coding, mixed or duplicate framing, malformed status/header
 syntax, truncation, trailing bytes, and failure to close a `Connection: close`
 response within its timeout. Per-stage socket timeouts are also capped by one
 monotonic complete-request deadline, and receipt polling passes its overall

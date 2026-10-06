@@ -40,7 +40,9 @@ not another transport, HTTP client framework or protocol crate:
 
 - Require nonempty hexadecimal sizes. Checked arithmetic refuses overflow and
   the next declared chunk that exceeds the configured decoded-body bound before
-  allocation or payload reads.
+  allocation or payload reads. The supported syntax is deliberately narrow:
+  no whitespace within or after the hexadecimal size, including before an
+  extension's semicolon. Pin those refusals with literal negative controls.
 - Support arbitrary TCP/TLS-record fragmentation, exact data CRLF, zero chunk
   and complete trailers. EOF before any terminator is incomplete even if the
   decoded prefix is already a valid canonical frame.

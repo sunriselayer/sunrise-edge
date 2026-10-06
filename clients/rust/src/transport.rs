@@ -200,10 +200,10 @@ pub enum TransportError {
     ResponseFramingBudgetOverflow,
     /// The response had more than one `Content-Type` header.
     DuplicateContentType,
-    /// The declared `Content-Length` exceeded the configured maximum body
-    /// bound.
+    /// The declared length or cumulative chunked body exceeded the configured
+    /// decoded-body maximum.
     ResponseBodyTooLarge {
-        /// Declared body length in bytes.
+        /// Declared length or cumulative chunked body length in bytes.
         declared: usize,
         /// Configured maximum body length in bytes.
         maximum: usize,
@@ -218,7 +218,7 @@ pub enum TransportError {
     /// The server sent bytes beyond its complete length or chunked framing.
     TrailingResponseBytes,
     /// The server did not close the `Connection: close` response after the
-    /// exact declared body within the configured read timeout.
+    /// complete length or chunked framing within the configured read timeout.
     ResponseDidNotClose,
 }
 

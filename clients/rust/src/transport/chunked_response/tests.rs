@@ -139,6 +139,8 @@ fn malformed_hex_controls_crlf_and_overflow_are_closed() {
         b"1\rx".as_slice(),
         b"1;bad\x01\r\n".as_slice(),
         b"1;\r\na\r\n0\r\n\r\n".as_slice(),
+        b"1 ;ignored=yes\r\na\r\n0\r\n\r\n".as_slice(),
+        b"1\t;ignored=yes\r\na\r\n0\r\n\r\n".as_slice(),
         b"1\r\na\n0\r\n\r\n".as_slice(),
         b"0\r\nX-Test: bad\n\r\n".as_slice(),
         b"0\r\n\n".as_slice(),
