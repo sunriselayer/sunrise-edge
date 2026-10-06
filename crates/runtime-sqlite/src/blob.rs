@@ -168,7 +168,7 @@ impl SqliteBlobStore {
             return Err(SqliteBlobStoreError::UnsupportedJournalMode(journal));
         }
         initialize_blob_schema(&mut connection)?;
-        verify_writable_shape(&connection)?;
+        verify_access_shape(&connection)?;
         native_files::sync_created(path, &held).map_err(SqliteBlobStoreError::File)?;
         Ok(Self {
             connection: Mutex::new(connection),
@@ -212,7 +212,7 @@ impl SqliteBlobStore {
             return Err(SqliteBlobStoreError::UnsupportedJournalMode(journal));
         }
         verify_schema_identity(&connection)?;
-        verify_writable_shape(&connection)?;
+        verify_access_shape(&connection)?;
         native_files::check_attached(path, &held).map_err(SqliteBlobStoreError::File)?;
         Ok(Self {
             connection: Mutex::new(connection),
@@ -239,6 +239,7 @@ impl SqliteBlobStore {
             return Err(SqliteBlobStoreError::SchemaVersion(schema_version));
         }
         verify_schema_identity(&connection)?;
+        verify_access_shape(&connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
             created_file: None,
@@ -281,7 +282,7 @@ fn configure_writable(connection: &Connection) -> Result<(), SqliteBlobStoreErro
     connection.pragma_update(None, "synchronous", "FULL")?;
     Ok(())
 }
-fn verify_writable_shape(connection: &Connection) -> Result<(), SqliteBlobStoreError> {
+fn verify_access_shape(connection: &Connection) -> Result<(), SqliteBlobStoreError> {
     connection.prepare("SELECT digest_algorithm, digest_bytes, content FROM blobs LIMIT 0")?;
     Ok(())
 }
