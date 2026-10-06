@@ -149,6 +149,9 @@ ci_run_action() {
     sqlite-inventory) ci_check_sqlite_inventory ;;
     core-recurrence|readiness-sqlite|recurring-sqlite) ci_run_required_extended_group "$1" ;;
     pg-storage-tests)
+      # Operator --all-targets includes nonignored compiled-CLI process tests;
+      # this isolated lane builds that separate binary like rust-tests does.
+      cargo build -p sunrise-edge-cli --bin sunrise-edge-cli --all-features || return "$?"
       # Keep native feature anchors and USB-HID identical to the former lane.
       cargo test -p runtime-postgres -p sunrise-edge-operator \
         -p sunrise-edge-cloudflare-validator -p sunrise-claim \

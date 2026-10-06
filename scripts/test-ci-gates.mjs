@@ -400,7 +400,7 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     ["cargo", compiledCliBuild],
     ["cargo", ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"]],
   ], "failed discovery must stop the nested gate before the inventory consumer");
-  for (const action of ["rust-tests-required", "rust-tests-full"]) {
+  for (const action of ["rust-tests-required", "rust-tests-full", "pg-storage-tests"]) {
     const failedBuild = runFunction("ci_run_action", [action], { CI_MOCK_FAIL_ARG: "build" });
     assert.equal(failedBuild.status, 19);
     assert.deepEqual(failedBuild.log.map(({ tool, args }) => [tool, args]), [["cargo", compiledCliBuild]],
@@ -554,7 +554,13 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   )).map((event) => event.tool === "cargo" && event.args[0] === "test" && event.args.includes("--workspace")
     ? { ...event, args: [...event.args, "--exclude", "runtime-postgres"] } : event);
   assert.deepEqual(gateEvents(required), gateEvents(commonFull));
-  const storageEvent = lanes.get("pg-storage")[0];
+  // The isolated storage lane runs operator --all-targets on a fresh runner, so
+  // it must build the actual CLI exactly once before those process tests.
+  const storageLane = lanes.get("pg-storage");
+  assert.deepEqual(storageLane.map(({ tool, args }) => [tool, args[0]]), [["cargo", "build"], ["cargo", "test"]],
+    "the actual CLI must be built before storage-lane operator process acceptance");
+  assert.deepEqual(storageLane[0].args, compiledCliBuild);
+  const storageEvent = storageLane[1];
   for (const anchor of ["runtime-postgres", "sunrise-edge-operator", "sunrise-edge-cloudflare-validator", "sunrise-claim"]) {
     const withoutAnchor = storageEvent.args.slice();
     const index = withoutAnchor.indexOf(anchor);
