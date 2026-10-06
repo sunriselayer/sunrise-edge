@@ -181,7 +181,7 @@ mod tests {
         let result: Result<(), Box<dyn Error>> =
             read_stable_advisory(&store, &operation, domain, || {
                 let writer_path: PathBuf = database.0.clone();
-                let writer_operation: DurableOperationContext = operation.clone();
+                let writer_operation: DurableOperationContext = operation;
                 let writer = std::thread::spawn(move || {
                     let writer_store: SqliteDurableStore =
                         SqliteDurableStore::open_existing(writer_path, namespace).unwrap();
