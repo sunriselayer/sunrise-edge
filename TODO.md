@@ -60,13 +60,19 @@ cleanup milestone is added to this functional gate.
   private reconstruction, plus valid v1/v2/v3/v4 profiles. The context-only
   control passed its existing economics refusal; it is not another gap.
   The source now uses the existing exact reference owner before any writes,
-  with fresh memory/SQLite and private-constructor refusal tests. Current
-  corrected tests and complete gates/source review are not yet executed.
-  Real retained SQLite evidence additionally requires first exporting with
-  the genuine old owner, then opening that exact stored baseline with the
-  corrected owner; its explicit test must fail rather than manufacture a
-  baseline if the export is absent. The shared warm target remains owned by
-  #271. This correctness reproduction is not a privilege exploit, severity
+  with fresh memory/SQLite and private-constructor refusal tests. The four
+  nonignored corrected cases passed normal Rust CI at `be7b5a5`, and independent
+  Opus approved its complete source. Actual local retained-SQLite acceptance
+  also passed: unchanged old owner `8c91a680` exported 35 genuine records at
+  generation 1/sequence 1; corrected `be7b5a5` reopened that exact pair,
+  explicitly refenced to generation 2, then refused installation and private
+  reconstruction with every captured record/blob and sequence unchanged.
+  Closing/reopening preserved that refusal baseline. Neither test fabricates
+  current-owner rows, and an absent old export remains an error.
+  Complete required local/CI gates remain open. The earlier #271 local gate
+  ended with SIGTERM during genuine recurring-process acceptance and is not
+  a pass; a fresh run is required. This documentation-only refresh requires
+  fresh exact-head source review. This reproduction is not a privilege exploit, severity
   judgment, released-store survey or independent release audit.
 
 ### Current acceptance checkpoint, 2026-10-05
