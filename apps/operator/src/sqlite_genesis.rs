@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 use crate::common::{FlagSet, parse_hash_suite, parse_hex_32};
+use crate::original_genesis_install::{OriginalGenesisInstallation, install_original_genesis};
 use crate::sqlite_genesis_checks::{
     OriginalHostPins, read_original_host_state, read_stable_advisory, verify_original_signer,
 };
@@ -219,31 +220,15 @@ fn prepare(
     let store: SqliteDurableStore =
         SqliteDurableStore::create_new(state_db, options.namespace(), fence)?;
     let blobs: SqliteBlobStore = SqliteBlobStore::create_new_fresh(blob_db)?;
-    node_core::genesis::install_genesis(
-        &store,
-        &context,
-        options.domain,
-        &options.resolver,
-        root.manifest(),
-        checkpoint,
-    )?;
-    let leg_policy: LocalExecutionPolicy =
-        LocalExecutionPolicy::generic_object_results(options.expected_context.clone());
-    let engine: LocalWasmExecutionEngine = LocalWasmExecutionEngine::new();
-    let environment: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
+    let installation: OriginalGenesisInstallation<'_> = OriginalGenesisInstallation {
+        context: &context,
+        domain: options.domain,
+        resolver: &options.resolver,
+        root,
         policy,
-        history: &[],
-        leg_policy: &leg_policy,
-        engine: &engine,
-        blobs: &blobs,
-        seal: None,
+        checkpoint,
     };
-    node_core::ordered_economics::install_ordered_genesis(
-        &store,
-        &context,
-        &environment,
-        SystemClock.now_unix_millis()?,
-    )?;
+    install_original_genesis(&store, &blobs, &installation)?;
     store.sync_created()?;
     blobs.sync_created()?;
     println!(

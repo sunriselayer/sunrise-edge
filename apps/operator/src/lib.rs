@@ -11,6 +11,7 @@ pub mod host_protocol_context;
 pub mod host_runtime;
 pub mod immutable_archive;
 pub mod ordered_seal;
+mod original_genesis_install;
 pub mod source_sqlite;
 pub mod sqlite_genesis;
 mod sqlite_genesis_checks;
