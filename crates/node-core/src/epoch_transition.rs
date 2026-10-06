@@ -91,6 +91,12 @@ impl fmt::Display for EpochTransitionError {
     }
 }
 impl Error for EpochTransitionError {}
+impl From<crate::EnvelopeError> for EpochTransitionError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for EpochTransitionError {
     fn from(error: NodeCoreError) -> Self {
         Self::Node(error)
@@ -338,6 +344,12 @@ pub(crate) enum NextSetEligibilityError {
     Prerequisite,
     /// Storage, key derivation or canonical decoding failed.
     Node(NodeCoreError),
+}
+
+impl From<crate::EnvelopeError> for NextSetEligibilityError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
 }
 
 impl From<NodeCoreError> for NextSetEligibilityError {

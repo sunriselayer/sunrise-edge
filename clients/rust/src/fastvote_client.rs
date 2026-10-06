@@ -830,23 +830,13 @@ pub(crate) fn validate_fastvote_apply_response(
     let expected_tx_hash: Digest32 = paid_invocation_digest(resolver, signed)?;
     let outer: HttpNodeResult = HttpNodeResult::decode(response_body)?;
     let expected_request_id: RequestId = RequestId::new(signed.intent.request_id)?;
-    if outer.request_id() != expected_request_id {
-        return Err(ClientError::SubmitResponseRequestIdMismatch {
-            expected: expected_request_id,
-            actual: outer.request_id(),
-        });
-    }
-    let [ack] = outer.responses() else {
-        return Err(ClientError::PaidExecutionAcknowledgementMismatch);
-    };
-    let payload = ack
-        .payload()
-        .ok_or(ClientError::PaidExecutionAcknowledgementMismatch)?;
+    let bound: node_wire::BoundHttpNodeResult = outer.bind_request(expected_request_id)?;
+    let ack: node_wire::SingleAcknowledgement<'_> = bound
+        .single_acknowledgement()
+        .map_err(|_| ClientError::PaidExecutionAcknowledgementMismatch)?;
+    let payload: &[u8] = ack.payload();
     let result: PaidExecutionResult = decode_paid_execution_result(payload)?;
-    if ack.request_id() != expected_request_id
-        || result.request_id != signed.intent.request_id
-        || result.effects.tx_hash != expected_tx_hash
-    {
+    if result.request_id != signed.intent.request_id || result.effects.tx_hash != expected_tx_hash {
         return Err(ClientError::PaidExecutionAcknowledgementMismatch);
     }
     let expected_status = if result.status == PaidExecutionStatus::Success {
@@ -868,6 +858,9 @@ pub(crate) fn validate_fastvote_apply_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod acknowledgement {
+        include!("../tests/support/acknowledgement.rs");
+    }
     use crate::key::LocalSigner;
     use crate::transport::{TransportError, WireResponse};
     use consensus::ConsensusError;
@@ -2129,6 +2122,39 @@ mod tests {
                     .unwrap(),
                 result
             );
+            let id: RequestId = RequestId::new(signed.intent.request_id).unwrap();
+            let payload: Vec<u8> =
+                execution::paid_execution::encode_paid_execution_result(&result).unwrap();
+            let ack_status: node_core::NodeResponseStatus =
+                if status == PaidExecutionStatus::Success {
+                    node_core::NodeResponseStatus::Accepted
+                } else {
+                    node_core::NodeResponseStatus::Rejected
+                };
+            for shape in acknowledgement::ACK_SHAPES {
+                let bytes: Vec<u8> =
+                    acknowledgement::acknowledgement_bytes(id, ack_status, &payload, shape);
+                let client: Client<ScriptedTransport> =
+                    Client::new(ScriptedTransport::ok(NODE_RESULT_MEDIA_TYPE, bytes));
+                let outcome: Result<PaidExecutionResult, ClientError> =
+                    client.apply_fastvote(&signed, &resolver(), &certificate_bytes, None);
+                match shape {
+                    acknowledgement::AckShape::Exact => assert_eq!(outcome.unwrap(), result),
+                    acknowledgement::AckShape::OuterMismatch => assert!(
+                        matches!(outcome, Err(ClientError::SubmitResponseRequestIdMismatch { expected, actual }) if expected == id && actual == RequestId::new([0xFA; 32]).unwrap())
+                    ),
+                    acknowledgement::AckShape::NestedMismatch => assert!(
+                        matches!(outcome, Err(ClientError::Contract(node_wire::HttpContractError::RequestMismatch { expected, actual })) if expected == id && actual == RequestId::new([0xFA; 32]).unwrap())
+                    ),
+                    _ => assert!(
+                        matches!(
+                            outcome,
+                            Err(ClientError::PaidExecutionAcknowledgementMismatch)
+                        ),
+                        "shape: {shape:?}"
+                    ),
+                }
+            }
             let mut unrelated_result: PaidExecutionResult = result.clone();
             unrelated_result.effects.tx_hash = digest(0xFE);
             let client: Client<ScriptedTransport> = apply_ack_client(&unrelated_result);
@@ -2138,6 +2164,24 @@ mod tests {
             ));
             assert_eq!(client.transport().calls.load(Ordering::Relaxed), 1);
         }
+    }
+
+    #[test]
+    fn fastvote_preserves_expected_digest_preparation_before_http_decoding() {
+        let (mut signed, _, _): (SignedPaidIntent, FastCertificate, PaidExecutionResult) =
+            apply_ack_fixture_kind(PaidExecutionStatus::Success, PaidResultKind::Call);
+        signed.intent.context = PublicationContext::new(
+            ChainId::new("wrong-resolver-context").unwrap(),
+            signed.intent.context.protocol_version(),
+            signed.intent.context.epoch(),
+        )
+        .unwrap();
+        assert!(matches!(
+            validate_fastvote_apply_response(&signed, &resolver(), &[1, 2, 3]),
+            Err(ClientError::PaidExecution(
+                execution::paid_execution::PaidExecutionError::Invalid("trusted resolver context")
+            ))
+        ));
     }
 
     #[test]

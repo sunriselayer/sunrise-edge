@@ -49,6 +49,7 @@ pub mod conditional_readiness;
 pub use mutation_fence::require_ordinary_namespace;
 mod durable_reconciliation;
 pub mod economics;
+pub mod envelope;
 pub mod epoch_transition;
 pub mod equivocation;
 pub mod fast_path;
@@ -82,6 +83,15 @@ use preinstalled_wasm::{
     resolve_preinstalled_module,
 };
 
+pub use envelope::{
+    EnvelopeError, MAX_CHAIN_ID_BYTES, MAX_NODE_OUTPUT_BYTES, MAX_NODE_OUTPUT_ITEMS,
+    MAX_NODE_PAYLOAD_BYTES, MAX_NODE_STATE_BYTES, NodeDedupRecord, NodeEvent, NodeEventKind,
+    NodeResponse, NodeResponseStatus, RequestId,
+};
+use envelope::{
+    bounded_nested_count, decode_digest, decode_nested_items, decode_request_id,
+    encode_nested_items, validate_chain_id,
+};
 pub use execution::{ObjectEffect, ResolvedObject};
 pub use fee_effects::{
     CommittedFeePolicy, FeeChargeBodies, FeeChargeRequest, FeeCompositionError, FeeEffectComposer,
@@ -131,9 +141,8 @@ pub use transaction_auth::{
     authenticate_transaction_bytes, encode_submit_transaction_signable,
 };
 
-const NODE_EVENT_TYPE_ID: u16 = 0xE001;
-const NODE_RESPONSE_TYPE_ID: u16 = 0xE002;
-const NODE_DEDUP_RECORD_TYPE_ID: u16 = 0xE003;
+#[cfg(test)]
+use envelope::{NODE_DEDUP_RECORD_TYPE_ID, NODE_EVENT_TYPE_ID, NODE_RESPONSE_TYPE_ID};
 const NODE_OUTBOX_BATCH_TYPE_ID: u16 = 0xE004;
 const NODE_OUTBOX_DELIVERY_TYPE_ID: u16 = 0xE005;
 const ENCODING_VERSION: u16 = 1;
@@ -153,16 +162,6 @@ const APPLY_REFUSED_MESSAGE: &str =
 const EPOCH_TRANSITION_LOGICAL_REFUSED_MESSAGE: &str =
     "epoch transition: handoff-capable (Logical) commitment profile is not yet supported";
 
-/// Maximum UTF-8 byte length of a chain identifier accepted at node ingress.
-pub const MAX_CHAIN_ID_BYTES: usize = 128;
-/// Maximum canonical payload length carried by one node event or response.
-pub const MAX_NODE_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
-/// Maximum canonical state value replaced by one node-core invocation.
-pub const MAX_NODE_STATE_BYTES: usize = 32 * 1024 * 1024;
-/// Maximum responses or outbound messages produced by one invocation.
-pub const MAX_NODE_OUTPUT_ITEMS: usize = 1_024;
-/// Maximum aggregate payload bytes returned by one invocation.
-pub const MAX_NODE_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 /// Maximum lease duration for one outbound delivery attempt.
 pub const MAX_OUTBOX_LEASE_MILLIS: u64 = 5 * 60 * 1_000;
 /// Pre-activation cap on authenticated object reads in one invocation.
@@ -1858,170 +1857,46 @@ impl From<TransactionAuthError> for NodeCoreError {
     }
 }
 
+impl From<EnvelopeError> for NodeCoreError {
+    fn from(value: EnvelopeError) -> Self {
+        match value {
+            EnvelopeError::CanonicalEncoding(value) => Self::CanonicalEncoding(value),
+            EnvelopeError::CanonicalDecoding(value) => Self::CanonicalDecoding(value),
+            EnvelopeError::InvalidChainId(value) => Self::InvalidChainId(value),
+            EnvelopeError::InvalidHashAlgorithm(value) => Self::InvalidHashAlgorithm(value),
+            EnvelopeError::InvalidDigestLength(value) => Self::InvalidDigestLength(value),
+            EnvelopeError::ChainIdTooLong(value) => Self::ChainIdTooLong(value),
+            EnvelopeError::InvalidRequestIdLength(value) => Self::InvalidRequestIdLength(value),
+            EnvelopeError::UnknownEventKind(value) => Self::UnknownEventKind(value),
+            EnvelopeError::UnknownResponseStatus(value) => Self::UnknownResponseStatus(value),
+            EnvelopeError::PayloadTooLarge(value) => Self::PayloadTooLarge(value),
+            EnvelopeError::StateTooLarge(value) => Self::StateTooLarge(value),
+            EnvelopeError::OutputTooLarge(value) => Self::OutputTooLarge(value),
+            EnvelopeError::NestedItemLengthOverflow(value) => Self::NestedItemLengthOverflow(value),
+            EnvelopeError::TrailingNestedListBytes(value) => Self::TrailingNestedListBytes(value),
+            EnvelopeError::ZeroRequestId => Self::ZeroRequestId,
+            EnvelopeError::TooManyOutputItems { collection, count } => {
+                Self::TooManyOutputItems { collection, count }
+            }
+            EnvelopeError::ResponseRequestMismatch { expected, actual } => {
+                Self::ResponseRequestMismatch { expected, actual }
+            }
+        }
+    }
+}
+impl From<envelope::NestedListDecodeError> for NodeCoreError {
+    fn from(value: envelope::NestedListDecodeError) -> Self {
+        EnvelopeError::from(value).into()
+    }
+}
+
 impl From<abi::AbiError> for NodeCoreError {
     fn from(value: abi::AbiError) -> Self {
         Self::TypedAbi(value)
     }
 }
 
-/// Stable, caller-supplied idempotency identifier for one request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RequestId([u8; 32]);
-
-impl RequestId {
-    /// Creates a non-zero request identifier.
-    pub fn new(bytes: [u8; 32]) -> Result<Self, NodeCoreError> {
-        if bytes == [0; 32] {
-            return Err(NodeCoreError::ZeroRequestId);
-        }
-        Ok(Self(bytes))
-    }
-
-    /// Returns the identifier bytes.
-    #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-impl fmt::Display for RequestId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in self.0 {
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
-    }
-}
-
-/// Closed node event families routed to application-specific schema decoders.
-#[repr(u16)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum NodeEventKind {
-    /// Client transaction submission.
-    SubmitTransaction = 0x0001,
-    /// Validator vote delivery.
-    ReceiveVote = 0x0002,
-    /// Certificate delivery.
-    ReceiveCertificate = 0x0003,
-    /// Shared-object consensus message delivery.
-    ReceiveConsensusMessage = 0x0004,
-    /// Governance certificate application.
-    ApplyGovernanceCertificate = 0x0005,
-    /// Protocol-upgrade certificate application.
-    ApplyProtocolUpgrade = 0x0006,
-    /// Validator-set change certificate application.
-    ApplyValidatorSetChange = 0x0007,
-    /// Untrusted liveness tick delivery.
-    Tick = 0x0008,
-}
-
-impl NodeEventKind {
-    /// Returns the stable wire identifier.
-    #[must_use]
-    pub const fn as_u16(self) -> u16 {
-        self as u16
-    }
-}
-
-impl TryFrom<u16> for NodeEventKind {
-    type Error = NodeCoreError;
-
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        match value {
-            0x0001 => Ok(Self::SubmitTransaction),
-            0x0002 => Ok(Self::ReceiveVote),
-            0x0003 => Ok(Self::ReceiveCertificate),
-            0x0004 => Ok(Self::ReceiveConsensusMessage),
-            0x0005 => Ok(Self::ApplyGovernanceCertificate),
-            0x0006 => Ok(Self::ApplyProtocolUpgrade),
-            0x0007 => Ok(Self::ApplyValidatorSetChange),
-            0x0008 => Ok(Self::Tick),
-            other => Err(NodeCoreError::UnknownEventKind(other)),
-        }
-    }
-}
-
-/// One replay-bounded, canonical input to the node state machine.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NodeEvent {
-    chain_id: ChainId,
-    protocol_version: ProtocolVersion,
-    epoch: Epoch,
-    request_id: RequestId,
-    kind: NodeEventKind,
-    payload: Vec<u8>,
-}
-
 impl NodeEvent {
-    /// Creates a validated event around one canonical application payload.
-    pub fn new(
-        chain_id: ChainId,
-        protocol_version: ProtocolVersion,
-        epoch: Epoch,
-        request_id: RequestId,
-        kind: NodeEventKind,
-        payload: Vec<u8>,
-    ) -> Result<Self, NodeCoreError> {
-        validate_chain_id(&chain_id)?;
-        validate_payload(&payload)?;
-        Ok(Self {
-            chain_id,
-            protocol_version,
-            epoch,
-            request_id,
-            kind,
-            payload,
-        })
-    }
-
-    /// Returns the replay-protected chain identifier.
-    #[must_use]
-    pub fn chain_id(&self) -> &ChainId {
-        &self.chain_id
-    }
-
-    /// Returns the replay-protected protocol version.
-    #[must_use]
-    pub const fn protocol_version(&self) -> ProtocolVersion {
-        self.protocol_version
-    }
-
-    /// Returns the replay-protected epoch.
-    #[must_use]
-    pub const fn epoch(&self) -> Epoch {
-        self.epoch
-    }
-
-    /// Returns the request identifier.
-    #[must_use]
-    pub const fn request_id(&self) -> RequestId {
-        self.request_id
-    }
-
-    /// Returns the event family.
-    #[must_use]
-    pub const fn kind(&self) -> NodeEventKind {
-        self.kind
-    }
-
-    /// Returns the canonical application payload.
-    #[must_use]
-    pub fn payload(&self) -> &[u8] {
-        &self.payload
-    }
-
-    /// Encodes the event into its stable canonical wire form.
-    pub fn encode(&self) -> Result<Vec<u8>, NodeCoreError> {
-        let mut frame = CanonicalStruct::new(NODE_EVENT_TYPE_ID, ENCODING_VERSION);
-        frame.field_str(1, self.chain_id.as_str())?;
-        frame.field_u32(2, self.protocol_version.get())?;
-        frame.field_u64(3, self.epoch.get())?;
-        frame.field_bytes(4, self.request_id.as_bytes().to_vec())?;
-        frame.field_u16(5, self.kind.as_u16())?;
-        frame.field_bytes(6, self.payload.clone())?;
-        Ok(frame.finish()?)
-    }
-
     /// Hashes the complete canonical event in its dedicated idempotency domain.
     pub fn digest(&self, resolver: &HashSuiteResolver) -> Result<Digest32, NodeCoreError> {
         if resolver.chain_id() != &self.chain_id {
@@ -2037,29 +1912,6 @@ impl NodeEvent {
             });
         }
         Ok(resolver.hash_for_purpose(self.epoch, HashPurpose::NodeEvent, &self.encode()?)?)
-    }
-
-    /// Decodes and validates exactly one canonical event frame.
-    pub fn decode(bytes: &[u8]) -> Result<Self, NodeCoreError> {
-        let frame = decode_canonical_frame(bytes)?;
-        frame.require_type(NODE_EVENT_TYPE_ID)?;
-        frame.require_version(ENCODING_VERSION)?;
-        frame.require_only_fields(&[1, 2, 3, 4, 5, 6])?;
-
-        let chain_id = ChainId::new(frame.required_str(1)?.to_owned())
-            .map_err(NodeCoreError::InvalidChainId)?;
-        let request_bytes = frame.required_field(4)?;
-        let request_array: [u8; 32] = request_bytes
-            .try_into()
-            .map_err(|_| NodeCoreError::InvalidRequestIdLength(request_bytes.len()))?;
-        Self::new(
-            chain_id,
-            ProtocolVersion::new(frame.required_u32(2)?),
-            Epoch::new(frame.required_u64(3)?),
-            RequestId::new(request_array)?,
-            NodeEventKind::try_from(frame.required_u16(5)?)?,
-            frame.required_field(6)?.to_vec(),
-        )
     }
 
     fn validate_context(&self, config: &NodeConfig) -> Result<(), NodeCoreError> {
@@ -2443,109 +2295,6 @@ impl SenderNonceRecord {
     }
 }
 
-/// Stable status returned to the request adapter.
-#[repr(u16)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NodeResponseStatus {
-    /// The event was accepted and persisted.
-    Accepted = 0x0001,
-    /// The authenticated event was deterministically rejected by application logic.
-    Rejected = 0x0002,
-}
-
-impl NodeResponseStatus {
-    /// Returns the stable wire identifier.
-    #[must_use]
-    pub const fn as_u16(self) -> u16 {
-        self as u16
-    }
-}
-
-impl TryFrom<u16> for NodeResponseStatus {
-    type Error = NodeCoreError;
-
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        match value {
-            0x0001 => Ok(Self::Accepted),
-            0x0002 => Ok(Self::Rejected),
-            other => Err(NodeCoreError::UnknownResponseStatus(other)),
-        }
-    }
-}
-
-/// Adapter-neutral response produced by a successful state transition.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NodeResponse {
-    request_id: RequestId,
-    status: NodeResponseStatus,
-    payload: Option<Vec<u8>>,
-}
-
-impl NodeResponse {
-    /// Creates a bounded response. A present payload must be a canonical frame.
-    pub fn new(
-        request_id: RequestId,
-        status: NodeResponseStatus,
-        payload: Option<Vec<u8>>,
-    ) -> Result<Self, NodeCoreError> {
-        if let Some(bytes) = &payload {
-            validate_payload(bytes)?;
-        }
-        Ok(Self {
-            request_id,
-            status,
-            payload,
-        })
-    }
-
-    /// Returns the matching request identifier.
-    #[must_use]
-    pub const fn request_id(&self) -> RequestId {
-        self.request_id
-    }
-
-    /// Returns the response status.
-    #[must_use]
-    pub const fn status(&self) -> NodeResponseStatus {
-        self.status
-    }
-
-    /// Returns the optional canonical response payload.
-    #[must_use]
-    pub fn payload(&self) -> Option<&[u8]> {
-        self.payload.as_deref()
-    }
-
-    /// Encodes this response into its adapter-neutral canonical wire form.
-    pub fn encode(&self) -> Result<Vec<u8>, NodeCoreError> {
-        let mut frame = CanonicalStruct::new(NODE_RESPONSE_TYPE_ID, ENCODING_VERSION);
-        frame.field_bytes(1, self.request_id.as_bytes().to_vec())?;
-        frame.field_u16(2, self.status.as_u16())?;
-        if let Some(payload) = &self.payload {
-            frame.field_bytes(3, payload.clone())?;
-        }
-        Ok(frame.finish()?)
-    }
-
-    /// Decodes one adapter-neutral canonical response.
-    pub fn decode(bytes: &[u8]) -> Result<Self, NodeCoreError> {
-        let frame = decode_canonical_frame(bytes)?;
-        frame.require_type(NODE_RESPONSE_TYPE_ID)?;
-        frame.require_version(ENCODING_VERSION)?;
-        frame.require_only_fields(&[1, 2, 3])?;
-
-        let request_bytes = frame.required_field(1)?;
-        let request_array: [u8; 32] = request_bytes
-            .try_into()
-            .map_err(|_| NodeCoreError::InvalidRequestIdLength(request_bytes.len()))?;
-        Self::new(
-            RequestId::new(request_array)?,
-            NodeResponseStatus::try_from(frame.required_u16(2)?)?,
-            frame.field(3).map(<[u8]>::to_vec),
-        )
-    }
-}
-
 /// Adapter-neutral outbound delivery request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutboundMessage {
@@ -2563,92 +2312,6 @@ impl OutboundMessage {
     #[must_use]
     pub const fn event(&self) -> &NodeEvent {
         &self.event
-    }
-}
-
-/// Canonical completed-request record used for persisted idempotency.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NodeDedupRecord {
-    request_id: RequestId,
-    event_digest: Digest32,
-    responses: Vec<NodeResponse>,
-}
-
-impl NodeDedupRecord {
-    /// Creates a completed request record with replayable adapter responses.
-    pub fn new(
-        request_id: RequestId,
-        event_digest: Digest32,
-        responses: Vec<NodeResponse>,
-    ) -> Result<Self, NodeCoreError> {
-        NodeOutput::new(responses.clone(), Vec::new())?;
-        for response in &responses {
-            if response.request_id() != request_id {
-                return Err(NodeCoreError::ResponseRequestMismatch {
-                    expected: request_id,
-                    actual: response.request_id(),
-                });
-            }
-        }
-        Ok(Self {
-            request_id,
-            event_digest,
-            responses,
-        })
-    }
-
-    /// Returns the stable request identifier.
-    #[must_use]
-    pub const fn request_id(&self) -> RequestId {
-        self.request_id
-    }
-
-    /// Returns the digest of the complete canonical input event.
-    #[must_use]
-    pub const fn event_digest(&self) -> Digest32 {
-        self.event_digest
-    }
-
-    /// Returns the responses replayed for a matching duplicate request.
-    #[must_use]
-    pub fn responses(&self) -> &[NodeResponse] {
-        &self.responses
-    }
-
-    /// Encodes the completed request record canonically.
-    pub fn encode(&self) -> Result<Vec<u8>, NodeCoreError> {
-        let response_list = encode_nested_items(
-            self.responses
-                .iter()
-                .map(NodeResponse::encode)
-                .collect::<Result<Vec<_>, _>>()?,
-        )?;
-        let response_count =
-            u32::try_from(self.responses.len()).map_err(|_| NodeCoreError::TooManyOutputItems {
-                collection: "dedup responses",
-                count: self.responses.len(),
-            })?;
-        let mut frame = CanonicalStruct::new(NODE_DEDUP_RECORD_TYPE_ID, ENCODING_VERSION);
-        frame.field_bytes(1, self.request_id.as_bytes().to_vec())?;
-        frame.field_u16(2, self.event_digest.algorithm().as_u16())?;
-        frame.field_bytes(3, self.event_digest.bytes())?;
-        frame.field_u32(4, response_count)?;
-        frame.field_bytes(5, response_list)?;
-        Ok(frame.finish()?)
-    }
-
-    /// Decodes and validates one completed request record.
-    pub fn decode(bytes: &[u8]) -> Result<Self, NodeCoreError> {
-        let frame = decode_canonical_frame(bytes)?;
-        frame.require_type(NODE_DEDUP_RECORD_TYPE_ID)?;
-        frame.require_version(ENCODING_VERSION)?;
-        frame.require_only_fields(&[1, 2, 3, 4, 5])?;
-
-        let request_id = decode_request_id(frame.required_field(1)?)?;
-        let event_digest = decode_digest(frame.required_u16(2)?, frame.required_field(3)?)?;
-        let count = bounded_nested_count(frame.required_u32(4)?, "dedup responses")?;
-        let responses = decode_nested_items(frame.required_field(5)?, count, NodeResponse::decode)?;
-        Self::new(request_id, event_digest, responses)
     }
 }
 
@@ -2700,6 +2363,7 @@ impl NodeOutboxBatch {
                 .iter()
                 .map(|message| message.event().encode())
                 .collect::<Result<Vec<_>, _>>()?,
+            Some(MAX_NODE_STATE_BYTES),
         )?;
         let message_count =
             u32::try_from(self.messages.len()).map_err(|_| NodeCoreError::TooManyOutputItems {
@@ -2912,29 +2576,16 @@ impl NodeOutput {
         responses: Vec<NodeResponse>,
         outbound_messages: Vec<OutboundMessage>,
     ) -> Result<Self, NodeCoreError> {
-        if responses.len() > MAX_NODE_OUTPUT_ITEMS {
-            return Err(NodeCoreError::TooManyOutputItems {
-                collection: "responses",
-                count: responses.len(),
-            });
-        }
-        if outbound_messages.len() > MAX_NODE_OUTPUT_ITEMS {
-            return Err(NodeCoreError::TooManyOutputItems {
-                collection: "outbound messages",
-                count: outbound_messages.len(),
-            });
-        }
-
-        let response_bytes = responses.iter().filter_map(|item| item.payload.as_ref());
-        let outbound_bytes = outbound_messages.iter().map(|item| item.event.payload());
-        let total = response_bytes
-            .map(Vec::len)
-            .chain(outbound_bytes.map(<[u8]>::len))
-            .try_fold(0_usize, usize::checked_add)
-            .ok_or(NodeCoreError::OutputTooLarge(usize::MAX))?;
-        if total > MAX_NODE_OUTPUT_BYTES {
-            return Err(NodeCoreError::OutputTooLarge(total));
-        }
+        envelope::validate_response_count(responses.len())?;
+        envelope::validate_item_count(outbound_messages.len(), "outbound messages")?;
+        let response_bytes = responses
+            .iter()
+            .filter_map(NodeResponse::payload)
+            .map(<[u8]>::len);
+        let outbound_bytes = outbound_messages
+            .iter()
+            .map(|item: &OutboundMessage| item.event().payload().len());
+        envelope::validate_output_bytes(response_bytes.chain(outbound_bytes))?;
 
         Ok(Self {
             responses,
@@ -6595,22 +6246,6 @@ fn validate_output_event_context(
     Ok(())
 }
 
-fn validate_chain_id(chain_id: &ChainId) -> Result<(), NodeCoreError> {
-    let length = chain_id.as_str().len();
-    if length > MAX_CHAIN_ID_BYTES {
-        return Err(NodeCoreError::ChainIdTooLong(length));
-    }
-    Ok(())
-}
-
-fn validate_payload(payload: &[u8]) -> Result<(), NodeCoreError> {
-    if payload.len() > MAX_NODE_PAYLOAD_BYTES {
-        return Err(NodeCoreError::PayloadTooLarge(payload.len()));
-    }
-    decode_canonical_frame(payload)?;
-    Ok(())
-}
-
 fn validate_state(state: &[u8]) -> Result<(), NodeCoreError> {
     if state.len() > MAX_NODE_STATE_BYTES {
         return Err(NodeCoreError::StateTooLarge(state.len()));
@@ -6638,98 +6273,6 @@ fn hex32(bytes: [u8; 32]) -> String {
         out.push_str(&format!("{byte:02x}"));
     }
     out
-}
-
-fn decode_request_id(bytes: &[u8]) -> Result<RequestId, NodeCoreError> {
-    let array: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| NodeCoreError::InvalidRequestIdLength(bytes.len()))?;
-    RequestId::new(array)
-}
-
-fn decode_digest(algorithm: u16, bytes: &[u8]) -> Result<Digest32, NodeCoreError> {
-    let algorithm =
-        HashAlgorithmId::try_from(algorithm).map_err(NodeCoreError::InvalidHashAlgorithm)?;
-    let bytes: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| NodeCoreError::InvalidDigestLength(bytes.len()))?;
-    Ok(Digest32::new(algorithm, bytes))
-}
-
-fn bounded_nested_count(count: u32, collection: &'static str) -> Result<usize, NodeCoreError> {
-    let count = usize::try_from(count).map_err(|_| NodeCoreError::TooManyOutputItems {
-        collection,
-        count: usize::MAX,
-    })?;
-    if count > MAX_NODE_OUTPUT_ITEMS {
-        return Err(NodeCoreError::TooManyOutputItems { collection, count });
-    }
-    Ok(count)
-}
-
-fn encode_nested_items(items: Vec<Vec<u8>>) -> Result<Vec<u8>, NodeCoreError> {
-    let capacity = items.iter().try_fold(0_usize, |total, item| {
-        total.checked_add(4)?.checked_add(item.len())
-    });
-    let capacity = capacity.ok_or(NodeCoreError::StateTooLarge(usize::MAX))?;
-    if capacity > MAX_NODE_STATE_BYTES {
-        return Err(NodeCoreError::StateTooLarge(capacity));
-    }
-
-    let mut encoded = Vec::with_capacity(capacity);
-    for item in items {
-        let length = u32::try_from(item.len())
-            .map_err(|_| NodeCoreError::NestedItemLengthOverflow(item.len()))?;
-        encoded.extend_from_slice(&length.to_le_bytes());
-        encoded.extend_from_slice(&item);
-    }
-    Ok(encoded)
-}
-
-fn decode_nested_items<T, F>(
-    bytes: &[u8],
-    count: usize,
-    mut decode: F,
-) -> Result<Vec<T>, NodeCoreError>
-where
-    F: FnMut(&[u8]) -> Result<T, NodeCoreError>,
-{
-    let mut offset = 0_usize;
-    let mut items = Vec::with_capacity(count);
-    for _ in 0..count {
-        let length_bytes = take_nested_bytes(bytes, &mut offset, 4)?;
-        let length = usize::try_from(u32::from_le_bytes([
-            length_bytes[0],
-            length_bytes[1],
-            length_bytes[2],
-            length_bytes[3],
-        ]))
-        .map_err(|_| NodeCoreError::NestedItemLengthOverflow(usize::MAX))?;
-        items.push(decode(take_nested_bytes(bytes, &mut offset, length)?)?);
-    }
-    if offset != bytes.len() {
-        return Err(NodeCoreError::TrailingNestedListBytes(bytes.len() - offset));
-    }
-    Ok(items)
-}
-
-fn take_nested_bytes<'a>(
-    bytes: &'a [u8],
-    offset: &mut usize,
-    length: usize,
-) -> Result<&'a [u8], NodeCoreError> {
-    let end = offset
-        .checked_add(length)
-        .ok_or(NodeCoreError::NestedItemLengthOverflow(usize::MAX))?;
-    let value = bytes
-        .get(*offset..end)
-        .ok_or(CanonicalDecodingError::Truncated {
-            offset: *offset,
-            needed: length,
-            remaining: bytes.len().saturating_sub(*offset),
-        })?;
-    *offset = end;
-    Ok(value)
 }
 
 #[cfg(test)]

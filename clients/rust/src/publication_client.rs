@@ -125,12 +125,7 @@ impl<T: Transport> Client<T> {
         let bytes: Vec<u8> = crate::client::expect_success(response, NODE_RESULT_MEDIA_TYPE)?;
         let result: HttpNodeResult = HttpNodeResult::decode(&bytes)?;
         let request_id: RequestId = RequestId::new(*submission.request_id())?;
-        if result.request_id() != request_id {
-            return Err(ClientError::SubmitResponseRequestIdMismatch {
-                expected: request_id,
-                actual: result.request_id(),
-            });
-        }
+        let bound: node_wire::BoundHttpNodeResult = result.bind_request(request_id)?;
         let artifact: &CodeArtifact = submission.request().artifact();
         let reference: execution::publication::UnverifiedDependencyRef =
             execution::publication::UnverifiedDependencyRef::new(
@@ -140,16 +135,15 @@ impl<T: Transport> Client<T> {
                 *submission.request().artifact_digest(),
             )?;
         let expected_payload: Vec<u8> = execution::publication::encode_dependency_ref(&reference)?;
-        let [acknowledgement] = result.responses() else {
-            return Err(ClientError::PublicationSubmitAcknowledgementMismatch);
-        };
-        if acknowledgement.request_id() != request_id
-            || acknowledgement.status() != crate::NodeResponseStatus::Accepted
-            || acknowledgement.payload() != Some(expected_payload.as_slice())
+        let acknowledgement: node_wire::SingleAcknowledgement<'_> = bound
+            .single_acknowledgement()
+            .map_err(|_| ClientError::PublicationSubmitAcknowledgementMismatch)?;
+        if acknowledgement.status() != crate::NodeResponseStatus::Accepted
+            || acknowledgement.payload() != expected_payload.as_slice()
         {
             return Err(ClientError::PublicationSubmitAcknowledgementMismatch);
         }
-        Ok(result)
+        Ok(bound.into_result())
     }
 
     /// Fetches a publication and authenticates its exact selector, signature,

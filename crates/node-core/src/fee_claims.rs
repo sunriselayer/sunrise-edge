@@ -146,6 +146,12 @@ impl From<LocalExecutionError> for FeeClaimError {
         Self::Execution(error)
     }
 }
+impl From<crate::EnvelopeError> for FeeClaimError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for FeeClaimError {
     fn from(error: NodeCoreError) -> Self {
         Self::Node(error)

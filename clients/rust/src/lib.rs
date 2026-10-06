@@ -208,7 +208,7 @@ pub use execution::{
 };
 pub use node_core::ordered_economics as ordered_economics_core;
 pub use node_core::publication::local_publication_profile_semantics;
-pub use node_core::{NodeCoreError, NodeResponse, NodeResponseStatus, RequestId};
+pub use node_core::{EnvelopeError, NodeCoreError, NodeResponse, NodeResponseStatus, RequestId};
 pub use node_wire::ordered_economics;
 pub use node_wire::ordered_history as ordered_history_wire;
 pub use node_wire::{

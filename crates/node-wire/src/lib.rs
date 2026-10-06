@@ -2,13 +2,16 @@
 
 //! Shared canonical HTTP wire contract for the Developer MVP (DR-0083).
 //!
-//! This crate owns the exact canonical event/query-result codecs and the
+//! This crate owns the exact canonical HTTP/query-result frames and the
 //! route/media-type constants shared between the `native-http` server
-//! adapter and `clients/rust`. It depends only on `node-core` and the
-//! foundational protocol crates it re-uses (`canonical-encoding`, `objects`,
-//! `protocol-types`, `runtime`) — never on Axum, Tokio, or any transport
-//! implementation. Routing, admission, clocks, storage authority, and HTTP
+//! adapter and `clients/rust`. Its defining core, execution, consensus and
+//! foundational protocol dependencies remain explicit — never Axum, Tokio,
+//! or any transport implementation. Routing, admission, clocks, storage authority, and HTTP
 //! status classification remain server concerns in `native-http`.
+//! Pure node event/response/dedup framing and nested lists belong to
+//! `node_core::envelope`; this crate consumes that codec, not a copied parser.
+//! Outer binding and single-acknowledgement views verify syntax only, never
+//! application success, authorization or inclusion.
 //!
 //! `native-http` re-exports every name in this crate's public API so
 //! existing server callers keep their original import paths; the bytes
@@ -76,10 +79,13 @@ use canonical_encoding::{
 };
 use core::fmt;
 use execution::paid_execution::MAX_SIGNED_PAID_INTENT_BYTES;
+use node_core::envelope::{
+    NestedListDecodeError, decode_response_list, encode_response_list, validate_response_count,
+};
 use node_core::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS;
 use node_core::{
-    MAX_AUTHENTICATED_OBJECT_BODY_BYTES, MAX_CHAIN_ID_BYTES, MAX_NODE_OUTPUT_ITEMS, NodeCoreError,
-    NodeDedupRecord, NodeResponse, ObjectQueryResult as NodeObjectQueryResult,
+    EnvelopeError, MAX_AUTHENTICATED_OBJECT_BODY_BYTES, MAX_CHAIN_ID_BYTES, MAX_NODE_OUTPUT_ITEMS,
+    NodeDedupRecord, NodeResponse, NodeResponseStatus, ObjectQueryResult as NodeObjectQueryResult,
     ReceiptQueryResult as NodeReceiptQueryResult, RequestId,
 };
 use objects::{Address, ObjectId, decode_object};
@@ -154,7 +160,7 @@ pub enum HttpContractError {
     /// Canonical decoding failed.
     CanonicalDecoding(CanonicalDecodingError),
     /// A nested node response failed validation.
-    NodeCore(NodeCoreError),
+    Envelope(EnvelopeError),
     /// A result carried more responses than one invocation allows.
     TooManyResponses(usize),
     /// A response belonged to another request.
@@ -179,7 +185,7 @@ impl fmt::Display for HttpContractError {
         match self {
             Self::CanonicalEncoding(error) => write!(f, "canonical encoding failed: {error}"),
             Self::CanonicalDecoding(error) => write!(f, "canonical decoding failed: {error}"),
-            Self::NodeCore(error) => write!(f, "node response validation failed: {error}"),
+            Self::Envelope(error) => write!(f, "node response validation failed: {error}"),
             Self::TooManyResponses(count) => write!(
                 f,
                 "HTTP result has {count} responses, maximum is {MAX_NODE_OUTPUT_ITEMS}"
@@ -210,7 +216,7 @@ impl Error for HttpContractError {
         match self {
             Self::CanonicalEncoding(error) => Some(error),
             Self::CanonicalDecoding(error) => Some(error),
-            Self::NodeCore(error) => Some(error),
+            Self::Envelope(error) => Some(error),
             _ => None,
         }
     }
@@ -228,9 +234,137 @@ impl From<CanonicalDecodingError> for HttpContractError {
     }
 }
 
-impl From<NodeCoreError> for HttpContractError {
-    fn from(value: NodeCoreError) -> Self {
-        Self::NodeCore(value)
+impl From<EnvelopeError> for HttpContractError {
+    fn from(value: EnvelopeError) -> Self {
+        Self::Envelope(value)
+    }
+}
+
+impl From<NestedListDecodeError> for HttpContractError {
+    fn from(value: NestedListDecodeError) -> Self {
+        match value {
+            NestedListDecodeError::TooManyItems(count) => Self::TooManyResponses(count),
+            NestedListDecodeError::LengthOverflow(length) => Self::ResponseLengthOverflow(length),
+            NestedListDecodeError::OffsetOverflow | NestedListDecodeError::Truncated { .. } => {
+                Self::TruncatedResponseList
+            }
+            NestedListDecodeError::TrailingBytes(length) => Self::TrailingResponseListBytes(length),
+            NestedListDecodeError::Item(error) => Self::Envelope(error),
+        }
+    }
+}
+
+/// Outer request binding failure; this is not an execution or authority result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HttpResultBindingError {
+    /// Ordinary framing and nested-ID validation failed before outer binding.
+    Contract(HttpContractError),
+    /// The decoded outer result belongs to another request.
+    RequestMismatch {
+        expected: RequestId,
+        actual: RequestId,
+    },
+}
+
+impl fmt::Display for HttpResultBindingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Contract(error) => error.fmt(f),
+            Self::RequestMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "HTTP result request mismatch: expected {expected}, got {actual}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for HttpResultBindingError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Contract(error) => Some(error),
+            Self::RequestMismatch { .. } => None,
+        }
+    }
+}
+
+impl From<HttpContractError> for HttpResultBindingError {
+    fn from(value: HttpContractError) -> Self {
+        Self::Contract(value)
+    }
+}
+
+/// Syntactic requirements shared by single-ack callers, never semantic success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SingleAcknowledgementError {
+    /// The caller's protocol requires exactly one response.
+    ResponseCount(usize),
+    /// That response has no canonical payload.
+    MissingPayload,
+}
+
+impl fmt::Display for SingleAcknowledgementError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ResponseCount(count) => write!(f, "expected one acknowledgement, got {count}"),
+            Self::MissingPayload => f.write_str("acknowledgement has no payload"),
+        }
+    }
+}
+
+impl Error for SingleAcknowledgementError {}
+
+/// A decoded result bound to one caller-supplied request ID.
+/// Framing/binding validity does not authorize or verify an operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundHttpNodeResult {
+    result: HttpNodeResult,
+}
+
+impl BoundHttpNodeResult {
+    /// Checks only cardinality and payload presence. The caller retains status,
+    /// digest, outcome and expected-context verification in its original order.
+    pub fn single_acknowledgement(
+        &self,
+    ) -> Result<SingleAcknowledgement<'_>, SingleAcknowledgementError> {
+        if self.result.responses.len() != 1 {
+            return Err(SingleAcknowledgementError::ResponseCount(
+                self.result.responses.len(),
+            ));
+        }
+        let response: &NodeResponse = &self.result.responses[0];
+        let payload: &[u8] = response
+            .payload()
+            .ok_or(SingleAcknowledgementError::MissingPayload)?;
+        Ok(SingleAcknowledgement { response, payload })
+    }
+
+    /// Returns the whole result, preserving generic submit/publication behavior.
+    #[must_use]
+    pub fn into_result(self) -> HttpNodeResult {
+        self.result
+    }
+}
+
+/// A borrowed single response with a present payload, not a successful receipt.
+#[derive(Clone, Copy, Debug)]
+pub struct SingleAcknowledgement<'a> {
+    response: &'a NodeResponse,
+    payload: &'a [u8],
+}
+
+impl<'a> SingleAcknowledgement<'a> {
+    /// Returns the syntactically valid payload for its owning semantic decoder.
+    #[must_use]
+    pub const fn payload(&self) -> &'a [u8] {
+        self.payload
+    }
+
+    /// Returns the declared status without checking application semantics.
+    #[must_use]
+    pub const fn status(&self) -> NodeResponseStatus {
+        self.response.status()
     }
 }
 
@@ -247,9 +381,7 @@ impl HttpNodeResult {
         request_id: RequestId,
         responses: Vec<NodeResponse>,
     ) -> Result<Self, HttpContractError> {
-        if responses.len() > MAX_NODE_OUTPUT_ITEMS {
-            return Err(HttpContractError::TooManyResponses(responses.len()));
-        }
+        validate_http_response_count(responses.len())?;
         for response in &responses {
             if response.request_id() != request_id {
                 return Err(HttpContractError::RequestMismatch {
@@ -278,18 +410,19 @@ impl HttpNodeResult {
 
     /// Encodes the complete HTTP success body.
     pub fn encode(&self) -> Result<Vec<u8>, HttpContractError> {
-        let mut response_list = Vec::new();
-        for response in &self.responses {
-            let encoded = response.encode()?;
-            let length = u32::try_from(encoded.len())
-                .map_err(|_| HttpContractError::ResponseLengthOverflow(encoded.len()))?;
-            response_list.extend_from_slice(&length.to_le_bytes());
-            response_list.extend_from_slice(&encoded);
-        }
+        let response_list: Vec<u8> = encode_response_list(&self.responses, None).map_err(
+            |error: EnvelopeError| match error {
+                EnvelopeError::NestedItemLengthOverflow(length) => {
+                    HttpContractError::ResponseLengthOverflow(length)
+                }
+                other => HttpContractError::Envelope(other),
+            },
+        )?;
 
-        let count = u32::try_from(self.responses.len())
+        let count: u32 = u32::try_from(self.responses.len())
             .map_err(|_| HttpContractError::TooManyResponses(self.responses.len()))?;
-        let mut frame = CanonicalStruct::new(HTTP_RESULT_TYPE_ID, HTTP_RESULT_ENCODING_VERSION);
+        let mut frame: CanonicalStruct =
+            CanonicalStruct::new(HTTP_RESULT_TYPE_ID, HTTP_RESULT_ENCODING_VERSION);
         frame.field_bytes(1, self.request_id.as_bytes().to_vec())?;
         frame.field_u32(2, count)?;
         frame.field_bytes(3, response_list)?;
@@ -298,44 +431,57 @@ impl HttpNodeResult {
 
     /// Decodes a complete HTTP success body and all nested responses.
     pub fn decode(bytes: &[u8]) -> Result<Self, HttpContractError> {
-        let frame = decode_canonical_frame(bytes)?;
+        let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
         frame.require_type(HTTP_RESULT_TYPE_ID)?;
         frame.require_version(HTTP_RESULT_ENCODING_VERSION)?;
         frame.require_only_fields(&[1, 2, 3])?;
 
-        let request_bytes = frame.required_field(1)?;
+        let request_bytes: &[u8] = frame.required_field(1)?;
         let request_array: [u8; 32] = request_bytes
             .try_into()
             .map_err(|_| HttpContractError::InvalidRequestIdLength(request_bytes.len()))?;
-        let request_id = RequestId::new(request_array)?;
-        let count = usize::try_from(frame.required_u32(2)?)
+        let request_id: RequestId = RequestId::new(request_array)?;
+        let count: usize = usize::try_from(frame.required_u32(2)?)
             .map_err(|_| HttpContractError::TooManyResponses(usize::MAX))?;
-        if count > MAX_NODE_OUTPUT_ITEMS {
-            return Err(HttpContractError::TooManyResponses(count));
-        }
-
-        let list = frame.required_field(3)?;
-        let mut offset = 0_usize;
-        let mut responses = Vec::with_capacity(count);
-        for _ in 0..count {
-            let length_bytes = take_list_bytes(list, &mut offset, 4)?;
-            let length = usize::try_from(u32::from_le_bytes([
-                length_bytes[0],
-                length_bytes[1],
-                length_bytes[2],
-                length_bytes[3],
-            ]))
-            .map_err(|_| HttpContractError::ResponseLengthOverflow(usize::MAX))?;
-            let encoded = take_list_bytes(list, &mut offset, length)?;
-            responses.push(NodeResponse::decode(encoded)?);
-        }
-        if offset != list.len() {
-            return Err(HttpContractError::TrailingResponseListBytes(
-                list.len() - offset,
-            ));
-        }
+        validate_http_response_count(count)?;
+        let responses: Vec<NodeResponse> = decode_response_list(frame.required_field(3)?, count)?;
         Self::new(request_id, responses)
     }
+
+    /// Decodes normally, including nested request IDs, then binds the outer ID.
+    /// It deliberately accepts valid zero/multiple-response generic results.
+    pub fn decode_bound(
+        bytes: &[u8],
+        expected: RequestId,
+    ) -> Result<BoundHttpNodeResult, HttpResultBindingError> {
+        let result: Self = Self::decode(bytes)?;
+        result.bind_request(expected)
+    }
+
+    /// Binds a previously decoded result, preserving caller-local preparation
+    /// between ordinary frame decoding and the binding check.
+    pub fn bind_request(
+        self,
+        expected: RequestId,
+    ) -> Result<BoundHttpNodeResult, HttpResultBindingError> {
+        let result: Self = self;
+        if result.request_id != expected {
+            return Err(HttpResultBindingError::RequestMismatch {
+                expected,
+                actual: result.request_id,
+            });
+        }
+        Ok(BoundHttpNodeResult { result })
+    }
+}
+
+fn validate_http_response_count(count: usize) -> Result<(), HttpContractError> {
+    validate_response_count(count).map_err(|error: EnvelopeError| match error {
+        EnvelopeError::TooManyOutputItems { count, .. } => {
+            HttpContractError::TooManyResponses(count)
+        }
+        other => HttpContractError::Envelope(other),
+    })
 }
 
 /// Errors from encoding or decoding a bounded query-result frame (DR-0082).
@@ -414,7 +560,7 @@ pub enum QueryResultError {
         maximum: usize,
     },
     /// The nested canonical `NodeDedupRecord` failed to decode or re-encode.
-    InvalidDedupRecord(NodeCoreError),
+    InvalidDedupRecord(EnvelopeError),
     /// The nested dedup record's request id disagreed with the outer selector.
     RequestIdentityMismatch {
         /// Request identifier carried by the outer result.
@@ -1314,7 +1460,7 @@ impl HttpReceiptQueryResult {
 /// Converts a node-core receipt query result into its canonical HTTP form.
 pub fn http_receipt_query_result(
     result: NodeReceiptQueryResult,
-) -> Result<HttpReceiptQueryResult, NodeCoreError> {
+) -> Result<HttpReceiptQueryResult, EnvelopeError> {
     match result {
         NodeReceiptQueryResult::Absent { request_id } => {
             Ok(HttpReceiptQueryResult::Absent { request_id })
@@ -1394,21 +1540,6 @@ impl HttpNextNonceQueryResult {
         let next_nonce = frame.required_u64(3)?;
         Ok(Self::new(sender, epoch, next_nonce))
     }
-}
-
-fn take_list_bytes<'a>(
-    bytes: &'a [u8],
-    offset: &mut usize,
-    length: usize,
-) -> Result<&'a [u8], HttpContractError> {
-    let end = offset
-        .checked_add(length)
-        .ok_or(HttpContractError::TruncatedResponseList)?;
-    let value = bytes
-        .get(*offset..end)
-        .ok_or(HttpContractError::TruncatedResponseList)?;
-    *offset = end;
-    Ok(value)
 }
 
 /// Errors from encoding or decoding a [`FastVoteApplyRequest`] (DR-0148).
@@ -1712,3 +1843,6 @@ mod fastvote_apply_request_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod http_node_result_tests;

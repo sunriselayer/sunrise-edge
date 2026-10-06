@@ -211,6 +211,12 @@ impl From<ReadinessError> for SuccessorActivationError {
         Self::Readiness(error)
     }
 }
+impl From<crate::EnvelopeError> for SuccessorActivationError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for SuccessorActivationError {
     fn from(error: NodeCoreError) -> Self {
         Self::Node(Box::new(error))
@@ -275,6 +281,12 @@ impl From<SuccessorActivationError> for ServingAuthorityError {
         Self::Evidence(Box::new(error))
     }
 }
+impl From<crate::EnvelopeError> for ServingAuthorityError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for ServingAuthorityError {
     fn from(error: NodeCoreError) -> Self {
         Self::Node(Box::new(error))

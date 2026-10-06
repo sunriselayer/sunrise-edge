@@ -10,6 +10,9 @@ use execution::publication::{ArtifactParts, CodeArtifact, PublicationContext};
 use fees::{Amount, GasSchedule};
 use sunrise_edge_client::*;
 
+#[path = "support/acknowledgement.rs"]
+mod acknowledgement;
+
 struct FakeTransport {
     responses: RefCell<VecDeque<WireResponse>>,
     requests: RefCell<Vec<WireRequest>>,
@@ -347,6 +350,41 @@ fn submit_paid_execution_accepts_exact_publish_success_and_rejects_wrong_kind_or
             .unwrap(),
         success
     );
+
+    let id: RequestId = RequestId::new(signed.intent.request_id).unwrap();
+    let payload: Vec<u8> = encode_paid_execution_result(&success).unwrap();
+    for shape in acknowledgement::ACK_SHAPES {
+        let client: Client<FakeTransport> = Client::new(FakeTransport {
+            responses: RefCell::new(VecDeque::from([response(
+                NODE_RESULT_MEDIA_TYPE,
+                acknowledgement::acknowledgement_bytes(
+                    id,
+                    NodeResponseStatus::Accepted,
+                    &payload,
+                    shape,
+                ),
+            )])),
+            requests: RefCell::new(Vec::new()),
+        });
+        let outcome: Result<PaidExecutionResult, ClientError> =
+            client.submit_paid_execution(&signed, &resolver());
+        match shape {
+            acknowledgement::AckShape::Exact => assert_eq!(outcome.unwrap(), success),
+            acknowledgement::AckShape::OuterMismatch => assert!(
+                matches!(outcome, Err(ClientError::SubmitResponseRequestIdMismatch { expected, actual }) if expected == id && actual == RequestId::new([0xFA; 32]).unwrap())
+            ),
+            acknowledgement::AckShape::NestedMismatch => assert!(
+                matches!(outcome, Err(ClientError::Contract(node_wire::HttpContractError::RequestMismatch { expected, actual })) if expected == id && actual == RequestId::new([0xFA; 32]).unwrap())
+            ),
+            _ => assert!(
+                matches!(
+                    outcome,
+                    Err(ClientError::PaidExecutionAcknowledgementMismatch)
+                ),
+                "shape: {shape:?}"
+            ),
+        }
+    }
 
     // Wrong kind: an otherwise wire-valid Instantiate/Instance
     // acknowledgement returned for a signed Publish intent.

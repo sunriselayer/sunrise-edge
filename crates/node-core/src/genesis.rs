@@ -470,6 +470,12 @@ impl From<DurableInvocationError> for GenesisError {
     }
 }
 
+impl From<crate::EnvelopeError> for GenesisError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for GenesisError {
     fn from(err: NodeCoreError) -> Self {
         Self::NodeCore(err)

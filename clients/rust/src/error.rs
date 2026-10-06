@@ -484,6 +484,23 @@ impl From<node_core::NodeCoreError> for ClientError {
     }
 }
 
+impl From<node_core::EnvelopeError> for ClientError {
+    fn from(value: node_core::EnvelopeError) -> Self {
+        Self::NodeCore(node_core::NodeCoreError::from(value))
+    }
+}
+
+impl From<node_wire::HttpResultBindingError> for ClientError {
+    fn from(value: node_wire::HttpResultBindingError) -> Self {
+        match value {
+            node_wire::HttpResultBindingError::Contract(error) => Self::Contract(error),
+            node_wire::HttpResultBindingError::RequestMismatch { expected, actual } => {
+                Self::SubmitResponseRequestIdMismatch { expected, actual }
+            }
+        }
+    }
+}
+
 impl From<execution::ExecutionError> for ClientError {
     fn from(value: execution::ExecutionError) -> Self {
         Self::Execution(value)

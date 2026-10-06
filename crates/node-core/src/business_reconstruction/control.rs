@@ -111,6 +111,12 @@ impl Error for DrainSetControlProofError {
     }
 }
 
+impl From<crate::EnvelopeError> for DrainSetControlProofError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for DrainSetControlProofError {
     fn from(error: NodeCoreError) -> Self {
         Self::Node(Box::new(error))

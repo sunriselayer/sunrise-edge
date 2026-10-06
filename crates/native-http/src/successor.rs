@@ -1255,7 +1255,7 @@ async fn query_receipt_route<S: SuccessorStore>(
                                     "query-state-invalid",
                                 ),
                             },
-                            Err(error) => query_node_error(error),
+                            Err(error) => query_node_error(NodeCoreError::from(error)),
                         }
                     }
                     Ok(_) => {

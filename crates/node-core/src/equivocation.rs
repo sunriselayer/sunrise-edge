@@ -59,6 +59,12 @@ impl fmt::Display for EquivocationEvidenceError {
     }
 }
 impl Error for EquivocationEvidenceError {}
+impl From<crate::EnvelopeError> for EquivocationEvidenceError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for EquivocationEvidenceError {
     fn from(error: NodeCoreError) -> Self {
         Self::Node(error)

@@ -73,6 +73,12 @@ impl fmt::Display for FrozenFrontierError {
 
 impl Error for FrozenFrontierError {}
 
+impl From<crate::EnvelopeError> for FrozenFrontierError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for FrozenFrontierError {
     fn from(value: NodeCoreError) -> Self {
         Self::Node(value)

@@ -284,6 +284,7 @@ fn query_state_hexes(
         let receipt =
             query_request_receipt(&backing.store, context, fixture.domain, request_id).unwrap();
         let receipt_bytes: Vec<u8> = http_receipt_query_result(receipt)
+            .map_err(NodeCoreError::from)
             .unwrap()
             .encode()
             .unwrap();

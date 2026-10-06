@@ -116,6 +116,20 @@ property: the selected application state machine must still decode the exact
 payload type/version and perform authentication, authorization, membership,
 signature, quorum, and transition checks appropriate to that event kind.
 
+[DR-0201](decisions/0201-envelope-and-acknowledgement-ownership.md) assigns
+construction, canonical event/response/dedup data, defining bounds and nested
+list framing to `node-core::envelope`. Existing root type paths remain
+reexports. Its closed `EnvelopeError` contains no execution, storage or
+chain/protocol/epoch authority failures. Core-owned `NodeEvent::digest` and
+`validate_context` retain their original ordering and `NodeCoreError` results.
+Conversion from envelope failures maps to existing flat core variants before
+native event/query and DO query classification; no host catch-all is added.
+Dedup validates response count, aggregate payload length and request binding
+in that order without constructing/cloning a `NodeOutput`. Core output still
+owns outbound messages and combined payload admission. Dedup and outbox
+explicitly select the 32MiB state-list budget; HTTP selects no state-list
+budget and retains its separate canonical frame bound and error vocabulary.
+
 `handle_event` validates replay context before storage access, reads one
 explicit canonical state value, invokes a synchronous `NodeStateMachine`, and
 uses compare-and-swap to persist the candidate next state. Responses and

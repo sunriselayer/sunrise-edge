@@ -276,6 +276,12 @@ impl From<ConsensusError> for FastPathError {
         Self::Consensus(error)
     }
 }
+impl From<crate::EnvelopeError> for FastPathError {
+    fn from(value: crate::EnvelopeError) -> Self {
+        <Self as From<NodeCoreError>>::from(NodeCoreError::from(value))
+    }
+}
+
 impl From<NodeCoreError> for FastPathError {
     fn from(error: NodeCoreError) -> Self {
         Self::Node(error)
