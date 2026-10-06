@@ -79,7 +79,7 @@ reports all three PRs merged. This closes those slices, not a release gate.
 | PR #279: private observations of genuine recurrence | `3f2b9e1`; merged normally as `1432cb85`; complete source approval, owning observer units 4/0 and all required CI passed |
 | PR #280: real host/signer/store capability map | `4d5507d`; complete exact-head Opus source approval and all required CI passed; merged normally as `c19bd0d3`. Primary `main` is clean and equal to `origin/main` at `c19bd0d3` (verified 22:09 UTC). |
 | PR #281: closed certified HTTPS relay | `7424d72`; complete exact-head Opus source approval; owning relay checks and npm-ci passed; hosted recurrence still running, not passed. Included in the isolated integration candidate below, not merged into `main`. |
-| PR #282: shared declared-state preparation | `7853869`; complete exact-head Opus source approval; literal full local required gate passed at 22:44:41 UTC, including genuine recurring e8 unlock, Cloudflare and portable owners. Hosted recurrence and integration remain open. Included in the candidate, not merged into `main`. |
+| PR #282: shared declared-state preparation | `7853869`; complete exact-head Opus source approval; literal full local required gate passed at 22:44:41 UTC, including genuine recurring e8 unlock, Cloudflare and portable owners. All seven hosted owners and `check` passed (verified 23:11 UTC). Integration remains open. Included in the candidate, not merged into `main`. |
 | PR #283: bounded SDK chunked-response owner | `9c7543a`; complete exact-head Opus source approval; SDK 246/0, workspace Clippy and all four pinned portable tasks passed; hosted recurrence still running, full required acceptance and integration remain open. Included in the candidate, not merged into `main`. |
 | PR #284: authority-free native ingress (DR-0206) | `e7b02f4`; complete exact-head Opus source approval; native 164/0, workspace Clippy, npm-ci, rustdoc, fmt and 415 doc links passed; hosted CI run `37538727944` still running, not passed. Included in the candidate, not merged into `main`. |
 
@@ -114,7 +114,22 @@ all-feature Clippy passed at 22:56:39 UTC. Exact npm-ci, all four actual portabl
 tasks on Node 22.20.0/Deno 2.9.4, 654 changed-document links, formatting and gate
 dispatch/mutation controls passed. These are scoped execution results, not this
 combined head's complete required gate, hosted CI or independent security audit.
-Final full-source review, exact final acceptance and integration remain open.
+Clean frozen `269e6b9` additionally passed the owning native/SDK tests,
+whole-workspace Clippy, npm-ci and all four pinned portable tasks; its complete
+Cloudflare owner passed at 23:00:32 UTC, including generated WASM and all four
+workerd suites. The same twelve contract-refusal diagnostic lines occur in the
+recorded R2 full-gate baseline; individual unnamed pairs cannot be directly
+attributed from the logs. This is not a clean-stderr or provider claim.
+
+Fresh complete read-only source review at `269e6b9` covered all 75 changed
+paths and the whole immutable diff and returned COMPLETE SOURCE APPROVE with
+no required findings. Opus exhausted its weekly allowance during review and
+Grok could not start because its allowance was exhausted; neither completed
+source approval. The human's earlier explicit fallback authorization was used
+for a fresh Codex reviewer. Its approval is not labeled Opus or an independent
+security audit. This status-only follow-up still requires exact-source review
+confirmation. The candidate's own complete required acceptance, final-head
+hosted CI and integration remain open; ancestor passes are not attributed here.
 
 ### Responsibility-oriented refactoring queue
 
@@ -175,7 +190,8 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   node-core suite, private priority controls, genuine core e8 and local
   readiness passed. The literal full local required gate passed at 22:44:41 UTC,
   retaining the real operator recurrence through terminal e8 unlock. Hosted
-  acceptance and integration are open, not passed.
+  acceptance passed with all seven owners and `check` (verified 23:11 UTC).
+  Combined-source integration remains open; that pass is not attributed to it.
   R2 as a whole remains open. Its R3 observation prerequisite is now in main.
 - [ ] **R3 — attributable tests and economical CI:** reuse bounded signed input
   and environment builders while keeping expected outcomes independent; separate
