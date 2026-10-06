@@ -26,29 +26,40 @@ a caller-selected upstream origin, wildcard route or additional authority.
 
 The profile contains these actual native routes, and no others:
 
-| Method | Route | Existing request ceiling owner |
-| --- | --- | --- |
-| POST | `/v1/fastvote/prepare` | `execution::paid_execution::MAX_SIGNED_PAID_INTENT_BYTES` |
-| POST | `/v1/fastvote/certificates` | `node_wire::MAX_FASTVOTE_APPLY_REQUEST_BYTES` |
-| POST | `/v1/fastvote/publications/source` | `node_wire::MAX_FASTVOTE_APPLY_REQUEST_BYTES` |
-| POST | `/v1/fastvote/publications/retain` | `consensus::bundle::MAX_ENCODED_BUNDLE_BYTES` |
-| POST | `/v1/fastvote/publications/apply` | `node_wire::MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES` |
-| POST | `/v1/fastvote/publications/retained-source` | `node_wire::MAX_RETAINED_PUBLICATION_SOURCE_REQUEST_BYTES` |
-| POST | `/v1/fastvote/frontier/page` | `node_wire::MAX_FRONTIER_PAGE_REQUEST_BYTES` |
-| POST | `/v1/fastvote/frontier/advance` | native frontier route, one-byte ceiling and semantically empty body |
-| POST | `/v1/fastvote/drain/signer-page` | `node_wire::MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES` |
-| POST | `/v1/fastvote/drain/member-confirm` | `node_wire::MAX_DRAIN_MEMBER_CONFIRM_REQUEST_BYTES` |
-| POST | `/v1/fastvote/drain/union-advance` | `node_wire::MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES` |
-| POST | `/v1/fastvote/drain/signer-progress` | `node_wire::MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES` |
-| POST | `/v1/fastvote/drain/apply` | `node_wire::MAX_DRAIN_MEMBER_APPLY_REQUEST_BYTES` |
-| POST | `/v1/fastvote/drain/import/{validator_id}` | `consensus::bundle::MAX_ENCODED_BUNDLE_BYTES` |
-| GET | `/v1/context` | no request body |
-| GET | `/v1/objects/{object_id}` | no request body |
-| GET | `/v1/receipts/{request_id}` | no request body |
-| GET | `/v1/senders/{sender}/next-nonce` | no request body |
-| GET | `/v1/contracts/paid-fee-policy` | no request body |
-| GET | `/v1/contracts/publications/{publisher}/{origin_seed}` | no request body |
-| GET | `/v1/contracts/instances/{creator}/{seed}` | no request body |
+`canonical` below means `canonical_encoding::MAX_CANONICAL_FRAME_BYTES`.
+Response limits describe the complete HTTP body, never just a nested payload.
+
+| Method | Route | Existing request ceiling owner | Complete successful response ceiling owner |
+| --- | --- | --- | --- |
+| POST | `/v1/fastvote/prepare` | `execution::paid_execution::MAX_SIGNED_PAID_INTENT_BYTES` | `node_wire::MAX_FASTVOTE_VOTE_BYTES` |
+| POST | `/v1/fastvote/certificates` | `node_wire::MAX_FASTVOTE_APPLY_REQUEST_BYTES` | canonical, outer `HttpNodeResult` |
+| POST | `/v1/fastvote/publications/source` | `node_wire::MAX_FASTVOTE_APPLY_REQUEST_BYTES` | `consensus::bundle::MAX_ENCODED_BUNDLE_BYTES` |
+| POST | `/v1/fastvote/publications/retain` | `consensus::bundle::MAX_ENCODED_BUNDLE_BYTES` | `consensus::availability::MAX_ENCODED_VOTE_BYTES` |
+| POST | `/v1/fastvote/publications/apply` | `node_wire::MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES` | canonical, outer `HttpNodeResult` |
+| POST | `/v1/fastvote/publications/retained-source` | `node_wire::MAX_RETAINED_PUBLICATION_SOURCE_REQUEST_BYTES` | `consensus::bundle::MAX_ENCODED_BUNDLE_BYTES` |
+| POST | `/v1/fastvote/frontier/page` | `node_wire::MAX_FRONTIER_PAGE_REQUEST_BYTES` | `node_wire::MAX_FRONTIER_PAGE_RESPONSE_BYTES` |
+| POST | `/v1/fastvote/frontier/advance` | native frontier route, one-byte ceiling and semantically empty body | `node_wire::MAX_FRONTIER_VOTE_BYTES`, or zero for 204 |
+| POST | `/v1/fastvote/drain/signer-page` | `node_wire::MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES` | zero, 204 only |
+| POST | `/v1/fastvote/drain/member-confirm` | `node_wire::MAX_DRAIN_MEMBER_CONFIRM_REQUEST_BYTES` | zero, 204 only |
+| POST | `/v1/fastvote/drain/union-advance` | `node_wire::MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES` | `consensus::availability::union::MAX_DRAIN_UNION_IDENTITY_BYTES`, or zero for 204 |
+| POST | `/v1/fastvote/drain/signer-progress` | `node_wire::MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES` | `node_wire::MAX_DRAIN_SIGNER_PROGRESS_RESPONSE_BYTES` |
+| POST | `/v1/fastvote/drain/apply` | `node_wire::MAX_DRAIN_MEMBER_APPLY_REQUEST_BYTES` | canonical, outer `HttpNodeResult` |
+| POST | `/v1/fastvote/drain/import/{validator_id}` | `consensus::bundle::MAX_ENCODED_BUNDLE_BYTES` | `consensus::availability::MAX_ENCODED_IDENTITY_BYTES` |
+| GET | `/v1/context` | no request body | canonical, `HttpQueryResult` |
+| GET | `/v1/objects/{object_id}` | no request body | canonical, `HttpQueryResult` |
+| GET | `/v1/receipts/{request_id}` | no request body | canonical, `HttpQueryResult` |
+| GET | `/v1/senders/{sender}/next-nonce` | no request body | canonical, `HttpQueryResult` |
+| GET | `/v1/contracts/paid-fee-policy` | no request body | `execution::paid_execution::MAX_PAID_FEE_POLICY_BYTES` |
+| GET | `/v1/contracts/publications/{publisher}/{origin_seed}` | no request body | `node_core::publication::MAX_PUBLICATION_QUERY_RESULT_BYTES` |
+| GET | `/v1/contracts/instances/{creator}/{seed}` | no request body | canonical, `encode_instance_record` |
+
+Expose the three existing private consensus identity/vote/union byte constants
+above for reuse by the native test oracle; their values and enforcement do not
+change. A paid apply's inner `MAX_PAID_EXECUTION_RESULT_BYTES` is not its HTTP
+ceiling: native wraps that result in `NodeResponse` and `HttpNodeResult`, adding
+framing. Keep the complete canonical outer cap rather than truncating a valid
+maximum-size paid result. Instance encoding has no named tighter output cap;
+its existing strict decoder and core validation remain unchanged.
 
 Keep the storage-free `GET /health/live` local. POST uses the exact existing
 `application/vnd.sunrise-edge.node-event` request media. A 200 POST response uses
@@ -60,7 +71,10 @@ have no content type, body or nonzero declared length. Do not turn those genuine
 native progress successes into errors or admit 204 on unrelated routes.
 Only `frontier/advance` accepts a null request body as empty; it rejects any
 actual byte before dispatch. Other POSTs retain the missing-body refusal.
-Forward GET with no body or content type; reject HEAD and OPTIONS even though
+Before dispatch, refuse every certified GET, including local `/health/live`,
+with a non-null body, any content length other than canonical `0`, a
+`Transfer-Encoding` header or a `Content-Type` header. Do not silently strip
+those inputs. Forward an admitted GET with no body or content type; reject HEAD and OPTIONS even though
 native Axum GET mounts also handle HEAD. Selectors are exactly
 64 lowercase ASCII hex characters, as native query parsing requires. Reject
 query strings, encoded separators/selector aliases, extra suffixes, wrong
@@ -114,7 +128,8 @@ refuses larger publication/import bundles. The bounded reader holds chunks plus
 a contiguous copy, so a 32 MiB request could require roughly twice that memory.
 Workers has a [128 MB per-isolate limit shared by concurrent requests](https://developers.cloudflare.com/workers/platform/limits/#memory).
 An 8 MiB ceiling reduces individual allocation; it does not certify concurrency,
-CPU, capacity or full native-size parity. Responses stay streamed and bounded.
+CPU, capacity or full native-size parity. Its response ceiling is explicitly
+32 MiB, streamed and narrowed by each route's response bound.
 
 Vercel retains a conservative 4 MiB request ceiling and adds the same response
 ceiling for this initial profile. Its [limits documentation](https://vercel.com/docs/functions/limitations#request-body-size)
@@ -142,10 +157,10 @@ unsupported size is expected; no provider claims complete native-size parity.
 A slow bounded response may exceed the configured full-consumption timeout;
 that is an expected transport failure, not proof of a failed commit.
 
-Every successful stream has a mandatory route-specific byte guard, narrowed by
-the provider response ceiling. Use existing small vote/frontier/progress bounds
-where available and at most the 32 MiB canonical frame bound for general query,
-invocation and publication frames. Validate declared length before returning;
+Every successful stream has the mandatory complete-body byte guard named in
+the table, narrowed by the provider response ceiling. The TSV pins request and
+response numbers independently and Rust asserts both against those real owners.
+Validate declared length before returning;
 otherwise stop before an over-budget chunk is emitted. No whole-response
 buffering, detached pump, automatic retry or new provider state. Preserve exact
 bytes, fixed media/no-store and backpressure; cancel/release the upstream reader
