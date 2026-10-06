@@ -236,15 +236,17 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   memory. Independent Opus DESIGN APPROVE precedes implementation. The command,
   shared private memory-validation owner, closed public configuration and
   bounded escaped renderer are implemented on this branch; real compiled
-  author/inspector tests, including signed control-character text, and focused
-  escaping/output-bound tests are added but
-  not yet executed. Exact source review and all required gates remain open.
+  author/inspector tests and three escaping/output-bound tests passed the
+  normal Rust CI owner at `c256f4d`. Fresh independent Opus review identified
+  missing required U+009B and U+202E vectors. Exact UTF-8 byte expectations and
+  real signed-chain/no-raw-control assertions are now added; execution of these
+  additions, final source review and all required gates remain open.
   This cannot
   substitute for custody, independent economic approval or release audit.
   Design review additionally identified original-installer publication versus
   exact code-reference revision alignment as a separate core correctness
   question; existing economics bindings already close a context-only mismatch.
-  inspection must display the two signed records separately, not repair or
+  Inspection must display the two signed records separately, not repair or
   imply their equality.
 - [ ] **Independent release audits and selected activation profile:** retain
   the economics and ingress audit gates, independently controlled stores,

@@ -103,10 +103,14 @@ pub const MAX_SIGNED_PAID_INTENT_NONPUBLISH_BYTES: usize = MAX_PAID_INTENT_NONPU
 /// Maximum bytes of one encoded [`PaidFeePolicy`].
 pub const MAX_PAID_FEE_POLICY_BYTES: usize = 16 * 1024;
 
-// DR-0124 first-profile reserve/settle phase ceilings have one neutral owner,
-// `crate::phase_limits`. Public read-only composition, this wire validator
-// (policy fields 17..22) and the private VM coordinator use those same values.
-// No second ceiling or public dependency on the private VM is introduced.
+// DR-0124 first-profile reserve/settle phase ceilings. `crate::phase_limits`
+// is the single neutral crate-internal copy, read by both this policy wire
+// boundary (which binds them as policy fields 17..22) and the private VM
+// phase coordinator (which enforces them). The wire boundary therefore never
+// makes the private coordinator module a public prerequisite, and there is
+// no second independent ceiling.
+// Public read-only caps for composing an ordinary policy. The coordinator and
+// wire validator consume these same definitions; the VM remains private.
 pub use crate::phase_limits::{
     PHASE_CALLS, PHASE_CREATIONS, PHASE_EVENTS, PHASE_HANDLES, PHASE_MEMORY_BYTES,
     PHASE_OUTPUT_BYTES,

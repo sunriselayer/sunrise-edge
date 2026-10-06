@@ -363,12 +363,13 @@ fn real_inspection_needs_no_secret_and_is_deterministic_without_durable_side_eff
 
 #[test]
 fn real_inspection_does_not_let_signed_public_text_inject_lines_or_terminal_controls() {
-    let chain: &str = "offline=inspect\\\n\u{1b}[31mé";
+    let chain: &str = "offline=inspect\\\n\u{1b}[31mé\u{009b}\u{202e}";
     let inspection: Inspection = Inspection::from_fixture(Fixture::with_chain(chain));
     let before: BTreeMap<PathBuf, Vec<u8>> = inventory(&inspection.fixture.directory);
     let summary: String = inspected(inspection.inspect(&inspection.args()));
     let values: BTreeMap<&str, &str> = fields(&summary);
-    let escaped_chain: &str = "offline\\x3dinspect\\\\\\x0a\\x1b[31m\\xc3\\xa9";
+    let escaped_chain: &str =
+        "offline\\x3dinspect\\\\\\x0a\\x1b[31m\\xc3\\xa9\\xc2\\x9b\\xe2\\x80\\xae";
     assert_eq!(values["expected_chain_id"], escaped_chain);
     let manifest: GenesisManifest = inspection.manifest();
     for (index, entry) in manifest.objects.iter().enumerate() {
@@ -381,6 +382,8 @@ fn real_inspection_does_not_let_signed_public_text_inject_lines_or_terminal_cont
     }
     assert!(!summary.contains('\u{1b}'));
     assert!(!summary.contains('é'));
+    assert!(!summary.contains('\u{009b}'));
+    assert!(!summary.contains('\u{202e}'));
     assert_eq!(inventory(&inspection.fixture.directory), before);
 }
 

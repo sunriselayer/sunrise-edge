@@ -410,6 +410,7 @@ mod tests {
             "\\\\\\x20\\x3d\\x0a\\x0d\\x09\\x00\\x7f"
         );
         assert_eq!(escaped("é日"), "\\xc3\\xa9\\xe6\\x97\\xa5");
+        assert_eq!(escaped("\u{009b}\u{202e}"), "\\xc2\\x9b\\xe2\\x80\\xae");
         assert_eq!(
             escaped("complete=true\nmode=inspect"),
             "complete\\x3dtrue\\x0amode\\x3dinspect"
