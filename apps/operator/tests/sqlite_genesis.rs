@@ -967,59 +967,102 @@ fn preflight_refuses_a_sealed_origin_namespace() {
 }
 
 #[test]
-fn preflight_refuses_missing_fee_committee_and_marker_without_repair() {
+fn preflight_refuses_missing_or_wrong_fee_committee_and_marker_without_repair() {
     use runtime::{
         AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, DurableCommitOutcome,
         StateMutation, StateMutationEntry, StateReadAssertion,
     };
     for which in ["fee", "committee", "marker"] {
-        let built: Built = build();
-        let state: PathBuf = built.directory.0.join("state.sqlite");
-        let blobs: PathBuf = built.directory.0.join("blobs.sqlite");
-        assert!(
-            run_sqlite_genesis(prepare_args(&built, 0, &state, &blobs))
-                .status
-                .success()
-        );
-        let store: SqliteDurableStore =
-            SqliteDurableStore::open_existing(&state, namespace(&built, 0)).unwrap();
-        let context: DurableOperationContext =
-            operation_context(store.writer_fence().unwrap(), 0x63);
-        let key: Vec<u8> = match which {
-            "fee" => node_core::local_instance_state::paid_fee_policy_key(&built.network.context)
+        for wrong_value in [false, true] {
+            let built: Built = build();
+            let state: PathBuf = built.directory.0.join("state.sqlite");
+            let blobs: PathBuf = built.directory.0.join("blobs.sqlite");
+            assert!(
+                run_sqlite_genesis(prepare_args(&built, 0, &state, &blobs))
+                    .status
+                    .success()
+            );
+            let store: SqliteDurableStore =
+                SqliteDurableStore::open_existing(&state, namespace(&built, 0)).unwrap();
+            let context: DurableOperationContext =
+                operation_context(store.writer_fence().unwrap(), 0x63);
+            let key: Vec<u8> = match which {
+                "fee" => {
+                    node_core::local_instance_state::paid_fee_policy_key(&built.network.context)
+                        .unwrap()
+                }
+                "committee" => node_core::local_instance_state::fastpath_validator_set_key(
+                    &built.network.context,
+                )
                 .unwrap(),
-            "committee" => {
-                node_core::local_instance_state::fastpath_validator_set_key(&built.network.context)
-                    .unwrap()
-            }
-            _ => node_core::genesis_marker_key(&built.network.context).unwrap(),
-        };
-        let observed: runtime::VersionedStateValue = store
-            .get_versioned_durable(&context, built.network.domain, &key)
+                _ => node_core::genesis_marker_key(&built.network.context).unwrap(),
+            };
+            let observed: runtime::VersionedStateValue = store
+                .get_versioned_durable(&context, built.network.domain, &key)
+                .unwrap();
+            assert!(observed.value().is_some());
+            let mutation: StateMutation = if wrong_value {
+                let bytes: Vec<u8> = match which {
+                    "fee" => {
+                        let mut policy: execution::paid_execution::PaidFeePolicy =
+                            execution::paid_execution::decode_paid_fee_policy(
+                                observed.value().unwrap(),
+                            )
+                            .unwrap();
+                        policy.fee_recipient =
+                            VerificationKey::from(&built.network.validators[1].signing_key).into();
+                        execution::paid_execution::encode_paid_fee_policy(&policy).unwrap()
+                    }
+                    "committee" => {
+                        let mut record: node_core::fast_path::FastPathValidatorSetRecord =
+                            node_core::fast_path::records::decode_fastpath_validator_set_record(
+                                observed.value().unwrap(),
+                            )
+                            .unwrap();
+                        record.validators[0].voting_power =
+                            record.validators[0].voting_power.checked_add(1).unwrap();
+                        node_core::fast_path::records::encode_fastpath_validator_set_record(&record)
+                            .unwrap()
+                    }
+                    _ => {
+                        let mut marker: node_core::genesis::GenesisInstallMarker =
+                            node_core::decode_genesis_install_marker(observed.value().unwrap())
+                                .unwrap();
+                        marker.manifest_digest = protocol_types::Digest32::new(
+                            protocol_types::HashAlgorithmId::Sha2_256,
+                            [0x71; 32],
+                        );
+                        node_core::encode_genesis_install_marker(&marker).unwrap()
+                    }
+                };
+                StateMutation::Put(bytes)
+            } else {
+                StateMutation::Delete
+            };
+            let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+                built.network.domain,
+                AtomicStateReadSet::new(vec![
+                    StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+                ])
+                .unwrap(),
+                AtomicStateMutationSet::new(vec![StateMutationEntry::new(key, mutation).unwrap()])
+                    .unwrap(),
+            )
             .unwrap();
-        assert!(observed.value().is_some());
-        let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
-            built.network.domain,
-            AtomicStateReadSet::new(vec![
-                StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
-            ])
-            .unwrap(),
-            AtomicStateMutationSet::new(vec![
-                StateMutationEntry::new(key, StateMutation::Delete).unwrap(),
-            ])
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            store.commit_durable(&context, transaction),
-            DurableCommitOutcome::Committed
-        );
-        drop(store);
-        let before = (logical_tables(&state), logical_tables(&blobs));
-        let output: Output = run_sqlite_genesis(preflight_args(&built, 0, &state, &blobs));
-        assert!(!output.status.success(), "{which} missing accepted");
-        assert!(output.stdout.is_empty());
-        assert_eq!(before, (logical_tables(&state), logical_tables(&blobs)));
+            assert_eq!(
+                store.commit_durable(&context, transaction),
+                DurableCommitOutcome::Committed
+            );
+            drop(store);
+            let before = (logical_tables(&state), logical_tables(&blobs));
+            let output: Output = run_sqlite_genesis(preflight_args(&built, 0, &state, &blobs));
+            assert!(
+                !output.status.success(),
+                "{which} wrong={wrong_value} accepted"
+            );
+            assert!(output.stdout.is_empty());
+            assert_eq!(before, (logical_tables(&state), logical_tables(&blobs)));
+        }
     }
 }
 
