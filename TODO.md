@@ -46,13 +46,14 @@ Human-authorized window: 2026-10-06 13:28:30–23:28:30 UTC, ending
 continuation and stops starting new slices at that deadline. Ten hours is an
 implementation budget, not a promise that external mainnet gates will pass.
 
-Current verified main baseline is `eae9e6972baa293e4ad3ffde5d3ed931b85a6ef5`.
+The planning baseline was `eae9e6972baa293e4ad3ffde5d3ed931b85a6ef5`.
+PR #273 subsequently merged normally as `587fe587` at 13:44:23 UTC after
+its exact `77090388` complete source approval and all required CI passed.
 This planning branch explicitly stacks on PR #276 at `c89acfdd`; it must not be
 described as already merged or independently validated runtime code.
 
 | Pending prerequisite | Actual head and remaining acceptance |
 | --- | --- |
-| PR #273: independently pinned offline genesis inspector | `77090388`; complete exact-head Opus source approval and all seven required CI owners plus `check` passed; normal merge pending |
 | PR #274: complete published-code reference comparison | `ffbd9ed0`; complete source approval and required CI passed; TODO-only standalone conflict is already resolved in the reviewed PR #275 normal-merge history |
 | PR #275: real four-validator SQLite/TLS/compiled-CLI startup | `13b0b76`; complete exact-head source approval and actual three-case TLS process target passed in CI; final recurring-sqlite/check still pending |
 | PR #276: storage-neutral startup guide and truthful evidence | `c89acfdd`; complete exact-head two-file Opus source approval; its own final recurring-sqlite/check still pending |
@@ -78,6 +79,10 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   foundations crate containing execution. Canonical size bounds must be owned
   once; adapter framing overhead and local resource budgets remain distinct.
   Complete SDK decoupling is not assumed from one migrated boundary.
+  [DR-0201](docs/architecture/decisions/0201-envelope-and-acknowledgement-ownership.md)
+  has independent conditional Opus PLAN APPROVE: one envelope/list codec,
+  narrow errors with unchanged host classification, and one SDK acknowledgement
+  binder with five real consumers. Pre-change literal vectors come first.
 - [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
   admission, evaluation, completion, reconciliation and storage contracts;
   separate object/receipt/outbox repositories and memory implementations by
