@@ -20,7 +20,7 @@ reachable without an explicit capability decision.
 Keep the existing event-only profile and its public defaults unchanged. Add an
 explicit `certified-fastvote` profile, selected by trusted composition, never a
 request header/query/body. One shared, private closed route owner supplies the
-exact method, request byte ceiling and successful response media for that
+exact method, request/response byte ceilings and successful status/media for that
 profile. Both ingress and HTTPS forwarding use this same owner; neither accepts
 a caller-selected upstream origin, wildcard route or additional authority.
 
@@ -51,9 +51,17 @@ The profile contains these actual native routes, and no others:
 | GET | `/v1/contracts/instances/{creator}/{seed}` | no request body |
 
 Keep the storage-free `GET /health/live` local. POST uses the exact existing
-`application/vnd.sunrise-edge.node-event` request and
-`application/vnd.sunrise-edge.node-result` success media; GET uses the exact
-`application/vnd.sunrise-edge.query-result` success media. Selectors are exactly
+`application/vnd.sunrise-edge.node-event` request media. A 200 POST response uses
+`application/vnd.sunrise-edge.node-result`; a 200 GET response uses
+`application/vnd.sunrise-edge.query-result`. Every GET and the ordinary POST
+routes permits only 200. `frontier/advance` and `drain/union-advance` permit 200
+or 204; `drain/signer-page` and `drain/member-confirm` permit only 204. A 204 must
+have no content type, body or nonzero declared length. Do not turn those genuine
+native progress successes into errors or admit 204 on unrelated routes.
+Only `frontier/advance` accepts a null request body as empty; it rejects any
+actual byte before dispatch. Other POSTs retain the missing-body refusal.
+Forward GET with no body or content type; reject HEAD and OPTIONS even though
+native Axum GET mounts also handle HEAD. Selectors are exactly
 64 lowercase ASCII hex characters, as native query parsing requires. Reject
 query strings, encoded separators/selector aliases, extra suffixes, wrong
 methods, unsupported content encoding and parameterized media before dispatch.
@@ -64,23 +72,59 @@ profile, with no credentials, query, fragment or base-path. Revalidate the
 selected closed route, synthesize only that method/path and fixed no-store/media
 headers, and supply only its configured Bearer token. Never forward caller
 Authorization, cookies, Host, redirect targets or forwarding identity headers.
-Keep redirects disabled, the existing bounded timeout and no automatic retry.
+Keep redirects disabled, the existing 5-second default/30-second maximum timeout
+and no automatic retry. That abort signal covers response consumption too; a
+late timeout can fail a partially delivered stream.
 Transport authentication is distinct from signatures, quorum and protocol pins.
 
+Classify pre-dispatch framing/size/method refusals separately from any failure
+after a certified POST was dispatched. A thrown fetch, timeout, 5xx or invalid
+response after dispatch returns opaque `503 node-core-outcome-unknown`, never a
+claim of non-execution. Do not automatically retry or expose a partial result.
+Clients reconcile the exact request/receipt before deciding whether to resubmit.
+Read-only GET failure remains an unavailable transport result. Preserve the
+event-only profile's existing status/error mapping unchanged. A stream failure
+after headers remains a transport error, not a definite rollback or new receipt.
+
 Fully bound request bodies before dispatch using the existing bounded reader.
-Use each route's own ceiling, narrowed by the provider/operator ceiling; never
-increase a core bound. Full publication/import frames retain their existing
-32 MiB ceiling. Vercel's smaller 4 MiB transport limit stays effective and is
-documented as a qualification limit, not provider parity. Stream successful
-downstream bytes without whole-response buffering, preserve exact bytes, fixed
-response media/no-store and ambiguity, and propagate cancellation. If adding a
-response byte guard, stop the stream at the canonical frame ceiling; after
-headers were sent, truncation is a transport error, not a new successful or
-definitely-aborted execution outcome. SDKs must still decode and authenticate.
+The certified profile validates provider ceilings against its 32 MiB maximum,
+then narrows each route's own ceiling; the legacy 16 MiB + 512 cap and its error
+remain unchanged. Full publication/import frames keep their existing 32 MiB
+native ceiling, not an unconditional claim for every provider.
+
+The separate certified Cloudflare Worker explicitly caps requests at 8 MiB.
+This accommodates current ordinary intent/certificate envelopes but intentionally
+refuses larger publication/import bundles. The bounded reader holds chunks plus
+a contiguous copy, so a 32 MiB request could require roughly twice that memory.
+Workers has a [128 MB per-isolate limit shared by concurrent requests](https://developers.cloudflare.com/workers/platform/limits/#memory).
+An 8 MiB ceiling reduces individual allocation; it does not certify concurrency,
+CPU, capacity or full native-size parity. Responses stay streamed and bounded.
+
+Vercel retains a conservative 4 MiB request ceiling and adds the same response
+ceiling for this initial profile. Its [limits documentation](https://vercel.com/docs/functions/limitations#request-body-size)
+describes a 4.5 MB request/response payload limit; the provider's
+[streaming guidance](https://vercel.com/kb/guide/how-to-bypass-vercel-body-size-limit-serverless-functions)
+describes a response-streaming exception. Do not assume that exception is
+qualified by an undeployed Fetch handler. Larger native results/bundles are
+outside the initial Vercel profile, and a mid-stream size/timeout failure is
+tested as a transport error, not a definitely-aborted operation.
+
+Every successful stream has a mandatory route-specific byte guard, narrowed by
+the provider response ceiling. Use existing small vote/frontier/progress bounds
+where available and at most the 32 MiB canonical frame bound for general query,
+invocation and publication frames. Validate declared length before returning;
+otherwise stop before an over-budget chunk is emitted. No whole-response
+buffering, detached pump, automatic retry or new provider state. Preserve exact
+bytes, fixed media/no-store and backpressure; cancel/release the upstream reader
+on disconnect, oversize, failure or completion. SDKs still decode/authenticate.
 
 Add explicit Deno/Vercel composition selection and a separate Cloudflare
 certified entrypoint/configuration rather than silently widening the existing
-default Worker. A service binding must actually implement the certified core
+default Worker. The existing Supabase and AWS Lambda adapters remain event-only;
+their `/v1/events` upstream URL validation and HTTP mapping remain unchanged.
+Use an explicit shared certified composition factory without widening those
+legacy constructors or accepting a profile from an HTTP request.
+A service binding must actually implement the certified core
 profile; the current Durable Object subset is not equivalent. No provider DB,
 D1 write, deployment, public listener or resource creation is part of this work.
 
@@ -90,8 +134,14 @@ Add independent shared/provider tests for every literal route, method, media,
 selector/query refusal, pre-dispatch byte ceiling, configured-origin/header
 isolation, redirect/timeout/cancellation, streamed result bytes and failure
 classification. Keep original event-only fixtures unchanged. Derive an
-executable transport reference from real Rust constants/native route owners,
-not a second test table copied from the new TypeScript owner. Run owning local
+executable transport reference: a checked-in TSV fixture is consumed independently
+by TypeScript tests and a native Rust test. The Rust expected inventory is built
+from real node-wire/native path and byte-bound constants, with explicit native
+200/204 status cases. Probe the real `certified_fastvote_router` for every listed
+method/path, its excluded direct mutations and unlisted routes; retain and extend
+the actual success/204 tests rather than relying on malformed-body mounting
+alone. The TSV is a test oracle, not production route configuration or authority.
+Do not derive TypeScript expectations from the new route owner. Run owning local
 portable/Workers checks and all existing required CI owners before normal merge.
 
 Canonical protocol/storage/signature bytes, SDK signing, core policy and
