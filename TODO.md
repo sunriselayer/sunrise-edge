@@ -74,7 +74,8 @@ mechanism or cleanup milestone is added to this functional gate.
   Complete required local/CI gates remain open. The earlier #271 local gate
   ended with SIGTERM during genuine recurring-process acceptance and is not
   a pass; a fresh run is required. This documentation-only refresh requires
-  fresh exact-head source review. This reproduction is not a privilege exploit, severity
+  fresh exact-head source review; independent Opus subsequently approved the
+  complete documentation/source head `ffbd9ed`. This reproduction is not a privilege exploit, severity
   judgment, released-store survey or independent release audit.
 
 ### Completed Delivery 3 acceptance checkpoint, 2026-10-05
@@ -283,7 +284,16 @@ Delivery 3 does not certify PostgreSQL/DO/D1 activation or production/mainnet.
   original validators, per-peer explicit TLS trust and the compiled CLI's
   causal certified transfer/replay. Independent Codex fallback approved the
   corrected design at `b62193c`; unavailable Claude/Grok supplied no approval.
-  Test implementation, execution, full gates and fresh source review remain
+  Test implementation now composes the real compiled commands and all four
+  original hosts through independently configured CA/DNS peers. Parent review
+  rejected incomplete Sonnet proposals; Opus supplied a corrected implementation,
+  and parent review additionally strengthened per-refusal complete snapshots,
+  existing-policy fee settlement and ordinary Coin output comparisons. This is
+  implementation, not executed process evidence or independent source approval.
+  The actual CLI prerequisite compiled at `2c2656e`; both exact request-framing
+  cases passed at `694d224`. Those same unchanged framing cases are now owned
+  once by the complete TLS integration target instead of a duplicate target.
+  Process execution, complete gates and fresh independent source review remain
   open. Key loading is not signing: absent-key controls cover local refusals,
   while TLS/remote-context negatives use valid protected disposable test keys.
   Required negatives cover TLS versus protocol pins, conflicting request-ID
