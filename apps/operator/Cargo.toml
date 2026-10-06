@@ -6,10 +6,12 @@ license.workspace = true
 
 [dependencies]
 abi.workspace = true
+bonds.workspace = true
 consensus.workspace = true
 crypto.workspace = true
 ed25519-zebra.workspace = true
 execution.workspace = true
+fees.workspace = true
 hashing.workspace = true
 native-http.workspace = true
 node-core.workspace = true
@@ -20,6 +22,7 @@ postgres_rustls.workspace = true
 protocol-config.workspace = true
 protocol-upgrades.workspace = true
 protocol-types.workspace = true
+public-standard-asset = { path = "../../contracts/standard-asset" }
 r2d2_postgres.workspace = true
 runtime.workspace = true
 runtime-postgres.workspace = true
@@ -30,13 +33,10 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sig
 validator-set.workspace = true
 
 [dev-dependencies]
-bonds.workspace = true
 canonical-encoding.workspace = true
 abi.workspace = true
-fees.workspace = true
 objects.workspace = true
 protocol-config.workspace = true
-public-standard-asset = { path = "../../contracts/standard-asset" }
 rcgen.workspace = true
 rusqlite.workspace = true
 sunrise-edge-client.workspace = true
