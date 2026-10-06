@@ -62,8 +62,10 @@ are distinct; do not force the latter into this codec.
 
 Preserve `NodeDedupRecord` validation order: item count, aggregate response
 payload bound, then request binding. The shared encoder takes its owning
-aggregate limit explicitly; adding the core state limit to previously larger
-valid HTTP output would be a behavior change, not cleanup.
+aggregate limit explicitly. HTTP encoding keeps only its existing canonical
+frame bound, not a new core-state refusal that changes framing-error vocabulary
+or precedence. The current canonical frame limit is also 32 MiB, so no test
+or readiness claim assumes a valid HTTP frame larger than that limit.
 
 Constructor count errors retain collection `responses`; decode checks count
 with `dedup responses` before list parsing. Overflow retains `usize::MAX`,
@@ -100,7 +102,8 @@ unknown kind/status and zero/mismatched ID negatives.
 
 Test unchanged native and DO classification exhaustively for the migrated
 error subset, including event and receipt-query conversion paths; preserve
-valid large HTTP-output encoding. Every single-ack SDK
+valid near-bound HTTP-output encoding and the original oversized canonical
+encoding refusal. Every single-ack SDK
 family keeps authentic positive outcomes and outer/inner mismatch, zero/two
 responses and missing-payload refusals with its intended typed errors. Generic
 submit preserves valid zero/multiple-response results and refuses only its
