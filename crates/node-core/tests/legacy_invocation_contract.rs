@@ -1,0 +1,632 @@
+//! Independent pre-change controls for the two real generic HTTP core paths.
+//! Builders create untrusted input; expected errors and I/O remain test-owned.
+
+use canonical_encoding::{CanonicalStruct, decode_canonical_frame};
+use hashing::HashSuiteResolver;
+use node_core::{
+    NodeConfig, NodeCoreError, NodeDedupRecord, NodeEvent, NodeEventKind, NodeOutboxBatch,
+    NodeOutput, NodeResponse, NodeResponseStatus, NodeStateAccess, NodeStateAccessMode,
+    NodeStateAccessPlan, NodeStateSnapshot, NodeStateUpdate, OutboundMessage, RequestId,
+    TransactionalNodeStateMachine, TransactionalNodeTransition, handle_domain_idempotent_event,
+    handle_idempotent_event,
+};
+use protocol_types::{
+    ChainId, Digest32, Epoch, HashAlgorithmId, HashSuite, HashSuiteSchedule, ProtocolVersion,
+};
+use runtime::{
+    AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, AtomicStateWriteResult,
+    AtomicStateWriteSet, AtomicityDomainId, CompareAndSwapResult, ComposedRuntime,
+    DomainTransactionalStateStore, ManualClock, MemoryBlobStore, MemoryScheduler, MemorySigner,
+    MemoryStateStore, MemoryTransport, PersistenceLayout, Runtime, RuntimeError, StateMutation,
+    StateMutationEntry, StateReadAssertion, StateStore, TransactionalStateStore, ValidatorId,
+    VersionedStateValue,
+};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
+
+#[derive(Clone, Copy, Debug)]
+enum Scope {
+    Unscoped,
+    Domain,
+}
+
+impl Scope {
+    fn domain(self) -> Option<AtomicityDomainId> {
+        match self {
+            Self::Unscoped => None,
+            Self::Domain => Some(AtomicityDomainId::new([0x4e; 32]).unwrap()),
+        }
+    }
+}
+
+type ReadTrace = Vec<(Option<AtomicityDomainId>, Vec<u8>)>;
+
+#[derive(Default)]
+struct RecordingStore {
+    inner: MemoryStateStore,
+    reads: Mutex<ReadTrace>,
+    commits: AtomicUsize,
+}
+
+impl RecordingStore {
+    fn raw_read(&self, scope: Scope, key: &[u8]) -> VersionedStateValue {
+        match scope.domain() {
+            None => self.inner.get_versioned(key).unwrap(),
+            Some(domain) => self.inner.get_versioned_in_domain(domain, key).unwrap(),
+        }
+    }
+
+    fn seed(&self, scope: Scope, key: Vec<u8>, value: Vec<u8>) {
+        match scope.domain() {
+            None => self.inner.put(key, value).unwrap(),
+            Some(domain) => {
+                let observed: VersionedStateValue = self.raw_read(scope, &key);
+                let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+                    domain,
+                    AtomicStateReadSet::new(vec![
+                        StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+                    ])
+                    .unwrap(),
+                    AtomicStateMutationSet::new(vec![
+                        StateMutationEntry::new(key, StateMutation::Put(value)).unwrap(),
+                    ])
+                    .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    self.inner.commit_transaction(transaction).unwrap(),
+                    AtomicStateWriteResult::Committed
+                );
+            }
+        }
+    }
+}
+
+impl StateStore for RecordingStore {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, RuntimeError> {
+        self.inner.get(key)
+    }
+
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), RuntimeError> {
+        self.inner.put(key, value)
+    }
+
+    fn compare_and_swap(
+        &self,
+        key: Vec<u8>,
+        expected: Option<Vec<u8>>,
+        value: Vec<u8>,
+    ) -> Result<CompareAndSwapResult, RuntimeError> {
+        self.inner.compare_and_swap(key, expected, value)
+    }
+}
+
+impl TransactionalStateStore for RecordingStore {
+    fn get_versioned(&self, key: &[u8]) -> Result<VersionedStateValue, RuntimeError> {
+        self.reads.lock().unwrap().push((None, key.to_vec()));
+        self.inner.get_versioned(key)
+    }
+
+    fn commit_atomic(
+        &self,
+        writes: AtomicStateWriteSet,
+    ) -> Result<AtomicStateWriteResult, RuntimeError> {
+        self.commits.fetch_add(1, Ordering::SeqCst);
+        self.inner.commit_atomic(writes)
+    }
+}
+
+impl DomainTransactionalStateStore for RecordingStore {
+    fn get_versioned_in_domain(
+        &self,
+        domain: AtomicityDomainId,
+        key: &[u8],
+    ) -> Result<VersionedStateValue, RuntimeError> {
+        self.reads
+            .lock()
+            .unwrap()
+            .push((Some(domain), key.to_vec()));
+        self.inner.get_versioned_in_domain(domain, key)
+    }
+
+    fn commit_transaction(
+        &self,
+        transaction: AtomicStateTransaction,
+    ) -> Result<AtomicStateWriteResult, RuntimeError> {
+        self.commits.fetch_add(1, Ordering::SeqCst);
+        self.inner.commit_transaction(transaction)
+    }
+}
+
+type TestRuntime = ComposedRuntime<
+    RecordingStore,
+    MemoryBlobStore,
+    MemorySigner,
+    MemoryTransport,
+    ManualClock,
+    MemoryScheduler,
+>;
+
+fn runtime() -> TestRuntime {
+    ComposedRuntime::new(
+        RecordingStore::default(),
+        MemoryBlobStore::default(),
+        MemorySigner::new(ValidatorId::new([0x52; 32])),
+        MemoryTransport::default(),
+        ManualClock::default(),
+        MemoryScheduler::default(),
+    )
+}
+
+fn frame(type_id: u16, value: u64) -> Vec<u8> {
+    let mut frame: CanonicalStruct = CanonicalStruct::new(type_id, 1);
+    frame.field_u64(1, value).unwrap();
+    frame.finish().unwrap()
+}
+
+fn chain() -> ChainId {
+    ChainId::new("legacy-invocation-control").unwrap()
+}
+
+fn config() -> NodeConfig {
+    NodeConfig::new(
+        chain(),
+        ProtocolVersion::new(3),
+        Epoch::new(7),
+        b"node/control".to_vec(),
+    )
+    .unwrap()
+}
+
+fn resolver() -> HashSuiteResolver {
+    HashSuiteResolver::new(
+        chain(),
+        ProtocolVersion::new(3),
+        vec![HashSuiteSchedule {
+            activation_epoch: Epoch::new(0),
+            suite: HashSuite::genesis(),
+        }],
+    )
+    .unwrap()
+}
+
+fn event() -> NodeEvent {
+    NodeEvent::new(
+        chain(),
+        ProtocolVersion::new(3),
+        Epoch::new(7),
+        RequestId::new([0x31; 32]).unwrap(),
+        NodeEventKind::ReceiveVote,
+        frame(0xef02, 9),
+    )
+    .unwrap()
+}
+
+struct ProbeMachine {
+    keys: Vec<Vec<u8>>,
+    plans: AtomicUsize,
+    transitions: AtomicUsize,
+}
+
+impl ProbeMachine {
+    fn new(keys: Vec<Vec<u8>>) -> Self {
+        Self {
+            keys,
+            plans: AtomicUsize::new(0),
+            transitions: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl TransactionalNodeStateMachine for ProbeMachine {
+    fn access_plan(&self, _: &NodeEvent) -> Result<NodeStateAccessPlan, NodeCoreError> {
+        self.plans.fetch_add(1, Ordering::SeqCst);
+        let accesses: Vec<NodeStateAccess> = self
+            .keys
+            .iter()
+            .map(|key: &Vec<u8>| {
+                NodeStateAccess::new(key.clone(), NodeStateAccessMode::ReadWrite).unwrap()
+            })
+            .collect();
+        NodeStateAccessPlan::new(accesses)
+    }
+
+    fn transition(
+        &self,
+        _: &NodeStateSnapshot,
+        event: &NodeEvent,
+    ) -> Result<TransactionalNodeTransition, NodeCoreError> {
+        self.transitions.fetch_add(1, Ordering::SeqCst);
+        TransactionalNodeTransition::new(
+            vec![NodeStateUpdate::put(
+                self.keys[0].clone(),
+                frame(0xef01, 99),
+            )?],
+            NodeOutput::new(
+                vec![NodeResponse::new(
+                    event.request_id(),
+                    NodeResponseStatus::Accepted,
+                    Some(frame(0xef02, 99)),
+                )?],
+                Vec::new(),
+            )?,
+        )
+    }
+}
+
+fn invoke(
+    scope: Scope,
+    runtime: &TestRuntime,
+    machine: &ProbeMachine,
+) -> Result<NodeOutput, NodeCoreError> {
+    match scope.domain() {
+        None => handle_idempotent_event(runtime, &config(), &resolver(), event(), machine),
+        Some(domain) => handle_domain_idempotent_event(
+            runtime,
+            domain,
+            &config(),
+            &resolver(),
+            event(),
+            machine,
+        ),
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MetadataCase {
+    OrphanOutbox,
+    OrphanDelivery,
+    InvalidDedup,
+    DedupRequest,
+    DedupDigest,
+    MissingOutbox,
+    InvalidOutbox,
+    OutboxRequest,
+    OutboxDigest,
+    OutboundChain,
+    MissingDelivery,
+    InvalidDelivery,
+    DeliveryRequest,
+    DeliveryDigest,
+    Valid,
+}
+
+fn metadata(case: MetadataCase) -> [Option<Vec<u8>>; 3] {
+    let event: NodeEvent = event();
+    let request: RequestId = event.request_id();
+    let other: RequestId = RequestId::new([0x32; 32]).unwrap();
+    let digest: Digest32 = event.digest(&resolver()).unwrap();
+    let wrong_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0xa7; 32]);
+    let dedup_request: RequestId = if matches!(case, MetadataCase::DedupRequest) {
+        other
+    } else {
+        request
+    };
+    let dedup_digest: Digest32 = if matches!(case, MetadataCase::DedupDigest) {
+        wrong_digest
+    } else {
+        digest
+    };
+    let response: NodeResponse = NodeResponse::new(
+        dedup_request,
+        NodeResponseStatus::Accepted,
+        Some(frame(0xef02, 7)),
+    )
+    .unwrap();
+    let mut dedup: Option<Vec<u8>> = Some(
+        NodeDedupRecord::new(dedup_request, dedup_digest, vec![response])
+            .unwrap()
+            .encode()
+            .unwrap(),
+    );
+    let outbound_chain: ChainId = if matches!(case, MetadataCase::OutboundChain) {
+        ChainId::new("foreign-replay").unwrap()
+    } else {
+        chain()
+    };
+    let outbound: NodeEvent = NodeEvent::new(
+        outbound_chain,
+        ProtocolVersion::new(3),
+        Epoch::new(7),
+        other,
+        NodeEventKind::Tick,
+        frame(0xef02, 10),
+    )
+    .unwrap();
+    let outbox_request: RequestId = if matches!(case, MetadataCase::OutboxRequest) {
+        other
+    } else {
+        request
+    };
+    let outbox_digest: Digest32 = if matches!(case, MetadataCase::OutboxDigest) {
+        wrong_digest
+    } else {
+        digest
+    };
+    let mut outbox: Option<Vec<u8>> = Some(
+        NodeOutboxBatch::new(
+            outbox_request,
+            outbox_digest,
+            vec![OutboundMessage::new(outbound)],
+        )
+        .unwrap()
+        .encode()
+        .unwrap(),
+    );
+    // Independent raw E005 input, not the private production pending producer.
+    let mut cursor: CanonicalStruct = CanonicalStruct::new(0xe005, 1);
+    let delivery_request: RequestId = if matches!(case, MetadataCase::DeliveryRequest) {
+        other
+    } else {
+        request
+    };
+    let delivery_digest: Digest32 = if matches!(case, MetadataCase::DeliveryDigest) {
+        wrong_digest
+    } else {
+        digest
+    };
+    cursor
+        .field_bytes(1, delivery_request.as_bytes().to_vec())
+        .unwrap();
+    cursor
+        .field_u16(2, delivery_digest.algorithm().as_u16())
+        .unwrap();
+    cursor.field_bytes(3, delivery_digest.bytes()).unwrap();
+    cursor.field_u32(4, 0).unwrap();
+    cursor.field_u32(5, 0).unwrap();
+    let mut delivery: Option<Vec<u8>> = Some(cursor.finish().unwrap());
+    match case {
+        MetadataCase::OrphanOutbox => {
+            dedup = None;
+            delivery = None;
+        }
+        MetadataCase::OrphanDelivery => {
+            dedup = None;
+            outbox = None;
+        }
+        MetadataCase::InvalidDedup => {
+            dedup = Some(vec![0]);
+            outbox = Some(vec![0]);
+            delivery = Some(vec![0]);
+        }
+        MetadataCase::DedupRequest | MetadataCase::DedupDigest => {
+            outbox = Some(vec![0]);
+            delivery = Some(vec![0]);
+        }
+        MetadataCase::MissingOutbox => {
+            outbox = None;
+            delivery = None;
+        }
+        MetadataCase::InvalidOutbox => {
+            outbox = Some(vec![0]);
+            delivery = None;
+        }
+        MetadataCase::OutboxRequest
+        | MetadataCase::OutboxDigest
+        | MetadataCase::OutboundChain
+        | MetadataCase::MissingDelivery => {
+            delivery = None;
+        }
+        MetadataCase::InvalidDelivery => {
+            delivery = Some(vec![0]);
+        }
+        MetadataCase::DeliveryRequest | MetadataCase::DeliveryDigest | MetadataCase::Valid => {}
+    }
+    [dedup, outbox, delivery]
+}
+
+fn metadata_keys() -> [Vec<u8>; 3] {
+    let layout: PersistenceLayout = PersistenceLayout::new(chain(), ProtocolVersion::new(3));
+    let request: [u8; 32] = *event().request_id().as_bytes();
+    [
+        layout.request_dedup_key(request),
+        layout.outbox_batch_key(request),
+        layout.outbox_delivery_key(request),
+    ]
+}
+
+#[test]
+fn legacy_replay_refusals_preserve_metadata_read_order_without_application_io() {
+    let cases: [(MetadataCase, NodeCoreError); 14] = [
+        (
+            MetadataCase::OrphanOutbox,
+            NodeCoreError::PersistenceInvariant("outbox state exists without dedup"),
+        ),
+        (
+            MetadataCase::OrphanDelivery,
+            NodeCoreError::PersistenceInvariant("outbox state exists without dedup"),
+        ),
+        (
+            MetadataCase::InvalidDedup,
+            NodeCoreError::PersistenceInvariant("invalid dedup record"),
+        ),
+        (MetadataCase::DedupRequest, NodeCoreError::RequestIdReuse),
+        (MetadataCase::DedupDigest, NodeCoreError::RequestIdReuse),
+        (
+            MetadataCase::MissingOutbox,
+            NodeCoreError::PersistenceInvariant("dedup exists without outbox"),
+        ),
+        (
+            MetadataCase::InvalidOutbox,
+            NodeCoreError::PersistenceInvariant("invalid outbox batch"),
+        ),
+        (
+            MetadataCase::OutboxRequest,
+            NodeCoreError::PersistenceInvariant("dedup and outbox identities differ"),
+        ),
+        (
+            MetadataCase::OutboxDigest,
+            NodeCoreError::PersistenceInvariant("dedup and outbox identities differ"),
+        ),
+        (
+            MetadataCase::OutboundChain,
+            NodeCoreError::ChainMismatch {
+                expected: chain(),
+                actual: ChainId::new("foreign-replay").unwrap(),
+            },
+        ),
+        (
+            MetadataCase::MissingDelivery,
+            NodeCoreError::PersistenceInvariant("dedup exists without outbox delivery state"),
+        ),
+        (
+            MetadataCase::InvalidDelivery,
+            NodeCoreError::PersistenceInvariant("invalid outbox delivery state"),
+        ),
+        (
+            MetadataCase::DeliveryRequest,
+            NodeCoreError::PersistenceInvariant("dedup and outbox delivery identities differ"),
+        ),
+        (
+            MetadataCase::DeliveryDigest,
+            NodeCoreError::PersistenceInvariant("dedup and outbox delivery identities differ"),
+        ),
+    ];
+    for scope in [Scope::Unscoped, Scope::Domain] {
+        for (case, expected) in &cases {
+            let runtime: TestRuntime = runtime();
+            let store: &RecordingStore = runtime.state_store();
+            let keys: [Vec<u8>; 3] = metadata_keys();
+            for (key, value) in keys.iter().zip(metadata(*case)) {
+                if let Some(value) = value {
+                    store.seed(scope, key.clone(), value);
+                }
+            }
+            store.seed(scope, b"state/application".to_vec(), frame(0xef01, 12));
+            let before: Vec<VersionedStateValue> =
+                keys.iter().map(|key| store.raw_read(scope, key)).collect();
+            let application: VersionedStateValue = store.raw_read(scope, b"state/application");
+            let machine: ProbeMachine = ProbeMachine::new(vec![b"state/application".to_vec()]);
+            assert_eq!(
+                invoke(scope, &runtime, &machine),
+                Err(expected.clone()),
+                "{scope:?} {case:?}"
+            );
+            let expected_reads: ReadTrace = keys
+                .iter()
+                .map(|key| (scope.domain(), key.clone()))
+                .collect();
+            assert_eq!(
+                *store.reads.lock().unwrap(),
+                expected_reads,
+                "{scope:?} {case:?}"
+            );
+            assert_eq!(machine.plans.load(Ordering::SeqCst), 1);
+            assert_eq!(machine.transitions.load(Ordering::SeqCst), 0);
+            assert_eq!(store.commits.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                keys.iter()
+                    .map(|key| store.raw_read(scope, key))
+                    .collect::<Vec<VersionedStateValue>>(),
+                before
+            );
+            assert_eq!(store.raw_read(scope, b"state/application"), application);
+        }
+    }
+}
+
+#[test]
+fn legacy_exact_replay_returns_retained_response_without_reenqueue_or_mutation() {
+    for scope in [Scope::Unscoped, Scope::Domain] {
+        let runtime: TestRuntime = runtime();
+        let store: &RecordingStore = runtime.state_store();
+        let keys: [Vec<u8>; 3] = metadata_keys();
+        for (key, value) in keys.iter().zip(metadata(MetadataCase::Valid)) {
+            store.seed(scope, key.clone(), value.unwrap());
+        }
+        store.seed(scope, b"state/application".to_vec(), frame(0xef01, 12));
+        let before: Vec<VersionedStateValue> =
+            keys.iter().map(|key| store.raw_read(scope, key)).collect();
+        let application: VersionedStateValue = store.raw_read(scope, b"state/application");
+        let machine: ProbeMachine = ProbeMachine::new(vec![b"state/application".to_vec()]);
+        let output: NodeOutput = invoke(scope, &runtime, &machine).unwrap();
+        assert_eq!(output.responses().len(), 1);
+        assert_eq!(output.responses()[0].request_id(), event().request_id());
+        assert_eq!(output.responses()[0].status(), NodeResponseStatus::Accepted);
+        assert_eq!(
+            decode_canonical_frame(output.responses()[0].payload().unwrap())
+                .unwrap()
+                .required_u64(1),
+            Ok(7)
+        );
+        assert!(output.outbound_messages().is_empty());
+        assert_eq!(machine.plans.load(Ordering::SeqCst), 1);
+        assert_eq!(machine.transitions.load(Ordering::SeqCst), 0);
+        assert_eq!(store.commits.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            *store.reads.lock().unwrap(),
+            keys.iter()
+                .map(|key| (scope.domain(), key.clone()))
+                .collect::<ReadTrace>()
+        );
+        assert_eq!(
+            keys.iter()
+                .map(|key| store.raw_read(scope, key))
+                .collect::<Vec<VersionedStateValue>>(),
+            before
+        );
+        assert_eq!(store.raw_read(scope, b"state/application"), application);
+    }
+}
+
+#[test]
+fn legacy_metadata_and_nonce_reservations_fail_before_any_record_io() {
+    let layout: PersistenceLayout = PersistenceLayout::new(chain(), ProtocolVersion::new(3));
+    let mut reserved: Vec<Vec<u8>> = metadata_keys().into_iter().collect();
+    let mut nonce: Vec<u8> = layout.sender_nonce_prefix();
+    nonce.extend_from_slice(b"test-only");
+    reserved.push(nonce);
+    for scope in [Scope::Unscoped, Scope::Domain] {
+        for key in &reserved {
+            let runtime: TestRuntime = runtime();
+            let machine: ProbeMachine = ProbeMachine::new(vec![key.clone()]);
+            assert_eq!(
+                invoke(scope, &runtime, &machine),
+                Err(NodeCoreError::ReservedStateAccess(key.clone()))
+            );
+            assert!(runtime.state_store().reads.lock().unwrap().is_empty());
+            assert_eq!(machine.transitions.load(Ordering::SeqCst), 0);
+            assert_eq!(runtime.state_store().commits.load(Ordering::SeqCst), 0);
+        }
+    }
+}
+
+#[test]
+fn legacy_slot_limit_precedes_metadata_collision_but_not_nonce_namespace() {
+    let maximum: usize = core::cmp::min(
+        runtime::MAX_ATOMIC_STATE_READS,
+        runtime::MAX_ATOMIC_STATE_WRITES,
+    ) - 3;
+    let count: usize = maximum + 1;
+    let layout: PersistenceLayout = PersistenceLayout::new(chain(), ProtocolVersion::new(3));
+    let mut nonce: Vec<u8> = layout.sender_nonce_prefix();
+    nonce.extend_from_slice(b"test-only");
+    for scope in [Scope::Unscoped, Scope::Domain] {
+        let mut oversized: Vec<Vec<u8>> = (0..count - 1)
+            .map(|index: usize| format!("state/application/{index:04}").into_bytes())
+            .collect();
+        oversized.push(metadata_keys()[0].clone());
+        let runtime: TestRuntime = runtime();
+        let machine: ProbeMachine = ProbeMachine::new(oversized.clone());
+        assert_eq!(
+            invoke(scope, &runtime, &machine),
+            Err(NodeCoreError::TooManyStateAccesses { count, maximum })
+        );
+        assert!(runtime.state_store().reads.lock().unwrap().is_empty());
+        assert_eq!(machine.transitions.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime.state_store().commits.load(Ordering::SeqCst), 0);
+
+        oversized[0] = nonce.clone();
+        let runtime: TestRuntime = self::runtime();
+        let machine: ProbeMachine = ProbeMachine::new(oversized);
+        assert_eq!(
+            invoke(scope, &runtime, &machine),
+            Err(NodeCoreError::ReservedStateAccess(nonce.clone()))
+        );
+        assert!(runtime.state_store().reads.lock().unwrap().is_empty());
+        assert_eq!(machine.transitions.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime.state_store().commits.load(Ordering::SeqCst), 0);
+    }
+}
