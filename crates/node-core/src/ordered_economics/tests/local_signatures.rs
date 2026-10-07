@@ -1118,7 +1118,8 @@ fn actual_returned_scheme_drift_is_not_the_declared_scheme_zero_call_control() {
     let mut voter: ScriptedSigner<'_> =
         ScriptedSigner::stable(&network.signers[replica], SigningResult::Valid);
     voter.scheme = SignatureSchemeId::Secp256k1;
-    voter.initial_scheme_reads = 1;
+    // on_event and process_proposal both check the scheme before vote metadata.
+    voter.initial_scheme_reads = 2;
     assert_opaque(
         &process_proposal(
             &network.stores[replica],
