@@ -1,10 +1,16 @@
+use canonical_encoding::CanonicalDecodingError;
 use crypto::SignatureSigner;
 use execution::call::InstanceTarget;
 use execution::paid_execution::{
     FeeSourceConsent, PaidApplication, PaidIntent, ReservationAccessKind, SignedPaidIntent,
     paid_intent_signing_frame,
 };
+use execution::publication::{
+    MAX_PUBLICATION_QUERY_RESULT_BYTES, PublicationError, PublicationQueryResult,
+    PublicationQueryResultError, encode_publication_query_result,
+};
 use std::cell::RefCell;
+use std::error::Error;
 
 #[path = "support/acknowledgement.rs"]
 mod acknowledgement;
@@ -889,21 +895,33 @@ fn malformed_oversized_and_trailing_query_frames_are_rejected() {
     // Malformed: not a canonical frame at all.
     let malformed: Client<FakeTransport> =
         client(response(200, QUERY_RESULT_MEDIA_TYPE, vec![0xff; 32]));
+    let malformed_error: ClientError = query(&malformed, &origin).unwrap_err();
     assert!(matches!(
-        query(&malformed, &origin),
-        Err(ClientError::PublicationQueryResult(_))
+        &malformed_error,
+        ClientError::PublicationQueryResult(PublicationQueryResultError::Publication(
+            PublicationError::Decoding(CanonicalDecodingError::InvalidMagic)
+        ))
     ));
+    assert_eq!(
+        malformed_error.to_string(),
+        "publication query result decoding failed: invalid canonical protocol magic"
+    );
+    let source: &(dyn Error + 'static) = malformed_error.source().unwrap();
+    assert_eq!(source.to_string(), "invalid canonical protocol magic");
+    assert!(source.source().is_none());
 
     // Oversized: exceeds `MAX_PUBLICATION_QUERY_RESULT_BYTES` before any
     // frame decoding is attempted.
     let oversized: Client<FakeTransport> = client(response(
         200,
         QUERY_RESULT_MEDIA_TYPE,
-        vec![0u8; node_core::publication::MAX_PUBLICATION_QUERY_RESULT_BYTES + 1],
+        vec![0u8; MAX_PUBLICATION_QUERY_RESULT_BYTES + 1],
     ));
     assert!(matches!(
         query(&oversized, &origin),
-        Err(ClientError::PublicationQueryResult(_))
+        Err(ClientError::PublicationQueryResult(
+            PublicationQueryResultError::Limit
+        ))
     ));
 
     // Trailing bytes appended after an otherwise well-formed frame.
@@ -914,6 +932,10 @@ fn malformed_oversized_and_trailing_query_frames_are_rejected() {
         client(response(200, QUERY_RESULT_MEDIA_TYPE, trailing));
     assert!(matches!(
         query(&trailing_client, &origin),
-        Err(ClientError::PublicationQueryResult(_))
+        Err(ClientError::PublicationQueryResult(
+            PublicationQueryResultError::Publication(PublicationError::Decoding(
+                CanonicalDecodingError::TrailingBytes(1)
+            ))
+        ))
     ));
 }

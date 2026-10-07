@@ -32,6 +32,7 @@ use execution::paid_execution::{
 };
 use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationContext, UnverifiedDependencyRef,
+    encode_publication_query_result,
 };
 use execution::{
     GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION, LocalWasmExecutionEngine, ObjectEffect,
@@ -43,7 +44,7 @@ use node_core::fast_path::{self, FastPathError};
 use node_core::local_execution::query_local_instance;
 use node_core::paid_execution::PaidExecutionAdmissionError;
 use node_core::paid_execution::authenticate_paid_execution;
-use node_core::publication::{encode_publication_query_result, query_publication_with_history};
+use node_core::publication::query_publication_with_history;
 use node_core::{
     GenesisInstallOutcome, NodeCoreError, ObjectQueryResult, RequestId, decode_genesis_manifest,
     genesis_manifest_commitment, install_genesis, query_object, query_request_receipt,

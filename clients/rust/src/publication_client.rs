@@ -6,15 +6,14 @@
 
 use abi::package_types::PackageOrigin;
 use crypto::SignatureSigner;
+pub use execution::publication::PublicationQueryResult;
 use execution::publication::{
     CodeArtifact, PublicationContext, PublicationRequest, PublicationSubmission,
-    artifact_commitment, authenticate_publication_submission, encode_publication_submission,
-    publication_submission_signing_frame,
+    artifact_commitment, authenticate_publication_submission, decode_publication_query_result,
+    encode_publication_submission, publication_submission_signing_frame,
 };
 use hashing::HashSuiteResolver;
 use node_core::RequestId;
-pub use node_core::publication::PublicationQueryResult;
-use node_core::publication::decode_publication_query_result;
 use node_wire::{
     HttpNodeResult, NODE_EVENT_MEDIA_TYPE, NODE_RESULT_MEDIA_TYPE, QUERY_RESULT_MEDIA_TYPE,
 };

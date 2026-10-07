@@ -4,6 +4,7 @@ use crate::args::parse_flags;
 use crate::net::BudgetedTransport;
 use crate::test_support::{FakeTransport, query_ok};
 use crypto::SignatureSigner;
+use execution::publication::{PublicationQueryResult, encode_publication_query_result};
 use std::cell::RefCell;
 use sunrise_edge_client::*;
 

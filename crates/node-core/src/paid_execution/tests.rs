@@ -26,7 +26,7 @@ use execution::paid_execution::{
     encode_signed_paid_intent, paid_fee_policy_digest, paid_intent_signing_frame,
 };
 use execution::publication::{
-    ArtifactParts, CodeArtifact, PublicationRequest, PublicationSubmission,
+    ArtifactParts, CodeArtifact, PublicationQueryResult, PublicationRequest, PublicationSubmission,
     UnverifiedDependencyRef, artifact_commitment, encode_code_artifact,
     publication_submission_signing_frame,
 };
@@ -1627,12 +1627,12 @@ fn paid_publish_stores_its_signed_frame_and_loads_as_a_verified_dependency() {
     // signed frame -- never a synthesized legacy signature.
     assert_eq!(
         publication::query_publication(&store, &context(), domain(), &resolver(), &origin).unwrap(),
-        Some(publication::PublicationQueryResult::Paid(expected_signed))
+        Some(PublicationQueryResult::Paid(expected_signed))
     );
     // The legacy publication path retains clear Legacy provenance.
     assert!(matches!(
         publication::query_publication(&store, &context(), domain(), &resolver(), &fixture.origin),
-        Ok(Some(publication::PublicationQueryResult::Legacy(_)))
+        Ok(Some(PublicationQueryResult::Legacy(_)))
     ));
 }
 

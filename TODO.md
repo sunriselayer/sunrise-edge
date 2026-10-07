@@ -100,7 +100,15 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   coupling without changing bytes, error priority or authority.
   DR-0201's envelope/list and acknowledgement owner is merged. DR-0209's one
   consensus Ed25519 adapter and all actual consumers are in the integration
-  above. Remaining core/SDK type coupling is explicit, not solved by inventing
+  above. DR-0217 now gives the publication-query result, codec, bounds and
+  four-category error one execution owner on an isolated source slice. Actual
+  SDK, original/successor HTTP, Rust DO and operator consumers migrate directly;
+  old core definitions and the SDK admission-error conversion are removed.
+  Core durable authority and all wire bytes/error priority stay separate. Nine
+  pure framing controls and stronger actual SDK error assertions are added;
+  compilation, execution, independent source review and full integration checks
+  are still pending, not inferred from formatting/static checks.
+  Remaining core/SDK type coupling is explicit, not solved by inventing
   a foundations crate containing execution. Complete SDK decoupling is not
   inferred from these migrated boundaries.
 - [ ] **R2 — semantic core/runtime responsibilities:** admission authorizes,

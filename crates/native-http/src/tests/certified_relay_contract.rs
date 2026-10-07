@@ -158,7 +158,7 @@ fn native_contract() -> Vec<RouteContract<'static>> {
         ),
         get(
             crate::publication::QUERY_PATH,
-            node_core::publication::MAX_PUBLICATION_QUERY_RESULT_BYTES,
+            execution::publication::MAX_PUBLICATION_QUERY_RESULT_BYTES,
         ),
         get(crate::local_execution::INSTANCE_PATH, canonical),
     ]

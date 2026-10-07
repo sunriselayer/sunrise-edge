@@ -11,7 +11,14 @@ mod auth;
 mod binding;
 mod bodies;
 mod interface;
+mod query_result;
 mod submission;
+
+pub use query_result::{
+    MAX_PUBLICATION_QUERY_RESULT_BYTES, PUBLICATION_QUERY_RESULT_FRAME_TYPE,
+    PublicationQueryResult, PublicationQueryResultError, decode_publication_query_result,
+    encode_publication_query_result,
+};
 
 pub use submission::{
     MAX_PUBLICATION_SUBMISSION_BYTES, PUBLICATION_SUBMISSION_FRAME_TYPE, PublicationSubmission,

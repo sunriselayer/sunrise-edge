@@ -2,7 +2,10 @@
 
 use super::*;
 use abi::package_types::PackageOrigin;
-use execution::publication::{MAX_PUBLICATION_SUBMISSION_BYTES, decode_publication_submission};
+use execution::publication::{
+    MAX_PUBLICATION_SUBMISSION_BYTES, decode_publication_submission,
+    encode_publication_query_result,
+};
 
 pub(super) const PUBLICATION_PATH: &str = "/v1/contracts/publications";
 pub(super) const QUERY_PATH: &str = "/v1/contracts/publications/{publisher}/{origin_seed}";
@@ -228,23 +231,21 @@ where
                 // `PublicationQueryResult` frame, whether the stored record
                 // is a Legacy submission or a Paid Publish receipt. This
                 // never synthesizes a legacy signature for a paid record.
-                Ok(Some(result)) => {
-                    match node_core::publication::encode_publication_query_result(&result) {
-                        Ok(bytes) => (
-                            StatusCode::OK,
-                            [
-                                (header::CONTENT_TYPE, QUERY_RESULT_MEDIA_TYPE),
-                                (header::CACHE_CONTROL, "no-store"),
-                            ],
-                            bytes,
-                        )
-                            .into_response(),
-                        Err(_) => error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "publication-result-encoding",
-                        ),
-                    }
-                }
+                Ok(Some(result)) => match encode_publication_query_result(&result) {
+                    Ok(bytes) => (
+                        StatusCode::OK,
+                        [
+                            (header::CONTENT_TYPE, QUERY_RESULT_MEDIA_TYPE),
+                            (header::CACHE_CONTROL, "no-store"),
+                        ],
+                        bytes,
+                    )
+                        .into_response(),
+                    Err(_) => error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "publication-result-encoding",
+                    ),
+                },
                 Ok(None) => error_response(StatusCode::NOT_FOUND, "publication-not-found"),
                 Err(error) => match error {
                     node_core::publication::PublicationAdmissionError::Node(error) => {

@@ -54,6 +54,17 @@ digest/context authority. `node-wire` consumes that list codec and owns only
 HTTP result framing, outer-request binding and the single-acknowledgement view.
 Its narrow errors do not remove the remaining real core verifier Cargo edges.
 
+The pure [publication-query owner](../../crates/execution/src/publication/query_result.rs)
+defines the bounded provenance frame, transport result and narrow codec error.
+Actual SDK, native original/successor, Rust DO and operator fixture encoders
+consume that execution owner. Core retains verified-record conversion,
+historical loading, admission and durable authority; a decoded Paid frame is
+not proof of a successful Publish. The SDK's independent application-kind,
+selector, semantics and authentication checks stay separate. Independent
+[execution frame controls](../../crates/execution/tests/publication_query_result.rs)
+and unchanged [literal core vectors](../../crates/node-core/src/publication/tests.rs)
+pin this boundary. Other SDK/core dependencies remain.
+
 ## Find the owner
 
 | Capability | Entry and wire | Decision and effects | Storage and representative tests |

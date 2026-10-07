@@ -1172,9 +1172,6 @@ async fn a_legacy_publication_from_an_earlier_protocol_version_is_queryable_with
     let accepted = get(&with_history, &path).await;
     assert_eq!(accepted.status(), StatusCode::OK);
     let body = to_bytes(accepted.into_body(), 1 << 20).await.unwrap();
-    let result = node_core::publication::decode_publication_query_result(&body).unwrap();
-    assert_eq!(
-        result,
-        node_core::publication::PublicationQueryResult::Legacy(submission)
-    );
+    let result = decode_publication_query_result(&body).unwrap();
+    assert_eq!(result, PublicationQueryResult::Legacy(submission));
 }

@@ -16,7 +16,8 @@ use execution::paid_execution::{
 };
 use execution::publication::PublicationContext;
 use execution::publication::{
-    AuthenticatedPublicationCandidate, UnverifiedDependencyRef, VerifiedPublicationInterface,
+    AuthenticatedPublicationCandidate, PublicationQueryResult, UnverifiedDependencyRef,
+    VerifiedPublicationInterface,
 };
 use node_wire::{
     HttpNodeResult, NODE_EVENT_MEDIA_TYPE, NODE_RESULT_MEDIA_TYPE, QUERY_RESULT_MEDIA_TYPE,
@@ -258,7 +259,7 @@ impl<T: Transport> Client<T> {
                     ),
                 ))?;
             let candidate: AuthenticatedPublicationCandidate = match result {
-                crate::PublicationQueryResult::Legacy(submission) => {
+                PublicationQueryResult::Legacy(submission) => {
                     let semantics = execution::local_execution::generic_object_result_semantics(
                         resolver,
                         submission.request().artifact().context(),
@@ -270,7 +271,7 @@ impl<T: Transport> Client<T> {
                         submission,
                     )?
                 }
-                crate::PublicationQueryResult::Paid(signed) => {
+                PublicationQueryResult::Paid(signed) => {
                     let encoded: Vec<u8> = encode_signed_paid_intent(&signed)?;
                     let authenticated =
                         authenticate_paid_intent(resolver, reference.context(), &encoded)?;
