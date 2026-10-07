@@ -8,6 +8,11 @@ approved the original contract at
 and the complete target/host linker clarification at
 `9e7f9a87adb87e012f6a49d95965d97372f322c4f04a2cfac4b048de1e8eb25c`.
 This accepts the contract, not implementation or native-build execution.
+Complete independent Codex fallback design review also approved the
+unpack-completion marker amendment at
+`adb80555fba150940cab4dd338a9573651f64344077875c4501abc9931f37941`.
+The original missing/empty-marker allowance is not sufficient for the pinned
+Cargo invocation's no-extraction contract; source correction remains separate.
 Current completion and remaining gates stay in [TODO](../../../TODO.md).
 
 ## Outcome and owner
@@ -135,9 +140,26 @@ and declared/inferred directories, rejecting unexplained expanded entries.
 Per package: ≤128 MiB compressed, ≤512 MiB expanded, ≤256 MiB per file,
 ≤50,000 entries and ≤4,096 bytes per path. Entire selected closure: ≤1 GiB
 compressed, ≤4 GiB expanded and ≤200,000 entries. Budget overflow fails closed.
-The sole extra expanded entry is regular root `.cargo-ok`: ≤128 bytes, empty or
-closed JSON `{ "v": 1 }`, recorded separately by presence/bytes/hash/identity;
+The sole extra expanded entry is regular root `.cargo-ok`: ≤128 bytes of
+nonempty closed JSON `{ "v": 1 }`, recorded separately by bytes/hash/identity;
 it never authenticates source. Refuse links, other metadata or marker drift.
+Before any Cargo metadata/tree call, require this attached regular marker and
+an expanded manifest for every existing locked cached archive. Missing, empty,
+old or invalid marker content fails before Cargo; do not repair or regenerate it.
+Apply this guard at every existing input boundary. It does not require missing
+unrelated archives or trust a marker instead of archive/source verification.
+
+This accepted amendment follows the pinned
+[Cargo unpack owner](https://github.com/rust-lang/cargo/blob/c980f4866141969fab6254a680546a277789d6f0/src/cargo/sources/registry/mod.rs):
+`RegistrySource::unpack_package` accepts completed version-1 metadata; missing
+metadata causes extraction, while empty/invalid metadata can cause destination
+replacement and re-extraction. Existing `Cargo.toml` alone is not a no-unpack
+guard. Any explicitly authorized offline dependency-cache preparation happens
+separately before evidence, never as an automatic runner fallback. Qualification
+still requires exact locked archive hashes, expanded bytes/inventory and drift
+checks. Add independent missing/empty/invalid-marker controls proving zero Cargo
+metadata/tree calls, no A/B launch, incomplete failure evidence and unchanged
+expanded files/sentinel. Valid-marker positives must retain ordinary resolution.
 Recheck selected archive hashes, expanded inventories/bytes and `.cargo-ok`
 before/after both builds and before final success. Missing input, unknown format,
 mismatch or drift retains incomplete evidence and exits nonzero, without fetch,
