@@ -190,8 +190,11 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   checks. Hosted CI run `37572669043` failed `rust-tests`, `core-recurrence` and
   `lint` with `E0425` for the test-local `ValidatorId` reference after removal
   of its unused production import. The repair adds the explicit test-local
-  import only; fresh source review, compilation/strict checks, full required
-  acceptance, final-head CI and integration remain pending. Other real
+  import only. Exact `a7dbb277` received complete final-source approval across
+  all 88 changed paths; consensus 259/0, the actual owning successor-chain
+  tests 5/0 and strict consensus/node-core all-target/all-feature Clippy passed.
+  Those are focused results, not full required acceptance. PR #286's final-head
+  CI, full required acceptance and integration remain pending. Other real
   core/SDK dependencies remain; no standalone SDK or compilation speedup is claimed.
 - [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
   admission, evaluation, completion, reconciliation and storage contracts;
