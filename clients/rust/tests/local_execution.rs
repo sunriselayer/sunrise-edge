@@ -3,6 +3,7 @@ use abi::{
     executable_abi::{ExecutableAbi, encode_executable_abi},
     public_abi::{EntrypointDeclaration, PackageAbi},
 };
+use execution::publication::{PublicationQueryResult, encode_publication_query_result};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use sunrise_edge_client::{call::CallIntent, local_execution::*, publication::*, *};

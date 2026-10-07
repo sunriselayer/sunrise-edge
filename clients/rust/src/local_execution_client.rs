@@ -9,8 +9,8 @@ use crypto::SignatureSigner;
 use execution::call::CallIntent;
 use execution::local_execution::*;
 use execution::publication::{
-    self, AuthenticatedPublicationCandidate, PublicationContext, UnverifiedDependencyRef,
-    VerifiedPublicationInterface,
+    self, AuthenticatedPublicationCandidate, PublicationContext, PublicationQueryResult,
+    UnverifiedDependencyRef, VerifiedPublicationInterface,
 };
 use node_wire::{
     HttpNodeResult, NODE_EVENT_MEDIA_TYPE, NODE_RESULT_MEDIA_TYPE, QUERY_RESULT_MEDIA_TYPE,
@@ -431,8 +431,8 @@ impl<T: Transport> Client<T> {
                 // authenticated legacy submission; a DR-0124 paid Publish
                 // record has none and none is fabricated for it.
                 let submission = match result {
-                    crate::PublicationQueryResult::Legacy(submission) => submission,
-                    crate::PublicationQueryResult::Paid { .. } => {
+                    PublicationQueryResult::Legacy(submission) => submission,
+                    PublicationQueryResult::Paid { .. } => {
                         return Err(invalid(
                             "publication dependency is a paid record, not a legacy submission",
                         ));

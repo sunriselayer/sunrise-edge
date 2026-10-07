@@ -99,6 +99,9 @@ pub use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationContext, PublicationSubmission,
     UnverifiedDependencyRef, decode_dependency_ref,
 };
+pub use execution::publication::{
+    PublicationQueryResultError, decode_publication_query_result, encode_publication_query_result,
+};
 pub use execution::{call, call_authorization, local_execution};
 pub use fastvote_client::{
     FastVoteApplyAttempt, FastVoteAttempt, FastVoteEndpoint, FastVoteEndpointConfigError,
@@ -122,9 +125,6 @@ pub use local_execution_client::{
 };
 pub use local_genesis::{GenesisTrustError, load_verified_genesis_root};
 pub use node_core::genesis::{GenesisCommitteeError, GenesisRootError, VerifiedGenesisRoot};
-pub use node_core::publication::{
-    decode_publication_query_result, encode_publication_query_result,
-};
 // Offline artifact consumers use the same certificate verifier as the network
 // client, without acquiring signing authority or depending on a transport.
 pub use consensus::bundle::MAX_ENCODED_BUNDLE_BYTES;

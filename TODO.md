@@ -69,6 +69,7 @@ Do not attribute a component/ancestor run to the combined head.
 | PR #291: ordered local signatures | `5980522b`; complete final source approval; identical functional `5c05215e` passed 1226/0/7 ignored and strict owning Clippy | Complete acceptance/CI; ignored tests were not executed by the scoped run |
 | PR #292: Native release evidence | `c3f9e3e4`; complete corrected source approval, parent verified 134 compiler/DB/network-free controls and CI recipe/mutation contract; marker/BOM and own-hardlink cleanup corrections are bounded | Fresh combined-source review/preflight, actual new A/B builds, complete acceptance/CI |
 | PR #294: local TLS rotation | `2ba302a2`; complete eight-path source approval, all six owning stages passed, real TLS 3/0 and SDK remote TLS 15/0 with no ignored tests, strict Clippy | Full combined acceptance/CI; production PKI, revocation and custody remain open |
+| PR #295: publication-query contract owner | `bdfee63a`; complete 27-path source approval, all eleven scoped stages passed, 429 executed cases with zero ignored, actual CLI/HTTP/SQLite workflows, operator/DO compile and strict Clippy | Full combined acceptance/CI; other core tests were filtered, SDK/core dependencies remain |
 
 Initial failed source/test attempts remain in the preserved queue and immutable
 evidence; they are not passed. The `8974634a` ordered test failed one timing
@@ -87,7 +88,9 @@ byte-verified own-unlink transitions. Corrected `c3f9e3e4` has complete independ
 source approval and 134 parent-verified cheap controls plus the CI contract;
 fresh native A/B evidence is still pending. No failed A is reused or relabeled.
 The PR's later `70702fbe` bot correction changes only a local SDK provider-length
-diagnostic and still needs new-head acceptance; it is not covered by `afac7908`.
+diagnostic. Its precise 63/65-byte refusal controls passed in the `bdfee63a`
+scoped paid SDK target; full combined acceptance is still required, not inherited
+from `afac7908`.
 
 DR-0216's quiet local TLS leaf rollover, separate CA cutover and finite peer-close
 controls at `2ba302a2` completed all six scoped stages at 09:49 UTC: format,
@@ -97,10 +100,15 @@ rcgen API compilation and `d1da1892` child-reap Clippy failures remain preserved
 neither is counted as a pass. These controls are not production PKI, revocation,
 custody or M5 qualification.
 
-Next, finish the publication-query ownership slice's review and coherent
-integration, freeze/review the complete combined source, verify its actual
-offline closure and eleven
-targets, and compare two new sequential native builds under the accepted budget.
+DR-0217's complete source review and eleven scoped stages passed at `bdfee63a`
+at 10:17 UTC. Actual immutable query frames, independent SDK refusal/error
+chains, verified paid dependency loading, historical HTTP and compiled CLI
+lifecycles are covered. This remains one migrated ownership boundary, not whole
+SDK decoupling, optional PG qualification, or an independent security audit.
+
+Next, freeze/review the complete combined source, verify its actual offline
+closure and eleven targets, and compare two new sequential native builds under
+the accepted budget.
 Then run literal npm-ci and the complete required gate, check final-head CI and
 actionable review findings, and normally merge. Reconcile live heads before each
 step. Preserve Draft #235 and do not auto-merge dependency PRs.
@@ -122,7 +130,15 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   coupling without changing bytes, error priority or authority.
   DR-0201's envelope/list and acknowledgement owner is merged. DR-0209's one
   consensus Ed25519 adapter and all actual consumers are in the integration
-  above. Remaining core/SDK type coupling is explicit, not solved by inventing
+  above. DR-0217 now gives the publication-query result, codec, bounds and
+  four-category error one execution owner in this local integration. Actual
+  SDK, original/successor HTTP, Rust DO and operator consumers migrate directly;
+  old core definitions and the SDK admission-error conversion are removed.
+  Core durable authority and all wire bytes/error priority stay separate. Nine
+  pure framing controls and stronger actual SDK error assertions are added.
+  Complete source approval and actual eleven-stage scoped execution passed at
+  `bdfee63a`; final combined source/gate/CI checks remain pending.
+  Remaining core/SDK type coupling is explicit, not solved by inventing
   a foundations crate containing execution. Complete SDK decoupling is not
   inferred from these migrated boundaries.
 - [ ] **R2 — semantic core/runtime responsibilities:** admission authorizes,

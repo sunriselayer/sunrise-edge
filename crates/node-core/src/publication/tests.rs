@@ -4,7 +4,8 @@ use abi::executable_abi::{ExecutableAbi, encode_executable_abi};
 use abi::public_abi::{ConstructorDeclaration, EntrypointDeclaration, PackageAbi};
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::publication::{
-    ArtifactParts, CodeArtifact, PublicationRequest, artifact_commitment,
+    ArtifactParts, CodeArtifact, PublicationQueryResult, PublicationRequest, artifact_commitment,
+    decode_publication_query_result, encode_publication_query_result,
     publication_submission_signing_frame,
 };
 use protocol_types::{HashSuite, HashSuiteSchedule, ValidatorId};
