@@ -281,10 +281,11 @@ needs real evidence for the selected profile, not fixtures from a different one.
 
 The accepted [protocol-v3 live-activation constraint](docs/architecture/core-protocol.md)
 still forbids activation on any live chain until complete atomic composition,
-authentication/authorization of every accepted external family, S4/S5 and
-independent security/release gates are satisfied. This includes public testnet;
-Ledger deferral currently leaves that original gate open. A bounded testnet
-exception requires an explicit human-approved decision and release review,
+authentication/authorization of every accepted external family and the required
+software/signing and independent security/release gates are satisfied. This
+includes public testnet. DR-0208 removes the Ledger-specific prerequisite only;
+replacement protected-signing M2 and the other release gates remain open.
+A bounded testnet exception requires an explicit human-approved decision and release review,
 not this roadmap or successful local startup.
 
 - [ ] Integrate the reviewed operator/startup prerequisites and pass the actual
@@ -367,6 +368,14 @@ explicitly approves a documented scope change.
   extra presentation work until a concrete consumer justifies it. This proposal
   selects no provider, implements no protected key or semantic review, and
   closes no M2 or launch gate.
+  Accepted [DR-0215](docs/architecture/decisions/0215-ordered-local-signature-verification.md)
+  specifies invocation-bound local validator identity and existing registered-key
+  verification for actual ordered votes, noncausal proposals and the distinct
+  post-completion retained-vote reread. Causal capacity probes stay nonauthoritative;
+  legitimate prefix/completion progress is not rolled back on a later refusal.
+  Complete independent design review approved the corrected contract; actual
+  implementation, final-source review and execution remain pending. This is a
+  handler-correctness prerequisite, not protected custody or M2 completion.
 - [ ] **M3 — selected-profile durable state:** atomic object/state/nonce/receipt/
   outbox, bounded indexed delivery, full-read revision/ABA assertions, restart,
   fencing and ambiguity reconciliation. Verify actual host/power/storage faults,
