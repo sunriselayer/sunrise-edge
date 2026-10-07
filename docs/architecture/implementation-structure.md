@@ -93,6 +93,17 @@ change, independent implementations of the same rule, public dependency/API
 surface and attributable nonredundant tests. File count is not acceptance;
 compilation, runtime and whole-CI speedups require actual measurement.
 
+### First qualified native profile
+
+[DR-0208](decisions/0208-native-sqlite-first-and-protected-signing.md) selects
+Native plus SQLite first, DO following. Connection/file ownership belongs to
+`runtime-sqlite`; atomic state and namespace decisions remain shared in
+`runtime-sql-durable`, and live authority stays with node-core. Qualification
+requires selected filesystem, host and signer evidence, not a database-specific
+business-engine rewrite. Protected signing is provider-independent; deferred
+Ledger evidence is not replaced by plaintext development keys. Status stays in
+TODO, not this structure contract.
+
 ## Handoff-specific ownership
 
 Use the accepted [epoch-handoff](epoch-handoff.md) authority chain:

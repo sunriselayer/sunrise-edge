@@ -50,12 +50,18 @@ Validator-set changes, slashing and reward/claim distribution remain FastVote
 completion requirements. Their functional implementation does not close the
 independent economic/security release gate.
 
-## Active integration and ten-hour execution
+## Active integration and continuous TODO completion
 
-Human-authorized window: 2026-10-06 13:28:30–23:28:30 UTC, ending
-2026-10-07 07:28:30 Asia/Singapore. The existing thread heartbeat owns
-continuation and stops starting new slices at that deadline. Ten hours is an
-implementation budget, not a promise that external mainnet gates will pass.
+The human renewed continuation toward this queue's completion on 2026-10-07;
+the previous ten-hour window ended and is not a new deadline. The existing
+thread heartbeat continues safe actionable work without duplicating running
+agents or acceptance owners. Continued work does not certify external mainnet
+gates or authorize deployment.
+
+[DR-0208](docs/architecture/decisions/0208-native-sqlite-first-and-protected-signing.md)
+records Native plus SQLite first, DO later, and removal of Ledger-specific
+mainnet prerequisites. Key protection, signing-content verification, recovery,
+rotation and revocation remain open M2 work.
 
 The planning baseline was `eae9e6972baa293e4ad3ffde5d3ed931b85a6ef5`.
 PR #273 subsequently merged normally as `587fe587` at 13:44:23 UTC after
@@ -127,9 +133,14 @@ no required findings. Opus exhausted its weekly allowance during review and
 Grok could not start because its allowance was exhausted; neither completed
 source approval. The human's earlier explicit fallback authorization was used
 for a fresh Codex reviewer. Its approval is not labeled Opus or an independent
-security audit. This status-only follow-up still requires exact-source review
-confirmation. The candidate's own complete required acceptance, final-head
-hosted CI and integration remain open; ancestor passes are not attributed here.
+security audit. The final TODO-only delta at exact `fb3e6884` subsequently
+received complete source approval from that independent reviewer with no
+findings. [PR #285](https://github.com/sunriselayer/sunrise-edge/pull/285) is Draft,
+not merged. Exact local npm-ci passed and its literal required gate started
+on 2026-10-07 at 03:41 UTC. Hosted CI has six successful owners and a running
+`recurring-sqlite` owner as observed at 03:39 UTC; `check` is not passed.
+Complete required acceptance, final-head CI and main integration remain open;
+ancestor and focused passes are not attributed as full final-head acceptance.
 
 ### Responsibility-oriented refactoring queue
 
@@ -293,9 +304,10 @@ explicitly approves a documented scope change.
   findings and independently verify corrections; retain residual-risk decisions.
 - [ ] **M2 — protected keys and signing:** production custody, separation of
   operators and authority, secret handling, recovery/rotation/revocation and
-  signer refusal/failure evidence. The historical complete S4 Ledger gate stays
-  open while physical/HIL/UI/release validation is deferred; another signer is
-  not an automatically approved substitute.
+  signer refusal/failure evidence. Under the human-approved DR-0208 amendment,
+  Ledger-specific S4 completion is no longer mandatory for mainnet. Design,
+  independently review and implement the replacement protected signer and
+  operation-specific content verification; a plaintext seed is not a substitute.
 - [ ] **M3 — selected-profile durable state:** atomic object/state/nonce/receipt/
   outbox, bounded indexed delivery, full-read revision/ABA assertions, restart,
   fencing and ambiguity reconciliation. Verify actual host/power/storage faults,
@@ -334,15 +346,17 @@ explicitly approves a documented scope change.
 
 ### CLI-First Node Production Gate
 
-Historical complete gate = Software Production Gate (S0–S3 plus S5) **and**
-Hardware Signing Release Gate (all S4) **and** independent security/release
-criteria. Ledger deferral permits non-Ledger software work; it does not complete
-S4 or silently waive the mainnet constraint. The exact original criteria remain
-in the [archived production gate](docs/development/history/roadmap-through-2026-10-06.md#cli-first-node-production-gate).
+The original gate combined Software Production (S0–S3 plus S5), all S4 Ledger
+and independent security/release criteria. DR-0208 explicitly replaces only the
+Ledger-specific dependency with the protected-signing M2 gate; other software
+and independent release criteria remain binding. S4 itself is still deferred,
+not complete. Retain the exact original text in the
+[archived production gate](docs/development/history/roadmap-through-2026-10-06.md#cli-first-node-production-gate)
+and review it together with this documented human-approved amendment.
 
 | Original requirement owner | Consolidated open groups |
 | --- | --- |
-| S4 physical/HIL/UI/release and production key management | M2, unchanged; alternate signer/scope needs human-reviewed decision |
+| S4 physical/HIL/UI/release and production key management | DR-0208 defers Ledger-specific product evidence; M2 retains provider-independent protected signing, custody and recovery/revocation |
 | S5 and Phase 15 To-Be exit criteria 1–10 | M1–M5/M7; exposed-family auth, durable contracts, operations and certification are not completed by refactoring |
 | Post-MVP persistence order and production correctness contract | M3/M4/M5/M7; all fault/checkpoint/backup/capacity criteria retained, implementation follows selected profile capabilities |
 | Cross-phase production release gate, Coding Requirements, Required Integration Tests and Security Invariants | M1–M8; disaster recovery/capacity/key/validator documentation and experimental/deferred criteria must be closed or explicitly respecified, not hidden |
@@ -352,10 +366,9 @@ in the [archived production gate](docs/development/history/roadmap-through-2026-
 
 ### Decisions still requiring the human
 
-- Initial-network and mainnet supported hosting/store profiles and independent
-  operator custody. Native SQLite is a local reference, not already certified.
-- Whether mainnet retains the historical full Ledger S4 prerequisite or uses a
-  separately reviewed protected-signing scope. Do not silently choose one.
+- Native plus SQLite is the selected first profile, not already certified.
+  Independent operator/key custody and the actual protected-signing backend
+  still need concrete reviewed choices and evidence.
 - Supported-provider release scope and any deliberate revision of historical
   all-provider criteria; budget/SLO and production economic/genesis values.
 - Any bounded initial-network exception to the protocol-v3 live-activation
@@ -389,7 +402,7 @@ and immutable audit evidence remain retained.
 
 ## Validation and completion discipline
 
-- Local SQLite, loopback and disposable development keys only in this window.
+- Local SQLite, loopback and disposable development keys for this continuation.
   No production D1 writes, deployed Workers, paid-plan changes, cloud resources,
   live PG service or public launch without separate authority.
 - Run focused checks while iterating, then `npm ci --prefix adapters/cloudflare-workers`

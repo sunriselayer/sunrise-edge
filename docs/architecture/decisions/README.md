@@ -104,6 +104,7 @@
 - [DR-0205: bounded SDK response framing for streamed relays](0205-bounded-sdk-streamed-response-framing.md)
 - [DR-0206: closed event ingress without execution capabilities](0206-unauthenticated-ingress-without-execution-capabilities.md)
 - [DR-0207: local native, streamed relay and SDK integration](0207-local-native-sdk-relay-integration.md)
+- [DR-0208: Native SQLite first and provider-independent protected signing](0208-native-sqlite-first-and-protected-signing.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong
