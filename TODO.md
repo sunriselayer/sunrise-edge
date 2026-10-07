@@ -186,8 +186,12 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   no required findings; independent mapping confirmed all 268 constructor
   choices. The first 258/1 test attempt exposed an incorrect new 63-byte
   expectation; only that assertion was corrected to the verified original
-  Authenticator result. Full required acceptance, final-head review/CI and
-  integration remain open. Other real
+  Authenticator result. Exact `ba8589e7` passed consensus 259/0 and strict focused
+  checks. Hosted CI run `37572669043` failed `rust-tests`, `core-recurrence` and
+  `lint` with `E0425` for the test-local `ValidatorId` reference after removal
+  of its unused production import. The repair adds the explicit test-local
+  import only; fresh source review, compilation/strict checks, full required
+  acceptance, final-head CI and integration remain pending. Other real
   core/SDK dependencies remain; no standalone SDK or compilation speedup is claimed.
 - [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
   admission, evaluation, completion, reconciliation and storage contracts;
