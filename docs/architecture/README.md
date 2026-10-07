@@ -25,6 +25,9 @@ roadmap describes a later target state.
 - [Native SQLite connection and attachment ownership](decisions/0210-native-sqlite-connection-ownership.md):
   one native settings owner, lock-safe identity checks and explicit operator
   commit ambiguity; shared SQL decisions and live protocol authority stay separate.
+- [Owned local TLS stop and explicit rotation](decisions/0216-local-tls-stop-restart-rotation.md):
+  retained listener and trust boundaries, actual served-leaf observation and
+  orderly compiled-host restart; separate from production PKI and custody.
 - [Immutable operation signing preparation](signing-preparation.md): one
   mechanical frame/identity owner, operation-specific immutable trust inputs,
   actual SDK/CLI consumers and the separate custody/content-review boundary.
