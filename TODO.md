@@ -91,6 +91,12 @@ controls are implemented on a separate slice, with source and actual execution
 checks still pending. They are not production PKI, revocation, custody or M5
 qualification.
 
+The first `4643836a` owning attempt passed formatting and real operator/CLI
+binary builds but failed to compile the TLS test because the fixed rcgen API
+has no `KeyPair::public_key_der`. Use its actual `PublicKeyData` SPKI encoder;
+the new-leaf public-key inequality oracle is retained. That failed attempt
+does not count as a TLS pass; corrected-source execution/review remains pending.
+
 Next, finish the accepted cleanup correction and owning TLS checks, freeze/review
 the complete combined source, verify its actual offline closure and eleven
 targets, and compare two new sequential native builds under the accepted budget.

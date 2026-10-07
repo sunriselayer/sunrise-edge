@@ -4,7 +4,7 @@
 
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    Issuer, KeyPair, KeyUsagePurpose,
+    Issuer, KeyPair, KeyUsagePurpose, PublicKeyData,
 };
 use rustls::{
     ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection, StreamOwned,
@@ -102,7 +102,7 @@ impl FixtureCa {
             ca_der: self.der.clone(),
             server_name: server_name.to_owned(),
             der: certificate.der().to_vec(),
-            public_key_der: key.public_key_der(),
+            public_key_der: key.subject_public_key_info(),
             server_config: Arc::new(config),
         }
     }
@@ -112,6 +112,7 @@ pub struct FixtureLeaf {
     pub ca_der: Vec<u8>,
     pub server_name: String,
     pub der: Vec<u8>,
+    /// DER SubjectPublicKeyInfo, independent of certificate metadata/DER.
     pub public_key_der: Vec<u8>,
     server_config: Arc<ServerConfig>,
 }
