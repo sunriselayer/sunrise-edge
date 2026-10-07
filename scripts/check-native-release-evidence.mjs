@@ -736,27 +736,111 @@ class RunOwner {
     this.directoryCheck(record);
     requireThat(this.childrenStopped && record.snapshotsVerified && /^(compiler|temp)-[ab]$/.test(record.purpose),
       "Cleanup lacks stopped descendants/verified snapshots/creation purpose");
-    // Validate the entire exact created tree first; never follow links/mounts.
-    const entries = [];
+    // Close the entire exact created tree before removal; never follow links/mounts.
+    const entries = []; const directories = new Map(); const groups = new Map();
     const visit = p => {
       const s = lstatSync(p);
       requireThat(!s.isSymbolicLink() && (s.isFile() || s.isDirectory()) && s.dev === record.id.dev &&
         s.uid === process.getuid(), "Unsafe cleanup entry/owner/device");
       requireThat(entries.length < 500_000, "Cleanup inventory budget exceeded");
-      entries.push({ path: p, id: stamp(s), directory: s.isDirectory() });
-      if (s.isDirectory()) for (const name of readdirSync(p).sort()) visit(path.join(p, name));
+      const entry = { path: p, id: stamp(s), directory: s.isDirectory() }; entries.push(entry);
+      if (entry.directory) {
+        directories.set(p, entry);
+        for (const name of readdirSync(p).sort()) visit(path.join(p, name));
+      } else {
+        requireThat(Number.isSafeInteger(s.size) && s.size >= 0, "Unsafe cleanup file size");
+        const key = `${s.dev}:${s.ino}`; let group = groups.get(key);
+        if (!group) { group = { id: entry.id, entries: [] }; groups.set(key, group); }
+        requireThat(same(entry.id, group.id), "Cleanup inode group stamp mismatch");
+        group.entries.push(entry);
+      }
     };
     visit(record.path); this.directoryCheck(record);
-    // Recheck all attachments before the first removal. Trusted-host freeze still applies.
-    for (const entry of entries) requireThat(same(stamp(lstatSync(entry.path)), entry.id), "Cleanup attachment drift");
-    for (const entry of entries.reverse()) {
-      // Directory timestamps change when its children are removed; identity cannot change.
-      const s = lstatSync(entry.path);
-      requireThat(same(identity(s), { dev: entry.id.dev, ino: entry.id.ino, uid: entry.id.uid, mode: entry.id.mode }) &&
-        (entry.directory || same(stamp(s), entry.id)), "Cleanup attachment changed during removal");
-      if (entry.directory) rmdirSync(entry.path); else unlinkSync(entry.path);
+    for (const group of groups.values()) requireThat(Number.isSafeInteger(group.id.nlink) && group.id.nlink > 0 &&
+      group.id.nlink === group.entries.length, "Cleanup inode has external/uninventoried links");
+    const fixed = s => ({ ...identity(s), size: s.size, mtime: s.mtimeMs });
+    const checkParents = p => {
+      this.directoryCheck(record); const parents = [];
+      for (let d = path.dirname(p); d !== this.root; d = path.dirname(d)) {
+        requireThat(d === record.path || within(record.path, d), "Cleanup containment drift");
+        const entry = directories.get(d); requireThat(entry, "Cleanup ancestor outside inventory"); parents.push(entry);
+      }
+      for (const entry of parents.reverse()) {
+        const s = lstatSync(entry.path);
+        requireThat(s.isDirectory() && !s.isSymbolicLink() && same(identity(s),
+          { dev: entry.id.dev, ino: entry.id.ino, uid: entry.id.uid, mode: entry.id.mode }), "Cleanup ancestor drift");
+      }
+    };
+    const buffer = Buffer.alloc(64 * 1024);
+    const content = (fd, size) => {
+      const sha = createHash("sha256");
+      for (let offset = 0; offset < size;) {
+        const n = readSync(fd, buffer, 0, Math.min(buffer.length, size - offset), offset);
+        requireThat(n > 0, "Cleanup premature file EOF"); sha.update(buffer.subarray(0, n)); offset += n;
+      }
+      requireThat(readSync(fd, buffer, 0, 1, size) === 0, "Cleanup file grew past EOF");
+      return sha.digest("hex");
+    };
+    const hold = (group, fn) => {
+      const p = group.entries[0].path; checkParents(p); const before = lstatSync(p);
+      requireThat(before.isFile() && !before.isSymbolicLink() && same(stamp(before), group.id), "Cleanup attachment drift");
+      const fd = openSync(p, F.O_RDONLY | F.O_NOFOLLOW | F.O_NONBLOCK);
+      try {
+        const initial = fstatSync(fd);
+        requireThat(initial.isFile() && same(stamp(initial), group.id), "Cleanup attachment drift");
+        fn({ fd, initial, check() {
+          checkParents(p); const attached = lstatSync(p); const held = fstatSync(fd);
+          requireThat(attached.isFile() && !attached.isSymbolicLink() && held.isFile() &&
+            same(stamp(attached), group.id) && same(stamp(held), group.id), "Cleanup attachment drift");
+        } });
+      } finally { closeSync(fd); } // Includes failure of the first fstat.
+    };
+    // Baselines are streamed one at a time, before ANY unlink, not one FD per inode.
+    for (const group of groups.values()) if (group.entries.length > 1) {
+      hold(group, h => {
+        group.sha256 = content(h.fd, group.id.size); h.check();
+      });
     }
-    record.cleaned = true; syncDir(this.root, this.sync);
+    // Recheck the complete initial inventory before the first removal. Freeze still applies.
+    this.directoryCheck(record);
+    for (const entry of entries) {
+      checkParents(entry.path); const s = lstatSync(entry.path);
+      requireThat((entry.directory ? s.isDirectory() : s.isFile()) && !s.isSymbolicLink() &&
+        same(stamp(s), entry.id), "Cleanup attachment drift");
+    }
+    for (const group of groups.values()) {
+      hold(group, h => {
+        let expected = group.id;
+        const checkFile = p => {
+          checkParents(p); const attached = lstatSync(p); const held = fstatSync(h.fd);
+          requireThat(attached.isFile() && !attached.isSymbolicLink() && held.isFile() &&
+            same(stamp(attached), expected) && same(stamp(held), expected), "Cleanup attachment changed during removal");
+        };
+        requireThat(same(stamp(h.initial), group.id), "Cleanup attachment changed during removal");
+        for (const entry of group.entries) {
+          checkFile(entry.path);
+          if (group.sha256) {
+            requireThat(content(h.fd, group.id.size) === group.sha256, "Cleanup file content drift"); checkFile(entry.path);
+          }
+          unlinkSync(entry.path);
+          const after = fstatSync(h.fd);
+          requireThat(after.isFile() && same(fixed(after), fixed(h.initial)) && after.nlink === expected.nlink - 1,
+            "Cleanup invalid own-unlink transition");
+          if (group.sha256) requireThat(content(h.fd, group.id.size) === group.sha256, "Cleanup file content drift");
+          requireThat(same(stamp(fstatSync(h.fd)), stamp(after)), "Cleanup drift after own unlink");
+          expected = stamp(after); // Only this verified own -1 transition admits its post-unlink ctime.
+        }
+        requireThat(expected.nlink === 0, "Cleanup final held inode still linked");
+      });
+    }
+    for (const entry of entries.reverse()) if (entry.directory) {
+      checkParents(entry.path); const s = lstatSync(entry.path);
+      // Directory timestamps/link counts change with removed children; type/identity stay exact.
+      requireThat(s.isDirectory() && !s.isSymbolicLink() && same(identity(s),
+        { dev: entry.id.dev, ino: entry.id.ino, uid: entry.id.uid, mode: entry.id.mode }), "Cleanup directory drift");
+      rmdirSync(entry.path); // Empty inventoried directories only, never recursive deletion.
+    }
+    syncDir(this.root, this.sync); record.cleaned = true;
     return { path: record.path, identity: record.id, removed: entries.length, success: true };
   }
 }

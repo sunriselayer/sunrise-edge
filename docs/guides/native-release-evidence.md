@@ -112,7 +112,26 @@ copies preserve actual modes, cannot alias compiler or other snapshot files,
 and are synchronized and rehashed. Only after stopped descendants and verified
 snapshots can the exact created compiler/temp directories be removed, checking
 creation identity, owner, device, containment and every descendant without
-following links. Then independently fresh B repeats the same recipe. B cleanup
+following links. Regular-file names are grouped by device/inode within that one
+cleanup record. The initial positive safe-integer link count must equal the
+inventoried name count, with identical full stamps; external or uninventoried
+aliases refuse cleanup before any removal. Multiply linked groups receive a
+bounded streaming content/size/exact-EOF baseline. The complete original tree
+is rechecked before the first removal.
+
+Groups are then removed sequentially with one active held no-follow regular-file
+descriptor, not a descriptor per inventoried inode. Single-link files and each
+group's first unlink retain strict original stamps. Every planned path and its
+ancestors must still match the held inode and expected full stamp. Only a verified
+own unlink can advance that stamp: its held link count must decrease by exactly
+one and type/device/inode/uid/mode/size/mtime/content must remain unchanged. The
+verified post-unlink ctime becomes the next expected epoch, through the final
+held link count of zero. Arbitrary link-count or ctime drift is never tolerated.
+Only inventoried empty directories are removed in reverse postorder with exact
+type/identity/owner/mode/containment checks. Cleanup is successful only after all
+removals and synchronization; any failure keeps the record incomplete.
+
+Then independently fresh B repeats the same recipe. B cleanup
 also requires eleven comparisons: names/modes/sizes/hashes and every byte to exact
 EOF with held regular-file attachments. Successful storage is bounded to one
 compiler target plus two snapshot sets; this is not a disk-capacity guarantee.
@@ -147,7 +166,16 @@ orchestration and negative drift/output/failure/timeout/cleanup/synchronization
 cases. Independent missing/empty/old/invalid-marker controls preserve expanded
 files/sentinel and incomplete evidence while proving zero metadata/tree and A/B
 calls; valid-marker positives and different valid marker encodings cover normal
-resolution and drift. Doubles cannot select a production bypass or set native
+resolution and drift. Genuine fixture-local two-/three-name target and host
+hardlinks exercise both A/B cleanups and final held zero-link transitions, while
+saved snapshots remain independent single-link files. Cleanup controls cover
+external-alias zero-removal refusal, complete preflight, strict initial stamps,
+unexpected link transitions, equal-size bytes with restored mtime, metadata/path/
+ancestor drift, exact EOF, bounded descriptors and unlink/directory/sync failures.
+Test-only builtin seams are restored locally in `finally`; production has no
+injection interface. These disposable fixture layouts are not Cargo build evidence
+and never adopt or clean up a retained failed native run.
+Doubles cannot select a production bypass or set native
 `complete=true`:
 
 ```sh

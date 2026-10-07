@@ -381,9 +381,13 @@ explicitly approves a documented scope change.
   equality is unproved. Failed partial output/logs/snapshots remain preserved.
   The accepted cleanup-local DR-0213 clarification requires closed in-tree inode
   groups and exact verified self-unlink transitions, retaining external-alias,
-  content/metadata and snapshot refusal. Source correction, cheap controls,
-  updated exact-source approval, a new fresh A/B pair and full local/hosted
-  required acceptance remain pending. No failed A is reused or relabeled.
+  content/metadata and snapshot refusal. The cleanup-local correction is now
+  implemented; parent verification passed 134 compiler/DB/network-free controls
+  and the complete CI recipe/dispatch contract. Real fixture hardlinks exercise
+  both build positions, bounded descriptor ownership and exact link transitions;
+  external aliases and content/metadata drift still fail closed. Independent
+  corrected-source approval, a new fresh A/B pair and full local/hosted required
+  acceptance remain pending. No failed A is reused or relabeled.
   See the [local evidence guide](docs/guides/native-release-evidence.md).
   No fixture, source inventory or design approval is native-build execution,
   provider qualification or complete M7 evidence. Keep the current full required
