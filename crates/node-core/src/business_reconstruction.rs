@@ -69,7 +69,7 @@ use execution::{
 };
 use hashing::HashSuiteResolver;
 use protocol_types::ExecutionGeneration;
-use protocol_types::{Digest32, Epoch, HashPurpose, ValidatorId};
+use protocol_types::{Digest32, Epoch, HashPurpose};
 use runtime::portable::{
     DurablePayloadDescriptor, DurableRecordDescriptor, DurableRecordKey, DurableRecordMetadata,
     PortableSnapshotToken,
