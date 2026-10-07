@@ -356,15 +356,20 @@ explicitly approves a documented scope change.
   two fresh sequential offline builds, complete byte comparisons and retained
   incomplete failure evidence. Actual locked archives, including required GNU
   long-name records, were inspected before acceptance. The bounded runner and
-  its 77 compiler/DB/network-free controls are implemented; an independent local
-  fixture run passed. Actual offline source/tool/closure preflight passed at
+  its initial 77 compiler/DB/network-free controls passed local verification.
+  Actual offline source/tool/closure preflight passed at
   `2e191ae5`: 168 selected packages, 138 registry archive/source matches and all
   eleven targets, after separately authorized offline cache preparation.
   Complete source review blocked the missing/empty Cargo unpack-marker guard;
   valid-cache preflight does not exercise that admitted failure. The bounded
-  marker amendment has complete independent design approval before its
-  correction; unchanged `2e191ae5` source is still blocked. Two real native
-  builds, corrected source approval and full required acceptance remain pending.
+  marker amendment has complete independent design approval. Its correction
+  now refuses invalid markers before metadata/tree at every input boundary,
+  preserves valid-encoding drift checks and closes first descriptors when a
+  second acquisition fails. Parent verification passed all 101 cheap controls
+  and the complete CI recipe/dispatch mutation contract. Initial failures and
+  the earlier `2e191ae5` source block remain attributable. Corrected exact-source
+  approval, renewed real preflight, two native builds and full required
+  acceptance remain pending.
   See the [local evidence guide](docs/guides/native-release-evidence.md).
   No fixture, source inventory or design approval is native-build execution,
   provider qualification or complete M7 evidence. Keep the current full required

@@ -78,17 +78,22 @@ host CC required to match the checked driver. GNU target ld and bundled host LLD
 are distinct observations. No automatic alternative flags, profile rewrite,
 stripping or post-build byte/mode normalization is permitted.
 
-Before resolution, existing locked cached archives must have expanded manifests,
-so Cargo cannot silently extract them. Missing unrelated cached archives are not
-required; an actual offline miss still fails. Each selected registry dependency
+Before every Cargo metadata/tree call, each existing locked cached archive must
+have an attached regular expanded manifest and regular root `.cargo-ok` containing
+nonempty closed JSON `{ "v": 1 }` within 128 bytes. Missing, empty, old or invalid
+markers fail before Cargo; there is no repair, extraction or preparation fallback.
+The manifest/marker bytes and identities are rechecked at every input boundary and
+around resolution. Missing unrelated cached archives are not required; an actual
+offline miss still fails. Separately authorized offline cache preparation is outside
+the evidence runner, never an automatic retry. Each selected registry dependency
 is then bound to the exact metadata manifest/cache bucket and locked source,
 name/version/archive SHA-256. A bounded built-in streaming gzip/tar reader matches
 every archive regular-file byte and complete declared/inferred directory inventory
 to expanded source, including GNU `L` metadata used by vcpkg. It refuses unknown
 formats, duplicates, links, illegal paths, extra empty directories, framing errors
-and over-budget bytes/entries. Only root `.cargo-ok` is additional metadata: a
-regular file at most 128 bytes, empty or closed `{ "v": 1 }`, recorded separately
-and never trusted as authentication. No extraction, vendor-checksum assumption or
+and over-budget bytes/entries. Only root `.cargo-ok` is additional metadata: the
+required valid unpack-completion marker is recorded by bytes/hash/identity and
+never trusted as authentication. No extraction, vendor-checksum assumption or
 whole-CARGO_HOME hash is used. Cargo's own cache bookkeeping/locks are not a promise
 of whole-cache read-only operation; source/archive/marker drift is checked.
 
@@ -137,7 +142,11 @@ SHA and absolute paths. The installed Node must invoke the committed source scri
 The cheap compiler/DB/network-free controls use independently constructed archives,
 files and labelled tool/resource/process doubles. They exercise successful complete
 orchestration and negative drift/output/failure/timeout/cleanup/synchronization
-cases. Doubles cannot select a production bypass or set native `complete=true`:
+cases. Independent missing/empty/old/invalid-marker controls preserve expanded
+files/sentinel and incomplete evidence while proving zero metadata/tree and A/B
+calls; valid-marker positives and different valid marker encodings cover normal
+resolution and drift. Doubles cannot select a production bypass or set native
+`complete=true`:
 
 ```sh
 /absolute/installed/node-22.20.0 scripts/test-native-release-evidence.mjs

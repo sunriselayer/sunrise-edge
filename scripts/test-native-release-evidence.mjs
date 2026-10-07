@@ -3,8 +3,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, lstatSync, chmodSync,
-  symlinkSync, linkSync, renameSync, unlinkSync, rmSync, existsSync, fsyncSync } from "node:fs";
+  symlinkSync, linkSync, renameSync, unlinkSync, rmSync, existsSync, fsyncSync, readlinkSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { NODE_VERSION, NAMES, TARGET, LIMITS, parseCli, validateCallerEnv, verifyRegistryPackage,
@@ -15,6 +17,22 @@ const root = mkdtempSync("/tmp/sunrise-edge-native-fixtures-");
 let passed = 0;
 const sha = b => createHash("sha256").update(b).digest("hex");
 function file(p, bytes, mode = 0o644) { mkdirSync(path.dirname(p), { recursive: true }); writeFileSync(p, bytes); chmodSync(p, mode); }
+function expandedState(root) {
+  const records = [];
+  const visit = p => {
+    const s = lstatSync(p); records.push({ name: path.relative(root, p), dev: s.dev, ino: s.ino,
+      mode: s.mode, size: s.isDirectory() ? null : s.size,
+      bytes: s.isFile() ? readFileSync(p).toString("base64") : null });
+    if (s.isDirectory()) for (const n of readdirSync(p).sort()) visit(path.join(p, n));
+  };
+  visit(root); return records;
+}
+function attachedDescriptors(p) {
+  return readdirSync("/proc/self/fd").filter(n => {
+    try { return readlinkSync(`/proc/self/fd/${n}`) === p; }
+    catch (e) { if (e.code === "ENOENT") return false; throw e; }
+  }).length;
+}
 function header(name, type, bytes) {
   const b = Buffer.alloc(512); b.write(name, 0, 100); b.write("0000644\0", 100);
   b.write("0000000\0", 108); b.write("0000000\0", 116);
@@ -85,11 +103,24 @@ function fixture(label, scenario = {}) {
   workspace("runtime-postgres", "crates/runtime-postgres", [target("runtime_postgres", path.join(source, "crates/runtime-postgres/src/lib.rs"))]);
   packages.push({ ...dep, features: {}, dependencies: [], targets: [target("vcpkg", path.join(dep.expanded, "src/lib.rs")),
     target("build-script-build", path.join(dep.expanded, "build.rs"), "custom-build")] });
+  const lockedPackages = [...packages]; let cachedOnly;
+  if (scenario.cachedOnly || scenario.missingUnrelatedArchive) {
+    const name = "unused-cache-fixture", version = "1.0.0";
+    const expanded = path.join(src, `${name}-${version}`);
+    const entries = [{ name: `${name}-${version}/Cargo.toml`, data: `[package]\nname="${name}"\nversion="${version}"\n` }];
+    const bytes = archive(entries);
+    lockedPackages.push({ name, version, source: dep.source, checksum: sha(bytes) });
+    if (scenario.cachedOnly) {
+      file(path.join(expanded, "Cargo.toml"), entries[0].data); file(path.join(expanded, ".cargo-ok"), '{"v":1}\n');
+      const crate = path.join(archives, `${name}-${version}.crate`); file(crate, bytes);
+      cachedOnly = { expanded, archive: crate };
+    }
+  }
   file(path.join(source, "Cargo.toml"), '[workspace]\nresolver="3"\n');
   file(path.join(source, "rust-toolchain.toml"), '[toolchain]\nchannel = "1.97.1"\n');
   file(path.join(source, "scripts/check-native-release-evidence.mjs"), "// committed fixture marker\n");
-  file(path.join(source, "Cargo.lock"), "version = 4\n\n" + packages.map(p => `[[package]]\nname = "${p.name}"\nversion = "${p.version}"\n` +
-    (p.source ? `source = "${p.source}"\nchecksum = "${dep.checksum}"\n` : "")).join("\n"));
+  file(path.join(source, "Cargo.lock"), "version = 4\n\n" + lockedPackages.map(p => `[[package]]\nname = "${p.name}"\nversion = "${p.version}"\n` +
+    (p.source ? `source = "${p.source}"\nchecksum = "${p.checksum ?? dep.checksum}"\n` : "")).join("\n"));
   mkdirSync(path.join(parent, "git-control")); const tools = path.join(parent, "tools"); mkdirSync(tools); mkdirSync(path.join(tools, "sysroot"));
   const toolNames = ["node", "git", "cargo", "rustc", "rustdoc", "cc", "ar", "ld"];
   for (const n of toolNames) file(path.join(tools, n), `fixture tool ${n}\n`, 0o755);
@@ -105,6 +136,7 @@ function fixture(label, scenario = {}) {
     return `100644 blob ${oid}\t${path.relative(source, p)}\0`; }).join("");
   const metadata = { version: 1, workspace_root: source, workspace_members: packages.filter(p => !p.source).map(p => p.id), packages, resolve: { nodes: [] } };
   const treeText = packages.map(p => `${p.name} v${p.version}${p.source ? "" : ` (${path.dirname(p.manifest_path)})`}|`).join("\n") + "\n";
+  const calls = { metadata: 0, tree: 0, builds: { a: 0, b: 0 } };
   const doubles = {
     resources: () => ({ disk: 100 * 1024 ** 3, memory: 16 * 1024 ** 3 }),
     execute(tool, argv, cwd, env) {
@@ -120,8 +152,10 @@ function fixture(label, scenario = {}) {
           "rev-parse --path-format=absolute --git-common-dir": path.join(parent, "git-control") };
         assert.ok(Object.hasOwn(map, key), key); out = map[key];
       } else if (name === "cargo" && argv[0] === "metadata") {
+        calls.metadata++;
         assert.ok(argv.includes("--filter-platform") && !argv.includes("--target")); assert.ok(argv.includes("--locked") && argv.includes("--offline")); out = JSON.stringify(metadata);
       } else if (name === "cargo" && argv[0] === "tree") {
+        calls.tree++;
         assert.equal(argv[argv.indexOf("--edges") + 1], "normal,build"); assert.equal(argv[argv.indexOf("--target") + 1], TARGET); out = treeText;
       } else if (["cargo", "rustc", "rustdoc"].includes(name) && argv[0] === "-vV") out = `${name} 1.97.1 (fixture)\nhost: ${TARGET}\nLLVM version: 22.1.6\n`;
       else if (name === "rustc" && argv[1] === "sysroot") out = path.join(tools, "sysroot");
@@ -136,6 +170,7 @@ function fixture(label, scenario = {}) {
       return Buffer.from(out);
     },
     spawnBuild(tool, argv, options, data) {
+      calls.builds[data.label]++;
       assert.ok(argv.includes("--locked") && argv.includes("--offline") && argv.includes("--release"));
       assert.equal(argv[argv.indexOf("--jobs") + 1], "1"); assert.equal(options.env.HOME, undefined);
       assert.equal(options.env.RUSTC, path.join(tools, "rustc")); assert.equal(options.env.RUSTDOC, path.join(tools, "rustdoc"));
@@ -172,9 +207,9 @@ function fixture(label, scenario = {}) {
           else {for(const a of d.artifacts)process.stdout.write(JSON.stringify(a)+'\\n');process.stdout.write(JSON.stringify({reason:'build-finished',success:d.fault!=='failed'})+(d.fault==='tail'?'':'\\n'));}process.exitCode=d.fault==='failed'?7:0;}`;
       return spawn(process.execPath, ["-e", script], options);
     },
-    async stage(name, ctx) { await scenario.stage?.(name, ctx, { source, tools, dep, parent }); },
+    async stage(name, ctx) { await scenario.stage?.(name, ctx, { source, tools, dep, parent, cachedOnly }); },
   };
-  return { args, doubles, source, tools, dep, parent, output, packages };
+  return { args, doubles, source, tools, dep, cachedOnly, parent, output, packages, calls };
 }
 async function badRun(f, pattern, more = () => {}) {
   let caught; try { await runFixtureEvidence(f.args, f.doubles); } catch (e) { caught = e; }
@@ -187,7 +222,9 @@ try {
   await check("GNU L archive/source and cargo-ok independent positive", async () => {
     const p = packageFixture("archive-positive"); const r = await verifyRegistryPackage(p);
     assert.equal(r.entries, 5); assert.equal(r.inventory.filter(x => x.kind === "file").length, 4);
-    assert.equal(r.marker.present, true); file(path.join(p.expanded, ".cargo-ok"), ""); assert.equal(verifyCargoOk(p.expanded).present, true);
+    assert.equal(r.marker.present, true); file(path.join(p.expanded, ".cargo-ok"), '{ "v" : 1 }\n');
+    const alternate = verifyCargoOk(p.expanded); assert.equal(alternate.present, true);
+    assert.notEqual(alternate.sha256, r.marker.sha256);
   });
   const archiveCases = [
     ["hash", p => p.checksum = "0".repeat(64), /checksum/],
@@ -196,6 +233,10 @@ try {
     ["extra-empty-dir", p => mkdirSync(path.join(p.expanded, "extra")), /Unexplained/],
     ["expanded-link", p => { unlinkSync(path.join(p.expanded, "src/lib.rs")); symlinkSync("/dev/null", path.join(p.expanded, "src/lib.rs")); }, /regular|symlink/],
     ["marker-size", p => file(path.join(p.expanded, ".cargo-ok"), "x".repeat(129)), /byte budget/],
+    ["marker-missing", p => unlinkSync(path.join(p.expanded, ".cargo-ok")), /Missing .cargo-ok/],
+    ["marker-empty", p => file(path.join(p.expanded, ".cargo-ok"), ""), /Empty .cargo-ok/],
+    ["marker-old", p => file(path.join(p.expanded, ".cargo-ok"), '{"v":0}\n'), /cargo-ok/],
+    ["marker-invalid", p => file(path.join(p.expanded, ".cargo-ok"), '{broken\n'), /cargo-ok/],
     ["marker-extra", p => file(path.join(p.expanded, ".cargo-ok"), '{"v":1,"x":2}'), /cargo-ok/],
     ["marker-duplicate", p => file(path.join(p.expanded, ".cargo-ok"), '{"v":1,"v":1}'), /cargo-ok/],
     ["duplicate", p => replace(p, [...p.entries, p.entries[0]]), /Duplicate/],
@@ -229,6 +270,65 @@ try {
       assert.throws(() => validateCallerEnv({ [key]: "DO-NOT-PRINT" }), e => e.message.includes(key) && !e.message.includes("DO-NOT-PRINT"));
     assert.throws(() => parseCli(f.args.map(x => x === f.source ? "relative" : x)), /absolute/);
   });
+  const markerCases = [
+    ["absent", p => unlinkSync(p), /Missing .cargo-ok/],
+    ["empty", p => file(p, ""), /Empty .cargo-ok/],
+    ["old", p => file(p, '{"v":0}\n'), /Unknown .cargo-ok/],
+    ["invalid", p => file(p, '{broken\n'), /Unknown .cargo-ok/],
+  ];
+  for (const cachedOnly of [false, true]) for (const [name, change, pattern] of markerCases)
+    await check(`pre-Cargo marker ${name}, ${cachedOnly ? "locked-unselected" : "selected"}`, async () => {
+      const f = fixture(`marker-${name}-${cachedOnly}`, { cachedOnly });
+      const expanded = cachedOnly ? f.cachedOnly.expanded : f.dep.expanded;
+      change(path.join(expanded, ".cargo-ok"));
+      const sentinel = path.join(f.parent, "sentinel"); file(sentinel, "keep before any probe");
+      const before = expandedState(expanded); const sourceBefore = expandedState(f.source);
+      await badRun(f, pattern, r => {
+        assert.equal(r.builds.a.started, false); assert.equal(r.builds.b.started, false);
+        assert.equal(r.failure.stage, "before-a"); assert.equal(r.fixturePassed, false);
+      });
+      assert.deepEqual(f.calls, { metadata: 0, tree: 0, builds: { a: 0, b: 0 } });
+      assert.deepEqual(expandedState(expanded), before); assert.deepEqual(expandedState(f.source), sourceBefore);
+      assert.equal(readFileSync(sentinel, "utf8"), "keep before any probe");
+    });
+  for (const [name, bytes] of [["compact", '{"v":1}'], ["whitespace", '{ "v" : 1 }\n']])
+    await check(`valid unpack marker ${name} retains ordinary resolution`, async () => {
+      const f = fixture(`marker-positive-${name}`, { cachedOnly: true });
+      for (const p of [f.dep.expanded, f.cachedOnly.expanded]) file(path.join(p, ".cargo-ok"), bytes);
+      const r = await runFixtureEvidence(f.args, f.doubles);
+      assert.equal(r.complete, false); assert.equal(r.fixturePassed, true);
+      assert.deepEqual(f.calls, { metadata: 5, tree: 5, builds: { a: 1, b: 1 } });
+      assert.equal(r.inputs.closure.cachedUnpackInputs.length, 2);
+    });
+  await check("unrelated locked missing archive does not require unpack inputs", async () => {
+    const f = fixture("unrelated-archive-missing", { missingUnrelatedArchive: true });
+    const r = await runFixtureEvidence(f.args, f.doubles);
+    assert.equal(r.fixturePassed, true); assert.equal(r.inputs.closure.cachedUnpackInputs.length, 1);
+  });
+  await check("marker invalidated by metadata refuses tree and both builds", async () => {
+    const f = fixture("marker-before-tree"); const old = f.doubles.execute; let changedState;
+    f.doubles.execute = (...args) => {
+      const out = old(...args);
+      if (path.basename(args[0]) === "cargo" && args[1][0] === "metadata") {
+        file(path.join(f.dep.expanded, ".cargo-ok"), ""); changedState = expandedState(f.dep.expanded);
+      }
+      return out;
+    };
+    await badRun(f, /Empty .cargo-ok/);
+    assert.deepEqual(f.calls, { metadata: 1, tree: 0, builds: { a: 0, b: 0 } });
+    assert.deepEqual(expandedState(f.dep.expanded), changedState);
+  });
+  await check("different valid marker after tree is drift, not source authority", async () => {
+    const f = fixture("marker-after-tree"); const old = f.doubles.execute;
+    f.doubles.execute = (...args) => {
+      const out = old(...args);
+      if (path.basename(args[0]) === "cargo" && args[1][0] === "tree")
+        file(path.join(f.dep.expanded, ".cargo-ok"), '{ "v" : 1 }\n');
+      return out;
+    };
+    await badRun(f, /Cached unpack input drift after Cargo tree/);
+    assert.deepEqual(f.calls, { metadata: 1, tree: 1, builds: { a: 0, b: 0 } });
+  });
   await check("full sequential orchestration positive; fixture NEVER native complete", async () => {
     const f = fixture("positive", { mode: 0o751 }); const sentinel = path.join(f.parent, "sentinel"); file(sentinel, "original before run");
     const r = await runFixtureEvidence(f.args, f.doubles, { AWS_SECRET_ACCESS_KEY: "not inherited" });
@@ -250,13 +350,31 @@ try {
     ["cache-config", f => file(path.join(path.dirname(path.dirname(path.dirname(path.dirname(f.dep.expanded)))), "config.toml"), "[source]\n"), /Cargo config/],
     ["expanded", f => file(path.join(f.dep.expanded, "src/lib.rs"), "// changed bytes!\n"), /size mismatch|bytes mismatch/],
     ["archive", f => { const b = readFileSync(f.dep.archive); b[10] ^= 1; file(f.dep.archive, b); }, /checksum/],
-    ["marker", f => file(path.join(f.dep.expanded, ".cargo-ok"), ""), /Input drift/],
+    ["marker", f => file(path.join(f.dep.expanded, ".cargo-ok"), '{ "v" : 1 }\n'), /Input drift/],
     ["host-lld", f => file(path.join(f.tools, "sysroot/lib/rustlib", TARGET, "bin/rust-lld"), "changed host linker", 0o755), /Input drift/],
   ];
   for (const [name, change, pattern] of driftCases) await check("real file recheck " + name, async () => {
     const f = fixture("drift-" + name, { stage(n, ctx, fields) { if (n === "after-a") change(fields); } });
     await badRun(f, pattern, r => { assert.equal(r.builds.a.exit, 0); assert.equal(r.builds.b.started, false); assert.ok(existsSync(path.join(f.output, "compiler-a"))); });
   });
+  await check("locked-unselected valid marker drift is retained across boundaries", async () => {
+    const f = fixture("unselected-marker-drift", { cachedOnly: true, stage(n, ctx, fields) {
+      if (n === "after-a") file(path.join(fields.cachedOnly.expanded, ".cargo-ok"), '{ "v" : 1 }\n');
+    } });
+    await badRun(f, /Input drift/, r => { assert.equal(r.builds.a.exit, 0); assert.equal(r.builds.b.started, false); });
+    assert.deepEqual(f.calls, { metadata: 2, tree: 2, builds: { a: 1, b: 0 } });
+  });
+  for (const [boundary, priorResolutions, b] of [["after-a", 1, 0], ["before-b", 2, 0], ["after-b", 3, 1], ["final", 4, 1]])
+    await check(`unpack marker guard reapplied at ${boundary}`, async () => {
+      let changedState; const f = fixture(`marker-boundary-${boundary}`, { stage(n, ctx, fields) {
+        if (n === boundary) {
+          file(path.join(fields.dep.expanded, ".cargo-ok"), ""); changedState = expandedState(fields.dep.expanded);
+        }
+      } });
+      await badRun(f, /Empty .cargo-ok/, r => assert.equal(r.failure.stage, boundary));
+      assert.deepEqual(f.calls, { metadata: priorResolutions, tree: priorResolutions, builds: { a: 1, b } });
+      assert.deepEqual(expandedState(f.dep.expanded), changedState);
+    });
   for (const [fault, pattern] of [["missing", /Missing shipped/], ["duplicate", /duplicate/], ["features", /features/], ["target", /target identity/],
     ["package", /outside selected/], ["escape", /illegal shipped/], ["fresh", /reused/], ["host-role", /not host output/], ["malformed", /Malformed/], ["tail", /Incomplete Cargo/],
     ["line", /line budget/], ["failed", /nonzero/], ["nonregular", /Illegal target release|regular/], ["unexpected-file", /Unexpected target release executable/]]) await check("process/observation " + fault, async () => {
@@ -348,6 +466,37 @@ try {
     const f = fixture("lease"); let tested = false;
     f.doubles.stage = async n => { if (n === "build-a") { await assert.rejects(() => runFixtureEvidence(f.args.map(x => x === f.output ? path.join(f.parent, "other-evidence") : x), f.doubles), /EEXIST/); tested = true; } };
     const r = await runFixtureEvidence(f.args, f.doubles); assert.equal(r.fixturePassed, true); assert.equal(tested, true);
+  });
+  await check("comparator first attachment closes when second acquisition fails", () => {
+    const a = path.join(root, "second-open-a"); file(a, "fixture bytes", 0o755);
+    const before = attachedDescriptors(a);
+    for (let i = 0; i < 16; i++) {
+      assert.throws(() => compareFiles(a, path.join(root, "missing-second-attachment"), 13), /ENOENT/);
+      assert.equal(attachedDescriptors(a), before);
+    }
+  });
+  await check("snapshot input closes when exclusive destination acquisition fails", async () => {
+    const f = fixture("snapshot-second-open");
+    const destination = path.join(f.output, "artifacts-a", NAMES[0]);
+    const input = path.join(f.output, "compiler-a", TARGET, "release", NAMES[0]);
+    const oldOpen = fs.openSync; let attempted = false;
+    // Test-only builtin seam, restored locally; no production CLI injection/export.
+    fs.openSync = (...args) => {
+      if (args[0] === destination && (args[1] & fs.constants.O_EXCL)) {
+        attempted = true; assert.equal(attachedDescriptors(input), 1);
+        throw new Error("fixture snapshot exclusive destination acquisition failure");
+      }
+      return oldOpen(...args);
+    };
+    syncBuiltinESMExports();
+    try {
+      await badRun(f, /destination acquisition failure/, r => {
+        assert.equal(r.failure.stage, "snapshot-a"); assert.equal(r.builds.b.started, false);
+        assert.ok(existsSync(path.join(f.output, "compiler-a")));
+      });
+    } finally { fs.openSync = oldOpen; syncBuiltinESMExports(); }
+    assert.equal(attempted, true); assert.equal(attachedDescriptors(input), 0);
+    assert.equal(existsSync(destination), false);
   });
   await check("independent comparator, forged hash equality, exact EOF and aliases", () => {
     const a = path.join(root, "bytes-a"), b = path.join(root, "bytes-b"), c = path.join(root, "bytes-c");

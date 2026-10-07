@@ -462,17 +462,27 @@ class CrateMatcher {
 }
 export function verifyCargoOk(root) {
   const p = path.join(root, ".cargo-ok");
-  if (!exists(p)) return { present: false };
-  const b = smallFile(p, 128);
-  if (b.length) {
-    let value;
-    try { value = JSON.parse(utf8.decode(b)); } catch { throw new Error("Unknown .cargo-ok content"); }
+  requireThat(exists(p), "Missing .cargo-ok unpack-completion marker");
+  const h = heldFile(p);
+  try {
+    requireThat(h.initial.size > 0, "Empty .cargo-ok unpack-completion marker");
+    requireThat(h.initial.size <= 128, ".cargo-ok byte budget exceeded");
+    const b = Buffer.alloc(h.initial.size);
+    let offset = 0;
+    while (offset < b.length) {
+      const n = readSync(h.fd, b, offset, b.length - offset, offset);
+      requireThat(n > 0, "Short .cargo-ok read"); offset += n;
+    }
+    let value; let text;
+    try { text = utf8.decode(b); value = JSON.parse(text); } catch { throw new Error("Unknown .cargo-ok content"); }
     requireThat(value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && value.v === 1,
       "Unknown .cargo-ok content");
     // JSON with duplicate properties is not closed metadata.
-    requireThat(/^\s*\{\s*"v"\s*:\s*1\s*\}\s*$/.test(utf8.decode(b)), "Noncanonical .cargo-ok metadata");
-  }
-  return { present: true, bytes: b.toString("base64"), ...hashFile(p) };
+    requireThat(/^\s*\{\s*"v"\s*:\s*1\s*\}\s*$/.test(text), "Noncanonical .cargo-ok metadata");
+    h.check();
+    return { present: true, bytes: b.toString("base64"), path: p, ...stamp(h.initial), sha256: digest(b),
+      blob: createHash("sha1").update(`blob ${b.length}\0`).update(b).digest("hex") };
+  } finally { h.close(); }
 }
 function expandedInventory(root, matcher) {
   const result = [];
@@ -596,19 +606,23 @@ export function resolveClosure(ctx) {
   // names in existing crates.io cache buckets; missing unrelated archives are not required.
   const cacheRoot = path.join(ctx.args["cargo-home"], "registry", "cache");
   const locked = parseLock(smallFile(path.join(ctx.args.source, "Cargo.lock"), 8 * 1024 ** 2));
-  if (exists(cacheRoot)) {
+  const guardCachedUnpackInputs = () => {
+    const records = [];
+    if (!exists(cacheRoot)) return records;
     checkAncestors(cacheRoot);
-    for (const bucket of readdirSync(cacheRoot).filter(n => /^index\.crates\.io-[0-9a-f]+$/.test(n))) {
+    for (const bucket of readdirSync(cacheRoot).filter(n => /^index\.crates\.io-[0-9a-f]+$/.test(n)).sort()) {
       checkAncestors(path.join(cacheRoot, bucket));
       for (const pkg of locked.filter(p => p.source)) {
         const archive = path.join(cacheRoot, bucket, `${pkg.name}-${pkg.version}.crate`);
         if (!exists(archive)) continue;
         const manifest = path.join(ctx.args["cargo-home"], "registry", "src", bucket, `${pkg.name}-${pkg.version}`, "Cargo.toml");
         requireThat(exists(manifest), "Locked cached manifest needs forbidden implicit expansion");
-        heldFile(manifest).close();
+        records.push({ archive, manifest: hashFile(manifest), marker: verifyCargoOk(path.dirname(manifest)) });
       }
     }
-  }
+    return records;
+  };
+  const cachedUnpackInputs = guardCachedUnpackInputs();
   const args = commonCargo(ctx);
   const metadataArgs = args.filter((_, i) => args[i] !== "--target" && args[i - 1] !== "--target");
   const raw = probe(ctx, ctx.args.cargo, ["metadata", "--format-version", "1", "--filter-platform", TARGET, ...metadataArgs]);
@@ -616,8 +630,10 @@ export function resolveClosure(ctx) {
   try { metadata = JSON.parse(utf8.decode(raw)); } catch { throw new Error("Malformed Cargo metadata"); }
   requireThat(metadata.version === 1 && metadata.workspace_root === ctx.args.source && Array.isArray(metadata.packages) && metadata.resolve,
     "Unexpected Cargo metadata/workspace");
+  requireThat(same(cachedUnpackInputs, guardCachedUnpackInputs()), "Cached unpack input drift before Cargo tree");
   const tree = textProbe(ctx, ctx.args.cargo, ["tree", ...args, ...PACKAGES.flatMap(p => ["-p", p]),
     "--edges", "normal,build", "--prefix", "none", "--format", "{p}|{f}"]);
+  requireThat(same(cachedUnpackInputs, guardCachedUnpackInputs()), "Cached unpack input drift after Cargo tree");
   // Cargo, not a home-grown cfg parser, resolves target-specific normal/build edges and features.
   const selected = parseTree(tree, metadata);
   const lock = locked;
@@ -658,7 +674,7 @@ export function resolveClosure(ctx) {
   const ledger = selected.find(p => p.name === "sunrise-edge-ledger");
   requireThat(ledger && (ledger.features.default ?? []).length === 0 && ledger.featureSets.every(f => !f.includes("usb-hid")), "Unexpected Ledger USB/default selection");
   requireThat(selected.some(p => p.name === "runtime-postgres") && selected.some(p => p.name === "vcpkg"), "Selected graph lost actual PG/native build dependencies");
-  return { selected, shipped, lockedGraph: lock, metadataHash: digest(raw), tree, recipe: args };
+  return { selected, shipped, lockedGraph: lock, cachedUnpackInputs, metadataHash: digest(raw), tree, recipe: args };
 }
 
 class RunOwner {
@@ -1028,21 +1044,23 @@ async function build(ctx, label, compiler, temp, record) {
 
 export function compareFiles(a, b, size) {
   const x = heldFile(a, { executable: true, singleLink: true });
-  const y = heldFile(b, { executable: true, singleLink: true });
   try {
-    requireThat(x.initial.size === size && y.initial.size === size &&
-      !(x.initial.dev === y.initial.dev && x.initial.ino === y.initial.ino), "Byte comparator attachment/size alias");
-    const xb = Buffer.alloc(64 * 1024); const yb = Buffer.alloc(64 * 1024);
-    let offset = 0;
-    while (offset < size) {
-      const count = Math.min(xb.length, size - offset);
-      requireThat(readSync(x.fd, xb, 0, count, offset) === count && readSync(y.fd, yb, 0, count, offset) === count,
-        "Byte comparator premature EOF");
-      requireThat(xb.subarray(0, count).equals(yb.subarray(0, count)), "Full byte comparison mismatch"); offset += count;
-    }
-    requireThat(readSync(x.fd, xb, 0, 1, offset) === 0 && readSync(y.fd, yb, 0, 1, offset) === 0, "Byte comparator trailing data");
-    x.check(); y.check(); return { bytes: offset, equal: true };
-  } finally { x.close(); y.close(); }
+    const y = heldFile(b, { executable: true, singleLink: true });
+    try {
+      requireThat(x.initial.size === size && y.initial.size === size &&
+        !(x.initial.dev === y.initial.dev && x.initial.ino === y.initial.ino), "Byte comparator attachment/size alias");
+      const xb = Buffer.alloc(64 * 1024); const yb = Buffer.alloc(64 * 1024);
+      let offset = 0;
+      while (offset < size) {
+        const count = Math.min(xb.length, size - offset);
+        requireThat(readSync(x.fd, xb, 0, count, offset) === count && readSync(y.fd, yb, 0, count, offset) === count,
+          "Byte comparator premature EOF");
+        requireThat(xb.subarray(0, count).equals(yb.subarray(0, count)), "Full byte comparison mismatch"); offset += count;
+      }
+      requireThat(readSync(x.fd, xb, 0, 1, offset) === 0 && readSync(y.fd, yb, 0, 1, offset) === 0, "Byte comparator trailing data");
+      x.check(); y.check(); return { bytes: offset, equal: true };
+    } finally { y.close(); }
+  } finally { x.close(); }
 }
 function snapshots(ctx, label, compiler, temp, observations, record) {
   const dir = ctx.owner.directory(`artifacts-${label}`); record.snapshotDirectory = dir;
@@ -1058,16 +1076,18 @@ function snapshots(ctx, label, compiler, temp, observations, record) {
     const before = hashFile(src, { executable: true });
     const input = heldFile(src, { executable: true });
     const destination = path.join(dir.path, name);
-    const fd = openSync(destination, F.O_WRONLY | F.O_CREAT | F.O_EXCL | F.O_NOFOLLOW, before.mode);
     try {
-      const buffer = Buffer.alloc(64 * 1024);
-      for (let offset = 0; offset < before.size;) {
-        const n = readSync(input.fd, buffer, 0, Math.min(buffer.length, before.size - offset), offset);
-        requireThat(n > 0, "Snapshot premature EOF"); writeAll(fd, buffer.subarray(0, n)); offset += n;
-      }
-      fchmodSync(fd, before.mode); // Preserve actual mode, never normalize to 0755.
-      ctx.sync(fd, "artifact"); input.check();
-    } finally { closeSync(fd); input.close(); }
+      const fd = openSync(destination, F.O_WRONLY | F.O_CREAT | F.O_EXCL | F.O_NOFOLLOW, before.mode);
+      try {
+        const buffer = Buffer.alloc(64 * 1024);
+        for (let offset = 0; offset < before.size;) {
+          const n = readSync(input.fd, buffer, 0, Math.min(buffer.length, before.size - offset), offset);
+          requireThat(n > 0, "Snapshot premature EOF"); writeAll(fd, buffer.subarray(0, n)); offset += n;
+        }
+        fchmodSync(fd, before.mode); // Preserve actual mode, never normalize to 0755.
+        ctx.sync(fd, "artifact"); input.check();
+      } finally { closeSync(fd); }
+    } finally { input.close(); }
     if (ctx.fixture) ctx.doubles.afterCopy?.({ label, name, src, destination });
     const after = hashFile(src, { executable: true });
     const saved = hashFile(destination, { executable: true, singleLink: true });
