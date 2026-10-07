@@ -714,7 +714,9 @@ fn process_commit_child() {
     };
     let store: SqliteDurableStore = SqliteDurableStore::open_existing(&path, namespace()).unwrap();
     store.engine.backend().on_commit(boundary, move || {
-        fs::write(marker, stage.as_bytes()).unwrap();
+        let staged_marker: PathBuf = marker.with_extension("boundary-pending");
+        fs::write(&staged_marker, stage.as_bytes()).unwrap();
+        fs::rename(&staged_marker, &marker).unwrap();
         loop {
             std::thread::park();
         }
