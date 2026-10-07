@@ -329,12 +329,15 @@ explicitly approves a documented scope change.
   and historical claimant paths. [The defining owners](docs/architecture/signing-preparation.md)
   retain immutable trust/content snapshots and independently verify returned
   signatures through the existing external-signer boundary. Development CLI
-  callers are migrated; no provider driver or fallback is added. The initial
-  SDK/CLI 491-test run predates final source corrections; the strict attempt
-  failed on R1's unused import, now incorporated as an independently approved
-  correction. Frozen final tests, strict Clippy, complete source review, actual
-  owning recurrence, full required acceptance and CI remain pending. Operator
-  controls compiled, not executed. Actual custody and trusted content review
+  callers are migrated; no provider driver or fallback is added. Exact functional
+  `85a65745` passed all-target/all-feature SDK/CLI 491/0/0 ignored and strict
+  Clippy without warning exclusions at 04:56 UTC. A fresh complete Codex fallback
+  source review approved all 31 three-dot paths, including R1's independently
+  approved import correction. The approved R1 dependency was then merged
+  normally with an identical tree. Final status-delta review and exact-head
+  checks, actual owning recurrence, full required acceptance and CI remain
+  pending. Operator controls compiled, not executed. Initial failed strict and
+  diagnostic attempts remain attributable, not passed. Actual custody and trusted content review
   remain separately open, with no provider selected or deployed; M2 stays open.
 - [ ] **M3 — selected-profile durable state:** atomic object/state/nonce/receipt/
   outbox, bounded indexed delivery, full-read revision/ABA assertions, restart,
