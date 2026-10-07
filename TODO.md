@@ -330,6 +330,17 @@ explicitly approves a documented scope change.
   backup, isolated restore with exact history/receipt/blob checks and fresh
   fencing; migration/upgrade and safe rollback/stop rehearsal. Use PITR/WAL and
   PG-specific exercises only for a PG profile; do not impose PG on lightweight stores.
+  Accepted [DR-0212](docs/architecture/decisions/0212-offline-business-closure-recovery.md)
+  reuses existing compiled export/saved verification/fresh inactive import
+  commands for one local business-closure rehearsal. Extend the existing genuine
+  signed fixture with both original source database paths unavailable throughout
+  verification/import/resume and with second-file creation failure preserving
+  inactive residue; no new runtime/serving authority or duplicate fixture.
+  Implementation and owning execution remain pending. Authenticated logical
+  generations are preserved; writer-fence/source-instance identity is not copied.
+  Arbitrary crash continuation, published checkpoint/state-root authority,
+  encrypted off-host backup, old-writer exclusion and general M4 qualification
+  remain open.
 - [ ] **M5 — production ingress and operations:** actual auth/TLS PKI and
   rotation, every exposed family's authentication/authorization, bounded retry/
   backpressure, request and capacity budgets, monitoring/alerts and incident
