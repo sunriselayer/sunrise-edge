@@ -264,7 +264,15 @@ and cross-phase criteria; it does not shorten them.
   bound the final 535-line report and every 29-path manifest row. DR-0219 now
   records narrow no-follow/nonblocking opening and actual pending/incomplete
   peer controls before corrective source work. Neither finding is closed by
-  design acceptance; corrected source and genuine owning execution are pending.
+  design acceptance. The corrective source now uses safe Unix no-follow and
+  nonblocking open with every attachment stamp/cap retained, plus deterministic
+  regular/symlink/FIFO controls for both attachment roles in bounded kill/reap
+  test children. The actual TLS oracle clamps only its unread client's receive
+  buffer, requires real output Pending and bounded first-owner end before a
+  complete next request, then proves the advertised 8 MiB body is incomplete;
+  a separate reading-peer control requires full delivery. No Cargo/runtime
+  execution or new source approval is inferred; the frozen blocked review and
+  prior author artifacts remain unchanged for attribution.
   Owning execution, independent complete-source approval, final Cargo
   resolution/dependency decision and complete integration gates remain open.
   Parent advisory review identified RUSTSEC-2026-0285 on locked Rustls 0.23.43

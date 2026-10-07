@@ -30,7 +30,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpSocket, TcpStream},
     sync::{Notify, oneshot},
     task::JoinHandle,
     time::{sleep, timeout},
@@ -38,11 +38,25 @@ use tokio::{
 use tokio_rustls::{TlsAcceptor, TlsConnector, client::TlsStream};
 
 const BOUND: Duration = Duration::from_secs(5);
+const LARGE_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Default)]
+struct TransportObservation {
+    empty_flushes: AtomicUsize,
+    pending_output: AtomicUsize,
+    finished: AtomicUsize,
+    errors: AtomicUsize,
+}
 
 struct ObservedFlush<S> {
     io: S,
     wrote: bool,
-    empty_flushes: Arc<AtomicUsize>,
+    observed: Arc<TransportObservation>,
+}
+impl<S> Drop for ObservedFlush<S> {
+    fn drop(&mut self) {
+        self.observed.finished.fetch_add(1, Ordering::SeqCst);
+    }
 }
 impl<S: AsyncRead + Unpin> AsyncRead for ObservedFlush<S> {
     fn poll_read(
@@ -50,7 +64,12 @@ impl<S: AsyncRead + Unpin> AsyncRead for ObservedFlush<S> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().io).poll_read(cx, buf)
+        let this: &mut Self = self.get_mut();
+        let result: Poll<io::Result<()>> = Pin::new(&mut this.io).poll_read(cx, buf);
+        if matches!(result, Poll::Ready(Err(_))) {
+            this.observed.errors.fetch_add(1, Ordering::SeqCst);
+        }
+        result
     }
 }
 impl<S: AsyncWrite + Unpin> AsyncWrite for ObservedFlush<S> {
@@ -59,23 +78,36 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for ObservedFlush<S> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let this = self.get_mut();
+        let this: &mut Self = self.get_mut();
         let result: Poll<io::Result<usize>> = Pin::new(&mut this.io).poll_write(cx, buf);
         if matches!(result, Poll::Ready(Ok(count)) if count > 0) {
             this.wrote = true;
+        } else if result.is_pending() {
+            this.observed.pending_output.fetch_add(1, Ordering::SeqCst);
+        } else if matches!(result, Poll::Ready(Err(_))) {
+            this.observed.errors.fetch_add(1, Ordering::SeqCst);
         }
         result
     }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let this = self.get_mut();
+        let this: &mut Self = self.get_mut();
         let result: Poll<io::Result<()>> = Pin::new(&mut this.io).poll_flush(cx);
         if !this.wrote && matches!(result, Poll::Ready(Ok(()))) {
-            this.empty_flushes.fetch_add(1, Ordering::SeqCst);
+            this.observed.empty_flushes.fetch_add(1, Ordering::SeqCst);
+        } else if result.is_pending() {
+            this.observed.pending_output.fetch_add(1, Ordering::SeqCst);
+        } else if matches!(result, Poll::Ready(Err(_))) {
+            this.observed.errors.fetch_add(1, Ordering::SeqCst);
         }
         result
     }
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().io).poll_shutdown(cx)
+        let this: &mut Self = self.get_mut();
+        let result: Poll<io::Result<()>> = Pin::new(&mut this.io).poll_shutdown(cx);
+        if matches!(result, Poll::Ready(Err(_))) {
+            this.observed.errors.fetch_add(1, Ordering::SeqCst);
+        }
+        result
     }
 }
 
@@ -83,7 +115,7 @@ struct Server {
     address: SocketAddr,
     connector: TlsConnector,
     attempts: Arc<AtomicUsize>,
-    empty_flushes: Arc<AtomicUsize>,
+    observed: Arc<TransportObservation>,
     shutdown: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<io::Result<()>>>,
 }
@@ -124,9 +156,9 @@ impl Server {
         let listener: TcpListener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address: SocketAddr = listener.local_addr().unwrap();
         let attempts: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
-        let empty_flushes: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+        let observed: Arc<TransportObservation> = Arc::new(TransportObservation::default());
         let upgrade_attempts: Arc<AtomicUsize> = Arc::clone(&attempts);
-        let upgrade_flushes: Arc<AtomicUsize> = Arc::clone(&empty_flushes);
+        let upgrade_observed: Arc<TransportObservation> = Arc::clone(&observed);
         let (sender, receiver): (oneshot::Sender<()>, oneshot::Receiver<()>) = oneshot::channel();
         let task: JoinHandle<io::Result<()>> = tokio::spawn(serve_with_stream_upgrade(
             listener,
@@ -135,7 +167,7 @@ impl Server {
             move |stream: TcpStream| {
                 upgrade_attempts.fetch_add(1, Ordering::SeqCst);
                 let acceptor: TlsAcceptor = acceptor.clone();
-                let empty_flushes: Arc<AtomicUsize> = Arc::clone(&upgrade_flushes);
+                let observed: Arc<TransportObservation> = Arc::clone(&upgrade_observed);
                 async move {
                     let io: tokio_rustls::server::TlsStream<TcpStream> =
                         timeout(handshake, acceptor.accept(stream))
@@ -143,11 +175,13 @@ impl Server {
                             .map_err(|_| {
                                 io::Error::new(io::ErrorKind::TimedOut, "test handshake deadline")
                             })??;
-                    Ok::<ObservedFlush<_>, io::Error>(ObservedFlush {
-                        io,
-                        wrote: false,
-                        empty_flushes,
-                    })
+                    Ok::<ObservedFlush<tokio_rustls::server::TlsStream<TcpStream>>, io::Error>(
+                        ObservedFlush {
+                            io,
+                            wrote: false,
+                            observed,
+                        },
+                    )
                 }
             },
             async move {
@@ -158,7 +192,7 @@ impl Server {
             address,
             connector,
             attempts,
-            empty_flushes,
+            observed,
             shutdown: Some(sender),
             task: Some(task),
         }
@@ -237,7 +271,7 @@ async fn real_tls_get_and_post_empty_flushes_do_not_time_admitted_application() 
             tokio::select! {
             result = &mut request => panic!("request completed before admitted work: {result:?}"),
             () = probe.started.notified() => {
-                wait_count(&server.empty_flushes, 1).await;
+                wait_count(&server.observed.empty_flushes, 1).await;
                 request.await
             },
             }
@@ -374,17 +408,15 @@ async fn slow_drip_handshake_cannot_extend_absolute_deadline() {
     assert_eq!(routes.load(Ordering::SeqCst), 1);
     server.stop().await;
 }
-#[tokio::test]
-async fn encrypted_output_backpressure_releases_the_connection_permit() {
-    let routes: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
-    let large: Arc<AtomicUsize> = Arc::clone(&routes);
-    let small: Arc<AtomicUsize> = Arc::clone(&routes);
-    let app: Router = Router::new()
+fn large_response_router(routes: &Arc<AtomicUsize>) -> Router {
+    let large: Arc<AtomicUsize> = Arc::clone(routes);
+    let small: Arc<AtomicUsize> = Arc::clone(routes);
+    Router::new()
         .route(
             "/large",
             get(move || {
                 large.fetch_add(1, Ordering::SeqCst);
-                async { Body::from(vec![0x67; 8 * 1024 * 1024]) }
+                async { Body::from(vec![0x67; LARGE_BODY_BYTES]) }
             }),
         )
         .route(
@@ -393,20 +425,110 @@ async fn encrypted_output_backpressure_releases_the_connection_permit() {
                 small.fetch_add(1, Ordering::SeqCst);
                 async { "ok" }
             }),
-        );
+        )
+}
+
+fn large_response_body(received: &[u8]) -> &[u8] {
+    assert!(received.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    let header_end: usize = received
+        .windows(4)
+        .position(|bytes| bytes == b"\r\n\r\n")
+        .expect("actual response must advertise its complete HTTP header");
+    assert!(header_end <= 64 * 1024);
+    let headers: &str = std::str::from_utf8(&received[..header_end]).unwrap();
+    let mut length: Option<usize> = None;
+    for line in headers.split("\r\n").skip(1) {
+        let (name, value): (&str, &str) = line.split_once(':').unwrap();
+        assert!(!name.eq_ignore_ascii_case("transfer-encoding"));
+        if name.eq_ignore_ascii_case("content-length") {
+            assert!(length.is_none(), "no duplicate advertised body length");
+            length = Some(value.trim().parse::<usize>().unwrap());
+        }
+    }
+    assert_eq!(length, Some(LARGE_BODY_BYTES));
+    &received[header_end + 4..]
+}
+
+#[tokio::test]
+async fn real_tls_large_response_completes_when_peer_reads() {
+    let routes: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let app: Router = large_response_router(&routes);
     let server: Server = Server::start(app, policy(), Duration::from_secs(1)).await;
-    let mut blocked: TlsStream<TcpStream> =
-        timeout(BOUND, server.connect()).await.unwrap().unwrap();
-    blocked
-        .write_all(b"GET /large HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .await
-        .unwrap();
-    blocked.flush().await.unwrap();
+    let received: Vec<u8> = server.request("GET", "/large", b"").await;
+    let body: &[u8] = large_response_body(&received);
+    assert_eq!(body.len(), LARGE_BODY_BYTES);
+    assert!(body.iter().all(|byte| *byte == 0x67));
+    assert_eq!(routes.load(Ordering::SeqCst), 1);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn encrypted_output_backpressure_releases_the_connection_permit() {
+    let routes: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let app: Router = large_response_router(&routes);
+    let server: Server = Server::start(app, policy(), Duration::from_secs(1)).await;
+    let mut blocked: TlsStream<TcpStream> = timeout(BOUND, async {
+        // Only this unread client's socket is clamped, before connecting.
+        // Linux returns the doubled bookkeeping size; require the actual cap.
+        let receive_bytes: u32 = 16 * 1024;
+        let socket: TcpSocket = TcpSocket::new_v4().unwrap();
+        socket.set_recv_buffer_size(receive_bytes).unwrap();
+        assert!(socket.recv_buffer_size().unwrap() <= 2 * receive_bytes);
+        let stream: TcpStream = socket.connect(server.address).await.unwrap();
+        let mut tls: TlsStream<TcpStream> = server
+            .connector
+            .connect(ServerName::try_from("localhost").unwrap(), stream)
+            .await
+            .unwrap();
+        tls.write_all(b"GET /large HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        tls.flush().await.unwrap();
+        tls
+    })
+    .await
+    .unwrap();
     wait_count(&routes, 1).await;
-    // Keep the actual TLS peer alive but do not consume encrypted response.
-    sleep(Duration::from_millis(750)).await;
-    assert!(server.request("GET", "/ok", b"").await.ends_with(b"ok"));
+    // Poll::Pending comes from real encrypted write/flush, not a synthetic
+    // writer or a sleep. Only the first admitted connection exists here.
+    wait_count(&server.observed.pending_output, 1).await;
+    wait_count(&server.observed.finished, 1).await;
+    assert_eq!(server.attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(server.observed.finished.load(Ordering::SeqCst), 1);
+    assert_eq!(server.observed.errors.load(Ordering::SeqCst), 0);
+    assert_eq!(routes.load(Ordering::SeqCst), 1);
+    // The first peer is still alive and unread while the one-permit owner
+    // recovers and a new ordinary client receives its complete result.
+    let recovered: Vec<u8> = server.request("GET", "/ok", b"").await;
+    assert!(recovered.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert!(recovered.ends_with(b"\r\n\r\nok"));
+    assert_eq!(server.attempts.load(Ordering::SeqCst), 2);
     assert_eq!(routes.load(Ordering::SeqCst), 2);
+
+    // Drain only after recovery. EOF (including missing TLS close-notify)
+    // must leave the actual advertised body incomplete, so ordinary complete
+    // buffering cannot explain the first owner's end. A read timeout fails.
+    let mut received: Vec<u8> = Vec::new();
+    let received_cap: usize = LARGE_BODY_BYTES + 64 * 1024;
+    let result: io::Result<usize> = timeout(
+        BOUND,
+        (&mut blocked)
+            .take((received_cap as u64) + 1)
+            .read_to_end(&mut received),
+    )
+    .await
+    .unwrap();
+    if let Err(error) = result {
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    }
+    assert!(received.len() <= received_cap);
+    let body: &[u8] = large_response_body(&received);
+    assert!(!body.is_empty(), "real encrypted body progress is required");
+    assert!(
+        body.len() < LARGE_BODY_BYTES,
+        "complete delivery is not timeout evidence"
+    );
+    assert!(body.iter().all(|byte| *byte == 0x67));
     drop(blocked);
     server.stop().await;
 }

@@ -33,6 +33,9 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sig
 tokio-rustls.workspace = true
 validator-set.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 canonical-encoding.workspace = true
 abi.workspace = true

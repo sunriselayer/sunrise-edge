@@ -9,9 +9,9 @@ use rustls::{
 use std::{error::Error, fmt, io, path::PathBuf, sync::Arc, time::Duration};
 #[cfg(unix)]
 use std::{
-    fs::{self, File, Metadata},
+    fs::{self, File, Metadata, OpenOptions},
     io::Read,
-    os::unix::fs::MetadataExt,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
 };
 use tokio::net::TcpStream;
@@ -161,11 +161,32 @@ impl Attachment {
 
 #[cfg(unix)]
 fn read_attached(path: &Path, private: bool) -> Result<Vec<u8>, NativeTlsError> {
-    let before: Attachment = Attachment::observe(
+    let before: Attachment = observe_attachment(path, private)?;
+    read_observed_attachment(path, private, before)
+}
+
+#[cfg(unix)]
+fn observe_attachment(path: &Path, private: bool) -> Result<Attachment, NativeTlsError> {
+    Attachment::observe(
         &fs::symlink_metadata(path).map_err(|_| NativeTlsError::FileUnavailable)?,
         private,
-    )?;
-    let file: File = File::open(path).map_err(|_| NativeTlsError::FileUnavailable)?;
+    )
+}
+
+#[cfg(unix)]
+fn read_observed_attachment(
+    path: &Path,
+    private: bool,
+    before: Attachment,
+) -> Result<Vec<u8>, NativeTlsError> {
+    // Reject a substituted final symlink at open. A substituted FIFO opens
+    // without waiting for a writer, then refuses at the held-type check.
+    // Parent components and device-side effects are not isolated by these flags.
+    let file: File = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| NativeTlsError::FileUnavailable)?;
     let opened: Attachment = Attachment::observe(
         &file
             .metadata()
@@ -222,7 +243,9 @@ mod tests {
         fs::OpenOptions,
         io::Write,
         os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink},
+        process::{Child, Command, ExitStatus, Stdio},
         sync::atomic::{AtomicU64, Ordering},
+        time::Instant,
     };
     static NEXT: AtomicU64 = AtomicU64::new(0);
     struct Files(PathBuf);
@@ -279,6 +302,130 @@ mod tests {
             Ok(_) => panic!("invalid TLS configuration accepted"),
         }
     }
+
+    // Only the exact owned mkfifo or this one exact libtest case is launched.
+    // The worker launches no descendants; a blocking-open regression is killed
+    // and reaped before the parent fails, rather than leaking a blocked thread.
+    struct RefusalChild(Child);
+    impl RefusalChild {
+        fn finish(mut self) -> (ExitStatus, Vec<u8>) {
+            let deadline: Instant = Instant::now() + Duration::from_secs(3);
+            let status: ExitStatus = loop {
+                if let Some(status) = self.0.try_wait().unwrap() {
+                    break status;
+                }
+                if Instant::now() >= deadline {
+                    self.0.kill().unwrap();
+                    let status: ExitStatus = self.0.wait().unwrap();
+                    panic!("attachment refusal child exceeded its bound; reaped {status}");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            let mut output: Vec<u8> = Vec::new();
+            if let Some(stdout) = self.0.stdout.take() {
+                stdout.take(8 * 1024 + 1).read_to_end(&mut output).unwrap();
+            }
+            assert!(output.len() <= 8 * 1024, "bounded child output exceeded");
+            (status, output)
+        }
+    }
+    impl Drop for RefusalChild {
+        fn drop(&mut self) {
+            if !matches!(self.0.try_wait(), Ok(Some(_))) {
+                let _killed: io::Result<()> = self.0.kill();
+                let _reaped: io::Result<ExitStatus> = self.0.wait();
+            }
+        }
+    }
+
+    #[test]
+    fn observed_attachment_replacements_refuse_without_blocking() {
+        const CASE: &str = "SUNRISE_NATIVE_TLS_ATTACHMENT_CASE";
+        const ROOT: &str = "SUNRISE_NATIVE_TLS_ATTACHMENT_ROOT";
+        const SENTINEL: &[u8] = b"unchanged bounded attachment";
+        if let Some(case) = std::env::var_os(CASE) {
+            let case: &str = case.to_str().unwrap();
+            let (role, replacement): (&str, &str) = case.split_once(':').unwrap();
+            let private: bool = match role {
+                "key" => true,
+                "certificate" => false,
+                _ => panic!("unknown attachment role"),
+            };
+            assert!(matches!(replacement, "regular" | "symlink" | "fifo"));
+            let root: PathBuf = PathBuf::from(std::env::var_os(ROOT).unwrap());
+            let path: PathBuf = root.join("attachment");
+            let before: Attachment = observe_attachment(&path, private).unwrap();
+            match replacement {
+                "regular" => {}
+                "symlink" => {
+                    fs::remove_file(&path).unwrap();
+                    symlink(root.join("target"), &path).unwrap();
+                }
+                "fifo" => fs::rename(root.join("fifo"), &path).unwrap(),
+                _ => unreachable!(),
+            }
+            let result: Result<Vec<u8>, NativeTlsError> =
+                read_observed_attachment(&path, private, before);
+            match replacement {
+                "regular" => assert_eq!(result.unwrap(), SENTINEL),
+                "symlink" => assert_eq!(result.unwrap_err(), NativeTlsError::FileUnavailable),
+                "fifo" => assert_eq!(result.unwrap_err(), NativeTlsError::NotRegular),
+                _ => unreachable!(),
+            }
+            println!("bounded attachment case completed: {case}");
+            return;
+        }
+        for role in ["certificate", "key"] {
+            for replacement in ["regular", "symlink", "fifo"] {
+                let files: Files = Files::new();
+                let mode: u32 = if role == "key" { 0o600 } else { 0o644 };
+                files.file("attachment", SENTINEL, mode);
+                files.file("target", b"different regular target", mode);
+                if replacement == "fifo" {
+                    let child: Child = Command::new("/usr/bin/mkfifo")
+                        .args(["-m", "600"])
+                        .arg(files.0.join("fifo"))
+                        .env_clear()
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .unwrap();
+                    let (status, output): (ExitStatus, Vec<u8>) = RefusalChild(child).finish();
+                    assert!(status.success(), "owned mkfifo failed: {status}");
+                    assert!(output.is_empty());
+                }
+                let case: String = format!("{role}:{replacement}");
+                let child: Child = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "native_tls::tests::observed_attachment_replacements_refuse_without_blocking",
+                        "--test-threads=1",
+                        "--nocapture",
+                    ])
+                    .env_clear()
+                    .env(CASE, &case)
+                    .env(ROOT, &files.0)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap();
+                let (status, output): (ExitStatus, Vec<u8>) = RefusalChild(child).finish();
+                assert!(
+                    status.success(),
+                    "attachment child failed for {case}: {status}"
+                );
+                let output: String = String::from_utf8(output).unwrap();
+                assert!(output.contains(&format!("bounded attachment case completed: {case}")));
+                assert!(
+                    output.contains("1 passed; 0 failed"),
+                    "exact worker must run"
+                );
+            }
+        }
+    }
+
     #[test]
     fn closed_options_and_pair_counts_refuse_without_file_io() {
         let mut empty: FlagSet =

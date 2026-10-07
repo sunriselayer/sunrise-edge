@@ -2021,6 +2021,7 @@ dependencies = [
  "execution",
  "fees",
  "hashing",
+ "libc",
  "native-http",
  "node-core",
  "node-wire",
