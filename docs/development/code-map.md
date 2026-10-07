@@ -195,6 +195,12 @@ contracts; they do not define protocol rules.
   immutable transaction, local/paid execution, publication, registration and
   historical claim owners. Their actual CLI consumers use the same paths;
   mechanical signature verification is not custody or human-review authority.
+- [Ordered local signature checks](../architecture/decisions/0215-ordered-local-signature-verification.md)
+  belong to the actual [ordered engine](../../crates/node-core/src/ordered_economics/engine.rs),
+  using the existing consensus verifier and invocation-bound local identity.
+  [Genuine fixture controls](../../crates/node-core/src/ordered_economics/tests/local_signatures.rs)
+  distinguish fresh, retained, unsigned-capacity and justified-prefix paths;
+  neither a valid returned signature nor historical replay proves protected custody.
 - [Replacement tests](../../crates/node-core/src/ordered_economics/tests/causal_placement/control_reconstruction/frozen_completion/successor_replacement.rs)
   own the real registration/Seal/activation and retired-owner distinction.
   [Process refusal tests](../../apps/operator/tests/successor_host_process_refusals.rs)

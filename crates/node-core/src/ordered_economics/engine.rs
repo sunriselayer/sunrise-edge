@@ -3314,7 +3314,8 @@ where
         return propose_causal(gate, store, context, env, candidate, signer);
     }
     gate.require_live(store, context, env.policy.domain())?;
-    gate.require_local_signer(store, signer.validator_id())?;
+    let local_validator: protocol_types::ValidatorId = signer.validator_id();
+    gate.require_local_signer(store, local_validator)?;
     let loaded = load_state(store, context, env)?;
     let mut profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     fence_policy(store, context, env, &mut profile_reads)?;
@@ -3355,10 +3356,30 @@ where
         context,
         env,
         proposal.view,
-        signer.validator_id(),
+        local_validator,
         digest,
     )?;
     if let RetainedIdentity::Exact(retained_proposal) = retained {
+        if retained_proposal.leader != local_validator {
+            return Err(stop("retained ordered proposal signer differs"));
+        }
+        env.policy
+            .engine()
+            .verify_proposal(
+                &retained_proposal,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
+            )
+            .map_err(consensus_to_node)?;
+        let retained_digest: Digest32 = env
+            .policy
+            .engine()
+            .proposal_digest(&retained_proposal)
+            .map_err(consensus_to_node)?;
+        if retained_digest != digest {
+            return Err(stop("retained ordered proposal digest differs"));
+        }
         // Exact repeated output: nothing is rewritten, no revision bumped.
         return Ok(OrderedProposal {
             proposal: retained_proposal,
@@ -3366,6 +3387,18 @@ where
         });
     }
 
+    if proposal.leader != local_validator {
+        return Err(stop("produced ordered proposal signer differs"));
+    }
+    env.policy
+        .engine()
+        .verify_proposal(
+            &proposal,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
+        .map_err(consensus_to_node)?;
     let record = identity::LeaderProposalRecord {
         view: proposal.view,
         leader: proposal.leader,
@@ -3513,7 +3546,8 @@ where
         loaded = load_state(store, context, env)?;
     }
     gate.require_live(store, context, env.policy.domain())?;
-    gate.require_local_signer(store, signer.validator_id())?;
+    let local_validator: protocol_types::ValidatorId = signer.validator_id();
+    gate.require_local_signer(store, local_validator)?;
     let transactions: Vec<Digest32> = transactions_for(&loaded.state, preliminary)?;
     let probe: CapacityProbeSigner<'_, C> = CapacityProbeSigner(signer);
     let preview: ConsensusProposal = env
@@ -3521,6 +3555,9 @@ where
         .engine()
         .propose(&loaded.state, transactions.clone(), &probe)
         .map_err(consensus_to_node)?;
+    if preview.leader != local_validator {
+        return Err(stop("ordered proposal capacity probe signer differs"));
+    }
     let digest: Digest32 = env
         .policy
         .engine()
@@ -3602,7 +3639,10 @@ where
         .map_err(consensus_to_node)?;
     let mut comparable: ConsensusProposal = proposal.clone();
     comparable.signature = preview.signature.clone();
-    if comparable != preview || proposal.signature.len() != preview.signature.len() {
+    if proposal.leader != local_validator
+        || comparable != preview
+        || proposal.signature.len() != preview.signature.len()
+    {
         return Err(stop("ordered proposal differs from capacity probe"));
     }
     let digest: Digest32 = env
@@ -3740,7 +3780,8 @@ where
     }
     require_seal_signing_capability(gate, store, proposal.candidate.as_ref(), env)?;
     gate.require_live(store, context, env.policy.domain())?;
-    gate.require_local_signer(store, signer.validator_id())?;
+    let local_validator: protocol_types::ValidatorId = signer.validator_id();
+    gate.require_local_signer(store, local_validator)?;
     let mut loaded = load_state(store, context, env)?;
     let digest = env
         .policy
@@ -3819,7 +3860,7 @@ where
     let retained: LocalVoteReconciliation =
         identity::reconcile_local_vote(store, context, env, proposal.proposal.view, digest)?;
     if let RetainedIdentity::Exact(vote) = retained.retained {
-        if vote.validator != signer.validator_id() {
+        if vote.validator != local_validator {
             return Err(stop("retained ordered vote signer differs"));
         }
         env.policy
@@ -4072,6 +4113,22 @@ where
                 ConsensusMessage::Vote(vote) => Some(vote.clone()),
                 _ => None,
             });
+    // Only the actual event is authenticated here, before either completion.
+    // The earlier capacity output remains unsigned and unconfirmed.
+    if let Some(vote) = &produced {
+        if vote.validator != local_validator {
+            return Err(stop("produced ordered vote signer differs"));
+        }
+        env.policy
+            .engine()
+            .verify_vote(
+                vote,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
+            )
+            .map_err(consensus_to_node)?;
+    }
     let mut result = match seal_signing_token {
         Some(token) => {
             let port: SealPort<'_> = gate.seal_port(store)?;
@@ -4116,6 +4173,20 @@ where
             identity::reconcile_local_vote(store, context, env, proposal.proposal.view, digest)?;
         if let RetainedIdentity::Exact(vote) = replay.retained {
             gate.require_live(store, context, env.policy.domain())?;
+            // Authenticate this distinct reread before exposure. A refusal
+            // does not undo legitimate completion or earlier prefix progress.
+            if vote.validator != local_validator {
+                return Err(stop("retained ordered vote signer differs"));
+            }
+            env.policy
+                .engine()
+                .verify_vote(
+                    &vote,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                    ),
+                )
+                .map_err(consensus_to_node)?;
             result.messages.insert(0, ConsensusMessage::Vote(vote));
         }
     }

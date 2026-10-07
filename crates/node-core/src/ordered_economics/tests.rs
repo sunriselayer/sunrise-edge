@@ -52,6 +52,8 @@ pub(crate) mod causal_placement;
 mod drain_boundaries;
 #[path = "tests/freeze_boundaries.rs"]
 mod freeze_boundaries;
+#[path = "tests/local_signatures.rs"]
+mod local_signatures;
 #[path = "tests/ordered_history.rs"]
 mod ordered_history_tests;
 /// The trusted local clock value the operator installs genesis with. Never a

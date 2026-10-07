@@ -373,9 +373,16 @@ explicitly approves a documented scope change.
   verification for actual ordered votes, noncausal proposals and the distinct
   post-completion retained-vote reread. Causal capacity probes stay nonauthoritative;
   legitimate prefix/completion progress is not rolled back on a later refusal.
-  Complete independent design review approved the corrected contract; actual
-  implementation, final-source review and execution remain pending. This is a
-  handler-correctness prerequisite, not protected custody or M2 completion.
+  Complete independent design review approved the corrected contract. The
+  implementation candidate now captures the local identity at the existing
+  three gates, verifies actual fresh votes before either completion, verifies
+  the separate retained reread and authenticates noncausal fresh/retained
+  proposals. Sixteen genuine-fixture controls cover invalid returned signatures,
+  independently committee-valid identity drift, exact bytes/replay, nonce locks,
+  real CAS/indeterminate reconciliation and preserved justified-prefix progress.
+  Final-source review and actual owning execution remain pending; rustfmt/static
+  inspection is not a test run. This is a handler-correctness prerequisite, not
+  protected custody or M2 completion.
 - [ ] **M3 — selected-profile durable state:** atomic object/state/nonce/receipt/
   outbox, bounded indexed delivery, full-read revision/ABA assertions, restart,
   fencing and ambiguity reconciliation. Verify actual host/power/storage faults,
