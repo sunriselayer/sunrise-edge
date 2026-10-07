@@ -258,6 +258,13 @@ and cross-phase criteria; it does not shorten them.
   source and owning controls without running Cargo/services/tests during the
   shared full-gate compiler ownership. Direct pinned rustfmt parse/format and
   static hygiene are narrower checks, not compilation or test evidence.
+  Complete different-reviewer inspection of frozen `9daf6f2b` returned SOURCE
+  BLOCK at 14:00 UTC: ordinary attachment open can wait on a raced FIFO, and the
+  encrypted-output oracle can pass through normal complete buffering. Parent
+  bound the final 535-line report and every 29-path manifest row. DR-0219 now
+  records narrow no-follow/nonblocking opening and actual pending/incomplete
+  peer controls before corrective source work. Neither finding is closed by
+  design acceptance; corrected source and genuine owning execution are pending.
   Owning execution, independent complete-source approval, final Cargo
   resolution/dependency decision and complete integration gates remain open.
   Parent advisory review identified RUSTSEC-2026-0285 on locked Rustls 0.23.43

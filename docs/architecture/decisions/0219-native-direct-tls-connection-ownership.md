@@ -40,9 +40,16 @@ successor live and successor signerless history serving.
   same TLS options without gaining a live signer, writer fence or mutation route.
 - Read bounded cap-plus-one bytes from nonsymlink regular attachments. Enforce
   private Unix key permissions and check pre-open/post-read attachment identity,
-  using the existing common key-file ownership pattern. Do not reopen per
-  connection, follow an environment/URL source, accept PEM/password formats,
-  generate credentials or fall back to plaintext after TLS refusal.
+  preserving the existing common key-file stamp fields. Open with safe Unix
+  `OpenOptions` and `O_NOFOLLOW | O_NONBLOCK`, so a substituted final symlink
+  refuses at open and a substituted FIFO cannot wait for a writer before held
+  type/identity validation. Use one operator-only Unix direct edge to already
+  locked `libc` 0.2.189 for constants; add no unsafe code or file framework.
+  These flags do not reject symlinks in parent components, prove device-side
+  effect exclusion, bound regular-filesystem I/O by wall-clock time or isolate
+  same-UID/root actors. Do not reopen per connection, follow an environment/URL
+  source, accept PEM/password formats, generate credentials or fall back to
+  plaintext after TLS refusal.
 - Report coarse configuration failures without key/DER contents. Bounded private
   file loading is not zeroization, root isolation or protected custody.
 - Add the already locked `tokio-rustls` 0.26.4 directly to workspace/operator,
@@ -110,11 +117,21 @@ all genuine recurrence, unlock delays and historical refusal/replay controls.
    symlink/nonregular files, nonprivate key permissions, malformed leaf/key and key
    mismatch before durable I/O/fence claim. Compare exact existing state and
    verify no new durable artifacts; use private permissions for the key only.
+   Through the same private observation/open phase, deterministically replace an
+   already observed regular attachment with a FIFO and final symlink; require
+   bounded specific refusals and an unchanged regular positive control. Add no
+   production injection hook or common signing-key loader refactor.
 2. Exercise real TLS success, malformed/plaintext/slow-drip or pending handshake,
    ClientHello-close, excess connection refusal, permit recovery and shutdown,
    with nonvacuous route/transport counters. Separately test private controlled
    writer branches and actual encrypted output/backpressure. Attribute each
-   oracle honestly; a synthetic writer is not a real peer.
+   oracle honestly; a synthetic writer is not a real peer. For the actual peer,
+   clamp only its own first client receive buffer with the existing Tokio API,
+   observe real write/flush `Pending`, and keep it alive and unread through
+   bounded one-permit recovery. Afterwards require the advertised 8 MiB body to
+   remain incomplete and a new legitimate request to complete. The case must
+   fail if no backpressure was observed or complete ordinary delivery can explain
+   recovery; a sleep, pending count alone or larger payload is not sufficient.
 3. Prove response write/flush/shutdown budgets and application work that outlasts
    ingress idle without cancellation. Preserve actual GET/POST results and
    post-disconnect receipt reconciliation.
@@ -144,6 +161,14 @@ Serialize actual owning builds/tests and strict Clippy under the shared compiler
 budget; retain complete npm-ci/check-all, all seven required CI owners and
 success-only check, plus fresh independent complete-source review. Add no heavy
 CI lane or selected-PG claim. Package compilation is not process execution.
+
+The narrow opening and real-peer controls above clarify the 2026-10-07 source
+review's two counterexamples without changing protocol/store authority, output
+deadlines or the accepted connection owner. API semantics are grounded in
+[Rust's Unix open options](https://doc.rust-lang.org/std/os/unix/fs/trait.OpenOptionsExt.html),
+[Linux open flags](https://man7.org/linux/man-pages/man2/open.2.html) and the
+[pinned Tokio socket API](https://docs.rs/tokio/1.53.1/tokio/net/struct.TcpSocket.html).
+Source review, actual fixtures and whole-release acceptance remain distinct.
 
 ## Limits and remaining decisions
 
