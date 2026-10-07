@@ -85,8 +85,11 @@ then failed on an internal Cargo hardlink's own unlink metadata transition.
 Build B did not start. Preserve that incomplete run rather than reuse/adopt it.
 The accepted DR-0213 clarification requires closed in-tree link groups and
 byte-verified own-unlink transitions. Corrected `c3f9e3e4` has complete independent
-source approval and 134 parent-verified cheap controls plus the CI contract;
-fresh native A/B evidence is still pending. No failed A is reused or relabeled.
+source approval and 134 parent-verified cheap controls plus the CI contract.
+Frozen combined `3ec8d7bd` then passed complete source review, actual offline
+preflight and two new sequential Native builds: all eleven independently retained
+artifact pairs are byte-equal, and both strict compiler/temp cleanups succeeded.
+No failed A is reused or relabeled. This same-host evidence does not close M7.
 The PR's later `70702fbe` bot correction changes only a local SDK provider-length
 diagnostic. Its precise 63/65-byte refusal controls passed in the `bdfee63a`
 scoped paid SDK target; full combined acceptance is still required, not inherited
@@ -106,12 +109,12 @@ chains, verified paid dependency loading, historical HTTP and compiled CLI
 lifecycles are covered. This remains one migrated ownership boundary, not whole
 SDK decoupling, optional PG qualification, or an independent security audit.
 
-Next, freeze/review the complete combined source, verify its actual offline
-closure and eleven targets, and compare two new sequential native builds under
-the accepted budget.
-Then run literal npm-ci and the complete required gate, check final-head CI and
-actionable review findings, and normally merge. Reconcile live heads before each
-step. Preserve Draft #235 and do not auto-merge dependency PRs.
+At `3ec8d7bd`, literal npm-ci passed and the complete required local gate is
+running. Six hosted owners passed; recurring SQLite and the success-only final
+check remain pending. No later TLS implementation inherits this source or
+execution approval. Finish the actual complete gate, check final-head CI and
+actionable review findings, then normally merge. Reconcile live heads before
+each step. Preserve Draft #235 and do not auto-merge dependency PRs.
 
 ## Responsibility-oriented work packages
 
@@ -240,6 +243,13 @@ and cross-phase criteria; it does not shorten them.
   monitoring/alerts, incident response, validator/liveness operations and spend
   limits. Initial testnet may precede representative load/soak; mainnet capacity
   evidence remains required and its real workload/SLO needs a human decision.
+  [DR-0219](docs/architecture/decisions/0219-native-direct-tls-connection-ownership.md)
+  accepts optional direct Native TLS under the existing connection/work owners:
+  bounded immutable startup loading, one handshake/output lifecycle and actual
+  compiled original/successor/history acceptance with stopped rotation. This
+  branch records the design only; source implementation, owning execution,
+  independent source approval and complete integration gates remain open.
+  Production PKI, caller authorization, custody and revocation are not inferred.
 - [ ] **M6 — economics/genesis approval:** real sets, independent roles, voting
   powers, bond/fee assets/schedules, treasury/supply/distribution, security and
   unbonding parameters, governance authorities, ceremony and supply invariants.
