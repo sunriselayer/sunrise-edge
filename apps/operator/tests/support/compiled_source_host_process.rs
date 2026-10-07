@@ -36,7 +36,9 @@ impl ChildGuard {
             .checked_add(deadline)
             .expect("child stop deadline");
         if let Some(status) = self.try_wait().expect("poll owned child before SIGINT") {
-            let _reaped: Child = self.0.take().expect("owned reaped child");
+            let mut reaped: Child = self.0.take().expect("owned reaped child");
+            let confirmed: ExitStatus = reaped.wait().expect("confirm already reaped child");
+            assert_eq!(confirmed, status, "cached observed early exit status");
             panic!("owned child exited before orderly stop: {status}");
         }
         let pid: u32 = self.child_mut().id();
@@ -64,7 +66,9 @@ impl ChildGuard {
             );
             std::thread::sleep(Duration::from_millis(20));
         };
-        let _reaped: Child = self.0.take().expect("owned child successfully reaped");
+        let mut reaped: Child = self.0.take().expect("owned child successfully reaped");
+        let confirmed: ExitStatus = reaped.wait().expect("confirm successful child reap");
+        assert_eq!(confirmed, status, "cached observed orderly exit status");
         assert_eq!(
             status.code(),
             Some(0),

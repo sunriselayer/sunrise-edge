@@ -96,6 +96,11 @@ binary builds but failed to compile the TLS test because the fixed rcgen API
 has no `KeyPair::public_key_der`. Use its actual `PublicKeyData` SPKI encoder;
 the new-leaf public-key inequality oracle is retained. That failed attempt
 does not count as a TLS pass; corrected-source execution/review remains pending.
+Corrected `d1da1892` then passed the whole real local-TLS target (3/0) and SDK
+remote-TLS target, but strict owning Clippy rejected two taken `Child` values.
+Make the cached reap explicit and require its identical observed exit status,
+without suppressing the lint or weakening the orderly-stop oracle. Complete
+corrected-source owning checks and independent review are still required.
 
 Next, finish the accepted cleanup correction and owning TLS checks, freeze/review
 the complete combined source, verify its actual offline closure and eleven
