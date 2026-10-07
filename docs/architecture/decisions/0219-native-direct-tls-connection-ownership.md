@@ -67,11 +67,16 @@ family or reset the deadline on peer progress. An async deadline is not
 preemption of synchronous cryptography or a total RAM/traffic/real-time bound.
 
 Extend the existing `IoIdleTimeoutStream` output idle/total budget to write,
-flush and shutdown, including when flush/shutdown is the first operation.
-Progress may refresh idle but must not reset total output lifetime. TLS can
-remain pending while draining ciphertext or close-notify; those operations
-must not bypass the same budget. Keep request-read completion before admitted
-application work, so ingress idle timing does not time out storage execution.
+flush and shutdown. First write, first pending flush or first shutdown starts
+the output lifetime. A ready successful empty flush before any output starts
+no timer: the pinned Hyper dispatcher flushes even while admitted application
+work is pending, and its empty-buffer flush directly reaches the stream.
+Starting a timer on that no-op would wrongly bound storage by an output budget.
+Once started, progress may refresh idle but never reset total output lifetime.
+First pending flush and first shutdown are still bounded. TLS can remain pending
+while draining ciphertext or close-notify; those operations must not bypass the
+same budget. Keep request-read completion before admitted application work,
+so ingress idle timing does not time out storage execution.
 
 Do not abort a started `spawn_blocking` store operation or classify it as a
 rollback/rejection because the peer disappears. Its work permit stays held to
