@@ -12,7 +12,10 @@ use canonical_encoding::{
     CanonicalDecodingError, CanonicalEncodingError, CanonicalStruct, encode_digest32,
 };
 use core::fmt;
-use crypto::{CryptoError, SignatureDomain, SignatureMessageType, frame_signature_message};
+use crypto::{
+    CryptoError, Ed25519Verifier, SignatureDomain, SignatureMessageType, SignatureVerifier,
+    frame_signature_message,
+};
 use hashing::{HashSuiteResolver, HashingError};
 use protocol_types::{
     ChainId, Digest32, Epoch, HashPurpose, ProtocolVersion, SignatureSchemeId, TypeError,
@@ -31,6 +34,8 @@ mod fast_vote;
 pub mod readiness;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod verifier_tests;
 pub use availability::union::{
     DrainUnionAccumulator, DrainUnionIdentity, MAX_DRAIN_UNION_IDENTITY_BYTES,
     MAX_DRAIN_UNION_SIGNERS, decode_drain_union_identity, encode_drain_union_identity,
@@ -553,6 +558,66 @@ pub trait ConsensusVerifier {
         framed: &[u8],
         signature: &[u8],
     ) -> Result<bool, String>;
+}
+
+/// The caller's existing classification of an unsupported signature scheme.
+///
+/// This choice changes only the adapter's refusal result. It neither enables
+/// another signature algorithm nor replaces registered-scheme validation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnsupportedSignatureSchemeResponse {
+    /// Return `Ok(false)`, preserving ordered/reconstruction invalid-signature
+    /// classification.
+    InvalidSignature,
+    /// Return the original FastPath profile error, preserving authenticator
+    /// failure classification and its exact diagnostic.
+    FastPathProfileError,
+}
+
+/// Adapts the existing pinned Ed25519 implementation to [`ConsensusVerifier`].
+///
+/// It verifies only the supplied key, exact frame and signature. Registered
+/// keys, membership, context, quorum and historical/live authority remain with
+/// the owning certifier and its caller. Unsupported-scheme behavior must be
+/// selected explicitly; there is no default or caller-defined diagnostic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ed25519ConsensusVerifier {
+    unsupported_scheme_response: UnsupportedSignatureSchemeResponse,
+}
+
+impl Ed25519ConsensusVerifier {
+    /// Constructs an adapter with the caller's explicit refusal classification.
+    #[must_use]
+    pub const fn new(unsupported_scheme_response: UnsupportedSignatureSchemeResponse) -> Self {
+        Self {
+            unsupported_scheme_response,
+        }
+    }
+}
+
+impl ConsensusVerifier for Ed25519ConsensusVerifier {
+    fn verify_framed(
+        &self,
+        _validator: ValidatorId,
+        scheme: SignatureSchemeId,
+        public_key: &[u8],
+        framed: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, String> {
+        if scheme != SignatureSchemeId::Ed25519 {
+            return match self.unsupported_scheme_response {
+                UnsupportedSignatureSchemeResponse::InvalidSignature => Ok(false),
+                UnsupportedSignatureSchemeResponse::FastPathProfileError => {
+                    Err("fast-path phase 1 supports only Ed25519".to_string())
+                }
+            };
+        }
+        let verifier: Ed25519Verifier = Ed25519Verifier::from_verifying_key_bytes(public_key)
+            .map_err(|error| error.to_string())?;
+        verifier
+            .verify_framed(framed, signature)
+            .map_err(|error| error.to_string())
+    }
 }
 
 /// A validator vote over one proposal digest.

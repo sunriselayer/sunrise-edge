@@ -60,7 +60,7 @@ use node_core::fast_path::records::{
     FastPathValidatorEntry, MAX_FASTPATH_ACTIVE_VALIDATORS, decode_fastpath_validator_set_record,
 };
 use node_core::fast_path::{
-    self, FastPathEd25519Verifier, FastPathValidatorSetRecord, FastVoteCommitteeError,
+    self, FastPathValidatorSetRecord, FastVoteCommitteeError,
     validate_fastvote_validator_set_record,
 };
 #[cfg(test)]
@@ -869,7 +869,9 @@ fn run_assemble_certificate(
             execution_effects_hash,
             locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )?
         .ok_or("insufficient quorum: no certificate formed, nothing written")?;
     let certificate_bytes: Vec<u8> = encode_fast_certificate(&certificate)?;

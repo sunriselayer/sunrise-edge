@@ -43,7 +43,6 @@ use consensus::ConsensusSigner;
 use execution::local_execution::{LocalContractEngine, LocalExecutionPolicy};
 use execution::paid_execution::PaidContractEngine;
 use hashing::HashSuiteResolver;
-use node_core::fast_path::FastPathEd25519Verifier;
 use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::{
     self, OrderedEconomicsEnvironment, OrderedEconomicsError, OrderedEconomicsPolicy,
@@ -373,7 +372,12 @@ where
         if state
             .policy
             .engine()
-            .verify_proposal(&proposal.proposal, &FastPathEd25519Verifier)
+            .verify_proposal(
+                &proposal.proposal,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
             .is_err()
         {
             return error_response(
@@ -444,7 +448,12 @@ where
         if state
             .policy
             .engine()
-            .verify_certificate(&certificate, &FastPathEd25519Verifier)
+            .verify_certificate(
+                &certificate,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
             .is_err()
         {
             return error_response(
@@ -507,7 +516,12 @@ where
         if state
             .policy
             .engine()
-            .verify_proposal(&proposal.proposal, &FastPathEd25519Verifier)
+            .verify_proposal(
+                &proposal.proposal,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
             .is_err()
         {
             return error_response(

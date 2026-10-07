@@ -720,7 +720,9 @@ where
     let verified: VerifiedPublicationBundle = verify_publication_bundle(
         &bundle,
         &fast_certifier,
-        &FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
         resolver,
         history,
     )?;
@@ -802,7 +804,12 @@ where
                 )
             })?;
         fast_certifier
-            .verify_certificate(&retained_certificate, &FastPathEd25519Verifier)
+            .verify_certificate(
+                &retained_certificate,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
             .map_err(|_| {
                 PublicationRetentionError::InconsistentRetainedRecord(
                     "retained publication certificate",
@@ -851,7 +858,12 @@ where
                 "retained acknowledgement vote",
             ));
         }
-        availability_certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+        availability_certifier.verify_vote(
+            &vote,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )?;
         return Ok(vote);
     }
     if observed_ack.value().is_some() {
@@ -886,7 +898,12 @@ where
     // re-verified before it can be committed, so a misconfigured or rotated
     // local key can never durably retain an unverifiable acknowledgement.
     let vote: AvailabilityVote = availability_certifier.cast_vote(identity.clone(), signer)?;
-    availability_certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+    availability_certifier.verify_vote(
+        &vote,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
+    )?;
 
     let record: FastPathPublicationRecord = FastPathPublicationRecord {
         context: expected.clone(),
@@ -1130,7 +1147,9 @@ where
     let _verified: VerifiedPublicationBundle = verify_publication_bundle(
         &bundle,
         &fast_certifier,
-        &FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
         resolver,
         history,
     )?;
@@ -1223,7 +1242,9 @@ pub(crate) fn verify_retained_publication<S: DurablePortableRepository>(
     let verified: VerifiedPublicationBundle = verify_publication_bundle(
         &bundle,
         &fast_certifier,
-        &FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
         resolver,
         history,
     )?;
@@ -1268,7 +1289,12 @@ pub(crate) fn verify_retained_publication<S: DurablePortableRepository>(
         expected.epoch(),
         validator_set.clone(),
     )?;
-    availability_certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+    availability_certifier.verify_vote(
+        &vote,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
+    )?;
     Ok(verified.identity)
 }
 

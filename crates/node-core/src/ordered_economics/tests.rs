@@ -382,7 +382,9 @@ impl Network {
             .certificate_from_votes(
                 &ordered_proposal.proposal,
                 &votes,
-                &super::policy::Ed25519ConsensusVerifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
             )
             .unwrap()
             .expect("four independent votes reach quorum");
@@ -1172,7 +1174,12 @@ fn committed_freeze_yields_four_durable_empty_frontier_votes_without_resigning()
         assert_eq!(vote.identity.closure_request_id, freeze.request_id);
         assert_eq!(vote.identity.closure_height, 4);
         certifier
-            .verify_vote(&vote, &super::policy::Ed25519ConsensusVerifier)
+            .verify_vote(
+                &vote,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
+            )
             .unwrap();
         let (served_vote, page) = read_frozen_frontier_page(
             &network.stores[replica],
@@ -1193,7 +1200,9 @@ fn committed_freeze_yields_four_durable_empty_frontier_votes_without_resigning()
             &network.resolver,
             &certifier,
             served_vote.clone(),
-            &super::policy::Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .unwrap();
         page_verifier.push_page(&network.resolver, &page).unwrap();
@@ -2052,7 +2061,9 @@ fn a_replica_refuses_to_vote_when_an_ancestor_candidate_payload_is_missing() {
         .certificate_from_votes(
             &carrying.proposal,
             &votes,
-            &super::policy::Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -2370,7 +2381,9 @@ fn an_ambiguous_business_commit_exposes_no_output_and_reconciles_on_retry() {
         .certificate_from_votes(
             &proposal.proposal,
             &votes,
-            &super::policy::Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -3111,7 +3124,9 @@ fn a_completed_candidate_is_answered_from_its_retained_outcome_and_never_re_plac
                     &genesis_state,
                     ConsensusEvent::Proposal(duplicate.clone()),
                     signer,
-                    &super::policy::Ed25519ConsensusVerifier,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                    ),
                 )
                 .unwrap();
             output
@@ -3127,7 +3142,13 @@ fn a_completed_candidate_is_answered_from_its_retained_outcome_and_never_re_plac
     let duplicate_certificate = network
         .policy
         .engine()
-        .certificate_from_votes(&duplicate, &votes, &super::policy::Ed25519ConsensusVerifier)
+        .certificate_from_votes(
+            &duplicate,
+            &votes,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
         .unwrap()
         .unwrap();
     for replica in 0..REPLICAS {

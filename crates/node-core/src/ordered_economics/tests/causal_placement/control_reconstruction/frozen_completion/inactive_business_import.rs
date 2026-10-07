@@ -7,7 +7,6 @@ use crate::business_reconstruction::cut::{SavedBusinessCut, derive_source_busine
 use crate::business_reconstruction::inactive_import::{
     BusinessImportAdvance, VerifiedImportPlan, verify_saved_business_import,
 };
-use crate::ordered_economics::policy::Ed25519ConsensusVerifier;
 use execution::local_execution::{
     LocalContractEngine, LocalExecutionError, LocalExecutionOutcome, LocalExecutionRequest,
 };
@@ -146,7 +145,12 @@ pub(super) fn uncompleted_empty_proposal(
     network
         .policy
         .engine()
-        .verify_proposal(&proof.grandchild, &Ed25519ConsensusVerifier)
+        .verify_proposal(
+            &proof.grandchild,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
         .unwrap();
     assert!(proof.grandchild.transactions.is_empty());
     let status: OrderedStatus =
@@ -207,7 +211,12 @@ fn assert_exact_original_freeze<S: runtime::StructuredDurableDomainStateStore>(
     network
         .policy
         .engine()
-        .verify_proposal(&proposal.proposal, &Ed25519ConsensusVerifier)
+        .verify_proposal(
+            &proposal.proposal,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
         .unwrap();
     let digest: Digest32 = network.policy.candidate_digest(candidate).unwrap();
     assert_eq!(proposal.proposal.transactions.as_slice(), &[digest]);
@@ -729,7 +738,12 @@ fn inactive_business_import_genuine_sqlite_reopen_exact_replay_and_all_phase_gua
     network
         .policy
         .engine()
-        .verify_vote(&retained, &Ed25519ConsensusVerifier)
+        .verify_vote(
+            &retained,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
         .unwrap();
     assert_eq!(
         record.proposal_digest,

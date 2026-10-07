@@ -1041,7 +1041,9 @@ fn nonempty_drain_set_from_real_ordered_consensus_lets_a_nonpreparing_replica_ap
             x_votes[0].execution_effects_hash,
             x_votes[0].locked_objects_digest,
             &x_votes,
-            &crate::fast_path::FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("three real independent votes reach fast-path quorum");
@@ -1062,7 +1064,9 @@ fn nonempty_drain_set_from_real_ordered_consensus_lets_a_nonpreparing_replica_ap
     let x_identity: consensus::AvailabilityIdentity = consensus::bundle::verify_publication_bundle(
         &bundle,
         &fastpath_certifier,
-        &crate::fast_path::FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
         &network.resolver,
         &network.history,
     )

@@ -40,6 +40,13 @@ ordered-economics types. Keep those couplings explicit. Any later removal needs
 a deliberate public-type owner and byte/API compatibility plan, not a new
 foundational crate containing node-core execution logic.
 
+The consensus-owned Ed25519 adapter follows
+[DR-0209](decisions/0209-consensus-verifier-ownership.md). Its one defining owner
+adapts only the exact supplied key/frame/signature, with an explicit closed
+unsupported-scheme response. Core, SDK and hosts retain registration, membership,
+context, quorum and authority checks. Removing that reverse coupling does not
+remove the SDK's other actual core dependencies or invent a foundational crate.
+
 ## Concrete refactoring seams
 
 The following are intended module responsibilities inside existing crates.

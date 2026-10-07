@@ -199,7 +199,9 @@ fn recover_logical_lifecycle(
         availability_certifier
             .verify_certificate(
                 &availability,
-                &node_core::fast_path::FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap();
         let before_retention: String = execution_snapshot(
@@ -227,7 +229,12 @@ fn recover_logical_lifecycle(
             .retain_fastvote_publication(&bundle_bytes, None)
             .unwrap();
         availability_certifier
-            .verify_vote(&ack, &node_core::fast_path::FastPathEd25519Verifier)
+            .verify_vote(
+                &ack,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
             .unwrap();
         assert_eq!(ack.validator, fixture.validators[3].validator_id);
         assert_eq!(ack.identity, availability.identity);

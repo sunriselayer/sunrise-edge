@@ -209,7 +209,13 @@ pub(crate) fn verified_committed_block(
     };
     policy
         .engine()
-        .verify_committed_block_proof(&block, proof, &super::policy::Ed25519ConsensusVerifier)
+        .verify_committed_block_proof(
+            &block,
+            proof,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
         .map_err(|_| invalid("ordered history commit proof authentication"))?;
     for proposal in [&proof.committed, &proof.child, &proof.grandchild] {
         engine::require_profile_shape(proposal)?;

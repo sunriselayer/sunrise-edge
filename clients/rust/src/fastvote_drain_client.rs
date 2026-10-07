@@ -35,7 +35,6 @@ use node_wire::{
 use protocol_types::{AtomicityDomainId, ValidatorId};
 
 use crate::Client;
-use crate::FastPathEd25519Verifier;
 use crate::client::expect_success;
 use crate::error::ClientError;
 use crate::transport::{Method, Transport, WireRequest, WireResponse};
@@ -309,7 +308,12 @@ impl<T: Transport> Client<T> {
                 "progress vote differs from local signer, resolver or Freeze",
             ));
         }
-        certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+        certifier.verify_vote(
+            &vote,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )?;
         let confirmed_identity: FrozenFrontierIdentity =
             decode_frozen_frontier_identity(&envelope.confirmed_identity)?;
         if confirmed_identity.chain_id != vote.identity.chain_id
@@ -387,7 +391,12 @@ impl<T: Transport> Client<T> {
                 "frontier vote differs from expected committed Freeze",
             ));
         }
-        certifier.verify_vote(vote, &FastPathEd25519Verifier)?;
+        certifier.verify_vote(
+            vote,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )?;
         let body: Vec<u8> = DrainSignerPageRequest {
             epoch: certifier.epoch(),
             vote: encode_frozen_frontier_vote(vote)?,
@@ -515,7 +524,9 @@ impl<T: Transport> Client<T> {
             freeze.domain,
             freeze.closure_request_id,
             freeze.closure_height,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )?;
         let request: DrainUnionAdvanceRequest = DrainUnionAdvanceRequest {
             epoch: certifier.epoch(),

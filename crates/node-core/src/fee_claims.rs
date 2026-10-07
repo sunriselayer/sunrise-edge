@@ -616,7 +616,12 @@ where
     )
     .map_err(|_| FeeClaimError::Invalid("fee claim certificate validator set"))?;
     certifier
-        .verify_certificate(&certificate, &crate::fast_path::FastPathEd25519Verifier)
+        .verify_certificate(
+            &certificate,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .map_err(|_| FeeClaimError::Invalid("fee claim certificate quorum signature"))?;
 
     let witness_key: Vec<u8> =

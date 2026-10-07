@@ -1,5 +1,4 @@
 use super::*;
-use crate::fast_path::FastPathEd25519Verifier;
 use crate::fast_path::drain_publication::{
     drain_possession_key, drain_publication_artifact_key, drain_publication_key,
     retain_drain_publication,
@@ -95,7 +94,9 @@ fn identity(bundle: &PublicationBundle) -> AvailabilityIdentity {
     verify_publication_bundle(
         bundle,
         &certifier,
-        &FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
         &resolver(),
         &[],
     )

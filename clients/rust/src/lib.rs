@@ -126,7 +126,8 @@ pub use node_core::publication::{
 // client, without acquiring signing authority or depending on a transport.
 pub use consensus::bundle::MAX_ENCODED_BUNDLE_BYTES;
 pub use consensus::{
-    AvailabilityCertificate, decode_availability_certificate, encode_availability_certificate,
+    AvailabilityCertificate, Ed25519ConsensusVerifier, UnsupportedSignatureSchemeResponse,
+    decode_availability_certificate, encode_availability_certificate,
 };
 pub use consensus::{DrainUnionIdentity, decode_drain_union_identity, encode_drain_union_identity};
 pub use consensus::{
@@ -141,7 +142,6 @@ pub use fee_claim_client::{
 pub use node_core::admission_profile::{
     ExternalRequestLane, VerifiedAdmissionProfile, require_external_request_lane,
 };
-pub use node_core::fast_path::FastPathEd25519Verifier;
 pub use node_core::fast_path::records::{
     FastPathValidatorSetRecord, decode_fastpath_validator_set_record,
 };

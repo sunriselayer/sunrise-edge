@@ -112,7 +112,9 @@ fn identity(bundle: &PublicationBundle) -> AvailabilityIdentity {
     verify_publication_bundle(
         bundle,
         &certifier,
-        &FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
         &resolver(),
         &[],
     )
@@ -337,7 +339,9 @@ fn a_certified_application_trap_applies_only_its_fee_and_replays_without_a_secon
             votes[0].execution_effects_hash,
             votes[0].locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();

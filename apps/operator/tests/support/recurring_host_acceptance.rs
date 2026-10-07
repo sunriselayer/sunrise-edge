@@ -10,7 +10,6 @@ use super::*;
 use crate::acceptance_timing::{AcceptanceSpan, Stage};
 use consensus::readiness::ReadinessCertificate;
 use consensus::{ConsensusMessage, ConsensusVote};
-use node_core::fast_path::FastPathEd25519Verifier;
 use node_core::fast_path::records::{FastPathValidatorEntry, FastPathValidatorSetRecord};
 use node_core::ordered_economics::{
     OrderedEventOutput, OrderedOutcome, OrderedProposal, decode_ordered_outcome,
@@ -1116,7 +1115,12 @@ fn reopened_host_submission(
             current
                 .ordered_policy()
                 .engine()
-                .verify_vote(vote, &FastPathEd25519Verifier)
+                .verify_vote(
+                    vote,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                    ),
+                )
                 .unwrap();
             actual_votes.push(vote.clone());
             if round == rounds.len() - 1 {
@@ -1155,7 +1159,13 @@ fn reopened_host_submission(
         let reconstructed: QuorumCertificate = current
             .ordered_policy()
             .engine()
-            .certificate_from_votes(&proposal.proposal, &actual_votes, &FastPathEd25519Verifier)
+            .certificate_from_votes(
+                &proposal.proposal,
+                &actual_votes,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(reconstructed.votes.len(), 3);

@@ -752,10 +752,15 @@ fn altered_source_fact(
             )
             .unwrap();
             certifier
-                .verify_vote(&original.vote, &policy::Ed25519ConsensusVerifier)
+                .verify_vote(
+                    &original.vote,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                    ),
+                )
                 .unwrap();
             assert!(matches!(
-                certifier.verify_vote(&changed.vote, &policy::Ed25519ConsensusVerifier),
+                certifier.verify_vote(&changed.vote, &consensus::Ed25519ConsensusVerifier::new(consensus::UnsupportedSignatureSchemeResponse::InvalidSignature)),
                 Err(consensus::FrontierError::Consensus(consensus::ConsensusError::InvalidSignature(validator)))
                     if validator == original.vote.validator
             ));

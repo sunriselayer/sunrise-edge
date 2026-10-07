@@ -336,7 +336,9 @@ fn certify_paid_with_expected_status(
                 votes[0].execution_effects_hash,
                 votes[0].locked_objects_digest,
                 &selected,
-                &crate::fast_path::FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .unwrap()
@@ -364,7 +366,9 @@ fn certify_paid_with_expected_status(
     consensus::bundle::verify_publication_bundle(
         &bundle,
         &certifier,
-        &crate::fast_path::FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
         &network.resolver,
         &network.history,
     )
@@ -400,7 +404,9 @@ fn certify_paid_with_expected_status(
                 .iter()
                 .map(|index: &usize| acknowledgements[*index].clone())
                 .collect::<Vec<consensus::AvailabilityVote>>(),
-            &crate::fast_path::FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -1420,7 +1426,9 @@ fn causal_replace_fences_two_nonce_legs_and_exact_head_with_distinct_internal_re
         .certificate_from_votes(
             &proposal.proposal,
             &votes,
-            &super::super::policy::Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .unwrap()
         .unwrap();

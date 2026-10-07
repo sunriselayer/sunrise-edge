@@ -11,7 +11,7 @@ use super::*;
 use crate::fast_path::publication::{
     PublicationRetentionError, fastpath_publication_key, verify_retained_publication,
 };
-use crate::fast_path::{FastPathEd25519Verifier, FastPathError, load_validator_set};
+use crate::fast_path::{FastPathError, load_validator_set};
 use canonical_encoding::{decode_canonical_frame, encode_chain_id};
 use consensus::{
     AvailabilityIdentity, ConsensusSigner, FrontierError, FrozenFrontierAccumulator,
@@ -742,7 +742,12 @@ where
                 "final frontier signer mismatch",
             ));
         }
-        certifier.verify_vote(&final_record.vote, &FastPathEd25519Verifier)?;
+        certifier.verify_vote(
+            &final_record.vote,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )?;
         return Ok(FrozenFrontierStep::Finalized(Box::new(final_record.vote)));
     }
     if observed_final.revision() != StateRevision::INITIAL {
@@ -926,7 +931,12 @@ where
     }
     let identity: FrozenFrontierIdentity = next.into_identity();
     let vote: FrozenFrontierVote = certifier.cast_vote(identity.clone(), signer)?;
-    certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+    certifier.verify_vote(
+        &vote,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
+    )?;
     let final_record: FinalFrontier = FinalFrontier {
         identity,
         vote: vote.clone(),
@@ -1115,7 +1125,12 @@ pub(crate) fn read_frozen_frontier_page_gated<S: DurablePortableRepository>(
             "final frontier context or local signer mismatch",
         ));
     }
-    certifier.verify_vote(&final_record.vote, &FastPathEd25519Verifier)?;
+    certifier.verify_vote(
+        &final_record.vote,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
+    )?;
 
     let prefix: Vec<u8> = key(&chain, epoch, FRONTIER_ENTRY_PREFIX)?;
     let mut ordinal: u64 = 0;

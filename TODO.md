@@ -174,6 +174,16 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   at 19:02:54 UTC without skipping the original e8/five-host recurrence. All
   required hosted acceptance passed and the slice merged normally as
   `3b8796ed`. Remaining core/SDK dependency work is not closed.
+  Under accepted [DR-0209](docs/architecture/decisions/0209-consensus-verifier-ownership.md),
+  the current slice defines one consensus-owned Ed25519 adapter and removes
+  all three core production adapters. Core, SDK, native hosts, operator and CLI
+  consumers explicitly retain their original unsupported-scheme classification;
+  the SDK exports the defining consensus type directly. The actual registration,
+  context, quorum, framing and authority owners are unchanged. Eight new outcome/
+  caller controls accompany the complete consumer migration. Scoped formatting,
+  source inventory and caller-response mapping checks passed; Cargo execution,
+  full required acceptance, fresh source approval and CI remain open. Other real
+  core/SDK dependencies remain; no standalone SDK or compilation speedup is claimed.
 - [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
   admission, evaluation, completion, reconciliation and storage contracts;
   separate object/receipt/outbox repositories and memory implementations by

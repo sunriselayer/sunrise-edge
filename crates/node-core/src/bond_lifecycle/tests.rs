@@ -3522,7 +3522,9 @@ fn file_backed_sqlite_slash_vs_withdraw_competing_writers_commit_exactly_once() 
                 sender_vote.next_validator_set_digest,
                 sender_vote.activation_digest,
                 &votes,
-                &fast_path::FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .expect("both equal-power validators exceed quorum");
@@ -4706,12 +4708,19 @@ fn current_epoch_certificate_verification_is_byte_for_byte_unaffected_by_a_later
                 ev_digest(0xC2),
                 ev_digest(0xC3),
                 std::slice::from_ref(&vote),
-                &fast_path::FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .expect("the single equal-power validator exceeds quorum");
         certifier
-            .verify_certificate(&certificate, &fast_path::FastPathEd25519Verifier)
+            .verify_certificate(
+                &certificate,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
             .unwrap();
         consensus::encode_fast_certificate(&certificate).unwrap()
     };
@@ -5316,7 +5325,9 @@ fn advance_epoch<S: StructuredDurableDomainStateStore>(
             vote.next_validator_set_digest,
             vote.activation_digest,
             std::slice::from_ref(&vote),
-            &fast_path::FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("the single equal-power validator exceeds quorum");

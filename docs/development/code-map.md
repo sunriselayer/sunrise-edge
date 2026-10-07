@@ -21,6 +21,15 @@ separately pin those boundaries. The native closed event endpoint owns no
 execution/storage capabilities (DR-0206); its canonical decoder returns only
 a refusal. Authenticated hosts and standalone recovery have separate owners.
 
+The [consensus Ed25519 adapter](../../crates/consensus/src/lib.rs) is the defining
+`ConsensusVerifier` implementation for actual core, SDK, host and operator
+callers. Its explicit unsupported-scheme response preserves each caller's
+classification. Registered keys, context, membership, quorum and authority stay
+with the owning caller/certifier. Independent
+[adapter outcome controls](../../crates/consensus/src/verifier_tests.rs) and the
+existing FastVote/availability certifier tests pin this boundary; the Rust SDK
+exports the defining consensus type, not a core adapter.
+
 ## Follow a request
 
 ```text

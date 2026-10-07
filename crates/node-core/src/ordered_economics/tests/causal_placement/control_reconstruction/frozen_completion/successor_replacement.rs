@@ -651,7 +651,9 @@ fn retired_d_cannot_sign_fastvote_prepare_or_availability_ack() {
         votes[0].execution_effects_hash,
         votes[0].locked_objects_digest,
         &votes,
-        &crate::fast_path::FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
     )
     .unwrap()
     .unwrap();
@@ -1026,8 +1028,9 @@ fn byzantine_chain(
     blocks: &[Vec<Digest32>],
 ) -> Vec<(consensus::ConsensusProposal, consensus::QuorumCertificate)> {
     let hotstuff: &consensus::ChainedHotStuff = world.policy.engine();
-    let verifier: crate::ordered_economics::policy::Ed25519ConsensusVerifier =
-        crate::ordered_economics::policy::Ed25519ConsensusVerifier;
+    let verifier: consensus::Ed25519ConsensusVerifier = consensus::Ed25519ConsensusVerifier::new(
+        consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+    );
     let key: Vec<u8> =
         engine::scoped_state_key(world.policy.key_scope(), &fixture::chain()).unwrap();
     let byzantine: Vec<usize> = (0..world.members.len())

@@ -13,6 +13,7 @@
 use super::*;
 use abi::package_types::ScopedTypeArg;
 use bonds::{BondResourceId, decode_bond_resource_id, encode_bond_resource_id};
+use crypto::Ed25519Verifier;
 use execution::local_execution::{
     ObjectAuthority, decode_object_authority, encode_object_authority,
 };

@@ -8,8 +8,7 @@
 //! opaque bulk-copy shortcut, no fresh signature, nonce or vote.
 use super::*;
 use sunrise_edge_client::{
-    FastPathEd25519Verifier, HashSuiteResolver, PublicationContext, authenticate_paid_intent,
-    paid_invocation_digest,
+    HashSuiteResolver, PublicationContext, authenticate_paid_intent, paid_invocation_digest,
 };
 
 const MAX_ENTRIES: usize = 16;
@@ -250,7 +249,12 @@ fn load_batch(
         let certificate: FastCertificate =
             decode_fast_certificate(&certificate_bytes).map_err(failure)?;
         certifier
-            .verify_certificate(&certificate, &FastPathEd25519Verifier)
+            .verify_certificate(
+                &certificate,
+                &sunrise_edge_client::Ed25519ConsensusVerifier::new(
+                    sunrise_edge_client::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
             .map_err(failure)?;
         if certificate.tx_hash != paid_invocation_digest(resolver, &signed).map_err(failure)? {
             return Err(invalid(
@@ -505,7 +509,9 @@ mod tests {
                 vote.execution_effects_hash,
                 vote.locked_objects_digest,
                 &votes,
-                &FastPathEd25519Verifier,
+                &sunrise_edge_client::Ed25519ConsensusVerifier::new(
+                    sunrise_edge_client::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .unwrap()

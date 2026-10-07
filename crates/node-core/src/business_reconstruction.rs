@@ -59,18 +59,17 @@ use consensus::bundle::{
     encode_artifact_manifest, verify_publication_bundle,
 };
 use consensus::{
-    AvailabilityCertificate, AvailabilityCertifier, AvailabilityIdentity, ConsensusVerifier,
-    FastCertificate, FastPathCertifier, decode_availability_certificate, decode_fast_certificate,
+    AvailabilityCertificate, AvailabilityCertifier, AvailabilityIdentity, FastCertificate,
+    FastPathCertifier, decode_availability_certificate, decode_fast_certificate,
     encode_availability_identity, encode_fast_certificate,
 };
-use crypto::{Ed25519Verifier, SignatureVerifier};
 use execution::{
     local_execution::{LocalContractEngine, LocalExecutionPolicy},
     paid_execution::PaidContractEngine,
 };
 use hashing::HashSuiteResolver;
 use protocol_types::ExecutionGeneration;
-use protocol_types::{Digest32, Epoch, HashPurpose, SignatureSchemeId, ValidatorId};
+use protocol_types::{Digest32, Epoch, HashPurpose, ValidatorId};
 use runtime::portable::{
     DurablePayloadDescriptor, DurableRecordDescriptor, DurableRecordKey, DurableRecordMetadata,
     PortableSnapshotToken,
@@ -439,7 +438,9 @@ pub fn owned_material_from_source_snapshot(
         validator_set,
     )
     .map_err(|_| invalid("signed genesis availability authority is malformed"))?;
-    let verifier: ReconstructionEd25519Verifier = ReconstructionEd25519Verifier;
+    let verifier: consensus::Ed25519ConsensusVerifier = consensus::Ed25519ConsensusVerifier::new(
+        consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+    );
     let mut output: Vec<OwnedPublicationMaterial> = Vec::with_capacity(normal.len() + drain.len());
     let ids: BTreeSet<[u8; 32]> = normal.keys().chain(drain.keys()).copied().collect();
     let mut consumed_normal: BTreeSet<[u8; 32]> = BTreeSet::new();
@@ -701,28 +702,6 @@ fn bundle_from_retained_record(
         manifest,
         contents,
     })
-}
-
-struct ReconstructionEd25519Verifier;
-
-impl ConsensusVerifier for ReconstructionEd25519Verifier {
-    fn verify_framed(
-        &self,
-        _validator: ValidatorId,
-        scheme: SignatureSchemeId,
-        public_key: &[u8],
-        framed: &[u8],
-        signature: &[u8],
-    ) -> Result<bool, String> {
-        if scheme != SignatureSchemeId::Ed25519 {
-            return Ok(false);
-        }
-        let verifier: Ed25519Verifier = Ed25519Verifier::from_verifying_key_bytes(public_key)
-            .map_err(|error| error.to_string())?;
-        verifier
-            .verify_framed(framed, signature)
-            .map_err(|error| error.to_string())
-    }
 }
 
 fn nonce_next_value(
@@ -1555,7 +1534,10 @@ impl<'a> BusinessReconstructionOverlay<'a> {
             validator_set,
         )
         .map_err(|_| invalid("pinned availability authority invalid"))?;
-        let verifier: ReconstructionEd25519Verifier = ReconstructionEd25519Verifier;
+        let verifier: consensus::Ed25519ConsensusVerifier =
+            consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            );
         let mut request_ids: BTreeSet<[u8; 32]> = BTreeSet::new();
         let mut semantic_catalog: Vec<VerifiedPublicationSemantic> =
             Vec::with_capacity(owned.len());
@@ -2291,7 +2273,9 @@ fn normalize_carrier_rows(
         validator_set,
     )
     .map_err(|_| invalid("carrier availability authority invalid"))?;
-    let verifier: ReconstructionEd25519Verifier = ReconstructionEd25519Verifier;
+    let verifier: consensus::Ed25519ConsensusVerifier = consensus::Ed25519ConsensusVerifier::new(
+        consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+    );
     let mut normalized: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
     for item in catalog {
         let certificate_key: Vec<u8> =

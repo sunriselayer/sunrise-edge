@@ -28,7 +28,7 @@ use super::completion::{
 };
 use super::identity::{LocalVoteReconciliation, RetainedIdentity};
 use super::observed_read::ObservedBusinessReadView;
-use super::policy::{AuthenticatedOrderedOperation, Ed25519ConsensusVerifier};
+use super::policy::AuthenticatedOrderedOperation;
 use super::reservation::{OrderedReservationPlan, PendingWrite};
 use super::seal;
 use super::*;
@@ -1017,7 +1017,12 @@ fn load_state<S: StructuredStateReader + ?Sized>(
         .map_err(|_| stop("ordered economics consensus state does not decode"))?;
     env.policy
         .engine()
-        .validate_state(&state, &Ed25519ConsensusVerifier)
+        .validate_state(
+            &state,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
         .map_err(|_| stop("ordered economics consensus state failed re-verification"))?;
     Ok(LoadedState {
         state,
@@ -1064,7 +1069,12 @@ pub fn install_ordered_genesis<S: StructuredDurableDomainStateStore>(
             .map_err(|_| stop("retained ordered consensus state does not decode"))?;
         env.policy
             .engine()
-            .validate_state(&state, &Ed25519ConsensusVerifier)
+            .validate_state(
+                &state,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
+            )
             .map_err(|_| stop("retained ordered consensus state failed re-verification"))?;
         return Ok(());
     }
@@ -3493,7 +3503,9 @@ where
         .on_observer_event(
             &loaded.state,
             ConsensusEvent::Certificate(loaded.state.high_qc.clone()),
-            &Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .map_err(consensus_to_node)?;
     if !prefix.committed_blocks.is_empty() {
@@ -3600,7 +3612,12 @@ where
         .map_err(consensus_to_node)?;
     env.policy
         .engine()
-        .verify_proposal(&proposal, &Ed25519ConsensusVerifier)
+        .verify_proposal(
+            &proposal,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
         .map_err(consensus_to_node)?;
     let mut writes: MergedWrites = causal_leader_writes(
         store,
@@ -3689,7 +3706,12 @@ where
     require_profile_shape(&proposal.proposal)?;
     env.policy
         .engine()
-        .verify_proposal(&proposal.proposal, &Ed25519ConsensusVerifier)
+        .verify_proposal(
+            &proposal.proposal,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
         .map_err(|_| {
             OrderedEconomicsError::Unauthenticated("ordered proposal failed verification")
         })?;
@@ -3738,7 +3760,9 @@ where
             .on_observer_event(
                 &loaded.state,
                 ConsensusEvent::Proposal(proposal.proposal.clone()),
-                &Ed25519ConsensusVerifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
             )
             .map_err(consensus_to_node)?;
         let prefix: ConsensusOutput = env
@@ -3747,7 +3771,9 @@ where
             .on_observer_event(
                 &loaded.state,
                 ConsensusEvent::Certificate(proposal.proposal.justify.clone()),
-                &Ed25519ConsensusVerifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
             )
             .map_err(consensus_to_node)?;
         if !prefix.committed_blocks.is_empty() {
@@ -3798,7 +3824,12 @@ where
         }
         env.policy
             .engine()
-            .verify_vote(&vote, &Ed25519ConsensusVerifier)
+            .verify_vote(
+                &vote,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
+            )
             .map_err(consensus_to_node)?;
         if let Some(candidate) = &proposal.candidate {
             let candidate_digest: Digest32 = env.policy.candidate_digest(candidate)?;
@@ -3863,7 +3894,9 @@ where
             .on_observer_event(
                 &loaded.state,
                 ConsensusEvent::Proposal(proposal.proposal.clone()),
-                &Ed25519ConsensusVerifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
             )
             .map_err(consensus_to_node)?;
         if preview
@@ -3953,7 +3986,9 @@ where
                 &loaded.state,
                 ConsensusEvent::Proposal(proposal.proposal.clone()),
                 &probe,
-                &Ed25519ConsensusVerifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
             )
             .map_err(consensus_to_node)?;
         if preview
@@ -4024,7 +4059,9 @@ where
             &loaded.state,
             ConsensusEvent::Proposal(proposal.proposal.clone()),
             signer,
-            &Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .map_err(consensus_to_node)?;
     let produced: Option<consensus::ConsensusVote> =
@@ -4107,7 +4144,12 @@ pub(crate) fn process_certificate_gated<S: StructuredDurableDomainStateStore>(
 ) -> Result<OrderedEventOutput, OrderedEconomicsError> {
     env.policy
         .engine()
-        .verify_certificate(certificate, &Ed25519ConsensusVerifier)
+        .verify_certificate(
+            certificate,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
         .map_err(|_| {
             OrderedEconomicsError::Unauthenticated("ordered certificate failed verification")
         })?;
@@ -4119,7 +4161,9 @@ pub(crate) fn process_certificate_gated<S: StructuredDurableDomainStateStore>(
         .on_observer_event(
             &loaded.state,
             ConsensusEvent::Certificate(certificate.clone()),
-            &Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .map_err(consensus_to_node)?;
     finalize_event(gate, store, context, env, &loaded, output, None, None)
@@ -4318,7 +4362,12 @@ pub(crate) fn observe_proposal_gated<S: StructuredDurableDomainStateStore>(
     require_profile_shape(&proposal.proposal)?;
     env.policy
         .engine()
-        .verify_proposal(&proposal.proposal, &Ed25519ConsensusVerifier)
+        .verify_proposal(
+            &proposal.proposal,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
         .map_err(|_| {
             OrderedEconomicsError::Unauthenticated("ordered proposal failed verification")
         })?;
@@ -4369,7 +4418,9 @@ pub(crate) fn observe_proposal_gated<S: StructuredDurableDomainStateStore>(
         .on_observer_event(
             &loaded.state,
             ConsensusEvent::Proposal(proposal.proposal.clone()),
-            &Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .map_err(consensus_to_node)?;
     finalize_event(gate, store, context, env, &loaded, output, admitted, None)
@@ -4443,7 +4494,9 @@ where
             &loaded.state,
             ConsensusEvent::Tick { now_unix_millis },
             signer,
-            &Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .map_err(consensus_to_node)?;
     finalize_event(gate, store, context, env, &loaded, output, None, None)

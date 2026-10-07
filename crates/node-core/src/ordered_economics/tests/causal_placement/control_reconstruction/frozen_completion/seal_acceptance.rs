@@ -70,7 +70,9 @@ fn certify_on_with_env(
         .certificate_from_votes(
             &ordered_proposal.proposal,
             &votes,
-            &crate::ordered_economics::policy::Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .unwrap()
         .expect("independent weighted votes reach quorum");
@@ -281,7 +283,12 @@ fn state_for(network: &Network, replica: usize) -> ConsensusState {
     network
         .policy
         .engine()
-        .validate_state(&state, &policy::Ed25519ConsensusVerifier)
+        .validate_state(
+            &state,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
         .unwrap();
     state
 }
@@ -301,7 +308,9 @@ fn proof_for_certificate(
         .on_observer_event(
             &state_for(network, replica),
             ConsensusEvent::Certificate(certificate.clone()),
-            &policy::Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .unwrap();
     let digest: Digest32 = network.policy.candidate_digest(candidate).unwrap();
@@ -574,7 +583,12 @@ fn assert_retained_empty_cache_guard(vote: bool) {
         network
             .policy
             .engine()
-            .verify_vote(&retained, &policy::Ed25519ConsensusVerifier)
+            .verify_vote(
+                &retained,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
+            )
             .unwrap();
         let replay: OrderedEventOutput = process_proposal(
             &network.stores[replica],
@@ -723,7 +737,9 @@ fn peer_empty_after_certificate(
         .on_observer_event(
             &state_for(network, leader),
             ConsensusEvent::Certificate(certificate.clone()),
-            &policy::Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .unwrap();
     assert_eq!(progressed.state.current_view, view);
@@ -740,7 +756,12 @@ fn peer_empty_after_certificate(
     network
         .policy
         .engine()
-        .verify_proposal(&proposal, &policy::Ed25519ConsensusVerifier)
+        .verify_proposal(
+            &proposal,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
         .unwrap();
     OrderedProposal {
         proposal,
@@ -1137,7 +1158,9 @@ pub(super) fn certify_adversarial_candidate(
                 &state_for(network, replica),
                 ConsensusEvent::Proposal(proposal.clone()),
                 &network.signers[replica],
-                &policy::Ed25519ConsensusVerifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
             )
             .unwrap();
         let vote: consensus::ConsensusVote = output
@@ -1153,7 +1176,13 @@ pub(super) fn certify_adversarial_candidate(
     let certificate: QuorumCertificate = network
         .policy
         .engine()
-        .certificate_from_votes(&proposal, &votes, &policy::Ed25519ConsensusVerifier)
+        .certificate_from_votes(
+            &proposal,
+            &votes,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
         .unwrap()
         .unwrap();
     let carrier: OrderedProposal = OrderedProposal {

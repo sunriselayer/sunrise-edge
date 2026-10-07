@@ -3,7 +3,7 @@
 //! discarded: they remain exact comparison facts of independent execution.
 use super::{
     OrderedCandidate, OrderedEconomicsPolicy, OrderedHistoryIdentity, drain_union, engine, freeze,
-    frontier, identity, policy::Ed25519ConsensusVerifier, reservation,
+    frontier, identity, reservation,
 };
 use crate::NodeCoreError;
 use crate::business_reconstruction::SourceSnapshotRecord;
@@ -119,7 +119,9 @@ fn validate_selection(
         policy.domain(),
         closure.request_id,
         closure.closed_at_block_height,
-        &Ed25519ConsensusVerifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+        ),
     )
     .map_err(|_| invalid("local union frontier selection lacks a genuine quorum"))?;
     let pairs: Vec<(ValidatorId, FrozenFrontierIdentity)> = votes
@@ -314,7 +316,12 @@ pub(crate) fn validate_local_rows(
                 .map_err(|_| invalid("source consensus state schema"))?;
             policy
                 .engine()
-                .validate_state(&state, &Ed25519ConsensusVerifier)
+                .validate_state(
+                    &state,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                    ),
+                )
                 .map_err(|_| invalid("source consensus state verification"))?;
             if is_source {
                 source_state_seen = true;
@@ -356,7 +363,12 @@ pub(crate) fn validate_local_rows(
             let (retained, proposal) = identity::decode_leader_proposal_record(present(row)?)?;
             policy
                 .engine()
-                .verify_proposal(&proposal, &Ed25519ConsensusVerifier)
+                .verify_proposal(
+                    &proposal,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                    ),
+                )
                 .map_err(|_| invalid("local leader proposal signature"))?;
             if retained.view != view
                 || retained.proposal_digest
@@ -390,7 +402,12 @@ pub(crate) fn validate_local_rows(
             let (retained, vote) = identity::decode_local_vote_record(present(row)?)?;
             policy
                 .engine()
-                .verify_vote(&vote, &Ed25519ConsensusVerifier)
+                .verify_vote(
+                    &vote,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                    ),
+                )
                 .map_err(|_| invalid("local retained vote signature"))?;
             if retained.view != view {
                 return Err(invalid("local vote key differs"));
@@ -557,7 +574,12 @@ pub(crate) fn validate_local_rows(
             )
             .map_err(|_| invalid("frontier authority"))?;
             certifier
-                .verify_vote(&final_record.vote, &Ed25519ConsensusVerifier)
+                .verify_vote(
+                    &final_record.vote,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                    ),
+                )
                 .map_err(|_| invalid("final frontier vote signature"))?;
             if frontier::key(
                 policy.context().chain_id(),
@@ -585,7 +607,12 @@ pub(crate) fn validate_local_rows(
             )
             .map_err(|_| invalid("drain signer authority"))?;
             certifier
-                .verify_vote(&record.vote, &Ed25519ConsensusVerifier)
+                .verify_vote(
+                    &record.vote,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                    ),
+                )
                 .map_err(|_| invalid("drain signer vote signature"))?;
             if record.vote.validator.as_bytes().as_slice() != &suffix[8..]
                 || drain_union::drain_signer_progress_key(
@@ -853,7 +880,12 @@ mod tests {
             .cast_vote(frontier.into_identity(), &signer)
             .unwrap();
         certifier
-            .verify_vote(&vote, &super::Ed25519ConsensusVerifier)
+            .verify_vote(
+                &vote,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
+            )
             .unwrap();
         (resolver, seed, vote, member)
     }

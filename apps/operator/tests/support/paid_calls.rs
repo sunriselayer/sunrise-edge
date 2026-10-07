@@ -26,7 +26,6 @@ use execution::{
     },
 };
 use hashing::HashSuiteResolver;
-use node_core::fast_path::FastPathEd25519Verifier;
 use node_core::{ObjectQueryResult, decode_genesis_manifest, query_object};
 use objects::{AccessMode, Object, ObjectId, ObjectRef};
 use protocol_types::{AtomicityDomainId, ChainId, Epoch, HashSuite, HashSuiteSchedule};
@@ -95,7 +94,12 @@ pub fn verify_saved_availability_certificate(
     )
     .unwrap();
     certifier
-        .verify_certificate(&cert, &FastPathEd25519Verifier)
+        .verify_certificate(
+            &cert,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .expect("saved availability certificate must verify under genesis validator set");
     let signed: SignedPaidIntent =
         decode_signed_paid_intent(&fs::read(signed_path).unwrap()).unwrap();
@@ -103,7 +107,12 @@ pub fn verify_saved_availability_certificate(
         decode_fast_certificate(&fs::read(certificate_path).unwrap()).unwrap();
     trusted
         .certifier()
-        .verify_certificate(&full, &FastPathEd25519Verifier)
+        .verify_certificate(
+            &full,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .unwrap();
     let signed_digest: protocol_types::Digest32 =
         paid_invocation_digest(&resolver, &signed).unwrap();

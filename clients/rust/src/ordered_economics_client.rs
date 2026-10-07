@@ -9,9 +9,9 @@
 //! [`validate_ordered_economics_endpoints`] is required, bounded,
 //! library-enforced preflight before any network I/O, mirroring
 //! [`crate::fastvote_client::validate_fastvote_endpoints`]. Vote/certificate
-//! verification reuses [`node_core::fast_path::FastPathEd25519Verifier`]
-//! (a generic, stateless Ed25519 `ConsensusVerifier`, not FastVote-specific
-//! despite its module home) -- never a hand-rolled reimplementation.
+//! verification reuses [`consensus::Ed25519ConsensusVerifier`] with the
+//! existing FastPath profile-error response -- never a hand-rolled
+//! reimplementation.
 //!
 //! [`submit_candidate`] drives the current leader (selected by
 //! `policy.engine().validator_set().leader(view)`, from this call's own
@@ -44,7 +44,6 @@ use std::time::{Duration, Instant};
 use consensus::{ConsensusMessage, ConsensusVote, QuorumCertificate};
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
-use node_core::fast_path::FastPathEd25519Verifier;
 use node_core::ordered_economics::{
     OrderedCandidate, OrderedEconomicsError, OrderedEconomicsPolicy, OrderedEventOutput,
     OrderedOutcome, OrderedStatus, decode_ordered_event_output, decode_ordered_proposal,
@@ -97,7 +96,12 @@ fn verify_ordered_proposal(
 ) -> Result<(), OrderedEconomicsNetworkError> {
     policy
         .engine()
-        .verify_proposal(&proposal.proposal, &FastPathEd25519Verifier)
+        .verify_proposal(
+            &proposal.proposal,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .map_err(|error| OrderedEconomicsNetworkError::Rejected(error.to_string()))?;
     let expected: Vec<Digest32> = match &proposal.candidate {
         Some(candidate) => {
@@ -639,7 +643,12 @@ fn routing_hint<T: Transport>(
             || status.current_view <= status.high_qc.view
             || policy
                 .engine()
-                .verify_certificate(&status.high_qc, &FastPathEd25519Verifier)
+                .verify_certificate(
+                    &status.high_qc,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                    ),
+                )
                 .is_err()
         {
             continue;
@@ -911,7 +920,9 @@ fn run_one_round<T: Transport>(
     artifacts: &mut dyn ArtifactSink,
     expected_parent: Option<&QuorumCertificate>,
 ) -> Result<RoundOutcome, OrderedEconomicsNetworkError> {
-    let verifier = FastPathEd25519Verifier;
+    let verifier: consensus::Ed25519ConsensusVerifier = consensus::Ed25519ConsensusVerifier::new(
+        consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+    );
     let (proposal_bytes, proposal) = if let Some(resume_bytes) = resume_proposal {
         // Reconciling a retained proposal from an interrupted prior attempt:
         // verify it exactly like a freshly received one, then skip asking
@@ -1308,7 +1319,9 @@ pub fn replay_declared_prefix_with_sink<T: Transport>(
             "declared replay byte bound".into(),
         ));
     }
-    let verifier = FastPathEd25519Verifier;
+    let verifier: consensus::Ed25519ConsensusVerifier = consensus::Ed25519ConsensusVerifier::new(
+        consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+    );
 
     // Phase 1: decode and verify the COMPLETE declared prefix -- every
     // proposal/certificate signature, each certificate's own binding to its
@@ -1724,7 +1737,9 @@ mod recovery_preflight_tests {
                             &state,
                             ConsensusEvent::Proposal(proposal.clone()),
                             signer,
-                            &FastPathEd25519Verifier,
+                            &consensus::Ed25519ConsensusVerifier::new(
+                                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                            ),
                         )
                         .unwrap()
                         .outbound_messages
@@ -1737,14 +1752,22 @@ mod recovery_preflight_tests {
                 })
                 .collect();
             let qc: QuorumCertificate = engine
-                .certificate_from_votes(&proposal, &votes, &FastPathEd25519Verifier)
+                .certificate_from_votes(
+                    &proposal,
+                    &votes,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                    ),
+                )
                 .unwrap()
                 .unwrap();
             state = engine
                 .on_observer_event(
                     &state,
                     ConsensusEvent::Proposal(proposal.clone()),
-                    &FastPathEd25519Verifier,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                    ),
                 )
                 .unwrap()
                 .state;
@@ -1752,7 +1775,9 @@ mod recovery_preflight_tests {
                 .on_observer_event(
                     &state,
                     ConsensusEvent::Certificate(qc.clone()),
-                    &FastPathEd25519Verifier,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                    ),
                 )
                 .unwrap()
                 .state;
@@ -2442,27 +2467,28 @@ mod recovery_preflight_tests {
                                         && *bytes == request.body)
                             );
                         }
-                        let transition: consensus::ConsensusOutput =
-                            if request.path == ORDERED_ECONOMICS_PROPOSAL_PATH {
-                                policy
+                        let transition: consensus::ConsensusOutput = if request.path
+                            == ORDERED_ECONOMICS_PROPOSAL_PATH
+                        {
+                            policy
                                     .engine()
                                     .on_event(
                                         &state,
                                         ConsensusEvent::Proposal(proposal.proposal),
                                         signer,
-                                        &FastPathEd25519Verifier,
+                                        &consensus::Ed25519ConsensusVerifier::new(consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError),
                                     )
                                     .unwrap()
-                            } else {
-                                policy
+                        } else {
+                            policy
                                     .engine()
                                     .on_observer_event(
                                         &state,
                                         ConsensusEvent::Proposal(proposal.proposal),
-                                        &FastPathEd25519Verifier,
+                                        &consensus::Ed25519ConsensusVerifier::new(consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError),
                                     )
                                     .unwrap()
-                            };
+                        };
                         if let Some(candidate) = proposal.candidate {
                             network.candidates.insert(digest, candidate);
                         }
@@ -2482,7 +2508,7 @@ mod recovery_preflight_tests {
                                 &state,
                                 ConsensusEvent::Certificate(certificate),
                                 signer,
-                                &FastPathEd25519Verifier,
+                                &consensus::Ed25519ConsensusVerifier::new(consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError),
                             )
                             .unwrap()
                     }
@@ -2566,7 +2592,9 @@ mod recovery_preflight_tests {
                         ConsensusEvent::Proposal(
                             decode_ordered_proposal(proposal).unwrap().proposal,
                         ),
-                        &FastPathEd25519Verifier,
+                        &consensus::Ed25519ConsensusVerifier::new(
+                            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                        ),
                     )
                     .unwrap()
                     .state;
@@ -2577,7 +2605,9 @@ mod recovery_preflight_tests {
                         ConsensusEvent::Certificate(
                             consensus::decode_quorum_certificate(certificate).unwrap(),
                         ),
-                        &FastPathEd25519Verifier,
+                        &consensus::Ed25519ConsensusVerifier::new(
+                            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                        ),
                     )
                     .unwrap()
                     .state;
@@ -2752,7 +2782,9 @@ mod recovery_preflight_tests {
                             &genesis,
                             ConsensusEvent::Proposal(proposal.proposal.clone()),
                             signer,
-                            &FastPathEd25519Verifier,
+                            &consensus::Ed25519ConsensusVerifier::new(
+                                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                            ),
                         )
                         .unwrap()
                         .outbound_messages
@@ -2769,12 +2801,22 @@ mod recovery_preflight_tests {
             fixture
                 .policy
                 .engine()
-                .verify_certificate(&minimal, &FastPathEd25519Verifier)
+                .verify_certificate(
+                    &minimal,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                    ),
+                )
                 .unwrap();
             fixture
                 .policy
                 .engine()
-                .verify_certificate(&complete, &FastPathEd25519Verifier)
+                .verify_certificate(
+                    &complete,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                    ),
+                )
                 .unwrap();
             assert_eq!(minimal.votes.len(), 3);
             assert_eq!(complete.votes.len(), 4);
@@ -2794,7 +2836,9 @@ mod recovery_preflight_tests {
                     .on_observer_event(
                         &genesis,
                         ConsensusEvent::Proposal(proposal.proposal.clone()),
-                        &FastPathEd25519Verifier,
+                        &consensus::Ed25519ConsensusVerifier::new(
+                            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                        ),
                     )
                     .unwrap()
                     .state;
@@ -2804,7 +2848,9 @@ mod recovery_preflight_tests {
                     .on_observer_event(
                         &observed,
                         ConsensusEvent::Certificate(certificate),
-                        &FastPathEd25519Verifier,
+                        &consensus::Ed25519ConsensusVerifier::new(
+                            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                        ),
                     )
                     .unwrap()
                     .state;
