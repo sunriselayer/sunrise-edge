@@ -109,6 +109,7 @@
 - [DR-0210: Native SQLite durability and lock-safe file identity](0210-native-sqlite-connection-ownership.md)
 - [DR-0211: immutable live-operation preparation before custody selection](0211-external-signing-preparation.md)
 - [DR-0212: offline Native SQLite business-closure recovery rehearsal](0212-offline-business-closure-recovery.md)
+- [DR-0213: bounded Native release artifact evidence](0213-native-release-artifact-evidence.md)
 - [DR-0214: protected custody and trustworthy review boundaries (Proposed)](0214-protected-custody-and-review-boundary.md)
 - [DR-0215: invocation-bound ordered local signatures and retained reread verification](0215-ordered-local-signature-verification.md)
 
