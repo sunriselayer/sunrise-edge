@@ -161,6 +161,14 @@ one. Never replace a running or previously prepared database with a fresh
 genesis as a recovery shortcut. Subsequent epoch recovery and serving use the
 existing verified successor path, not another original-genesis preparation.
 
+For quiet local maintenance, finish client work, stop the external terminator
+and wait for its forwarding worker, then send SIGINT to the exact still-owned
+host and require an ordinary successful exit. Killing a child on failed-test
+cleanup is not an orderly-stop result. Reopen the same state/blob pair with the
+same manifest, validator signing key and independently expected protocol/domain
+pins; do not prepare it again. A certificate change is not permission to alter
+any of those inputs or bypass explicit offline-fence confirmation.
+
 ## Local TLS and compiled CLI acceptance
 
 The storage-neutral process acceptance composes the real author, public
@@ -169,7 +177,26 @@ Private loopback TLS terminators forward the actual host responses unchanged;
 each peer has its own ephemeral CA and DNS identity. The separately compiled
 CLI performs an ordinary paid Standard Asset transfer and replays its saved
 intent/certificate/availability artifacts in the same boot and after all four
-hosts restart. The logical domain is the same across these replicas; the file
+hosts restart. The private terminators retain their exact bound listeners, DNS
+names and original CA files/configuration while new leaf keys/certificates are
+issued by those same retained CAs. Fresh fully authenticated observations with
+resumption disabled compare the actual received leaf DER, not just a successful
+context query. Quiet host stops require successful owned-child SIGINT exits;
+reopening advances each physical writer fence exactly 2 -> 3. Held old handles
+must refuse both fresh-deadline reads and a valid captured marker commit without
+changing its revision/value or any complete durable state.
+
+A separate finite control reads and parses the selected CLI's actual ClientHello
+before closing, without completing TLS or reaching a backend. Another separate
+phase changes only peer 0's CA to a disposable issuer with a distinct subject,
+keeping endpoint, DNS and the generation-3 host unchanged. Both held old SDK
+trust and a fresh old-trust compiled CLI process must refuse precisely
+with `UnknownIssuer`. Explicit new trust uses a new immutable DER file and a
+cohort config changing only that peer's CA-file field. Actual new-leaf, context,
+all-four stored-result replay and independent remote-domain refusal checks retain
+the same complete object/receipt/nonce, record/blob and mutation-sequence oracles.
+
+The logical domain is the same across these replicas; the file
 coordinates, validator identities, signing keys and TLS pins are distinct.
 
 Build the actual executables before running this focused acceptance:
@@ -190,7 +217,12 @@ Key derivation is not transaction signing, and missing output artifacts alone
 are not a signature-count measurement.
 
 See [DR-0199](../architecture/decisions/0199-local-tls-validator-startup-acceptance.md)
-for full-state replay, request-ID conflict and fencing requirements. Passing
+for full-state replay and request-ID conflict, and
+[DR-0216](../architecture/decisions/0216-local-tls-stop-restart-rotation.md)
+for the stopped-rotation boundary. Same-CA leaf rollover does not revoke other
+still-valid leaves. This fixture is not a production certificate loader, hot
+reload, zero-downtime/overlapping-bundle migration, CRL/OCSP, remote trust
+distribution or a mainnet PKI/custody/power/load qualification. Passing
 this focused test does not substitute for all required CI/local groups,
 independent economics/ingress audits, real custody, a selected reviewed
 activation profile or authorized network startup. The test TLS terminator is

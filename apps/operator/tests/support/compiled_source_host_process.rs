@@ -27,6 +27,51 @@ impl ChildGuard {
     pub fn into_inner(mut self) -> Child {
         self.0.take().expect("guard still owns its child")
     }
+
+    /// Quiet local acceptance only: signal this still-owned, unreaped positive
+    /// PID, then require an ordinary successful exit. Kill/reap remains solely
+    /// failure cleanup, never evidence of an orderly stop.
+    pub fn stop_orderly(mut self, deadline: Duration) {
+        let end: Instant = Instant::now()
+            .checked_add(deadline)
+            .expect("child stop deadline");
+        if let Some(status) = self.try_wait().expect("poll owned child before SIGINT") {
+            let _reaped: Child = self.0.take().expect("owned reaped child");
+            panic!("owned child exited before orderly stop: {status}");
+        }
+        let pid: u32 = self.child_mut().id();
+        assert!(
+            pid > 0 && pid <= i32::MAX as u32,
+            "positive owned child PID"
+        );
+        let mut signal: Command = Command::new("kill");
+        signal.args(["-s", "INT", "--"]).arg(pid.to_string());
+        let remaining: Duration = end.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "SIGINT helper deadline elapsed");
+        let output: Output = spawn_bounded_output(signal, remaining);
+        assert!(
+            output.status.success(),
+            "owned-child SIGINT helper failed: {:?}",
+            output.stderr
+        );
+        let status: ExitStatus = loop {
+            if let Some(status) = self.try_wait().expect("poll SIGINT child exit") {
+                break status;
+            }
+            assert!(
+                Instant::now() < end,
+                "owned child did not stop orderly within {deadline:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let _reaped: Child = self.0.take().expect("owned child successfully reaped");
+        assert_eq!(
+            status.code(),
+            Some(0),
+            "SIGINT must produce an ordinary successful child exit"
+        );
+        assert!(status.success());
+    }
 }
 impl Drop for ChildGuard {
     fn drop(&mut self) {
