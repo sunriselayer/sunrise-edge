@@ -623,3 +623,30 @@ without warnings; actual ordinary main exit 0 and owned teardown were retained.
 That scope did not run genuine activated-successor/signerless-history recurrence.
 Final-head whole acceptance/CI, production PKI/custody and Rustls advisory
 qualification were still open at this documentation preparation.
+
+At final documentation source `70210f57`, complete different-reviewer source
+approval was obtained and Draft PR #296 was created. The first whole-required
+invocation `0e62db50` ran from 17:56:47.384 to 17:57:07.250 UTC on 2026-10-07:
+npm-ci exited 0, then check-all exited 1 in the cheap release fixture's exact
+0751 assertion. The synthetic builder depended on inherited umask0077. Rust,
+genuine ignored recurrence and later owners did not run; this attempt remains
+failed. Actual terminal and exact own unit/process/cgroup/both-lease teardown
+were verified; no partial stages were adopted.
+
+Hosted run `37662978717` independently failed readiness-sqlite and
+recurring-sqlite at 18:00 UTC because the real CLI binary was absent in those
+separate jobs. The required full run builds it in the earlier Rust owner, but
+isolated selected lanes must own that prerequisite too. Corrections preserve
+literal test selectors, release mode oracles, restrictive service umask and
+the genuine seven-epoch/full-withdrawal-unlock workload. Source-only fixes do
+not reclassify either failed run; fresh corrected-source acceptance remains open.
+
+The fixture correction retained different-reviewer source approval. Its first
+own-unit cheap invocation failed in the final production-CLI negative because
+the parent unnecessarily supplied `--no-addons`; the production owner correctly
+refused undeclared execution flags. No source oracle was changed. The separate
+fresh plain-Node invocation `fc4a66ac` ran from 18:28:33 to 18:28:41 UTC:
+all 135 controls passed and actual main exit was 0. While running, UMask0077,
+NoNewPrivileges and the exact own PID/cgroup were read back; final own
+unit/PID/cgroup absence and unchanged source hashes were verified. This is cheap
+fixture evidence with ZERO native builds, not corrected-head whole acceptance.

@@ -416,6 +416,28 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   const refusedInventory = runFunction("ci_run_gate", ["rust-tests"], { CI_MOCK_FAIL_PREREQUISITE: "ci_require_exact_ignored_test" });
   assert.equal(refusedInventory.status, 9);
   const compiledCliBuild = ["build", "-p", "sunrise-edge-cli", "--bin", "sunrise-edge-cli", "--all-features"];
+  const compiledCliExtendedGroups = ["readiness-sqlite", "recurring-sqlite"];
+  function checkCompiledCliExtendedTrace(log, group) {
+    const [, pkg, target, name, capture] = expectedRecurringCases.find(([owner]) => owner === group);
+    assert.deepEqual(log.map(({ tool, args }) => [tool, args]), [
+      ["cargo", compiledCliBuild],
+      ["cargo", ["test", "--quiet", "-p", pkg, "--test", target, name, "--", "--ignored", "--exact", "--list"]],
+      ["cargo", ["test", "--quiet", "-p", pkg, "--test", target, name, "--", "--ignored", "--exact", ...(capture === "yes" ? ["--nocapture"] : [])]],
+    ], "each compiled-host owner must build the actual CLI exactly once before discovery and execution");
+  }
+  for (const group of compiledCliExtendedGroups) {
+    for (const fn of ["ci_run_required_extended_group", "ci_run_action", "ci_run_gate"]) {
+      checkCompiledCliExtendedTrace(passed(runFunction(fn, [group])), group);
+      const failedBuild = runFunction(fn, [group], { CI_MOCK_FAIL_ARG: "build" });
+      assert.equal(failedBuild.status, 19, "nested dispatch must propagate the CLI build's exact failure");
+      assert.deepEqual(failedBuild.log.map(({ tool, args }) => [tool, args]), [["cargo", compiledCliBuild]],
+        "failed CLI build must prevent both ignored-test discovery and execution");
+    }
+    for (const prerequisite of ["ci_execution_profile", "ci_execution_plan"]) {
+      const refused = runFunction("ci_run_required_extended_group", [group], { CI_MOCK_FAIL_PREREQUISITE: prerequisite });
+      assert.equal(refused.status, 9); assert.deepEqual(refused.log, [], "invalid selection must not build the CLI");
+    }
+  }
   assert.deepEqual(refusedInventory.log.map(({ tool, args }) => [tool, args]), [
     ["cargo", compiledCliBuild],
     ["cargo", ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"]],
@@ -488,6 +510,14 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   const required = passed(run("scripts/check-all.sh"));
   const full = passed(run("scripts/check-all.sh", ["--full"], pgEnvironment));
   const lanes = new Map(groups.map((group) => [group, passed(run("scripts/check-all.sh", ["--group", group], postgresGroups.includes(group) ? pgEnvironment : {}))]));
+  for (const group of compiledCliExtendedGroups) {
+    checkCompiledCliExtendedTrace(lanes.get(group), group);
+    const failedBuild = run("scripts/check-all.sh", ["--group", group], { CI_MOCK_FAIL_ARG: "build" });
+    assert.equal(failedBuild.status, 19);
+    assert.deepEqual(failedBuild.log.map(({ tool, args }) => [tool, args]), [["cargo", compiledCliBuild]]);
+  }
+  assert.deepEqual(lanes.get("core-recurrence").map(({ tool, args }) => [tool, args[0]]),
+    [["cargo", "test"], ["cargo", "test"]], "core-only recurrence must not gain a CLI prerequisite");
   const union = [...lanes.values()].flat();
   function contractEvents(log) {
     return log.filter(({ tool, args }) => tool === "node" && expectedContractCommands.some(
@@ -637,12 +667,18 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   }
   assert.deepEqual(lanes.get("rust-tests")[0].args, compiledCliBuild);
   assert.deepEqual(lanes.get("rust-tests")[1].args, ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"]);
-  for (const log of [required, full, lanes.get("rust-tests")]) {
+  for (const [log, expectedBuilds] of [[required, 3], [full, 3], [lanes.get("rust-tests"), 1]]) {
     const buildIndex = log.findIndex(({ tool, args }) => tool === "cargo" && JSON.stringify(args) === JSON.stringify(compiledCliBuild));
     const testIndex = log.findIndex(({ tool, args }) => tool === "cargo" && args[0] === "test" && args.includes("--workspace"));
     assert(buildIndex >= 0 && buildIndex < testIndex,
       "the actual CLI must be built before ordinary operator process acceptance");
-    assert.equal(log.filter(({ tool, args }) => tool === "cargo" && JSON.stringify(args) === JSON.stringify(compiledCliBuild)).length, 1);
+    assert.equal(log.filter(({ tool, args }) => tool === "cargo" && JSON.stringify(args) === JSON.stringify(compiledCliBuild)).length, expectedBuilds);
+  }
+  for (const log of [required, full]) for (const group of compiledCliExtendedGroups) {
+    const name = expectedRecurringCases.find(([owner]) => owner === group)[3];
+    const discoveryIndex = log.findIndex(({ tool, args }) => tool === "cargo" && args.includes(name) && args.includes("--list"));
+    assert(discoveryIndex > 0);
+    checkCompiledCliExtendedTrace(log.slice(discoveryIndex - 1, discoveryIndex + 2), group);
   }
   for (const group of ["pg-lifecycle", "pg-drain-history", "pg-business-audit", "pg-recovery-economics"]) {
     assert(lanes.get(group).some(({ tool, args }) => tool === "cargo" && args.includes("build") && args.includes("sunrise-edge-cli")));
@@ -707,7 +743,8 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     assert.notEqual(duplicate.status, 0);
     assert.equal(ignoredExecutions(duplicate.log).length, 0, "ambiguous discovery must not execute a test");
   }
-  for (const args of [[], ["unknown"], ["lint"], ["core-recurrence", "extra"]]) {
+  for (const args of [[], ["unknown"], ["lint"], ["core-recurrence", "extra"],
+    ["readiness-sqlite", "extra"], ["recurring-sqlite", "extra"]]) {
     const invalid = runFunction("ci_run_required_extended_group", args);
     assert.notEqual(invalid.status, 0);
     assert.deepEqual(invalid.log, []);
@@ -733,6 +770,22 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
       "ci_run_required_extended_group", "core-recurrence"]);
     assert.notEqual(refused.status, 0);
     assert.deepEqual(refused.log, [], "invalid complete inventory must fail before any selected test");
+  }
+  for (const group of compiledCliExtendedGroups) {
+    for (const [label, rows] of [
+      ["missing-owner", recurringCases.filter(([owner]) => owner !== group)],
+      ["late-invalid-owner", [...recurringCases, ["unknown", ...recurringCases[0].slice(1)]]],
+      ["late-duplicate", [...recurringCases, recurringCases[0]]],
+    ]) {
+      const changedRegistry = requiredInventoryText.replace(requiredInventoryPattern,
+        `readonly CI_REQUIRED_EXTENDED_CASES=(\n${rows.map((row) => `  '${row.join("|")}'`).join("\n")}\n)`);
+      assert.notEqual(changedRegistry, requiredInventoryText);
+      const changedRegistryPath = join(directory, `compiled-cli-inventory-${group}-${label}.sh`);
+      writeFileSync(changedRegistryPath, changedRegistry, { flag: "wx", mode: 0o600 });
+      const refused = runBash([functionScript, changedRegistryPath, execution, "ci_run_required_extended_group", group]);
+      assert.notEqual(refused.status, 0);
+      assert.deepEqual(refused.log, [], "complete inventory and nonempty selection must validate before any CLI build");
+    }
   }
   for (const [group, , name] of auxiliary.slice(1)) {
     const missing = run("scripts/check-all.sh", ["--group", group], { ...pgEnvironment, CI_MOCK_MISSING_TEST: name });

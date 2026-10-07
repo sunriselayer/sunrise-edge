@@ -66,9 +66,23 @@ The direct Native TLS follow-up under
 has complete different-reviewer source approval at `c0d2f217` and an actual
 six-stage scoped PASS: 17 named tests, zero failed/ignored and strict owning
 Clippy. Normal main ancestry is included without changing that functional tree.
-The final documentation head still requires fresh complete source review,
+PR #296 is Draft. The final documentation head `70210f57` received fresh
+complete independent source approval, but its first whole-required attempt
+failed in the cheap release fixture after npm-ci passed. The fixture's requested
+file mode depended on the inherited umask; its exact mode oracle is retained.
+The explicit test-owned setup correction has independent source approval and
+all 135 cheap controls passed in a fresh own unit with UMask0077. Its initial
+single-script invocation failed on an extra outer Node flag; the subsequent
+plain-Node invocation preserved the production flag refusal and passed.
+The separate hosted SQLite lanes also failed because they did not build the
+actual CLI prerequisite; the shared selected-group recipe now explicitly
+builds it after complete inventory validation, with new ordering/failure
+controls. Those source-only CI changes require independent review and actual
+gate execution. Neither earlier failure is a TLS/runtime result or a passing
+whole gate. A new exact source freeze,
 literal npm-ci/full required acceptance, genuine ignored successor/history
-recurrence and final-head CI. No ancestor or scoped pass substitutes for them.
+recurrence and final-head CI remain mandatory. No ancestor or scoped pass
+substitutes for them.
 
 Prior failed/interrupted/source-blocked attempts and component evidence remain
 in the [preserved queue](docs/development/history/execution-queue-through-2026-10-07.md#native-integration-and-direct-tls-observations-2026-10-08).
@@ -224,6 +238,15 @@ and cross-phase criteria; it does not shorten them.
   workload, fresh final-head literal npm-ci/check-all and CI remain mandatory.
   Prior source blocks and the first runner's incorrect expected-count failure
   remain preserved in the archived queue, never adopted as passing.
+  Final source `70210f57` received a fresh complete independent review; its
+  whole-required invocation `0e62db50` failed on the cheap fixture's mode
+  assertion before Rust/full recurrence. Hosted `37662978717` separately failed
+  both SQLite process lanes on a missing CLI binary. Explicit fixture modes and
+  selected-lane build prerequisites are corrected without changing the
+  restrictive service umask, test selectors, expected bytes or unlock delay.
+  The fixture alone subsequently passed all 135 controls under UMask0077;
+  isolated-lane and whole corrected-source execution are separate gates.
+  Fresh complete acceptance and CI for the corrected source are still open.
   The M5 lock delta only adds direct edges to already locked versions; no PG
   dependency/version changes occur. Locked Rustls 0.23.43 remains affected by
   RUSTSEC-2026-0285 (patched in >=0.23.45). The shared upgrade and local PG
@@ -243,9 +266,15 @@ and cross-phase criteria; it does not shorten them.
   16/17 criteria remain for advertised providers; a local adapter is insufficient
   and narrowing historical all-provider scope needs approval.
   Two fresh same-host Native builds passed at `3ec8d7bd`; this is not complete
-  M7 qualification. The builtins-only isolated-runtime foundation S0 attempt
-  failed on an unknown own-inner descriptor. Acquired package/native code has
-  not been executed in that isolation profile; no runtime clearance is inferred.
+  M7 qualification. The original builtins-only isolated-runtime S0 attempt and
+  its separate descriptor diagnostic failed. A separately reviewed own-unit
+  three-syscall denial subsequently passed the builtins-only checks; it did not
+  execute acquired code or prove package isolation. Its exited unit was retained
+  for 28.010 seconds before stopping, so a strict twenty-second deactivation
+  bound was not met. The corrected two-archive DATA plan is independently
+  approved only as a plan; no archive/helper invocation or package acceptance
+  follows. Acquired package/native code has not been executed in that isolation
+  profile; no runtime clearance is inferred.
 - [ ] **M8 — public operation/final go-no-go:** complete Delivery 4 and actual
   public-operation/recovery evidence; review experimental, unsupported, mock and
   deferred capabilities against the original criteria. Mainnet genesis and

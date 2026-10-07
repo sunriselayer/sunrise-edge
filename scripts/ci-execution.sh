@@ -101,6 +101,12 @@ ci_run_required_extended_group() {
     echo 'required extended gate group has no registered test' >&2
     return 1
   fi
+  # Compiled host fixtures need the separately built CLI on a fresh lane.
+  case "$requested" in
+    readiness-sqlite|recurring-sqlite)
+      cargo build -p sunrise-edge-cli --bin sunrise-edge-cli --all-features || return "$?"
+      ;;
+  esac
   for row in "${selected[@]}"; do
     IFS='|' read -r case_group package target test_name nocapture <<< "$row"
     local -a args=(-p "$package")
