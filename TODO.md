@@ -386,7 +386,7 @@ explicitly approves a documented scope change.
   checks and every assertion, with production code unchanged. Exact `5c05215e`
   received complete final-source approval and passed the actual all-feature core
   lib suite (1226 passed, 0 failed, 7 ignored) plus strict all-target/all-feature
-  owning Clippy at 07:37 UTC. The seven ignored recurrences were not executed by
+  owning Clippy at 07:37 UTC. The seven ignored tests were not executed by
   that owning profile. Full required acceptance and CI remain pending. This is
   a handler-correctness prerequisite, not protected custody or M2 completion.
 - [ ] **M3 — selected-profile durable state:** atomic object/state/nonce/receipt/
