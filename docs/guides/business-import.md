@@ -1,7 +1,8 @@
 # Install a verified business cut into inactive SQLite
 
-`business_import` privately reexecutes one complete first-epoch saved cut and
-installs its verified raw inventory into a dedicated import-only namespace.
+`business_import` privately reexecutes one complete independently authenticated
+saved cut and installs its verified raw inventory into a dedicated import-only
+namespace.
 The result cannot admit new business, sign protocol votes/ACKs or serve an
 activated epoch. See [the storage/authority contract](../architecture/verified-inactive-import.md)
 and [DR-0176](../architecture/decisions/0176-verified-inactive-business-import.md).
@@ -23,7 +24,7 @@ the destination namespace; it does not certify eligibility in the next set.
 Do not supply a private key, endpoint or source writer generation.
 
 ```sh
-cargo build -p sunrise-edge-operator --bin business_import
+cargo build --locked -p sunrise-edge-operator --bin business_import
 BUSINESS_IMPORT_BIN="${CARGO_TARGET_DIR:-target}/debug/business_import"
 
 "$BUSINESS_IMPORT_BIN" create-sqlite \
@@ -85,3 +86,46 @@ unsupported, not automatically migrated or reset. Preserve any needed old
 data separately and request an explicitly scoped preservation workflow.
 SQLite evidence does not certify PostgreSQL, D1, a deployed DO host, readiness
 or production/mainnet safety.
+
+## Offline business-closure recovery rehearsal
+
+[DR-0212](../architecture/decisions/0212-offline-business-closure-recovery.md)
+reuses the existing commands; it is not a new live-restore or promotion mode.
+Start with one genuinely drained original outgoing epoch and independently
+reviewed local pins. No production values or public network are created.
+
+1. Run the compiled [cut export](business-cut.md#build-and-export) until complete.
+   Retain the original signed genesis, fixed history and complete immutable cut.
+2. Stop and close every source SQLite owner, including the separate blob store.
+   In an operator-controlled isolated rehearsal, make both original state and
+   blob paths unavailable. Merely clearing state handles is insufficient. Do
+   not move or open/close independent leaf descriptors under active SQLite.
+3. Run [saved verification](business-cut.md#verify-without-the-source) with no
+   source or signer inputs. Keep both source paths unavailable throughout the
+   subsequent `create-sqlite`, `resume-sqlite` and exact final resume commands.
+4. Require `complete-inactive`, unchanged `cut`/`package`/`plan` identities and
+   `new_batches=0` on final resume. Ensure neither source path was recreated;
+   input archive/history inventory must remain unchanged. An ordinary store
+   open must still refuse this import-origin destination.
+5. Only after the offline sequence, reattach the original sources and compare
+   their complete business snapshot with the pre-export observation. An
+   unchanged archive hash or successful command exit alone is not that check.
+
+Creation is not atomic across two database files: after the first import-origin
+state file is initialized, body-file creation can fail. Preserve that inactive
+residue for inspection. Ordinary open and resume with a missing body file must
+refuse; do not repair/bootstrap the missing file, reset metadata or force resume.
+
+Logical execution generations and their authenticated floor are preserved.
+Destination-local writer-fence/source-instance identity and physical revisions
+are fresh; refencing a copy cannot revoke the original inode's writer or signer.
+The rehearsal ends inactive and is not physical old-writer exclusion, arbitrary
+crash continuation, freshness proof, encrypted off-host backup or mainnet M4
+qualification. Those requirements remain in [`TODO.md`](../../TODO.md).
+
+For a saved successor cut, keep original-genesis pins and provide the same full
+all-or-none verified predecessor chain described in the
+[cut guide](business-cut.md#successor-source-and-saved-verification). Current
+context is derived from that chain, not selected by changing the declared epoch.
+Import/saved verification accept no signer key; their verified business closure
+does not acquire serving or signing authority.

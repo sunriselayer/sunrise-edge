@@ -321,9 +321,11 @@ explicitly approves a documented scope change.
   interruption with external-process lock exclusion. Scoped `runtime-sqlite`
   tests pass 141/0, strict package Clippy and formatting pass. The nonce write set
   transports the unchanged canonical fixture as opaque bytes; these backend
-  checks do not replace protocol authentication/replay acceptance. Complete
-  exact-head source review, full required acceptance, CI and integration remain
-  pending. Power-loss, ENOSPC/storage faults, failover and off-host restore are
+  checks do not replace protocol authentication/replay acceptance. Exact
+  `621d1a07` has fresh complete independent source approval and repeated owning
+  141/0 tests plus strict Clippy. Full required acceptance, final CI and
+  integration of PR #287 remain pending. Power-loss, ENOSPC/storage faults,
+  failover and off-host restore are
   not closed by this local process evidence; M3 remains open.
 - [ ] **M4 — checkpoint, backup and disaster recovery:** publish/verify the
   required checkpoint/state-root and immutable body manifests; encrypted off-host
@@ -332,12 +334,16 @@ explicitly approves a documented scope change.
   PG-specific exercises only for a PG profile; do not impose PG on lightweight stores.
   Accepted [DR-0212](docs/architecture/decisions/0212-offline-business-closure-recovery.md)
   reuses existing compiled export/saved verification/fresh inactive import
-  commands for one local business-closure rehearsal. Extend the existing genuine
-  signed fixture with both original source database paths unavailable throughout
-  verification/import/resume and with second-file creation failure preserving
-  inactive residue; no new runtime/serving authority or duplicate fixture.
-  Implementation and owning execution remain pending. Authenticated logical
-  generations are preserved; writer-fence/source-instance identity is not copied.
+  commands for one local business-closure rehearsal. The implementation candidate
+  extends the existing genuine signed fixture with compiled export, both original
+  state/blob paths unavailable throughout saved verification/import/resume/replay,
+  exact final `new_batches=0`, restored full source-snapshot equality and genuine
+  active-WAL second-file creation failure. Failed import origin and missing-body
+  refusal remain inactive; no new runtime/serving authority or duplicate fixture.
+  Only formatting and diff checks have run; owning compiled execution, strict
+  Clippy, complete final source review, full required acceptance and CI remain
+  pending. Authenticated logical generations are preserved; writer-fence/source-
+  instance identity is not copied.
   Arbitrary crash continuation, published checkpoint/state-root authority,
   encrypted off-host backup, old-writer exclusion and general M4 qualification
   remain open.
