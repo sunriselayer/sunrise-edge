@@ -1,6 +1,11 @@
 //! Real TCP E2E from `sunrise-edge-client` through the native HTTP adapter
 //! into the composed local devnet query surface.
 
+#[path = "support/certified_relay_process.rs"]
+mod certified_relay_process;
+#[path = "support/disposable_tls.rs"]
+mod disposable_tls;
+
 use std::ffi::OsString;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -14,8 +19,9 @@ use execution::publication::PublicationContext;
 use protocol_types::AtomicityDomainId;
 use runtime::{DurableOperationContext, StorageCorrelationId, StorageDeadline};
 use sunrise_edge_client::{
-    Address, Client, HttpObjectQueryResult, HttpReceiptQueryResult, LocalSigner,
-    LoopbackHttpTransport, ObjectId, RequestId,
+    Address, Client, HttpContextQueryResult, HttpNextNonceQueryResult, HttpObjectQueryResult,
+    HttpReceiptQueryResult, LocalSigner, LoopbackHttpTransport, ObjectId, RemoteTlsHttpTransport,
+    RequestId,
 };
 use sunrise_edge_devnet::{
     DevnetConfig, boot_local_store, build_devnet_protocol_context, compose_devnet_router,
@@ -160,6 +166,77 @@ async fn client_queries_all_four_routes_from_the_real_devnet_router_over_tcp() {
         assert_eq!(nonce.sender(), sender);
         assert_eq!(nonce.epoch().get(), 7);
         assert_eq!(nonce.next_nonce(), 0);
+
+        // Second leg: the same real native listener, reached through the
+        // actual certified Vercel constructor and a test-owned TLS relay,
+        // rather than the loopback transport above. Both Node spawn/stdio
+        // and this blocking TLS exchange stay on this blocking thread; a
+        // panic here drops `relay`, which kills and waits for its child.
+        let identity: disposable_tls::DisposableTlsIdentity =
+            disposable_tls::issue_identity("relay.test");
+        let relay_script: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/support/native-certified-relay-server.mjs");
+        let (mut relay, relay_addr): (certified_relay_process::OwnedServer, SocketAddr) =
+            certified_relay_process::start(
+                &relay_script,
+                &identity.leaf.pem(),
+                &identity.key.serialize_pem(),
+                Some(address.port()),
+            );
+        let relay_transport: RemoteTlsHttpTransport = RemoteTlsHttpTransport::new(
+            relay_addr,
+            "relay.test",
+            &identity.ca_der,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(1),
+            NonZeroUsize::new(16 * 1024).unwrap(),
+            NonZeroUsize::new(1024 * 1024).unwrap(),
+        )
+        .unwrap();
+        let relay_client: Client<RemoteTlsHttpTransport> = Client::new(relay_transport);
+
+        let relayed_context: HttpContextQueryResult = relay_client.query_context().unwrap();
+        assert_eq!(relayed_context.chain_id().as_str(), "client-e2e-devnet");
+        assert_eq!(relayed_context.epoch().get(), 7);
+        assert!(!relayed_context.protocol_config_bytes().is_empty());
+
+        let relayed_object_id: ObjectId = ObjectId::new([0x41; 32]);
+        assert_eq!(
+            relay_client.query_object(relayed_object_id).unwrap(),
+            HttpObjectQueryResult::Absent {
+                object_id: relayed_object_id
+            }
+        );
+
+        let relayed_request_id: RequestId = RequestId::new([0x42; 32]).unwrap();
+        assert_eq!(
+            relay_client.query_receipt(relayed_request_id).unwrap(),
+            HttpReceiptQueryResult::Absent {
+                request_id: relayed_request_id
+            }
+        );
+
+        let relayed_sender: Address = Address::new([0x43; 32]);
+        let relayed_nonce: HttpNextNonceQueryResult =
+            relay_client.query_next_nonce(relayed_sender).unwrap();
+        assert_eq!(relayed_nonce.sender(), relayed_sender);
+        assert_eq!(relayed_nonce.epoch().get(), 7);
+        assert_eq!(relayed_nonce.next_nonce(), 0);
+
+        let relayed_object_line: String = format!("CHUNKED GET /v1/objects/{}", "41".repeat(32));
+        let relayed_receipt_line: String = format!("CHUNKED GET /v1/receipts/{}", "42".repeat(32));
+        let relayed_nonce_line: String =
+            format!("CHUNKED GET /v1/senders/{}/next-nonce", "43".repeat(32));
+        relay.stop(&[
+            "CHUNKED GET /v1/context",
+            &relayed_object_line,
+            &relayed_receipt_line,
+            &relayed_nonce_line,
+        ]);
+
         context
     })
     .await

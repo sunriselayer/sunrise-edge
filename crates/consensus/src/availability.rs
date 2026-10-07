@@ -103,8 +103,10 @@ const MAX_CHAIN_ID_BYTES: usize = 128;
 /// already needs several megabytes. Larger otherwise valid signatures can
 /// exceed this shared ceiling; not every legal validator count and signature
 /// length combination is guaranteed to fit in one canonical frame.
-const MAX_ENCODED_IDENTITY_BYTES: usize = 2 * 1024;
-const MAX_ENCODED_VOTE_BYTES: usize = 8 * 1024;
+/// Complete encoded availability identity ceiling, reusable by transport guards.
+pub const MAX_ENCODED_IDENTITY_BYTES: usize = 2 * 1024;
+/// Complete encoded availability vote ceiling, distinct from a durable vote.
+pub const MAX_ENCODED_VOTE_BYTES: usize = 8 * 1024;
 const MAX_ENCODED_CERTIFICATE_BYTES: usize = MAX_CANONICAL_FRAME_BYTES;
 
 /// Bound on the `votes` slice a caller may pass to

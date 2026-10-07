@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sunrise-edge-certified-relay",
+  "main": "src/certified.ts",
+  "compatibility_date": "2026-08-20",
+  "compatibility_flags": ["enable_request_signal"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "send_metrics": false,
+  "vars": {
+    "SUNRISE_NODE_CORE_URL": "https://certified-host.invalid"
+  },
+  "secrets": {
+    "required": ["SUNRISE_NODE_CORE_BEARER_TOKEN"]
+  },
+  "observability": {
+    "enabled": false
+  }
+}

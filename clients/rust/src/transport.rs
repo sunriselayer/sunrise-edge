@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore};
 
+mod chunked_response;
+
 /// HTTP method used by one bounded request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Method {
@@ -170,22 +172,38 @@ pub enum TransportError {
     InvalidStatusCode,
     /// A header line was not `"Name: value"`.
     MalformedHeaderLine,
-    /// A response other than bodyless HTTP 204 had no `Content-Length` header.
+    /// An ordinary response had neither length nor supported chunked framing.
     MissingContentLength,
     /// The response had more than one `Content-Length` header.
     DuplicateContentLength,
     /// The response's `Content-Length` was not a valid integer or was present
     /// on bodyless HTTP 204.
     InvalidContentLength,
-    /// The response declared `Transfer-Encoding`, which this transport
-    /// never accepts.
+    /// The response's transfer coding is unsupported or forbidden on 204.
     TransferEncodingUnsupported,
+    /// The response declared both length and transfer-coding framing.
+    AmbiguousResponseFraming,
+    /// The response declared transfer coding more than once.
+    DuplicateTransferEncoding,
+    /// Chunk sizes, delimiters, extensions or trailers were malformed.
+    MalformedChunkedResponse,
+    /// The connection closed before a complete chunked terminator.
+    TruncatedChunkedResponse,
+    /// A chunked trailer tried to alter framing or content interpretation.
+    ForbiddenResponseTrailer,
+    /// Chunk/trailer metadata exceeded its independently bounded budget.
+    ResponseFramingTooLarge {
+        /// Maximum aggregate framing/trailer byte count.
+        maximum: usize,
+    },
+    /// The configured decoded-body maximum could not form a framing budget.
+    ResponseFramingBudgetOverflow,
     /// The response had more than one `Content-Type` header.
     DuplicateContentType,
-    /// The declared `Content-Length` exceeded the configured maximum body
-    /// bound.
+    /// The declared length or cumulative chunked body exceeded the configured
+    /// decoded-body maximum.
     ResponseBodyTooLarge {
-        /// Declared body length in bytes.
+        /// Declared length or cumulative chunked body length in bytes.
         declared: usize,
         /// Configured maximum body length in bytes.
         maximum: usize,
@@ -197,10 +215,10 @@ pub enum TransportError {
         /// Body bytes actually received before the connection closed.
         received: usize,
     },
-    /// The server sent bytes beyond its own declared `Content-Length`.
+    /// The server sent bytes beyond its complete length or chunked framing.
     TrailingResponseBytes,
     /// The server did not close the `Connection: close` response after the
-    /// exact declared body within the configured read timeout.
+    /// complete length or chunked framing within the configured read timeout.
     ResponseDidNotClose,
 }
 
@@ -252,7 +270,9 @@ impl fmt::Display for TransportError {
             }
             Self::InvalidStatusCode => f.write_str("response status code was not a valid integer"),
             Self::MalformedHeaderLine => f.write_str("malformed response header line"),
-            Self::MissingContentLength => f.write_str("response had no Content-Length header"),
+            Self::MissingContentLength => {
+                f.write_str("response had neither length nor supported chunked framing")
+            }
             Self::DuplicateContentLength => {
                 f.write_str("response had more than one Content-Length header")
             }
@@ -260,7 +280,22 @@ impl fmt::Display for TransportError {
                 f.write_str("response Content-Length was invalid for its status")
             }
             Self::TransferEncodingUnsupported => {
-                f.write_str("response declared Transfer-Encoding, which is unsupported")
+                f.write_str("response transfer coding was unsupported or forbidden for its status")
+            }
+            Self::AmbiguousResponseFraming => {
+                f.write_str("response declared conflicting length and transfer coding")
+            }
+            Self::DuplicateTransferEncoding => {
+                f.write_str("response declared more than one transfer coding field")
+            }
+            Self::MalformedChunkedResponse => f.write_str("malformed chunked response framing"),
+            Self::TruncatedChunkedResponse => f.write_str("incomplete chunked response framing"),
+            Self::ForbiddenResponseTrailer => f.write_str("forbidden response trailer"),
+            Self::ResponseFramingTooLarge { maximum } => {
+                write!(f, "response framing exceeded {maximum} bytes")
+            }
+            Self::ResponseFramingBudgetOverflow => {
+                f.write_str("configured body maximum overflows response framing budget")
             }
             Self::DuplicateContentType => {
                 f.write_str("response had more than one Content-Type header")
@@ -274,7 +309,7 @@ impl fmt::Display for TransportError {
                 "connection closed after {received} of {expected} declared body bytes"
             ),
             Self::TrailingResponseBytes => {
-                f.write_str("response carried bytes beyond its declared Content-Length")
+                f.write_str("response carried bytes beyond its complete framing")
             }
             Self::ResponseDidNotClose => {
                 f.write_str("Connection: close response did not close within the read timeout")
@@ -383,9 +418,9 @@ impl BoundedTransportIo for TcpStream {
 ///
 /// Opens exactly one bounded [`TcpStream`] per request, sends
 /// `Connection: close`, and enforces connect/read/write timeouts plus
-/// header/body byte bounds. It requires an exact `Content-Length` except for
-/// bodyless HTTP 204, which ends at the headers and forbids Content-Length.
-/// It rejects `Transfer-Encoding`, a missing/duplicate/invalid length, a
+/// header/body byte bounds. It requires exact `Content-Length` or unique
+/// `Transfer-Encoding: chunked`; bodyless 204 ends at headers and forbids both.
+/// It rejects mixed/unsupported/duplicate framing, missing/invalid length, a
 /// truncated or trailing body, and any non-loopback
 /// target. It performs no TLS handshake, never follows a redirect, never
 /// uses a proxy, never reuses a connection across requests, and does no
@@ -895,7 +930,7 @@ impl BoundedTransportIo for TlsBoundedStream {
                 // A peer that closes the raw TCP connection without sending a
                 // TLS `close_notify` surfaces here as `UnexpectedEof`. This
                 // transport treats it exactly like a plain TCP EOF (`Ok(0)`):
-                // the strict exact-length/bodyless framing shared with
+                // the strict complete length/chunked/bodyless framing shared with
                 // `LoopbackHttpTransport` already detects any truncation this
                 // would otherwise catch, so both transports must react to a
                 // closed connection identically.
@@ -1014,6 +1049,11 @@ fn read_response<S: BoundedTransportIo>(
 
     let mut content_length: Option<usize> = None;
     let mut content_type: Option<String> = None;
+    let mut content_length_count: usize = 0;
+    let mut invalid_length: bool = false;
+    let mut content_type_count: usize = 0;
+    let mut transfer_encoding: Option<&str> = None;
+    let mut transfer_encoding_count: usize = 0;
     for line in lines {
         if line.is_empty() {
             continue;
@@ -1029,25 +1069,33 @@ fn read_response<S: BoundedTransportIo>(
             return Err(TransportError::MalformedHeaderLine);
         }
         if name.eq_ignore_ascii_case("content-length") {
-            if content_length.is_some() {
-                return Err(TransportError::DuplicateContentLength);
-            }
+            content_length_count += 1;
             if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err(TransportError::InvalidContentLength);
+                invalid_length = true;
+            } else {
+                match value.parse::<usize>() {
+                    Ok(length) => content_length = Some(length),
+                    Err(_) => invalid_length = true,
+                }
             }
-            content_length = Some(
-                value
-                    .parse::<usize>()
-                    .map_err(|_| TransportError::InvalidContentLength)?,
-            );
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
-            return Err(TransportError::TransferEncodingUnsupported);
+            transfer_encoding_count += 1;
+            transfer_encoding = Some(value);
         } else if name.eq_ignore_ascii_case("content-type") {
-            if content_type.is_some() {
-                return Err(TransportError::DuplicateContentType);
-            }
+            content_type_count += 1;
             content_type = Some(value.to_string());
         }
+    }
+
+    // Collect facts first: ambiguity refusals must not depend on field order.
+    if content_length_count > 1 {
+        return Err(TransportError::DuplicateContentLength);
+    }
+    if invalid_length {
+        return Err(TransportError::InvalidContentLength);
+    }
+    if content_type_count > 1 {
+        return Err(TransportError::DuplicateContentType);
     }
 
     if status == 204 {
@@ -1055,6 +1103,9 @@ fn read_response<S: BoundedTransportIo>(
         // even an explicit zero. Already-buffered trailing bytes are rejected;
         // later bytes are not read as the one-shot connection is dropped
         // without waiting for EOF.
+        if transfer_encoding_count > 0 {
+            return Err(TransportError::TransferEncodingUnsupported);
+        }
         if content_length.is_some() {
             return Err(TransportError::InvalidContentLength);
         }
@@ -1065,6 +1116,30 @@ fn read_response<S: BoundedTransportIo>(
             status,
             content_type,
             body: Vec::new(),
+        });
+    }
+    if transfer_encoding_count > 0 {
+        if content_length.is_some() {
+            return Err(TransportError::AmbiguousResponseFraming);
+        }
+        if transfer_encoding_count > 1 {
+            return Err(TransportError::DuplicateTransferEncoding);
+        }
+        if !transfer_encoding.is_some_and(|value: &str| value.eq_ignore_ascii_case("chunked")) {
+            return Err(TransportError::TransferEncodingUnsupported);
+        }
+        let body: Vec<u8> = chunked_response::read_chunked(
+            stream,
+            already_read_body,
+            max_body_bytes,
+            deadline,
+            read_timeout,
+        )?;
+        require_response_close(stream, deadline, read_timeout)?;
+        return Ok(WireResponse {
+            status,
+            content_type,
+            body,
         });
     }
     let content_length: usize = content_length.ok_or(TransportError::MissingContentLength)?;
@@ -1094,10 +1169,23 @@ fn read_response<S: BoundedTransportIo>(
         }
     }
 
-    // Bounded trailing-byte probe: Content-Length declared the exact body
-    // size, so any further byte before the peer closes is a protocol
-    // violation. A timeout here (the peer simply has not closed yet) is not
-    // itself evidence of trailing bytes.
+    require_response_close(stream, deadline, read_timeout)?;
+
+    Ok(WireResponse {
+        status,
+        content_type,
+        body: already_read_body,
+    })
+}
+
+fn require_response_close<S: BoundedTransportIo>(
+    stream: &mut S,
+    deadline: Instant,
+    read_timeout: Duration,
+) -> Result<(), TransportError> {
+    // Both complete framings require a bounded close probe; a timeout alone
+    // is not evidence of trailing data, nor successful one-shot completion.
+    let mut chunk: [u8; 4096] = [0; 4096];
     match stream.read_once(&mut chunk, deadline, read_timeout) {
         Ok(0) => {}
         Ok(_) => return Err(TransportError::TrailingResponseBytes),
@@ -1110,11 +1198,7 @@ fn read_response<S: BoundedTransportIo>(
         Err(error) => return Err(error),
     }
 
-    Ok(WireResponse {
-        status,
-        content_type,
-        body: already_read_body,
-    })
+    Ok(())
 }
 
 fn remaining_timeout(

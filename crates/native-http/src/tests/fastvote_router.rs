@@ -18,6 +18,9 @@ use execution::publication::{PublicationContext, UnverifiedDependencyRef};
 use fees::GasSchedule;
 use protocol_types::{SignatureSchemeId, ValidatorId};
 
+#[path = "certified_relay_contract.rs"]
+mod certified_relay_contract;
+
 #[test]
 fn frozen_frontier_wire_and_consensus_page_bounds_match() {
     assert_eq!(

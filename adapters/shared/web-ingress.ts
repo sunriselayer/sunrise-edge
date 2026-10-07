@@ -1,7 +1,6 @@
 export const NODE_EVENT_PATH = "/v1/events";
 export const LIVENESS_PATH = "/health/live";
-export const NODE_EVENT_MEDIA_TYPE =
-  "application/vnd.sunrise-edge.node-event";
+export const NODE_EVENT_MEDIA_TYPE = "application/vnd.sunrise-edge.node-event";
 export const NODE_RESULT_MEDIA_TYPE =
   "application/vnd.sunrise-edge.node-result";
 export const MAX_HTTP_EVENT_BODY_BYTES = 16 * 1024 * 1024 + 512;
@@ -18,12 +17,18 @@ export interface WebIngressOptions {
   readonly maximumRequestBodyBytes?: number;
 }
 
-class IngressError extends Error {
+/** A pre-dispatch framing refusal; never evidence of an upstream outcome. */
+export class IngressError extends Error {
+  readonly status: number;
+  readonly code: string;
+
   constructor(
-    readonly status: number,
-    readonly code: string,
+    status: number,
+    code: string,
   ) {
     super(code);
+    this.status = status;
+    this.code = code;
     this.name = "IngressError";
   }
 }
@@ -56,7 +61,7 @@ export async function handleWebRequest(
   }
 
   try {
-    validateHeaders(request.headers, maximumRequestBodyBytes);
+    validateEventRequestHeaders(request.headers, maximumRequestBodyBytes);
     const body = await readBoundedBody(
       request.body,
       maximumRequestBodyBytes,
@@ -163,7 +168,8 @@ function validateMaximumRequestBodyBytes(value: number): number {
   return value;
 }
 
-function validateHeaders(
+/** Shared exact event media, encoding and canonical declared-length rules. */
+export function validateEventRequestHeaders(
   headers: Headers,
   maximumRequestBodyBytes: number,
 ): void {

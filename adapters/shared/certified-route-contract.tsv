@@ -1,0 +1,23 @@
+# DR-0204 independent test oracle: method path request-bytes response-bytes success-mode empty-request
+# These numbers are checked against actual native/Rust codec owners, not derived from TypeScript policy.
+POST	/v1/fastvote/prepare	5309888	4096	result	0
+POST	/v1/fastvote/certificates	6359488	33554432	result	0
+POST	/v1/fastvote/publications/source	6359488	33554432	result	0
+POST	/v1/fastvote/publications/retain	33554432	8192	result	0
+POST	/v1/fastvote/publications/apply	7408064	33554432	result	0
+POST	/v1/fastvote/publications/retained-source	128	33554432	result	0
+POST	/v1/fastvote/frontier/page	128	532544	result	0
+POST	/v1/fastvote/frontier/advance	1	8192	result-or-empty	1
+POST	/v1/fastvote/drain/signer-page	532608	0	empty	0
+POST	/v1/fastvote/drain/member-confirm	160	0	empty	0
+POST	/v1/fastvote/drain/union-advance	2099328	4096	result-or-empty	0
+POST	/v1/fastvote/drain/signer-progress	128	534912	result	0
+POST	/v1/fastvote/drain/apply	128	33554432	result	0
+POST	/v1/fastvote/drain/import/{validator_id}	33554432	2048	result	0
+GET	/v1/context	0	33554432	result	1
+GET	/v1/objects/{object_id}	0	33554432	result	1
+GET	/v1/receipts/{request_id}	0	33554432	result	1
+GET	/v1/senders/{sender}/next-nonce	0	33554432	result	1
+GET	/v1/contracts/paid-fee-policy	0	16384	result	1
+GET	/v1/contracts/publications/{publisher}/{origin_seed}	0	5310144	result	1
+GET	/v1/contracts/instances/{creator}/{seed}	0	33554432	result	1

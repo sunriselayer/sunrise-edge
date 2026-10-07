@@ -1,0 +1,43 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "functions": {
+    "api/ingress.ts": { "maxDuration": 35 }
+  },
+  "routes": [
+    { "src": "^/health/live$", "dest": "/api/ingress" },
+    { "src": "^/v1/fastvote/prepare$", "dest": "/api/ingress" },
+    { "src": "^/v1/fastvote/certificates$", "dest": "/api/ingress" },
+    { "src": "^/v1/fastvote/publications/source$", "dest": "/api/ingress" },
+    { "src": "^/v1/fastvote/publications/retain$", "dest": "/api/ingress" },
+    { "src": "^/v1/fastvote/publications/apply$", "dest": "/api/ingress" },
+    {
+      "src": "^/v1/fastvote/publications/retained-source$",
+      "dest": "/api/ingress"
+    },
+    { "src": "^/v1/fastvote/frontier/page$", "dest": "/api/ingress" },
+    { "src": "^/v1/fastvote/frontier/advance$", "dest": "/api/ingress" },
+    { "src": "^/v1/fastvote/drain/signer-page$", "dest": "/api/ingress" },
+    { "src": "^/v1/fastvote/drain/member-confirm$", "dest": "/api/ingress" },
+    { "src": "^/v1/fastvote/drain/union-advance$", "dest": "/api/ingress" },
+    { "src": "^/v1/fastvote/drain/signer-progress$", "dest": "/api/ingress" },
+    { "src": "^/v1/fastvote/drain/apply$", "dest": "/api/ingress" },
+    {
+      "src": "^/v1/fastvote/drain/import/[0-9a-f]{64}$",
+      "dest": "/api/ingress"
+    },
+    { "src": "^/v1/context$", "dest": "/api/ingress" },
+    { "src": "^/v1/objects/[0-9a-f]{64}$", "dest": "/api/ingress" },
+    { "src": "^/v1/receipts/[0-9a-f]{64}$", "dest": "/api/ingress" },
+    { "src": "^/v1/senders/[0-9a-f]{64}/next-nonce$", "dest": "/api/ingress" },
+    { "src": "^/v1/contracts/paid-fee-policy$", "dest": "/api/ingress" },
+    {
+      "src": "^/v1/contracts/publications/[0-9a-f]{64}/[0-9a-f]{64}$",
+      "dest": "/api/ingress"
+    },
+    {
+      "src": "^/v1/contracts/instances/[0-9a-f]{64}/[0-9a-f]{64}$",
+      "dest": "/api/ingress"
+    }
+  ]
+}

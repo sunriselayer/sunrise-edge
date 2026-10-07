@@ -99,6 +99,11 @@
 - [DR-0200: semantic maintainability and one mainnet roadmap](0200-maintainability-and-mainnet-roadmap.md)
 - [DR-0201: one envelope codec and acknowledgement binding owner](0201-envelope-and-acknowledgement-ownership.md)
 - [DR-0202: private observations of genuine recurring acceptance work](0202-private-recurring-acceptance-observations.md)
+- [DR-0203: one declared-state transition preparation owner](0203-declared-state-transition-preparation.md)
+- [DR-0204: closed portable certified relay and pinned-runtime no-follow policy](0204-portable-certified-relay.md)
+- [DR-0205: bounded SDK response framing for streamed relays](0205-bounded-sdk-streamed-response-framing.md)
+- [DR-0206: closed event ingress without execution capabilities](0206-unauthenticated-ingress-without-execution-capabilities.md)
+- [DR-0207: local native, streamed relay and SDK integration](0207-local-native-sdk-relay-integration.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

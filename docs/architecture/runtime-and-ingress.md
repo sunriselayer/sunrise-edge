@@ -201,7 +201,8 @@ described in [persistence.md §41](persistence.md#41-production-persistence-arch
 to `NodeEvent`, and the structured durable native route requires the resulting
 private-field `AuthenticatedSubmitTransaction` before deriving an access plan
 or entering its persistence/dispatch path. Generic node-core handlers and the
-legacy native routes reject `SubmitTransaction`. The authenticated wrapper also
+capability-free closed native route reject `SubmitTransaction`. The
+authenticated wrapper also
 derives the private sender-nonce reservation. Exact next-nonce equality and its
 checked increment now commit atomically with the structured invocation. Signed
 read-only object manifests are loaded from exact heads and immutable inline
@@ -246,14 +247,18 @@ other seven kinds — `ReceiveVote`, `ReceiveCertificate`,
 a typed private native-http error before identity allocation, any clock read,
 storage I/O, machine `access_plan`/transition, outbox work, or transport send.
 Every one of those seven kinds maps to the same fixed, opaque
-`501 event-family-requires-authenticated-route` response on all four native
-router families (`router`, `resolved_domain_router`, `structured_durable_router`,
-and `preinstalled_wasm_structured_durable_router`, including each
-`_with_executor` constructor), so the response never leaks which specific kind
-was sent. The two legacy routes (`router`, `resolved_domain_router`) authenticate
-no event at all, so they additionally keep rejecting `SubmitTransaction` itself
+`501 event-family-requires-authenticated-route` response on the closed,
+structured durable and preinstalled-WASM event routers, including their
+`_with_executor` forms, so the response never leaks which specific kind
+was sent. `closed_event_router` authenticates
+no event at all, so it additionally keeps rejecting `SubmitTransaction` itself
 with the pre-existing, unchanged `501 submit-transaction-requires-authenticated-route`
-response — both legacy routes are therefore closed for every known kind. The
+response. [DR-0206](decisions/0206-unauthenticated-ingress-without-execution-capabilities.md)
+replaces the two unreleased legacy constructors with this one refusal-only
+composition: its state has only bounded blocking admission, no runtime, store,
+signer, clock, placement, configuration, callback or lease source. The event
+decoder can return only a refusal, never application output. Neither query nor
+recovery routes are mounted. The
 structured and preinstalled-WASM routes still accept a validly authenticated
 `SubmitTransaction`; their generic non-`SubmitTransaction` branch is now
 unreachable from HTTP and has been removed from native-http, but node-core's
@@ -313,8 +318,8 @@ deadlines while writing the response. HTTP/1 keep-alive is
 disabled, so one accepted connection carries at most one request; header count
 and parser buffer size are fixed as well. `serve_with_policy` exposes smaller
 validated limits under hard ceilings while `serve` preserves its signature and
-uses bounded defaults. Because this wraps the completed `Router`, all four
-native event router families and query routes receive the same pre-parser
+uses bounded defaults. Because this wraps the completed `Router`, the closed
+and authenticated native event routers and query routes receive the same pre-parser
 controls. An embedding host that does not use this server entrypoint must
 provide equivalent connection/read/write/lifecycle controls itself.
 
@@ -337,8 +342,10 @@ blocking jobs: Tokio cannot abort `spawn_blocking` work after it starts, so
 returning a timeout while a database commit may continue would create ambiguous
 client semantics. The structured durable route supplies a storage-aware deadline
 and checks an explicit cooperative cancellation signal before blocking dispatch,
-at blocking-job entry, and immediately before its first storage call. Legacy
-routes, client-disconnect wiring after complete request admission, shutdown
+at blocking-job entry, and immediately before its first storage call. The closed
+event route holds a permit over canonical decoding only and cannot start
+storage or application work. Client-disconnect wiring after complete request
+admission, shutdown
 budgets, cancellation of started transport/storage work, measured load
 capacity, and circuit breaking remain required.
 
@@ -368,20 +375,21 @@ before expiry, and redelivers at expiry with the attempt counter retained.
 These are orderly connection close/reopen tests. They are evidence for durable
 state continuity, not kill -9, torn-write, filesystem, or power-loss safety.
 
-The default native route now requires a `TransactionalNodeStateMachine`, a hash
-suite resolver, a transactional store, and an injected outbox lease-ID source.
-Application updates, replayable responses, request/event deduplication, the
-ordered outbox batch, and its delivery cursor commit atomically. The request
-then claims one message at a time with a 30-second persisted lease, sends it,
-and atomically acknowledges the matching lease and index. A transport failure
-returns 503 while retaining the lease; retry after expiry deliberately
-redelivers the message, while a fully acknowledged duplicate request replays
-only its response and does not rerun the transition or resend the outbox.
+The generic library's independently composed recoverable invocation commits
+application updates, replayable responses, request/event deduplication and the
+ordered outbox batch atomically. It is not exposed by a default native route.
+Standalone native recovery retains its separately injected transactional
+runtime, configuration and lease-ID source; it claims one message with a
+30-second persisted lease, sends it, and atomically acknowledges the matching
+lease and index. A failed send retains that lease and is reported through the
+recovery error, not a nonexistent legacy HTTP success path. Retry after expiry
+deliberately redelivers; fully acknowledged requests are not resent.
 
 Lease-ID sources must prevent reuse for the same request across process
 restarts, because a delayed acknowledgement from an expired attempt must not
-match a newer lease. This closes the old native commit-before-enqueue loss
-window for request-scoped retries, but it is not the complete production
+match a newer lease. Durable publication precedes this standalone recovery,
+but the closed event endpoint cannot create a batch or dispatch it. This is not
+the complete production
 delivery architecture. A local durable SQLite store, bounded native blocking
 seam, and scheduler-callable one-shot discovery/recovery operation exist, but
 no production runtime composition, real provider trigger, poison-message
@@ -440,6 +448,41 @@ the security envelope. A lower provider limit is an explicit compatibility gap
 that remains visible in Phase 17 production criteria rather than being called
 full protocol conformance.
 
+### Explicit portable certified profile
+
+The default event-only Web constructor stays unchanged. The separate
+`createCertifiedWebIngressHandler` implements the closed [DR-0204](decisions/0204-portable-certified-relay.md)
+transport. Trusted configuration pins the HTTPS origin, Bearer token and provider
+ceilings. A single route owner supplies certified FastVote/publication/frontier/
+drain/query methods and limits to ingress and forwarding; it does not mount
+ordered economics, successor fee-claim preparation or any direct mutation.
+The embedded DO's ingress and authority contracts remain separate.
+
+Certified responses have full-body byte guards, pull backpressure and a timeout
+covering dispatch and consumption. All 3xx refuse without following Location;
+native refusals have closed status/media and a completely read 1 KiB budget.
+A failed dispatched POST is outcome-unknown, not definitely uncommitted. A late
+stream failure cannot be rewritten as rollback, a new receipt or automatic retry.
+Validated upstream Content-Length is dropped. The Rust SDK already has loopback
+HTTP and CA/DNS-pinned TLS transports. Both accept exactly one valid Content-Length
+or one `Transfer-Encoding: chunked` under [DR-0205](decisions/0205-bounded-sdk-streamed-response-framing.md)'s
+independent body/metadata/line and original total-deadline bounds. Mixed,
+duplicate and unsupported codings, incomplete termination and all coding on
+204 refuse. Their local native Node HTTPS interoperability fixture mounts the
+actual certified constructor through a test-owned bridge; it does not qualify
+a deployed provider, Vercel runtime or genuine backend quorum. TLS server
+identity remains separate from locally pinned expected protocol context before
+signing, application decoding and proof verification.
+
+Cloudflare uses a separate HTTPS certified entrypoint, not the default binding
+or an embedded store, with 8 MiB requests and streamed 32 MiB responses. Deno's
+certified constructor defaults to the same bounds; only trusted configuration
+may choose a request cap up to 32 MiB. Vercel's opt-in template and constructor
+retain a conservative 4 MiB request/response cap. Larger native envelopes are
+explicitly outside a narrowed profile. Tests run locally with no cloud writes;
+provider capacity, actual rewrite/TLS/PKI behavior and full lifecycle remain
+selected-profile release requirements. Supabase/AWS stay event-only.
+
 ## 34. Deno Web ingress adapter
 
 The Deno Phase 17 adapter uses the current Deno 2 default `fetch` export and
@@ -447,12 +490,14 @@ passes every public request to the portable Web ingress core. Its only runtime
 capability is an immutable node-core fetcher configured from named environment
 variables. The wrapper does not decode canonical bytes or own protocol state.
 
-The As-Is node-core transport requires an exact HTTPS `/v1/events` URL and a
+The default node-core transport requires an exact HTTPS `/v1/events` URL and a
 bounded Bearer token stored as a Deno Deploy secret. It reconstructs an
 allow-listed upstream request, forbids redirects to prevent cross-origin
 credential forwarding, and applies a bounded deadline through the shared
 `authenticated-node-core.ts` capability. Configuration errors fail at startup;
-network and timeout failures become the shared sanitized 503.
+network and timeout failures become the shared sanitized 503. The distinct
+certified profile above requires an HTTPS origin and keeps the legacy
+constructor's behavior unchanged.
 
 This authenticated public relay is an incremental conformance adapter, not the
 production trust boundary. Phase 17 still requires a fixed private transport,
@@ -463,7 +508,7 @@ tests, observability, incident response, and rollback rehearsal.
 ## 35. Vercel Web ingress adapter
 
 The Vercel Phase 17 adapter is a Node.js Function with the Web `fetch` export.
-Two same-application rewrites expose the canonical event and liveness paths to
+The default two same-application rewrites expose canonical event and liveness paths to
 one handler, which delegates request semantics to the portable ingress core and
 uses the shared authenticated node-core capability. The function has a
 ten-second maximum duration and a bounded downstream deadline.

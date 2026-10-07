@@ -298,7 +298,8 @@ consistency. The route then reads the durable `FastPathEpochRecord` and requires
 that already-authenticated epoch to equal its current epoch before application
 planning or transition; the signed epoch never selects live authority.
 Exact replays authenticate again before durable receipt reconciliation.
-Generic node-core handlers and the legacy native routers fail closed on
+Generic node-core handlers and the capability-free closed native event router
+fail closed on
 `SubmitTransaction`. DR-0099 additionally closes every native public
 `POST /v1/events` route to all seven non-transaction families before identity,
 clock, storage, machine, outbox, or transport work; the generic node-core

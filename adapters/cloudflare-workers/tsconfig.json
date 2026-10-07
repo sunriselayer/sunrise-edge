@@ -15,12 +15,14 @@
   "include": [
     "worker-configuration.d.ts",
     "validator-configuration.d.ts",
+    "certified-configuration.d.ts",
     "../shared/**/*.ts",
     "src/**/*.ts",
     "test/**/*.ts",
     "vitest.config.ts",
     "vitest.sql.config.ts",
     "vitest.contract.config.ts",
+    "vitest.certified.config.ts",
     "eslint.config.js"
   ],
   "exclude": ["src/validator/generated"]

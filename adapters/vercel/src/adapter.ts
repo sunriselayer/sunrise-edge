@@ -3,12 +3,23 @@ import {
   createAuthenticatedNodeCoreFetcher,
 } from "../../shared/authenticated-node-core.ts";
 import { handleWebRequest } from "../../shared/web-ingress.ts";
+import { createCertifiedWebIngressHandler } from "../../shared/certified-web-ingress.ts";
 
 // Vercel documents a 4.5 MB Function payload ceiling. Keep a conservative,
 // binary-aligned budget below it and below the shared protocol transport bound.
 export const MAX_VERCEL_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
 
 export type VercelIngressConfig = AuthenticatedNodeCoreConfig;
+
+/** Explicit narrower certified profile; never raises the provider budget. */
+export function createCertifiedVercelHandler(
+  config: VercelIngressConfig,
+): (request: Request) => Promise<Response> {
+  return createCertifiedWebIngressHandler(config, {
+    maximumRequestBodyBytes: MAX_VERCEL_REQUEST_BODY_BYTES,
+    maximumResponseBodyBytes: MAX_VERCEL_REQUEST_BODY_BYTES,
+  });
+}
 
 /** Builds an immutable Vercel handler around an authenticated node-core client. */
 export function createVercelHandler(

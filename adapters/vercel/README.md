@@ -17,7 +17,21 @@ Required project configuration:
 - `SUNRISE_NODE_CORE_TIMEOUT_MS`: optional integer from 1 through 30000; defaults to
   5000 and should remain below the ten-second Function duration.
 
-Run local static checks and permission-free adapter tests with:
+For an explicitly selected certified relay, set trusted `SUNRISE_INGRESS_PROFILE` to
+`certified-fastvote` and set `SUNRISE_NODE_CORE_URL` to an exact HTTPS origin without a
+base path. Use the separate `vercel.certified.json` configuration template, whose closed
+noncapturing route patterns target the Fetch function and whose maximum duration is 35
+seconds. The default `vercel.json` and existing `createVercelHandler` remain event-only.
+
+The certified profile bounds **both** requests and complete streamed responses at 4 MiB.
+It can refuse maximum Publish-bearing intent/certificate frames and large
+bundles/results; no native-size parity or provider streaming exception is claimed. See
+the [shared contract](../shared/README.md#explicit-certified-profile). Do not
+reconstruct routes from caller-supplied forwarding headers or query aliases. The
+template's original-path behavior still needs a selected deployment rehearsal; the local
+test verifies its inventory, not the provider's actual rewrite runtime.
+
+Run local static checks and adapter tests with only the named fixture/config reads:
 
 ```bash
 deno task check

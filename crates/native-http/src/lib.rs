@@ -31,12 +31,10 @@ use node_core::{
     NodeEvent, NodeEventKind, NodeOutboxBatch, NodeOutboxDelivery, OutboxClaim, OutboxLeaseId,
     PreinstalledFeeComposition, PreinstalledModuleCatalog, RequestId, TransactionAuthError,
     TransactionalNodeStateMachine, TrustedTransactionContext, acknowledge_outbox_message,
-    acknowledge_outbox_message_in_domain, authenticate_submit_transaction_event,
-    claim_next_outbox_message, claim_next_outbox_message_in_domain,
+    authenticate_submit_transaction_event, claim_next_outbox_message,
     handle_authenticated_resolved_durable_submit_transaction,
     handle_authenticated_resolved_durable_submit_transaction_with_preinstalled_wasm_execution,
-    handle_idempotent_event, handle_resolved_idempotent_event, query_committed_epoch_state,
-    query_object, query_request_receipt, query_sender_next_nonce,
+    query_committed_epoch_state, query_object, query_request_receipt, query_sender_next_nonce,
 };
 use objects::{Address, ObjectId};
 use protocol_config::{
@@ -44,8 +42,8 @@ use protocol_config::{
 };
 use protocol_types::ProtocolVersion;
 use runtime::{
-    AtomicityDomainId, BlobStore, Clock, DomainTransactionalStateStore, DueOutboxClaimRequest,
-    DurableOperationContext, DurableOutboxAcknowledgement, DurableOutboxAcknowledgementOutcome,
+    AtomicityDomainId, BlobStore, Clock, DueOutboxClaimRequest, DurableOperationContext,
+    DurableOutboxAcknowledgement, DurableOutboxAcknowledgementOutcome,
     DurableOutboxAcknowledgementRejection, DurableOutboxClaimOutcome, DurableOutboxClaimRejection,
     DurableOutboxLeaseId, IndeterminateCommitReason, IndexedOutboxContractError,
     IndexedOutboxRepository, InvocationCancellation, MAX_DURABLE_OUTBOX_LEASE_MILLIS,
@@ -873,22 +871,8 @@ impl fmt::Display for IndexedOutboxIdentitySourceError {
 
 impl Error for IndexedOutboxIdentitySourceError {}
 
-struct NativeHttpState<R, M, L> {
-    runtime: Arc<R>,
-    config: NodeConfig,
-    resolver: HashSuiteResolver,
-    machine: Arc<M>,
-    lease_ids: Arc<L>,
-    blocking_executor: NativeBlockingExecutor,
-}
-
-struct ResolvedDomainNativeHttpState<R, M, L> {
-    runtime: Arc<R>,
-    placement: DomainPlacementManifest,
-    config: NodeConfig,
-    resolver: HashSuiteResolver,
-    machine: Arc<M>,
-    lease_ids: Arc<L>,
+/// Closed event ingress has no storage, signing or execution capability.
+struct ClosedEventHttpState {
     blocking_executor: NativeBlockingExecutor,
 }
 
@@ -926,130 +910,25 @@ struct PreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I> {
 type SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I> =
     Arc<PreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>;
 
-/// Builds the recoverable native HTTP router.
+/// Builds liveness and a refusal-only canonical event endpoint (DR-0206).
 ///
-/// Application state, request deduplication, responses, and the ordered outbox
-/// commit atomically. Outbound messages are sent only through persisted
-/// lease/ack state, so a retry can recover a committed invocation.
-pub fn router<R, M, L>(
-    runtime: Arc<R>,
-    config: NodeConfig,
-    resolver: HashSuiteResolver,
-    machine: Arc<M>,
-    lease_ids: Arc<L>,
-    blocking_policy: NativeBlockingPolicy,
-) -> Router
-where
-    R: Runtime + Send + Sync + 'static,
-    R::State: TransactionalStateStore,
-    M: TransactionalNodeStateMachine + Send + Sync + 'static,
-    L: OutboxLeaseIdSource + Send + Sync + 'static,
-{
-    router_with_executor(
-        runtime,
-        config,
-        resolver,
-        machine,
-        lease_ids,
-        NativeBlockingExecutor::new(blocking_policy),
-    )
+/// This is not an execution or query host. No runtime, signer, store or
+/// application callback can be supplied: every decoded event is refused.
+/// Authenticated execution requires a separate authority-bearing composition,
+/// such as [`structured_durable_router`].
+pub fn closed_event_router(blocking_policy: NativeBlockingPolicy) -> Router {
+    closed_event_router_with_executor(NativeBlockingExecutor::new(blocking_policy))
 }
 
-/// Builds the native router with a reusable blocking admission executor.
+/// Builds the refusal-only endpoint with explicitly shared blocking admission.
 ///
-/// Native embeddings that run unattended outbox recovery should share this
-/// executor with [`recover_outboxes_once`].
-pub fn router_with_executor<R, M, L>(
-    runtime: Arc<R>,
-    config: NodeConfig,
-    resolver: HashSuiteResolver,
-    machine: Arc<M>,
-    lease_ids: Arc<L>,
-    blocking_executor: NativeBlockingExecutor,
-) -> Router
-where
-    R: Runtime + Send + Sync + 'static,
-    R::State: TransactionalStateStore,
-    M: TransactionalNodeStateMachine + Send + Sync + 'static,
-    L: OutboxLeaseIdSource + Send + Sync + 'static,
-{
-    let state = Arc::new(NativeHttpState {
-        runtime,
-        config,
-        resolver,
-        machine,
-        lease_ids,
-        blocking_executor,
-    });
+/// The executor limits canonical decoding only; it grants no storage,
+/// execution, recovery or validator authority.
+pub fn closed_event_router_with_executor(blocking_executor: NativeBlockingExecutor) -> Router {
+    let state: Arc<ClosedEventHttpState> = Arc::new(ClosedEventHttpState { blocking_executor });
     Router::new()
         .route(LIVENESS_PATH, get(liveness))
-        .route(NODE_EVENT_PATH, post(submit_event::<R, M, L>))
-        .layer(DefaultBodyLimit::max(MAX_HTTP_EVENT_BODY_BYTES))
-        .with_state(state)
-}
-
-/// Builds a native router that resolves state authority from protocol config.
-///
-/// This route is available only for stores implementing the explicit-domain
-/// transaction contract. It never accepts a domain from the HTTP request and
-/// carries node-core's resolved domain into request-scoped outbox delivery.
-pub fn resolved_domain_router<R, M, L>(
-    runtime: Arc<R>,
-    placement: DomainPlacementManifest,
-    config: NodeConfig,
-    resolver: HashSuiteResolver,
-    machine: Arc<M>,
-    lease_ids: Arc<L>,
-    blocking_policy: NativeBlockingPolicy,
-) -> Router
-where
-    R: Runtime + Send + Sync + 'static,
-    R::State: DomainTransactionalStateStore,
-    M: TransactionalNodeStateMachine + Send + Sync + 'static,
-    L: OutboxLeaseIdSource + Send + Sync + 'static,
-{
-    resolved_domain_router_with_executor(
-        runtime,
-        placement,
-        config,
-        resolver,
-        machine,
-        lease_ids,
-        NativeBlockingExecutor::new(blocking_policy),
-    )
-}
-
-/// Builds a resolved-domain router with shared blocking admission.
-pub fn resolved_domain_router_with_executor<R, M, L>(
-    runtime: Arc<R>,
-    placement: DomainPlacementManifest,
-    config: NodeConfig,
-    resolver: HashSuiteResolver,
-    machine: Arc<M>,
-    lease_ids: Arc<L>,
-    blocking_executor: NativeBlockingExecutor,
-) -> Router
-where
-    R: Runtime + Send + Sync + 'static,
-    R::State: DomainTransactionalStateStore,
-    M: TransactionalNodeStateMachine + Send + Sync + 'static,
-    L: OutboxLeaseIdSource + Send + Sync + 'static,
-{
-    let state = Arc::new(ResolvedDomainNativeHttpState {
-        runtime,
-        placement,
-        config,
-        resolver,
-        machine,
-        lease_ids,
-        blocking_executor,
-    });
-    Router::new()
-        .route(LIVENESS_PATH, get(liveness))
-        .route(
-            NODE_EVENT_PATH,
-            post(submit_resolved_domain_event::<R, M, L>),
-        )
+        .route(NODE_EVENT_PATH, post(refuse_event))
         .layer(DefaultBodyLimit::max(MAX_HTTP_EVENT_BODY_BYTES))
         .with_state(state)
 }
@@ -1393,7 +1272,7 @@ fn validate_structured_durable_router_authority(
 /// Serves a configured native router with the default bounded connection and
 /// request-read policy until the shutdown future completes.
 ///
-/// Build `app` with [`router`], [`structured_durable_router`], or
+/// Build `app` with [`closed_event_router`], [`structured_durable_router`], or
 /// [`preinstalled_wasm_structured_durable_router`] so the blocking admission
 /// policy is explicit at the composition boundary. Use [`serve_with_policy`]
 /// when an embedding host needs a smaller, explicitly validated limit.
@@ -2163,17 +2042,11 @@ async fn liveness() -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
-async fn submit_event<R, M, L>(
-    State(state): State<Arc<NativeHttpState<R, M, L>>>,
+async fn refuse_event(
+    State(state): State<Arc<ClosedEventHttpState>>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
-) -> Response
-where
-    R: Runtime + Send + Sync + 'static,
-    R::State: TransactionalStateStore,
-    M: TransactionalNodeStateMachine + Send + Sync + 'static,
-    L: OutboxLeaseIdSource + Send + Sync + 'static,
-{
+) -> Response {
     if !has_supported_content_type(&headers) {
         return error_response(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -2197,84 +2070,14 @@ where
             return error_response(StatusCode::SERVICE_UNAVAILABLE, "blocking-admission-closed");
         }
     };
-    let blocking_state = Arc::clone(&state);
     let work = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        invoke_event(blocking_state.as_ref(), &body)
+        unauthenticated_event_refusal(&body)
     });
-    let result = match work.await {
-        Ok(Ok(result)) => result,
-        Ok(Err(error)) => return invocation_error_response(&error),
-        Err(_) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "blocking-task-failed");
-        }
-    };
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, NODE_RESULT_MEDIA_TYPE),
-            (header::CACHE_CONTROL, "no-store"),
-        ],
-        result,
-    )
-        .into_response()
-}
-
-async fn submit_resolved_domain_event<R, M, L>(
-    State(state): State<Arc<ResolvedDomainNativeHttpState<R, M, L>>>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
-) -> Response
-where
-    R: Runtime + Send + Sync + 'static,
-    R::State: DomainTransactionalStateStore,
-    M: TransactionalNodeStateMachine + Send + Sync + 'static,
-    L: OutboxLeaseIdSource + Send + Sync + 'static,
-{
-    if !has_supported_content_type(&headers) {
-        return error_response(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported-content-type",
-        );
+    match work.await {
+        Ok(error) => invocation_error_response(&error),
+        Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "blocking-task-failed"),
     }
-    if has_unsupported_content_encoding(&headers) {
-        return error_response(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported-content-encoding",
-        );
-    }
-    let body = match body {
-        Ok(body) => body,
-        Err(error) => return error_response(error.status(), "body-rejected"),
-    };
-    let permit = match state.blocking_executor.try_acquire() {
-        Ok(permit) => permit,
-        Err(TryAcquireError::NoPermits) => return overload_response(),
-        Err(TryAcquireError::Closed) => {
-            return error_response(StatusCode::SERVICE_UNAVAILABLE, "blocking-admission-closed");
-        }
-    };
-    let blocking_state = Arc::clone(&state);
-    let work = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        invoke_resolved_domain_event(blocking_state.as_ref(), &body)
-    });
-    let result = match work.await {
-        Ok(Ok(result)) => result,
-        Ok(Err(error)) => return invocation_error_response(&error),
-        Err(_) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "blocking-task-failed");
-        }
-    };
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, NODE_RESULT_MEDIA_TYPE),
-            (header::CACHE_CONTROL, "no-store"),
-        ],
-        result,
-    )
-        .into_response()
 }
 
 /// Shared request-shape/admission/cancellation plumbing behind both
@@ -3137,7 +2940,6 @@ where
 enum InvocationError {
     CancelledBeforeStorage,
     Node(NodeCoreError),
-    Delivery(OutboxDeliveryError),
     Indexed(IndexedOutboxRecoveryError),
     ResultEncoding,
     /// A known [`NodeEventKind`] whose family requires per-family
@@ -3149,22 +2951,6 @@ enum InvocationError {
     /// carries no event-kind detail so every family maps to the same opaque
     /// response.
     EventFamilyRequiresAuthenticatedRoute,
-}
-
-/// Rejects a `SubmitTransaction` event before any machine or storage work.
-///
-/// `router` and `resolved_domain_router` never authenticate a transaction:
-/// only [`structured_durable_router`] does. Calling either of those legacy
-/// routes with a `SubmitTransaction` event must fail closed here rather than
-/// let it reach [`TransactionalNodeStateMachine::access_plan`] or storage
-/// under the appearance of having been authenticated.
-fn reject_unauthenticated_submit_transaction(event: &NodeEvent) -> Result<(), InvocationError> {
-    if event.kind() == NodeEventKind::SubmitTransaction {
-        return Err(InvocationError::Node(
-            NodeCoreError::UnauthenticatedTransactionSubmission,
-        ));
-    }
-    Ok(())
 }
 
 /// Rejects every known `NodeEventKind` other than `SubmitTransaction` before
@@ -3180,8 +2966,8 @@ fn reject_unauthenticated_submit_transaction(event: &NodeEvent) -> Result<(), In
 /// their own authentication and authorization the native adapter does not
 /// implement yet, so every one of them maps to the same opaque
 /// `501 event-family-requires-authenticated-route` response on every native
-/// route, including the two legacy routes that never authenticate
-/// `SubmitTransaction` either. The match is exhaustive over
+/// route, including [`closed_event_router`], which also refuses
+/// `SubmitTransaction`. The match is exhaustive over
 /// [`NodeEventKind`] so a future kind must be classified here explicitly
 /// rather than silently falling through to acceptance.
 fn reject_unauthenticated_event_family(event: &NodeEvent) -> Result<(), InvocationError> {
@@ -3197,78 +2983,17 @@ fn reject_unauthenticated_event_family(event: &NodeEvent) -> Result<(), Invocati
     }
 }
 
-fn invoke_event<R, M, L>(
-    state: &NativeHttpState<R, M, L>,
-    body: &[u8],
-) -> Result<Vec<u8>, InvocationError>
-where
-    R: Runtime,
-    R::State: TransactionalStateStore,
-    M: TransactionalNodeStateMachine,
-    L: OutboxLeaseIdSource,
-{
-    let event = NodeEvent::decode(body)
-        .map_err(NodeCoreError::from)
-        .map_err(InvocationError::Node)?;
-    reject_unauthenticated_event_family(&event)?;
-    reject_unauthenticated_submit_transaction(&event)?;
-    let request_id = event.request_id();
-    let output = handle_idempotent_event(
-        state.runtime.as_ref(),
-        &state.config,
-        &state.resolver,
-        event,
-        state.machine.as_ref(),
-    )
-    .map_err(InvocationError::Node)?;
-    let _delivered_messages = deliver_request_outbox(
-        state.runtime.as_ref(),
-        &state.config,
-        state.lease_ids.as_ref(),
-        request_id,
-    )
-    .map_err(InvocationError::Delivery)?;
-    HttpNodeResult::new(request_id, output.responses().to_vec())
-        .and_then(|result| result.encode())
-        .map_err(|_| InvocationError::ResultEncoding)
-}
-
-fn invoke_resolved_domain_event<R, M, L>(
-    state: &ResolvedDomainNativeHttpState<R, M, L>,
-    body: &[u8],
-) -> Result<Vec<u8>, InvocationError>
-where
-    R: Runtime,
-    R::State: DomainTransactionalStateStore,
-    M: TransactionalNodeStateMachine,
-    L: OutboxLeaseIdSource,
-{
-    let event = NodeEvent::decode(body)
-        .map_err(NodeCoreError::from)
-        .map_err(InvocationError::Node)?;
-    reject_unauthenticated_event_family(&event)?;
-    reject_unauthenticated_submit_transaction(&event)?;
-    let request_id = event.request_id();
-    let resolved = handle_resolved_idempotent_event(
-        state.runtime.as_ref(),
-        &state.placement,
-        &state.config,
-        &state.resolver,
-        event,
-        state.machine.as_ref(),
-    )
-    .map_err(InvocationError::Node)?;
-    let _delivered_messages = deliver_request_outbox_in_domain(
-        state.runtime.as_ref(),
-        resolved.domain(),
-        &state.config,
-        state.lease_ids.as_ref(),
-        request_id,
-    )
-    .map_err(InvocationError::Delivery)?;
-    HttpNodeResult::new(request_id, resolved.output().responses().to_vec())
-        .and_then(|result| result.encode())
-        .map_err(|_| InvocationError::ResultEncoding)
+/// Decodes the closed ingress's bounded event and always returns a refusal.
+/// No successful output or caller-injected execution capability exists here.
+fn unauthenticated_event_refusal(body: &[u8]) -> InvocationError {
+    let event: NodeEvent = match NodeEvent::decode(body) {
+        Ok(event) => event,
+        Err(error) => return InvocationError::Node(NodeCoreError::from(error)),
+    };
+    match reject_unauthenticated_event_family(&event) {
+        Err(error) => error,
+        Ok(()) => InvocationError::Node(NodeCoreError::UnauthenticatedTransactionSubmission),
+    }
 }
 
 /// Distinguishes how one authenticated `SubmitTransaction` is executed by
@@ -3598,22 +3323,6 @@ fn invocation_error_response(error: &InvocationError) -> Response {
     match error {
         InvocationError::CancelledBeforeStorage => cancelled_before_storage_response(),
         InvocationError::Node(error) => node_error_response(error),
-        InvocationError::Delivery(OutboxDeliveryError::Node(error)) => node_error_response(error),
-        InvocationError::Delivery(OutboxDeliveryError::Send) => {
-            error_response(StatusCode::SERVICE_UNAVAILABLE, "outbound-send-failed")
-        }
-        InvocationError::Delivery(OutboxDeliveryError::LeaseId(
-            OutboxLeaseIdSourceError::Unavailable,
-        )) => error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "lease-id-source-unavailable",
-        ),
-        InvocationError::Delivery(OutboxDeliveryError::LeaseId(
-            OutboxLeaseIdSourceError::Exhausted,
-        )) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "lease-id-source-exhausted",
-        ),
         InvocationError::Indexed(error) => indexed_invocation_error_response(error),
         InvocationError::ResultEncoding => {
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "result-encoding-failed")
@@ -3728,96 +3437,26 @@ where
     R::State: TransactionalStateStore,
     L: OutboxLeaseIdSource,
 {
-    deliver_request_outbox_inner(
-        runtime,
-        config,
-        lease_ids,
-        request_id,
-        |layout, request_id, lease_id, now_unix_millis| {
-            claim_next_outbox_message(
-                runtime.state_store(),
-                layout,
-                request_id,
-                lease_id,
-                now_unix_millis,
-                NATIVE_OUTBOX_LEASE_MILLIS,
-            )
-        },
-        |layout, request_id, index, lease_id| {
-            acknowledge_outbox_message(runtime.state_store(), layout, request_id, index, lease_id)
-        },
-    )
-}
-
-fn deliver_request_outbox_in_domain<R, L>(
-    runtime: &R,
-    domain: AtomicityDomainId,
-    config: &NodeConfig,
-    lease_ids: &L,
-    request_id: RequestId,
-) -> Result<usize, OutboxDeliveryError>
-where
-    R: Runtime,
-    R::State: DomainTransactionalStateStore,
-    L: OutboxLeaseIdSource,
-{
-    deliver_request_outbox_inner(
-        runtime,
-        config,
-        lease_ids,
-        request_id,
-        |layout, request_id, lease_id, now_unix_millis| {
-            claim_next_outbox_message_in_domain(
-                runtime.state_store(),
-                domain,
-                layout,
-                request_id,
-                lease_id,
-                now_unix_millis,
-                NATIVE_OUTBOX_LEASE_MILLIS,
-            )
-        },
-        |layout, request_id, index, lease_id| {
-            acknowledge_outbox_message_in_domain(
-                runtime.state_store(),
-                domain,
-                layout,
-                request_id,
-                index,
-                lease_id,
-            )
-        },
-    )
-}
-
-fn deliver_request_outbox_inner<R, L, C, A>(
-    runtime: &R,
-    config: &NodeConfig,
-    lease_ids: &L,
-    request_id: RequestId,
-    mut claim_next: C,
-    mut acknowledge: A,
-) -> Result<usize, OutboxDeliveryError>
-where
-    R: Runtime,
-    L: OutboxLeaseIdSource,
-    C: FnMut(
-        &PersistenceLayout,
-        RequestId,
-        OutboxLeaseId,
-        u64,
-    ) -> Result<Option<OutboxClaim>, NodeCoreError>,
-    A: FnMut(&PersistenceLayout, RequestId, u32, OutboxLeaseId) -> Result<(), NodeCoreError>,
-{
-    let layout = PersistenceLayout::new(config.chain_id().clone(), config.protocol_version());
-    let mut delivered_messages = 0_usize;
+    // With the unreachable domain-dispatch branch removed, standalone
+    // recovery has one concrete claim/ack owner, not injectable closures.
+    let layout: PersistenceLayout =
+        PersistenceLayout::new(config.chain_id().clone(), config.protocol_version());
+    let mut delivered_messages: usize = 0;
     for _ in 0..MAX_NODE_OUTPUT_ITEMS {
-        let lease_id = lease_ids.next_lease_id(request_id)?;
-        let now_unix_millis = runtime.clock().now_unix_millis()?;
-        let Some(claim) = claim_next(&layout, request_id, lease_id, now_unix_millis)? else {
+        let lease_id: OutboxLeaseId = lease_ids.next_lease_id(request_id)?;
+        let now_unix_millis: u64 = runtime.clock().now_unix_millis()?;
+        let claim: Option<OutboxClaim> = claim_next_outbox_message(
+            runtime.state_store(),
+            &layout,
+            request_id,
+            lease_id,
+            now_unix_millis,
+            NATIVE_OUTBOX_LEASE_MILLIS,
+        )?;
+        let Some(claim) = claim else {
             return Ok(delivered_messages);
         };
-        let encoded = claim
+        let encoded: Vec<u8> = claim
             .message()
             .event()
             .encode()
@@ -3826,7 +3465,13 @@ where
             .transport()
             .send(encoded)
             .map_err(|_| OutboxDeliveryError::Send)?;
-        acknowledge(&layout, claim.request_id(), claim.index(), claim.lease_id())?;
+        acknowledge_outbox_message(
+            runtime.state_store(),
+            &layout,
+            claim.request_id(),
+            claim.index(),
+            claim.lease_id(),
+        )?;
         delivered_messages = delivered_messages
             .checked_add(1)
             .ok_or(NodeCoreError::OutboxArithmeticOverflow)?;

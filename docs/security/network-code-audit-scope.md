@@ -17,6 +17,11 @@ signer, atomicity domain and exposed route families. Describe the actual
 external TLS/authentication/private-transport configuration separately from
 protocol authentication. Do not describe the stateless Cloudflare relay as the
 embedded validator, or native SQLite validation as complete DO qualification.
+For the [portable certified relay](../architecture/decisions/0204-portable-certified-relay.md),
+include the trusted profile/origin/secret selection, complete route/provider
+limits, no-follow redirects, full-consumption timeout/cleanup and unknown POST
+outcome reconciliation. Its tests neither grant backend authority nor qualify
+the current Rust SDK or a deployed provider against streamed HTTPS.
 
 The selected configuration must account for unsupported operations explicitly.
 A narrowed provider profile needs its own accepted release decision; it must not
