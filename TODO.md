@@ -334,10 +334,15 @@ explicitly approves a documented scope change.
   Clippy without warning exclusions at 04:56 UTC. A fresh complete Codex fallback
   source review approved all 31 three-dot paths, including R1's independently
   approved import correction. The approved R1 dependency was then merged
-  normally with an identical tree. Final status-delta review and exact-head
-  checks, actual owning recurrence, full required acceptance and CI remain
-  pending. Operator controls compiled, not executed. Initial failed strict and
-  diagnostic attempts remain attributable, not passed. Actual custody and trusted content review
+  normally with an identical tree. Exact `1bd413c4` also passed SDK/CLI 491/0
+  and strict Clippy, and received complete final-source approval. Its actual
+  operator owner compiled, but additional strict owning Clippy found three
+  new large-error test closures. The follow-up replaces only those closures
+  with explicitly typed matches, retaining every refusal/zero-call assertion;
+  final follow-up review/owning verification remain pending. Operator controls
+  compiled, not executed. Actual owning recurrence, full required acceptance
+  and CI remain pending. Initial failed strict and diagnostic attempts remain
+  attributable, not passed. Actual custody and trusted content review
   remain separately open, with no provider selected or deployed; M2 stays open.
 - [ ] **M3 — selected-profile durable state:** atomic object/state/nonce/receipt/
   outbox, bounded indexed delivery, full-read revision/ABA assertions, restart,

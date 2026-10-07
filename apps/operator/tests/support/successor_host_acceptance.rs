@@ -1207,15 +1207,16 @@ fn imported_escrow_fee_claim(
         current_intent.validator_id = current_member.id;
         let external =
             external_signer::TestSigner::new(claimant.seed, external_signer::Behavior::Valid);
-        assert!(
-            sunrise_edge_client::PreparedFeeClaim::prepare(
+        let current_result: Result<Vec<u8>, sunrise_edge_client::FeeClaimPreparationError> =
+            match sunrise_edge_client::PreparedFeeClaim::prepare(
                 workflow,
                 &current_request,
-                current_intent
-            )
-            .and_then(|retained| retained.sign_and_finalize_external(&external))
-            .is_err()
-        );
+                current_intent,
+            ) {
+                Ok(retained) => retained.sign_and_finalize_external(&external),
+                Err(error) => Err(error),
+            };
+        assert!(current_result.is_err());
         assert_eq!(external.calls(), 0);
     }
     let mut later_epoch = prepared.clone();
@@ -1239,16 +1240,16 @@ fn imported_escrow_fee_claim(
         );
         let external =
             external_signer::TestSigner::new(claimant.seed, external_signer::Behavior::Valid);
-        assert!(
-            sunrise_edge_client::PreparedFeeClaim::prepare(
+        let altered_result: Result<Vec<u8>, sunrise_edge_client::FeeClaimPreparationError> =
+            match sunrise_edge_client::PreparedFeeClaim::prepare(
                 workflow,
                 &request_frame,
-                altered.clone()
-            )
-            .and_then(|retained| retained.sign_and_finalize_external(&external))
-            .is_err(),
-            "{label}"
-        );
+                altered.clone(),
+            ) {
+                Ok(retained) => retained.sign_and_finalize_external(&external),
+                Err(error) => Err(error),
+            };
+        assert!(altered_result.is_err(), "{label}");
         assert_eq!(external.calls(), 0, "{label}");
     }
     let mut stale_scope: node_wire::FeeClaimPrepareRequest = request_frame.clone();
@@ -1258,11 +1259,16 @@ fn imported_escrow_fee_claim(
     );
     let external =
         external_signer::TestSigner::new(claimant.seed, external_signer::Behavior::Valid);
-    assert!(
-        sunrise_edge_client::PreparedFeeClaim::prepare(workflow, &stale_scope, prepared.clone())
-            .and_then(|retained| retained.sign_and_finalize_external(&external))
-            .is_err()
-    );
+    let stale_result: Result<Vec<u8>, sunrise_edge_client::FeeClaimPreparationError> =
+        match sunrise_edge_client::PreparedFeeClaim::prepare(
+            workflow,
+            &stale_scope,
+            prepared.clone(),
+        ) {
+            Ok(retained) => retained.sign_and_finalize_external(&external),
+            Err(error) => Err(error),
+        };
+    assert!(stale_result.is_err());
     assert_eq!(external.calls(), 0);
     assert!(
         sunrise_edge_client::sign_prepared_fee_claim(
