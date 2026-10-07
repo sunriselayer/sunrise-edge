@@ -70,3 +70,11 @@ refusal/restart behavior, trusted content review and recovery/rotation/revocatio
 still need design, implementation and qualification. Provider revocation does
 not erase historical signatures or silently rotate an AddressIsPublicKey
 identity. No custody backend or public network launch is selected here.
+
+[Proposed DR-0214](decisions/0214-protected-custody-and-review-boundary.md)
+separates client review, automatic consensus, readiness and genesis/admin roles,
+and compares local-OS, separated-host and hardware-backed threat boundaries.
+Its contract is independently design-reviewed, not provider selection or M2
+qualification. It explicitly defers an additional presentation layer without a
+concrete trusted review consumer; repeating these prepared-owner guarantees is
+not another security boundary.

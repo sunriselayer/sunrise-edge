@@ -107,6 +107,7 @@
 - [DR-0208: Native SQLite first and provider-independent protected signing](0208-native-sqlite-first-and-protected-signing.md)
 - [DR-0209: one consensus-owned Ed25519 verifier adapter](0209-consensus-verifier-ownership.md)
 - [DR-0211: immutable live-operation preparation before custody selection](0211-external-signing-preparation.md)
+- [DR-0214: protected custody and trustworthy review boundaries (Proposed)](0214-protected-custody-and-review-boundary.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

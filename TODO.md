@@ -350,11 +350,23 @@ explicitly approves a documented scope change.
   and strict Clippy, plus actual operator-owner compilation and strict owning
   Clippy without exclusions. Operator controls compiled, not executed. The
   independently approved R1 replay-import correction and its truthful execution
-  attribution are merged normally; final combined-head verification remains
-  pending. Actual owning recurrence, full required acceptance
+  attribution are merged normally. Exact combined `85b8a0a2` received complete
+  final-source approval and passed SDK/CLI 491/0/0 ignored plus strict all-target/
+  all-feature Clippy; the actual operator owner compiled and strict owning
+  Clippy passed at 05:26 UTC. Its genuine operator recurrence was not executed.
+  Actual owning recurrence, full required acceptance
   and CI remain pending. Initial failed strict and diagnostic attempts remain
   attributable, not passed. Actual custody and trusted content review
   remain separately open, with no provider selected or deployed; M2 stays open.
+  [Proposed DR-0214](docs/architecture/decisions/0214-protected-custody-and-review-boundary.md)
+  has independent design approval for separated signing roles, exact-frame/key
+  checks, durable authority and recovery/rollback limits, and three unselected
+  custody threat models. The human still chooses the threat boundary, trusted
+  review surface and independent key/recovery roles. Existing publication
+  preparation already supplies immutable inputs and mechanical checks; defer
+  extra presentation work until a concrete consumer justifies it. This proposal
+  selects no provider, implements no protected key or semantic review, and
+  closes no M2 or launch gate.
 - [ ] **M3 — selected-profile durable state:** atomic object/state/nonce/receipt/
   outbox, bounded indexed delivery, full-read revision/ABA assertions, restart,
   fencing and ambiguity reconciliation. Verify actual host/power/storage faults,
