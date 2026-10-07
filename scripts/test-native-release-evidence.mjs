@@ -242,11 +242,14 @@ function fixture(label, scenario = {}) {
           executable: shipped ? output : null, filenames: [output] });
       }
       const payload = { artifacts, fault: data.label === (scenario.faultBuild ?? "a") ? scenario.fault : null,
-        different: scenario.different && data.label === "b", mode: scenario.mode, name: data.closure.shipped[0].name };
+        different: scenario.different && data.label === "b", mode: scenario.mode, umask: scenario.umask, name: data.closure.shipped[0].name };
       const script = `const fs=require('node:fs'),p=require('node:path'),cp=require('node:child_process'); const d=${JSON.stringify(payload)};
+        if(d.umask!==undefined)process.umask(d.umask);
         if(d.fault==='descendant'){process.on('SIGTERM',()=>{});cp.spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});process.stdout.write('{bad json}\\n');setInterval(()=>{},1000);}
         else if(d.fault==='hang'){process.on('SIGTERM',()=>{});setInterval(()=>{},1000);}
-        else {for(const a of d.artifacts){const f=a.filenames[0];fs.mkdirSync(p.dirname(f),{recursive:true});fs.writeFileSync(f,'FIXTURE:'+a.target.name+(d.different?'Y':'X'),{mode:d.mode??0o755});}
+        else {for(const a of d.artifacts){const f=a.filenames[0],mode=d.mode??0o755;fs.mkdirSync(p.dirname(f),{recursive:true});fs.writeFileSync(f,'FIXTURE:'+a.target.name+(d.different?'Y':'X'),{mode});
+          if(d.umask!==undefined&&a===d.artifacts[0])process.stderr.write(JSON.stringify({fixtureUmask:process.umask(),createdMode:fs.lstatSync(f).mode&0o7777})+'\\n');
+          fs.chmodSync(f,mode);}
           if(d.fault==='nonregular'){const f=d.artifacts.find(a=>a.executable).executable;fs.unlinkSync(f);fs.symlinkSync('/dev/null',f);}
           if(d.fault==='missing')d.artifacts=d.artifacts.filter(a=>a.target.name!==d.name);
           if(d.fault==='duplicate')d.artifacts.push(d.artifacts.find(a=>a.executable));
@@ -256,7 +259,7 @@ function fixture(label, scenario = {}) {
           if(d.fault==='package')d.artifacts[0].package_id='unexpected-package';
           if(d.fault==='escape')d.artifacts.find(a=>a.executable).executable='/escaped/output';
           if(d.fault==='fresh')d.artifacts[0].fresh=true;
-          if(d.fault==='unexpected-file')fs.writeFileSync(p.join(p.dirname(d.artifacts.find(a=>a.executable).executable),'pg-only-unobserved'), 'FIXTURE',{mode:0o755});
+          if(d.fault==='unexpected-file'){const f=p.join(p.dirname(d.artifacts.find(a=>a.executable).executable),'pg-only-unobserved');fs.writeFileSync(f,'FIXTURE',{mode:0o755});fs.chmodSync(f,0o755);}
           process.stderr.write('separate non-JSON stderr fixture\\n');
           if(d.fault==='malformed')process.stdout.write('{bad json}\\n');
           else if(d.fault==='line')process.stdout.write('x'.repeat(${LIMITS.line + 1})+'\\n');
@@ -406,6 +409,32 @@ try {
     assert.ok(r.builds.a.observations.dependencies.some(a => a.target.kind.includes("custom-build")));
     assert.equal(r.inputs.tools.linkerRoles.target.linker, path.join(f.tools, "ld"));
     assert.match(r.inputs.tools.linkerRoles.host.implementation, /rust-lld$/);
+  });
+  await check("child-local restrictive umask preserves exact raw and saved artifact modes", async () => {
+    const parentMask = process.umask(); const raw = {};
+    const f = fixture("builder-umask-077", { mode: 0o751, umask: 0o077, stage(n, ctx) {
+      if (n !== "after-a" && n !== "after-b") return;
+      assert.equal(process.umask(), parentMask);
+      const files = expandedState(path.join(ctx.owner.root, `compiler-${n.slice(-1)}`)).filter(r => r.bytes !== null);
+      assert.equal(files.length, ctx.closure.selected.reduce((count, p) => count + p.targets.length, 0));
+      assert.ok(files.length > NAMES.length); assert.ok(files.every(r => (r.mode & 0o7777) === 0o751));
+      raw[n.slice(-1)] = files.map(r => r.name);
+    } });
+    const r = await runFixtureEvidence(f.args, f.doubles);
+    assert.equal(process.umask(), parentMask); assert.equal(r.fixturePassed, true); assert.equal(r.complete, false);
+    assert.deepEqual(f.calls.builds, { a: 1, b: 1 }); assert.equal(r.comparisons.length, NAMES.length);
+    assert.deepEqual(raw.a, raw.b);
+    for (const label of ["a", "b"]) {
+      const build = r.builds[label]; assert.equal(build.exit, 0); assert.equal(build.signal, null);
+      const probes = readFileSync(build.logs.stderr, "utf8").split("\n")
+        .filter(line => line.startsWith('{"fixtureUmask":')).map(line => JSON.parse(line));
+      assert.deepEqual(probes, [{ fixtureUmask: 0o077, createdMode: 0o700 }]);
+      assert.equal(build.artifacts.length, NAMES.length);
+      for (const artifact of build.artifacts) {
+        assert.equal(artifact.source.mode, 0o751); assert.equal(artifact.mode, 0o751);
+        assert.equal(lstatSync(artifact.path).mode & 0o7777, 0o751);
+      }
+    }
   });
   for (const names of [2, 3]) await check(`closed ${names}-name Cargo target/host hardlinks through both A/B cleanups`, async () => {
     const groups = {}; const transitions = new Map(); let descriptors;

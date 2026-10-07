@@ -162,14 +162,47 @@ genesis as a recovery shortcut. Subsequent epoch recovery and serving use the
 existing verified successor path, not another original-genesis preparation.
 
 For quiet local maintenance, finish client work, stop the external terminator
-and wait for its forwarding worker, then send SIGINT to the exact still-owned
-host and require an ordinary successful exit. Killing a child on failed-test
-cleanup is not an orderly-stop result. Reopen the same state/blob pair with the
+when present and wait for its forwarding worker, then send SIGINT to the exact
+still-owned host and require an ordinary successful exit. Killing a child on
+failed-test cleanup is not an orderly-stop result. Reopen the same state/blob
+pair with the
 same manifest, validator signing key and independently expected protocol/domain
 pins; do not prepare it again. A certificate change is not permission to alter
 any of those inputs or bypass explicit offline-fence confirmation.
 
 ## Local TLS and compiled CLI acceptance
+
+### Optional direct Native termination
+
+The original `sqlite_source_host` and both `successor_host serve` and
+`serve-history` accept these additional local inputs (not `sqlite_genesis`,
+activation or the single-validator devnet):
+
+```text
+--tls-cert-der-file LOCAL_LEAF.der
+--tls-cert-der-file LOCAL_INTERMEDIATE.der
+--tls-key-pkcs8-der-file LOCAL_PRIVATE_KEY.der
+```
+
+Supply one to four ordered leaf-first DER files and exactly one matching PKCS8
+key, or omit both options for the existing plaintext mode. Each file must be a
+nonempty nonsymlink regular file at most 16 KiB; the chain is at most 64 KiB.
+The key requires private Unix permissions (use `0600`). Load/refusal completes
+before genesis/state/blob I/O or fencing. A malformed, missing, nonprivate or
+mismatched key never falls back to plaintext. Construction checks leaf/key
+correspondence, not the full issuer/name/time policy of a production PKI.
+
+Clients independently set their existing TLS server name/root and expected
+protocol pins. Network config uses those per-peer TLS fields even for direct
+loopback TLS endpoints. There is no mTLS, public bind, auto-renewal or reload.
+For explicit stopped rotation, finish client work, SIGINT/reap the exact owned
+host successfully, replace the configured leaf/key and restart at the same
+endpoint with unchanged protocol/genesis/database/signing inputs. Live restart
+requires offline confirmation and advances the fence; signerless history
+restart claims no new generation. An unrelated CA change requires explicit new
+client trust and does not revoke still-valid old leaves.
+
+### Distinct executable fixtures
 
 The storage-neutral process acceptance composes the real author, public
 inspector, four independent prepared SQLite pairs and four serving processes.
@@ -196,6 +229,19 @@ cohort config changing only that peer's CA-file field. Actual new-leaf, context,
 all-four stored-result replay and independent remote-domain refusal checks retain
 the same complete object/receipt/nonce, record/blob and mutation-sequence oracles.
 
+The separate DR-0219 direct-host case uses those same complete business
+oracles without a relay: actual compiled hosts terminate TLS, the compiled CLI
+commits a four-peer paid transfer, and same-boot/restarted saved results and
+conflicting request IDs retain exact state, receipts, nonce, referenced blobs
+and mutation sequences. Same-CA leaf rollover advances live fences 2 -> 3;
+the separate peer-0 unrelated-CA stopped restart reopens all four hosts 3 -> 4.
+Held old SDK/fresh old-trust CLI refuse exact `UnknownIssuer`, and explicit new
+trust succeeds at unchanged endpoints/DNS with fresh authenticated received
+DER/SPKI. Discarding a saved apply response qualifies receipt reconciliation,
+not a fresh post-disconnect mutation or atomicity claim. Real direct successor
+and no-fence history restart controls use the existing genuine recurring
+workflow; its original recurrence/unlock and relay controls are retained.
+
 The logical domain is the same across these replicas; the file
 coordinates, validator identities, signing keys and TLS pins are distinct.
 
@@ -220,8 +266,10 @@ See [DR-0199](../architecture/decisions/0199-local-tls-validator-startup-accepta
 for full-state replay and request-ID conflict, and
 [DR-0216](../architecture/decisions/0216-local-tls-stop-restart-rotation.md)
 for the stopped-rotation boundary. Same-CA leaf rollover does not revoke other
-still-valid leaves. This fixture is not a production certificate loader, hot
-reload, zero-downtime/overlapping-bundle migration, CRL/OCSP, remote trust
+still-valid leaves. [DR-0219](../architecture/decisions/0219-native-direct-tls-connection-ownership.md)
+defines the separate shipped optional Native loader and lifecycle. Neither
+fixture qualifies production PKI, hot reload, zero-downtime/overlapping-bundle
+migration, CRL/OCSP, remote trust
 distribution or a mainnet PKI/custody/power/load qualification. Passing
 this focused test does not substitute for all required CI/local groups,
 independent economics/ingress audits, real custody, a selected reviewed

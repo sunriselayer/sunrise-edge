@@ -32,7 +32,10 @@ crypto.workspace = true
 ed25519-zebra.workspace = true
 public-standard-asset = { path = "../../contracts/standard-asset" }
 protocol-upgrades.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
 runtime-sqlite.workspace = true
 standard-assets.workspace = true
 system-modules.workspace = true
+tokio-rustls.workspace = true
 wat.workspace = true

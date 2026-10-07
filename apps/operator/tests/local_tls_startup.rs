@@ -7,6 +7,8 @@
 //! boot and after reopening every host, and pin/TLS/cohort/request-ID refusals.
 //! The terminator forwards exact HTTP bytes; every protocol result comes from
 //! an actual host. All keys and CAs are disposable fixture material.
+//! DR-0219 separately runs the same complete business oracles against direct
+//! production-host termination and its actual 2 -> 3 -> 4 stopped fences.
 
 #[path = "support/compiled_cli_process.rs"]
 mod compiled_cli_process;
@@ -348,6 +350,148 @@ struct Host {
     address: SocketAddr,
 }
 
+/// Direct production-host endpoint, never a relay or a fake protocol adapter.
+struct DirectPeer {
+    address: SocketAddr,
+    ca: FixtureCa,
+    leaf: FixtureLeaf,
+    ca_file: PathBuf,
+    cert_file: PathBuf,
+    key_file: PathBuf,
+}
+impl TlsPeer for DirectPeer {
+    fn client(&self) -> Client<RemoteTlsHttpTransport> {
+        endpoint_client(self.address, &self.leaf.server_name, &self.ca.der)
+    }
+}
+impl DirectPeer {
+    fn renew(&mut self, directory: &Path, label: &str) {
+        let leaf: FixtureLeaf = self.ca.issue_leaf(&self.leaf.server_name);
+        assert_ne!(leaf.der, self.leaf.der);
+        assert_ne!(leaf.public_key_der, self.leaf.public_key_der);
+        self.cert_file = directory.join(format!("{label}.der"));
+        self.key_file = directory.join(format!("{label}.key"));
+        write_private_new(&self.cert_file, &leaf.der);
+        write_private_new(&self.key_file, &leaf.key_pkcs8_der);
+        self.leaf = leaf;
+    }
+    fn received(&self) -> Vec<u8> {
+        let received: Vec<u8> =
+            authenticated_leaf(self.address, &self.leaf.server_name, &self.ca.der);
+        assert_eq!(
+            received, self.leaf.der,
+            "actual authenticated direct-host leaf"
+        );
+        received
+    }
+    fn context(&self, root: &Path) -> Output {
+        run_cli(vec![
+            "context".into(),
+            "--endpoint".into(),
+            self.address.to_string().into(),
+            "--tls-server-name".into(),
+            self.leaf.server_name.clone().into(),
+            "--tls-ca-cert-der-file".into(),
+            root.as_os_str().to_owned(),
+        ])
+    }
+}
+fn direct_peers(network: &Network) -> Vec<DirectPeer> {
+    (0..VALIDATORS)
+        .map(|index: usize| {
+            let name: String = fixture_server_name();
+            let ca: FixtureCa = FixtureCa::new(&format!("{name}-direct-issuer-a"));
+            let leaf: FixtureLeaf = ca.issue_leaf(&name);
+            let ca_file: PathBuf = network.tls_dir.join(format!("direct-{index}-ca.der"));
+            let cert_file: PathBuf = network.tls_dir.join(format!("direct-{index}-leaf.der"));
+            let key_file: PathBuf = network.tls_dir.join(format!("direct-{index}-key.der"));
+            write_private_new(&ca_file, &ca.der);
+            write_private_new(&cert_file, &leaf.der);
+            write_private_new(&key_file, &leaf.key_pkcs8_der);
+            DirectPeer {
+                address: "127.0.0.1:0".parse().unwrap(),
+                ca,
+                leaf,
+                ca_file,
+                cert_file,
+                key_file,
+            }
+        })
+        .collect()
+}
+fn start_direct_hosts(network: &Network, peers: &mut [DirectPeer], generation: u64) -> Vec<Host> {
+    assert_eq!(peers.len(), VALIDATORS);
+    peers
+        .iter_mut()
+        .enumerate()
+        .map(|(index, peer): (usize, &mut DirectPeer)| {
+            let requested: SocketAddr = peer.address;
+            let mut command: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+            command
+                .args(network.fixture.root_pins(
+                    &network.genesis,
+                    network.digest,
+                    index,
+                    network.domain,
+                ))
+                .arg("--signing-key-file")
+                .arg(&network.signing_keys[index])
+                .args([
+                    "--created-checkpoint",
+                    "10",
+                    "--timeout-seconds",
+                    "30",
+                    "--max-concurrent",
+                    "4",
+                    "--confirm-offline-fence-advance",
+                    "--listen",
+                ])
+                .arg(requested.to_string())
+                .arg("--tls-cert-der-file")
+                .arg(&peer.cert_file)
+                .arg("--tls-key-pkcs8-der-file")
+                .arg(&peer.key_file);
+            let (guard, line): (ChildGuard, String) =
+                spawn_bounded_status_line(command, PROCESS_DEADLINE);
+            assert!(line.contains("complete=true mode=serving"), "{line}");
+            assert_eq!(field(&line, "writer_generation="), generation.to_string());
+            let address: SocketAddr = field(&line, "listen=").parse().unwrap();
+            if requested.port() != 0 {
+                assert_eq!(address, requested, "no alternate port fallback");
+            }
+            peer.address = address;
+            Host { guard, address }
+        })
+        .collect()
+}
+fn direct_lines(network: &Network, peers: &[DirectPeer]) -> Vec<String> {
+    peers
+        .iter()
+        .enumerate()
+        .map(|(index, peer): (usize, &DirectPeer)| {
+            peer_line(
+                network,
+                index,
+                peer.address,
+                &peer.leaf.server_name,
+                &peer.ca_file,
+            )
+        })
+        .collect()
+}
+fn direct_contexts(peers: &[DirectPeer]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    peers
+        .iter()
+        .map(|peer: &DirectPeer| {
+            let sdk: Vec<u8> = peer.client().query_context().unwrap().encode().unwrap();
+            let output: Output = peer.context(&peer.ca_file);
+            assert!(output.status.success(), "{}", lossy(&output.stderr));
+            assert!(output.stderr.is_empty() && !output.stdout.is_empty());
+            (sdk, output.stdout)
+        })
+        .collect()
+}
+
 fn start_hosts(network: &Network, generation: u64) -> Vec<Host> {
     (0..VALIDATORS)
         .map(|validator: usize| {
@@ -556,11 +700,15 @@ fn assert_context_refused(output: Output, diagnostic: &str) {
 }
 
 fn relay_client(relay: &HttpsRelay) -> Client<RemoteTlsHttpTransport> {
+    endpoint_client(relay.addr, &relay.server_name, &relay.ca_der)
+}
+
+fn endpoint_client(address: SocketAddr, name: &str, ca: &[u8]) -> Client<RemoteTlsHttpTransport> {
     Client::new(
         RemoteTlsHttpTransport::new(
-            relay.addr,
-            &relay.server_name,
-            &relay.ca_der,
+            address,
+            name,
+            ca,
             Duration::from_secs(5),
             Duration::from_secs(5),
             Duration::from_secs(5),
@@ -815,7 +963,12 @@ fn assert_unchanged(
 
 /// Reopening advances each physical fence exactly once and nothing else.
 /// Different replicas' physical tokens are never compared with each other.
-fn assert_reopened(before: &[SourceBusinessSnapshot], after: &[SourceBusinessSnapshot]) {
+fn assert_reopened(
+    before: &[SourceBusinessSnapshot],
+    after: &[SourceBusinessSnapshot],
+    from: u64,
+    to: u64,
+) {
     assert_eq!(before.len(), VALIDATORS);
     assert_eq!(after.len(), VALIDATORS);
     for (index, (old, new)) in before.iter().zip(after).enumerate() {
@@ -834,8 +987,8 @@ fn assert_reopened(before: &[SourceBusinessSnapshot], after: &[SourceBusinessSna
             new.token.mutation_sequence(),
             "reopen: namespace {index} mutation sequence"
         );
-        assert_eq!(old.token.writer_fence().get(), 2);
-        assert_eq!(new.token.writer_fence().get(), 3);
+        assert_eq!(old.token.writer_fence().get(), from);
+        assert_eq!(new.token.writer_fence().get(), to);
     }
 }
 
@@ -945,16 +1098,25 @@ struct Observation {
     next_nonce: Vec<u8>,
 }
 
-fn observe(
-    relays: &[HttpsRelay],
+trait TlsPeer {
+    fn client(&self) -> Client<RemoteTlsHttpTransport>;
+}
+impl TlsPeer for HttpsRelay {
+    fn client(&self) -> Client<RemoteTlsHttpTransport> {
+        relay_client(self)
+    }
+}
+
+fn observe<P: TlsPeer>(
+    relays: &[P],
     objects: &[ObjectId],
     request: RequestId,
     sender: Address,
 ) -> Observation {
     let observed: Vec<Observation> = relays
         .iter()
-        .map(|relay: &HttpsRelay| {
-            let client: Client<RemoteTlsHttpTransport> = relay_client(relay);
+        .map(|relay: &P| {
+            let client: Client<RemoteTlsHttpTransport> = relay.client();
             Observation {
                 objects: objects
                     .iter()
@@ -1587,9 +1749,9 @@ fn assert_exact_replay(output: &Output, replay: &Outputs, saved: &Saved, label: 
 }
 
 /// Everything the original commitment left behind, compared exactly.
-fn assert_original_intact(
+fn assert_original_intact<P: TlsPeer>(
     network: &Network,
-    relays: &[HttpsRelay],
+    relays: &[P],
     first: &Outputs,
     saved: &Saved,
     before: &[SourceBusinessSnapshot],
@@ -1904,7 +2066,7 @@ fn actual_local_tls_startup_certifies_a_cli_transfer_refuses_bad_pins_and_replay
         capability.assert_fenced(network.domain, 3);
     }
     let reopened: Vec<SourceBusinessSnapshot> = snapshots(&network);
-    assert_reopened(&before_restart, &reopened);
+    assert_reopened(&before_restart, &reopened, 2, 3);
     let relays: Vec<HttpsRelay> = listeners
         .into_iter()
         .zip(&hosts)
@@ -2133,6 +2295,490 @@ fn actual_local_tls_startup_certifies_a_cli_transfer_refuses_bad_pins_and_replay
     }
     for relay in tls.relays {
         let _listener: TcpListener = relay.stop();
+    }
+    for host in hosts {
+        host.guard.stop_orderly(PROCESS_DEADLINE);
+    }
+}
+
+fn direct_refused(
+    network: &Network,
+    peers: &[DirectPeer],
+    args: Vec<OsString>,
+    outputs: &Outputs,
+    expected: &Observation,
+    diagnostic: &str,
+) {
+    let before: Vec<SourceBusinessSnapshot> = snapshots(network);
+    let output: Output = run_cli(args);
+    assert!(!output.status.success(), "{}", lossy(&output.stdout));
+    assert!(
+        lossy(&output.stderr).contains(diagnostic),
+        "{}",
+        lossy(&output.stderr)
+    );
+    outputs.assert_absent("direct TLS pre-signing refusal");
+    assert_unchanged(&before, &snapshots(network), "direct TLS refusal");
+    let ids: Vec<ObjectId> = expected.objects.keys().copied().collect();
+    assert_eq!(
+        observe(
+            peers,
+            &ids,
+            RequestId::new(TRANSFER_REQUEST).unwrap(),
+            Address::new(network.fixture.owner)
+        ),
+        *expected
+    );
+}
+
+/// Send a genuinely authenticated saved apply, discard its confirmation, and
+/// reconcile the already committed receipt. This is transport/reconciliation
+/// evidence, not proof that a fresh mutation starts after disconnect.
+fn discard_saved_confirmation(peer: &DirectPeer, saved: &Saved) {
+    let mut roots: rustls::RootCertStore = rustls::RootCertStore::empty();
+    roots
+        .add(rustls::pki_types::CertificateDer::from(peer.ca.der.clone()))
+        .unwrap();
+    let mut config: rustls::ClientConfig = rustls::ClientConfig::builder_with_provider(
+        std::sync::Arc::new(rustls::crypto::ring::default_provider()),
+    )
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    config.resumption = rustls::client::Resumption::disabled();
+    let mut connection: rustls::ClientConnection = rustls::ClientConnection::new(
+        std::sync::Arc::new(config),
+        rustls::pki_types::ServerName::try_from(peer.leaf.server_name.clone()).unwrap(),
+    )
+    .unwrap();
+    let mut socket: std::net::TcpStream =
+        std::net::TcpStream::connect_timeout(&peer.address, Duration::from_secs(5)).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    socket
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    while connection.is_handshaking() {
+        connection.complete_io(&mut socket).unwrap();
+    }
+    assert_eq!(
+        connection.peer_certificates().unwrap()[0].as_ref(),
+        peer.leaf.der
+    );
+    let body: Vec<u8> = node_wire::FastVoteApplyRequest {
+        signed_paid_intent: saved.intent.clone(),
+        certificate: saved.certificate.clone(),
+    }
+    .encode()
+    .unwrap();
+    let headers: String = format!(
+        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        node_wire::FASTVOTE_CERTIFICATES_PATH,
+        peer.leaf.server_name,
+        node_wire::NODE_EVENT_MEDIA_TYPE,
+        body.len(),
+    );
+    let mut stream: rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream> =
+        rustls::StreamOwned::new(connection, socket);
+    stream.write_all(headers.as_bytes()).unwrap();
+    stream.write_all(&body).unwrap();
+    stream.flush().unwrap();
+    drop(stream); // No response read and no invented rejection/rollback.
+}
+
+#[test]
+fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust_rotation() {
+    let network: Network = author_inspect_and_prepare();
+    let mut peers: Vec<DirectPeer> = direct_peers(&network);
+    let hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 2);
+    let lines: Vec<String> = direct_lines(&network, &peers);
+    let config: PathBuf = write_config(&network.tls_dir.join("direct-network.conf"), &lines);
+    let received: Vec<Vec<u8>> = peers.iter().map(DirectPeer::received).collect();
+    let contexts: Vec<(Vec<u8>, Vec<u8>)> = direct_contexts(&peers);
+    let original_inputs: Vec<(PathBuf, Vec<u8>)> = std::iter::once(network.genesis.clone())
+        .chain(network.signing_keys.iter().cloned())
+        .chain(std::iter::once(network.owner_seed.clone()))
+        .chain(peers.iter().map(|peer: &DirectPeer| peer.ca_file.clone()))
+        .chain(peers.iter().map(|peer: &DirectPeer| peer.cert_file.clone()))
+        .chain(peers.iter().map(|peer: &DirectPeer| peer.key_file.clone()))
+        .chain(std::iter::once(config.clone()))
+        .map(|path: PathBuf| {
+            let bytes: Vec<u8> = fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
+    let sender: Address = Address::new(network.fixture.owner);
+    let request: RequestId = RequestId::new(TRANSFER_REQUEST).unwrap();
+    let initial: Observation = observe(
+        &peers,
+        &[ObjectId::new(APP_COIN), ObjectId::new(FEE_COIN)],
+        request,
+        sender,
+    );
+    let nonce: u64 = verify_initial(&network, &initial, sender);
+    for (label, name, ca) in [
+        (
+            "wrong-ca",
+            peers[0].leaf.server_name.as_str(),
+            peers[1].ca_file.as_path(),
+        ),
+        (
+            "wrong-dns",
+            "wrong-direct.fixture.invalid",
+            peers[0].ca_file.as_path(),
+        ),
+    ] {
+        let mut wrong: Vec<String> = lines.clone();
+        wrong[0] = peer_line(&network, 0, peers[0].address, name, ca);
+        let wrong_config: PathBuf = write_config(
+            &network.tls_dir.join(format!("direct-{label}.conf")),
+            &wrong,
+        );
+        let outputs: Outputs = Outputs::new(&network.artifacts_dir, label);
+        direct_refused(
+            &network,
+            &peers,
+            transfer_args(
+                &network,
+                &wrong_config,
+                peers[0].address,
+                &network.owner_seed,
+                [0x08; 32],
+                nonce,
+                &outputs,
+            ),
+            &outputs,
+            &initial,
+            TLS_PEER_REFUSAL,
+        );
+    }
+    let outputs: Outputs = Outputs::new(&network.artifacts_dir, "direct-wrong-domain");
+    let mut args: Vec<OsString> = transfer_args(
+        &network,
+        &config,
+        peers[0].address,
+        &network.owner_seed,
+        [0x09; 32],
+        nonce,
+        &outputs,
+    );
+    replace(&mut args, "--expected-domain", hex(&[0x62; 32]).into());
+    let mismatch: String = format!(
+        "remote /v1/context domain {} disagrees with locally expected domain {}",
+        hex(&DOMAIN),
+        hex(&[0x62; 32])
+    );
+    direct_refused(&network, &peers, args, &outputs, &initial, &mismatch);
+
+    let first: Outputs = Outputs::new(&network.artifacts_dir, "direct-transfer");
+    let output: Output = run_cli(transfer_args(
+        &network,
+        &config,
+        peers[0].address,
+        &network.owner_seed,
+        TRANSFER_REQUEST,
+        nonce,
+        &first,
+    ));
+    let stdout: String = lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout={stdout} stderr={}",
+        lossy(&output.stderr)
+    );
+    assert_ordered(
+        &stdout,
+        &[
+            "fastvote_signed_intent_out=",
+            "fastvote_certificate_formed=true",
+            "fastvote_certificate_out=",
+            "fastvote_publication_source=",
+            "fastvote_availability_certificate_out=",
+            "apply validator=",
+        ],
+    );
+    assert_eq!(
+        stdout
+            .matches("status=received paid_status=Success")
+            .count(),
+        VALIDATORS
+    );
+    let saved: Saved = Saved::read(&first);
+    let committed: Committed = verify_saved_artifacts(&network, &saved, nonce);
+    let ids: Vec<ObjectId> = observed_ids(&committed.result);
+    let committed_view: Observation = observe(&peers, &ids, request, sender);
+    verify_committed_state(&network, &committed, &saved, &committed_view);
+    let before: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    let replay: Outputs = Outputs::new(&network.artifacts_dir, "direct-same-boot");
+    assert_exact_replay(
+        &run_cli(replay_args(
+            &network,
+            &config,
+            &first.intent,
+            Some(&first),
+            &replay,
+        )),
+        &replay,
+        &saved,
+        "direct same-boot replay",
+    );
+    assert_original_intact(
+        &network,
+        &peers,
+        &first,
+        &saved,
+        &before,
+        &committed_view,
+        "direct same boot",
+    );
+
+    // Same-CA leaf/key rollover: exact same endpoints, DNS, roots and protocol
+    // files, fresh authenticated DER/SPKI, and real live fence 2 -> 3.
+    let stale: Vec<StaleCapability> = (0..VALIDATORS)
+        .map(|index: usize| StaleCapability::hold(&network, index))
+        .collect();
+    for (index, peer) in peers.iter_mut().enumerate() {
+        peer.renew(&network.tls_dir, &format!("direct-same-ca-{index}"));
+    }
+    for host in hosts {
+        host.guard.stop_orderly(PROCESS_DEADLINE);
+    }
+    let hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 3);
+    for capability in &stale {
+        capability.assert_fenced(network.domain, 3);
+    }
+    let reopened: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    assert_reopened(&before, &reopened, 2, 3);
+    assert_eq!(direct_lines(&network, &peers), lines);
+    for (index, peer) in peers.iter().enumerate() {
+        assert_ne!(peer.received(), received[index]);
+    }
+    assert_eq!(direct_contexts(&peers), contexts);
+    let replay: Outputs = Outputs::new(&network.artifacts_dir, "direct-same-ca-replay");
+    assert_exact_replay(
+        &run_cli(replay_args(
+            &network,
+            &config,
+            &first.intent,
+            Some(&first),
+            &replay,
+        )),
+        &replay,
+        &saved,
+        "direct same-CA restart replay",
+    );
+    assert_original_intact(
+        &network,
+        &peers,
+        &first,
+        &saved,
+        &reopened,
+        &committed_view,
+        "direct same CA",
+    );
+
+    // Separate unrelated-CA stopped restart. Only peer 0 changes trust; all
+    // four live hosts reopen exactly once, with explicit fence 3 -> 4.
+    let old_client: Client<RemoteTlsHttpTransport> = peers[0].client();
+    assert_eq!(
+        old_client.query_context().unwrap().encode().unwrap(),
+        contexts[0].0
+    );
+    let old_root: PathBuf = peers[0].ca_file.clone();
+    let old_root_bytes: Vec<u8> = fs::read(&old_root).unwrap();
+    let ca: FixtureCa = FixtureCa::new(&format!("{}-direct-issuer-b", peers[0].leaf.server_name));
+    assert_ne!(ca.subject, peers[0].ca.subject);
+    assert_ne!(ca.der, peers[0].ca.der);
+    peers[0].ca = ca;
+    peers[0].renew(&network.tls_dir, "direct-ca-b");
+    for host in hosts {
+        host.guard.stop_orderly(PROCESS_DEADLINE);
+    }
+    let hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 4);
+    let reopened_again: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    assert_reopened(&reopened, &reopened_again, 3, 4);
+    match old_client.query_context() {
+        Err(ClientError::Transport(TransportError::TlsProtocol(
+            rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+        ))) => {}
+        other => panic!("held old direct trust must refuse exact UnknownIssuer: {other:?}"),
+    }
+    let unknown: String = format!("{TLS_PEER_REFUSAL}UnknownIssuer");
+    assert_context_refused(peers[0].context(&old_root), &unknown);
+    let outputs: Outputs = Outputs::new(&network.artifacts_dir, "direct-old-ca-transfer");
+    direct_refused(
+        &network,
+        &peers,
+        transfer_args(
+            &network,
+            &config,
+            peers[0].address,
+            &network.owner_seed,
+            [0x08; 32],
+            nonce,
+            &outputs,
+        ),
+        &outputs,
+        &committed_view,
+        &unknown,
+    );
+    assert_eq!(fs::read(&old_root).unwrap(), old_root_bytes);
+    peers[0].ca_file = network.tls_dir.join("direct-ca-b-root.der");
+    write_private_new(&peers[0].ca_file, &peers[0].ca.der);
+    let new_lines: Vec<String> = direct_lines(&network, &peers);
+    assert_eq!(&new_lines[1..], &lines[1..]);
+    let old_fields: Vec<&str> = lines[0].split_whitespace().collect();
+    let new_fields: Vec<&str> = new_lines[0].split_whitespace().collect();
+    assert_eq!(&old_fields[..3], &new_fields[..3]);
+    assert_ne!(old_fields[3], new_fields[3]);
+    let new_config: PathBuf = write_config(
+        &network.tls_dir.join("direct-ca-b-network.conf"),
+        &new_lines,
+    );
+    assert_eq!(direct_contexts(&peers), contexts);
+    for peer in &peers {
+        let _received: Vec<u8> = peer.received();
+    }
+    let replay: Outputs = Outputs::new(&network.artifacts_dir, "direct-ca-b-replay");
+    assert_exact_replay(
+        &run_cli(replay_args(
+            &network,
+            &new_config,
+            &first.intent,
+            Some(&first),
+            &replay,
+        )),
+        &replay,
+        &saved,
+        "direct new-CA restart replay",
+    );
+    assert_original_intact(
+        &network,
+        &peers,
+        &first,
+        &saved,
+        &reopened_again,
+        &committed_view,
+        "direct new CA",
+    );
+    let outputs: Outputs = Outputs::new(&network.artifacts_dir, "direct-new-ca-wrong-domain");
+    let mut args: Vec<OsString> = transfer_args(
+        &network,
+        &new_config,
+        peers[0].address,
+        &network.owner_seed,
+        [0x09; 32],
+        nonce,
+        &outputs,
+    );
+    replace(&mut args, "--expected-domain", hex(&[0x62; 32]).into());
+    direct_refused(&network, &peers, args, &outputs, &committed_view, &mismatch);
+
+    discard_saved_confirmation(&peers[0], &saved);
+    let replay: Outputs = Outputs::new(&network.artifacts_dir, "direct-lost-confirmation-replay");
+    assert_exact_replay(
+        &run_cli(replay_args(
+            &network,
+            &new_config,
+            &first.intent,
+            Some(&first),
+            &replay,
+        )),
+        &replay,
+        &saved,
+        "direct saved-result reconciliation",
+    );
+    assert_original_intact(
+        &network,
+        &peers,
+        &first,
+        &saved,
+        &reopened_again,
+        &committed_view,
+        "discarded saved confirmation",
+    );
+
+    let mut conflicting: SignedPaidIntent = decode_signed_paid_intent(&saved.intent).unwrap();
+    conflicting.intent.consent.max_fee = Amount::new(
+        conflicting
+            .intent
+            .consent
+            .max_fee
+            .get()
+            .checked_add(1)
+            .unwrap(),
+    );
+    let frame: Vec<u8> =
+        paid_intent_signing_frame(&network.fixture.context, &conflicting.intent).unwrap();
+    conflicting.signature = SigningKey::from(OWNER_SEED).sign(&frame).into();
+    let conflicting_bytes: Vec<u8> = encode_signed_paid_intent(&conflicting).unwrap();
+    assert_ne!(conflicting_bytes, saved.intent);
+    assert_eq!(conflicting.intent.request_id, TRANSFER_REQUEST);
+    assert_eq!(conflicting.intent.nonce, nonce);
+    assert!(
+        authenticate_paid_intent(
+            &network.fixture.resolver,
+            &network.fixture.context,
+            &conflicting_bytes
+        )
+        .is_ok()
+    );
+    for (index, peer) in peers.iter().enumerate() {
+        match peer.client().prepare_fastvote(&conflicting_bytes, None) {
+            Err(ClientError::UnexpectedStatus { status, body }) => {
+                assert_eq!(status, 400, "direct validator {index}");
+                assert_eq!(body, "fastvote-rejected");
+            }
+            other => panic!("direct conflicting authenticated request must refuse: {other:?}"),
+        }
+        assert_original_intact(
+            &network,
+            &peers,
+            &first,
+            &saved,
+            &reopened_again,
+            &committed_view,
+            "direct SDK conflict",
+        );
+    }
+    let conflict_path: PathBuf = network.artifacts_dir.join("direct-conflicting.intent");
+    write_private_new(&conflict_path, &conflicting_bytes);
+    let conflict: Outputs = Outputs::new(&network.artifacts_dir, "direct-conflicting-replay");
+    let output: Output = run_cli(replay_args(
+        &network,
+        &new_config,
+        &conflict_path,
+        None,
+        &conflict,
+    ));
+    assert!(!output.status.success());
+    assert!(lossy(&output.stdout).contains("fastvote_replay_mode=prepare_from_saved_intent"));
+    assert_eq!(
+        lossy(&output.stdout).matches(PREPARE_REFUSED).count(),
+        VALIDATORS
+    );
+    assert!(lossy(&output.stderr).contains(INSUFFICIENT_QUORUM));
+    for path in [
+        &conflict.certificate,
+        &conflict.availability,
+        &conflict.result,
+    ] {
+        assert_reserved_empty(path, "direct conflict");
+    }
+    assert_absent(&conflict.intent, "direct conflict");
+    assert_original_intact(
+        &network,
+        &peers,
+        &first,
+        &saved,
+        &reopened_again,
+        &committed_view,
+        "direct CLI conflict",
+    );
+    for (path, bytes) in original_inputs {
+        assert_eq!(fs::read(&path).unwrap(), bytes, "{}", path.display());
     }
     for host in hosts {
         host.guard.stop_orderly(PROCESS_DEADLINE);

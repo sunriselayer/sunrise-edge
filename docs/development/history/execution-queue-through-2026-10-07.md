@@ -571,3 +571,82 @@ and immutable audit evidence remain retained.
 - Check actual Git/PR/process state at every continuation. Mark completion only
   with owning implementation and evidence; distinguish ancestor checks from
   exact-head checks and interrupted from passed. Update this file, not README.
+
+## Native integration and direct-TLS observations, 2026-10-08
+
+These dated records replace stale live-TODO observations, not the original
+snapshot or its criteria. The preceding archived body is unchanged; current
+status remains only in [TODO.md](../../../TODO.md).
+
+PR #293 integrated normally as `364e2ec8` at 16:17:14 UTC on 2026-10-07.
+Its tree equals accepted `3ec8d7bd`; main/origin were verified clean and equal.
+PR #286–#292/#294/#295 were recognized as merged components. Their prior scoped
+source/evidence records, separately from the combined gate, were:
+
+| Component | Retained source and narrower evidence |
+| --- | --- |
+| #286 consensus verifier | `f797d049`; complete source approval, consensus 259/0, genuine successor controls 5/0 and strict Clippy |
+| #287 SQLite physical ownership | `621d1a07`; complete source approval, real owning 141/0 and strict Clippy, not power/ENOSPC/failover |
+| #288 external signing preparation | `85b8a0a2`; complete source approval, SDK/CLI 491/0 and strict Clippy; operator initially compiled only, not custody |
+| #289 inactive recovery | `7065a1dd`; complete source approval, compiled owning 3/0 and strict Clippy, not general/off-host recovery |
+| #290 custody design | `dba52ddd`; reviewed four-document proposal, no selected threat/backend or protected-key implementation |
+| #291 ordered local signatures | `5980522b`; identical functional `5c05215e` passed 1226/0 with seven ignored and strict Clippy; ignored cases not run by that scope |
+| #292 release evidence | `c3f9e3e4`; complete corrected source approval, 134 cheap controls and CI recipe/mutation contract, not actual builds |
+| #294 local TLS rotation | `2ba302a2`; eight-path source approval and six owning stages, TLS 3/0 and SDK TLS 15/0, zero ignored, strict Clippy |
+| #295 publication-query owner | `bdfee63a`; 27-path source approval and eleven stages/429 executions, zero ignored, real workflows and owning Clippy, not complete SDK decoupling |
+
+Nonpassing observations remain nonpassing: `8974634a` failed one ordered-test
+timing assertion; `2e191ae5` and `69a2992d` were release marker/BOM source
+blocks; `afac7908` completed build A but own-hardlink cleanup failed and B never
+started. None was adopted or reused. DR-0216's `4643836a` rcgen compilation and
+`d1da1892` child-reap Clippy failures also remain attributable.
+
+At `3ec8d7bd`, the first full attempt was interrupted at 12:12:20 UTC because
+the external two-hour envelope was undersized. The separate fresh five-hour
+attempt ran literal npm-ci and complete check-all from 12:17:25.247 to
+15:56:07.679 UTC, both actual exits 0/null. Genuine unchanged recurrence and
+terminal withdrawal unlock ran; hosted `37610011266` finished all seven owners
+and success-only `check`. Two new sequential offline Native builds compared all
+eleven retained pairs byte-identically and both owned cleanups passed. The
+retained `70702fbe` SDK length diagnostic retained 63/65-byte refusal controls.
+This is exact local integration evidence, not PG/provider/M1–M8 qualification.
+
+Direct TLS `9daf6f2b` received SOURCE BLOCK for ordinary-open FIFO waiting and
+an encrypted-output oracle compatible with complete ordinary buffering. The
+accepted narrow corrections at `c0d2f217` received different complete source
+approval. Its first scoped runner invocation `f98abeed` failed at startup
+despite child exit 0: the expected-count plan omitted two existing fixture
+framing cases. It did not run Clippy and no completed stages were adopted.
+The fresh retry `35f4732c` ran all six literal stages from 16:55:58.237 to
+16:56:45.374 UTC: 17 exact named tests, zero failed/ignored and strict Clippy
+without warnings; actual ordinary main exit 0 and owned teardown were retained.
+That scope did not run genuine activated-successor/signerless-history recurrence.
+Final-head whole acceptance/CI, production PKI/custody and Rustls advisory
+qualification were still open at this documentation preparation.
+
+At final documentation source `70210f57`, complete different-reviewer source
+approval was obtained and Draft PR #296 was created. The first whole-required
+invocation `0e62db50` ran from 17:56:47.384 to 17:57:07.250 UTC on 2026-10-07:
+npm-ci exited 0, then check-all exited 1 in the cheap release fixture's exact
+0751 assertion. The synthetic builder depended on inherited umask0077. Rust,
+genuine ignored recurrence and later owners did not run; this attempt remains
+failed. Actual terminal and exact own unit/process/cgroup/both-lease teardown
+were verified; no partial stages were adopted.
+
+Hosted run `37662978717` independently failed readiness-sqlite and
+recurring-sqlite at 18:00 UTC because the real CLI binary was absent in those
+separate jobs. The required full run builds it in the earlier Rust owner, but
+isolated selected lanes must own that prerequisite too. Corrections preserve
+literal test selectors, release mode oracles, restrictive service umask and
+the genuine seven-epoch/full-withdrawal-unlock workload. Source-only fixes do
+not reclassify either failed run; fresh corrected-source acceptance remains open.
+
+The fixture correction retained different-reviewer source approval. Its first
+own-unit cheap invocation failed in the final production-CLI negative because
+the parent unnecessarily supplied `--no-addons`; the production owner correctly
+refused undeclared execution flags. No source oracle was changed. The separate
+fresh plain-Node invocation `fc4a66ac` ran from 18:28:33 to 18:28:41 UTC:
+all 135 controls passed and actual main exit was 0. While running, UMask0077,
+NoNewPrivileges and the exact own PID/cgroup were read back; final own
+unit/PID/cgroup absence and unchanged source hashes were verified. This is cheap
+fixture evidence with ZERO native builds, not corrected-head whole acceptance.

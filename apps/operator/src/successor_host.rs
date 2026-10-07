@@ -16,6 +16,7 @@ use crate::{
     common::{FlagSet, load_signing_key_file, parse_hex_32},
     host_protocol_context::host_query_protocol_config,
     host_runtime::FileEd25519Signer,
+    native_tls::{self, NativeTlsInputs},
     successor_artifacts::{SuccessorChainArtifactFiles, SuccessorChainInputs},
 };
 use ed25519_zebra::{SigningKey, VerificationKey};
@@ -74,9 +75,11 @@ const FLAGS: &[&str] = &[
     "--created-checkpoint",
     "--timeout-seconds",
     "--max-concurrent",
+    native_tls::CERT_FLAG,
+    native_tls::KEY_FLAG,
 ];
 const BOOL_FLAGS: &[&str] = &["--confirm-offline-fence-advance"];
-const HELP: &str = "Recurring-successor loopback host only: serve | serve-history. Never activates, imports or installs genesis; current Freeze/frontier/DrainSet/Seal controls enter the existing core owners under a fresh warrant.\nRequire the same original pins, explicit --successor-max-links and complete ordered directory role lists as successor_activation, plus --target-state-db --target-blob-db --validator-id --listen 127.0.0.1:port or [::1]:port. Serve additionally requires --signer-key-file --created-checkpoint --confirm-offline-fence-advance (claims the target writer fence once). Serve-history instead requires explicit --historical-epoch and consumes only post-Seal history material: no key loading, signing, fence advance or other routes.\nBudget and counts refuse before any genesis or artifact I/O. Every request re-verifies every link and exact target metadata. Optional --timeout-seconds 1..3600 (30), --max-concurrent 1..256 (16).";
+const HELP: &str = "Recurring-successor loopback host only: serve | serve-history. Never activates, imports or installs genesis; current Freeze/frontier/DrainSet/Seal controls enter the existing core owners under a fresh warrant.\nRequire the same original pins, explicit --successor-max-links and complete ordered directory role lists as successor_activation, plus --target-state-db --target-blob-db --validator-id --listen 127.0.0.1:port or [::1]:port. Serve additionally requires --signer-key-file --created-checkpoint --confirm-offline-fence-advance (claims the target writer fence once). Serve-history instead requires explicit --historical-epoch and consumes only post-Seal history material: no protocol signing-key loading, signing, fence advance or other routes.\nBudget and counts refuse before any genesis or artifact I/O. Every request re-verifies every link and exact target metadata. Optional --timeout-seconds 1..3600 (30), --max-concurrent 1..256 (16). Optional ordered leaf-first --tls-cert-der-file (one to four DER files) and one --tls-key-pkcs8-der-file must appear together; bounded regular-file/private-key checks finish before durable I/O. TLS identity never grants protocol or caller authority; no hot reload or plaintext fallback.";
 
 /// Correlation identities unique within the one writer generation this
 /// process claimed; a restart claims a new generation.
@@ -220,10 +223,12 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         1,
         256,
     )?;
+    let tls_inputs: NativeTlsInputs = NativeTlsInputs::parse(&mut flags)?;
     flags.finish()?;
     if state_path == blob_path {
         return Err("target state and blob database paths must be distinct".into());
     }
+    let tls: Option<tokio_rustls::TlsAcceptor> = tls_inputs.load()?;
     serve(SuccessorHostInputs {
         listen,
         inputs,
@@ -235,6 +240,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         created_checkpoint,
         timeout,
         max_concurrent: usize::try_from(max_concurrent)?,
+        tls,
     })
 }
 
@@ -249,6 +255,7 @@ struct SuccessorHostInputs {
     created_checkpoint: u64,
     timeout: u64,
     max_concurrent: usize,
+    tls: Option<tokio_rustls::TlsAcceptor>,
 }
 
 fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
@@ -349,10 +356,20 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
             generation.get(),
         );
         std::io::Write::flush(&mut std::io::stdout())?;
-        native_http::serve(listener, router, async {
+        let shutdown = async {
             let _ = tokio::signal::ctrl_c().await;
-        })
-        .await
+        };
+        match host.tls {
+            None => native_http::serve(listener, router, shutdown).await,
+            Some(acceptor) => native_http::serve_with_stream_upgrade(
+                listener,
+                router,
+                native_http::NativeHttpServePolicy::default(),
+                move |stream: tokio::net::TcpStream| native_tls::accept(acceptor.clone(), stream),
+                shutdown,
+            )
+            .await,
+        }
     })?;
     Ok(())
 }

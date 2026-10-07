@@ -14,7 +14,7 @@ production deployment. Readiness and the selected release profile belong in
 | Native structured and preinstalled-WASM router families in the same file | Authenticated `SubmitTransaction` with explicitly supplied trusted composition; other NodeEvent families refuse. Opt-in direct paid/local/publication routes are separate composition choices. | The mere presence of an opt-in constructor does not certify its inclusion in a network host. |
 | [`certified_fastvote_router_with_executor`](../../crates/native-http/src/fastvote.rs) | Bounded queries, certified prepare/apply/publication, frozen-frontier advance/page and the [drain family](../../crates/native-http/src/fastvote/drain.rs), including union/member/import/progress and retained publication controls. Context, policy, signed intent, committee and durable owners enforce their contracts. Direct paid/local/publication mutations and `NODE_EVENT_PATH` are excluded. | These mounted handoff controls do not themselves supply ordered Seal, readiness, activation or a complete host lifecycle. An ordinary response or user signature is not a committee certificate or validator warrant. |
 | [`certified_ordered_economics_router`](../../crates/native-http/src/ordered_economics.rs) | Explicit opt-in ordered proposal/observe/certificate/status/outcome/tick and read-only fixed-target history transport whose material is authenticated by history owners, composed with the certified router. Its supplied policy, signer and optional Seal composition decide authority. | Authenticating archive material does not authenticate the requester. An ordinary proposal or local tick is not a quorum commit. `Seal = None` is not an implemented handoff composition. |
-| Original [`sqlite-source-host`](../../apps/operator/src/sqlite_source_host.rs) | Existing original-genesis namespace, explicit offline fence claim, locally pinned signer/policies and the certified/ordered router with Seal composition. Listen is numeric loopback only. | It neither authors genesis nor activates a successor; a loopback acceptance host is not a public validator deployment. |
+| Original [`sqlite-source-host`](../../apps/operator/src/sqlite_source_host.rs) | Existing original-genesis namespace, explicit offline fence claim, locally pinned signer/policies and the certified/ordered router with Seal composition. Listen is numeric loopback only; optional immutable Native TLS uses the same connection owner. | It neither authors genesis nor activates a successor; TLS identity is not caller/protocol authority, and a loopback acceptance host is not a public validator deployment. |
 | [`successor-host`](../../apps/operator/src/successor_host.rs) and live [`successor_router`](../../crates/native-http/src/successor.rs) | Each request obtains fresh verified serving authority from the original root, complete predecessor chain and exact target namespace. Mounts current certified, ordered and supported handoff controls, plus successor-only fee-claim preparation. Unsupported successor controls explicitly refuse. | Fee-claim preparation is not mounted by the original SQLite/PG hosts. A startup-time cached policy, completed import, readiness certificate or transport success does not independently grant serving authority. |
 | [`successor_history_router`](../../crates/native-http/src/successor/historical.rs) | Exactly three material-only history routes; freshly verified current policy, no signer and no live serving warrant. The executable's `serve-history` does not advance the fence. | Historical availability must never be treated as paid execution, voting, receipt authority or successor activation. |
 | Optional [`fastvote_host_pg`](../../apps/operator/src/bin/fastvote_host_pg.rs) | Loopback original host backed by explicitly configured PostgreSQL and the certified router, including its frontier/drain controls. Ordered economics is mounted only with `--enable-ordered-economics`; its Seal composition is `None`. | The PG host does not replace the native SQLite successor/Seal acceptance or make PostgreSQL mandatory. |
@@ -27,6 +27,15 @@ committee quorum, verified serving authority and physical writer fencing are
 distinct controls. Do not replace one with another when composing an adapter.
 Publication/Instantiate/Call use the generic contract owners; Standard Asset
 has no separate node-core privilege.
+
+The private [Native TLS input owner](../../apps/operator/src/native_tls.rs) is
+consumed by original SQLite, successor live and successor history startup.
+Closed options, bounded regular DER/PKCS8 files, private Unix key permissions
+and leaf/key correspondence decide before durable I/O or fencing. History may
+load a transport key but still has no validator signing key, live warrant or
+writer-generation claim. [DR-0219](decisions/0219-native-direct-tls-connection-ownership.md)
+extends the single native connection permit/task/output lifecycle; it supplies
+no new route, mTLS caller identity, proxy or hot-reload authority.
 
 ## Store and signer capabilities
 
@@ -48,9 +57,10 @@ has no separate node-core privilege.
   one atomicity-domain contract. Separate validator stores are expected;
   independently sharding one validator's related writes requires a separately
   designed atomic protocol and is not supplied by FastVote certificates.
-- Operator binaries currently use explicit local key-file signers. The real
-  loopback TLS/CLI acceptance uses disposable keys and a local relay. It does
-  not certify mainnet key custody, production PKI rotation or a deployed proxy.
+- Operator binaries currently use explicit local key-file signers. Loopback
+  TLS/CLI fixtures separately exercise disposable relay termination and direct
+  Native termination. Neither certifies mainnet key custody, production PKI
+  rotation or a deployed proxy.
   Historical composition intentionally has no signing capability.
   [DR-0208](decisions/0208-native-sqlite-first-and-protected-signing.md) replaces
   the Ledger-specific product prerequisite, not key protection, trusted content

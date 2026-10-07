@@ -114,6 +114,7 @@
 - [DR-0215: invocation-bound ordered local signatures and retained reread verification](0215-ordered-local-signature-verification.md)
 - [DR-0216: owned local TLS stop, restart and explicit trust rotation](0216-local-tls-stop-restart-rotation.md)
 - [DR-0217: one publication-query codec and narrow error owner](0217-publication-query-contract-owner.md)
+- [DR-0219: direct Native TLS under one connection lifecycle](0219-native-direct-tls-connection-ownership.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

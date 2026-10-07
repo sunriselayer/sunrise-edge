@@ -323,6 +323,28 @@ and authenticated native event routers and query routes receive the same pre-par
 controls. An embedding host that does not use this server entrypoint must
 provide equivalent connection/read/write/lifecycle controls itself.
 
+[DR-0219](decisions/0219-native-direct-tls-connection-ownership.md) adds
+`serve_with_stream_upgrade`, immediately consumed by the original SQLite and
+successor live/history executables. It retains this one listener, immediate
+permit acquisition and tracked task set: the admitted task performs its
+configured upgrade before Hyper, holds the permit throughout HTTP and cancels
+unfinished upgrade I/O on shutdown, including an already-signaled watch. The
+private operator `native_tls` owner loads one immutable optional leaf-first
+DER chain and matching private PKCS8 key before durable startup/fence claim.
+It supplies explicit Ring TLS 1.2/1.3 with no resumption, tickets, early data,
+key log or HTTP/2 negotiation; one absolute five-second handshake budget has
+no progress reset or CLI override. Async timing does not preempt synchronous
+cryptography or establish a global CPU/RAM/traffic bound.
+
+The same output idle/total owner now wraps write, flush and shutdown, including
+encrypted records and close-notify. The first write, pending flush or shutdown
+starts its fixed total lifetime. A ready successful empty pre-output flush
+starts no timer: Hyper performs this no-op while admitted application work is
+pending. Progress can refresh idle, never total. Protocol routes, canonical
+frames, errors, expected client context and actual store/work permits remain
+with their existing owners; server TLS authenticates no caller or intent.
+There is no second accept loop, proxy, task pool, queue or reload watcher.
+
 The private connection owner ends the request-read phase when the bounded
 body collector resolves, before dispatching the router or a terminal input
 refusal. Waiting for application work is not idle request input: Hyper's
@@ -344,10 +366,13 @@ client semantics. The structured durable route supplies a storage-aware deadline
 and checks an explicit cooperative cancellation signal before blocking dispatch,
 at blocking-job entry, and immediately before its first storage call. The closed
 event route holds a permit over canonical decoding only and cannot start
-storage or application work. Client-disconnect wiring after complete request
-admission, shutdown
-budgets, cancellation of started transport/storage work, measured load
-capacity, and circuit breaking remain required.
+storage or application work. A dropped TLS peer does not abort a started
+blocking job or release its work permit before actual completion. A lost
+confirmation is unknown and reconciles by exact saved intent and receipt, not
+new signing or an invented rollback/rejection. Connection handshake/output
+budgets do not promise globally bounded host shutdown or storage cancellation.
+Operational cancellation policy, measured load capacity and circuit breaking
+remain required.
 
 An embedding scheduler may call `recover_outboxes_once` without an active HTTP
 request. It scans one bounded outbox-key page, validates delivery/batch identity

@@ -1,5 +1,6 @@
 //! Post-Seal material-only history process. Uses the existing historical
-//! SQLite open and writer fence without advancing it. No signing key is read.
+//! SQLite open and writer fence without advancing it. No protocol signing key
+//! is read; optional TLS loads only its independent transport key.
 
 use super::*;
 use native_http::successor::{
@@ -109,10 +110,12 @@ pub(super) fn run(values: Vec<OsString>) -> Result<(), Box<dyn Error>> {
         1,
         256,
     )?)?;
+    let tls_inputs: NativeTlsInputs = NativeTlsInputs::parse(&mut flags)?;
     flags.finish()?;
     if state_path == blob_path {
         return Err("target state and blob paths must be distinct".into());
     }
+    let tls: Option<tokio_rustls::TlsAcceptor> = tls_inputs.load()?;
     let artifacts: SuccessorChainArtifactFiles = chain.open()?;
     for path in [&state_path, &blob_path] {
         artifacts.require_output_outside(path)?;
@@ -164,7 +167,18 @@ pub(super) fn run(values: Vec<OsString>) -> Result<(), Box<dyn Error>> {
         let bound: SocketAddr = listener.local_addr()?;
         println!("complete=true mode=successor-history-material-only domain={domain} epoch={} validator_id={validator} writer_generation={} listen={bound}", epoch.get(), generation.get());
         std::io::Write::flush(&mut std::io::stdout())?;
-        native_http::serve(listener, router, async { let _ = tokio::signal::ctrl_c().await; }).await
+        let shutdown = async { let _ = tokio::signal::ctrl_c().await; };
+        match tls {
+            None => native_http::serve(listener, router, shutdown).await,
+            Some(acceptor) => native_http::serve_with_stream_upgrade(
+                listener,
+                router,
+                native_http::NativeHttpServePolicy::default(),
+                move |stream: tokio::net::TcpStream| native_tls::accept(acceptor.clone(), stream),
+                shutdown,
+            )
+            .await,
+        }
     })?;
     Ok(())
 }
