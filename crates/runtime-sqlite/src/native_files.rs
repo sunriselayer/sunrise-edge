@@ -1,4 +1,4 @@
-//! Native import file ownership, never protocol/bootstrap authority.
+//! Lock-safe native file attachment, never protocol/bootstrap authority.
 use std::{
     fs::{File, OpenOptions},
     io,
@@ -8,8 +8,58 @@ use std::{
 #[derive(Debug)]
 pub(crate) struct ImportFile {
     path: PathBuf,
-    file: File,
+    main: FileIdentity,
+    sidecars: [Option<FileIdentity>; 3],
     ancestors: Vec<(PathBuf, File)>,
+    fresh: bool,
+}
+
+/// Observations only: closing an independent main/SHM descriptor can release
+/// SQLite's process-wide POSIX locks. Only directory descriptors are retained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+fn regular_identity(metadata: &std::fs::Metadata) -> io::Result<FileIdentity> {
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SQLite path is not a regular file",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "SQLite file has a hard-link alias",
+            ));
+        }
+        Ok(FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "native SQLite attachment requires POSIX file identity",
+        ))
+    }
+}
+
+fn observe(path: &Path) -> io::Result<FileIdentity> {
+    regular_identity(&std::fs::symlink_metadata(path)?)
+}
+
+fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
 }
 
 pub(crate) const SIDECAR_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
@@ -45,10 +95,6 @@ pub(crate) fn require_no_sidecars(path: &Path) -> io::Result<()> {
         require_absent(Path::new(&sidecar))?;
     }
     Ok(())
-}
-
-pub(crate) fn sync_owned(held: &ImportFile) -> io::Result<()> {
-    sync_created(&held.path, held)
 }
 
 fn absolute(path: &Path) -> io::Result<PathBuf> {
@@ -118,7 +164,7 @@ fn pin_ancestors(path: &Path) -> io::Result<Vec<(PathBuf, File)>> {
     Ok(held)
 }
 
-pub(crate) fn check_attached(path: &Path, held: &ImportFile) -> io::Result<()> {
+pub(crate) fn check_attached(path: &Path, held: &mut ImportFile) -> io::Result<()> {
     if absolute(path)? != held.path {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -128,26 +174,85 @@ pub(crate) fn check_attached(path: &Path, held: &ImportFile) -> io::Result<()> {
     for (ancestor, directory) in &held.ancestors {
         directory_attached(ancestor, directory)?;
     }
-    let actual = std::fs::symlink_metadata(path)?;
-    let opened = held.file.metadata()?;
-    if !actual.is_file() || actual.file_type().is_symlink() || !opened.is_file() {
+    if observe(&held.path)? != held.main {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "import target is not an attached regular file",
+            "SQLite main file identity changed",
         ));
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if (actual.dev(), actual.ino()) != (opened.dev(), opened.ino()) {
+    let mut observed: [Option<FileIdentity>; 3] = [None; 3];
+    for (index, suffix) in SIDECAR_SUFFIXES.iter().enumerate() {
+        let actual: Option<FileIdentity> = match observe(&sidecar_path(&held.path, suffix)) {
+            Ok(identity) => Some(identity),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        if held.sidecars[index].is_some() && actual.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "import target file changed while opening",
+                "SQLite attached sidecar disappeared",
             ));
         }
+        if let Some(identity) = actual {
+            if identity == held.main || observed.contains(&Some(identity)) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "SQLite main/sidecar alias",
+                ));
+            }
+            if held.sidecars[index].is_some_and(|previous| previous != identity) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "SQLite sidecar identity changed",
+                ));
+            }
+        }
+        // FULL/TRUNCATE checkpoints may change bytes and length, not this
+        // attachment. Last-close cleanup drops the owner; a later constructor
+        // observes its own optional sidecars. Do not bless an unlinked live WAL.
+        observed[index] = actual;
     }
+    held.sidecars = observed;
     Ok(())
 }
+
+impl ImportFile {
+    pub(crate) fn require_fresh(&self) -> io::Result<()> {
+        if !self.fresh {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "SQLite handle is not from the fresh-only factory",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn restrict_development(&mut self) {
+        self.fresh = false;
+    }
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn check(&mut self) -> io::Result<()> {
+        let path: PathBuf = self.path.clone();
+        check_attached(&path, self)
+    }
+
+    pub(crate) fn sync_parent(&mut self) -> io::Result<()> {
+        self.require_fresh()?;
+        self.check()?;
+        let (_, directory) = self.ancestors.last().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "SQLite target lost parent identity",
+            )
+        })?;
+        directory.sync_all()?;
+        self.check()
+    }
+}
+
 pub(crate) fn create_new(path: &Path) -> io::Result<ImportFile> {
     let pinned_path: PathBuf = absolute(path)?;
     let ancestors: Vec<(PathBuf, File)> = pin_ancestors(&pinned_path)?;
@@ -155,56 +260,34 @@ pub(crate) fn create_new(path: &Path) -> io::Result<ImportFile> {
         .read(true)
         .write(true)
         .create_new(true)
-        .open(path)?;
-    let held: ImportFile = ImportFile {
+        .open(&pinned_path)?;
+    let main: FileIdentity = regular_identity(&file.metadata()?)?;
+    file.sync_all()?;
+    // Must close this exclusive reservation BEFORE SQLite opens the inode.
+    drop(file);
+    let mut held: ImportFile = ImportFile {
         path: pinned_path,
-        file,
+        main,
+        sidecars: [None; 3],
         ancestors,
+        fresh: true,
     };
-    check_attached(path, &held)?;
+    check_attached(path, &mut held)?;
     Ok(held)
 }
 pub(crate) fn open_existing(path: &Path) -> io::Result<ImportFile> {
     let pinned_path: PathBuf = absolute(path)?;
     let ancestors: Vec<(PathBuf, File)> = pin_ancestors(&pinned_path)?;
-    let before = std::fs::symlink_metadata(path)?;
-    if !before.is_file() || before.file_type().is_symlink() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "import target is not a regular file",
-        ));
-    }
-    let file: File = File::open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let opened = file.metadata()?;
-        if (before.dev(), before.ino()) != (opened.dev(), opened.ino()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "import target file changed while opening",
-            ));
-        }
-    }
-    let held: ImportFile = ImportFile {
+    let main: FileIdentity = observe(&pinned_path)?;
+    let mut held: ImportFile = ImportFile {
         path: pinned_path,
-        file,
+        main,
+        sidecars: [None; 3],
         ancestors,
+        fresh: false,
     };
-    check_attached(path, &held)?;
+    check_attached(path, &mut held)?;
     Ok(held)
-}
-pub(crate) fn sync_created(path: &Path, file: &ImportFile) -> io::Result<()> {
-    check_attached(path, file)?;
-    file.file.sync_all()?;
-    let (_, directory) = file.ancestors.last().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "import target lost parent identity",
-        )
-    })?;
-    directory.sync_all()?;
-    check_attached(path, file)
 }
 
 #[cfg(all(test, unix))]
@@ -231,13 +314,13 @@ mod tests {
         assert!(create_new(&alias.join("target.db")).is_err());
         assert!(!parent.join("target.db").exists());
         let path: PathBuf = parent.join("target.db");
-        let held: ImportFile = create_new(&path).unwrap();
-        assert!(check_attached(&path, &held).is_ok());
+        let mut held: ImportFile = create_new(&path).unwrap();
+        assert!(check_attached(&path, &mut held).is_ok());
         std::fs::rename(&parent, &replaced).unwrap();
         std::fs::create_dir(&parent).unwrap();
         std::fs::hard_link(replaced.join("target.db"), &path).unwrap();
         assert!(
-            check_attached(&path, &held).is_err(),
+            check_attached(&path, &mut held).is_err(),
             "leaf identity is identical but the held ancestor changed"
         );
         drop(held);
