@@ -346,8 +346,12 @@ explicitly approves a documented scope change.
   operator owner compiled, but additional strict owning Clippy found three
   new large-error test closures. The follow-up replaces only those closures
   with explicitly typed matches, retaining every refusal/zero-call assertion;
-  final follow-up review/owning verification remain pending. Operator controls
-  compiled, not executed. Actual owning recurrence, full required acceptance
+  exact `cdeb9d2e` received complete follow-up source approval, SDK/CLI 491/0
+  and strict Clippy, plus actual operator-owner compilation and strict owning
+  Clippy without exclusions. Operator controls compiled, not executed. The
+  independently approved R1 replay-import correction and its truthful execution
+  attribution are merged normally; final combined-head verification remains
+  pending. Actual owning recurrence, full required acceptance
   and CI remain pending. Initial failed strict and diagnostic attempts remain
   attributable, not passed. Actual custody and trusted content review
   remain separately open, with no provider selected or deployed; M2 stays open.
