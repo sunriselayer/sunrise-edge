@@ -372,9 +372,18 @@ explicitly approves a documented scope change.
   decoder; selected/locked-unselected zero-Cargo controls and the independent
   archive negative extend the parent-verified suite to 104 passed controls.
   The complete CI contract also passed. Initial failures and both earlier source
-  blocks remain attributable; these are not actual native builds. Corrected exact-source
-  approval, renewed real preflight, two native builds and full required
-  acceptance remain pending.
+  blocks remain attributable. Corrected `2f043f45` and combined `afac7908`
+  received complete independent SOURCE approval; actual combined preflight
+  verified 168 packages, 138 archives and eleven targets. Genuine native build A
+  at `afac7908` finished in 5m38s with eleven verified independent snapshots and
+  unchanged inputs, then FAILED at owned cleanup: its own Cargo hardlink unlink
+  changed the remaining alias's link count/ctime. B never started; full-byte
+  equality is unproved. Failed partial output/logs/snapshots remain preserved.
+  The accepted cleanup-local DR-0213 clarification requires closed in-tree inode
+  groups and exact verified self-unlink transitions, retaining external-alias,
+  content/metadata and snapshot refusal. Source correction, cheap controls,
+  updated exact-source approval, a new fresh A/B pair and full local/hosted
+  required acceptance remain pending. No failed A is reused or relabeled.
   See the [local evidence guide](docs/guides/native-release-evidence.md).
   No fixture, source inventory or design approval is native-build execution,
   provider qualification or complete M7 evidence. Keep the current full required

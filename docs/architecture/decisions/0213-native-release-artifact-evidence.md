@@ -208,6 +208,48 @@ cleanup outcome; failed identity/cleanup stops and retains output. Then create
 distinct empty `compiler-b` and repeat the same recipe from fresh compiler
 outputs. This caps successful storage at one compiler target plus two snapshots.
 
+### Accepted cleanup clarification, 2026-10-07
+
+Parent accepted the independent real-output diagnosis and bounded correction
+after the genuine `afac7908` A build completed eleven verified snapshots but
+stopped at cleanup. Its own unlink of one Cargo name changed the remaining
+alias's link count and ctime; bytes, inode, mode, size and mtime were unchanged.
+B did not start. Preserve that incomplete run; it is not a reusable A build.
+The already accepted internal-hardlink allowance requires accounting for these
+self-caused transitions, not removing ctime/link checks globally.
+
+Within this one cleanup record, inventory regular names by exact device/inode
+under the existing entry bound. Each group's positive safe-integer link count
+must equal its in-tree name count and every initial full stamp must agree.
+Reject external/incomplete alias groups before any removal; never discover or
+delete names outside the exact compiler/temp tree. Verify the whole tree's
+original types/stamps/owners/device/containment again before the first removal.
+Establish bounded streamed bytes/size/EOF for multiply linked groups.
+
+Use sequential group removal with O(1) held no-follow regular descriptors, not
+a descriptor per inventoried group. Single-link files and a group's first
+unlink retain strict original stamps. Before each unlink, check the exact
+planned path and ancestor/directory attachments against the held inode and
+current expected full stamp. Only a successful own unlink may advance the
+expected epoch: held link count must decrease by exactly one, while regular
+type/device/inode/uid/mode/size/mtime and complete content remain unchanged.
+Record that verified post-unlink ctime for remaining aliases. Verify the last
+held link transition to zero before closing. Unexpected link changes, missing
+paths, altered bytes/metadata or removal failures stop with incomplete evidence.
+
+Remove only inventoried empty directories in reverse postorder, checking their
+original identity/type/owner/mode/containment. Set cleanup success only after
+complete removal and synchronization. Keep failed partial output and never
+start B after A cleanup failure. Add ordinary two-/three-name compiler and
+host-build-script positives for both A/B, external-alias zero-removal refusal,
+unexpected link transition, equal-size/restored-mtime drift, descriptor/failure
+and independent single-link snapshot controls. Existing global stamp, source,
+cache, tool, snapshot, comparator, lease, recipe and resource checks stay strict.
+
+This is a trusted-host/frozen-owner contract, not atomic hostile-host filesystem
+protection or a stale-output cleanup framework. Source correction/review, cheap
+controls and a newly allocated fresh A/B run remain separate execution gates.
+
 A/B build, timeout, disk-floor, copy, cleanup or comparison failure retains raw
 logs, incomplete manifest, partial snapshots and the failed compiler output;
 A failure never starts B. Successful B may be cleaned only after verified
