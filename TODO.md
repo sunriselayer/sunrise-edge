@@ -67,11 +67,13 @@ Do not attribute a component/ancestor run to the combined head.
 | PR #289: source-free inactive recovery | `7065a1dd`; complete source approval, 3/0 compiled owning tests and strict Clippy | Full combined acceptance, final CI; encrypted off-host/general recovery stay M4 |
 | PR #290: protected custody design | `dba52ddd`; complete four-document source approval, no provider selection or protected-key implementation | Human threat/review/key-role choices and actual M2 implementation |
 | PR #291: ordered local signatures | `5980522b`; complete final source approval; identical functional `5c05215e` passed 1226/0/7 ignored and strict owning Clippy | Complete acceptance/CI; ignored tests were not executed by the scoped run |
-| Native release evidence candidate | `69a2992d`; parent verified 101 compiler/DB/network-free controls and CI recipe/mutation contract; complete independent source review BLOCKED on raw UTF-8 BOM marker acceptance | Marker-local correction and new negatives, fresh exact-source review/preflight, actual fresh A/B builds, complete acceptance/CI |
+| PR #292: Native release evidence | `2f043f45`; complete final source approval, parent verified 104 compiler/DB/network-free controls and CI recipe/mutation contract; raw BOM refusal is marker-local | Fresh combined-source review/preflight, actual fresh A/B builds, complete acceptance/CI |
 
 Initial failed source/test attempts remain in the preserved queue and immutable
 evidence; they are not passed. The `8974634a` ordered test failed one timing
 assertion, then was corrected without production changes or weakened assertions.
+The earlier `2e191ae5` missing-marker and `69a2992d` raw-BOM source blocks are
+preserved; 104 corrected controls are still not actual native-build evidence.
 Package compilation does not prove the expensive original operator recurrence.
 
 Next, finish the release-input refusal correction, freeze/review the complete
@@ -87,11 +89,12 @@ Contracts and acceptance are in
 [implementation structure](docs/architecture/implementation-structure.md#maintainability-work-packages).
 These are coherent outcomes, not an obligatory PR per helper or facade.
 
-- [ ] **R0 — one truthful plan:** one live queue, preserved original requirements
+- [x] **R0 — one truthful plan:** one live queue, preserved original requirements
   and attributable history, architecture/code-map/ADR ownership, working links
-  and independent review. The consolidated queue is implemented here; its
-  complete independent integration review is pending. Keep it synchronized with
-  actual integration.
+  and independent review. The complete 662eda8f review verified the exact
+  558-line archived body and every original criterion mapping; links passed.
+  Implementation/release acceptance remains separate. Keep this queue
+  synchronized with actual integration.
 - [ ] **R1 — public contract and dependency ownership:** migrate actual consumers
   to one defining data/codec/error/bounds owner and remove copied rules/reverse
   coupling without changing bytes, error priority or authority.

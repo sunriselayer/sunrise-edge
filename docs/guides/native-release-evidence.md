@@ -82,6 +82,8 @@ Before every Cargo metadata/tree call, each existing locked cached archive must
 have an attached regular expanded manifest and regular root `.cargo-ok` containing
 nonempty closed JSON `{ "v": 1 }` within 128 bytes. Missing, empty, old or invalid
 markers fail before Cargo; there is no repair, extraction or preparation fallback.
+Raw leading UTF-8 BOM bytes are rejected before marker decoding, not normalized
+into valid JSON.
 The manifest/marker bytes and identities are rechecked at every input boundary and
 around resolution. Missing unrelated cached archives are not required; an actual
 offline miss still fails. Separately authorized offline cache preparation is outside
