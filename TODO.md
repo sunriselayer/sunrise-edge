@@ -180,9 +180,14 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   consumers explicitly retain their original unsupported-scheme classification;
   the SDK exports the defining consensus type directly. The actual registration,
   context, quorum, framing and authority owners are unchanged. Eight new outcome/
-  caller controls accompany the complete consumer migration. Scoped formatting,
-  source inventory and caller-response mapping checks passed; Cargo execution,
-  full required acceptance, fresh source approval and CI remain open. Other real
+  caller controls accompany the complete consumer migration. Exact functional
+  `d31178c9` passed consensus 259/0 and scoped consensus Clippy. Fresh complete
+  Codex fallback source review covered all 87 changed paths and approved with
+  no required findings; independent mapping confirmed all 268 constructor
+  choices. The first 258/1 test attempt exposed an incorrect new 63-byte
+  expectation; only that assertion was corrected to the verified original
+  Authenticator result. Full required acceptance, final-head review/CI and
+  integration remain open. Other real
   core/SDK dependencies remain; no standalone SDK or compilation speedup is claimed.
 - [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
   admission, evaluation, completion, reconciliation and storage contracts;
