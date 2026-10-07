@@ -9,9 +9,12 @@
 //! through the existing successor-scoped ordered workflow.
 
 use crate::client::expect_success;
+use crate::signing_frame::PreparedSigningFrame;
 use crate::successor_authority::SuccessorWorkflowAuthority;
-use crate::{Client, ClientError, Digest32, Method, Transport, WireRequest, WireResponse};
-use ed25519_zebra::{SigningKey, VerificationKey};
+use crate::{
+    Address, Client, ClientError, Digest32, ExternalSigner, LocalSigner, Method, Transport,
+    WireRequest, WireResponse,
+};
 use execution::local_execution::{SignedLocalExecutionIntent, decode_signed_local_execution};
 use execution::publication::PublicationContext;
 use node_core::NodeCoreError;
@@ -167,23 +170,152 @@ pub fn sign_prepared_fee_claim(
     claimant_seed: [u8; 32],
 ) -> Result<Vec<u8>, FeeClaimPreparationError> {
     verify_prepared_fee_claim(workflow, request, &intent)?;
-    let resolver: &crate::HashSuiteResolver = workflow.ordered_policy().resolver();
-    let key: SigningKey = SigningKey::from(claimant_seed);
-    let public: [u8; 32] = VerificationKey::from(&key).into();
-    if public != request.claimant_public_key {
+    let signer: LocalSigner = LocalSigner::from_seed(claimant_seed);
+    if signer.address().as_bytes() != &request.claimant_public_key {
         return Err(FeeClaimPreparationError::Mismatch(
             "signing key is not the requested claimant public key",
         ));
     }
-    let digest: Digest32 =
-        fee_claim_intent_digest(resolver, &intent).map_err(FeeClaimPreparationError::Core)?;
-    let frame: Vec<u8> =
-        fee_claim_signing_frame(&intent.context, digest).map_err(FeeClaimPreparationError::Core)?;
-    let signed: SignedFeeClaimIntent = SignedFeeClaimIntent {
-        signature: key.sign(&frame).into(),
-        intent,
-    };
-    encode_signed_fee_claim_intent(&signed).map_err(FeeClaimPreparationError::IntentCodec)
+    PreparedFeeClaim::prepare(workflow, request, intent)?.sign_and_finalize_with(&signer)
+}
+
+/// Exact successor request/intent and the historical committee's claimant key.
+/// The verified workflow remains immutably borrowed through finalization.
+pub struct PreparedFeeClaim<'a> {
+    workflow: &'a SuccessorWorkflowAuthority,
+    request: FeeClaimPrepareRequest,
+    intent: FeeClaimIntent,
+    digest: Digest32,
+    signing: PreparedSigningFrame,
+}
+
+impl<'a> PreparedFeeClaim<'a> {
+    /// Verifies the exact requested selectors and binds the claimant to the
+    /// verified committee at the intent's historical certificate epoch.
+    pub fn prepare(
+        workflow: &'a SuccessorWorkflowAuthority,
+        request: &FeeClaimPrepareRequest,
+        intent: FeeClaimIntent,
+    ) -> Result<Self, FeeClaimPreparationError> {
+        verify_prepared_fee_claim(workflow, request, &intent)?;
+        // Select from the verified certificate epoch, never from the current
+        // committee, the peer response, or a signer's default identity.
+        let member: &crate::ValidatorInfo = workflow
+            .ordered_policy()
+            .certificate_set(intent.certificate_epoch)
+            .and_then(|set| set.get(intent.validator_id))
+            .ok_or(FeeClaimPreparationError::Mismatch(
+                "claimant has no key in the verified certificate scope",
+            ))?;
+        let public_key: [u8; 32] = member.public_key.as_slice().try_into().map_err(|_| {
+            FeeClaimPreparationError::Mismatch(
+                "claimant key differs from the verified certificate committee",
+            )
+        })?;
+        let resolver: &crate::HashSuiteResolver = workflow.ordered_policy().resolver();
+        let digest: Digest32 =
+            fee_claim_intent_digest(resolver, &intent).map_err(FeeClaimPreparationError::Core)?;
+        let frame: Vec<u8> = fee_claim_signing_frame(&intent.context, digest)
+            .map_err(FeeClaimPreparationError::Core)?;
+        Ok(Self {
+            workflow,
+            request: request.clone(),
+            intent,
+            digest,
+            signing: PreparedSigningFrame::new(
+                Address::new(public_key),
+                member.signature_scheme,
+                frame,
+            )?,
+        })
+    }
+
+    /// Exact retained intent, including signed leg and economic preimages.
+    #[must_use]
+    pub fn intent(&self) -> &FeeClaimIntent {
+        &self.intent
+    }
+
+    /// Immutable request snapshot checked against the host-prepared intent.
+    #[must_use]
+    pub fn request(&self) -> &FeeClaimPrepareRequest {
+        &self.request
+    }
+
+    /// Verified source-free chain whose historical committee selected the key.
+    #[must_use]
+    pub fn workflow(&self) -> &SuccessorWorkflowAuthority {
+        self.workflow
+    }
+
+    /// Recomputed commitment whose canonical preimage is retained in `intent`.
+    #[must_use]
+    pub const fn intent_digest(&self) -> &Digest32 {
+        &self.digest
+    }
+
+    /// Expected identity from the historical committee, never the current set.
+    #[must_use]
+    pub fn claimant(&self) -> Address {
+        self.signing.expected()
+    }
+
+    /// Exact immutable fee-claim signing frame.
+    #[must_use]
+    pub fn signable_frame(&self) -> &[u8] {
+        self.signing.frame()
+    }
+
+    /// Independently verifies the returned raw signature against retained
+    /// historical identity and frame before producing any claim bytes.
+    pub fn finalize(self, signature_bytes: Vec<u8>) -> Result<Vec<u8>, FeeClaimPreparationError> {
+        let signature: [u8; 64] = signature_bytes.as_slice().try_into().map_err(|_| {
+            ClientError::Crypto(crypto::CryptoError::InvalidSignatureLength(
+                signature_bytes.len(),
+            ))
+        })?;
+        if !self
+            .signing
+            .verify(&signature)
+            .map_err(ClientError::Crypto)?
+        {
+            return Err(ClientError::ExternalSignatureInvalid {
+                sender: self.signing.expected(),
+            }
+            .into());
+        }
+        let signed: SignedFeeClaimIntent = SignedFeeClaimIntent {
+            intent: self.intent,
+            signature,
+        };
+        encode_signed_fee_claim_intent(&signed).map_err(FeeClaimPreparationError::IntentCodec)
+    }
+
+    /// Checks the provider's historical claimant identity before invoking it.
+    pub fn sign_and_finalize_external<S: ExternalSigner>(
+        self,
+        signer: &S,
+    ) -> Result<Vec<u8>, FeeClaimPreparationError> {
+        let signature: Vec<u8> = self.signing.sign_external(signer)?;
+        self.finalize(signature)
+    }
+
+    /// Seed-development convenience. Its identity refusal retains the original wording.
+    pub fn sign_and_finalize_with(
+        self,
+        signer: &LocalSigner,
+    ) -> Result<Vec<u8>, FeeClaimPreparationError> {
+        if signer.address() != self.signing.expected() {
+            return Err(FeeClaimPreparationError::Mismatch(
+                "signing key is not the requested claimant public key",
+            ));
+        }
+        let signature: Vec<u8> = self
+            .signing
+            .sign_with(signer)
+            .map_err(ClientError::Crypto)?;
+        self.finalize(signature)
+    }
 }
 
 /// Wraps signed claim bytes as the ordered e+1 FeeClaim candidate the

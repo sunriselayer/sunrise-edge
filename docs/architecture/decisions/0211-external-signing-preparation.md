@@ -10,9 +10,9 @@ mainnet signing qualification is selected by this decision.
 
 ## Context
 
-The live Rust SDK still requires `LocalSigner` for generic local/paid execution,
-publication and bond registration, and a seed for successor fee claims. Those
-restrictions propagate to the actual CLI. The existing `PreparedTransaction`
+Before this refactor, the live Rust SDK required `LocalSigner` for generic
+local/paid execution, publication and bond registration, and a seed for successor
+fee claims. Those restrictions propagated to the actual CLI. The existing `PreparedTransaction`
 and `ExternalSigner` already provide immutable exact-frame preparation and
 independent returned-signature verification for historical transaction profiles.
 That pattern can serve the live operations without adding another provider trait.
@@ -74,6 +74,10 @@ they remain explicitly development-only. Migrate actual CLI local/paid execution
 publication, Standard Asset paid operations, bond registration and successor
 claim callers. Do not leave the new interfaces unused or introduce production
 provider flags before a driver and its trust boundary are selected.
+
+The defining source owners and their current mechanical contracts are mapped in
+[signing preparation](../signing-preparation.md). Implementation and acceptance
+status remain in `TODO.md`; that map does not qualify a custody backend.
 
 ## Content review and automatic signing
 

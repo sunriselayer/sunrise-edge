@@ -43,6 +43,9 @@ use sunrise_edge_client::{
 #[path = "recurring_host_acceptance.rs"]
 mod recurring;
 
+#[path = "../../../../clients/rust/tests/support/external_signer.rs"]
+mod external_signer;
+
 /// Host checkpoint for FastVote preparation and fee-claim preparation.
 const HOST_CHECKPOINT: u64 = 1_000;
 
@@ -1102,8 +1105,8 @@ fn imported_escrow_fee_claim(
         }
     };
     let seed_file: PathBuf = fixture.directory.0.join("successor-claimant.seed");
-    // Real SDK pre-signing refusals on the independently loaded workflow and
-    // an actual host-prepared intent; nothing below signs or submits.
+    // SDK signature/refusal controls use the independently loaded workflow and
+    // an actual host-prepared intent; no additional operation is submitted.
     let request_frame: node_wire::FeeClaimPrepareRequest = node_wire::FeeClaimPrepareRequest {
         context: next.clone(),
         escrow_request_id: fixture.network.request_id,
@@ -1117,6 +1120,104 @@ fn imported_escrow_fee_claim(
         .prepare_successor_fee_claim(workflow, &request_frame, None)
         .unwrap();
     sunrise_edge_client::verify_prepared_fee_claim(workflow, &request_frame, &prepared).unwrap();
+    let historical: &validator_set::ValidatorSet = workflow
+        .ordered_policy()
+        .certificate_set(prepared.certificate_epoch)
+        .unwrap();
+    assert!(prepared.certificate_epoch < next.epoch());
+    assert_eq!(
+        historical
+            .get(claimant.validator_id)
+            .unwrap()
+            .public_key
+            .as_slice(),
+        public.as_slice()
+    );
+    // Pin the original seed-only sequence independently of the SDK owner.
+    let digest: protocol_types::Digest32 = node_core::fee_claims::fee_claim_intent_digest(
+        workflow.ordered_policy().resolver(),
+        &prepared,
+    )
+    .unwrap();
+    let frame: Vec<u8> =
+        node_core::fee_claims::fee_claim_signing_frame(&prepared.context, digest).unwrap();
+    let original_signature: [u8; 64] = claimant.signing_key.sign(&frame).into();
+    let original_claim: Vec<u8> = node_core::fee_claims::codec::encode_signed_fee_claim_intent(
+        &node_core::fee_claims::codec::SignedFeeClaimIntent {
+            intent: prepared.clone(),
+            signature: original_signature,
+        },
+    )
+    .unwrap();
+    let retained =
+        sunrise_edge_client::PreparedFeeClaim::prepare(workflow, &request_frame, prepared.clone())
+            .unwrap();
+    assert_eq!(retained.claimant(), objects::Address::new(public));
+    assert_eq!(retained.signable_frame(), frame);
+    assert_eq!(retained.request(), &request_frame);
+    let external =
+        external_signer::TestSigner::new(claimant.seed, external_signer::Behavior::Valid);
+    assert_eq!(
+        retained.sign_and_finalize_external(&external).unwrap(),
+        original_claim
+    );
+    assert_eq!(external.calls(), 1);
+    assert_eq!(
+        sunrise_edge_client::sign_prepared_fee_claim(
+            workflow,
+            &request_frame,
+            prepared.clone(),
+            claimant.seed
+        )
+        .unwrap(),
+        original_claim
+    );
+    for behavior in external_signer::REFUSALS {
+        let external = external_signer::TestSigner::new(claimant.seed, behavior);
+        let retained = sunrise_edge_client::PreparedFeeClaim::prepare(
+            workflow,
+            &request_frame,
+            prepared.clone(),
+        )
+        .unwrap();
+        let error = retained.sign_and_finalize_external(&external).unwrap_err();
+        assert!(!error.to_string().contains("secret-provider-failure-marker"));
+        assert_eq!(external.calls(), external_signer::expected_calls(behavior));
+    }
+    let mut changed_preimage = prepared.clone();
+    changed_preimage.expected_generation += 1;
+    let retained =
+        sunrise_edge_client::PreparedFeeClaim::prepare(workflow, &request_frame, changed_preimage)
+            .unwrap();
+    assert!(retained.finalize(original_signature.to_vec()).is_err());
+    // A genuinely registered current member absent from this old certificate
+    // set must not acquire the original historical claimant's entitlement.
+    for current_member in workflow
+        .fastvote_certifier()
+        .validator_set()
+        .validators()
+        .iter()
+        .filter(|member| historical.get(member.id).is_none())
+    {
+        let mut current_request = request_frame.clone();
+        current_request.validator_id = current_member.id;
+        current_request.claimant_public_key =
+            current_member.public_key.as_slice().try_into().unwrap();
+        let mut current_intent = prepared.clone();
+        current_intent.validator_id = current_member.id;
+        let external =
+            external_signer::TestSigner::new(claimant.seed, external_signer::Behavior::Valid);
+        assert!(
+            sunrise_edge_client::PreparedFeeClaim::prepare(
+                workflow,
+                &current_request,
+                current_intent
+            )
+            .and_then(|retained| retained.sign_and_finalize_external(&external))
+            .is_err()
+        );
+        assert_eq!(external.calls(), 0);
+    }
     let mut later_epoch = prepared.clone();
     later_epoch.certificate_epoch = protocol_types::Epoch::new(next.epoch().get() + 1);
     let mut other_claimant = prepared.clone();
@@ -1136,12 +1237,33 @@ fn imported_escrow_fee_claim(
                 .is_err(),
             "{label} must refuse before signing"
         );
+        let external =
+            external_signer::TestSigner::new(claimant.seed, external_signer::Behavior::Valid);
+        assert!(
+            sunrise_edge_client::PreparedFeeClaim::prepare(
+                workflow,
+                &request_frame,
+                altered.clone()
+            )
+            .and_then(|retained| retained.sign_and_finalize_external(&external))
+            .is_err(),
+            "{label}"
+        );
+        assert_eq!(external.calls(), 0, "{label}");
     }
     let mut stale_scope: node_wire::FeeClaimPrepareRequest = request_frame.clone();
     stale_scope.context = fixture.network.context.clone();
     assert!(
         sunrise_edge_client::verify_prepared_fee_claim(workflow, &stale_scope, &prepared).is_err()
     );
+    let external =
+        external_signer::TestSigner::new(claimant.seed, external_signer::Behavior::Valid);
+    assert!(
+        sunrise_edge_client::PreparedFeeClaim::prepare(workflow, &stale_scope, prepared.clone())
+            .and_then(|retained| retained.sign_and_finalize_external(&external))
+            .is_err()
+    );
+    assert_eq!(external.calls(), 0);
     assert!(
         sunrise_edge_client::sign_prepared_fee_claim(
             workflow,
@@ -1190,6 +1312,13 @@ fn imported_escrow_fee_claim(
         ]);
     }
     cli(&["economics", "fee-claim-prepare"], tail);
+    let cli_candidate: node_core::ordered_economics::OrderedCandidate =
+        node_core::ordered_economics::decode_ordered_candidate(&std::fs::read(&candidate).unwrap())
+            .unwrap();
+    assert_eq!(
+        cli_candidate.intent, original_claim,
+        "the actual development CLI retains original historical claim bytes"
+    );
     let mut submit: Vec<String> = flags;
     submit.extend([
         "--candidate".to_string(),

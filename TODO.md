@@ -324,11 +324,18 @@ explicitly approves a documented scope change.
   independently review and implement the replacement protected signer and
   operation-specific content verification; a plaintext seed is not a substitute.
   Accepted [DR-0211](docs/architecture/decisions/0211-external-signing-preparation.md)
-  first removes secret-key requirements from the actual SDK/CLI local, paid,
-  publication, original/successor registration and historical claimant paths.
-  Immutable preparation and independent returned-signature verification reuse
-  the existing external-signer boundary; actual custody and trusted content
-  review remain separately open, with no provider selected or deployed.
+  has a local implementation candidate removing secret-key requirements from
+  the actual SDK/CLI local, paid, publication, original/successor registration
+  and historical claimant paths. [The defining owners](docs/architecture/signing-preparation.md)
+  retain immutable trust/content snapshots and independently verify returned
+  signatures through the existing external-signer boundary. Development CLI
+  callers are migrated; no provider driver or fallback is added. The initial
+  SDK/CLI 491-test run predates final source corrections; the strict attempt
+  failed on R1's unused import, now incorporated as an independently approved
+  correction. Frozen final tests, strict Clippy, complete source review, actual
+  owning recurrence, full required acceptance and CI remain pending. Operator
+  controls compiled, not executed. Actual custody and trusted content review
+  remain separately open, with no provider selected or deployed; M2 stays open.
 - [ ] **M3 — selected-profile durable state:** atomic object/state/nonce/receipt/
   outbox, bounded indexed delivery, full-read revision/ABA assertions, restart,
   fencing and ambiguity reconciliation. Verify actual host/power/storage faults,

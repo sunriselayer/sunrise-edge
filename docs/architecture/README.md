@@ -22,6 +22,9 @@ roadmap describes a later target state.
 - [First native profile and protected signing](decisions/0208-native-sqlite-first-and-protected-signing.md):
   Native plus SQLite first, DO following; a separately reviewed protected
   signer replaces Ledger-specific prerequisites, not plaintext development keys.
+- [Immutable operation signing preparation](signing-preparation.md): one
+  mechanical frame/identity owner, operation-specific immutable trust inputs,
+  actual SDK/CLI consumers and the separate custody/content-review boundary.
 - [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
   an explicitly configured closed HTTPS transport, separate from default
   event-only relays, embedded DO policy and core authority.

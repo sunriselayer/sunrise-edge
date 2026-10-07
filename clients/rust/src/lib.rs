@@ -73,6 +73,7 @@ pub mod ordered_history_archive;
 pub mod ordered_history_client;
 pub mod paid_execution_client;
 pub mod publication_client;
+mod signing_frame;
 pub mod successor_artifacts;
 pub mod successor_authority;
 pub mod support;
@@ -116,7 +117,9 @@ pub use fastvote_publication_client::{
 };
 pub use hashing::HashSuiteResolver;
 pub use key::LocalSigner;
-pub use local_execution_client::{build_signed_general_execution, build_signed_local_execution};
+pub use local_execution_client::{
+    PreparedLocalExecution, build_signed_general_execution, build_signed_local_execution,
+};
 pub use local_genesis::{GenesisTrustError, load_verified_genesis_root};
 pub use node_core::genesis::{GenesisCommitteeError, GenesisRootError, VerifiedGenesisRoot};
 pub use node_core::publication::{
@@ -136,8 +139,8 @@ pub use consensus::{
     encode_frozen_frontier_vote,
 };
 pub use fee_claim_client::{
-    FeeClaimPreparationError, fee_claim_candidate, require_successor_fee_claim_request,
-    sign_prepared_fee_claim, verify_prepared_fee_claim,
+    FeeClaimPreparationError, PreparedFeeClaim, fee_claim_candidate,
+    require_successor_fee_claim_request, sign_prepared_fee_claim, verify_prepared_fee_claim,
 };
 pub use node_core::admission_profile::{
     ExternalRequestLane, VerifiedAdmissionProfile, require_external_request_lane,
@@ -162,11 +165,12 @@ pub use node_wire::{
     FEE_CLAIM_PREPARE_PATH, FeeClaimPrepareRequest, MAX_FEE_CLAIM_PREPARE_LEG_BYTES,
 };
 pub use paid_execution_client::{
-    PAID_EXECUTION_PATH, PAID_FEE_POLICY_PATH, build_signed_paid_execution,
+    PAID_EXECUTION_PATH, PAID_FEE_POLICY_PATH, PreparedPaidExecution, build_signed_paid_execution,
 };
 pub use protocol_types::{HashSuite, HashSuiteSchedule};
 pub use publication_client::{
-    PublicationQueryResult, build_signed_publication, local_publication_resolver,
+    PreparedPublication, PublicationQueryResult, build_signed_publication,
+    local_publication_resolver,
 };
 pub use signing_view::{
     ClearSigningPolicy, ClearSigningPolicyError, ClearSigningView, DeviceSigningProfile,

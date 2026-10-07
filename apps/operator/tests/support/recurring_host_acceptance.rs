@@ -2520,6 +2520,20 @@ pub(super) fn run(
         remember_receipt(&mut receipt_history, &hosts, seal.request_id);
         let next_network: PathBuf = network_file(&directory, &hosts);
         if let Some(view) = &old_share {
+            assert!(activated.expected_context().epoch() > view.escrow.settlement.context.epoch());
+            let historical: &validator_set::ValidatorSet = activated
+                .ordered_policy()
+                .certificate_set(view.escrow.settlement.context.epoch())
+                .unwrap();
+            assert!(
+                activated
+                    .fastvote_certifier()
+                    .validator_set()
+                    .validators()
+                    .iter()
+                    .any(|member| historical.get(member.id).is_none()),
+                "the actual changed current committee differs from the original fee certificate committee"
+            );
             let claim: [u8; 32] = imported_escrow_fee_claim(
                 fixture,
                 &hosts,

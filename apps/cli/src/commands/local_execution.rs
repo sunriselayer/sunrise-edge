@@ -295,8 +295,8 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         &expected,
         &policy,
     )?;
-    let signed = build_signed_general_execution(
-        &signer,
+    let prepared: PreparedLocalExecution = PreparedLocalExecution::prepare(
+        signer.address(),
         &resolver,
         &expected,
         &policy,
@@ -305,6 +305,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         authorizations,
         &scopes,
     )?;
+    let signed = prepared.sign_and_finalize_with(&signer)?;
     let result = submit_with_outputs(
         parsed.get("--result-out"),
         parsed.get("--submission-out"),

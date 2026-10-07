@@ -190,6 +190,11 @@ contracts; they do not define protocol rules.
   verifies them inside the signing API. [Native successor adapter](../../crates/native-http/src/successor.rs)
   resolves fresh authority for each request. The loopback host supplies local
   pins, artifacts, store, fence and signer; no response grants authority.
+- [Signing preparation](../architecture/signing-preparation.md) maps the
+  client-private [frame owner](../../clients/rust/src/signing_frame.rs) and
+  immutable transaction, local/paid execution, publication, registration and
+  historical claim owners. Their actual CLI consumers use the same paths;
+  mechanical signature verification is not custody or human-review authority.
 - [Replacement tests](../../crates/node-core/src/ordered_economics/tests/causal_placement/control_reconstruction/frozen_completion/successor_replacement.rs)
   own the real registration/Seal/activation and retired-owner distinction.
   [Process refusal tests](../../apps/operator/tests/successor_host_process_refusals.rs)

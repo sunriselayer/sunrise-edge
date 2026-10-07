@@ -293,7 +293,7 @@ impl fmt::Display for ClientError {
                 f,
                 "external signer address {actual} disagrees with prepared sender {expected}"
             ),
-            Self::ExternalSigner(error) => write!(f, "external signer failed: {error}"),
+            Self::ExternalSigner(_) => f.write_str("external signer failed"),
             Self::SubmitResponseRequestIdMismatch { expected, actual } => write!(
                 f,
                 "submit result request id {actual} disagrees with submitted request id {expected}"

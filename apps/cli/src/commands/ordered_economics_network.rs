@@ -1096,9 +1096,9 @@ fn run_fee_claim_prepare<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
     let seed: [u8; 32] =
         crate::seed::load_dev_seed(Path::new(parsed.require("--claimant-seed-file")?))
             .map_err(failure)?;
-    let claimant_public_key: [u8; 32] = *sunrise_edge_client::LocalSigner::from_seed(seed)
-        .address()
-        .as_bytes();
+    let signer: sunrise_edge_client::LocalSigner =
+        sunrise_edge_client::LocalSigner::from_seed(seed);
+    let claimant_public_key: [u8; 32] = *signer.address().as_bytes();
     let request: sunrise_edge_client::FeeClaimPrepareRequest =
         sunrise_edge_client::FeeClaimPrepareRequest {
             context: workflow.expected_context().clone(),
@@ -1117,9 +1117,10 @@ fn run_fee_claim_prepare<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
         .client
         .prepare_successor_fee_claim(workflow, &request, Some(request_deadline))
         .map_err(failure)?;
-    let signed: Vec<u8> =
-        sunrise_edge_client::sign_prepared_fee_claim(workflow, &request, intent, seed)
+    let prepared: sunrise_edge_client::PreparedFeeClaim<'_> =
+        sunrise_edge_client::PreparedFeeClaim::prepare(workflow, &request, intent)
             .map_err(failure)?;
+    let signed: Vec<u8> = prepared.sign_and_finalize_with(&signer).map_err(failure)?;
     let encoded: Vec<u8> =
         sunrise_edge_client::fee_claim_candidate(workflow, request_id, signed, created_checkpoint)
             .map_err(failure)?;
