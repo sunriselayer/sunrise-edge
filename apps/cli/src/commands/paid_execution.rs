@@ -16,7 +16,6 @@ use std::{
     io::{Read, Write},
     path::Path,
 };
-use sunrise_edge_client::paid_execution_client::build_signed_paid_execution;
 use sunrise_edge_client::publication::MAX_ABI_DECLARATION_BYTES;
 use sunrise_edge_client::{
     FeeSourceConsent, PaidApplication, PaidExecutionResult, PaidExecutionStatus,
@@ -271,7 +270,13 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         max_fee: Amount::new(parse_u64("--max-fee", parsed.require("--max-fee")?)?),
         refund_recipient,
     };
-    client.validate_paid_fee_source(&signer, &resolver, &expected, &fee_policy, &consent)?;
+    client.validate_paid_fee_source_for_owner(
+        signer.address(),
+        &resolver,
+        &expected,
+        &fee_policy,
+        &consent,
+    )?;
     let request_id: RequestId = RequestId::new(decode_hex_32(
         "--request-id",
         parsed.require("--request-id")?,
@@ -309,8 +314,8 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     if let Some(budget) = budget {
         budget.ensure_live()?;
     }
-    let signed = build_signed_paid_execution(
-        &signer,
+    let prepared: PreparedPaidExecution = PreparedPaidExecution::prepare(
+        signer.address(),
         &resolver,
         &expected,
         &fee_policy,
@@ -321,6 +326,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         gas_limit,
         authorizations,
     )?;
+    let signed = prepared.sign_and_finalize_with(&signer)?;
     let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
     let (derived_path, derived_kind, derived_bytes): (Option<&str>, &'static str, Option<Vec<u8>>) =
         match &signed.intent.application {

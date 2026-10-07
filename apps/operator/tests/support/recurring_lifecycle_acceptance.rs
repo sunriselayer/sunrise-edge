@@ -550,6 +550,73 @@ pub(super) fn register(
         ),
         "a genesis context cannot authorize a current registration signature"
     );
+    let public_prepared =
+        sunrise_edge_client::bond_registration::prepare_successor_bond_registration_for_public_key(
+            current,
+            &context,
+            *signer.address().as_bytes(),
+            id,
+            leg.clone(),
+            predicted.clone(),
+        )
+        .unwrap();
+    assert_eq!(public_prepared.predicted_initial_row(), &predicted);
+    let external = external_signer::TestSigner::new(seed, external_signer::Behavior::Valid);
+    assert_eq!(
+        public_prepared
+            .sign_and_finalize_external(&external)
+            .unwrap(),
+        construction.signed
+    );
+    assert_eq!(external.calls(), 1);
+    for behavior in external_signer::REFUSALS {
+        let external = external_signer::TestSigner::new(seed, behavior);
+        let retained = sunrise_edge_client::bond_registration::prepare_successor_bond_registration_for_public_key(
+            current, &context, *signer.address().as_bytes(), id, leg.clone(), predicted.clone(),
+        ).unwrap();
+        let error = retained.sign_and_finalize_external(&external).unwrap_err();
+        assert!(!error.to_string().contains("secret-provider-failure-marker"));
+        assert_eq!(external.calls(), external_signer::expected_calls(behavior));
+    }
+    for case in 0..4 {
+        let mut changed_row = predicted.clone();
+        let mut changed_leg = leg.clone();
+        let mut declared = context.clone();
+        match case {
+            0 => declared = fixture.network.context.clone(),
+            1 => changed_row.generation += 1,
+            2 => changed_row.authorization_key = [0; 32],
+            3 => {
+                let last: usize = changed_leg.len() - 1;
+                changed_leg[last] ^= 1;
+            }
+            _ => unreachable!(),
+        }
+        let external = external_signer::TestSigner::new(seed, external_signer::Behavior::Valid);
+        let result: Result<Vec<u8>, sunrise_edge_client::bond_registration::LocalBondRegistrationError> =
+            match sunrise_edge_client::bond_registration::prepare_successor_bond_registration_for_public_key(
+                current, &declared, *signer.address().as_bytes(), id, changed_leg, changed_row,
+            ) {
+                Ok(retained) => retained.sign_and_finalize_external(&external),
+                Err(error) => Err(error),
+            };
+        assert!(result.is_err(), "successor registration case {case}");
+        assert_eq!(external.calls(), 0, "successor registration case {case}");
+    }
+    let mut changed_prediction = predicted.clone();
+    changed_prediction.committed_at_checkpoint += 1;
+    let changed =
+        sunrise_edge_client::bond_registration::prepare_successor_bond_registration_for_public_key(
+            current,
+            &context,
+            *signer.address().as_bytes(),
+            id,
+            leg.clone(),
+            changed_prediction,
+        )
+        .unwrap();
+    let original_signature: Vec<u8> = signer.sign_framed(prepared.signable_frame()).unwrap();
+    assert!(changed.finalize(original_signature).is_err());
     let leg_path: PathBuf = directory.join(format!("registration-{coin_byte}.leg"));
     let row_path: PathBuf = directory.join(format!("registration-{coin_byte}.row"));
     let seed_path: PathBuf = directory.join(format!("registration-{coin_byte}.seed"));
@@ -1291,6 +1358,28 @@ pub(super) fn assert_retired_owner_cannot_register(
         Err(error) => panic!("SDK preparation refused an unrelated cause: {error}"),
         Ok(_) => panic!("Admit-mode preparation cannot reuse a verified retired owner"),
     }
+    let external = external_signer::TestSigner::new(member.seed, external_signer::Behavior::Valid);
+    let public_preparation: Result<Vec<u8>, sunrise_edge_client::bond_registration::LocalBondRegistrationError> =
+        match sunrise_edge_client::bond_registration::prepare_successor_bond_registration_for_public_key(
+            current,
+            current.expected_context(),
+            public,
+            id,
+            construction.leg.clone(),
+            construction.predicted.clone(),
+        ) {
+            Ok(retained) => retained.sign_and_finalize_external(&external),
+            Err(error) => Err(error),
+        };
+    assert!(matches!(
+        public_preparation,
+        Err(
+            sunrise_edge_client::bond_registration::LocalBondRegistrationError::Registration(
+                sunrise_edge_client::bond_registration::BondRegistrationError::Invalid(OWNER_REUSE)
+            )
+        )
+    ));
+    assert_eq!(external.calls(), 0);
     let core_error: sunrise_edge_client::bond_registration::BondRegistrationError =
         node_core::bond_lifecycle::registration::verify_signed_bond_registration_successor(
             current.genesis_root(),

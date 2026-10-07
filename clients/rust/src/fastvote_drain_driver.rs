@@ -15,7 +15,6 @@ use hashing::HashSuiteResolver;
 use node_wire::{FrozenFrontierPageRequest, MAX_FRONTIER_PAGE_LIMIT};
 
 use crate::Client;
-use crate::FastPathEd25519Verifier;
 use crate::error::ClientError;
 use crate::fastvote_client::{
     FastVoteEndpoint, FastVoteEndpointConfigError, FastVoteNetworkError, bounded_deadline,
@@ -163,7 +162,9 @@ pub fn drive_drain_to_local_ready<T: Transport>(
         freeze.domain,
         freeze.closure_request_id,
         freeze.closure_height,
-        &FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
     )
     .map_err(DrainDriveError::Frontier)?;
     for vote in selected_votes {
@@ -575,7 +576,9 @@ mod tests {
                 effect_hash,
                 lock_hash,
                 &fast_votes,
-                &FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .unwrap();
@@ -593,7 +596,9 @@ mod tests {
         let identity: AvailabilityIdentity = verify_publication_bundle(
             &bundle,
             &certifier,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
             &resolver,
             &[],
         )

@@ -57,6 +57,9 @@ use sunrise_edge_devnet::{
 };
 
 const NEW_SEED: [u8; 32] = [0x65; 32];
+
+#[path = "../../../clients/rust/tests/support/external_signer.rs"]
+mod external_signer;
 const REQUEST_ID: [u8; 32] = [0x86; 32];
 const SUITE: &str = "0:23:2:2:2:2:2:2";
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -547,6 +550,180 @@ fn sdk_preparation_is_immutable_and_refuses_an_independent_signer() {
             .intent,
         *prepared.intent()
     );
+}
+
+#[test]
+fn public_key_registration_preserves_original_raw_and_executable_bytes() {
+    use external_signer::{Behavior, TestSigner};
+    use node_core::bond_lifecycle::registration::{
+        BondRegistrationPreparationRequest, BondResourceId, prepare_bond_registration,
+    };
+    use sunrise_edge_client::bond_registration::{
+        SignedBondRegistrationIntent, encode_signed_bond_registration_intent,
+    };
+    let fixture: Fixture = Fixture::new();
+    let root: VerifiedGenesisRoot = VerifiedGenesisRoot::verify_bytes(
+        &fixture.resolver,
+        &encode_genesis_manifest(&fixture.manifest).unwrap(),
+        fixture.digest.bytes(),
+        &fixture.context,
+    )
+    .unwrap();
+    let signer: LocalSigner = LocalSigner::from_seed(NEW_SEED);
+    // Core preparation and the original raw sign/encode sequence independently
+    // pin the envelope, not a second call into the migrated SDK wrapper.
+    let raw = prepare_bond_registration(
+        &root,
+        BondRegistrationPreparationRequest {
+            context: fixture.context.clone(),
+            request_id: REQUEST_ID,
+            authorization_key: *signer.address().as_bytes(),
+            resource_context: fixture.row.context.clone(),
+            resource: BondResourceId::new(fixture.row.resource_domain, fixture.row.resource)
+                .unwrap(),
+            leg: fixture.leg.clone(),
+            predicted_initial_row: fixture.row.clone(),
+        },
+    )
+    .unwrap();
+    let signature: [u8; 64] = signer
+        .sign_framed(&raw.signing_frame)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let original: Vec<u8> = encode_signed_bond_registration_intent(&SignedBondRegistrationIntent {
+        intent: raw.intent,
+        signature,
+    })
+    .unwrap();
+    let trusted: BondRegistrationContext = BondRegistrationContext::load(
+        Path::new(&fixture.path("genesis")),
+        &fixture.resolver,
+        fixture.digest.bytes(),
+        &fixture.context,
+        fixture.domain,
+    )
+    .unwrap();
+    let prepared = trusted
+        .prepare_for_public_key(
+            *signer.address().as_bytes(),
+            REQUEST_ID,
+            fixture.leg.clone(),
+            fixture.row.clone(),
+        )
+        .unwrap();
+    assert_eq!(prepared.signable_frame(), raw.signing_frame);
+    assert_eq!(prepared.predicted_initial_row(), &fixture.row);
+    let external: TestSigner = TestSigner::new(NEW_SEED, Behavior::Valid);
+    assert_eq!(
+        prepared.sign_and_finalize_external(&external).unwrap(),
+        original
+    );
+    assert_eq!(external.calls(), 1);
+    assert_eq!(
+        trusted
+            .prepare(
+                &signer,
+                REQUEST_ID,
+                fixture.leg.clone(),
+                fixture.row.clone()
+            )
+            .unwrap()
+            .sign(&signer)
+            .unwrap(),
+        original
+    );
+    let output: Output = run(&fixture.prepare_args("prepared-vector"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read(fixture.path("prepared-vector")).unwrap(), original);
+}
+
+#[test]
+fn registration_refuses_external_failures_changed_row_and_presign_mutations() {
+    use external_signer::{Behavior, REFUSALS, TestSigner, expected_calls};
+    let fixture: Fixture = Fixture::new();
+    let signer: LocalSigner = LocalSigner::from_seed(NEW_SEED);
+    let trusted: BondRegistrationContext = BondRegistrationContext::load(
+        Path::new(&fixture.path("genesis")),
+        &fixture.resolver,
+        fixture.digest.bytes(),
+        &fixture.context,
+        fixture.domain,
+    )
+    .unwrap();
+    for behavior in REFUSALS {
+        let external: TestSigner = TestSigner::new(NEW_SEED, behavior);
+        let prepared = trusted
+            .prepare_for_public_key(
+                *signer.address().as_bytes(),
+                REQUEST_ID,
+                fixture.leg.clone(),
+                fixture.row.clone(),
+            )
+            .unwrap();
+        let error = prepared.sign_and_finalize_external(&external).unwrap_err();
+        assert!(!error.to_string().contains("secret-provider-failure-marker"));
+        assert!(!format!("{error:?}").contains("secret-provider-failure-marker"));
+        assert_eq!(external.calls(), expected_calls(behavior));
+    }
+    for case in 0..8 {
+        let external: TestSigner = TestSigner::new(NEW_SEED, Behavior::Valid);
+        let mut row = fixture.row.clone();
+        let mut leg = fixture.leg.clone();
+        let mut request_id: [u8; 32] = REQUEST_ID;
+        let mut key: [u8; 32] = *signer.address().as_bytes();
+        match case {
+            0 => row.generation += 1,
+            1 => row.authorization_key = [0; 32],
+            2 => row.validator_id = ValidatorId::new([9; 32]),
+            3 => row.custody_object.version += 1,
+            4 => {
+                let last: usize = leg.len() - 1;
+                leg[last] ^= 1;
+            }
+            5 => request_id = [0; 32],
+            6 => {
+                key = *LocalSigner::from_seed(DEVNET_PAID_GENESIS_SEED)
+                    .address()
+                    .as_bytes()
+            }
+            7 => row.lifecycle_epoch = Epoch::new(1),
+            _ => unreachable!(),
+        }
+        let result: Result<Vec<u8>, LocalBondRegistrationError> =
+            match trusted.prepare_for_public_key(key, request_id, leg, row) {
+                Ok(prepared) => prepared.sign_and_finalize_external(&external),
+                Err(error) => Err(error),
+            };
+        assert!(result.is_err(), "case {case}");
+        assert_eq!(external.calls(), 0, "case {case}");
+    }
+    let original = trusted
+        .prepare_for_public_key(
+            *signer.address().as_bytes(),
+            REQUEST_ID,
+            fixture.leg.clone(),
+            fixture.row.clone(),
+        )
+        .unwrap();
+    let signature: Vec<u8> = signer.sign_framed(original.signable_frame()).unwrap();
+    let mut changed = fixture.row.clone();
+    // Checkpoint is a caller prediction and can be different while still
+    // structurally valid; its digest must remain bound to the outer signature.
+    changed.committed_at_checkpoint += 1;
+    let changed = trusted
+        .prepare_for_public_key(
+            *signer.address().as_bytes(),
+            REQUEST_ID,
+            fixture.leg.clone(),
+            changed,
+        )
+        .unwrap();
+    assert!(changed.finalize(signature).is_err());
 }
 
 struct ObservedRequest {

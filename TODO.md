@@ -174,6 +174,28 @@ These are coherent outcomes, not one obligatory PR per helper or file.
   at 19:02:54 UTC without skipping the original e8/five-host recurrence. All
   required hosted acceptance passed and the slice merged normally as
   `3b8796ed`. Remaining core/SDK dependency work is not closed.
+  Under accepted [DR-0209](docs/architecture/decisions/0209-consensus-verifier-ownership.md),
+  the current slice defines one consensus-owned Ed25519 adapter and removes
+  all three core production adapters. Core, SDK, native hosts, operator and CLI
+  consumers explicitly retain their original unsupported-scheme classification;
+  the SDK exports the defining consensus type directly. The actual registration,
+  context, quorum, framing and authority owners are unchanged. Eight new outcome/
+  caller controls accompany the complete consumer migration. Exact functional
+  `d31178c9` passed consensus 259/0 and scoped consensus Clippy. Fresh complete
+  Codex fallback source review covered all 87 changed paths and approved with
+  no required findings; independent mapping confirmed all 268 constructor
+  choices. The first 258/1 test attempt exposed an incorrect new 63-byte
+  expectation; only that assertion was corrected to the verified original
+  Authenticator result. Exact `ba8589e7` passed consensus 259/0 and strict focused
+  checks. Hosted CI run `37572669043` failed `rust-tests`, `core-recurrence` and
+  `lint` with `E0425` for the test-local `ValidatorId` reference after removal
+  of its unused production import. The repair adds the explicit test-local
+  import only. Exact `a7dbb277` received complete final-source approval across
+  all 88 changed paths; consensus 259/0, the actual owning successor-chain
+  tests 5/0 and strict consensus/node-core all-target/all-feature Clippy passed.
+  Those are focused results, not full required acceptance. PR #286's final-head
+  CI, full required acceptance and integration remain pending. Other real
+  core/SDK dependencies remain; no standalone SDK or compilation speedup is claimed.
 - [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
   admission, evaluation, completion, reconciliation and storage contracts;
   separate object/receipt/outbox repositories and memory implementations by
@@ -259,10 +281,11 @@ needs real evidence for the selected profile, not fixtures from a different one.
 
 The accepted [protocol-v3 live-activation constraint](docs/architecture/core-protocol.md)
 still forbids activation on any live chain until complete atomic composition,
-authentication/authorization of every accepted external family, S4/S5 and
-independent security/release gates are satisfied. This includes public testnet;
-Ledger deferral currently leaves that original gate open. A bounded testnet
-exception requires an explicit human-approved decision and release review,
+authentication/authorization of every accepted external family and the required
+software/signing and independent security/release gates are satisfied. This
+includes public testnet. DR-0208 removes the Ledger-specific prerequisite only;
+replacement protected-signing M2 and the other release gates remain open.
+A bounded testnet exception requires an explicit human-approved decision and release review,
 not this roadmap or successful local startup.
 
 - [ ] Integrate the reviewed operator/startup prerequisites and pass the actual
@@ -308,6 +331,64 @@ explicitly approves a documented scope change.
   Ledger-specific S4 completion is no longer mandatory for mainnet. Design,
   independently review and implement the replacement protected signer and
   operation-specific content verification; a plaintext seed is not a substitute.
+  Accepted [DR-0211](docs/architecture/decisions/0211-external-signing-preparation.md)
+  has a local implementation candidate removing secret-key requirements from
+  the actual SDK/CLI local, paid, publication, original/successor registration
+  and historical claimant paths. [The defining owners](docs/architecture/signing-preparation.md)
+  retain immutable trust/content snapshots and independently verify returned
+  signatures through the existing external-signer boundary. Development CLI
+  callers are migrated; no provider driver or fallback is added. Exact functional
+  `85a65745` passed all-target/all-feature SDK/CLI 491/0/0 ignored and strict
+  Clippy without warning exclusions at 04:56 UTC. A fresh complete Codex fallback
+  source review approved all 31 three-dot paths, including R1's independently
+  approved import correction. The approved R1 dependency was then merged
+  normally with an identical tree. Exact `1bd413c4` also passed SDK/CLI 491/0
+  and strict Clippy, and received complete final-source approval. Its actual
+  operator owner compiled, but additional strict owning Clippy found three
+  new large-error test closures. The follow-up replaces only those closures
+  with explicitly typed matches, retaining every refusal/zero-call assertion;
+  exact `cdeb9d2e` received complete follow-up source approval, SDK/CLI 491/0
+  and strict Clippy, plus actual operator-owner compilation and strict owning
+  Clippy without exclusions. Operator controls compiled, not executed. The
+  independently approved R1 replay-import correction and its truthful execution
+  attribution are merged normally. Exact combined `85b8a0a2` received complete
+  final-source approval and passed SDK/CLI 491/0/0 ignored plus strict all-target/
+  all-feature Clippy; the actual operator owner compiled and strict owning
+  Clippy passed at 05:26 UTC. Its genuine operator recurrence was not executed.
+  Actual owning recurrence, full required acceptance
+  and CI remain pending. Initial failed strict and diagnostic attempts remain
+  attributable, not passed. Actual custody and trusted content review
+  remain separately open, with no provider selected or deployed; M2 stays open.
+  [Proposed DR-0214](docs/architecture/decisions/0214-protected-custody-and-review-boundary.md)
+  has independent design approval for separated signing roles, exact-frame/key
+  checks, durable authority and recovery/rollback limits, and three unselected
+  custody threat models. The human still chooses the threat boundary, trusted
+  review surface and independent key/recovery roles. Existing publication
+  preparation already supplies immutable inputs and mechanical checks; defer
+  extra presentation work until a concrete consumer justifies it. This proposal
+  selects no provider, implements no protected key or semantic review, and
+  closes no M2 or launch gate.
+  Accepted [DR-0215](docs/architecture/decisions/0215-ordered-local-signature-verification.md)
+  specifies invocation-bound local validator identity and existing registered-key
+  verification for actual ordered votes, noncausal proposals and the distinct
+  post-completion retained-vote reread. Causal capacity probes stay nonauthoritative;
+  legitimate prefix/completion progress is not rolled back on a later refusal.
+  Complete independent design review approved the corrected contract. The
+  implementation candidate now captures the local identity at the existing
+  three gates, verifies actual fresh votes before either completion, verifies
+  the separate retained reread and authenticates noncausal fresh/retained
+  proposals. Sixteen genuine-fixture controls cover invalid returned signatures,
+  independently committee-valid identity drift, exact bytes/replay, nonce locks,
+  real CAS/indeterminate reconciliation and preserved justified-prefix progress.
+  The initial `8974634a` source review and owning run identified one test's
+  scheme-read timing error (1225 passed, 1 failed, 7 ignored); that failed run
+  remains attributable. The correction preserves both existing voter pre-sign
+  checks and every assertion, with production code unchanged. Exact `5c05215e`
+  received complete final-source approval and passed the actual all-feature core
+  lib suite (1226 passed, 0 failed, 7 ignored) plus strict all-target/all-feature
+  owning Clippy at 07:37 UTC. The seven ignored tests were not executed by
+  that owning profile. Full required acceptance and CI remain pending. This is
+  a handler-correctness prerequisite, not protected custody or M2 completion.
 - [ ] **M3 — selected-profile durable state:** atomic object/state/nonce/receipt/
   outbox, bounded indexed delivery, full-read revision/ABA assertions, restart,
   fencing and ambiguity reconciliation. Verify actual host/power/storage faults,

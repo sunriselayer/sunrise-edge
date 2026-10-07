@@ -35,9 +35,7 @@ use execution::publication::{
 };
 use fees::{Amount, GasSchedule};
 use node_core::economics::{FastPathEconomicsPolicy, FastPathEconomicsResourcePolicy};
-use node_core::fast_path::{
-    FastPathEd25519Verifier, FastPathValidatorEntry, FastPathValidatorSetRecord,
-};
+use node_core::fast_path::{FastPathValidatorEntry, FastPathValidatorSetRecord};
 use node_core::genesis::{
     GenesisInstallOutcome, GenesisManifest, GenesisObjectEntry, VerifiedGenesisRoot,
     encode_genesis_manifest, genesis_manifest_commitment, genesis_manifest_signing_frame,
@@ -471,7 +469,13 @@ fn drive_round(
     let certificate: QuorumCertificate = env
         .policy
         .engine()
-        .certificate_from_votes(&proposal.proposal, &votes, &FastPathEd25519Verifier)
+        .certificate_from_votes(
+            &proposal.proposal,
+            &votes,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .unwrap()
         .expect("one validator at full voting power reaches quorum");
     let applied: OrderedEventOutput =

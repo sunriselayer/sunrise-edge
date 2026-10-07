@@ -92,7 +92,9 @@ fn certify_proposal(
         .certificate_from_votes(
             &proposal.proposal,
             &votes,
-            &crate::ordered_economics::policy::Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .unwrap()
         .expect("actual independent successor votes reach weighted quorum")

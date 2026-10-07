@@ -1,6 +1,6 @@
 //! The canonical domain-separated DR-0153 authority anchor,
 //! [`OrderedEconomicsPolicy`]/[`OrderedEconomicsEnvironment`], the
-//! [`Ed25519ConsensusVerifier`] glue adapter, and the pure
+//! consensus-owned signature verification, and the pure
 //! [`authenticate_candidate`] check.
 //!
 //! "Pure" here is load-bearing: every check below is decided from the
@@ -22,8 +22,8 @@ use bond_lifecycle::{
 };
 use canonical_encoding::encode_digest32;
 use consensus::{
-    ChainedHotStuff, ConsensusError, ConsensusParameters, ConsensusVerifier,
-    FrozenFrontierCertifier, verify_frozen_frontier_quorum,
+    ChainedHotStuff, ConsensusError, ConsensusParameters, FrozenFrontierCertifier,
+    verify_frozen_frontier_quorum,
 };
 use crypto::{
     Ed25519OwnerAddressPolicy, Ed25519Verifier, SignatureVerifier, validate_ed25519_owner_address,
@@ -957,35 +957,6 @@ impl<'a> OrderedEconomicsEnvironment<'a> {
     }
 }
 
-/// Adapts the existing [`crypto::Ed25519Verifier`]/[`SignatureVerifier`] to
-/// [`consensus::ConsensusVerifier`]. Holds no state and duplicates no
-/// algorithm: it only routes an already-framed message/signature/public-key
-/// triple to the one existing Ed25519 verifier, rejecting every other
-/// signature scheme up front (this fixed profile registers only Ed25519
-/// validators, exactly like [`crate::fast_path`]'s own validator-set
-/// installation).
-pub(crate) struct Ed25519ConsensusVerifier;
-
-impl ConsensusVerifier for Ed25519ConsensusVerifier {
-    fn verify_framed(
-        &self,
-        _validator: ValidatorId,
-        scheme: SignatureSchemeId,
-        public_key: &[u8],
-        framed: &[u8],
-        signature: &[u8],
-    ) -> Result<bool, String> {
-        if scheme != SignatureSchemeId::Ed25519 {
-            return Ok(false);
-        }
-        let verifier = Ed25519Verifier::from_verifying_key_bytes(public_key)
-            .map_err(|error| error.to_string())?;
-        verifier
-            .verify_framed(framed, signature)
-            .map_err(|error| error.to_string())
-    }
-}
-
 /// Returns the trusted registered Ed25519 verifying key for `validator_id`.
 ///
 /// This fixed-epoch profile pins exactly one validator set, so an envelope's
@@ -1309,7 +1280,9 @@ fn authenticate_drain_set(
         env.policy.domain(),
         identity.closure_request_id,
         identity.closure_height,
-        &Ed25519ConsensusVerifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+        ),
     )
     .map_err(|_| OrderedEconomicsError::Unauthenticated("drain set frontier quorum"))?;
     // Authentication must also prove that the immutable record this
@@ -1702,21 +1675,27 @@ fn verify_evidence_proof(
             consensus::verify_fast_vote_equivocation_evidence(
                 inner,
                 validator_set,
-                &Ed25519ConsensusVerifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
             )
         }
         equivocation::DecodedEquivocationEvidence::ObjectConflict(inner) => {
             consensus::verify_fast_vote_object_conflict_evidence(
                 inner,
                 validator_set,
-                &Ed25519ConsensusVerifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
             )
         }
         equivocation::DecodedEquivocationEvidence::EpochTransition(inner) => {
             consensus::verify_epoch_transition_equivocation_evidence(
                 inner,
                 validator_set,
-                &Ed25519ConsensusVerifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
             )
         }
     };

@@ -4,9 +4,9 @@
 
 use super::{
     AuthenticatedPublicationProjection, BusinessReconstructionError, BusinessReconstructionOverlay,
-    OwnedPublicationMaterial, ReconstructionEd25519Verifier, SourceBusinessSnapshot,
-    SourceSnapshotRecord, VerifiedPublicationSemantic, invalid,
-    owned_material_from_source_snapshot, source_retention_keys,
+    OwnedPublicationMaterial, SourceBusinessSnapshot, SourceSnapshotRecord,
+    VerifiedPublicationSemantic, invalid, owned_material_from_source_snapshot,
+    source_retention_keys,
 };
 use crate::NodeDedupRecord;
 use crate::fast_path::{prepared_material, publication, records};
@@ -192,8 +192,13 @@ fn local_fastpath_rows(
             .map_err(|_| invalid("local prepared external lane"))?;
             let vote = decode_fast_vote(&prepared.vote)
                 .map_err(|_| invalid("local prepared vote schema"))?;
-            fast.verify_vote(&vote, &ReconstructionEd25519Verifier)
-                .map_err(|_| invalid("local prepared vote signature"))?;
+            fast.verify_vote(
+                &vote,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
+            )
+            .map_err(|_| invalid("local prepared vote signature"))?;
             if vote.tx_hash != prepared.signed_intent_digest
                 || vote.execution_effects_hash != prepared.commitment
             {
@@ -292,7 +297,12 @@ fn local_fastpath_rows(
                 return Err(invalid("local availability key/identity differs"));
             }
             availability
-                .verify_vote(&vote, &ReconstructionEd25519Verifier)
+                .verify_vote(
+                    &vote,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                    ),
+                )
                 .map_err(|_| invalid("local availability vote signature"))?;
             excluded.insert(key.clone(), ());
         } else if key

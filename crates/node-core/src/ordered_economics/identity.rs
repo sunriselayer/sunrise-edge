@@ -294,7 +294,12 @@ pub(crate) fn reconcile_unsigned_leader_proposal<S: StructuredDurableDomainState
             }
             env.policy
                 .engine()
-                .verify_proposal(&retained, &super::policy::Ed25519ConsensusVerifier)
+                .verify_proposal(
+                    &retained,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                    ),
+                )
                 .map_err(|_| invalid("retained causal leader proposal signature differs"))?;
             if env
                 .policy

@@ -186,7 +186,9 @@ fn terminal_material(
                 &state,
                 ConsensusEvent::Proposal(proposal),
                 &signer,
-                &ReconstructionEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
             )
             .unwrap();
         let vote: consensus::ConsensusVote = voted
@@ -203,12 +205,19 @@ fn terminal_material(
                 &voted.state,
                 ConsensusEvent::Vote(vote),
                 &signer,
-                &ReconstructionEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
             )
             .unwrap();
         policy
             .engine()
-            .validate_state(&certified.state, &ReconstructionEd25519Verifier)
+            .validate_state(
+                &certified.state,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
+            )
             .unwrap();
         for proof in &certified.committed_proofs {
             if proof.committed.height == terminal_height {

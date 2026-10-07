@@ -19,8 +19,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use sunrise_edge_client::{
-    AtomicityDomainId, ChainId, Client, Epoch, FastPathCertifier, FastPathEd25519Verifier,
-    FastVoteEndpoint, FrozenFrontierCertifier, FrozenFrontierPage, FrozenFrontierPageRequest,
+    AtomicityDomainId, ChainId, Client, Epoch, FastPathCertifier, FastVoteEndpoint,
+    FrozenFrontierCertifier, FrozenFrontierPage, FrozenFrontierPageRequest,
     FrozenFrontierPageResponse, FrozenFrontierPageVerifier, FrozenFrontierVote, HashSuite,
     HashSuiteResolver, HashSuiteSchedule, MAX_FRONTIER_PAGE_LIMIT,
     MAX_FRONTIER_PAGE_RESPONSE_BYTES, MAX_FRONTIER_VOTE_BYTES, ProtocolVersion, ValidatorId,
@@ -209,7 +209,12 @@ fn load(parsed: &ParsedArgs, schedules: Vec<HashSuiteSchedule>) -> Result<Inputs
 fn verify_pin(inputs: &Inputs, vote: &FrozenFrontierVote) -> Result<(), CliError> {
     inputs
         .certifier
-        .verify_vote(vote, &FastPathEd25519Verifier)
+        .verify_vote(
+            vote,
+            &sunrise_edge_client::Ed25519ConsensusVerifier::new(
+                sunrise_edge_client::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .map_err(failure)?;
     if vote.validator != inputs.endpoint.validator_id
         || vote.identity.domain != inputs.domain
@@ -424,7 +429,7 @@ fn export(parsed: &ParsedArgs, inputs: &Inputs) -> Result<(), CliError> {
                     &inputs.resolver,
                     &inputs.certifier,
                     vote,
-                    &FastPathEd25519Verifier,
+                    &sunrise_edge_client::Ed25519ConsensusVerifier::new(sunrise_edge_client::UnsupportedSignatureSchemeResponse::FastPathProfileError),
                 )
                 .map_err(failure)?,
             )
@@ -488,7 +493,7 @@ fn export(parsed: &ParsedArgs, inputs: &Inputs) -> Result<(), CliError> {
                     &inputs.resolver,
                     &inputs.certifier,
                     page_vote,
-                    &FastPathEd25519Verifier,
+                    &sunrise_edge_client::Ed25519ConsensusVerifier::new(sunrise_edge_client::UnsupportedSignatureSchemeResponse::FastPathProfileError),
                 )
                 .map_err(failure)?,
             );

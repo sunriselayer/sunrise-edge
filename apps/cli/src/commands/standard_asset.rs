@@ -24,8 +24,8 @@ use sunrise_edge_client::{
     ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID, Epoch, ExpectedProtocolContext,
     FastPathCertifier, FastVoteEndpoint, FeeSourceConsent, HashSuiteId, HashSuiteResolver,
     HttpObjectQueryResult, LocalSigner, Object, ObjectEffect, ObjectId, ObjectRef, Owner,
-    PaidApplication, PaidExecutionResult, PaidExecutionStatus, ProtocolVersion, RequestId,
-    ReservationAccessKind, SignatureSchemeId, Transport,
+    PaidApplication, PaidExecutionResult, PaidExecutionStatus, PreparedPaidExecution,
+    ProtocolVersion, RequestId, ReservationAccessKind, SignatureSchemeId, Transport,
     call::{CallIntent, InstanceTarget},
     decode_object, encode_signed_paid_intent,
     local_execution::{
@@ -33,7 +33,6 @@ use sunrise_edge_client::{
     },
     local_publication_resolver,
     package_types::{ScopedTypeArg, ScopedTypeTag, derive_scoped_type_id, verify_scoped_type_id},
-    paid_execution_client::build_signed_paid_execution,
     publication::{PublicationContext, UnverifiedDependencyRef},
 };
 
@@ -696,7 +695,13 @@ where
         max_fee: Amount::new(parse_u64(MAX_FEE, parsed.require(MAX_FEE)?)?),
         refund_recipient,
     };
-    client.validate_paid_fee_source(&signer, &resolver, &expected, &policy, &consent)?;
+    client.validate_paid_fee_source_for_owner(
+        signer.address(),
+        &resolver,
+        &expected,
+        &policy,
+        &consent,
+    )?;
 
     let request_id: RequestId =
         RequestId::new(decode_hex_32(REQUEST_ID, parsed.require(REQUEST_ID)?)?)?;
@@ -750,8 +755,8 @@ where
         if let Some(budget) = budget {
             budget.ensure_live()?;
         }
-        let signed = build_signed_paid_execution(
-            &signer,
+        let prepared: PreparedPaidExecution = PreparedPaidExecution::prepare(
+            signer.address(),
             &resolver,
             &expected,
             &policy,
@@ -762,6 +767,7 @@ where
             gas_limit,
             Vec::new(),
         )?;
+        let signed = prepared.sign_and_finalize_with(&signer)?;
         let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
         let record_bytes: Vec<u8> = encode_instance_record(&record).map_err(failure)?;
         let result: PaidExecutionResult = if let Some((endpoints, certifier, admission)) = &network
@@ -873,8 +879,8 @@ where
     if let Some(budget) = budget {
         budget.ensure_live()?;
     }
-    let signed = build_signed_paid_execution(
-        &signer,
+    let prepared: PreparedPaidExecution = PreparedPaidExecution::prepare(
+        signer.address(),
         &resolver,
         &expected,
         &policy,
@@ -885,6 +891,7 @@ where
         gas_limit,
         Vec::new(),
     )?;
+    let signed = prepared.sign_and_finalize_with(&signer)?;
     let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
     let result: PaidExecutionResult = if let Some((endpoints, certifier, admission)) = &network {
         super::fastvote_network::run_network_submit(

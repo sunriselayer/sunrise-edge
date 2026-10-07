@@ -11,8 +11,7 @@ use super::root_policy_binding::{
 };
 use super::{
     BusinessReconstructionOverlay, BusinessReconstructionPlan, OwnedPublicationMaterial,
-    ReconstructionEd25519Verifier, SourceBusinessSnapshot, SourceSnapshotRecord,
-    VerifiedPublicationSemantic,
+    SourceBusinessSnapshot, SourceSnapshotRecord, VerifiedPublicationSemantic,
 };
 use crate::NodeCoreError;
 use crate::admission_profile::{ExternalRequestLane, require_external_request_lane};
@@ -436,7 +435,9 @@ fn validate_bound_control(
             plan.genesis_root.genesis_resolver(),
             &certifier,
             vote.clone(),
-            &ReconstructionEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )?;
         for page in &frontier.pages {
             encode_frozen_frontier_page(page)?;

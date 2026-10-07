@@ -8,8 +8,8 @@ use crate::epoch_transition::{
     activate, propose_and_vote,
     tests::{GenesisFixture, build_genesis_fixture, install_additional_bonds},
 };
+use crate::fast_path::records;
 use crate::fast_path::records::{FastPathValidatorEntry, FastPathValidatorSetRecord};
-use crate::fast_path::{FastPathEd25519Verifier, records};
 use crate::genesis::{GenesisInstallOutcome, install_genesis_with_history};
 use crate::local_instance_state::{
     FastPathEpochRecord, encode_fastpath_epoch_record, fastpath_epoch_record_key,
@@ -1794,8 +1794,14 @@ fn equivocation_evidence_survives_close_reopen_and_reverifies() {
                 NodeCoreError::StateConflict
             ))
         ));
-        verify_fast_vote_equivocation_evidence(&ev, hist_val_set, &FastPathEd25519Verifier)
-            .unwrap();
+        verify_fast_vote_equivocation_evidence(
+            &ev,
+            hist_val_set,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
+        .unwrap();
     }
 }
 
@@ -1923,7 +1929,9 @@ fn class_b_object_conflict_evidence_for_a_retired_validator_still_verifies_by_hi
             transition_votes[0].next_validator_set_digest,
             transition_votes[0].activation_digest,
             &transition_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -2004,7 +2012,9 @@ fn class_b_object_conflict_evidence_for_a_retired_validator_still_verifies_by_hi
         verify_fast_vote_object_conflict_evidence(
             &queried_evidence,
             historical_set,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError
+            ),
         ),
         Ok(())
     );
@@ -2027,7 +2037,9 @@ fn class_b_object_conflict_evidence_for_a_retired_validator_still_verifies_by_hi
     let live_verify_result = verify_fast_vote_object_conflict_evidence(
         &queried_evidence,
         live_set,
-        &FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
     );
     assert_eq!(
         live_verify_result,

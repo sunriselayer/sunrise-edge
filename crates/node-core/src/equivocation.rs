@@ -892,7 +892,9 @@ pub(crate) fn prepare_fast_vote_equivocation_evidence_ordered<S: StructuredState
     consensus::verify_fast_vote_equivocation_evidence(
         &evidence,
         validator_set,
-        &fast_path::FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
     )?;
     let prepared: PreparedEquivocationEvidence = prepare_new_evidence(
         store,
@@ -1035,7 +1037,9 @@ pub(crate) fn prepare_fast_vote_object_conflict_evidence_ordered<
     consensus::verify_fast_vote_object_conflict_evidence(
         &evidence,
         validator_set,
-        &fast_path::FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
     )?;
     let prepared: PreparedEquivocationEvidence = prepare_new_evidence(
         store,
@@ -1145,7 +1149,9 @@ pub(crate) fn prepare_epoch_transition_equivocation_evidence_ordered<
     consensus::verify_epoch_transition_equivocation_evidence(
         &evidence,
         validator_set,
-        &fast_path::FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
     )?;
     let prepared: PreparedEquivocationEvidence = prepare_new_evidence(
         store,

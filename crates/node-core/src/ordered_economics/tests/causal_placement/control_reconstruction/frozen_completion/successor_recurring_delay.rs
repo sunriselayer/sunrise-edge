@@ -453,7 +453,9 @@ impl EpochHosts {
             .certificate_from_votes(
                 &proposal.proposal,
                 &quorum_votes,
-                &crate::ordered_economics::policy::Ed25519ConsensusVerifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
             )
             .unwrap()
             .expect("the actual current committee reaches quorum");

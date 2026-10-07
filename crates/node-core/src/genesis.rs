@@ -2280,7 +2280,9 @@ pub(crate) fn verify_fastpath_bond_chain<S: VersionedStateReader + ?Sized>(
                         consensus::verify_fast_vote_equivocation_evidence(
                             evidence,
                             validator_set,
-                            &fast_path::FastPathEd25519Verifier,
+                            &consensus::Ed25519ConsensusVerifier::new(
+                                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                            ),
                         )
                         .map_err(|_| {
                             GenesisError::TamperedInstalledRecord(
@@ -2292,7 +2294,9 @@ pub(crate) fn verify_fastpath_bond_chain<S: VersionedStateReader + ?Sized>(
                         consensus::verify_fast_vote_object_conflict_evidence(
                             evidence,
                             validator_set,
-                            &fast_path::FastPathEd25519Verifier,
+                            &consensus::Ed25519ConsensusVerifier::new(
+                                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                            ),
                         )
                         .map_err(|_| {
                             GenesisError::TamperedInstalledRecord(
@@ -2304,7 +2308,9 @@ pub(crate) fn verify_fastpath_bond_chain<S: VersionedStateReader + ?Sized>(
                         consensus::verify_epoch_transition_equivocation_evidence(
                             evidence,
                             validator_set,
-                            &fast_path::FastPathEd25519Verifier,
+                            &consensus::Ed25519ConsensusVerifier::new(
+                                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                            ),
                         )
                         .map_err(|_| {
                             GenesisError::TamperedInstalledRecord(
@@ -2767,7 +2773,12 @@ fn verify_fastpath_epoch_chain<S: StructuredDurableDomainStateStore>(
                 GenesisError::TamperedInstalledRecord("fast-path epoch transition certificate")
             })?;
         certifier
-            .verify_certificate(&certificate, &crate::fast_path::FastPathEd25519Verifier)
+            .verify_certificate(
+                &certificate,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
             .map_err(|_| {
                 GenesisError::TamperedInstalledRecord("fast-path epoch transition certificate")
             })?;

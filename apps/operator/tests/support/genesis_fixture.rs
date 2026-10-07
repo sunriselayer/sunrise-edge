@@ -557,7 +557,7 @@ mod tests {
     use consensus::{ConsensusSigner, FastPathCertifier, FastVote, encode_fast_certificate};
     use execution::LocalWasmExecutionEngine;
     use execution::local_execution::LocalExecutionPolicy;
-    use node_core::fast_path::{self, FastPathEd25519Verifier};
+    use node_core::fast_path;
     use node_core::{GenesisInstallOutcome, decode_genesis_manifest, install_genesis};
     use runtime::{
         DurableOperationContext, MemoryBlobStore, MemoryDurableStateStore, StorageCorrelationId,
@@ -734,7 +734,9 @@ mod tests {
                 target.execution_effects_hash,
                 target.locked_objects_digest,
                 &votes[..3],
-                &FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .expect("3-of-4 equal-power votes must certify");

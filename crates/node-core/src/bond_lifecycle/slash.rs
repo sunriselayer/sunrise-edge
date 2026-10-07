@@ -560,7 +560,9 @@ where
             consensus::verify_fast_vote_equivocation_evidence(
                 evidence,
                 validator_set,
-                &fast_path::FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .map_err(|_| BondLifecycleError::Invalid("evidence reverification failed"))?;
         }
@@ -568,7 +570,9 @@ where
             consensus::verify_fast_vote_object_conflict_evidence(
                 evidence,
                 validator_set,
-                &fast_path::FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .map_err(|_| BondLifecycleError::Invalid("evidence reverification failed"))?;
         }
@@ -576,7 +580,9 @@ where
             consensus::verify_epoch_transition_equivocation_evidence(
                 evidence,
                 validator_set,
-                &fast_path::FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .map_err(|_| BondLifecycleError::Invalid("evidence reverification failed"))?;
         }

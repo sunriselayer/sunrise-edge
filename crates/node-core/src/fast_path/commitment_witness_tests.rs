@@ -211,7 +211,9 @@ fn prepare_and_apply(
             vote.execution_effects_hash,
             vote.locked_objects_digest,
             &all_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("three of four equal-power votes is quorum");

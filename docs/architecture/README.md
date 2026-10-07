@@ -25,6 +25,9 @@ roadmap describes a later target state.
 - [Native SQLite connection and attachment ownership](decisions/0210-native-sqlite-connection-ownership.md):
   one native settings owner, lock-safe identity checks and explicit operator
   commit ambiguity; shared SQL decisions and live protocol authority stay separate.
+- [Immutable operation signing preparation](signing-preparation.md): one
+  mechanical frame/identity owner, operation-specific immutable trust inputs,
+  actual SDK/CLI consumers and the separate custody/content-review boundary.
 - [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
   an explicitly configured closed HTTPS transport, separate from default
   event-only relays, embedded DO policy and core authority.

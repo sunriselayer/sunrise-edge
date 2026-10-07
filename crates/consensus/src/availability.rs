@@ -868,6 +868,7 @@ pub fn encode_availability_certificate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Ed25519ConsensusVerifier, UnsupportedSignatureSchemeResponse};
     use ed25519_zebra::{Signature, SigningKey, VerificationKey};
     use protocol_types::HashAlgorithmId;
     use validator_set::ValidatorInfo;
@@ -890,6 +891,75 @@ mod tests {
         let vote = cast(&certifier, 1);
         assert_eq!(vote.signature.len(), 64);
         assert_eq!(certifier.verify_vote(&vote, &Ed25519TestVerifier), Ok(()));
+    }
+
+    #[test]
+    fn production_verifier_preserves_availability_certificate_bytes() {
+        let certifier: AvailabilityCertifier = certifier(4);
+        let votes: Vec<AvailabilityVote> = (1..=4).map(|byte| cast(&certifier, byte)).collect();
+        let reference: AvailabilityCertificate = quorum_certificate(&certifier);
+        let reference_bytes: Vec<u8> = encode_availability_certificate(&reference).unwrap();
+        let responses: [UnsupportedSignatureSchemeResponse; 2] = [
+            UnsupportedSignatureSchemeResponse::InvalidSignature,
+            UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ];
+        for response in responses {
+            let verifier: Ed25519ConsensusVerifier = Ed25519ConsensusVerifier::new(response);
+            let certificate: AvailabilityCertificate = certifier
+                .try_form_certificate(&identity(), &votes, &verifier)
+                .unwrap()
+                .expect("genuine 3-of-4 quorum");
+            assert_eq!(
+                encode_availability_certificate(&certificate).unwrap(),
+                reference_bytes,
+            );
+            assert_eq!(
+                certifier.verify_certificate(&certificate, &verifier),
+                Ok(())
+            );
+        }
+    }
+
+    #[test]
+    fn production_verifier_preserves_availability_unsupported_scheme_classification() {
+        let source: AvailabilityCertifier = certifier(1);
+        let mut vote: AvailabilityVote = cast(&source, 1);
+        let mut member: ValidatorInfo =
+            source.validator_set().get(validator_id(1)).unwrap().clone();
+        // This deliberately unsupported generic fixture tests refusal only.
+        member.signature_scheme = SignatureSchemeId::Secp256k1;
+        vote.signature_scheme = SignatureSchemeId::Secp256k1;
+        let unsupported_set: ValidatorSet = ValidatorSet::new(epoch(), vec![member]).unwrap();
+        let certifier: AvailabilityCertifier = AvailabilityCertifier::new(
+            identity().chain_id,
+            protocol_version(),
+            epoch(),
+            unsupported_set,
+        )
+        .unwrap();
+        let profile_error: Ed25519ConsensusVerifier =
+            Ed25519ConsensusVerifier::new(UnsupportedSignatureSchemeResponse::FastPathProfileError);
+        let invalid_signature: Ed25519ConsensusVerifier =
+            Ed25519ConsensusVerifier::new(UnsupportedSignatureSchemeResponse::InvalidSignature);
+        let expected_error: ConsensusError =
+            ConsensusError::Authenticator("fast-path phase 1 supports only Ed25519".to_string());
+        assert_eq!(
+            certifier.verify_vote(&vote, &profile_error),
+            Err(expected_error.clone()),
+        );
+        assert_eq!(
+            certifier.verify_vote(&vote, &invalid_signature),
+            Err(ConsensusError::InvalidSignature(validator_id(1))),
+        );
+        let votes: [AvailabilityVote; 1] = [vote];
+        assert_eq!(
+            certifier.try_form_certificate(&identity(), &votes, &profile_error),
+            Err(expected_error),
+        );
+        assert_eq!(
+            certifier.try_form_certificate(&identity(), &votes, &invalid_signature),
+            Ok(None),
+        );
     }
 
     #[test]

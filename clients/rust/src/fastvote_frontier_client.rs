@@ -8,7 +8,6 @@ use consensus::{
     FrozenFrontierCertifier, FrozenFrontierPage, FrozenFrontierVote, decode_frozen_frontier_page,
     decode_frozen_frontier_vote,
 };
-use node_core::fast_path::FastPathEd25519Verifier;
 use node_wire::{
     FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH, FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
     FrozenFrontierPageRequest, FrozenFrontierPageResponse, NODE_EVENT_MEDIA_TYPE,
@@ -116,7 +115,12 @@ fn verify_endpoint_vote(
             "vote signer differs from locally configured endpoint",
         ));
     }
-    certifier.verify_vote(vote, &FastPathEd25519Verifier)?;
+    certifier.verify_vote(
+        vote,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
+    )?;
     Ok(())
 }
 
@@ -260,7 +264,9 @@ mod tests {
             &resolver,
             &certifier,
             got_vote.clone(),
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap();
         verifier.push_page(&resolver, &got_page).unwrap();

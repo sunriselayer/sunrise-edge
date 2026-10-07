@@ -39,7 +39,6 @@
 //! [`verify_drain_ready`].
 use super::freeze::{admission_closure_key, decode_admission_closure_record};
 use super::*;
-use crate::fast_path::FastPathEd25519Verifier;
 use crate::fast_path::drain_publication::{
     fence_closed_epoch, verify_drain_possession_into, verify_or_stage_drain_possession_rebuild,
 };
@@ -576,7 +575,12 @@ pub(crate) fn ingest_drain_signer_page_gated<S: StructuredDurableDomainStateStor
     // forged or unregistered signature on an empty vote would never reach
     // any signature verification at all and could still wedge this signer's
     // progress row as complete.
-    certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+    certifier.verify_vote(
+        &vote,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
+    )?;
 
     let progress_key: Vec<u8> =
         drain_signer_progress_key(&drain.fence.chain, drain.fence.epoch, signer)?;
@@ -661,7 +665,9 @@ pub(crate) fn ingest_drain_signer_page_gated<S: StructuredDurableDomainStateStor
                 &certifier,
                 vote.clone(),
                 accumulator,
-                &FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )?;
             verifier.push_page(resolver, &page)?;
             if page.entries.is_empty() {
@@ -1150,7 +1156,12 @@ fn read_drain_signer_progress_gated<S: StructuredDurableDomainStateStore>(
         drain.fence.epoch,
         drain.fence.validators.clone(),
     )?;
-    certifier.verify_vote(&record.vote, &FastPathEd25519Verifier)?;
+    certifier.verify_vote(
+        &record.vote,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
+    )?;
     Ok(DrainSignerProgress {
         signer,
         vote: record.vote,
@@ -1337,7 +1348,9 @@ fn verify_selection(
         domain,
         fence.closure_request_id,
         fence.closure_height,
-        &FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
     )?;
     Ok(())
 }

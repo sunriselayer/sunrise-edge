@@ -29,7 +29,6 @@ use execution::paid_execution::{
 };
 use execution::publication::PublicationContext;
 use fastvote::{DynConsensusSigner, fastpath_error_response, publication_retention_error_response};
-use node_core::fast_path::FastPathEd25519Verifier;
 use node_core::fee_claims::{FeeClaimError, FeeClaimPreparationRequest, PreparedFeeClaim};
 use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::{
@@ -675,7 +674,12 @@ async fn ordered_proposal_route<S: SuccessorStore>(
                 if env
                     .policy
                     .engine()
-                    .verify_proposal(&proposal.proposal, &FastPathEd25519Verifier)
+                    .verify_proposal(
+                        &proposal.proposal,
+                        &consensus::Ed25519ConsensusVerifier::new(
+                            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                        ),
+                    )
                     .is_err()
                 {
                     return error_response(
@@ -758,7 +762,12 @@ async fn ordered_certificate<S: SuccessorStore>(
                 if env
                     .policy
                     .engine()
-                    .verify_certificate(&certificate, &FastPathEd25519Verifier)
+                    .verify_certificate(
+                        &certificate,
+                        &consensus::Ed25519ConsensusVerifier::new(
+                            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                        ),
+                    )
                     .is_err()
                 {
                     return error_response(

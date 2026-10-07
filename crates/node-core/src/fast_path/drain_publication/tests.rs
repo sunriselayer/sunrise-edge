@@ -63,7 +63,9 @@ fn pure_bundle_verifier_requires_exact_closure_of_genuine_certified_witness() {
         verify_publication_bundle(
             &changed,
             &certifier,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
             &resolver(),
             &[],
         )

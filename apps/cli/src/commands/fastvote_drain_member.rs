@@ -368,7 +368,9 @@ mod tests {
                 effect_hash,
                 lock_hash,
                 &[vote],
-                &sunrise_edge_client::FastPathEd25519Verifier,
+                &sunrise_edge_client::Ed25519ConsensusVerifier::new(
+                    sunrise_edge_client::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .unwrap();

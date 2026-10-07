@@ -578,7 +578,9 @@ fn logical_network_submit_persists_ac_before_published_apply_and_saved_replay_us
             execution_hash,
             digest(0x56),
             std::slice::from_ref(&vote),
-            &FastPathEd25519Verifier,
+            &sunrise_edge_client::Ed25519ConsensusVerifier::new(
+                sunrise_edge_client::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -597,7 +599,9 @@ fn logical_network_submit_persists_ac_before_published_apply_and_saved_replay_us
     let identity: consensus::AvailabilityIdentity = verify_publication_bundle(
         &bundle,
         &fixture.certifier,
-        &FastPathEd25519Verifier,
+        &sunrise_edge_client::Ed25519ConsensusVerifier::new(
+            sunrise_edge_client::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
         &fixture.resolver,
         &[],
     )
@@ -617,7 +621,9 @@ fn logical_network_submit_persists_ac_before_published_apply_and_saved_replay_us
         .try_form_certificate(
             &availability_vote.identity,
             std::slice::from_ref(&availability_vote),
-            &FastPathEd25519Verifier,
+            &sunrise_edge_client::Ed25519ConsensusVerifier::new(
+                sunrise_edge_client::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -717,7 +723,12 @@ fn logical_network_submit_persists_ac_before_published_apply_and_saved_replay_us
     let availability: AvailabilityCertificate =
         decode_availability_certificate(&std::fs::read(&availability_path).unwrap()).unwrap();
     availability_certifier
-        .verify_certificate(&availability, &FastPathEd25519Verifier)
+        .verify_certificate(
+            &availability,
+            &sunrise_edge_client::Ed25519ConsensusVerifier::new(
+                sunrise_edge_client::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .unwrap();
     assert_eq!(
         std::fs::read(&result_path).unwrap(),

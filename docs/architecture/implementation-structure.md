@@ -40,6 +40,13 @@ ordered-economics types. Keep those couplings explicit. Any later removal needs
 a deliberate public-type owner and byte/API compatibility plan, not a new
 foundational crate containing node-core execution logic.
 
+The consensus-owned Ed25519 adapter follows
+[DR-0209](decisions/0209-consensus-verifier-ownership.md). Its one defining owner
+adapts only the exact supplied key/frame/signature, with an explicit closed
+unsupported-scheme response. Core, SDK and hosts retain registration, membership,
+context, quorum and authority checks. Removing that reverse coupling does not
+remove the SDK's other actual core dependencies or invent a foundational crate.
+
 ## Concrete refactoring seams
 
 The following are intended module responsibilities inside existing crates.
@@ -60,6 +67,7 @@ paths through reexports where possible. The active integration order is in TODO.
 | [Outgoing Seal storage](../../crates/runtime/src/outgoing_seal.rs), [shared SQL Seal completion](../../crates/runtime-sql-durable/src/engine/outgoing_seal.rs) and [ordered Seal](../../crates/node-core/src/ordered_economics/seal.rs) | Runtime owns protected metadata and atomic continuity; core owns certificate authority, independent reconstruction and selected consensus history | A real same-store capability consumes the original snapshot token. Ordinary writers cannot bypass Sealed, unsupported providers cannot fake completion, and storage never decides successor eligibility or activation |
 | [Native ingress](../../crates/native-http/src/lib.rs) and [DO host](../../adapters/cloudflare-workers/rust/src/lib.rs) | Serving, shared blocking admission, query context, recovery and trusted composition; capability-specific provider dispatch | Preserve authentication before I/O, one permit pool and closed certified routes. Generic event proxy ingress must not acquire handoff authority; core must guard inactive imports |
 | [FastVote client](../../clients/rust/src/fastvote_client.rs), [ordered client](../../clients/rust/src/ordered_economics_client.rs), [local genesis primitives](../../clients/rust/src/local_genesis.rs) and [transport](../../clients/rust/src/transport.rs) | Local genesis primitives own bounded file reads, signed manifest verification and committee conversion; clients retain their own profile/policy checks and public errors | Share verified primitives, not a peer-chosen trust context. Genesis trust and verified live serving context are different. Transport policy remains separate |
+| [Client-private signing frame](../../clients/rust/src/signing_frame.rs) and [typed operation preparations](signing-preparation.md) | One immutable expected identity/frame and shared provider checks; each operation retains its own trust/content snapshots, authentication, error ordering and consuming finalization | Returned-signature validity grants neither business authority nor custody/content-review qualification. Actual CLI consumers delegate to the same owner; automatic protocol/readiness signing retains its separate live authority |
 | [CLI network commands](../../apps/cli/src/commands/fastvote_network.rs), [ordered commands](../../apps/cli/src/commands/ordered_economics_network.rs), [network artifact primitives](../../apps/cli/src/commands/network_artifacts.rs) and [operator economics](../../apps/operator/src/economics.rs) | Commands-private artifact I/O owns reservations, held handles and synchronization; network configuration and operation-specific workflows stay with their command owners | Keep pre-reserved paths, held file handles, file/parent synchronization and exact bytes. Offline and certified-network operations do not share authority merely because file utilities match |
 
 The rows are an inventory, not ten obligatory cleanup PRs. In particular,

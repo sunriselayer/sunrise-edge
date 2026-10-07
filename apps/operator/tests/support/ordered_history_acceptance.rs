@@ -210,7 +210,9 @@ fn advance_empty_history(
 ) {
     use node_wire::ordered_economics::*;
 
-    let verifier: FastPathEd25519Verifier = FastPathEd25519Verifier;
+    let verifier: consensus::Ed25519ConsensusVerifier = consensus::Ed25519ConsensusVerifier::new(
+        consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+    );
     let overall: Instant = Instant::now() + std::time::Duration::from_secs(90);
     for _ in 0..rounds {
         let mut chosen: Option<(ValidatorId, SocketAddr, u64)> = None;

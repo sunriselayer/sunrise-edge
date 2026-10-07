@@ -20,9 +20,10 @@ use node_wire::{
 };
 use protocol_types::{Digest32, SignatureSchemeId};
 
+use crate::signing_frame::PreparedSigningFrame;
 use crate::{
-    Client, ClientError, ExpectedProtocolContext, LocalSigner, Method, Transport, WireRequest,
-    WireResponse,
+    Address, Client, ClientError, ExpectedProtocolContext, ExternalSigner, LocalSigner, Method,
+    Transport, WireRequest, WireResponse,
 };
 
 /// The explicitly enabled local-devnet publication endpoint.
@@ -79,32 +80,167 @@ pub fn build_signed_publication(
     nonce: u64,
     request_id: RequestId,
 ) -> Result<PublicationSubmission, ClientError> {
-    let context: PublicationContext = trusted_context(resolver, expected)?;
-    if artifact.origin().publisher() != signer.address().as_bytes() {
-        return Err(ClientError::ExternalSignerAddressMismatch {
-            expected: crate::Address::new(*artifact.origin().publisher()),
-            actual: signer.address(),
-        });
-    }
-    let digest: Digest32 = artifact_commitment(resolver, &context, &artifact)?;
-    let semantics: Digest32 = *artifact.semantics();
-    let frame: Vec<u8> = publication_submission_signing_frame(
+    PreparedPublication::prepare(
+        signer.address(),
         resolver,
-        &context,
-        &artifact,
+        expected,
+        artifact,
         nonce,
-        *request_id.as_bytes(),
-    )?;
-    let signature_bytes: Vec<u8> = signer.sign_framed(&frame)?;
-    let signature: [u8; 64] = signature_bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| crypto::CryptoError::InvalidSignatureLength(signature_bytes.len()))?;
-    let request: PublicationRequest = PublicationRequest::new(artifact, nonce, digest, signature);
-    let submission: PublicationSubmission =
-        PublicationSubmission::new(*request_id.as_bytes(), request)?;
-    authenticate_publication_submission(resolver, &context, &semantics, submission.clone())?;
-    Ok(submission)
+        request_id,
+    )?
+    .sign_and_finalize_with(signer)
+}
+
+/// Immutable complete artifact, commitment, semantics and submission identity.
+/// Publication authentication is not code provenance or human content approval.
+pub struct PreparedPublication {
+    signing: PreparedSigningFrame,
+    resolver: HashSuiteResolver,
+    context: PublicationContext,
+    artifact: CodeArtifact,
+    digest: Digest32,
+    semantics: Digest32,
+    nonce: u64,
+    request_id: RequestId,
+}
+
+impl PreparedPublication {
+    /// Binds an explicitly configured publisher to the complete artifact and
+    /// its locally recomputed commitment using the original validation order.
+    pub fn prepare(
+        publisher: Address,
+        resolver: &HashSuiteResolver,
+        expected: &ExpectedProtocolContext,
+        artifact: CodeArtifact,
+        nonce: u64,
+        request_id: RequestId,
+    ) -> Result<Self, ClientError> {
+        let context: PublicationContext = trusted_context(resolver, expected)?;
+        if artifact.origin().publisher() != publisher.as_bytes() {
+            return Err(ClientError::ExternalSignerAddressMismatch {
+                expected: Address::new(*artifact.origin().publisher()),
+                actual: publisher,
+            });
+        }
+        let digest: Digest32 = artifact_commitment(resolver, &context, &artifact)?;
+        let semantics: Digest32 = *artifact.semantics();
+        let frame: Vec<u8> = publication_submission_signing_frame(
+            resolver,
+            &context,
+            &artifact,
+            nonce,
+            *request_id.as_bytes(),
+        )?;
+        Ok(Self {
+            signing: PreparedSigningFrame::new(publisher, SignatureSchemeId::Ed25519, frame)?,
+            resolver: resolver.clone(),
+            context,
+            artifact,
+            digest,
+            semantics,
+            nonce,
+            request_id,
+        })
+    }
+
+    /// Complete immutable artifact, including ABI, code and dependency preimages.
+    #[must_use]
+    pub fn artifact(&self) -> &CodeArtifact {
+        &self.artifact
+    }
+
+    /// Locally trusted submission context.
+    #[must_use]
+    pub fn context(&self) -> &PublicationContext {
+        &self.context
+    }
+
+    /// Retained hash history for independent commitment recomputation.
+    #[must_use]
+    pub fn resolver(&self) -> &HashSuiteResolver {
+        &self.resolver
+    }
+
+    /// Locally recomputed complete artifact commitment.
+    #[must_use]
+    pub fn artifact_digest(&self) -> &Digest32 {
+        &self.digest
+    }
+
+    /// Exact artifact semantics retained for final authentication.
+    #[must_use]
+    pub const fn semantics(&self) -> &Digest32 {
+        &self.semantics
+    }
+
+    /// Immutable publisher nonce.
+    #[must_use]
+    pub const fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    /// Immutable request identity signed by the submission profile.
+    #[must_use]
+    pub const fn request_id(&self) -> RequestId {
+        self.request_id
+    }
+
+    /// Configured publisher identity, independent of the provider's defaults.
+    #[must_use]
+    pub fn publisher(&self) -> Address {
+        self.signing.expected()
+    }
+
+    /// Exact immutable submission frame to sign.
+    #[must_use]
+    pub fn signable_frame(&self) -> &[u8] {
+        self.signing.frame()
+    }
+
+    /// Consumes the artifact and signature, preserving submission authentication
+    /// and independently verifying the retained frame before returning output.
+    pub fn finalize(self, signature_bytes: Vec<u8>) -> Result<PublicationSubmission, ClientError> {
+        let signature: [u8; 64] = signature_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| crypto::CryptoError::InvalidSignatureLength(signature_bytes.len()))?;
+        let request: PublicationRequest =
+            PublicationRequest::new(self.artifact, self.nonce, self.digest, signature);
+        let submission: PublicationSubmission =
+            PublicationSubmission::new(*self.request_id.as_bytes(), request)?;
+        authenticate_publication_submission(
+            &self.resolver,
+            &self.context,
+            &self.semantics,
+            submission.clone(),
+        )?;
+        if !self
+            .signing
+            .verify(&signature)
+            .map_err(execution::publication::PublicationError::Crypto)?
+        {
+            return Err(execution::publication::PublicationError::InvalidSignature.into());
+        }
+        Ok(submission)
+    }
+
+    /// Checks the provider's scheme/publisher identity before invoking it once.
+    pub fn sign_and_finalize_external<S: ExternalSigner>(
+        self,
+        signer: &S,
+    ) -> Result<PublicationSubmission, ClientError> {
+        let signature: Vec<u8> = self.signing.sign_external(signer)?;
+        self.finalize(signature)
+    }
+
+    /// In-process development convenience with the original crypto errors.
+    pub fn sign_and_finalize_with<S: SignatureSigner>(
+        self,
+        signer: &S,
+    ) -> Result<PublicationSubmission, ClientError> {
+        let signature: Vec<u8> = self.signing.sign_with(signer)?;
+        self.finalize(signature)
+    }
 }
 
 impl<T: Transport> Client<T> {

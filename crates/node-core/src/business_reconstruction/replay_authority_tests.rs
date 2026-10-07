@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::test_support::capture::{assert_same_records_and_blobs, captured_source};
+use protocol_types::ValidatorId;
 use runtime::{
     AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, DurableCommitOutcome,
     StateMutationEntry, StateReadAssertion,

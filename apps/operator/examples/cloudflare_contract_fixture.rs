@@ -39,7 +39,7 @@ use execution::{
 use fees::Amount;
 use genesis_fixture::FastVoteGenesisFixture;
 use hashing::HashSuiteResolver;
-use node_core::fast_path::{self, FastPathEd25519Verifier, FastPathError};
+use node_core::fast_path::{self, FastPathError};
 use node_core::local_execution::query_local_instance;
 use node_core::paid_execution::PaidExecutionAdmissionError;
 use node_core::paid_execution::authenticate_paid_execution;
@@ -488,7 +488,9 @@ fn run_step(
             target.execution_effects_hash,
             target.locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("3-of-4 equal-power votes must certify");

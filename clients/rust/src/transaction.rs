@@ -13,10 +13,7 @@
 //! single-call convenience entrypoint and is now implemented through this
 //! same path, so its stable output is unchanged.
 
-use crypto::{
-    Ed25519Verifier, SignatureDomain, SignatureMessageType, SignatureSigner, SignatureVerifier,
-    frame_signature_message,
-};
+use crypto::{SignatureDomain, SignatureMessageType, SignatureSigner, frame_signature_message};
 use execution::{Transaction, encode_transaction, encode_transaction_signable};
 use node_core::{
     NodeCoreError, RequestId, SUBMIT_TRANSACTION_V1_MESSAGE_TYPE, TRANSACTION_V1_MESSAGE_TYPE,
@@ -31,6 +28,7 @@ use std::error::Error;
 
 use crate::error::ClientError;
 use crate::key::LocalSigner;
+use crate::signing_frame::PreparedSigningFrame;
 
 /// Explicit, caller-supplied inputs for one canonical Transaction v1.
 ///
@@ -90,6 +88,7 @@ pub struct PreparedTransaction {
     unsigned: Transaction,
     domain: SignatureDomain,
     signable: Vec<u8>,
+    signing: PreparedSigningFrame,
 }
 
 /// A bounded external signing boundary.
@@ -143,7 +142,7 @@ impl PreparedTransaction {
         request: TransactionRequest,
         request_id: Option<RequestId>,
     ) -> Result<Self, ClientError> {
-        reject_unsupported_scheme(signature_scheme_id)?;
+        PreparedSigningFrame::require_supported_scheme(signature_scheme_id)?;
 
         let TransactionRequest {
             chain_id,
@@ -158,7 +157,7 @@ impl PreparedTransaction {
             fee_payment,
         } = request;
 
-        let unsigned = Transaction {
+        let unsigned: Transaction = Transaction {
             chain_id: chain_id.clone(),
             protocol_version,
             epoch,
@@ -184,7 +183,7 @@ impl PreparedTransaction {
             }
             None => (TRANSACTION_V1_MESSAGE_TYPE, transaction_signable),
         };
-        let domain = SignatureDomain {
+        let domain: SignatureDomain = SignatureDomain {
             chain_id,
             protocol_version,
             epoch,
@@ -192,10 +191,14 @@ impl PreparedTransaction {
             signature_scheme_id,
         };
 
+        let frame: Vec<u8> = frame_signature_message(&domain, &signable)?;
+        let signing: PreparedSigningFrame =
+            PreparedSigningFrame::new(sender, signature_scheme_id, frame)?;
         Ok(Self {
             unsigned,
             domain,
             signable,
+            signing,
         })
     }
 
@@ -208,7 +211,7 @@ impl PreparedTransaction {
     /// Returns the declared signature scheme.
     #[must_use]
     pub const fn signature_scheme_id(&self) -> SignatureSchemeId {
-        self.domain.signature_scheme_id
+        self.signing.scheme()
     }
 
     /// Returns the exact framed bytes an external signer must produce a raw
@@ -222,7 +225,7 @@ impl PreparedTransaction {
     /// asked to sign without this client duplicating or re-deriving that
     /// framing.
     pub fn signable_frame(&self) -> Result<Vec<u8>, ClientError> {
-        Ok(frame_signature_message(&self.domain, &self.signable)?)
+        Ok(self.signing.frame().to_vec())
     }
 
     /// Derives the bounded, fail-closed hardware display exclusively from
@@ -252,29 +255,12 @@ impl PreparedTransaction {
     where
         S: ExternalSigner,
     {
-        let expected_scheme: SignatureSchemeId = self.signature_scheme_id();
-        let actual_scheme: SignatureSchemeId = signer.signature_scheme_id();
-        if actual_scheme != expected_scheme {
-            return Err(ClientError::ExternalSignerSchemeMismatch {
-                expected: expected_scheme,
-                actual: actual_scheme,
-            });
-        }
-
-        let expected_address: Address = self.sender();
-        let actual_address: Address = signer.address();
-        if actual_address != expected_address {
-            return Err(ClientError::ExternalSignerAddressMismatch {
-                expected: expected_address,
-                actual: actual_address,
-            });
-        }
-
-        let framed: Vec<u8> = self.signable_frame()?;
-        let _view: ClearSigningView = build_clear_signing_view(&framed, profile, policy)?;
-        let signature: Vec<u8> = signer
-            .sign_frame(&framed)
-            .map_err(|error| ClientError::ExternalSigner(Box::new(error)))?;
+        let signature: Vec<u8> = self
+            .signing
+            .sign_external_after_preflight(signer, |framed| {
+                let _view: ClearSigningView = build_clear_signing_view(framed, profile, policy)?;
+                Ok(())
+            })?;
         self.finalize(signature)
     }
 
@@ -289,23 +275,14 @@ impl PreparedTransaction {
     /// Ed25519 verification key under the declared scheme. Only a `true`
     /// verification result produces output.
     pub fn finalize(mut self, signature: Vec<u8>) -> Result<Vec<u8>, ClientError> {
-        match self.domain.signature_scheme_id {
-            SignatureSchemeId::Ed25519 => {
-                let verifier =
-                    Ed25519Verifier::from_verifying_key_bytes(self.unsigned.sender.as_bytes())?;
-                let framed = self.signable_frame()?;
-                if !verifier.verify_framed(&framed, &signature)? {
-                    return Err(ClientError::ExternalSignatureInvalid {
-                        sender: self.unsigned.sender,
-                    });
-                }
-                self.unsigned.signature = signature;
-                Ok(encode_transaction(&self.unsigned)?)
-            }
-            SignatureSchemeId::Secp256k1 => Err(ClientError::UnsupportedSignatureScheme(
-                self.domain.signature_scheme_id,
-            )),
+        PreparedSigningFrame::require_supported_scheme(self.signing.scheme())?;
+        if !self.signing.verify(&signature)? {
+            return Err(ClientError::ExternalSignatureInvalid {
+                sender: self.unsigned.sender,
+            });
         }
+        self.unsigned.signature = signature;
+        Ok(encode_transaction(&self.unsigned)?)
     }
 
     /// Signs this transaction in-process with `signer` and finalizes it in
@@ -319,7 +296,7 @@ impl PreparedTransaction {
     where
         S: SignatureSigner,
     {
-        let signature = signer.sign_canonical(&self.domain, &self.signable)?;
+        let signature: Vec<u8> = signer.sign_canonical(&self.domain, &self.signable)?;
         self.finalize(signature)
     }
 }
@@ -337,13 +314,6 @@ impl ExternalSigner for LocalSigner {
 
     fn sign_frame(&self, framed_message: &[u8]) -> Result<Vec<u8>, Self::Error> {
         self.sign_framed(framed_message)
-    }
-}
-
-fn reject_unsupported_scheme(scheme: SignatureSchemeId) -> Result<(), ClientError> {
-    match scheme {
-        SignatureSchemeId::Ed25519 => Ok(()),
-        SignatureSchemeId::Secp256k1 => Err(ClientError::UnsupportedSignatureScheme(scheme)),
     }
 }
 
@@ -409,6 +379,95 @@ mod tests {
             version: 1,
             digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x02; 32]),
         }
+    }
+
+    #[test]
+    fn both_profiles_preserve_independent_original_signed_bytes() {
+        let signer: LocalSigner = LocalSigner::from_seed([0xD8; 32]);
+        let request_id: RequestId = RequestId::new([0x33; 32]).unwrap();
+        for profile in [1_u16, 2_u16] {
+            let request: TransactionRequest = base_request();
+            let mut transaction: Transaction = Transaction {
+                chain_id: request.chain_id,
+                protocol_version: request.protocol_version,
+                epoch: request.epoch,
+                sender: signer.address(),
+                nonce: request.nonce,
+                access_manifest: request.access_manifest,
+                module_ref: request.module_ref,
+                entrypoint: request.entrypoint,
+                args: request.args,
+                gas_limit: request.gas_limit,
+                fee_payment: request.fee_payment,
+                signature: vec![],
+            };
+            let raw: Vec<u8> = encode_transaction_signable(&transaction).unwrap();
+            let (message_type, payload): (&str, Vec<u8>) = if profile == 1 {
+                (TRANSACTION_V1_MESSAGE_TYPE, raw)
+            } else {
+                (
+                    SUBMIT_TRANSACTION_V1_MESSAGE_TYPE,
+                    encode_submit_transaction_signable(request_id, &raw).unwrap(),
+                )
+            };
+            let domain: SignatureDomain = SignatureDomain {
+                chain_id: transaction.chain_id.clone(),
+                protocol_version: transaction.protocol_version,
+                epoch: transaction.epoch,
+                message_type: SignatureMessageType::new(message_type).unwrap(),
+                signature_scheme_id: SignatureSchemeId::Ed25519,
+            };
+            transaction.signature = signer.sign_canonical(&domain, &payload).unwrap();
+            let original: Vec<u8> = encode_transaction(&transaction).unwrap();
+            let prepared: PreparedTransaction = if profile == 1 {
+                PreparedTransaction::prepare(
+                    signer.address(),
+                    SignatureSchemeId::Ed25519,
+                    base_request(),
+                )
+                .unwrap()
+            } else {
+                PreparedTransaction::prepare_submission(
+                    request_id,
+                    signer.address(),
+                    SignatureSchemeId::Ed25519,
+                    base_request(),
+                )
+                .unwrap()
+            };
+            assert_eq!(
+                prepared.signable_frame().unwrap(),
+                frame_signature_message(&domain, &payload).unwrap()
+            );
+            assert_eq!(prepared.finalize(transaction.signature).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn ordinary_signature_signer_retains_crypto_scheme_error_before_signing() {
+        struct WrongScheme(Cell<u32>);
+        impl SignatureSigner for WrongScheme {
+            fn scheme_id(&self) -> SignatureSchemeId {
+                SignatureSchemeId::Secp256k1
+            }
+            fn sign_framed(&self, _frame: &[u8]) -> Result<Vec<u8>, CryptoError> {
+                self.0.set(self.0.get() + 1);
+                Ok(vec![0; 64])
+            }
+        }
+        let key: LocalSigner = LocalSigner::from_seed([0xD9; 32]);
+        let signer: WrongScheme = WrongScheme(Cell::new(0));
+        let prepared =
+            PreparedTransaction::prepare(key.address(), SignatureSchemeId::Ed25519, base_request())
+                .unwrap();
+        assert!(matches!(
+            prepared.sign_and_finalize_with(&signer),
+            Err(ClientError::Crypto(CryptoError::SignatureSchemeMismatch {
+                expected: SignatureSchemeId::Secp256k1,
+                actual: SignatureSchemeId::Ed25519
+            }))
+        ));
+        assert_eq!(signer.0.get(), 0);
     }
 
     fn base_request() -> TransactionRequest {

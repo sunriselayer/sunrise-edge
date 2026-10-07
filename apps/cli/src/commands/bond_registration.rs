@@ -9,7 +9,7 @@ use sunrise_edge_client::{
         BondRegistrationContext, FastPathBondRecord, MAX_BOND_REGISTRATION_ROW_BYTES,
         MAX_LOCAL_EXECUTION_INTENT_BYTES, PreparedLocalBondRegistration,
         PreparedSuccessorBondRegistration, decode_fastpath_bond_record,
-        prepare_successor_bond_registration,
+        prepare_successor_bond_registration_for_public_key,
     },
 };
 
@@ -128,7 +128,12 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
         (Some(trusted), None) => (
             Some(
                 trusted
-                    .prepare(&signer, request_id, leg, predicted_initial_row)
+                    .prepare_for_public_key(
+                        *signer.address().as_bytes(),
+                        request_id,
+                        leg,
+                        predicted_initial_row,
+                    )
                     .map_err(failure)?,
             ),
             None,
@@ -136,10 +141,10 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
         (None, Some(workflow)) => (
             None,
             Some(
-                prepare_successor_bond_registration(
+                prepare_successor_bond_registration_for_public_key(
                     workflow,
                     &context,
-                    &signer,
+                    *signer.address().as_bytes(),
                     request_id,
                     leg,
                     predicted_initial_row,
@@ -163,14 +168,14 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
         .ok_or_else(|| invalid("registration output reservation is missing"))?;
     output.ensure_attached()?;
     let (validator, bytes): (sunrise_edge_client::ValidatorId, Vec<u8>) =
-        match (&prepared, &successor_prepared) {
+        match (prepared, successor_prepared) {
             (Some(prepared), None) => (
                 prepared.validator_id(),
-                prepared.sign(&signer).map_err(failure)?,
+                prepared.sign_and_finalize_with(&signer).map_err(failure)?,
             ),
             (None, Some(prepared)) => (
                 prepared.validator_id(),
-                prepared.sign(&signer, &context).map_err(failure)?,
+                prepared.sign_and_finalize_with(&signer).map_err(failure)?,
             ),
             _ => return Err(invalid("registration preparation is incomplete")),
         };

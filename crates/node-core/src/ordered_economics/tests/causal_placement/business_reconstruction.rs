@@ -239,7 +239,9 @@ fn claim_source(
                         &genesis,
                         ConsensusEvent::Proposal(proposal.clone()),
                         signer,
-                        &super::super::super::policy::Ed25519ConsensusVerifier,
+                        &consensus::Ed25519ConsensusVerifier::new(
+                            consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                        ),
                     )
                     .unwrap()
                     .outbound_messages
@@ -258,7 +260,9 @@ fn claim_source(
             .certificate_from_votes(
                 &proposal,
                 &votes,
-                &super::super::super::policy::Ed25519ConsensusVerifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
             )
             .unwrap()
             .unwrap();
@@ -310,7 +314,9 @@ fn availability_subset(network: &Network, request: [u8; 32], signers: &[usize]) 
         .try_form_certificate(
             &votes[0].identity,
             &votes,
-            &crate::fast_path::FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();

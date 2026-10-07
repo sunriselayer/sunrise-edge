@@ -37,7 +37,6 @@ use fees::Amount;
 use fees::reservation::{Admission, Settlement};
 use https_relay::HttpsRelay;
 use node_core::business_reconstruction::SourceBusinessSnapshot;
-use node_core::fast_path::FastPathEd25519Verifier;
 use node_core::genesis::VerifiedGenesisRoot;
 use node_core::{NodeDedupRecord, NodeResponseStatus};
 use objects::{Address, Object, ObjectId, Owner, ProtocolCustodyPurpose, encode_object};
@@ -1161,7 +1160,12 @@ fn verify_saved_artifacts(network: &Network, saved: &Saved, nonce: u64) -> Commi
     assert!(trusted.commitment_profile().is_logical());
     trusted
         .certifier()
-        .verify_certificate(&certificate, &FastPathEd25519Verifier)
+        .verify_certificate(
+            &certificate,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .unwrap();
     assert_eq!(&certificate.chain_id, network.fixture.context.chain_id());
     assert_eq!(
@@ -1185,7 +1189,12 @@ fn verify_saved_artifacts(network: &Network, saved: &Saved, nonce: u64) -> Commi
     )
     .unwrap();
     availability_certifier
-        .verify_certificate(&availability, &FastPathEd25519Verifier)
+        .verify_certificate(
+            &availability,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .unwrap();
     assert_eq!(availability.identity.domain, network.domain);
     assert_eq!(availability.identity.request_id, signed.intent.request_id);

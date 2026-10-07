@@ -1,7 +1,4 @@
-use super::super::{
-    ReconstructionEd25519Verifier,
-    projection::{SemanticProjection, SemanticRecord},
-};
+use super::super::projection::{SemanticProjection, SemanticRecord};
 use super::*;
 use crate::logical_generation::{
     LogicalSubject, decode_logical_profile_record, decode_logical_provenance_record,
@@ -118,7 +115,9 @@ fn complete_drain(
         plan.domain,
         freeze.request_id,
         freeze.closed_at_block_height,
-        &ReconstructionEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+        ),
     )
     .map_err(|_| invalid("cut signed selection lacks the exact frozen quorum"))?;
     let mut members: BTreeMap<[u8; 32], AvailabilityIdentity> = BTreeMap::new();
@@ -130,7 +129,9 @@ fn complete_drain(
             plan.genesis_root.genesis_resolver(),
             &certifier,
             vote.clone(),
-            &ReconstructionEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .map_err(|_| invalid("cut frontier signature differs"))?;
         for page in &frontier.pages {

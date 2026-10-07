@@ -21,6 +21,15 @@ separately pin those boundaries. The native closed event endpoint owns no
 execution/storage capabilities (DR-0206); its canonical decoder returns only
 a refusal. Authenticated hosts and standalone recovery have separate owners.
 
+The [consensus Ed25519 adapter](../../crates/consensus/src/lib.rs) is the defining
+`ConsensusVerifier` implementation for actual core, SDK, host and operator
+callers. Its explicit unsupported-scheme response preserves each caller's
+classification. Registered keys, context, membership, quorum and authority stay
+with the owning caller/certifier. Independent
+[adapter outcome controls](../../crates/consensus/src/verifier_tests.rs) and the
+existing FastVote/availability certifier tests pin this boundary; the Rust SDK
+exports the defining consensus type, not a core adapter.
+
 ## Follow a request
 
 ```text
@@ -182,6 +191,17 @@ contracts; they do not define protocol rules.
   verifies them inside the signing API. [Native successor adapter](../../crates/native-http/src/successor.rs)
   resolves fresh authority for each request. The loopback host supplies local
   pins, artifacts, store, fence and signer; no response grants authority.
+- [Signing preparation](../architecture/signing-preparation.md) maps the
+  client-private [frame owner](../../clients/rust/src/signing_frame.rs) and
+  immutable transaction, local/paid execution, publication, registration and
+  historical claim owners. Their actual CLI consumers use the same paths;
+  mechanical signature verification is not custody or human-review authority.
+- [Ordered local signature checks](../architecture/decisions/0215-ordered-local-signature-verification.md)
+  belong to the actual [ordered engine](../../crates/node-core/src/ordered_economics/engine.rs),
+  using the existing consensus verifier and invocation-bound local identity.
+  [Genuine fixture controls](../../crates/node-core/src/ordered_economics/tests/local_signatures.rs)
+  distinguish fresh, retained, unsigned-capacity and justified-prefix paths;
+  neither a valid returned signature nor historical replay proves protected custody.
 - [Replacement tests](../../crates/node-core/src/ordered_economics/tests/causal_placement/control_reconstruction/frozen_completion/successor_replacement.rs)
   own the real registration/Seal/activation and retired-owner distinction.
   [Process refusal tests](../../apps/operator/tests/successor_host_process_refusals.rs)
