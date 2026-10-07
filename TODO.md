@@ -340,9 +340,12 @@ explicitly approves a documented scope change.
   exact final `new_batches=0`, restored full source-snapshot equality and genuine
   active-WAL second-file creation failure. Failed import origin and missing-body
   refusal remain inactive; no new runtime/serving authority or duplicate fixture.
-  Only formatting and diff checks have run; owning compiled execution, strict
-  Clippy, complete final source review, full required acceptance and CI remain
-  pending. Authenticated logical generations are preserved; writer-fence/source-
+  Exact `6c65f4d7` received fresh complete independent source approval across
+  all six changed paths. Actual owning compiled tests passed 3/0/0 ignored and
+  strict owning all-feature Clippy passed; formatting, whitespace and 152 changed
+  document links passed. Full required acceptance, final-head CI and integration
+  remain pending, not inferred from these focused checks. Authenticated logical
+  generations are preserved; writer-fence/source-
   instance identity is not copied.
   Arbitrary crash continuation, published checkpoint/state-root authority,
   encrypted off-host backup, old-writer exclusion and general M4 qualification
