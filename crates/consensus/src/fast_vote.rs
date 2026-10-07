@@ -596,6 +596,7 @@ pub fn decode_fast_certificate(input: &[u8]) -> Result<FastCertificate, Consensu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Ed25519ConsensusVerifier, UnsupportedSignatureSchemeResponse};
     use ed25519_zebra::{Signature, SigningKey, VerificationKey};
     use protocol_types::HashAlgorithmId;
     use validator_set::ValidatorInfo;
@@ -765,6 +766,188 @@ mod tests {
         let vote = cast(&certifier, 1);
         assert_eq!(vote.signature.len(), 64);
         assert_eq!(certifier.verify_vote(&vote, &Ed25519TestVerifier), Ok(()));
+    }
+
+    #[test]
+    fn production_verifier_preserves_authentic_certificate_bytes_and_quorum() {
+        let certifier: FastPathCertifier = certifier(4);
+        let votes: Vec<FastVote> = (1..=4).map(|byte| cast(&certifier, byte)).collect();
+        let reference: FastCertificate = quorum_certificate(&certifier);
+        let reference_bytes: Vec<u8> = encode_fast_certificate(&reference).unwrap();
+        let responses: [UnsupportedSignatureSchemeResponse; 2] = [
+            UnsupportedSignatureSchemeResponse::InvalidSignature,
+            UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ];
+        for response in responses {
+            let verifier: Ed25519ConsensusVerifier = Ed25519ConsensusVerifier::new(response);
+            let certificate: FastCertificate = certifier
+                .try_form_certificate(
+                    tx_hash(),
+                    effects_hash(),
+                    locked_objects_digest(),
+                    &votes,
+                    &verifier,
+                )
+                .unwrap()
+                .expect("genuine 3-of-4 quorum");
+            assert_eq!(
+                encode_fast_certificate(&certificate).unwrap(),
+                reference_bytes
+            );
+            assert_eq!(
+                certifier.verify_certificate(&certificate, &verifier),
+                Ok(())
+            );
+            let mut below_quorum: FastCertificate = certificate;
+            below_quorum.votes.pop();
+            assert_eq!(
+                certifier.verify_certificate(&below_quorum, &verifier),
+                Err(ConsensusError::InsufficientQuorum {
+                    actual: 2,
+                    required: 3,
+                }),
+            );
+        }
+    }
+
+    #[test]
+    fn production_verifier_does_not_replace_fast_vote_registration_or_context_checks() {
+        let certifier: FastPathCertifier = certifier(4);
+        let authentic: FastVote = cast(&certifier, 1);
+        let mut wrong_context: FastVote = authentic.clone();
+        wrong_context.chain_id = ChainId::new("different-chain").unwrap();
+        let mut unknown_member: FastVote = authentic.clone();
+        unknown_member.validator = validator_id(99);
+        let mut wrong_scheme: FastVote = authentic.clone();
+        wrong_scheme.signature_scheme = SignatureSchemeId::Secp256k1;
+        let mut short_signature: FastVote = authentic.clone();
+        short_signature.signature.truncate(63);
+        let mut wrong_payload: FastVote = authentic.clone();
+        wrong_payload.execution_effects_hash = tx_hash();
+        let responses: [UnsupportedSignatureSchemeResponse; 2] = [
+            UnsupportedSignatureSchemeResponse::InvalidSignature,
+            UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ];
+        for response in responses {
+            let verifier: Ed25519ConsensusVerifier = Ed25519ConsensusVerifier::new(response);
+            assert_eq!(certifier.verify_vote(&authentic, &verifier), Ok(()));
+            assert_eq!(
+                certifier.verify_vote(&wrong_context, &verifier),
+                Err(ConsensusError::ContextMismatch),
+            );
+            assert_eq!(
+                certifier.verify_vote(&unknown_member, &verifier),
+                Err(ConsensusError::UnknownValidator(validator_id(99))),
+            );
+            assert_eq!(
+                certifier.verify_vote(&wrong_scheme, &verifier),
+                Err(ConsensusError::SignatureSchemeMismatch(validator_id(1))),
+            );
+            // The generic bound accepts 63 bytes. Crypto checks the exact
+            // Ed25519 length, and verify_vote maps that adapter error to
+            // Authenticator, just as the former FastPath adapter did.
+            assert_eq!(
+                certifier.verify_vote(&short_signature, &verifier),
+                Err(ConsensusError::Authenticator(
+                    "signature has an invalid length: 63 bytes".to_string(),
+                )),
+            );
+            assert_eq!(
+                certifier.verify_vote(&wrong_payload, &verifier),
+                Err(ConsensusError::InvalidSignature(validator_id(1))),
+            );
+        }
+    }
+
+    #[test]
+    fn production_verifier_preserves_fast_vote_unsupported_scheme_classification() {
+        let source: FastPathCertifier = certifier(1);
+        let mut vote: FastVote = cast(&source, 1);
+        let mut member: ValidatorInfo =
+            source.validator_set().get(validator_id(1)).unwrap().clone();
+        // A negative generic committee fixture reaches the adapter's refusal.
+        // It is not a genuine Secp256k1 signer or an activated core profile.
+        member.signature_scheme = SignatureSchemeId::Secp256k1;
+        vote.signature_scheme = SignatureSchemeId::Secp256k1;
+        let unsupported_set: ValidatorSet = ValidatorSet::new(epoch(), vec![member]).unwrap();
+        let certifier: FastPathCertifier =
+            FastPathCertifier::new(chain(), protocol_version(), epoch(), unsupported_set).unwrap();
+        let profile_error: Ed25519ConsensusVerifier =
+            Ed25519ConsensusVerifier::new(UnsupportedSignatureSchemeResponse::FastPathProfileError);
+        let invalid_signature: Ed25519ConsensusVerifier =
+            Ed25519ConsensusVerifier::new(UnsupportedSignatureSchemeResponse::InvalidSignature);
+        let expected_error: ConsensusError =
+            ConsensusError::Authenticator("fast-path phase 1 supports only Ed25519".to_string());
+        assert_eq!(
+            certifier.verify_vote(&vote, &profile_error),
+            Err(expected_error.clone()),
+        );
+        assert_eq!(
+            certifier.verify_vote(&vote, &invalid_signature),
+            Err(ConsensusError::InvalidSignature(validator_id(1))),
+        );
+        let votes: [FastVote; 1] = [vote];
+        assert_eq!(
+            certifier.try_form_certificate(
+                tx_hash(),
+                effects_hash(),
+                locked_objects_digest(),
+                &votes,
+                &profile_error,
+            ),
+            Err(expected_error),
+        );
+        assert_eq!(
+            certifier.try_form_certificate(
+                tx_hash(),
+                effects_hash(),
+                locked_objects_digest(),
+                &votes,
+                &invalid_signature,
+            ),
+            Ok(None),
+        );
+    }
+
+    #[test]
+    fn production_verifier_uses_the_registered_key_and_preserves_malformed_key_errors() {
+        let source: FastPathCertifier = certifier(1);
+        let vote: FastVote = cast(&source, 1);
+        let key_cases: [(Vec<u8>, ConsensusError); 2] = [
+            (
+                public_key_bytes(&signing_key(2)),
+                ConsensusError::InvalidSignature(validator_id(1)),
+            ),
+            (
+                vec![0x11; 31],
+                ConsensusError::Authenticator(
+                    "verification key has an invalid length: 31 bytes".to_string(),
+                ),
+            ),
+        ];
+        for (public_key, expected_error) in key_cases {
+            let member: ValidatorInfo = ValidatorInfo {
+                id: validator_id(1),
+                voting_power: 1,
+                signature_scheme: SignatureSchemeId::Ed25519,
+                public_key,
+            };
+            let registered_set: ValidatorSet = ValidatorSet::new(epoch(), vec![member]).unwrap();
+            let certifier: FastPathCertifier =
+                FastPathCertifier::new(chain(), protocol_version(), epoch(), registered_set)
+                    .unwrap();
+            let responses: [UnsupportedSignatureSchemeResponse; 2] = [
+                UnsupportedSignatureSchemeResponse::InvalidSignature,
+                UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ];
+            for response in responses {
+                let verifier: Ed25519ConsensusVerifier = Ed25519ConsensusVerifier::new(response);
+                assert_eq!(
+                    certifier.verify_vote(&vote, &verifier),
+                    Err(expected_error.clone()),
+                );
+            }
+        }
     }
 
     #[test]

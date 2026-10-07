@@ -39,7 +39,7 @@ use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::LocalWasmExecutionEngine;
 use execution::local_execution::LocalExecutionPolicy;
 use execution::paid_execution::{decode_paid_fee_policy, decode_signed_paid_intent};
-use execution::publication::PublicationContext;
+use execution::publication::{PublicationContext, encode_publication_query_result};
 use hashing::HashSuiteResolver;
 use host::{DoBlobStore, SqlHost};
 use node_core::fast_path::publication::PublicationRetentionError;
@@ -907,7 +907,7 @@ impl ValidatorHost {
         )
         .map_err(|_| AdapterError::OperationContext("publication query".to_owned()))?;
         let record = result.ok_or(AdapterError::PublicationNotFound)?;
-        node_core::publication::encode_publication_query_result(&record).map_err(|_| {
+        encode_publication_query_result(&record).map_err(|_| {
             AdapterError::OperationContext("publication result encoding".to_owned()).into()
         })
     }

@@ -6,19 +6,21 @@
 //! types, never business logic. `runtime-sql-durable` itself never
 //! depends on `rusqlite`.
 
+use crate::native_connection::{
+    DEFAULT_BUSY_TIMEOUT, MAX_BUSY_TIMEOUT_MILLIS, NativeConnection, NativeError,
+};
 use runtime_sql_durable::{
     SqlBackend, SqlBackendError, SqlRow, SqlRows, SqlSession, SqlSessionError, SqlValue,
     TransactionBudget, TransactionDecision,
 };
+#[cfg(test)]
+use rusqlite::Connection;
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, Transaction, TransactionBehavior, types::Value as RusqliteValue};
+use rusqlite::{Transaction, TransactionBehavior, types::Value as RusqliteValue};
 use std::{
-    sync::{Mutex, MutexGuard},
+    sync::Mutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-
-const MAX_BUSY_TIMEOUT_MILLIS: u64 = 5_000;
-const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_millis(MAX_BUSY_TIMEOUT_MILLIS);
 
 fn now_unix_millis() -> Option<u64> {
     let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
@@ -109,20 +111,77 @@ impl SqlSession for RusqliteSession<'_> {
 /// from `budget`, so a blocked write fails closed near the caller's own
 /// deadline instead of always waiting the fixed operator default.
 pub(crate) struct NativeSqlBackend {
-    connection: Mutex<Connection>,
+    connection: Mutex<NativeConnection>,
+    #[cfg(test)]
+    commit_hook: Mutex<Option<TestCommitHook>>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommitBoundary {
+    BeforeDispatch,
+    AfterCommit,
+}
+
+#[cfg(test)]
+struct TestCommitHook {
+    boundary: CommitBoundary,
+    action: Box<dyn FnOnce() -> Result<(), SqlBackendError> + Send>,
 }
 
 impl NativeSqlBackend {
-    pub(crate) const fn new(connection: Connection) -> Self {
+    pub(crate) const fn from_owned(connection: NativeConnection) -> Self {
         Self {
             connection: Mutex::new(connection),
+            #[cfg(test)]
+            commit_hook: Mutex::new(None),
         }
     }
 
-    pub(crate) fn lock(&self) -> Result<MutexGuard<'_, Connection>, SqlBackendError> {
+    #[cfg(test)]
+    pub(crate) fn new(connection: Connection) -> Self {
+        Self::from_owned(NativeConnection::from_test_connection(connection))
+    }
+
+    pub(crate) fn sync_created(&self) -> Result<(), NativeError> {
         self.connection
             .lock()
-            .map_err(|_| SqlBackendError::Unavailable)
+            .map_err(|_| NativeError::Database(rusqlite::Error::InvalidQuery))?
+            .sync_created()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn on_commit(
+        &self,
+        boundary: CommitBoundary,
+        action: impl FnOnce() -> Result<(), SqlBackendError> + Send + 'static,
+    ) {
+        *self.commit_hook.lock().unwrap() = Some(TestCommitHook {
+            boundary,
+            action: Box::new(action),
+        });
+    }
+
+    #[cfg(test)]
+    fn test_boundary(&self, boundary: CommitBoundary) -> Result<(), SqlBackendError> {
+        let mut slot = self.commit_hook.lock().unwrap();
+        let hook: Option<TestCommitHook> =
+            if slot.as_ref().is_some_and(|hook| hook.boundary == boundary) {
+                slot.take()
+            } else {
+                None
+            };
+        drop(slot);
+        if let Some(hook) = hook {
+            (hook.action)()?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inspect_test<T>(&self, read: impl FnOnce(&Connection) -> T) -> T {
+        let owned = self.connection.lock().unwrap();
+        read(&owned.sqlite)
     }
 }
 
@@ -132,7 +191,15 @@ impl SqlBackend for NativeSqlBackend {
         budget: TransactionBudget,
         run: impl FnOnce(&mut dyn SqlSession, u64) -> Result<TransactionDecision<T>, SqlSessionError>,
     ) -> Result<T, SqlBackendError> {
-        let mut connection = self.lock()?;
+        let mut owned = self
+            .connection
+            .lock()
+            .map_err(|_| SqlBackendError::Unavailable)?;
+        let NativeConnection {
+            sqlite: connection,
+            identity,
+        } = &mut *owned;
+        identity.check().map_err(|_| SqlBackendError::Unavailable)?;
         let Some(pre_lock_now) = now_unix_millis() else {
             return Err(SqlBackendError::Unavailable);
         };
@@ -151,6 +218,10 @@ impl SqlBackend for NativeSqlBackend {
         else {
             return Err(SqlBackendError::Unavailable);
         };
+        if identity.check().is_err() {
+            let _ = transaction.rollback();
+            return Err(SqlBackendError::Unavailable);
+        }
         let Some(now) = now_unix_millis() else {
             let _ = transaction.rollback();
             return Err(SqlBackendError::Unavailable);
@@ -160,17 +231,35 @@ impl SqlBackend for NativeSqlBackend {
         };
         match run(&mut session, now) {
             Err(error) => {
-                let _ = transaction.rollback();
+                if transaction.rollback().is_err() || identity.check().is_err() {
+                    return Err(SqlBackendError::Unavailable);
+                }
                 Err(SqlBackendError::SessionFailed(error))
             }
             Ok(TransactionDecision::Rollback(value)) => {
-                if transaction.rollback().is_err() {
+                if identity.check().is_err() {
+                    let _ = transaction.rollback();
+                    return Err(SqlBackendError::Unavailable);
+                }
+                if transaction.rollback().is_err() || identity.check().is_err() {
                     return Err(SqlBackendError::Unavailable);
                 }
                 Ok(value)
             }
             Ok(TransactionDecision::Commit(value)) => {
+                #[cfg(test)]
+                self.test_boundary(CommitBoundary::BeforeDispatch)?;
+                if identity.check().is_err() {
+                    let _ = transaction.rollback();
+                    return Err(SqlBackendError::Unavailable);
+                }
                 if transaction.commit().is_err() {
+                    return Err(SqlBackendError::CommitIndeterminate);
+                }
+                #[cfg(test)]
+                self.test_boundary(CommitBoundary::AfterCommit)
+                    .map_err(|_| SqlBackendError::CommitIndeterminate)?;
+                if identity.check().is_err() {
                     return Err(SqlBackendError::CommitIndeterminate);
                 }
                 Ok(value)

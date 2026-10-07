@@ -297,7 +297,9 @@ impl Fixture {
                 votes[0].execution_effects_hash,
                 votes[0].locked_objects_digest,
                 &votes[..3],
-                &node_core::fast_path::FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .unwrap();

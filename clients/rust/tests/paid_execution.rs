@@ -13,6 +13,184 @@ use sunrise_edge_client::*;
 #[path = "support/acknowledgement.rs"]
 mod acknowledgement;
 
+#[path = "support/external_signer.rs"]
+mod external_signer;
+
+#[test]
+fn prepared_paid_families_preserve_independent_original_bytes() {
+    use crypto::SignatureSigner;
+    use external_signer::{Behavior, TestSigner};
+    let request_id: RequestId = RequestId::new([0x42; 32]).unwrap();
+    let nonce: u64 = 4;
+    let gas_limit: u64 = 100_000;
+    let call: CallIntent = instantiate_call(*request_id.as_bytes(), nonce, gas_limit);
+    for application in [
+        PaidApplication::Call(call.clone()),
+        PaidApplication::Instantiate(call),
+        PaidApplication::Publish(artifact()),
+    ] {
+        let intent: PaidIntent = PaidIntent {
+            context: context(),
+            request_id: *request_id.as_bytes(),
+            sender: *signer().address().as_bytes(),
+            nonce,
+            fee_policy_digest: paid_fee_policy_digest(&resolver(), &fee_policy()).unwrap(),
+            consent: consent(),
+            application: application.clone(),
+            gas_limit,
+            authorizations: vec![],
+        };
+        // Original raw construction is independent of every new SDK owner/wrapper.
+        let frame: Vec<u8> = paid_intent_signing_frame(&context(), &intent).unwrap();
+        let signature: [u8; 64] = signer().sign_framed(&frame).unwrap().try_into().unwrap();
+        let original: Vec<u8> =
+            encode_signed_paid_intent(&SignedPaidIntent { intent, signature }).unwrap();
+        let external: TestSigner = TestSigner::new([7; 32], Behavior::Valid);
+        let prepared = PreparedPaidExecution::prepare(
+            signer().address(),
+            &resolver(),
+            &expected(),
+            &fee_policy(),
+            consent(),
+            application.clone(),
+            request_id,
+            nonce,
+            gas_limit,
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(prepared.signable_frame(), frame);
+        assert_eq!(prepared.fee_policy(), &fee_policy());
+        let actual = prepared.sign_and_finalize_external(&external).unwrap();
+        assert_eq!(encode_signed_paid_intent(&actual).unwrap(), original);
+        assert_eq!(external.calls(), 1);
+        let development = build_signed_paid_execution(
+            &signer(),
+            &resolver(),
+            &expected(),
+            &fee_policy(),
+            consent(),
+            application,
+            request_id,
+            nonce,
+            gas_limit,
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(encode_signed_paid_intent(&development).unwrap(), original);
+    }
+}
+
+fn prepared_publish_with(
+    policy: &PaidFeePolicy,
+    consent: FeeSourceConsent,
+    nonce: u64,
+) -> Result<PreparedPaidExecution, Box<ClientError>> {
+    PreparedPaidExecution::prepare(
+        signer().address(),
+        &resolver(),
+        &expected(),
+        policy,
+        consent,
+        PaidApplication::Publish(artifact()),
+        RequestId::new([0x42; 32]).unwrap(),
+        nonce,
+        100_000,
+        vec![],
+    )
+    .map_err(Box::new)
+}
+
+#[test]
+fn prepared_paid_refuses_external_failures_and_changed_preimage() {
+    use crypto::SignatureSigner;
+    use external_signer::{Behavior, REFUSALS, TestSigner, expected_calls};
+    for behavior in REFUSALS {
+        let external = TestSigner::new([7; 32], behavior);
+        let error = prepared_publish_with(&fee_policy(), consent(), 4)
+            .unwrap()
+            .sign_and_finalize_external(&external)
+            .unwrap_err();
+        assert!(!error.to_string().contains("secret-provider-failure-marker"));
+        assert!(!format!("{error:?}").contains("secret-provider-failure-marker"));
+        assert_eq!(external.calls(), expected_calls(behavior));
+        // A local provider failure is never reported as a node acknowledgement mismatch.
+        match behavior {
+            Behavior::Short => assert!(matches!(
+                error,
+                ClientError::Crypto(crypto::CryptoError::InvalidSignatureLength(63))
+            )),
+            Behavior::Long => assert!(matches!(
+                error,
+                ClientError::Crypto(crypto::CryptoError::InvalidSignatureLength(65))
+            )),
+            _ => assert!(!matches!(
+                error,
+                ClientError::PaidExecutionAcknowledgementMismatch
+            )),
+        }
+    }
+    let original = prepared_publish_with(&fee_policy(), consent(), 4).unwrap();
+    let signature: Vec<u8> = signer().sign_framed(original.signable_frame()).unwrap();
+    let changed = prepared_publish_with(&fee_policy(), consent(), 5).unwrap();
+    assert!(matches!(
+        changed.finalize(signature),
+        Err(ClientError::PaidExecution(
+            PaidExecutionError::InvalidSignature
+        ))
+    ));
+}
+
+#[test]
+fn prepared_paid_preserves_presign_refusals_and_postsign_quote_order() {
+    use external_signer::{Behavior, TestSigner};
+    let mut foreign_policy = fee_policy();
+    foreign_policy.context = PublicationContext::new(
+        expected().chain_id().clone(),
+        expected().protocol_version(),
+        Epoch::new(1),
+    )
+    .unwrap();
+    let external: TestSigner = TestSigner::new([7; 32], Behavior::Valid);
+    let foreign: Result<SignedPaidIntent, ClientError> =
+        match prepared_publish_with(&foreign_policy, consent(), 4) {
+            Ok(prepared) => prepared.sign_and_finalize_external(&external),
+            Err(error) => Err(*error),
+        };
+    assert!(matches!(
+        foreign,
+        Err(ClientError::PaidExecution(
+            PaidExecutionError::ContextMismatch
+        ))
+    ));
+    assert_eq!(external.calls(), 0);
+    // A structurally malformed fee policy is an original pre-sign refusal.
+    let mut invalid_policy = fee_policy();
+    invalid_policy.conversion_divisor = 0;
+    let invalid: Result<SignedPaidIntent, ClientError> =
+        match prepared_publish_with(&invalid_policy, consent(), 4) {
+            Ok(prepared) => prepared.sign_and_finalize_external(&external),
+            Err(error) => Err(*error),
+        };
+    assert!(invalid.is_err());
+    assert_eq!(external.calls(), 0);
+    // The original builder quoted only after signing/authentication. Preserve
+    // that behavior for a structurally valid base pin or insufficient max_fee.
+    for case in 0..2 {
+        let mut policy = fee_policy();
+        let mut source = consent();
+        if case == 0 {
+            policy.base_policy_digest = digest(0x12);
+        } else {
+            source.max_fee = Amount::new(1);
+        }
+        let external: TestSigner = TestSigner::new([7; 32], Behavior::Valid);
+        let prepared = prepared_publish_with(&policy, source, 4).unwrap();
+        assert!(prepared.sign_and_finalize_external(&external).is_err());
+        assert_eq!(external.calls(), 1);
+    }
+}
+
 struct FakeTransport {
     responses: RefCell<VecDeque<WireResponse>>,
     requests: RefCell<Vec<WireRequest>>,

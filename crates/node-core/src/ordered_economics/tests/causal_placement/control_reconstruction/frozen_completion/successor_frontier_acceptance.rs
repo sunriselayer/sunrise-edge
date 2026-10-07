@@ -99,7 +99,9 @@ fn publish_retained(
             votes[0].execution_effects_hash,
             votes[0].locked_objects_digest,
             &votes,
-            &crate::fast_path::FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -340,7 +342,9 @@ fn verify_stream(
             &network.resolver,
             &certifier,
             vote.clone(),
-            &crate::fast_path::FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap();
     for served in [first, terminal] {

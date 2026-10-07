@@ -7,7 +7,7 @@
 
 use std::{error::Error, fmt, path::Path};
 
-use crypto::{CryptoError, SignatureSigner};
+use crypto::CryptoError;
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
 use node_core::bond_lifecycle::registration::BondRegistrationPreparationRequest;
@@ -15,10 +15,11 @@ use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::OrderedEconomicsPolicy;
 use protocol_types::{AtomicityDomainId, ValidatorId};
 
-use crate::SuccessorWorkflowAuthority;
 use crate::key::LocalSigner;
 use crate::local_genesis::load_verified_genesis_root;
 use crate::ordered_economics_client::OrderedGenesisTrustError;
+use crate::signing_frame::PreparedSigningFrame;
+use crate::{Address, ClientError, ExternalSigner, SuccessorWorkflowAuthority};
 
 pub use execution::local_execution::MAX_LOCAL_EXECUTION_INTENT_BYTES;
 pub use node_core::bond_lifecycle::registration::{
@@ -41,6 +42,8 @@ pub enum LocalBondRegistrationError {
     Crypto(CryptoError),
     SignatureLength,
     CurrentContextMismatch,
+    /// External provider identity or opaque provider failure.
+    ExternalSigning(Box<ClientError>),
 }
 
 impl fmt::Display for LocalBondRegistrationError {
@@ -57,6 +60,9 @@ impl fmt::Display for LocalBondRegistrationError {
             Self::CurrentContextMismatch => formatter.write_str(
                 "registration signing context differs from the verified current successor",
             ),
+            Self::ExternalSigning(error) => {
+                write!(formatter, "registration signing refused: {error}")
+            }
         }
     }
 }
@@ -103,6 +109,24 @@ impl BondRegistrationContext {
         leg: Vec<u8>,
         predicted_initial_row: FastPathBondRecord,
     ) -> Result<PreparedLocalBondRegistration, LocalBondRegistrationError> {
+        self.prepare_for_public_key(
+            *signer.address().as_bytes(),
+            request_id,
+            leg,
+            predicted_initial_row,
+        )
+    }
+
+    /// Prepares against an explicitly configured public identity. The existing
+    /// core derives the validator ID and rejects original ID/key reuse.
+    #[allow(clippy::result_large_err)]
+    pub fn prepare_for_public_key(
+        &self,
+        authorization_key: [u8; 32],
+        request_id: [u8; 32],
+        leg: Vec<u8>,
+        predicted_initial_row: FastPathBondRecord,
+    ) -> Result<PreparedLocalBondRegistration, LocalBondRegistrationError> {
         let resource: BondResourceId = BondResourceId::new(
             predicted_initial_row.resource_domain,
             predicted_initial_row.resource,
@@ -111,38 +135,54 @@ impl BondRegistrationContext {
         let request: BondRegistrationPreparationRequest = BondRegistrationPreparationRequest {
             context: self.policy.context().clone(),
             request_id,
-            authorization_key: *signer.address().as_bytes(),
+            authorization_key,
             resource_context: predicted_initial_row.context.clone(),
             resource,
             leg,
-            predicted_initial_row,
+            predicted_initial_row: predicted_initial_row.clone(),
         };
         let prepared: node_core::bond_lifecycle::registration::PreparedBondRegistration =
             node_core::bond_lifecycle::registration::prepare_bond_registration(&self.root, request)
                 .map_err(LocalBondRegistrationError::Registration)?;
         Ok(PreparedLocalBondRegistration {
             root: self.root.clone(),
-            prepared,
+            signing: PreparedSigningFrame::new(
+                Address::new(authorization_key),
+                prepared.intent.authorization_scheme,
+                prepared.signing_frame,
+            )
+            .map_err(external_error)?,
+            intent: prepared.intent,
+            predicted_initial_row,
         })
     }
 }
 
 /// Immutable, structurally validated registration claim. No public mutable
 /// intent or independent signing-key assertion can replace its prepared fields.
+#[derive(Clone)]
 pub struct PreparedLocalBondRegistration {
     root: VerifiedGenesisRoot,
-    prepared: node_core::bond_lifecycle::registration::PreparedBondRegistration,
+    signing: PreparedSigningFrame,
+    intent: BondRegistrationIntent,
+    predicted_initial_row: FastPathBondRecord,
 }
 
 impl PreparedLocalBondRegistration {
+    /// Original immutable trust root for independently recomputing commitments.
+    #[must_use]
+    pub fn genesis_root(&self) -> &VerifiedGenesisRoot {
+        &self.root
+    }
+
     #[must_use]
     pub fn intent(&self) -> &BondRegistrationIntent {
-        &self.prepared.intent
+        &self.intent
     }
 
     #[must_use]
     pub fn validator_id(&self) -> ValidatorId {
-        self.prepared.intent.validator_id
+        self.intent.validator_id
     }
 
     /// Signs with the same actual key, then independently verifies the exact
@@ -150,10 +190,50 @@ impl PreparedLocalBondRegistration {
     /// Callers can reserve/validate their output destination before this step.
     #[allow(clippy::result_large_err)]
     pub fn sign(&self, signer: &LocalSigner) -> Result<Vec<u8>, LocalBondRegistrationError> {
-        let bytes: Vec<u8> = sign_registration(&self.prepared, signer)?;
+        self.clone().sign_and_finalize_with(signer)
+    }
+
+    /// Exact predicted row whose commitment is bound to the outer envelope.
+    #[must_use]
+    pub fn predicted_initial_row(&self) -> &FastPathBondRecord {
+        &self.predicted_initial_row
+    }
+
+    /// Immutable outer frame; the already-signed inner leg remains in the intent.
+    #[must_use]
+    pub fn signable_frame(&self) -> &[u8] {
+        self.signing.frame()
+    }
+
+    /// Consumes the signature and re-verifies the original outer and custody
+    /// leg under the retained original genesis scope before returning output.
+    #[allow(clippy::result_large_err)]
+    pub fn finalize(self, signature: Vec<u8>) -> Result<Vec<u8>, LocalBondRegistrationError> {
+        let bytes: Vec<u8> = encode_registration(self.intent, signature)?;
         verify_signed_bond_registration(&self.root, &bytes)
             .map_err(LocalBondRegistrationError::Registration)?;
+        verify_registration_frame(&self.signing, &bytes)?;
         Ok(bytes)
+    }
+
+    /// Checks the configured external identity and finalizes its returned signature.
+    #[allow(clippy::result_large_err)]
+    pub fn sign_and_finalize_external<S: ExternalSigner>(
+        self,
+        signer: &S,
+    ) -> Result<Vec<u8>, LocalBondRegistrationError> {
+        let signature: Vec<u8> = self.signing.sign_external(signer).map_err(external_error)?;
+        self.finalize(signature)
+    }
+
+    /// Existing development key convenience, preserving signer-mismatch errors.
+    #[allow(clippy::result_large_err)]
+    pub fn sign_and_finalize_with(
+        self,
+        signer: &LocalSigner,
+    ) -> Result<Vec<u8>, LocalBondRegistrationError> {
+        let signature: Vec<u8> = sign_registration(&self.signing, signer)?;
+        self.finalize(signature)
     }
 }
 
@@ -169,6 +249,26 @@ pub fn prepare_successor_bond_registration<'a>(
     leg: Vec<u8>,
     predicted_initial_row: FastPathBondRecord,
 ) -> Result<PreparedSuccessorBondRegistration<'a>, LocalBondRegistrationError> {
+    prepare_successor_bond_registration_for_public_key(
+        workflow,
+        declared,
+        *signer.address().as_bytes(),
+        request_id,
+        leg,
+        predicted_initial_row,
+    )
+}
+
+/// Public-key-only successor preparation under the same verified chain scope.
+#[allow(clippy::result_large_err)]
+pub fn prepare_successor_bond_registration_for_public_key<'a>(
+    workflow: &'a SuccessorWorkflowAuthority,
+    declared: &PublicationContext,
+    authorization_key: [u8; 32],
+    request_id: [u8; 32],
+    leg: Vec<u8>,
+    predicted_initial_row: FastPathBondRecord,
+) -> Result<PreparedSuccessorBondRegistration<'a>, LocalBondRegistrationError> {
     workflow
         .require_signing_context(declared)
         .map_err(|_| LocalBondRegistrationError::CurrentContextMismatch)?;
@@ -180,11 +280,11 @@ pub fn prepare_successor_bond_registration<'a>(
     let request: BondRegistrationPreparationRequest = BondRegistrationPreparationRequest {
         context: declared.clone(),
         request_id,
-        authorization_key: *signer.address().as_bytes(),
+        authorization_key,
         resource_context: predicted_initial_row.context.clone(),
         resource,
         leg,
-        predicted_initial_row,
+        predicted_initial_row: predicted_initial_row.clone(),
     };
     let prepared: node_core::bond_lifecycle::registration::PreparedBondRegistration =
         node_core::bond_lifecycle::registration::prepare_bond_registration_successor(
@@ -193,25 +293,44 @@ pub fn prepare_successor_bond_registration<'a>(
             request,
         )
         .map_err(LocalBondRegistrationError::Registration)?;
-    Ok(PreparedSuccessorBondRegistration { workflow, prepared })
+    Ok(PreparedSuccessorBondRegistration {
+        workflow,
+        signing: PreparedSigningFrame::new(
+            Address::new(authorization_key),
+            prepared.intent.authorization_scheme,
+            prepared.signing_frame,
+        )
+        .map_err(external_error)?,
+        intent: prepared.intent,
+        predicted_initial_row,
+    })
 }
 
 /// The current context and full chain remain borrowed until the exact signed
 /// registration envelope is reverified by the same core RegistrationScope.
+#[derive(Clone)]
 pub struct PreparedSuccessorBondRegistration<'a> {
     workflow: &'a SuccessorWorkflowAuthority,
-    prepared: node_core::bond_lifecycle::registration::PreparedBondRegistration,
+    signing: PreparedSigningFrame,
+    intent: BondRegistrationIntent,
+    predicted_initial_row: FastPathBondRecord,
 }
 
 impl PreparedSuccessorBondRegistration<'_> {
+    /// Retained verified chain and current registration scope.
+    #[must_use]
+    pub fn workflow(&self) -> &SuccessorWorkflowAuthority {
+        self.workflow
+    }
+
     #[must_use]
     pub fn validator_id(&self) -> ValidatorId {
-        self.prepared.intent.validator_id
+        self.intent.validator_id
     }
 
     #[must_use]
     pub fn intent(&self) -> &BondRegistrationIntent {
-        &self.prepared.intent
+        &self.intent
     }
 
     #[allow(clippy::result_large_err)]
@@ -223,39 +342,106 @@ impl PreparedSuccessorBondRegistration<'_> {
         self.workflow
             .require_signing_context(declared)
             .map_err(|_| LocalBondRegistrationError::CurrentContextMismatch)?;
-        if self.prepared.intent.context != *declared {
+        if self.intent.context != *declared {
             return Err(LocalBondRegistrationError::CurrentContextMismatch);
         }
-        let bytes: Vec<u8> = sign_registration(&self.prepared, signer)?;
+        self.clone().sign_and_finalize_with(signer)
+    }
+
+    /// Exact immutable predicted row, retained with its signed custody leg.
+    #[must_use]
+    pub fn predicted_initial_row(&self) -> &FastPathBondRecord {
+        &self.predicted_initial_row
+    }
+
+    /// Immutable current-context outer frame to sign.
+    #[must_use]
+    pub fn signable_frame(&self) -> &[u8] {
+        self.signing.frame()
+    }
+
+    /// Consumes the signature and authenticates under the same retained current
+    /// chain scope without accepting replacement context or custody inputs.
+    #[allow(clippy::result_large_err)]
+    pub fn finalize(self, signature: Vec<u8>) -> Result<Vec<u8>, LocalBondRegistrationError> {
+        let bytes: Vec<u8> = encode_registration(self.intent, signature)?;
         node_core::bond_lifecycle::registration::verify_signed_bond_registration_successor(
             self.workflow.genesis_root(),
             self.workflow.authority(),
             &bytes,
         )
         .map_err(LocalBondRegistrationError::Registration)?;
+        verify_registration_frame(&self.signing, &bytes)?;
         Ok(bytes)
+    }
+
+    /// Checks the provider's expected identity before signing the current envelope.
+    #[allow(clippy::result_large_err)]
+    pub fn sign_and_finalize_external<S: ExternalSigner>(
+        self,
+        signer: &S,
+    ) -> Result<Vec<u8>, LocalBondRegistrationError> {
+        let signature: Vec<u8> = self.signing.sign_external(signer).map_err(external_error)?;
+        self.finalize(signature)
+    }
+
+    /// Existing development convenience preserving the actual-key mismatch check.
+    #[allow(clippy::result_large_err)]
+    pub fn sign_and_finalize_with(
+        self,
+        signer: &LocalSigner,
+    ) -> Result<Vec<u8>, LocalBondRegistrationError> {
+        let signature: Vec<u8> = sign_registration(&self.signing, signer)?;
+        self.finalize(signature)
     }
 }
 
 #[allow(clippy::result_large_err)]
 fn sign_registration(
-    prepared: &node_core::bond_lifecycle::registration::PreparedBondRegistration,
+    signing: &PreparedSigningFrame,
     signer: &LocalSigner,
 ) -> Result<Vec<u8>, LocalBondRegistrationError> {
-    if signer.address().as_bytes() != &prepared.intent.authorization_key {
+    if signer.address() != signing.expected() {
         return Err(LocalBondRegistrationError::SignerMismatch);
     }
-    let signature_bytes: Vec<u8> = signer
-        .sign_framed(&prepared.signing_frame)
-        .map_err(LocalBondRegistrationError::Crypto)?;
+    signing
+        .sign_with(signer)
+        .map_err(LocalBondRegistrationError::Crypto)
+}
+
+#[allow(clippy::result_large_err)]
+fn encode_registration(
+    intent: BondRegistrationIntent,
+    signature_bytes: Vec<u8>,
+) -> Result<Vec<u8>, LocalBondRegistrationError> {
     let signature: [u8; 64] = signature_bytes
         .try_into()
         .map_err(|_| LocalBondRegistrationError::SignatureLength)?;
-    let signed: SignedBondRegistrationIntent = SignedBondRegistrationIntent {
-        intent: prepared.intent.clone(),
-        signature,
-    };
+    let signed: SignedBondRegistrationIntent = SignedBondRegistrationIntent { intent, signature };
     let bytes: Vec<u8> = encode_signed_bond_registration_intent(&signed)
         .map_err(LocalBondRegistrationError::Registration)?;
     Ok(bytes)
+}
+
+fn external_error(error: ClientError) -> LocalBondRegistrationError {
+    LocalBondRegistrationError::ExternalSigning(Box::new(error))
+}
+
+#[allow(clippy::result_large_err)]
+fn verify_registration_frame(
+    signing: &PreparedSigningFrame,
+    bytes: &[u8],
+) -> Result<(), LocalBondRegistrationError> {
+    let signed: SignedBondRegistrationIntent = decode_signed_bond_registration_intent(bytes)
+        .map_err(LocalBondRegistrationError::Registration)?;
+    if !signing.verify(&signed.signature).map_err(|_| {
+        LocalBondRegistrationError::Registration(BondRegistrationError::Invalid(
+            "registration outer signature",
+        ))
+    })? {
+        return Err(LocalBondRegistrationError::Registration(
+            BondRegistrationError::Invalid("registration outer signature"),
+        ));
+    }
+    Ok(())
 }

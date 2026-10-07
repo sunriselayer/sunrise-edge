@@ -12,7 +12,7 @@ use crate::{
 use std::{error::Error, ffi::OsString, fs::File, io::Read, path::Path};
 use sunrise_edge_client::{
     ArtifactParts, CodeArtifact, ExpectedProtocolContext, LocalSigner, PackageOrigin,
-    PublicationContext, RequestId, UnverifiedDependencyRef, build_signed_publication,
+    PreparedPublication, PublicationContext, RequestId, UnverifiedDependencyRef,
     local_publication_resolver,
 };
 
@@ -173,8 +173,15 @@ where
             }
             result.next_nonce()
         };
-        let submission =
-            build_signed_publication(&signer, &resolver, &expected, artifact, nonce, request_id)?;
+        let prepared: PreparedPublication = PreparedPublication::prepare(
+            signer.address(),
+            &resolver,
+            &expected,
+            artifact,
+            nonce,
+            request_id,
+        )?;
+        let submission = prepared.sign_and_finalize_with(&signer)?;
         let result = client.submit_publication(&submission)?;
         println!("request_id={request_id}");
         println!("nonce={nonce}");

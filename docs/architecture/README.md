@@ -19,6 +19,18 @@ roadmap describes a later target state.
 - [Host compositions and capabilities](compositions-and-capabilities.md):
   actual router/executable/store/signer boundaries, closed versus accepted
   surfaces, and the distinction between component and provider qualification.
+- [First native profile and protected signing](decisions/0208-native-sqlite-first-and-protected-signing.md):
+  Native plus SQLite first, DO following; a separately reviewed protected
+  signer replaces Ledger-specific prerequisites, not plaintext development keys.
+- [Native SQLite connection and attachment ownership](decisions/0210-native-sqlite-connection-ownership.md):
+  one native settings owner, lock-safe identity checks and explicit operator
+  commit ambiguity; shared SQL decisions and live protocol authority stay separate.
+- [Owned local TLS stop and explicit rotation](decisions/0216-local-tls-stop-restart-rotation.md):
+  retained listener and trust boundaries, actual served-leaf observation and
+  orderly compiled-host restart; separate from production PKI and custody.
+- [Immutable operation signing preparation](signing-preparation.md): one
+  mechanical frame/identity owner, operation-specific immutable trust inputs,
+  actual SDK/CLI consumers and the separate custody/content-review boundary.
 - [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
   an explicitly configured closed HTTPS transport, separate from default
   event-only relays, embedded DO policy and core authority.

@@ -51,7 +51,9 @@ fn certify_proposal(
             state,
             ConsensusEvent::Proposal(proposal.clone()),
             &signer,
-            &Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .unwrap();
     let vote: consensus::ConsensusVote = proposal_output
@@ -68,12 +70,19 @@ fn certify_proposal(
             &proposal_output.state,
             ConsensusEvent::Vote(vote),
             &signer,
-            &Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .unwrap();
     policy
         .engine()
-        .validate_state(&output.state, &Ed25519ConsensusVerifier)
+        .validate_state(
+            &output.state,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
+        )
         .unwrap();
     output
 }
@@ -190,7 +199,9 @@ fn legally_superseded_nonempty_fork_does_not_close_the_empty_selected_branch() {
                 now_unix_millis: base.view_deadline_unix_millis,
             },
             &signer,
-            &Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .unwrap();
     let selected: ConsensusProposal = policy
@@ -226,7 +237,9 @@ fn independently_authenticated_alternative_boundary_and_missing_branch_stop() {
                 now_unix_millis: genesis.view_deadline_unix_millis,
             },
             &Signer(fixture::key()),
-            &Ed25519ConsensusVerifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+            ),
         )
         .unwrap();
     // Alternative valid delivery chronology starts at view 2. No durable

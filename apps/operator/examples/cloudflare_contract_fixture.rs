@@ -32,6 +32,7 @@ use execution::paid_execution::{
 };
 use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationContext, UnverifiedDependencyRef,
+    encode_publication_query_result,
 };
 use execution::{
     GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION, LocalWasmExecutionEngine, ObjectEffect,
@@ -39,11 +40,11 @@ use execution::{
 use fees::Amount;
 use genesis_fixture::FastVoteGenesisFixture;
 use hashing::HashSuiteResolver;
-use node_core::fast_path::{self, FastPathEd25519Verifier, FastPathError};
+use node_core::fast_path::{self, FastPathError};
 use node_core::local_execution::query_local_instance;
 use node_core::paid_execution::PaidExecutionAdmissionError;
 use node_core::paid_execution::authenticate_paid_execution;
-use node_core::publication::{encode_publication_query_result, query_publication_with_history};
+use node_core::publication::query_publication_with_history;
 use node_core::{
     GenesisInstallOutcome, NodeCoreError, ObjectQueryResult, RequestId, decode_genesis_manifest,
     genesis_manifest_commitment, install_genesis, query_object, query_request_receipt,
@@ -488,7 +489,9 @@ fn run_step(
             target.execution_effects_hash,
             target.locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("3-of-4 equal-power votes must certify");

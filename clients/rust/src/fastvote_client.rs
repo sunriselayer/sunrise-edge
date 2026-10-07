@@ -80,7 +80,6 @@ use node_core::RequestId;
 use node_core::admission_profile::{
     ExternalRequestLane, VerifiedAdmissionProfile, require_external_request_lane,
 };
-use node_core::fast_path::FastPathEd25519Verifier;
 use node_core::logical_generation::CommitmentProfile;
 use node_wire::{FASTVOTE_CERTIFICATES_PATH, FASTVOTE_PREPARE_PATH, FastVoteApplyRequest};
 use protocol_types::{Digest32, ValidatorId};
@@ -643,7 +642,12 @@ pub fn collect_fastvote_certificate<T: Transport>(
                         });
                     }
                     certifier
-                        .verify_vote(&vote, &FastPathEd25519Verifier)
+                        .verify_vote(
+                            &vote,
+                            &consensus::Ed25519ConsensusVerifier::new(
+                                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                            ),
+                        )
                         .map_err(ClientError::FastVoteConsensus)?;
                     Ok(vote)
                 }),
@@ -669,7 +673,9 @@ pub fn collect_fastvote_certificate<T: Transport>(
             effects_hash,
             locked_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         ) {
             return Ok((certificate, attempts));
         }
@@ -730,7 +736,12 @@ pub fn apply_fastvote_to_all<T: Transport>(
         ));
     }
     certifier
-        .verify_certificate(certificate, &FastPathEd25519Verifier)
+        .verify_certificate(
+            certificate,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .map_err(ClientError::from)?;
     let certificate_bytes = encode_fast_certificate(certificate).map_err(ClientError::from)?;
 
@@ -1183,7 +1194,9 @@ mod tests {
                 execution_hash,
                 lock_hash,
                 &votes,
-                &FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .unwrap();
@@ -1203,7 +1216,9 @@ mod tests {
         let identity: consensus::AvailabilityIdentity = verify_publication_bundle(
             &bundle,
             &certifier,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
             &resolver,
             &[],
         )
@@ -1255,7 +1270,12 @@ mod tests {
         assert_eq!(round.attempts.len(), 4);
         assert!(round.attempts[3].result.is_err());
         availability_certifier
-            .verify_certificate(&round.availability_certificate, &FastPathEd25519Verifier)
+            .verify_certificate(
+                &round.availability_certificate,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
             .unwrap();
         assert_eq!(
             endpoints[0].client.transport().requests.lock().unwrap()[0].path,
@@ -1728,7 +1748,9 @@ mod tests {
                 digest(0x10),
                 digest(0x11),
                 &votes,
-                &node_core::fast_path::FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .expect("3-of-4 quorum for the unrelated transaction");
@@ -1829,7 +1851,9 @@ mod tests {
                 digest(0x10),
                 digest(0x11),
                 &votes,
-                &node_core::fast_path::FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .expect("3-of-4 quorum");
@@ -1935,7 +1959,9 @@ mod tests {
                 digest(0x10),
                 digest(0x11),
                 &votes,
-                &FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .unwrap();
@@ -2014,7 +2040,9 @@ mod tests {
                 digest(0x10),
                 digest(0x11),
                 &votes,
-                &FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .unwrap();
@@ -2473,7 +2501,9 @@ mod tests {
                 digest(0x10),
                 digest(0x11),
                 &votes,
-                &node_core::fast_path::FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .expect("3-of-4 quorum");

@@ -386,7 +386,9 @@ fn propose_vote_and_certify<S: StructuredDurableDomainStateStore>(
             votes[0].next_validator_set_digest,
             votes[0].activation_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("3-of-4 equal power validators exceed quorum");
@@ -1512,7 +1514,9 @@ fn activate_rejects_a_certificate_signed_by_the_incoming_set() {
             derived.next_validator_set_digest,
             derived.activation_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -1669,7 +1673,9 @@ fn activate_is_idempotent_for_the_identical_certificate_and_for_an_alternate_quo
             votes[0].next_validator_set_digest,
             votes[0].activation_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -1680,7 +1686,9 @@ fn activate_is_idempotent_for_the_identical_certificate_and_for_an_alternate_quo
             votes[0].next_validator_set_digest,
             votes[0].activation_digest,
             &votes[1..4],
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -1846,14 +1854,21 @@ fn activate_rejects_a_certificate_bound_to_a_different_outgoing_validator_set_di
             next_validator_set_digest,
             activation_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("3-of-4 equal power validators exceed quorum");
     // Cryptographically valid in isolation: a real outgoing-set quorum over
     // this exact (wrong-digest) payload.
-    cert.verify_certificate(&certificate, &FastPathEd25519Verifier)
-        .unwrap();
+    cert.verify_certificate(
+        &certificate,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
+    )
+    .unwrap();
     let certificate_bytes = consensus::encode_epoch_transition_certificate(&certificate).unwrap();
 
     let result = activate(
@@ -2287,7 +2302,9 @@ fn historical_positive_control(
             votes[0].next_validator_set_digest,
             votes[0].activation_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("4-of-4 equal-power validators exceed quorum");
@@ -2736,7 +2753,9 @@ fn four_validator_sqlite_epoch_transition_activates_and_certified_execution_cont
             baseline_votes[0].execution_effects_hash,
             baseline_votes[0].locked_objects_digest,
             &baseline_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -2827,7 +2846,9 @@ fn four_validator_sqlite_epoch_transition_activates_and_certified_execution_cont
             transition_votes[0].next_validator_set_digest,
             transition_votes[0].activation_digest,
             &transition_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -2840,7 +2861,9 @@ fn four_validator_sqlite_epoch_transition_activates_and_certified_execution_cont
             transition_votes[0].next_validator_set_digest,
             transition_votes[0].activation_digest,
             &reversed_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -2990,7 +3013,9 @@ fn four_validator_sqlite_epoch_transition_activates_and_certified_execution_cont
             next_votes[0].execution_effects_hash,
             next_votes[0].locked_objects_digest,
             &next_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -3108,7 +3133,9 @@ fn activate_one_transition<S: StructuredDurableDomainStateStore>(
             votes[0].next_validator_set_digest,
             votes[0].activation_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("quorum reached");
@@ -3454,7 +3481,9 @@ fn restart_verify_rejects_a_stored_certificate_whose_payload_disagrees_with_its_
             derived.next_validator_set_digest,
             derived.activation_digest,
             &alternate_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("quorum reached");
@@ -4249,7 +4278,9 @@ fn activate_and_apply_contend_on_the_same_epoch_record_and_exactly_one_commits()
             fast_votes[0].execution_effects_hash,
             fast_votes[0].locked_objects_digest,
             &fast_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("quorum reached");
@@ -4680,7 +4711,9 @@ fn hash_suite_activation_lands_exactly_at_the_transition_epoch_and_is_determinis
             votes[0].next_validator_set_digest,
             votes[0].activation_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("quorum reached");

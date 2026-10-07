@@ -1,5 +1,7 @@
 //! Public paid Call/Instantiate/Publish client surface (DR-0126).
 
+use crate::signing_frame::PreparedSigningFrame;
+use crate::{Address, ExternalSigner, SignatureSchemeId};
 use crate::{
     Client, ClientError, ExpectedProtocolContext, HashSuiteResolver, LocalSigner, Method,
     NodeResponseStatus, RequestId, Transport, WireRequest,
@@ -14,7 +16,8 @@ use execution::paid_execution::{
 };
 use execution::publication::PublicationContext;
 use execution::publication::{
-    AuthenticatedPublicationCandidate, UnverifiedDependencyRef, VerifiedPublicationInterface,
+    AuthenticatedPublicationCandidate, PublicationQueryResult, UnverifiedDependencyRef,
+    VerifiedPublicationInterface,
 };
 use node_wire::{
     HttpNodeResult, NODE_EVENT_MEDIA_TYPE, NODE_RESULT_MEDIA_TYPE, QUERY_RESULT_MEDIA_TYPE,
@@ -41,37 +44,163 @@ pub fn build_signed_paid_execution(
     gas_limit: u64,
     authorizations: Vec<execution::call_authorization::CallAuthorization>,
 ) -> Result<SignedPaidIntent, ClientError> {
-    let context: PublicationContext =
-        crate::publication_client::trusted_context(resolver, expected)?;
-    if fee_policy.context != context {
-        return Err(ClientError::PaidExecution(
-            execution::paid_execution::PaidExecutionError::ContextMismatch,
-        ));
-    }
-    let base_policy: LocalExecutionPolicy =
-        LocalExecutionPolicy::generic_object_results(context.clone());
-    let intent: PaidIntent = PaidIntent {
-        context: context.clone(),
-        request_id: *request_id.as_bytes(),
-        sender: *signer.address().as_bytes(),
-        nonce,
-        fee_policy_digest: paid_fee_policy_digest(resolver, fee_policy)?,
+    PreparedPaidExecution::prepare(
+        signer.address(),
+        resolver,
+        expected,
+        fee_policy,
         consent,
         application,
+        request_id,
+        nonce,
         gas_limit,
         authorizations,
-    };
-    let frame: Vec<u8> = paid_intent_signing_frame(&context, &intent)?;
-    let signature_bytes: Vec<u8> = signer.sign_framed(&frame)?;
-    let signature: [u8; 64] = signature_bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| ClientError::PaidExecutionAcknowledgementMismatch)?;
-    let signed: SignedPaidIntent = SignedPaidIntent { intent, signature };
-    let encoded: Vec<u8> = encode_signed_paid_intent(&signed)?;
-    let authenticated = authenticate_paid_intent(resolver, &context, &encoded)?;
-    quote_paid_intent(&authenticated, resolver, &base_policy, fee_policy)?;
-    Ok(signed)
+    )?
+    .sign_and_finalize_with(signer)
+}
+
+/// One immutable paid Call/Instantiate/Publish with locally retained fee-policy pins.
+/// Fee quoting deliberately remains after signing and intent authentication.
+pub struct PreparedPaidExecution {
+    signing: PreparedSigningFrame,
+    resolver: HashSuiteResolver,
+    context: PublicationContext,
+    base_policy: LocalExecutionPolicy,
+    fee_policy: PaidFeePolicy,
+    intent: PaidIntent,
+}
+
+impl PreparedPaidExecution {
+    /// Preserves the original builder's preparation/error order. It does not
+    /// claim that every fee/application validation runs before a signature.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare(
+        sender: Address,
+        resolver: &HashSuiteResolver,
+        expected: &ExpectedProtocolContext,
+        fee_policy: &PaidFeePolicy,
+        consent: FeeSourceConsent,
+        application: PaidApplication,
+        request_id: RequestId,
+        nonce: u64,
+        gas_limit: u64,
+        authorizations: Vec<execution::call_authorization::CallAuthorization>,
+    ) -> Result<Self, ClientError> {
+        let context: PublicationContext =
+            crate::publication_client::trusted_context(resolver, expected)?;
+        if fee_policy.context != context {
+            return Err(ClientError::PaidExecution(
+                execution::paid_execution::PaidExecutionError::ContextMismatch,
+            ));
+        }
+        let base_policy: LocalExecutionPolicy =
+            LocalExecutionPolicy::generic_object_results(context.clone());
+        let intent: PaidIntent = PaidIntent {
+            context: context.clone(),
+            request_id: *request_id.as_bytes(),
+            sender: *sender.as_bytes(),
+            nonce,
+            fee_policy_digest: paid_fee_policy_digest(resolver, fee_policy)?,
+            consent,
+            application,
+            gas_limit,
+            authorizations,
+        };
+        let frame: Vec<u8> = paid_intent_signing_frame(&context, &intent)?;
+        Ok(Self {
+            signing: PreparedSigningFrame::new(sender, SignatureSchemeId::Ed25519, frame)?,
+            resolver: resolver.clone(),
+            context,
+            base_policy,
+            fee_policy: fee_policy.clone(),
+            intent,
+        })
+    }
+
+    /// Exact signed application, fee consent, nonce, request and authorizations.
+    #[must_use]
+    pub fn intent(&self) -> &PaidIntent {
+        &self.intent
+    }
+
+    /// Immutable installed-policy snapshot, including all economic pins.
+    #[must_use]
+    pub fn fee_policy(&self) -> &PaidFeePolicy {
+        &self.fee_policy
+    }
+
+    /// Exact base policy used by the original post-sign quote.
+    #[must_use]
+    pub fn base_policy(&self) -> &LocalExecutionPolicy {
+        &self.base_policy
+    }
+
+    /// Locally configured hash history retained through finalization.
+    #[must_use]
+    pub fn resolver(&self) -> &HashSuiteResolver {
+        &self.resolver
+    }
+
+    /// Exact immutable bytes to sign, without implying independent human review.
+    #[must_use]
+    pub fn signable_frame(&self) -> &[u8] {
+        self.signing.frame()
+    }
+
+    /// Sender identity configured before provider selection.
+    #[must_use]
+    pub fn sender(&self) -> Address {
+        self.signing.expected()
+    }
+
+    /// Encodes and authenticates the signed intent, then performs the original
+    /// fee quote against retained inputs before returning any signed output.
+    pub fn finalize(self, signature_bytes: Vec<u8>) -> Result<SignedPaidIntent, ClientError> {
+        let signature: [u8; 64] = signature_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| crypto::CryptoError::InvalidSignatureLength(signature_bytes.len()))?;
+        let signed: SignedPaidIntent = SignedPaidIntent {
+            intent: self.intent,
+            signature,
+        };
+        let encoded: Vec<u8> = encode_signed_paid_intent(&signed)?;
+        let authenticated = authenticate_paid_intent(&self.resolver, &self.context, &encoded)?;
+        quote_paid_intent(
+            &authenticated,
+            &self.resolver,
+            &self.base_policy,
+            &self.fee_policy,
+        )?;
+        if !self
+            .signing
+            .verify(&signature)
+            .map_err(execution::paid_execution::PaidExecutionError::Crypto)?
+        {
+            return Err(ClientError::PaidExecution(
+                execution::paid_execution::PaidExecutionError::InvalidSignature,
+            ));
+        }
+        Ok(signed)
+    }
+
+    /// Checks the configured provider identity, signs and consumes this preparation.
+    pub fn sign_and_finalize_external<S: ExternalSigner>(
+        self,
+        signer: &S,
+    ) -> Result<SignedPaidIntent, ClientError> {
+        let signature: Vec<u8> = self.signing.sign_external(signer)?;
+        self.finalize(signature)
+    }
+
+    /// In-process development convenience preserving the crypto error contract.
+    pub fn sign_and_finalize_with<S: SignatureSigner>(
+        self,
+        signer: &S,
+    ) -> Result<SignedPaidIntent, ClientError> {
+        let signature: Vec<u8> = self.signing.sign_with(signer)?;
+        self.finalize(signature)
+    }
 }
 
 impl<T: Transport> Client<T> {
@@ -130,7 +259,7 @@ impl<T: Transport> Client<T> {
                     ),
                 ))?;
             let candidate: AuthenticatedPublicationCandidate = match result {
-                crate::PublicationQueryResult::Legacy(submission) => {
+                PublicationQueryResult::Legacy(submission) => {
                     let semantics = execution::local_execution::generic_object_result_semantics(
                         resolver,
                         submission.request().artifact().context(),
@@ -142,7 +271,7 @@ impl<T: Transport> Client<T> {
                         submission,
                     )?
                 }
-                crate::PublicationQueryResult::Paid(signed) => {
+                PublicationQueryResult::Paid(signed) => {
                     let encoded: Vec<u8> = encode_signed_paid_intent(&signed)?;
                     let authenticated =
                         authenticate_paid_intent(resolver, reference.context(), &encoded)?;
@@ -225,6 +354,24 @@ impl<T: Transport> Client<T> {
         policy: &PaidFeePolicy,
         consent: &FeeSourceConsent,
     ) -> Result<Object, ClientError> {
+        self.validate_paid_fee_source_for_owner(
+            signer.address(),
+            resolver,
+            expected,
+            policy,
+            consent,
+        )
+    }
+
+    /// Public-identity-only fee-source validation for an explicitly configured owner.
+    pub fn validate_paid_fee_source_for_owner(
+        &self,
+        owner: Address,
+        resolver: &HashSuiteResolver,
+        expected: &ExpectedProtocolContext,
+        policy: &PaidFeePolicy,
+        consent: &FeeSourceConsent,
+    ) -> Result<Object, ClientError> {
         let context: PublicationContext =
             crate::publication_client::trusted_context(resolver, expected)?;
         if policy.context != context {
@@ -262,7 +409,7 @@ impl<T: Transport> Client<T> {
         .map_err(|_| ClientError::PaidFeeSourceInvalid)?;
         if object.id != consent.source.id
             || object.version != consent.source.version
-            || object.owner != Owner::Address(signer.address())
+            || object.owner != Owner::Address(owner)
             || object.schema_version != policy.schema
             || !type_matches
         {

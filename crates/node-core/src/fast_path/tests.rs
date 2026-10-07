@@ -778,7 +778,9 @@ fn independent_validators_derive_byte_identical_commitment_and_a_quorum_certific
             vote_a.execution_effects_hash,
             vote_a.locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -791,7 +793,9 @@ fn independent_validators_derive_byte_identical_commitment_and_a_quorum_certific
             vote_a.execution_effects_hash,
             vote_a.locked_objects_digest,
             &alternate_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -993,7 +997,9 @@ fn logical_profile_validators_certify_and_apply_across_physical_revisions() {
             vote_a.execution_effects_hash,
             vote_a.locked_objects_digest,
             &[vote_a, vote_b, vote_c],
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -1048,7 +1054,9 @@ fn logical_profile_validators_certify_and_apply_across_physical_revisions() {
         .try_form_certificate(
             &availability_votes[0].identity,
             &availability_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("three equal-power ACKs already form quorum");
@@ -1193,7 +1201,9 @@ fn apply_uses_the_prepare_time_checkpoint_and_releases_both_locks() {
             vote.execution_effects_hash,
             vote.locked_objects_digest,
             &all_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -1623,7 +1633,9 @@ fn prepare_and_certify<S: StructuredDurableDomainStateStore>(
             vote.execution_effects_hash,
             vote.locked_objects_digest,
             &all_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -1807,7 +1819,9 @@ fn four_validator_sqlite_restart_e2e_derives_identical_votes_and_replays_prepare
             votes[0].execution_effects_hash,
             votes[0].locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -2071,7 +2085,9 @@ fn duplicate_and_reordered_certificates_apply_idempotently() {
             vote_local.execution_effects_hash,
             vote_local.locked_objects_digest,
             &all_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -2085,7 +2101,9 @@ fn duplicate_and_reordered_certificates_apply_idempotently() {
             vote_local.execution_effects_hash,
             vote_local.locked_objects_digest,
             &reversed_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -2314,7 +2332,9 @@ fn apply_rejects_a_request_bound_to_a_non_current_epoch() {
             vote_a.execution_effects_hash,
             vote_a.locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -2537,7 +2557,9 @@ fn apply_rejects_a_certificate_signed_by_validators_absent_from_the_committed_se
             prepared.commitment,
             prepared.commitment,
             &rogue_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -2647,7 +2669,9 @@ fn a_racing_epoch_record_write_conflicts_the_apply_commit() {
             vote_a.execution_effects_hash,
             vote_a.locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -2757,7 +2781,9 @@ fn application_failed_fee_only_outcome_prepares_and_applies() {
             vote.execution_effects_hash,
             vote.locked_objects_digest,
             &all_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -2823,7 +2849,9 @@ fn stale_writer_fence_rejects_apply_atomically() {
             vote.execution_effects_hash,
             vote.locked_objects_digest,
             &all_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -2957,7 +2985,9 @@ fn certificate_with_wrong_commitment_for_the_correct_tx_hash_is_rejected_before_
             wrong_commitment,
             vote.locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -3230,7 +3260,9 @@ fn fast_path_apply_rejects_a_certificate_whose_locked_objects_digest_does_not_ma
             vote.execution_effects_hash,
             wrong_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -3388,7 +3420,9 @@ fn indeterminate_apply_commit_reconciles_on_exact_retry_without_reexecution_or_d
             vote.execution_effects_hash,
             vote.locked_objects_digest,
             &all_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -5408,7 +5442,9 @@ pub(crate) fn transfer_bundle(
             votes[0].execution_effects_hash,
             votes[0].locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("quorum reached");
@@ -5711,7 +5747,13 @@ fn availability_certificate_bytes_for(bundle_bytes: &[u8], subset: &[usize]) -> 
     )
     .unwrap();
     let certificate: consensus::AvailabilityCertificate = certifier
-        .try_form_certificate(&votes[0].identity, &votes, &FastPathEd25519Verifier)
+        .try_form_certificate(
+            &votes[0].identity,
+            &votes,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .unwrap()
         .expect("three equal-power ACKs already form quorum");
     consensus::encode_availability_certificate(&certificate).unwrap()
@@ -5740,7 +5782,9 @@ fn real_v2_prepare_bundle_three_acks_certificate_apply_succeeds_without_prior_ap
             votes[0].execution_effects_hash,
             votes[0].locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("three equal-power votes already form quorum");
@@ -5840,7 +5884,9 @@ fn apply_without_an_availability_certificate_refuses_and_leaves_state_and_locks_
             votes[0].execution_effects_hash,
             votes[0].locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("three equal-power votes already form quorum");
@@ -5887,7 +5933,9 @@ fn apply_after_publication_with_a_mismatched_availability_certificate_refuses_an
             votes[0].execution_effects_hash,
             votes[0].locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("three equal-power votes already form quorum");
@@ -5913,7 +5961,9 @@ fn apply_after_publication_with_a_mismatched_availability_certificate_refuses_an
             other_votes[0].execution_effects_hash,
             other_votes[0].locked_objects_digest,
             &other_votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("three equal-power votes already form quorum");
@@ -5960,7 +6010,13 @@ fn apply_after_publication_with_a_mismatched_availability_certificate_refuses_an
         )
         .unwrap();
         let certificate: consensus::AvailabilityCertificate = certifier
-            .try_form_certificate(&votes[0].identity, &votes, &FastPathEd25519Verifier)
+            .try_form_certificate(
+                &votes[0].identity,
+                &votes,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
             .unwrap()
             .expect("three equal-power ACKs already form quorum");
         consensus::encode_availability_certificate(&certificate).unwrap()
@@ -6021,7 +6077,9 @@ fn v1_apply_remains_unchanged_and_requires_no_availability_certificate() {
             vote_a.execution_effects_hash,
             vote_a.locked_objects_digest,
             &[vote_a, vote_b, vote_c],
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("three equal-power votes already form quorum");
@@ -6164,7 +6222,9 @@ fn assemble_publication_bundle_is_restart_safe_across_a_real_sqlite_reopen() {
             vote_a.execution_effects_hash,
             vote_a.locked_objects_digest,
             &[vote_a, vote_b, vote_c],
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("three equal-power votes already form quorum");

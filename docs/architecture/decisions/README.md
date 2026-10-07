@@ -104,6 +104,16 @@
 - [DR-0205: bounded SDK response framing for streamed relays](0205-bounded-sdk-streamed-response-framing.md)
 - [DR-0206: closed event ingress without execution capabilities](0206-unauthenticated-ingress-without-execution-capabilities.md)
 - [DR-0207: local native, streamed relay and SDK integration](0207-local-native-sdk-relay-integration.md)
+- [DR-0208: Native SQLite first and provider-independent protected signing](0208-native-sqlite-first-and-protected-signing.md)
+- [DR-0209: one consensus-owned Ed25519 verifier adapter](0209-consensus-verifier-ownership.md)
+- [DR-0210: Native SQLite durability and lock-safe file identity](0210-native-sqlite-connection-ownership.md)
+- [DR-0211: immutable live-operation preparation before custody selection](0211-external-signing-preparation.md)
+- [DR-0212: offline Native SQLite business-closure recovery rehearsal](0212-offline-business-closure-recovery.md)
+- [DR-0213: bounded Native release artifact evidence](0213-native-release-artifact-evidence.md)
+- [DR-0214: protected custody and trustworthy review boundaries (Proposed)](0214-protected-custody-and-review-boundary.md)
+- [DR-0215: invocation-bound ordered local signatures and retained reread verification](0215-ordered-local-signature-verification.md)
+- [DR-0216: owned local TLS stop, restart and explicit trust rotation](0216-local-tls-stop-restart-rotation.md)
+- [DR-0217: one publication-query codec and narrow error owner](0217-publication-query-contract-owner.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

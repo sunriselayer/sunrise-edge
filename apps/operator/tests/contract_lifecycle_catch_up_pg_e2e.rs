@@ -930,7 +930,7 @@ prefix-mint.intent prefix-mint.cert\ninstantiate2.intent instantiate2.cert\n"
         relay2.posts.load(Ordering::SeqCst) > posts_before_gap,
         "the valid publish2 prefix must have actually been POSTed before the gap entry rejected"
     );
-    let publish2_publication_live: Option<node_core::publication::PublicationQueryResult> =
+    let publish2_publication_live: Option<execution::publication::PublicationQueryResult> =
         node_core::publication::query_publication(
             &store(&pool, &namespaces[0]),
             &read_context(&pool, &namespaces[0]),
@@ -939,7 +939,7 @@ prefix-mint.intent prefix-mint.cert\ninstantiate2.intent instantiate2.cert\n"
             &origin2,
         )
         .unwrap();
-    let publish2_publication_recovered: Option<node_core::publication::PublicationQueryResult> =
+    let publish2_publication_recovered: Option<execution::publication::PublicationQueryResult> =
         node_core::publication::query_publication(
             &store(&pool, &namespaces[3]),
             &read_context(&pool, &namespaces[3]),

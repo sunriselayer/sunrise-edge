@@ -35,11 +35,11 @@ use consensus::{
 use execution::local_execution::{LocalExecutionError, LocalExecutionPolicy};
 use execution::paid_execution::{PaidExecutionError, PaidFeePolicy, decode_paid_fee_policy};
 use execution::publication::{PublicationContext, PublicationError};
+use fast_path::load_validator_set;
 use fast_path::records::{
     FastPathBondRecord, FastPathBondState, FastPathValidatorEntry, FastPathValidatorSetRecord,
     decode_fastpath_bond_record,
 };
-use fast_path::{FastPathEd25519Verifier, load_validator_set};
 use local_instance_state::FastPathEpochRecord;
 #[cfg(test)]
 use protocol_types::SignatureSchemeId;
@@ -901,7 +901,12 @@ pub fn activate<S: StructuredDurableDomainStateStore>(
         certificate.epoch,
         outgoing_validator_set,
     )?;
-    certifier.verify_certificate(&certificate, &FastPathEd25519Verifier)?;
+    certifier.verify_certificate(
+        &certificate,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
+    )?;
     if certificate.current_validator_set_digest != epoch_record.current_validator_set_digest {
         return invalid(
             "epoch transition certificate outgoing validator-set digest does not match the committed epoch record",

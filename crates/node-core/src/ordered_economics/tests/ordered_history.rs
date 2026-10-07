@@ -574,7 +574,9 @@ fn delayed_observer_with_one_economic_batch(replay: bool) {
                             &genesis,
                             ConsensusEvent::Proposal(proposal.clone()),
                             signer,
-                            &super::super::policy::Ed25519ConsensusVerifier,
+                            &consensus::Ed25519ConsensusVerifier::new(
+                                consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                            ),
                         )
                         .unwrap()
                         .outbound_messages
@@ -592,7 +594,9 @@ fn delayed_observer_with_one_economic_batch(replay: bool) {
                 .certificate_from_votes(
                     &proposal,
                     &votes,
-                    &super::super::policy::Ed25519ConsensusVerifier,
+                    &consensus::Ed25519ConsensusVerifier::new(
+                        consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                    ),
                 )
                 .unwrap()
                 .unwrap();

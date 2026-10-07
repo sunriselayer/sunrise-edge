@@ -688,9 +688,7 @@ fn file_backed_sqlite_fee_claims_reopen_and_replay_without_reapplication() {
 /// the tampered escrow.
 pub(crate) mod certified_multi_escrow_inventory {
     use super::*;
-    use crate::fast_path::{
-        self, FastPathEd25519Verifier, FastPathValidatorEntry, install_validator_set,
-    };
+    use crate::fast_path::{self, FastPathValidatorEntry, install_validator_set};
     use crate::paid_execution::tests::{
         CountingEngine, FIRST_PAID_NONCE, Fixture, PaidCall, base_policy, context, domain, entry,
         install, key, memory_store, next_nonce, object_reference, paid_call_with_access, protocol,
@@ -888,7 +886,9 @@ pub(crate) mod certified_multi_escrow_inventory {
                 votes[0].execution_effects_hash,
                 votes[0].locked_objects_digest,
                 votes,
-                &FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .expect("three of four equal-power votes already form quorum");
@@ -2563,7 +2563,9 @@ pub(crate) mod certified_multi_escrow_inventory {
                 votes[0].next_validator_set_digest,
                 votes[0].activation_digest,
                 &votes,
-                &FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .expect("three of four outgoing validators exceed epoch-transition quorum");

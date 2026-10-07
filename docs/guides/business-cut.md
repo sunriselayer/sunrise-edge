@@ -1,7 +1,9 @@
 # Export and independently verify a pre-Seal business candidate
 
-`business_cut` exports one completely drained first outgoing CausalAdmission
-epoch from an existing local SQLite source. Saved verification repeats the
+`business_cut` exports one completely drained CausalAdmission epoch from an
+existing local SQLite source. The examples below use the original outgoing
+epoch; later epochs require the separately verified predecessor chain described
+below. Saved verification repeats the
 original authenticated reconstruction without a source database or signing
 key. See [the cut contract](../architecture/first-epoch-business-cut.md) and
 [DR-0175](../architecture/decisions/0175-first-epoch-preseal-business-cut.md).
@@ -16,7 +18,9 @@ or reset option.
 
 - The original signed CausalAdmission genesis and its independently configured
   expected commitment, outgoing chain/protocol/epoch/domain and full hash-suite
-  schedule. Advanced outgoing epochs and historical profiles are refused.
+  schedule. Changing the declared epoch is not successor authority; without
+  verified predecessor artifacts, advanced outgoing epochs refuse. Historical
+  profiles remain unsupported.
 - A complete [ordered-history archive](ordered-history.md) for one fixed target.
   Its authenticated target, child and grandchild must be candidate-free. Every
   selected committed DrainSet member must have its original complete outcome.
@@ -35,7 +39,7 @@ in the exact package; normalized comparison bytes are not restorable certificate
 ## Build and export
 
 ```sh
-cargo build -p sunrise-edge-operator --bin business_cut
+cargo build --locked -p sunrise-edge-operator --bin business_cut
 BUSINESS_CUT_BIN="${CARGO_TARGET_DIR:-target}/debug/business_cut"
 "$BUSINESS_CUT_BIN" --help
 ```
@@ -106,3 +110,28 @@ reexecutes business effects, rederives the complete drain/candidate and compares
 the complete semantic and exact streams. File hashes alone cannot do this.
 SQLite evidence does not certify a deployed provider. PostgreSQL remains an
 optional independently selected operational profile; D1 is not implemented.
+
+## Successor source and saved verification
+
+Later-epoch policy comes only from the full independently verified predecessor
+chain. Keep the common genesis pins bound to the original signed genesis,
+including its epoch. The separately supplied `--ordered-history-dir` is the
+current cut's fixed-target history, not a replacement genesis or predecessor
+archive. Current epoch/context is derived from the verified chain.
+
+Both modes accept the all-or-none successor chain: `--successor-max-links` once,
+and equal-count repeated `--successor-plan-history-dir`, `--successor-cut-dir`,
+`--successor-manifest-history-dir` and `--successor-certificate-dir` in predecessor
+order within that explicit budget. Use only existing independently configured
+artifacts; see [successor serving](first-successor.md). Do not shorten or replace
+the chain with a peer's current committee response.
+
+Successor source export additionally requires `--signer-key-file` to derive and
+pin the current public key, not create a signature. It resolves fresh live
+authority over the installed Serving namespace, current member/key and verified
+chain. This development raw-key input is not protected-custody qualification.
+Saved verification reauthenticates the same chain but accepts no signer key or
+source database flags and grants no live capability.
+
+For the bounded local recovery composition, continue with the
+[offline inactive import rehearsal](business-import.md#offline-business-closure-recovery-rehearsal).

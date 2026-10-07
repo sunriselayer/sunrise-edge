@@ -62,7 +62,9 @@ pub(super) fn certificate_for(bytes: &[u8], checkpoint: u64) -> Vec<u8> {
             votes[0].execution_effects_hash,
             votes[0].locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -716,7 +718,15 @@ fn signed_certificate_for_hashes(
         .map(|signer| cert.cast_vote(tx_hash, commitment, locks, signer).unwrap())
         .collect();
     let certificate: FastCertificate = cert
-        .try_form_certificate(tx_hash, commitment, locks, &votes, &FastPathEd25519Verifier)
+        .try_form_certificate(
+            tx_hash,
+            commitment,
+            locks,
+            &votes,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .unwrap()
         .unwrap();
     consensus::encode_fast_certificate(&certificate).unwrap()
@@ -1157,7 +1167,9 @@ fn certificate_for_after_publish(
             votes[0].execution_effects_hash,
             votes[0].locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();

@@ -22,13 +22,6 @@ pub struct SqliteImportTarget {
     store: SqliteDurableStore,
 }
 
-fn configure(connection: &Connection) -> Result<(), SqliteDurableStoreError> {
-    connection.busy_timeout(STRUCTURED_BUSY_TIMEOUT)?;
-    connection.pragma_update(None, "foreign_keys", "ON")?;
-    connection.pragma_update(None, "trusted_schema", "OFF")?;
-    connection.pragma_update(None, "synchronous", "FULL")?;
-    Ok(())
-}
 impl SqliteImportTarget {
     /// Reserves a new file, initializes its own local fence and immutable
     /// binding. Existing files are never replaced, converted or reset. A
@@ -48,34 +41,16 @@ impl SqliteImportTarget {
         let path: &Path = path.as_ref();
         let reserved: native_files::ImportFile =
             native_files::create_new(path).map_err(SqliteDurableStoreError::File)?;
-        let connection: Connection = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        configure(&connection)?;
-        native_files::check_attached(path, &reserved).map_err(SqliteDurableStoreError::File)?;
-        let journal: String =
-            connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
-        if !journal.eq_ignore_ascii_case("wal") {
-            return Err(SqliteDurableStoreError::UnsupportedJournalMode(journal));
-        }
-        let backend: NativeSqlBackend = NativeSqlBackend::new(connection);
+        let connection: NativeConnection = NativeConnection::open_reserved(reserved, true, true)?;
+        let backend: NativeSqlBackend = NativeSqlBackend::from_owned(connection);
         run_operator_step(&backend, |session, _| {
-            session.exec(
-                &format!("PRAGMA application_id = {STRUCTURED_APPLICATION_ID}"),
-                &[],
-            )?;
-            session.exec(
-                &format!("PRAGMA user_version = {STRUCTURED_SCHEMA_VERSION}"),
-                &[],
-            )?;
+            claim_structured_file(session)?;
             schema::bootstrap_import_namespace(session, &namespace, own_writer_fence, binding)
         })?;
-        native_files::sync_created(path, &reserved).map_err(SqliteDurableStoreError::File)?;
+        backend.sync_created()?;
         Ok(Self {
             store: SqliteDurableStore {
                 engine: SqlDurableEngine::new(backend, namespace),
-                created_file: None,
             },
         })
     }
@@ -88,38 +63,17 @@ impl SqliteImportTarget {
         binding: &ImportBinding,
     ) -> Result<Self, SqliteDurableStoreError> {
         let path: &Path = path.as_ref();
-        let held: native_files::ImportFile =
-            native_files::open_existing(path).map_err(SqliteDurableStoreError::File)?;
-        let connection: Connection = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        configure(&connection)?;
-        let application: i64 =
-            connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
-        if application != STRUCTURED_APPLICATION_ID {
-            return Err(SqliteDurableStoreError::ApplicationId(application));
-        }
-        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version != STRUCTURED_SCHEMA_VERSION {
-            return Err(SqliteDurableStoreError::SchemaVersion(version));
-        }
-        let journal: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
-        if !journal.eq_ignore_ascii_case("wal") {
-            return Err(SqliteDurableStoreError::UnsupportedJournalMode(journal));
-        }
-        let backend: NativeSqlBackend = NativeSqlBackend::new(connection);
-        let metadata = run_operator_step(&backend, |session, _| {
+        let connection: NativeConnection = open_verified_connection(path)?;
+        let backend: NativeSqlBackend = NativeSqlBackend::from_owned(connection);
+        let metadata = read_operator_step(&backend, |session, _| {
             schema::verify_namespace(session, &namespace)
         })?;
         if metadata.lifecycle().binding() != Some(binding) {
             return Err(SqliteDurableStoreError::ImportBindingMismatch);
         }
-        native_files::check_attached(path, &held).map_err(SqliteDurableStoreError::File)?;
         Ok(Self {
             store: SqliteDurableStore {
                 engine: SqlDurableEngine::new(backend, namespace),
-                created_file: None,
             },
         })
     }

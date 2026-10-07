@@ -8,8 +8,7 @@ use abi::package_types::{PackageOrigin, encode_package_origin};
 use canonical_encoding::{CanonicalFrame, decode_digest32, encode_digest32};
 use execution::paid_execution::{
     AuthenticatedPaidIntent, PaidExecutionError, PaidExecutionResult, PaidExecutionStatus,
-    PaidResultKind, PaidResultTarget, decode_paid_execution_result, decode_signed_paid_intent,
-    encode_signed_paid_intent, paid_invocation_digest,
+    PaidResultKind, PaidResultTarget, decode_paid_execution_result, paid_invocation_digest,
 };
 use execution::publication::{
     AuthenticatedPublicationCandidate, InterfaceError, MAX_INTERFACE_NODES, PublicationContext,
@@ -17,6 +16,10 @@ use execution::publication::{
     authenticate_publication_submission, decode_publication_context, decode_publication_submission,
     encode_dependency_ref, encode_publication_context, encode_publication_submission,
     verify_publication_interface,
+};
+pub use execution::publication::{
+    MAX_PUBLICATION_QUERY_RESULT_BYTES, PUBLICATION_QUERY_RESULT_FRAME_TYPE,
+    PublicationQueryResult, decode_publication_query_result, encode_publication_query_result,
 };
 use runtime::{StructuredStateReader, VersionedStateReader};
 
@@ -749,41 +752,6 @@ pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStor
     )?)
 }
 
-/// Canonical frame type of an encoded [`PublicationQueryResult`] (DR-0126).
-/// Normatively allocated by this decision, distinct from the
-/// reserved-but-unimplemented `0x6416`/`0x6417` genesis manifest/marker
-/// frames.
-pub const PUBLICATION_QUERY_RESULT_FRAME_TYPE: u16 = 0x6418;
-const PUBLICATION_QUERY_RESULT_VERSION_1: u16 = 1;
-const PUBLICATION_QUERY_PROVENANCE_LEGACY: u16 = 1;
-const PUBLICATION_QUERY_PROVENANCE_PAID: u16 = 2;
-
-/// Maximum encoded byte size of one [`PublicationQueryResult`] (DR-0126).
-/// The Paid variant embeds a complete `SignedPaidIntent` (itself bounding a
-/// full `CodeArtifact`), which is the larger of the two variants; this bound
-/// is checked before any allocation driven by a caller-supplied byte slice
-/// and re-checked after encoding.
-pub const MAX_PUBLICATION_QUERY_RESULT_BYTES: usize =
-    execution::paid_execution::MAX_SIGNED_PAID_INTENT_BYTES + 256;
-
-/// A durable publication query result, distinguishing its actual ingress
-/// provenance (DR-0126). Legacy rows carry their exact original signed
-/// [`PublicationSubmission`]. A DR-0124 paid Publish row carries its exact
-/// stored, re-authenticatable [`execution::paid_execution::SignedPaidIntent`]:
-/// no `PublicationSubmission` or publisher signature is ever fabricated for
-/// it, and this query surface never converts one provenance into the other.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)]
-pub enum PublicationQueryResult {
-    /// Legacy stored `PublicationSubmission` frame `0x6308`.
-    Legacy(PublicationSubmission),
-    /// Stored `SignedPaidIntent` frame `0x6413` whose successful paid
-    /// Publish receipt was already verified. The caller must independently
-    /// re-authenticate this frame under its own trusted resolver/context
-    /// before trusting anything about it.
-    Paid(execution::paid_execution::SignedPaidIntent),
-}
-
 impl From<VerifiedPublicationRecord> for PublicationQueryResult {
     fn from(record: VerifiedPublicationRecord) -> Self {
         match record {
@@ -791,58 +759,6 @@ impl From<VerifiedPublicationRecord> for PublicationQueryResult {
             VerifiedPublicationRecord::Paid(signed) => Self::Paid(signed),
         }
     }
-}
-
-/// Encodes Frame `0x6418/v1`.
-pub fn encode_publication_query_result(
-    result: &PublicationQueryResult,
-) -> Result<Vec<u8>, PublicationAdmissionError> {
-    let mut frame: CanonicalStruct = CanonicalStruct::new(
-        PUBLICATION_QUERY_RESULT_FRAME_TYPE,
-        PUBLICATION_QUERY_RESULT_VERSION_1,
-    );
-    match result {
-        PublicationQueryResult::Legacy(submission) => {
-            frame.field_u16(1, PUBLICATION_QUERY_PROVENANCE_LEGACY)?;
-            frame.field_bytes(2, encode_publication_submission(submission)?)?;
-        }
-        PublicationQueryResult::Paid(signed) => {
-            frame.field_u16(1, PUBLICATION_QUERY_PROVENANCE_PAID)?;
-            frame.field_bytes(3, encode_signed_paid_intent(signed)?)?;
-        }
-    }
-    let bytes: Vec<u8> = frame.finish()?;
-    if bytes.len() > MAX_PUBLICATION_QUERY_RESULT_BYTES {
-        return Err(PublicationAdmissionError::Limit);
-    }
-    Ok(bytes)
-}
-
-/// Strictly decodes Frame `0x6418/v1`.
-pub fn decode_publication_query_result(
-    bytes: &[u8],
-) -> Result<PublicationQueryResult, PublicationAdmissionError> {
-    if bytes.len() > MAX_PUBLICATION_QUERY_RESULT_BYTES {
-        return Err(PublicationAdmissionError::Limit);
-    }
-    let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
-    frame.require_type(PUBLICATION_QUERY_RESULT_FRAME_TYPE)?;
-    frame.require_version(PUBLICATION_QUERY_RESULT_VERSION_1)?;
-    let result: PublicationQueryResult = match frame.required_u16(1)? {
-        PUBLICATION_QUERY_PROVENANCE_LEGACY => {
-            frame.require_only_fields(&[1, 2])?;
-            PublicationQueryResult::Legacy(decode_publication_submission(frame.required_field(2)?)?)
-        }
-        PUBLICATION_QUERY_PROVENANCE_PAID => {
-            frame.require_only_fields(&[1, 3])?;
-            PublicationQueryResult::Paid(decode_signed_paid_intent(frame.required_field(3)?)?)
-        }
-        _ => return Err(PublicationAdmissionError::CorruptRecord),
-    };
-    if encode_publication_query_result(&result)? != bytes {
-        return Err(PublicationAdmissionError::CorruptRecord);
-    }
-    Ok(result)
 }
 
 /// Loads canonical immutable code, independently verifies its complete

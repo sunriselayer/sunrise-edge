@@ -128,7 +128,9 @@ pub(super) fn capture_proposal(
         .engine()
         .verify_proposal(
             &proposal.proposal,
-            &node_core::fast_path::FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap();
     assert_eq!(proposal.candidate.as_ref(), Some(candidate));
@@ -248,7 +250,9 @@ pub(super) fn reserve_and_check(
         .engine()
         .verify_proposal(
             &proposal.proposal,
-            &node_core::fast_path::FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap();
     let leader_index = fixture

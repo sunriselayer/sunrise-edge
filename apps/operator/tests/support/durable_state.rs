@@ -293,7 +293,7 @@ fn request_publication_nonce_evidence<
             .unwrap()
         })
         .collect();
-    let published: Vec<Option<node_core::publication::PublicationQueryResult>> = publications
+    let published: Vec<Option<execution::publication::PublicationQueryResult>> = publications
         .iter()
         .map(|origin: &abi::package_types::PackageOrigin| {
             node_core::publication::query_publication(

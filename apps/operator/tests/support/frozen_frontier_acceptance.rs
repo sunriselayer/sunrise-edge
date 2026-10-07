@@ -17,7 +17,6 @@ use consensus::{AvailabilityIdentity, FastCertificate, FastVote};
 use execution::paid_execution::{
     PaidApplication, SignedPaidIntent, decode_signed_paid_intent, encode_signed_paid_intent,
 };
-use node_core::fast_path::FastPathEd25519Verifier;
 use objects::{ObjectId, ObjectRef};
 use protocol_types::ValidatorId;
 use runtime::DurableOperationContext;
@@ -138,7 +137,9 @@ fn retain_unapplied_publication(
             votes[0].execution_effects_hash,
             votes[0].locked_objects_digest,
             &votes,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .expect("three genuine prepare signatures must form a strict quorum");
@@ -168,7 +169,12 @@ fn retain_unapplied_publication(
     )
     .unwrap();
     availability
-        .verify_vote(&ack, &FastPathEd25519Verifier)
+        .verify_vote(
+            &ack,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .unwrap();
     assert_eq!(
         namespaces
@@ -335,7 +341,12 @@ fn verify_export(
     )
     .unwrap();
     certifier
-        .verify_vote(&vote, &FastPathEd25519Verifier)
+        .verify_vote(
+            &vote,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .unwrap();
     assert_eq!(vote.validator, validator);
     assert_eq!(vote.identity.domain, fixture.domain);
@@ -347,7 +358,9 @@ fn verify_export(
             &fixture.resolver,
             &certifier,
             vote,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap();
     let mut saved: Vec<Vec<u8>> = vec![vote_bytes.clone()];

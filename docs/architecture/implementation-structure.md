@@ -40,6 +40,21 @@ ordered-economics types. Keep those couplings explicit. Any later removal needs
 a deliberate public-type owner and byte/API compatibility plan, not a new
 foundational crate containing node-core execution logic.
 
+The consensus-owned Ed25519 adapter follows
+[DR-0209](decisions/0209-consensus-verifier-ownership.md). Its one defining owner
+adapts only the exact supplied key/frame/signature, with an explicit closed
+unsupported-scheme response. Core, SDK and hosts retain registration, membership,
+context, quorum and authority checks. Removing that reverse coupling does not
+remove the SDK's other actual core dependencies or invent a foundational crate.
+
+[DR-0217](decisions/0217-publication-query-contract-owner.md) assigns the pure
+provenance-bearing publication-query data, codec, bound and narrow error to the
+existing execution publication owner. Real SDK and host consumers migrate to
+that owner; durable loading and authority remain core-owned. The concrete Rust
+codec error deliberately changes without an admission-error compatibility
+adapter. This does not remove other SDK/core Cargo edges or establish a build
+improvement. The code map identifies actual definitions after migration.
+
 ## Concrete refactoring seams
 
 The following are intended module responsibilities inside existing crates.
@@ -60,6 +75,7 @@ paths through reexports where possible. The active integration order is in TODO.
 | [Outgoing Seal storage](../../crates/runtime/src/outgoing_seal.rs), [shared SQL Seal completion](../../crates/runtime-sql-durable/src/engine/outgoing_seal.rs) and [ordered Seal](../../crates/node-core/src/ordered_economics/seal.rs) | Runtime owns protected metadata and atomic continuity; core owns certificate authority, independent reconstruction and selected consensus history | A real same-store capability consumes the original snapshot token. Ordinary writers cannot bypass Sealed, unsupported providers cannot fake completion, and storage never decides successor eligibility or activation |
 | [Native ingress](../../crates/native-http/src/lib.rs) and [DO host](../../adapters/cloudflare-workers/rust/src/lib.rs) | Serving, shared blocking admission, query context, recovery and trusted composition; capability-specific provider dispatch | Preserve authentication before I/O, one permit pool and closed certified routes. Generic event proxy ingress must not acquire handoff authority; core must guard inactive imports |
 | [FastVote client](../../clients/rust/src/fastvote_client.rs), [ordered client](../../clients/rust/src/ordered_economics_client.rs), [local genesis primitives](../../clients/rust/src/local_genesis.rs) and [transport](../../clients/rust/src/transport.rs) | Local genesis primitives own bounded file reads, signed manifest verification and committee conversion; clients retain their own profile/policy checks and public errors | Share verified primitives, not a peer-chosen trust context. Genesis trust and verified live serving context are different. Transport policy remains separate |
+| [Client-private signing frame](../../clients/rust/src/signing_frame.rs) and [typed operation preparations](signing-preparation.md) | One immutable expected identity/frame and shared provider checks; each operation retains its own trust/content snapshots, authentication, error ordering and consuming finalization | Returned-signature validity grants neither business authority nor custody/content-review qualification. Actual CLI consumers delegate to the same owner; automatic protocol/readiness signing retains its separate live authority |
 | [CLI network commands](../../apps/cli/src/commands/fastvote_network.rs), [ordered commands](../../apps/cli/src/commands/ordered_economics_network.rs), [network artifact primitives](../../apps/cli/src/commands/network_artifacts.rs) and [operator economics](../../apps/operator/src/economics.rs) | Commands-private artifact I/O owns reservations, held handles and synchronization; network configuration and operation-specific workflows stay with their command owners | Keep pre-reserved paths, held file handles, file/parent synchronization and exact bytes. Offline and certified-network operations do not share authority merely because file utilities match |
 
 The rows are an inventory, not ten obligatory cleanup PRs. In particular,
@@ -92,6 +108,32 @@ Evaluate improvement by the number of owners needed for one specification
 change, independent implementations of the same rule, public dependency/API
 surface and attributable nonredundant tests. File count is not acceptance;
 compilation, runtime and whole-CI speedups require actual measurement.
+
+### First qualified native profile
+
+[DR-0208](decisions/0208-native-sqlite-first-and-protected-signing.md) selects
+Native plus SQLite first, DO following. Connection/file ownership belongs to
+`runtime-sqlite`; atomic state and namespace decisions remain shared in
+`runtime-sql-durable`, and live authority stays with node-core. Qualification
+requires selected filesystem, host and signer evidence, not a database-specific
+business-engine rewrite. Protected signing is provider-independent; deferred
+Ledger evidence is not replaced by plaintext development keys. Status stays in
+TODO, not this structure contract.
+
+[DR-0210](decisions/0210-native-sqlite-connection-ownership.md) assigns native
+writable settings, lock-safe metadata identity and fresh synchronization to one
+private connection owner. Its retained handles are directories, not independent
+SQLite main/WAL/SHM descriptors. `NativeSqlBackend` retains actual transaction
+dispatch and distinguishes operator commit ambiguity; the shared engine still
+owns logical state and namespace decisions. Read-only blob inspection does not
+acquire initialization or lifecycle authority.
+
+[DR-0213](decisions/0213-native-release-artifact-evidence.md) assigns bounded
+release provenance and same-host artifact comparison to one local tooling owner.
+It records the actual Native binaries, source/dependency/tool inputs and two
+fresh output trees; it grants no runtime, signing or release authority. A
+source-download cache is not an accepted compiler-output cache, and local byte
+equality is not provider certification or complete M7 acceptance.
 
 ## Handoff-specific ownership
 

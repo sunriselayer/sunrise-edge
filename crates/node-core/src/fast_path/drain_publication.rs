@@ -250,7 +250,9 @@ pub fn verify_drain_publication_bundle(
     let verified: VerifiedPublicationBundle = verify_publication_bundle(
         bundle,
         certifier,
-        &FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
         resolver,
         history,
     )?;
@@ -513,7 +515,12 @@ where
             epoch,
             validators,
         )?;
-        certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+        certifier.verify_vote(
+            &vote,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )?;
     }
     Ok(bundle)
 }

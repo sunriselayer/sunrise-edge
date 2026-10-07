@@ -608,7 +608,12 @@ pub(super) fn verify_application_carriers(
         let certificate = consensus::decode_fast_certificate(&record.certificate)
             .map_err(|_| invalid("cut original application certificate schema"))?;
         certifier
-            .verify_certificate(&certificate, &super::super::ReconstructionEd25519Verifier)
+            .verify_certificate(
+                &certificate,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::InvalidSignature,
+                ),
+            )
             .map_err(|_| invalid("cut original application certificate lacks quorum"))?;
         if record.request_id != *request
             || certificate.tx_hash != producer.tx_hash

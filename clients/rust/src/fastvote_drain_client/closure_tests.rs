@@ -219,7 +219,9 @@ pub(crate) fn member_fixture() -> MemberFixture {
             vote.execution_effects_hash,
             vote.locked_objects_digest,
             &[vote],
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
         )
         .unwrap()
         .unwrap();
@@ -323,7 +325,9 @@ fn corrupt_closure(fixture: &MemberFixture, corruption: u8) -> PublicationBundle
     verify_publication_bundle(
         &bundle,
         &fixture.certifier,
-        &FastPathEd25519Verifier,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
         &fixture.resolver,
         &[],
     )
@@ -445,7 +449,9 @@ fn staged_import_refuses_incomplete_or_surplus_closure_before_any_post() {
         let identity: AvailabilityIdentity = verify_publication_bundle(
             &bundle,
             &fixture.certifier,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
             &fixture.resolver,
             &[],
         )

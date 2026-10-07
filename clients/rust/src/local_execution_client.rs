@@ -1,4 +1,6 @@
 //! Explicit zero-fee local execution. Endpoint claims are not inclusion proofs.
+use crate::signing_frame::PreparedSigningFrame;
+use crate::{Address, ExternalSigner, SignatureSchemeId};
 use crate::{
     Client, ClientError, ExpectedProtocolContext, HashSuiteResolver, LocalSigner, Method,
     NodeResponseStatus, RequestId, Transport, WireRequest,
@@ -7,8 +9,8 @@ use crypto::SignatureSigner;
 use execution::call::CallIntent;
 use execution::local_execution::*;
 use execution::publication::{
-    self, AuthenticatedPublicationCandidate, PublicationContext, UnverifiedDependencyRef,
-    VerifiedPublicationInterface,
+    self, AuthenticatedPublicationCandidate, PublicationContext, PublicationQueryResult,
+    UnverifiedDependencyRef, VerifiedPublicationInterface,
 };
 use node_wire::{
     HttpNodeResult, NODE_EVENT_MEDIA_TYPE, NODE_RESULT_MEDIA_TYPE, QUERY_RESULT_MEDIA_TYPE,
@@ -86,24 +88,16 @@ pub fn build_signed_local_execution(
     instance: &InstanceRecord,
     interface: &VerifiedPublicationInterface,
 ) -> Result<SignedLocalExecutionIntent, ClientError> {
-    let policy: LocalExecutionPolicy = LocalExecutionPolicy::new(
-        crate::publication_client::trusted_context(resolver, expected)?,
-    );
-    let scopes: Vec<ResolvedExecutionScope> = vec![ResolvedExecutionScope {
-        instance: instance.clone(),
-        target: instance_target(resolver, instance)?,
-        interface: interface.clone(),
-    }];
-    build_signed_general_execution(
-        signer,
+    PreparedLocalExecution::prepare_single_instance(
+        signer.address(),
         resolver,
         expected,
-        &policy,
         mode,
         call,
-        Vec::new(),
-        &scopes,
-    )
+        instance,
+        interface,
+    )?
+    .sign_and_finalize_with(signer)
 }
 
 /// Signs one common execution intent after shared scope/authority validation.
@@ -120,32 +114,177 @@ pub fn build_signed_general_execution(
     authorizations: Vec<execution::call_authorization::CallAuthorization>,
     scopes: &[ResolvedExecutionScope],
 ) -> Result<SignedLocalExecutionIntent, ClientError> {
-    let context: PublicationContext =
-        crate::publication_client::trusted_context(resolver, expected)?;
-    if policy.context() != &context
-        || call.context != context
-        || call.sender != *signer.address().as_bytes()
-    {
-        return Err(invalid("signer or trusted policy context mismatch"));
-    }
-    let intent: LocalExecutionIntent = LocalExecutionIntent {
-        authorizations,
+    PreparedLocalExecution::prepare(
+        signer.address(),
+        resolver,
+        expected,
+        policy,
         mode,
-        policy_digest: policy.digest(resolver)?,
         call,
-    };
-    execution::execution_scopes::validate_local_execution_scopes(
-        resolver, policy, &intent, scopes,
-    )?;
-    let frame: Vec<u8> = local_execution_signing_frame(&context, &intent)?;
-    let bytes: Vec<u8> = signer.sign_framed(&frame)?;
-    let signature: [u8; 64] = bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| invalid("signature length"))?;
-    let signed: SignedLocalExecutionIntent = SignedLocalExecutionIntent { intent, signature };
-    authenticate_local_execution(resolver, policy, &encode_signed_local_execution(&signed)?)?;
-    Ok(signed)
+        authorizations,
+        scopes,
+    )?
+    .sign_and_finalize_with(signer)
+}
+
+/// Exact local execution and immutable snapshots of its trusted policy and code closure.
+/// This establishes signatures, not an independent human content-review boundary.
+pub struct PreparedLocalExecution {
+    signing: PreparedSigningFrame,
+    resolver: HashSuiteResolver,
+    policy: LocalExecutionPolicy,
+    scopes: Vec<ResolvedExecutionScope>,
+    intent: LocalExecutionIntent,
+}
+
+impl PreparedLocalExecution {
+    /// Prepares one generic intent after the original scope/ABI/authority validation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare(
+        sender: Address,
+        resolver: &HashSuiteResolver,
+        expected: &ExpectedProtocolContext,
+        policy: &LocalExecutionPolicy,
+        mode: LocalExecutionMode,
+        call: CallIntent,
+        authorizations: Vec<execution::call_authorization::CallAuthorization>,
+        scopes: &[ResolvedExecutionScope],
+    ) -> Result<Self, ClientError> {
+        let context: PublicationContext =
+            crate::publication_client::trusted_context(resolver, expected)?;
+        if policy.context() != &context
+            || call.context != context
+            || call.sender != *sender.as_bytes()
+        {
+            return Err(invalid("signer or trusted policy context mismatch"));
+        }
+        let intent: LocalExecutionIntent = LocalExecutionIntent {
+            authorizations,
+            mode,
+            policy_digest: policy.digest(resolver)?,
+            call,
+        };
+        execution::execution_scopes::validate_local_execution_scopes(
+            resolver, policy, &intent, scopes,
+        )?;
+        let frame: Vec<u8> = local_execution_signing_frame(&context, &intent)?;
+        Ok(Self {
+            signing: PreparedSigningFrame::new(sender, SignatureSchemeId::Ed25519, frame)?,
+            resolver: resolver.clone(),
+            policy: policy.clone(),
+            scopes: scopes.to_vec(),
+            intent,
+        })
+    }
+
+    /// Prepares the existing one-instance local convenience with its exact policy.
+    pub fn prepare_single_instance(
+        sender: Address,
+        resolver: &HashSuiteResolver,
+        expected: &ExpectedProtocolContext,
+        mode: LocalExecutionMode,
+        call: CallIntent,
+        instance: &InstanceRecord,
+        interface: &VerifiedPublicationInterface,
+    ) -> Result<Self, ClientError> {
+        let policy: LocalExecutionPolicy = LocalExecutionPolicy::new(
+            crate::publication_client::trusted_context(resolver, expected)?,
+        );
+        let scopes: Vec<ResolvedExecutionScope> = vec![ResolvedExecutionScope {
+            instance: instance.clone(),
+            target: instance_target(resolver, instance)?,
+            interface: interface.clone(),
+        }];
+        Self::prepare(
+            sender,
+            resolver,
+            expected,
+            &policy,
+            mode,
+            call,
+            Vec::new(),
+            &scopes,
+        )
+    }
+
+    /// Exact intent including authorizations, policy digest and call preimages.
+    #[must_use]
+    pub fn intent(&self) -> &LocalExecutionIntent {
+        &self.intent
+    }
+
+    /// Trusted execution-policy snapshot used by final authentication.
+    #[must_use]
+    pub fn policy(&self) -> &LocalExecutionPolicy {
+        &self.policy
+    }
+
+    /// Locally configured hash history for independent commitment recomputation.
+    #[must_use]
+    pub fn resolver(&self) -> &HashSuiteResolver {
+        &self.resolver
+    }
+
+    /// Complete exact instance and authenticated publication-closure snapshots.
+    #[must_use]
+    pub fn scopes(&self) -> &[ResolvedExecutionScope] {
+        &self.scopes
+    }
+
+    /// Exact immutable bytes to sign; this is not a content-review attestation.
+    #[must_use]
+    pub fn signable_frame(&self) -> &[u8] {
+        self.signing.frame()
+    }
+
+    /// Sender identity configured before any signer is invoked.
+    #[must_use]
+    pub fn sender(&self) -> Address {
+        self.signing.expected()
+    }
+
+    /// Consumes the prepared content; no caller can replace its trust inputs.
+    pub fn finalize(self, bytes: Vec<u8>) -> Result<SignedLocalExecutionIntent, ClientError> {
+        let signature: [u8; 64] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| invalid("signature length"))?;
+        let signed: SignedLocalExecutionIntent = SignedLocalExecutionIntent {
+            intent: self.intent,
+            signature,
+        };
+        authenticate_local_execution(
+            &self.resolver,
+            &self.policy,
+            &encode_signed_local_execution(&signed)?,
+        )?;
+        if !self
+            .signing
+            .verify(&signature)
+            .map_err(LocalExecutionError::Crypto)?
+        {
+            return Err(invalid("execution signature"));
+        }
+        Ok(signed)
+    }
+
+    /// Checks the provider's declared identity before signing, then finalizes.
+    pub fn sign_and_finalize_external<S: ExternalSigner>(
+        self,
+        signer: &S,
+    ) -> Result<SignedLocalExecutionIntent, ClientError> {
+        let signature: Vec<u8> = self.signing.sign_external(signer)?;
+        self.finalize(signature)
+    }
+
+    /// In-process development convenience with the original crypto error mapping.
+    pub fn sign_and_finalize_with<S: SignatureSigner>(
+        self,
+        signer: &S,
+    ) -> Result<SignedLocalExecutionIntent, ClientError> {
+        let signature: Vec<u8> = self.signing.sign_with(signer)?;
+        self.finalize(signature)
+    }
 }
 
 impl<T: Transport> Client<T> {
@@ -292,8 +431,8 @@ impl<T: Transport> Client<T> {
                 // authenticated legacy submission; a DR-0124 paid Publish
                 // record has none and none is fabricated for it.
                 let submission = match result {
-                    crate::PublicationQueryResult::Legacy(submission) => submission,
-                    crate::PublicationQueryResult::Paid { .. } => {
+                    PublicationQueryResult::Legacy(submission) => submission,
+                    PublicationQueryResult::Paid { .. } => {
                         return Err(invalid(
                             "publication dependency is a paid record, not a legacy submission",
                         ));

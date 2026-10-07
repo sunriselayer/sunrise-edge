@@ -35,7 +35,7 @@ pub enum ClientError {
     /// A DR-0126 provenance-aware publication query response failed to
     /// decode. This is a wire/decoding failure, distinct from `Publication`,
     /// which covers legacy submission authentication.
-    PublicationQueryResult(node_core::publication::PublicationAdmissionError),
+    PublicationQueryResult(execution::publication::PublicationQueryResultError),
     /// A DR-0126 Paid publication query result's embedded `SignedPaidIntent`
     /// failed independent re-authentication (context, signature, or trusted
     /// resolver mismatch). Its `SignedPaidIntent` is never trusted merely
@@ -293,7 +293,7 @@ impl fmt::Display for ClientError {
                 f,
                 "external signer address {actual} disagrees with prepared sender {expected}"
             ),
-            Self::ExternalSigner(error) => write!(f, "external signer failed: {error}"),
+            Self::ExternalSigner(_) => f.write_str("external signer failed"),
             Self::SubmitResponseRequestIdMismatch { expected, actual } => write!(
                 f,
                 "submit result request id {actual} disagrees with submitted request id {expected}"
@@ -448,8 +448,8 @@ impl From<node_wire::QueryResultError> for ClientError {
     }
 }
 
-impl From<node_core::publication::PublicationAdmissionError> for ClientError {
-    fn from(value: node_core::publication::PublicationAdmissionError) -> Self {
+impl From<execution::publication::PublicationQueryResultError> for ClientError {
+    fn from(value: execution::publication::PublicationQueryResultError) -> Self {
         Self::PublicationQueryResult(value)
     }
 }

@@ -15,7 +15,7 @@
 //! local network and successor/recovery acceptance. It is bound at
 //! construction to exactly one trusted `(chain, validator, atomicity
 //! domain)` namespace and serializes every operation behind one
-//! process-local [`Mutex`] plus one SQLite transaction. Separate validator
+//! process-local [`std::sync::Mutex`] plus one SQLite transaction. Separate validator
 //! files are not independent concurrent writers to the same namespace.
 //! It does not supply PostgreSQL-style connection pooling or application
 //! serialization retries, nor does local acceptance certify public deployment,
@@ -23,6 +23,7 @@
 //! is backend-neutral; production qualification belongs to the selected host
 //! profile rather than the database name.
 
+use crate::native_connection::{NativeConnection, NativeError};
 use crate::native_files;
 use crate::rusqlite_backend::NativeSqlBackend;
 use runtime::outbox_guard::{StructuredOutboxExclusionGuard, StructuredOutboxInventory};
@@ -42,10 +43,11 @@ use runtime::{
     StructuredDurableDomainStateStore, VersionedStateValue, WriterFenceGeneration,
 };
 use runtime_sql_durable::{
-    SqlBackend, SqlDurableEngine, SqlDurableNamespace, TransactionBudget, TransactionDecision,
-    schema,
+    SqlBackend, SqlBackendError, SqlDurableEngine, SqlDurableNamespace, TransactionBudget,
+    TransactionDecision, schema,
 };
-use rusqlite::{Connection, OpenFlags};
+#[cfg(test)]
+use rusqlite::Connection;
 use std::{error::Error, fmt, path::Path};
 
 /// The exact trusted `(chain, validator, atomicity domain)` namespace one
@@ -60,7 +62,6 @@ pub const SQLITE_STRUCTURED_SCHEMA_IDENTITY: &[u8] =
 
 const STRUCTURED_APPLICATION_ID: i64 = 0x5352_4453;
 const STRUCTURED_SCHEMA_VERSION: i64 = 5;
-const STRUCTURED_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Fail-closed errors opening, bootstrapping, or operating a structured
 /// SQLite database outside the request-path traits.
@@ -111,6 +112,10 @@ pub enum SqliteDurableStoreError {
     },
     /// The backend transaction was unavailable.
     Unavailable,
+    /// COMMIT was dispatched but confirmation was lost. Preserve the files
+    /// and inspect existing metadata/fence/lifecycle under physical exclusion.
+    /// Matching metadata is never evidence of live writer ownership.
+    CommitIndeterminate,
     /// The checked mutation sequence would overflow.
     MutationSequenceOverflow,
     /// The checked mutation sequence changed within the active transaction.
@@ -164,6 +169,7 @@ impl fmt::Display for SqliteDurableStoreError {
                 requested.get()
             ),
             Self::Unavailable => f.write_str("SQLite structured backend is unavailable"),
+            Self::CommitIndeterminate => f.write_str("SQLite operator commit is indeterminate; serving is refused pending physically excluded inspection"),
             Self::MutationSequenceOverflow => f.write_str("SQLite mutation sequence overflow"),
             Self::MutationSequenceConflict => f.write_str("SQLite mutation sequence conflict"),
         }
@@ -183,6 +189,17 @@ impl Error for SqliteDurableStoreError {
 impl From<rusqlite::Error> for SqliteDurableStoreError {
     fn from(value: rusqlite::Error) -> Self {
         Self::Database(value)
+    }
+}
+
+impl From<NativeError> for SqliteDurableStoreError {
+    fn from(error: NativeError) -> Self {
+        match error {
+            NativeError::File(error) => Self::File(error),
+            NativeError::Database(error) => Self::Database(error),
+            NativeError::JournalMode(mode) => Self::UnsupportedJournalMode(mode),
+            NativeError::CommitIndeterminate => Self::CommitIndeterminate,
+        }
     }
 }
 
@@ -213,9 +230,6 @@ impl From<schema::SchemaError> for SqliteDurableStoreError {
 /// when used from an asynchronous request runtime.
 pub struct SqliteDurableStore {
     engine: SqlDurableEngine<NativeSqlBackend>,
-    // Only a freshly created handle may flush its original file identity.
-    // This is native ownership, never a persisted serving authorization.
-    created_file: Option<native_files::ImportFile>,
 }
 
 impl fmt::Debug for SqliteDurableStore {
@@ -227,8 +241,7 @@ impl fmt::Debug for SqliteDurableStore {
     }
 }
 
-/// Runs one operator-path transaction, mapping every backend failure to
-/// `SqliteDurableStoreError::Unavailable` and every schema/namespace
+/// Runs one operator-path write, preserving commit ambiguity and schema/namespace
 /// failure through its own `From` conversion.
 fn run_operator_step<T>(
     backend: &NativeSqlBackend,
@@ -242,8 +255,74 @@ fn run_operator_step<T>(
         }
     });
     outcome
-        .map_err(|_| SqliteDurableStoreError::Unavailable)?
+        .map_err(operator_backend_error)?
         .map_err(SqliteDurableStoreError::from)
+}
+
+fn operator_backend_error(error: SqlBackendError) -> SqliteDurableStoreError {
+    match error {
+        SqlBackendError::CommitIndeterminate => SqliteDurableStoreError::CommitIndeterminate,
+        SqlBackendError::Unavailable | SqlBackendError::SessionFailed(_) => {
+            SqliteDurableStoreError::Unavailable
+        }
+    }
+}
+
+/// Operator observations complete through rollback just like request reads.
+fn read_operator_step<T>(
+    backend: &NativeSqlBackend,
+    step: impl FnOnce(&mut dyn runtime_sql_durable::SqlSession, u64) -> Result<T, schema::SchemaError>,
+) -> Result<T, SqliteDurableStoreError> {
+    backend
+        .transaction(TransactionBudget::OperatorDefault, |session, now| {
+            Ok(TransactionDecision::Rollback(step(session, now)))
+        })
+        .map_err(operator_backend_error)?
+        .map_err(SqliteDurableStoreError::from)
+}
+
+fn verify_ordinary_namespace(
+    backend: &NativeSqlBackend,
+    namespace: &SqliteNamespace,
+) -> Result<(), SqliteDurableStoreError> {
+    read_operator_step(backend, |session, _| {
+        let metadata: schema::NamespaceMetadata = schema::verify_namespace(session, namespace)?;
+        if !metadata.lifecycle().is_ordinary() {
+            return Err(schema::SchemaError::InactiveNamespace);
+        }
+        if metadata.barrier().is_sealed() {
+            return Err(schema::SchemaError::NamespaceSealed);
+        }
+        Ok(())
+    })
+}
+
+/// The file schema identity belongs to this native structured store, while
+/// logical metadata and row definitions remain with the shared schema owner.
+fn claim_structured_file(
+    session: &mut dyn runtime_sql_durable::SqlSession,
+) -> Result<(), schema::SchemaError> {
+    session.exec(
+        &format!("PRAGMA application_id = {STRUCTURED_APPLICATION_ID}"),
+        &[],
+    )?;
+    session.exec(
+        &format!("PRAGMA user_version = {STRUCTURED_SCHEMA_VERSION}"),
+        &[],
+    )?;
+    Ok(())
+}
+
+fn bootstrap_ordinary(
+    backend: &NativeSqlBackend,
+    namespace: &SqliteNamespace,
+    initial_writer_fence: WriterFenceGeneration,
+) -> Result<(), SqliteDurableStoreError> {
+    run_operator_step(backend, |session, _| {
+        claim_structured_file(session)?;
+        schema::bootstrap_namespace(session, namespace, initial_writer_fence)?;
+        Ok(())
+    })
 }
 
 /// Opens an existing file with the exact native connection checks live
@@ -252,30 +331,24 @@ fn run_operator_step<T>(
 /// supported `user_version`, and WAL journaling. Both `open_existing` and
 /// `open_historical` share this so neither entry point can silently accept
 /// a weaker-checked connection than the other.
-fn open_verified_connection(path: impl AsRef<Path>) -> Result<Connection, SqliteDurableStoreError> {
-    let connection: Connection = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    connection.busy_timeout(STRUCTURED_BUSY_TIMEOUT)?;
-    connection.pragma_update(None, "foreign_keys", "ON")?;
-    connection.pragma_update(None, "trusted_schema", "OFF")?;
-    let application_id: i64 =
-        connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
-    if application_id != STRUCTURED_APPLICATION_ID {
-        return Err(SqliteDurableStoreError::ApplicationId(application_id));
-    }
-    let schema_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if schema_version != STRUCTURED_SCHEMA_VERSION {
-        return Err(SqliteDurableStoreError::SchemaVersion(schema_version));
-    }
-    let journal_mode: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
-    if !journal_mode.eq_ignore_ascii_case("wal") {
-        return Err(SqliteDurableStoreError::UnsupportedJournalMode(
-            journal_mode,
-        ));
-    }
-    Ok(connection)
+fn open_verified_connection(
+    path: impl AsRef<Path>,
+) -> Result<NativeConnection, SqliteDurableStoreError> {
+    let mut owned: NativeConnection = NativeConnection::open_existing(path.as_ref(), true)?;
+    owned.inspect(|connection| {
+        let application_id: i64 =
+            connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
+        if application_id != STRUCTURED_APPLICATION_ID {
+            return Err(SqliteDurableStoreError::ApplicationId(application_id));
+        }
+        let schema_version: i64 =
+            connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if schema_version != STRUCTURED_SCHEMA_VERSION {
+            return Err(SqliteDurableStoreError::SchemaVersion(schema_version));
+        }
+        Ok::<(), SqliteDurableStoreError>(())
+    })?;
+    Ok(owned)
 }
 
 impl SqliteDurableStore {
@@ -285,21 +358,11 @@ impl SqliteDurableStore {
         path: impl AsRef<Path>,
         namespace: SqliteNamespace,
     ) -> Result<Self, SqliteDurableStoreError> {
-        let connection: Connection = open_verified_connection(path)?;
-        let backend = NativeSqlBackend::new(connection);
-        run_operator_step(&backend, |session, _now| {
-            let metadata = schema::verify_namespace(session, &namespace)?;
-            if !metadata.lifecycle().is_ordinary() {
-                return Err(schema::SchemaError::InactiveNamespace);
-            }
-            if metadata.barrier().is_sealed() {
-                return Err(schema::SchemaError::NamespaceSealed);
-            }
-            Ok(metadata)
-        })?;
+        let connection: NativeConnection = open_verified_connection(path)?;
+        let backend = NativeSqlBackend::from_owned(connection);
+        verify_ordinary_namespace(&backend, &namespace)?;
         Ok(Self {
             engine: SqlDurableEngine::new(backend, namespace),
-            created_file: None,
         })
     }
 
@@ -316,79 +379,47 @@ impl SqliteDurableStore {
         namespace: SqliteNamespace,
         initial_writer_fence: WriterFenceGeneration,
     ) -> Result<Self, SqliteDurableStoreError> {
-        let connection = Connection::open(path)?;
-        connection.busy_timeout(STRUCTURED_BUSY_TIMEOUT)?;
-        connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.pragma_update(None, "trusted_schema", "OFF")?;
-
-        let journal_mode: String =
-            connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
-        if !journal_mode.eq_ignore_ascii_case("wal") {
-            return Err(SqliteDurableStoreError::UnsupportedJournalMode(
-                journal_mode,
-            ));
-        }
-        connection.pragma_update(None, "synchronous", "FULL")?;
-        connection.pragma_update(None, "wal_autocheckpoint", 1_000_i64)?;
-
-        let application_id: i64 =
-            connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
-        if application_id != 0 && application_id != STRUCTURED_APPLICATION_ID {
-            return Err(SqliteDurableStoreError::ApplicationId(application_id));
-        }
-        let schema_version: i64 =
-            connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if schema_version != 0 && schema_version != STRUCTURED_SCHEMA_VERSION {
-            return Err(SqliteDurableStoreError::SchemaVersion(schema_version));
-        }
-        let already_claimed = application_id == STRUCTURED_APPLICATION_ID
-            && schema_version == STRUCTURED_SCHEMA_VERSION;
-        if !already_claimed {
-            if application_id != 0 {
-                return Err(SqliteDurableStoreError::SchemaVersion(schema_version));
-            }
-            if schema_version != 0 {
+        let mut owned: NativeConnection = NativeConnection::open_development(path.as_ref())?;
+        let already_claimed: bool = owned.inspect(|connection| {
+            let application_id: i64 =
+                connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
+            if application_id != 0 && application_id != STRUCTURED_APPLICATION_ID {
                 return Err(SqliteDurableStoreError::ApplicationId(application_id));
             }
-            let schema_objects: i64 = connection.query_row(
-                "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
-                [],
-                |row| row.get(0),
-            )?;
-            if schema_objects != 0 {
-                return Err(SqliteDurableStoreError::UnclaimedDatabase);
+            let schema_version: i64 =
+                connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            if schema_version != 0 && schema_version != STRUCTURED_SCHEMA_VERSION {
+                return Err(SqliteDurableStoreError::SchemaVersion(schema_version));
             }
-        }
+            let already_claimed = application_id == STRUCTURED_APPLICATION_ID
+                && schema_version == STRUCTURED_SCHEMA_VERSION;
+            if !already_claimed {
+                if application_id != 0 {
+                    return Err(SqliteDurableStoreError::SchemaVersion(schema_version));
+                }
+                if schema_version != 0 {
+                    return Err(SqliteDurableStoreError::ApplicationId(application_id));
+                }
+                let schema_objects: i64 = connection.query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if schema_objects != 0 {
+                    return Err(SqliteDurableStoreError::UnclaimedDatabase);
+                }
+            }
 
-        let backend = NativeSqlBackend::new(connection);
-        run_operator_step(&backend, |session, _now| {
-            if already_claimed {
-                let metadata = schema::verify_namespace(session, &namespace)?;
-                if !metadata.lifecycle().is_ordinary() {
-                    return Err(schema::SchemaError::InactiveNamespace);
-                }
-                if metadata.barrier().is_sealed() {
-                    return Err(schema::SchemaError::NamespaceSealed);
-                }
-                return Ok(metadata);
-            }
-            session
-                .exec(
-                    &format!("PRAGMA application_id = {STRUCTURED_APPLICATION_ID}"),
-                    &[],
-                )
-                .map_err(schema::SchemaError::from)?;
-            session
-                .exec(
-                    &format!("PRAGMA user_version = {STRUCTURED_SCHEMA_VERSION}"),
-                    &[],
-                )
-                .map_err(schema::SchemaError::from)?;
-            schema::bootstrap_namespace(session, &namespace, initial_writer_fence)
+            Ok::<bool, SqliteDurableStoreError>(already_claimed)
         })?;
+        let backend = NativeSqlBackend::from_owned(owned);
+        if already_claimed {
+            verify_ordinary_namespace(&backend, &namespace)?;
+        } else {
+            bootstrap_ordinary(&backend, &namespace, initial_writer_fence)?;
+        }
         Ok(Self {
             engine: SqlDurableEngine::new(backend, namespace),
-            created_file: None,
         })
     }
 
@@ -401,14 +432,13 @@ impl SqliteDurableStore {
         path: impl AsRef<Path>,
         namespace: SqliteNamespace,
     ) -> Result<Self, SqliteDurableStoreError> {
-        let connection: Connection = open_verified_connection(path)?;
-        let backend = NativeSqlBackend::new(connection);
-        run_operator_step(&backend, |session, _now| {
+        let connection: NativeConnection = open_verified_connection(path)?;
+        let backend = NativeSqlBackend::from_owned(connection);
+        read_operator_step(&backend, |session, _now| {
             schema::open_namespace_historical(session, &namespace)
         })?;
         Ok(Self {
             engine: SqlDurableEngine::new(backend, namespace),
-            created_file: None,
         })
     }
 
@@ -433,57 +463,22 @@ impl SqliteDurableStore {
         let reserved: native_files::ImportFile =
             native_files::create_new(path).map_err(SqliteDurableStoreError::File)?;
         native_files::require_no_sidecars(path).map_err(SqliteDurableStoreError::File)?;
-        let connection: Connection = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        connection.busy_timeout(STRUCTURED_BUSY_TIMEOUT)?;
-        connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.pragma_update(None, "trusted_schema", "OFF")?;
-        native_files::check_attached(path, &reserved).map_err(SqliteDurableStoreError::File)?;
-        let journal_mode: String =
-            connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
-        if !journal_mode.eq_ignore_ascii_case("wal") {
-            return Err(SqliteDurableStoreError::UnsupportedJournalMode(
-                journal_mode,
-            ));
-        }
-        connection.pragma_update(None, "synchronous", "FULL")?;
-        connection.pragma_update(None, "wal_autocheckpoint", 1_000_i64)?;
-        let backend = NativeSqlBackend::new(connection);
-        run_operator_step(&backend, |session, _now| {
-            session
-                .exec(
-                    &format!("PRAGMA application_id = {STRUCTURED_APPLICATION_ID}"),
-                    &[],
-                )
-                .map_err(schema::SchemaError::from)?;
-            session
-                .exec(
-                    &format!("PRAGMA user_version = {STRUCTURED_SCHEMA_VERSION}"),
-                    &[],
-                )
-                .map_err(schema::SchemaError::from)?;
-            schema::bootstrap_namespace(session, &namespace, initial_writer_fence)
-        })?;
-        native_files::check_attached(path, &reserved).map_err(SqliteDurableStoreError::File)?;
-        native_files::sync_created(path, &reserved).map_err(SqliteDurableStoreError::File)?;
+        let connection: NativeConnection = NativeConnection::open_reserved(reserved, true, true)?;
+        let backend = NativeSqlBackend::from_owned(connection);
+        bootstrap_ordinary(&backend, &namespace, initial_writer_fence)?;
+        backend.sync_created()?;
         Ok(Self {
             engine: SqlDurableEngine::new(backend, namespace),
-            created_file: Some(reserved),
         })
     }
 
     /// Rechecks and flushes the original freshly reserved main file and
     /// directory identity. Reopened handles cannot claim fresh ownership.
     pub fn sync_created(&self) -> Result<(), SqliteDurableStoreError> {
-        let held: &native_files::ImportFile = self.created_file.as_ref().ok_or_else(|| {
-            SqliteDurableStoreError::File(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "store was not opened through the fresh-only factory",
-            ))
-        })?;
-        native_files::sync_owned(held).map_err(SqliteDurableStoreError::File)
+        self.engine
+            .backend()
+            .sync_created()
+            .map_err(SqliteDurableStoreError::from)
     }
 
     /// Atomically advances the persisted writer fence.
@@ -511,7 +506,7 @@ impl SqliteDurableStore {
     /// This is an explicit operator-only accessor, not part of any
     /// runtime trait; request handling must never be able to reach it.
     pub fn writer_fence(&self) -> Result<WriterFenceGeneration, SqliteDurableStoreError> {
-        let metadata = run_operator_step(self.engine.backend(), |session, _now| {
+        let metadata = read_operator_step(self.engine.backend(), |session, _now| {
             schema::verify_namespace(session, self.engine.namespace())
         })?;
         Ok(metadata.writer_fence())
@@ -522,7 +517,7 @@ impl SqliteDurableStore {
     /// This is an operator-only startup accessor, not a request-path
     /// query.
     pub fn object_store_is_empty(&self) -> Result<bool, SqliteDurableStoreError> {
-        run_operator_step(self.engine.backend(), |session, _now| {
+        read_operator_step(self.engine.backend(), |session, _now| {
             schema::verify_namespace(session, self.engine.namespace())?;
             schema::object_heads_is_empty(session).map_err(schema::SchemaError::from)
         })
@@ -570,6 +565,8 @@ impl DurableDomainStateStore for SqliteDurableStore {
 }
 
 mod inactive_import;
+#[cfg(all(test, unix))]
+mod ownership_tests;
 pub use inactive_import::SqliteImportTarget;
 
 impl StructuredDurableDomainStateStore for SqliteDurableStore {

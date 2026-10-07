@@ -408,7 +408,12 @@ fn verify_partial_prepare_conflicts<S: StructuredDurableDomainStateStore>(
         {
             return invalid("drain conflict prepared vote differs from its exact inputs");
         }
-        certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+        certifier.verify_vote(
+            &vote,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )?;
         let certificate_key: Vec<u8> =
             fastpath_certificate_key(chain, &resolution.owner_request_id)?;
         let certificate_row: VersionedStateValue =
@@ -599,7 +604,12 @@ where
         intent_context.epoch(),
         validator_set,
     )?;
-    certifier.verify_certificate(&certificate, &FastPathEd25519Verifier)?;
+    certifier.verify_certificate(
+        &certificate,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
+    )?;
     if certificate.chain_id != chain
         || certificate.protocol_version != intent_context.protocol_version()
         || certificate.epoch != intent_context.epoch()

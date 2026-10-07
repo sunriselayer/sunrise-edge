@@ -373,7 +373,9 @@ fn causal_real_paid_success_trap_zero_charge_publish_instantiate_and_signerless_
                 votes[0].execution_effects_hash,
                 votes[0].locked_objects_digest,
                 &votes,
-                &FastPathEd25519Verifier,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
             )
             .unwrap()
             .unwrap();
@@ -415,7 +417,13 @@ fn causal_real_paid_success_trap_zero_charge_publish_instantiate_and_signerless_
         )
         .unwrap();
         let ac: consensus::AvailabilityCertificate = availability
-            .try_form_certificate(&acks[0].identity, &acks, &FastPathEd25519Verifier)
+            .try_form_certificate(
+                &acks[0].identity,
+                &acks,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
             .unwrap()
             .unwrap();
         let ac_bytes: Vec<u8> = consensus::encode_availability_certificate(&ac).unwrap();

@@ -3,12 +3,16 @@ use abi::{
     executable_abi::{ExecutableAbi, encode_executable_abi},
     public_abi::{EntrypointDeclaration, PackageAbi},
 };
+use execution::publication::{PublicationQueryResult, encode_publication_query_result};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use sunrise_edge_client::{call::CallIntent, local_execution::*, publication::*, *};
 
 #[path = "support/acknowledgement.rs"]
 mod acknowledgement;
+
+#[path = "support/external_signer.rs"]
+mod external_signer;
 
 fn expected() -> ExpectedProtocolContext {
     ExpectedProtocolContext::new(
@@ -22,6 +26,197 @@ fn expected() -> ExpectedProtocolContext {
         AtomicityDomainId::new([1; 32]).unwrap(),
     )
     .unwrap()
+}
+
+#[test]
+fn prepared_local_and_general_execution_preserve_independent_signed_bytes() {
+    use crypto::SignatureSigner;
+    use external_signer::{Behavior, TestSigner};
+    for (profile, mode) in [
+        (2, LocalExecutionMode::Instantiate),
+        (2, LocalExecutionMode::Call),
+        (3, LocalExecutionMode::Instantiate),
+        (3, LocalExecutionMode::Call),
+    ] {
+        let (resolver, signer, interface, instance, mut call) = fixture_profile(profile, 4);
+        if mode == LocalExecutionMode::Call {
+            call.entrypoint = "run".to_owned();
+        }
+        let policy: LocalExecutionPolicy = if profile == 3 {
+            LocalExecutionPolicy::general(call.context.clone())
+        } else {
+            LocalExecutionPolicy::new(call.context.clone())
+        };
+        let intent: LocalExecutionIntent = LocalExecutionIntent {
+            mode,
+            call: call.clone(),
+            policy_digest: policy.digest(&resolver).unwrap(),
+            authorizations: vec![],
+        };
+        // Independent pre-refactor construction uses the original core encoder
+        // and raw development signer, never the new preparation or its wrapper.
+        let frame: Vec<u8> = local_execution_signing_frame(&call.context, &intent).unwrap();
+        let signature: [u8; 64] = signer.sign_framed(&frame).unwrap().try_into().unwrap();
+        let original: Vec<u8> =
+            encode_signed_local_execution(&SignedLocalExecutionIntent { intent, signature })
+                .unwrap();
+        let scopes: Vec<ResolvedExecutionScope> = vec![ResolvedExecutionScope {
+            instance: instance.clone(),
+            target: instance_target(&resolver, &instance).unwrap(),
+            interface: interface.clone(),
+        }];
+        let prepared: PreparedLocalExecution = PreparedLocalExecution::prepare(
+            signer.address(),
+            &resolver,
+            &expected(),
+            &policy,
+            mode,
+            call.clone(),
+            vec![],
+            &scopes,
+        )
+        .unwrap();
+        assert_eq!(prepared.signable_frame(), frame);
+        assert_eq!(prepared.scopes()[0].instance, instance);
+        let external: TestSigner = TestSigner::new([7; 32], Behavior::Valid);
+        let actual = prepared.sign_and_finalize_external(&external).unwrap();
+        assert_eq!(external.calls(), 1);
+        assert_eq!(encode_signed_local_execution(&actual).unwrap(), original);
+        let development = build_signed_general_execution(
+            &signer,
+            &resolver,
+            &expected(),
+            &policy,
+            mode,
+            call.clone(),
+            vec![],
+            &scopes,
+        )
+        .unwrap();
+        assert_eq!(
+            encode_signed_local_execution(&development).unwrap(),
+            original
+        );
+        if profile == 2 {
+            let single = PreparedLocalExecution::prepare_single_instance(
+                signer.address(),
+                &resolver,
+                &expected(),
+                mode,
+                call,
+                &instance,
+                &interface,
+            )
+            .unwrap();
+            assert_eq!(
+                encode_signed_local_execution(&single.finalize(signature.to_vec()).unwrap())
+                    .unwrap(),
+                original
+            );
+        }
+    }
+}
+
+#[test]
+fn prepared_local_execution_refuses_external_failures_and_changed_preimage() {
+    use crypto::SignatureSigner;
+    use external_signer::{REFUSALS, TestSigner, expected_calls};
+    let (resolver, signer, interface, instance, call) = fixture();
+    for behavior in REFUSALS {
+        let external: TestSigner = TestSigner::new([7; 32], behavior);
+        let prepared = PreparedLocalExecution::prepare_single_instance(
+            signer.address(),
+            &resolver,
+            &expected(),
+            LocalExecutionMode::Instantiate,
+            call.clone(),
+            &instance,
+            &interface,
+        )
+        .unwrap();
+        let error = prepared.sign_and_finalize_external(&external).unwrap_err();
+        assert!(!error.to_string().contains("secret-provider-failure-marker"));
+        assert!(!format!("{error:?}").contains("secret-provider-failure-marker"));
+        assert_eq!(external.calls(), expected_calls(behavior));
+    }
+    let original = PreparedLocalExecution::prepare_single_instance(
+        signer.address(),
+        &resolver,
+        &expected(),
+        LocalExecutionMode::Instantiate,
+        call.clone(),
+        &instance,
+        &interface,
+    )
+    .unwrap();
+    let signature: Vec<u8> = signer.sign_framed(original.signable_frame()).unwrap();
+    let mut changed = call;
+    changed.nonce += 1;
+    let prepared = PreparedLocalExecution::prepare_single_instance(
+        signer.address(),
+        &resolver,
+        &expected(),
+        LocalExecutionMode::Instantiate,
+        changed,
+        &instance,
+        &interface,
+    )
+    .unwrap();
+    assert!(prepared.finalize(signature).is_err());
+}
+
+#[test]
+fn prepared_local_execution_preserves_presign_refusals_without_external_calls() {
+    use external_signer::{Behavior, TestSigner};
+    let (resolver, signer, interface, instance, call) = fixture();
+    for case in 0..8 {
+        let external: TestSigner = TestSigner::new([7; 32], Behavior::Valid);
+        let mut changed_call = call.clone();
+        let mut changed_instance = instance.clone();
+        let mut sender: Address = signer.address();
+        let mut mode: LocalExecutionMode = LocalExecutionMode::Instantiate;
+        match case {
+            0 => sender = LocalSigner::from_seed([8; 32]).address(),
+            1 => {
+                changed_call.context = PublicationContext::new(
+                    call.context.chain_id().clone(),
+                    call.context.protocol_version(),
+                    Epoch::new(1),
+                )
+                .unwrap()
+            }
+            2 => changed_call.instance.seed = [9; 32],
+            3 => mode = LocalExecutionMode::Call,
+            4 => changed_call.arguments = vec![0],
+            5 => {
+                changed_call.code = UnverifiedDependencyRef::new(
+                    call.code.origin().clone(),
+                    2,
+                    call.code.context().clone(),
+                    *call.code.artifact_digest(),
+                )
+                .unwrap()
+            }
+            6 => changed_instance.revision += 1,
+            7 => changed_call.entrypoint = "absent".to_owned(),
+            _ => unreachable!(),
+        }
+        let result: Result<SignedLocalExecutionIntent, ClientError> =
+            match PreparedLocalExecution::prepare_single_instance(
+                sender,
+                &resolver,
+                &expected(),
+                mode,
+                changed_call,
+                &changed_instance,
+                &interface,
+            ) {
+                Ok(prepared) => prepared.sign_and_finalize_external(&external),
+                Err(error) => Err(error),
+            };
+        assert!(result.is_err(), "case {case}");
+        assert_eq!(external.calls(), 0, "case {case}");
+    }
 }
 fn fixture() -> (
     HashSuiteResolver,
@@ -315,6 +510,7 @@ fn scope_query_rejects_replacement_record_before_loading_code() {
 #[test]
 fn general_signing_uses_shared_exact_scope_checks() {
     use call_authorization::{CallAuthorization, ExecutionTarget};
+    use crypto::SignatureSigner;
     let (resolver, signer, interface, instance, mut call) = fixture_profile(3, 4);
     let (_, _, child_interface, child, _) = fixture_profile(3, 5);
     call.entrypoint = "run".to_owned();
@@ -356,6 +552,25 @@ fn general_signing_uses_shared_exact_scope_checks() {
     )
     .unwrap();
     let bytes: Vec<u8> = encode_signed_local_execution(&signed).unwrap();
+    let original_intent: LocalExecutionIntent = LocalExecutionIntent {
+        mode: LocalExecutionMode::Call,
+        policy_digest: policy.digest(&resolver).unwrap(),
+        call: call.clone(),
+        authorizations: vec![authorization.clone()],
+    };
+    let original_frame: Vec<u8> =
+        local_execution_signing_frame(&call.context, &original_intent).unwrap();
+    let original_signature: [u8; 64] = signer
+        .sign_framed(&original_frame)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let original_bytes: Vec<u8> = encode_signed_local_execution(&SignedLocalExecutionIntent {
+        intent: original_intent,
+        signature: original_signature,
+    })
+    .unwrap();
+    assert_eq!(bytes, original_bytes);
     authenticate_local_execution(&resolver, &policy, &bytes).unwrap();
     assert_eq!(decode_signed_local_execution(&bytes).unwrap(), signed);
     for case in 0..6 {
@@ -388,12 +603,29 @@ fn general_signing_uses_shared_exact_scope_checks() {
                 &changed_policy,
                 LocalExecutionMode::Call,
                 call.clone(),
-                vec![changed_authorization],
+                vec![changed_authorization.clone()],
                 &changed_scopes
             )
             .is_err(),
             "case {case}"
         );
+        let external = external_signer::TestSigner::new([7; 32], external_signer::Behavior::Valid);
+        let result: Result<SignedLocalExecutionIntent, ClientError> =
+            match PreparedLocalExecution::prepare(
+                signer.address(),
+                &resolver,
+                &expected(),
+                &changed_policy,
+                LocalExecutionMode::Call,
+                call.clone(),
+                vec![changed_authorization],
+                &changed_scopes,
+            ) {
+                Ok(prepared) => prepared.sign_and_finalize_external(&external),
+                Err(error) => Err(error),
+            };
+        assert!(result.is_err(), "case {case}");
+        assert_eq!(external.calls(), 0, "case {case}");
     }
 }
 

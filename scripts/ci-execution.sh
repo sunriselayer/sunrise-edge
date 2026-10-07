@@ -136,7 +136,10 @@ ci_run_action() {
     return 1
   fi
   case "$1" in
-    gate-contract) node scripts/test-ci-gates.mjs ;;
+    gate-contract)
+      node scripts/test-ci-gates.mjs || return "$?"
+      node scripts/test-native-release-evidence.mjs
+      ;;
     rust-style) ci_check_rust_style ;;
     rust-tests-required)
       cargo build -p sunrise-edge-cli --bin sunrise-edge-cli --all-features || return "$?"

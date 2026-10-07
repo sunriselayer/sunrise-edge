@@ -37,7 +37,7 @@ use crate::fastvote_client::{
     bounded_deadline, validate_fastvote_apply_response, validate_fastvote_endpoints,
 };
 use crate::transport::{Method, Transport, WireRequest};
-use crate::{Client, FastPathEd25519Verifier, NODE_RESULT_MEDIA_TYPE};
+use crate::{Client, NODE_RESULT_MEDIA_TYPE};
 
 /// One endpoint's independently checked retention ACK, or its exact error.
 #[derive(Debug)]
@@ -168,7 +168,12 @@ fn verify_published_authority(
             actual: certificate.tx_hash,
         });
     }
-    certifier.verify_certificate(certificate, &FastPathEd25519Verifier)?;
+    certifier.verify_certificate(
+        certificate,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
+    )?;
     let identity: &AvailabilityIdentity = &availability.identity;
     if identity.domain != domain
         || identity.request_id != signed.intent.request_id
@@ -179,8 +184,12 @@ fn verify_published_authority(
             "availability certificate identity",
         ));
     }
-    availability_certifier(certifier)?
-        .verify_certificate(availability, &FastPathEd25519Verifier)?;
+    availability_certifier(certifier)?.verify_certificate(
+        availability,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
+    )?;
     Ok(())
 }
 
@@ -215,7 +224,12 @@ impl<T: Transport> Client<T> {
                 actual: certificate.tx_hash,
             });
         }
-        certifier.verify_certificate(certificate, &FastPathEd25519Verifier)?;
+        certifier.verify_certificate(
+            certificate,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )?;
         let certificate_bytes: Vec<u8> = encode_fast_certificate(certificate)?;
         let body: Vec<u8> = FastVoteApplyRequest {
             signed_paid_intent: signed_bytes.clone(),
@@ -243,7 +257,9 @@ impl<T: Transport> Client<T> {
         let verified = verify_publication_bundle(
             &bundle,
             certifier,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
             resolver,
             history,
         )?;
@@ -298,7 +314,9 @@ impl<T: Transport> Client<T> {
         let verified = verify_publication_bundle(
             &bundle,
             certifier,
-            &FastPathEd25519Verifier,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
             resolver,
             history,
         )?;
@@ -416,7 +434,12 @@ pub fn collect_fastvote_availability_certificate<T: Transport>(
         .into());
     }
     certifier
-        .verify_certificate(certificate, &FastPathEd25519Verifier)
+        .verify_certificate(
+            certificate,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .map_err(ClientError::FastVoteConsensus)?;
 
     let mut source_failures: Vec<(ValidatorId, ClientError)> = Vec::new();
@@ -467,8 +490,13 @@ pub fn collect_fastvote_availability_certificate<T: Transport>(
                             ));
                         }
                         availability_certifier
-                            .verify_vote(&vote, &FastPathEd25519Verifier)
-                            .map_err(ClientError::FastVoteConsensus)?;
+                        .verify_vote(
+                            &vote,
+                            &consensus::Ed25519ConsensusVerifier::new(
+                                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                            ),
+                        )
+                        .map_err(ClientError::FastVoteConsensus)?;
                         Ok(vote)
                     }),
             };
@@ -481,7 +509,13 @@ pub fn collect_fastvote_availability_certificate<T: Transport>(
         });
     }
     let Some(availability_certificate) = availability_certifier
-        .try_form_certificate(&identity, &votes, &FastPathEd25519Verifier)
+        .try_form_certificate(
+            &identity,
+            &votes,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .map_err(ClientError::FastVoteConsensus)?
     else {
         return Err(FastVotePublicationError::InsufficientQuorum(attempts));

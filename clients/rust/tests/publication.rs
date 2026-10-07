@@ -1,13 +1,163 @@
+use canonical_encoding::CanonicalDecodingError;
 use crypto::SignatureSigner;
 use execution::call::InstanceTarget;
 use execution::paid_execution::{
     FeeSourceConsent, PaidApplication, PaidIntent, ReservationAccessKind, SignedPaidIntent,
     paid_intent_signing_frame,
 };
+use execution::publication::{
+    MAX_PUBLICATION_QUERY_RESULT_BYTES, PublicationError, PublicationQueryResult,
+    PublicationQueryResultError, encode_publication_query_result,
+};
 use std::cell::RefCell;
+use std::error::Error;
 
 #[path = "support/acknowledgement.rs"]
 mod acknowledgement;
+
+#[path = "support/external_signer.rs"]
+mod external_signer;
+
+#[test]
+fn prepared_publication_preserves_independent_bytes_and_owned_artifact() {
+    use external_signer::{Behavior, TestSigner};
+    let signer: LocalSigner = LocalSigner::from_seed([7; 32]);
+    let resolver: HashSuiteResolver = local_publication_resolver(&expected()).unwrap();
+    let artifact: CodeArtifact = artifact(&signer, 2);
+    let digest: Digest32 =
+        publication::artifact_commitment(&resolver, &expected_context(), &artifact).unwrap();
+    let frame: Vec<u8> = publication::publication_submission_signing_frame(
+        &resolver,
+        &expected_context(),
+        &artifact,
+        3,
+        [3; 32],
+    )
+    .unwrap();
+    let signature: [u8; 64] = signer.sign_framed(&frame).unwrap().try_into().unwrap();
+    let original: PublicationSubmission = PublicationSubmission::new(
+        [3; 32],
+        PublicationRequest::new(artifact.clone(), 3, digest, signature),
+    )
+    .unwrap();
+    let prepared = PreparedPublication::prepare(
+        signer.address(),
+        &resolver,
+        &expected(),
+        artifact.clone(),
+        3,
+        RequestId::new([3; 32]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(prepared.signable_frame(), frame);
+    assert_eq!(prepared.artifact(), &artifact);
+    assert_eq!(prepared.artifact_digest(), &digest);
+    let external: TestSigner = TestSigner::new([7; 32], Behavior::Valid);
+    let submission = prepared.sign_and_finalize_external(&external).unwrap();
+    assert_eq!(
+        encode_publication_submission(&submission).unwrap(),
+        encode_publication_submission(&original).unwrap()
+    );
+    assert_eq!(
+        encode_publication_submission(&submission).unwrap(),
+        encode_publication_submission(&signed(2)).unwrap()
+    );
+    assert_eq!(external.calls(), 1);
+}
+
+#[test]
+fn prepared_publication_refuses_external_failures_and_changed_preimage() {
+    use external_signer::{REFUSALS, TestSigner, expected_calls};
+    let signer: LocalSigner = LocalSigner::from_seed([7; 32]);
+    let resolver: HashSuiteResolver = local_publication_resolver(&expected()).unwrap();
+    for behavior in REFUSALS {
+        let external = TestSigner::new([7; 32], behavior);
+        let prepared = PreparedPublication::prepare(
+            signer.address(),
+            &resolver,
+            &expected(),
+            artifact(&signer, 2),
+            3,
+            RequestId::new([3; 32]).unwrap(),
+        )
+        .unwrap();
+        let error = prepared.sign_and_finalize_external(&external).unwrap_err();
+        assert!(!error.to_string().contains("secret-provider-failure-marker"));
+        assert!(!format!("{error:?}").contains("secret-provider-failure-marker"));
+        assert_eq!(external.calls(), expected_calls(behavior));
+    }
+    let prepared = PreparedPublication::prepare(
+        signer.address(),
+        &resolver,
+        &expected(),
+        artifact(&signer, 2),
+        3,
+        RequestId::new([3; 32]).unwrap(),
+    )
+    .unwrap();
+    let signature: Vec<u8> = signer.sign_framed(prepared.signable_frame()).unwrap();
+    let changed = PreparedPublication::prepare(
+        signer.address(),
+        &resolver,
+        &expected(),
+        artifact(&signer, 3),
+        3,
+        RequestId::new([3; 32]).unwrap(),
+    )
+    .unwrap();
+    assert!(changed.finalize(signature).is_err());
+}
+
+#[test]
+fn prepared_publication_keeps_presign_publisher_and_context_refusals() {
+    use external_signer::{Behavior, TestSigner};
+    let signer: LocalSigner = LocalSigner::from_seed([7; 32]);
+    let resolver: HashSuiteResolver = local_publication_resolver(&expected()).unwrap();
+    let external: TestSigner = TestSigner::new([7; 32], Behavior::Valid);
+    let wrong_publisher: Address = LocalSigner::from_seed([8; 32]).address();
+    let publisher_result: Result<PublicationSubmission, ClientError> =
+        match PreparedPublication::prepare(
+            wrong_publisher,
+            &resolver,
+            &expected(),
+            artifact(&signer, 2),
+            3,
+            RequestId::new([3; 32]).unwrap(),
+        ) {
+            Ok(prepared) => prepared.sign_and_finalize_external(&external),
+            Err(error) => Err(error),
+        };
+    assert!(matches!(
+        publisher_result,
+        Err(ClientError::ExternalSignerAddressMismatch { .. })
+    ));
+    assert_eq!(external.calls(), 0);
+    let foreign = ExpectedProtocolContext::new(
+        ChainId::new("foreign").unwrap(),
+        ProtocolVersion::new(1),
+        Epoch::new(0),
+        HashSuiteId::new(1),
+        2,
+        1,
+        2,
+        AtomicityDomainId::new([1; 32]).unwrap(),
+    )
+    .unwrap();
+    let context_result: Result<PublicationSubmission, ClientError> =
+        match PreparedPublication::prepare(
+            signer.address(),
+            &resolver,
+            &foreign,
+            artifact(&signer, 2),
+            3,
+            RequestId::new([3; 32]).unwrap(),
+        ) {
+            Ok(prepared) => prepared.sign_and_finalize_external(&external),
+            Err(error) => Err(error),
+        };
+    assert!(context_result.is_err());
+    assert_eq!(external.calls(), 0);
+}
 use std::collections::VecDeque;
 use sunrise_edge_client::publication::{PublicationRequest, encode_publication_submission};
 use sunrise_edge_client::*;
@@ -745,21 +895,33 @@ fn malformed_oversized_and_trailing_query_frames_are_rejected() {
     // Malformed: not a canonical frame at all.
     let malformed: Client<FakeTransport> =
         client(response(200, QUERY_RESULT_MEDIA_TYPE, vec![0xff; 32]));
+    let malformed_error: ClientError = query(&malformed, &origin).unwrap_err();
     assert!(matches!(
-        query(&malformed, &origin),
-        Err(ClientError::PublicationQueryResult(_))
+        &malformed_error,
+        ClientError::PublicationQueryResult(PublicationQueryResultError::Publication(
+            PublicationError::Decoding(CanonicalDecodingError::InvalidMagic)
+        ))
     ));
+    assert_eq!(
+        malformed_error.to_string(),
+        "publication query result decoding failed: invalid canonical protocol magic"
+    );
+    let source: &(dyn Error + 'static) = malformed_error.source().unwrap();
+    assert_eq!(source.to_string(), "invalid canonical protocol magic");
+    assert!(source.source().is_none());
 
     // Oversized: exceeds `MAX_PUBLICATION_QUERY_RESULT_BYTES` before any
     // frame decoding is attempted.
     let oversized: Client<FakeTransport> = client(response(
         200,
         QUERY_RESULT_MEDIA_TYPE,
-        vec![0u8; node_core::publication::MAX_PUBLICATION_QUERY_RESULT_BYTES + 1],
+        vec![0u8; MAX_PUBLICATION_QUERY_RESULT_BYTES + 1],
     ));
     assert!(matches!(
         query(&oversized, &origin),
-        Err(ClientError::PublicationQueryResult(_))
+        Err(ClientError::PublicationQueryResult(
+            PublicationQueryResultError::Limit
+        ))
     ));
 
     // Trailing bytes appended after an otherwise well-formed frame.
@@ -770,6 +932,10 @@ fn malformed_oversized_and_trailing_query_frames_are_rejected() {
         client(response(200, QUERY_RESULT_MEDIA_TYPE, trailing));
     assert!(matches!(
         query(&trailing_client, &origin),
-        Err(ClientError::PublicationQueryResult(_))
+        Err(ClientError::PublicationQueryResult(
+            PublicationQueryResultError::Publication(PublicationError::Decoding(
+                CanonicalDecodingError::TrailingBytes(1)
+            ))
+        ))
     ));
 }

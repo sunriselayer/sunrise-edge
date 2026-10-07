@@ -85,9 +85,8 @@ use bonds::BondResourceId;
 use canonical_encoding::{decode_digest32, encode_digest32};
 use consensus::{
     AvailabilityCertificate, AvailabilityCertifier, ConsensusError, ConsensusSigner,
-    ConsensusVerifier, FastCertificate, FastVote, decode_availability_certificate,
+    FastCertificate, FastVote, decode_availability_certificate,
 };
-use crypto::{Ed25519Verifier, SignatureVerifier};
 use execution::local_execution::{CreatedObjectAuthority, LocalExecutionPolicy};
 use execution::paid_execution::{PaidContractEngine, PaidFeePolicy};
 use execution::protocol_custody::{FeeEscrowCreationCapability, ProtocolCustodyTarget};
@@ -364,33 +363,6 @@ fn invalid<T>(message: &'static str) -> FastPathResult<T> {
     Err(FastPathError::Invalid(message))
 }
 
-/// A [`ConsensusVerifier`] backed by the pinned Ed25519 verifier. Phase 1's
-/// durable validator set is restricted to Ed25519 members
-/// ([`install_validator_set`]); any other scheme fails closed here too, as
-/// defense in depth.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct FastPathEd25519Verifier;
-
-impl ConsensusVerifier for FastPathEd25519Verifier {
-    fn verify_framed(
-        &self,
-        _validator: ValidatorId,
-        scheme: SignatureSchemeId,
-        public_key: &[u8],
-        framed: &[u8],
-        signature: &[u8],
-    ) -> Result<bool, String> {
-        if scheme != SignatureSchemeId::Ed25519 {
-            return Err("fast-path phase 1 supports only Ed25519".to_string());
-        }
-        let verifier: Ed25519Verifier = Ed25519Verifier::from_verifying_key_bytes(public_key)
-            .map_err(|error| error.to_string())?;
-        verifier
-            .verify_framed(framed, signature)
-            .map_err(|error| error.to_string())
-    }
-}
-
 /// Decodes and structurally validates one [`FastPathValidatorSetRecord`] row
 /// into a [`ValidatorSet`]: rejects a non-Ed25519 member and a context that
 /// disagrees with `validator_context`. Shared by [`load_validator_set`]
@@ -523,7 +495,12 @@ fn require_publication_authority(
         "handoff-capable apply requires a verified availability certificate",
     ))?;
     let certificate: AvailabilityCertificate = decode_availability_certificate(bytes)?;
-    availability_certifier.verify_certificate(&certificate, &FastPathEd25519Verifier)?;
+    availability_certifier.verify_certificate(
+        &certificate,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
+    )?;
     let identity = &certificate.identity;
     if identity.domain != domain
         || identity.request_id != request_id
@@ -812,7 +789,12 @@ where
                 intent_context.epoch(),
                 validator_set,
             )?;
-            certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+            certifier.verify_vote(
+                &vote,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )?;
             if existing.prepared_generation.is_some() {
                 prepared_material::verify_prepared_material(
                     store, context, domain, resolver, history, &existing,
@@ -949,7 +931,12 @@ where
     let cast_verified_vote = || -> FastPathResult<FastVote> {
         let vote: FastVote =
             certifier.cast_vote(event_digest, commitment, locked_objects_digest, signer)?;
-        certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+        certifier.verify_vote(
+            &vote,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )?;
         Ok(vote)
     };
     // The installed committee permits only Ed25519. Its verified signatures
@@ -1461,7 +1448,12 @@ where
         intent_context.epoch(),
         validator_set.clone(),
     )?;
-    certifier.verify_certificate(&certificate, &FastPathEd25519Verifier)?;
+    certifier.verify_certificate(
+        &certificate,
+        &consensus::Ed25519ConsensusVerifier::new(
+            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ),
+    )?;
     if certificate.chain_id != chain
         || certificate.protocol_version != intent_context.protocol_version()
         || certificate.epoch != intent_context.epoch()

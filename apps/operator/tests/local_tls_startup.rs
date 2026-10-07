@@ -1,4 +1,4 @@
-//! DR-0199: actual original startup composition through real local TLS.
+//! DR-0199/0216: actual original startup and stopped rotation through local TLS.
 //!
 //! Real compiled author -> secret-free inspector -> four fresh SQLite
 //! preparations and preflights -> four compiled serving hosts, each behind its
@@ -35,9 +35,10 @@ use execution::paid_execution::{
 };
 use fees::Amount;
 use fees::reservation::{Admission, Settlement};
-use https_relay::HttpsRelay;
+use https_relay::{
+    FixtureCa, FixtureLeaf, HttpsRelay, PeerClose, authenticated_leaf, fixture_server_name,
+};
 use node_core::business_reconstruction::SourceBusinessSnapshot;
-use node_core::fast_path::FastPathEd25519Verifier;
 use node_core::genesis::VerifiedGenesisRoot;
 use node_core::{NodeDedupRecord, NodeResponseStatus};
 use objects::{Address, Object, ObjectId, Owner, ProtocolCustodyPurpose, encode_object};
@@ -45,8 +46,10 @@ use offline_genesis_fixture::{Fixture, field, hex, replace, success};
 use protocol_types::{AtomicityDomainId, Digest32, ValidatorId};
 use public_standard_asset::coin_amount;
 use runtime::{
-    Clock, DurableDomainStateStore, DurableOperationContext, DurableReadError,
-    StorageCorrelationId, StorageDeadline, SystemClock, VersionedStateValue, WriterFenceGeneration,
+    AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, Clock,
+    DurableCommitOutcome, DurableCommitRejection, DurableDomainStateStore, DurableOperationContext,
+    DurableReadError, StateMutation, StateMutationEntry, StateReadAssertion, StorageCorrelationId,
+    StorageDeadline, SystemClock, VersionedStateValue, WriterFenceGeneration,
 };
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 use std::{
@@ -54,7 +57,7 @@ use std::{
     ffi::OsString,
     fs,
     io::{ErrorKind, Write},
-    net::SocketAddr,
+    net::{SocketAddr, TcpListener},
     num::NonZeroUsize,
     path::{Path, PathBuf},
     process::{Command, Output},
@@ -63,7 +66,7 @@ use std::{
 };
 use sunrise_edge_client::{
     Client, ClientError, HttpNextNonceQueryResult, HttpObjectQueryResult, HttpReceiptQueryResult,
-    RemoteTlsHttpTransport, RequestId, TrustedFastVoteGenesis,
+    RemoteTlsHttpTransport, RequestId, TransportError, TrustedFastVoteGenesis,
     load_trusted_fastvote_genesis_with_profile,
 };
 use sunrise_edge_operator::business_snapshot::capture_source_business_snapshot;
@@ -90,6 +93,8 @@ const COMMITMENT_MISMATCH: &str =
 const MIXED_COHORT: &str =
     "network config cannot mix loopback-plaintext and remote-TLS peers in one cohort";
 const TLS_PEER_REFUSAL: &str = "transport error: TLS protocol error: invalid peer certificate: ";
+const TLS_HANDSHAKE_CLOSED: &str =
+    "transport error: connection closed before the TLS handshake completed";
 const INSUFFICIENT_QUORUM: &str =
     "insufficient FastVote quorum: no candidate execution outcome reached quorum voting power";
 const PREPARE_REFUSED: &str = "status=failed reason=unexpected HTTP status 400: fastvote-rejected";
@@ -336,9 +341,10 @@ fn author_inspect_and_prepare() -> Network {
     }
 }
 
-/// One actual compiled serving host; the guard kills and reaps it on drop.
+/// One actual compiled host; explicit quiet SIGINT is the stop success oracle.
+/// The guard kills and reaps only if an earlier test failure unwinds.
 struct Host {
-    _guard: ChildGuard,
+    guard: ChildGuard,
     address: SocketAddr,
 }
 
@@ -379,10 +385,7 @@ fn start_hosts(network: &Network, generation: u64) -> Vec<Host> {
             );
             let address: SocketAddr = field(&line, "listen=").parse().unwrap();
             assert!(address.ip().is_loopback());
-            Host {
-                _guard: guard,
-                address,
-            }
+            Host { guard, address }
         })
         .collect()
 }
@@ -392,13 +395,22 @@ fn start_hosts(network: &Network, generation: u64) -> Vec<Host> {
 struct Tls {
     relays: Vec<HttpsRelay>,
     ca_files: Vec<PathBuf>,
+    cas: Vec<FixtureCa>,
+    leaves: Vec<FixtureLeaf>,
 }
 
 fn start_tls(hosts: &[Host], directory: &Path) -> Tls {
-    let relays: Vec<HttpsRelay> = hosts
-        .iter()
-        .map(|host: &Host| HttpsRelay::new(host.address))
-        .collect();
+    let mut relays: Vec<HttpsRelay> = Vec::with_capacity(VALIDATORS);
+    let mut cas: Vec<FixtureCa> = Vec::with_capacity(VALIDATORS);
+    let mut leaves: Vec<FixtureLeaf> = Vec::with_capacity(VALIDATORS);
+    for host in hosts {
+        let server_name: String = fixture_server_name();
+        let ca: FixtureCa = FixtureCa::new(&format!("{server_name}-issuer-a"));
+        let leaf: FixtureLeaf = ca.issue_leaf(&server_name);
+        relays.push(HttpsRelay::bind(host.address, &leaf));
+        cas.push(ca);
+        leaves.push(leaf);
+    }
     let ca_files: Vec<PathBuf> = relays
         .iter()
         .enumerate()
@@ -422,7 +434,12 @@ fn start_tls(hosts: &[Host], directory: &Path) -> Tls {
         VALIDATORS,
         "leaf DNS names must differ"
     );
-    Tls { relays, ca_files }
+    Tls {
+        relays,
+        ca_files,
+        cas,
+        leaves,
+    }
 }
 
 fn peer_line(
@@ -458,8 +475,84 @@ fn write_config(path: &Path, lines: &[String]) -> PathBuf {
 fn forwarded_posts(relays: &[HttpsRelay]) -> Vec<usize> {
     relays
         .iter()
-        .map(|relay: &HttpsRelay| relay.posts.load(Ordering::SeqCst))
+        .map(|relay: &HttpsRelay| relay.counters.posts.load(Ordering::SeqCst))
         .collect()
+}
+
+fn assert_all_forwarded(before: &[usize], relays: &[HttpsRelay], label: &str) {
+    assert_eq!(before.len(), VALIDATORS);
+    assert_eq!(relays.len(), VALIDATORS);
+    for (index, (old, new)) in before.iter().zip(forwarded_posts(relays)).enumerate() {
+        assert!(
+            new > *old,
+            "{label}: relay {index} forwarded no POST to its actual host"
+        );
+    }
+}
+
+fn served_leaves(tls: &Tls) -> Vec<Vec<u8>> {
+    assert_eq!(tls.relays.len(), VALIDATORS);
+    assert_eq!(tls.leaves.len(), VALIDATORS);
+    tls.relays
+        .iter()
+        .zip(&tls.leaves)
+        .map(|(relay, expected): (&HttpsRelay, &FixtureLeaf)| {
+            let received: Vec<u8> =
+                authenticated_leaf(relay.addr, &relay.server_name, &relay.ca_der);
+            assert_eq!(
+                received, expected.der,
+                "actual authenticated received leaf DER"
+            );
+            assert!(relay.counters.accepted.load(Ordering::SeqCst) > 0);
+            received
+        })
+        .collect()
+}
+
+fn cli_context(relay: &HttpsRelay, ca: &Path) -> Output {
+    run_cli(vec![
+        "context".into(),
+        "--endpoint".into(),
+        relay.addr.to_string().into(),
+        "--tls-server-name".into(),
+        relay.server_name.clone().into(),
+        "--tls-ca-cert-der-file".into(),
+        ca.as_os_str().to_owned(),
+    ])
+}
+
+/// SDK canonical context and deterministic compiled CLI context, for every peer.
+fn contexts(tls: &Tls) -> Vec<(Vec<u8>, Vec<u8>)> {
+    tls.relays
+        .iter()
+        .zip(&tls.ca_files)
+        .map(|(relay, ca): (&HttpsRelay, &PathBuf)| {
+            let sdk: Vec<u8> = relay_client(relay)
+                .query_context()
+                .unwrap()
+                .encode()
+                .unwrap();
+            let output: Output = cli_context(relay, ca);
+            assert!(
+                output.status.success(),
+                "compiled context: {}",
+                lossy(&output.stderr)
+            );
+            assert!(output.stderr.is_empty());
+            assert!(!output.stdout.is_empty());
+            (sdk, output.stdout)
+        })
+        .collect()
+}
+
+fn assert_context_refused(output: Output, diagnostic: &str) {
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr: String = lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("error=") && stderr.contains(diagnostic),
+        "{stderr}"
+    );
 }
 
 fn relay_client(relay: &HttpsRelay) -> Client<RemoteTlsHttpTransport> {
@@ -752,6 +845,8 @@ struct StaleCapability {
     store: SqliteDurableStore,
     fence: WriterFenceGeneration,
     key: Vec<u8>,
+    marker: VersionedStateValue,
+    transaction: AtomicStateTransaction,
 }
 
 impl StaleCapability {
@@ -767,7 +862,32 @@ impl StaleCapability {
             current.value().is_some(),
             "the held capability reads before restart"
         );
-        Self { store, fence, key }
+        // Assemble before restart from a genuine present key/revision/value.
+        // This nonempty valid CAS/Put would rewrite the same marker bytes;
+        // neither an invalid envelope nor an expired deadline is a substitute.
+        let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+            network.domain,
+            AtomicStateReadSet::new(vec![
+                StateReadAssertion::new(key.clone(), current.revision()).unwrap(),
+            ])
+            .unwrap(),
+            AtomicStateMutationSet::new(vec![
+                StateMutationEntry::new(
+                    key.clone(),
+                    StateMutation::Put(current.value().unwrap().to_vec()),
+                )
+                .unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        Self {
+            store,
+            fence,
+            key,
+            marker: current,
+            transaction,
+        }
     }
 
     fn assert_fenced(&self, domain: AtomicityDomainId, active: u64) {
@@ -785,6 +905,35 @@ impl StaleCapability {
                 self.fence.get()
             ),
         }
+        let active_fence: WriterFenceGeneration = self.store.writer_fence().unwrap();
+        assert_eq!(active_fence.get(), active);
+        let current: VersionedStateValue = self
+            .store
+            .get_versioned_durable(&operation(active_fence, 0x73), domain, &self.key)
+            .unwrap();
+        assert_eq!(
+            current, self.marker,
+            "captured CAS remains valid under the active fence"
+        );
+        match self
+            .store
+            .commit_durable(&operation(self.fence, 0x74), self.transaction.clone())
+        {
+            DurableCommitOutcome::Rejected(DurableCommitRejection::WriterFenced {
+                active_generation,
+            }) => {
+                assert_eq!(active_generation.get(), active);
+            }
+            other => panic!("valid stale commit must be writer-fenced, got {other:?}"),
+        }
+        let after: VersionedStateValue = self
+            .store
+            .get_versioned_durable(&operation(active_fence, 0x75), domain, &self.key)
+            .unwrap();
+        assert_eq!(
+            after, self.marker,
+            "stale commit changed no marker revision/value"
+        );
     }
 }
 
@@ -1161,7 +1310,12 @@ fn verify_saved_artifacts(network: &Network, saved: &Saved, nonce: u64) -> Commi
     assert!(trusted.commitment_profile().is_logical());
     trusted
         .certifier()
-        .verify_certificate(&certificate, &FastPathEd25519Verifier)
+        .verify_certificate(
+            &certificate,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .unwrap();
     assert_eq!(&certificate.chain_id, network.fixture.context.chain_id());
     assert_eq!(
@@ -1185,7 +1339,12 @@ fn verify_saved_artifacts(network: &Network, saved: &Saved, nonce: u64) -> Commi
     )
     .unwrap();
     availability_certifier
-        .verify_certificate(&availability, &FastPathEd25519Verifier)
+        .verify_certificate(
+            &availability,
+            &consensus::Ed25519ConsensusVerifier::new(
+                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+            ),
+        )
         .unwrap();
     assert_eq!(availability.identity.domain, network.domain);
     assert_eq!(availability.identity.request_id, signed.intent.request_id);
@@ -1449,6 +1608,164 @@ fn assert_original_intact(
     assert_eq!(&observed, expected, "{label}: canonical query bytes");
 }
 
+fn refuse_peer_close(network: &Network, host: &Host, tls: &mut Tls, config: &Path, nonce: u64) {
+    let endpoint: SocketAddr = tls.relays[0].addr;
+    let name: String = tls.relays[0].server_name.clone();
+    let listener: TcpListener = tls.relays.remove(0).stop();
+    let close: PeerClose = PeerClose::start(listener, &name);
+    let outputs: Outputs = Outputs::new(&network.artifacts_dir, "peer-close");
+    let args: Vec<OsString> = transfer_args(
+        network,
+        config,
+        endpoint,
+        &network.owner_seed,
+        [0x07; 32],
+        nonce,
+        &outputs,
+    );
+    // The selected endpoint is the finite worker, not any of the three live
+    // relays. Its successful join additionally proves exactly one parsed SNI
+    // ClientHello and zero handshake/HTTP/POST progress without any backend.
+    refused(
+        network,
+        &tls.relays,
+        "selected peer pre-handshake close",
+        args,
+        &outputs,
+        &[TLS_HANDSHAKE_CLOSED],
+    );
+    let listener: TcpListener = close.finish();
+    assert_eq!(listener.local_addr().unwrap(), endpoint);
+    // No host stops or fence advances during this transport-only refusal.
+    tls.relays
+        .insert(0, HttpsRelay::start(listener, host.address, &tls.leaves[0]));
+}
+
+fn cutover_peer_zero(
+    network: &Network,
+    host: &Host,
+    tls: &mut Tls,
+    config: &Path,
+    nonce: u64,
+) -> PathBuf {
+    let old_client: Client<RemoteTlsHttpTransport> = relay_client(&tls.relays[0]);
+    let old_sdk_context: Vec<u8> = old_client.query_context().unwrap().encode().unwrap();
+    let old_cli_context: Output = cli_context(&tls.relays[0], &tls.ca_files[0]);
+    assert!(
+        old_cli_context.status.success(),
+        "{}",
+        lossy(&old_cli_context.stderr)
+    );
+    let endpoint: SocketAddr = tls.relays[0].addr;
+    let name: String = tls.relays[0].server_name.clone();
+    let old_ca_file: PathBuf = tls.ca_files[0].clone();
+    let old_ca_bytes: Vec<u8> = fs::read(&old_ca_file).unwrap();
+    let old_config_bytes: Vec<u8> = fs::read(config).unwrap();
+    let old_lines: Vec<String> = tls_lines(network, tls);
+    let old_leaf: Vec<u8> = tls.leaves[0].der.clone();
+    let ca: FixtureCa = FixtureCa::new(&format!("{name}-issuer-b"));
+    assert_ne!(
+        ca.subject, tls.cas[0].subject,
+        "B_0 must have a distinct issuer DN"
+    );
+    assert_ne!(ca.der, tls.cas[0].der);
+    let leaf: FixtureLeaf = ca.issue_leaf(&name);
+    assert_ne!(leaf.der, old_leaf);
+    assert_ne!(leaf.public_key_der, tls.leaves[0].public_key_der);
+    let listener: TcpListener = tls.relays.remove(0).stop();
+    tls.relays
+        .insert(0, HttpsRelay::start(listener, host.address, &leaf));
+    assert_eq!(tls.relays[0].addr, endpoint);
+    assert_eq!(tls.relays[0].server_name, name);
+    tls.cas[0] = ca;
+    tls.leaves[0] = leaf;
+
+    // The original config and immutable A_0 trust file still point at this
+    // exact endpoint/DNS; no backend restart, root repair or protocol re-pin.
+    let before: Vec<SourceBusinessSnapshot> = snapshots(network);
+    let posts: Vec<usize> = forwarded_posts(&tls.relays);
+    let accepted_before: usize = tls.relays[0].counters.accepted.load(Ordering::SeqCst);
+    match old_client.query_context() {
+        Err(ClientError::Transport(TransportError::TlsProtocol(
+            rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+        ))) => {}
+        other => panic!("held A_0 SDK trust must refuse B_0 with UnknownIssuer: {other:?}"),
+    }
+    let accepted_sdk: usize = tls.relays[0].counters.accepted.load(Ordering::SeqCst);
+    assert!(
+        accepted_sdk > accepted_before,
+        "held old SDK made no connection"
+    );
+    let unknown_issuer: String = format!("{TLS_PEER_REFUSAL}UnknownIssuer");
+    assert_context_refused(cli_context(&tls.relays[0], &old_ca_file), &unknown_issuer);
+    let accepted_context: usize = tls.relays[0].counters.accepted.load(Ordering::SeqCst);
+    assert!(
+        accepted_context > accepted_sdk,
+        "fresh old-trust CLI made no connection"
+    );
+    let outputs: Outputs = Outputs::new(&network.artifacts_dir, "old-ca-after-cutover");
+    let args: Vec<OsString> = transfer_args(
+        network,
+        config,
+        endpoint,
+        &network.owner_seed,
+        [0x08; 32],
+        nonce,
+        &outputs,
+    );
+    refused(
+        network,
+        &tls.relays,
+        "selected peer old CA after cutover",
+        args,
+        &outputs,
+        &[unknown_issuer.as_str()],
+    );
+    assert!(tls.relays[0].counters.accepted.load(Ordering::SeqCst) > accepted_context);
+    assert_eq!(tls.relays[0].counters.requests.load(Ordering::SeqCst), 0);
+    assert_eq!(forwarded_posts(&tls.relays), posts);
+    assert_unchanged(&before, &snapshots(network), "old trust refusals");
+    assert_eq!(fs::read(&old_ca_file).unwrap(), old_ca_bytes);
+    assert_eq!(fs::read(config).unwrap(), old_config_bytes);
+
+    // Explicit new trust is a new immutable file/config, never an overwrite.
+    let ca_file: PathBuf = network.tls_dir.join("validator-0-ca-b.der");
+    write_private_new(&ca_file, &tls.cas[0].der);
+    tls.ca_files[0] = ca_file;
+    let mut expected_lines: Vec<String> = old_lines.clone();
+    expected_lines[0] = peer_line(network, 0, endpoint, &name, &tls.ca_files[0]);
+    let new_lines: Vec<String> = tls_lines(network, tls);
+    assert_eq!(
+        new_lines, expected_lines,
+        "only peer-0 CA-file field may change"
+    );
+    let old_fields: Vec<&str> = old_lines[0].split_whitespace().collect();
+    let new_fields: Vec<&str> = new_lines[0].split_whitespace().collect();
+    assert_eq!(old_fields.len(), 4);
+    assert_eq!(new_fields.len(), 4);
+    assert_eq!(&old_fields[..3], &new_fields[..3]);
+    assert_ne!(old_fields[3], new_fields[3]);
+    let config: PathBuf = write_config(&network.tls_dir.join("network-ca-b.conf"), &new_lines);
+    let received: Vec<u8> = authenticated_leaf(endpoint, &name, &tls.cas[0].der);
+    assert_eq!(received, tls.leaves[0].der);
+    assert_ne!(received, old_leaf);
+    let new_sdk_context: Vec<u8> = relay_client(&tls.relays[0])
+        .query_context()
+        .unwrap()
+        .encode()
+        .unwrap();
+    assert_eq!(new_sdk_context, old_sdk_context);
+    let new_cli_context: Output = cli_context(&tls.relays[0], &tls.ca_files[0]);
+    assert!(
+        new_cli_context.status.success(),
+        "{}",
+        lossy(&new_cli_context.stderr)
+    );
+    assert_eq!(new_cli_context.stdout, old_cli_context.stdout);
+    assert_unchanged(&before, &snapshots(network), "explicit new trust context");
+    config
+}
+
 #[test]
 fn actual_local_tls_startup_certifies_a_cli_transfer_refuses_bad_pins_and_replays_across_restart() {
     let network: Network = author_inspect_and_prepare();
@@ -1458,6 +1775,19 @@ fn actual_local_tls_startup_certifies_a_cli_transfer_refuses_bad_pins_and_replay
         &network.tls_dir.join("network.conf"),
         &tls_lines(&network, &tls),
     );
+    let initial_leaves: Vec<Vec<u8>> = served_leaves(&tls);
+    let initial_contexts: Vec<(Vec<u8>, Vec<u8>)> = contexts(&tls);
+    let original_lines: Vec<String> = tls_lines(&network, &tls);
+    let original_inputs: Vec<(PathBuf, Vec<u8>)> = std::iter::once(network.genesis.clone())
+        .chain(network.signing_keys.iter().cloned())
+        .chain(std::iter::once(network.owner_seed.clone()))
+        .chain(tls.ca_files.iter().cloned())
+        .chain(std::iter::once(config.clone()))
+        .map(|path: PathBuf| {
+            let bytes: Vec<u8> = fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
     let sender: Address = Address::new(network.fixture.owner);
     let request: RequestId = RequestId::new(TRANSFER_REQUEST).unwrap();
     let genesis_ids: [ObjectId; 2] = [ObjectId::new(APP_COIN), ObjectId::new(FEE_COIN)];
@@ -1508,12 +1838,7 @@ fn actual_local_tls_startup_certifies_a_cli_transfer_refuses_bad_pins_and_replay
             .count(),
         VALIDATORS
     );
-    for (index, (before, after)) in posts.iter().zip(forwarded_posts(&tls.relays)).enumerate() {
-        assert!(
-            after > *before,
-            "relay {index} forwarded no POST to its actual host"
-        );
-    }
+    assert_all_forwarded(&posts, &tls.relays, "ordinary transfer");
     let saved: Saved = Saved::read(&first);
     let committed: Committed = verify_saved_artifacts(&network, &saved, nonce);
     let ids: Vec<ObjectId> = observed_ids(&committed.result);
@@ -1522,6 +1847,7 @@ fn actual_local_tls_startup_certifies_a_cli_transfer_refuses_bad_pins_and_replay
 
     // Exact saved intent/certificate/availability replay in the same boot.
     let before_replay: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    let posts: Vec<usize> = forwarded_posts(&tls.relays);
     let same_boot: Outputs = Outputs::new(&network.artifacts_dir, "same-boot-replay");
     let output: Output = run_cli(replay_args(
         &network,
@@ -1531,6 +1857,7 @@ fn actual_local_tls_startup_certifies_a_cli_transfer_refuses_bad_pins_and_replay
         &same_boot,
     ));
     assert_exact_replay(&output, &same_boot, &saved, "same-boot replay");
+    assert_all_forwarded(&posts, &tls.relays, "same-boot replay");
     assert_original_intact(
         &network,
         &tls.relays,
@@ -1541,29 +1868,76 @@ fn actual_local_tls_startup_certifies_a_cli_transfer_refuses_bad_pins_and_replay
         "same-boot replay",
     );
 
-    // Stop and reopen every actual host on its own original files.
+    // Issue fresh leaves under retained authorities, then quietly stop/join
+    // every relay and SIGINT/reap each exact owned host. Keep every listener,
+    // client endpoint, DNS, immutable CA file and original config unchanged.
     let stale: Vec<StaleCapability> = (0..VALIDATORS)
         .map(|index: usize| StaleCapability::hold(&network, index))
         .collect();
     let before_restart: Vec<SourceBusinessSnapshot> = snapshots(&network);
-    drop(tls);
-    drop(hosts);
+    let new_leaves: Vec<FixtureLeaf> = tls
+        .cas
+        .iter()
+        .zip(&tls.leaves)
+        .map(|(ca, old): (&FixtureCa, &FixtureLeaf)| {
+            let leaf: FixtureLeaf = ca.issue_leaf(&old.server_name);
+            assert_eq!(leaf.ca_der, old.ca_der);
+            assert_eq!(leaf.ca_der, ca.der);
+            assert_eq!(leaf.server_name, old.server_name);
+            assert_ne!(leaf.der, old.der);
+            assert_ne!(leaf.public_key_der, old.public_key_der);
+            leaf
+        })
+        .collect();
+    let Tls {
+        relays,
+        ca_files,
+        cas,
+        leaves: old_leaves,
+    } = tls;
+    let listeners: Vec<TcpListener> = relays.into_iter().map(HttpsRelay::stop).collect();
+    for host in hosts {
+        host.guard.stop_orderly(PROCESS_DEADLINE);
+    }
     let hosts: Vec<Host> = start_hosts(&network, 3);
     for capability in &stale {
         capability.assert_fenced(network.domain, 3);
     }
     let reopened: Vec<SourceBusinessSnapshot> = snapshots(&network);
     assert_reopened(&before_restart, &reopened);
-    // Only endpoint coordinates and trust configuration are rebuilt.
-    let restart_dir: PathBuf = network.tls_dir.join("restart");
-    fs::create_dir(&restart_dir).unwrap();
-    let tls: Tls = start_tls(&hosts, &restart_dir);
-    let config: PathBuf = write_config(
-        &restart_dir.join("network.conf"),
-        &tls_lines(&network, &tls),
-    );
+    let relays: Vec<HttpsRelay> = listeners
+        .into_iter()
+        .zip(&hosts)
+        .zip(&new_leaves)
+        .map(
+            |((listener, host), leaf): ((TcpListener, &Host), &FixtureLeaf)| {
+                HttpsRelay::start(listener, host.address, leaf)
+            },
+        )
+        .collect();
+    let mut tls: Tls = Tls {
+        relays,
+        ca_files,
+        cas,
+        leaves: new_leaves,
+    };
+    assert_eq!(tls_lines(&network, &tls), original_lines);
+    let received: Vec<Vec<u8>> = served_leaves(&tls);
+    for (index, leaf) in received.iter().enumerate() {
+        assert_ne!(leaf, &initial_leaves[index]);
+        assert_ne!(leaf, &old_leaves[index].der);
+    }
+    for (path, bytes) in &original_inputs {
+        assert!(
+            &fs::read(path).unwrap() == bytes,
+            "same-CA restart changed a pinned input: {}",
+            path.display()
+        );
+    }
+    assert_eq!(contexts(&tls), initial_contexts);
     assert_eq!(observe(&tls.relays, &ids, request, sender), committed_view);
     let after_restart: Outputs = Outputs::new(&network.artifacts_dir, "restart-replay");
+    let posts: Vec<usize> = forwarded_posts(&tls.relays);
     let output: Output = run_cli(replay_args(
         &network,
         &config,
@@ -1572,6 +1946,7 @@ fn actual_local_tls_startup_certifies_a_cli_transfer_refuses_bad_pins_and_replay
         &after_restart,
     ));
     assert_exact_replay(&output, &after_restart, &saved, "restart replay");
+    assert_all_forwarded(&posts, &tls.relays, "same-CA leaf rotation replay");
     assert_original_intact(
         &network,
         &tls.relays,
@@ -1580,6 +1955,84 @@ fn actual_local_tls_startup_certifies_a_cli_transfer_refuses_bad_pins_and_replay
         &reopened,
         &committed_view,
         "restart replay",
+    );
+
+    // Finite TLS peer failure, then a separate explicit CA trust migration.
+    // These restart no SQLite host and therefore must retain generation 3.
+    let before_transport: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    refuse_peer_close(&network, &hosts[0], &mut tls, &config, nonce);
+    assert_original_intact(
+        &network,
+        &tls.relays,
+        &first,
+        &saved,
+        &before_transport,
+        &committed_view,
+        "finite peer close",
+    );
+    let config: PathBuf = cutover_peer_zero(&network, &hosts[0], &mut tls, &config, nonce);
+    assert_eq!(contexts(&tls), initial_contexts);
+    let _received: Vec<Vec<u8>> = served_leaves(&tls);
+    let ca_replay: Outputs = Outputs::new(&network.artifacts_dir, "ca-cutover-replay");
+    let posts: Vec<usize> = forwarded_posts(&tls.relays);
+    let output: Output = run_cli(replay_args(
+        &network,
+        &config,
+        &first.intent,
+        Some(&first),
+        &ca_replay,
+    ));
+    assert_exact_replay(&output, &ca_replay, &saved, "explicit CA cutover replay");
+    assert_all_forwarded(&posts, &tls.relays, "explicit CA cutover replay");
+    assert_original_intact(
+        &network,
+        &tls.relays,
+        &first,
+        &saved,
+        &before_transport,
+        &committed_view,
+        "explicit CA cutover replay",
+    );
+
+    // Authenticated new TLS still cannot replace an independent domain pin.
+    let foreign: [u8; 32] = [0x62; 32];
+    let domain_refusal: Outputs = Outputs::new(&network.artifacts_dir, "new-ca-wrong-domain");
+    let mut args: Vec<OsString> = transfer_args(
+        &network,
+        &config,
+        tls.relays[0].addr,
+        &network.owner_seed,
+        [0x09; 32],
+        nonce,
+        &domain_refusal,
+    );
+    replace(&mut args, "--expected-domain", hex(&foreign).into());
+    let mismatch: String = format!(
+        "remote /v1/context domain {} disagrees with locally expected domain {}",
+        hex(&DOMAIN),
+        hex(&foreign),
+    );
+    let requests: usize = tls.relays[0].counters.requests.load(Ordering::SeqCst);
+    refused(
+        &network,
+        &tls.relays,
+        "new CA remote domain pin mismatch",
+        args,
+        &domain_refusal,
+        &[mismatch.as_str()],
+    );
+    assert!(
+        tls.relays[0].counters.requests.load(Ordering::SeqCst) > requests,
+        "domain refusal must follow actual authenticated HTTP context"
+    );
+    assert_original_intact(
+        &network,
+        &tls.relays,
+        &first,
+        &saved,
+        &before_transport,
+        &committed_view,
+        "new CA remote domain refusal",
     );
 
     // A genuinely different signed intent reusing the committed request ID.
@@ -1671,4 +2124,17 @@ fn actual_local_tls_startup_certifies_a_cli_transfer_refuses_bad_pins_and_replay
         &committed_view,
         "conflicting CLI replay",
     );
+    for (path, bytes) in original_inputs {
+        assert!(
+            fs::read(&path).unwrap() == bytes,
+            "original pinned input changed: {}",
+            path.display()
+        );
+    }
+    for relay in tls.relays {
+        let _listener: TcpListener = relay.stop();
+    }
+    for host in hosts {
+        host.guard.stop_orderly(PROCESS_DEADLINE);
+    }
 }

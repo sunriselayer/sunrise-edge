@@ -27,9 +27,8 @@ use execution::paid_execution::{
     MAX_SIGNED_PAID_INTENT_BYTES, PaidFeePolicy, decode_paid_fee_policy, decode_signed_paid_intent,
     encode_paid_fee_policy,
 };
-use execution::publication::PublicationContext;
+use execution::publication::{PublicationContext, encode_publication_query_result};
 use fastvote::{DynConsensusSigner, fastpath_error_response, publication_retention_error_response};
-use node_core::fast_path::FastPathEd25519Verifier;
 use node_core::fee_claims::{FeeClaimError, FeeClaimPreparationRequest, PreparedFeeClaim};
 use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::{
@@ -675,7 +674,12 @@ async fn ordered_proposal_route<S: SuccessorStore>(
                 if env
                     .policy
                     .engine()
-                    .verify_proposal(&proposal.proposal, &FastPathEd25519Verifier)
+                    .verify_proposal(
+                        &proposal.proposal,
+                        &consensus::Ed25519ConsensusVerifier::new(
+                            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                        ),
+                    )
                     .is_err()
                 {
                     return error_response(
@@ -758,7 +762,12 @@ async fn ordered_certificate<S: SuccessorStore>(
                 if env
                     .policy
                     .engine()
-                    .verify_certificate(&certificate, &FastPathEd25519Verifier)
+                    .verify_certificate(
+                        &certificate,
+                        &consensus::Ed25519ConsensusVerifier::new(
+                            consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                        ),
+                    )
                     .is_err()
                 {
                     return error_response(
@@ -1341,15 +1350,13 @@ async fn query_publication_route<S: SuccessorStore>(
                     &host.history,
                     &origin,
                 ) {
-                    Ok(Some(result)) => {
-                        match node_core::publication::encode_publication_query_result(&result) {
-                            Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
-                            Err(_) => error_response(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "publication-result-encoding",
-                            ),
-                        }
-                    }
+                    Ok(Some(result)) => match encode_publication_query_result(&result) {
+                        Ok(bytes) => bytes_response(QUERY_RESULT_MEDIA_TYPE, bytes),
+                        Err(_) => error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "publication-result-encoding",
+                        ),
+                    },
                     Ok(None) => error_response(StatusCode::NOT_FOUND, "publication-not-found"),
                     Err(node_core::publication::PublicationAdmissionError::Node(error)) => {
                         query_node_error(error)

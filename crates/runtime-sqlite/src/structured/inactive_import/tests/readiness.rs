@@ -425,7 +425,7 @@ fn readiness_sqlite_landed_and_unlanded_commit_reply_loss_reconcile_exact_slot()
         let value: ReadinessRecord = record(&pin, &progress, &token, 10);
         drop(store);
         let connection: Connection = Connection::open(&db.0).unwrap();
-        configure(&connection).unwrap();
+        crate::native_connection::configure_writable(&connection).unwrap();
         let engine: SqlDurableEngine<LostCommitBackend> = SqlDurableEngine::new(
             LostCommitBackend {
                 inner: NativeSqlBackend::new(connection),
@@ -551,7 +551,7 @@ fn readiness_sqlite_length_first_corruption_tombstone_and_absent_recreation() {
         .unwrap();
     connection.execute("UPDATE durable_conditional_readiness SET status = 1, record = zeroblob(16385) WHERE slot = ?1", params![key]).unwrap();
     let probe_connection: Connection = Connection::open(&db.0).unwrap();
-    configure(&probe_connection).unwrap();
+    crate::native_connection::configure_writable(&probe_connection).unwrap();
     let full_reads: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
     let probe: ProbeBackend = ProbeBackend {
         inner: NativeSqlBackend::new(probe_connection),
@@ -787,7 +787,7 @@ fn readiness_sqlite_ambiguous_protected_rows_refuse_without_loading_record() {
             .unwrap();
     }
     let probe_connection: Connection = Connection::open(&db.0).unwrap();
-    configure(&probe_connection).unwrap();
+    crate::native_connection::configure_writable(&probe_connection).unwrap();
     let full_reads: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
     let engine: SqlDurableEngine<ProbeBackend> = SqlDurableEngine::new(
         ProbeBackend {
