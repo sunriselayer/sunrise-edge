@@ -350,6 +350,15 @@ explicitly approves a documented scope change.
   activation. Actual Phase 16/17 provider criteria remain
   required for advertised supported profiles; a local adapter test is not provider
   certification. Narrowing historical all-provider release scope needs approval.
+  Accepted [DR-0213](docs/architecture/decisions/0213-native-release-artifact-evidence.md)
+  has complete independent design approval for one bounded local Native release
+  evidence tool: exact source/tool/dependency inputs, eleven selected binaries,
+  two fresh sequential offline builds, complete byte comparisons and retained
+  incomplete failure evidence. Actual locked archives, including required GNU
+  long-name records, were inspected before acceptance. Implementation and real
+  rebuilding are still pending; no fixture, source inventory or design approval
+  is execution, provider qualification or complete M7 evidence. Keep the current
+  full required acceptance owner isolated and coordinate any build budget.
 - [ ] **M8 — public testnet and final go/no-go:** complete Delivery 4 and collect
   actual public-operation/recovery evidence; review all remaining experimental,
   unsupported, mock and deferred items against the production criteria. Mainnet

@@ -112,6 +112,13 @@ dispatch and distinguishes operator commit ambiguity; the shared engine still
 owns logical state and namespace decisions. Read-only blob inspection does not
 acquire initialization or lifecycle authority.
 
+[DR-0213](decisions/0213-native-release-artifact-evidence.md) assigns bounded
+release provenance and same-host artifact comparison to one local tooling owner.
+It records the actual Native binaries, source/dependency/tool inputs and two
+fresh output trees; it grants no runtime, signing or release authority. A
+source-download cache is not an accepted compiler-output cache, and local byte
+equality is not provider certification or complete M7 acceptance.
+
 ## Handoff-specific ownership
 
 Use the accepted [epoch-handoff](epoch-handoff.md) authority chain:

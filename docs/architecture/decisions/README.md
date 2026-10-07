@@ -106,6 +106,7 @@
 - [DR-0207: local native, streamed relay and SDK integration](0207-local-native-sdk-relay-integration.md)
 - [DR-0208: Native SQLite first and provider-independent protected signing](0208-native-sqlite-first-and-protected-signing.md)
 - [DR-0210: Native SQLite durability and lock-safe file identity](0210-native-sqlite-connection-ownership.md)
+- [DR-0213: bounded Native release artifact evidence](0213-native-release-artifact-evidence.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong
