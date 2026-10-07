@@ -51,8 +51,11 @@ has no separate node-core privilege.
 - Operator binaries currently use explicit local key-file signers. The real
   loopback TLS/CLI acceptance uses disposable keys and a local relay. It does
   not certify mainnet key custody, production PKI rotation or a deployed proxy.
-  Historical composition intentionally has no signing capability. Ledger's
-  incomplete release gate is not closed by local signing success.
+  Historical composition intentionally has no signing capability.
+  [DR-0208](decisions/0208-native-sqlite-first-and-protected-signing.md) replaces
+  the Ledger-specific product prerequisite, not key protection, trusted content
+  review or recovery/rotation/revocation. Local signing success qualifies neither
+  that protected-signing boundary nor a future Ledger product.
 
 ## Audit and release selection
 

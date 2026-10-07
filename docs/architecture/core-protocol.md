@@ -445,8 +445,13 @@ ordering, FastVote/FastCertificate, certificate publication, and every
 externally accepted event family's authenticated/authorized ingress are
 implemented and atomically composed with the authenticated transaction where
 protocol semantics require it; independently, the CLI-First Node Production
-Gate's remaining S4/S5 and the independent security/release gates must also be
-completed. The bounded S3 uniform ordinary-asset fee composition
+Gate's signing/S5 and the independent security/release gates must also be
+completed. For the selected non-Ledger profile,
+[DR-0208](decisions/0208-native-sqlite-first-and-protected-signing.md) replaces
+only the Ledger-specific S4 product prerequisite with independently qualified
+protected signing, content verification and recovery/rotation/revocation; it
+does not waive the other activation gates. Ledger product qualification remains
+separate. The bounded S3 uniform ordinary-asset fee composition
 ([DR-0087](decisions/0081-0087-cli-first-roadmap.md)) and
 the additive owned-effects/preinstalled-WASM module-object effects entrypoints
 are implemented As-Is, but implementing them alone does not satisfy this
