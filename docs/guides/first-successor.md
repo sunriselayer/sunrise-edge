@@ -76,6 +76,18 @@ executable is not a public deployment, TLS or keystore certification. Each reque
 re-verifies attached evidence and the protected Serving record; startup success
 does not bypass later evidence replacement or a superseded writer fence.
 
+Live `serve` and signerless `serve-history` can also consume the same optional
+direct [Native TLS DER/PKCS8 inputs](sqlite-validator-startup.md#optional-direct-native-termination).
+They load before predecessor/genesis/target I/O, keep numeric loopback binding
+and never grant protocol authority from the leaf/DNS/CA. History loads only a
+transport key, not a validator signing key; it still mounts exactly the three
+post-Seal material read routes and advances no live fence. TLS configuration
+is fixed for the process lifetime. Quiet successful stop/reap and explicit
+same-endpoint restart are required for replacement; there is no hot reload or
+plaintext fallback. The genuine recurring acceptance exercises direct live
+TLS with fresh-warrant substitution refusal and history TLS with its signing
+key absent, complete component bytes and unchanged physical state on restart.
+
 ## Independently pinned clients and recovery
 
 For [ordered](ordered-economics.md) and [FastVote](fastvote-network.md) workflows,

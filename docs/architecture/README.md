@@ -28,6 +28,10 @@ roadmap describes a later target state.
 - [Owned local TLS stop and explicit rotation](decisions/0216-local-tls-stop-restart-rotation.md):
   retained listener and trust boundaries, actual served-leaf observation and
   orderly compiled-host restart; separate from production PKI and custody.
+- [Direct Native TLS connection ownership](decisions/0219-native-direct-tls-connection-ownership.md):
+  optional immutable host DER/PKCS8 inputs, one admitted upgrade/HTTP lifecycle,
+  bounded encrypted output and explicit stopped rotation; transport identity
+  never replaces protocol authority or production PKI qualification.
 - [Immutable operation signing preparation](signing-preparation.md): one
   mechanical frame/identity owner, operation-specific immutable trust inputs,
   actual SDK/CLI consumers and the separate custody/content-review boundary.

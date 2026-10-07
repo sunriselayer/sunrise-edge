@@ -13,7 +13,10 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
+#[path = "support/compiled_source_host_process.rs"]
+mod bounded_process;
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -36,9 +39,13 @@ impl Drop for TempDir {
 }
 
 fn host(root: &Path, listen: &str, confirm: bool) -> Output {
+    host_command(root, listen, confirm, false).output().unwrap()
+}
+
+fn host_command(root: &Path, listen: &str, confirm: bool, historical: bool) -> Command {
     let missing: PathBuf = root.join("missing");
     let mut command: Command = Command::new(env!("CARGO_BIN_EXE_successor_host"));
-    command.arg("serve");
+    command.arg(if historical { "serve-history" } else { "serve" });
     let domain: String = "11".repeat(32);
     let digest: String = "22".repeat(32);
     let validator: String = "33".repeat(32);
@@ -65,12 +72,78 @@ fn host(root: &Path, listen: &str, confirm: bool) -> Output {
         ("--created-checkpoint", "1"),
     ];
     for (flag, value) in pairs {
+        if historical && ["--signer-key-file", "--created-checkpoint"].contains(&flag) {
+            continue;
+        }
         command.arg(flag).arg(value);
     }
-    if confirm {
+    if historical {
+        command.args(["--historical-epoch", "1"]);
+    } else if confirm {
         command.arg("--confirm-offline-fence-advance");
     }
-    command.output().unwrap()
+    command
+}
+
+#[test]
+#[cfg(unix)]
+fn compiled_live_and_history_tls_options_refuse_before_artifact_or_target_io() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    for historical in [false, true] {
+        let root: TempDir = TempDir::new("tls-prefile");
+        let leaf: rcgen::CertifiedKey<rcgen::KeyPair> =
+            rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+        let cert: PathBuf = root.0.join("leaf.der");
+        fs::write(&cert, leaf.cert.der()).unwrap();
+        let bad: PathBuf = root.0.join("private.der");
+        fs::write(&bad, b"private-byte-sentinel").unwrap();
+        fs::set_permissions(&bad, fs::Permissions::from_mode(0o600)).unwrap();
+        let before: Vec<OsString> = {
+            let mut names: Vec<OsString> = fs::read_dir(&root.0)
+                .unwrap()
+                .map(|x| x.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let mut tails: Vec<Vec<OsString>> = vec![
+            vec!["--tls-cert-der-file".into(), cert.clone().into()],
+            vec!["--tls-key-pkcs8-der-file".into(), bad.clone().into()],
+            vec![
+                "--tls-cert-der-file".into(),
+                cert.clone().into(),
+                "--tls-key-pkcs8-der-file".into(),
+                bad.clone().into(),
+            ],
+        ];
+        let mut duplicate: Vec<OsString> = tails[2].clone();
+        duplicate.extend(["--tls-key-pkcs8-der-file".into(), bad.clone().into()]);
+        tails.push(duplicate);
+        let mut count: Vec<OsString> = vec!["--tls-key-pkcs8-der-file".into(), bad.clone().into()];
+        for _ in 0..5 {
+            count.extend(["--tls-cert-der-file".into(), cert.clone().into()]);
+        }
+        tails.push(count);
+        for tail in tails {
+            let mut command: Command = host_command(&root.0, "127.0.0.1:0", true, historical);
+            command.args(tail);
+            let output: Output =
+                bounded_process::spawn_bounded_output(command, Duration::from_secs(20));
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            let message: String = stderr(&output);
+            assert!(message.contains("Native TLS"), "{message}");
+            assert!(!message.contains("private-byte-sentinel"));
+            assert!(!root.0.join("state.db").exists());
+            assert!(!root.0.join("body.db").exists());
+            let mut after: Vec<OsString> = fs::read_dir(&root.0)
+                .unwrap()
+                .map(|x| x.unwrap().file_name())
+                .collect();
+            after.sort();
+            assert_eq!(after, before);
+        }
+    }
 }
 
 fn stderr(output: &Output) -> String {

@@ -4,9 +4,11 @@ mod fastvote_router;
 mod fastvote_sealed_frontier;
 mod local_execution_http;
 mod ordered_history_http;
+mod output_budget;
 mod query_codecs;
 mod query_http;
 mod query_protocol_context;
+mod tls_connection;
 use super::*;
 use abi::{AccessEntry, AccessManifest};
 use axum::{

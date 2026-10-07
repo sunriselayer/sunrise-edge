@@ -89,8 +89,9 @@ impl FixtureCa {
         let certificate: Certificate = params
             .signed_by(&key, &self.issuer)
             .expect("fixture CA-signed DNS leaf");
+        let key_pkcs8_der: Vec<u8> = key.serialize_der();
         let private_key: PrivateKeyDer<'static> =
-            PrivatePkcs8KeyDer::from(key.serialize_der()).into();
+            PrivatePkcs8KeyDer::from(key_pkcs8_der.clone()).into();
         let mut config: ServerConfig = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(vec![certificate.der().clone()], private_key)
@@ -103,6 +104,7 @@ impl FixtureCa {
             server_name: server_name.to_owned(),
             der: certificate.der().to_vec(),
             public_key_der: key.subject_public_key_info(),
+            key_pkcs8_der,
             server_config: Arc::new(config),
         }
     }
@@ -114,6 +116,8 @@ pub struct FixtureLeaf {
     pub der: Vec<u8>,
     /// DER SubjectPublicKeyInfo, independent of certificate metadata/DER.
     pub public_key_der: Vec<u8>,
+    /// Disposable test key written to the actual Native TLS loader's input.
+    pub key_pkcs8_der: Vec<u8>,
     server_config: Arc<ServerConfig>,
 }
 

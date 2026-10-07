@@ -30,6 +30,7 @@ runtime-sqlite.workspace = true
 rustls.workspace = true
 sunrise-edge-client.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal"] }
+tokio-rustls.workspace = true
 validator-set.workspace = true
 
 [dev-dependencies]

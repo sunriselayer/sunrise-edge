@@ -12,7 +12,9 @@ surface. Choose one certified-only original host per validator:
   [the PostgreSQL rehearsal](../operations/fastvote-pg-rehearsal.md).
 
 Both hosts serve the same certified router. Neither host installs, resets or
-migrates genesis, advances a live epoch, or terminates TLS. Prepare each
+migrates genesis or advances a live epoch. SQLite supports optional direct
+[Native TLS](sqlite-validator-startup.md#optional-direct-native-termination);
+the optional PostgreSQL host remains plaintext. Prepare each
 validator's independent storage and install the exact independently approved
 signed original genesis before serving. Preparation is not a serving action.
 Keep listeners on loopback; remote access needs an independently configured
@@ -70,8 +72,9 @@ published apply and frozen-frontier routes, liveness, and bounded read queries
 for context, object, receipt, next nonce, fee policy, instance and publication
 are mounted -- no generic event-submission route exists on this router at all,
 regardless of configuration. `--listen` must be a loopback address; put your
-own TLS-terminating reverse proxy in front of it for anything beyond a
-single trusted host on the same machine. The original host is not the
+own reviewed ingress in front of it for anything beyond a
+single trusted host on the same machine. Direct Native TLS does not authorize
+public binding, callers or a deployment. The original host is not the
 verified successor host or an epoch-transition command; use the separately
 verified [successor workflow](first-successor.md) for those actions.
 
@@ -300,12 +303,15 @@ or speculative locks; it is not full-state handoff or epoch activation.
 Use the [local startup acceptance commands](sqlite-validator-startup.md#local-tls-and-compiled-cli-acceptance).
 They build the actual operator and CLI binaries and run the nonignored
 `local_tls_startup` target with four independently stored SQLite validators
-and four per-peer loopback TLS terminators. The real CLI sends a certified
+and distinct relay/direct-host TLS cases. The real CLI sends a certified
 transfer, refuses bad trust/context pins and a conflicting request ID, and
 replays the saved artifacts before and after all hosts restart. The fixture
 also verifies stale-writer fencing and unchanged complete logical snapshots
 on refusal/replay. All keys are disposable; the TLS helper is test-only, not
-shipped ingress. No PostgreSQL or provider service is required.
+shipped ingress. The separate direct case consumes the actual private Native
+TLS loader and same connection lifecycle; it adds stopped leaf/CA rotation
+without claiming production PKI or revocation. No PostgreSQL or provider service
+is required.
 
 ### Explicit PostgreSQL regression
 

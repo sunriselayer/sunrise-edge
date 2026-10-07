@@ -109,11 +109,18 @@ chains, verified paid dependency loading, historical HTTP and compiled CLI
 lifecycles are covered. This remains one migrated ownership boundary, not whole
 SDK decoupling, optional PG qualification, or an independent security audit.
 
-At `3ec8d7bd`, literal npm-ci passed and the complete required local gate is
-running. Six hosted owners passed; recurring SQLite and the success-only final
-check remain pending. No later TLS implementation inherits this source or
-execution approval. Finish the actual complete gate, check final-head CI and
-actionable review findings, then normally merge. Reconcile live heads before
+At `3ec8d7bd`, the first complete local attempt was intentionally interrupted
+at 12:12:20 UTC when its external two-hour bound proved undersized; it is
+incomplete, not passing. The fresh literal npm-ci passed at 12:17:28.442 UTC,
+and the whole required check-all retry was still running at 13:00 UTC under
+the separately source-reviewed finite five-hour supervisor (invocation
+`a65e144c`, root PID 1298014). Actual recurrence completed epoch 2 and was in
+epoch 3 of its unchanged seven-epoch/full-unlock loop. The source and required
+commands/caps are unchanged; no selected or ancestor pass substitutes for the
+whole result. Hosted workflow `37610011266` had six owners passed, recurring
+SQLite running and no success-only final check yet. No later TLS implementation
+inherits this source or execution approval. Finish the actual complete gate,
+check final-head CI and actionable review findings, then normally merge. Reconcile live heads before
 each step. Preserve Draft #235 and do not auto-merge dependency PRs.
 
 ## Responsibility-oriented work packages
@@ -246,9 +253,17 @@ and cross-phase criteria; it does not shorten them.
   [DR-0219](docs/architecture/decisions/0219-native-direct-tls-connection-ownership.md)
   accepts optional direct Native TLS under the existing connection/work owners:
   bounded immutable startup loading, one handshake/output lifecycle and actual
-  compiled original/successor/history acceptance with stopped rotation. This
-  branch records the design only; source implementation, owning execution,
-  independent source approval and complete integration gates remain open.
+  compiled original/successor/history acceptance with stopped rotation. The
+  dedicated `codex/native-ingress-tls-1007` branch now authors that coherent
+  source and owning controls without running Cargo/services/tests during the
+  shared full-gate compiler ownership. Direct pinned rustfmt parse/format and
+  static hygiene are narrower checks, not compilation or test evidence.
+  Owning execution, independent complete-source approval, final Cargo
+  resolution/dependency decision and complete integration gates remain open.
+  Parent advisory review identified RUSTSEC-2026-0285 on locked Rustls 0.23.43
+  (patched in >=0.23.45). No dependency/cache change or security clearance is
+  inferred here; the shared optional PG impact needs its scoped decision and
+  acceptance before qualification. Do not recommend the old lock for exposure.
   Production PKI, caller authorization, custody and revocation are not inferred.
 - [ ] **M6 — economics/genesis approval:** real sets, independent roles, voting
   powers, bond/fee assets/schedules, treasury/supply/distribution, security and

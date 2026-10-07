@@ -163,6 +163,179 @@ fn protected_state(fixture: &Fixture, targets: &CurrentTargets) -> ProtectedStat
     }
 }
 
+/// A real activated successor, not a new recurring network or a source-free
+/// bootstrap shortcut. Its TLS reads still resolve the existing fresh warrant.
+pub(super) fn prove_direct_live_tls(
+    fixture: &Fixture,
+    inputs: &SuccessorProcessInputs,
+    export: &Path,
+    current: &SuccessorWorkflowAuthority,
+    seal: &OrderedCandidate,
+) {
+    let targets: CurrentTargets = CurrentTargets {
+        paths: inputs.targets.clone(),
+        members: inputs.members.clone(),
+    };
+    let before: ProtectedState = protected_state(fixture, &targets);
+    let directory: PathBuf = fixture.directory.0.join("direct-successor-tls");
+    std::fs::create_dir(&directory).unwrap();
+    let tls: NativeTlsFiles = NativeTlsFiles::new(&directory, "live");
+    let mut command: Command = Command::new(&inputs.executables.successor_host);
+    command.arg("serve");
+    pins(&mut command, fixture, inputs);
+    super::target_flags(&mut command, inputs, export, &inputs.certificate, 0);
+    command.args([
+        "--listen",
+        "127.0.0.1:0",
+        "--created-checkpoint",
+        &HOST_CHECKPOINT.to_string(),
+        "--timeout-seconds",
+        "600",
+        "--confirm-offline-fence-advance",
+    ]);
+    tls.flags(&mut command);
+    let (guard, line): (process::ChildGuard, String) =
+        process::spawn_bounded_status_line(command, Duration::from_secs(600));
+    assert!(line.contains("mode=successor-serving"), "{line}");
+    assert_eq!(
+        field(&line, "epoch="),
+        current.expected_context().epoch().get().to_string()
+    );
+    let generation: u64 = field(&line, "writer_generation=").parse().unwrap();
+    assert_eq!(
+        generation,
+        before.metadata[0].0.get().checked_add(1).unwrap()
+    );
+    let address: SocketAddr = field(&line, "listen=").parse().unwrap();
+    tls.received(address);
+    let started: ProtectedState = protected_state(fixture, &targets);
+    for (index, (old, new)) in before.business.iter().zip(&started.business).enumerate() {
+        assert_eq!(old.records, new.records);
+        assert_eq!(old.referenced_blobs, new.referenced_blobs);
+        assert_eq!(old.token.namespace(), new.token.namespace());
+        assert_eq!(old.token.domain(), new.token.domain());
+        assert_eq!(old.token.mutation_sequence(), new.token.mutation_sequence());
+        assert_eq!(
+            new.token.writer_fence().get(),
+            if index == 0 {
+                generation
+            } else {
+                old.token.writer_fence().get()
+            }
+        );
+    }
+    assert_eq!(started.metadata[0].0.get(), generation);
+    assert_eq!(started.metadata[0].1, before.metadata[0].1);
+    assert_eq!(started.metadata[0].2, before.metadata[0].2);
+    assert_eq!(started.metadata[0].3, before.metadata[0].3);
+    assert_eq!(&started.metadata[1..], &before.metadata[1..]);
+    assert_eq!(started.blob_rows, before.blob_rows);
+    let mut expected_rows: Vec<SqlRows> = before.state_rows.clone();
+    // Exact defining schema: durable_metadata has ten columns, with the one
+    // operator-owned writer_fence at index 5. No other row/value is masked.
+    assert_eq!(expected_rows[0][0].len(), 1);
+    assert_eq!(expected_rows[0][0][0].len(), 10);
+    assert_eq!(
+        expected_rows[0][0][0][5],
+        rusqlite::types::Value::Blob(before.metadata[0].0.get().to_be_bytes().to_vec())
+    );
+    expected_rows[0][0][0][5] = rusqlite::types::Value::Blob(generation.to_be_bytes().to_vec());
+    assert_eq!(started.state_rows, expected_rows);
+    let client: Client<RemoteTlsHttpTransport> = Client::new(tls.transport(address));
+    let context: node_wire::HttpContextQueryResult = client.query_context().unwrap();
+    assert_eq!(context.epoch(), current.expected_context().epoch());
+    assert_eq!(context.chain_id(), current.expected_context().chain_id());
+    let status_response: WireResponse = tls.raw(
+        address,
+        Method::Get,
+        node_wire::ordered_economics::ORDERED_ECONOMICS_STATUS_PATH,
+        None,
+        Vec::new(),
+    );
+    assert_eq!(status_response.status, 200);
+    let _: OrderedStatus = decode_ordered_status(&status_response.body).unwrap();
+    let mut present: usize = 0;
+    for request in [fixture.network.request_id, seal.request_id] {
+        let receipt: sunrise_edge_client::HttpReceiptQueryResult = client
+            .query_receipt(sunrise_edge_client::RequestId::new(request).unwrap())
+            .unwrap();
+        // Existing stored receipt bytes are compared with the independently
+        // read row captured from the same genuine activated namespace.
+        let expected: Option<&node_core::business_reconstruction::SourceSnapshotRecord> = started.business[0].records.iter()
+            .find(|record| matches!(record.descriptor.key(), runtime::portable::DurableRecordKey::Receipt(id) if id.as_bytes() == &request));
+        match receipt {
+            sunrise_edge_client::HttpReceiptQueryResult::Present {
+                dedup_record_bytes, ..
+            } => {
+                assert_eq!(
+                    expected.unwrap().value.as_ref().unwrap(),
+                    &dedup_record_bytes
+                );
+                present += 1;
+            }
+            sunrise_edge_client::HttpReceiptQueryResult::Absent { .. } => {
+                assert!(expected.is_none())
+            }
+        }
+    }
+    assert!(
+        present > 0,
+        "genuine imported receipt is not an absence-only oracle"
+    );
+    let cli_context: Command = super::compiled_cli_process::edge_cli_command([
+        "context",
+        "--endpoint",
+        &address.to_string(),
+        "--tls-server-name",
+        &tls.leaf.server_name,
+        "--tls-ca-cert-der-file",
+        tls.root.to_str().unwrap(),
+    ]);
+    let context_output: Output =
+        process::spawn_bounded_output(cli_context, Duration::from_secs(120));
+    assert!(context_output.status.success() && !context_output.stdout.is_empty());
+    assert!(context_output.stderr.is_empty());
+    assert_eq!(protected_state(fixture, &targets), started);
+
+    let certificate: PathBuf = inputs.certificate.join("certificate.bin");
+    let original: Vec<u8> = std::fs::read(&certificate).unwrap();
+    let replacement: Vec<u8> =
+        std::fs::read(inputs.competing_certificate.join("certificate.bin")).unwrap();
+    assert_ne!(replacement, original);
+    consensus::readiness::decode_readiness_certificate(&replacement).unwrap();
+    let restore: ArtifactChange = ArtifactChange {
+        path: certificate.clone(),
+        original,
+        held: None,
+    };
+    std::fs::write(&certificate, replacement).unwrap();
+    let refused: WireResponse = tls.raw(
+        address,
+        Method::Get,
+        node_wire::ordered_economics::ORDERED_ECONOMICS_STATUS_PATH,
+        None,
+        Vec::new(),
+    );
+    assert_ne!(
+        refused.status, 200,
+        "authenticated TLS does not cache a live warrant"
+    );
+    assert!(String::from_utf8_lossy(&refused.body).starts_with("successor-"));
+    assert_eq!(protected_state(fixture, &targets), started);
+    drop(restore);
+    let restored: WireResponse = tls.raw(
+        address,
+        Method::Get,
+        node_wire::ordered_economics::ORDERED_ECONOMICS_STATUS_PATH,
+        None,
+        Vec::new(),
+    );
+    assert_eq!(restored.body, status_response.body);
+    assert_eq!(restored.status, 200);
+    guard.stop_orderly(Duration::from_secs(600));
+    assert_eq!(protected_state(fixture, &targets), started);
+}
+
 fn budget() -> SuccessorChainBudget {
     SuccessorChainBudget::new(NonZeroU32::new(MAXIMUM_LINKS).unwrap())
 }
@@ -726,6 +899,162 @@ fn terminal_descriptor(
     )
 }
 
+fn direct_history_material(
+    tls: &NativeTlsFiles,
+    address: SocketAddr,
+    current: &SuccessorWorkflowAuthority,
+    identity: &node_core::ordered_economics::OrderedHistoryIdentity,
+    expected: &node_core::ordered_economics::OrderedHistoryHeightDescriptor,
+    seal: &OrderedCandidate,
+) {
+    tls.received(address);
+    let client: Client<RemoteTlsHttpTransport> = Client::new(tls.transport(address));
+    assert_eq!(
+        client.query_ordered_history_summary(None).unwrap().identity,
+        *identity
+    );
+    let descriptor: node_core::ordered_economics::OrderedHistoryHeightDescriptor = client
+        .fetch_ordered_history_height_descriptor(identity, identity.through_height, None)
+        .unwrap();
+    assert_eq!(
+        &descriptor, expected,
+        "TLS material agrees with actual authenticated source reader"
+    );
+    let digest: protocol_types::Digest32 =
+        node_core::ordered_economics::ordered_history_descriptor_digest(
+            current.ordered_policy(),
+            &descriptor,
+        )
+        .unwrap();
+    let mut saw_candidate: bool = false;
+    for reference in &descriptor.components {
+        let mut bytes: Vec<u8> = Vec::new();
+        while u64::try_from(bytes.len()).unwrap() < reference.length {
+            let read: sunrise_edge_client::ordered_history_client::OrderedHistoryComponentRead =
+                sunrise_edge_client::ordered_history_client::OrderedHistoryComponentRead {
+                    identity: identity.clone(),
+                    height: identity.through_height,
+                    descriptor_digest: digest,
+                    kind: reference.kind,
+                    offset: u64::try_from(bytes.len()).unwrap(),
+                    limit: u32::try_from(
+                        node_core::ordered_economics::MAX_ORDERED_HISTORY_CHUNK_BYTES,
+                    )
+                    .unwrap(),
+                    expected_total_length: reference.length,
+                };
+            let chunk: Vec<u8> = client
+                .fetch_ordered_history_component_chunk(&read, None)
+                .unwrap();
+            assert!(!chunk.is_empty());
+            bytes.extend_from_slice(&chunk);
+        }
+        assert_eq!(u64::try_from(bytes.len()).unwrap(), reference.length);
+        assert_eq!(
+            node_core::ordered_economics::ordered_history_component_digest(
+                current.ordered_policy(),
+                &bytes
+            )
+            .unwrap(),
+            reference.digest
+        );
+        if reference.kind == node_core::ordered_economics::OrderedHistoryComponentKind::Candidate {
+            assert_eq!(
+                bytes,
+                node_core::ordered_economics::encode_ordered_candidate(seal).unwrap()
+            );
+            saw_candidate = true;
+        }
+    }
+    assert!(
+        saw_candidate,
+        "complete genuine terminal Seal candidate was transferred"
+    );
+    for (method, path) in [
+        (Method::Get, node_wire::QUERY_CONTEXT_PATH),
+        (
+            Method::Get,
+            node_wire::ordered_economics::ORDERED_ECONOMICS_STATUS_PATH,
+        ),
+        (Method::Post, node_wire::FASTVOTE_PREPARE_PATH),
+        (Method::Post, node_wire::FASTVOTE_CERTIFICATES_PATH),
+        (Method::Post, node_wire::FEE_CLAIM_PREPARE_PATH),
+        (Method::Post, node_wire::NODE_EVENT_PATH),
+    ] {
+        let response: WireResponse = tls.raw(
+            address,
+            method,
+            path,
+            Some(node_wire::NODE_EVENT_MEDIA_TYPE),
+            Vec::new(),
+        );
+        assert_eq!(
+            response.status, 404,
+            "TLS history mounts no live/context/mutation route: {path}"
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prove_direct_history_tls(
+    executables: &CompiledExecutableSnapshot,
+    fixture: &Fixture,
+    links: &[Link],
+    current: &SuccessorWorkflowAuthority,
+    targets: &CurrentTargets,
+    directory: &Path,
+    identity: &node_core::ordered_economics::OrderedHistoryIdentity,
+    seal: &OrderedCandidate,
+) {
+    let intact: ProtectedState = protected_state(fixture, targets);
+    let descriptor: node_core::ordered_economics::OrderedHistoryHeightDescriptor =
+        terminal_descriptor(fixture, current, targets, identity).unwrap();
+    let tls: NativeTlsFiles = NativeTlsFiles::new(directory, "retired-history-tls");
+    // The real history process consumes no signing key, even when that exact
+    // retired target's original key is temporarily absent. Drop restores it.
+    let signing_key: PathBuf = targets.paths[0].join("private.key");
+    let held_key: PathBuf = directory.join("history-signing-key.held");
+    let absent_key: ArtifactChange = ArtifactChange::inject(&signing_key, &held_key, true);
+    let mut address: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    for _restart in 0..2 {
+        let mut flags: Vec<String> = historical_startup_flags(fixture, links, targets, 1);
+        let listen: usize = flags
+            .iter()
+            .position(|flag: &String| flag == "--listen")
+            .unwrap();
+        flags[listen + 1] = address.to_string();
+        let mut command: Command = Command::new(&executables.successor_host);
+        command.arg("serve-history").args(flags);
+        tls.flags(&mut command);
+        let requested: SocketAddr = address;
+        let (guard, line): (process::ChildGuard, String) =
+            process::spawn_bounded_status_line(command, Duration::from_secs(600));
+        assert!(
+            line.contains("mode=successor-history-material-only"),
+            "{line}"
+        );
+        assert_eq!(field(&line, "epoch="), "1");
+        assert_eq!(
+            field(&line, "writer_generation="),
+            intact.metadata[0].0.get().to_string()
+        );
+        address = field(&line, "listen=").parse().unwrap();
+        if requested.port() != 0 {
+            assert_eq!(address, requested);
+        }
+        direct_history_material(&tls, address, current, identity, &descriptor, seal);
+        assert_eq!(protected_state(fixture, targets), intact);
+        guard.stop_orderly(Duration::from_secs(600));
+        assert_eq!(
+            protected_state(fixture, targets),
+            intact,
+            "history restart has no fence claim"
+        );
+    }
+    drop(absent_key);
+    assert_eq!(protected_state(fixture, targets), intact);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn prove_historical_artifact_controls(
     executables: &CompiledExecutableSnapshot,
@@ -763,6 +1092,16 @@ fn prove_historical_artifact_controls(
     );
     drop(positive_host);
     assert_eq!(protected_state(fixture, targets), intact);
+    prove_direct_history_tls(
+        executables,
+        fixture,
+        links,
+        current,
+        targets,
+        directory,
+        &identity,
+        seal,
+    );
     let wrong_epoch: Vec<String> = historical_startup_flags(fixture, links, targets, 2);
     assert_historical_startup_refused(
         executables,

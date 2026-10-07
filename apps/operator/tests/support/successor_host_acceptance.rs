@@ -35,8 +35,8 @@ use sunrise_edge_client::ordered_economics_client::{
     replay_declared_prefix_with_sink,
 };
 use sunrise_edge_client::{
-    Client, FastVoteEndpoint, LoopbackHttpTransport, Method, SuccessorArtifactDirectories,
-    SuccessorWorkflowAuthority, Transport, WireRequest, WireResponse,
+    Client, FastVoteEndpoint, LoopbackHttpTransport, Method, RemoteTlsHttpTransport,
+    SuccessorArtifactDirectories, SuccessorWorkflowAuthority, Transport, WireRequest, WireResponse,
     load_successor_workflow_from_directories,
 };
 
@@ -45,6 +45,103 @@ mod recurring;
 
 #[path = "../../../../clients/rust/tests/support/external_signer.rs"]
 mod external_signer;
+
+// Reuse the existing disposable certificate owner; the relay API itself is
+// unused here because the compiled successor terminates these connections.
+#[allow(dead_code)]
+#[path = "https_relay.rs"]
+mod tls_fixture;
+
+#[path = "compiled_cli_process.rs"]
+mod compiled_cli_process;
+
+struct NativeTlsFiles {
+    ca: tls_fixture::FixtureCa,
+    leaf: tls_fixture::FixtureLeaf,
+    cert: PathBuf,
+    key: PathBuf,
+    root: PathBuf,
+}
+impl NativeTlsFiles {
+    fn new(directory: &Path, label: &str) -> Self {
+        let name: String = tls_fixture::fixture_server_name();
+        let ca: tls_fixture::FixtureCa = tls_fixture::FixtureCa::new(&format!("{name}-{label}"));
+        let leaf: tls_fixture::FixtureLeaf = ca.issue_leaf(&name);
+        let cert: PathBuf = directory.join(format!("{label}.der"));
+        let key: PathBuf = directory.join(format!("{label}.key"));
+        let root: PathBuf = directory.join(format!("{label}-ca.der"));
+        for (path, bytes) in [
+            (&cert, leaf.der.as_slice()),
+            (&key, leaf.key_pkcs8_der.as_slice()),
+            (&root, ca.der.as_slice()),
+        ] {
+            use std::io::Write;
+            let mut options: std::fs::OpenOptions = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file: std::fs::File = options.open(path).unwrap();
+            file.write_all(bytes).unwrap();
+            file.sync_all().unwrap();
+        }
+        Self {
+            ca,
+            leaf,
+            cert,
+            key,
+            root,
+        }
+    }
+    fn flags(&self, command: &mut Command) {
+        command
+            .arg("--tls-cert-der-file")
+            .arg(&self.cert)
+            .arg("--tls-key-pkcs8-der-file")
+            .arg(&self.key);
+    }
+    fn transport(&self, address: SocketAddr) -> RemoteTlsHttpTransport {
+        RemoteTlsHttpTransport::new(
+            address,
+            &self.leaf.server_name,
+            &self.ca.der,
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+            Duration::from_secs(5),
+            NonZeroUsize::new(64 * 1024).unwrap(),
+            NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+        )
+        .unwrap()
+    }
+    fn received(&self, address: SocketAddr) {
+        assert_eq!(
+            tls_fixture::authenticated_leaf(address, &self.leaf.server_name, &self.ca.der),
+            self.leaf.der
+        );
+    }
+    fn raw(
+        &self,
+        address: SocketAddr,
+        method: Method,
+        path: &str,
+        content_type: Option<&'static str>,
+        body: Vec<u8>,
+    ) -> WireResponse {
+        self.transport(address)
+            .send(&WireRequest {
+                method,
+                path: path.to_owned(),
+                content_type,
+                body,
+                deadline: Some(Instant::now() + Duration::from_secs(120)),
+            })
+            .unwrap()
+    }
+}
 
 /// Host checkpoint for FastVote preparation and fee-claim preparation.
 const HOST_CHECKPOINT: u64 = 1_000;
@@ -1497,6 +1594,7 @@ fn accept(
     let claimant_index: usize = original_member_index(fixture, [0xa2; 32]);
     let share: node_core::fee_claims::FeeClaimInspection =
         inspect_imported_share(fixture, inputs, &workflow, export, claimant_index);
+    recurring::prove_direct_live_tls(fixture, inputs, export, &workflow, seal);
     let mut hosts: Vec<HostProcess> = (0..4)
         .map(|index: usize| start_host(fixture, inputs, export, index))
         .collect();

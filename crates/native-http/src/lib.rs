@@ -1303,6 +1303,39 @@ pub async fn serve_with_policy<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    serve_with_stream_upgrade(
+        listener,
+        app,
+        policy,
+        |stream: tokio::net::TcpStream| async move {
+            Ok::<tokio::net::TcpStream, io::Error>(stream)
+        },
+        shutdown,
+    )
+    .await
+}
+
+/// Serves an upgraded stream through the same admitted, tracked HTTP lifecycle.
+///
+/// The upgrade runs only after connection admission and inside its owned task;
+/// shutdown cancels an unfinished upgrade, including an already-signaled watch.
+/// The caller must bound upgrade I/O (the Native TLS owner uses one absolute
+/// handshake deadline). It supplies transport only, never protocol authority.
+/// Started blocking application work retains its separate permit and cannot be
+/// aborted or classified as rolled back by connection cancellation.
+pub async fn serve_with_stream_upgrade<F, U, UF, S>(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    policy: NativeHttpServePolicy,
+    upgrade: U,
+    shutdown: F,
+) -> io::Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+    U: Fn(tokio::net::TcpStream) -> UF + Clone + Send + 'static,
+    UF: Future<Output = io::Result<S>> + Send + 'static,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let connection_permits: Arc<Semaphore> = Arc::new(Semaphore::new(policy.max_connections.get()));
     let (shutdown_sender, _shutdown_receiver) = watch::channel(false);
     let mut connections: JoinSet<()> = JoinSet::new();
@@ -1334,9 +1367,21 @@ where
                     }
                 };
                 let connection_app: Router = app.clone();
-                let connection_shutdown = shutdown_sender.subscribe();
+                let mut connection_shutdown: watch::Receiver<bool> = shutdown_sender.subscribe();
+                let connection_upgrade: U = upgrade.clone();
                 connections.spawn(async move {
                     let _permit = permit;
+                    if *connection_shutdown.borrow() {
+                        return;
+                    }
+                    let stream: S = tokio::select! {
+                        biased;
+                        _changed = connection_shutdown.changed() => return,
+                        upgraded = connection_upgrade(stream) => match upgraded {
+                            Ok(stream) => stream,
+                            Err(_error) => return,
+                        },
+                    };
                     serve_connection(
                         stream,
                         connection_app,
@@ -1376,13 +1421,18 @@ fn accept_error_backoff(consecutive_errors: u32) -> Duration {
 const ACCEPT_ERROR_BACKOFF_FLOOR: Duration = Duration::from_millis(5);
 const ACCEPT_ERROR_BACKOFF_CEILING: Duration = Duration::from_secs(1);
 
-async fn serve_connection(
-    stream: tokio::net::TcpStream,
+async fn serve_connection<S>(
+    stream: S,
     app: Router,
     policy: NativeHttpServePolicy,
     mut shutdown: watch::Receiver<bool>,
-) {
-    let stream: IoIdleTimeoutStream<tokio::net::TcpStream> = IoIdleTimeoutStream::new(
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    if *shutdown.borrow() {
+        return;
+    }
+    let stream: IoIdleTimeoutStream<S> = IoIdleTimeoutStream::new(
         stream,
         policy.body_idle_timeout,
         policy.response_total_timeout,
@@ -1496,6 +1546,34 @@ impl<S> IoIdleTimeoutStream<S> {
             write_total_deadline: None,
         }
     }
+
+    fn poll_output_budget(&mut self, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let total: &mut Pin<Box<Sleep>> = self
+            .write_total_deadline
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(self.response_total_timeout)));
+        if total.as_mut().poll(context).is_ready() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "native HTTP response write total timeout",
+            )));
+        }
+        let idle: &mut Pin<Box<Sleep>> = self
+            .write_idle_deadline
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(self.idle_timeout)));
+        if idle.as_mut().poll(context).is_ready() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "native HTTP response write idle timeout",
+            )));
+        }
+        Poll::Ready(Ok(()))
+    }
+
+    fn output_progress(&mut self) {
+        if let Some(idle) = &mut self.write_idle_deadline {
+            idle.as_mut().reset(Instant::now() + self.idle_timeout);
+        }
+    }
 }
 
 impl<S> AsyncRead for IoIdleTimeoutStream<S>
@@ -1542,47 +1620,47 @@ where
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
-        let total_deadline: &mut Pin<Box<Sleep>> = this
-            .write_total_deadline
-            .get_or_insert_with(|| Box::pin(tokio::time::sleep(this.response_total_timeout)));
-        if total_deadline.as_mut().poll(context).is_ready() {
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "native HTTP response write total timeout",
-            )));
+        if let Poll::Ready(Err(error)) = this.poll_output_budget(context) {
+            return Poll::Ready(Err(error));
         }
         match Pin::new(&mut this.stream).poll_write(context, buffer) {
             Poll::Ready(Ok(written)) if written > 0 => {
-                let idle_deadline: &mut Pin<Box<Sleep>> = this
-                    .write_idle_deadline
-                    .get_or_insert_with(|| Box::pin(tokio::time::sleep(this.idle_timeout)));
-                idle_deadline
-                    .as_mut()
-                    .reset(Instant::now() + this.idle_timeout);
+                this.output_progress();
                 Poll::Ready(Ok(written))
             }
             Poll::Ready(result) => Poll::Ready(result),
-            Poll::Pending => {
-                let idle_deadline: &mut Pin<Box<Sleep>> = this
-                    .write_idle_deadline
-                    .get_or_insert_with(|| Box::pin(tokio::time::sleep(this.idle_timeout)));
-                match idle_deadline.as_mut().poll(context) {
-                    Poll::Ready(()) => Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "native HTTP response write idle timeout",
-                    ))),
-                    Poll::Pending => Poll::Pending,
-                }
-            }
+            Poll::Pending => Poll::Pending,
         }
     }
 
     fn poll_flush(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().stream).poll_flush(context)
+        let this = self.get_mut();
+        if this.write_total_deadline.is_some()
+            && let Poll::Ready(Err(error)) = this.poll_output_budget(context)
+        {
+            return Poll::Ready(Err(error));
+        }
+        match Pin::new(&mut this.stream).poll_flush(context) {
+            // Hyper flushes an empty buffer while an application is pending.
+            // A ready pre-output no-op must not time that storage-work phase.
+            Poll::Ready(Ok(())) => {
+                this.output_progress();
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+            Poll::Pending => match this.poll_output_budget(context) {
+                Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+                Poll::Ready(Ok(())) | Poll::Pending => Poll::Pending,
+            },
+        }
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().stream).poll_shutdown(context)
+        let this = self.get_mut();
+        if let Poll::Ready(Err(error)) = this.poll_output_budget(context) {
+            return Poll::Ready(Err(error));
+        }
+        Pin::new(&mut this.stream).poll_shutdown(context)
     }
 }
 

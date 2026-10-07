@@ -11,6 +11,7 @@
 use crate::common::{FlagSet, load_signing_key_file, parse_hash_suite, parse_hex_32};
 use crate::host_protocol_context::host_query_protocol_config;
 use crate::host_runtime::{FileEd25519Signer, NoOutboundTransport, SequentialIdentitySource};
+use crate::native_tls::{self, NativeTlsInputs};
 use crate::sqlite_genesis_checks::{
     OriginalHostPins, read_original_host_state, verify_original_signer,
 };
@@ -62,6 +63,8 @@ const VALUE_FLAGS: &[&str] = &[
     "--created-checkpoint",
     "--timeout-seconds",
     "--max-concurrent",
+    native_tls::CERT_FLAG,
+    native_tls::KEY_FLAG,
 ];
 const BOOL_FLAGS: &[&str] = &["--confirm-offline-fence-advance"];
 const MAX_HOST_TIMEOUT_SECONDS: u64 = native_http::MAX_INDEXED_OUTBOX_OPERATION_MILLIS / 1000;
@@ -135,6 +138,7 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     if !(1..=256).contains(&max_concurrent) {
         return Err("--max-concurrent must be 1..=256".into());
     }
+    let tls_inputs: NativeTlsInputs = NativeTlsInputs::parse(&mut flags)?;
     flags.finish()?;
     if !confirmed {
         return Err(
@@ -149,6 +153,7 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     if !listen_addr.ip().is_loopback() {
         return Err("--listen must be a loopback address".into());
     }
+    let tls: Option<tokio_rustls::TlsAcceptor> = tls_inputs.load()?;
 
     let resolver: HashSuiteResolver =
         HashSuiteResolver::new(chain.clone(), protocol_version, schedule)?;
@@ -339,10 +344,20 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         );
         use std::io::Write;
         std::io::stdout().flush()?;
-        native_http::serve(listener, router, async {
+        let shutdown = async {
             let _ = tokio::signal::ctrl_c().await;
-        })
-        .await
+        };
+        match tls {
+            None => native_http::serve(listener, router, shutdown).await,
+            Some(acceptor) => native_http::serve_with_stream_upgrade(
+                listener,
+                router,
+                native_http::NativeHttpServePolicy::default(),
+                move |stream: tokio::net::TcpStream| native_tls::accept(acceptor.clone(), stream),
+                shutdown,
+            )
+            .await,
+        }
     })?;
     Ok(())
 }

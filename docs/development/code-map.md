@@ -180,6 +180,16 @@ contracts; they do not define protocol rules.
   native HTTP query projection resolves the effective epoch freshly, and
   rejects schedule or protocol disagreement. Read-only advertised context
   does not replace the client's independently expected signing context.
+- [Private Native TLS configuration](../../apps/operator/src/native_tls.rs)
+  owns closed optional DER/PKCS8 loading, leaf/key correspondence and the fixed
+  handshake deadline for original SQLite and successor live/history startup.
+  The [single native connection owner](../../crates/native-http/src/lib.rs)
+  immediately admits and tracks the upgrade, HTTP collection and bounded
+  write/flush/shutdown under one connection permit. Work permits retain their
+  separate synchronous lifetime. [Real TLS lifecycle controls](../../crates/native-http/src/tests/tls_connection.rs)
+  and [private writer controls](../../crates/native-http/src/tests/output_budget.rs)
+  have distinct oracles; the original direct-host and genuine activated/
+  historical successor fixtures remain separate from relay transport evidence.
 
 - [Core authority](../../crates/node-core/src/serving_authority.rs) separates
   historical evidence from fresh issuer-bound warrants.

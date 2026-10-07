@@ -1055,11 +1055,14 @@ dependencies = [
  "protocol-types",
  "protocol-upgrades",
  "public-standard-asset",
+ "rcgen",
  "runtime",
  "runtime-sqlite",
+ "rustls",
  "standard-assets",
  "system-modules",
  "tokio",
+ "tokio-rustls",
  "tower",
  "validator-set",
  "wat",
@@ -2039,6 +2042,7 @@ dependencies = [
  "sunrise-edge-client",
  "sunrise-edge-devnet",
  "tokio",
+ "tokio-rustls",
  "validator-set",
 ]
 

@@ -249,3 +249,126 @@ fn compiled_source_host_refuses_missing_deleted_and_malformed_ordered_state_with
         assert_eq!(after.token.writer_fence(), current);
     }
 }
+
+#[test]
+#[cfg(unix)]
+fn compiled_tls_configuration_refuses_before_existing_fence_or_durable_io() {
+    use std::{
+        fs,
+        os::unix::fs::{PermissionsExt, symlink},
+    };
+    let fixture: Fixture = Fixture::new();
+    let state: PathBuf = fixture.directory.0.join("tls-startup-state.sqlite");
+    let generation: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    let store: SqliteDurableStore = SqliteDurableStore::open(
+        &state,
+        SqliteNamespace::new(
+            fixture.network.chain_id.clone(),
+            fixture.network.validators[0].validator_id,
+            fixture.network.domain,
+        ),
+        generation,
+    )
+    .unwrap();
+    node_core::genesis::install_genesis(
+        &store,
+        &fixture.operation,
+        fixture.network.domain,
+        &fixture.network.resolver,
+        fixture.root.manifest(),
+        10,
+    )
+    .unwrap();
+    let before: SourceBusinessSnapshot = snapshot(&fixture, &store, &fixture.operation);
+    let protocol_key: PathBuf = fixture.directory.0.join("tls-protocol.key");
+    fs::write(&protocol_key, fixture.network.validators[0].seed).unwrap();
+    fs::set_permissions(&protocol_key, fs::Permissions::from_mode(0o600)).unwrap();
+    let genesis: PathBuf = fixture.directory.0.join("tls-genesis.bin");
+    fs::write(&genesis, &fixture.network.manifest_bytes).unwrap();
+    let leaf: rcgen::CertifiedKey<rcgen::KeyPair> =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+    let cert: PathBuf = fixture.directory.0.join("tls-leaf.der");
+    fs::write(&cert, leaf.cert.der()).unwrap();
+    let key: PathBuf = fixture.directory.0.join("tls-key.der");
+    fs::write(&key, leaf.signing_key.serialize_der()).unwrap();
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+    let malformed: PathBuf = fixture.directory.0.join("tls-malformed");
+    fs::write(&malformed, b"private-byte-sentinel").unwrap();
+    fs::set_permissions(&malformed, fs::Permissions::from_mode(0o600)).unwrap();
+    let empty: PathBuf = fixture.directory.0.join("tls-empty");
+    fs::write(&empty, b"").unwrap();
+    let oversized: PathBuf = fixture.directory.0.join("tls-oversized");
+    fs::write(&oversized, vec![0; 16 * 1024 + 1]).unwrap();
+    let alias: PathBuf = fixture.directory.0.join("tls-alias");
+    symlink(&key, &alias).unwrap();
+    let directory: PathBuf = fixture.directory.0.join("tls-directory");
+    fs::create_dir(&directory).unwrap();
+    let other: rcgen::CertifiedKey<rcgen::KeyPair> =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+    let mismatch: PathBuf = fixture.directory.0.join("tls-mismatch.der");
+    fs::write(&mismatch, other.signing_key.serialize_der()).unwrap();
+    fs::set_permissions(&mismatch, fs::Permissions::from_mode(0o600)).unwrap();
+    let insecure: PathBuf = fixture.directory.0.join("tls-insecure.der");
+    fs::write(&insecure, leaf.signing_key.serialize_der()).unwrap();
+    fs::set_permissions(&insecure, fs::Permissions::from_mode(0o644)).unwrap();
+    let missing: PathBuf = fixture.directory.0.join("tls-missing");
+    let pair = |cert: &Path, key: &Path| -> Vec<OsString> {
+        vec![
+            "--tls-cert-der-file".into(),
+            cert.into(),
+            "--tls-key-pkcs8-der-file".into(),
+            key.into(),
+        ]
+    };
+    let mut cases: Vec<Vec<OsString>> = vec![
+        vec!["--tls-cert-der-file".into(), cert.clone().into()],
+        vec!["--tls-key-pkcs8-der-file".into(), key.clone().into()],
+        vec!["--tls-unknown".into(), key.clone().into()],
+    ];
+    for invalid in [&malformed, &empty, &oversized, &missing, &directory] {
+        cases.push(pair(invalid, &key));
+    }
+    for invalid in [
+        &malformed, &empty, &missing, &alias, &directory, &mismatch, &insecure,
+    ] {
+        cases.push(pair(&cert, invalid));
+    }
+    let mut duplicate: Vec<OsString> = pair(&cert, &key);
+    duplicate.extend(["--tls-key-pkcs8-der-file".into(), key.clone().into()]);
+    cases.push(duplicate);
+    let mut count: Vec<OsString> = vec!["--tls-key-pkcs8-der-file".into(), key.clone().into()];
+    for _ in 0..5 {
+        count.extend(["--tls-cert-der-file".into(), cert.clone().into()]);
+    }
+    cases.push(count);
+    let names: std::collections::BTreeSet<OsString> = fs::read_dir(&fixture.directory.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    for tail in cases {
+        // A nonexistent manifest makes loader-before-genesis refusal observable,
+        // while the existing committed state/fence still proves no durable change.
+        let mut values: Vec<OsString> = args(&fixture, &state, &protocol_key, &missing);
+        values.extend(tail);
+        let output: Output = refused_process(&values);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let message: String = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            message.contains("Native TLS") || message.contains("--tls-unknown"),
+            "{message}"
+        );
+        assert!(!message.contains("private-byte-sentinel"));
+        assert_eq!(
+            store.writer_fence().unwrap(),
+            generation,
+            "TLS refuses before fencing"
+        );
+        assert_eq!(snapshot(&fixture, &store, &fixture.operation), before);
+        let after_names: std::collections::BTreeSet<OsString> = fs::read_dir(&fixture.directory.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(after_names, names, "no new durable files or repair");
+    }
+}
