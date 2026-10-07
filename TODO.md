@@ -380,14 +380,15 @@ explicitly approves a documented scope change.
   proposals. Sixteen genuine-fixture controls cover invalid returned signatures,
   independently committee-valid identity drift, exact bytes/replay, nonce locks,
   real CAS/indeterminate reconciliation and preserved justified-prefix progress.
-  Complete source review of `8974634a` blocked one new test's scheme-read timing;
-  the actual all-feature core lib run confirmed exactly that failure at 07:24 UTC
-  (1225 passed, 1 failed, 7 ignored). All 15 other new controls passed; strict
-  owning Clippy was not reached. The correction retains both existing voter
-  pre-sign checks before changing returned metadata, without weakening assertions
-  or changing production code. Fresh final-source approval, corrected owning
-  execution, full required acceptance and CI remain pending. This is a
-  handler-correctness prerequisite, not protected custody or M2 completion.
+  The initial `8974634a` source review and owning run identified one test's
+  scheme-read timing error (1225 passed, 1 failed, 7 ignored); that failed run
+  remains attributable. The correction preserves both existing voter pre-sign
+  checks and every assertion, with production code unchanged. Exact `5c05215e`
+  received complete final-source approval and passed the actual all-feature core
+  lib suite (1226 passed, 0 failed, 7 ignored) plus strict all-target/all-feature
+  owning Clippy at 07:37 UTC. The seven ignored recurrences were not executed by
+  that owning profile. Full required acceptance and CI remain pending. This is
+  a handler-correctness prerequisite, not protected custody or M2 completion.
 - [ ] **M3 — selected-profile durable state:** atomic object/state/nonce/receipt/
   outbox, bounded indexed delivery, full-read revision/ABA assertions, restart,
   fencing and ambiguity reconciliation. Verify actual host/power/storage faults,
