@@ -112,6 +112,7 @@
 - [DR-0213: bounded Native release artifact evidence](0213-native-release-artifact-evidence.md)
 - [DR-0214: protected custody and trustworthy review boundaries (Proposed)](0214-protected-custody-and-review-boundary.md)
 - [DR-0215: invocation-bound ordered local signatures and retained reread verification](0215-ordered-local-signature-verification.md)
+- [DR-0216: owned local TLS stop, restart and explicit trust rotation](0216-local-tls-stop-restart-rotation.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

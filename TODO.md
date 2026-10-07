@@ -76,9 +76,35 @@ The earlier `2e191ae5` missing-marker and `69a2992d` raw-BOM source blocks are
 preserved; 104 corrected controls are still not actual native-build evidence.
 Package compilation does not prove the expensive original operator recurrence.
 
-Next, finish the release-input refusal correction, freeze/review the complete
-combined source, verify the actual offline closure and eleven targets, and
-compare two fresh sequential native builds under the accepted resource budget.
+PR #293 is Draft. Frozen `afac7908` received complete source approval and passed
+the actual offline-closure/eleven-target preflight. Its first genuine native A
+build completed and all eleven independent snapshots were verified; cleanup A
+then failed on an internal Cargo hardlink's own unlink metadata transition.
+Build B did not start. Preserve that incomplete run rather than reuse/adopt it.
+The accepted DR-0213 clarification requires closed in-tree link groups and
+byte-verified own-unlink transitions; its implementation remains under review.
+The PR's later `70702fbe` bot correction changes only a local SDK provider-length
+diagnostic and still needs new-head acceptance; it is not covered by `afac7908`.
+
+DR-0216's quiet local TLS leaf rollover, separate CA cutover and finite peer-close
+controls are implemented on a separate slice, with source and actual execution
+checks still pending. They are not production PKI, revocation, custody or M5
+qualification.
+
+The first `4643836a` owning attempt passed formatting and real operator/CLI
+binary builds but failed to compile the TLS test because the fixed rcgen API
+has no `KeyPair::public_key_der`. Use its actual `PublicKeyData` SPKI encoder;
+the new-leaf public-key inequality oracle is retained. That failed attempt
+does not count as a TLS pass; corrected-source execution/review remains pending.
+Corrected `d1da1892` then passed the whole real local-TLS target (3/0) and SDK
+remote-TLS target, but strict owning Clippy rejected two taken `Child` values.
+Make the cached reap explicit and require its identical observed exit status,
+without suppressing the lint or weakening the orderly-stop oracle. Complete
+corrected-source owning checks and independent review are still required.
+
+Next, finish the accepted cleanup correction and owning TLS checks, freeze/review
+the complete combined source, verify its actual offline closure and eleven
+targets, and compare two new sequential native builds under the accepted budget.
 Then run literal npm-ci and the complete required gate, check final-head CI and
 actionable review findings, and normally merge. Reconcile live heads before each
 step. Preserve Draft #235 and do not auto-merge dependency PRs.

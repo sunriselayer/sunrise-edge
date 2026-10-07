@@ -4,11 +4,13 @@
 
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    Issuer, KeyPair, KeyUsagePurpose,
+    Issuer, KeyPair, KeyUsagePurpose, PublicKeyData,
 };
 use rustls::{
-    ServerConfig, ServerConnection, StreamOwned,
-    pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
+    ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection, StreamOwned,
+    client::Resumption,
+    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
+    server::{Acceptor, ClientHello, NoServerSessionStorage},
 };
 use std::{
     io::{self, Read, Write},
@@ -25,6 +27,7 @@ const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 512;
+const MAX_CLIENT_HELLO_BYTES: u64 = 64 * 1024;
 const MAX_LIFETIME: Duration = Duration::from_secs(10 * 60);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -34,49 +37,135 @@ const ACCEPT_POLL: Duration = Duration::from_millis(5);
 // Fixture identity only; never a protocol ID or a source of authority.
 static NEXT_RELAY: AtomicU64 = AtomicU64::new(1);
 
-/// One ephemeral CA/DNS-bound endpoint in front of one actual local host.
-/// Failed TLS connections are isolated; Drop stops and joins the sole worker.
+pub fn fixture_server_name() -> String {
+    let instance: u64 = NEXT_RELAY
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value: u64| {
+            value.checked_add(1)
+        })
+        .expect("HTTPS fixture identity exhausted");
+    format!(
+        "validator-{}-{instance}.sunrise-edge.invalid",
+        std::process::id()
+    )
+}
+
+/// Retained disposable issuer, independent of validator signing authority.
+pub struct FixtureCa {
+    pub der: Vec<u8>,
+    pub subject: String,
+    issuer: Issuer<'static, KeyPair>,
+}
+
+impl FixtureCa {
+    pub fn new(subject: &str) -> Self {
+        let mut params: CertificateParams =
+            CertificateParams::new(Vec::<String>::new()).expect("fixture CA parameters");
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.distinguished_name.push(DnType::CommonName, subject);
+        params.key_usages = vec![
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::CrlSign,
+        ];
+        let key: KeyPair = KeyPair::generate().expect("fixture CA key");
+        let certificate: Certificate = params.self_signed(&key).expect("fixture CA certificate");
+        Self {
+            der: certificate.der().to_vec(),
+            subject: subject.to_owned(),
+            issuer: Issuer::new(params, key),
+        }
+    }
+
+    pub fn issue_leaf(&self, server_name: &str) -> FixtureLeaf {
+        let mut params: CertificateParams = CertificateParams::new(vec![server_name.to_owned()])
+            .expect("fixture DNS leaf parameters");
+        params
+            .distinguished_name
+            .push(DnType::CommonName, server_name);
+        params.use_authority_key_identifier_extension = true;
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        let key: KeyPair = KeyPair::generate().expect("fixture leaf key");
+        let certificate: Certificate = params
+            .signed_by(&key, &self.issuer)
+            .expect("fixture CA-signed DNS leaf");
+        let private_key: PrivateKeyDer<'static> =
+            PrivatePkcs8KeyDer::from(key.serialize_der()).into();
+        let mut config: ServerConfig = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![certificate.der().clone()], private_key)
+            .expect("fixture TLS configuration");
+        // No tickets or cache can substitute a prior generation's handshake.
+        config.send_tls13_tickets = 0;
+        config.session_storage = Arc::new(NoServerSessionStorage {});
+        FixtureLeaf {
+            ca_der: self.der.clone(),
+            server_name: server_name.to_owned(),
+            der: certificate.der().to_vec(),
+            public_key_der: key.subject_public_key_info(),
+            server_config: Arc::new(config),
+        }
+    }
+}
+
+pub struct FixtureLeaf {
+    pub ca_der: Vec<u8>,
+    pub server_name: String,
+    pub der: Vec<u8>,
+    /// DER SubjectPublicKeyInfo, independent of certificate metadata/DER.
+    pub public_key_der: Vec<u8>,
+    server_config: Arc<ServerConfig>,
+}
+
+#[derive(Default)]
+pub struct RelayCounters {
+    pub accepted: AtomicUsize,
+    pub handshakes: AtomicUsize,
+    pub requests: AtomicUsize,
+    /// Conservative count of POST forwarding attempts, including failed writes.
+    pub posts: AtomicUsize,
+}
+
+/// One bounded CA/DNS endpoint in front of one actual local host. Explicit
+/// stopped rotation joins successfully and retains the exact bound listener.
 pub struct HttpsRelay {
     pub addr: SocketAddr,
     pub ca_der: Vec<u8>,
     pub server_name: String,
-    /// Conservative count of POST forwarding attempts, including failed writes.
-    /// TLS handshakes, HTTP reads and backend connection failures never count.
-    pub posts: Arc<AtomicUsize>,
+    pub counters: Arc<RelayCounters>,
     stop: Arc<AtomicBool>,
-    worker: Option<JoinHandle<()>>,
+    worker: Option<JoinHandle<TcpListener>>,
 }
 
 impl HttpsRelay {
-    pub fn new(backend: SocketAddr) -> Self {
+    pub fn bind(backend: SocketAddr, leaf: &FixtureLeaf) -> Self {
+        let listener: TcpListener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("bind private HTTPS fixture listener");
+        Self::start(listener, backend, leaf)
+    }
+
+    pub fn start(listener: TcpListener, backend: SocketAddr, leaf: &FixtureLeaf) -> Self {
         assert!(
             backend.ip().is_loopback(),
             "HTTPS fixture backend must be loopback"
         );
-        let instance: u64 = NEXT_RELAY
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value: u64| {
-                value.checked_add(1)
-            })
-            .expect("HTTPS fixture identity exhausted");
-        let server_name: String = format!(
-            "validator-{}-{instance}.sunrise-edge.invalid",
-            std::process::id()
-        );
-        let (ca_der, server_config): (Vec<u8>, Arc<ServerConfig>) = certificate(&server_name);
-        let listener: TcpListener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .expect("bind private HTTPS fixture listener");
         listener
             .set_nonblocking(true)
             .expect("nonblocking HTTPS fixture listener");
         let addr: SocketAddr = listener.local_addr().expect("HTTPS fixture address");
+        assert!(
+            addr.ip().is_loopback(),
+            "HTTPS fixture listener must be loopback"
+        );
+        let server_config: Arc<ServerConfig> = Arc::clone(&leaf.server_config);
         let stop: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-        let posts: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+        let counters: Arc<RelayCounters> = Arc::new(RelayCounters::default());
         let worker_stop: Arc<AtomicBool> = Arc::clone(&stop);
-        let worker_posts: Arc<AtomicUsize> = Arc::clone(&posts);
+        let worker_counters: Arc<RelayCounters> = Arc::clone(&counters);
         let deadline: Instant = Instant::now()
             .checked_add(MAX_LIFETIME)
             .expect("HTTPS fixture lifetime overflow");
-        let worker: JoinHandle<()> = thread::spawn(move || {
+        let worker: JoinHandle<TcpListener> = thread::spawn(move || {
             let mut accepted: usize = 0;
             while accepted < MAX_CONNECTIONS
                 && !worker_stop.load(Ordering::Acquire)
@@ -85,6 +174,7 @@ impl HttpsRelay {
                 match listener.accept() {
                     Ok((socket, _peer)) => {
                         accepted += 1;
+                        worker_counters.accepted.fetch_add(1, Ordering::SeqCst);
                         let Some(connection_deadline) =
                             Instant::now().checked_add(CONNECTION_TIMEOUT)
                         else {
@@ -96,7 +186,7 @@ impl HttpsRelay {
                             socket,
                             backend,
                             Arc::clone(&server_config),
-                            &worker_posts,
+                            &worker_counters,
                             Arc::clone(&worker_stop),
                             connection_deadline.min(deadline),
                         );
@@ -105,18 +195,35 @@ impl HttpsRelay {
                         thread::sleep(ACCEPT_POLL);
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(_) => break,
+                    Err(error) => panic!("HTTPS fixture accept failed: {error}"),
                 }
             }
+            listener
         });
         Self {
             addr,
-            ca_der,
-            server_name,
-            posts,
+            ca_der: leaf.ca_der.clone(),
+            server_name: leaf.server_name.clone(),
+            counters,
             stop,
             worker: Some(worker),
         }
+    }
+
+    pub fn stop(mut self) -> TcpListener {
+        self.stop.store(true, Ordering::Release);
+        let listener: TcpListener = self
+            .worker
+            .take()
+            .expect("owned HTTPS worker")
+            .join()
+            .expect("HTTPS fixture worker must finish successfully");
+        assert_eq!(
+            listener.local_addr().unwrap(),
+            self.addr,
+            "retained HTTPS listener"
+        );
+        listener
     }
 }
 
@@ -127,48 +234,149 @@ impl Drop for HttpsRelay {
             // Accepted socket operations expire within SOCKET_TIMEOUT, and
             // connect and nonblocking accept have their own tighter bounds.
             // Cleanup never panics during a failed test's unwind.
-            let _ignored: thread::Result<()> = worker.join();
+            let _ignored: thread::Result<TcpListener> = worker.join();
         }
     }
 }
 
-fn certificate(server_name: &str) -> (Vec<u8>, Arc<ServerConfig>) {
-    let mut ca_params: CertificateParams =
-        CertificateParams::new(Vec::<String>::new()).expect("fixture CA parameters");
-    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params
-        .distinguished_name
-        .push(DnType::CommonName, server_name);
-    ca_params.key_usages = vec![
-        KeyUsagePurpose::DigitalSignature,
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::CrlSign,
-    ];
-    let ca_key: KeyPair = KeyPair::generate().expect("fixture CA key");
-    let ca: Certificate = ca_params
-        .self_signed(&ca_key)
-        .expect("fixture CA certificate");
-    let ca_der: Vec<u8> = ca.der().to_vec();
-    let issuer: Issuer<'_, KeyPair> = Issuer::new(ca_params, ca_key);
-    let mut leaf_params: CertificateParams =
-        CertificateParams::new(vec![server_name.to_owned()]).expect("fixture DNS leaf parameters");
-    leaf_params
-        .distinguished_name
-        .push(DnType::CommonName, server_name);
-    leaf_params.use_authority_key_identifier_extension = true;
-    leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-    leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    let leaf_key: KeyPair = KeyPair::generate().expect("fixture leaf key");
-    let leaf: Certificate = leaf_params
-        .signed_by(&leaf_key, &issuer)
-        .expect("fixture CA-signed DNS leaf");
-    let private_key: PrivateKeyDer<'static> =
-        PrivatePkcs8KeyDer::from(leaf_key.serialize_der()).into();
-    let config: ServerConfig = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![leaf.der().clone()], private_key)
-        .expect("fixture TLS configuration");
-    (ca_der, Arc::new(config))
+/// Full authenticated peer observation, never an insecure verifier or a
+/// configured-leaf echo. Its fresh client explicitly disables all resumption.
+pub fn authenticated_leaf(addr: SocketAddr, server_name: &str, ca_der: &[u8]) -> Vec<u8> {
+    assert!(addr.ip().is_loopback());
+    let mut roots: RootCertStore = RootCertStore::empty();
+    roots
+        .add(CertificateDer::from(ca_der.to_vec()))
+        .expect("observer CA root");
+    let mut config: ClientConfig = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    config.resumption = Resumption::disabled();
+    let name: ServerName<'static> = ServerName::try_from(server_name.to_owned()).unwrap();
+    let mut connection: ClientConnection = ClientConnection::new(Arc::new(config), name).unwrap();
+    let deadline: Instant = Instant::now().checked_add(CONNECTION_TIMEOUT).unwrap();
+    let socket: TcpStream = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).unwrap();
+    let mut bounded: DeadlineSocket = DeadlineSocket {
+        socket,
+        deadline,
+        stop: Arc::new(AtomicBool::new(false)),
+    };
+    while connection.is_handshaking() {
+        connection
+            .complete_io(&mut bounded)
+            .expect("authenticated observer handshake");
+    }
+    let der: Vec<u8> = connection
+        .peer_certificates()
+        .expect("received peer certificates")
+        .first()
+        .expect("received peer leaf")
+        .to_vec();
+    connection.send_close_notify();
+    while connection.wants_write() {
+        connection
+            .write_tls(&mut bounded)
+            .expect("observer close-notify");
+    }
+    der
+}
+
+/// One finite actual ClientHello close. It owns no backend address, identity,
+/// response or signing key, and cannot manufacture an HTTP/TLS error result.
+pub struct PeerClose {
+    pub counters: Arc<RelayCounters>,
+    pub client_hellos: Arc<AtomicUsize>,
+    addr: SocketAddr,
+    stop: Arc<AtomicBool>,
+    worker: Option<JoinHandle<TcpListener>>,
+}
+
+impl PeerClose {
+    pub fn start(listener: TcpListener, server_name: &str) -> Self {
+        listener.set_nonblocking(true).unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        assert!(addr.ip().is_loopback());
+        let name: String = server_name.to_owned();
+        let counters: Arc<RelayCounters> = Arc::new(RelayCounters::default());
+        let client_hellos: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+        let stop: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        let worker_counts: Arc<RelayCounters> = Arc::clone(&counters);
+        let worker_hellos: Arc<AtomicUsize> = Arc::clone(&client_hellos);
+        let worker_stop: Arc<AtomicBool> = Arc::clone(&stop);
+        let deadline: Instant = Instant::now().checked_add(CONNECTION_TIMEOUT).unwrap();
+        let worker: JoinHandle<TcpListener> = thread::spawn(move || {
+            while !worker_stop.load(Ordering::Acquire) && Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((socket, _peer)) => {
+                        worker_counts.accepted.fetch_add(1, Ordering::SeqCst);
+                        socket.set_nonblocking(false).unwrap();
+                        let bounded: DeadlineSocket = DeadlineSocket {
+                            socket,
+                            deadline,
+                            stop: Arc::clone(&worker_stop),
+                        };
+                        let mut limited: io::Take<DeadlineSocket> =
+                            bounded.take(MAX_CLIENT_HELLO_BYTES);
+                        let mut acceptor: Acceptor = Acceptor::default();
+                        loop {
+                            let read: usize = acceptor
+                                .read_tls(&mut limited)
+                                .expect("read actual ClientHello");
+                            assert_ne!(read, 0, "ClientHello missing, truncated or exceeds bound");
+                            if let Some(accepted) = acceptor
+                                .accept()
+                                .unwrap_or_else(|_| panic!("parse actual ClientHello"))
+                            {
+                                let hello: ClientHello<'_> = accepted.client_hello();
+                                assert_eq!(hello.server_name(), Some(name.as_str()));
+                                worker_hellos.fetch_add(1, Ordering::SeqCst);
+                                break;
+                            }
+                        }
+                        // Drop the socket before starting any TLS handshake or HTTP.
+                        return listener;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(ACCEPT_POLL);
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) => panic!("accept actual peer-close connection: {error}"),
+                }
+            }
+            listener
+        });
+        Self {
+            counters,
+            client_hellos,
+            addr,
+            stop,
+            worker: Some(worker),
+        }
+    }
+
+    pub fn finish(mut self) -> TcpListener {
+        let listener: TcpListener = self
+            .worker
+            .take()
+            .expect("owned peer-close worker")
+            .join()
+            .expect("peer-close worker must finish successfully");
+        assert_eq!(self.counters.accepted.load(Ordering::SeqCst), 1);
+        assert_eq!(self.client_hellos.load(Ordering::SeqCst), 1);
+        assert_eq!(self.counters.handshakes.load(Ordering::SeqCst), 0);
+        assert_eq!(self.counters.requests.load(Ordering::SeqCst), 0);
+        assert_eq!(self.counters.posts.load(Ordering::SeqCst), 0);
+        assert_eq!(listener.local_addr().unwrap(), self.addr);
+        listener
+    }
+}
+
+impl Drop for PeerClose {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ignored: thread::Result<TcpListener> = worker.join();
+        }
+    }
 }
 
 fn invalid(reason: &'static str) -> io::Error {
@@ -227,7 +435,7 @@ fn forward_connection(
     socket: TcpStream,
     backend: SocketAddr,
     server_config: Arc<ServerConfig>,
-    posts: &AtomicUsize,
+    counters: &RelayCounters,
     stop: Arc<AtomicBool>,
     deadline: Instant,
 ) -> io::Result<()> {
@@ -241,7 +449,12 @@ fn forward_connection(
     };
     let mut tls: StreamOwned<ServerConnection, DeadlineSocket> =
         StreamOwned::new(connection, client);
+    while tls.conn.is_handshaking() {
+        tls.conn.complete_io(&mut tls.sock)?;
+    }
+    counters.handshakes.fetch_add(1, Ordering::SeqCst);
     let (request, is_post): (Vec<u8>, bool) = read_request(&mut tls)?;
+    counters.requests.fetch_add(1, Ordering::SeqCst);
     let connect_timeout: Duration = tls.sock.remaining(CONNECT_TIMEOUT)?;
     let backend_socket: TcpStream = TcpStream::connect_timeout(&backend, connect_timeout)?;
     let mut upstream: DeadlineSocket = DeadlineSocket {
@@ -253,7 +466,7 @@ fn forward_connection(
     if is_post {
         // Count conservatively before the first write: a partial/failed POST
         // remains an attempt, while an unauthenticated TLS peer cannot count.
-        posts.fetch_add(1, Ordering::SeqCst);
+        counters.posts.fetch_add(1, Ordering::SeqCst);
     }
     upstream.write_all(&request)?;
     upstream.flush()?;
