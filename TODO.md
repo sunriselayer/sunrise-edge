@@ -2,557 +2,275 @@
 
 Updated: 2026-10-07 (Asia/Singapore).
 
-This is the only live implementation queue and readiness tracker. Design and
-responsibility contracts belong in [architecture](docs/architecture/README.md),
-actual code owners in the [code map](docs/development/code-map.md), and dated
-rationale in [decision records](docs/architecture/decisions/README.md).
+This is the only live queue and readiness tracker. Responsibility contracts
+belong in [architecture](docs/architecture/README.md), actual owners in the
+[code map](docs/development/code-map.md), and dated rationale in
+[decision records](docs/architecture/decisions/README.md).
 [DR-0200](docs/architecture/decisions/0200-maintainability-and-mainnet-roadmap.md)
-defines this consolidation. The [preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)
-retains original criteria, exact revisions, failed/interrupted attempts and
-scoped validation. Archiving evidence does not waive a gate.
+consolidates implementation and semantic refactoring; file splitting is not its
+completion criterion.
 
-The referenced original security, coding, integration-test and release
-requirements remain binding until explicitly superseded by an accepted
-decision. Old execution observations and aspirational design sketches are not
-new authority. The architecture documents and `SECURITY.md` remain their live
-design/security owners; this file tracks every remaining completion group.
+The [original roadmap](docs/development/history/roadmap-through-2026-10-06.md)
+and [preserved execution queue](docs/development/history/execution-queue-through-2026-10-07.md)
+retain original criteria, exact revisions and failed/interrupted/scoped attempts.
+Historical pending statuses and the expired ten-hour window are not the current
+queue. The human's later instruction is to continue toward resolving the TODOs;
+no new deadline or deployment authority is inferred.
 
 ## Established baseline
 
-- [x] CLI Developer MVP: local Rust CLI, object queries, generic paid contract
-  Publish/Instantiate/Call and ordinary Standard Asset create/transfer/split/
-  merge/mint/burn. No Standard Asset-specific node-core authority.
+- [x] CLI Developer MVP: local Rust queries, generic paid Publish/Instantiate/Call
+  and ordinary Standard Asset create/transfer/split/merge/mint/burn. Standard
+  Asset has no node-core admission or balance privilege.
 - [x] Delivery 1: certified network contract lifecycle, replay and declared
-  catch-up (PR #228). This is not complete state handoff.
-- [x] Delivery 2: shared ordered claims, bonds, evidence/slashing and
-  reactivation (PR #232). Membership is not user ownership or voting power.
-- [x] Delivery 3: recurring original-root membership/recovery through the actual
+  catch-up (PR #228), not complete state handoff.
+- [x] Delivery 2: shared ordered claims, bonds, evidence/slashing and reactivation
+  (PR #232). Membership, ownership, bond and voting power remain distinct.
+- [x] Delivery 3: recurring original-root membership/recovery through actual
   configured e8 withdrawal unlock, changed five-member committees, restart,
-  fencing and replay (PR #269/#270, normal merge `952c77f`). Complete local
-  owners passed at functional ancestor `65b2ee8`; reviewed final documentation
-  head `b7c034b` passed every required CI owner. This is functional acceptance,
-  not independent audit, real provider activation or mainnet certification.
-- [x] Semantic refactoring: writer-free shared business preparation; domain-bound
-  observations/transaction assembly; immutable `VerifiedGenesisRoot`; one
-  structural committee validator; shared reconstruction policy binding and
-  native SQLite/DO SQL engine. Accepted callers and scoped evidence are retained
-  in the archived verified-architecture checkpoints, not inferred from file size.
-- [x] Explicit local SQLite prepare/preflight (PR #271, normal merge `54d9c3f`)
-  and offline public Standard Asset genesis authoring (PR #272, normal merge
-  `eae9e69`). Local preparation does not select a production provider.
-- [x] Exact original publication-reference validation and real four-validator
-  SQLite/TLS/compiled-CLI startup (PR #274/#275). PR #275 merged normally as
-  `725e4a14` at 14:05:45 UTC after exact `13b0b766` complete source approval,
-  all seven CI owners and `check`; PR #274's preserved normal merge `734f6454`
-  was automatically recognized as merged. No public deployment is claimed.
+  fencing and replay (PR #269/#270, normal merge `952c77f`). This is functional
+  local acceptance, not an independent audit or public/mainnet qualification.
+- [x] Semantic foundations: writer-free business preparation, domain-bound
+  observations/assembly, immutable `VerifiedGenesisRoot`, one committee record
+  validator and reconstruction-policy owner, and shared SQLite/DO SQL decisions.
+- [x] Local SQLite preflight, offline Standard Asset genesis, exact publication
+  reference checks and real four-validator SQLite/TLS/compiled-CLI startup
+  (PR #271–#276). Development composition is not operational custody.
+- [x] Native/SDK/certified-relay integration (PR #285): exact `fb3e6884` received
+  complete independent Codex fallback source approval, literal npm-ci plus
+  `./scripts/check-all.sh` PASS, all seven required hosted owners plus `check`,
+  and normal merge `4d919b0d` at 07:28 UTC. Merge tree equals the approved head;
+  local main equaled origin/main and was clean. PR #281–#284 are merged ancestors.
 
 Validator-set changes, slashing and reward/claim distribution remain FastVote
-completion requirements. Their functional implementation does not close the
-independent economic/security release gate.
+completion requirements. Functional acceptance does not close their economic
+and security release gates.
 
-## Active integration and continuous TODO completion
-
-The human renewed continuation toward this queue's completion on 2026-10-07;
-the previous ten-hour window ended and is not a new deadline. The existing
-thread heartbeat continues safe actionable work without duplicating running
-agents or acceptance owners. Continued work does not certify external mainnet
-gates or authorize deployment.
+## Current local integration
 
 [DR-0208](docs/architecture/decisions/0208-native-sqlite-first-and-protected-signing.md)
-records Native plus SQLite first, DO later, and removal of Ledger-specific
-mainnet prerequisites. Key protection, signing-content verification, recovery,
-rotation and revocation remain open M2 work.
+selects Native plus SQLite first and Cloudflare DO later. PostgreSQL remains
+optional. Ledger-specific product completion is no longer mandatory for mainnet;
+protected keys, trusted content review, recovery/rotation/revocation and
+independent qualification remain required. Ledger itself is deferred, not complete.
 
-The planning baseline was `eae9e6972baa293e4ad3ffde5d3ed931b85a6ef5`.
-PR #273 subsequently merged normally as `587fe587` at 13:44:23 UTC after
-its exact `77090388` complete source approval and all required CI passed.
-PR #275 then merged as `725e4a14`; local main was verified clean and equal to
-origin/main at that merge.
-PR #276 merged normally as `b878d2e1` at 16:09:07 UTC after exact `c89acfdd`
-complete source approval and all seven required CI owners plus `check` passed.
-The plan, common envelope and private acceptance observations were integrated
-with normal merge commits at 21:59:04–22:00:28 UTC: PR #277 as `9e07194e`,
-PR #278 as `3b8796ed`, and PR #279 as `1432cb85`. Each exact head had complete
-independent source approval and all seven required CI owners plus `check`
-passing; PR #278 also passed the literal full local required gate. The merged
-trees retain the exact approved source contents, and GitHub independently
-reports all three PRs merged. This closes those slices, not a release gate.
+Branch `codex/native-sqlite-release-integration-1007` locally combines the slices
+below with normal merge commits. This is not yet main integration. Source review,
+owning checks, complete local acceptance and hosted CI are separate evidence.
+Do not attribute a component/ancestor run to the combined head.
 
-| Integration inventory | Actual head and remaining acceptance |
-| --- | --- |
-| PR #277: one plan and mainnet gate inventory | `7a9d391`; merged normally as `9e07194e` after complete source approval and all required CI passed |
-| PR #278: pure envelope/list and SDK binding owner | `aab0389`; merged normally as `3b8796ed`; complete source approval, literal full local required gate and all required CI passed |
-| PR #279: private observations of genuine recurrence | `3f2b9e1`; merged normally as `1432cb85`; complete source approval, owning observer units 4/0 and all required CI passed |
-| PR #280: real host/signer/store capability map | `4d5507d`; complete exact-head Opus source approval and all required CI passed; merged normally as `c19bd0d3`. Primary `main` is clean and equal to `origin/main` at `c19bd0d3` (verified 22:09 UTC). |
-| PR #281: closed certified HTTPS relay | `7424d72`; complete exact-head Opus source approval; owning relay checks and npm-ci passed; hosted recurrence still running, not passed. Included in the isolated integration candidate below, not merged into `main`. |
-| PR #282: shared declared-state preparation | `7853869`; complete exact-head Opus source approval; literal full local required gate passed at 22:44:41 UTC, including genuine recurring e8 unlock, Cloudflare and portable owners. All seven hosted owners and `check` passed (verified 23:11 UTC). Integration remains open. Included in the candidate, not merged into `main`. |
-| PR #283: bounded SDK chunked-response owner | `9c7543a`; complete exact-head Opus source approval; SDK 246/0, workspace Clippy and all four pinned portable tasks passed; hosted recurrence still running, full required acceptance and integration remain open. Included in the candidate, not merged into `main`. |
-| PR #284: authority-free native ingress (DR-0206) | `e7b02f4`; complete exact-head Opus source approval; native 164/0, workspace Clippy, npm-ci, rustdoc, fmt and 415 doc links passed; hosted CI run `37538727944` still running, not passed. Included in the candidate, not merged into `main`. |
+| Slice | Exact source and verified scope | Remaining acceptance |
+| --- | --- | --- |
+| PR #286: consensus verifier owner | `f797d049`; complete source approval, consensus 259/0 and genuine core successor controls 5/0 plus strict owning Clippy | Full combined acceptance, final CI and integration |
+| PR #287: SQLite physical ownership | `621d1a07`; complete source approval, 141/0 real owning tests and strict Clippy | Full combined acceptance, final CI; actual power/ENOSPC/failover remain M3 |
+| PR #288: external signing preparation | `85b8a0a2`; complete source approval, SDK/CLI 491/0 and strict Clippy; actual operator owner compiled with strict Clippy | Genuine operator execution in complete acceptance; actual custody stays M2 |
+| PR #289: source-free inactive recovery | `7065a1dd`; complete source approval, 3/0 compiled owning tests and strict Clippy | Full combined acceptance, final CI; encrypted off-host/general recovery stay M4 |
+| PR #290: protected custody design | `dba52ddd`; complete four-document source approval, no provider selection or protected-key implementation | Human threat/review/key-role choices and actual M2 implementation |
+| PR #291: ordered local signatures | `5980522b`; complete final source approval; identical functional `5c05215e` passed 1226/0/7 ignored and strict owning Clippy | Complete acceptance/CI; ignored tests were not executed by the scoped run |
+| Native release evidence candidate | `69a2992d`; parent verified 101 compiler/DB/network-free controls and CI recipe/mutation contract; complete independent source review BLOCKED on raw UTF-8 BOM marker acceptance | Marker-local correction and new negatives, fresh exact-source review/preflight, actual fresh A/B builds, complete acceptance/CI |
 
-Recheck live heads and required checks before integrating; pending never means
-passed. Preserve Draft #235 as extraction material and do not auto-merge
-dependency PRs. Avoid duplicate builds and long tests already running elsewhere.
+Initial failed source/test attempts remain in the preserved queue and immutable
+evidence; they are not passed. The `8974634a` ordered test failed one timing
+assertion, then was corrected without production changes or weakened assertions.
+Package compilation does not prove the expensive original operator recurrence.
 
-### Isolated integration candidate (branch `codex/native-client-integration-1006`)
+Next, finish the release-input refusal correction, freeze/review the complete
+combined source, verify the actual offline closure and eleven targets, and
+compare two fresh sequential native builds under the accepted resource budget.
+Then run literal npm-ci and the complete required gate, check final-head CI and
+actionable review findings, and normally merge. Reconcile live heads before each
+step. Preserve Draft #235 and do not auto-merge dependency PRs.
 
-A separate worktree branch, based on `main` at `c19bd0d3`, has locally merged
-the four approved source heads above (`7424d72`, `7853869`, `9c7543a`,
-`e7b02f4`) with four normal local merge commits. This is a candidate only; it
-is not a `main` integration and has not passed combined acceptance. Each local
-merge retained its original source parent's content and resolved only
-mechanical conflicts, keeping both sides' decision-record/code-map entries and
-the current criteria text. Combined host/SDK tests, exact-source review of the
-integrated tree and all required CI must still complete before any merge into
-`main`.
+## Responsibility-oriented work packages
 
-[DR-0207](docs/architecture/decisions/0207-local-native-sdk-relay-integration.md)
-adds a local acceptance seam: retain the real SQLite/native TCP query scenario
-and its original assertions, then run all four queries through the actual
-certified Vercel handler, a test-owned TLS bridge and the CA/DNS-pinned SDK.
-Only bounded Rust process setup is shared; the original GET/POST/204/late-failure
-JavaScript fixture is unchanged. The bridge's second leg is numeric loopback
-HTTP, not upstream TLS, provider deployment, quorum or business execution proof.
-Fresh complete PLAN approval required eight corrections before source acceptance;
-they are implemented here. Exact functional `388a2a88` passed combined owning
-native HTTP 166/0 and SDK 246/0 at 22:55:30 UTC, including the real native-relay
-queries and unchanged original TLS failure controls. Whole-workspace all-target/
-all-feature Clippy passed at 22:56:39 UTC. Exact npm-ci, all four actual portable
-tasks on Node 22.20.0/Deno 2.9.4, 654 changed-document links, formatting and gate
-dispatch/mutation controls passed. These are scoped execution results, not this
-combined head's complete required gate, hosted CI or independent security audit.
-Clean frozen `269e6b9` additionally passed the owning native/SDK tests,
-whole-workspace Clippy, npm-ci and all four pinned portable tasks; its complete
-Cloudflare owner passed at 23:00:32 UTC, including generated WASM and all four
-workerd suites. The same twelve contract-refusal diagnostic lines occur in the
-recorded R2 full-gate baseline; individual unnamed pairs cannot be directly
-attributed from the logs. This is not a clean-stderr or provider claim.
-
-Fresh complete read-only source review at `269e6b9` covered all 75 changed
-paths and the whole immutable diff and returned COMPLETE SOURCE APPROVE with
-no required findings. Opus exhausted its weekly allowance during review and
-Grok could not start because its allowance was exhausted; neither completed
-source approval. The human's earlier explicit fallback authorization was used
-for a fresh Codex reviewer. Its approval is not labeled Opus or an independent
-security audit. The final TODO-only delta at exact `fb3e6884` subsequently
-received complete source approval from that independent reviewer with no
-findings. [PR #285](https://github.com/sunriselayer/sunrise-edge/pull/285) is Draft,
-not merged. Exact local npm-ci passed and its literal required gate started
-on 2026-10-07 at 03:41 UTC. Hosted CI has six successful owners and a running
-`recurring-sqlite` owner as observed at 03:39 UTC; `check` is not passed.
-Complete required acceptance, final-head CI and main integration remain open;
-ancestor and focused passes are not attributed as full final-head acceptance.
-
-### Responsibility-oriented refactoring queue
-
-The contracts and acceptance for R0–R4 are in
+Contracts and acceptance are in
 [implementation structure](docs/architecture/implementation-structure.md#maintainability-work-packages).
-These are coherent outcomes, not one obligatory PR per helper or file.
+These are coherent outcomes, not an obligatory PR per helper or facade.
 
-- [x] **R0 — one truthful plan and gate inventory:** consolidate this queue,
-  preserve original requirements/evidence, repair links, reconcile merged and
-  pending startup work, and obtain independent plan/source review. Current
-  status stays here; README does not acquire progress reports.
-- [ ] **R1 — public contract and dependency ownership:** establish the defining
-  owner for shared data/codec/error contracts consumed by node, wire, SDK and
-  host. Migrate actual consumers and remove copied rules or reverse coupling.
-  Start with the independently reviewed coherent boundary, not an invented
-  foundations crate containing execution. Canonical size bounds must be owned
-  once; adapter framing overhead and local resource budgets remain distinct.
-  Complete SDK decoupling is not assumed from one migrated boundary.
-  [DR-0201](docs/architecture/decisions/0201-envelope-and-acknowledgement-ownership.md)
-  has corrected independent conditional Opus PLAN APPROVE: one envelope/list codec,
-  narrow errors with unchanged host classification, an outer-bound generic
-  result decoder and one single-ack binder for four actual SDK families.
-  Generic submit retains its whole-result return contract; the HTTP decoder
-  remains the existing nested-ID owner. Caller-local preparation and semantic
-  error order stay unchanged. Pre-change vectors come first.
-  The current implementation branch has migrated the pure envelope/list owner,
-  wire-bound views and all four actual SDK consumers, including native,
-  successor, DO and CLI flat mappings. Pre-move literal vectors are unchanged;
-  focused wire/core and full Rust-client iterations passed. Exact `aab0389`
-  complete source review approved; its literal full local required gate passed
-  at 19:02:54 UTC without skipping the original e8/five-host recurrence. All
-  required hosted acceptance passed and the slice merged normally as
-  `3b8796ed`. Remaining core/SDK dependency work is not closed.
-  Under accepted [DR-0209](docs/architecture/decisions/0209-consensus-verifier-ownership.md),
-  the current slice defines one consensus-owned Ed25519 adapter and removes
-  all three core production adapters. Core, SDK, native hosts, operator and CLI
-  consumers explicitly retain their original unsupported-scheme classification;
-  the SDK exports the defining consensus type directly. The actual registration,
-  context, quorum, framing and authority owners are unchanged. Eight new outcome/
-  caller controls accompany the complete consumer migration. Exact functional
-  `d31178c9` passed consensus 259/0 and scoped consensus Clippy. Fresh complete
-  Codex fallback source review covered all 87 changed paths and approved with
-  no required findings; independent mapping confirmed all 268 constructor
-  choices. The first 258/1 test attempt exposed an incorrect new 63-byte
-  expectation; only that assertion was corrected to the verified original
-  Authenticator result. Exact `ba8589e7` passed consensus 259/0 and strict focused
-  checks. Hosted CI run `37572669043` failed `rust-tests`, `core-recurrence` and
-  `lint` with `E0425` for the test-local `ValidatorId` reference after removal
-  of its unused production import. The repair adds the explicit test-local
-  import only. Exact `a7dbb277` received complete final-source approval across
-  all 88 changed paths; consensus 259/0, the actual owning successor-chain
-  tests 5/0 and strict consensus/node-core all-target/all-feature Clippy passed.
-  Those are focused results, not full required acceptance. PR #286's final-head
-  CI, full required acceptance and integration remain pending. Other real
-  core/SDK dependencies remain; no standalone SDK or compilation speedup is claimed.
-- [ ] **R2 — narrow core/runtime responsibilities:** make the facade compose
-  admission, evaluation, completion, reconciliation and storage contracts;
-  separate object/receipt/outbox repositories and memory implementations by
-  semantic owner. Remove obsolete duplicate paths only after their callers move.
-  A move with unchanged bodies is mechanical progress, not semantic completion.
-  [DR-0206](docs/architecture/decisions/0206-unauthenticated-ingress-without-execution-capabilities.md)
-  additionally removes the two unreachable legacy native invocation pipelines
-  and their runtime/configuration/callback/lease capabilities. The unreleased
-  host constructors are replaced by one explicit closed event endpoint; actual
-  authenticated execution, queries and standalone recovery remain separate.
-  The pre-change native suite passed 161/0; the independently design-reviewed
-  implementation retains every authenticated/recovery test and adds three
-  refusal/admission controls. Functional `f5d6863` received complete independent
-  source approval, native tests 164/0, whole-workspace all-feature Clippy,
-  npm-ci and native rustdoc. One remaining single-caller recovery callback
-  abstraction is removed without changing lease/time/claim/encode/send/ack
-  or failure order. Source approval and scoped checks do not close its full
-  required gate, CI, combined-source integration or security audit.
-  [DR-0203](docs/architecture/decisions/0203-declared-state-transition-preparation.md)
-  has independent PLAN APPROVE at `d2be439` after actual pre-change public-library
-  8/0 and durable/authenticated 11/0 controls. Its private preparation owner now
-  replaces all five sorted loading loops and the duplicated writable/revision
-  rules, while retaining two deliberately distinct assemblers and original
-  caller ordering. Exact `7853869` has complete source approval; its ordinary
-  node-core suite, private priority controls, genuine core e8 and local
-  readiness passed. The literal full local required gate passed at 22:44:41 UTC,
-  retaining the real operator recurrence through terminal e8 unlock. Hosted
-  acceptance passed with all seven owners and `check` (verified 23:11 UTC).
-  Combined-source integration remains open; that pass is not attributed to it.
-  R2 as a whole remains open. Its R3 observation prerequisite is now in main.
-- [ ] **R3 — attributable tests and economical CI:** reuse bounded signed input
-  and environment builders while keeping expected outcomes independent; separate
-  pure, real-store, HTTP and compiled-CLI owners. Remove duplicate setup/work
-  where equivalent coverage is proved. Keep every real recurrence, delay,
-  restart/fencing/fault and optional selected-PG case. Prove any CI reuse from
-  exact relevant executable/build inputs; do not add path-filter skips or call
-  partial/ancestor/interrupted tests exact-head passes.
-  The independent timing slice adds test-private closed-stage observations to
-  the actual SQLite/compiled-CLI recurrence without changing original work,
-  delay or assertions. It exposes the existing recurring selector's output;
-  no cache, skipped owner or speedup is claimed. Exact `3f2b9e1` complete source
-  review and hosted required CI passed; actual owning observer units passed
-  4/0 locally and the slice merged normally as `1432cb85`. No separately
-  exact-head full local recurrence is claimed. Other setup/reuse improvements
-  remain open; no workflow validation was removed on an unproved equivalence.
-- [ ] **R4 — audit and launch seams:** assemble exact source/build/configuration
-  provenance, exposed-family authorization inventory, signer/store capability
-  inventory and executable startup/stop/restart/recovery evidence for the audit.
-  Remove misleading unsupported advertised compositions and stale architecture
-  claims; do not build another consensus or general orchestration framework.
-  The [composition inventory](docs/architecture/compositions-and-capabilities.md)
-  and [network audit input contract](docs/security/network-code-audit-scope.md)
-  identify actual surfaces and required final-review inputs. Their existence is
-  not a completed audit, selected public host or release qualification.
-  The explicit [certified relay](docs/architecture/decisions/0204-portable-certified-relay.md)
-  adds closed FastVote/publication/frontier/drain/query transport to Deno/Vercel
-  and a separate stateless Worker. It does not add ordered/successor/DO lifecycle
-  authority. Exact `7424d72` has complete independent source approval; owning
-  portable/workerd checks, the actual native oracle/genuine 204 regression and
-  generated-artifact checks passed at their recorded functional inputs. Full
-  exact-head acceptance, hosted recurrence and combined integration remain open.
-  [DR-0205](docs/architecture/decisions/0205-bounded-sdk-streamed-response-framing.md)
-  implements one bounded chunk decoder with header-priority, framing-budget,
-  wire-fragmentation and pinned-Node CI controls. Exact `9c7543a` has complete
-  independent source approval, SDK all-targets 246/0, workspace Clippy and all
-  four actual pinned portable tasks passed. Original length/204 controls and
-  late-failure/refusal/budget cases remain. The runtime removal/wrong-version
-  CI mutation controls also passed. Complete required CI and combined integration
-  remain pending; DR-0207 adds actual native-to-relay-to-SDK query evidence,
-  not another mock-backed execution or provider qualification claim.
-  TLS identity is not protocol authority, and
-  this local fixture does not qualify a deployed provider or public network.
+- [ ] **R0 — one truthful plan:** one live queue, preserved original requirements
+  and attributable history, architecture/code-map/ADR ownership, working links
+  and independent review. The consolidated queue is implemented here; its
+  complete independent integration review is pending. Keep it synchronized with
+  actual integration.
+- [ ] **R1 — public contract and dependency ownership:** migrate actual consumers
+  to one defining data/codec/error/bounds owner and remove copied rules/reverse
+  coupling without changing bytes, error priority or authority.
+  DR-0201's envelope/list and acknowledgement owner is merged. DR-0209's one
+  consensus Ed25519 adapter and all actual consumers are in the integration
+  above. Remaining core/SDK type coupling is explicit, not solved by inventing
+  a foundations crate containing execution. Complete SDK decoupling is not
+  inferred from these migrated boundaries.
+- [ ] **R2 — semantic core/runtime responsibilities:** admission authorizes,
+  evaluation proposes, completion assembles one atomic transaction, reconciliation
+  exposes confirmed exact output, and repositories expose their actual capability.
+  DR-0203/0206 removed duplicated state preparation and unreachable native
+  execution-capability paths in PR #285. DR-0210 centralizes native connection
+  settings/lock-safe attachment ownership; DR-0215 binds actual local signatures
+  to invocation identity before retention/exposure. Preserve receipt-first replay,
+  actual CAS/ambiguity, legitimate prefix progress and real memory reconstruction.
+  Further extraction needs a concrete changing owner, not a file-size target.
+- [ ] **R3 — attributable tests and economical CI:** share bounded signed-input
+  setup, not the implementation-derived oracle; separate pure/store/HTTP/CLI
+  owners. Remove equivalent duplicate work only with exact-input coverage proof
+  and measured benefit. DR-0202's private recurrence observations are merged.
+  Keep every actual recurrence, unlock delay, restart/fence/fault and selected-PG
+  case. The release fixture runs once in the existing cheap contract owner;
+  no new heavy CI lane, path-filter skip or unproved ancestor reuse is introduced.
+- [ ] **R4 — audit and launch seams:** bind exact source/build/configuration,
+  exposed-family authorization, signer/store capabilities and executable
+  startup/stop/restart/recovery evidence. DR-0204–0207 relay/native/SDK evidence
+  is merged; DR-0212 recovery and DR-0213 release evidence extend the actual
+  audit handoff. TLS identity is not protocol authority, local workerd is not
+  provider rollout, and an evidence manifest grants no serving/signing authority.
 
-Sequence R0 and the ready startup integrations first; review R1's contract
-before implementation. R2/R3 may run in parallel only with disjoint owners and
-isolated writer worktrees. After a useful accepted slice, continue the next
-unchecked item; do not reopen completed Delivery 3 without a relevant change.
+Continue a useful accepted slice rather than reopening completed Delivery 3 or
+requiring unrelated facade extraction before functionality. Concurrent writers
+need independent owners/worktrees; shared compiler and source ownership stay explicit.
 
 ## Delivery 4: first public testnet
 
-This is a separately reviewed bounded release profile, not mainnet. Each item
-needs real evidence for the selected profile, not fixtures from a different one.
+This needs a separately approved release profile and real evidence, not fixtures
+from another profile. The accepted
+[protocol-v3 activation constraint](docs/architecture/core-protocol.md) still
+requires atomic composition, authentication/authorization for every accepted
+external family, protected signing under DR-0208, S5 and independent security/
+release gates. It also applies to public testnet. Any bounded exception needs
+explicit human approval and release review.
 
-The accepted [protocol-v3 live-activation constraint](docs/architecture/core-protocol.md)
-still forbids activation on any live chain until complete atomic composition,
-authentication/authorization of every accepted external family and the required
-software/signing and independent security/release gates are satisfied. This
-includes public testnet. DR-0208 removes the Ledger-specific prerequisite only;
-replacement protected-signing M2 and the other release gates remain open.
-A bounded testnet exception requires an explicit human-approved decision and release review,
-not this roadmap or successful local startup.
-
-- [ ] Integrate the reviewed operator/startup prerequisites and pass the actual
-  required gates. Reproduce author → independent inspection → four separate
-  stores → authenticated TLS → compiled CLI → restart/exact replay/refusal.
-- [ ] Complete independent economics/FastVote and ingress/lifecycle delta
-  audits of the final implemented scope; remediate and independently verify
-  findings. Tech-lead APPROVE is not the independent security audit.
-- [ ] Review the locked production and build/tooling dependency advisories
-  before exposure. The preserved 2026-10-06 observation of seven high tooling
-  advisories and zero `npm audit --omit=dev` findings is not release clearance;
-  establish actual exposure and remediation without a forced bulk upgrade.
-- [ ] Human selects the initial hosting/store profile, independent validator
-  operators and administrative/key boundaries, genesis authority/chain pins,
-  economic configuration, supported routes and release artifact. Keep PG optional.
-- [ ] Verify actual endpoint authentication/TLS, all accepted event families,
-  rate/request/work bounds, liveness scheduling, logs/alerts and spend limits.
-  Unimplemented/unaudited families stay disabled, not generically proxied.
-- [ ] Author and independently verify the real genesis; execute the key/config
-  ceremony and separate-validator installation. Development keys and a shared
-  test database are not independent operational custody.
-- [ ] Rehearse on the authorized selected topology: outside-client submission,
-  fees/claims, bonds/slash, membership/epoch changes, stopped-validator catch-up,
-  safe stop/restart and recovery, verifying receipts and canonical state.
-- [ ] Approve the launch profile and startup/rollback/stop instructions before
-  actually creating resources or admitting public traffic. This work window
-  does not itself authorize deployment or public-network startup.
+- [ ] Integrate the reviewed startup/operator prerequisites and pass complete
+  gates: author → independent inspection → four independent stores → authenticated
+  TLS → compiled CLI → restart/exact replay/refusal.
+- [ ] Independently audit the final economics/FastVote, generic contracts, ingress
+  and lifecycle scope; fix and independently verify findings. Tech-lead approval
+  is not a security audit.
+- [ ] Review locked production and build/tooling advisories before exposure.
+  Historical seven high tooling findings and zero omit-dev findings are not
+  clearance; establish actual exposure/remediation without forced bulk upgrades.
+- [ ] Select independent validator operators, custody/admin roles, real genesis/
+  chain pins, economics, supported routes and exact release artifact. Native plus
+  SQLite is selected first, not already production-certified.
+- [ ] Verify actual auth/TLS and rotation, every accepted event family, bounded
+  requests/retries/work, liveness, logs/alerts and spend controls. Unsupported or
+  unaudited families stay disabled, never generically proxied.
+- [ ] Author and independently verify real genesis; rehearse the key/config
+  ceremony and independent installations. Development keys/shared test DBs are
+  not operational independence.
+- [ ] On an authorized topology, rehearse outside-client submission, fees/claims,
+  bonds/slash, membership/epochs, stopped-validator catch-up, safe restart/stop
+  and recovery with exact receipt/canonical-state checks.
+- [ ] Approve launch, rollback and stop instructions before creating resources
+  or admitting public traffic. Continued implementation does not authorize deployment.
 
 ## Mainnet completion
 
-The following groups consolidate existing S4/S5, Phase 15–17 and cross-phase
-release criteria; they do not replace them with a smaller checklist. Every
-group is open until its original required evidence is complete or the human
-explicitly approves a documented scope change.
+Every group remains open until original evidence is complete or an accepted
+human decision explicitly supersedes it. This consolidates S4/S5, Phase 15–17
+and cross-phase criteria; it does not shorten them.
 
-- [ ] **M1 — independently reviewed release:** complete final code/deployment
-  threat and delta audits, including generic contracts, all economic operations,
-  handoff/activation, authenticated ingress, storage and signing. Fix significant
-  findings and independently verify corrections; retain residual-risk decisions.
-- [ ] **M2 — protected keys and signing:** production custody, separation of
-  operators and authority, secret handling, recovery/rotation/revocation and
-  signer refusal/failure evidence. Under the human-approved DR-0208 amendment,
-  Ledger-specific S4 completion is no longer mandatory for mainnet. Design,
-  independently review and implement the replacement protected signer and
-  operation-specific content verification; a plaintext seed is not a substitute.
-  Accepted [DR-0211](docs/architecture/decisions/0211-external-signing-preparation.md)
-  has a local implementation candidate removing secret-key requirements from
-  the actual SDK/CLI local, paid, publication, original/successor registration
-  and historical claimant paths. [The defining owners](docs/architecture/signing-preparation.md)
-  retain immutable trust/content snapshots and independently verify returned
-  signatures through the existing external-signer boundary. Development CLI
-  callers are migrated; no provider driver or fallback is added. Exact functional
-  `85a65745` passed all-target/all-feature SDK/CLI 491/0/0 ignored and strict
-  Clippy without warning exclusions at 04:56 UTC. A fresh complete Codex fallback
-  source review approved all 31 three-dot paths, including R1's independently
-  approved import correction. The approved R1 dependency was then merged
-  normally with an identical tree. Exact `1bd413c4` also passed SDK/CLI 491/0
-  and strict Clippy, and received complete final-source approval. Its actual
-  operator owner compiled, but additional strict owning Clippy found three
-  new large-error test closures. The follow-up replaces only those closures
-  with explicitly typed matches, retaining every refusal/zero-call assertion;
-  exact `cdeb9d2e` received complete follow-up source approval, SDK/CLI 491/0
-  and strict Clippy, plus actual operator-owner compilation and strict owning
-  Clippy without exclusions. Operator controls compiled, not executed. The
-  independently approved R1 replay-import correction and its truthful execution
-  attribution are merged normally. Exact combined `85b8a0a2` received complete
-  final-source approval and passed SDK/CLI 491/0/0 ignored plus strict all-target/
-  all-feature Clippy; the actual operator owner compiled and strict owning
-  Clippy passed at 05:26 UTC. Its genuine operator recurrence was not executed.
-  Actual owning recurrence, full required acceptance
-  and CI remain pending. Initial failed strict and diagnostic attempts remain
-  attributable, not passed. Actual custody and trusted content review
-  remain separately open, with no provider selected or deployed; M2 stays open.
-  [Proposed DR-0214](docs/architecture/decisions/0214-protected-custody-and-review-boundary.md)
-  has independent design approval for separated signing roles, exact-frame/key
-  checks, durable authority and recovery/rollback limits, and three unselected
-  custody threat models. The human still chooses the threat boundary, trusted
-  review surface and independent key/recovery roles. Existing publication
-  preparation already supplies immutable inputs and mechanical checks; defer
-  extra presentation work until a concrete consumer justifies it. This proposal
-  selects no provider, implements no protected key or semantic review, and
-  closes no M2 or launch gate.
-  Accepted [DR-0215](docs/architecture/decisions/0215-ordered-local-signature-verification.md)
-  specifies invocation-bound local validator identity and existing registered-key
-  verification for actual ordered votes, noncausal proposals and the distinct
-  post-completion retained-vote reread. Causal capacity probes stay nonauthoritative;
-  legitimate prefix/completion progress is not rolled back on a later refusal.
-  Complete independent design review approved the corrected contract. The
-  implementation candidate now captures the local identity at the existing
-  three gates, verifies actual fresh votes before either completion, verifies
-  the separate retained reread and authenticates noncausal fresh/retained
-  proposals. Sixteen genuine-fixture controls cover invalid returned signatures,
-  independently committee-valid identity drift, exact bytes/replay, nonce locks,
-  real CAS/indeterminate reconciliation and preserved justified-prefix progress.
-  The initial `8974634a` source review and owning run identified one test's
-  scheme-read timing error (1225 passed, 1 failed, 7 ignored); that failed run
-  remains attributable. The correction preserves both existing voter pre-sign
-  checks and every assertion, with production code unchanged. Exact `5c05215e`
-  received complete final-source approval and passed the actual all-feature core
-  lib suite (1226 passed, 0 failed, 7 ignored) plus strict all-target/all-feature
-  owning Clippy at 07:37 UTC. The seven ignored tests were not executed by
-  that owning profile. Full required acceptance and CI remain pending. This is
-  a handler-correctness prerequisite, not protected custody or M2 completion.
-- [ ] **M3 — selected-profile durable state:** atomic object/state/nonce/receipt/
-  outbox, bounded indexed delivery, full-read revision/ABA assertions, restart,
-  fencing and ambiguity reconciliation. Verify actual host/power/storage faults,
-  ENOSPC/resource exhaustion, real writer failover and TLS failure/rotation at
-  the selected profile's owning boundaries. Local process reopen and simulated
-  commit-loss are narrower evidence, not complete durability certification.
-  The local Native implementation candidate follows accepted
-  [DR-0210](docs/architecture/decisions/0210-native-sqlite-connection-ownership.md):
-  one verified writable-connection configuration, lock-safe file/sidecar identity,
-  distinguishable operator commit ambiguity, and actual pre/post-COMMIT process
-  interruption with external-process lock exclusion. Scoped `runtime-sqlite`
-  tests pass 141/0, strict package Clippy and formatting pass. The nonce write set
-  transports the unchanged canonical fixture as opaque bytes; these backend
-  checks do not replace protocol authentication/replay acceptance. Exact
-  `621d1a07` has fresh complete independent source approval and repeated owning
-  141/0 tests plus strict Clippy. Full required acceptance, final CI and
-  integration of PR #287 remain pending. Power-loss, ENOSPC/storage faults,
-  failover and off-host restore are
-  not closed by this local process evidence; M3 remains open.
-- [ ] **M4 — checkpoint, backup and disaster recovery:** publish/verify the
-  required checkpoint/state-root and immutable body manifests; encrypted off-host
-  backup, isolated restore with exact history/receipt/blob checks and fresh
-  fencing; migration/upgrade and safe rollback/stop rehearsal. Use PITR/WAL and
-  PG-specific exercises only for a PG profile; do not impose PG on lightweight stores.
-  Accepted [DR-0212](docs/architecture/decisions/0212-offline-business-closure-recovery.md)
-  reuses existing compiled export/saved verification/fresh inactive import
-  commands for one local business-closure rehearsal. The implementation candidate
-  extends the existing genuine signed fixture with compiled export, both original
-  state/blob paths unavailable throughout saved verification/import/resume/replay,
-  exact final `new_batches=0`, restored full source-snapshot equality and genuine
-  active-WAL second-file creation failure. Failed import origin and missing-body
-  refusal remain inactive; no new runtime/serving authority or duplicate fixture.
-  Exact `6c65f4d7` received fresh complete independent source approval across
-  all six changed paths. Actual owning compiled tests passed 3/0/0 ignored and
-  strict owning all-feature Clippy passed; formatting, whitespace and 152 changed
-  document links passed. Full required acceptance, final-head CI and integration
-  remain pending, not inferred from these focused checks. Authenticated logical
-  generations are preserved; writer-fence/source-
-  instance identity is not copied.
-  Arbitrary crash continuation, published checkpoint/state-root authority,
-  encrypted off-host backup, old-writer exclusion and general M4 qualification
-  remain open.
-- [ ] **M5 — production ingress and operations:** actual auth/TLS PKI and
-  rotation, every exposed family's authentication/authorization, bounded retry/
-  backpressure, request and capacity budgets, monitoring/alerts and incident
-  response, validator/liveness operations and spend controls. Initial testnet
-  may precede representative load/soak, but mainnet capacity evidence remains open.
-- [ ] **M6 — economics and genesis approval:** approve real validator sets,
-  voting powers, bond/fee assets and schedules, treasury/supply/distribution,
-  security/unbonding parameters and governance authorities. Verify ceremony,
-  supply invariants and independent custody. Never invent production values to
-  make an automated example launchable.
-- [ ] **M7 — reproducible release and supported-runtime qualification:** pin
-  source/compiler/dependencies/build provenance, reproduce release artifacts,
-  preserve canonical bytes/digests/effects/consensus/proof parity, complete
-  conformance/property/fuzz/adversarial/long-running coverage and tested upgrade/
-  migration/restore instructions. Retain the original Coding Requirements,
-  Required Integration Tests and Security Invariants; review locked production
-  and build/tooling advisories and historical claims before protocol-version
-  activation. Actual Phase 16/17 provider criteria remain
-  required for advertised supported profiles; a local adapter test is not provider
-  certification. Narrowing historical all-provider release scope needs approval.
-  Accepted [DR-0213](docs/architecture/decisions/0213-native-release-artifact-evidence.md)
-  has complete independent design approval for one bounded local Native release
-  evidence tool: exact source/tool/dependency inputs, eleven selected binaries,
-  two fresh sequential offline builds, complete byte comparisons and retained
-  incomplete failure evidence. Actual locked archives, including required GNU
-  long-name records, were inspected before acceptance. The bounded runner and
-  its initial 77 compiler/DB/network-free controls passed local verification.
-  Actual offline source/tool/closure preflight passed at
-  `2e191ae5`: 168 selected packages, 138 registry archive/source matches and all
-  eleven targets, after separately authorized offline cache preparation.
-  Complete source review blocked the missing/empty Cargo unpack-marker guard;
-  valid-cache preflight does not exercise that admitted failure. The bounded
-  marker amendment has complete independent design approval. Its correction
-  now refuses invalid markers before metadata/tree at every input boundary,
-  preserves valid-encoding drift checks and closes first descriptors when a
-  second acquisition fails. Parent verification passed all 101 cheap controls
-  and the complete CI recipe/dispatch mutation contract. Initial failures and
-  the earlier `2e191ae5` source block remain attributable. Corrected exact-source
-  approval, renewed real preflight, two native builds and full required
-  acceptance remain pending.
-  See the [local evidence guide](docs/guides/native-release-evidence.md).
-  No fixture, source inventory or design approval is native-build execution,
-  provider qualification or complete M7 evidence. Keep the current full required
-  acceptance owner isolated and coordinate any build budget.
-- [ ] **M8 — public testnet and final go/no-go:** complete Delivery 4 and collect
-  actual public-operation/recovery evidence; review all remaining experimental,
-  unsupported, mock and deferred items against the production criteria. Mainnet
-  genesis and launch need explicit human approval after the gate review.
+- [ ] **M1 — independent release review:** final threat/delta audits of code and
+  deployment, generic contracts, economics, handoff/activation, ingress, storage
+  and signing; remediate significant findings, independently verify fixes and
+  retain residual-risk decisions. Updating the proposed SECURITY policy still
+  needs human approval; current SECURITY.md has not been changed.
+- [ ] **M2 — protected signing:** actual custody, operator/authority separation,
+  exposure controls, exact operation-specific content verification, refusal/
+  failure, recovery/rotation/revocation. DR-0208 removes only Ledger-specific
+  product completion. DR-0211's prepared SDK/CLI owners keep immutable identity/
+  frame/trust inputs and independently verify provider output without fallback;
+  DR-0215 covers actual ordered returned signatures and retained rereads. Neither
+  implements protected key storage. Proposed DR-0214 is independently reviewed
+  but leaves local-OS, separate-host and hardware threat models unselected.
+  Select a real trusted review surface and independent key/recovery roles before
+  implementing the backend; plaintext seeds and opaque generic bytes do not qualify.
+- [ ] **M3 — selected-profile durability:** atomic object/state/nonce/receipt/
+  outbox, bounded indexed delivery, full-read revision/ABA, restart, fencing and
+  ambiguity reconciliation. DR-0210's real SQLite process/lock tests are narrower
+  than host/power/storage faults, ENOSPC/resource exhaustion, real writer failover
+  and TLS failure/rotation. Qualify those actual selected-profile boundaries.
+- [ ] **M4 — checkpoint, backup and disaster recovery:** publish/verify required
+  checkpoint/state-root and immutable body manifests; encrypted off-host backup,
+  isolated exact history/receipt/blob restore, fresh fencing, migration/upgrade
+  and safe rollback/stop. DR-0212 proves one saved-business-cut inactive import
+  with original paths unavailable and genuine WAL creation failure, not arbitrary
+  crash continuation, off-host backup, old-writer exclusion or activation authority.
+  Use PITR/WAL and PG-specific operations only for a selected PG profile.
+- [ ] **M5 — production ingress/operations:** actual auth/TLS PKI/rotation, every
+  exposed family's authorization, retry/backpressure/request/work/capacity budgets,
+  monitoring/alerts, incident response, validator/liveness operations and spend
+  limits. Initial testnet may precede representative load/soak; mainnet capacity
+  evidence remains required and its real workload/SLO needs a human decision.
+- [ ] **M6 — economics/genesis approval:** real sets, independent roles, voting
+  powers, bond/fee assets/schedules, treasury/supply/distribution, security and
+  unbonding parameters, governance authorities, ceremony and supply invariants.
+  Never invent production values or infer power from bonds to make examples launchable.
+- [ ] **M7 — reproducible supported-runtime release:** pinned source/compiler/
+  dependencies/build provenance, two actual fresh artifact builds and byte
+  equality, canonical/digest/effects/consensus/proof parity, conformance/property/
+  fuzz/adversarial/long-running coverage, tested upgrade/migration/restore and
+  advisory review before activation. DR-0213's cheap fixtures/source preflight are
+  not native-build execution, hermeticity or complete M7 evidence. Actual Phase
+  16/17 criteria remain for advertised providers; a local adapter is insufficient
+  and narrowing historical all-provider scope needs approval.
+- [ ] **M8 — public operation/final go-no-go:** complete Delivery 4 and actual
+  public-operation/recovery evidence; review experimental, unsupported, mock and
+  deferred capabilities against the original criteria. Mainnet genesis and
+  launch need explicit human approval after the gate review.
 
-### CLI-First Node Production Gate
+### Original requirement mapping
 
-The original gate combined Software Production (S0–S3 plus S5), all S4 Ledger
-and independent security/release criteria. DR-0208 explicitly replaces only the
-Ledger-specific dependency with the protected-signing M2 gate; other software
-and independent release criteria remain binding. S4 itself is still deferred,
-not complete. Retain the exact original text in the
-[archived production gate](docs/development/history/roadmap-through-2026-10-06.md#cli-first-node-production-gate)
-and review it together with this documented human-approved amendment.
+Retain the exact [CLI-first production gate](docs/development/history/roadmap-through-2026-10-06.md#cli-first-node-production-gate)
+with DR-0208; Ledger is deferred, not complete. Other original conditions remain.
 
-| Original requirement owner | Consolidated open groups |
+| Original owner | Open completion groups |
 | --- | --- |
-| S4 physical/HIL/UI/release and production key management | DR-0208 defers Ledger-specific product evidence; M2 retains provider-independent protected signing, custody and recovery/revocation |
-| S5 and Phase 15 To-Be exit criteria 1–10 | M1–M5/M7; exposed-family auth, durable contracts, operations and certification are not completed by refactoring |
-| Post-MVP persistence order and production correctness contract | M3/M4/M5/M7; all fault/checkpoint/backup/capacity criteria retained, implementation follows selected profile capabilities |
-| Cross-phase production release gate, Coding Requirements, Required Integration Tests and Security Invariants | M1–M8; disaster recovery/capacity/key/validator documentation and experimental/deferred criteria must be closed or explicitly respecified, not hidden |
-| Phase 16/17 production-provider criteria | M3/M5/M7; local adapters are insufficient, supported-profile scope must be explicit |
-| Phase 3 economic audit and initial-network profile | Delivery 4/M1/M6/M8; claims/bonds/slash/membership remain FastVote completion requirements |
-| PG rehearsal and retained optional PG faults/workload | Selected PG acceptance, M3/M4/M5 when PG is selected; never a generic every-PR dependency |
+| S4 custody/physical/HIL/UI/release | DR-0208 defers Ledger product evidence; M2 retains protected signing/content/recovery/revocation |
+| S5 and Phase 15 To-Be exit criteria 1–10 | M1–M5/M7, including exposed-family auth, persistence, operations and certification |
+| Post-MVP persistence and production correctness | M3/M4/M5/M7, including actual fault/checkpoint/backup/capacity evidence |
+| Cross-phase release, Coding Requirements, Required Integration Tests, Security Invariants | M1–M8; close or explicitly respecify disaster recovery, keys, validators and experimental/deferred criteria |
+| Phase 16/17 advertised providers | M3/M5/M7; selected scope and actual provider qualification, not local adapters |
+| Phase 3 economics and initial network | Delivery 4/M1/M6/M8; claims/bonds/slash/membership remain required |
+| Optional PG rehearsals/faults/workload | Complete selected PG acceptance, M3/M4/M5 when PG is selected; never PG-every-PR |
 
-### Decisions still requiring the human
+### Human decisions still required
 
-- Native plus SQLite is the selected first profile, not already certified.
-  Independent operator/key custody and the actual protected-signing backend
-  still need concrete reviewed choices and evidence.
-- Supported-provider release scope and any deliberate revision of historical
-  all-provider criteria; budget/SLO and production economic/genesis values.
-- Any bounded initial-network exception to the protocol-v3 live-activation
-  constraint. Until explicitly approved, public testnet activation is blocked
-  by the original incomplete production/signing gates.
+Protected-signing threat/backend, trusted content-review surface and independent
+key/recovery/operator roles; SECURITY policy approval; supported-provider scope;
+real workload/SLO and genesis/economic values; any bounded protocol-v3 testnet
+exception and eventual public launch. These choices do not block independent
+safe local implementation, but cannot be replaced with fixture values.
 
-These future release choices do not block local refactoring or audit preparation.
+## Deferred products
 
-## Deferred product and scale capabilities
-
-TypeScript client, explorer/wallet UI, Unique Asset, multisig, contract
+TypeScript client, explorer/wallet UI, Ledger, Unique Asset, multisig, contract
 upgrade/irreversible authority relinquishment/atomic migration, ZK acceleration,
-cross-domain atomicity, full provider expansion and additional HA/scale products
-remain explicit future capabilities. Unsupported operations fail closed.
-Do not make them testnet prerequisites or advertise them as implemented.
-Their relevant production criteria are not waived by this deferral list.
+cross-domain atomicity, full provider expansion and further HA/scale products
+remain deferred. Unsupported operations fail closed. Do not make these initial
+testnet prerequisites or advertise them as implemented; their applicable
+production criteria are not waived.
 
-### CLI Developer MVP Gate
-
-Core Rust CLI criteria 1–6/10/11 are established; historical criteria 7–9
-(TypeScript/explorer/wallet) stay deferred. See the [original gate](docs/development/history/roadmap-through-2026-10-06.md#cli-developer-mvp-gate)
-for scope and residual limitations, not a second live queue.
-
-### Initial Code Security Audit Entry Gate
-
-The earlier scoped entry gate and remediations are established. Later generic
-contracts/economics/ingress/handoff/operator surfaces still require independent
-delta/final audits; earlier findings or tech-lead reviews do not cover them.
-The [original audit criteria](docs/development/history/roadmap-through-2026-10-06.md#initial-code-security-audit-entry-gate)
-and immutable audit evidence remain retained.
+The [original CLI Developer MVP gate](docs/development/history/roadmap-through-2026-10-06.md#cli-developer-mvp-gate)
+retains deferred TypeScript/UI criteria 7–9 and residual limits. The
+[original audit entry gate](docs/development/history/roadmap-through-2026-10-06.md#initial-code-security-audit-entry-gate)
+and immutable earlier remediations do not audit the later final release scope.
 
 ## Validation and completion discipline
 
-- Local SQLite, loopback and disposable development keys for this continuation.
-  No production D1 writes, deployed Workers, paid-plan changes, cloud resources,
-  live PG service or public launch without separate authority.
-- Run focused checks while iterating, then `npm ci --prefix adapters/cloudflare-workers`
-  and the complete required `./scripts/check-all.sh` for acceptance. Preserve all
-  seven required CI owners plus the success-only `check`; no softened recurrence
-  delay, skipped owner or fabricated fault. [Profiles](docs/development/validation.md)
-  distinguish required validation from selected PG/provider qualification.
-- PG implementation/dependency changes and PG release claims additionally need
-  complete fresh selected-source PG acceptance. Do not revive PG-every-PR CI.
-- Each refactor names the invariant, defining owner, migrated callers, removed
-  duplicate mechanism, unchanged bytes/outcomes and actual verification.
-- Commit/push coherent reviewed slices. Use fresh independent explicit complete
-  exact-head review and passing required CI before normal merge, never squash
-  or rebase. Review actionable findings; approval is not an execution result.
-- Check actual Git/PR/process state at every continuation. Mark completion only
-  with owning implementation and evidence; distinguish ancestor checks from
-  exact-head checks and interrupted from passed. Update this file, not README.
+- Local SQLite, loopback and disposable development keys only. No production
+  D1/Worker writes, cloud resources, public listeners, paid-plan changes, live PG
+  service or public launch without separate authority.
+- Focused checks during iteration, then literal
+  `npm ci --prefix adapters/cloudflare-workers` and complete required
+  `./scripts/check-all.sh`. Preserve all seven required CI owners and success-only
+  `check`; no softened recurrence delay, skipped owner or fabricated fault.
+  [Validation profiles](docs/development/validation.md) separate required from
+  selected-PG/provider qualification.
+- PG implementation/dependency changes and PG release claims need complete
+  fresh selected-source PG acceptance; do not revive PG-every-PR CI.
+- Name the invariant, defining owner, actual migrated callers, removed duplicate
+  mechanism, unchanged bytes/outcomes and actual verification for each refactor.
+- Commit/push coherent slices; complete independent exact-head source review,
+  required local acceptance/CI and actionable-finding resolution precede normal
+  merge, never squash/rebase. A review approval is not an execution result or audit.
+- Recheck actual Git/PR/process state and compiler/source ownership. Keep ancestor,
+  scoped, compiled-only, ignored, failed/interrupted and exact-head passes distinct.
+  Update this file with real progress; do not put status in README.
