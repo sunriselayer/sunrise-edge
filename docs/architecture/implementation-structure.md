@@ -47,6 +47,14 @@ unsupported-scheme response. Core, SDK and hosts retain registration, membership
 context, quorum and authority checks. Removing that reverse coupling does not
 remove the SDK's other actual core dependencies or invent a foundational crate.
 
+[DR-0217](decisions/0217-publication-query-contract-owner.md) assigns the pure
+provenance-bearing publication-query data, codec, bound and narrow error to the
+existing execution publication owner. Real SDK and host consumers migrate to
+that owner; durable loading and authority remain core-owned. The concrete Rust
+codec error deliberately changes without an admission-error compatibility
+adapter. This does not remove other SDK/core Cargo edges or establish a build
+improvement. The code map identifies actual definitions after migration.
+
 ## Concrete refactoring seams
 
 The following are intended module responsibilities inside existing crates.
