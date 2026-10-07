@@ -21,7 +21,8 @@ function expandedState(root) {
   const records = [];
   const visit = p => {
     const s = lstatSync(p); records.push({ name: path.relative(root, p), dev: s.dev, ino: s.ino,
-      mode: s.mode, size: s.isDirectory() ? null : s.size,
+      uid: s.uid, mode: s.mode, nlink: s.nlink, mtime: s.mtimeMs, ctime: s.ctimeMs,
+      size: s.isDirectory() ? null : s.size,
       bytes: s.isFile() ? readFileSync(p).toString("base64") : null });
     if (s.isDirectory()) for (const n of readdirSync(p).sort()) visit(path.join(p, n));
   };
@@ -32,6 +33,61 @@ function attachedDescriptors(p) {
     try { return readlinkSync(`/proc/self/fd/${n}`) === p; }
     catch (e) { if (e.code === "ENOENT") return false; throw e; }
   }).length;
+}
+function cargoLinks(compiler, names) {
+  const groups = [...NAMES.map(name => [path.join(compiler, TARGET, "release", name),
+    path.join(compiler, TARGET, "release/deps", `${name}-fixture`),
+    path.join(compiler, TARGET, "release/zz-linked", name)]),
+    [path.join(compiler, "release/deps/vcpkg-build-script-build"),
+      path.join(compiler, "release/build/vcpkg-fixture/build-script-build"),
+      path.join(compiler, "release/zz-linked/build-script-build")]];
+  for (const group of groups) {
+    for (const alias of group.slice(1, names)) { mkdirSync(path.dirname(alias), { recursive: true }); linkSync(group[0], alias); }
+    const s = lstatSync(group[0]); assert.equal(s.nlink, names);
+    for (const alias of group.slice(1, names)) {
+      const a = lstatSync(alias); assert.equal(a.dev, s.dev); assert.equal(a.ino, s.ino); assert.equal(a.nlink, names);
+    }
+  }
+  return groups.map(group => group.slice(0, names));
+}
+function cleanupLinks(compiler, names = 3, bytes = Buffer.alloc(131073, 65)) {
+  const group = Array.from({ length: names }, (_, i) => path.join(compiler, "aa-cleanup-group", `${i}-name`));
+  file(group[0], bytes); fs.utimesSync(group[0], 1234567890, 1234567890);
+  for (const p of group.slice(1)) linkSync(group[0], p);
+  return group;
+}
+async function withFsSeams(replacements, fn) {
+  // Test-only builtins, always restored; there is no runner seam/CLI injection.
+  const originals = Object.fromEntries(Object.keys(replacements).map(name => [name, fs[name]]));
+  try { Object.assign(fs, replacements); syncBuiltinESMExports(); return await fn(); }
+  finally { Object.assign(fs, originals); syncBuiltinESMExports(); }
+}
+function statsWith(s, fields) { return Object.assign(Object.create(Object.getPrototypeOf(s)), s, fields); }
+function cleanupDescriptors(f) {
+  const oldOpen = fs.openSync, oldClose = fs.closeSync, oldStat = fs.fstatSync;
+  const active = new Map(); let maximum = 0, acquired = 0, watching = false;
+  return {
+    watch(value = true) { watching = value; },
+    assertClosed() { assert.equal(active.size, 0); },
+    descriptors() { return [...active.keys()]; },
+    result() { return { maximum, acquired }; },
+    seams: {
+      openSync(...args) {
+        const fd = oldOpen(...args);
+        if (watching && typeof args[0] === "string" && typeof args[1] === "number" &&
+          !(args[1] & (fs.constants.O_WRONLY | fs.constants.O_RDWR)) &&
+          /^compiler-[ab]\//.test(path.relative(f.output, args[0])) && oldStat(fd).isFile()) {
+          try {
+            assert.ok(args[1] & fs.constants.O_NOFOLLOW); assert.ok(args[1] & fs.constants.O_NONBLOCK);
+            active.set(fd, args[0]); maximum = Math.max(maximum, active.size); acquired++;
+            assert.ok(active.size <= 1, "Cleanup accumulated regular inode descriptors");
+          } catch (e) { active.delete(fd); oldClose(fd); throw e; }
+        }
+        return fd;
+      },
+      closeSync(fd) { try { return oldClose(fd); } finally { active.delete(fd); } },
+    },
+  };
 }
 function header(name, type, bytes) {
   const b = Buffer.alloc(512); b.write(name, 0, 100); b.write("0000644\0", 100);
@@ -217,6 +273,14 @@ async function badRun(f, pattern, more = () => {}) {
   const saved = JSON.parse(readFileSync(path.join(f.output, "manifest.json"), "utf8"));
   assert.equal(saved.complete, false); assert.equal(saved.evidenceKind, "fixture"); more(caught.evidence); return caught.evidence;
 }
+function retainedCleanup(f, r) {
+  assert.equal(r.failure.stage, "cleanup-a"); assert.equal(r.builds.b.started, false);
+  assert.equal(r.builds.a.compiler.cleaned, false); assert.equal(r.builds.a.temp.cleaned, false);
+  assert.equal(r.builds.a.snapshotVerified, true); assert.equal(r.sourceLease.released, true);
+  assert.equal(r.cleanup.length, 0);
+  for (const name of NAMES) assert.equal(lstatSync(path.join(f.output, "artifacts-a", name)).nlink, 1);
+  for (const p of [r.builds.a.logs.stdout, r.builds.a.logs.stderr]) assert.ok(existsSync(p));
+}
 
 try {
   await check("GNU L archive/source and cargo-ok independent positive", async () => {
@@ -343,6 +407,36 @@ try {
     assert.equal(r.inputs.tools.linkerRoles.target.linker, path.join(f.tools, "ld"));
     assert.match(r.inputs.tools.linkerRoles.host.implementation, /rust-lld$/);
   });
+  for (const names of [2, 3]) await check(`closed ${names}-name Cargo target/host hardlinks through both A/B cleanups`, async () => {
+    const groups = {}; const transitions = new Map(); let descriptors;
+    const f = fixture(`cargo-links-${names}`, { stage(n, ctx) {
+      if (n === "after-a" || n === "after-b") {
+        const label = n.slice(-1); groups[label] = cargoLinks(path.join(ctx.owner.root, `compiler-${label}`), names);
+        for (const group of groups[label]) transitions.set(group, []);
+      }
+      if (n === "build-b") assert.equal(existsSync(path.join(ctx.owner.root, "compiler-a")), false);
+      if (n === "cleanup-a" || n === "cleanup-b") descriptors.watch();
+      if (n === "before-b" || n === "final") { descriptors.assertClosed(); descriptors.watch(false); }
+    } });
+    descriptors = cleanupDescriptors(f); const oldUnlink = fs.unlinkSync, oldStat = fs.fstatSync;
+    const r = await withFsSeams({ ...descriptors.seams, unlinkSync(p) {
+      const group = [...transitions.keys()].find(g => g.includes(p)); const before = group ? lstatSync(p).nlink : null;
+      oldUnlink(p);
+      if (group) {
+        const fds = descriptors.descriptors(); assert.equal(fds.length, 1);
+        const after = oldStat(fds[0]); assert.equal(after.nlink, before - 1); transitions.get(group).push(after.nlink);
+      }
+    } }, () => runFixtureEvidence(f.args, f.doubles));
+    assert.equal(r.complete, false); assert.equal(r.fixturePassed, true); assert.equal(r.comparisons.length, 11);
+    assert.equal(r.cleanup.length, 4); assert.ok(r.cleanup.every(x => x.success));
+    assert.deepEqual(f.calls.builds, { a: 1, b: 1 });
+    descriptors.assertClosed(); assert.equal(descriptors.result().maximum, 1);
+    for (const trace of transitions.values()) assert.deepEqual(trace, Array.from({ length: names }, (_, i) => names - i - 1));
+    for (const label of ["a", "b"]) {
+      for (const group of groups[label]) for (const p of group) { assert.equal(existsSync(p), false); assert.equal(attachedDescriptors(p), 0); }
+      for (const name of NAMES) assert.equal(lstatSync(path.join(f.output, `artifacts-${label}`, name)).nlink, 1);
+    }
+  });
   for (const [name, scenario, pattern] of [["dirty-index", { dirty: true }, /Dirty/], ["ignored", { untracked: true }, /Untracked/],
     ["abi", { abi: "x86_64-unknown-linux-musl" }, /ABI/], ["linker", { wrongLinker: true }, /supplied linker/]])
     await check("pre-A " + name, async () => { const f = fixture(name, scenario); await badRun(f, pattern, r => assert.equal(r.builds.a.started, false)); });
@@ -428,6 +522,218 @@ try {
     const f = fixture("artifact-sync"); let failed = false;
     f.doubles.sync = (fd, kind) => { if (kind === "artifact" && !failed) { failed = true; throw new Error("fixture artifact synchronization failure"); } fsyncSync(fd); };
     await badRun(f, /synchronization failure/, r => assert.ok(existsSync(path.join(f.output, "compiler-a"))));
+  });
+  await check("many disjoint cleanup groups keep one active regular descriptor", async () => {
+    let descriptors; const f = fixture("cleanup-descriptor-bound", { stage(n, ctx) {
+      if (n === "after-a" || n === "after-b") {
+        const compiler = path.join(ctx.owner.root, `compiler-${n.slice(-1)}`);
+        for (let i = 0; i < 48; i++) {
+          const p = path.join(compiler, "cleanup-many", String(i), "z-name");
+          file(p, Buffer.alloc(i === 0 ? 131073 : 1024, i));
+          linkSync(p, path.join(path.dirname(p), "a-name")); linkSync(p, path.join(path.dirname(p), "m-name"));
+        }
+      }
+      if (n === "cleanup-a" || n === "cleanup-b") descriptors.watch();
+      if (n === "before-b" || n === "final") { descriptors.assertClosed(); descriptors.watch(false); }
+    } });
+    descriptors = cleanupDescriptors(f);
+    const r = await withFsSeams(descriptors.seams, () => runFixtureEvidence(f.args, f.doubles));
+    assert.equal(r.fixturePassed, true); assert.equal(r.complete, false); descriptors.assertClosed();
+    assert.equal(descriptors.result().maximum, 1); assert.ok(descriptors.result().acquired >= 48 * 2 * 2);
+  });
+  await check("external hardlink preflight refuses ZERO owned removals and preserves sentinel", async () => {
+    let before, tempBefore, sentinelBefore, removals = 0; const f = fixture("cleanup-external", { stage(n, ctx) {
+      if (n === "cleanup-a") {
+        linkSync(sentinel, path.join(ctx.owner.root, "compiler-a/00-external"));
+        before = expandedState(path.join(f.output, "compiler-a")); tempBefore = expandedState(path.join(f.output, "temp-a"));
+        sentinelBefore = expandedState(sentinel); descriptors.watch();
+      }
+    } });
+    const sentinel = path.join(f.parent, "external-sentinel"); file(sentinel, "original external bytes");
+    const descriptors = cleanupDescriptors(f); const oldUnlink = fs.unlinkSync, oldRmdir = fs.rmdirSync;
+    const owned = p => /^((compiler|temp)-a)(\/|$)/.test(path.relative(f.output, p));
+    await withFsSeams({ ...descriptors.seams,
+      unlinkSync(p) { if (owned(p)) removals++; return oldUnlink(p); },
+      rmdirSync(p) { if (owned(p)) removals++; return oldRmdir(p); },
+    }, () => badRun(f, /external\/uninventoried links/, r => retainedCleanup(f, r)));
+    assert.equal(removals, 0); descriptors.assertClosed(); assert.equal(descriptors.result().acquired, 0);
+    assert.deepEqual(expandedState(path.join(f.output, "compiler-a")), before);
+    assert.deepEqual(expandedState(path.join(f.output, "temp-a")), tempBefore);
+    assert.deepEqual(expandedState(sentinel), sentinelBefore); assert.equal(readFileSync(sentinel, "utf8"), "original external bytes");
+  });
+  await check("complete original preflight rechecks earlier singles after group hashing", async () => {
+    let group, single, changed = false, removed = 0; const f = fixture("cleanup-preflight", { stage(n, ctx) {
+      if (n === "cleanup-a") {
+        const compiler = path.join(ctx.owner.root, "compiler-a"); single = path.join(compiler, "00-single");
+        file(single, "original"); group = cleanupLinks(compiler); descriptors.watch();
+      }
+    } });
+    const descriptors = cleanupDescriptors(f); const oldUnlink = fs.unlinkSync;
+    await withFsSeams({ ...descriptors.seams,
+      closeSync(fd) {
+        const isGroup = group && readlinkSync(`/proc/self/fd/${fd}`) === group[0]; descriptors.seams.closeSync(fd);
+        if (isGroup && !changed) { changed = true; file(single, "modified"); }
+      },
+      unlinkSync(p) { if (group && p.startsWith(path.join(f.output, "compiler-a") + path.sep)) removed++; return oldUnlink(p); },
+    }, () => badRun(f, /Cleanup attachment drift/, r => retainedCleanup(f, r)));
+    assert.equal(changed, true); assert.equal(removed, 0); assert.equal(readFileSync(single, "utf8"), "modified"); descriptors.assertClosed();
+  });
+  for (const names of [1, 2]) await check(`cleanup ${names === 1 ? "single" : "first group unlink"} keeps its original full stamp`, async () => {
+    let group, opens = 0, fd, reads = 0, changed = false, removed = 0;
+    const f = fixture(`cleanup-initial-${names}`, { stage(n, ctx) {
+      if (n === "cleanup-a") { group = cleanupLinks(path.join(ctx.owner.root, "compiler-a"), names); descriptors.watch(); }
+    } });
+    const descriptors = cleanupDescriptors(f); const oldStat = fs.fstatSync, oldUnlink = fs.unlinkSync;
+    await withFsSeams({ ...descriptors.seams,
+      openSync(...args) {
+        const opened = descriptors.seams.openSync(...args);
+        if (group && args[0] === group[0] && ++opens === names) { fd = opened; reads = 0; }
+        return opened;
+      },
+      fstatSync(candidate) {
+        const s = oldStat(candidate);
+        if (candidate === fd && ++reads === 2) { changed = true; return statsWith(s, { ctimeMs: s.ctimeMs + 1 }); }
+        return s;
+      },
+      unlinkSync(p) { if (group && p.startsWith(path.join(f.output, "compiler-a") + path.sep)) removed++; return oldUnlink(p); },
+    }, () => badRun(f, /changed during removal/, r => retainedCleanup(f, r)));
+    assert.equal(changed, true); assert.equal(removed, 0); assert.equal(lstatSync(group[0]).nlink, names); descriptors.assertClosed();
+  });
+  for (const names of [1, 2]) await check(`cleanup ${names === 1 ? "single" : "baseline"} closes acquisition on first fstat failure`, async () => {
+    let group, failed = false; const f = fixture(`cleanup-acquisition-${names}`, { stage(n, ctx) {
+      if (n === "cleanup-a") { group = cleanupLinks(path.join(ctx.owner.root, "compiler-a"), names); descriptors.watch(); }
+    } });
+    const descriptors = cleanupDescriptors(f); const oldStat = fs.fstatSync;
+    await withFsSeams({ ...descriptors.seams, fstatSync(fd) {
+      if (!failed && descriptors.descriptors().includes(fd)) { failed = true; throw new Error("fixture cleanup first fstat failure"); }
+      return oldStat(fd);
+    } }, () => badRun(f, /first fstat failure/, r => retainedCleanup(f, r)));
+    assert.equal(failed, true); descriptors.assertClosed(); assert.equal(lstatSync(group[0]).nlink, names);
+  });
+  for (const name of ["premature", "extra"]) await check(`cleanup streamed baseline refuses ${name} EOF with zero removal`, async () => {
+    let group, changed = false, removed = 0; const f = fixture(`cleanup-eof-${name}`, { stage(n, ctx) {
+      if (n === "cleanup-a") { group = cleanupLinks(path.join(ctx.owner.root, "compiler-a")); descriptors.watch(); }
+    } });
+    const descriptors = cleanupDescriptors(f); const oldRead = fs.readSync, oldUnlink = fs.unlinkSync;
+    await withFsSeams({ ...descriptors.seams,
+      readSync(fd, buffer, offset, length, position) {
+        const n = oldRead(fd, buffer, offset, length, position);
+        if (!changed && group && readlinkSync(`/proc/self/fd/${fd}`) === group[0] &&
+          (name === "premature" ? position === 0 : position + n === 131073)) {
+          changed = true;
+          if (name === "premature") writeFileSync(group[0], Buffer.alloc(65536, 65));
+          else fs.appendFileSync(group[0], "X");
+        }
+        return n;
+      },
+      unlinkSync(p) { if (group && p.startsWith(path.join(f.output, "compiler-a") + path.sep)) removed++; return oldUnlink(p); },
+    }, () => badRun(f, /Cleanup premature file EOF|Cleanup file grew past EOF/, r => retainedCleanup(f, r)));
+    assert.equal(changed, true); assert.equal(removed, 0); descriptors.assertClosed();
+  });
+  for (const [name, delta] of [["minus-two", -2], ["plus-one", 1], ["unchanged", 0]])
+    await check(`cleanup own unlink refuses ${name} link-count transition`, async () => {
+      let group, changed = false, observed; const f = fixture(`cleanup-links-${name}`, { stage(n, ctx) {
+        if (n === "cleanup-a") { group = cleanupLinks(path.join(ctx.owner.root, "compiler-a")); descriptors.watch(); }
+      } });
+      const sentinel = path.join(f.parent, "external-sentinel"); file(sentinel, "keep unrelated bytes");
+      const descriptors = cleanupDescriptors(f); const oldUnlink = fs.unlinkSync;
+      await withFsSeams({ ...descriptors.seams, unlinkSync(p) {
+        oldUnlink(p);
+        if (group && p === group[0]) {
+          changed = true;
+          if (delta === -2) oldUnlink(group[1]);
+          else for (let i = 0; i < delta + 1; i++) linkSync(group[1], path.join(f.parent, `unexpected-alias-${i}`));
+          observed = lstatSync(group[2]).nlink;
+        }
+      } }, () => badRun(f, /invalid own-unlink transition/, r => retainedCleanup(f, r)));
+      assert.equal(changed, true); assert.equal(observed, 3 + delta); descriptors.assertClosed();
+      assert.ok(existsSync(group[2])); assert.equal(readFileSync(sentinel, "utf8"), "keep unrelated bytes");
+      if (delta >= 0) assert.ok(existsSync(path.join(f.parent, "unexpected-alias-0")));
+    });
+  await check("cleanup refuses equal-size byte drift with exactly restored baseline mtime", async () => {
+    let group, initial, changed = false; const f = fixture("cleanup-content", { stage(n, ctx) {
+      if (n === "cleanup-a") { group = cleanupLinks(path.join(ctx.owner.root, "compiler-a")); initial = lstatSync(group[0]); descriptors.watch(); }
+    } });
+    const descriptors = cleanupDescriptors(f); const oldUnlink = fs.unlinkSync;
+    await withFsSeams({ ...descriptors.seams, unlinkSync(p) {
+      oldUnlink(p);
+      if (group && p === group[0]) {
+        const bytes = readFileSync(group[1]); bytes[65536] ^= 1; writeFileSync(group[1], bytes);
+        fs.utimesSync(group[1], 1234567890, 1234567890); const after = lstatSync(group[1]);
+        for (const key of ["dev", "ino", "uid", "mode", "size", "mtimeMs"]) assert.equal(after[key], initial[key]);
+        changed = true;
+      }
+    } }, () => badRun(f, /Cleanup file content drift/, r => retainedCleanup(f, r)));
+    assert.equal(changed, true); assert.equal(readFileSync(group[1])[65536], 64); descriptors.assertClosed();
+  });
+  for (const name of ["mode", "size", "mtime", "device", "uid", "replacement", "symlink", "missing", "ancestor", "ctime-epoch"])
+    await check(`cleanup refuses ${name} drift after its own unlink`, async () => {
+      let group, changed = false; const f = fixture(`cleanup-drift-${name}`, { stage(n, ctx) {
+        if (n === "cleanup-a") { group = cleanupLinks(path.join(ctx.owner.root, "compiler-a")); descriptors.watch(); }
+      } });
+      const sentinel = path.join(f.parent, "external-sentinel"); file(sentinel, "keep external bytes");
+      const descriptors = cleanupDescriptors(f); const oldUnlink = fs.unlinkSync, oldStat = fs.fstatSync, oldLstat = fs.lstatSync;
+      await withFsSeams({ ...descriptors.seams,
+        unlinkSync(p) {
+          oldUnlink(p); if (!group || p !== group[0]) return; changed = true;
+          if (name === "mode") chmodSync(group[1], 0o600);
+          if (name === "size") writeFileSync(group[1], "short");
+          if (name === "mtime") fs.utimesSync(group[1], 1234567891, 1234567891);
+          if (["replacement", "symlink", "missing"].includes(name)) {
+            renameSync(group[1], group[1] + "-displaced");
+            if (name === "replacement") file(group[1], readFileSync(group[2]));
+            if (name === "symlink") symlinkSync(sentinel, group[1]);
+          }
+          if (name === "ancestor") { renameSync(path.dirname(group[1]), path.dirname(group[1]) + "-displaced"); mkdirSync(path.dirname(group[1])); }
+        },
+        fstatSync(fd) {
+          const s = oldStat(fd);
+          if (changed && descriptors.descriptors().includes(fd) && ["device", "uid"].includes(name))
+            return statsWith(s, name === "device" ? { dev: s.dev + 1 } : { uid: s.uid + 1 });
+          return s;
+        },
+        lstatSync(p, ...args) {
+          const s = oldLstat(p, ...args);
+          return changed && name === "ctime-epoch" && p === group[1] ? statsWith(s, { ctimeMs: s.ctimeMs + 1 }) : s;
+        },
+      }, () => badRun(f, /own-unlink transition|changed during removal|ancestor drift|ENOENT/, r => retainedCleanup(f, r)));
+      assert.equal(changed, true); descriptors.assertClosed(); assert.equal(readFileSync(sentinel, "utf8"), "keep external bytes");
+      assert.ok(existsSync(path.join(f.output, "compiler-a")));
+    });
+  for (const name of ["first", "next", "directory", "sync"])
+    await check(`cleanup ${name} failure closes descriptors and never marks success`, async () => {
+      let group, failed = false, active = false; const f = fixture(`cleanup-failure-${name}`, { stage(n, ctx) {
+        if (n === "cleanup-a") { group = cleanupLinks(path.join(ctx.owner.root, "compiler-a")); active = true; descriptors.watch(); }
+      } });
+      const descriptors = cleanupDescriptors(f); const oldUnlink = fs.unlinkSync, oldRmdir = fs.rmdirSync;
+      f.doubles.sync = (fd, kind) => {
+        if (name === "sync" && active && !failed && kind === "directory" && readlinkSync(`/proc/self/fd/${fd}`) === f.output &&
+          !existsSync(path.join(f.output, "compiler-a"))) { failed = true; throw new Error("fixture cleanup sync failure"); }
+        fsyncSync(fd);
+      };
+      await withFsSeams({ ...descriptors.seams,
+        unlinkSync(p) {
+          if (group && p === group[name === "first" ? 0 : 1] && ["first", "next"].includes(name)) {
+            failed = true; throw new Error(`fixture cleanup ${name} unlink failure`);
+          }
+          return oldUnlink(p);
+        },
+        rmdirSync(p) {
+          if (name === "directory" && p === path.join(f.output, "compiler-a")) { failed = true; throw new Error("fixture cleanup directory failure"); }
+          return oldRmdir(p);
+        },
+      }, () => badRun(f, /fixture cleanup .* failure/, r => retainedCleanup(f, r)));
+      assert.equal(failed, true); descriptors.assertClosed(); assert.equal(descriptors.result().maximum, 1);
+      if (name === "first" || name === "next") assert.equal(lstatSync(group[2]).nlink, name === "first" ? 3 : 2);
+      assert.equal(existsSync(path.join(f.output, "compiler-a")), name !== "sync");
+    });
+  await check("saved snapshot hardlink stays strictly refused despite compiler hardlink support", async () => {
+    const f = fixture("snapshot-alias"); let alias;
+    f.doubles.afterCopy = ({ destination }) => { alias = path.join(f.parent, "saved-external-alias"); linkSync(destination, alias); };
+    await badRun(f, /Aliased saved file/, r => {
+      assert.equal(r.failure.stage, "snapshot-a"); assert.equal(r.builds.b.started, false);
+      assert.equal(r.builds.a.compiler.cleaned, false); assert.ok(existsSync(alias));
+    });
   });
   await check("unsafe cleanup preserves unrelated sentinel created BEFORE checks", async () => {
     const sentinel = path.join(root, "cleanup-sentinel"); file(sentinel, "keep original");

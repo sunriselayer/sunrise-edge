@@ -67,7 +67,8 @@ Do not attribute a component/ancestor run to the combined head.
 | PR #289: source-free inactive recovery | `7065a1dd`; complete source approval, 3/0 compiled owning tests and strict Clippy | Full combined acceptance, final CI; encrypted off-host/general recovery stay M4 |
 | PR #290: protected custody design | `dba52ddd`; complete four-document source approval, no provider selection or protected-key implementation | Human threat/review/key-role choices and actual M2 implementation |
 | PR #291: ordered local signatures | `5980522b`; complete final source approval; identical functional `5c05215e` passed 1226/0/7 ignored and strict owning Clippy | Complete acceptance/CI; ignored tests were not executed by the scoped run |
-| PR #292: Native release evidence | `2f043f45`; complete final source approval, parent verified 104 compiler/DB/network-free controls and CI recipe/mutation contract; raw BOM refusal is marker-local | Fresh combined-source review/preflight, actual fresh A/B builds, complete acceptance/CI |
+| PR #292: Native release evidence | `c3f9e3e4`; complete corrected source approval, parent verified 134 compiler/DB/network-free controls and CI recipe/mutation contract; marker/BOM and own-hardlink cleanup corrections are bounded | Fresh combined-source review/preflight, actual new A/B builds, complete acceptance/CI |
+| PR #294: local TLS rotation | `2ba302a2`; complete eight-path source approval, all six owning stages passed, real TLS 3/0 and SDK remote TLS 15/0 with no ignored tests, strict Clippy | Full combined acceptance/CI; production PKI, revocation and custody remain open |
 
 Initial failed source/test attempts remain in the preserved queue and immutable
 evidence; they are not passed. The `8974634a` ordered test failed one timing
@@ -82,28 +83,23 @@ build completed and all eleven independent snapshots were verified; cleanup A
 then failed on an internal Cargo hardlink's own unlink metadata transition.
 Build B did not start. Preserve that incomplete run rather than reuse/adopt it.
 The accepted DR-0213 clarification requires closed in-tree link groups and
-byte-verified own-unlink transitions; its implementation remains under review.
+byte-verified own-unlink transitions. Corrected `c3f9e3e4` has complete independent
+source approval and 134 parent-verified cheap controls plus the CI contract;
+fresh native A/B evidence is still pending. No failed A is reused or relabeled.
 The PR's later `70702fbe` bot correction changes only a local SDK provider-length
 diagnostic and still needs new-head acceptance; it is not covered by `afac7908`.
 
 DR-0216's quiet local TLS leaf rollover, separate CA cutover and finite peer-close
-controls are implemented on a separate slice, with source and actual execution
-checks still pending. They are not production PKI, revocation, custody or M5
-qualification.
+controls at `2ba302a2` completed all six scoped stages at 09:49 UTC: format,
+actual operator/CLI builds, real TLS tests, SDK remote TLS and strict Clippy.
+Complete independent source approval covers all eight paths. Earlier `4643836a`
+rcgen API compilation and `d1da1892` child-reap Clippy failures remain preserved;
+neither is counted as a pass. These controls are not production PKI, revocation,
+custody or M5 qualification.
 
-The first `4643836a` owning attempt passed formatting and real operator/CLI
-binary builds but failed to compile the TLS test because the fixed rcgen API
-has no `KeyPair::public_key_der`. Use its actual `PublicKeyData` SPKI encoder;
-the new-leaf public-key inequality oracle is retained. That failed attempt
-does not count as a TLS pass; corrected-source execution/review remains pending.
-Corrected `d1da1892` then passed the whole real local-TLS target (3/0) and SDK
-remote-TLS target, but strict owning Clippy rejected two taken `Child` values.
-Make the cached reap explicit and require its identical observed exit status,
-without suppressing the lint or weakening the orderly-stop oracle. Complete
-corrected-source owning checks and independent review are still required.
-
-Next, finish the accepted cleanup correction and owning TLS checks, freeze/review
-the complete combined source, verify its actual offline closure and eleven
+Next, finish the publication-query ownership slice's review and coherent
+integration, freeze/review the complete combined source, verify its actual
+offline closure and eleven
 targets, and compare two new sequential native builds under the accepted budget.
 Then run literal npm-ci and the complete required gate, check final-head CI and
 actionable review findings, and normally merge. Reconcile live heads before each
