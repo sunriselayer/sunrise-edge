@@ -323,6 +323,12 @@ explicitly approves a documented scope change.
   Ledger-specific S4 completion is no longer mandatory for mainnet. Design,
   independently review and implement the replacement protected signer and
   operation-specific content verification; a plaintext seed is not a substitute.
+  Accepted [DR-0211](docs/architecture/decisions/0211-external-signing-preparation.md)
+  first removes secret-key requirements from the actual SDK/CLI local, paid,
+  publication, original/successor registration and historical claimant paths.
+  Immutable preparation and independent returned-signature verification reuse
+  the existing external-signer boundary; actual custody and trusted content
+  review remain separately open, with no provider selected or deployed.
 - [ ] **M3 — selected-profile durable state:** atomic object/state/nonce/receipt/
   outbox, bounded indexed delivery, full-read revision/ABA assertions, restart,
   fencing and ambiguity reconciliation. Verify actual host/power/storage faults,
