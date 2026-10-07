@@ -2,8 +2,11 @@
 
 Date: 2026-10-07 (Asia/Singapore)
 
-Status: Accepted bounded design after complete independent Codex fallback review
-of `0f8a95fd91de667466f2f04c3b07382d166c1c1c611ed3e7d98d45082cd80c48`.
+Status: Accepted bounded design. Complete independent Codex fallback review
+approved the original contract at
+`0f8a95fd91de667466f2f04c3b07382d166c1c1c611ed3e7d98d45082cd80c48`
+and the complete target/host linker clarification at
+`9e7f9a87adb87e012f6a49d95965d97372f322c4f04a2cfac4b048de1e8eb25c`.
 This accepts the contract, not implementation or native-build execution.
 Current completion and remaining gates stay in [TODO](../../../TODO.md).
 
@@ -85,6 +88,25 @@ Rust path maps. Reject undeclared Cargo configuration in source/ancestors or
 selected/alternate Cargo homes, symlinked config, registry/source overrides and
 config includes. Reject caller build/target/profile/flag/wrapper, CC/AR flag and
 loader injection by variable name; never log rejected values or credential files.
+
+For the selected target, use the checked CC driver with fixed generated Rust
+flags `-C linker-features=-lld` and `-C link-self-contained=-linker`. These
+disable the target's default LLD selection and bundled-linker search override;
+`target.linker=<CC>` alone does not bind the actual GNU linker. Verify the
+driver's resolved default GNU `ld` against the explicit checked linker, and
+record both flags without changing committed Cargo profiles. Cargo's host
+build-script/proc-macro units do not receive those target flags. Require the
+actual host `cc` resolution to match the checked driver and separately hash and
+record the pinned sysroot's exact `gcc-ld/ld.lld` wrapper and `rust-lld`
+implementation, their version observations and host-only roles. Do not call
+host LLD execution target GNU-linker execution, claim path-map normalization
+of every host intermediate, or extend this into whole-sysroot qualification.
+The pinned local tools must support this recipe without compilation during
+preflight. Failure stops; no alternate-linker retry changes the recipe.
+The [Rust code-generation options](https://doc.rust-lang.org/rustc/codegen-options/index.html#linker-features)
+define the selected target's LLD and self-contained-linker controls;
+[Cargo target configuration](https://doc.rust-lang.org/cargo/reference/config.html#target)
+separates target from host units.
 
 Construct a closed nonsecret child environment with explicit tool PATH,
 installed dependency cache as `CARGO_HOME`, pinned Rust/CC/AR tools, offline mode,

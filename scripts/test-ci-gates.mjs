@@ -378,6 +378,14 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     return runBash([functionScript, registry, execution, fn, ...args], overrides);
   }
   function passed(run) { assert.equal(run.status, 0, run.stderr); return run.log; }
+  const expectedContractCommands = [
+    ["node", ["scripts/test-ci-gates.mjs"]],
+    ["node", ["scripts/test-native-release-evidence.mjs"]],
+  ];
+  function checkContractTrace(log) {
+    assert.deepEqual(log.map(({ tool, args }) => [tool, args]), expectedContractCommands);
+  }
+  checkContractTrace(passed(runFunction("ci_run_action", ["gate-contract"])));
   assert.deepEqual(passed(runFunction(":")), [], "sourcing the registry/recipes must not execute a gate");
   for (const [fn, args] of [
     ["ci_run_gate", []], ["ci_run_gate", ["unknown"]], ["ci_run_gate", ["required", "extra"]],
@@ -452,10 +460,57 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   assert.deepEqual(drainedPlan.stdout.trim().split("\n"), [
     "ACTION:gate-contract", "UNEXPECTED_STDIN:rust-style", "UNEXPECTED_STDIN:diff-hygiene",
   ], "the negative control must reproduce skipped later actions, not certify itself");
+  const contractCommand = "node scripts/test-native-release-evidence.mjs";
+  for (const [index, replacement] of [
+    ": # intentionally removed contract owner",
+    `${contractCommand}\n      ${contractCommand}`,
+  ].entries()) {
+    const changed = safeExecutionText.replace(contractCommand, replacement);
+    assert.notEqual(changed, safeExecutionText);
+    const mutatedPath = join(directory, `contract-owner-mutation-${index}.sh`);
+    writeFileSync(mutatedPath, changed, { flag: "wx", mode: 0o700 });
+    const mutated = runBash([functionScript, registry, mutatedPath, "ci_run_action", "gate-contract"]);
+    assert.equal(mutated.status, 0, mutated.stderr);
+    assert.throws(() => checkContractTrace(mutated.log),
+      "a removed or duplicated owner must fail independent command expectations");
+  }
+  const unguardedContract = safeExecutionText.replace(
+    'node scripts/test-ci-gates.mjs || return "$?"', "node scripts/test-ci-gates.mjs");
+  assert.notEqual(unguardedContract, safeExecutionText);
+  const unguardedContractPath = join(directory, "unguarded-contract-mutation.sh");
+  writeFileSync(unguardedContractPath, unguardedContract, { flag: "wx", mode: 0o700 });
+  const hiddenContractFailure = runBash(
+    [functionScript, registry, unguardedContractPath, "ci_run_action", "gate-contract"],
+    { CI_MOCK_FAIL_ARG: "scripts/test-ci-gates.mjs" });
+  assert.equal(hiddenContractFailure.status, 0,
+    "the mutation must reproduce an error hidden by nested disabled errexit");
+  checkContractTrace(hiddenContractFailure.log);
   const required = passed(run("scripts/check-all.sh"));
   const full = passed(run("scripts/check-all.sh", ["--full"], pgEnvironment));
   const lanes = new Map(groups.map((group) => [group, passed(run("scripts/check-all.sh", ["--group", group], postgresGroups.includes(group) ? pgEnvironment : {}))]));
   const union = [...lanes.values()].flat();
+  function contractEvents(log) {
+    return log.filter(({ tool, args }) => tool === "node" && expectedContractCommands.some(
+      ([, expected]) => args[0] === expected[0]));
+  }
+  for (const log of [required, full, lanes.get("lint")]) {
+    checkContractTrace(contractEvents(log));
+    assert.deepEqual(log.slice(0, expectedContractCommands.length), contractEvents(log),
+      "both contract tests must finish before any later gate action");
+  }
+  for (const [group, log] of lanes) {
+    if (group !== "lint") assert.deepEqual(contractEvents(log), [],
+      "isolated unrelated gate owners must not duplicate contract tests");
+  }
+  for (const [args, env] of [[[], {}], [["--full"], pgEnvironment], [["--group", "lint"], {}]]) {
+    for (const [index, [, command]] of expectedContractCommands.entries()) {
+      const failed = run("scripts/check-all.sh", args, { ...env, CI_MOCK_FAIL_ARG: command[0] });
+      assert.equal(failed.status, 19, "each failed contract must propagate its exact returned status");
+      assert.deepEqual(failed.log.map(({ tool, args }) => [tool, args]),
+        expectedContractCommands.slice(0, index + 1),
+        "contract failure must prevent every later command and gate action");
+    }
+  }
   // An independent baseline stops deleting a gate from BOTH dispatch modes
   // from turning the union comparison below into a misleading success.
   assert.deepEqual(full.filter(({ tool, args }) => tool === "node" && args[0].endsWith("-vectors.mjs")).map(({ args }) => args[0]), [
@@ -715,4 +770,4 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }
-console.log("CI gate contract passed: 7 required lanes, 5 explicit PostgreSQL lanes, 19 retained plus 3 new required-recurrence ignored selectors, complete required/full coverage and fail-closed dispatch/results");
+console.log("CI gate contract passed: 7 required lanes, 5 explicit PostgreSQL lanes, 19 retained plus 3 new required-recurrence ignored selectors, two DB/compiler-free contract owners, complete required/full coverage and fail-closed dispatch/results");

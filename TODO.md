@@ -355,10 +355,14 @@ explicitly approves a documented scope change.
   evidence tool: exact source/tool/dependency inputs, eleven selected binaries,
   two fresh sequential offline builds, complete byte comparisons and retained
   incomplete failure evidence. Actual locked archives, including required GNU
-  long-name records, were inspected before acceptance. Implementation and real
-  rebuilding are still pending; no fixture, source inventory or design approval
-  is execution, provider qualification or complete M7 evidence. Keep the current
-  full required acceptance owner isolated and coordinate any build budget.
+  long-name records, were inspected before acceptance. The bounded runner and
+  its 77 compiler/DB/network-free controls are implemented; an independent local
+  fixture run passed. Fresh complete implementation review, actual offline
+  source/tool/closure preflight and two real native builds are still pending.
+  See the [local evidence guide](docs/guides/native-release-evidence.md).
+  No fixture, source inventory or design approval is native-build execution,
+  provider qualification or complete M7 evidence. Keep the current full required
+  acceptance owner isolated and coordinate any build budget.
 - [ ] **M8 — public testnet and final go/no-go:** complete Delivery 4 and collect
   actual public-operation/recovery evidence; review all remaining experimental,
   unsupported, mock and deferred items against the production criteria. Mainnet
