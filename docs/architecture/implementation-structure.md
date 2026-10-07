@@ -104,6 +104,14 @@ business-engine rewrite. Protected signing is provider-independent; deferred
 Ledger evidence is not replaced by plaintext development keys. Status stays in
 TODO, not this structure contract.
 
+[DR-0210](decisions/0210-native-sqlite-connection-ownership.md) assigns native
+writable settings, lock-safe metadata identity and fresh synchronization to one
+private connection owner. Its retained handles are directories, not independent
+SQLite main/WAL/SHM descriptors. `NativeSqlBackend` retains actual transaction
+dispatch and distinguishes operator commit ambiguity; the shared engine still
+owns logical state and namespace decisions. Read-only blob inspection does not
+acquire initialization or lifecycle authority.
+
 ## Handoff-specific ownership
 
 Use the accepted [epoch-handoff](epoch-handoff.md) authority chain:

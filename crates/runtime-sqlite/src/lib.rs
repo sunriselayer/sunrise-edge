@@ -15,6 +15,7 @@
 //! crate does not make network filesystems or serverless ephemeral disks durable.
 
 mod blob;
+mod native_connection;
 mod native_files;
 mod rusqlite_backend;
 mod structured;
@@ -36,12 +37,10 @@ use std::{
     fmt,
     path::Path,
     sync::{Mutex, MutexGuard},
-    time::Duration,
 };
 
 const SCHEMA_VERSION: i64 = 1;
 const APPLICATION_ID: i64 = 0x5352_4544;
-const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Checks an original-genesis destination and its SQLite sidecars without
 /// creating anything. Parents must already be regular, non-symlink
@@ -136,10 +135,7 @@ impl SqliteStateStore {
     /// Opens or initializes a Sunrise Edge state database.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SqliteStateStoreError> {
         let mut connection = Connection::open(path)?;
-        connection.busy_timeout(BUSY_TIMEOUT)?;
-
-        connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.pragma_update(None, "trusted_schema", "OFF")?;
+        native_connection::configure_writable(&connection)?;
         initialize_schema(&mut connection)?;
 
         let journal_mode: String =
@@ -147,8 +143,6 @@ impl SqliteStateStore {
         if !journal_mode.eq_ignore_ascii_case("wal") {
             return Err(SqliteStateStoreError::UnsupportedJournalMode(journal_mode));
         }
-        connection.pragma_update(None, "synchronous", "FULL")?;
-        connection.pragma_update(None, "wal_autocheckpoint", 1_000_i64)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })

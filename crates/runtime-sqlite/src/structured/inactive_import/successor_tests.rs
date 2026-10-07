@@ -892,7 +892,7 @@ fn activation_reply_loss_is_atomic_in_both_directions_and_observable_after_reope
         let record: Vec<u8> = encode_successor_serving_record(&valid_record(&token)).unwrap();
         drop(store);
         let connection: Connection = Connection::open(&db.0).unwrap();
-        configure(&connection).unwrap();
+        crate::native_connection::configure_writable(&connection).unwrap();
         let engine: SqlDurableEngine<LostActivationReply> = SqlDurableEngine::new(
             LostActivationReply {
                 inner: NativeSqlBackend::new(connection),
@@ -1399,7 +1399,7 @@ fn successor_seal_completion_reply_loss_is_atomic_and_reconciles_after_reopen() 
         let before: SqliteSealState = sqlite_seal_state(&db);
         drop(store);
         let connection: Connection = Connection::open(&db.0).unwrap();
-        configure(&connection).unwrap();
+        crate::native_connection::configure_writable(&connection).unwrap();
         let engine: SqlDurableEngine<LostActivationReply> = SqlDurableEngine::new(
             LostActivationReply {
                 inner: NativeSqlBackend::new(connection),

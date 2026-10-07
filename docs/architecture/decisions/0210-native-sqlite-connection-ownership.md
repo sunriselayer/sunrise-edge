@@ -11,9 +11,9 @@ or production qualification. Local selected-profile work follows DR-0208.
 
 The shared `SqlDurableEngine` owns state, object, receipt/outbox, namespace,
 fencing and atomic decision rules. Native `NativeSqlBackend` owns the connection
-mutex and actual SQLite BEGIN/COMMIT. Fresh and import paths explicitly select
-FULL synchronization; ordinary/historical reopen does not use one common
-configuration/verification owner. SQLite defaults may already be FULL. This is
+mutex and actual SQLite BEGIN/COMMIT. Before this decision, fresh and import paths
+explicitly selected FULL synchronization; ordinary/historical reopen did not use
+one common configuration/verification owner. SQLite defaults may already be FULL. This is
 an explicit contract gap, not evidence of corruption or a proven vulnerability.
 
 Native file/ancestor handles already protect fresh/import opening and final
@@ -125,3 +125,23 @@ Focused real-store checks, complete required acceptance and independent exact-he
 review/CI are required. This proves process-failure behavior on local storage,
 not power-loss flush correctness, ENOSPC, off-host restore, failover or mainnet.
 Those remaining release requirements stay open in TODO.
+
+## Owning implementation boundaries
+
+The private [`NativeConnection`](../../../crates/runtime-sqlite/src/native_connection.rs)
+owns native settings, scoped attachment inspection and fresh synchronization.
+[`native_files`](../../../crates/runtime-sqlite/src/native_files.rs) owns only
+metadata observations and retained directory handles. A live observed sidecar
+must not disappear or change identity; a real checkpoint may change its length.
+Closing the last SQLite connection releases its owner, and a later constructor
+captures its own optional sidecars. Read-only blob inspection retains its
+non-WAL read contract rather than inheriting writable initialization authority.
+
+[`NativeSqlBackend`](../../../crates/runtime-sqlite/src/rusqlite_backend.rs)
+owns BEGIN/COMMIT and the existing mutex; structured/import adapters retain
+store identity and lifecycle checks. Blob operations guard their separate
+connection and never make state/blob publication a cross-file transaction.
+The existing shared SQL engine retains every logical commit, receipt, outbox,
+namespace and writer-generation rule. Private `cfg(test)` commit hooks are
+absent from released builds and do not add a public maintenance capability.
+Implementation, integration and qualification status remain only in TODO.

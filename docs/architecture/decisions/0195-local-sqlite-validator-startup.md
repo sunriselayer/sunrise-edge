@@ -50,12 +50,16 @@ are explicitly excluded.
    Refuse pre-existing `-wal`, `-shm` or `-journal` sidecars for either file and
    any main/sidecar alias between the two normalized destinations. Check these
    fresh-only constraints before intentionally creating either resource. Add
-   `SqliteDurableStore::create_new` using the existing held-file/ancestor checks
+   `SqliteDurableStore::create_new` using the native file/ancestor checks
    used by the import factory; add the narrow blob `create_new_fresh` entry point
    sharing the existing blob initializer while leaving import `create_new`'s
-   separately scoped sidecar policy unchanged. Both fresh handles retain the
-   original created-file and ancestor ownership through final synchronization;
-   reopening a pathname cannot substitute for that evidence. Do not use
+   separately scoped sidecar policy unchanged. Under the physical ownership
+   amendment in [DR-0210](0210-native-sqlite-connection-ownership.md), both fresh
+   handles retain the original device/inode observation and ancestor directory
+   handles through final synchronization, not an independent leaf descriptor.
+   Synchronize and close the exclusive reservation before SQLite opens it;
+   closing another descriptor while SQLite holds POSIX locks is unsafe.
+   Reopening a pathname cannot substitute for the original identity. Do not use
    auto-bootstrap `open` against arbitrary existing files. Initialize the
    ordinary schema under its own initial writer fence **1**, then call the defining
    `install_genesis` and `install_ordered_genesis` owners. No new storage schema,
@@ -70,8 +74,10 @@ are explicitly excluded.
    inspection, report failure and expose no successful startup result; a new
    attempt uses new destinations. The serving host still refuses incomplete
    ordered state. Preparation never resets or resumes an existing namespace.
-   Synchronize created file and parent handles with the existing `sync_created`
-   discipline after installation, before exactly one closed success output line.
+   Use `sync_created` after installation: an explicitly complete, non-busy
+   SQLite-owned checkpoint/flush, then held parent-directory synchronization
+   with attachment checks. Never reopen the main/WAL/SHM merely to synchronize
+   it. Refuse incomplete synchronization before the closed success output line.
    The first serving claim must be strictly newer than the initial fence.
 4. Add an explicit read-only preflight consumer without changing the existing
    `sqlite_source_host` flag-only serving invocation or its offline-confirmation
@@ -113,7 +119,7 @@ are explicitly excluded.
 | --- | --- | --- |
 | Operator genesis command | Closed local pins, fresh preparation and advisory preflight orchestration | Manifest construction, signing, network deployment, existing-state repair |
 | Original host startup checks | One definition of committed root/fee/committee/key/status agreement | Fence acquisition, genesis initialization, successor authorization |
-| SQLite fresh-file factory | Exclusive held-file creation and ordinary schema/fence initialization | Protocol configuration, membership or activation decisions |
+| SQLite fresh-file factory | Exclusive reservation closed before SQLite opens, retained identity/ancestor checks and ordinary schema/fence initialization | Protocol configuration, membership or activation decisions |
 | Existing core installers | Defining signed genesis and original ordered initialization | New genesis for an already serving/imported/Sealed namespace |
 | Existing serving host | Fresh offline-coordinated fence, reverified pins and loopback transport | Trusting a previous preflight or implicit bootstrap |
 

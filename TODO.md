@@ -314,11 +314,17 @@ explicitly approves a documented scope change.
   ENOSPC/resource exhaustion, real writer failover and TLS failure/rotation at
   the selected profile's owning boundaries. Local process reopen and simulated
   commit-loss are narrower evidence, not complete durability certification.
-  The next Native slice follows accepted [DR-0210](docs/architecture/decisions/0210-native-sqlite-connection-ownership.md):
+  The local Native implementation candidate follows accepted
+  [DR-0210](docs/architecture/decisions/0210-native-sqlite-connection-ownership.md):
   one verified writable-connection configuration, lock-safe file/sidecar identity,
-  distinguishable operator commit ambiguity, and real pre/post-COMMIT process
-  interruption with external-process lock exclusion. Implementation and evidence
-  remain open; these local checks will not close power-loss or storage-fault gates.
+  distinguishable operator commit ambiguity, and actual pre/post-COMMIT process
+  interruption with external-process lock exclusion. Scoped `runtime-sqlite`
+  tests pass 141/0, strict package Clippy and formatting pass. The nonce write set
+  transports the unchanged canonical fixture as opaque bytes; these backend
+  checks do not replace protocol authentication/replay acceptance. Complete
+  exact-head source review, full required acceptance, CI and integration remain
+  pending. Power-loss, ENOSPC/storage faults, failover and off-host restore are
+  not closed by this local process evidence; M3 remains open.
 - [ ] **M4 — checkpoint, backup and disaster recovery:** publish/verify the
   required checkpoint/state-root and immutable body manifests; encrypted off-host
   backup, isolated restore with exact history/receipt/blob checks and fresh

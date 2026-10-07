@@ -117,6 +117,85 @@ fn ordinary_write(domain: AtomicityDomainId) -> AtomicStateTransaction {
 }
 
 #[test]
+fn import_create_and_existing_writable_reopen_verify_full_settings() {
+    let db: Database = Database::new();
+    let pin: ImportBinding = binding(0);
+    let created: SqliteImportTarget =
+        SqliteImportTarget::create(&db.0, namespace(&pin), operation(7).writer_fence(), &pin)
+            .unwrap();
+    for store in [
+        created,
+        SqliteImportTarget::open_existing(&db.0, namespace(&pin), &pin).unwrap(),
+    ] {
+        store.store.engine.backend().inspect_test(|connection| {
+            for (name, expected) in [
+                ("foreign_keys", 1_i64),
+                ("trusted_schema", 0_i64),
+                ("synchronous", 2_i64),
+                ("wal_autocheckpoint", 1_000_i64),
+            ] {
+                let actual: i64 = connection
+                    .pragma_query_value(None, name, |row| row.get(0))
+                    .unwrap();
+                assert_eq!(actual, expected, "{name}");
+            }
+        });
+    }
+}
+
+#[test]
+fn import_reopen_requires_existing_wal_and_preserves_rejected_journal_identity() {
+    let db: Database = Database::new();
+    let pin: ImportBinding = binding(0);
+    drop(
+        SqliteImportTarget::create(&db.0, namespace(&pin), operation(7).writer_fence(), &pin)
+            .unwrap(),
+    );
+    let connection: Connection = Connection::open(&db.0).unwrap();
+    let mode: String = connection
+        .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(mode, "delete");
+    drop(connection);
+    assert!(
+        matches!(SqliteImportTarget::open_existing(&db.0, namespace(&pin), &pin), Err(SqliteDurableStoreError::UnsupportedJournalMode(mode)) if mode == "delete")
+    );
+    let connection: Connection = Connection::open(&db.0).unwrap();
+    let mode: String = connection
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(mode, "delete");
+}
+
+#[cfg(unix)]
+#[test]
+fn reopened_import_lifetime_refuses_replaced_main_file_without_repair() {
+    let db: Database = Database::new();
+    let pin: ImportBinding = binding(0);
+    let created: SqliteImportTarget =
+        SqliteImportTarget::create(&db.0, namespace(&pin), operation(7).writer_fence(), &pin)
+            .unwrap();
+    let reopened: SqliteImportTarget =
+        SqliteImportTarget::open_existing(&db.0, namespace(&pin), &pin).unwrap();
+    let retained: PathBuf = db.0.with_extension("retained");
+    std::fs::rename(&db.0, &retained).unwrap();
+    std::fs::write(&db.0, b"replacement is never repaired").unwrap();
+    assert!(
+        reopened
+            .read_import_progress(&operation(7), pin.domain)
+            .is_err()
+    );
+    assert!(reopened.writer_fence().is_err());
+    drop(reopened);
+    drop(created);
+    assert_eq!(
+        std::fs::read(&db.0).unwrap(),
+        b"replacement is never repaired"
+    );
+    std::fs::remove_file(retained).unwrap();
+}
+
+#[test]
 fn inactive_import_sqlite_fresh_exact_rows_retry_reopen_and_complete_stays_inactive() {
     let db: Database = Database::new();
     let pin: ImportBinding = binding(6);
@@ -561,7 +640,7 @@ fn inactive_import_sqlite_indeterminate_landed_and_unlanded_batches_reconcile_ex
         );
         drop(store);
         let connection = Connection::open(&db.0).unwrap();
-        configure(&connection).unwrap();
+        crate::native_connection::configure_writable(&connection).unwrap();
         let engine = SqlDurableEngine::new(
             LostCommitBackend {
                 inner: NativeSqlBackend::new(connection),
