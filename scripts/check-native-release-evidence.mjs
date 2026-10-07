@@ -473,6 +473,9 @@ export function verifyCargoOk(root) {
       const n = readSync(h.fd, b, offset, b.length - offset, offset);
       requireThat(n > 0, "Short .cargo-ok read"); offset += n;
     }
+    // Marker bytes must be raw JSON; the shared decoder would strip this prefix.
+    requireThat(!(b.length >= 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf),
+      "UTF-8 BOM in .cargo-ok unpack-completion marker");
     let value; let text;
     try { text = utf8.decode(b); value = JSON.parse(text); } catch { throw new Error("Unknown .cargo-ok content"); }
     requireThat(value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && value.v === 1,

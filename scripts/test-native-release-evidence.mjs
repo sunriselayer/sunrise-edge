@@ -237,6 +237,8 @@ try {
     ["marker-empty", p => file(path.join(p.expanded, ".cargo-ok"), ""), /Empty .cargo-ok/],
     ["marker-old", p => file(path.join(p.expanded, ".cargo-ok"), '{"v":0}\n'), /cargo-ok/],
     ["marker-invalid", p => file(path.join(p.expanded, ".cargo-ok"), '{broken\n'), /cargo-ok/],
+    ["marker-bom", p => file(path.join(p.expanded, ".cargo-ok"),
+      Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{ "v": 1 }\n')])), /BOM.*\.cargo-ok/],
     ["marker-extra", p => file(path.join(p.expanded, ".cargo-ok"), '{"v":1,"x":2}'), /cargo-ok/],
     ["marker-duplicate", p => file(path.join(p.expanded, ".cargo-ok"), '{"v":1,"v":1}'), /cargo-ok/],
     ["duplicate", p => replace(p, [...p.entries, p.entries[0]]), /Duplicate/],
@@ -275,6 +277,7 @@ try {
     ["empty", p => file(p, ""), /Empty .cargo-ok/],
     ["old", p => file(p, '{"v":0}\n'), /Unknown .cargo-ok/],
     ["invalid", p => file(p, '{broken\n'), /Unknown .cargo-ok/],
+    ["bom", p => file(p, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"v":1}\n')])), /BOM.*\.cargo-ok/],
   ];
   for (const cachedOnly of [false, true]) for (const [name, change, pattern] of markerCases)
     await check(`pre-Cargo marker ${name}, ${cachedOnly ? "locked-unselected" : "selected"}`, async () => {

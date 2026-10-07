@@ -366,8 +366,13 @@ explicitly approves a documented scope change.
   now refuses invalid markers before metadata/tree at every input boundary,
   preserves valid-encoding drift checks and closes first descriptors when a
   second acquisition fails. Parent verification passed all 101 cheap controls
-  and the complete CI recipe/dispatch mutation contract. Initial failures and
-  the earlier `2e191ae5` source block remain attributable. Corrected exact-source
+  and the complete CI recipe/dispatch mutation contract. Complete source review
+  at `69a2992d` then blocked raw UTF-8 BOM acceptance: the shared decoder stripped
+  invalid marker bytes. A marker-local raw-byte refusal now preserves the shared
+  decoder; selected/locked-unselected zero-Cargo controls and the independent
+  archive negative extend the parent-verified suite to 104 passed controls.
+  The complete CI contract also passed. Initial failures and both earlier source
+  blocks remain attributable; these are not actual native builds. Corrected exact-source
   approval, renewed real preflight, two native builds and full required
   acceptance remain pending.
   See the [local evidence guide](docs/guides/native-release-evidence.md).
