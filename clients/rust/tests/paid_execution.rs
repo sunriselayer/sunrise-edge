@@ -104,7 +104,7 @@ fn prepared_publish_with(
 #[test]
 fn prepared_paid_refuses_external_failures_and_changed_preimage() {
     use crypto::SignatureSigner;
-    use external_signer::{REFUSALS, TestSigner, expected_calls};
+    use external_signer::{Behavior, REFUSALS, TestSigner, expected_calls};
     for behavior in REFUSALS {
         let external = TestSigner::new([7; 32], behavior);
         let error = prepared_publish_with(&fee_policy(), consent(), 4)
@@ -114,6 +114,21 @@ fn prepared_paid_refuses_external_failures_and_changed_preimage() {
         assert!(!error.to_string().contains("secret-provider-failure-marker"));
         assert!(!format!("{error:?}").contains("secret-provider-failure-marker"));
         assert_eq!(external.calls(), expected_calls(behavior));
+        // A local provider failure is never reported as a node acknowledgement mismatch.
+        match behavior {
+            Behavior::Short => assert!(matches!(
+                error,
+                ClientError::Crypto(crypto::CryptoError::InvalidSignatureLength(63))
+            )),
+            Behavior::Long => assert!(matches!(
+                error,
+                ClientError::Crypto(crypto::CryptoError::InvalidSignatureLength(65))
+            )),
+            _ => assert!(!matches!(
+                error,
+                ClientError::PaidExecutionAcknowledgementMismatch
+            )),
+        }
     }
     let original = prepared_publish_with(&fee_policy(), consent(), 4).unwrap();
     let signature: Vec<u8> = signer().sign_framed(original.signable_frame()).unwrap();

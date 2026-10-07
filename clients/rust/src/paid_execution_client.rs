@@ -158,7 +158,7 @@ impl PreparedPaidExecution {
         let signature: [u8; 64] = signature_bytes
             .as_slice()
             .try_into()
-            .map_err(|_| ClientError::PaidExecutionAcknowledgementMismatch)?;
+            .map_err(|_| crypto::CryptoError::InvalidSignatureLength(signature_bytes.len()))?;
         let signed: SignedPaidIntent = SignedPaidIntent {
             intent: self.intent,
             signature,
