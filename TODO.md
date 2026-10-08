@@ -72,11 +72,13 @@ Prior fixture/runner and hosted prerequisite failures remain failures in the
 preserved evidence; the corrected final gate does not relabel those attempts.
 This closes that local TLS integration, not production PKI, M5 or public readiness.
 
-Draft PR #297 separately contains the ordinary-write policy responsibility
-refactor. Its complete source review and owning scoped checks passed only in
-their stated scopes. A fresh isolated whole-required invocation is in progress;
-the first interrupted/failed whole attempt is not accepted. Final-head whole
-local acceptance, complete hosted CI and independent review remain required.
+PR #297, the phase-only ordinary-write policy responsibility refactor,
+merged normally as `322dfa3e` after exact head `db466a02` passed fresh literal
+npm-ci and `./scripts/check-all.sh`, all seven hosted owners plus `check`,
+and complete independent exact-head/source/terminal review. The isolated whole
+gate included all three extended owners, seven successors and real epoch8
+withdrawals. Main equals origin/main with the accepted tree. Its first failed
+whole attempt remains a failure, not a passing gate or a later-source result.
 
 The Native operations slice under
 [DR-0222](docs/architecture/decisions/0222-native-stop-and-operational-observations.md)
@@ -84,7 +86,8 @@ has an accepted local design and authored stop/drain/observation code and tests.
 Independent complete source review and the additional stop/error test review
 have passed for their exact source scope. Formatting, owning tests/Clippy,
 whole required validation and final-head CI are pending. No runtime pass is
-claimed for this slice. It is independent of PR #297, with compiler work serialized.
+claimed for this slice. It includes PR #297 through normal main ancestry, not
+through reuse of that PR's execution evidence; compiler work stays serialized.
 
 Prior failed/interrupted/source-blocked attempts and component evidence remain
 in the [preserved queue](docs/development/history/execution-queue-through-2026-10-07.md#native-integration-and-direct-tls-observations-2026-10-08).
@@ -131,6 +134,21 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   to invocation identity before retention/exposure. Preserve receipt-first replay,
   actual CAS/ambiguity, legitimate prefix progress and real memory reconstruction.
   Further extraction needs a concrete changing owner, not a file-size target.
+  PR #297 shares only ordinary-write phase refusal in
+  `runtime::validate_ordinary_write_lifecycle`, consumed by both Memory and
+  shared SQL commit pairs under their existing lock/transaction and preceding
+  authority checks. PostgreSQL's different checks remain unchanged. Applied
+  source bytes match the independently reviewed proposal, with 16 literal phase
+  cases and genuine Memory/SQLite import, Seal and SQLite serving refusal
+  controls using complete existing snapshots. Normal formatting, the three owning
+  crates' tests (288 nonignored passes, zero failed/ignored), all five new and one
+  strengthened named controls, and strict owning Clippy passed in a fresh local
+  scope. The shared SQL library has zero standalone cases; its consumers are
+  exercised by the actual SQLite suites. Earlier formatting and test-build
+  failures remain failures. Exact `db466a02` subsequently passed fresh whole
+  required, all hosted owners and independent final integration review before
+  normal merge `322dfa3e`. This closes the phase-only extraction, grants no new
+  authority, closes neither all R1 nor all R2, and is not an M4/M5 prerequisite.
 - [ ] **R3 — attributable tests and economical CI:** share bounded signed-input
   setup, not the implementation-derived oracle; separate pure/store/HTTP/CLI
   owners. Remove equivalent duplicate work only with exact-input coverage proof
