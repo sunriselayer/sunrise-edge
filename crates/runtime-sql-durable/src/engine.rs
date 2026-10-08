@@ -39,7 +39,7 @@ use runtime::{
     IndexedOutboxRepository, ObjectHeadRevision, ObjectId, OutboxRequestId,
     RequestOutboxClaimRequest, RuntimeError, StateKeyPage, StateKeyScan, StateMutation,
     StateMutationEntry, StateReadAssertion, StateRevision, StructuredDurableDomainStateStore,
-    VersionedStateValue, WriterFenceGeneration,
+    VersionedStateValue, WriterFenceGeneration, validate_ordinary_write_lifecycle,
 };
 
 /// Pre-commit classification of one failed SQL read/write attempt.
@@ -1440,15 +1440,11 @@ impl<B: SqlBackend> DurableDomainStateStore for SqlDurableEngine<B> {
                         .map_err(|error| PreCommitFailure::from(error).into_commit_rejection())?;
                     validate_authority(&metadata, context, now)
                         .map_err(PreCommitFailure::into_commit_rejection)?;
-                    if !metadata.lifecycle().is_ordinary() {
-                        return Err(DurableCommitRejection::InactiveNamespace);
-                    }
-                    if metadata.barrier().is_sealed() {
-                        return Err(DurableCommitRejection::NamespaceSealed);
-                    }
-                    if metadata.successor_serving().is_serving() {
-                        return Err(DurableCommitRejection::InactiveNamespace);
-                    }
+                    validate_ordinary_write_lifecycle(
+                        metadata.lifecycle(),
+                        metadata.barrier(),
+                        metadata.successor_serving(),
+                    )?;
                     validate_state_reads(session, transaction.reads())?;
                     schema::advance_mutation_sequence(session, metadata.mutation_sequence())
                         .map_err(|error| PreCommitFailure::from(error).into_commit_rejection())?;
@@ -1549,15 +1545,11 @@ impl<B: SqlBackend> StructuredDurableDomainStateStore for SqlDurableEngine<B> {
                         .map_err(|error| PreCommitFailure::from(error).into_commit_rejection())?;
                     validate_authority(&metadata, context, now)
                         .map_err(PreCommitFailure::into_commit_rejection)?;
-                    if !metadata.lifecycle().is_ordinary() {
-                        return Err(DurableCommitRejection::InactiveNamespace);
-                    }
-                    if metadata.barrier().is_sealed() {
-                        return Err(DurableCommitRejection::NamespaceSealed);
-                    }
-                    if metadata.successor_serving().is_serving() {
-                        return Err(DurableCommitRejection::InactiveNamespace);
-                    }
+                    validate_ordinary_write_lifecycle(
+                        metadata.lifecycle(),
+                        metadata.barrier(),
+                        metadata.successor_serving(),
+                    )?;
                     let receipt = invocation.receipt();
                     if receipt_exists(session, receipt.request_id())
                         .map_err(PreCommitFailure::into_commit_rejection)?
