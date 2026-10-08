@@ -406,13 +406,18 @@ remain separate open release criteria.
   ambiguous progress, missing blobs, genuine second-file WAL creation failure
   and inactive admission/signing/ordinary-serving refusals. No encrypted format
   test replaces these or the full required owners.
-- After design acceptance: exact dependency/source review, bounded owning
-  execution and strict Clippy, literal npm-ci/full required acceptance and
-  final-source hosted CI remain gates. Optional PG is unchanged/unqualified;
-  no cloud/off-host resources or real recovery key are authorized.
+- The implementation is source-present, not qualified. Exact dependency/source
+  review, bounded owning execution and strict Clippy, literal npm-ci/full
+  required acceptance, all 31 original/current/predecessor roles, twelve fresh
+  Native A/B targets and final-head hosted CI/review remain gates. The optional PG
+  implementation is unchanged, but the encryption dependency expands shared
+  `futures-util` feature edges used by PG; the documented full-PG dependency
+  acceptance hold is unwaived. No live PG, cloud/off-host resources or real
+  recovery key are authorized.
 
 The existing [cut guide](../guides/business-cut.md) and
-[import guide](../guides/business-import.md) remain the only implemented
-workflow. Add runnable recovery instructions only after implementation review
-and real source-free tests. Current evidence/status lives exclusively in
+[import guide](../guides/business-import.md) describe the existing inactive
+rehearsal and the source-present encrypted-recovery candidate. Add runnable
+encrypted-recovery instructions only after implementation review and real
+source-free tests. Current evidence/status lives exclusively in
 [TODO](../../TODO.md), not README or a competing recovery runbook.

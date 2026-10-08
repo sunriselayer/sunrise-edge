@@ -136,7 +136,8 @@ source database flags and grants no live capability.
 For the bounded local recovery composition, continue with the
 [offline inactive import rehearsal](business-import.md#offline-business-closure-recovery-rehearsal).
 
-The proposed [encrypted local relocation](business-import.md#proposed-encrypted-local-relocation)
-retains these SAME original/current/all-predecessor roles. It is docs-only,
-not another export mode, an implemented backup command or authority to select
-real recovery custody/off-host retention.
+The source-present [encrypted local relocation](business-import.md#encrypted-local-relocation)
+candidate retains these SAME original/current/all-predecessor roles. It is not
+another export mode or completed backup qualification. Its owning/full,
+source-free and final-head acceptance gates remain pending; it grants no
+authority to select real recovery custody/off-host retention.
