@@ -82,16 +82,18 @@ whole attempt remains a failure, not a passing gate or a later-source result.
 
 The Native operations slice under
 [DR-0222](docs/architecture/decisions/0222-native-stop-and-operational-observations.md)
-has an accepted local design and authored stop/drain/observation code and tests.
-Independent complete source review and the additional stop/error test review
-have passed for their exact source scope. The first owning invocation at
-`f6626f5f` passed formatting, CLI build and all 255 cases across the Native HTTP,
-operator and actual SQLite/TLS executable, including all thirteen new controls.
-Strict Clippy failed on item ordering after the test module; the unchanged Drop
-implementation is moved before tests, with a fresh complete owning retry required.
-That first invocation remains NONPASS. Whole required validation and final-head
-CI/review remain binding gates. PR #297 is included through normal main ancestry,
-not through reuse of its execution evidence; compiler work stays serialized.
+has independently reviewed stop/drain/observation code and local owning
+acceptance at `aa236916`: a fresh initially empty-target capture passed all six
+stages, including formatting, CLI build, 185 Native HTTP cases, 66 operator cases,
+four real SQLite/TLS cases and strict Clippy. All thirteen new controls and the
+actual SIGTERM/INT restart, exact saved-intent replay and stale-writer fixture
+passed. Independent terminal review verified ordinary exit, all child/process
+group/cgroup release and both compiler leases removed. The first `f6626f5f`
+invocation remains NONPASS at Clippy; its tests or target were not adopted as
+retry acceptance. Whole required validation and final-head CI/review remain
+mandatory integration gates. This local acceptance does not close all M5.
+PR #297 is included through normal main ancestry, not execution-evidence reuse;
+compiler work stays serialized.
 
 Prior failed/interrupted/source-blocked attempts and component evidence remain
 in the [preserved queue](docs/development/history/execution-queue-through-2026-10-07.md#native-integration-and-direct-tls-observations-2026-10-08).
@@ -260,7 +262,9 @@ and cross-phase criteria; it does not shorten them.
   stop ownership, permanent work-admission closure, actual queued/detached-work
   drain and one fixed bounded secret-free termination record. Code and thirteen
   new unit controls plus the extended real four-SQLite TLS restart fixture are
-  authored and independently source-reviewed; execution gates are not yet accepted.
+  independently source-reviewed and passed the fresh six-stage local owning
+  gate at `aa236916`. Whole required validation and final-head CI/review are
+  mandatory for integration; this is neither all M5 nor provider qualification.
   No alert/SLO/capacity, globally bounded shutdown or forced-kill safety claim
   follows from these source changes.
   The M5 lock delta only adds direct edges to already locked versions; no PG
