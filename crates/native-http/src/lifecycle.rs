@@ -52,7 +52,13 @@ impl BlockingLifecycle {
             tokio::pin!(notified);
             // Register before checking zero, including for multiple waiters.
             notified.as_mut().enable();
-            if self.state.lock().unwrap_or_else(|error| error.into_inner()).outstanding == 0 {
+            if self
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .outstanding
+                == 0
+            {
                 return;
             }
             notified.await;
@@ -71,7 +77,11 @@ pub(crate) struct BlockingPermit {
 mod tests {
     use super::*;
     use crate::{NativeBlockingExecutor, NativeBlockingPolicy};
-    use std::{num::NonZeroUsize, sync::{Barrier, Condvar}, time::Duration};
+    use std::{
+        num::NonZeroUsize,
+        sync::{Barrier, Condvar},
+        time::Duration,
+    };
 
     fn executor() -> NativeBlockingExecutor {
         NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(2).unwrap()))
@@ -91,12 +101,21 @@ mod tests {
             barrier.wait();
             executor.close();
             let result: Result<BlockingPermit, TryAcquireError> = acquire.join().unwrap();
-            assert!(matches!(executor.try_acquire(), Err(TryAcquireError::Closed)));
+            assert!(matches!(
+                executor.try_acquire(),
+                Err(TryAcquireError::Closed)
+            ));
             if let Ok(permit) = result {
-                assert!(tokio::time::timeout(Duration::from_millis(5), executor.wait_drained()).await.is_err());
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(5), executor.wait_drained())
+                        .await
+                        .is_err()
+                );
                 drop(permit);
             }
-            tokio::time::timeout(Duration::from_secs(2), executor.wait_drained()).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(2), executor.wait_drained())
+                .await
+                .unwrap();
         }
     }
 
@@ -108,10 +127,22 @@ mod tests {
         let first = executor.wait_drained();
         let second = executor.wait_drained();
         tokio::pin!(first, second);
-        assert!(tokio::time::timeout(Duration::from_millis(10), &mut first).await.is_err());
-        assert!(tokio::time::timeout(Duration::from_millis(10), &mut second).await.is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut first)
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut second)
+                .await
+                .is_err()
+        );
         drop(permit); // A pre-spawn refusal releases tracking just like closure completion.
-        tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(first, second); }).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(first, second);
+        })
+        .await
+        .unwrap();
     }
 
     struct Release(Arc<(Mutex<bool>, Condvar)>);
@@ -126,7 +157,11 @@ mod tests {
     #[test]
     fn queued_detached_and_unwinding_jobs_keep_drain_owned() {
         let runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1).max_blocking_threads(1).enable_all().build().unwrap();
+            .worker_threads(1)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
         let released: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
         let cleanup: Release = Release(Arc::clone(&released));
         runtime.block_on(async {
@@ -138,7 +173,9 @@ mod tests {
                 started.send(()).unwrap();
                 let (ready, wake): &(Mutex<bool>, Condvar) = &released;
                 let mut ready = ready.lock().unwrap();
-                while !*ready { ready = wake.wait(ready).unwrap(); }
+                while !*ready {
+                    ready = wake.wait(ready).unwrap();
+                }
             });
             entered.await.unwrap();
             let second_permit: BlockingPermit = executor.try_acquire().unwrap();
@@ -151,12 +188,21 @@ mod tests {
             drop(first); // A dropped HTTP waiter cannot detach lifecycle tracking.
             executor.close();
             let mut queued_entered = queued_entered;
-            assert_eq!(queued_entered.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty));
-            assert!(tokio::time::timeout(Duration::from_millis(20), executor.wait_drained()).await.is_err());
+            assert_eq!(
+                queued_entered.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), executor.wait_drained())
+                    .await
+                    .is_err()
+            );
             drop(cleanup);
             queued_entered.await.unwrap();
             assert!(second.await.unwrap_err().is_panic());
-            tokio::time::timeout(Duration::from_secs(2), executor.wait_drained()).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(2), executor.wait_drained())
+                .await
+                .unwrap();
             assert_eq!(executor.observations().snapshot().blocking_panics, 1);
         });
     }
@@ -167,7 +213,11 @@ impl Drop for BlockingPermit {
         if std::thread::panicking() {
             self.observations.0.blocking_panics.increment();
         }
-        let mut state = self.lifecycle.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self
+            .lifecycle
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         // Release capacity before publishing completion under the same lock.
         drop(self.permit.take());
         state.outstanding -= 1;

@@ -1,8 +1,8 @@
 //! Genuine encrypted IO through the one Native connection owner. Private
 //! counters describe transport/router entry, not protocol signing authority.
 use crate::{
-    NativeBlockingExecutor, NativeBlockingPolicy, NativeHttpServePolicy, publication,
-    NativeHttpObservations, serve_with_stream_upgrade_observed,
+    NativeBlockingExecutor, NativeBlockingPolicy, NativeHttpObservations, NativeHttpServePolicy,
+    publication, serve_with_stream_upgrade_observed,
 };
 use axum::{
     Router,
@@ -634,8 +634,12 @@ async fn disconnected_tls_peer_does_not_release_started_blocking_work_capacity()
     assert_eq!(executor.observations().snapshot().blocking_overloaded, 1);
     let drained = executor.wait_drained();
     tokio::pin!(drained);
-    assert!(timeout(Duration::from_millis(40), &mut drained).await.is_err(),
-        "lost peer must leave the actual worker drain pending");
+    assert!(
+        timeout(Duration::from_millis(40), &mut drained)
+            .await
+            .is_err(),
+        "lost peer must leave the actual worker drain pending"
+    );
     release.release();
     timeout(BOUND, drained).await.unwrap();
     timeout(BOUND, async {

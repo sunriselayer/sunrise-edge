@@ -16,8 +16,8 @@ use axum::{
 use consensus::ConsensusSigner;
 use core::fmt;
 mod fastvote;
-mod local_execution;
 mod lifecycle;
+mod local_execution;
 mod observations;
 pub mod ordered_economics;
 mod paid_execution;
@@ -39,6 +39,7 @@ use node_core::{
     query_committed_epoch_state, query_object, query_request_receipt, query_sender_next_nonce,
 };
 use objects::{Address, ObjectId};
+pub use observations::{NativeHttpObservations, NativeHttpSnapshot, NativeStopReason};
 use protocol_config::{
     DomainPlacementManifest, ProtocolConfig, ProtocolConfigError, resolve_transaction_auth_profile,
 };
@@ -74,7 +75,6 @@ use tokio::{
     time::{Instant, Sleep, sleep, timeout},
 };
 use tower::ServiceExt;
-pub use observations::{NativeHttpObservations, NativeHttpSnapshot, NativeStopReason};
 
 // Canonical HTTP event/query-result codecs and route/media-type constants
 // live in `node-wire` (DR-0083) and are re-exported below so existing
@@ -1367,8 +1367,15 @@ where
     UF: Future<Output = io::Result<S>> + Send + 'static,
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    serve_with_stream_upgrade_observed(listener, app, policy, upgrade, shutdown,
-        NativeHttpObservations::default()).await
+    serve_with_stream_upgrade_observed(
+        listener,
+        app,
+        policy,
+        upgrade,
+        shutdown,
+        NativeHttpObservations::default(),
+    )
+    .await
 }
 
 /// Observed variant of the same connection owner. The host retains its exact
@@ -1628,12 +1635,20 @@ struct IoIdleTimeoutStream<S> {
 impl<S> IoIdleTimeoutStream<S> {
     #[cfg(test)]
     fn new(stream: S, idle_timeout: Duration, response_total_timeout: Duration) -> Self {
-        Self::with_observations(stream, idle_timeout, response_total_timeout,
-            observations::ConnectionObservations::new(NativeHttpObservations::default()))
+        Self::with_observations(
+            stream,
+            idle_timeout,
+            response_total_timeout,
+            observations::ConnectionObservations::new(NativeHttpObservations::default()),
+        )
     }
 
-    fn with_observations(stream: S, idle_timeout: Duration, response_total_timeout: Duration,
-        observations: Arc<observations::ConnectionObservations>) -> Self {
+    fn with_observations(
+        stream: S,
+        idle_timeout: Duration,
+        response_total_timeout: Duration,
+        observations: Arc<observations::ConnectionObservations>,
+    ) -> Self {
         Self {
             stream,
             idle_timeout,
@@ -1704,10 +1719,10 @@ where
                 Poll::Ready(()) => {
                     this.observations.input_timeout();
                     Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "native HTTP request read idle timeout",
+                        io::ErrorKind::TimedOut,
+                        "native HTTP request read idle timeout",
                     )))
-                },
+                }
                 Poll::Pending => Poll::Pending,
             },
         }

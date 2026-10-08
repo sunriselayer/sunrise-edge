@@ -2396,19 +2396,48 @@ fn assert_native_termination_summary(stderr: &[u8], reason: &str) {
     assert!(text.ends_with('\n'));
     let mut fields = text.split_whitespace();
     assert_eq!(fields.next(), Some("native_operations"));
-    let pairs: Vec<(&str, &str)> = fields.map(|field: &str| field.split_once('=').unwrap()).collect();
-    let names: [&str; 17] = ["schema", "stop", "connections_admitted", "connections_refused",
-        "accept_failures", "upgrade_failures", "upgrade_timeouts", "requests_dispatched",
-        "requests_refused", "input_timeouts", "output_timeouts", "connection_failures",
-        "connection_task_failures", "blocking_admitted", "blocking_overloaded", "blocking_closed", "blocking_panics"];
-    assert_eq!(pairs.iter().map(|(name, _)| *name).collect::<Vec<&str>>(), names);
+    let pairs: Vec<(&str, &str)> = fields
+        .map(|field: &str| field.split_once('=').unwrap())
+        .collect();
+    let names: [&str; 17] = [
+        "schema",
+        "stop",
+        "connections_admitted",
+        "connections_refused",
+        "accept_failures",
+        "upgrade_failures",
+        "upgrade_timeouts",
+        "requests_dispatched",
+        "requests_refused",
+        "input_timeouts",
+        "output_timeouts",
+        "connection_failures",
+        "connection_task_failures",
+        "blocking_admitted",
+        "blocking_overloaded",
+        "blocking_closed",
+        "blocking_panics",
+    ];
+    assert_eq!(
+        pairs.iter().map(|(name, _)| *name).collect::<Vec<&str>>(),
+        names
+    );
     assert_eq!(pairs[0].1, "1");
     assert_eq!(pairs[1].1, reason);
-    let counts: Vec<u64> = pairs[2..].iter().map(|(_, value)| value.parse::<u64>().unwrap()).collect();
+    let counts: Vec<u64> = pairs[2..]
+        .iter()
+        .map(|(_, value)| value.parse::<u64>().unwrap())
+        .collect();
     assert!(counts[0] > 0, "actual connections must have been admitted");
     assert!(counts[5] > 0, "actual requests must have been dispatched");
-    assert!(counts[11] > 0, "actual synchronous operations must have been admitted");
-    assert_eq!(counts[14], 0, "ordinary successful fixture has no blocking unwind");
+    assert!(
+        counts[11] > 0,
+        "actual synchronous operations must have been admitted"
+    );
+    assert_eq!(
+        counts[14], 0,
+        "ordinary successful fixture has no blocking unwind"
+    );
 }
 
 #[test]

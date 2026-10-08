@@ -1,6 +1,10 @@
 //! One process-local stop/drain/summary owner for Native operator serving.
 use native_http::{NativeBlockingExecutor, NativeHttpObservations, NativeStopReason};
-use std::{future::Future, io::{self, Write}, pin::Pin};
+use std::{
+    future::Future,
+    io::{self, Write},
+    pin::Pin,
+};
 
 type StopFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
@@ -20,12 +24,18 @@ impl StopOwner {
             use tokio::signal::unix::{Signal, SignalKind, signal};
             let interrupt: Signal = signal(SignalKind::interrupt())?;
             let terminate: Signal = signal(SignalKind::terminate())?;
-            Ok(Self { buffered: None, interrupt, terminate })
+            Ok(Self {
+                buffered: None,
+                interrupt,
+                terminate,
+            })
         }
         #[cfg(not(unix))]
         {
-            Err(io::Error::new(io::ErrorKind::Unsupported,
-                "Native orderly signal ownership requires Unix"))
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Native orderly signal ownership requires Unix",
+            ))
         }
     }
 
@@ -41,13 +51,23 @@ impl StopOwner {
         {
             let mut context: std::task::Context<'_> =
                 std::task::Context::from_waker(std::task::Waker::noop());
-            self.buffered = polled_signal_result(self.interrupt.poll_recv(&mut context), NativeStopReason::Sigint)
-                .or_else(|| polled_signal_result(self.terminate.poll_recv(&mut context), NativeStopReason::Sigterm));
+            self.buffered = polled_signal_result(
+                self.interrupt.poll_recv(&mut context),
+                NativeStopReason::Sigint,
+            )
+            .or_else(|| {
+                polled_signal_result(
+                    self.terminate.poll_recv(&mut context),
+                    NativeStopReason::Sigterm,
+                )
+            });
         }
         #[cfg(not(unix))]
         {
-            self.buffered = Some(Err(io::Error::new(io::ErrorKind::Unsupported,
-                "Native orderly signal ownership requires Unix")));
+            self.buffered = Some(Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Native orderly signal ownership requires Unix",
+            )));
         }
         self.buffered.is_some()
     }
@@ -67,15 +87,19 @@ impl StopOwner {
         #[cfg(not(unix))]
         {
             let _owner = &mut self;
-            Err(io::Error::new(io::ErrorKind::Unsupported,
-                "Native orderly signal ownership requires Unix"))
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Native orderly signal ownership requires Unix",
+            ))
         }
     }
 }
 
 #[cfg(unix)]
-fn polled_signal_result(received: std::task::Poll<Option<()>>, reason: NativeStopReason)
-    -> Option<io::Result<NativeStopReason>> {
+fn polled_signal_result(
+    received: std::task::Poll<Option<()>>,
+    reason: NativeStopReason,
+) -> Option<io::Result<NativeStopReason>> {
     match received {
         std::task::Poll::Pending => None,
         std::task::Poll::Ready(received) => Some(signal_result(received, reason)),
@@ -84,8 +108,12 @@ fn polled_signal_result(received: std::task::Poll<Option<()>>, reason: NativeSto
 
 #[cfg(unix)]
 fn signal_result(received: Option<()>, reason: NativeStopReason) -> io::Result<NativeStopReason> {
-    received.map(|()| reason).ok_or_else(||
-        io::Error::new(io::ErrorKind::BrokenPipe, "Native stop signal stream closed"))
+    received.map(|()| reason).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "Native stop signal stream closed",
+        )
+    })
 }
 
 /// Owns an entered serving lifecycle, including a buffered pre-readiness stop.
@@ -113,7 +141,10 @@ where
     executor.close();
     executor.wait_drained().await;
     let stopped: io::Result<NativeStopReason> = receiver.await.unwrap_or_else(|_| {
-        Err(io::Error::new(io::ErrorKind::BrokenPipe, "Native stop owner did not complete"))
+        Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "Native stop owner did not complete",
+        ))
     });
     let reason: NativeStopReason = match (&served, &stopped) {
         (Err(_), _) => NativeStopReason::ServeFailure,
@@ -132,7 +163,7 @@ where
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use native_http::{NativeBlockingPolicy, NODE_EVENT_MEDIA_TYPE, NODE_EVENT_PATH};
+    use native_http::{NODE_EVENT_MEDIA_TYPE, NODE_EVENT_PATH, NativeBlockingPolicy};
     use std::{num::NonZeroUsize, time::Duration};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -168,13 +199,20 @@ mod tests {
             );
             stream.write_all(request.as_bytes()).await.unwrap();
             let mut response: Vec<u8> = Vec::new();
-            (&mut stream).take(1_025).read_to_end(&mut response).await.unwrap();
+            (&mut stream)
+                .take(1_025)
+                .read_to_end(&mut response)
+                .await
+                .unwrap();
             sender.send(()).unwrap();
             response
         };
         let (served, response): (io::Result<()>, Vec<u8>) = tokio::join!(server, exchange);
         served.unwrap();
-        assert!(response.len() <= 1_024, "bounded established refusal response");
+        assert!(
+            response.len() <= 1_024,
+            "bounded established refusal response"
+        );
         assert!(response.starts_with(b"HTTP/1.1 503"));
         assert!(response.ends_with(b"\r\n\r\nblocking-admission-closed"));
     }
@@ -189,12 +227,21 @@ mod tests {
             let mut stop: StopOwner = StopOwner::install().unwrap();
             // Private buffered-result injection only; no OS signal is sent.
             stop.buffered = Some(if signal_failure {
-                Err(io::Error::new(io::ErrorKind::BrokenPipe, "buffered signal stream closed"))
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "buffered signal stream closed",
+                ))
             } else {
                 Ok(NativeStopReason::Sigterm)
             });
-            assert!(stop.stop_before_readiness(), "buffered stop suppresses readiness");
-            assert!(stop.stop_before_readiness(), "readiness polling retains the stop result");
+            assert!(
+                stop.stop_before_readiness(),
+                "buffered stop suppresses readiness"
+            );
+            assert!(
+                stop.stop_before_readiness(),
+                "readiness polling retains the stop result"
+            );
             match stop.buffered.as_ref().unwrap() {
                 Ok(reason) => {
                     assert!(!signal_failure);
@@ -207,14 +254,20 @@ mod tests {
             }
             let result: io::Result<()> = timeout(
                 TEST_DEADLINE,
-                serve(executor.clone(), stop, move |shutdown, _observations| async move {
-                    // This POST completes inside the run future, before the
-                    // host wrapper's fallback close after run returns. It must
-                    // therefore observe closure by the actual shutdown future.
-                    assert_closed_router_post(probe_executor, Some(shutdown)).await;
-                    Ok::<(), io::Error>(())
-                }),
-            ).await.unwrap();
+                serve(
+                    executor.clone(),
+                    stop,
+                    move |shutdown, _observations| async move {
+                        // This POST completes inside the run future, before the
+                        // host wrapper's fallback close after run returns. It must
+                        // therefore observe closure by the actual shutdown future.
+                        assert_closed_router_post(probe_executor, Some(shutdown)).await;
+                        Ok::<(), io::Error>(())
+                    },
+                ),
+            )
+            .await
+            .unwrap();
             if signal_failure {
                 let error: io::Error = result.unwrap_err();
                 assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
@@ -229,37 +282,70 @@ mod tests {
 
     #[tokio::test]
     async fn serving_failure_closes_admission_and_is_not_clean_stop() {
-        let executor: NativeBlockingExecutor = NativeBlockingExecutor::new(
-            NativeBlockingPolicy::new(NonZeroUsize::new(1).unwrap()),
-        );
+        let executor: NativeBlockingExecutor =
+            NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(1).unwrap()));
         let stop: StopOwner = StopOwner::install().unwrap();
         let error: io::Error = timeout(
             TEST_DEADLINE,
-            serve(executor.clone(), stop, |shutdown, _observations| async move {
-                // The serving failure never polls the stop future. Dropping it
-                // closes the result channel; the wrapper must not wait forever
-                // or replace this error with a clean signal-stop result.
-                drop(shutdown);
-                Err::<(), io::Error>(io::Error::new(io::ErrorKind::ConnectionAborted, "test serving failure"))
-            }),
-        ).await.unwrap().unwrap_err();
+            serve(
+                executor.clone(),
+                stop,
+                |shutdown, _observations| async move {
+                    // The serving failure never polls the stop future. Dropping it
+                    // closes the result channel; the wrapper must not wait forever
+                    // or replace this error with a clean signal-stop result.
+                    drop(shutdown);
+                    Err::<(), io::Error>(io::Error::new(
+                        io::ErrorKind::ConnectionAborted,
+                        "test serving failure",
+                    ))
+                },
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
         assert_eq!(error.to_string(), "test serving failure");
-        timeout(TEST_DEADLINE, assert_closed_router_post(executor.clone(), None)).await.unwrap();
+        timeout(
+            TEST_DEADLINE,
+            assert_closed_router_post(executor.clone(), None),
+        )
+        .await
+        .unwrap();
         assert_eq!(executor.observations().snapshot().blocking_closed, 1);
         assert_eq!(executor.observations().snapshot().blocking_admitted, 0);
     }
 
     #[test]
     fn closed_signal_stream_is_an_error_not_clean_stop() {
-        assert_eq!(signal_result(None, NativeStopReason::Sigterm).unwrap_err().kind(),
-            io::ErrorKind::BrokenPipe);
-        assert_eq!(signal_result(Some(()), NativeStopReason::Sigint).unwrap(), NativeStopReason::Sigint);
-        assert_eq!(signal_result(Some(()), NativeStopReason::Sigterm).unwrap(), NativeStopReason::Sigterm);
+        assert_eq!(
+            signal_result(None, NativeStopReason::Sigterm)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::BrokenPipe
+        );
+        assert_eq!(
+            signal_result(Some(()), NativeStopReason::Sigint).unwrap(),
+            NativeStopReason::Sigint
+        );
+        assert_eq!(
+            signal_result(Some(()), NativeStopReason::Sigterm).unwrap(),
+            NativeStopReason::Sigterm
+        );
         assert!(polled_signal_result(std::task::Poll::Pending, NativeStopReason::Sigint).is_none());
-        assert_eq!(polled_signal_result(std::task::Poll::Ready(Some(())), NativeStopReason::Sigterm)
-            .unwrap().unwrap(), NativeStopReason::Sigterm);
-        assert_eq!(polled_signal_result(std::task::Poll::Ready(None), NativeStopReason::Sigint)
-            .unwrap().unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(
+            polled_signal_result(std::task::Poll::Ready(Some(())), NativeStopReason::Sigterm)
+                .unwrap()
+                .unwrap(),
+            NativeStopReason::Sigterm
+        );
+        assert_eq!(
+            polled_signal_result(std::task::Poll::Ready(None), NativeStopReason::Sigint)
+                .unwrap()
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::BrokenPipe
+        );
     }
 }

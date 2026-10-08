@@ -38,14 +38,21 @@ impl ChildGuard {
     /// The same owned-child lifecycle, exercising Unix SIGTERM explicitly.
     /// The direct Native fixture pipes stderr to assert its one fixed summary.
     pub fn stop_orderly_terminate(self, deadline: Duration) -> Vec<u8> {
-        self.stop_with_signal(deadline, "TERM", true).expect("TERM fixture must pipe owned child stderr")
+        self.stop_with_signal(deadline, "TERM", true)
+            .expect("TERM fixture must pipe owned child stderr")
     }
 
     pub fn stop_orderly_interrupt_observed(self, deadline: Duration) -> Vec<u8> {
-        self.stop_with_signal(deadline, "INT", true).expect("observed INT fixture must pipe owned child stderr")
+        self.stop_with_signal(deadline, "INT", true)
+            .expect("observed INT fixture must pipe owned child stderr")
     }
 
-    fn stop_with_signal(mut self, deadline: Duration, signal_name: &'static str, capture: bool) -> Option<Vec<u8>> {
+    fn stop_with_signal(
+        mut self,
+        deadline: Duration,
+        signal_name: &'static str,
+        capture: bool,
+    ) -> Option<Vec<u8>> {
         let end: Instant = Instant::now()
             .checked_add(deadline)
             .expect("child stop deadline");
@@ -56,11 +63,19 @@ impl ChildGuard {
             panic!("owned child exited before orderly stop: {status}");
         }
         let pid: u32 = self.child_mut().id();
-        let stderr = if capture { self.child_mut().stderr.take() } else { None }.map(|stderr| {
+        let stderr = if capture {
+            self.child_mut().stderr.take()
+        } else {
+            None
+        }
+        .map(|stderr| {
             let (sender, receiver) = mpsc::channel::<Vec<u8>>();
             std::thread::spawn(move || {
                 let mut bytes: Vec<u8> = Vec::new();
-                stderr.take(2 * 1024 + 1).read_to_end(&mut bytes).expect("read child termination summary");
+                stderr
+                    .take(2 * 1024 + 1)
+                    .read_to_end(&mut bytes)
+                    .expect("read child termination summary");
                 let _sent = sender.send(bytes);
             });
             receiver
@@ -98,8 +113,11 @@ impl ChildGuard {
             "{signal_name} must produce an ordinary successful child exit"
         );
         assert!(status.success());
-        stderr.map(|receiver| receiver.recv_timeout(end.saturating_duration_since(Instant::now()))
-            .expect("owned child termination stderr deadline"))
+        stderr.map(|receiver| {
+            receiver
+                .recv_timeout(end.saturating_duration_since(Instant::now()))
+                .expect("owned child termination stderr deadline")
+        })
     }
 }
 impl Drop for ChildGuard {

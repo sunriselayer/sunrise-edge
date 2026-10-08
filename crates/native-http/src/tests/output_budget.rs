@@ -47,11 +47,18 @@ fn stream(writer: Writer) -> IoIdleTimeoutStream<Writer> {
 #[tokio::test]
 async fn repeated_input_timeout_polling_counts_once() {
     let (reader, _held_peer) = tokio::io::duplex(64);
-    let mut stream = IoIdleTimeoutStream::new(reader, Duration::from_millis(40), Duration::from_millis(150));
+    let mut stream = IoIdleTimeoutStream::new(
+        reader,
+        Duration::from_millis(40),
+        Duration::from_millis(150),
+    );
     let mut buffer: [u8; 1] = [0];
     for _poll in 0..2 {
-        let error: io::Error = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buffer))
-            .await.unwrap().unwrap_err();
+        let error: io::Error =
+            tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buffer))
+                .await
+                .unwrap()
+                .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
     assert_eq!(stream.observations.owner.snapshot().input_timeouts, 1);

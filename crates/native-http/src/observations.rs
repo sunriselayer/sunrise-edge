@@ -1,14 +1,22 @@
 //! Fixed local observations. No input bytes, dynamic labels or protocol state.
-use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
 #[derive(Debug, Default)]
 pub(crate) struct Counter(AtomicU64);
 impl Counter {
     pub(crate) fn increment(&self) {
-        let _previous = self.0.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
-            |value: u64| Some(value.saturating_add(1)));
+        let _previous = self
+            .0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value: u64| {
+                Some(value.saturating_add(1))
+            });
     }
-    fn get(&self) -> u64 { self.0.load(Ordering::Relaxed) }
+    fn get(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -117,12 +125,24 @@ impl NativeHttpSnapshot {
             NativeStopReason::SignalFailure => "signal_failure",
             NativeStopReason::ServeFailure => "serve_failure",
         };
-        format!("native_operations schema=1 stop={reason} connections_admitted={} connections_refused={} accept_failures={} upgrade_failures={} upgrade_timeouts={} requests_dispatched={} requests_refused={} input_timeouts={} output_timeouts={} connection_failures={} connection_task_failures={} blocking_admitted={} blocking_overloaded={} blocking_closed={} blocking_panics={}\n",
-            self.connections_admitted, self.connections_refused, self.accept_failures,
-            self.upgrade_failures, self.upgrade_timeouts, self.requests_dispatched,
-            self.requests_refused, self.input_timeouts, self.output_timeouts,
-            self.connection_failures, self.connection_task_failures, self.blocking_admitted,
-            self.blocking_overloaded, self.blocking_closed, self.blocking_panics)
+        format!(
+            "native_operations schema=1 stop={reason} connections_admitted={} connections_refused={} accept_failures={} upgrade_failures={} upgrade_timeouts={} requests_dispatched={} requests_refused={} input_timeouts={} output_timeouts={} connection_failures={} connection_task_failures={} blocking_admitted={} blocking_overloaded={} blocking_closed={} blocking_panics={}\n",
+            self.connections_admitted,
+            self.connections_refused,
+            self.accept_failures,
+            self.upgrade_failures,
+            self.upgrade_timeouts,
+            self.requests_dispatched,
+            self.requests_refused,
+            self.input_timeouts,
+            self.output_timeouts,
+            self.connection_failures,
+            self.connection_task_failures,
+            self.blocking_admitted,
+            self.blocking_overloaded,
+            self.blocking_closed,
+            self.blocking_panics
+        )
     }
 }
 
@@ -135,7 +155,10 @@ pub(crate) struct ConnectionObservations {
 }
 impl ConnectionObservations {
     pub(crate) fn new(owner: NativeHttpObservations) -> Arc<Self> {
-        Arc::new(Self { owner, ..Self::default() })
+        Arc::new(Self {
+            owner,
+            ..Self::default()
+        })
     }
     pub(crate) fn input_timeout(&self) {
         if !self.input_timeout.swap(true, Ordering::Relaxed) {
@@ -155,10 +178,17 @@ mod tests {
     #[tokio::test]
     async fn counters_saturate_and_connection_timeout_latches_are_once() {
         let executor: crate::NativeBlockingExecutor = crate::NativeBlockingExecutor::new(
-            crate::NativeBlockingPolicy::new(std::num::NonZeroUsize::new(1).unwrap()));
+            crate::NativeBlockingPolicy::new(std::num::NonZeroUsize::new(1).unwrap()),
+        );
         let owner: NativeHttpObservations = executor.observations();
-        owner.0.connections_admitted.0.store(u64::MAX - 1, Ordering::Relaxed);
-        for _poll in 0..10 { owner.0.connections_admitted.increment(); }
+        owner
+            .0
+            .connections_admitted
+            .0
+            .store(u64::MAX - 1, Ordering::Relaxed);
+        for _poll in 0..10 {
+            owner.0.connections_admitted.increment();
+        }
         assert_eq!(owner.snapshot().connections_admitted, u64::MAX);
         let connection: Arc<ConnectionObservations> = ConnectionObservations::new(owner.clone());
         for _poll in 0..10 {
@@ -169,45 +199,101 @@ mod tests {
         assert_eq!(owner.snapshot().output_timeouts, 1);
         ConnectionObservations::new(owner.clone()).input_timeout();
         assert_eq!(owner.snapshot().input_timeouts, 2);
-        owner.0.blocking_admitted.0.store(u64::MAX, Ordering::Relaxed);
+        owner
+            .0
+            .blocking_admitted
+            .0
+            .store(u64::MAX, Ordering::Relaxed);
         let permit = executor.try_acquire().unwrap();
         executor.close();
         assert_eq!(owner.snapshot().blocking_admitted, u64::MAX);
-        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), executor.wait_drained()).await.is_err(),
-            "saturated observations cannot make an outstanding lifecycle drain complete");
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                executor.wait_drained()
+            )
+            .await
+            .is_err(),
+            "saturated observations cannot make an outstanding lifecycle drain complete"
+        );
         drop(permit);
-        tokio::time::timeout(std::time::Duration::from_secs(2), executor.wait_drained()).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), executor.wait_drained())
+            .await
+            .unwrap();
     }
 
     #[test]
     fn termination_schema_is_fixed_bounded_and_secret_free() {
         let snapshot: NativeHttpSnapshot = NativeHttpSnapshot {
-            connections_admitted: u64::MAX, connections_refused: u64::MAX,
-            accept_failures: u64::MAX, upgrade_failures: u64::MAX, upgrade_timeouts: u64::MAX,
-            requests_dispatched: u64::MAX, requests_refused: u64::MAX,
-            input_timeouts: u64::MAX, output_timeouts: u64::MAX,
-            connection_failures: u64::MAX, connection_task_failures: u64::MAX,
-            blocking_admitted: u64::MAX, blocking_overloaded: u64::MAX,
-            blocking_closed: u64::MAX, blocking_panics: u64::MAX,
+            connections_admitted: u64::MAX,
+            connections_refused: u64::MAX,
+            accept_failures: u64::MAX,
+            upgrade_failures: u64::MAX,
+            upgrade_timeouts: u64::MAX,
+            requests_dispatched: u64::MAX,
+            requests_refused: u64::MAX,
+            input_timeouts: u64::MAX,
+            output_timeouts: u64::MAX,
+            connection_failures: u64::MAX,
+            connection_task_failures: u64::MAX,
+            blocking_admitted: u64::MAX,
+            blocking_overloaded: u64::MAX,
+            blocking_closed: u64::MAX,
+            blocking_panics: u64::MAX,
         };
-        let names: [&str; 17] = ["schema", "stop", "connections_admitted", "connections_refused",
-            "accept_failures", "upgrade_failures", "upgrade_timeouts", "requests_dispatched",
-            "requests_refused", "input_timeouts", "output_timeouts", "connection_failures",
-            "connection_task_failures", "blocking_admitted", "blocking_overloaded", "blocking_closed", "blocking_panics"];
-        for (reason, label) in [(NativeStopReason::Sigint, "sigint"), (NativeStopReason::Sigterm, "sigterm"),
-            (NativeStopReason::SignalFailure, "signal_failure"), (NativeStopReason::ServeFailure, "serve_failure")] {
+        let names: [&str; 17] = [
+            "schema",
+            "stop",
+            "connections_admitted",
+            "connections_refused",
+            "accept_failures",
+            "upgrade_failures",
+            "upgrade_timeouts",
+            "requests_dispatched",
+            "requests_refused",
+            "input_timeouts",
+            "output_timeouts",
+            "connection_failures",
+            "connection_task_failures",
+            "blocking_admitted",
+            "blocking_overloaded",
+            "blocking_closed",
+            "blocking_panics",
+        ];
+        for (reason, label) in [
+            (NativeStopReason::Sigint, "sigint"),
+            (NativeStopReason::Sigterm, "sigterm"),
+            (NativeStopReason::SignalFailure, "signal_failure"),
+            (NativeStopReason::ServeFailure, "serve_failure"),
+        ] {
             let summary: String = snapshot.termination_summary(reason);
             assert!(summary.len() <= 2 * 1024);
             assert_eq!(summary.lines().count(), 1);
             assert!(summary.ends_with('\n'));
             let mut fields = summary.split_whitespace();
             assert_eq!(fields.next(), Some("native_operations"));
-            let pairs: Vec<(&str, &str)> = fields.map(|field: &str| field.split_once('=').unwrap()).collect();
-            assert_eq!(pairs.iter().map(|(name, _)| *name).collect::<Vec<&str>>(), names);
+            let pairs: Vec<(&str, &str)> = fields
+                .map(|field: &str| field.split_once('=').unwrap())
+                .collect();
+            assert_eq!(
+                pairs.iter().map(|(name, _)| *name).collect::<Vec<&str>>(),
+                names
+            );
             assert_eq!(pairs[0].1, "1");
             assert_eq!(pairs[1].1, label);
-            for (_, count) in &pairs[2..] { assert_eq!(count.parse::<u64>().unwrap(), u64::MAX); }
-            for excluded in ["http", "127.0.0.1", "secret", "certificate", "request_id", "object_id", "body=", "error="] {
+            for (_, count) in &pairs[2..] {
+                assert_eq!(count.parse::<u64>().unwrap(), u64::MAX);
+            }
+            for excluded in [
+                "http",
+                "127.0.0.1",
+                "secret",
+                "certificate",
+                "request_id",
+                "object_id",
+                "body=",
+                "error=",
+            ] {
                 assert!(!summary.contains(excluded));
             }
         }
