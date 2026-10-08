@@ -32,6 +32,10 @@ roadmap describes a later target state.
   optional immutable host DER/PKCS8 inputs, one admitted upgrade/HTTP lifecycle,
   bounded encrypted output and explicit stopped rotation; transport identity
   never replaces protocol authority or production PKI qualification.
+- [Native stop and operational observations](native-operations.md)
+  ([DR-0222](decisions/0222-native-stop-and-operational-observations.md)):
+  explicit SIGINT/SIGTERM ownership, actual admitted-work drain and bounded
+  secret-free counters; no protocol, public-readiness or deployment authority.
 - [Immutable operation signing preparation](signing-preparation.md): one
   mechanical frame/identity owner, operation-specific immutable trust inputs,
   actual SDK/CLI consumers and the separate custody/content-review boundary.

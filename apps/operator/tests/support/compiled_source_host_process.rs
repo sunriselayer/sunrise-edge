@@ -31,33 +31,71 @@ impl ChildGuard {
     /// Quiet local acceptance only: signal this still-owned, unreaped positive
     /// PID, then require an ordinary successful exit. Kill/reap remains solely
     /// failure cleanup, never evidence of an orderly stop.
-    pub fn stop_orderly(mut self, deadline: Duration) {
+    pub fn stop_orderly(self, deadline: Duration) {
+        let _stderr: Option<Vec<u8>> = self.stop_with_signal(deadline, "INT", false);
+    }
+
+    /// The same owned-child lifecycle, exercising Unix SIGTERM explicitly.
+    /// The direct Native fixture pipes stderr to assert its one fixed summary.
+    pub fn stop_orderly_terminate(self, deadline: Duration) -> Vec<u8> {
+        self.stop_with_signal(deadline, "TERM", true)
+            .expect("TERM fixture must pipe owned child stderr")
+    }
+
+    pub fn stop_orderly_interrupt_observed(self, deadline: Duration) -> Vec<u8> {
+        self.stop_with_signal(deadline, "INT", true)
+            .expect("observed INT fixture must pipe owned child stderr")
+    }
+
+    fn stop_with_signal(
+        mut self,
+        deadline: Duration,
+        signal_name: &'static str,
+        capture: bool,
+    ) -> Option<Vec<u8>> {
         let end: Instant = Instant::now()
             .checked_add(deadline)
             .expect("child stop deadline");
-        if let Some(status) = self.try_wait().expect("poll owned child before SIGINT") {
+        if let Some(status) = self.try_wait().expect("poll owned child before signal") {
             let mut reaped: Child = self.0.take().expect("owned reaped child");
             let confirmed: ExitStatus = reaped.wait().expect("confirm already reaped child");
             assert_eq!(confirmed, status, "cached observed early exit status");
             panic!("owned child exited before orderly stop: {status}");
         }
         let pid: u32 = self.child_mut().id();
+        let stderr = if capture {
+            self.child_mut().stderr.take()
+        } else {
+            None
+        }
+        .map(|stderr| {
+            let (sender, receiver) = mpsc::channel::<Vec<u8>>();
+            std::thread::spawn(move || {
+                let mut bytes: Vec<u8> = Vec::new();
+                stderr
+                    .take(2 * 1024 + 1)
+                    .read_to_end(&mut bytes)
+                    .expect("read child termination summary");
+                let _sent = sender.send(bytes);
+            });
+            receiver
+        });
         assert!(
             pid > 0 && pid <= i32::MAX as u32,
             "positive owned child PID"
         );
         let mut signal: Command = Command::new("kill");
-        signal.args(["-s", "INT", "--"]).arg(pid.to_string());
+        signal.args(["-s", signal_name, "--"]).arg(pid.to_string());
         let remaining: Duration = end.saturating_duration_since(Instant::now());
-        assert!(!remaining.is_zero(), "SIGINT helper deadline elapsed");
+        assert!(!remaining.is_zero(), "signal helper deadline elapsed");
         let output: Output = spawn_bounded_output(signal, remaining);
         assert!(
             output.status.success(),
-            "owned-child SIGINT helper failed: {:?}",
+            "owned-child {signal_name} helper failed: {:?}",
             output.stderr
         );
         let status: ExitStatus = loop {
-            if let Some(status) = self.try_wait().expect("poll SIGINT child exit") {
+            if let Some(status) = self.try_wait().expect("poll signaled child exit") {
                 break status;
             }
             assert!(
@@ -72,9 +110,14 @@ impl ChildGuard {
         assert_eq!(
             status.code(),
             Some(0),
-            "SIGINT must produce an ordinary successful child exit"
+            "{signal_name} must produce an ordinary successful child exit"
         );
         assert!(status.success());
+        stderr.map(|receiver| {
+            receiver
+                .recv_timeout(end.saturating_duration_since(Instant::now()))
+                .expect("owned child termination stderr deadline")
+        })
     }
 }
 impl Drop for ChildGuard {

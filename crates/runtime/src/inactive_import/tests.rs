@@ -104,6 +104,76 @@ fn assert_node_event_vector(bytes: &[u8], expected_hex: &str) {
 }
 
 #[test]
+fn ordinary_write_lifecycle_refusal_has_literal_phase_precedence() {
+    // Phase-only synthetic observations, not authenticated serving evidence
+    // or a way to install these combinations in a live namespace.
+    let pin: ImportBinding = binding(0);
+    let progress: ImportProgress = initial();
+    let lifecycles: [NamespaceLifecycle; 4] = [
+        NamespaceLifecycle::Ordinary,
+        NamespaceLifecycle::FreshImport(pin.clone()),
+        NamespaceLifecycle::Importing {
+            binding: pin.clone(),
+            progress: progress.clone(),
+        },
+        NamespaceLifecycle::CompleteInactive {
+            binding: pin.clone(),
+            progress: progress.clone(),
+        },
+    ];
+    let barriers: [OutgoingBarrier; 2] = [
+        OutgoingBarrier::Unsealed,
+        OutgoingBarrier::Sealed(SealBarrier {
+            outgoing_epoch: Epoch::new(7),
+            request: [0x80; 32],
+            height: 1,
+            block_digest: digest(10),
+            target_digest: digest(11),
+            transition_history: TransitionHistoryState::Virgin,
+        }),
+    ];
+    let slots: [SuccessorServingSlot; 2] = [
+        SuccessorServingSlot::Inactive,
+        SuccessorServingSlot::Serving(Box::new(SuccessorServingObservation {
+            record: Vec::new(),
+            binding: pin,
+            progress,
+        })),
+    ];
+    // Literal independent expectations: lifecycle, barrier, slot, result.
+    // 4 lifecycle variants x 2 barriers x 2 slots = 16 predicate cases.
+    let cases: [(usize, usize, usize, Result<(), DurableCommitRejection>); 16] = [
+        (0, 0, 0, Ok(())),
+        (0, 0, 1, Err(DurableCommitRejection::InactiveNamespace)),
+        (0, 1, 0, Err(DurableCommitRejection::NamespaceSealed)),
+        (0, 1, 1, Err(DurableCommitRejection::NamespaceSealed)),
+        (1, 0, 0, Err(DurableCommitRejection::InactiveNamespace)),
+        (1, 0, 1, Err(DurableCommitRejection::InactiveNamespace)),
+        (1, 1, 0, Err(DurableCommitRejection::InactiveNamespace)),
+        (1, 1, 1, Err(DurableCommitRejection::InactiveNamespace)),
+        (2, 0, 0, Err(DurableCommitRejection::InactiveNamespace)),
+        (2, 0, 1, Err(DurableCommitRejection::InactiveNamespace)),
+        (2, 1, 0, Err(DurableCommitRejection::InactiveNamespace)),
+        (2, 1, 1, Err(DurableCommitRejection::InactiveNamespace)),
+        (3, 0, 0, Err(DurableCommitRejection::InactiveNamespace)),
+        (3, 0, 1, Err(DurableCommitRejection::InactiveNamespace)),
+        (3, 1, 0, Err(DurableCommitRejection::InactiveNamespace)),
+        (3, 1, 1, Err(DurableCommitRejection::InactiveNamespace)),
+    ];
+    for (lifecycle_index, barrier_index, slot_index, expected) in cases {
+        let actual: Result<(), DurableCommitRejection> = validate_ordinary_write_lifecycle(
+            &lifecycles[lifecycle_index],
+            &barriers[barrier_index],
+            &slots[slot_index],
+        );
+        assert_eq!(
+            actual, expected,
+            "lifecycle {lifecycle_index}, barrier {barrier_index}, slot {slot_index}"
+        );
+    }
+}
+
+#[test]
 fn inactive_import_persistence_frames_match_independent_node_vectors() {
     // Synthetic storage frames, not an authenticated import plan or permit.
     // Independently pinned by scripts/business-import-vectors.mjs.

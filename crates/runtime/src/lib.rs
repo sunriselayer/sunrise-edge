@@ -2544,6 +2544,29 @@ pub enum DurableCommitRejection {
     UnavailableBeforeCommit,
 }
 
+/// Applies the phase-only refusal rule for an ordinary durable write.
+///
+/// Observe these inputs under the existing commit lock or SQL transaction,
+/// after the caller's applicable domain, schema, fence and deadline checks.
+/// `Ok(())` passes only this rule; it grants no commit or serving authority.
+/// Protected import, Seal and successor writes retain their own contracts.
+pub fn validate_ordinary_write_lifecycle(
+    lifecycle: &NamespaceLifecycle,
+    barrier: &OutgoingBarrier,
+    successor_serving: &SuccessorServingSlot,
+) -> Result<(), DurableCommitRejection> {
+    if !lifecycle.is_ordinary() {
+        return Err(DurableCommitRejection::InactiveNamespace);
+    }
+    if barrier.is_sealed() {
+        return Err(DurableCommitRejection::NamespaceSealed);
+    }
+    if successor_serving.is_serving() {
+        return Err(DurableCommitRejection::InactiveNamespace);
+    }
+    Ok(())
+}
+
 /// Why a durable adapter can no longer prove whether a commit happened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IndeterminateCommitReason {
@@ -3898,14 +3921,12 @@ impl DurableDomainStateStore for MemoryDurableStateStore {
         if let Err(reason) = validate_memory_durable_commit_authority(&data, context) {
             return DurableCommitOutcome::Rejected(reason);
         }
-        if !data.lifecycle.is_ordinary() {
-            return DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace);
-        }
-        if data.outgoing_barrier.is_sealed() {
-            return DurableCommitOutcome::Rejected(DurableCommitRejection::NamespaceSealed);
-        }
-        if data.successor_serving.is_serving() {
-            return DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace);
+        if let Err(reason) = validate_ordinary_write_lifecycle(
+            &data.lifecycle,
+            &data.outgoing_barrier,
+            &data.successor_serving,
+        ) {
+            return DurableCommitOutcome::Rejected(reason);
         }
         let domain = *transaction.domain.as_bytes();
         let state = data.state_domains.get(&domain);
@@ -4001,14 +4022,12 @@ impl StructuredDurableDomainStateStore for MemoryDurableStateStore {
             return DurableCommitOutcome::Rejected(reason);
         }
 
-        if !data.lifecycle.is_ordinary() {
-            return DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace);
-        }
-        if data.outgoing_barrier.is_sealed() {
-            return DurableCommitOutcome::Rejected(DurableCommitRejection::NamespaceSealed);
-        }
-        if data.successor_serving.is_serving() {
-            return DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace);
+        if let Err(reason) = validate_ordinary_write_lifecycle(
+            &data.lifecycle,
+            &data.outgoing_barrier,
+            &data.successor_serving,
+        ) {
+            return DurableCommitOutcome::Rejected(reason);
         }
         let domain = *transaction.domain.as_bytes();
         let request_key = (domain, *transaction.receipt.request_id.as_bytes());

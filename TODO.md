@@ -66,17 +66,38 @@ equals `3ec8d7bd`. The component source/scoped observations below remain
 separate from the exact combined full gate, native A/B and hosted CI above.
 Do not relabel an earlier component/failed/ancestor attempt as that combined run.
 
-| Slice | Exact source and verified scope | Remaining acceptance |
-| --- | --- | --- |
-| PR #286: consensus verifier owner | `f797d049`; complete source approval, consensus 259/0 and genuine core successor controls 5/0 plus strict owning Clippy; merged | Other R1 dependency ownership and M1 review stay open |
-| PR #287: SQLite physical ownership | `621d1a07`; complete source approval, 141/0 real owning tests and strict Clippy; merged | Actual power/ENOSPC/failover remain M3 |
-| PR #288: external signing preparation | `85b8a0a2`; complete source approval, SDK/CLI 491/0 and strict Clippy; actual operator owner compiled, then included in exact combined acceptance; merged | Actual custody stays M2 |
-| PR #289: source-free inactive recovery | `7065a1dd`; complete source approval, 3/0 compiled owning tests and strict Clippy; merged | Encrypted off-host/general recovery stay M4 |
-| PR #290: protected custody design | `dba52ddd`; complete four-document source approval, no provider selection or protected-key implementation | Human threat/review/key-role choices and actual M2 implementation |
-| PR #291: ordered local signatures | `5980522b`; complete final source approval; identical functional `5c05215e` passed 1226/0/7 ignored and strict owning Clippy; merged | Scoped ignored tests remain distinct from separately executed full required owners |
-| PR #292: Native release evidence | `c3f9e3e4`; complete corrected source approval, parent verified 134 compiler/DB/network-free controls and CI contract; fresh combined-source A/B subsequently passed; merged | Hermeticity, broader conformance/advisory/provider qualification remain M7 |
-| PR #294: local TLS rotation | `2ba302a2`; complete eight-path source approval, all six owning stages passed, real TLS 3/0 and SDK remote TLS 15/0 with no ignored tests, strict Clippy; merged | Production PKI, revocation and custody remain open |
-| PR #295: publication-query contract owner | `bdfee63a`; complete 27-path source approval, all eleven scoped stages passed, 429 executed cases with zero ignored, actual CLI/HTTP/SQLite workflows, operator/DO compile and strict Clippy; merged | Other scoped core tests were filtered; full SDK/core dependency decoupling is not claimed |
+PR #296, the direct Native TLS follow-up under
+[DR-0219](docs/architecture/decisions/0219-native-direct-tls-connection-ownership.md),
+merged normally as `99c75e0c` after exact head `c35a9dec` passed fresh complete
+independent source review, literal npm-ci and `./scripts/check-all.sh`, genuine
+seven-successor/full e8 withdrawal and extended integration controls, and all
+seven required hosted owners plus success-only `check`. The merge tree equals
+the approved tree; local main and origin/main were verified clean and equal.
+Prior fixture/runner and hosted prerequisite failures remain failures in the
+preserved evidence; the corrected final gate does not relabel those attempts.
+This closes that local TLS integration, not production PKI, M5 or public readiness.
+
+PR #297, the phase-only ordinary-write policy responsibility refactor,
+merged normally as `322dfa3e` after exact head `db466a02` passed fresh literal
+npm-ci and `./scripts/check-all.sh`, all seven hosted owners plus `check`,
+and complete independent exact-head/source/terminal review. The isolated whole
+gate included all three extended owners, seven successors and real epoch8
+withdrawals. Main equals origin/main with the accepted tree. Its first failed
+whole attempt remains a failure, not a passing gate or a later-source result.
+
+PR #299, the Native operations slice under
+[DR-0222](docs/architecture/decisions/0222-native-stop-and-operational-observations.md)
+merged normally as `ffcf5767` on 2026-10-08 at 15:25:58 UTC. Exact final head
+`535ca4cb` passed literal npm-ci and the complete required gate, all seven
+hosted owners plus success-only `check` in run `37758494656`, and a fresh
+independent final exact-head integration review. The normal merge tree equals
+the approved head tree. The gate retained all thirteen new controls, the real
+four-SQLite TLS SIGTERM/INT stop/restart/exact replay/fencing fixture, all three
+extended owners and genuine seven-successor/full epoch8 withdrawals. Its
+earlier scoped acceptance at `aa236916` and first Clippy NONPASS remain distinct.
+Actual child/process-group/cgroup and lease release was independently verified;
+only the finished owned unit was stopped. This technical integration does not
+close M5, protected custody, security or public/mainnet qualification.
 
 Initial failed source/test attempts remain in the preserved queue and immutable
 evidence; they are not passed. The `8974634a` ordered test failed one timing
@@ -114,41 +135,22 @@ chains, verified paid dependency loading, historical HTTP and compiled CLI
 lifecycles are covered. This remains one migrated ownership boundary, not whole
 SDK decoupling, optional PG qualification, or an independent security audit.
 
-Direct-native TLS is now Draft [PR #296](https://github.com/sunriselayer/sunrise-edge/pull/296),
-head `c35a9dec`, tree `bdeb3e60`. Complete independent source approval covers
-the retained TLS changes and the five-file CI/fixture correction. The earlier
-`c0d2f217` scoped retry1 passed all six stages and 17 exact named tests with
-zero failures/ignored, strict owning Clippy and verified teardown. The corrected
-release fixture separately passed 135 controls under the owned restrictive
-umask; the exact `c35a9dec` compiler-free CI contract exited 0 in 18.452 seconds.
-None of these scoped observations replaces the whole required gate.
-The first `70210f57` local full attempt FAILED before Rust in the fixture
-contract; its two hosted prerequisite failures and all earlier failures remain
-preserved, including the initial fixture invocation's undeclared Node-flag
-refusal. The shared selected-group recipe now builds the actual compiled CLI
-after complete inventory validation and before isolated SQLite lane discovery.
-The fresh `c35a9dec` literal npm-ci/full-required retry ran from 19:16:40 to
-22:39:02 UTC on 2026-10-07; both stages exited 0/null. The parent accepted ONLY
-that exact local required gate at 22:41:07 UTC (receipt `ba459f81`), including
-the genuine ignored seven-epoch/full-unlock owners. As of the parent's 22:43
-check, unchanged at 22:59 UTC, hosted run `37671265599` had six of seven
-required owners successful; recurring was still in progress and no final
-success-only `check` had run. PR #296 remains Draft and is NOT merged.
-No fresh c35 native A/B or M5 production qualification follows.
+M4's 49-path encrypted-recovery candidate is preserved exactly in source-only
+snapshot `a9aef828` before integration with accepted normal-main `ffcf5767`.
+Its saved lock remains exactly `dd280028` / 82,801 bytes, not a new resolution.
+The original shared-target invocation is NONPASS because a mandatory new test
+was absent; the later isolated invocation is NONPASS at strict Clippy after
+real 15 canonical, 184 SDK and 81 operator cases. The minimal Clippy correction
+received source-only review but has not passed a corrected owning run. Those
+partial results are not acceptance of the new combined source.
 
-M4 has provisionally advanced ff-only to exact `c35a9dec`, NOT a main merge.
-The retained own stash `74eef98c` was applied once and exited 1 with four
-attributable content conflicts. The five-file source resolution preserves both
-TLS witnesses, terminal encrypted restore and the twelfth release target.
-The combined source is NOT approved or compiled; the original 48-path source
-approval and c35-only local gate do not approve this union. Old M4 metadata
-SOURCE DATA inventories and helper/launch bindings are stale. The metadata
-executor/capture remains uninvoked; do not refresh or invoke it implicitly.
-
-Next: independently inspect this provisional combined source, finish M5's
-hosted gate and normal merge, then align M4 to the actual accepted main base.
-Only a fresh exact source/lock inventory and separately reviewed binding may
-precede any authorized metadata resolution or compilation. Keep the accepted
+Next: review the combined source and newly bound owning packet before any new
+invocation; then execute fresh required, twelve-target A/B and final-head
+hosted gates. Old metadata/scoped helpers must not run with substituted source
+or target bindings. M4's age edge expands shared `futures-util` features used
+by PostgreSQL: the documented PG dependency acceptance requirement remains
+unresolved, even though Native+SQLite development may continue. No live PG
+or waived selected-profile check is authorized. Keep the accepted
 [DR-0221](docs/architecture/decisions/0221-encrypted-recovery-closure.md)
 transport/restore requirements and fresh twelve-target A/B gates intact.
 Rustls advisories, optional PG acceptance, production PKI/custody and M3's
@@ -193,6 +195,21 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   to invocation identity before retention/exposure. Preserve receipt-first replay,
   actual CAS/ambiguity, legitimate prefix progress and real memory reconstruction.
   Further extraction needs a concrete changing owner, not a file-size target.
+  PR #297 shares only ordinary-write phase refusal in
+  `runtime::validate_ordinary_write_lifecycle`, consumed by both Memory and
+  shared SQL commit pairs under their existing lock/transaction and preceding
+  authority checks. PostgreSQL's different checks remain unchanged. Applied
+  source bytes match the independently reviewed proposal, with 16 literal phase
+  cases and genuine Memory/SQLite import, Seal and SQLite serving refusal
+  controls using complete existing snapshots. Normal formatting, the three owning
+  crates' tests (288 nonignored passes, zero failed/ignored), all five new and one
+  strengthened named controls, and strict owning Clippy passed in a fresh local
+  scope. The shared SQL library has zero standalone cases; its consumers are
+  exercised by the actual SQLite suites. Earlier formatting and test-build
+  failures remain failures. Exact `db466a02` subsequently passed fresh whole
+  required, all hosted owners and independent final integration review before
+  normal merge `322dfa3e`. This closes the phase-only extraction, grants no new
+  authority, closes neither all R1 nor all R2, and is not an M4/M5 prerequisite.
 - [ ] **R3 — attributable tests and economical CI:** share bounded signed-input
   setup, not the implementation-derived oracle; separate pure/store/HTTP/CLI
   owners. Remove equivalent duplicate work only with exact-input coverage proof
@@ -292,13 +309,19 @@ and cross-phase criteria; it does not shorten them.
   remain preserved. Their narrow corrections include an independently fixed
   L=1 record/hash/all-role/File/Footer vector; the L=16 ceiling and negative
   controls are retained. The corrected original tuple received different
-  SOURCE_ONLY approval, not execution. That old approval does not approve the
-  new c35-combined source, which is neither approved nor compiled. Exact age/
-  libc/zeroize/rustix edges remain source-only; the current c35 lock is only the
-  preserved starting constraint, not a resolved M4 graph. Old metadata SOURCE
-  DATA/helper bindings are stale; metadata remains uninvoked. Dependency
-  provenance, graph/features, advisories, compilation and runtime acceptance
-  are unverified. Aggregate repeated-walk/decode/deadline cost is still UNKNOWN;
+  SOURCE_ONLY approval, not execution. The later 49-path candidate and exact
+  saved lock are preserved at `a9aef828` against accepted normal-main `ffcf5767`.
+  Saved bounded graph DATA and narrow exact-lock adoption have separate review;
+  the original metadata attempt remains NONPASS, not dependency qualification.
+  The shared-target named-control absence and isolated strict-Clippy failure
+  remain NONPASS; the corrected source has no new owning or whole execution.
+  New combined-source review, actual corrected owning/full encrypted restore,
+  twelve-target A/B and final-head hosted acceptance are still required. The
+  unconditional age edge expands `futures-util` features shared with PostgreSQL,
+  so final dependency acceptance also needs the documented selected-PG evidence
+  and pending authority; unchanged PG versions do not waive that obligation.
+  Advisory/MSRV/license, runtime and off-host custody qualification remain open.
+  Aggregate repeated-walk/decode/deadline cost is still UNKNOWN;
   do not reset or widen the shared budget to force a pass. Both prior design
   BLOCKs remain preserved. Disposable local X25519 does not select real custody
   or off-host retention; no M4 completion is claimed.
@@ -308,17 +331,30 @@ and cross-phase criteria; it does not shorten them.
   limits. Initial testnet may precede representative load/soak; mainnet capacity
   evidence remains required and its real workload/SLO needs a human decision.
   [DR-0219](docs/architecture/decisions/0219-native-direct-tls-connection-ownership.md)
-  adds optional direct Native TLS under the existing connection/work owners,
-  immutable bounded loading and explicit stopped rotation. Draft #296 at
-  `c35a9dec` has exact-source local full-required acceptance as recorded above;
-  hosted CI and normal merge remain pending. The new M4/c35 union has no
-  inherited combined approval or execution. Production PKI, caller authority,
-  revocation, operations and capacity/custody qualification remain open.
-  M5's lock delta adds only direct edges to already locked versions. Locked
-  Rustls 0.23.43 remains affected by RUSTSEC-2026-0285 (patched in >=0.23.45).
-  The shared Rustls upgrade and complete local PG acceptance need the pending
-  human decision; no dependency change, advisory clearance or exposure
-  recommendation follows from the local required gate.
+  implements optional direct Native TLS under the existing connection/work
+  owners, immutable bounded startup loading and explicit stopped rotation.
+  The corrected exact `c35a9dec` source completed its actual whole required
+  gate, genuine successor/history recurrence, final-head independent review and
+  complete hosted CI before normal PR #296 merge. Earlier failed/scoped
+  attempts remain distinct. This is local transport integration, not all M5.
+  [DR-0222](docs/architecture/decisions/0222-native-stop-and-operational-observations.md)
+  now defines shared original/live-successor/signerless-history SIGINT/SIGTERM
+  stop ownership, permanent work-admission closure, actual queued/detached-work
+  drain and one fixed bounded secret-free termination record. Code and thirteen
+  new unit controls plus the extended real four-SQLite TLS restart fixture are
+  independently source-reviewed and passed the fresh six-stage local owning
+  gate at `aa236916`. Final `535ca4cb` then passed its genuinely fresh whole
+  required gate, all seven hosted owners/check and independent exact-head
+  integration review before normal PR #299 merge `ffcf5767`. These are not
+  all M5 or provider qualification, and do not qualify the new M4 source union.
+  No alert/SLO/capacity, globally bounded shutdown or forced-kill safety claim
+  follows from these source changes.
+  The M5 lock delta only adds direct edges to already locked versions; no PG
+  dependency/version changes occur. Locked Rustls 0.23.43 remains affected by
+  RUSTSEC-2026-0285 (patched in >=0.23.45). The shared upgrade and local PG
+  acceptance authority need the pending human decision; no clearance or old-lock
+  exposure recommendation follows. Production PKI, caller authorization,
+  protected custody and revocation remain open.
 - [ ] **M6 — economics/genesis approval:** real sets, independent roles, voting
   powers, bond/fee assets/schedules, treasury/supply/distribution, security and
   unbonding parameters, governance authorities, ceremony and supply invariants.
