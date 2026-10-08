@@ -61,30 +61,39 @@ success-only `check`. PR #286–#292/#294/#295 are merged components. The merge
 tree equals the accepted source tree; main and origin/main were verified clean
 and equal. This closes that local integration, not M1–M8 or provider qualification.
 
-The direct Native TLS follow-up under
-[DR-0219](docs/architecture/decisions/0219-native-direct-tls-connection-ownership.md)
-has complete different-reviewer source approval at `c0d2f217` and an actual
-six-stage scoped PASS: 17 named tests, zero failed/ignored and strict owning
-Clippy. Normal main ancestry is included without changing that functional tree.
-The final documentation head `70210f57` received fresh
-complete independent source approval, but its first whole-required attempt
-failed in the cheap release fixture after npm-ci passed. The fixture's requested
-file mode depended on the inherited umask; its exact mode oracle is retained.
-The explicit test-owned setup correction has independent source approval and
-all 135 cheap controls passed in a fresh own unit with UMask0077. Its initial
-single-script invocation failed on an extra outer Node flag; the subsequent
-plain-Node invocation preserved the production flag refusal and passed.
-The separate hosted SQLite lanes also failed because they did not build the
-actual CLI prerequisite; the shared selected-group recipe now explicitly
-builds it after complete inventory validation, with new ordering/failure
-controls. Corrected source `c35a9dec` subsequently passed fresh literal npm-ci
-and the complete `./scripts/check-all.sh`, including the genuine ignored
-successor/history recurrence and unchanged seven-epoch/full-unlock workload.
-All seven hosted owners and success-only `check` also passed; PR #296 merged
-normally as `99c75e0c`, whose tree equals the accepted `c35a9dec` tree.
-Neither earlier failure is a passing whole gate; both remain preserved and
-attributable. These completed local/hosted gates qualify that development
-slice, not later source candidates or complete M5 production operations.
+PR #296, the direct Native TLS follow-up under
+[DR-0219](docs/architecture/decisions/0219-native-direct-tls-connection-ownership.md),
+merged normally as `99c75e0c` after exact head `c35a9dec` passed fresh complete
+independent source review, literal npm-ci and `./scripts/check-all.sh`, genuine
+seven-successor/full e8 withdrawal and extended integration controls, and all
+seven required hosted owners plus success-only `check`. The merge tree equals
+the approved tree; local main and origin/main were verified clean and equal.
+Prior fixture/runner and hosted prerequisite failures remain failures in the
+preserved evidence; the corrected final gate does not relabel those attempts.
+This closes that local TLS integration, not production PKI, M5 or public readiness.
+
+PR #297, the phase-only ordinary-write policy responsibility refactor,
+merged normally as `322dfa3e` after exact head `db466a02` passed fresh literal
+npm-ci and `./scripts/check-all.sh`, all seven hosted owners plus `check`,
+and complete independent exact-head/source/terminal review. The isolated whole
+gate included all three extended owners, seven successors and real epoch8
+withdrawals. Main equals origin/main with the accepted tree. Its first failed
+whole attempt remains a failure, not a passing gate or a later-source result.
+
+The Native operations slice under
+[DR-0222](docs/architecture/decisions/0222-native-stop-and-operational-observations.md)
+has independently reviewed stop/drain/observation code and local owning
+acceptance at `aa236916`: a fresh initially empty-target capture passed all six
+stages, including formatting, CLI build, 185 Native HTTP cases, 66 operator cases,
+four real SQLite/TLS cases and strict Clippy. All thirteen new controls and the
+actual SIGTERM/INT restart, exact saved-intent replay and stale-writer fixture
+passed. Independent terminal review verified ordinary exit, all child/process
+group/cgroup release and both compiler leases removed. The first `f6626f5f`
+invocation remains NONPASS at Clippy; its tests or target were not adopted as
+retry acceptance. Whole required validation and final-head CI/review remain
+mandatory integration gates. This local acceptance does not close all M5.
+PR #297 is included through normal main ancestry, not execution-evidence reuse;
+compiler work stays serialized.
 
 Prior failed/interrupted/source-blocked attempts and component evidence remain
 in the [preserved queue](docs/development/history/execution-queue-through-2026-10-07.md#native-integration-and-direct-tls-observations-2026-10-08).
@@ -131,7 +140,7 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   to invocation identity before retention/exposure. Preserve receipt-first replay,
   actual CAS/ambiguity, legitimate prefix progress and real memory reconstruction.
   Further extraction needs a concrete changing owner, not a file-size target.
-  A small **LOCALLY VERIFIED CANDIDATE** shares only ordinary-write phase refusal in
+  PR #297 shares only ordinary-write phase refusal in
   `runtime::validate_ordinary_write_lifecycle`, consumed by both Memory and
   shared SQL commit pairs under their existing lock/transaction and preceding
   authority checks. PostgreSQL's different checks remain unchanged. Applied
@@ -142,9 +151,10 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   strengthened named controls, and strict owning Clippy passed in a fresh local
   scope. The shared SQL library has zero standalone cases; its consumers are
   exercised by the actual SQLite suites. Earlier formatting and test-build
-  failures remain failures. Whole required, hosted and final integration
-  acceptance are **PENDING**; this grants no authority, closes neither R1 nor R2,
-  and is not a new M4/M5 prerequisite.
+  failures remain failures. Exact `db466a02` subsequently passed fresh whole
+  required, all hosted owners and independent final integration review before
+  normal merge `322dfa3e`. This closes the phase-only extraction, grants no new
+  authority, closes neither all R1 nor all R2, and is not an M4/M5 prerequisite.
 - [ ] **R3 — attributable tests and economical CI:** share bounded signed-input
   setup, not the implementation-derived oracle; separate pure/store/HTTP/CLI
   owners. Remove equivalent duplicate work only with exact-input coverage proof
@@ -243,30 +253,20 @@ and cross-phase criteria; it does not shorten them.
   [DR-0219](docs/architecture/decisions/0219-native-direct-tls-connection-ownership.md)
   implements optional direct Native TLS under the existing connection/work
   owners, immutable bounded startup loading and explicit stopped rotation.
-  Corrected `c0d2f217` received complete different-reviewer source approval and
-  passed all six scoped stages at 16:56 UTC on 2026-10-07: locked CLI build,
-  attachment refusal, real TLS connection/output, compiled four-store original
-  host/direct rotation plus retained relay controls, and strict owning Clippy.
-  All 17 named tests passed with zero failed/ignored; exact child/group/lease
-  teardown was verified. These are owning results, not whole M5 acceptance.
-  Genuine activated-successor and signerless-history controls were NOT RUN by
-  that scoped attempt; they remained required in the later corrected-source
-  complete gate, alongside the unchanged seven-epoch/full-unlock workload.
-  Prior source blocks and the first runner's incorrect expected-count failure
-  remain preserved in the archived queue, never adopted as passing.
-  Final source `70210f57` received a fresh complete independent review; its
-  whole-required invocation `0e62db50` failed on the cheap fixture's mode
-  assertion before Rust/full recurrence. Hosted `37662978717` separately failed
-  both SQLite process lanes on a missing CLI binary. Explicit fixture modes and
-  selected-lane build prerequisites are corrected without changing the
-  restrictive service umask, test selectors, expected bytes or unlock delay.
-  The fixture alone subsequently passed all 135 controls under UMask0077;
-  isolated-lane and whole corrected-source execution remained separate gates.
-  Corrected exact source `c35a9dec` subsequently passed fresh literal npm-ci and
-  the complete required gate, including those genuine owners, plus all seven
-  hosted owners and success-only `check`. PR #296 merged normally as `99c75e0c`
-  with the same accepted tree. This completes that local direct-TLS slice, not
-  the full M5 qualification or validation of the current R1/R2 source candidate.
+  The corrected exact `c35a9dec` source completed its actual whole required
+  gate, genuine successor/history recurrence, final-head independent review and
+  complete hosted CI before normal PR #296 merge. Earlier failed/scoped
+  attempts remain distinct. This is local transport integration, not all M5.
+  [DR-0222](docs/architecture/decisions/0222-native-stop-and-operational-observations.md)
+  now defines shared original/live-successor/signerless-history SIGINT/SIGTERM
+  stop ownership, permanent work-admission closure, actual queued/detached-work
+  drain and one fixed bounded secret-free termination record. Code and thirteen
+  new unit controls plus the extended real four-SQLite TLS restart fixture are
+  independently source-reviewed and passed the fresh six-stage local owning
+  gate at `aa236916`. Whole required validation and final-head CI/review are
+  mandatory for integration; this is neither all M5 nor provider qualification.
+  No alert/SLO/capacity, globally bounded shutdown or forced-kill safety claim
+  follows from these source changes.
   The M5 lock delta only adds direct edges to already locked versions; no PG
   dependency/version changes occur. Locked Rustls 0.23.43 remains affected by
   RUSTSEC-2026-0285 (patched in >=0.23.45). The shared upgrade and local PG

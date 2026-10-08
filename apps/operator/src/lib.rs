@@ -12,6 +12,7 @@ mod genesis_output;
 pub mod host_protocol_context;
 pub mod host_runtime;
 pub mod immutable_archive;
+mod native_operations;
 mod native_tls;
 pub mod ordered_seal;
 mod original_genesis_install;

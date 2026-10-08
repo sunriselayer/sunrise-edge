@@ -3,6 +3,7 @@ mod envelope_classification;
 mod fastvote_router;
 mod fastvote_sealed_frontier;
 mod local_execution_http;
+mod native_operations;
 mod ordered_history_http;
 mod output_budget;
 mod query_codecs;
@@ -2936,7 +2937,7 @@ async fn closed_native_routes_reject_submit_without_injectable_execution_capabil
 async fn closed_ingress_exhaustion_precedes_decode_and_liveness_bypasses_admission() {
     let executor: NativeBlockingExecutor =
         NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(1).unwrap()));
-    let held: tokio::sync::OwnedSemaphorePermit = executor.try_acquire().unwrap();
+    let held: lifecycle::BlockingPermit = executor.try_acquire().unwrap();
     let app: Router = closed_event_router_with_executor(executor);
     let liveness: Response = app
         .clone()
