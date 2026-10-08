@@ -158,27 +158,36 @@ pub(super) fn run(values: Vec<OsString>) -> Result<(), Box<dyn Error>> {
                 NonZeroUsize::new(maximum).ok_or("zero --max-concurrent")?,
             )),
         };
+    let blocking_executor: NativeBlockingExecutor = composition.blocking_executor.clone();
     let router = successor_history_router(composition)?;
     let runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async move {
+        let mut stop = crate::native_operations::StopOwner::install()?;
         let listener: tokio::net::TcpListener = bind_successor_loopback(listen).await?;
         let bound: SocketAddr = listener.local_addr()?;
+        if !stop.stop_before_readiness() {
         println!("complete=true mode=successor-history-material-only domain={domain} epoch={} validator_id={validator} writer_generation={} listen={bound}", epoch.get(), generation.get());
         std::io::Write::flush(&mut std::io::stdout())?;
-        let shutdown = async { let _ = tokio::signal::ctrl_c().await; };
+        }
+        crate::native_operations::serve(blocking_executor, stop, move |shutdown, observations| async move {
         match tls {
-            None => native_http::serve(listener, router, shutdown).await,
-            Some(acceptor) => native_http::serve_with_stream_upgrade(
+            None => native_http::serve_with_stream_upgrade_observed(
+                listener, router, native_http::NativeHttpServePolicy::default(),
+                |stream: tokio::net::TcpStream| async move { Ok::<_, std::io::Error>(stream) },
+                shutdown, observations).await,
+            Some(acceptor) => native_http::serve_with_stream_upgrade_observed(
                 listener,
                 router,
                 native_http::NativeHttpServePolicy::default(),
                 move |stream: tokio::net::TcpStream| native_tls::accept(acceptor.clone(), stream),
                 shutdown,
+                observations,
             )
             .await,
         }
+        }).await
     })?;
     Ok(())
 }

@@ -2,7 +2,7 @@
 //! counters describe transport/router entry, not protocol signing authority.
 use crate::{
     NativeBlockingExecutor, NativeBlockingPolicy, NativeHttpServePolicy, publication,
-    serve_with_stream_upgrade,
+    NativeHttpObservations, serve_with_stream_upgrade_observed,
 };
 use axum::{
     Router,
@@ -116,6 +116,7 @@ struct Server {
     connector: TlsConnector,
     attempts: Arc<AtomicUsize>,
     observed: Arc<TransportObservation>,
+    operations: NativeHttpObservations,
     shutdown: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<io::Result<()>>>,
 }
@@ -160,7 +161,8 @@ impl Server {
         let upgrade_attempts: Arc<AtomicUsize> = Arc::clone(&attempts);
         let upgrade_observed: Arc<TransportObservation> = Arc::clone(&observed);
         let (sender, receiver): (oneshot::Sender<()>, oneshot::Receiver<()>) = oneshot::channel();
-        let task: JoinHandle<io::Result<()>> = tokio::spawn(serve_with_stream_upgrade(
+        let operations: NativeHttpObservations = NativeHttpObservations::default();
+        let task: JoinHandle<io::Result<()>> = tokio::spawn(serve_with_stream_upgrade_observed(
             listener,
             app,
             policy,
@@ -187,12 +189,14 @@ impl Server {
             async move {
                 let _received = receiver.await;
             },
+            operations.clone(),
         ));
         Self {
             address,
             connector,
             attempts,
             observed,
+            operations,
             shutdown: Some(sender),
             task: Some(task),
         }
@@ -359,6 +363,10 @@ async fn real_tls_handshake_capacity_close_recovery_and_shutdown() {
             .ends_with(b"actual route")
     );
     assert_eq!(routes.load(Ordering::SeqCst), 2);
+    assert!(server.operations.snapshot().connections_refused >= 1);
+    assert_eq!(server.operations.snapshot().upgrade_timeouts, 1);
+    assert!(server.operations.snapshot().upgrade_failures >= 2);
+    assert_eq!(server.operations.snapshot().requests_dispatched, 2);
     server.stop().await;
     // This handshake deadline outlasts stop's five-second bound, so a pass
     // requires shutdown cancellation, not merely natural handshake expiry.
@@ -504,6 +512,8 @@ async fn encrypted_output_backpressure_releases_the_connection_permit() {
     assert!(recovered.ends_with(b"\r\n\r\nok"));
     assert_eq!(server.attempts.load(Ordering::SeqCst), 2);
     assert_eq!(routes.load(Ordering::SeqCst), 2);
+    assert_eq!(server.operations.snapshot().output_timeouts, 1);
+    assert!(server.operations.snapshot().connection_failures >= 1);
 
     // Drain only after recovery. EOF (including missing TLS close-notify)
     // must leave the actual advertised body incomplete, so ordinary complete
@@ -621,7 +631,13 @@ async fn disconnected_tls_peer_does_not_release_started_blocking_work_capacity()
     assert_eq!(probes.load(Ordering::SeqCst), 0);
     assert_eq!(completed.load(Ordering::SeqCst), 0);
     assert_eq!(executor.permits.available_permits(), 0);
+    assert_eq!(executor.observations().snapshot().blocking_overloaded, 1);
+    let drained = executor.wait_drained();
+    tokio::pin!(drained);
+    assert!(timeout(Duration::from_millis(40), &mut drained).await.is_err(),
+        "lost peer must leave the actual worker drain pending");
     release.release();
+    timeout(BOUND, drained).await.unwrap();
     timeout(BOUND, async {
         while executor.permits.available_permits() != 1 {
             sleep(Duration::from_millis(5)).await;
@@ -635,4 +651,6 @@ async fn disconnected_tls_peer_does_not_release_started_blocking_work_capacity()
     assert!(recovered.ends_with(b"capacity recovered"));
     assert_eq!(probes.load(Ordering::SeqCst), 1);
     server.stop().await;
+    executor.close();
+    timeout(BOUND, executor.wait_drained()).await.unwrap();
 }

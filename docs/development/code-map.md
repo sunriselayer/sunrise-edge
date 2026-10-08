@@ -190,6 +190,16 @@ contracts; they do not define protocol rules.
   and [private writer controls](../../crates/native-http/src/tests/output_budget.rs)
   have distinct oracles; the original direct-host and genuine activated/
   historical successor fixtures remain separate from relay transport evidence.
+- [Private Native stop owner](../../apps/operator/src/native_operations.rs)
+  installs SIGINT/SIGTERM before binding/readiness for original, live successor
+  and signerless history, closes the router's retained executor and emits one
+  fixed termination record only after actual drain. The HTTP executor's
+  [private lifecycle permit](../../crates/native-http/src/lifecycle.rs) tracks
+  queued, detached and unwinding synchronous work independently of telemetry.
+  [Fixed local observations](../../crates/native-http/src/observations.rs)
+  belong to existing accept/upgrade/collector/I/O branches, not protocol state
+  or a public metrics endpoint. [Focused lifecycle controls](../../crates/native-http/src/tests/native_operations.rs)
+  and the existing four-store direct-TLS fixture retain distinct oracles.
 
 - [Core authority](../../crates/node-core/src/serving_authority.rs) separates
   historical evidence from fresh issuer-bound warrants.

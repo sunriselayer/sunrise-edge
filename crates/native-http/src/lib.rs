@@ -17,6 +17,8 @@ use consensus::ConsensusSigner;
 use core::fmt;
 mod fastvote;
 mod local_execution;
+mod lifecycle;
+mod observations;
 pub mod ordered_economics;
 mod paid_execution;
 mod publication;
@@ -72,6 +74,7 @@ use tokio::{
     time::{Instant, Sleep, sleep, timeout},
 };
 use tower::ServiceExt;
+pub use observations::{NativeHttpObservations, NativeHttpSnapshot, NativeStopReason};
 
 // Canonical HTTP event/query-result codecs and route/media-type constants
 // live in `node-wire` (DR-0083) and are re-exported below so existing
@@ -702,6 +705,8 @@ impl NativeBlockingPolicy {
 #[derive(Clone, Debug)]
 pub struct NativeBlockingExecutor {
     permits: Arc<Semaphore>,
+    lifecycle: Arc<lifecycle::BlockingLifecycle>,
+    observations: NativeHttpObservations,
 }
 
 impl NativeBlockingExecutor {
@@ -710,11 +715,37 @@ impl NativeBlockingExecutor {
     pub fn new(policy: NativeBlockingPolicy) -> Self {
         Self {
             permits: Arc::new(Semaphore::new(policy.max_concurrent_invocations().get())),
+            lifecycle: Arc::new(lifecycle::BlockingLifecycle::default()),
+            observations: NativeHttpObservations::default(),
         }
     }
 
-    fn try_acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, TryAcquireError> {
-        Arc::clone(&self.permits).try_acquire_owned()
+    /// Permanently closes admission. Already admitted synchronous work continues.
+    pub fn close(&self) {
+        self.lifecycle.close(&self.permits);
+    }
+
+    /// Waits for actual completion or unwind of all admitted work, including
+    /// detached and queued blocking jobs. Call `close` first to prevent new work.
+    pub async fn wait_drained(&self) {
+        self.lifecycle.wait_drained().await;
+    }
+
+    /// Returns the local, noncanonical observation owner for this executor.
+    #[must_use]
+    pub fn observations(&self) -> NativeHttpObservations {
+        self.observations.clone()
+    }
+
+    fn try_acquire(&self) -> Result<lifecycle::BlockingPermit, TryAcquireError> {
+        let result: Result<lifecycle::BlockingPermit, TryAcquireError> =
+            self.lifecycle.acquire(&self.permits, &self.observations);
+        match &result {
+            Ok(_) => self.observations.0.blocking_admitted.increment(),
+            Err(TryAcquireError::NoPermits) => self.observations.0.blocking_overloaded.increment(),
+            Err(TryAcquireError::Closed) => self.observations.0.blocking_closed.increment(),
+        }
+        result
     }
 }
 
@@ -1336,6 +1367,27 @@ where
     UF: Future<Output = io::Result<S>> + Send + 'static,
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    serve_with_stream_upgrade_observed(listener, app, policy, upgrade, shutdown,
+        NativeHttpObservations::default()).await
+}
+
+/// Observed variant of the same connection owner. The host retains its exact
+/// router executor, closes admission in `shutdown`, and drains it after return.
+/// The adapter emits no logs and introduces no public metrics route.
+pub async fn serve_with_stream_upgrade_observed<F, U, UF, S>(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    policy: NativeHttpServePolicy,
+    upgrade: U,
+    shutdown: F,
+    observations: NativeHttpObservations,
+) -> io::Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+    U: Fn(tokio::net::TcpStream) -> UF + Clone + Send + 'static,
+    UF: Future<Output = io::Result<S>> + Send + 'static,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let connection_permits: Arc<Semaphore> = Arc::new(Semaphore::new(policy.max_connections.get()));
     let (shutdown_sender, _shutdown_receiver) = watch::channel(false);
     let mut connections: JoinSet<()> = JoinSet::new();
@@ -1344,14 +1396,22 @@ where
 
     loop {
         tokio::select! {
+            biased;
             _ = &mut shutdown => break,
+            completed = connections.join_next(), if !connections.is_empty() => {
+                if let Some(Err(_error)) = completed {
+                    observations.0.connection_task_failures.increment();
+                }
+            }
             accepted = listener.accept() => {
                 let (stream, _remote_address) = match accepted {
                     Ok(accepted) => accepted,
                     Err(_error) => {
+                        observations.0.accept_failures.increment();
                         consecutive_accept_errors = consecutive_accept_errors.saturating_add(1);
                         let backoff = accept_error_backoff(consecutive_accept_errors);
                         tokio::select! {
+                            biased;
                             _ = &mut shutdown => break,
                             () = sleep(backoff) => {}
                         }
@@ -1362,13 +1422,17 @@ where
                 let permit = match Arc::clone(&connection_permits).try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(TryAcquireError::NoPermits | TryAcquireError::Closed) => {
+                        observations.0.connections_refused.increment();
                         drop(stream);
                         continue;
                     }
                 };
+                observations.0.connections_admitted.increment();
                 let connection_app: Router = app.clone();
                 let mut connection_shutdown: watch::Receiver<bool> = shutdown_sender.subscribe();
                 let connection_upgrade: U = upgrade.clone();
+                let connection_observations: Arc<observations::ConnectionObservations> =
+                    observations::ConnectionObservations::new(observations.clone());
                 connections.spawn(async move {
                     let _permit = permit;
                     if *connection_shutdown.borrow() {
@@ -1379,7 +1443,14 @@ where
                         _changed = connection_shutdown.changed() => return,
                         upgraded = connection_upgrade(stream) => match upgraded {
                             Ok(stream) => stream,
-                            Err(_error) => return,
+                            Err(error) => {
+                                if error.kind() == io::ErrorKind::TimedOut {
+                                    connection_observations.owner.0.upgrade_timeouts.increment();
+                                } else {
+                                    connection_observations.owner.0.upgrade_failures.increment();
+                                }
+                                return;
+                            },
                         },
                     };
                     serve_connection(
@@ -1387,18 +1458,21 @@ where
                         connection_app,
                         policy,
                         connection_shutdown,
+                        connection_observations,
                     )
                     .await;
                 });
             }
-            completed = connections.join_next(), if !connections.is_empty() => {
-                let _completed = completed;
-            }
         }
     }
 
+    drop(listener);
     let _sent = shutdown_sender.send(true);
-    while connections.join_next().await.is_some() {}
+    while let Some(completed) = connections.join_next().await {
+        if completed.is_err() {
+            observations.0.connection_task_failures.increment();
+        }
+    }
     Ok(())
 }
 
@@ -1426,18 +1500,21 @@ async fn serve_connection<S>(
     app: Router,
     policy: NativeHttpServePolicy,
     mut shutdown: watch::Receiver<bool>,
+    observations: Arc<observations::ConnectionObservations>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     if *shutdown.borrow() {
         return;
     }
-    let stream: IoIdleTimeoutStream<S> = IoIdleTimeoutStream::new(
+    let stream: IoIdleTimeoutStream<S> = IoIdleTimeoutStream::with_observations(
         stream,
         policy.body_idle_timeout,
         policy.response_total_timeout,
+        Arc::clone(&observations),
     );
     let request_read_complete: Arc<AtomicBool> = Arc::clone(&stream.request_read_complete);
+    let request_observations: Arc<observations::ConnectionObservations> = Arc::clone(&observations);
     let io = TokioIo::new(stream);
     let service = service_fn(move |request: Request<Incoming>| {
         dispatch_bounded_request(
@@ -1447,6 +1524,7 @@ async fn serve_connection<S>(
             policy.local_publication,
             policy.local_execution,
             Arc::clone(&request_read_complete),
+            Arc::clone(&request_observations),
         )
     });
     let mut builder = http1::Builder::new();
@@ -1459,11 +1537,18 @@ async fn serve_connection<S>(
     let connection = builder.serve_connection(io, service);
     tokio::pin!(connection);
 
-    tokio::select! {
-        _result = &mut connection => {}
+    let result: Result<(), hyper::Error> = tokio::select! {
+        biased;
         _changed = shutdown.changed() => {
             connection.as_mut().graceful_shutdown();
-            let _result = connection.await;
+            connection.await
+        }
+        result = &mut connection => result,
+    };
+    if let Err(error) = result {
+        observations.owner.0.connection_failures.increment();
+        if error.is_timeout() {
+            observations.input_timeout();
         }
     }
 }
@@ -1475,6 +1560,7 @@ async fn dispatch_bounded_request(
     local_publication: bool,
     local_execution: bool,
     request_read_complete: Arc<AtomicBool>,
+    observations: Arc<observations::ConnectionObservations>,
 ) -> Result<Response, Infallible> {
     let (parts, incoming) = request.into_parts();
     let body = Body::new(incoming);
@@ -1499,12 +1585,15 @@ async fn dispatch_bounded_request(
     request_read_complete.store(true, Ordering::Release);
     let bytes: Bytes = match collected {
         Err(_) => {
+            observations.owner.0.requests_refused.increment();
+            observations.input_timeout();
             return Ok(error_response(
                 StatusCode::REQUEST_TIMEOUT,
                 "body-read-timeout",
             ));
         }
         Ok(Err(error)) => {
+            observations.owner.0.requests_refused.increment();
             let source = error.into_inner();
             let status = if source.downcast_ref::<LengthLimitError>().is_some() {
                 StatusCode::PAYLOAD_TOO_LARGE
@@ -1516,6 +1605,7 @@ async fn dispatch_bounded_request(
         Ok(Ok(bytes)) => bytes,
     };
     let request = Request::from_parts(parts, Body::from(bytes));
+    observations.owner.0.requests_dispatched.increment();
     let response = match app.oneshot(request).await {
         Ok(response) => response,
         Err(error) => match error {},
@@ -1532,10 +1622,18 @@ struct IoIdleTimeoutStream<S> {
     read_deadline: Pin<Box<Sleep>>,
     write_idle_deadline: Option<Pin<Box<Sleep>>>,
     write_total_deadline: Option<Pin<Box<Sleep>>>,
+    observations: Arc<observations::ConnectionObservations>,
 }
 
 impl<S> IoIdleTimeoutStream<S> {
+    #[cfg(test)]
     fn new(stream: S, idle_timeout: Duration, response_total_timeout: Duration) -> Self {
+        Self::with_observations(stream, idle_timeout, response_total_timeout,
+            observations::ConnectionObservations::new(NativeHttpObservations::default()))
+    }
+
+    fn with_observations(stream: S, idle_timeout: Duration, response_total_timeout: Duration,
+        observations: Arc<observations::ConnectionObservations>) -> Self {
         Self {
             stream,
             idle_timeout,
@@ -1544,6 +1642,7 @@ impl<S> IoIdleTimeoutStream<S> {
             read_deadline: Box::pin(tokio::time::sleep(idle_timeout)),
             write_idle_deadline: None,
             write_total_deadline: None,
+            observations,
         }
     }
 
@@ -1552,6 +1651,7 @@ impl<S> IoIdleTimeoutStream<S> {
             .write_total_deadline
             .get_or_insert_with(|| Box::pin(tokio::time::sleep(self.response_total_timeout)));
         if total.as_mut().poll(context).is_ready() {
+            self.observations.output_timeout();
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "native HTTP response write total timeout",
@@ -1561,6 +1661,7 @@ impl<S> IoIdleTimeoutStream<S> {
             .write_idle_deadline
             .get_or_insert_with(|| Box::pin(tokio::time::sleep(self.idle_timeout)));
         if idle.as_mut().poll(context).is_ready() {
+            self.observations.output_timeout();
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "native HTTP response write idle timeout",
@@ -1600,10 +1701,13 @@ where
             // propagate, but an ingress idle timer cannot cancel that phase.
             Poll::Pending if this.request_read_complete.load(Ordering::Acquire) => Poll::Pending,
             Poll::Pending => match this.read_deadline.as_mut().poll(context) {
-                Poll::Ready(()) => Poll::Ready(Err(io::Error::new(
+                Poll::Ready(()) => {
+                    this.observations.input_timeout();
+                    Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "native HTTP request read idle timeout",
-                ))),
+                    )))
+                },
                 Poll::Pending => Poll::Pending,
             },
         }

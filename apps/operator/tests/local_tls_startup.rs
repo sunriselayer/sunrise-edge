@@ -62,7 +62,7 @@ use std::{
     net::{SocketAddr, TcpListener},
     num::NonZeroUsize,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
     sync::atomic::Ordering,
     time::Duration,
 };
@@ -450,7 +450,8 @@ fn start_direct_hosts(network: &Network, peers: &mut [DirectPeer], generation: u
                 .arg("--tls-cert-der-file")
                 .arg(&peer.cert_file)
                 .arg("--tls-key-pkcs8-der-file")
-                .arg(&peer.key_file);
+                .arg(&peer.key_file)
+                .stderr(Stdio::piped());
             let (guard, line): (ChildGuard, String) =
                 spawn_bounded_status_line(command, PROCESS_DEADLINE);
             assert!(line.contains("complete=true mode=serving"), "{line}");
@@ -2388,6 +2389,28 @@ fn discard_saved_confirmation(peer: &DirectPeer, saved: &Saved) {
     drop(stream); // No response read and no invented rejection/rollback.
 }
 
+fn assert_native_termination_summary(stderr: &[u8], reason: &str) {
+    assert!(stderr.len() <= 2 * 1024, "one bounded termination record");
+    let text: &str = std::str::from_utf8(stderr).unwrap();
+    assert_eq!(text.lines().count(), 1);
+    assert!(text.ends_with('\n'));
+    let mut fields = text.split_whitespace();
+    assert_eq!(fields.next(), Some("native_operations"));
+    let pairs: Vec<(&str, &str)> = fields.map(|field: &str| field.split_once('=').unwrap()).collect();
+    let names: [&str; 17] = ["schema", "stop", "connections_admitted", "connections_refused",
+        "accept_failures", "upgrade_failures", "upgrade_timeouts", "requests_dispatched",
+        "requests_refused", "input_timeouts", "output_timeouts", "connection_failures",
+        "connection_task_failures", "blocking_admitted", "blocking_overloaded", "blocking_closed", "blocking_panics"];
+    assert_eq!(pairs.iter().map(|(name, _)| *name).collect::<Vec<&str>>(), names);
+    assert_eq!(pairs[0].1, "1");
+    assert_eq!(pairs[1].1, reason);
+    let counts: Vec<u64> = pairs[2..].iter().map(|(_, value)| value.parse::<u64>().unwrap()).collect();
+    assert!(counts[0] > 0, "actual connections must have been admitted");
+    assert!(counts[5] > 0, "actual requests must have been dispatched");
+    assert!(counts[11] > 0, "actual synchronous operations must have been admitted");
+    assert_eq!(counts[14], 0, "ordinary successful fixture has no blocking unwind");
+}
+
 #[test]
 fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust_rotation() {
     let network: Network = author_inspect_and_prepare();
@@ -2543,7 +2566,8 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
         peer.renew(&network.tls_dir, &format!("direct-same-ca-{index}"));
     }
     for host in hosts {
-        host.guard.stop_orderly(PROCESS_DEADLINE);
+        let stderr: Vec<u8> = host.guard.stop_orderly_terminate(PROCESS_DEADLINE);
+        assert_native_termination_summary(&stderr, "sigterm");
     }
     let hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 3);
     for capability in &stale {
@@ -2594,7 +2618,8 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
     peers[0].ca = ca;
     peers[0].renew(&network.tls_dir, "direct-ca-b");
     for host in hosts {
-        host.guard.stop_orderly(PROCESS_DEADLINE);
+        let stderr: Vec<u8> = host.guard.stop_orderly_interrupt_observed(PROCESS_DEADLINE);
+        assert_native_termination_summary(&stderr, "sigint");
     }
     let hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 4);
     let reopened_again: Vec<SourceBusinessSnapshot> = snapshots(&network);
@@ -2781,6 +2806,7 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
         assert_eq!(fs::read(&path).unwrap(), bytes, "{}", path.display());
     }
     for host in hosts {
-        host.guard.stop_orderly(PROCESS_DEADLINE);
+        let stderr: Vec<u8> = host.guard.stop_orderly_interrupt_observed(PROCESS_DEADLINE);
+        assert_native_termination_summary(&stderr, "sigint");
     }
 }

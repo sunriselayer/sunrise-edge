@@ -325,7 +325,7 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         node_config,
         resolver,
         Vec::new(),
-        blocking_executor,
+        blocking_executor.clone(),
     )
     .map_err(|error| format!("failed to compose certified FastVote router: {error}"))?
     .merge(ordered_router);
@@ -334,8 +334,10 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         .enable_all()
         .build()?;
     runtime.block_on(async move {
+        let mut stop = crate::native_operations::StopOwner::install()?;
         let listener = tokio::net::TcpListener::bind(listen_addr).await?;
         let bound_addr = listener.local_addr()?;
+        if !stop.stop_before_readiness() {
         println!(
             "complete=true mode=serving chain_id={chain} validator_id={validator} domain={domain} protocol_version={} epoch={} writer_generation={} listen={bound_addr}",
             protocol_version.get(),
@@ -344,20 +346,24 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         );
         use std::io::Write;
         std::io::stdout().flush()?;
-        let shutdown = async {
-            let _ = tokio::signal::ctrl_c().await;
-        };
+        }
+        crate::native_operations::serve(blocking_executor, stop, move |shutdown, observations| async move {
         match tls {
-            None => native_http::serve(listener, router, shutdown).await,
-            Some(acceptor) => native_http::serve_with_stream_upgrade(
+            None => native_http::serve_with_stream_upgrade_observed(
+                listener, router, native_http::NativeHttpServePolicy::default(),
+                |stream: tokio::net::TcpStream| async move { Ok::<_, std::io::Error>(stream) },
+                shutdown, observations).await,
+            Some(acceptor) => native_http::serve_with_stream_upgrade_observed(
                 listener,
                 router,
                 native_http::NativeHttpServePolicy::default(),
                 move |stream: tokio::net::TcpStream| native_tls::accept(acceptor.clone(), stream),
                 shutdown,
+                observations,
             )
             .await,
         }
+        }).await
     })?;
     Ok(())
 }

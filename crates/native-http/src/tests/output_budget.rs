@@ -6,7 +6,7 @@ use std::{
     task::{Context, Poll},
     time::Duration,
 };
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 enum Writer {
     Ready,
@@ -43,6 +43,19 @@ fn stream(writer: Writer) -> IoIdleTimeoutStream<Writer> {
         Duration::from_millis(150),
     )
 }
+
+#[tokio::test]
+async fn repeated_input_timeout_polling_counts_once() {
+    let (reader, _held_peer) = tokio::io::duplex(64);
+    let mut stream = IoIdleTimeoutStream::new(reader, Duration::from_millis(40), Duration::from_millis(150));
+    let mut buffer: [u8; 1] = [0];
+    for _poll in 0..2 {
+        let error: io::Error = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buffer))
+            .await.unwrap().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+    assert_eq!(stream.observations.owner.snapshot().input_timeouts, 1);
+}
 #[tokio::test]
 async fn first_pending_flush_and_first_shutdown_are_bounded() {
     let mut flush: IoIdleTimeoutStream<Writer> = stream(Writer::PendingFlush);
@@ -51,12 +64,17 @@ async fn first_pending_flush_and_first_shutdown_are_bounded() {
         .unwrap()
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert_eq!(flush.observations.owner.snapshot().output_timeouts, 1);
+    let repeated: io::Error = flush.flush().await.unwrap_err();
+    assert_eq!(repeated.kind(), io::ErrorKind::TimedOut);
+    assert_eq!(flush.observations.owner.snapshot().output_timeouts, 1);
     let mut shutdown: IoIdleTimeoutStream<Writer> = stream(Writer::PendingShutdown);
     let error: io::Error = tokio::time::timeout(Duration::from_secs(2), shutdown.shutdown())
         .await
         .unwrap()
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert_eq!(shutdown.observations.owner.snapshot().output_timeouts, 1);
 }
 #[tokio::test]
 async fn ready_empty_pre_output_flush_does_not_time_application_work() {

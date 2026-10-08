@@ -13,6 +13,7 @@ pub mod host_protocol_context;
 pub mod host_runtime;
 pub mod immutable_archive;
 mod native_tls;
+mod native_operations;
 pub mod ordered_seal;
 mod original_genesis_install;
 pub mod source_sqlite;
