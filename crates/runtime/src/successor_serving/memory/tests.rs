@@ -483,6 +483,301 @@ fn assert_memory_seal_rejection(
     assert_eq!(memory_seal_state(store), before);
 }
 
+fn ordinary_port_objects(byte: u8) -> DurableObjectChanges {
+    let pin: ImportBinding = binding(1);
+    let object_id: ObjectId = ObjectId::new([byte; 32]);
+    let version: DurableObjectVersionRecord = DurableObjectVersionRecord::from_blob_reference(
+        object_id,
+        DurableObjectVersion::FIRST,
+        Digest32::new(HashAlgorithmId::Sha2_256, [80; 32]),
+        1,
+        DurableObjectProvenance::new(pin.context.chain_id, pin.context.protocol_version),
+        0,
+        Digest32::new(HashAlgorithmId::Sha2_256, [81; 32]),
+    );
+    DurableObjectChanges::new(
+        vec![DurableObjectHeadRead::new(
+            object_id,
+            DurableObjectHead::Absent,
+        )],
+        vec![DurableObjectMutationEntry::new(
+            object_id,
+            DurableObjectMutation::Create {
+                version,
+                owner_projection: Default::default(),
+                routing_projection: Default::default(),
+            },
+        )],
+    )
+    .unwrap()
+}
+
+fn ordinary_port_invocation(
+    selected: AtomicityDomainId,
+    receipt_byte: u8,
+    expected: StateRevision,
+    with_message: bool,
+) -> DurableInvocationTransaction {
+    let state: DurableStateTransaction =
+        successor_state_write(selected, b"ordinary-port", 9, expected).into();
+    let receipt: DurableRequestReceipt = receipt(receipt_byte);
+    let messages: Vec<DurableOutboxMessage> = if with_message {
+        vec![
+            DurableOutboxMessage::new(
+                Digest32::new(HashAlgorithmId::Sha2_256, [90; 32]),
+                vec![0x55; 3],
+            )
+            .unwrap(),
+        ]
+    } else {
+        Vec::new()
+    };
+    let outbox: DurableOutboxBatch =
+        DurableOutboxBatch::new(receipt.request_id(), receipt.event_digest(), messages).unwrap();
+    DurableInvocationTransaction::new(
+        selected,
+        Some(state),
+        ordinary_port_objects(receipt_byte),
+        receipt,
+        Some(outbox),
+    )
+    .unwrap()
+}
+
+fn assert_memory_ordinary_ports_rejected(
+    store: &MemoryDurableStateStore,
+    context: &DurableOperationContext,
+    selected: AtomicityDomainId,
+    expected: StateRevision,
+    reason: DurableCommitRejection,
+) {
+    assert_memory_seal_rejection(store, reason.clone(), || {
+        store.commit_durable(
+            context,
+            successor_state_write(selected, b"ordinary-port", 9, expected),
+        )
+    });
+    assert_memory_seal_rejection(store, reason, || {
+        store.commit_invocation(
+            context,
+            ordinary_port_invocation(selected, 0xD1, expected, true),
+        )
+    });
+}
+
+#[test]
+fn ordinary_ports_refuse_genuine_memory_import_phases_without_any_mutation() {
+    let mut pin: ImportBinding = binding(121);
+    pin.row_count = 4;
+    let context: DurableOperationContext = operation(1);
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new_import_target(pin.clone(), context.writer_fence()).unwrap();
+    assert_eq!(
+        store.get_namespace_lifecycle(&context, pin.domain).unwrap(),
+        NamespaceLifecycle::FreshImport(pin.clone())
+    );
+    assert_memory_ordinary_ports_rejected(
+        &store,
+        &context,
+        pin.domain,
+        StateRevision::INITIAL,
+        DurableCommitRejection::InactiveNamespace,
+    );
+
+    let initial: ImportProgress = progress();
+    assert_eq!(
+        store.begin_import(&context, pin.domain, &pin, initial.accumulator),
+        DurableCommitOutcome::Committed
+    );
+    assert_memory_ordinary_ports_rejected(
+        &store,
+        &context,
+        pin.domain,
+        StateRevision::INITIAL,
+        DurableCommitRejection::InactiveNamespace,
+    );
+    let objects: DurableObjectChanges = ordinary_port_objects(0xC0);
+    let version: DurableObjectVersionRecord = match objects.mutations()[0].mutation() {
+        DurableObjectMutation::Create { version, .. } => version.clone(),
+        _ => panic!("fixture requires one Create"),
+    };
+    let batch: ImportBatch = ImportBatch::new(
+        pin.clone(),
+        initial,
+        Digest32::new(HashAlgorithmId::Sha2_256, [7; 32]),
+        Digest32::new(HashAlgorithmId::Sha2_256, [8; 32]),
+        vec![
+            ImportRow::State {
+                key: b"ordinary-port".to_vec(),
+                value: Some(vec![1]),
+            },
+            ImportRow::ObjectVersion(version.clone()),
+            ImportRow::ObjectHead {
+                object_id: version.object_id(),
+                head: ImportObjectHead::Tombstoned {
+                    last_object_version: version.object_version(),
+                },
+            },
+            ImportRow::Receipt(receipt(0xC0)),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_import_batch(&context, pin.domain, &batch),
+        DurableCommitOutcome::Committed
+    );
+    let populated: MemorySealState = memory_seal_state(&store);
+    assert_eq!(populated.heads.len(), 1);
+    assert_eq!(populated.versions.len(), 1);
+    assert_eq!(populated.receipts.len(), 1);
+    assert_eq!(
+        populated.state[pin.domain.as_bytes()][b"ordinary-port".as_slice()],
+        (StateRevision::new(1), Some(vec![1]))
+    );
+    assert_memory_ordinary_ports_rejected(
+        &store,
+        &context,
+        pin.domain,
+        StateRevision::new(1),
+        DurableCommitRejection::InactiveNamespace,
+    );
+    let token: PortableSnapshotToken = store.begin_portable_snapshot(&context, pin.domain).unwrap();
+    assert_eq!(
+        store.finish_import(&context, pin.domain, &pin, batch.next(), &token),
+        DurableCommitOutcome::Committed
+    );
+    assert_eq!(
+        store.get_namespace_lifecycle(&context, pin.domain).unwrap(),
+        NamespaceLifecycle::CompleteInactive {
+            binding: pin.clone(),
+            progress: batch.next().clone(),
+        }
+    );
+    assert_memory_ordinary_ports_rejected(
+        &store,
+        &context,
+        pin.domain,
+        StateRevision::new(1),
+        DurableCommitRejection::InactiveNamespace,
+    );
+    // This constructor deliberately has no successor validator or serving port.
+    assert!(store.successor_serving_repository().is_none());
+}
+
+#[test]
+fn ordinary_ports_preserve_memory_authority_and_genuine_seal_refusal_priority() {
+    let selected: AtomicityDomainId = domain(122);
+    let context: DurableOperationContext = operation(1);
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new_bound(selected, context.writer_fence());
+    let seed: DurableInvocationTransaction =
+        ordinary_port_invocation(selected, 0xC1, StateRevision::INITIAL, false);
+    assert_eq!(
+        store.commit_invocation(&context, seed),
+        DurableCommitOutcome::Committed
+    );
+    let populated: MemorySealState = memory_seal_state(&store);
+    assert_eq!(populated.heads.len(), 1);
+    assert_eq!(populated.versions.len(), 1);
+    assert_eq!(populated.receipts.len(), 1);
+    assert_eq!(populated.outboxes.len(), 1);
+    assert_eq!(populated.deliveries.len(), 1);
+    assert_eq!(
+        populated.state[selected.as_bytes()][b"ordinary-port".as_slice()],
+        (StateRevision::new(1), Some(vec![9]))
+    );
+
+    // Occupied receipt beats stale state/object assertions while ordinary.
+    assert_memory_seal_rejection(
+        &store,
+        DurableCommitRejection::RequestAlreadyCommitted,
+        || {
+            store.commit_invocation(
+                &context,
+                ordinary_port_invocation(selected, 0xC1, StateRevision::INITIAL, true),
+            )
+        },
+    );
+    assert_memory_ordinary_ports_rejected(
+        &store,
+        &context,
+        selected,
+        StateRevision::INITIAL,
+        DurableCommitRejection::Conflict {
+            key: b"ordinary-port".to_vec(),
+            current_revision: StateRevision::new(1),
+        },
+    );
+    let token: PortableSnapshotToken = store.begin_portable_snapshot(&context, selected).unwrap();
+    let sealed: SealBarrier = successor_sealed(123);
+    assert_eq!(
+        store.commit_seal_completion(
+            &context,
+            &token,
+            successor_stateful_invocation(selected, &sealed, b"sealed", 3, StateRevision::INITIAL),
+            sealed,
+        ),
+        DurableCommitOutcome::Committed
+    );
+    assert_eq!(
+        store.get_outgoing_barrier(&context, selected).unwrap(),
+        OutgoingBarrier::Sealed(sealed)
+    );
+
+    // Both valid and stale CAS inputs must refuse at the phase decision.
+    for expected in [StateRevision::new(1), StateRevision::INITIAL] {
+        assert_memory_ordinary_ports_rejected(
+            &store,
+            &context,
+            selected,
+            expected,
+            DurableCommitRejection::NamespaceSealed,
+        );
+    }
+    assert_memory_seal_rejection(&store, DurableCommitRejection::NamespaceSealed, || {
+        store.commit_invocation(
+            &context,
+            ordinary_port_invocation(selected, 0xC1, StateRevision::INITIAL, true),
+        )
+    });
+
+    store.set_time(1);
+    let expired_and_fenced: DurableOperationContext = DurableOperationContext::new(
+        WriterFenceGeneration::new(2).unwrap(),
+        StorageDeadline::new(1).unwrap(),
+        StorageCorrelationId::new([0xA1; 16]).unwrap(),
+    );
+    assert_memory_ordinary_ports_rejected(
+        &store,
+        &expired_and_fenced,
+        domain(123),
+        StateRevision::new(1),
+        DurableCommitRejection::AtomicityDomainMismatch,
+    );
+    assert_memory_ordinary_ports_rejected(
+        &store,
+        &expired_and_fenced,
+        selected,
+        StateRevision::new(1),
+        DurableCommitRejection::WriterFenced {
+            active_generation: context.writer_fence(),
+        },
+    );
+    let expired: DurableOperationContext = DurableOperationContext::new(
+        context.writer_fence(),
+        StorageDeadline::new(1).unwrap(),
+        StorageCorrelationId::new([0xA2; 16]).unwrap(),
+    );
+    assert_memory_ordinary_ports_rejected(
+        &store,
+        &expired,
+        selected,
+        StateRevision::new(1),
+        DurableCommitRejection::DeadlineExceededBeforeCommit,
+    );
+    store.set_time(0);
+}
+
 #[test]
 fn successor_seal_rejects_wrong_binding_and_progress_with_deciding_positive_controls() {
     for wrong_progress in [false, true] {

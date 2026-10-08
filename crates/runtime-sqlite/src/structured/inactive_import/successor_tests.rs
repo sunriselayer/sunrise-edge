@@ -7,6 +7,7 @@
 //! authority, matching the runtime crate contract.
 use super::*;
 use protocol_types::{ChainId, Epoch, ExecutionGeneration, HashAlgorithmId, ProtocolVersion};
+use runtime::OutgoingSealRepository;
 use runtime::successor_serving::{
     SuccessorServingObservation, SuccessorServingRecord, SuccessorServingRepository,
     SuccessorServingSlot, decode_successor_serving_record, encode_successor_serving_record,
@@ -628,23 +629,314 @@ fn activation_rejects_wrong_binding_and_wrong_validator() {
         SuccessorServingSlot::Inactive
     );
 }
+fn ordinary_port_invocation(
+    selected: AtomicityDomainId,
+    receipt_byte: u8,
+    expected: StateRevision,
+    with_message: bool,
+) -> DurableInvocationTransaction {
+    let base: DurableInvocationTransaction = invocation_with_objects_and_outbox(
+        selected,
+        receipt_byte,
+        ObjectId::new([receipt_byte; 32]),
+    );
+    let state: runtime::DurableStateTransaction =
+        durable_write_at(selected, b"ordinary-port", 9, expected).into();
+    let outbox: runtime::DurableOutboxBatch = if with_message {
+        base.outbox().unwrap().clone()
+    } else {
+        runtime::DurableOutboxBatch::new(
+            base.receipt().request_id(),
+            base.receipt().event_digest(),
+            Vec::new(),
+        )
+        .unwrap()
+    };
+    DurableInvocationTransaction::new(
+        selected,
+        Some(state),
+        base.object_changes().clone(),
+        base.receipt().clone(),
+        Some(outbox),
+    )
+    .unwrap()
+}
+
+fn assert_sqlite_ordinary_ports_rejected(
+    db: &Database,
+    store: &dyn StructuredDurableDomainStateStore,
+    context: &DurableOperationContext,
+    selected: AtomicityDomainId,
+    expected: StateRevision,
+    reason: DurableCommitRejection,
+) {
+    assert_sqlite_seal_rejection(db, reason.clone(), || {
+        store.commit_durable(
+            context,
+            durable_write_at(selected, b"ordinary-port", 9, expected),
+        )
+    });
+    assert_sqlite_seal_rejection(db, reason, || {
+        store.commit_invocation(
+            context,
+            ordinary_port_invocation(selected, 0xD1, expected, true),
+        )
+    });
+}
+
+#[test]
+fn ordinary_ports_refuse_genuine_sqlite_import_phases_without_any_mutation() {
+    let db: Database = Database::new();
+    let mut binding: ImportBinding = pin();
+    binding.row_count = 4;
+    let context: DurableOperationContext = operation(71);
+    let store: SqliteImportTarget =
+        SqliteImportTarget::create(&db.0, namespace(&binding), context.writer_fence(), &binding)
+            .unwrap();
+    assert_eq!(
+        store
+            .get_namespace_lifecycle(&context, binding.domain)
+            .unwrap(),
+        NamespaceLifecycle::FreshImport(binding.clone())
+    );
+    assert_sqlite_ordinary_ports_rejected(
+        &db,
+        &store,
+        &context,
+        binding.domain,
+        StateRevision::INITIAL,
+        DurableCommitRejection::InactiveNamespace,
+    );
+    let expected: ImportProgress = initial();
+    assert_eq!(
+        store.begin_import(&context, binding.domain, &binding, expected.accumulator),
+        DurableCommitOutcome::Committed
+    );
+    assert_sqlite_ordinary_ports_rejected(
+        &db,
+        &store,
+        &context,
+        binding.domain,
+        StateRevision::INITIAL,
+        DurableCommitRejection::InactiveNamespace,
+    );
+    let objects: DurableObjectChanges = object_create_changes(ObjectId::new([0xC0; 32]));
+    let version: DurableObjectVersionRecord = match objects.mutations()[0].mutation() {
+        runtime::DurableObjectMutation::Create { version, .. } => version.clone(),
+        _ => panic!("fixture requires one Create"),
+    };
+    let batch: ImportBatch = ImportBatch::new(
+        binding.clone(),
+        expected,
+        digest(7),
+        digest(8),
+        vec![
+            runtime::ImportRow::State {
+                key: b"ordinary-port".to_vec(),
+                value: Some(vec![1]),
+            },
+            runtime::ImportRow::ObjectVersion(version.clone()),
+            runtime::ImportRow::ObjectHead {
+                object_id: version.object_id(),
+                head: runtime::ImportObjectHead::Tombstoned {
+                    last_object_version: version.object_version(),
+                },
+            },
+            runtime::ImportRow::Receipt(receipt(0xC0)),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_import_batch(&context, binding.domain, &batch),
+        DurableCommitOutcome::Committed
+    );
+    let populated: SqliteSealState = sqlite_seal_state(&db);
+    assert_eq!(populated.0[4].len(), 1);
+    assert_eq!(populated.0[6].len(), 1);
+    assert_eq!(populated.0[7].len(), 1);
+    assert_eq!(populated.0[8].len(), 1);
+    assert_sqlite_ordinary_ports_rejected(
+        &db,
+        &store,
+        &context,
+        binding.domain,
+        StateRevision::new(1),
+        DurableCommitRejection::InactiveNamespace,
+    );
+    let token: PortableSnapshotToken = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    assert_eq!(
+        store.finish_import(&context, binding.domain, &binding, batch.next(), &token),
+        DurableCommitOutcome::Committed
+    );
+    assert_eq!(
+        store
+            .get_namespace_lifecycle(&context, binding.domain)
+            .unwrap(),
+        NamespaceLifecycle::CompleteInactive {
+            binding: binding.clone(),
+            progress: batch.next().clone(),
+        }
+    );
+    assert_sqlite_ordinary_ports_rejected(
+        &db,
+        &store,
+        &context,
+        binding.domain,
+        StateRevision::new(1),
+        DurableCommitRejection::InactiveNamespace,
+    );
+
+    let expired_and_fenced: DurableOperationContext = DurableOperationContext::new(
+        WriterFenceGeneration::new(72).unwrap(),
+        StorageDeadline::new(1).unwrap(),
+        StorageCorrelationId::new([0xA1; 16]).unwrap(),
+    );
+    assert_sqlite_ordinary_ports_rejected(
+        &db,
+        &store,
+        &expired_and_fenced,
+        AtomicityDomainId::new([0xFE; 32]).unwrap(),
+        StateRevision::new(1),
+        DurableCommitRejection::AtomicityDomainMismatch,
+    );
+    // SQL's initial deadline check precedes its schema/fence/phase checks.
+    assert_sqlite_ordinary_ports_rejected(
+        &db,
+        &store,
+        &expired_and_fenced,
+        binding.domain,
+        StateRevision::new(1),
+        DurableCommitRejection::DeadlineExceededBeforeCommit,
+    );
+    assert_sqlite_ordinary_ports_rejected(
+        &db,
+        &store,
+        &operation(72),
+        binding.domain,
+        StateRevision::new(1),
+        DurableCommitRejection::WriterFenced {
+            active_generation: context.writer_fence(),
+        },
+    );
+    let before_reopen: SqliteSealState = sqlite_seal_state(&db);
+    drop(store);
+    let reopened: SqliteImportTarget =
+        SqliteImportTarget::open_existing(&db.0, namespace(&binding), &binding).unwrap();
+    assert_eq!(sqlite_seal_state(&db), before_reopen);
+    assert_sqlite_ordinary_ports_rejected(
+        &db,
+        &reopened,
+        &context,
+        binding.domain,
+        StateRevision::new(1),
+        DurableCommitRejection::InactiveNamespace,
+    );
+}
+
+#[test]
+fn ordinary_ports_preserve_sqlite_receipt_cas_and_genuine_seal_refusal_priority() {
+    let db: Database = Database::new();
+    let binding: ImportBinding = pin();
+    let context: DurableOperationContext = operation(73);
+    let store: SqliteDurableStore =
+        SqliteDurableStore::open(&db.0, namespace(&binding), context.writer_fence()).unwrap();
+    let seed: DurableInvocationTransaction =
+        ordinary_port_invocation(binding.domain, 0xC1, StateRevision::INITIAL, false);
+    assert_eq!(
+        store.commit_invocation(&context, seed),
+        DurableCommitOutcome::Committed
+    );
+    let populated: SqliteSealState = sqlite_seal_state(&db);
+    assert_eq!(populated.0[4].len(), 1);
+    assert_eq!(populated.0[6].len(), 1);
+    assert_eq!(populated.0[7].len(), 1);
+    assert_eq!(populated.0[8].len(), 1);
+    assert_eq!(populated.0[9].len(), 0);
+    assert_eq!(populated.0[10].len(), 1);
+
+    assert_sqlite_seal_rejection(&db, DurableCommitRejection::RequestAlreadyCommitted, || {
+        store.commit_invocation(
+            &context,
+            ordinary_port_invocation(binding.domain, 0xC1, StateRevision::INITIAL, true),
+        )
+    });
+    assert_sqlite_ordinary_ports_rejected(
+        &db,
+        &store,
+        &context,
+        binding.domain,
+        StateRevision::INITIAL,
+        DurableCommitRejection::Conflict {
+            key: b"ordinary-port".to_vec(),
+            current_revision: StateRevision::new(1),
+        },
+    );
+    let token: PortableSnapshotToken = store
+        .begin_portable_snapshot(&context, binding.domain)
+        .unwrap();
+    let sealed: SealBarrier = sample_sealed(0xB0);
+    assert_eq!(
+        store.commit_seal_completion(
+            &context,
+            &token,
+            stateful_sealed_invocation(
+                binding.domain,
+                &sealed,
+                b"sealed",
+                3,
+                StateRevision::INITIAL
+            ),
+            sealed,
+        ),
+        DurableCommitOutcome::Committed
+    );
+    assert_eq!(
+        store
+            .get_outgoing_barrier(&context, binding.domain)
+            .unwrap(),
+        OutgoingBarrier::Sealed(sealed)
+    );
+    for expected in [StateRevision::new(1), StateRevision::INITIAL] {
+        assert_sqlite_ordinary_ports_rejected(
+            &db,
+            &store,
+            &context,
+            binding.domain,
+            expected,
+            DurableCommitRejection::NamespaceSealed,
+        );
+    }
+    assert_sqlite_seal_rejection(&db, DurableCommitRejection::NamespaceSealed, || {
+        store.commit_invocation(
+            &context,
+            ordinary_port_invocation(binding.domain, 0xC1, StateRevision::INITIAL, true),
+        )
+    });
+}
+
 #[test]
 fn ordinary_ports_refuse_both_inactive_and_serving_imported_origin() {
-    let (_db, store, context, fresh_token, _stale_token) = complete_inactive_store(45);
-    let binding = pin();
+    let (db, store, context, fresh_token, _stale_token) = complete_inactive_store(45);
+    let binding: ImportBinding = pin();
 
-    assert_eq!(
-        store.commit_durable(&context, ordinary_write(binding.domain)),
-        DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace)
+    assert_sqlite_seal_rejection(&db, DurableCommitRejection::InactiveNamespace, || {
+        store.commit_durable(&context, ordinary_write(binding.domain))
+    });
+    assert_sqlite_ordinary_ports_rejected(
+        &db,
+        &store,
+        &context,
+        binding.domain,
+        StateRevision::INITIAL,
+        DurableCommitRejection::InactiveNamespace,
     );
-
-    let _observation = activate(&store, &context, &fresh_token, 65);
-
-    assert_eq!(
-        store.commit_durable(&context, ordinary_write(binding.domain)),
-        DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace)
-    );
-    let invocation = DurableInvocationTransaction::new(
+    let observation: SuccessorServingObservation = activate(&store, &context, &fresh_token, 65);
+    assert_sqlite_seal_rejection(&db, DurableCommitRejection::InactiveNamespace, || {
+        store.commit_durable(&context, ordinary_write(binding.domain))
+    });
+    let original_invocation: DurableInvocationTransaction = DurableInvocationTransaction::new(
         binding.domain,
         None,
         DurableObjectChanges::empty(),
@@ -652,10 +944,46 @@ fn ordinary_ports_refuse_both_inactive_and_serving_imported_origin() {
         None,
     )
     .unwrap();
-    assert_eq!(
-        store.commit_invocation(&context, invocation),
-        DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace)
+    assert_sqlite_seal_rejection(&db, DurableCommitRejection::InactiveNamespace, || {
+        store.commit_invocation(&context, original_invocation)
+    });
+    assert_sqlite_ordinary_ports_rejected(
+        &db,
+        &store,
+        &context,
+        binding.domain,
+        StateRevision::INITIAL,
+        DurableCommitRejection::InactiveNamespace,
     );
+    // Populate every invocation section through the actual successor port.
+    let invocation: DurableInvocationTransaction =
+        ordinary_port_invocation(binding.domain, 67, StateRevision::INITIAL, true);
+    assert_eq!(
+        store.commit_successor_invocation(&context, &observation, invocation),
+        DurableCommitOutcome::Committed
+    );
+    let populated: SqliteSealState = sqlite_seal_state(&db);
+    assert_eq!(populated.0[4].len(), 2);
+    assert_eq!(populated.0[6].len(), 1);
+    assert_eq!(populated.0[7].len(), 1);
+    assert_eq!(populated.0[8].len(), 2);
+    assert_eq!(populated.0[9].len(), 1);
+    assert_eq!(populated.0[10].len(), 1);
+    assert_sqlite_ordinary_ports_rejected(
+        &db,
+        &store,
+        &context,
+        binding.domain,
+        StateRevision::new(1),
+        DurableCommitRejection::InactiveNamespace,
+    );
+    // Even an occupied receipt and stale CAS stay behind the lifecycle refusal.
+    assert_sqlite_seal_rejection(&db, DurableCommitRejection::InactiveNamespace, || {
+        store.commit_invocation(
+            &context,
+            ordinary_port_invocation(binding.domain, 67, StateRevision::INITIAL, true),
+        )
+    });
 }
 #[test]
 fn only_import_target_exposes_successor_serving_repository() {

@@ -66,7 +66,7 @@ The direct Native TLS follow-up under
 has complete different-reviewer source approval at `c0d2f217` and an actual
 six-stage scoped PASS: 17 named tests, zero failed/ignored and strict owning
 Clippy. Normal main ancestry is included without changing that functional tree.
-PR #296 is Draft. The final documentation head `70210f57` received fresh
+The final documentation head `70210f57` received fresh
 complete independent source approval, but its first whole-required attempt
 failed in the cheap release fixture after npm-ci passed. The fixture's requested
 file mode depended on the inherited umask; its exact mode oracle is retained.
@@ -77,12 +77,14 @@ plain-Node invocation preserved the production flag refusal and passed.
 The separate hosted SQLite lanes also failed because they did not build the
 actual CLI prerequisite; the shared selected-group recipe now explicitly
 builds it after complete inventory validation, with new ordering/failure
-controls. Those source-only CI changes require independent review and actual
-gate execution. Neither earlier failure is a TLS/runtime result or a passing
-whole gate. A new exact source freeze,
-literal npm-ci/full required acceptance, genuine ignored successor/history
-recurrence and final-head CI remain mandatory. No ancestor or scoped pass
-substitutes for them.
+controls. Corrected source `c35a9dec` subsequently passed fresh literal npm-ci
+and the complete `./scripts/check-all.sh`, including the genuine ignored
+successor/history recurrence and unchanged seven-epoch/full-unlock workload.
+All seven hosted owners and success-only `check` also passed; PR #296 merged
+normally as `99c75e0c`, whose tree equals the accepted `c35a9dec` tree.
+Neither earlier failure is a passing whole gate; both remain preserved and
+attributable. These completed local/hosted gates qualify that development
+slice, not later source candidates or complete M5 production operations.
 
 Prior failed/interrupted/source-blocked attempts and component evidence remain
 in the [preserved queue](docs/development/history/execution-queue-through-2026-10-07.md#native-integration-and-direct-tls-observations-2026-10-08).
@@ -129,6 +131,20 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   to invocation identity before retention/exposure. Preserve receipt-first replay,
   actual CAS/ambiguity, legitimate prefix progress and real memory reconstruction.
   Further extraction needs a concrete changing owner, not a file-size target.
+  A small **LOCALLY VERIFIED CANDIDATE** shares only ordinary-write phase refusal in
+  `runtime::validate_ordinary_write_lifecycle`, consumed by both Memory and
+  shared SQL commit pairs under their existing lock/transaction and preceding
+  authority checks. PostgreSQL's different checks remain unchanged. Applied
+  source bytes match the independently reviewed proposal, with 16 literal phase
+  cases and genuine Memory/SQLite import, Seal and SQLite serving refusal
+  controls using complete existing snapshots. Normal formatting, the three owning
+  crates' tests (288 nonignored passes, zero failed/ignored), all five new and one
+  strengthened named controls, and strict owning Clippy passed in a fresh local
+  scope. The shared SQL library has zero standalone cases; its consumers are
+  exercised by the actual SQLite suites. Earlier formatting and test-build
+  failures remain failures. Whole required, hosted and final integration
+  acceptance are **PENDING**; this grants no authority, closes neither R1 nor R2,
+  and is not a new M4/M5 prerequisite.
 - [ ] **R3 — attributable tests and economical CI:** share bounded signed-input
   setup, not the implementation-derived oracle; separate pure/store/HTTP/CLI
   owners. Remove equivalent duplicate work only with exact-input coverage proof
@@ -234,8 +250,8 @@ and cross-phase criteria; it does not shorten them.
   All 17 named tests passed with zero failed/ignored; exact child/group/lease
   teardown was verified. These are owning results, not whole M5 acceptance.
   Genuine activated-successor and signerless-history controls were NOT RUN by
-  this scope; the unchanged full required recurrence, seven-epoch/full-unlock
-  workload, fresh final-head literal npm-ci/check-all and CI remain mandatory.
+  that scoped attempt; they remained required in the later corrected-source
+  complete gate, alongside the unchanged seven-epoch/full-unlock workload.
   Prior source blocks and the first runner's incorrect expected-count failure
   remain preserved in the archived queue, never adopted as passing.
   Final source `70210f57` received a fresh complete independent review; its
@@ -245,8 +261,12 @@ and cross-phase criteria; it does not shorten them.
   selected-lane build prerequisites are corrected without changing the
   restrictive service umask, test selectors, expected bytes or unlock delay.
   The fixture alone subsequently passed all 135 controls under UMask0077;
-  isolated-lane and whole corrected-source execution are separate gates.
-  Fresh complete acceptance and CI for the corrected source are still open.
+  isolated-lane and whole corrected-source execution remained separate gates.
+  Corrected exact source `c35a9dec` subsequently passed fresh literal npm-ci and
+  the complete required gate, including those genuine owners, plus all seven
+  hosted owners and success-only `check`. PR #296 merged normally as `99c75e0c`
+  with the same accepted tree. This completes that local direct-TLS slice, not
+  the full M5 qualification or validation of the current R1/R2 source candidate.
   The M5 lock delta only adds direct edges to already locked versions; no PG
   dependency/version changes occur. Locked Rustls 0.23.43 remains affected by
   RUSTSEC-2026-0285 (patched in >=0.23.45). The shared upgrade and local PG
