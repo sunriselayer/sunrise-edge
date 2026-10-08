@@ -73,6 +73,25 @@ pub(crate) struct BlockingPermit {
     observations: NativeHttpObservations,
 }
 
+impl Drop for BlockingPermit {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.observations.0.blocking_panics.increment();
+        }
+        let mut state = self
+            .lifecycle
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // Release capacity before publishing completion under the same lock.
+        drop(self.permit.take());
+        state.outstanding -= 1;
+        if state.outstanding == 0 {
+            self.lifecycle.drained.notify_waiters();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,24 +224,5 @@ mod tests {
                 .unwrap();
             assert_eq!(executor.observations().snapshot().blocking_panics, 1);
         });
-    }
-}
-
-impl Drop for BlockingPermit {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            self.observations.0.blocking_panics.increment();
-        }
-        let mut state = self
-            .lifecycle
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        // Release capacity before publishing completion under the same lock.
-        drop(self.permit.take());
-        state.outstanding -= 1;
-        if state.outstanding == 0 {
-            self.lifecycle.drained.notify_waiters();
-        }
     }
 }

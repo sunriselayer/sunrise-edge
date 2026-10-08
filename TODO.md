@@ -84,10 +84,14 @@ The Native operations slice under
 [DR-0222](docs/architecture/decisions/0222-native-stop-and-operational-observations.md)
 has an accepted local design and authored stop/drain/observation code and tests.
 Independent complete source review and the additional stop/error test review
-have passed for their exact source scope. Formatting, owning tests/Clippy,
-whole required validation and final-head CI are pending. No runtime pass is
-claimed for this slice. It includes PR #297 through normal main ancestry, not
-through reuse of that PR's execution evidence; compiler work stays serialized.
+have passed for their exact source scope. The first owning invocation at
+`f6626f5f` passed formatting, CLI build and all 255 cases across the Native HTTP,
+operator and actual SQLite/TLS executable, including all thirteen new controls.
+Strict Clippy failed on item ordering after the test module; the unchanged Drop
+implementation is moved before tests, with a fresh complete owning retry required.
+That first invocation remains NONPASS. Whole required validation and final-head
+CI/review remain binding gates. PR #297 is included through normal main ancestry,
+not through reuse of its execution evidence; compiler work stays serialized.
 
 Prior failed/interrupted/source-blocked attempts and component evidence remain
 in the [preserved queue](docs/development/history/execution-queue-through-2026-10-07.md#native-integration-and-direct-tls-observations-2026-10-08).
