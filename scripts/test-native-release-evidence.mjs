@@ -286,6 +286,14 @@ function retainedCleanup(f, r) {
 }
 
 try {
+  await check("closed twelve shipped targets include encrypted recovery", () => {
+    assert.deepEqual(NAMES, [
+      "sqlite_genesis", "standard_asset_genesis", "genesis_inspect", "sqlite_source_host",
+      "business_cut", "business_import", "business_recovery", "conditional_readiness", "ordered_seal",
+      "successor_activation", "successor_host", "sunrise-edge-cli",
+    ]);
+    assert.equal(Object.isFrozen(NAMES), true);
+  });
   await check("GNU L archive/source and cargo-ok independent positive", async () => {
     const p = packageFixture("archive-positive"); const r = await verifyRegistryPackage(p);
     assert.equal(r.entries, 5); assert.equal(r.inventory.filter(x => x.kind === "file").length, 4);
@@ -402,7 +410,12 @@ try {
   await check("full sequential orchestration positive; fixture NEVER native complete", async () => {
     const f = fixture("positive", { mode: 0o751 }); const sentinel = path.join(f.parent, "sentinel"); file(sentinel, "original before run");
     const r = await runFixtureEvidence(f.args, f.doubles, { AWS_SECRET_ACCESS_KEY: "not inherited" });
-    assert.equal(r.complete, false); assert.equal(r.fixturePassed, true); assert.equal(r.comparisons.length, 11); assert.equal(r.boundaries.length, 5);
+    assert.equal(r.complete, false); assert.equal(r.fixturePassed, true); assert.equal(r.comparisons.length, 12); assert.equal(r.boundaries.length, 5);
+    assert.deepEqual(r.comparisons.map(a => a.name), [
+      "sqlite_genesis", "standard_asset_genesis", "genesis_inspect", "sqlite_source_host",
+      "business_cut", "business_import", "business_recovery", "conditional_readiness", "ordered_seal",
+      "successor_activation", "successor_host", "sunrise-edge-cli",
+    ]);
     assert.ok(r.builds.a.artifacts.every(a => a.mode === 0o751)); assert.equal(existsSync(path.join(f.output, "compiler-a")), false);
     assert.equal(existsSync(path.join(f.output, "compiler-b")), false); assert.equal(readFileSync(sentinel, "utf8"), "original before run");
     assert.equal(r.sourceLease.released, true); assert.equal(r.builds.b.exit, 0); assert.match(readFileSync(r.builds.a.logs.stderr, "utf8"), /non-JSON/);
@@ -456,7 +469,7 @@ try {
         const after = oldStat(fds[0]); assert.equal(after.nlink, before - 1); transitions.get(group).push(after.nlink);
       }
     } }, () => runFixtureEvidence(f.args, f.doubles));
-    assert.equal(r.complete, false); assert.equal(r.fixturePassed, true); assert.equal(r.comparisons.length, 11);
+    assert.equal(r.complete, false); assert.equal(r.fixturePassed, true); assert.equal(r.comparisons.length, 12);
     assert.equal(r.cleanup.length, 4); assert.ok(r.cleanup.every(x => x.success));
     assert.deepEqual(f.calls.builds, { a: 1, b: 1 });
     descriptors.assertClosed(); assert.equal(descriptors.result().maximum, 1);

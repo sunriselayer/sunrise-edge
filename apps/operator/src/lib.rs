@@ -3,6 +3,7 @@
 pub mod business_cut;
 pub mod business_import;
 mod business_pins;
+pub mod business_recovery;
 pub mod business_snapshot;
 pub mod common;
 pub mod conditional_readiness;

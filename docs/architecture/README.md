@@ -151,6 +151,11 @@ roadmap describes a later target state.
   ([DR-0176](decisions/0176-verified-inactive-business-import.md)):
   private raw-plan derivation, permanent import origin, atomic bounded storage
   and core/live-response guards; no readiness, Seal or activation authority.
+- [Encrypted saved-business-closure transport](encrypted-recovery-closure.md)
+  ([DR-0221](decisions/0221-encrypted-recovery-closure.md), accepted design):
+  disposable local X25519/age transport for original and full successor saved
+  roles, opt-in bounded reads and independent inactive verification; source
+  candidate, not execution, real custody or off-host recovery qualification.
 - [Conditional readiness and ordered Seal](conditional-readiness-seal.md)
   ([DR-0178](decisions/0178-conditional-readiness-wire-and-retention.md)):
   private fresh staging verification, actual-key-bound votes, weighted public

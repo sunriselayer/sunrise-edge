@@ -162,3 +162,117 @@ pub fn spawn_bounded_output(mut command: Command, deadline: Duration) -> Output 
             .unwrap_or_default(),
     }
 }
+
+/// Recovery's finite complete-capture control. A pipe read error, output-cap
+/// breach or missing EOF is FAILURE, never an empty/default successful log.
+/// The real compiled recovery/import children do not spawn subprocesses.
+pub fn spawn_strict_bounded_output(mut command: Command, deadline: Duration) -> Output {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    const MAXIMUM: usize = 4 * 1024 * 1024;
+    let child: Child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn compiled recovery child");
+    let mut guard: ChildGuard = ChildGuard::new(child);
+    let stdout = guard
+        .child_mut()
+        .stdout
+        .take()
+        .expect("piped recovery stdout");
+    let stderr = guard
+        .child_mut()
+        .stderr
+        .take()
+        .expect("piped recovery stderr");
+    let total: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let capture = |mut input: Box<dyn Read + Send>, total: Arc<AtomicUsize>| {
+        let (send, receive) = mpsc::channel::<Result<Vec<u8>, &'static str>>();
+        let thread = std::thread::spawn(move || {
+            let result: Result<Vec<u8>, &'static str> = (|| {
+                let mut bytes: Vec<u8> = Vec::new();
+                let mut buffer: [u8; 64 * 1024] = [0; 64 * 1024];
+                loop {
+                    let count: usize = input
+                        .read(&mut buffer)
+                        .map_err(|_| "recovery child pipe read failed")?;
+                    if count == 0 {
+                        return Ok(bytes);
+                    } // Actual pipe EOF.
+                    total
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value: usize| {
+                            value
+                                .checked_add(count)
+                                .filter(|sum: &usize| *sum <= MAXIMUM)
+                        })
+                        .map_err(|_| "recovery child complete capture exceeded cap")?;
+                    bytes.extend_from_slice(&buffer[..count]);
+                }
+            })();
+            send.send(result)
+                .expect("strict capture owner still present");
+        });
+        (receive, thread)
+    };
+    let (out_receive, out_thread) = capture(Box::new(stdout), Arc::clone(&total));
+    let (err_receive, err_thread) = capture(Box::new(stderr), Arc::clone(&total));
+    let end: Instant = Instant::now()
+        .checked_add(deadline)
+        .expect("recovery child deadline");
+    let mut out: Option<Vec<u8>> = None;
+    let mut err: Option<Vec<u8>> = None;
+    let status: ExitStatus = loop {
+        for (receiver, slot) in [(&out_receive, &mut out), (&err_receive, &mut err)] {
+            if slot.is_none() {
+                match receiver.try_recv() {
+                    Ok(Ok(bytes)) => *slot = Some(bytes),
+                    Ok(Err(reason)) => panic!("{reason}"),
+                    Err(mpsc::TryRecvError::Empty) => {}
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        panic!("recovery capture disconnected before EOF")
+                    }
+                }
+            }
+        }
+        if let Some(status) = guard.try_wait().expect("poll compiled recovery child") {
+            break status;
+        }
+        assert!(
+            Instant::now() < end,
+            "compiled recovery child exceeded finite deadline"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut reaped: Child = guard.into_inner();
+    assert_eq!(
+        reaped.wait().expect("confirm compiled recovery child reap"),
+        status
+    );
+    let close_end: Instant = Instant::now()
+        .checked_add(Duration::from_secs(5))
+        .expect("pipe-close deadline");
+    let finish = |receiver: mpsc::Receiver<Result<Vec<u8>, &'static str>>,
+                  slot: Option<Vec<u8>>|
+     -> Vec<u8> {
+        match slot {
+            Some(bytes) => bytes,
+            None => receiver
+                .recv_timeout(close_end.saturating_duration_since(Instant::now()))
+                .expect("complete recovery pipe EOF within five seconds")
+                .expect("strict recovery pipe capture"),
+        }
+    };
+    let stdout: Vec<u8> = finish(out_receive, out);
+    let stderr: Vec<u8> = finish(err_receive, err);
+    out_thread.join().expect("stdout capture thread completed");
+    err_thread.join().expect("stderr capture thread completed");
+    Output {
+        status,
+        stdout,
+        stderr,
+    }
+}

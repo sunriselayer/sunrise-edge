@@ -12,6 +12,14 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+mod bounded;
+mod budget;
+mod held_file;
+pub use budget::{ArchiveReadBudget, ArchiveReadLimits};
+pub use held_file::{AttachedFilePolicy, AttachedFileStamp, AttachedRegularFile};
+#[cfg(test)]
+mod tests;
+
 /// Name of the publication staging role inside an archive root.
 pub const ARCHIVE_STAGING_DIRECTORY: &str = ".cut-staging-v1";
 
@@ -44,6 +52,7 @@ pub struct ImmutableArchiveReader {
     root: PathBuf,
     directory: File,
     staging: Option<ArchiveStagingDirectory>,
+    budget: Option<ArchiveReadBudget>,
 }
 
 impl ImmutableArchiveReader {
@@ -88,6 +97,7 @@ impl ImmutableArchiveReader {
             root,
             directory,
             staging,
+            budget: None,
         };
         archive.ensure_attached()?;
         archive.validate_staging()?;
@@ -99,15 +109,22 @@ impl ImmutableArchiveReader {
     /// directory aliases; a string prefix alone is not a placement guard.
     pub fn require_output_outside(&self, path: &Path) -> io::Result<()> {
         self.ensure_attached()?;
-        let absolute: PathBuf = if path.is_absolute() {
-            path.to_path_buf()
+        let parent: PathBuf = if self.budget.is_some() {
+            let parent: &Path = path
+                .parent()
+                .ok_or_else(|| invalid("destination database has no parent directory"))?;
+            Self::directory_path_with_budget(parent, self.budget.as_ref())?
         } else {
-            std::env::current_dir()?.join(path)
+            let absolute: PathBuf = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::env::current_dir()?.join(path)
+            };
+            let parent: &Path = absolute
+                .parent()
+                .ok_or_else(|| invalid("destination database has no parent directory"))?;
+            Self::directory_path(parent)?
         };
-        let parent: &Path = absolute
-            .parent()
-            .ok_or_else(|| invalid("destination database has no parent directory"))?;
-        let parent: PathBuf = Self::directory_path(parent)?;
         if parent.starts_with(&self.root) {
             return Err(invalid(
                 "destination database must be outside pinned input archive",
@@ -118,8 +135,13 @@ impl ImmutableArchiveReader {
             use std::os::unix::fs::MetadataExt;
             let source: std::fs::Metadata = self.directory.metadata()?;
             for ancestor in parent.ancestors() {
-                let directory: File = File::open(ancestor)?;
-                Self::ensure_directory_attached(ancestor, &directory)?;
+                self.observe()?;
+                let directory: File = if let Some(budget) = &self.budget {
+                    Self::open_bounded_directory(ancestor, budget)?
+                } else {
+                    File::open(ancestor)?
+                };
+                Self::ensure_directory_with_budget(ancestor, &directory, self.budget.as_ref())?;
                 let held: std::fs::Metadata = directory.metadata()?;
                 if (held.dev(), held.ino()) == (source.dev(), source.ino()) {
                     return Err(invalid(
@@ -160,9 +182,13 @@ impl ImmutableArchiveReader {
     /// Rechecks that the root (and any held staging role) is still the
     /// exact directory this reader attached to.
     pub fn ensure_attached(&self) -> io::Result<()> {
-        Self::ensure_directory_attached(&self.root, &self.directory)?;
+        Self::ensure_directory_with_budget(&self.root, &self.directory, self.budget.as_ref())?;
         if let Some(staging) = &self.staging {
-            Self::ensure_directory_attached(&staging.path, &staging.directory)?;
+            Self::ensure_directory_with_budget(
+                &staging.path,
+                &staging.directory,
+                self.budget.as_ref(),
+            )?;
         }
         Ok(())
     }
@@ -224,9 +250,15 @@ impl ImmutableArchiveReader {
         let Some(staging) = &self.staging else {
             return Ok(());
         };
-        Self::ensure_directory_attached(&staging.path, &staging.directory)?;
+        Self::ensure_directory_with_budget(
+            &staging.path,
+            &staging.directory,
+            self.budget.as_ref(),
+        )?;
         for entry in std::fs::read_dir(&staging.path)? {
+            self.observe()?;
             let entry: std::fs::DirEntry = entry?;
+            self.check_name_bytes(&entry.file_name())?;
             let name: String = entry
                 .file_name()
                 .into_string()
@@ -242,7 +274,7 @@ impl ImmutableArchiveReader {
             }
             // Orphan bytes are deliberately never read, adopted or deleted.
         }
-        Self::ensure_directory_attached(&staging.path, &staging.directory)
+        Self::ensure_directory_with_budget(&staging.path, &staging.directory, self.budget.as_ref())
     }
 
     /// Accepts exactly one normal path component.
@@ -258,6 +290,10 @@ impl ImmutableArchiveReader {
     /// Reads one regular artifact of at most maximum bytes, rechecking file
     /// and directory identity before and after the bounded read.
     pub fn read(&self, name: &str, maximum: usize) -> io::Result<Vec<u8>> {
+        if self.budget.is_some() {
+            Self::filename(name)?;
+            return self.read_relative(name, maximum);
+        }
         let relative: &Path = Self::filename(name)?;
         self.ensure_attached()?;
         let path: PathBuf = self.root.join(relative);
@@ -304,7 +340,11 @@ impl ImmutableArchiveReader {
     /// Whether one regular artifact exists; any non-regular entry refuses.
     pub fn contains(&self, name: &str) -> io::Result<bool> {
         let relative: &Path = Self::filename(name)?;
+        if self.budget.is_some() {
+            Self::relative_filename(name)?;
+        }
         self.ensure_attached()?;
+        self.observe()?;
         let outcome: io::Result<bool> = match std::fs::symlink_metadata(self.root.join(relative)) {
             Ok(metadata) if metadata.is_file() => Ok(true),
             Ok(_) => Err(invalid("archive artifact is not a regular file")),
@@ -321,7 +361,9 @@ impl ImmutableArchiveReader {
         self.ensure_attached()?;
         let mut names: BTreeSet<String> = BTreeSet::new();
         for entry in std::fs::read_dir(&self.root)? {
+            self.observe()?;
             let entry: std::fs::DirEntry = entry?;
+            self.check_name_bytes(&entry.file_name())?;
             let name: String = entry
                 .file_name()
                 .into_string()

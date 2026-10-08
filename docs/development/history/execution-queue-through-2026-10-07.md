@@ -650,3 +650,74 @@ all 135 controls passed and actual main exit was 0. While running, UMask0077,
 NoNewPrivileges and the exact own PID/cgroup were read back; final own
 unit/PID/cgroup absence and unchanged source hashes were verified. This is cheap
 fixture evidence with ZERO native builds, not corrected-head whole acceptance.
+
+## Attributable continuation: 2026-10-08 (Asia/Singapore)
+
+This append records new observations without rewriting the preserved queue
+above. Current priorities and readiness remain in [TODO](../../../TODO.md).
+
+- PR #293 normally merged at `364e2ec8`, with the exact reviewed `3ec8d7bd`
+  tree `00e1d340`. Its complete local required gate, fresh eleven-target native
+  A/B byte equality and all eight hosted checks passed. Earlier failed cleanup
+  and source blocks remain failed, not adopted as this accepted run.
+- Direct-native TLS Draft PR #296 is pushed at `c35a9dec`, tree `bdeb3e60`.
+  A different complete source review approved the retained source plus the five
+  CI/fixture correction paths. `c0d2f217` scoped retry1 passed six stages and
+  17 named tests with no failures/ignored and strict owning Clippy. The corrected
+  release fixture separately passed 135 controls under the owned restrictive
+  umask; the exact-head cheap CI contract actually exited 0 in 18.452 seconds.
+  The first `70210f57` full attempt failed before Rust, and two separate hosted
+  owners failed on a missing compiled CLI prerequisite. Those failures are
+  preserved. The fresh exact-head full-required retry started on 2026-10-07 at
+  19:16:40 UTC, invocation `82793f57ab494deaa167ed05a78f3795`; npm-ci exited 0.
+  The genuine full-unlock owner is still running as of this append. No complete
+  full-required/hosted CI pass or M5 qualification is claimed.
+- [DR-0221](../../architecture/decisions/0221-encrypted-recovery-closure.md)
+  received different complete corrected C4 DESIGN_APPROVE and parent acceptance.
+  Both prior BLOCKs remain preserved. Bounded SDK source is now handed off;
+  operator encryption and original/seven-epoch source-free recovery controls are
+  being authored. Dependencies age/libc/zeroize/rustix are candidate source edges
+  only; the original lock remains unchanged. Source/graph/advisory approval,
+  compilation and genuine runtime cost remain unverified. No disposable local
+  key is an approved real custody/off-host profile or M4 completion.
+- A separately approved fixed two-archive M7 DATA stage actually ran at
+  19:33:42–19:33:44 UTC on 2026-10-07: anonymous public-registry GETs returned
+  200, complete locked integrity matched, all 51 records were strictly closed,
+  and both manifests were read through the verified archive. The parent verified
+  actual ordinary exits, all 24 Git guard records, EOF/caps, owned process-group
+  absence and unchanged source/tool bindings. No package JS/native/install ran.
+  The original S0 unknown-FD failure is not erased by this distinct DATA pass.
+  Exactly two already-observed JS members are selected for a new TEXT-only
+  reader; its source is being authored and has no invocation authority yet.
+  Actual bundled dependency fixes, install/compatibility and M7 clearance stay
+  UNKNOWN. No provider deployment, cloud spend or production DB write occurred.
+
+At 20:17 UTC on 2026-10-07, the encrypted operator author froze the complete
+18-path source handoff; the separate 16-path SDK handoff is unchanged. Both
+are now under a different combined source review, not executed or approved.
+The new recovery binary is included in the SAME closed native artifact owner
+as a twelfth target under the dated DR-0213 amendment. Earlier eleven-target
+acceptance remains exact-source history and does not qualify the new binary.
+The two-member M7 TEXT helper is also authored and frozen for a different
+source review; no extraction, evaluation or installation has run. Private
+metadata resolution is only proposed with trusted pinned Cargo and closed
+source/configuration policy, not an OS-enforced egress or execution sandbox.
+
+At 20:54 UTC on 2026-10-07, the complete different 48-path encrypted-recovery
+review froze a BLOCK on the missing implementation-independent LOCAL L>0
+literal oracle. The original surplus-directory BLOCK is separately preserved;
+its correction is source-only. The parent subsequently added a fixed L=1
+record (M=466, K=653, P=660), seven explicit role/link descriptors, all File
+indices and independently fixed raw-record/Footer hash, retaining L=16 and
+negative controls. This correction is not yet independently approved or run;
+its changed test tuple requires a NEW metadata-source DATA freeze and helper
+binding. The older 713-file freeze remains immutable, not silently refreshed.
+
+The separate M7 TEXT reader received complete different source approval and
+one fixed local-only invocation ran at 20:52:28–20:52:29 UTC on 2026-10-07.
+The parent verified exactly 17,568,262 original bytes, both inventory/member
+hashes, every raw EOF/ordinary exit/reap and all 27 child PIDs/process-group
+absence. Complete nonpayload evidence was 85,452 bytes, below the separate
+8 MiB cap. There was no new network acquisition, package execution or install.
+Text-only copied-library analysis is next; no advisory, S0, M3/M4/M7, provider
+or mainnet qualification follows.

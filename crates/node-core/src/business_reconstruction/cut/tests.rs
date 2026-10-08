@@ -209,6 +209,45 @@ fn page_vector() -> Vec<u8> {
     expected.field_bytes(9, descriptor_vector()).unwrap();
     expected.finish().unwrap()
 }
+
+#[test]
+fn local_page_admission_preserves_bytes_and_precedes_descriptor_growth() {
+    let bytes: Vec<u8> = page_vector();
+    let mut charged: usize = 0;
+    assert_eq!(
+        decode_business_cut_page_bounded(&bytes, 1, &mut |count: usize| -> bool {
+            charged += count;
+            true
+        })
+        .unwrap(),
+        decode_business_cut_page(&bytes).unwrap()
+    );
+    assert_eq!(charged, 1);
+    assert!(
+        decode_business_cut_page_bounded(&bytes, 1, &mut |_: usize| -> bool { false }).is_err()
+    );
+    assert!(
+        decode_business_cut_page_bounded(&bytes, 0, &mut |_: usize| -> bool {
+            panic!("zero field admission must refuse before descriptor allocation")
+        })
+        .is_err()
+    );
+    let mut missing_body: CanonicalStruct = CanonicalStruct::new(0x64B4, 1);
+    missing_body.field_u16(8, 1).unwrap();
+    let mut calls: usize = 0;
+    assert!(
+        decode_business_cut_page_bounded(
+            &missing_body.finish().unwrap(),
+            1,
+            &mut |count: usize| -> bool {
+                calls += count;
+                false
+            },
+        )
+        .is_err()
+    );
+    assert_eq!(calls, 1); // Refusal is BEFORE fields/descriptors, not a parse-body error.
+}
 fn chunk() -> BusinessCutChunk {
     BusinessCutChunk {
         cut_digest: digest(),

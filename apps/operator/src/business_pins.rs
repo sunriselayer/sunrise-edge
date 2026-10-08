@@ -23,12 +23,17 @@ use runtime::{
     Clock, DurableOperationContext, StorageCorrelationId, StorageDeadline, SystemClock,
     WriterFenceGeneration,
 };
+use std::io::Read;
 use std::{
     error::Error,
     path::{Path, PathBuf},
 };
+use sunrise_edge_client::immutable_archive::{
+    ArchiveReadBudget, AttachedFilePolicy, AttachedRegularFile, ImmutableArchiveReader,
+};
 use sunrise_edge_client::load_verified_genesis_root;
 use sunrise_edge_client::ordered_history_archive::read_verified_ordered_history_archive;
+use sunrise_edge_client::ordered_history_archive::read_verified_ordered_history_archive_bounded;
 
 pub(crate) fn bounded(value: &str, minimum: u64, maximum: u64) -> Result<u64, Box<dyn Error>> {
     let parsed: u64 = value.parse()?;
@@ -59,6 +64,28 @@ impl BusinessPinInputs {
         &self.history_root
     }
 
+    pub(crate) fn genesis_file(&self) -> &Path {
+        &self.genesis_file
+    }
+
+    /// Relocates only transport paths; none of the independently parsed trust
+    /// fields are derived from a recovery manifest.
+    pub(crate) fn with_saved_paths(mut self, genesis: PathBuf, history: PathBuf) -> Self {
+        self.genesis_file = genesis;
+        self.history_root = history;
+        self
+    }
+
+    /// Open-saved has no source-path flags. It supplies generated local paths
+    /// to exactly the same public trust parser used by the existing commands.
+    pub(crate) fn parse_saved(
+        flags: &mut FlagSet,
+        genesis: PathBuf,
+        history: PathBuf,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::parse_inputs(flags, Some(genesis), history)
+    }
+
     pub(crate) fn parse(flags: &mut FlagSet) -> Result<Self, Box<dyn Error>> {
         let history_root: PathBuf = flags.one("--ordered-history-dir")?.into();
         Self::parse_with_history(flags, history_root)
@@ -69,6 +96,14 @@ impl BusinessPinInputs {
     /// opens a file or adopts a peer's epoch or suite.
     pub(crate) fn parse_with_history(
         flags: &mut FlagSet,
+        history_root: PathBuf,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::parse_inputs(flags, None, history_root)
+    }
+
+    fn parse_inputs(
+        flags: &mut FlagSet,
+        saved_genesis: Option<PathBuf>,
         history_root: PathBuf,
     ) -> Result<Self, Box<dyn Error>> {
         let chain: ChainId = ChainId::new(flags.one("--chain-id")?)?;
@@ -94,7 +129,10 @@ impl BusinessPinInputs {
             context: PublicationContext::new(chain, protocol, epoch)?,
             domain,
             resolver,
-            genesis_file: flags.one("--genesis-manifest")?.into(),
+            genesis_file: match saved_genesis {
+                Some(path) => path,
+                None => flags.one("--genesis-manifest")?.into(),
+            },
             genesis_pin: parse_hex_32(
                 &flags.one("--expected-genesis-digest")?,
                 "--expected-genesis-digest",
@@ -104,19 +142,79 @@ impl BusinessPinInputs {
     }
 
     pub(crate) fn load(self) -> Result<BusinessPins, Box<dyn Error>> {
-        let root: VerifiedGenesisRoot = load_verified_genesis_root(
-            &self.genesis_file,
-            &self.resolver,
-            self.genesis_pin,
-            &self.context,
-        )?;
+        self.load_mode(None)
+    }
+
+    pub(crate) fn load_bounded(
+        self,
+        budget: &ArchiveReadBudget,
+    ) -> Result<BusinessPins, Box<dyn Error>> {
+        self.load_mode(Some(budget))
+    }
+
+    fn load_root(
+        &self,
+        budget: Option<&ArchiveReadBudget>,
+    ) -> Result<VerifiedGenesisRoot, Box<dyn Error>> {
+        match budget {
+            None => Ok(load_verified_genesis_root(
+                &self.genesis_file,
+                &self.resolver,
+                self.genesis_pin,
+                &self.context,
+            )?),
+            Some(budget) => {
+                budget.check()?;
+                let maximum: u64 = u64::try_from(node_core::MAX_GENESIS_MANIFEST_BYTES)?;
+                let mut file: AttachedRegularFile = AttachedRegularFile::open(
+                    &self.genesis_file,
+                    maximum,
+                    budget,
+                    AttachedFilePolicy::public(),
+                )?;
+                budget.check_component_bytes(
+                    file.stamp().length,
+                    node_core::MAX_GENESIS_MANIFEST_BYTES,
+                )?;
+                let mut bytes: Vec<u8> = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                file.ensure_attached()?;
+                let root: VerifiedGenesisRoot = VerifiedGenesisRoot::verify_bytes(
+                    &self.resolver,
+                    &bytes,
+                    self.genesis_pin,
+                    &self.context,
+                )?;
+                budget.check()?;
+                Ok(root)
+            }
+        }
+    }
+
+    fn read_history(
+        &self,
+        policy: &OrderedEconomicsPolicy,
+        budget: Option<&ArchiveReadBudget>,
+    ) -> Result<(OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>), Box<dyn Error>> {
+        match budget {
+            None => read_verified_ordered_history_archive(policy, &self.history_root),
+            Some(budget) => {
+                let archive: ImmutableArchiveReader =
+                    ImmutableArchiveReader::open_bounded(&self.history_root, budget)?;
+                read_verified_ordered_history_archive_bounded(policy, &archive)
+            }
+        }
+    }
+
+    fn load_mode(self, budget: Option<&ArchiveReadBudget>) -> Result<BusinessPins, Box<dyn Error>> {
+        let root: VerifiedGenesisRoot = self.load_root(budget)?;
         if !root.admission_profile().is_causal() {
             return Err("business reconstruction requires signed causal-admission genesis".into());
         }
         let policy: OrderedEconomicsPolicy =
             OrderedEconomicsPolicy::from_genesis_root(&root, self.domain)?;
         let (identity, ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
-            read_verified_ordered_history_archive(&policy, &self.history_root)?;
+            self.read_history(&policy, budget)?;
         Ok(BusinessPins {
             context: self.context.clone(),
             domain: self.domain,
@@ -140,18 +238,34 @@ impl BusinessPinInputs {
         artifacts: &mut SuccessorChainArtifactFiles,
         budget: SuccessorChainBudget,
     ) -> Result<BusinessPins, Box<dyn Error>> {
-        let root: VerifiedGenesisRoot = load_verified_genesis_root(
-            &self.genesis_file,
-            &self.resolver,
-            self.genesis_pin,
-            &self.context,
-        )?;
+        self.load_successor_mode(artifacts, budget, None)
+    }
+
+    pub(crate) fn load_with_successor_bounded(
+        self,
+        artifacts: &mut SuccessorChainArtifactFiles,
+        chain_budget: SuccessorChainBudget,
+        read_budget: &ArchiveReadBudget,
+    ) -> Result<BusinessPins, Box<dyn Error>> {
+        self.load_successor_mode(artifacts, chain_budget, Some(read_budget))
+    }
+
+    fn load_successor_mode(
+        self,
+        artifacts: &mut SuccessorChainArtifactFiles,
+        budget: SuccessorChainBudget,
+        read_budget: Option<&ArchiveReadBudget>,
+    ) -> Result<BusinessPins, Box<dyn Error>> {
+        let root: VerifiedGenesisRoot = self.load_root(read_budget)?;
         if !root.admission_profile().is_causal() {
             return Err("business reconstruction requires signed causal-admission genesis".into());
         }
         let original_policy: OrderedEconomicsPolicy =
             OrderedEconomicsPolicy::from_genesis_root(&root, self.domain)?;
-        let links: Vec<SuccessorLinkPins> = artifacts.pins();
+        let links: Vec<SuccessorLinkPins> = match read_budget {
+            Some(_) => artifacts.pins_bounded()?,
+            None => artifacts.pins(),
+        };
         let original_identity: OrderedHistoryIdentity = links
             .first()
             .ok_or("successor chain is empty")?
@@ -180,7 +294,7 @@ impl BusinessPinInputs {
         let policy: OrderedEconomicsPolicy = authority.ordered_policy(&root)?;
         let context: PublicationContext = policy.context().clone();
         let (identity, ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
-            read_verified_ordered_history_archive(&policy, &self.history_root)?;
+            self.read_history(&policy, read_budget)?;
         Ok(BusinessPins {
             context: context.clone(),
             domain: self.domain,

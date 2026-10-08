@@ -129,3 +129,28 @@ all-or-none verified predecessor chain described in the
 context is derived from that chain, not selected by changing the declared epoch.
 Import/saved verification accept no signer key; their verified business closure
 does not acquire serving or signing authority.
+
+## Proposed encrypted local relocation
+
+[DR-0221](../architecture/decisions/0221-encrypted-recovery-closure.md) and the
+[encrypted recovery contract](../architecture/encrypted-recovery-closure.md)
+propose real authenticated encryption of the original saved bytes, including
+every explicit predecessor role for later cuts. The only selected prospective
+profile is disposable local single-recovery-X25519, not validator signing
+custody, off-host retention or a backup destination.
+
+No `business_recovery`, `pack-saved` or `open-saved` command exists yet.
+The proposed opener must finish authentication, exact inventory/physical EOF
+and independent original-root proof verification in private staging before
+qualification; it never creates SQLite or grants activation. An eventual
+create/resume still uses the existing verifier and inactive boundaries above.
+Independent external pins are not read from the encrypted input.
+
+The proposed exact-TOTAL-cap same-cursor probe can establish physical EOF
+only from a real underlying zero; it never qualifies plaintext or replaces
+final authentication, the subsequent explicit EOF/stamp checks or proofs.
+
+Do not substitute the proposal for this implemented rehearsal, run future
+flags or create a real recovery key. Its beta-library/dependency, bounded SDK
+read, host resource, source-free relocation and custody gates remain explicit.
+Current evidence and remaining M4 requirements belong in [TODO](../../TODO.md).

@@ -57,6 +57,23 @@ dependencies or claim a PG-free graph. Bundled SQLite and ring require native
 CC inputs. PG-only binaries/services, tests/examples and provider builds are
 excluded; no `--workspace`, `--bins`, `--all-targets` or `--all-features`.
 
+### 2026-10-08 encrypted-recovery target amendment
+
+[DR-0221](0221-encrypted-recovery-closure.md) adds the ordinary native operator
+`business_recovery`. Include its real `apps/operator/src/bin/business_recovery.rs`
+target in the SAME closed evidence owner, between `business_import` and
+`conditional_readiness`: twelve selected binaries, not an arbitrary `--bins`
+expansion or another build lane. Reconcile twelve actual package/bin/executable
+observations and compare all twelve saved artifacts with the unchanged full-byte,
+mode, ownership and cleanup rules. Independently assert the closed list in the
+existing cheap fixture owner; doubles are not native execution.
+
+The eleven-target recipe and its original acceptance remain historical evidence
+for their exact source. They do not qualify the newly selected recovery binary
+or its new dependency graph. A new exact committed source, accepted dependency
+closure and two fresh twelve-target builds remain required. This amendment grants
+neither dependency execution nor a resource reservation or release approval.
+
 ## Closed recipe and inputs
 
 Use installed Node 22.20.0, checked through `process.version`; require its

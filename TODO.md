@@ -41,54 +41,119 @@ no new deadline or deployment authority is inferred.
   `./scripts/check-all.sh` PASS, all seven required hosted owners plus `check`,
   and normal merge `4d919b0d` at 07:28 UTC. Merge tree equals the approved head;
   local main equaled origin/main and was clean. PR #281–#284 are merged ancestors.
+- [x] Native SQLite integration (PR #293): normal merge `364e2ec8`, tree
+  `00e1d340`, equals independently reviewed frozen `3ec8d7bd`. Literal npm-ci
+  and full required `./scripts/check-all.sh` both exited 0 on that exact source;
+  fresh eleven-target native A/B byte equality was independently verified.
+  All seven hosted required owners plus success-only `check` succeeded in
+  run `37610011266`. Components #286–#292/#294/#295 are merged. This local
+  profile acceptance is not a security audit or completion of M1–M8.
 
 Validator-set changes, slashing and reward/claim distribution remain FastVote
 completion requirements. Functional acceptance does not close their economic
 and security release gates.
 
-## Current local integration
+## Current native baseline and next gaps
 
 [DR-0208](docs/architecture/decisions/0208-native-sqlite-first-and-protected-signing.md)
-selects Native plus SQLite first and Cloudflare DO later; PostgreSQL remains
-optional. Ledger is deferred, not complete. Protected keys, trusted content
-review, recovery/rotation/revocation and independent qualification remain required.
+selects Native plus SQLite first and Cloudflare DO later. PostgreSQL remains
+optional. Ledger-specific product completion is no longer mandatory for mainnet;
+protected keys, trusted content review, recovery/rotation/revocation and
+independent qualification remain required. Ledger itself is deferred, not complete.
 
-PR #293 merged normally as `364e2ec8` after exact source `3ec8d7bd` passed
-complete independent source review, literal npm-ci and `./scripts/check-all.sh`,
-two fresh sequential Native A/B builds with all eleven retained artifact pairs
-byte-equal and both owned cleanups successful, and all seven hosted owners plus
-success-only `check`. PR #286–#292/#294/#295 are merged components. The merge
-tree equals the accepted source tree; main and origin/main were verified clean
-and equal. This closes that local integration, not M1–M8 or provider qualification.
+PR #293 normally merged the combined source into main at `364e2ec8`; its tree
+equals `3ec8d7bd`. The component source/scoped observations below remain
+separate from the exact combined full gate, native A/B and hosted CI above.
+Do not relabel an earlier component/failed/ancestor attempt as that combined run.
 
-The direct Native TLS follow-up under
-[DR-0219](docs/architecture/decisions/0219-native-direct-tls-connection-ownership.md)
-has complete different-reviewer source approval at `c0d2f217` and an actual
-six-stage scoped PASS: 17 named tests, zero failed/ignored and strict owning
-Clippy. Normal main ancestry is included without changing that functional tree.
-PR #296 is Draft. The final documentation head `70210f57` received fresh
-complete independent source approval, but its first whole-required attempt
-failed in the cheap release fixture after npm-ci passed. The fixture's requested
-file mode depended on the inherited umask; its exact mode oracle is retained.
-The explicit test-owned setup correction has independent source approval and
-all 135 cheap controls passed in a fresh own unit with UMask0077. Its initial
-single-script invocation failed on an extra outer Node flag; the subsequent
-plain-Node invocation preserved the production flag refusal and passed.
-The separate hosted SQLite lanes also failed because they did not build the
-actual CLI prerequisite; the shared selected-group recipe now explicitly
-builds it after complete inventory validation, with new ordering/failure
-controls. Those source-only CI changes require independent review and actual
-gate execution. Neither earlier failure is a TLS/runtime result or a passing
-whole gate. A new exact source freeze,
-literal npm-ci/full required acceptance, genuine ignored successor/history
-recurrence and final-head CI remain mandatory. No ancestor or scoped pass
-substitutes for them.
+| Slice | Exact source and verified scope | Remaining acceptance |
+| --- | --- | --- |
+| PR #286: consensus verifier owner | `f797d049`; complete source approval, consensus 259/0 and genuine core successor controls 5/0 plus strict owning Clippy; merged | Other R1 dependency ownership and M1 review stay open |
+| PR #287: SQLite physical ownership | `621d1a07`; complete source approval, 141/0 real owning tests and strict Clippy; merged | Actual power/ENOSPC/failover remain M3 |
+| PR #288: external signing preparation | `85b8a0a2`; complete source approval, SDK/CLI 491/0 and strict Clippy; actual operator owner compiled, then included in exact combined acceptance; merged | Actual custody stays M2 |
+| PR #289: source-free inactive recovery | `7065a1dd`; complete source approval, 3/0 compiled owning tests and strict Clippy; merged | Encrypted off-host/general recovery stay M4 |
+| PR #290: protected custody design | `dba52ddd`; complete four-document source approval, no provider selection or protected-key implementation | Human threat/review/key-role choices and actual M2 implementation |
+| PR #291: ordered local signatures | `5980522b`; complete final source approval; identical functional `5c05215e` passed 1226/0/7 ignored and strict owning Clippy; merged | Scoped ignored tests remain distinct from separately executed full required owners |
+| PR #292: Native release evidence | `c3f9e3e4`; complete corrected source approval, parent verified 134 compiler/DB/network-free controls and CI contract; fresh combined-source A/B subsequently passed; merged | Hermeticity, broader conformance/advisory/provider qualification remain M7 |
+| PR #294: local TLS rotation | `2ba302a2`; complete eight-path source approval, all six owning stages passed, real TLS 3/0 and SDK remote TLS 15/0 with no ignored tests, strict Clippy; merged | Production PKI, revocation and custody remain open |
+| PR #295: publication-query contract owner | `bdfee63a`; complete 27-path source approval, all eleven scoped stages passed, 429 executed cases with zero ignored, actual CLI/HTTP/SQLite workflows, operator/DO compile and strict Clippy; merged | Other scoped core tests were filtered; full SDK/core dependency decoupling is not claimed |
 
-Prior failed/interrupted/source-blocked attempts and component evidence remain
-in the [preserved queue](docs/development/history/execution-queue-through-2026-10-07.md#native-integration-and-direct-tls-observations-2026-10-08).
-Production PKI/custody, locked advisories and M1–M8 remain open. Reconcile live
-heads and ownership before each gate; preserve Draft #235 and never auto-merge
-dependency PRs.
+Initial failed source/test attempts remain in the preserved queue and immutable
+evidence; they are not passed. The `8974634a` ordered test failed one timing
+assertion, then was corrected without production changes or weakened assertions.
+The earlier `2e191ae5` missing-marker and `69a2992d` raw-BOM source blocks are
+preserved; their corrected fixture controls are not relabeled as native builds.
+Package compilation does not prove the expensive original operator recurrence.
+
+Historical frozen `afac7908` received complete source approval and passed
+the actual offline-closure/eleven-target preflight. Its first genuine native A
+build completed and all eleven independent snapshots were verified; cleanup A
+then failed on an internal Cargo hardlink's own unlink metadata transition.
+Build B did not start. Preserve that incomplete run rather than reuse/adopt it.
+The accepted DR-0213 clarification requires closed in-tree link groups and
+byte-verified own-unlink transitions. Corrected `c3f9e3e4` has complete independent
+source approval and 134 parent-verified cheap controls plus the CI contract.
+The later exact `3ec8d7bd` sequence independently verified BOTH new native
+builds and byte equality. No failed A is reused or relabeled.
+The PR's later `70702fbe` bot correction changes only a local SDK provider-length
+diagnostic. Its precise 63/65-byte refusal controls passed in the `bdfee63a`
+scoped paid SDK target, then the exact `3ec8d7bd` combined gate passed.
+That pass is not inherited from `afac7908`; its failed cleanup remains failed.
+
+DR-0216's quiet local TLS leaf rollover, separate CA cutover and finite peer-close
+controls at `2ba302a2` completed all six scoped stages at 09:49 UTC: format,
+actual operator/CLI builds, real TLS tests, SDK remote TLS and strict Clippy.
+Complete independent source approval covers all eight paths. Earlier `4643836a`
+rcgen API compilation and `d1da1892` child-reap Clippy failures remain preserved;
+neither is counted as a pass. These controls are not production PKI, revocation,
+custody or M5 qualification.
+
+DR-0217's complete source review and eleven scoped stages passed at `bdfee63a`
+at 10:17 UTC. Actual immutable query frames, independent SDK refusal/error
+chains, verified paid dependency loading, historical HTTP and compiled CLI
+lifecycles are covered. This remains one migrated ownership boundary, not whole
+SDK decoupling, optional PG qualification, or an independent security audit.
+
+Direct-native TLS is now Draft [PR #296](https://github.com/sunriselayer/sunrise-edge/pull/296),
+head `c35a9dec`, tree `bdeb3e60`. Complete independent source approval covers
+the retained TLS changes and the five-file CI/fixture correction. The earlier
+`c0d2f217` scoped retry1 passed all six stages and 17 exact named tests with
+zero failures/ignored, strict owning Clippy and verified teardown. The corrected
+release fixture separately passed 135 controls under the owned restrictive
+umask; the exact `c35a9dec` compiler-free CI contract exited 0 in 18.452 seconds.
+None of these scoped observations replaces the whole required gate.
+The first `70210f57` local full attempt FAILED before Rust in the fixture
+contract; its two hosted prerequisite failures and all earlier failures remain
+preserved, including the initial fixture invocation's undeclared Node-flag
+refusal. The shared selected-group recipe now builds the actual compiled CLI
+after complete inventory validation and before isolated SQLite lane discovery.
+The fresh `c35a9dec` literal npm-ci/full-required retry ran from 19:16:40 to
+22:39:02 UTC on 2026-10-07; both stages exited 0/null. The parent accepted ONLY
+that exact local required gate at 22:41:07 UTC (receipt `ba459f81`), including
+the genuine ignored seven-epoch/full-unlock owners. As of the parent's 22:43
+check, unchanged at 22:59 UTC, hosted run `37671265599` had six of seven
+required owners successful; recurring was still in progress and no final
+success-only `check` had run. PR #296 remains Draft and is NOT merged.
+No fresh c35 native A/B or M5 production qualification follows.
+
+M4 has provisionally advanced ff-only to exact `c35a9dec`, NOT a main merge.
+The retained own stash `74eef98c` was applied once and exited 1 with four
+attributable content conflicts. The five-file source resolution preserves both
+TLS witnesses, terminal encrypted restore and the twelfth release target.
+The combined source is NOT approved or compiled; the original 48-path source
+approval and c35-only local gate do not approve this union. Old M4 metadata
+SOURCE DATA inventories and helper/launch bindings are stale. The metadata
+executor/capture remains uninvoked; do not refresh or invoke it implicitly.
+
+Next: independently inspect this provisional combined source, finish M5's
+hosted gate and normal merge, then align M4 to the actual accepted main base.
+Only a fresh exact source/lock inventory and separately reviewed binding may
+precede any authorized metadata resolution or compilation. Keep the accepted
+[DR-0221](docs/architecture/decisions/0221-encrypted-recovery-closure.md)
+transport/restore requirements and fresh twelve-target A/B gates intact.
+Rustls advisories, optional PG acceptance, production PKI/custody and M3's
+environment-unavailable memory/noswap choice remain open. Reconcile exact heads
+and ownership before action; preserve Draft #235 and never auto-merge dependencies.
 
 ## Responsibility-oriented work packages
 
@@ -106,17 +171,16 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   to one defining data/codec/error/bounds owner and remove copied rules/reverse
   coupling without changing bytes, error priority or authority.
   DR-0201's envelope/list and acknowledgement owner is merged. DR-0209's one
-  consensus Ed25519 adapter and all actual consumers are now merged through
-  PR #293. DR-0217 gives the publication-query result, codec, bounds and
-  four-category error one execution owner in that accepted integration. Actual
+  consensus Ed25519 adapter and all actual consumers are merged in the baseline
+  above. DR-0217 now gives the publication-query result, codec, bounds and
+  four-category error one execution owner in the merged baseline. Actual
   SDK, original/successor HTTP, Rust DO and operator consumers migrate directly;
   old core definitions and the SDK admission-error conversion are removed.
   Core durable authority and all wire bytes/error priority stay separate. Nine
   pure framing controls and stronger actual SDK error assertions are added.
-  Complete source approval and eleven-stage scoped execution passed at
-  `bdfee63a`; combined source/gate/CI acceptance subsequently passed at
-  `3ec8d7bd` before normal PR #293 integration. This is not the direct-TLS
-  follow-up head's full acceptance.
+  Complete source approval and actual eleven-stage scoped execution passed at
+  `bdfee63a`; the separate exact `3ec8d7bd` combined source/gate/CI acceptance
+  then passed and normally merged at `364e2ec8`.
   Remaining core/SDK type coupling is explicit, not solved by inventing
   a foundations crate containing execution. Complete SDK decoupling is not
   inferred from these migrated boundaries.
@@ -207,9 +271,10 @@ and cross-phase criteria; it does not shorten them.
   ambiguity reconciliation. DR-0210's real SQLite process/lock tests are narrower
   than host/power/storage faults, ENOSPC/resource exhaustion, real writer failover
   and TLS failure/rotation. Qualify those actual selected-profile boundaries.
-  The isolated ENOSPC capability preflight returned ENVIRONMENT_UNAVAILABLE
-  (78): unprivileged tmpfs refused required `noswap`. No fault/SQL fixture ran;
-  the bounded memory/swap resource decision remains with the human.
+  The bounded non-faulting private-namespace capability attempt ended
+  ENVIRONMENT_UNAVAILABLE/78: required unprivileged tmpfs noswap was unsupported.
+  No SQLite/ENOSPC filler or privilege fallback ran. Retained actual failure/
+  refusal history remains separate; safe host/resource direction needs a human.
 - [ ] **M4 — checkpoint, backup and disaster recovery:** publish/verify required
   checkpoint/state-root and immutable body manifests; encrypted off-host backup,
   isolated exact history/receipt/blob restore, fresh fencing, migration/upgrade
@@ -217,42 +282,43 @@ and cross-phase criteria; it does not shorten them.
   with original paths unavailable and genuine WAL creation failure, not arbitrary
   crash continuation, off-host backup, old-writer exclusion or activation authority.
   Use PITR/WAL and PG-specific operations only for a selected PG profile.
-  A corrected Native/SQLite checkpoint-and-backup proposal is underway
-  separately; it is not accepted or implemented.
+  Accepted-design [DR-0221](docs/architecture/decisions/0221-encrypted-recovery-closure.md)
+  specifies a corrected bounded encrypted saved-closure transport for original
+  and full predecessor roles. Parent full-text review and a different complete
+  DESIGN_APPROVE are finished, including C1-C3 and the C4 same-cursor real-EOF
+  correction. The bounded SDK source, encrypted pack/open and genuine original/
+  seven-epoch source-free restore controls were authored in the original
+  48-path tuple. Earlier surplus-directory and independent L>0 layout BLOCKs
+  remain preserved. Their narrow corrections include an independently fixed
+  L=1 record/hash/all-role/File/Footer vector; the L=16 ceiling and negative
+  controls are retained. The corrected original tuple received different
+  SOURCE_ONLY approval, not execution. That old approval does not approve the
+  new c35-combined source, which is neither approved nor compiled. Exact age/
+  libc/zeroize/rustix edges remain source-only; the current c35 lock is only the
+  preserved starting constraint, not a resolved M4 graph. Old metadata SOURCE
+  DATA/helper bindings are stale; metadata remains uninvoked. Dependency
+  provenance, graph/features, advisories, compilation and runtime acceptance
+  are unverified. Aggregate repeated-walk/decode/deadline cost is still UNKNOWN;
+  do not reset or widen the shared budget to force a pass. Both prior design
+  BLOCKs remain preserved. Disposable local X25519 does not select real custody
+  or off-host retention; no M4 completion is claimed.
 - [ ] **M5 — production ingress/operations:** actual auth/TLS PKI/rotation, every
   exposed family's authorization, retry/backpressure/request/work/capacity budgets,
   monitoring/alerts, incident response, validator/liveness operations and spend
   limits. Initial testnet may precede representative load/soak; mainnet capacity
   evidence remains required and its real workload/SLO needs a human decision.
   [DR-0219](docs/architecture/decisions/0219-native-direct-tls-connection-ownership.md)
-  implements optional direct Native TLS under the existing connection/work
-  owners, immutable bounded startup loading and explicit stopped rotation.
-  Corrected `c0d2f217` received complete different-reviewer source approval and
-  passed all six scoped stages at 16:56 UTC on 2026-10-07: locked CLI build,
-  attachment refusal, real TLS connection/output, compiled four-store original
-  host/direct rotation plus retained relay controls, and strict owning Clippy.
-  All 17 named tests passed with zero failed/ignored; exact child/group/lease
-  teardown was verified. These are owning results, not whole M5 acceptance.
-  Genuine activated-successor and signerless-history controls were NOT RUN by
-  this scope; the unchanged full required recurrence, seven-epoch/full-unlock
-  workload, fresh final-head literal npm-ci/check-all and CI remain mandatory.
-  Prior source blocks and the first runner's incorrect expected-count failure
-  remain preserved in the archived queue, never adopted as passing.
-  Final source `70210f57` received a fresh complete independent review; its
-  whole-required invocation `0e62db50` failed on the cheap fixture's mode
-  assertion before Rust/full recurrence. Hosted `37662978717` separately failed
-  both SQLite process lanes on a missing CLI binary. Explicit fixture modes and
-  selected-lane build prerequisites are corrected without changing the
-  restrictive service umask, test selectors, expected bytes or unlock delay.
-  The fixture alone subsequently passed all 135 controls under UMask0077;
-  isolated-lane and whole corrected-source execution are separate gates.
-  Fresh complete acceptance and CI for the corrected source are still open.
-  The M5 lock delta only adds direct edges to already locked versions; no PG
-  dependency/version changes occur. Locked Rustls 0.23.43 remains affected by
-  RUSTSEC-2026-0285 (patched in >=0.23.45). The shared upgrade and local PG
-  acceptance authority need the pending human decision; no clearance or old-lock
-  exposure recommendation follows. Production PKI, caller authorization,
-  protected custody and revocation remain open.
+  adds optional direct Native TLS under the existing connection/work owners,
+  immutable bounded loading and explicit stopped rotation. Draft #296 at
+  `c35a9dec` has exact-source local full-required acceptance as recorded above;
+  hosted CI and normal merge remain pending. The new M4/c35 union has no
+  inherited combined approval or execution. Production PKI, caller authority,
+  revocation, operations and capacity/custody qualification remain open.
+  M5's lock delta adds only direct edges to already locked versions. Locked
+  Rustls 0.23.43 remains affected by RUSTSEC-2026-0285 (patched in >=0.23.45).
+  The shared Rustls upgrade and complete local PG acceptance need the pending
+  human decision; no dependency change, advisory clearance or exposure
+  recommendation follows from the local required gate.
 - [ ] **M6 — economics/genesis approval:** real sets, independent roles, voting
   powers, bond/fee assets/schedules, treasury/supply/distribution, security and
   unbonding parameters, governance authorities, ceremony and supply invariants.
@@ -261,20 +327,30 @@ and cross-phase criteria; it does not shorten them.
   dependencies/build provenance, two actual fresh artifact builds and byte
   equality, canonical/digest/effects/consensus/proof parity, conformance/property/
   fuzz/adversarial/long-running coverage, tested upgrade/migration/restore and
-  advisory review before activation. DR-0213's cheap fixtures/source preflight are
-  not native-build execution, hermeticity or complete M7 evidence. Actual Phase
-  16/17 criteria remain for advertised providers; a local adapter is insufficient
-  and narrowing historical all-provider scope needs approval.
-  Two fresh same-host Native builds passed at `3ec8d7bd`; this is not complete
-  M7 qualification. The original builtins-only isolated-runtime S0 attempt and
-  its separate descriptor diagnostic failed. A separately reviewed own-unit
-  three-syscall denial subsequently passed the builtins-only checks; it did not
-  execute acquired code or prove package isolation. Its exited unit was retained
-  for 28.010 seconds before stopping, so a strict twenty-second deactivation
-  bound was not met. The corrected two-archive DATA plan is independently
-  approved only as a plan; no archive/helper invocation or package acceptance
-  follows. Acquired package/native code has not been executed in that isolation
-  profile; no runtime clearance is inferred.
+  advisory review before activation. DR-0213's exact `3ec8d7bd` fresh eleven-
+  target native A/B byte equality passed and was independently verified; cheap
+  fixtures alone were never native execution. This is not hermeticity or complete
+  M7 evidence. The new encrypted `business_recovery` target extends the SAME
+  closed release owner to twelve selected binaries; its new exact-source
+  dependency review and fresh twelve-target builds are still unexecuted.
+  The original S0 unknown-FD attempt and separate diagnostic remain FAILED.
+  A different own-unit three-syscall denial passed only builtin checks, not
+  acquired-code isolation. Its exited unit remained for 28.010 seconds before
+  stopping, so the strict twenty-second deactivation bound was not met.
+  A separate bounded DATA-only stage actually acquired and integrity-verified
+  exactly the
+  Wrangler 4.148.0 and Vitest plugin 1.3.7 archives, closed all 51 member records
+  and read their manifests; the parent accepted raw exits, caps and teardown.
+  No package code, native binary or install was executed. The separate fixed-
+  member TEXT reader received complete different source approval, then one
+  authorized local-only capture retained exactly 17,568,262 original bytes.
+  Both member hashes, complete raw exit/EOF/byte evidence, source identities
+  and all 27 owned child PIDs/process-group absence were parent-verified.
+  This permits text-only copy analysis, not evaluation or installation.
+  Actual bundled dependency
+  remediation, installation/compatibility and advisory clearance remain UNKNOWN.
+  Actual Phase 16/17 criteria remain for advertised providers; a local adapter
+  is insufficient and narrowing historical all-provider scope needs approval.
 - [ ] **M8 — public operation/final go-no-go:** complete Delivery 4 and actual
   public-operation/recovery evidence; review experimental, unsupported, mock and
   deferred capabilities against the original criteria. Mainnet genesis and
@@ -299,10 +375,13 @@ with DR-0208; Ledger is deferred, not complete. Other original conditions remain
 
 Protected-signing threat/backend, trusted content-review surface and independent
 key/recovery/operator roles; SECURITY policy approval; supported-provider scope;
-real workload/SLO and genesis/economic values; the isolated memory/swap resource
-boundary and shared Rustls upgrade/local PG acceptance; any bounded protocol-v3
-testnet exception and eventual public launch. These choices do not block
-independent safe local implementation, but cannot be replaced with fixture values.
+real workload/SLO and genesis/economic values; shared Rustls upgrade and
+complete local PG acceptance; any bounded protocol-v3 testnet exception and
+eventual public launch. These choices do not block independent
+safe local implementation, but cannot be replaced with fixture values. M3's
+required noswap host/resource prerequisite and real off-host recovery custody/
+retention remain human choices; the disposable DR-0221 test profile selects
+neither. Do not weaken the actual environment refusal to manufacture a pass.
 
 ## Deferred products
 

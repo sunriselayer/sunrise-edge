@@ -96,12 +96,65 @@ pub struct Fixture {
     pub local_policy: LocalExecutionPolicy,
     pub engine: LocalWasmExecutionEngine,
     pub stores: Vec<SqliteDurableStore>,
-    pub blobs: SqliteBlobStore,
+    pub blobs: FixtureBlobs,
     pub operation: DurableOperationContext,
     pub directory: Directory,
 }
 
+/// Concrete test-private owner, allowing the terminal cold-recovery acceptance
+/// to drop the actual original pool without constructing a replacement store.
+pub struct FixtureBlobs(Option<SqliteBlobStore>);
+impl std::ops::Deref for FixtureBlobs {
+    type Target = SqliteBlobStore;
+    fn deref(&self) -> &Self::Target {
+        self.0
+            .as_ref()
+            .expect("source blob owner closed only after all source work")
+    }
+}
+// Generic existing snapshot callers do not apply Deref coercions. Forward the
+// four existing concrete repository methods only, preserving every old caller.
+impl runtime::BlobStore for FixtureBlobs {
+    fn put_blob(
+        &self,
+        digest: protocol_types::Digest32,
+        bytes: Vec<u8>,
+    ) -> Result<(), runtime::RuntimeError> {
+        runtime::BlobStore::put_blob(&**self, digest, bytes)
+    }
+    fn get_blob(
+        &self,
+        digest: &protocol_types::Digest32,
+    ) -> Result<Option<Vec<u8>>, runtime::RuntimeError> {
+        runtime::BlobStore::get_blob(&**self, digest)
+    }
+}
+impl runtime::portable::PortableBlobRepository for FixtureBlobs {
+    fn read_portable_blob_descriptor(
+        &self,
+        digest: &protocol_types::Digest32,
+    ) -> Result<Option<runtime::portable::PortableBlobDescriptor>, runtime::RuntimeError> {
+        runtime::portable::PortableBlobRepository::read_portable_blob_descriptor(&**self, digest)
+    }
+    fn read_portable_blob_chunk(
+        &self,
+        request: &runtime::portable::PortableBlobChunkRequest,
+    ) -> Result<runtime::portable::PortableBlobChunkOutcome, runtime::RuntimeError> {
+        runtime::portable::PortableBlobRepository::read_portable_blob_chunk(&**self, request)
+    }
+}
+
 impl Fixture {
+    #[allow(dead_code)] // Only the full recurring acceptance closes this owner.
+    pub fn close_source_owners(&mut self) {
+        self.stores.clear();
+        drop(
+            self.blobs
+                .0
+                .take()
+                .expect("original blob pool closes exactly once"),
+        );
+    }
     pub fn new() -> Self {
         Self::build(false)
     }
@@ -167,7 +220,7 @@ impl Fixture {
             local_policy,
             engine: LocalWasmExecutionEngine::new(),
             stores,
-            blobs,
+            blobs: FixtureBlobs(Some(blobs)),
             operation,
             directory,
         };

@@ -2389,7 +2389,7 @@ fn assert_prior_epoch_envelopes_refused(
 }
 
 pub(super) fn run(
-    fixture: &Fixture,
+    fixture: &mut Fixture,
     inputs: &SuccessorProcessInputs,
     initial_history: &Path,
     original_seal_request: [u8; 32],
@@ -2958,4 +2958,174 @@ pub(super) fn run(
     let _terminal_envelopes: (Vec<u8>, Vec<u8>) =
         prove_f_ordered_quorum(&unlocked, &hosts, &final_directory);
     verify_receipts(&receipt_history, &hosts);
+    // All existing genuine seven-epoch/full-unlock assertions above have
+    // finished. Recovery adds a SEPARATE terminal control transition, never
+    // relabels the e6 cut as latest state or advances/activates an e8.
+    let pre_freeze: ProtectedState = protected_state(fixture, &targets);
+    let recovery_control: PathBuf = final_directory.join("terminal-recovery-control");
+    std::fs::create_dir(&recovery_control).unwrap();
+    let _terminal_freeze: (Vec<u8>, Vec<u8>) = freeze_and_drain(
+        fixture,
+        &links,
+        &unlocked,
+        &targets,
+        &hosts,
+        &recovery_control,
+        &final_network,
+        &targets.members,
+    );
+    let post_freeze: ProtectedState = protected_state(fixture, &targets);
+    assert_ne!(
+        post_freeze, pre_freeze,
+        "genuine terminal Freeze/drain changes control/receipt state; it is not a no-write claim"
+    );
+    let terminal_history: PathBuf = recovery_control.join("history-through-cut");
+    export_history(
+        fixture,
+        &links,
+        &unlocked,
+        &final_network,
+        hosts[0].validator,
+        &terminal_history,
+    );
+    let terminal_cut: PathBuf = recovery_control.join("business-cut");
+    std::fs::create_dir(&terminal_cut).unwrap();
+    let mut terminal_pins: Vec<String> = current_operator_pins(fixture, &links, &terminal_history);
+    let mut export_flags: Vec<String> = terminal_pins.clone();
+    export_flags.extend(target_flags(&targets, 0, true));
+    export_flags.extend([
+        "--out-dir".into(),
+        terminal_cut.to_str().unwrap().into(),
+        "--timeout-seconds".into(),
+        "3600".into(),
+    ]);
+    assert!(
+        operator(
+            inputs.executables.business_cut.to_str().unwrap(),
+            "export-sqlite",
+            export_flags
+        )
+        .contains("business_cut=complete")
+    );
+    let latest_identity: node_core::business_reconstruction::cut::BusinessCutIdentity =
+        node_core::business_reconstruction::cut::decode_business_cut_identity(
+            &std::fs::read(terminal_cut.join("identity.bin")).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(latest_identity.context.epoch(), terminal_epoch);
+    assert_eq!(unlocked.authority().link_count() as usize, links.len());
+    assert_eq!(
+        links.len(),
+        7,
+        "configured genuine fixture preserves ALL seven predecessors"
+    );
+    let expected_binding: runtime::ImportBinding = {
+        let archive: sunrise_edge_client::immutable_archive::ImmutableArchiveReader =
+            sunrise_edge_client::immutable_archive::ImmutableArchiveReader::open(&terminal_cut)
+                .unwrap();
+        let plan: node_core::business_reconstruction::BusinessReconstructionPlan<'_> =
+            fixture.plan(&latest_identity.ordered_history, fixture.operation);
+        let saved: node_core::business_reconstruction::cut::SavedBusinessCut =
+            sunrise_edge_client::business_cut_archive::read_business_cut_archive(&plan, &archive)
+                .unwrap();
+        let verified: node_core::business_reconstruction::inactive_import::VerifiedImportPlan = node_core::business_reconstruction::inactive_import::verify_saved_business_import_chain(plan, unlocked.authority(), &latest_identity.ordered_history, &saved).unwrap();
+        verified.binding().clone()
+    }; // No cached proof permit or attached source reader crosses cold recovery.
+    assert_eq!(expected_binding.context.epoch, terminal_epoch);
+    assert_eq!(
+        expected_binding.generation_floor,
+        latest_identity.generation_floor
+    );
+    let mut withdrawal_state: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+    for owner in &owners {
+        let key: Vec<u8> = node_core::local_instance_state::fastpath_bond_record_key(
+            &fixture.network.chain_id,
+            &owner.member.validator_id,
+        )
+        .unwrap();
+        let bytes: Vec<u8> = retained_state(&post_freeze.business[0], &key);
+        let bond: node_core::fast_path::records::FastPathBondRecord =
+            node_core::fast_path::records::decode_fastpath_bond_record(&bytes).unwrap();
+        assert_eq!(
+            bond.state,
+            node_core::fast_path::records::FastPathBondState::Exited,
+            "genuine full-unlock withdrawal is retained before transport"
+        );
+        assert_eq!(
+            retained_state(&pre_freeze.business[0], &key),
+            bytes,
+            "terminal Freeze/drain preserves unlocked owner bytes"
+        );
+        for snapshot in &post_freeze.business {
+            assert_eq!(retained_state(snapshot, &key), bytes);
+        }
+        withdrawal_state.insert(key, bytes);
+        let nonce: Vec<u8> = runtime::PersistenceLayout::new(
+            fixture.network.chain_id.clone(),
+            fixture.network.protocol_version,
+        )
+        .sender_nonce_key(*owner.member.validator_id.as_bytes(), terminal_epoch);
+        let bytes: Vec<u8> = retained_state(&post_freeze.business[0], &nonce);
+        assert_eq!(
+            retained_state(&pre_freeze.business[0], &nonce),
+            bytes,
+            "terminal control does not substitute withdrawn owner nonces"
+        );
+        withdrawal_state.insert(nonce, bytes);
+    }
+    // Every serving child is killed+reaped by its existing concrete Drop;
+    // preceding in-process seal servers were awaited and their ports/stores
+    // dropped; historical exporter servers/tasks also finished before here.
+    // protected_state/local archive scopes above retained only owned DATA.
+    hosts.clear();
+    fixture.close_source_owners(); // Drop actual original blob pool, no dummy DB.
+    let relocation: super::super::fixture::Directory =
+        super::super::fixture::Directory::new("recurring-terminal-encrypted-relocation");
+    let predecessors: Vec<[PathBuf; 4]> = links
+        .iter()
+        .map(|link: &Link| {
+            [
+                link.plan_history.clone(),
+                link.cut.clone(),
+                link.manifest_history.clone(),
+                link.certificate.clone(),
+            ]
+        })
+        .collect();
+    let terminal_pins: Vec<OsString> = terminal_pins.drain(..).map(OsString::from).collect();
+    // First-successor targets were created in independent Directory owners;
+    // later epoch targets are under the original fixture root. Hide BOTH,
+    // plus the explicit current targets, rather than retaining retired SQL.
+    let mut unavailable_roots: Vec<PathBuf> = vec![fixture.directory.0.clone()];
+    unavailable_roots.extend(inputs.targets.iter().cloned());
+    unavailable_roots.extend(targets.paths.iter().cloned());
+    let recovered: node_core::business_reconstruction::SourceBusinessSnapshot =
+        super::super::encrypted_recovery_acceptance::relocate(
+            super::super::encrypted_recovery_acceptance::Relocation {
+                recovery: &inputs.executables.business_recovery,
+                importer: &inputs.executables.business_import,
+                pins: &terminal_pins,
+                cut: &terminal_cut,
+                predecessors: &predecessors,
+                genesis: &fixture.directory.0.join("genesis.bin"),
+                unavailable_roots: &unavailable_roots,
+                work: &relocation.0,
+                binding: &expected_binding,
+                validator: ValidatorId::new([0xec; 32]),
+                expected_state: &withdrawal_state,
+                expected_business: &post_freeze.business[0],
+            },
+        );
+    assert!(recovered.token.namespace() != post_freeze.business[0].token.namespace());
+    assert_eq!(
+        recovered.token.writer_fence(),
+        WriterFenceGeneration::new(1).unwrap()
+    );
+}
+
+fn retained_state(
+    snapshot: &node_core::business_reconstruction::SourceBusinessSnapshot,
+    key: &[u8],
+) -> Vec<u8> {
+    snapshot.records.iter().find(|record| matches!(record.descriptor.key(), runtime::portable::DurableRecordKey::State(actual) if actual.as_slice() == key)).and_then(|record| record.value.clone()).expect("genuine retained business state bytes")
 }

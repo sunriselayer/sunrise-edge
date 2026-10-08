@@ -1,7 +1,7 @@
 //! Swept new DR-0175 namespace 0x64B0..0x64BA. No historical frame changes.
 use super::*;
 use crate::ordered_economics::{decode_ordered_history_identity, encode_ordered_history_identity};
-use canonical_encoding::{CanonicalFrame, decode_canonical_frame};
+use canonical_encoding::{CanonicalFrame, decode_canonical_frame, decode_canonical_frame_bounded};
 use execution::publication::{decode_publication_context, encode_publication_context};
 
 const VERSION: u16 = 1;
@@ -438,13 +438,41 @@ pub fn encode_business_cut_page(value: &BusinessCutPage) -> Result<Vec<u8>, Busi
     Ok(bytes)
 }
 pub fn decode_business_cut_page(bytes: &[u8]) -> Result<BusinessCutPage, BusinessCutError> {
+    decode_page(bytes, None, &mut |_: usize| -> bool { true })
+}
+
+/// Additive local work admission before field/descriptor count allocations;
+/// protocol bytes and the ordinary decoder remain unchanged.
+pub fn decode_business_cut_page_bounded(
+    bytes: &[u8],
+    maximum_components: usize,
+    admit: &mut impl FnMut(usize) -> bool,
+) -> Result<BusinessCutPage, BusinessCutError> {
+    decode_page(bytes, Some(maximum_components), admit)
+}
+
+fn decode_page(
+    bytes: &[u8],
+    maximum_components: Option<usize>,
+    admit: &mut impl FnMut(usize) -> bool,
+) -> Result<BusinessCutPage, BusinessCutError> {
     bounded(bytes, MAX_BUSINESS_CUT_PAGE_BYTES)?;
-    let value: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
+    let value: CanonicalFrame<'_> = if let Some(maximum) = maximum_components {
+        let fields: usize = 8_usize
+            .checked_add(maximum.min(MAX_BUSINESS_CUT_PAGE_ENTRIES))
+            .ok_or_else(|| invalid("local cut field bound overflow"))?;
+        decode_canonical_frame_bounded(bytes, fields)?
+    } else {
+        decode_canonical_frame(bytes)?
+    };
     value.require_type(0x64B4)?;
     value.require_version(VERSION)?;
     let count: usize = usize::from(value.required_u16(8)?);
     if count > MAX_BUSINESS_CUT_PAGE_ENTRIES {
         return Err(invalid("cut page count capacity"));
+    }
+    if maximum_components.is_some_and(|maximum: usize| count > maximum) || !admit(count) {
+        return Err(invalid("local cut component budget"));
     }
     let fields: Vec<u16> =
         (1..=u16::try_from(8 + count).map_err(|_| invalid("cut page fields"))?).collect();

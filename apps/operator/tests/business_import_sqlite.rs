@@ -3,6 +3,10 @@
 
 #[path = "support/causal_genesis_fixture.rs"]
 mod causal_genesis_fixture;
+#[path = "support/compiled_source_host_process.rs"]
+mod compiled_source_host_process;
+#[path = "support/encrypted_recovery_acceptance.rs"]
+mod encrypted_recovery_acceptance;
 #[path = "business_cut/fixture.rs"]
 mod fixture;
 #[path = "support/genesis_fixture.rs"]
@@ -543,6 +547,23 @@ fn compiled_verified_import_creates_reopens_and_reverifies_without_ordinary_serv
         network.manifest_bytes,
         "the independently retained signed genesis pin is never rewritten",
     );
+    // Add encrypted relocation to THIS genuine frozen/drained producer, after
+    // every existing inactive/refusal/replay oracle and before source returns.
+    let recovery_directory: Directory = Directory::new("original-encrypted-relocation");
+    encrypted_recovery_acceptance::relocate(encrypted_recovery_acceptance::Relocation {
+        recovery: Path::new(env!("CARGO_BIN_EXE_business_recovery")),
+        importer: Path::new(env!("CARGO_BIN_EXE_business_import")),
+        pins: &pins,
+        cut: &cut.0,
+        predecessors: &[],
+        genesis: &source_directory.0.join("genesis.bin"),
+        unavailable_roots: &[source_directory.0.clone()],
+        work: &recovery_directory.0,
+        binding: &binding_before,
+        validator: ValidatorId::new([0xe8; 32]),
+        expected_state: &BTreeMap::new(),
+        expected_business: &before,
+    });
     // The entire source-free sequence is over before either attachment returns.
     std::fs::rename(&hidden_state, &source_state).unwrap();
     std::fs::rename(&hidden_blobs, &source_blobs).unwrap();

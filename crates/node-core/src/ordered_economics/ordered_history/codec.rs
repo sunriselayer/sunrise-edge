@@ -1,7 +1,7 @@
 //! New DR-0169 frames only. Existing proofs, candidates, receipts and keys keep
 //! their original codecs. No all-components content superframe is defined.
 use super::*;
-use canonical_encoding::decode_canonical_frame;
+use canonical_encoding::{decode_canonical_frame, decode_canonical_frame_bounded};
 
 const IDENTITY_TYPE: u16 = 0x6490;
 const COMPONENT_TYPE: u16 = 0x6491;
@@ -123,13 +123,41 @@ pub fn encode_ordered_history_height_descriptor(
 pub fn decode_ordered_history_height_descriptor(
     bytes: &[u8],
 ) -> Result<OrderedHistoryHeightDescriptor, OrderedEconomicsError> {
+    decode_descriptor(bytes, None, &mut |_: usize| -> bool { true })
+}
+
+/// Additive local count admission through the SAME descriptor parser. The supplied
+/// callback charges invocation work before component/field vectors are allocated.
+pub fn decode_ordered_history_height_descriptor_bounded(
+    bytes: &[u8],
+    maximum_components: usize,
+    admit: &mut impl FnMut(usize) -> bool,
+) -> Result<OrderedHistoryHeightDescriptor, OrderedEconomicsError> {
+    decode_descriptor(bytes, Some(maximum_components), admit)
+}
+
+fn decode_descriptor(
+    bytes: &[u8],
+    maximum_components: Option<usize>,
+    admit: &mut impl FnMut(usize) -> bool,
+) -> Result<OrderedHistoryHeightDescriptor, OrderedEconomicsError> {
     require_small(bytes)?;
-    let frame = decode_canonical_frame(bytes)?;
+    let frame: canonical_encoding::CanonicalFrame<'_> = if let Some(maximum) = maximum_components {
+        let fields: usize = 5_usize
+            .checked_add(maximum.min(MAX_ORDERED_HISTORY_COMPONENTS))
+            .ok_or_else(|| invalid("local ordered history field bound overflow"))?;
+        decode_canonical_frame_bounded(bytes, fields)?
+    } else {
+        decode_canonical_frame(bytes)?
+    };
     frame.require_type(DESCRIPTOR_TYPE)?;
     frame.require_version(VERSION)?;
     let count: usize = usize::from(frame.required_u16(5)?);
     if count == 0 || count > MAX_ORDERED_HISTORY_COMPONENTS {
         return Err(invalid("ordered history component count"));
+    }
+    if maximum_components.is_some_and(|maximum: usize| count > maximum) || !admit(count) {
+        return Err(invalid("local ordered history component budget"));
     }
     let fields: Vec<u16> = (1..=u16::try_from(5 + count)
         .map_err(|_| invalid("ordered history component field"))?)
@@ -293,6 +321,36 @@ mod tests {
         assert_eq!(
             decode_ordered_history_height_descriptor(&descriptor_bytes).unwrap(),
             descriptor
+        );
+        let mut charged: usize = 0;
+        assert_eq!(
+            decode_ordered_history_height_descriptor_bounded(
+                &descriptor_bytes,
+                1,
+                &mut |count: usize| -> bool {
+                    charged += count;
+                    true
+                },
+            )
+            .unwrap(),
+            descriptor
+        );
+        assert_eq!(charged, 1);
+        assert!(
+            decode_ordered_history_height_descriptor_bounded(
+                &descriptor_bytes,
+                1,
+                &mut |_: usize| -> bool { false },
+            )
+            .is_err()
+        );
+        assert!(
+            decode_ordered_history_height_descriptor_bounded(
+                &descriptor_bytes,
+                0,
+                &mut |_: usize| -> bool { panic!("admission must precede allocation") },
+            )
+            .is_err()
         );
         let summary: OrderedHistorySummary = OrderedHistorySummary { identity };
         let mut expected: CanonicalStruct = CanonicalStruct::new(0x6493, 1);

@@ -1518,7 +1518,7 @@ fn receipts(
 
 /// Positive first-successor process acceptance; see the module boundary.
 pub async fn run(
-    fixture: &Fixture,
+    fixture: &mut Fixture,
     inputs: &SuccessorProcessInputs,
     seal: &OrderedCandidate,
     fence: WriterFenceGeneration,
@@ -1529,7 +1529,7 @@ pub async fn run(
 }
 
 fn accept(
-    fixture: &Fixture,
+    fixture: &mut Fixture,
     inputs: &SuccessorProcessInputs,
     seal: &OrderedCandidate,
     export: &Path,

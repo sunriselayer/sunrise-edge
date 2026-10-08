@@ -2500,6 +2500,6 @@ pub(super) async fn run(
         consensus::encode_quorum_certificate(original_certificate).unwrap(),
     );
     drop(initial_seal);
-    super::successor_host_acceptance::run(&*fixture, successor, candidate, fence, &original_round)
+    super::successor_host_acceptance::run(fixture, successor, candidate, fence, &original_round)
         .await;
 }
