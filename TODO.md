@@ -248,11 +248,20 @@ and cross-phase criteria; it does not shorten them.
   isolated-lane and whole corrected-source execution are separate gates.
   Fresh complete acceptance and CI for the corrected source are still open.
   The M5 lock delta only adds direct edges to already locked versions; no PG
-  dependency/version changes occur. Locked Rustls 0.23.43 remains affected by
-  RUSTSEC-2026-0285 (patched in >=0.23.45). The shared upgrade and local PG
-  acceptance authority need the pending human decision; no clearance or old-lock
-  exposure recommendation follows. Production PKI, caller authorization,
-  protected custody and revocation remain open.
+  dependency/version changes occur. The accepted predecessor's Rustls 0.23.43
+  is affected by RUSTSEC-2026-0285 (patched in >=0.23.45). A separate narrow
+  candidate pins shared Rustls 0.23.45 with unchanged Ring/std/TLS1.2 features
+  and wrapper versions; only the pin and lock version/checksum change. The
+  cached archive matches the published registry checksum, but that source DATA
+  is not runtime verification. Focused refusal/legitimate TLS controls, owning
+  checks, whole required acceptance and exact-head review/CI remain pending.
+  The delegated regression author stopped on a provider safety flag without
+  edits or execution; there is no baseline or repaired trigger result to adopt.
+  This is also a PG dependency change, so complete fresh selected-source PG
+  acceptance remains required by the existing policy. Live PG authority is
+  unselected; Native-only checks cannot certify or waive that gate. No security
+  clearance or old-lock exposure recommendation follows. Production PKI,
+  caller authorization, protected custody and revocation remain open.
 - [ ] **M6 — economics/genesis approval:** real sets, independent roles, voting
   powers, bond/fee assets/schedules, treasury/supply/distribution, security and
   unbonding parameters, governance authorities, ceremony and supply invariants.
@@ -300,7 +309,8 @@ with DR-0208; Ledger is deferred, not complete. Other original conditions remain
 Protected-signing threat/backend, trusted content-review surface and independent
 key/recovery/operator roles; SECURITY policy approval; supported-provider scope;
 real workload/SLO and genesis/economic values; the isolated memory/swap resource
-boundary and shared Rustls upgrade/local PG acceptance; any bounded protocol-v3
+boundary and selected-source local PG acceptance for the shared Rustls change;
+any bounded protocol-v3
 testnet exception and eventual public launch. These choices do not block
 independent safe local implementation, but cannot be replaced with fixture values.
 

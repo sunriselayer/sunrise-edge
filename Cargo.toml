@@ -84,7 +84,7 @@ postgres = "=0.19.14"
 postgres_rustls = "=0.1.6"
 r2d2_postgres = "=0.18.2"
 rcgen = "=0.14.10"
-rustls = { version = "=0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 hyper = { version = "1.11.0", default-features = false, features = ["http1", "server"] }
