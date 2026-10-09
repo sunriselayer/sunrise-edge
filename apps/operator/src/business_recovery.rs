@@ -433,6 +433,33 @@ fn verify(value: Verification<'_>) -> Result<runtime::ImportBinding, RecoveryErr
     Ok(verified.binding().clone())
 }
 
+// Printable public counts only; this is not a proof or import capability.
+struct PackedDiagnosticCounts {
+    links: u16,
+    files: usize,
+}
+
+fn finish_pack_publication(
+    finished: Result<(u64, [u8; 32]), RecoveryError>,
+    stage: &mut PrivateStage,
+    publication: CipherPublication,
+    manifest: &Manifest,
+    footer: &[u8; 49],
+    maximum: u64,
+    budget: &ArchiveReadBudget,
+) -> Result<PackedDiagnosticCounts, RecoveryError> {
+    let (length, hash): (u64, [u8; 32]) = finished?;
+    stage.check(manifest)?;
+    publication.publish(length, hash, maximum)?;
+    stage.complete(manifest, footer)?;
+    budget.check().map_err(|_| RecoveryError::Quota)?;
+    Ok(PackedDiagnosticCounts {
+        // capture forwards the request's links unchanged to Manifest::encode.
+        links: manifest.links,
+        files: manifest.entries.len(),
+    })
+}
+
 fn pack(request: Request, budget: &ArchiveReadBudget) -> Result<(), RecoveryError> {
     let Request {
         pins,
@@ -536,17 +563,25 @@ fn pack(request: Request, budget: &ArchiveReadBudget) -> Result<(), RecoveryErro
     encrypted
         .write_all(&footer)
         .map_err(|_| RecoveryError::Transport)?;
-    let counted: CipherWriter<'_, &mut std::fs::File> =
-        encrypted.finish().map_err(|_| RecoveryError::Transport)?;
-    let (length, hash): (u64, [u8; 32]) = counted.observation();
-    stage.check(&manifest)?;
-    publication.publish(length, hash, limits.ciphertext_bytes)?;
-    stage.complete(&manifest, &footer)?;
-    budget.check().map_err(|_| RecoveryError::Quota)?;
+    // Consume the successful writer observation before moving publication;
+    // an actual age finish error carries no writer borrow or provider error.
+    let finished: Result<(u64, [u8; 32]), RecoveryError> = encrypted
+        .finish()
+        .map(|counted: CipherWriter<'_, &mut std::fs::File>| counted.observation())
+        .map_err(|_| RecoveryError::Transport);
+    let counts: PackedDiagnosticCounts = finish_pack_publication(
+        finished,
+        &mut stage,
+        publication,
+        &manifest,
+        &footer,
+        limits.ciphertext_bytes,
+        budget,
+    )?;
     println!(
         "business_recovery=packed links={} files={} meaning=local-encrypted-saved-closure-not-import-or-custody",
-        links,
-        manifest.entries.len()
+        counts.links,
+        counts.files
     );
     Ok(())
 }

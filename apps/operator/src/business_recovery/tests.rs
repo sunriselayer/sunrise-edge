@@ -1211,3 +1211,599 @@ fn real_age_finish_final_chunk_write_failure_is_opaque_and_never_completes() {
     assert_eq!(observed, accepted.len() as u64);
     assert_eq!(digest, <[u8; 32]>::from(Sha256::digest(&accepted)));
 }
+
+// These direct terminal controls have no signed business fixture or SQL
+// authority. Counts and marker bytes are not full-CLI or entry-count evidence.
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+
+#[cfg(target_os = "linux")]
+const PACK_TERMINAL_FILE_BOUND: u64 = 64 * 1024;
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PackTerminalFileStamp {
+    dev: u64,
+    ino: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    links: u64,
+    length: u64,
+    mtime: i64,
+    mtime_nsec: i64,
+    ctime: i64,
+    ctime_nsec: i64,
+}
+
+#[cfg(target_os = "linux")]
+impl PackTerminalFileStamp {
+    fn read(metadata: &std::fs::Metadata) -> Self {
+        assert!(metadata.is_file(), "checkpoint must be a regular file");
+        Self {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            mode: metadata.mode(),
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            links: metadata.nlink(),
+            length: metadata.len(),
+            mtime: metadata.mtime(),
+            mtime_nsec: metadata.mtime_nsec(),
+            ctime: metadata.ctime(),
+            ctime_nsec: metadata.ctime_nsec(),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct PackTerminalCheckpoint {
+    file: std::fs::File,
+    stamp: PackTerminalFileStamp,
+    bytes: Vec<u8>,
+}
+
+#[cfg(target_os = "linux")]
+impl PackTerminalCheckpoint {
+    fn new(path: &Path, budget: &ArchiveReadBudget) -> Self {
+        budget.check().expect("budget before checkpoint open");
+        let named: std::fs::Metadata = std::fs::symlink_metadata(path).unwrap();
+        let stamp: PackTerminalFileStamp = PackTerminalFileStamp::read(&named);
+        assert_eq!(stamp.mode & 0o7777, 0o600);
+        assert_eq!(stamp.uid, transport::effective_uid().unwrap());
+        assert_eq!(stamp.links, 1);
+        assert!(stamp.length <= PACK_TERMINAL_FILE_BOUND);
+        let mut file: std::fs::File = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+            .unwrap();
+        assert_eq!(PackTerminalFileStamp::read(&file.metadata().unwrap()), stamp);
+        let mut bytes: Vec<u8> = vec![0; usize::try_from(stamp.length).unwrap()];
+        file.read_exact(&mut bytes).unwrap();
+        let mut probe: [u8; 1] = [0];
+        assert_eq!(file.read(&mut probe).unwrap(), 0, "held physical EOF");
+        assert_eq!(PackTerminalFileStamp::read(&file.metadata().unwrap()), stamp);
+        assert_eq!(
+            PackTerminalFileStamp::read(&std::fs::symlink_metadata(path).unwrap()),
+            stamp
+        );
+        budget.check().expect("budget after checkpoint EOF");
+        Self { file, stamp, bytes }
+    }
+
+    fn assert_unchanged(&self, path: &Path, budget: &ArchiveReadBudget) {
+        assert_eq!(
+            PackTerminalFileStamp::read(&self.file.metadata().unwrap()),
+            self.stamp
+        );
+        let current: Self = Self::new(path, budget);
+        assert_eq!(current.stamp, self.stamp);
+        assert_eq!(current.bytes, self.bytes);
+        assert_eq!(
+            PackTerminalFileStamp::read(&self.file.metadata().unwrap()),
+            self.stamp
+        );
+    }
+
+    fn assert_owned_final(&self, path: &Path, budget: &ArchiveReadBudget) -> Self {
+        let current: Self = Self::new(path, budget);
+        let mut expected: PackTerminalFileStamp = self.stamp;
+        // Only this invocation's successful hard-link/unlink ctime change is
+        // exempted; final nlink is independently required to be one.
+        expected.ctime = current.stamp.ctime;
+        expected.ctime_nsec = current.stamp.ctime_nsec;
+        assert_eq!(current.stamp, expected);
+        assert_eq!(current.bytes, self.bytes);
+        assert_eq!(
+            PackTerminalFileStamp::read(&self.file.metadata().unwrap()),
+            current.stamp
+        );
+        current
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq, Eq)]
+struct PackTerminalRootIdentity {
+    dev: u64,
+    ino: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+}
+
+#[cfg(target_os = "linux")]
+impl PackTerminalRootIdentity {
+    fn read(metadata: &std::fs::Metadata) -> Self {
+        assert!(metadata.is_dir(), "fixture root must remain a directory");
+        Self {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            mode: metadata.mode(),
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct PackTerminalDirectory {
+    path: PathBuf,
+    held: std::fs::File,
+    identity: PackTerminalRootIdentity,
+}
+
+#[cfg(target_os = "linux")]
+impl PackTerminalDirectory {
+    fn new(budget: &ArchiveReadBudget) -> Self {
+        budget.check().expect("budget before fixture root creation");
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence: u64 = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path: PathBuf = std::env::temp_dir().join(format!(
+            "recovery-pack-terminal-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+        let named: std::fs::Metadata = std::fs::symlink_metadata(&path).unwrap();
+        let identity: PackTerminalRootIdentity = PackTerminalRootIdentity::read(&named);
+        assert_eq!(identity.mode & 0o7777, 0o700);
+        assert_eq!(identity.uid, transport::effective_uid().unwrap());
+        let held: std::fs::File = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&path)
+            .unwrap();
+        assert_eq!(
+            PackTerminalRootIdentity::read(&held.metadata().unwrap()),
+            identity
+        );
+        Self {
+            path,
+            held,
+            identity,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for PackTerminalDirectory {
+    fn drop(&mut self) {
+        // Directory nlink/length/times legitimately change as children are
+        // created. Cleanup binds the held/named identity, type, mode, UID/GID.
+        assert_eq!(
+            PackTerminalRootIdentity::read(&self.held.metadata().unwrap()),
+            self.identity
+        );
+        assert_eq!(
+            PackTerminalRootIdentity::read(&std::fs::symlink_metadata(&self.path).unwrap()),
+            self.identity
+        );
+        std::fs::remove_dir_all(&self.path).expect("remove only the identity-bound fixture root");
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn pack_terminal_create_private(path: &Path, bytes: &[u8], budget: &ArchiveReadBudget) {
+    budget.check().expect("budget before fixture leaf creation");
+    assert!(bytes.len() as u64 <= PACK_TERMINAL_FILE_BOUND);
+    let mut file: std::fs::File = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .unwrap();
+    file.write_all(bytes).unwrap();
+    file.sync_all().unwrap();
+    budget.check().expect("budget after fixture leaf creation");
+}
+
+#[cfg(target_os = "linux")]
+fn pack_terminal_absent(path: &Path) {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        _ => panic!("expected absent terminal leaf"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct PackTerminalFixture {
+    budget: ArchiveReadBudget,
+    limits: RecoveryLimits,
+    stage: PrivateStage,
+    manifest: Manifest,
+    footer: [u8; 49],
+    plaintext: Vec<u8>,
+    payloads: Vec<(PathBuf, PackTerminalCheckpoint)>,
+    sentinel: PackTerminalCheckpoint,
+    // Drop all other fixture handles before identity-bound directory cleanup.
+    directory: PackTerminalDirectory,
+}
+
+#[cfg(target_os = "linux")]
+impl PackTerminalFixture {
+    fn new() -> Self {
+        let limits: RecoveryLimits = RecoveryLimits {
+            files: 3,
+            observations: 4096,
+            heights: 64,
+            components: 64,
+            file_bytes: PACK_TERMINAL_FILE_BOUND,
+            control_bytes: 1024,
+            plaintext_bytes: 1024,
+            ciphertext_bytes: PACK_TERMINAL_FILE_BOUND,
+            header_bytes: 16 * 1024,
+            ..RecoveryLimits::default()
+        };
+        let budget: ArchiveReadBudget = limits.budget().unwrap();
+        budget.check_roles(3).unwrap();
+        let directory: PackTerminalDirectory = PackTerminalDirectory::new(&budget);
+        let sentinel_path: PathBuf = directory.path.join("foreign-sentinel.bin");
+        pack_terminal_create_private(&sentinel_path, b"unrelated private sentinel\0", &budget);
+        let sentinel: PackTerminalCheckpoint = PackTerminalCheckpoint::new(&sentinel_path, &budget);
+        let mut entries: Vec<Entry> = Vec::new();
+        // Independent L0 fields and one-byte bodies; these are not business proofs.
+        for (tag, name, body) in [
+            (1u8, "genesis.bin", [1u8]),
+            (2, "identity.bin", [2]),
+            (3, "identity.bin", [3]),
+        ] {
+            entries.push(Entry {
+                role: Role { tag, link: 65535 },
+                name: name.to_owned(),
+                length: 1,
+                hash: Sha256::digest(body).into(),
+            });
+        }
+        let manifest: Manifest = Manifest::encode(0, entries, &limits).unwrap();
+        let mut literal: Vec<u8> = vec![
+            1, 0, 0, 0, 207, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 3, 1, 255, 255, 0, 0, 0,
+            1, 2, 255, 255, 0, 0, 0, 1, 3, 255, 255, 0, 0, 0, 1,
+        ];
+        for (tag, name, name_length, body) in [
+            (1u8, "genesis.bin", 11u8, [1u8]),
+            (2, "identity.bin", 12, [2]),
+            (3, "identity.bin", 12, [3]),
+        ] {
+            literal.extend_from_slice(&[tag, 255, 255, 0, name_length]);
+            literal.extend_from_slice(name.as_bytes());
+            literal.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1]);
+            literal.extend_from_slice(&Sha256::digest(body));
+        }
+        assert_eq!(literal.len(), 212);
+        assert_eq!(manifest.record, literal);
+        assert_eq!(
+            (
+                manifest.links,
+                manifest.bodies,
+                manifest.control,
+                manifest.plaintext
+            ),
+            (0, 3, 326, 329)
+        );
+        let mut footer: [u8; 49] = [0; 49];
+        footer[..17].copy_from_slice(&[3, 0, 0, 0, 44, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 3]);
+        footer[17..].copy_from_slice(&Sha256::digest(&literal));
+        assert_eq!(manifest.footer().unwrap(), footer);
+        let mut plaintext: Vec<u8> = b"SE-RECOVERY\0\0\x01".to_vec();
+        plaintext.extend_from_slice(&literal);
+        for (index, body) in [(0u8, 1u8), (1, 2), (2, 3)] {
+            plaintext.extend_from_slice(&[2, 0, 0, 0, 13, 0, 0, 0, index, 0, 0, 0, 0, 0, 0, 0, 1]);
+            plaintext.push(body);
+        }
+        plaintext.extend_from_slice(&footer);
+        assert_eq!(plaintext.len(), 329);
+        let capture: PathBuf = directory.path.join("capture");
+        let absent_capture: AbsentOutput = AbsentOutput::new(&capture, &budget).unwrap();
+        let mut stage: PrivateStage = PrivateStage::create(&absent_capture, &budget).unwrap();
+        assert_eq!(stage.root(), capture.as_path());
+        for (entry, body) in manifest.entries.iter().zip([[1u8], [2], [3]]) {
+            let mut input: Cursor<[u8; 1]> = Cursor::new(body);
+            stage.receive(&mut input, entry).unwrap();
+            let mut probe: [u8; 1] = [0];
+            assert_eq!(input.read(&mut probe).unwrap(), 0);
+        }
+        stage.check(&manifest).unwrap();
+        let mut payloads: Vec<(PathBuf, PackTerminalCheckpoint)> = Vec::new();
+        for (name, body) in [
+            ("genesis/genesis.bin", [1u8]),
+            ("current/history/identity.bin", [2]),
+            ("current/cut/identity.bin", [3]),
+        ] {
+            let path: PathBuf = capture.join(name);
+            let checkpoint: PackTerminalCheckpoint = PackTerminalCheckpoint::new(&path, &budget);
+            assert_eq!(checkpoint.bytes, body);
+            payloads.push((path, checkpoint));
+        }
+        Self {
+            budget,
+            limits,
+            stage,
+            manifest,
+            footer,
+            plaintext,
+            payloads,
+            sentinel,
+            directory,
+        }
+    }
+
+    fn assert_retained_inputs(&self) {
+        for (path, checkpoint) in &self.payloads {
+            checkpoint.assert_unchanged(path, &self.budget);
+        }
+        self.sentinel.assert_unchanged(
+            &self.directory.path.join("foreign-sentinel.bin"),
+            &self.budget,
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn pack_terminal_write_stage<W: Write>(fixture: &PackTerminalFixture, output: &mut W) {
+    fixture.manifest.write_prefix(output).unwrap();
+    for (index, entry) in fixture.manifest.entries.iter().enumerate() {
+        output
+            .write_all(&envelope::file_header(index, entry).unwrap())
+            .unwrap();
+        fixture.stage.write_body(output, entry).unwrap();
+    }
+    output.write_all(&fixture.footer).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn pack_terminal_real_finish(
+    fixture: &PackTerminalFixture,
+    publication: &mut CipherPublication,
+    identity: &age::x25519::Identity,
+) -> Result<(u64, [u8; 32]), RecoveryError> {
+    let counted: CipherWriter<'_, &mut std::fs::File> = CipherWriter::new(
+        publication.writer(),
+        &fixture.budget,
+        fixture.limits.ciphertext_bytes,
+    );
+    let recipient: age::x25519::Recipient = identity.to_public();
+    let mut encrypted: age::stream::StreamWriter<CipherWriter<'_, &mut std::fs::File>> =
+        transport::encryptor(&recipient)
+            .unwrap()
+            .wrap_output(counted)
+            .unwrap();
+    pack_terminal_write_stage(fixture, &mut encrypted);
+    encrypted
+        .finish()
+        .map(|counted: CipherWriter<'_, &mut std::fs::File>| counted.observation())
+        .map_err(|_| RecoveryError::Transport)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pack_terminal_real_age_finish_error_has_no_diagnostic_counts_or_completion_file() {
+    struct FinishSink<'a> {
+        file: &'a mut std::fs::File,
+        armed: &'a std::cell::Cell<bool>,
+        rejected: &'a std::cell::Cell<usize>,
+    }
+    impl Write for FinishSink<'_> {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if bytes.is_empty() {
+                return Ok(0);
+            }
+            if self.armed.get() {
+                self.rejected
+                    .set(self.rejected.get().checked_add(1).unwrap());
+                return Err(io::Error::other("AGE-SECRET-KEY-1-terminal-finish-refusal"));
+            }
+            self.file.write(bytes)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.file.flush()
+        }
+    }
+
+    let mut fixture: PackTerminalFixture = PackTerminalFixture::new();
+    let output: PathBuf = fixture.directory.path.join("closure.age");
+    let pending: PathBuf = CipherPublication::pending_path(&output).unwrap();
+    let absent_output: AbsentOutput = AbsentOutput::new(&output, &fixture.budget).unwrap();
+    let mut publication: CipherPublication =
+        CipherPublication::create(absent_output, &fixture.budget).unwrap();
+    let identity: age::x25519::Identity = age::x25519::Identity::generate();
+    let recipient: age::x25519::Recipient = identity.to_public();
+    let armed: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    let rejected: std::cell::Cell<usize> = std::cell::Cell::new(0);
+    let sink: FinishSink<'_> = FinishSink {
+        file: publication.writer(),
+        armed: &armed,
+        rejected: &rejected,
+    };
+    let counted: CipherWriter<'_, FinishSink<'_>> =
+        CipherWriter::new(sink, &fixture.budget, fixture.limits.ciphertext_bytes);
+    let mut encrypted: age::stream::StreamWriter<CipherWriter<'_, FinishSink<'_>>> =
+        transport::encryptor(&recipient)
+            .unwrap()
+            .wrap_output(counted)
+            .unwrap();
+    pack_terminal_write_stage(&fixture, &mut encrypted);
+    let before: PackTerminalCheckpoint = PackTerminalCheckpoint::new(&pending, &fixture.budget);
+    assert!(
+        !before.bytes.is_empty(),
+        "real age header reached the pending file"
+    );
+    armed.set(true);
+    let finished: Result<(u64, [u8; 32]), RecoveryError> = encrypted
+        .finish()
+        .map(|counted: CipherWriter<'_, FinishSink<'_>>| counted.observation())
+        .map_err(|_| RecoveryError::Transport);
+    assert!(finished.is_err(), "actual age finish must refuse");
+    assert!(
+        rejected.get() > 0,
+        "actual final emission attempted a nonempty write"
+    );
+    let result: Result<PackedDiagnosticCounts, RecoveryError> = finish_pack_publication(
+        finished,
+        &mut fixture.stage,
+        publication,
+        &fixture.manifest,
+        &fixture.footer,
+        fixture.limits.ciphertext_bytes,
+        &fixture.budget,
+    );
+    let error: RecoveryError = match result {
+        Err(error) => error,
+        Ok(_) => panic!("finish refusal returned printable diagnostic counts"),
+    };
+    assert_eq!(error, RecoveryError::Transport);
+    assert!(!format!("{error} {error:?}").contains("AGE-SECRET-KEY"));
+    assert!(std::error::Error::source(&error).is_none());
+    pack_terminal_absent(&output);
+    pack_terminal_absent(
+        &fixture.directory.path.join("capture/recovery-complete-v1.bin"),
+    );
+    before.assert_unchanged(&pending, &fixture.budget);
+    fixture.assert_retained_inputs();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pack_terminal_late_equal_output_refusal_preserves_foreign_leaf_and_no_diagnostic_counts() {
+    let mut fixture: PackTerminalFixture = PackTerminalFixture::new();
+    let output: PathBuf = fixture.directory.path.join("closure.age");
+    let pending: PathBuf = CipherPublication::pending_path(&output).unwrap();
+    let absent_output: AbsentOutput = AbsentOutput::new(&output, &fixture.budget).unwrap();
+    let mut publication: CipherPublication =
+        CipherPublication::create(absent_output, &fixture.budget).unwrap();
+    let identity: age::x25519::Identity = age::x25519::Identity::generate();
+    let finished: Result<(u64, [u8; 32]), RecoveryError> =
+        pack_terminal_real_finish(&fixture, &mut publication, &identity);
+    let (length, hash): (u64, [u8; 32]) = finished.as_ref().copied().unwrap();
+    let owned: PackTerminalCheckpoint = PackTerminalCheckpoint::new(&pending, &fixture.budget);
+    assert_eq!(length, owned.bytes.len() as u64);
+    assert_eq!(hash, <[u8; 32]>::from(Sha256::digest(&owned.bytes)));
+    pack_terminal_create_private(&output, &owned.bytes, &fixture.budget);
+    let foreign: PackTerminalCheckpoint = PackTerminalCheckpoint::new(&output, &fixture.budget);
+    assert_eq!(foreign.bytes, owned.bytes);
+    assert_eq!(foreign.stamp.dev, owned.stamp.dev);
+    assert_ne!(
+        foreign.stamp.ino, owned.stamp.ino,
+        "equal bytes are a foreign inode"
+    );
+    let result: Result<PackedDiagnosticCounts, RecoveryError> = finish_pack_publication(
+        finished,
+        &mut fixture.stage,
+        publication,
+        &fixture.manifest,
+        &fixture.footer,
+        fixture.limits.ciphertext_bytes,
+        &fixture.budget,
+    );
+    let error: RecoveryError = match result {
+        Err(error) => error,
+        Ok(_) => panic!("equal-existing refusal returned printable diagnostic counts"),
+    };
+    assert_eq!(error, RecoveryError::Publication);
+    pack_terminal_absent(
+        &fixture.directory.path.join("capture/recovery-complete-v1.bin"),
+    );
+    owned.assert_unchanged(&pending, &fixture.budget);
+    foreign.assert_unchanged(&output, &fixture.budget);
+    fixture.assert_retained_inputs();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pack_terminal_ordinary_success_returns_counts_after_publication_and_stage_completion() {
+    let mut fixture: PackTerminalFixture = PackTerminalFixture::new();
+    let output: PathBuf = fixture.directory.path.join("closure.age");
+    let pending: PathBuf = CipherPublication::pending_path(&output).unwrap();
+    let absent_output: AbsentOutput = AbsentOutput::new(&output, &fixture.budget).unwrap();
+    let mut publication: CipherPublication =
+        CipherPublication::create(absent_output, &fixture.budget).unwrap();
+    let identity: age::x25519::Identity = age::x25519::Identity::generate();
+    let finished: Result<(u64, [u8; 32]), RecoveryError> =
+        pack_terminal_real_finish(&fixture, &mut publication, &identity);
+    let (length, hash): (u64, [u8; 32]) = finished.as_ref().copied().unwrap();
+    let owned: PackTerminalCheckpoint = PackTerminalCheckpoint::new(&pending, &fixture.budget);
+    assert_eq!(length, owned.bytes.len() as u64);
+    assert_eq!(hash, <[u8; 32]>::from(Sha256::digest(&owned.bytes)));
+    let counts: PackedDiagnosticCounts = finish_pack_publication(
+        finished,
+        &mut fixture.stage,
+        publication,
+        &fixture.manifest,
+        &fixture.footer,
+        fixture.limits.ciphertext_bytes,
+        &fixture.budget,
+    )
+    .unwrap();
+    assert_eq!(counts.links, 0);
+    assert_eq!(counts.files, 3);
+    pack_terminal_absent(&pending);
+    let final_file: PackTerminalCheckpoint = owned.assert_owned_final(&output, &fixture.budget);
+    let marker: PackTerminalCheckpoint = PackTerminalCheckpoint::new(
+        &fixture.directory.path.join("capture/recovery-complete-v1.bin"),
+        &fixture.budget,
+    );
+    assert_eq!(marker.bytes, fixture.footer);
+    assert_eq!(marker.stamp.length, 49);
+    fixture.assert_retained_inputs();
+
+    fixture.budget.check().unwrap();
+    let input: std::fs::File = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&output)
+        .unwrap();
+    assert_eq!(
+        PackTerminalFileStamp::read(&input.metadata().unwrap()),
+        final_file.stamp
+    );
+    let limits: RecoveryLimits = RecoveryLimits {
+        ciphertext_bytes: length,
+        plaintext_bytes: 329,
+        ..fixture.limits.clone()
+    };
+    let phase: CipherPhase = CipherPhase::header();
+    let mut cipher: CipherReader<'_, std::fs::File> =
+        CipherReader::new(input, &phase, &fixture.budget, &limits);
+    {
+        let decrypted: age::stream::StreamReader<&mut CipherReader<'_, std::fs::File>> =
+            transport::decrypt(&mut cipher, &phase, &identity).unwrap();
+        let mut plain: PlainReader<'_, age::stream::StreamReader<&mut CipherReader<'_, std::fs::File>>> =
+            PlainReader::new(decrypted, limits.plaintext_bytes, &fixture.budget);
+        let mut observed: Vec<u8> = Vec::new();
+        plain.read_to_end(&mut observed).unwrap();
+        assert_eq!(observed, fixture.plaintext);
+        assert_eq!(plain.observed(), 329);
+        plain.authenticated_eof().unwrap();
+    }
+    let earlier_zeros: u64 = cipher.physical_zeros();
+    cipher.physical_eof().unwrap();
+    assert_eq!(cipher.physical_zeros(), earlier_zeros + 1);
+    assert_eq!(cipher.observed(), length);
+    assert_eq!(
+        PackTerminalFileStamp::read(&cipher.inner.metadata().unwrap()),
+        final_file.stamp
+    );
+    final_file.assert_unchanged(&output, &fixture.budget);
+    fixture.assert_retained_inputs();
+}
