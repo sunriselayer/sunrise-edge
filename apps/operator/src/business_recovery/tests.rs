@@ -1659,6 +1659,7 @@ fn pack_terminal_real_age_finish_error_has_no_diagnostic_counts_or_completion_fi
         rejected.get() > 0,
         "actual final emission attempted a nonempty write"
     );
+    assert_eq!(fixture.stage.complete_entry_count_for_test(), 0_usize);
     let result: Result<PackedDiagnosticCounts, RecoveryError> = finish_pack_publication(
         finished,
         &mut fixture.stage,
@@ -1668,6 +1669,7 @@ fn pack_terminal_real_age_finish_error_has_no_diagnostic_counts_or_completion_fi
         fixture.limits.ciphertext_bytes,
         &fixture.budget,
     );
+    assert_eq!(fixture.stage.complete_entry_count_for_test(), 0_usize);
     let error: RecoveryError = match result {
         Err(error) => error,
         Ok(_) => panic!("finish refusal returned printable diagnostic counts"),
@@ -1707,6 +1709,7 @@ fn pack_terminal_late_equal_output_refusal_preserves_foreign_leaf_and_no_diagnos
         foreign.stamp.ino, owned.stamp.ino,
         "equal bytes are a foreign inode"
     );
+    assert_eq!(fixture.stage.complete_entry_count_for_test(), 0_usize);
     let result: Result<PackedDiagnosticCounts, RecoveryError> = finish_pack_publication(
         finished,
         &mut fixture.stage,
@@ -1716,6 +1719,7 @@ fn pack_terminal_late_equal_output_refusal_preserves_foreign_leaf_and_no_diagnos
         fixture.limits.ciphertext_bytes,
         &fixture.budget,
     );
+    assert_eq!(fixture.stage.complete_entry_count_for_test(), 0_usize);
     let error: RecoveryError = match result {
         Err(error) => error,
         Ok(_) => panic!("equal-existing refusal returned printable diagnostic counts"),
@@ -1745,6 +1749,7 @@ fn pack_terminal_ordinary_success_returns_counts_after_publication_and_stage_com
     let owned: PackTerminalCheckpoint = PackTerminalCheckpoint::new(&pending, &fixture.budget);
     assert_eq!(length, owned.bytes.len() as u64);
     assert_eq!(hash, <[u8; 32]>::from(Sha256::digest(&owned.bytes)));
+    assert_eq!(fixture.stage.complete_entry_count_for_test(), 0_usize);
     let counts: PackedDiagnosticCounts = finish_pack_publication(
         finished,
         &mut fixture.stage,
@@ -1755,6 +1760,7 @@ fn pack_terminal_ordinary_success_returns_counts_after_publication_and_stage_com
         &fixture.budget,
     )
     .unwrap();
+    assert_eq!(fixture.stage.complete_entry_count_for_test(), 1_usize);
     assert_eq!(counts.links, 0);
     assert_eq!(counts.files, 3);
     pack_terminal_absent(&pending);

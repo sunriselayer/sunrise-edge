@@ -236,6 +236,8 @@ pub(super) struct PrivateStage {
     directories: BTreeSet<PathBuf>,
     directory_stamps: BTreeMap<PathBuf, DirectoryStamp>,
     snapshots: BTreeMap<PathBuf, AttachedFileStamp>,
+    #[cfg(all(test, target_os = "linux"))]
+    complete_entries_for_test: usize,
 }
 impl PrivateStage {
     pub(super) fn create(
@@ -266,6 +268,8 @@ impl PrivateStage {
             directories: BTreeSet::from([PathBuf::new()]),
             directory_stamps: BTreeMap::from([(PathBuf::new(), stamp)]),
             snapshots: BTreeMap::new(),
+            #[cfg(all(test, target_os = "linux"))]
+            complete_entries_for_test: 0_usize,
         };
         stage.check_directory(Path::new(""))?;
         stage.sync(Path::new(""))?;
@@ -278,6 +282,10 @@ impl PrivateStage {
     }
     pub(super) fn root(&self) -> &Path {
         self.root.root()
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn complete_entry_count_for_test(&self) -> usize {
+        self.complete_entries_for_test
     }
     fn check_directory(&self, relative: &Path) -> Result<ImmutableArchiveReader, RecoveryError> {
         self.root
@@ -529,6 +537,13 @@ impl PrivateStage {
         manifest: &Manifest,
         footer: &[u8; 49],
     ) -> Result<(), RecoveryError> {
+        #[cfg(all(test, target_os = "linux"))]
+        {
+            self.complete_entries_for_test = self
+                .complete_entries_for_test
+                .checked_add(1_usize)
+                .expect("test-only completion entry counter overflow");
+        }
         let relative: PathBuf = PathBuf::from(COMPLETE);
         let mut file: File = self.new_file(&relative)?;
         file.write_all(footer)
