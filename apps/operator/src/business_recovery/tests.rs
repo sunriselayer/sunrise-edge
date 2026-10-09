@@ -2,10 +2,11 @@
 //! Pure transport vectors are not business-proof or custody qualification.
 use super::*;
 use envelope::Entry;
+use sha2::{Digest, Sha256};
 use std::{
     io::{self, Cursor, Read, Write},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -958,4 +959,255 @@ fn ciphertext_writer_real_cap_and_secret_like_io_failures_are_opaque_and_permane
     assert!(capped.flush().is_err());
     drop(capped);
     assert_eq!(output, [1, 2, 3]);
+}
+
+#[test]
+fn ciphertext_writer_accepts_repeated_short_writes_through_real_age_finish_and_round_trip() {
+    struct ShortSink {
+        accepted: Arc<Mutex<Vec<u8>>>,
+        maximum_write: usize,
+        calls: Arc<AtomicUsize>,
+    }
+    impl Write for ShortSink {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if bytes.is_empty() {
+                return Ok(0);
+            }
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let written: usize = bytes.len().min(self.maximum_write);
+            self.accepted
+                .lock()
+                .map_err(|_| io::Error::other("local test sink poisoned"))?
+                .extend_from_slice(&bytes[..written]);
+            Ok(written)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let identity: age::x25519::Identity = age::x25519::Identity::generate();
+    let recipient: age::x25519::Recipient = identity.to_public();
+    let plaintext: Vec<u8> = (0..4097usize)
+        .map(|index: usize| (index.wrapping_mul(37) & 0xff) as u8)
+        .collect();
+    let accepted: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
+    let sink: ShortSink = ShortSink {
+        accepted: Arc::clone(&accepted),
+        maximum_write: 7,
+        calls: Arc::clone(&calls),
+    };
+    let mut cipher: transport::CipherWriter<'_, ShortSink> =
+        transport::CipherWriter::new(sink, &budget, 1_000_000);
+    {
+        let mut age_writer: age::stream::StreamWriter<&mut transport::CipherWriter<'_, ShortSink>> =
+            transport::encryptor(&recipient)
+                .unwrap()
+                .wrap_output(&mut cipher)
+                .unwrap();
+        age_writer.write_all(&plaintext).unwrap();
+        age_writer.finish().unwrap();
+    }
+    let encrypted: Vec<u8> = accepted
+        .lock()
+        .map_err(|_| io::Error::other("local test sink poisoned"))
+        .unwrap()
+        .clone();
+    assert!(calls.load(Ordering::SeqCst) > 1);
+    let (observed, digest): (u64, [u8; 32]) = cipher.observation();
+    assert_eq!(observed, encrypted.len() as u64);
+    assert_eq!(digest, <[u8; 32]>::from(Sha256::digest(&encrypted)));
+
+    let limits: RecoveryLimits = RecoveryLimits {
+        ciphertext_bytes: encrypted.len() as u64,
+        plaintext_bytes: plaintext.len() as u64,
+        ..RecoveryLimits::default()
+    };
+    let read_budget: ArchiveReadBudget = limits.budget().unwrap();
+    let phase: CipherPhase = CipherPhase::header();
+    let mut reader: CipherReader<'_, Cursor<Vec<u8>>> =
+        CipherReader::new(Cursor::new(encrypted), &phase, &read_budget, &limits);
+    let mut actual: Vec<u8> = Vec::new();
+    {
+        let decrypted: age::stream::StreamReader<&mut CipherReader<'_, Cursor<Vec<u8>>>> =
+            transport::decrypt(&mut reader, &phase, &identity).unwrap();
+        let mut plain: PlainReader<
+            '_,
+            age::stream::StreamReader<&mut CipherReader<'_, Cursor<Vec<u8>>>>,
+        > = PlainReader::new(decrypted, limits.plaintext_bytes, &read_budget);
+        plain.read_to_end(&mut actual).unwrap();
+        plain.authenticated_eof().unwrap();
+    }
+    assert_eq!(actual, plaintext);
+    reader.physical_eof().unwrap();
+}
+
+#[test]
+fn ciphertext_writer_nonempty_write_zero_is_opaque_and_permanently_refused() {
+    struct ZeroSink {
+        calls: Arc<AtomicUsize>,
+    }
+    impl Write for ZeroSink {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(0)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
+    let calls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let mut writer: transport::CipherWriter<'_, ZeroSink> = transport::CipherWriter::new(
+        ZeroSink {
+            calls: Arc::clone(&calls),
+        },
+        &budget,
+        32,
+    );
+    assert_eq!(writer.write(&[]).unwrap(), 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let error: io::Error = writer.write(b"nonempty").unwrap_err();
+    assert!(!format!("{error} {error:?}").contains("SECRET"));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(writer.write(b"again").is_err());
+    assert!(writer.flush().is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let (observed, digest): (u64, [u8; 32]) = writer.observation();
+    assert_eq!(observed, 0);
+    assert_eq!(digest, <[u8; 32]>::from(Sha256::digest(&[] as &[u8])));
+}
+
+#[test]
+fn ciphertext_writer_partial_progress_then_error_preserves_exact_prefix_and_latches() {
+    struct PartialThenError {
+        accepted: Arc<Mutex<Vec<u8>>>,
+        offered_first: Arc<Mutex<Vec<u8>>>,
+        calls: Arc<AtomicUsize>,
+        first_write: usize,
+    }
+    impl Write for PartialThenError {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let call: usize = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                self.offered_first
+                    .lock()
+                    .map_err(|_| io::Error::other("local test sink poisoned"))?
+                    .extend_from_slice(bytes);
+                let written: usize = bytes.len().min(self.first_write);
+                self.accepted
+                    .lock()
+                    .map_err(|_| io::Error::other("local test sink poisoned"))?
+                    .extend_from_slice(&bytes[..written]);
+                Ok(written)
+            } else {
+                Err(io::Error::other("AGE-SECRET-KEY-1-short-write-error"))
+            }
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
+    let accepted: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let offered_first: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let mut writer: transport::CipherWriter<'_, PartialThenError> = transport::CipherWriter::new(
+        PartialThenError {
+            accepted: Arc::clone(&accepted),
+            offered_first: Arc::clone(&offered_first),
+            calls: Arc::clone(&calls),
+            first_write: 5,
+        },
+        &budget,
+        128,
+    );
+    let input: &[u8] = b"independent deterministic cipher bytes";
+    let error: io::Error = writer.write_all(input).unwrap_err();
+    assert!(!format!("{error} {error:?}").contains("AGE-SECRET-KEY"));
+    let expected_prefix: Vec<u8> = input[..5].to_vec();
+    assert_eq!(*accepted.lock().unwrap(), expected_prefix);
+    assert_eq!(*offered_first.lock().unwrap(), input);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(writer.write(b"later").is_err());
+    assert_eq!(*accepted.lock().unwrap(), input[..5]);
+    let (observed, digest): (u64, [u8; 32]) = writer.observation();
+    assert_eq!(observed, 5);
+    assert_eq!(digest, <[u8; 32]>::from(Sha256::digest(&input[..5])));
+}
+
+#[test]
+fn real_age_finish_final_chunk_write_failure_is_opaque_and_never_completes() {
+    struct FinishState {
+        accepted: Vec<u8>,
+        reject_writes: bool,
+        rejected_write_calls: usize,
+    }
+    struct FinishSink {
+        state: Arc<Mutex<FinishState>>,
+    }
+    impl Write for FinishSink {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let mut state: std::sync::MutexGuard<'_, FinishState> = self
+                .state
+                .lock()
+                .map_err(|_| io::Error::other("local test sink poisoned"))?;
+            if state.reject_writes {
+                state.rejected_write_calls += 1;
+                return Err(io::Error::other("AGE-SECRET-KEY-1-final-chunk-failure"));
+            }
+            state.accepted.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let identity: age::x25519::Identity = age::x25519::Identity::generate();
+    let recipient: age::x25519::Recipient = identity.to_public();
+    let state: Arc<Mutex<FinishState>> = Arc::new(Mutex::new(FinishState {
+        accepted: Vec::new(),
+        reject_writes: false,
+        rejected_write_calls: 0,
+    }));
+    let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
+    let sink: FinishSink = FinishSink {
+        state: Arc::clone(&state),
+    };
+    let mut cipher: transport::CipherWriter<'_, FinishSink> =
+        transport::CipherWriter::new(sink, &budget, 1_000_000);
+    let finish_error: Option<io::Error>;
+    {
+        let mut age_writer: age::stream::StreamWriter<&mut transport::CipherWriter<'_, FinishSink>> =
+            transport::encryptor(&recipient)
+                .unwrap()
+                .wrap_output(&mut cipher)
+                .unwrap();
+        age_writer
+            .write_all(b"finalization-boundary plaintext")
+            .unwrap();
+        state.lock().unwrap().reject_writes = true;
+        finish_error = age_writer.finish().err();
+    }
+    let completed: bool = finish_error.is_none();
+    assert!(!completed);
+    assert!(!format!("{finish_error:?}").contains("AGE-SECRET-KEY"));
+    let accepted: Vec<u8> = state.lock().unwrap().accepted.clone();
+    let rejected_write_calls: usize = state.lock().unwrap().rejected_write_calls;
+    assert!(rejected_write_calls > 0);
+    assert!(cipher.write(b"after-final-chunk-error").is_err());
+    assert!(cipher.flush().is_err());
+    assert_eq!(state.lock().unwrap().accepted, accepted);
+    assert_eq!(
+        state.lock().unwrap().rejected_write_calls,
+        rejected_write_calls
+    );
+    let (observed, digest): (u64, [u8; 32]) = cipher.observation();
+    assert_eq!(observed, accepted.len() as u64);
+    assert_eq!(digest, <[u8; 32]>::from(Sha256::digest(&accepted)));
 }

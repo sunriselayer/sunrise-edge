@@ -272,7 +272,14 @@ impl<W: Write> Write for CipherWriter<'_, W> {
             self.failed = true;
             return Err(refused());
         }
+        if bytes.is_empty() {
+            return Ok(0);
+        }
         match self.inner.write(bytes) {
+            Ok(0) => {
+                self.failed = true;
+                return Err(refused());
+            }
             Ok(written) if written <= bytes.len() => {
                 self.hash.update(&bytes[..written]);
                 self.observed = self
