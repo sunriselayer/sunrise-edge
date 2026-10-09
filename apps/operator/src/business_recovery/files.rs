@@ -579,6 +579,9 @@ struct DirectoryStamp {
 impl DirectoryStamp {
     fn read(file: &File) -> Result<Self, RecoveryError> {
         let metadata: std::fs::Metadata = file.metadata().map_err(|_| RecoveryError::Attachment)?;
+        Self::from_metadata(&metadata)
+    }
+    fn from_metadata(metadata: &std::fs::Metadata) -> Result<Self, RecoveryError> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -740,6 +743,29 @@ pub(super) struct CipherPublication {
     file: File,
     budget: ArchiveReadBudget,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PublicationFailureAt {
+    PendingCreate,
+    CreateParentSync,
+    PendingFileSync,
+    FinalHardLink,
+    LinkedParentSync,
+    PendingUnlink,
+    FinalParentSync,
+}
+
+fn publication_step(
+    selected: Option<PublicationFailureAt>,
+    step: PublicationFailureAt,
+) -> Result<(), RecoveryError> {
+    if selected == Some(step) {
+        Err(RecoveryError::Publication)
+    } else {
+        Ok(())
+    }
+}
+
 impl CipherPublication {
     pub(super) fn pending_path(path: &Path) -> Result<PathBuf, RecoveryError> {
         let mut name = path
@@ -756,9 +782,18 @@ impl CipherPublication {
         output: AbsentOutput,
         budget: &ArchiveReadBudget,
     ) -> Result<Self, RecoveryError> {
+        Self::create_inner(output, budget, None)
+    }
+    fn create_inner(
+        output: AbsentOutput,
+        budget: &ArchiveReadBudget,
+        fail_at: Option<PublicationFailureAt>,
+    ) -> Result<Self, RecoveryError> {
         output.check()?;
         let pending: PathBuf = Self::pending_path(output.path())?;
+        publication_step(fail_at, PublicationFailureAt::PendingCreate)?;
         let file: File = create_private_file(&pending)?;
+        publication_step(fail_at, PublicationFailureAt::CreateParentSync)?;
         output
             .parent
             .directory()
@@ -771,6 +806,14 @@ impl CipherPublication {
             budget: budget.clone(),
         })
     }
+    #[cfg(all(test, target_os = "linux"))]
+    fn create_with_failure_at(
+        output: AbsentOutput,
+        budget: &ArchiveReadBudget,
+        fail_at: PublicationFailureAt,
+    ) -> Result<Self, RecoveryError> {
+        Self::create_inner(output, budget, Some(fail_at))
+    }
     pub(super) fn writer(&mut self) -> &mut File {
         &mut self.file
     }
@@ -780,6 +823,16 @@ impl CipherPublication {
         hash: [u8; 32],
         maximum: u64,
     ) -> Result<(), RecoveryError> {
+        self.publish_inner(length, hash, maximum, None)
+    }
+    fn publish_inner(
+        self,
+        length: u64,
+        hash: [u8; 32],
+        maximum: u64,
+        fail_at: Option<PublicationFailureAt>,
+    ) -> Result<(), RecoveryError> {
+        publication_step(fail_at, PublicationFailureAt::PendingFileSync)?;
         self.file
             .sync_all()
             .map_err(|_| RecoveryError::Publication)?;
@@ -805,6 +858,7 @@ impl CipherPublication {
         held.ensure_attached()
             .map_err(|_| RecoveryError::Attachment)?;
         self.final_output.check()?;
+        publication_step(fail_at, PublicationFailureAt::FinalHardLink)?;
         std::fs::hard_link(&self.pending, self.final_output.path())
             .map_err(|_| RecoveryError::Publication)?;
         // Only this successful owned publication may change nlink/ctime.
@@ -815,6 +869,7 @@ impl CipherPublication {
             std::fs::symlink_metadata(&self.pending).map_err(|_| RecoveryError::Attachment)?;
         check_link(&stamp, &actual, 2)?;
         check_link(&stamp, &pending, 2)?;
+        publication_step(fail_at, PublicationFailureAt::LinkedParentSync)?;
         self.final_output
             .parent
             .directory()
@@ -845,10 +900,12 @@ impl CipherPublication {
                 .map_err(|_| RecoveryError::Attachment)?,
             2,
         )?;
+        publication_step(fail_at, PublicationFailureAt::PendingUnlink)?;
         std::fs::remove_file(&self.pending).map_err(|_| RecoveryError::Publication)?;
         let actual: std::fs::Metadata = std::fs::symlink_metadata(self.final_output.path())
             .map_err(|_| RecoveryError::Attachment)?;
         check_link(&stamp, &actual, 1)?;
+        publication_step(fail_at, PublicationFailureAt::FinalParentSync)?;
         self.final_output
             .parent
             .directory()
@@ -867,6 +924,16 @@ impl CipherPublication {
         final_file
             .ensure_attached()
             .map_err(|_| RecoveryError::Attachment)
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    fn publish_with_failure_at(
+        self,
+        length: u64,
+        hash: [u8; 32],
+        maximum: u64,
+        fail_at: PublicationFailureAt,
+    ) -> Result<(), RecoveryError> {
+        self.publish_inner(length, hash, maximum, Some(fail_at))
     }
 }
 fn check_link(
@@ -904,5 +971,349 @@ fn check_link(
     {
         let _ = (before, after, links);
         Err(RecoveryError::Unsupported)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod publication_controls {
+    use super::*;
+    use std::{
+        io::Write,
+        os::unix::fs::{DirBuilderExt, MetadataExt},
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    struct PublicationTestDirectory {
+        path: PathBuf,
+        root: ImmutableArchiveReader,
+        original: DirectoryStamp,
+    }
+
+    impl PublicationTestDirectory {
+        fn new(budget: &ArchiveReadBudget) -> Self {
+            budget.check().expect("admit fixture before creating it");
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let sequence: u64 = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path: PathBuf = std::env::temp_dir().join(format!(
+                "recovery-publication-{}-{sequence}",
+                std::process::id()
+            ));
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&path)
+                .expect("create this test's private fixture root");
+            let root: ImmutableArchiveReader =
+                ImmutableArchiveReader::open_bounded(&path, budget)
+                    .expect("hold this test's private fixture root");
+            let original: DirectoryStamp =
+                DirectoryStamp::read(root.directory()).expect("stamp fixture root");
+            assert_eq!(root.root(), path.as_path());
+            assert_eq!(original.uid, effective_uid().unwrap());
+            assert_eq!(original.mode & 0o7777, 0o700);
+            Self {
+                path,
+                root,
+                original,
+            }
+        }
+    }
+
+    impl Drop for PublicationTestDirectory {
+        fn drop(&mut self) {
+            self.root
+                .ensure_attached()
+                .expect("held fixture root remains attached before cleanup");
+            let attached: DirectoryStamp =
+                DirectoryStamp::read(self.root.directory()).expect("read held fixture root");
+            let named: std::fs::Metadata = std::fs::symlink_metadata(&self.path)
+                .expect("fixture path remains present before cleanup");
+            let named_stamp: DirectoryStamp = DirectoryStamp::from_metadata(&named)
+                .expect("fixture path still names a directory");
+            assert!(attached == self.original, "held fixture identity changed");
+            assert!(named_stamp == self.original, "named fixture identity changed");
+            assert_eq!(self.root.root(), self.path.as_path());
+            std::fs::remove_dir_all(&self.path)
+                .expect("remove only the still-attached private fixture root");
+        }
+    }
+
+    fn absent(path: &Path) {
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => panic!("expected absent publication leaf"),
+        }
+    }
+
+    fn file_stamp(
+        metadata: &std::fs::Metadata,
+    ) -> (u64, u64, u32, u32, u64, u64, i64, i64, i64, i64) {
+        (
+            metadata.dev(),
+            metadata.ino(),
+            metadata.mode(),
+            metadata.uid(),
+            metadata.nlink(),
+            metadata.len(),
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+        )
+    }
+
+    fn assert_retained_file(
+        path: &Path,
+        expected: &[u8],
+        original: &std::fs::Metadata,
+        links: u64,
+        allow_ctime_change: bool,
+    ) {
+        let metadata: std::fs::Metadata =
+            std::fs::symlink_metadata(path).expect("expected retained publication leaf");
+        assert!(metadata.is_file());
+        assert_eq!(metadata.dev(), original.dev());
+        assert_eq!(metadata.ino(), original.ino());
+        assert_eq!(metadata.uid(), original.uid());
+        assert_eq!(metadata.mode() & 0o7777, 0o600);
+        assert_eq!(metadata.mode(), original.mode());
+        assert_eq!(metadata.nlink(), links);
+        assert_eq!(metadata.len(), original.len());
+        assert_eq!(metadata.len(), expected.len() as u64);
+        assert_eq!(metadata.mtime(), original.mtime());
+        assert_eq!(metadata.mtime_nsec(), original.mtime_nsec());
+        if !allow_ctime_change {
+            assert_eq!(metadata.ctime(), original.ctime());
+            assert_eq!(metadata.ctime_nsec(), original.ctime_nsec());
+        }
+        assert_eq!(std::fs::read(path).unwrap(), expected);
+    }
+
+    fn ready_publication(
+        directory: &Path,
+        name: &str,
+        bytes: &[u8],
+        budget: &ArchiveReadBudget,
+    ) -> (CipherPublication, PathBuf, PathBuf, std::fs::Metadata) {
+        let output: PathBuf = directory.join(name);
+        let pending: PathBuf = CipherPublication::pending_path(&output).unwrap();
+        let absent_output: AbsentOutput = AbsentOutput::new(&output, budget).unwrap();
+        let mut publication: CipherPublication =
+            CipherPublication::create(absent_output, budget).unwrap();
+        publication.writer().write_all(bytes).unwrap();
+        let original: std::fs::Metadata =
+            publication.file.metadata().expect("capture held pending metadata");
+        (publication, output, pending, original)
+    }
+
+    fn create_sentinel(directory: &Path, name: &str) -> (PathBuf, Vec<u8>, std::fs::Metadata) {
+        let path: PathBuf = directory.join(name);
+        let bytes: Vec<u8> = format!("unrelated sentinel for {name}").into_bytes();
+        std::fs::write(&path, &bytes).expect("create unrelated sentinel");
+        let metadata: std::fs::Metadata =
+            std::fs::symlink_metadata(&path).expect("stamp unrelated sentinel");
+        (path, bytes, metadata)
+    }
+
+    fn assert_sentinel(path: &Path, bytes: &[u8], original: &std::fs::Metadata) {
+        let current: std::fs::Metadata =
+            std::fs::symlink_metadata(path).expect("unrelated sentinel remains present");
+        assert_eq!(file_stamp(&current), file_stamp(original));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    fn content_hash(bytes: &[u8]) -> [u8; 32] {
+        Sha256::digest(bytes).into()
+    }
+
+    #[test]
+    fn pending_create_refusal_and_real_collision_preserve_existing_leaf() {
+        let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
+        let directory: PublicationTestDirectory = PublicationTestDirectory::new(&budget);
+        let (sentinel_path, sentinel_bytes, sentinel_before):
+            (PathBuf, Vec<u8>, std::fs::Metadata) =
+            create_sentinel(&directory.path, "pending-create-sentinel");
+        let output: PathBuf = directory.path.join("new-output");
+        let pending: PathBuf = CipherPublication::pending_path(&output).unwrap();
+        let refused: Result<CipherPublication, RecoveryError> =
+            CipherPublication::create_with_failure_at(
+                AbsentOutput::new(&output, &budget).unwrap(),
+                &budget,
+                PublicationFailureAt::PendingCreate,
+            );
+        assert!(matches!(refused, Err(RecoveryError::Publication)));
+        absent(&output);
+        absent(&pending);
+        assert_sentinel(&sentinel_path, &sentinel_bytes, &sentinel_before);
+
+        let (collision_sentinel_path, collision_sentinel_bytes, collision_sentinel_before):
+            (PathBuf, Vec<u8>, std::fs::Metadata) =
+            create_sentinel(&directory.path, "collision-sentinel");
+        let collision_output: PathBuf = directory.path.join("collision-output");
+        let collision_pending: PathBuf =
+            CipherPublication::pending_path(&collision_output).unwrap();
+        let sentinel: &[u8] = b"preexisting pending sentinel";
+        std::fs::write(&collision_pending, sentinel).unwrap();
+        let before: std::fs::Metadata = std::fs::symlink_metadata(&collision_pending).unwrap();
+        let refused: Result<CipherPublication, RecoveryError> = CipherPublication::create(
+            AbsentOutput::new(&collision_output, &budget).unwrap(),
+            &budget,
+        );
+        assert!(matches!(refused, Err(RecoveryError::Publication)));
+        let after: std::fs::Metadata = std::fs::symlink_metadata(&collision_pending).unwrap();
+        assert_eq!(file_stamp(&after), file_stamp(&before));
+        assert_eq!(std::fs::read(&collision_pending).unwrap(), sentinel);
+        absent(&collision_output);
+        assert_sentinel(
+            &collision_sentinel_path,
+            &collision_sentinel_bytes,
+            &collision_sentinel_before,
+        );
+    }
+
+    #[test]
+    fn create_parent_sync_refusal_retains_only_empty_owned_pending_file() {
+        let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
+        let directory: PublicationTestDirectory = PublicationTestDirectory::new(&budget);
+        let (sentinel_path, sentinel_bytes, sentinel_before):
+            (PathBuf, Vec<u8>, std::fs::Metadata) =
+            create_sentinel(&directory.path, "create-sync-sentinel");
+        let output: PathBuf = directory.path.join("create-sync-output");
+        let pending: PathBuf = CipherPublication::pending_path(&output).unwrap();
+        let refused: Result<CipherPublication, RecoveryError> =
+            CipherPublication::create_with_failure_at(
+                AbsentOutput::new(&output, &budget).unwrap(),
+                &budget,
+                PublicationFailureAt::CreateParentSync,
+            );
+        assert!(matches!(refused, Err(RecoveryError::Publication)));
+        let metadata: std::fs::Metadata =
+            std::fs::symlink_metadata(&pending).expect("empty pending file remains");
+        assert!(metadata.is_file());
+        assert_eq!(metadata.uid(), effective_uid().unwrap());
+        assert_eq!(metadata.mode() & 0o7777, 0o600);
+        assert_eq!(metadata.nlink(), 1);
+        assert_eq!(metadata.len(), 0);
+        assert_eq!(std::fs::read(&pending).unwrap(), b"");
+        absent(&output);
+        assert_sentinel(&sentinel_path, &sentinel_bytes, &sentinel_before);
+    }
+
+    #[test]
+    fn prelink_sync_and_link_refusals_retain_complete_pending_only() {
+        let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
+        let directory: PublicationTestDirectory = PublicationTestDirectory::new(&budget);
+        let bytes: &[u8] = b"deterministic publication body before linking";
+        let cases: [(&str, PublicationFailureAt); 2] = [
+            ("file-sync", PublicationFailureAt::PendingFileSync),
+            ("hard-link", PublicationFailureAt::FinalHardLink),
+        ];
+        for (name, fail_at) in cases {
+            let (sentinel_path, sentinel_bytes, sentinel_before):
+                (PathBuf, Vec<u8>, std::fs::Metadata) =
+                create_sentinel(&directory.path, &format!("{name}-sentinel"));
+            let (publication, output, pending, original):
+                (CipherPublication, PathBuf, PathBuf, std::fs::Metadata) =
+                ready_publication(&directory.path, name, bytes, &budget);
+            let refused: Result<(), RecoveryError> = publication.publish_with_failure_at(
+                bytes.len() as u64,
+                content_hash(bytes),
+                bytes.len() as u64,
+                fail_at,
+            );
+            assert!(matches!(refused, Err(RecoveryError::Publication)));
+            assert_retained_file(&pending, bytes, &original, 1, false);
+            absent(&output);
+            assert_sentinel(&sentinel_path, &sentinel_bytes, &sentinel_before);
+        }
+    }
+
+    #[test]
+    fn postlink_sync_and_unlink_refusals_retain_both_owned_hardlinks() {
+        let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
+        let directory: PublicationTestDirectory = PublicationTestDirectory::new(&budget);
+        let bytes: &[u8] = b"deterministic body retained at link count two";
+        let cases: [(&str, PublicationFailureAt); 2] = [
+            ("linked-sync", PublicationFailureAt::LinkedParentSync),
+            ("pending-unlink", PublicationFailureAt::PendingUnlink),
+        ];
+        for (name, fail_at) in cases {
+            let (sentinel_path, sentinel_bytes, sentinel_before):
+                (PathBuf, Vec<u8>, std::fs::Metadata) =
+                create_sentinel(&directory.path, &format!("{name}-sentinel"));
+            let (publication, output, pending, original):
+                (CipherPublication, PathBuf, PathBuf, std::fs::Metadata) =
+                ready_publication(&directory.path, name, bytes, &budget);
+            let refused: Result<(), RecoveryError> = publication.publish_with_failure_at(
+                bytes.len() as u64,
+                content_hash(bytes),
+                bytes.len() as u64,
+                fail_at,
+            );
+            assert!(matches!(refused, Err(RecoveryError::Publication)));
+            assert_retained_file(&pending, bytes, &original, 2, true);
+            assert_retained_file(&output, bytes, &original, 2, true);
+            let pending_after: std::fs::Metadata = std::fs::symlink_metadata(&pending).unwrap();
+            let output_after: std::fs::Metadata = std::fs::symlink_metadata(&output).unwrap();
+            assert_eq!(pending_after.dev(), output_after.dev());
+            assert_eq!(pending_after.ino(), output_after.ino());
+            assert_eq!(pending_after.ctime(), output_after.ctime());
+            assert_eq!(pending_after.ctime_nsec(), output_after.ctime_nsec());
+            assert_sentinel(&sentinel_path, &sentinel_bytes, &sentinel_before);
+        }
+    }
+
+    #[test]
+    fn final_parent_sync_refusal_retains_final_only_and_success_preserves_sentinels() {
+        let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
+        let directory: PublicationTestDirectory = PublicationTestDirectory::new(&budget);
+        let (failure_sentinel_path, failure_sentinel_bytes, failure_sentinel_before):
+            (PathBuf, Vec<u8>, std::fs::Metadata) =
+            create_sentinel(&directory.path, "final-sync-sentinel");
+        let bytes: &[u8] = b"deterministic final-only body";
+        let (publication, output, pending, original):
+            (CipherPublication, PathBuf, PathBuf, std::fs::Metadata) =
+            ready_publication(&directory.path, "final-sync", bytes, &budget);
+        let refused: Result<(), RecoveryError> = publication.publish_with_failure_at(
+            bytes.len() as u64,
+            content_hash(bytes),
+            bytes.len() as u64,
+            PublicationFailureAt::FinalParentSync,
+        );
+        assert!(matches!(refused, Err(RecoveryError::Publication)));
+        assert_retained_file(&output, bytes, &original, 1, true);
+        absent(&pending);
+        assert_sentinel(
+            &failure_sentinel_path,
+            &failure_sentinel_bytes,
+            &failure_sentinel_before,
+        );
+
+        let sentinel_output: PathBuf = directory.path.join("sentinel-output");
+        let sentinel: &[u8] = b"do not replace an existing final leaf";
+        std::fs::write(&sentinel_output, sentinel).unwrap();
+        let sentinel_before: std::fs::Metadata =
+            std::fs::symlink_metadata(&sentinel_output).unwrap();
+        assert!(AbsentOutput::new(&sentinel_output, &budget).is_err());
+        let sentinel_after: std::fs::Metadata =
+            std::fs::symlink_metadata(&sentinel_output).unwrap();
+        assert_eq!(file_stamp(&sentinel_after), file_stamp(&sentinel_before));
+        assert_eq!(std::fs::read(&sentinel_output).unwrap(), sentinel);
+
+        let (success_sentinel_path, success_sentinel_bytes, success_sentinel_before):
+            (PathBuf, Vec<u8>, std::fs::Metadata) =
+            create_sentinel(&directory.path, "success-sentinel");
+        let (publication, success_output, success_pending, success_original):
+            (CipherPublication, PathBuf, PathBuf, std::fs::Metadata) =
+            ready_publication(&directory.path, "success", bytes, &budget);
+        publication
+            .publish(bytes.len() as u64, content_hash(bytes), bytes.len() as u64)
+            .unwrap();
+        assert_retained_file(&success_output, bytes, &success_original, 1, true);
+        absent(&success_pending);
+        assert_sentinel(
+            &success_sentinel_path,
+            &success_sentinel_bytes,
+            &success_sentinel_before,
+        );
     }
 }
