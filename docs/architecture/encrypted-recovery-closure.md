@@ -358,6 +358,14 @@ before encryption. Finish or publication refusal cannot return printable counts.
 This source composition alone is not full-CLI stdout/stderr or an exact count of
 completion-function entries, and it does not make later-failure residue qualified.
 
+PrivateStage's shared `new_file` owner checks the original shared budget before
+parent preparation or private file creation, returning opaque Quota for refused
+or expired admission. Capture/receive/completion retain their preceding
+validations; this is the first ordinary action inside `new_file`, not a guard on
+every caller's earlier IO/allocation or on all filesystem owners. Refusal-first
+error precedence is deliberate. Admission is cooperative, not atomic with later
+deadline/clone refusal or IO, and does not roll back later unqualified residue.
+
 Reuse the existing create-new, held-file sync, hard-link/no-clobber and directory
 sync publication mechanism only, not its equal-existing-byte `Ok(false)`
 resumption meaning. ANY preexisting destination, even byte-identical, refuses.
@@ -424,9 +432,20 @@ remain separate open release criteria.
   Footer/bytes, private fixture stamps including GID, retained staged payloads and
   sentinel, no count result or marker in those two refusal cases, and produced-file
   decryption with authenticated plaintext EOF then later same-cursor physical EOF
-  are their proposed oracles. They are NOT compiled or executed results, full-CLI
-  or exact completion-entry-count evidence, real syscall faults, business proofs,
-  SQL restore or custody qualification. Original named controls remain, and
+  are their proposed oracles. A Linux test-only same-instance counter adds
+  expected real completion-function entry counts of 0/0/1 for these controls,
+  separate from returned public counts or marker bytes. One further direct
+  completion control first irreversibly refuses that same original budget and
+  expects entry 1, opaque Quota and metadata-only NotFound for the diagnostic.
+  Its post-refusal observer reads ONLY the original preheld payload/sentinel
+  descriptors: saved length is bounded before allocation, positive positional
+  reads have finite attempts/checked offsets, full original held/named file
+  stamps bracket every read, and a nonempty saved-offset probe requires real EOF.
+  The already-held outer fixture directory identity is separate from the capture
+  root; no post-refusal reopen, replacement budget or live-budget helper is used.
+  All assertions remain SOURCE expectations, NOT compiled or executed entry-count,
+  full-CLI, real syscall fault, business proof, SQL restore or custody evidence.
+  Original named controls remain, and
   genuine source-free restore is checked separately. Wrong public recipient
   and scrypt/SSH/plugin-only inputs refuse without prompting or plaintext
   fallback; legitimate library GREASE stays accepted.

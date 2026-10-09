@@ -354,11 +354,24 @@ and cross-phase criteria; it does not shorten them.
   finish result, stage recheck, ordinary no-clobber publication, stage completion,
   the original budget check and unchanged count-print order; returned public
   counts are not proof/import authority. Independent fixture byte/full-stamp/EOF
-  oracles and unchanged staged payloads/sentinel do not establish full CLI output
-  or exact completion-entry counts. All 18 original named recovery controls remain;
-  the added four plus five plus three are source declarations, not discovered or
-  executed counts. This is 30 operator recovery names (40 across the three owning
-  libraries), not an inferred test-run total.
+  oracles and unchanged staged payloads/sentinel do not establish full CLI output.
+  Normal local `76a1603b` adds a Linux test-only same-instance completion-entry
+  observer and source assertions of 0/0/1 for those three terminal controls;
+  these are unexecuted expectations, not observed counts. Normal local
+  `15ba7f7a` adds shared-budget admission as the first ordinary `new_file` action,
+  before parent preparation/private creation. Its exact-delta SOURCE_APPROVE
+  does not approve the whole candidate. All three callers retain preceding
+  validation; refused/expired admission deliberately prioritizes opaque Quota.
+  A further Linux direct-completion source control irreversibly refuses the
+  original budget and expects entry 1, Quota and an absent diagnostic. It checks
+  original held payload/sentinel descriptors with bounded positive positional
+  reads, original full file stamps and real EOF, plus the outer fixture directory
+  identity, not a capture-root descriptor. Admission is not atomic with later
+  refusal or IO; empty/partial unqualified residue can still remain.
+  All 18 original named recovery controls remain; the added four plus five plus
+  three plus one are source declarations, not discovered or executed counts.
+  This is 31 operator recovery names (41 across the three owning libraries),
+  not an inferred test-run total or the separate 31 encrypted role inventory.
   Original and corrected-rev1 publication BLOCKs remain immutable; rev2 repaired
   the private fixture/oracle/sentinel/type and cleanup-assertion findings.
   None of these new slices has been formatted, compiled or executed. Pre-syscall
