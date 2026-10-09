@@ -381,8 +381,15 @@ and cross-phase criteria; it does not shorten them.
   reconciliation; only complete reconciliation reports Activated. Three pure
   result-classification controls are source declarations, not executed tests
   or additions to the 41 selected recovery-library controls. The landed-storage
-  reply-loss fault control, no-second-commit proof and full acceptance remain
-  pending; ordinary pre-dispatch/already-Serving refusal paths are unchanged.
+  reply-loss control now has one additional UNEXECUTED node-core SOURCE name:
+  `ordered_economics::tests::causal_placement::control_reconstruction::frozen_completion::successor_activation::successor_activation_reply_loss::first_successor_activation_reply_loss_on_real_sqlite`.
+  It compares three complete real-SQLite import/activation captures, preserves
+  original CancellationRequested on a refused reconciliation read, and asserts
+  same-wrapper AlreadyActivated settlement without a second commit. This is
+  trait-level reply/read loss, not failed SQLite I/O, fsync or crash qualification;
+  all format/compile/owning/full/CI acceptance remains pending. The 31 operator,
+  41 selected recovery-library names and 35 roles are unchanged; ordinary
+  pre-dispatch/already-Serving refusal paths and old controls are unchanged.
   Original and corrected-rev1 publication BLOCKs remain immutable; rev2 repaired
   the private fixture/oracle/sentinel/type and cleanup-assertion findings.
   None of these new slices has been formatted, compiled or executed. Pre-syscall
