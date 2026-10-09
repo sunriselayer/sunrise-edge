@@ -371,7 +371,11 @@ and cross-phase criteria; it does not shorten them.
   All 18 original named recovery controls remain; the added four plus five plus
   three plus one are source declarations, not discovered or executed counts.
   This is 31 operator recovery names (41 across the three owning libraries),
-  not an inferred test-run total or the separate 31 encrypted role inventory.
+  not an inferred test-run total or the separate 35 encrypted role inventory.
+  Source review found a terminal fixture contradiction: the original e0->e1
+  link plus seven genuine later handoffs reaches e8 with eight predecessors,
+  requiring `3 + 4*8 = 35` roles. The terminal assertion/comment and prospective
+  role requirements are corrected only in source; no execution is claimed.
   Original and corrected-rev1 publication BLOCKs remain immutable; rev2 repaired
   the private fixture/oracle/sentinel/type and cleanup-assertion findings.
   None of these new slices has been formatted, compiled or executed. Pre-syscall

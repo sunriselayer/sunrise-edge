@@ -469,13 +469,15 @@ remain separate open release criteria.
   chain. Preserve the real signed seven-epoch withdrawal/unlock, changed
   committees, activated successor and signerless historical controls; do not
   shorten economics, simulate epochs or add another expensive runner.
+  The original e0->e1 link plus seven genuine later handoffs gives eight
+  predecessors at e8: all `3 + 4*8 = 35` original/current/predecessor roles.
 - Retain corruption, wrong binding/pins, placement, prefix/fence/source-token,
   ambiguous progress, missing blobs, genuine second-file WAL creation failure
   and inactive admission/signing/ordinary-serving refusals. No encrypted format
   test replaces these or the full required owners.
 - The implementation is source-present, not qualified. Exact dependency/source
   review, bounded owning execution and strict Clippy, literal npm-ci/full
-  required acceptance, all 31 original/current/predecessor roles, twelve fresh
+  required acceptance, all 35 original/current/predecessor roles, twelve fresh
   Native A/B targets and final-head hosted CI/review remain gates. The optional PG
   implementation is unchanged, but the encryption dependency expands shared
   `futures-util` feature edges used by PG; the documented full-PG dependency

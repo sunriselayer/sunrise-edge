@@ -155,8 +155,9 @@ final authentication, the subsequent explicit EOF/stamp checks or proofs.
 Continue using the existing inactive import rehearsal until the candidate's
 validation completes; runnable encrypted-recovery instructions remain deferred.
 Do not treat source presence as backup qualification or create a real recovery
-key. Owning/full/source-free validation, all 31 original/current/predecessor
-roles, twelve fresh Native A/B targets, final-head hosted CI/review,
-dependency/PG acceptance and host-resource/custody gates remain pending.
+key. Owning/full/source-free validation, all 35 original/current/predecessor
+roles from the complete eight-predecessor e8 closure, twelve fresh Native A/B
+targets, final-head hosted CI/review, dependency/PG acceptance and host-resource/
+custody gates remain pending.
 Current evidence and remaining M4
 requirements belong in [TODO](../../TODO.md).

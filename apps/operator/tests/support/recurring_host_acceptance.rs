@@ -2959,8 +2959,8 @@ pub(super) fn run(
         prove_f_ordered_quorum(&unlocked, &hosts, &final_directory);
     verify_receipts(&receipt_history, &hosts);
     // All existing genuine seven-epoch/full-unlock assertions above have
-    // finished. Recovery adds a SEPARATE terminal control transition, never
-    // relabels the e6 cut as latest state or advances/activates an e8.
+    // finished. Recovery adds a SEPARATE terminal control transition at the
+    // post-withdrawal e8 cut; it does not advance or activate e9.
     let pre_freeze: ProtectedState = protected_state(fixture, &targets);
     let recovery_control: PathBuf = final_directory.join("terminal-recovery-control");
     std::fs::create_dir(&recovery_control).unwrap();
@@ -3016,8 +3016,8 @@ pub(super) fn run(
     assert_eq!(unlocked.authority().link_count() as usize, links.len());
     assert_eq!(
         links.len(),
-        7,
-        "configured genuine fixture preserves ALL seven predecessors"
+        8,
+        "full e8 closure keeps the original e0->e1 link and seven recurrent handoffs"
     );
     let expected_binding: runtime::ImportBinding = {
         let archive: sunrise_edge_client::immutable_archive::ImmutableArchiveReader =
