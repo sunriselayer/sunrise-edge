@@ -361,6 +361,7 @@ impl PrivateStage {
         Ok(root.join(&entry.name))
     }
     fn new_file(&mut self, relative: &Path) -> Result<File, RecoveryError> {
+        self.budget.check().map_err(|_| RecoveryError::Quota)?;
         self.prepare_parent(relative)?;
         let file: File = create_private_file(&self.root.root().join(relative))?;
         self.check_directory(relative.parent().ok_or(RecoveryError::Inventory)?)?;

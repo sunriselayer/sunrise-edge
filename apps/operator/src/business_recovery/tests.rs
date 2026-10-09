@@ -1813,3 +1813,87 @@ fn pack_terminal_ordinary_success_returns_counts_after_publication_and_stage_com
     final_file.assert_unchanged(&output, &fixture.budget);
     fixture.assert_retained_inputs();
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pack_terminal_direct_complete_refused_budget_is_quota_before_leaf_creation() {
+    fn assert_original_stamps(checkpoint: &PackTerminalCheckpoint, path: &Path) {
+        let held: std::fs::Metadata = checkpoint.file.metadata().unwrap();
+        let named: std::fs::Metadata = std::fs::symlink_metadata(path).unwrap();
+        assert_eq!(PackTerminalFileStamp::read(&held), checkpoint.stamp);
+        assert_eq!(PackTerminalFileStamp::read(&named), checkpoint.stamp);
+    }
+
+    fn assert_original_held_bytes(checkpoint: &PackTerminalCheckpoint, path: &Path) {
+        use std::os::unix::fs::FileExt;
+
+        assert!(checkpoint.stamp.length <= PACK_TERMINAL_FILE_BOUND);
+        let length: usize = usize::try_from(checkpoint.stamp.length).unwrap();
+        assert!(length > 0_usize, "retained fixture leaf must be nonempty");
+        assert_eq!(checkpoint.bytes.len(), length);
+        assert_original_stamps(checkpoint, path);
+        let mut observed: Vec<u8> = vec![0; length];
+        let mut offset: usize = 0_usize;
+        let mut attempts: usize = 0_usize;
+        while offset < length {
+            assert!(attempts < length, "finite positive-progress read attempts");
+            attempts = attempts.checked_add(1_usize).unwrap();
+            let position: u64 = u64::try_from(offset).unwrap();
+            let remaining: usize = length.checked_sub(offset).unwrap();
+            assert_original_stamps(checkpoint, path);
+            let read_result: io::Result<usize> =
+                checkpoint.file.read_at(&mut observed[offset..], position);
+            assert_original_stamps(checkpoint, path);
+            let count: usize = read_result.unwrap();
+            assert!(count > 0_usize, "zero progress before saved leaf length");
+            assert!(count <= remaining);
+            offset = offset.checked_add(count).unwrap();
+        }
+        assert_eq!(offset, length);
+        assert!(attempts <= length);
+        let mut probe: [u8; 1] = [0; 1];
+        assert_original_stamps(checkpoint, path);
+        let probe_result: io::Result<usize> =
+            checkpoint.file.read_at(&mut probe, checkpoint.stamp.length);
+        assert_original_stamps(checkpoint, path);
+        let physical_eof: usize = probe_result.unwrap();
+        assert_eq!(physical_eof, 0_usize, "nonempty held positional EOF probe");
+        assert_eq!(observed, checkpoint.bytes);
+        assert_original_stamps(checkpoint, path);
+    }
+
+    fn assert_outer_identity(directory: &PackTerminalDirectory) {
+        let held: std::fs::Metadata = directory.held.metadata().unwrap();
+        let named: std::fs::Metadata = std::fs::symlink_metadata(&directory.path).unwrap();
+        assert_eq!(PackTerminalRootIdentity::read(&held), directory.identity);
+        assert_eq!(PackTerminalRootIdentity::read(&named), directory.identity);
+    }
+
+    let mut fixture: PackTerminalFixture = PackTerminalFixture::new();
+    let marker: PathBuf = fixture.stage.root().join(envelope::COMPLETE);
+    let sentinel_path: PathBuf = fixture.directory.path.join("foreign-sentinel.bin");
+    assert_eq!(fixture.payloads.len(), 3_usize);
+    fixture.stage.check(&fixture.manifest).unwrap();
+    assert_eq!(fixture.stage.complete_entry_count_for_test(), 0_usize);
+    pack_terminal_absent(&marker);
+    fixture.assert_retained_inputs();
+    assert_outer_identity(&fixture.directory);
+
+    assert!(fixture.budget.charge_observations(u64::MAX).is_err());
+    assert!(fixture.budget.check().is_err());
+    assert_eq!(fixture.stage.complete_entry_count_for_test(), 0_usize);
+    let result: Result<(), RecoveryError> =
+        fixture.stage.complete(&fixture.manifest, &fixture.footer);
+    assert_eq!(fixture.stage.complete_entry_count_for_test(), 1_usize);
+    let error: RecoveryError = result.unwrap_err();
+    assert_eq!(error, RecoveryError::Quota);
+    assert!(fixture.budget.check().is_err());
+    pack_terminal_absent(&marker);
+    assert_outer_identity(&fixture.directory);
+    for (path, checkpoint) in &fixture.payloads {
+        assert_original_held_bytes(checkpoint, path);
+    }
+    assert_original_held_bytes(&fixture.sentinel, &sentinel_path);
+    assert_outer_identity(&fixture.directory);
+    assert!(fixture.budget.check().is_err());
+}
