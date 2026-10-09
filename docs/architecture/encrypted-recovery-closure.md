@@ -377,11 +377,31 @@ remain separate open release criteria.
   malformed/secret-like IO errors, unsupported input, tampering, plaintext-cap
   and stable-attachment refusals. Finish/authentication/EOF are independently
   observed; no fallback, counter reset or buffered bypass is permitted.
-- File-only publication controls cover byte-identical preexisting output,
-  overlap, write-zero/short-write error and failed finish/sync/directory sync,
-  with no qualified completion and exact retained residue. Wrong public
-  recipient and scrypt/SSH/plugin-only inputs refuse without prompting or
-  plaintext fallback; legitimate library GREASE stays accepted.
+- File-only controls retain byte-identical preexisting-output and overlap
+  refusal, no-clobber and ordinary-success cases. Private writer sinks
+  distinguish repeated short writes through maintained age `finish()` and
+  round-trip from nonempty write-zero refusal, partial-progress-then-error and
+  failure during final age emission. Independently assert exact accepted
+  prefix/count/hash and opaque permanent refusal; legitimate empty writes are
+  not nonempty write-zero or EOF evidence. A private invocation-local selector
+  may refuse before pending creation, create-parent sync, pending-file sync,
+  final hard-link, linked-parent sync, pending unlink or final-parent sync.
+  Production publication always follows the no-fault path. Inspect residue
+  independently against the original held pending inode/metadata and bytes:
+  absent leaves before creation, empty pending-only after create-parent
+  refusal, complete pending-only before link, both owned hardlinks after
+  link/before unlink, and final-only after unlink. An unrelated sentinel must
+  preserve its exact bytes and metadata through every refusal and success.
+  Constructor-time refusal checks real empty/private residue without inventing
+  a pre-creation inode. Test-fixture cleanup checks retained root identity
+  before deletion but is not atomic hostile-race deletion or production rollback.
+  These pre-syscall refusals do not qualify actual failed file/parent sync,
+  power loss, process crash, hostile mutation, ENOSPC or durability; real
+  selected-profile faults remain separate requirements. Pack must still
+  propagate finish/publication failure before completion diagnostics/output,
+  with genuine source-free restore checked separately. Wrong public recipient
+  and scrypt/SSH/plugin-only inputs refuse without prompting or plaintext
+  fallback; legitimate library GREASE stays accepted.
 - Bounded SDK tests exhaust constructor staging, names before insertion, nested
   surplus history, huge declared heights/components before growth, repeat-walk
   accounting and aggregate cross-role quotas. Ignored orphan bytes stay unread/

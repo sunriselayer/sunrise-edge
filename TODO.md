@@ -1,6 +1,6 @@
 # Sunrise Edge implementation and mainnet roadmap
 
-Updated: 2026-10-08 (Asia/Singapore).
+Updated: 2026-10-09 (Asia/Singapore).
 
 This is the only live queue and readiness tracker. Responsibility contracts
 belong in [architecture](docs/architecture/README.md), actual owners in the
@@ -14,8 +14,9 @@ The [original roadmap](docs/development/history/roadmap-through-2026-10-06.md)
 and [preserved execution queue](docs/development/history/execution-queue-through-2026-10-07.md)
 retain original criteria, exact revisions and failed/interrupted/scoped attempts.
 Historical pending statuses and the expired ten-hour window are not the current
-queue. The human's later instruction is to continue toward resolving the TODOs;
-no new deadline or deployment authority is inferred.
+queue. On 2026-10-09 the human authorized a further eight-hour local implementation
+window ending at 08:34:32 UTC. This does not add network-acquisition, live PG,
+deployment or public-launch authority.
 
 ## Established baseline
 
@@ -144,11 +145,22 @@ real 15 canonical, 184 SDK and 81 operator cases. The minimal Clippy correction
 received source-only review but has not passed a corrected owning run. Those
 partial results are not acceptance of the new combined source.
 
-Next: review the combined source and newly bound owning packet before any new
-invocation; then execute fresh required, twelve-target A/B and final-head
-hosted gates. Old metadata/scoped helpers must not run with substituted source
-or target bindings. M4's age edge expands shared `futures-util` features used
-by PostgreSQL: the documented PG dependency acceptance requirement remains
+The combined `5c28e868` source and its proposed rev3 owning packet received
+different source-only approvals; neither was a corrected runtime invocation.
+They are now baseline evidence, not approval of the later writer/publication
+source commits below. The inherited private Cargo home is unavailable for an
+unknown reason. Human-authorized local reconstruction is not admitted: exact
+local inputs are incomplete and its replacement protocol remains unqualified.
+Network acquisition awaits a separate direct human answer; global caches and
+the retained M4 target must not be silently substituted or repopulated.
+
+Next: freeze and review the new combined source, resolve the private-cache
+prerequisite within the actual authorized scope, and bind/review a NEW owning
+packet before any invocation; then execute fresh required, twelve-target A/B
+and final-head hosted gates. Old metadata/scoped helpers must not run with
+substituted source or target bindings. M4's age edge expands shared
+`futures-util` features used by PostgreSQL: the documented PG dependency
+acceptance requirement remains
 unresolved, even though Native+SQLite development may continue. No live PG
 or waived selected-profile check is authorized. Keep the accepted
 [DR-0221](docs/architecture/decisions/0221-encrypted-recovery-closure.md)
@@ -325,6 +337,21 @@ and cross-phase criteria; it does not shorten them.
   do not reset or widen the shared budget to force a pass. Both prior design
   BLOCKs remain preserved. Disposable local X25519 does not select real custody
   or off-host retention; no M4 completion is claimed.
+  Separate normal local commits `bcd9afd0` and `ffed0cd0` received different
+  exact-delta SOURCE_APPROVE, not combined-source or runtime acceptance. The
+  writer adds four source controls for repeated short writes through age finish
+  and round-trip, nonempty write-zero refusal, exact partial-prefix progress
+  followed by error, and final age-emission failure. Publication adds five
+  Linux-only source controls for seven private operation-boundary refusals,
+  independently checking original pending/final inode/bytes and unrelated
+  sentinel preservation. All 18 original named recovery controls remain; the
+  added four plus five are source declarations, not discovered/executed counts.
+  Original and corrected-rev1 publication BLOCKs remain immutable; rev2 repaired
+  the private fixture/oracle/sentinel/type and cleanup-assertion findings.
+  Neither new slice has been formatted, compiled or executed. Pre-syscall
+  refusal injection does not prove actual failed sync, power loss, crash
+  durability, pack completion output, source-free SQL restore or off-host custody.
+  New full-source review/owning admission and every gate above remain required.
 - [ ] **M5 — production ingress/operations:** actual auth/TLS PKI/rotation, every
   exposed family's authorization, retry/backpressure/request/work/capacity budgets,
   monitoring/alerts, incident response, validator/liveness operations and spend
