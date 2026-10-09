@@ -147,7 +147,7 @@ partial results are not acceptance of the new combined source.
 
 The combined `5c28e868` source and its proposed rev3 owning packet received
 different source-only approvals; neither was a corrected runtime invocation.
-They are now baseline evidence, not approval of the later writer/publication
+They are now baseline evidence, not approval of the later writer/publication/terminal
 source commits below. The inherited private Cargo home is unavailable for an
 unknown reason. Human-authorized local reconstruction is not admitted: exact
 local inputs are incomplete and its replacement protocol remains unqualified.
@@ -338,17 +338,30 @@ and cross-phase criteria; it does not shorten them.
   BLOCKs remain preserved. Disposable local X25519 does not select real custody
   or off-host retention; no M4 completion is claimed.
   Separate normal local commits `bcd9afd0` and `ffed0cd0` received different
-  exact-delta SOURCE_APPROVE, not combined-source or runtime acceptance. The
-  writer adds four source controls for repeated short writes through age finish
-  and round-trip, nonempty write-zero refusal, exact partial-prefix progress
+  exact-delta SOURCE_APPROVE. A fresh complete-source SOURCE_APPROVE then covered
+  their combined `cf37216d` snapshot only; that is now baseline, not approval of
+  later edits or runtime acceptance. The writer adds four source controls for
+  repeated short writes through age finish and round-trip, nonempty write-zero
+  refusal, exact partial-prefix progress
   followed by error, and final age-emission failure. Publication adds five
   Linux-only source controls for seven private operation-boundary refusals,
   independently checking original pending/final inode/bytes and unrelated
-  sentinel preservation. All 18 original named recovery controls remain; the
-  added four plus five are source declarations, not discovered/executed counts.
+  sentinel preservation within the declared attachment field set, not every Unix
+  metadata field. Normal local `576575eb` adds a private terminal gate and three
+  Linux source controls: actual file-backed final-age emission refusal, natural
+  late byte-identical foreign-output refusal, and ordinary publication/completion
+  success. Its different exact-delta SOURCE_APPROVE is static only. The gate keeps
+  finish result, stage recheck, ordinary no-clobber publication, stage completion,
+  the original budget check and unchanged count-print order; returned public
+  counts are not proof/import authority. Independent fixture byte/full-stamp/EOF
+  oracles and unchanged staged payloads/sentinel do not establish full CLI output
+  or exact completion-entry counts. All 18 original named recovery controls remain;
+  the added four plus five plus three are source declarations, not discovered or
+  executed counts. This is 30 operator recovery names (40 across the three owning
+  libraries), not an inferred test-run total.
   Original and corrected-rev1 publication BLOCKs remain immutable; rev2 repaired
   the private fixture/oracle/sentinel/type and cleanup-assertion findings.
-  Neither new slice has been formatted, compiled or executed. Pre-syscall
+  None of these new slices has been formatted, compiled or executed. Pre-syscall
   refusal injection does not prove actual failed sync, power loss, crash
   durability, pack completion output, source-free SQL restore or off-host custody.
   New full-source review/owning admission and every gate above remain required.

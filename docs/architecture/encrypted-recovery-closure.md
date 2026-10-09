@@ -118,8 +118,15 @@ metadata, not unchecked raw path reopening. Consumer-specific ownership/mode
 checks run before the first byte read, not after parsing a secret.
 Refuse nonregular or changed attachments before reads; retain held root and
 regular-ancestor checks. Compare device/inode/type/uid/mode/link count/length/
-mtime/ctime plus exact length and content digest across capture/reuse. This is
-not whole-path isolation or a wall-clock guarantee for a blocking regular
+mtime/ctime plus exact length and content digest across capture/reuse. This
+declared regular-file attachment set excludes GID and atime; it is not every
+Unix metadata field. Private recovery staging-root identity retains device/inode/
+mode/uid, not immutable directory timestamps across child creation. Publication's
+own link/unlink checks require the expected link counts and permit ctime changes
+within the otherwise compared field set; they do not prove GID preservation.
+These application rules are distinct from a reviewer's full UID/GID source-file
+DATA stamp or a stronger independent test-fixture oracle. This is not
+whole-path isolation or a wall-clock guarantee for a blocking regular
 filesystem. Unsupported platforms refuse this local profile. Ordinary
 `local_genesis` continues to follow genesis file symlinks; ordinary SDK
 constructors and common Ed25519 seed format/error priority stay unchanged.
@@ -341,6 +348,16 @@ That diagnostic is not proof authority; the importer independently verifies
 again. Packing's private captured stage may use the same last-written
 diagnostic only after independent verification; it is never a packaged role.
 
+Pack's private concrete terminal gate reduces the actual maintained-age finish
+result to a borrow-free length/hash before moving publication. It keeps the
+existing finish-result refusal, staged recheck, ordinary publication, real stage
+completion and original shared-budget check order. Only then does it return
+public link/file counts to the unchanged print site. Those counts carry no proof,
+import or custody capability; the caller's defining business verification remains
+before encryption. Finish or publication refusal cannot return printable counts.
+This source composition alone is not full-CLI stdout/stderr or an exact count of
+completion-function entries, and it does not make later-failure residue qualified.
+
 Reuse the existing create-new, held-file sync, hard-link/no-clobber and directory
 sync publication mechanism only, not its equal-existing-byte `Ok(false)`
 resumption meaning. ANY preexisting destination, even byte-identical, refuses.
@@ -387,19 +404,30 @@ remain separate open release criteria.
   may refuse before pending creation, create-parent sync, pending-file sync,
   final hard-link, linked-parent sync, pending unlink or final-parent sync.
   Production publication always follows the no-fault path. Inspect residue
-  independently against the original held pending inode/metadata and bytes:
+  independently against the original held pending inode, declared attachment
+  fields and bytes:
   absent leaves before creation, empty pending-only after create-parent
   refusal, complete pending-only before link, both owned hardlinks after
   link/before unlink, and final-only after unlink. An unrelated sentinel must
-  preserve its exact bytes and metadata through every refusal and success.
+  preserve its exact bytes and compared metadata fields through every refusal
+  and success; do not expand this to an all-field Unix metadata claim.
   Constructor-time refusal checks real empty/private residue without inventing
   a pre-creation inode. Test-fixture cleanup checks retained root identity
   before deletion but is not atomic hostile-race deletion or production rollback.
   These pre-syscall refusals do not qualify actual failed file/parent sync,
   power loss, process crash, hostile mutation, ENOSPC or durability; real
   selected-profile faults remain separate requirements. Pack must still
-  propagate finish/publication failure before completion diagnostics/output,
-  with genuine source-free restore checked separately. Wrong public recipient
+  propagate finish/publication failure before completion diagnostics/output.
+  Three added Linux source declarations compose the actual terminal gate with a
+  file-backed final-age emission refusal, a natural late equal-byte foreign inode
+  collision and ordinary success. Independent literal L0 framing/real body hashes/
+  Footer/bytes, private fixture stamps including GID, retained staged payloads and
+  sentinel, no count result or marker in those two refusal cases, and produced-file
+  decryption with authenticated plaintext EOF then later same-cursor physical EOF
+  are their proposed oracles. They are NOT compiled or executed results, full-CLI
+  or exact completion-entry-count evidence, real syscall faults, business proofs,
+  SQL restore or custody qualification. Original named controls remain, and
+  genuine source-free restore is checked separately. Wrong public recipient
   and scrypt/SSH/plugin-only inputs refuse without prompting or plaintext
   fallback; legitimate library GREASE stays accepted.
 - Bounded SDK tests exhaust constructor staging, names before insertion, nested
