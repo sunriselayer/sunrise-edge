@@ -895,6 +895,21 @@ followed by a refused barrier or closure read; the result remains the original
 controls. Pure result-classification tests do not replace this storage-backed
 fault control or establish durability.
 
+Source-only fixture status, 2026-10-09:
+`first_successor_activation_reply_loss_on_real_sqlite` is present with three
+independent file-backed SQLite targets. Its test-only wrapper forwards an actual
+committed activation, loses its reply and refuses one reconciliation-barrier
+read. The source assertions require the original `Indeterminate` result,
+independently expected full persisted state and all protected-record fields,
+then settlement through the same consumed wrapper without a second activation
+commit or signing. Successful reconciliation and the ordinary control retain
+the exact attempted activation identity. This case is outside the 41 selected
+source names; the 31 operator source names, eight genuine links and 35 encrypted
+logical roles are unchanged. It remains uncompiled, unformatted and unexecuted;
+owning/full workloads and exact-head hosted qualification are pending. The
+trait-level reply/read loss does not establish physical SQLite I/O failure,
+fsync, crash/power-loss, custody or durability behavior.
+
 **Vectors:** independent stable vectors for 0xD054, 0xD055, 0x64D5, 0x64D6
 and the v3 anchor, plus a generation-floor versus genesis-floor pair. Older
 vectors unchanged.

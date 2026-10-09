@@ -84,6 +84,20 @@ branch. Pre-dispatch and already-Serving refusals retain their no-current-attemp
 write meaning. Pure classification controls do not substitute for a landed
 storage reply-loss fault control or the unchanged full acceptance gate.
 
+Source-only fixture status, 2026-10-09: the file-backed SQLite case
+`first_successor_activation_reply_loss_on_real_sqlite` now asserts the
+post-commit reply-loss/reconciliation-refusal boundary with independent
+full-state and protected-record expectations. Settlement must use the same
+consumed wrapper and retain the attempted identity without a second activation
+commit or signing. Successful reconciliation and the ordinary control remain
+separate branches. The case is uncompiled, unformatted and unexecuted source,
+outside the 41 selected source names; it does not replace owning/full workloads
+or exact-head hosted qualification. Test-only trait-level reply/read loss is
+not physical SQLite I/O, fsync, crash/power-loss, custody or durability
+qualification. The 31 operator source names, eight genuine links and 35
+encrypted logical roles are unchanged. See the accepted design contract below
+for the remaining requirements.
+
 Use [first-successor-serving.md](../first-successor-serving.md) as the
 accepted design contract. Its choices, summarized:
 
