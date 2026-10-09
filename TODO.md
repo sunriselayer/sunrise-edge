@@ -376,6 +376,13 @@ and cross-phase criteria; it does not shorten them.
   link plus seven genuine later handoffs reaches e8 with eight predecessors,
   requiring `3 + 4*8 = 35` roles. The terminal assertion/comment and prospective
   role requirements are corrected only in source; no execution is claimed.
+  A further source correction preserves the original activation Indeterminate
+  reason when an exact matching Serving record is followed by failed full
+  reconciliation; only complete reconciliation reports Activated. Three pure
+  result-classification controls are source declarations, not executed tests
+  or additions to the 41 selected recovery-library controls. The landed-storage
+  reply-loss fault control, no-second-commit proof and full acceptance remain
+  pending; ordinary pre-dispatch/already-Serving refusal paths are unchanged.
   Original and corrected-rev1 publication BLOCKs remain immutable; rev2 repaired
   the private fixture/oracle/sentinel/type and cleanup-assertion findings.
   None of these new slices has been formatted, compiled or executed. Pre-syscall

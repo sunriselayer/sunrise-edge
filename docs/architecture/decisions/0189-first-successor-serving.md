@@ -75,6 +75,15 @@ claimants are not required to join the new consensus set. This narrows the claim
 Section 10 behavior into explicit checks without adding wire fields or weakening
 original namespace behavior.
 
+Outcome-boundary clarification, 2026-10-09: after an ambiguous activation
+commit, an exact matching Serving record alone is insufficient for success.
+Full immutable reconciliation must also succeed. Any later read or invariant
+refusal preserves the original `IndeterminateCommitReason`; it cannot establish
+that the preceding activation made no write. Do not retry the commit in that
+branch. Pre-dispatch and already-Serving refusals retain their no-current-attempt-
+write meaning. Pure classification controls do not substitute for a landed
+storage reply-loss fault control or the unchanged full acceptance gate.
+
 Use [first-successor-serving.md](../first-successor-serving.md) as the
 accepted design contract. Its choices, summarized:
 
