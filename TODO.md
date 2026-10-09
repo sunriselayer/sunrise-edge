@@ -13,10 +13,12 @@ completion criterion.
 The [original roadmap](docs/development/history/roadmap-through-2026-10-06.md)
 and [preserved execution queue](docs/development/history/execution-queue-through-2026-10-07.md)
 retain original criteria, exact revisions and failed/interrupted/scoped attempts.
-Historical pending statuses and the expired ten-hour window are not the current
-queue. On 2026-10-09 the human authorized a further eight-hour local implementation
-window ending at 08:34:32 UTC. This does not add network-acquisition, live PG,
-deployment or public-launch authority.
+Historical pending statuses and expired implementation windows are not the
+current queue. The first 2026-10-09 eight-hour window ended at 08:34:32 UTC;
+a separate direct human request authorized eight more hours of ordinary
+Native+SQLite source work from 08:58:27 through 16:58:27 UTC. This finite window
+does not admit unresolved runtime prerequisites or add network-acquisition,
+live PG, deployment, public-launch, custody or global-host-change authority.
 
 ## Established baseline
 
