@@ -24,10 +24,17 @@ from 06:46:39 through 14:46:39 UTC on 2026-10-10. The CI-check recurring
 automation was deleted at that request; no replacement automation was created.
 The newer direct request to resolve dependency acquisition authorizes only
 missing exact locked Rust inputs from official crates.io, without package code
-execution. Acquisition still needs its own admitted bounded protocol; the disk
-floor-policy choice remains unanswered. Source work does not admit unresolved
+execution. Acquisition still needs its own admitted bounded protocol; the human
+has selected the [observed acquisition floor policy](docs/architecture/decisions/0225-observed-acquisition-floor-and-current-binding.md)
+with stop before 5 GiB. Source work does not admit unresolved
 runtime prerequisites, global-cache substitution, live PG, deployment, public
 launch, custody or global-host changes.
+
+The current direct human request resumes ordinary Native+SQLite implementation
+and requires resolving acquisition blockers and all twenty open groups. It
+selects monitored stop before the 5 GiB floor, not a full-duration global-space
+guarantee. Acquisition code, combined protocol and runtime admission remain
+pending; no TODO group or release gate is closed by this policy decision.
 
 ## Established baseline
 
@@ -179,7 +186,7 @@ The later DR-0224 collector/source-documentation delta is separate from that
 approval; it remains uncompiled, unformatted and unexecuted.
 
 Next: resolve the private-cache prerequisite within the actual authorized scope,
-including the unanswered floor choice, and bind/review a NEW owning
+under the accepted observed floor policy, and bind/review a NEW owning
 packet before any invocation; then execute fresh required, thirteen-target A/B
 and final-head hosted gates. Old metadata/scoped helpers must not run with
 substituted source or target bindings. M4's age edge expands shared
