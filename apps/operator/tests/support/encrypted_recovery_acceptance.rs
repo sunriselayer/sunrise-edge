@@ -205,6 +205,23 @@ pub fn relocate(input: Relocation<'_>) -> SourceBusinessSnapshot {
     assert_eq!(roles.len(), 3 + 4 * input.predecessors.len());
     let expected: Vec<BTreeMap<PathBuf, Option<Vec<u8>>>> =
         roles.iter().map(|(source, _)| inventory(source)).collect();
+    let expected_links: usize = input.predecessors.len();
+    let mut expected_files: usize = 0_usize;
+    for original in &expected {
+        for bytes in original.values() {
+            if bytes.is_some() {
+                expected_files = expected_files
+                    .checked_add(1_usize)
+                    .expect("original carried regular-file count fits usize");
+            }
+        }
+    }
+    let expected_packed: String = format!(
+        "business_recovery=packed links={expected_links} files={expected_files} meaning=local-encrypted-saved-closure-not-import-or-custody\n"
+    );
+    let expected_opened: String = format!(
+        "business_recovery=opened links={expected_links} files={expected_files} meaning=verified-saved-closure-inactive-import-still-separate\n"
+    );
     let token: PortableSnapshotToken =
         sunrise_edge_client::business_cut_archive::decode_saved_source_token(
             &std::fs::read(input.cut.join("source-token.bin")).unwrap(),
@@ -253,7 +270,8 @@ pub fn relocate(input: Relocation<'_>) -> SourceBusinessSnapshot {
             ]);
         command
     };
-    assert!(success(execute(pack())).contains("business_recovery=packed"));
+    let packed: String = success(execute(pack()));
+    assert_eq!(packed, expected_packed);
     for ((_, generated), expected) in roles.iter().zip(&expected) {
         assert_eq!(
             &inventory(&capture.join(generated)),
@@ -264,10 +282,12 @@ pub fn relocate(input: Relocation<'_>) -> SourceBusinessSnapshot {
     let diagnostic: Vec<u8> = std::fs::read(capture.join("recovery-complete-v1.bin")).unwrap();
     assert_eq!(diagnostic.len(), 49);
     let original_cipher: Vec<u8> = std::fs::read(&encrypted).unwrap();
+    let existing_pack: Output = execute(pack());
     assert!(
-        !execute(pack()).status.success(),
+        !existing_pack.status.success(),
         "even identical existing pack outputs refuse, never resume/adopt"
     );
+    assert!(existing_pack.stdout.is_empty());
     assert_eq!(std::fs::read(&encrypted).unwrap(), original_cipher);
     let refusal = |cipher: &Path, key: &Path, output: &Path| -> Output {
         let mut command: Command = Command::new(input.recovery);
@@ -298,6 +318,7 @@ pub fn relocate(input: Relocation<'_>) -> SourceBusinessSnapshot {
     let invalid_output: PathBuf = negative_root.join("invalid-identity-output");
     let invalid: Output = refusal(&encrypted, &malformed, &invalid_output);
     assert!(!invalid.status.success());
+    assert!(invalid.stdout.is_empty());
     assert!(
         !invalid_output.exists(),
         "identity validation precedes staging"
@@ -334,14 +355,18 @@ pub fn relocate(input: Relocation<'_>) -> SourceBusinessSnapshot {
         let path: PathBuf = negative_root.join(format!("{name}.age"));
         std::fs::write(&path, bytes).unwrap();
         let output: PathBuf = negative_root.join(format!("{name}-output"));
-        assert!(!refusal(&path, &key, &output).status.success());
+        let transport_refusal: Output = refusal(&path, &key, &output);
+        assert!(!transport_refusal.status.success());
+        assert!(transport_refusal.stdout.is_empty());
         assert!(!output.join("recovery-complete-v1.bin").exists());
         if output.exists() {
             let before: BTreeMap<PathBuf, Option<Vec<u8>>> = inventory(&output);
+            let residue_refusal: Output = refusal(&encrypted, &key, &output);
             assert!(
-                !refusal(&encrypted, &key, &output).status.success(),
+                !residue_refusal.status.success(),
                 "incomplete stage is not adopted/repaired"
             );
+            assert!(residue_refusal.stdout.is_empty());
             assert_eq!(inventory(&output), before);
         }
     }
@@ -380,18 +405,19 @@ pub fn relocate(input: Relocation<'_>) -> SourceBusinessSnapshot {
             "--out-dir",
             opened.to_str().unwrap(),
         ]);
-    assert!(success(execute(open)).contains("business_recovery=opened"));
+    let opened_output: String = success(execute(open));
+    assert_eq!(opened_output, expected_opened);
     hidden.assert_unavailable();
     assert_eq!(
         std::fs::read(opened.join("recovery-complete-v1.bin")).unwrap(),
         diagnostic
     );
+    let existing_open: Output = refusal(&cold_cipher, &cold_identity, &opened);
     assert!(
-        !refusal(&cold_cipher, &cold_identity, &opened)
-            .status
-            .success(),
+        !existing_open.status.success(),
         "equal existing qualified output still refuses"
     );
+    assert!(existing_open.stdout.is_empty());
     assert_eq!(
         std::fs::read(opened.join("recovery-complete-v1.bin")).unwrap(),
         diagnostic
