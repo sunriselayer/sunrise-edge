@@ -409,6 +409,26 @@ fn check_transaction_bytes(bytes: usize) -> Result<(), RuntimeError> {
     Ok(())
 }
 
+// Callers retain their distinct mutation-set admission. This shared envelope
+// decision checks containment before the unchanged represented-byte bound.
+pub(super) fn validate_state_transaction_parts(
+    domain: AtomicityDomainId,
+    reads: &AtomicStateReadSet,
+    mutations: &AtomicStateMutationSet,
+) -> Result<usize, RuntimeError> {
+    if mutations.mutations().iter().any(|mutation| {
+        reads
+            .reads()
+            .binary_search_by(|read| read.key.as_slice().cmp(mutation.key()))
+            .is_err()
+    }) {
+        return Err(RuntimeError::StateMutationWithoutRead);
+    }
+    let represented_bytes: usize = represented_transaction_bytes(domain, reads, mutations);
+    check_transaction_bytes(represented_bytes)?;
+    Ok(represented_bytes)
+}
+
 fn represented_base_bytes(domain: AtomicityDomainId) -> usize {
     domain.as_bytes().len().saturating_add(2 * size_of::<u32>())
 }

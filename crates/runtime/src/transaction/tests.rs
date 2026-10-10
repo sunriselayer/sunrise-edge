@@ -235,6 +235,141 @@ fn metadata_and_receipt_bearing_state_keep_distinct_empty_mutation_rules() {
 }
 
 #[test]
+fn direct_state_constructors_preserve_order_accounting_and_empty_rules() {
+    let own_domain: AtomicityDomainId = domain(2);
+    let reads: AtomicStateReadSet =
+        AtomicStateReadSet::new(vec![read(b"z", 17), read(b"a", 0)]).unwrap();
+    let mutations: Vec<StateMutationEntry> = vec![
+        mutation(b"z", StateMutation::Put(vec![3, 4])),
+        mutation(b"a", StateMutation::Delete),
+    ];
+    let atomic: AtomicStateTransaction = AtomicStateTransaction::new(
+        own_domain,
+        reads.clone(),
+        AtomicStateMutationSet::new(mutations.clone()).unwrap(),
+    )
+    .unwrap();
+    let durable: DurableStateTransaction =
+        DurableStateTransaction::new(own_domain, reads.clone(), mutations).unwrap();
+    let expected_reads: Vec<StateReadAssertion> = vec![read(b"a", 0), read(b"z", 17)];
+    let expected_mutations: Vec<StateMutationEntry> = vec![
+        mutation(b"a", StateMutation::Delete),
+        mutation(b"z", StateMutation::Put(vec![3, 4])),
+    ];
+    // Independently fixed domain/count/key/revision/tag/value widths.
+    let expected_bytes: usize = 32 + 8 + 2 * 13 + 2 * 6 + 8 + 2;
+    assert_eq!(atomic.domain(), own_domain);
+    assert_eq!(atomic.reads(), expected_reads.as_slice());
+    assert_eq!(atomic.mutations(), expected_mutations.as_slice());
+    assert_eq!(atomic.represented_bytes(), expected_bytes);
+    assert_eq!(durable.domain(), own_domain);
+    assert_eq!(durable.reads(), expected_reads.as_slice());
+    assert_eq!(durable.mutations(), expected_mutations.as_slice());
+    assert_eq!(durable.represented_bytes(), expected_bytes);
+    assert_eq!(DurableStateTransaction::from(atomic), durable);
+
+    assert_eq!(
+        AtomicStateMutationSet::new(Vec::new()),
+        Err(RuntimeError::EmptyWriteSet)
+    );
+    let read_only: DurableStateTransaction =
+        DurableStateTransaction::new(own_domain, reads, Vec::new()).unwrap();
+    assert_eq!(read_only.domain(), own_domain);
+    assert_eq!(read_only.reads(), expected_reads.as_slice());
+    assert!(read_only.mutations().is_empty());
+    assert_eq!(read_only.represented_bytes(), 32 + 8 + 2 * 13);
+}
+
+#[test]
+fn direct_state_constructors_check_containment_before_aggregate_size() {
+    for atomic in [true, false] {
+        let reads: AtomicStateReadSet = AtomicStateReadSet::new(vec![read(b"a", 0)]).unwrap();
+        // Individually legal values, but their represented total exceeds 64 MiB.
+        // The missing read for b must retain the earlier containment refusal.
+        let mutations: Vec<StateMutationEntry> = vec![
+            mutation(b"a", StateMutation::Put(vec![1; MAX_STATE_VALUE_BYTES])),
+            mutation(b"b", StateMutation::Put(vec![2; MAX_STATE_VALUE_BYTES])),
+        ];
+        let error: RuntimeError = if atomic {
+            AtomicStateTransaction::new(
+                domain(3),
+                reads,
+                AtomicStateMutationSet::new(mutations).unwrap(),
+            )
+            .unwrap_err()
+        } else {
+            DurableStateTransaction::new(domain(3), reads, mutations).unwrap_err()
+        };
+        assert_eq!(error, RuntimeError::StateMutationWithoutRead);
+    }
+}
+
+#[test]
+fn direct_state_constructors_keep_exact_aggregate_boundary() {
+    // Two one-byte keys: domain32 + counts8 + reads26 + mutations28 = 94.
+    let overhead: usize = 32 + 8 + 2 * (4 + 1 + 8) + 2 * (4 + 1 + 1 + 8);
+    let remaining: usize = MAX_ATOMIC_STATE_TRANSACTION_BYTES - overhead - MAX_STATE_VALUE_BYTES;
+    for excess in [0_usize, 1] {
+        for atomic in [true, false] {
+            let reads: AtomicStateReadSet =
+                AtomicStateReadSet::new(vec![read(b"b", 7), read(b"a", 0)]).unwrap();
+            let mutations: Vec<StateMutationEntry> = vec![
+                mutation(b"b", StateMutation::Put(vec![2; remaining + excess])),
+                mutation(b"a", StateMutation::Put(vec![1; MAX_STATE_VALUE_BYTES])),
+            ];
+            let result: Result<DurableStateTransaction, RuntimeError> = if atomic {
+                AtomicStateTransaction::new(
+                    domain(4),
+                    reads,
+                    AtomicStateMutationSet::new(mutations).unwrap(),
+                )
+                .map(DurableStateTransaction::from)
+            } else {
+                DurableStateTransaction::new(domain(4), reads, mutations)
+            };
+            if excess == 0 {
+                let state: DurableStateTransaction = result.unwrap();
+                assert_eq!(state.domain(), domain(4));
+                assert_eq!(state.reads(), &[read(b"a", 0), read(b"b", 7)]);
+                assert_eq!(state.mutations()[0].key(), b"a");
+                assert_eq!(state.mutations()[1].key(), b"b");
+                assert_eq!(state.represented_bytes(), MAX_ATOMIC_STATE_TRANSACTION_BYTES);
+            } else {
+                assert_eq!(
+                    result,
+                    Err(RuntimeError::StateTransactionTooLarge {
+                        bytes: MAX_ATOMIC_STATE_TRANSACTION_BYTES + 1,
+                        maximum: MAX_ATOMIC_STATE_TRANSACTION_BYTES,
+                    })
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn durable_mutation_admission_stays_before_envelope_containment() {
+    let own_domain: AtomicityDomainId = domain(5);
+    let reads: AtomicStateReadSet = AtomicStateReadSet::new(vec![read(b"a", 0)]).unwrap();
+    let missing: StateMutationEntry = mutation(b"b", StateMutation::Delete);
+    assert_eq!(
+        DurableStateTransaction::new(own_domain, reads.clone(), vec![missing.clone(); 2]),
+        Err(RuntimeError::DuplicateStateWriteKey)
+    );
+    assert_eq!(
+        DurableStateTransaction::new(
+            own_domain,
+            reads,
+            vec![missing; MAX_ATOMIC_STATE_WRITES + 1],
+        ),
+        Err(RuntimeError::TooManyStateWrites {
+            count: MAX_ATOMIC_STATE_WRITES + 1,
+            maximum: MAX_ATOMIC_STATE_WRITES,
+        })
+    );
+}
+
+#[test]
 fn exact_count_boundary_and_oversized_merges_preserve_existing_state() {
     let mut observations: StateObservationSet = StateObservationSet::new(domain(1));
     for index in 0..MAX_ATOMIC_STATE_READS {
