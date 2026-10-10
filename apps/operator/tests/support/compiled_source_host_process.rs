@@ -164,30 +164,49 @@ impl Drop for ChildGuard {
     }
 }
 
+/// Captures exactly the first LF-terminated line, not whole-stream EOF.
+/// Read errors retain precedence over empty or unterminated successful reads.
+pub(crate) fn read_complete_status_line<R: Read>(input: R) -> std::io::Result<String> {
+    let mut reader: BufReader<R> = BufReader::new(input);
+    let mut line: String = String::new();
+    let count: usize = reader.read_line(&mut line)?;
+    if count == 0 || !line.ends_with('\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "compiled host first status line ended before LF",
+        ));
+    }
+    Ok(line)
+}
+
 /// Spawns `command`, owning the child before its piped stdout is even
-/// taken, and waits up to `deadline` for its first status line. Returns
-/// the guard (still owning the live process) and the line; a timeout,
-/// early exit, or malformed line panics while the guard still owns the
-/// child, so unwind kills and reaps it rather than leaking it.
+/// taken, and waits up to `deadline` for its first LF-terminated status line.
+/// A timeout, read error, EOF before LF or worker failure panics while the
+/// guard still owns the child. Successful first-line capture requires no stream
+/// EOF and does not establish host survival; existing guard cleanup is unchanged.
 pub fn spawn_bounded_status_line(mut command: Command, deadline: Duration) -> (ChildGuard, String) {
     let child: Child = command
         .stdout(Stdio::piped())
         .spawn()
         .expect("failed to spawn compiled host process");
     let mut guard: ChildGuard = ChildGuard::new(child);
-    let stdout = guard.child_mut().stdout.take().expect("piped stdout");
-    let (sender, receiver) = mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        let mut line: String = String::new();
-        let _ignored = BufReader::new(stdout).read_line(&mut line);
-        let _ignored = sender.send(line);
+    let stdout: std::process::ChildStdout =
+        guard.child_mut().stdout.take().expect("piped stdout");
+    let (sender, receiver) = mpsc::channel::<std::io::Result<String>>();
+    let status_reader: std::thread::JoinHandle<()> = std::thread::spawn(move || {
+        let result: std::io::Result<String> = read_complete_status_line(stdout);
+        let _ignored: Result<(), mpsc::SendError<std::io::Result<String>>> = sender.send(result);
     });
-    let line: String = receiver.recv_timeout(deadline).unwrap_or_else(|_| {
+    let read: std::io::Result<String> = receiver.recv_timeout(deadline).unwrap_or_else(|_| {
         panic!(
             "compiled host process did not print a status line within {deadline:?}: {:?}",
             guard.try_wait()
         )
     });
+    let line: String = read.expect("compiled host status line capture did not complete");
+    status_reader
+        .join()
+        .expect("compiled host status line reader panicked");
     (guard, line)
 }
 

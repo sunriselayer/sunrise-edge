@@ -2992,3 +2992,85 @@ fn complete_process_pipe_capture_preserves_eof_and_refuses_read_or_channel_failu
     ));
     drop(pending_sender);
 }
+
+#[test]
+fn complete_startup_status_line_requires_first_lf_and_preserves_read_failure() {
+    use compiled_source_host_process::read_complete_status_line;
+    use std::io::{self, Cursor, Read};
+
+    let first: &str =
+        "complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234\n";
+    let with_tail: Vec<u8> = format!("{first}later output\n").into_bytes();
+    let captured: String = read_complete_status_line(Cursor::new(with_tail)).unwrap();
+    assert_eq!(captured, first, "only the first complete line is returned");
+
+    struct BytesThenError {
+        bytes: &'static [u8],
+        delivered: usize,
+        failed: bool,
+    }
+    impl Read for BytesThenError {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if buffer.is_empty() {
+                return Ok(0);
+            }
+            if self.delivered < self.bytes.len() {
+                let count: usize = buffer.len().min(self.bytes.len() - self.delivered);
+                buffer[..count]
+                    .copy_from_slice(&self.bytes[self.delivered..self.delivered + count]);
+                self.delivered += count;
+                return Ok(count);
+            }
+            self.failed = true;
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "status read failed after a real prefix",
+            ))
+        }
+    }
+
+    let mut completed: BytesThenError = BytesThenError {
+        bytes: b"complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234\n",
+        delivered: 0,
+        failed: false,
+    };
+    assert_eq!(read_complete_status_line(&mut completed).unwrap(), first);
+    assert_eq!(completed.delivered, completed.bytes.len());
+    assert!(
+        !completed.failed,
+        "a complete first line does not require another read or stream EOF"
+    );
+
+    let empty: io::Error =
+        read_complete_status_line(Cursor::new(Vec::<u8>::new())).unwrap_err();
+    assert_eq!(empty.kind(), io::ErrorKind::UnexpectedEof);
+
+    let unterminated: Vec<u8> =
+        b"complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234".to_vec();
+    let incomplete: io::Error =
+        read_complete_status_line(Cursor::new(unterminated)).unwrap_err();
+    assert_eq!(incomplete.kind(), io::ErrorKind::UnexpectedEof);
+
+    let mut refused: BytesThenError = BytesThenError {
+        bytes: b"complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234",
+        delivered: 0,
+        failed: false,
+    };
+    let read_error: io::Error = read_complete_status_line(&mut refused).unwrap_err();
+    assert_eq!(refused.delivered, refused.bytes.len());
+    assert!(refused.failed, "nonempty valid UTF-8 prefix preceded the error");
+    assert_eq!(read_error.kind(), io::ErrorKind::ConnectionReset);
+    assert_eq!(read_error.to_string(), "status read failed after a real prefix");
+
+    let invalid: Vec<u8> = vec![0xff, b'\n'];
+    let invalid_error: io::Error =
+        read_complete_status_line(Cursor::new(invalid)).unwrap_err();
+    assert_eq!(invalid_error.kind(), io::ErrorKind::InvalidData);
+
+    let crlf: Vec<u8> = b"complete=true mode=serving\r\nmore\n".to_vec();
+    assert_eq!(
+        read_complete_status_line(Cursor::new(crlf)).unwrap(),
+        "complete=true mode=serving\r\n",
+        "successful CRLF bytes are preserved rather than normalized"
+    );
+}
