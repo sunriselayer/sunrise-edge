@@ -7,6 +7,8 @@ use super::super::ordered_seal_sqlite_acceptance::{
     acknowledged_output, saved_configured_peer_results, saved_policy_submission_rounds,
 };
 use super::*;
+#[cfg(target_os = "linux")]
+use super::process::local_observation_collector;
 use crate::acceptance_timing::{AcceptanceSpan, Stage};
 use consensus::readiness::ReadinessCertificate;
 use consensus::{ConsensusMessage, ConsensusVote};
@@ -180,6 +182,15 @@ pub(super) fn prove_direct_live_tls(
     let directory: PathBuf = fixture.directory.0.join("direct-successor-tls");
     std::fs::create_dir(&directory).unwrap();
     let tls: NativeTlsFiles = NativeTlsFiles::new(&directory, "live");
+    #[cfg(target_os = "linux")]
+    let mut collector: local_observation_collector::Collector = {
+        let end: Instant = Instant::now()
+            .checked_add(Duration::from_millis(
+                local_observation_collector::TIMEOUT_MILLIS,
+            ))
+            .expect("one successor collector setup-through-completion deadline");
+        local_observation_collector::Collector::start(end, &fixture.directory.0)
+    };
     let mut command: Command = Command::new(&inputs.executables.successor_host);
     command.arg("serve");
     pins(&mut command, fixture, inputs);
@@ -194,8 +205,14 @@ pub(super) fn prove_direct_live_tls(
         "--confirm-offline-fence-advance",
     ]);
     tls.flags(&mut command);
+    #[cfg(target_os = "linux")]
+    command
+        .arg("--local-observations-socket")
+        .arg(collector.socket_path());
     let (guard, line): (process::ChildGuard, String) =
         process::spawn_bounded_status_line(command, Duration::from_secs(600));
+    #[cfg(target_os = "linux")]
+    let mut guard: process::ChildGuard = guard;
     assert!(line.contains("mode=successor-serving"), "{line}");
     assert_eq!(
         field(&line, "epoch="),
@@ -245,6 +262,22 @@ pub(super) fn prove_direct_live_tls(
     let context: node_wire::HttpContextQueryResult = client.query_context().unwrap();
     assert_eq!(context.epoch(), current.expected_context().epoch());
     assert_eq!(context.chain_id(), current.expected_context().chain_id());
+    #[cfg(target_os = "linux")]
+    let context_response: WireResponse = {
+        let response: WireResponse = tls.raw(
+            address,
+            Method::Get,
+            node_wire::QUERY_CONTEXT_PATH,
+            None,
+            Vec::new(),
+        );
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            node_wire::HttpContextQueryResult::decode(&response.body).unwrap(),
+            context
+        );
+        response
+    };
     let status_response: WireResponse = tls.raw(
         address,
         Method::Get,
@@ -296,6 +329,49 @@ pub(super) fn prove_direct_live_tls(
     assert!(context_output.status.success() && !context_output.stdout.is_empty());
     assert!(context_output.stderr.is_empty());
     assert_eq!(protected_state(fixture, &targets), started);
+
+    #[cfg(target_os = "linux")]
+    {
+        guard.request_usr1(collector.deadline());
+        collector.finish();
+        assert!(
+            guard
+                .try_wait()
+                .expect("successor remains owned after collection")
+                .is_none()
+        );
+        let observed_context: WireResponse = tls.raw(
+            address,
+            Method::Get,
+            node_wire::QUERY_CONTEXT_PATH,
+            None,
+            Vec::new(),
+        );
+        assert_eq!(observed_context.status, context_response.status);
+        assert_eq!(
+            observed_context.body, context_response.body,
+            "USR1 preserves authenticated successor context bytes"
+        );
+        let observed_status: WireResponse = tls.raw(
+            address,
+            Method::Get,
+            node_wire::ordered_economics::ORDERED_ECONOMICS_STATUS_PATH,
+            None,
+            Vec::new(),
+        );
+        assert_eq!(observed_status.status, status_response.status);
+        assert_eq!(
+            observed_status.body, status_response.body,
+            "USR1 preserves authenticated successor status bytes"
+        );
+        assert!(
+            guard
+                .try_wait()
+                .expect("successor remains alive after authenticated reads")
+                .is_none()
+        );
+        assert_eq!(protected_state(fixture, &targets), started);
+    }
 
     let certificate: PathBuf = inputs.certificate.join("certificate.bin");
     let original: Vec<u8> = std::fs::read(&certificate).unwrap();
@@ -1017,6 +1093,20 @@ fn prove_direct_history_tls(
     let absent_key: ArtifactChange = ArtifactChange::inject(&signing_key, &held_key, true);
     let mut address: SocketAddr = "127.0.0.1:0".parse().unwrap();
     for _restart in 0..2 {
+        #[cfg(target_os = "linux")]
+        let mut collector: Option<local_observation_collector::Collector> = if _restart == 0 {
+            let end: Instant = Instant::now()
+                .checked_add(Duration::from_millis(
+                    local_observation_collector::TIMEOUT_MILLIS,
+                ))
+                .expect("one history collector setup-through-completion deadline");
+            Some(local_observation_collector::Collector::start(
+                end,
+                &fixture.directory.0,
+            ))
+        } else {
+            None
+        };
         let mut flags: Vec<String> = historical_startup_flags(fixture, links, targets, 1);
         let listen: usize = flags
             .iter()
@@ -1026,9 +1116,17 @@ fn prove_direct_history_tls(
         let mut command: Command = Command::new(&executables.successor_host);
         command.arg("serve-history").args(flags);
         tls.flags(&mut command);
+        #[cfg(target_os = "linux")]
+        if let Some(collector) = collector.as_ref() {
+            command
+                .arg("--local-observations-socket")
+                .arg(collector.socket_path());
+        }
         let requested: SocketAddr = address;
         let (guard, line): (process::ChildGuard, String) =
             process::spawn_bounded_status_line(command, Duration::from_secs(600));
+        #[cfg(target_os = "linux")]
+        let mut guard: process::ChildGuard = guard;
         assert!(
             line.contains("mode=successor-history-material-only"),
             "{line}"
@@ -1044,6 +1142,25 @@ fn prove_direct_history_tls(
         }
         direct_history_material(&tls, address, current, identity, &descriptor, seal);
         assert_eq!(protected_state(fixture, targets), intact);
+        #[cfg(target_os = "linux")]
+        if let Some(collector) = collector.as_mut() {
+            guard.request_usr1(collector.deadline());
+            collector.finish();
+            assert!(
+                guard
+                    .try_wait()
+                    .expect("history host remains owned after collection")
+                    .is_none()
+            );
+            direct_history_material(&tls, address, current, identity, &descriptor, seal);
+            assert!(
+                guard
+                    .try_wait()
+                    .expect("history host remains alive after authenticated material")
+                    .is_none()
+            );
+            assert_eq!(protected_state(fixture, targets), intact);
+        }
         guard.stop_orderly(Duration::from_secs(600));
         assert_eq!(
             protected_state(fixture, targets),
