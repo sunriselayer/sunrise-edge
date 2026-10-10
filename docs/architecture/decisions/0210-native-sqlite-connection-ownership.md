@@ -145,3 +145,38 @@ The existing shared SQL engine retains every logical commit, receipt, outbox,
 namespace and writer-generation rule. Private `cfg(test)` commit hooks are
 absent from released builds and do not add a public maintenance capability.
 Implementation, integration and qualification status remain only in TODO.
+
+## 2026-10-10: compiled serving-host SIGKILL source control
+
+The existing [TLS process target](../../../apps/operator/tests/local_tls_startup.rs)
+adds the nonignored Linux control
+`actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence`.
+Its [private child owner](../../../apps/operator/tests/support/compiled_source_host_process.rs)
+adds `ChildGuard::kill_abruptly_and_reap`, not a production signal or storage API.
+
+The fixture authenticates an acknowledged paid CLI transfer before the fault.
+All four live owned children must return actual signal-9/no-exit-code status
+and confirmed reap receipts under one original eligibility/polling end. Restart
+retains the same four database/blob paths, namespaces, keys, certificates,
+configuration and nonzero endpoints, advancing the writer fence from 2 to 3.
+Pre-held stale read and valid nonempty CAS/Put capabilities must refuse as
+`WriterFenced`. Complete logical snapshots compare State, Receipts, ObjectHeads,
+ObjectVersions, referenced blob bytes and mutation sequence; they are continuity
+observations, not independently reconstructed cut authority. Canonical saved
+artifacts, paid receipt/result, public object/nonce query bytes and all 19 input
+files remain equal. Saved CLI replay must return all four original results
+without a second business mutation/receipt commit. Read-only SQL COMMIT is not
+excluded. Ordinary tail stop follows those assertions and is not the fault oracle.
+
+Parent-side SQLite handles remain open across host reaps/restart. The outbox
+oracle is guarded empty, not nonempty-outbox delivery; physical pages and
+unreferenced blobs are not compared. The shared end bounds polling and success
+eligibility, not kill/wait syscalls, scheduling, legacy Drop cleanup, readers or
+process-group release. This is post-acknowledged serving-host failure, not loss
+of every connection, WAL loss, interrupted COMMIT, power/fsync, disk failure,
+ENOSPC or failover qualification. Existing before-COMMIT and after-COMMIT-before-
+confirmation requirements above remain unchanged.
+
+UNFORMATTED, UNCOMPILED, UNEXECUTED; runtime/resource fit is UNKNOWN. This source
+control does not complete M3/TODO, qualify PostgreSQL or custody, or grant runtime,
+dependency/floor/private-input/ROOT ONE or release authority.

@@ -352,6 +352,14 @@ and cross-phase criteria; it does not shorten them.
   ambiguity reconciliation. DR-0210's real SQLite process/lock tests are narrower
   than host/power/storage faults, ENOSPC/resource exhaustion, real writer failover
   and TLS failure/rotation. Qualify those actual selected-profile boundaries.
+  An additional nonignored Linux source fixture follows an acknowledged paid
+  CLI transfer with owned-child SIGKILL/reap of all four serving hosts and
+  same-path TLS restart at the next fence. It checks pre-held stale capabilities,
+  complete logical business snapshots and referenced blobs, and exact saved replay
+  without a second business mutation. It is uncompiled/unexecuted; parent SQLite
+  handles remain open and the outbox oracle is guarded empty. This is not
+  interrupted COMMIT, all-connections-lost, power, disk-failure, ENOSPC or failover
+  qualification.
   The bounded non-faulting private-namespace capability attempt ended
   ENVIRONMENT_UNAVAILABLE/78: required unprivileged tmpfs noswap was unsupported.
   No SQLite/ENOSPC filler or privilege fallback ran. Retained actual failure/
