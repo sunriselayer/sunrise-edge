@@ -155,6 +155,15 @@ adopting or removing an existing regular file, symlink or socket automatically.
   coverage and add actual owned-child SIGTERM with successful ordinary reap,
   same-endpoint restart, exact receipts/nonce/objects/blobs, saved-intent replay
   and genuine stale-writer fencing. Forced teardown is failure cleanup only.
+- In that existing nonignored fixture on Linux, opt in only the selected host's
+  first boot against a fresh private foreground collector. After ordinary TLS
+  traffic/readiness, request one SIGUSR1 sample without stopping the host. Require
+  ordinary collector success/reap, complete bounded stdout and actual pipe EOF,
+  empty stderr, strict full-record decoding and positive admission/dispatch
+  counters. Check that the host remains alive and its authenticated context bytes
+  are unchanged; retain every later transaction/replay/rotation/stop assertion.
+  Use one setup-through-collection deadline and preserve cleanup failures. This
+  source control is not an executed delivery pass or authenticated attribution.
 - Keep activated-successor/history consumers under the same owner, preserve
   their existing authority/refusal fixtures, and add no duplicated recurrence
   runner, heavy CI lane, selected-PG claim or skipped required gate.

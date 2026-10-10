@@ -110,3 +110,24 @@ Different design and exact implemented-delta source inspection precede adoption.
 Compilation, formatting, focused/owning/full tests, final-head hosted CI and
 the existing independent release gates remain required. Source declarations do
 not complete M5, prove observed delivery or qualify production operations.
+
+## Compiled-host source control, 2026-10-10
+
+Extend the existing nonignored direct-TLS SQLite process fixture, not a new CI
+lane or test selector. Only its selected host's first boot opts in on Linux;
+later boot/rotation and other-host behavior remain default-off. A fresh private
+collector uses one setup-through-collection deadline. Request one SIGUSR1 sample
+after ordinary host readiness and TLS traffic, without consuming or stopping
+the host. Require successful ordinary collector reap, both actual pipe EOFs,
+empty stderr and a complete strict live record with positive admission/dispatch
+counters. Recheck host liveness and exact authenticated context bytes before
+continuing all original paid-state/replay/fencing/rotation/stop assertions.
+
+The test-only owner bounds each captured pipe before append, joins both readers
+on success and failure, and preserves read/poll/kill/reap/cleanup failures instead
+of accepting an empty fallback. Signal delivery has no retry. Fixture cleanup
+removes only its unchanged owned directory/socket after confirmed child release;
+changed or unresolved residue is retained. These local trusted-environment source
+controls do not establish atomic attribution or globally bounded kernel/output
+behavior. Different exact-delta source approval remains separate from formatting,
+compilation, execution and all existing release gates.

@@ -469,6 +469,14 @@ and cross-phase criteria; it does not shorten them.
   interruption controls are authored but unexecuted, as are the private-socket
   controls. Neither static review nor this command qualifies delivery, peer
   attribution, alerts/SLOs, production operations or an M5 completion.
+  Normal local `12152cd7` extends the existing nonignored direct-TLS SQLite
+  fixture with a first-boot-only Linux collector, one non-stopping SIGUSR1 request,
+  strict complete output/real pipe EOF checks and positive admission/dispatch
+  expectations. It rechecks live-host/context preservation before retaining all
+  original transaction/replay/fencing/rotation/stop assertions. The different
+  exact-two-test-path SOURCE approval is static only: formatting, compilation and
+  execution have not run. No selector, CI lane, dependency or TODO completion is
+  added; later original-host boots and the other hosts remain default-off.
   The M5 lock delta only adds direct edges to already locked versions; no PG
   dependency/version changes occur. Locked Rustls 0.23.43 remains affected by
   RUSTSEC-2026-0285 (patched in >=0.23.45). The shared upgrade and local PG
