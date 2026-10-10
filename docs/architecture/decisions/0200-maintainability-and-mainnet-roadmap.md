@@ -71,3 +71,29 @@ The budget authorizes continued local implementation, not cloud resources,
 production D1/Worker traffic, paid-plan changes, live provider activation or
 public/mainnet launch. Stop starting new slices at the window deadline; retain
 real head/review/test state and any unfinished requirements.
+
+## 2026-10-10 R1 submission-signature codec ownership
+
+The existing E009/version1 raw signature-envelope codec and the unchanged
+transaction-v1/submit-transaction-v1 message families belong to execution.
+The SDK uses that owner directly. Core retains its public typed RequestId
+wrapper and reexports, preserving existing API paths and authentication order.
+Its old defining constants and local envelope construction are removed.
+
+The raw owner encodes exactly 32 identity bytes and the supplied payload,
+including zero identity or an empty payload. It validates no request authority,
+transaction, signature or durable outcome. Field copies precede the existing
+32 MiB canonical finish bound; this is not preallocation admission. Core's
+nonzero RequestId and separate 1 MiB authentication bound remain unchanged.
+SDK canonical-envelope failure still maps to the existing NodeCore error;
+unsupported-scheme and transaction-encoding errors retain their priority.
+
+Seven added source controls use independent complete E009 literals, complete
+prepared/signed bytes, exact/+1 frame-size refusal, typed-zero refusal and
+caller-error priority. The large SDK operand is an encoder-only negative,
+not an admissible transaction. Approximately 96 MiB of major live byte buffers
+is source reasoning, not a measured heap/concurrency ceiling or resource grant.
+
+UNFORMATTED, UNCOMPILED and UNEXECUTED. This ownership slice changes no Cargo
+edge, protocol bytes, crypto, custody or durable admission and does not close
+R1/M2 or qualify release. Actual validation and all existing gates remain.

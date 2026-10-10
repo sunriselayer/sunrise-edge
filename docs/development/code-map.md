@@ -68,6 +68,14 @@ selector, semantics and authentication checks stay separate. Independent
 and unchanged [literal core vectors](../../crates/node-core/src/publication/tests.rs)
 pin this boundary. Other SDK/core dependencies remain.
 
+The raw [submission-signature codec](../../crates/execution/src/lib.rs) owns
+the unchanged E009/version1 field layout and both signature-message families.
+[SDK preparation](../../clients/rust/src/transaction.rs) consumes it directly;
+the [typed core wrapper](../../crates/node-core/src/transaction_auth.rs) and
+public reexports preserve existing APIs. Raw zero/empty operands are syntax,
+not authenticated requests. Core admission and the SDK's RequestId/error
+coupling remain separate; seven new source controls are not executed evidence.
+
 ## Find the owner
 
 | Capability | Entry and wire | Decision and effects | Storage and representative tests |

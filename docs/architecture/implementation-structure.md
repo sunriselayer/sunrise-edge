@@ -55,6 +55,14 @@ codec error deliberately changes without an admission-error compatibility
 adapter. This does not remove other SDK/core Cargo edges or establish a build
 improvement. The code map identifies actual definitions after migration.
 
+The existing E009 submission-signature encoding and two message-family
+constants have one execution owner, consumed directly by SDK preparation and
+through the compatible typed core wrapper. RequestId validation, core admission
+and the SDK's existing error projection remain caller-owned. Raw zero/empty
+encoding grants no authority. This removes one codec call through core, not
+its remaining SDK type/error dependencies or Cargo edge; no build benefit is
+measured. See the dated R1 addendum in [DR-0200](decisions/0200-maintainability-and-mainnet-roadmap.md).
+
 ## Concrete refactoring seams
 
 The following are intended module responsibilities inside existing crates.

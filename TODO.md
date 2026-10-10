@@ -230,6 +230,13 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   controls retain full record/response bytes and refusal priority. Different
   exact-slice source review passed; formatting, compilation and execution
   remain unperformed. This does not close R1 or qualify durable receipts.
+  The local submission-signature slice gives the existing E009 encoding and
+  two message-family constants one execution owner. SDK preparation calls it
+  directly; core retains its typed wrapper and existing public paths.
+  Seven source controls independently retain complete envelope/frame/signed
+  bytes, exact/+1 canonical bounds, nonzero-ID and caller-error priority.
+  Formatting, compilation and execution remain unperformed. Raw structural
+  encoding is not admission, full SDK decoupling, custody or R1 completion.
 - [ ] **R2 — semantic core/runtime responsibilities:** admission authorizes,
   evaluation proposes, completion assembles one atomic transaction, reconciliation
   exposes confirmed exact output, and repositories expose their actual capability.
