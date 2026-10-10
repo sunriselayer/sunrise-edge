@@ -274,6 +274,13 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   Exactly one final flush is required: even after every byte is accepted, a
   refused flush remains `Output`, not a successful export. Different exact-slice
   source review passed; formatting, compilation and execution remain unperformed.
+  Shared compiled-child capture now requires successful complete pipe reads and
+  both reader joins before returning `Output`. Startup requires one complete
+  LF-terminated line, preserving the original read error and exact bytes without
+  waiting for host EOF. Two process-free source controls cover read/channel
+  refusal and complete-first-line behavior; they are outside the original 41
+  selected controls and remain unexecuted. Existing failure-cleanup limits and
+  every real CLI, restart/fence/fault and release gate remain unchanged.
 - [ ] **R4 — audit and launch seams:** bind exact source/build/configuration,
   exposed-family authorization, signer/store capabilities and executable
   startup/stop/restart/recovery evidence. DR-0204–0207 relay/native/SDK evidence

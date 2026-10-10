@@ -167,6 +167,11 @@ contracts; they do not define protocol rules.
   [neutral compiled-CLI locator](../../apps/operator/tests/support/compiled_cli_process.rs)
   is also reused by existing optional PostgreSQL tests, without importing their
   fixture/deployment authority into local acceptance.
+  The [shared compiled-child capture](../../apps/operator/tests/support/compiled_source_host_process.rs)
+  returns full `Output` only after successful pipe reads and reader joins; live
+  startup returns one LF-terminated first line without waiting for host-stream EOF.
+  Its two pure TLS-target controls preserve read errors and reject missing
+  completion. These are source contracts, not executed tests or all-path cleanup.
 
 ## Successor invocation and immutable transport
 
