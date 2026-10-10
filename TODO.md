@@ -19,9 +19,12 @@ a separate direct human request authorized eight more hours of ordinary
 Native+SQLite source work from 08:58:27 through 16:58:27 UTC, which also ended.
 The direct 2026-10-10 request to resolve TODO resumes ordinary implementation;
 the recurring automation is CI-only, not implementation or local-state polling.
-Neither source implementation nor an expired window admits unresolved runtime
-prerequisites or adds network-acquisition, live PG, deployment, public-launch,
-custody or global-host-change authority.
+The newer direct request to resolve dependency acquisition authorizes only
+missing exact locked Rust inputs from official crates.io, without package code
+execution. Acquisition still needs its own admitted bounded protocol; the disk
+floor-policy choice remains unanswered. Source work does not admit unresolved
+runtime prerequisites, global-cache substitution, live PG, deployment, public
+launch, custody or global-host changes.
 
 ## Established baseline
 
@@ -156,11 +159,22 @@ They are now baseline evidence, not approval of the later writer/publication/ter
 source commits below. The inherited private Cargo home is unavailable for an
 unknown reason. Human-authorized local reconstruction is not admitted: exact
 local inputs are incomplete and its replacement protocol remains unqualified.
-Network acquisition awaits a separate direct human answer; global caches and
-the retained M4 target must not be silently substituted or repopulated.
+The 2026-10-10 direct request now authorizes official acquire-only missing locked
+inputs. The fresh inert census still has 41 missing archives, 36 missing sparse
+name files and three missing version records. No acquisition or quarantine was
+created: the bounded acquisition implementation remains incomplete, including
+combined evidence accounting, held-input capture and failure/release proof.
+Global caches and the retained M4 target must not be substituted or repopulated.
 
-Next: freeze and review the new combined source, resolve the private-cache
-prerequisite within the actual authorized scope, and bind/review a NEW owning
+Different complete SOURCE_ONLY_APPROVE now covers exact `37ac3197`: all 67
+changed bodies and their relevant ordinary current-route contracts, including
+the genuine fee/bond/slash/evidence and receipt/output defining-owner closure.
+Root independently rebound all 1,045 actual tracked bodies to that clean HEAD.
+This resolves source review for that snapshot only; no new build, test, input
+acquisition, runtime admission or TODO-group completion follows.
+
+Next: resolve the private-cache prerequisite within the actual authorized scope,
+including the unanswered floor choice, and bind/review a NEW owning
 packet before any invocation; then execute fresh required, twelve-target A/B
 and final-head hosted gates. Old metadata/scoped helpers must not run with
 substituted source or target bindings. M4's age edge expands shared
@@ -332,7 +346,7 @@ and cross-phase criteria; it does not shorten them.
   the original metadata attempt remains NONPASS, not dependency qualification.
   The shared-target named-control absence and isolated strict-Clippy failure
   remain NONPASS; the corrected source has no new owning or whole execution.
-  New combined-source review, actual corrected owning/full encrypted restore,
+  Actual corrected owning/full encrypted restore,
   twelve-target A/B and final-head hosted acceptance are still required. The
   unconditional age edge expands `futures-util` features shared with PostgreSQL,
   so final dependency acceptance also needs the documented selected-PG evidence
@@ -400,7 +414,8 @@ and cross-phase criteria; it does not shorten them.
   None of these new slices has been formatted, compiled or executed. Pre-syscall
   refusal injection does not prove actual failed sync, power loss, crash
   durability, pack completion output, source-free SQL restore or off-host custody.
-  New full-source review/owning admission and every gate above remain required.
+  The current combined-source verdict is recorded above. Owning admission and
+  every execution/qualification gate above remain required.
   The 2026-10-10 source follow-up strengthens the existing compiled relocation
   fixture with exact complete pack/open stdout, independently counted original
   regular-file/link inputs and empty stdout for every existing recovery refusal.
