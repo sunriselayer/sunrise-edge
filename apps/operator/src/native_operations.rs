@@ -6,6 +6,11 @@ use std::{
     pin::Pin,
 };
 
+mod live_observations;
+pub(crate) use live_observations::{
+    LOCAL_OBSERVATIONS_SOCKET_FLAG, LocalObservationsPath, PreparedLocalObservations,
+};
+
 type StopFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 pub(crate) struct StopOwner {
@@ -14,24 +19,39 @@ pub(crate) struct StopOwner {
     interrupt: tokio::signal::unix::Signal,
     #[cfg(unix)]
     terminate: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    live_signal: Option<tokio::signal::unix::Signal>,
+    live_ready: bool,
+    live_observations: PreparedLocalObservations,
 }
 
 impl StopOwner {
     /// Call inside the owned Tokio runtime, before binding or announcing readiness.
-    pub(crate) fn install() -> io::Result<Self> {
+    pub(crate) fn install(live_observations: PreparedLocalObservations) -> io::Result<Self> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{Signal, SignalKind, signal};
             let interrupt: Signal = signal(SignalKind::interrupt())?;
             let terminate: Signal = signal(SignalKind::terminate())?;
+            // Opt-in only: Tokio's SIGUSR1 registration is process-wide and is
+            // not restored when this stream or the stop owner is dropped.
+            let live_signal: Option<Signal> = if live_observations.is_enabled() {
+                Some(signal(SignalKind::user_defined1())?)
+            } else {
+                None
+            };
             Ok(Self {
                 buffered: None,
                 interrupt,
                 terminate,
+                live_signal,
+                live_ready: false,
+                live_observations,
             })
         }
         #[cfg(not(unix))]
         {
+            let _live_observations = live_observations;
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "Native orderly signal ownership requires Unix",
@@ -72,26 +92,144 @@ impl StopOwner {
         self.buffered.is_some()
     }
 
-    async fn wait(mut self) -> io::Result<NativeStopReason> {
+    /// Enable opt-in snapshots only after the existing readiness line is flushed.
+    pub(crate) fn readiness_announced(&mut self) {
+        #[cfg(unix)]
+        if let Some(live_signal) = self.live_signal.as_mut() {
+            let mut context: std::task::Context<'_> =
+                std::task::Context::from_waker(std::task::Waker::noop());
+            match live_signal.poll_recv(&mut context) {
+                std::task::Poll::Pending | std::task::Poll::Ready(Some(())) => {}
+                std::task::Poll::Ready(None) => self.live_signal = None,
+            }
+        }
+        self.live_ready = true;
+    }
+
+    async fn wait(mut self, observations: NativeHttpObservations) -> io::Result<NativeStopReason> {
         if let Some(result) = self.buffered.take() {
             return result;
         }
         #[cfg(unix)]
         {
-            tokio::select! {
-                biased;
-                received = self.interrupt.recv() => signal_result(received, NativeStopReason::Sigint),
-                received = self.terminate.recv() => signal_result(received, NativeStopReason::Sigterm),
+            loop {
+                if !self.live_observations.is_enabled() {
+                    self.live_signal = None;
+                }
+                let now: std::time::Instant = std::time::Instant::now();
+                let live_eligible: bool = self.live_observations.is_eligible(now);
+                let live_enabled: bool = live_snapshot_enabled(
+                    self.live_ready,
+                    self.live_signal.is_some(),
+                    self.live_observations.is_enabled(),
+                );
+                let event: WaitEvent = match self.live_signal.as_mut() {
+                    Some(live_signal) if live_enabled && live_eligible => {
+                        select_stop_or_live(
+                            self.interrupt.recv(),
+                            self.terminate.recv(),
+                            live_signal.recv(),
+                        )
+                        .await
+                    }
+                    Some(_) if live_enabled => {
+                        let deadline: std::time::Instant = match self
+                            .live_observations
+                            .next_eligible()
+                        {
+                            Some(deadline) => deadline,
+                            None => {
+                                self.live_signal = None;
+                                continue;
+                            }
+                        };
+                        tokio::select! {
+                            biased;
+                            received = self.interrupt.recv() => WaitEvent::Interrupt(received),
+                            received = self.terminate.recv() => WaitEvent::Terminate(received),
+                            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => WaitEvent::Cooldown,
+                        }
+                    }
+                    Some(_) | None => tokio::select! {
+                        biased;
+                        received = self.interrupt.recv() => WaitEvent::Interrupt(received),
+                        received = self.terminate.recv() => WaitEvent::Terminate(received),
+                    },
+                };
+                match event {
+                    WaitEvent::Interrupt(received) => {
+                        return signal_result(received, NativeStopReason::Sigint);
+                    }
+                    WaitEvent::Terminate(received) => {
+                        return signal_result(received, NativeStopReason::Sigterm);
+                    }
+                    WaitEvent::Live(received) => match live_notification_action(received) {
+                        LiveNotificationAction::Snapshot => {
+                            let attempted_at: std::time::Instant = std::time::Instant::now();
+                            let _outcome = self
+                                .live_observations
+                                .try_send(attempted_at, observations.snapshot());
+                        }
+                        LiveNotificationAction::Disable => {
+                            self.live_signal = None;
+                        }
+                    },
+                    WaitEvent::Cooldown => {}
+                }
             }
         }
         #[cfg(not(unix))]
         {
             let _owner = &mut self;
+            let _observations = &observations;
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "Native orderly signal ownership requires Unix",
             ))
         }
+    }
+}
+
+#[cfg(unix)]
+fn live_snapshot_enabled(ready: bool, signal_open: bool, socket_enabled: bool) -> bool {
+    ready && signal_open && socket_enabled
+}
+
+#[cfg(unix)]
+enum WaitEvent {
+    Interrupt(Option<()>),
+    Terminate(Option<()>),
+    Live(Option<()>),
+    Cooldown,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LiveNotificationAction {
+    Snapshot,
+    Disable,
+}
+
+#[cfg(unix)]
+fn live_notification_action(received: Option<()>) -> LiveNotificationAction {
+    match received {
+        Some(()) => LiveNotificationAction::Snapshot,
+        None => LiveNotificationAction::Disable,
+    }
+}
+
+#[cfg(unix)]
+async fn select_stop_or_live<I, T, L>(interrupt: I, terminate: T, live: L) -> WaitEvent
+where
+    I: Future<Output = Option<()>>,
+    T: Future<Output = Option<()>>,
+    L: Future<Output = Option<()>>,
+{
+    tokio::select! {
+        biased;
+        received = interrupt => WaitEvent::Interrupt(received),
+        received = terminate => WaitEvent::Terminate(received),
+        received = live => WaitEvent::Live(received),
     }
 }
 
@@ -132,8 +270,9 @@ where
     let observations: NativeHttpObservations = executor.observations();
     let stop_executor: NativeBlockingExecutor = executor.clone();
     let (sender, receiver) = tokio::sync::oneshot::channel::<io::Result<NativeStopReason>>();
+    let shutdown_observations: NativeHttpObservations = observations.clone();
     let shutdown: StopFuture = Box::pin(async move {
-        let result: io::Result<NativeStopReason> = stop.wait().await;
+        let result: io::Result<NativeStopReason> = stop.wait(shutdown_observations).await;
         stop_executor.close();
         let _sent = sender.send(result);
     });
@@ -224,7 +363,8 @@ mod tests {
                 NativeBlockingPolicy::new(NonZeroUsize::new(1).unwrap()),
             );
             let probe_executor: NativeBlockingExecutor = executor.clone();
-            let mut stop: StopOwner = StopOwner::install().unwrap();
+            let mut stop: StopOwner =
+                StopOwner::install(PreparedLocalObservations::disabled()).unwrap();
             // Private buffered-result injection only; no OS signal is sent.
             stop.buffered = Some(if signal_failure {
                 Err(io::Error::new(
@@ -284,7 +424,8 @@ mod tests {
     async fn serving_failure_closes_admission_and_is_not_clean_stop() {
         let executor: NativeBlockingExecutor =
             NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(1).unwrap()));
-        let stop: StopOwner = StopOwner::install().unwrap();
+        let stop: StopOwner =
+            StopOwner::install(PreparedLocalObservations::disabled()).unwrap();
         let error: io::Error = timeout(
             TEST_DEADLINE,
             serve(
@@ -346,6 +487,67 @@ mod tests {
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::BrokenPipe
+        );
+    }
+
+    #[test]
+    fn live_signal_requires_readiness_and_open_opt_in_resources() {
+        assert!(!live_snapshot_enabled(false, true, true));
+        assert!(!live_snapshot_enabled(true, false, true));
+        assert!(!live_snapshot_enabled(true, true, false));
+        assert!(live_snapshot_enabled(true, true, true));
+    }
+
+    #[tokio::test]
+    async fn stop_notifications_precede_live_under_load_and_closed_live_only_disables_sampling() {
+        let (live_sender, mut live_receiver): (
+            tokio::sync::mpsc::Sender<()>,
+            tokio::sync::mpsc::Receiver<()>,
+        ) = tokio::sync::mpsc::channel(8);
+        for _notification in 0..8 {
+            live_sender.try_send(()).unwrap();
+        }
+        let interrupt: std::future::Ready<Option<()>> = std::future::ready(Some(()));
+        let terminate: std::future::Ready<Option<()>> = std::future::ready(Some(()));
+        let live = live_receiver.recv();
+        assert!(matches!(
+            select_stop_or_live(interrupt, terminate, live).await,
+            WaitEvent::Interrupt(Some(()))
+        ));
+
+        drop(live_receiver);
+        drop(live_sender);
+        let (live_sender, mut live_receiver): (
+            tokio::sync::mpsc::Sender<()>,
+            tokio::sync::mpsc::Receiver<()>,
+        ) = tokio::sync::mpsc::channel(8);
+        for _notification in 0..8 {
+            live_sender.try_send(()).unwrap();
+        }
+        let interrupt: std::future::Pending<Option<()>> = std::future::pending();
+        let terminate: std::future::Ready<Option<()>> = std::future::ready(Some(()));
+        let live = live_receiver.recv();
+        assert!(matches!(
+            select_stop_or_live(interrupt, terminate, live).await,
+            WaitEvent::Terminate(Some(()))
+        ));
+        drop(live_receiver);
+        drop(live_sender);
+
+        let interrupt: std::future::Pending<Option<()>> = std::future::pending();
+        let terminate: std::future::Pending<Option<()>> = std::future::pending();
+        let live: std::future::Ready<Option<()>> = std::future::ready(None);
+        assert!(matches!(
+            select_stop_or_live(interrupt, terminate, live).await,
+            WaitEvent::Live(None)
+        ));
+        assert_eq!(
+            live_notification_action(None),
+            LiveNotificationAction::Disable
+        );
+        assert_eq!(
+            live_notification_action(Some(())),
+            LiveNotificationAction::Snapshot
         );
     }
 }

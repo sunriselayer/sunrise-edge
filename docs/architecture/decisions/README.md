@@ -117,6 +117,7 @@
 - [DR-0219: direct Native TLS under one connection lifecycle](0219-native-direct-tls-connection-ownership.md)
 - [DR-0221: bounded encrypted saved-business-closure transport (accepted design)](0221-encrypted-recovery-closure.md)
 - [DR-0222: Native stop, actual work drain and bounded observations](0222-native-stop-and-operational-observations.md)
+- [DR-0223: opt-in local Native observation export](0223-local-native-observation-export.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

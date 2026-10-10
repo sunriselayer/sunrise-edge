@@ -116,6 +116,12 @@ impl NativeHttpObservations {
 }
 
 impl NativeHttpSnapshot {
+    /// One fixed-schema live counter record, bounded below 2 KiB for all u64s.
+    #[must_use]
+    pub fn live_summary(self) -> String {
+        format!("native_operations schema=1 kind=live {}\n", self.counter_fields())
+    }
+
     /// One fixed-schema secret-free record, bounded below 2 KiB for all u64s.
     #[must_use]
     pub fn termination_summary(self, reason: NativeStopReason) -> String {
@@ -126,7 +132,14 @@ impl NativeHttpSnapshot {
             NativeStopReason::ServeFailure => "serve_failure",
         };
         format!(
-            "native_operations schema=1 stop={reason} connections_admitted={} connections_refused={} accept_failures={} upgrade_failures={} upgrade_timeouts={} requests_dispatched={} requests_refused={} input_timeouts={} output_timeouts={} connection_failures={} connection_task_failures={} blocking_admitted={} blocking_overloaded={} blocking_closed={} blocking_panics={}\n",
+            "native_operations schema=1 stop={reason} {}\n",
+            self.counter_fields()
+        )
+    }
+
+    fn counter_fields(self) -> String {
+        format!(
+            "connections_admitted={} connections_refused={} accept_failures={} upgrade_failures={} upgrade_timeouts={} requests_dispatched={} requests_refused={} input_timeouts={} output_timeouts={} connection_failures={} connection_task_failures={} blocking_admitted={} blocking_overloaded={} blocking_closed={} blocking_panics={}",
             self.connections_admitted,
             self.connections_refused,
             self.accept_failures,
@@ -297,5 +310,82 @@ mod tests {
                 assert!(!summary.contains(excluded));
             }
         }
+
+        let live_summary: String = snapshot.live_summary();
+        assert!(live_summary.len() <= 2 * 1024);
+        assert_eq!(live_summary.lines().count(), 1);
+        assert!(live_summary.ends_with('\n'));
+        let mut live_fields = live_summary.split_whitespace();
+        assert_eq!(live_fields.next(), Some("native_operations"));
+        assert_eq!(live_fields.next(), Some("schema=1"));
+        assert_eq!(live_fields.next(), Some("kind=live"));
+        let live_pairs: Vec<(&str, &str)> = live_fields
+            .map(|field: &str| field.split_once('=').unwrap())
+            .collect();
+        let live_names: Vec<&str> = vec![
+            "connections_admitted",
+            "connections_refused",
+            "accept_failures",
+            "upgrade_failures",
+            "upgrade_timeouts",
+            "requests_dispatched",
+            "requests_refused",
+            "input_timeouts",
+            "output_timeouts",
+            "connection_failures",
+            "connection_task_failures",
+            "blocking_admitted",
+            "blocking_overloaded",
+            "blocking_closed",
+            "blocking_panics",
+        ];
+        let actual_live_names: Vec<&str> =
+            live_pairs.iter().map(|(name, _)| *name).collect();
+        assert_eq!(actual_live_names, live_names);
+        for (_, count) in &live_pairs {
+            assert_eq!(count.parse::<u64>().unwrap(), u64::MAX);
+        }
+        for excluded in [
+            "http",
+            "127.0.0.1",
+            "secret",
+            "certificate",
+            "request_id",
+            "object_id",
+            "body=",
+            "error=",
+        ] {
+            assert!(!live_summary.contains(excluded));
+        }
+    }
+
+    #[test]
+    fn live_and_termination_records_have_independent_fixed_field_order() {
+        let snapshot: NativeHttpSnapshot = NativeHttpSnapshot {
+            connections_admitted: 1,
+            connections_refused: 2,
+            accept_failures: 3,
+            upgrade_failures: 4,
+            upgrade_timeouts: 5,
+            requests_dispatched: 6,
+            requests_refused: 7,
+            input_timeouts: 8,
+            output_timeouts: 9,
+            connection_failures: 10,
+            connection_task_failures: 11,
+            blocking_admitted: 12,
+            blocking_overloaded: 13,
+            blocking_closed: 14,
+            blocking_panics: 15,
+        };
+        let expected_fields: &str = "connections_admitted=1 connections_refused=2 accept_failures=3 upgrade_failures=4 upgrade_timeouts=5 requests_dispatched=6 requests_refused=7 input_timeouts=8 output_timeouts=9 connection_failures=10 connection_task_failures=11 blocking_admitted=12 blocking_overloaded=13 blocking_closed=14 blocking_panics=15";
+        assert_eq!(
+            snapshot.live_summary(),
+            format!("native_operations schema=1 kind=live {expected_fields}\n")
+        );
+        assert_eq!(
+            snapshot.termination_summary(NativeStopReason::Sigterm),
+            format!("native_operations schema=1 stop=sigterm {expected_fields}\n")
+        );
     }
 }

@@ -77,9 +77,10 @@ const FLAGS: &[&str] = &[
     "--max-concurrent",
     native_tls::CERT_FLAG,
     native_tls::KEY_FLAG,
+    crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG,
 ];
 const BOOL_FLAGS: &[&str] = &["--confirm-offline-fence-advance"];
-const HELP: &str = "Recurring-successor loopback host only: serve | serve-history. Never activates, imports or installs genesis; current Freeze/frontier/DrainSet/Seal controls enter the existing core owners under a fresh warrant.\nRequire the same original pins, explicit --successor-max-links and complete ordered directory role lists as successor_activation, plus --target-state-db --target-blob-db --validator-id --listen 127.0.0.1:port or [::1]:port. Serve additionally requires --signer-key-file --created-checkpoint --confirm-offline-fence-advance (claims the target writer fence once). Serve-history instead requires explicit --historical-epoch and consumes only post-Seal history material: no protocol signing-key loading, signing, fence advance or other routes.\nBudget and counts refuse before any genesis or artifact I/O. Every request re-verifies every link and exact target metadata. Optional --timeout-seconds 1..3600 (30), --max-concurrent 1..256 (16). Optional ordered leaf-first --tls-cert-der-file (one to four DER files) and one --tls-key-pkcs8-der-file must appear together; bounded regular-file/private-key checks finish before durable I/O. TLS identity never grants protocol or caller authority; no hot reload or plaintext fallback.";
+const HELP: &str = "Recurring-successor loopback host only: serve | serve-history. Never activates, imports or installs genesis; current Freeze/frontier/DrainSet/Seal controls enter the existing core owners under a fresh warrant.\nRequire the same original pins, explicit --successor-max-links and complete ordered directory role lists as successor_activation, plus --target-state-db --target-blob-db --validator-id --listen 127.0.0.1:port or [::1]:port. Serve additionally requires --signer-key-file --created-checkpoint --confirm-offline-fence-advance (claims the target writer fence once). Serve-history instead requires explicit --historical-epoch and consumes only post-Seal history material: no protocol signing-key loading, signing, fence advance or other routes.\nBudget and counts refuse before any genesis or artifact I/O. Every request re-verifies every link and exact target metadata. Optional --timeout-seconds 1..3600 (30), --max-concurrent 1..256 (16). Optional --local-observations-socket ABSOLUTE_PATH sends fixed local counter snapshots on opt-in SIGUSR1. Optional ordered leaf-first --tls-cert-der-file (one to four DER files) and one --tls-key-pkcs8-der-file must appear together; bounded regular-file/private-key checks finish before durable I/O. TLS identity never grants protocol or caller authority; no hot reload or plaintext fallback.";
 
 /// Correlation identities unique within the one writer generation this
 /// process claimed; a restart claims a new generation.
@@ -224,10 +225,16 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         256,
     )?;
     let tls_inputs: NativeTlsInputs = NativeTlsInputs::parse(&mut flags)?;
+    let local_observations_path: Option<crate::native_operations::LocalObservationsPath> =
+        crate::native_operations::LocalObservationsPath::parse(
+            flags.optional_one(crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG)?,
+        )?;
     flags.finish()?;
     if state_path == blob_path {
         return Err("target state and blob database paths must be distinct".into());
     }
+    let local_observations: crate::native_operations::PreparedLocalObservations =
+        crate::native_operations::PreparedLocalObservations::connect(local_observations_path)?;
     let tls: Option<tokio_rustls::TlsAcceptor> = tls_inputs.load()?;
     serve(SuccessorHostInputs {
         listen,
@@ -241,6 +248,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         timeout,
         max_concurrent: usize::try_from(max_concurrent)?,
         tls,
+        local_observations,
     })
 }
 
@@ -256,6 +264,7 @@ struct SuccessorHostInputs {
     timeout: u64,
     max_concurrent: usize,
     tls: Option<tokio_rustls::TlsAcceptor>,
+    local_observations: crate::native_operations::PreparedLocalObservations,
 }
 
 fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
@@ -345,8 +354,10 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
     let runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    let local_observations: crate::native_operations::PreparedLocalObservations =
+        host.local_observations;
     runtime.block_on(async move {
-        let mut stop = crate::native_operations::StopOwner::install()?;
+        let mut stop = crate::native_operations::StopOwner::install(local_observations)?;
         let listener: tokio::net::TcpListener = bind_successor_loopback(listen).await?;
         let bound: SocketAddr = listener.local_addr()?;
         // Printed only after the bind, with the actual port, and flushed so
@@ -359,6 +370,7 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
             generation.get(),
         );
         std::io::Write::flush(&mut std::io::stdout())?;
+        stop.readiness_announced();
         }
         crate::native_operations::serve(blocking_executor, stop, move |shutdown, observations| async move {
         match host.tls {
@@ -420,6 +432,34 @@ mod tests {
         values.into_iter().map(OsString::from).collect()
     }
 
+    fn history_arguments(listen: &str) -> Vec<OsString> {
+        let serving_arguments: Vec<OsString> = arguments(listen, true);
+        let mut iterator = serving_arguments.into_iter();
+        let _serve_mode: Option<OsString> = iterator.next();
+        let mut values: Vec<OsString> = vec![OsString::from("serve-history")];
+        while let Some(flag) = iterator.next() {
+            if flag == "--confirm-offline-fence-advance" {
+                continue;
+            }
+            if flag == "--signer-key-file" || flag == "--created-checkpoint" {
+                let _value: Option<OsString> = iterator.next();
+                continue;
+            }
+            values.push(flag);
+        }
+        values.push(OsString::from("--historical-epoch"));
+        values.push(OsString::from("1"));
+        values
+    }
+
+    fn replace_argument_value(arguments: &mut [OsString], flag: &str, value: &str) {
+        let index: usize = arguments
+            .iter()
+            .position(|argument: &OsString| argument == flag)
+            .unwrap();
+        arguments[index + 1] = OsString::from(value);
+    }
+
     #[test]
     fn parser_refuses_modes_and_missing_inputs_without_io() {
         assert!(run([OsString::from("--help")]).is_ok());
@@ -469,5 +509,59 @@ mod tests {
         // artifact directory open, which refuses before any target write.
         assert!(run(arguments("[::1]:0", true)).is_err());
         assert!(!Path::new("/nonexistent/state.db").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_observations_option_defaults_off_and_invalid_forms_refuse_before_io() {
+        let mut serve_defaults: Vec<OsString> = arguments("127.0.0.1:0", true);
+        replace_argument_value(
+            &mut serve_defaults,
+            "--target-blob-db",
+            "/nonexistent/state.db",
+        );
+        let serve_default_error: String = run(serve_defaults).unwrap_err().to_string();
+        assert!(serve_default_error.contains("must be distinct"));
+
+        let mut history_defaults: Vec<OsString> = history_arguments("127.0.0.1:0");
+        replace_argument_value(
+            &mut history_defaults,
+            "--target-blob-db",
+            "/nonexistent/state.db",
+        );
+        let history_default_error: String = run(history_defaults).unwrap_err().to_string();
+        assert!(history_default_error.contains("must be distinct"));
+
+        let overlong_path: String = format!("/{}", "a".repeat(100));
+        let invalid_values: Vec<(String, &str)> = vec![
+            ("relative.sock".into(), "requires an absolute path"),
+            ("/tmp/a\0b".into(), "without NUL"),
+            (overlong_path, "path exceeds 100 bytes"),
+        ];
+        for (value, expected) in invalid_values {
+            let mut serve_args: Vec<OsString> = arguments("127.0.0.1:0", true);
+            serve_args.push(crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG.into());
+            serve_args.push(value.clone().into());
+            let serve_error: String = run(serve_args).unwrap_err().to_string();
+            assert!(serve_error.contains(expected), "{serve_error}");
+
+            let mut history_args: Vec<OsString> = history_arguments("127.0.0.1:0");
+            history_args.push(crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG.into());
+            history_args.push(value.into());
+            let history_error: String = run(history_args).unwrap_err().to_string();
+            assert!(history_error.contains(expected), "{history_error}");
+        }
+
+        for mut serve_args in [
+            arguments("127.0.0.1:0", true),
+            history_arguments("127.0.0.1:0"),
+        ] {
+            for path in ["/tmp/first.sock", "/tmp/second.sock"] {
+                serve_args.push(crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG.into());
+                serve_args.push(path.into());
+            }
+            let duplicate_error: String = run(serve_args).unwrap_err().to_string();
+            assert!(duplicate_error.contains("must be supplied at most once"));
+        }
     }
 }

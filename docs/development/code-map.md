@@ -198,7 +198,10 @@ contracts; they do not define protocol rules.
   queued, detached and unwinding synchronous work independently of telemetry.
   [Fixed local observations](../../crates/native-http/src/observations.rs)
   belong to existing accept/upgrade/collector/I/O branches, not protocol state
-  or a public metrics endpoint. [Focused lifecycle controls](../../crates/native-http/src/tests/native_operations.rs)
+  or a public metrics endpoint. The [opt-in local exporter](../../apps/operator/src/native_operations/live_observations.rs)
+  owns path validation, an unbound nonblocking datagram sender and charged
+  cooldown; the stop owner retains readiness, signal selection and drain.
+  [Focused lifecycle controls](../../crates/native-http/src/tests/native_operations.rs)
   and the existing four-store direct-TLS fixture retain distinct oracles.
 
 - [Core authority](../../crates/node-core/src/serving_authority.rs) separates

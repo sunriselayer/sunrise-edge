@@ -111,10 +111,16 @@ pub(super) fn run(values: Vec<OsString>) -> Result<(), Box<dyn Error>> {
         256,
     )?)?;
     let tls_inputs: NativeTlsInputs = NativeTlsInputs::parse(&mut flags)?;
+    let local_observations_path: Option<crate::native_operations::LocalObservationsPath> =
+        crate::native_operations::LocalObservationsPath::parse(
+            flags.optional_one(crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG)?,
+        )?;
     flags.finish()?;
     if state_path == blob_path {
         return Err("target state and blob paths must be distinct".into());
     }
+    let local_observations: crate::native_operations::PreparedLocalObservations =
+        crate::native_operations::PreparedLocalObservations::connect(local_observations_path)?;
     let tls: Option<tokio_rustls::TlsAcceptor> = tls_inputs.load()?;
     let artifacts: SuccessorChainArtifactFiles = chain.open()?;
     for path in [&state_path, &blob_path] {
@@ -164,12 +170,13 @@ pub(super) fn run(values: Vec<OsString>) -> Result<(), Box<dyn Error>> {
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let mut stop = crate::native_operations::StopOwner::install()?;
+        let mut stop = crate::native_operations::StopOwner::install(local_observations)?;
         let listener: tokio::net::TcpListener = bind_successor_loopback(listen).await?;
         let bound: SocketAddr = listener.local_addr()?;
         if !stop.stop_before_readiness() {
         println!("complete=true mode=successor-history-material-only domain={domain} epoch={} validator_id={validator} writer_generation={} listen={bound}", epoch.get(), generation.get());
         std::io::Write::flush(&mut std::io::stdout())?;
+        stop.readiness_announced();
         }
         crate::native_operations::serve(blocking_executor, stop, move |shutdown, observations| async move {
         match tls {

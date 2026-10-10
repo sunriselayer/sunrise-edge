@@ -70,6 +70,37 @@ This is not a public metrics endpoint, live alert policy, globally bounded
 stderr I/O, an SLO or a capacity/abuse qualification. Those remain separate
 deployment choices; no network telemetry destination is introduced.
 
+## Opt-in live local observations
+
+[DR-0223](decisions/0223-local-native-observation-export.md) adds a separate
+local source contract for `--local-observations-socket ABSOLUTE_PATH` on the
+SQLite source host and both successor serving modes. It is disabled by default.
+The caller must already own an operational Unix datagram collector and its
+trusted directory. The pathname must be absolute, NUL-free and at most 100
+bytes; invalid/duplicate/unsupported options refuse before I/O. An unbound,
+nonblocking sender connects before TLS/archive/key/store/fence access. The host
+creates no socket file, collector or directory and never repairs, removes or
+reconnects the destination.
+
+Opt-in SIGUSR1 registration occurs at the existing stop installation point,
+before listener bind/readiness, not at the beginning of startup. Wait for the
+existing readiness output before requesting a snapshot. Registration failures
+may follow a fence claim, without rollback. Tokio's process-wide signal handler
+is not restored on receiver drop; only a fresh disabled process is guaranteed
+not to install this handler.
+
+After readiness, SIGUSR1 requests one fixed `native_operations schema=1
+kind=live` record with the existing 15 counters and one LF. A monotonic
+one-second cooldown is charged even when the nonblocking send fails; observation
+polling waits during that cooldown while SIGINT/SIGTERM remain prioritized.
+Samples may coalesce, throttle or be dropped; no retry, stdout/stderr write or
+detached sampler follows. A closed observation stream disables its branch.
+The termination record and actual close/drain/error owner remain separate and
+unchanged. Counter loads are not atomic, application-success or readiness
+evidence. This is no public endpoint, delivery guarantee, alert/SLO policy or
+global timing/capacity qualification. Source controls and runtime acceptance
+remain distinct.
+
 ## Acceptance
 
 - Prove acquire/close races, pre-spawn permit release, multiple drain waiters,

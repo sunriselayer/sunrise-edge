@@ -1,6 +1,6 @@
 # Sunrise Edge implementation and mainnet roadmap
 
-Updated: 2026-10-09 (Asia/Singapore).
+Updated: 2026-10-10 (UTC).
 
 This is the only live queue and readiness tracker. Responsibility contracts
 belong in [architecture](docs/architecture/README.md), actual owners in the
@@ -16,9 +16,12 @@ retain original criteria, exact revisions and failed/interrupted/scoped attempts
 Historical pending statuses and expired implementation windows are not the
 current queue. The first 2026-10-09 eight-hour window ended at 08:34:32 UTC;
 a separate direct human request authorized eight more hours of ordinary
-Native+SQLite source work from 08:58:27 through 16:58:27 UTC. This finite window
-does not admit unresolved runtime prerequisites or add network-acquisition,
-live PG, deployment, public-launch, custody or global-host-change authority.
+Native+SQLite source work from 08:58:27 through 16:58:27 UTC, which also ended.
+The direct 2026-10-10 request to resolve TODO resumes ordinary implementation;
+the recurring automation is CI-only, not implementation or local-state polling.
+Neither source implementation nor an expired window admits unresolved runtime
+prerequisites or adds network-acquisition, live PG, deployment, public-launch,
+custody or global-host-change authority.
 
 ## Established baseline
 
@@ -398,6 +401,12 @@ and cross-phase criteria; it does not shorten them.
   refusal injection does not prove actual failed sync, power loss, crash
   durability, pack completion output, source-free SQL restore or off-host custody.
   New full-source review/owning admission and every gate above remain required.
+  The 2026-10-10 source follow-up strengthens the existing compiled relocation
+  fixture with exact complete pack/open stdout, independently counted original
+  regular-file/link inputs and empty stdout for every existing recovery refusal.
+  Invocation order, full role/state/receipt/blob checks and library selectors
+  are unchanged. These new assertions are uncompiled and unexecuted; they do
+  not supply a CLI-output pass or close M4's owning/full/runtime gates.
 - [ ] **M5 — production ingress/operations:** actual auth/TLS PKI/rotation, every
   exposed family's authorization, retry/backpressure/request/work/capacity budgets,
   monitoring/alerts, incident response, validator/liveness operations and spend
@@ -422,6 +431,16 @@ and cross-phase criteria; it does not shorten them.
   all M5 or provider qualification, and do not qualify the new M4 source union.
   No alert/SLO/capacity, globally bounded shutdown or forced-kill safety claim
   follows from these source changes.
+  The 2026-10-10 source follow-up under
+  [DR-0223](docs/architecture/decisions/0223-local-native-observation-export.md)
+  adds default-off local observation export to all three Native serving modes.
+  An existing caller-owned Unix datagram collector receives the fixed 15-counter
+  record only on opt-in SIGUSR1 requests, with charged one-second cooldown and
+  prioritized stop polling; the termination record and actual work drain remain
+  unchanged. Source controls are uncompiled and unexecuted; static review is
+  separate from whole-candidate and runtime acceptance. This does not qualify
+  public monitoring, delivery, alerts/SLO/capacity or production ingress, and
+  closes no M5 gate.
   The M5 lock delta only adds direct edges to already locked versions; no PG
   dependency/version changes occur. Locked Rustls 0.23.43 remains affected by
   RUSTSEC-2026-0285 (patched in >=0.23.45). The shared upgrade and local PG
