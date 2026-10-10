@@ -167,6 +167,18 @@ adopting or removing an existing regular file, symlink or socket automatically.
 - Keep activated-successor/history consumers under the same owner, preserve
   their existing authority/refusal fixtures, and add no duplicated recurrence
   runner, heavy CI lane, selected-PG claim or skipped required gate.
+  The existing Linux successor TLS fixture now uses that private collector after
+  its actual context/status, imported-receipt and CLI traffic and complete
+  protected-state check. After one non-stopping sample, repeat authenticated
+  context/status byte comparisons and the complete state oracle before the
+  original certificate-refusal/restoration and successful-stop controls.
+  Signerless history opts in only on restart zero, repeats the full actual
+  material oracle after collection, and keeps the retired signing key absent
+  through both restarts; restart one stays default-off. Both existing ignored
+  fixtures keep their selectors and unconditional owning CI lanes. One original
+  300,000 ms collector deadline covers setup, signal and strict full capture;
+  a 600-second host bound grants no additional collection eligibility. Source
+  inspection is separate from formatting, compilation and observed delivery.
 
 Only disposable local SQLite and loopback traffic are authorized here. This
 contract is not cloud deployment, production custody, power-loss safety,

@@ -477,6 +477,15 @@ and cross-phase criteria; it does not shorten them.
   exact-two-test-path SOURCE approval is static only: formatting, compilation and
   execution have not run. No selector, CI lane, dependency or TODO completion is
   added; later original-host boots and the other hosts remain default-off.
+  Normal local `614a99d0` reuses the same private collector in the existing
+  activated-successor and signerless-history TLS fixtures. Live collection
+  repeats actual authenticated context/status bytes and whole protected state;
+  history collection repeats the complete material oracle with the retired key
+  absent across both restarts. Only history restart zero opts in. Each collector
+  retains one 300,000 ms setup-through-completion deadline, and all existing
+  selectors, ignored attributes and CI owners remain unchanged. Different
+  exact-three-test-path SOURCE approval is static only; these controls are
+  unformatted, uncompiled and unexecuted, with no whole-source or M5 completion.
   The M5 lock delta only adds direct edges to already locked versions; no PG
   dependency/version changes occur. Locked Rustls 0.23.43 remains affected by
   RUSTSEC-2026-0285 (patched in >=0.23.45). The shared upgrade and local PG

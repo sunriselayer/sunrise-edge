@@ -131,3 +131,25 @@ changed or unresolved residue is retained. These local trusted-environment sourc
 controls do not establish atomic attribution or globally bounded kernel/output
 behavior. Different exact-delta source approval remains separate from formatting,
 compilation, execution and all existing release gates.
+
+## Successor and signerless-history source controls, 2026-10-10
+
+Reuse that test-private collector/process owner in the existing activated-
+successor and signerless-history TLS fixtures. Preserve the original first-boot
+fixture and every existing test name, ignored attribute and owning CI lane.
+Live collection follows the actual authenticated context/status, imported-
+receipt and CLI traffic plus the complete protected-state checkpoint; it then
+repeats the saved context/status bytes and whole state before existing certificate
+refusal/restoration and ordinary stop. History collection occurs only on restart
+zero and repeats the complete authenticated material oracle, including all
+component lengths/digests, exact terminal Seal candidate and absent live routes.
+Keep the retired signing key absent across both restarts and restart one
+default-off, with the original port reuse and no-fence-claim state checks.
+
+Declare each collector before its host guard so unwind releases the host first.
+The one 300,000 ms deadline begins before collector setup, remains unchanged
+through the single non-stopping signal and complete capture, and is not extended
+by a 600-second host bound. Retain the same actual reap/pipe-EOF/strict-decoder
+requirements and identity-bound cleanup. Exact implemented-delta source review
+does not establish execution, authenticated sample attribution, whole-source
+acceptance or M5/release qualification.
