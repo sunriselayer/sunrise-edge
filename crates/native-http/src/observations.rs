@@ -4,6 +4,123 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+const LIVE_FIELDS: [&[u8]; 15] = [
+    b"connections_admitted=",
+    b"connections_refused=",
+    b"accept_failures=",
+    b"upgrade_failures=",
+    b"upgrade_timeouts=",
+    b"requests_dispatched=",
+    b"requests_refused=",
+    b"input_timeouts=",
+    b"output_timeouts=",
+    b"connection_failures=",
+    b"connection_task_failures=",
+    b"blocking_admitted=",
+    b"blocking_overloaded=",
+    b"blocking_closed=",
+    b"blocking_panics=",
+];
+const MAX_LIVE_RECORD_BYTES: usize = 2_048;
+
+/// Fixed, input-independent rejection categories for the live record grammar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeHttpLiveRecordError {
+    /// The record framing or fixed prefix was not exact.
+    Framing,
+    /// The live field names or order did not match schema 1.
+    Fields,
+    /// A counter was not a canonical unsigned decimal `u64`.
+    Counter,
+}
+
+impl core::fmt::Display for NativeHttpLiveRecordError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let message: &str = match self {
+            Self::Framing => "invalid live observation framing",
+            Self::Fields => "invalid live observation fields",
+            Self::Counter => "invalid live observation counter",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for NativeHttpLiveRecordError {}
+
+/// Decodes one canonical DR-0223 live record without retaining input text.
+pub fn decode_live_summary(
+    input: &[u8],
+) -> Result<NativeHttpSnapshot, NativeHttpLiveRecordError> {
+    const PREFIX: &[u8] = b"native_operations schema=1 kind=live ";
+    if input.len() <= PREFIX.len() + 1
+        || input.len() >= MAX_LIVE_RECORD_BYTES
+        || input.last() != Some(&b'\n')
+        || input[..input.len() - 1].contains(&b'\n')
+        || input.contains(&b'\r')
+        || input.contains(&0)
+        || input.get(..PREFIX.len()) != Some(PREFIX)
+    {
+        return Err(NativeHttpLiveRecordError::Framing);
+    }
+    let mut body: &[u8] = &input[PREFIX.len()..input.len() - 1];
+    let mut values: [u64; 15] = [0; 15];
+    for (index, expected_field) in LIVE_FIELDS.iter().enumerate() {
+        let separator: Option<usize> = body.iter().position(|byte: &u8| *byte == b' ');
+        let (field, remainder): (&[u8], &[u8]) = if index + 1 == LIVE_FIELDS.len() {
+            if separator.is_some() {
+                return Err(NativeHttpLiveRecordError::Fields);
+            }
+            (body, &[])
+        } else {
+            match separator {
+                Some(position) => (&body[..position], &body[position + 1..]),
+                None => return Err(NativeHttpLiveRecordError::Fields),
+            }
+        };
+        if field.len() <= expected_field.len()
+            || field.get(..expected_field.len()) != Some(*expected_field)
+        {
+            return Err(NativeHttpLiveRecordError::Fields);
+        }
+        let decimal: &[u8] = &field[expected_field.len()..];
+        if decimal.is_empty()
+            || (decimal.len() > 1 && decimal.first() == Some(&b'0'))
+            || !decimal.iter().all(u8::is_ascii_digit)
+        {
+            return Err(NativeHttpLiveRecordError::Counter);
+        }
+        let mut value: u64 = 0;
+        for digit in decimal {
+            value = value
+                .checked_mul(10)
+                .and_then(|accumulator: u64| accumulator.checked_add(u64::from(*digit - b'0')))
+                .ok_or(NativeHttpLiveRecordError::Counter)?;
+        }
+        values[index] = value;
+        body = remainder;
+    }
+    if !body.is_empty() {
+        return Err(NativeHttpLiveRecordError::Fields);
+    }
+    Ok(NativeHttpSnapshot {
+        connections_admitted: values[0],
+        connections_refused: values[1],
+        accept_failures: values[2],
+        upgrade_failures: values[3],
+        upgrade_timeouts: values[4],
+        requests_dispatched: values[5],
+        requests_refused: values[6],
+        input_timeouts: values[7],
+        output_timeouts: values[8],
+        connection_failures: values[9],
+        connection_task_failures: values[10],
+        blocking_admitted: values[11],
+        blocking_overloaded: values[12],
+        blocking_closed: values[13],
+        blocking_panics: values[14],
+    })
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Counter(AtomicU64);
 impl Counter {
@@ -387,5 +504,177 @@ mod tests {
             snapshot.termination_summary(NativeStopReason::Sigterm),
             format!("native_operations schema=1 stop=sigterm {expected_fields}\n")
         );
+    }
+
+    #[test]
+    fn live_decoder_round_trips_independent_zero_maximum_and_distinct_records() {
+        let zero: NativeHttpSnapshot = NativeHttpSnapshot::default();
+        let maximum: NativeHttpSnapshot = NativeHttpSnapshot {
+            connections_admitted: u64::MAX,
+            connections_refused: u64::MAX,
+            accept_failures: u64::MAX,
+            upgrade_failures: u64::MAX,
+            upgrade_timeouts: u64::MAX,
+            requests_dispatched: u64::MAX,
+            requests_refused: u64::MAX,
+            input_timeouts: u64::MAX,
+            output_timeouts: u64::MAX,
+            connection_failures: u64::MAX,
+            connection_task_failures: u64::MAX,
+            blocking_admitted: u64::MAX,
+            blocking_overloaded: u64::MAX,
+            blocking_closed: u64::MAX,
+            blocking_panics: u64::MAX,
+        };
+        let distinct: NativeHttpSnapshot = NativeHttpSnapshot {
+            connections_admitted: 1,
+            connections_refused: 2,
+            accept_failures: 3,
+            upgrade_failures: 4,
+            upgrade_timeouts: 5,
+            requests_dispatched: 6,
+            requests_refused: 7,
+            input_timeouts: 8,
+            output_timeouts: 9,
+            connection_failures: 10,
+            connection_task_failures: 11,
+            blocking_admitted: 12,
+            blocking_overloaded: 13,
+            blocking_closed: 14,
+            blocking_panics: 15,
+        };
+        let zero_record: &[u8] = concat!(
+            "native_operations schema=1 kind=live ",
+            "connections_admitted=0 connections_refused=0 accept_failures=0 ",
+            "upgrade_failures=0 upgrade_timeouts=0 requests_dispatched=0 ",
+            "requests_refused=0 input_timeouts=0 output_timeouts=0 ",
+            "connection_failures=0 connection_task_failures=0 blocking_admitted=0 ",
+            "blocking_overloaded=0 blocking_closed=0 blocking_panics=0\n"
+        )
+        .as_bytes();
+        let maximum_record: &[u8] = concat!(
+            "native_operations schema=1 kind=live ",
+            "connections_admitted=18446744073709551615 connections_refused=18446744073709551615 ",
+            "accept_failures=18446744073709551615 upgrade_failures=18446744073709551615 ",
+            "upgrade_timeouts=18446744073709551615 requests_dispatched=18446744073709551615 ",
+            "requests_refused=18446744073709551615 input_timeouts=18446744073709551615 ",
+            "output_timeouts=18446744073709551615 connection_failures=18446744073709551615 ",
+            "connection_task_failures=18446744073709551615 blocking_admitted=18446744073709551615 ",
+            "blocking_overloaded=18446744073709551615 blocking_closed=18446744073709551615 ",
+            "blocking_panics=18446744073709551615\n"
+        )
+        .as_bytes();
+        let distinct_record: &[u8] = concat!(
+            "native_operations schema=1 kind=live ",
+            "connections_admitted=1 connections_refused=2 accept_failures=3 ",
+            "upgrade_failures=4 upgrade_timeouts=5 requests_dispatched=6 ",
+            "requests_refused=7 input_timeouts=8 output_timeouts=9 ",
+            "connection_failures=10 connection_task_failures=11 blocking_admitted=12 ",
+            "blocking_overloaded=13 blocking_closed=14 blocking_panics=15\n"
+        )
+        .as_bytes();
+        for (record, expected) in [
+            (zero_record, zero),
+            (maximum_record, maximum),
+            (distinct_record, distinct),
+        ] {
+            assert_eq!(decode_live_summary(record), Ok(expected));
+            assert_eq!(expected.live_summary().as_bytes(), record);
+        }
+    }
+
+    #[test]
+    fn live_decoder_rejects_noncanonical_and_nonlive_records() {
+        let valid: &[u8] = concat!(
+            "native_operations schema=1 kind=live ",
+            "connections_admitted=0 connections_refused=0 accept_failures=0 ",
+            "upgrade_failures=0 upgrade_timeouts=0 requests_dispatched=0 ",
+            "requests_refused=0 input_timeouts=0 output_timeouts=0 ",
+            "connection_failures=0 connection_task_failures=0 blocking_admitted=0 ",
+            "blocking_overloaded=0 blocking_closed=0 blocking_panics=0\n"
+        )
+        .as_bytes();
+        let reordered: &[u8] = concat!(
+            "native_operations schema=1 kind=live ",
+            "connections_refused=0 connections_admitted=0 accept_failures=0 ",
+            "upgrade_failures=0 upgrade_timeouts=0 requests_dispatched=0 ",
+            "requests_refused=0 input_timeouts=0 output_timeouts=0 ",
+            "connection_failures=0 connection_task_failures=0 blocking_admitted=0 ",
+            "blocking_overloaded=0 blocking_closed=0 blocking_panics=0\n"
+        )
+        .as_bytes();
+        let duplicate: &[u8] = concat!(
+            "native_operations schema=1 kind=live ",
+            "connections_admitted=0 connections_admitted=0 accept_failures=0 ",
+            "upgrade_failures=0 upgrade_timeouts=0 requests_dispatched=0 ",
+            "requests_refused=0 input_timeouts=0 output_timeouts=0 ",
+            "connection_failures=0 connection_task_failures=0 blocking_admitted=0 ",
+            "blocking_overloaded=0 blocking_closed=0 blocking_panics=0\n"
+        )
+        .as_bytes();
+        let extra: &[u8] = concat!(
+            "native_operations schema=1 kind=live ",
+            "connections_admitted=0 connections_refused=0 accept_failures=0 ",
+            "upgrade_failures=0 upgrade_timeouts=0 requests_dispatched=0 ",
+            "requests_refused=0 input_timeouts=0 output_timeouts=0 ",
+            "connection_failures=0 connection_task_failures=0 blocking_admitted=0 ",
+            "blocking_overloaded=0 blocking_closed=0 blocking_panics=0 extra=0\n"
+        )
+        .as_bytes();
+        let mut embedded_lf: Vec<u8> = valid.to_vec();
+        embedded_lf.insert(valid.len() - 1, b'\n');
+        let mut embedded_nul: Vec<u8> = valid.to_vec();
+        embedded_nul.insert(valid.len() - 1, 0);
+        const COUNTER_PREFIX: &[u8] =
+            b"native_operations schema=1 kind=live connections_admitted=";
+        const COUNTER_SUFFIX: &[u8] = concat!(
+            " connections_refused=0 accept_failures=0 upgrade_failures=0 ",
+            "upgrade_timeouts=0 requests_dispatched=0 requests_refused=0 ",
+            "input_timeouts=0 output_timeouts=0 connection_failures=0 ",
+            "connection_task_failures=0 blocking_admitted=0 blocking_overloaded=0 ",
+            "blocking_closed=0 blocking_panics=0\n"
+        )
+        .as_bytes();
+        let with_first_counter = |value: &[u8]| -> Vec<u8> {
+            let mut record: Vec<u8> = Vec::with_capacity(
+                COUNTER_PREFIX.len() + value.len() + COUNTER_SUFFIX.len(),
+            );
+            record.extend_from_slice(COUNTER_PREFIX);
+            record.extend_from_slice(value);
+            record.extend_from_slice(COUNTER_SUFFIX);
+            record
+        };
+        let leading_zero: Vec<u8> = with_first_counter(b"00");
+        let signed: Vec<u8> = with_first_counter(b"+1");
+        let overflow: Vec<u8> = with_first_counter(b"18446744073709551616");
+        let non_ascii: Vec<u8> = with_first_counter(b"\xff");
+        let malformed: [(&[u8], NativeHttpLiveRecordError); 14] = [
+            (b"native_operations schema=2 kind=live\n", NativeHttpLiveRecordError::Framing),
+            (b"native_operations schema=1 kind=termination\n", NativeHttpLiveRecordError::Framing),
+            (reordered, NativeHttpLiveRecordError::Fields),
+            (duplicate, NativeHttpLiveRecordError::Fields),
+            (extra, NativeHttpLiveRecordError::Fields),
+            (&leading_zero, NativeHttpLiveRecordError::Counter),
+            (&signed, NativeHttpLiveRecordError::Counter),
+            (&overflow, NativeHttpLiveRecordError::Counter),
+            (&non_ascii, NativeHttpLiveRecordError::Counter),
+            (
+                b"native_operations schema=1 kind=live connections_admitted=0",
+                NativeHttpLiveRecordError::Framing,
+            ),
+            (
+                b" native_operations schema=1 kind=live connections_admitted=0\n",
+                NativeHttpLiveRecordError::Framing,
+            ),
+            (&embedded_lf, NativeHttpLiveRecordError::Framing),
+            (&embedded_nul, NativeHttpLiveRecordError::Framing),
+            (
+                b"native_operations schema=1 kind=live connections_admitted=0\r\n",
+                NativeHttpLiveRecordError::Framing,
+            ),
+        ];
+        for (record, expected_error) in malformed {
+            assert_eq!(decode_live_summary(record), Err(expected_error));
+        }
     }
 }

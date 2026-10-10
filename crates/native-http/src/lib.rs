@@ -39,7 +39,10 @@ use node_core::{
     query_committed_epoch_state, query_object, query_request_receipt, query_sender_next_nonce,
 };
 use objects::{Address, ObjectId};
-pub use observations::{NativeHttpObservations, NativeHttpSnapshot, NativeStopReason};
+pub use observations::{
+    NativeHttpLiveRecordError, NativeHttpObservations, NativeHttpSnapshot, NativeStopReason,
+    decode_live_summary,
+};
 use protocol_config::{
     DomainPlacementManifest, ProtocolConfig, ProtocolConfigError, resolve_transaction_auth_profile,
 };

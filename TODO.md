@@ -18,6 +18,7 @@ current queue. The first 2026-10-09 eight-hour window ended at 08:34:32 UTC;
 a separate direct human request authorized eight more hours of ordinary
 Native+SQLite source work from 08:58:27 through 16:58:27 UTC, which also ended.
 The direct 2026-10-10 request to resolve TODO resumes ordinary implementation;
+the latest eight-hour source window is 03:01:23 through 11:01:23 UTC that day.
 the recurring automation is CI-only, not implementation or local-state polling.
 The newer direct request to resolve dependency acquisition authorizes only
 missing exact locked Rust inputs from official crates.io, without package code
@@ -166,16 +167,18 @@ created: the bounded acquisition implementation remains incomplete, including
 combined evidence accounting, held-input capture and failure/release proof.
 Global caches and the retained M4 target must not be substituted or repopulated.
 
-Different complete SOURCE_ONLY_APPROVE now covers exact `37ac3197`: all 67
+Different complete SOURCE_ONLY_APPROVE now covers exact `39640e32`: all 67
 changed bodies and their relevant ordinary current-route contracts, including
 the genuine fee/bond/slash/evidence and receipt/output defining-owner closure.
 Root independently rebound all 1,045 actual tracked bodies to that clean HEAD.
 This resolves source review for that snapshot only; no new build, test, input
 acquisition, runtime admission or TODO-group completion follows.
+The later DR-0224 collector/source-documentation delta is separate from that
+approval; it remains uncompiled, unformatted and unexecuted.
 
 Next: resolve the private-cache prerequisite within the actual authorized scope,
 including the unanswered floor choice, and bind/review a NEW owning
-packet before any invocation; then execute fresh required, twelve-target A/B
+packet before any invocation; then execute fresh required, thirteen-target A/B
 and final-head hosted gates. Old metadata/scoped helpers must not run with
 substituted source or target bindings. M4's age edge expands shared
 `futures-util` features used by PostgreSQL: the documented PG dependency
@@ -183,7 +186,8 @@ acceptance requirement remains
 unresolved, even though Native+SQLite development may continue. No live PG
 or waived selected-profile check is authorized. Keep the accepted
 [DR-0221](docs/architecture/decisions/0221-encrypted-recovery-closure.md)
-transport/restore requirements and fresh twelve-target A/B gates intact.
+transport/restore requirements intact; DR-0224 adds the thirteenth target to
+the same fresh A/B owner without dropping any original target.
 Rustls advisories, optional PG acceptance, production PKI/custody and M3's
 environment-unavailable memory/noswap choice remain open. Reconcile exact heads
 and ownership before action; preserve Draft #235 and never auto-merge dependencies.
@@ -347,7 +351,7 @@ and cross-phase criteria; it does not shorten them.
   The shared-target named-control absence and isolated strict-Clippy failure
   remain NONPASS; the corrected source has no new owning or whole execution.
   Actual corrected owning/full encrypted restore,
-  twelve-target A/B and final-head hosted acceptance are still required. The
+  thirteen-target A/B and final-head hosted acceptance are still required. The
   unconditional age edge expands `futures-util` features shared with PostgreSQL,
   so final dependency acceptance also needs the documented selected-PG evidence
   and pending authority; unchanged PG versions do not waive that obligation.
@@ -456,6 +460,15 @@ and cross-phase criteria; it does not shorten them.
   separate from whole-candidate and runtime acceptance. This does not qualify
   public monitoring, delivery, alerts/SLO/capacity or production ingress, and
   closes no M5 gate.
+  [DR-0224](docs/architecture/decisions/0224-bounded-local-observation-collector.md)
+  adds a bounded foreground Linux receiver and shared strict live-record decoder.
+  It retains the caller-owned mode-0700 directory chain, uses one setup/receive
+  deadline, limits count/record size/attempts, and prints only a complete typed
+  collection after descriptor closure. Existing or own closed socket leaves are
+  never automatically removed. Actual-loop late-success, malformed-prefix and
+  interruption controls are authored but unexecuted, as are the private-socket
+  controls. Neither static review nor this command qualifies delivery, peer
+  attribution, alerts/SLOs, production operations or an M5 completion.
   The M5 lock delta only adds direct edges to already locked versions; no PG
   dependency/version changes occur. Locked Rustls 0.23.43 remains affected by
   RUSTSEC-2026-0285 (patched in >=0.23.45). The shared upgrade and local PG
@@ -476,6 +489,10 @@ and cross-phase criteria; it does not shorten them.
   M7 evidence. The new encrypted `business_recovery` target extends the SAME
   closed release owner to twelve selected binaries; its new exact-source
   dependency review and fresh twelve-target builds are still unexecuted.
+  DR-0224 then adds `native_observations` as the thirteenth, retaining all twelve
+  targets in that same owner. Current qualification requires two fresh thirteen-
+  target builds and full comparisons; old eleven-/twelve-target output is not
+  acceptance of the new receiver, and its cheap controls remain unexecuted.
   The original S0 unknown-FD attempt and separate diagnostic remain FAILED.
   A different own-unit three-syscall denial passed only builtin checks, not
   acquired-code isolation. Its exited unit remained for 28.010 seconds before

@@ -101,6 +101,48 @@ evidence. This is no public endpoint, delivery guarantee, alert/SLO policy or
 global timing/capacity qualification. Source controls and runtime acceptance
 remain distinct.
 
+## Bounded foreground collection
+
+[DR-0224](decisions/0224-bounded-local-observation-collector.md) defines the
+Linux-only operator receiver `native_observations`. It requires each of
+`--socket ABSOLUTE_PATH`, `--max-samples N` and `--timeout-ms MS` exactly once.
+Use an existing effective-UID-owned mode-0700 parent and a fresh absolute socket
+path. The command validates arguments before I/O, retains a no-follow directory
+descriptor chain, and binds through the held parent's process-self FD path.
+Both the supplied path and that FD-relative address have separate 100-byte
+bounds. Trusted Linux procfs and the same-UID caller remain environmental
+assumptions; attachment checks do not exclude every malicious same-UID rename.
+
+The receiver accepts 1 through 1,024 samples and 1 through 300,000 milliseconds.
+One checked monotonic deadline covers setup and collection, with checks around
+directory/procfs/bind work and every receive. A fixed 2,048-byte receive buffer
+refuses a length at capacity, including truncated larger datagrams. Every
+attempt, including interruption, is charged to a 4,096-attempt ceiling. The
+shared native-http decoder accepts only the exact schema-1 live record with
+15 ordered canonical u64 counters and one LF, not termination records or
+arbitrary text. It changes neither existing encoder nor producer behavior.
+
+Start this foreground collector before the opted-in host, then request samples
+only after the host's ordinary readiness. The collector itself sends no signal,
+starts no host, creates no directory and grants no readiness or node-control
+authority. Producer coalescing, cooldown and dropped sends can make collection
+expire. Use one collector per explicitly chosen local host; this command does
+not authenticate or attribute same-UID senders.
+
+Only exact-count collection completed before expiry, with the retained socket
+and parent chain still attached, reaches stdout. Socket and directory descriptors
+close first. Collection failure leaves stdout empty and reports a fixed category,
+without paths, peer data, received bytes or raw OS errors. Output write/flush
+failure may leave a canonical prefix but returns failure, not a complete export.
+Deadline checks cannot interrupt a stalled syscall or blocked output sink; the
+caller owns an external watchdog when needed.
+
+There is no unlink or stale-path repair, including for the collector's own closed
+socket. Success or a later failure retains that leaf; it is not qualified evidence
+of delivery. After the foreground process ends, the caller separately inspects
+and removes only its owned residue, then uses a fresh path. Do not restart by
+adopting or removing an existing regular file, symlink or socket automatically.
+
 ## Acceptance
 
 - Prove acquire/close races, pre-spawn permit release, multiple drain waiters,

@@ -17,7 +17,7 @@ export const TARGET = "x86_64-unknown-linux-gnu";
 export const NAMES = Object.freeze([
   "sqlite_genesis", "standard_asset_genesis", "genesis_inspect", "sqlite_source_host",
   "business_cut", "business_import", "business_recovery", "conditional_readiness", "ordered_seal",
-  "successor_activation", "successor_host", "sunrise-edge-cli",
+  "successor_activation", "successor_host", "native_observations", "sunrise-edge-cli",
 ]);
 const PACKAGES = ["sunrise-edge-operator", "sunrise-edge-cli"];
 const SCRIPT = fileURLToPath(import.meta.url);

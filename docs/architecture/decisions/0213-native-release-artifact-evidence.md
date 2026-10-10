@@ -74,6 +74,26 @@ or its new dependency graph. A new exact committed source, accepted dependency
 closure and two fresh twelve-target builds remain required. This amendment grants
 neither dependency execution nor a resource reservation or release approval.
 
+### 2026-10-10 bounded local-collection target amendment
+
+[DR-0224](0224-bounded-local-observation-collector.md) adds the foreground
+`native_observations` operator binary. Include its actual
+`apps/operator/src/bin/native_observations.rs` target in this SAME closed owner,
+after `successor_host` and before `sunrise-edge-cli`. Retain all twelve existing
+targets, including `business_recovery`: thirteen actual package/bin/executable
+observations and thirteen saved-artifact comparisons are now required.
+Independently assert the complete list in the existing cheap fixture owner.
+Do not use arbitrary `--bins`, create another build lane, alter resource/cache/
+target rules, or reuse old eleven-/twelve-target output as new qualification.
+
+The original eleven-target recipe and the dated recovery amendment above remain
+historical contracts for their exact sources. For the current recipe, their
+closed argv additionally selects `--bin business_recovery` after `business_import`
+and `--bin native_observations` after `successor_host`. Every actual selected
+target must satisfy the unchanged byte/mode/ownership/cleanup rules in both
+fresh builds. New exact-source/dependency review and execution remain separate
+gates; the source target amendment grants no invocation or release authority.
+
 ## Closed recipe and inputs
 
 Use installed Node 22.20.0, checked through `process.version`; require its

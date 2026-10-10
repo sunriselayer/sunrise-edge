@@ -203,6 +203,14 @@ contracts; they do not define protocol rules.
   cooldown; the stop owner retains readiness, signal selection and drain.
   [Focused lifecycle controls](../../crates/native-http/src/tests/native_operations.rs)
   and the existing four-store direct-TLS fixture retain distinct oracles.
+- [Bounded foreground observation collector](../../apps/operator/src/native_observations.rs)
+  owns exact CLI arguments, Linux retained-directory/socket lifetime, one setup/
+  receive deadline, finite attempts and complete-collection output. The shared
+  [live decoder](../../crates/native-http/src/observations.rs) owns the fixed
+  15-counter grammar beside the unchanged encoders. The collector never unlinks
+  a socket, signals a node or authenticates senders. The existing
+  [Native release owner](../../scripts/check-native-release-evidence.mjs) includes
+  its actual binary as the thirteenth target, not an extra build lane.
 
 - [Core authority](../../crates/node-core/src/serving_authority.rs) separates
   historical evidence from fresh issuer-bound warrants.
