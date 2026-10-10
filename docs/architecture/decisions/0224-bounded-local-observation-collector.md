@@ -153,3 +153,14 @@ by a 600-second host bound. Retain the same actual reap/pipe-EOF/strict-decoder
 requirements and identity-bound cleanup. Exact implemented-delta source review
 does not establish execution, authenticated sample attribution, whole-source
 acceptance or M5/release qualification.
+
+## Complete-export source control, 2026-10-10
+
+Strengthen the existing real local-datagram control, retaining its original
+deadline and socket identity assertions. Queue two distinct public-encoder
+records, check both complete typed snapshots in order and compare the complete
+two-record export against independently written literal bytes. Successful
+export requires exactly one successful final flush. A sink accepting all bytes
+but refusing that flush returns the existing `Output` failure; accepted bytes
+are not rolled back or relabeled as a completed export. This is a test-only
+source amendment, not an executed command or filesystem-fault qualification.

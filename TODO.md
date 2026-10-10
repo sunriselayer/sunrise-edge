@@ -18,8 +18,10 @@ current queue. The first 2026-10-09 eight-hour window ended at 08:34:32 UTC;
 a separate direct human request authorized eight more hours of ordinary
 Native+SQLite source work from 08:58:27 through 16:58:27 UTC, which also ended.
 The direct 2026-10-10 request to resolve TODO resumes ordinary implementation;
-the latest eight-hour source window is 03:01:23 through 11:01:23 UTC that day.
-the recurring automation is CI-only, not implementation or local-state polling.
+its earlier eight-hour source window is 03:01:23 through 11:01:23 UTC that day.
+A newer direct eight-hour request authorizes ordinary source implementation
+from 06:46:39 through 14:46:39 UTC on 2026-10-10. The CI-check recurring
+automation was deleted at that request; no replacement automation was created.
 The newer direct request to resolve dependency acquisition authorizes only
 missing exact locked Rust inputs from official crates.io, without package code
 execution. Acquisition still needs its own admitted bounded protocol; the disk
@@ -252,6 +254,11 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   Keep every actual recurrence, unlock delay, restart/fence/fault and selected-PG
   case. The release fixture runs once in the existing cheap contract owner;
   no new heavy CI lane, path-filter skip or unproved ancestor reuse is introduced.
+  The existing local-datagram collector control at local `bfb7383a` now checks
+  two complete ordered snapshots and independent literal full output bytes.
+  Exactly one final flush is required: even after every byte is accepted, a
+  refused flush remains `Output`, not a successful export. Different exact-slice
+  source review passed; formatting, compilation and execution remain unperformed.
 - [ ] **R4 — audit and launch seams:** bind exact source/build/configuration,
   exposed-family authorization, signer/store capabilities and executable
   startup/stop/restart/recovery evidence. DR-0204–0207 relay/native/SDK evidence
