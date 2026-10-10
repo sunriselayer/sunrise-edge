@@ -14,11 +14,11 @@
 //! same path, so its stable output is unchanged.
 
 use crypto::{SignatureDomain, SignatureMessageType, SignatureSigner, frame_signature_message};
-use execution::{Transaction, encode_transaction, encode_transaction_signable};
-use node_core::{
-    NodeCoreError, RequestId, SUBMIT_TRANSACTION_V1_MESSAGE_TYPE, TRANSACTION_V1_MESSAGE_TYPE,
-    encode_submit_transaction_signable,
+use execution::{
+    SUBMIT_TRANSACTION_V1_MESSAGE_TYPE, TRANSACTION_V1_MESSAGE_TYPE, Transaction,
+    encode_submit_transaction_signable_payload, encode_transaction, encode_transaction_signable,
 };
+use node_core::{NodeCoreError, RequestId};
 use objects::{Address, ObjectRef};
 use protocol_types::{ChainId, Epoch, ProtocolVersion, SignatureSchemeId};
 use signing_view::{
@@ -175,10 +175,13 @@ impl PreparedTransaction {
         let transaction_signable: Vec<u8> = encode_transaction_signable(&unsigned)?;
         let (message_type, signable): (&'static str, Vec<u8>) = match request_id {
             Some(request_id) => {
-                let envelope: Vec<u8> =
-                    encode_submit_transaction_signable(request_id, &transaction_signable).map_err(
-                        |error| ClientError::NodeCore(NodeCoreError::CanonicalEncoding(error)),
-                    )?;
+                let envelope: Vec<u8> = encode_submit_transaction_signable_payload(
+                    request_id.as_bytes(),
+                    &transaction_signable,
+                )
+                .map_err(|error: canonical_encoding::CanonicalEncodingError| {
+                    ClientError::NodeCore(NodeCoreError::CanonicalEncoding(error))
+                })?;
                 (SUBMIT_TRANSACTION_V1_MESSAGE_TYPE, envelope)
             }
             None => (TRANSACTION_V1_MESSAGE_TYPE, transaction_signable),
@@ -337,7 +340,7 @@ pub fn build_signed_submission_transaction(
 
 /// Builds and signs one historical profile-1 canonical Transaction v1 under
 /// the exact stable `"transaction-v1"` message family
-/// ([`node_core::TRANSACTION_V1_MESSAGE_TYPE`]). Active profile-2 submission
+/// ([`execution::TRANSACTION_V1_MESSAGE_TYPE`]). Active profile-2 submission
 /// callers must use [`PreparedTransaction::prepare_submission`] so the outer
 /// request id is authenticated; profile 2 rejects this legacy signature.
 ///
@@ -365,6 +368,7 @@ mod tests {
     use crypto::CryptoError;
     use execution::decode_transaction;
     use fees::{Amount, FeePayment};
+    use node_core::encode_submit_transaction_signable;
     use objects::{AccessMode, ObjectId};
     use protocol_types::{Digest32, HashAlgorithmId};
     use signing_view::{
@@ -954,5 +958,144 @@ mod tests {
             Err(ClientError::ExternalSigner(_))
         ));
         assert_eq!(signer.calls.get(), 1);
+    }
+
+    #[test]
+    fn submission_preparation_matches_independent_literal_envelope_and_family() {
+        let signer: LocalSigner = LocalSigner::from_seed([0xDA; 32]);
+        let request_id: RequestId = RequestId::new([0x5A; 32]).unwrap();
+        let request: TransactionRequest = base_request();
+        let mut unsigned: Transaction = Transaction {
+            chain_id: request.chain_id,
+            protocol_version: request.protocol_version,
+            epoch: request.epoch,
+            sender: signer.address(),
+            nonce: request.nonce,
+            access_manifest: request.access_manifest,
+            module_ref: request.module_ref,
+            entrypoint: request.entrypoint,
+            args: request.args,
+            gas_limit: request.gas_limit,
+            fee_payment: request.fee_payment,
+            signature: Vec::new(),
+        };
+        let transaction_signable: Vec<u8> = encode_transaction_signable(&unsigned).unwrap();
+        assert_eq!(transaction_signable.len(), 311);
+        // Complete literal E009 header and tag/LE-length fields. Neither the
+        // new raw helper nor the typed core wrapper builds this expected envelope.
+        let mut expected_payload: Vec<u8> = vec![
+            0x53, 0x4E, 0x52, 0x45, 0x09, 0xE0, 0x01, 0x00, 0x02, 0x00,
+            0x01, 0x00, 0x20, 0x00, 0x00, 0x00,
+        ];
+        expected_payload.extend_from_slice(&[0x5A; 32]);
+        expected_payload.extend_from_slice(&[0x02, 0x00, 0x37, 0x01, 0x00, 0x00]);
+        expected_payload.extend_from_slice(&transaction_signable);
+        assert_eq!(expected_payload.len(), 365);
+        let expected_domain: SignatureDomain = SignatureDomain {
+            chain_id: unsigned.chain_id.clone(),
+            protocol_version: unsigned.protocol_version,
+            epoch: unsigned.epoch,
+            message_type: SignatureMessageType::new("submit-transaction-v1").unwrap(),
+            signature_scheme_id: SignatureSchemeId::Ed25519,
+        };
+        let expected_frame: Vec<u8> =
+            frame_signature_message(&expected_domain, &expected_payload).unwrap();
+        unsigned.signature = signer
+            .sign_canonical(&expected_domain, &expected_payload)
+            .unwrap();
+        let expected_signed: Vec<u8> = encode_transaction(&unsigned).unwrap();
+        let prepared: PreparedTransaction = PreparedTransaction::prepare_submission(
+            request_id,
+            signer.address(),
+            SignatureSchemeId::Ed25519,
+            base_request(),
+        )
+        .unwrap();
+        assert_eq!(prepared.signable_frame().unwrap(), expected_frame);
+        assert_eq!(
+            prepared.sign_and_finalize_with(&signer).unwrap(),
+            expected_signed
+        );
+    }
+
+    #[test]
+    fn submission_preparation_keeps_scheme_before_entrypoint_error_priority() {
+        let signer: LocalSigner = LocalSigner::from_seed([0xDB; 32]);
+        let request_id: RequestId = RequestId::new([0x5B; 32]).unwrap();
+        let mut unsupported_request: TransactionRequest = base_request();
+        unsupported_request.entrypoint.clear();
+        match PreparedTransaction::prepare_submission(
+            request_id,
+            signer.address(),
+            SignatureSchemeId::Secp256k1,
+            unsupported_request,
+        ) {
+            Err(ClientError::UnsupportedSignatureScheme(SignatureSchemeId::Secp256k1)) => {}
+            Err(error) => panic!("unexpected unsupported-scheme error: {error}"),
+            Ok(_) => panic!("unsupported scheme must reject before an empty entrypoint"),
+        }
+        let mut empty_request: TransactionRequest = base_request();
+        empty_request.entrypoint.clear();
+        match PreparedTransaction::prepare_submission(
+            request_id,
+            signer.address(),
+            SignatureSchemeId::Ed25519,
+            empty_request,
+        ) {
+            Err(ClientError::Execution(execution::ExecutionError::EmptyEntrypoint)) => {}
+            Err(error) => panic!("unexpected empty-entrypoint error: {error}"),
+            Ok(_) => panic!("supported scheme must retain execution's empty-entrypoint refusal"),
+        }
+    }
+
+    #[test]
+    fn submission_preparation_keeps_node_core_envelope_overflow_projection() {
+        // These are encoder-only negative operands, not a 1 MiB admission override.
+        let signer: LocalSigner = LocalSigner::from_seed([0xDC; 32]);
+        let request_id: RequestId = RequestId::new([0x5C; 32]).unwrap();
+        let mut original: TransactionRequest = base_request();
+        original.args = vec![0x01_u8; 33_554_071];
+        let unsigned: Transaction = Transaction {
+            chain_id: original.chain_id,
+            protocol_version: original.protocol_version,
+            epoch: original.epoch,
+            sender: signer.address(),
+            nonce: original.nonce,
+            access_manifest: original.access_manifest,
+            module_ref: original.module_ref,
+            entrypoint: original.entrypoint,
+            args: original.args,
+            gas_limit: original.gas_limit,
+            fee_payment: original.fee_payment,
+            signature: Vec::new(),
+        };
+        let preliminary: Vec<u8> = encode_transaction_signable(&unsigned).unwrap();
+        assert_eq!(preliminary.len(), 33_554_379);
+        drop(preliminary);
+        // Move the single large args buffer; do not clone another large transaction.
+        let request: TransactionRequest = TransactionRequest {
+            chain_id: unsigned.chain_id,
+            protocol_version: unsigned.protocol_version,
+            epoch: unsigned.epoch,
+            nonce: unsigned.nonce,
+            access_manifest: unsigned.access_manifest,
+            module_ref: unsigned.module_ref,
+            entrypoint: unsigned.entrypoint,
+            args: unsigned.args,
+            gas_limit: unsigned.gas_limit,
+            fee_payment: unsigned.fee_payment,
+        };
+        match PreparedTransaction::prepare_submission(
+            request_id,
+            signer.address(),
+            SignatureSchemeId::Ed25519,
+            request,
+        ) {
+            Err(ClientError::NodeCore(NodeCoreError::CanonicalEncoding(
+                canonical_encoding::CanonicalEncodingError::FrameTooLarge(33_554_433),
+            ))) => {}
+            Err(error) => panic!("unexpected submission-envelope overflow error: {error}"),
+            Ok(_) => panic!("submission-envelope overflow must precede domain framing and signing"),
+        }
     }
 }
