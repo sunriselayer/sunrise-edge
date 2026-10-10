@@ -2910,3 +2910,85 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
         assert_native_termination_summary(&stderr, "sigint");
     }
 }
+
+#[test]
+fn complete_process_pipe_capture_preserves_eof_and_refuses_read_or_channel_failure() {
+    use compiled_source_host_process::{
+        CompletePipeError, read_complete_pipe, receive_complete_pipe,
+    };
+    use std::{
+        io::{self, Cursor, Read},
+        sync::mpsc,
+    };
+
+    let expected: Vec<u8> = vec![0x00, 0xff, 0x07, 0x0a, 0x80];
+    let complete: io::Result<Vec<u8>> = read_complete_pipe(Cursor::new(expected.clone()));
+    let (sender, receiver) = mpsc::channel::<io::Result<Vec<u8>>>();
+    sender.send(complete).unwrap();
+    let captured: Vec<u8> = receive_complete_pipe(&receiver, Duration::ZERO).unwrap();
+    assert_eq!(captured, expected);
+
+    let empty: io::Result<Vec<u8>> = read_complete_pipe(Cursor::new(Vec::<u8>::new()));
+    sender.send(empty).unwrap();
+    assert_eq!(
+        receive_complete_pipe(&receiver, Duration::ZERO).unwrap(),
+        Vec::<u8>::new(),
+        "successful empty EOF is not missing completion"
+    );
+
+    struct PrefixThenError {
+        delivered: usize,
+    }
+    impl Read for PrefixThenError {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let prefix: [u8; 4] = [0x04, 0x03, 0x02, 0x01];
+            if buffer.is_empty() {
+                return Ok(0);
+            }
+            if self.delivered < prefix.len() {
+                let count: usize = buffer.len().min(prefix.len() - self.delivered);
+                buffer[..count]
+                    .copy_from_slice(&prefix[self.delivered..self.delivered + count]);
+                self.delivered += count;
+                return Ok(count);
+            }
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "capture failed after a real prefix",
+            ))
+        }
+    }
+    let mut refusing: PrefixThenError = PrefixThenError { delivered: 0 };
+    let refused: io::Result<Vec<u8>> = read_complete_pipe(&mut refusing);
+    assert_eq!(
+        refusing.delivered, 4,
+        "read really delivered its nonempty prefix"
+    );
+    sender.send(refused).unwrap();
+    match receive_complete_pipe(&receiver, Duration::ZERO) {
+        Err(CompletePipeError::Read(error)) => {
+            assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+            assert_eq!(error.to_string(), "capture failed after a real prefix");
+        }
+        other => panic!("read failure must preserve its original error, got {other:?}"),
+    }
+    drop(sender);
+
+    let (disconnected_sender, disconnected_receiver) = mpsc::channel::<io::Result<Vec<u8>>>();
+    drop(disconnected_sender);
+    assert!(matches!(
+        receive_complete_pipe(&disconnected_receiver, Duration::ZERO),
+        Err(CompletePipeError::Receive(
+            mpsc::RecvTimeoutError::Disconnected
+        ))
+    ));
+
+    let (pending_sender, pending_receiver) = mpsc::channel::<io::Result<Vec<u8>>>();
+    let pending: Result<Vec<u8>, CompletePipeError> =
+        receive_complete_pipe(&pending_receiver, Duration::ZERO);
+    assert!(matches!(
+        pending,
+        Err(CompletePipeError::Receive(mpsc::RecvTimeoutError::Timeout))
+    ));
+    drop(pending_sender);
+}

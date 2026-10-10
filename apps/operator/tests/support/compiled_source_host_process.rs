@@ -191,6 +191,32 @@ pub fn spawn_bounded_status_line(mut command: Command, deadline: Duration) -> (C
     (guard, line)
 }
 
+/// A successful pipe capture contains every byte through actual EOF.
+/// A read error never converts the accumulated prefix into successful output.
+pub(crate) fn read_complete_pipe<R: Read>(input: R) -> std::io::Result<Vec<u8>> {
+    let mut reader: BufReader<R> = BufReader::new(input);
+    let mut bytes: Vec<u8> = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+#[derive(Debug)]
+pub(crate) enum CompletePipeError {
+    Read(std::io::Error),
+    Receive(mpsc::RecvTimeoutError),
+}
+
+/// Missing completion is different from a successful, genuinely empty pipe.
+pub(crate) fn receive_complete_pipe(
+    receiver: &mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    timeout: Duration,
+) -> Result<Vec<u8>, CompletePipeError> {
+    let result: std::io::Result<Vec<u8>> = receiver
+        .recv_timeout(timeout)
+        .map_err(CompletePipeError::Receive)?;
+    result.map_err(CompletePipeError::Read)
+}
+
 /// Spawns `command` with piped stdout/stderr, owning the child before
 /// either is taken, and waits up to `deadline` for it to exit, returning
 /// its full captured `Output`. Unlike `Command::output`, a timeout still
@@ -202,19 +228,19 @@ pub fn spawn_bounded_output(mut command: Command, deadline: Duration) -> Output 
         .spawn()
         .expect("failed to spawn compiled host process");
     let mut guard: ChildGuard = ChildGuard::new(child);
-    let stdout = guard.child_mut().stdout.take().expect("piped stdout");
-    let stderr = guard.child_mut().stderr.take().expect("piped stderr");
-    let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>();
-    let (err_tx, err_rx) = mpsc::channel::<Vec<u8>>();
-    std::thread::spawn(move || {
-        let mut buffer: Vec<u8> = Vec::new();
-        let _ignored = BufReader::new(stdout).read_to_end(&mut buffer);
-        let _ignored = out_tx.send(buffer);
+    let stdout: std::process::ChildStdout =
+        guard.child_mut().stdout.take().expect("piped stdout");
+    let stderr: std::process::ChildStderr =
+        guard.child_mut().stderr.take().expect("piped stderr");
+    let (out_tx, out_rx) = mpsc::channel::<std::io::Result<Vec<u8>>>();
+    let (err_tx, err_rx) = mpsc::channel::<std::io::Result<Vec<u8>>>();
+    let stdout_reader: std::thread::JoinHandle<()> = std::thread::spawn(move || {
+        let result: std::io::Result<Vec<u8>> = read_complete_pipe(stdout);
+        let _ignored: Result<(), mpsc::SendError<std::io::Result<Vec<u8>>>> = out_tx.send(result);
     });
-    std::thread::spawn(move || {
-        let mut buffer: Vec<u8> = Vec::new();
-        let _ignored = BufReader::new(stderr).read_to_end(&mut buffer);
-        let _ignored = err_tx.send(buffer);
+    let stderr_reader: std::thread::JoinHandle<()> = std::thread::spawn(move || {
+        let result: std::io::Result<Vec<u8>> = read_complete_pipe(stderr);
+        let _ignored: Result<(), mpsc::SendError<std::io::Result<Vec<u8>>>> = err_tx.send(result);
     });
     let start: Instant = Instant::now();
     let status: ExitStatus = loop {
@@ -230,14 +256,20 @@ pub fn spawn_bounded_output(mut command: Command, deadline: Duration) -> Output 
         );
         std::thread::sleep(Duration::from_millis(20));
     };
+    let stdout: Vec<u8> = receive_complete_pipe(&out_rx, Duration::from_secs(5))
+        .expect("compiled host stdout capture did not complete");
+    let stderr: Vec<u8> = receive_complete_pipe(&err_rx, Duration::from_secs(5))
+        .expect("compiled host stderr capture did not complete");
+    stdout_reader
+        .join()
+        .expect("compiled host stdout reader panicked");
+    stderr_reader
+        .join()
+        .expect("compiled host stderr reader panicked");
     Output {
         status,
-        stdout: out_rx
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap_or_default(),
-        stderr: err_rx
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap_or_default(),
+        stdout,
+        stderr,
     }
 }
 
