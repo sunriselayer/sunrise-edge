@@ -24,6 +24,41 @@ impl ChildGuard {
     pub fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
         self.child_mut().try_wait()
     }
+
+    /// One live observation request, not a stop or a transfer of ownership.
+    #[cfg(target_os = "linux")]
+    pub fn request_usr1(&mut self, end: Instant) {
+        assert!(Instant::now() < end, "observation request deadline elapsed");
+        assert!(
+            self.try_wait()
+                .expect("poll owned host before USR1")
+                .is_none(),
+            "owned host exited before USR1"
+        );
+        let pid: u32 = self.child_mut().id();
+        assert!(pid > 0 && pid <= i32::MAX as u32, "positive owned host PID");
+        let signal_end: Instant = end.min(
+            Instant::now()
+                .checked_add(Duration::from_secs(5))
+                .expect("USR1 helper deadline"),
+        );
+        let mut command: Command = Command::new("kill");
+        command.args(["-s", "USR1", "--"]).arg(pid.to_string());
+        let mut signal: PendingStrictOutput = PendingStrictOutput::spawn(command, signal_end);
+        let output: Output = signal.finish();
+        assert_eq!(
+            output.status.code(), Some(0),
+            "owned-host USR1 helper failed"
+        );
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        assert!(
+            self.try_wait()
+                .expect("poll still-owned host after USR1")
+                .is_none(),
+            "USR1 must not stop the owned host"
+        );
+    }
+
     pub fn into_inner(mut self) -> Child {
         self.0.take().expect("guard still owns its child")
     }
@@ -317,5 +352,335 @@ pub fn spawn_strict_bounded_output(mut command: Command, deadline: Duration) -> 
         status,
         stdout,
         stderr,
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use pending_capture::PendingStrictOutput;
+
+/// Separate asynchronous capture for the small foreground observation child.
+/// Existing status-line and business-output helpers keep their original behavior.
+#[cfg(target_os = "linux")]
+mod pending_capture {
+    use super::{Child, Command, Duration, ExitStatus, Instant, Output, Read, Stdio};
+    use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+    use std::{
+        io::ErrorKind,
+        os::fd::AsFd,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread::JoinHandle,
+    };
+
+    const PIPE_CAP: usize = 2_048;
+    const READ_ATTEMPTS: usize = 1_000_000;
+    const POLL_INTERVAL: Duration = Duration::from_millis(5);
+    type PipeResult = Result<Vec<u8>, &'static str>;
+
+    struct PendingPipe {
+        thread: Option<JoinHandle<PipeResult>>,
+        result: Option<PipeResult>,
+    }
+
+    impl PendingPipe {
+        fn start<R>(mut input: R, end: Instant, stop: Arc<AtomicBool>) -> Self
+        where
+            R: Read + AsFd + Send + 'static,
+        {
+            let flags: OFlags = fcntl_getfl(&input).expect("read owned collector pipe flags");
+            fcntl_setfl(&input, flags | OFlags::NONBLOCK)
+                .expect("make owned collector pipe nonblocking");
+            let thread: JoinHandle<PipeResult> = std::thread::spawn(move || {
+                let mut bytes: Vec<u8> = Vec::new();
+                let mut buffer: [u8; 256] = [0; 256];
+                for _attempt in 0..READ_ATTEMPTS {
+                    if stop.load(Ordering::SeqCst) {
+                        return Err("collector pipe capture canceled before EOF");
+                    }
+                    if Instant::now() >= end {
+                        return Err("collector pipe capture deadline elapsed before EOF");
+                    }
+                    let read: std::io::Result<usize> = input.read(&mut buffer);
+                    if Instant::now() >= end {
+                        return Err("collector pipe capture returned after its deadline");
+                    }
+                    match read {
+                        Ok(0) => return Ok(bytes), // Only an actual read EOF is success.
+                        Ok(count) => {
+                            let length: usize = bytes
+                                .len()
+                                .checked_add(count)
+                                .filter(|length: &usize| *length <= PIPE_CAP)
+                                .ok_or("collector pipe capture exceeded 2048 bytes")?;
+                            bytes.extend_from_slice(&buffer[..count]);
+                            debug_assert_eq!(bytes.len(), length);
+                        }
+                        Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                            std::thread::sleep(POLL_INTERVAL);
+                        }
+                        Err(_error) => return Err("collector pipe read failed"),
+                    }
+                }
+                Err("collector pipe read-attempt limit exhausted")
+            });
+            Self {
+                thread: Some(thread),
+                result: None,
+            }
+        }
+
+        fn poll(&mut self) {
+            if self.thread.as_ref().is_some_and(JoinHandle::is_finished) {
+                self.join();
+            }
+        }
+
+        fn join(&mut self) {
+            if let Some(thread) = self.thread.take() {
+                self.result = Some(match thread.join() {
+                    Ok(result) => result,
+                    Err(_panic) => Err("collector pipe reader panicked"),
+                });
+            }
+        }
+
+        fn error(&self) -> Option<&'static str> {
+            match self.result.as_ref() {
+                Some(Err(reason)) => Some(*reason),
+                Some(Ok(_bytes)) | None => None,
+            }
+        }
+
+        fn take_complete(&mut self) -> PipeResult {
+            self.result
+                .take()
+                .expect("joined collector pipe has a result")
+        }
+    }
+
+    pub struct PendingStrictOutput {
+        child: Option<Child>,
+        stdout: Option<PendingPipe>,
+        stderr: Option<PendingPipe>,
+        stop: Arc<AtomicBool>,
+        end: Instant,
+        reaped: bool,
+        cleanup_started: bool,
+        cleanup_errors: Vec<&'static str>,
+    }
+
+    impl PendingStrictOutput {
+        pub fn spawn(mut command: Command, end: Instant) -> Self {
+            assert!(Instant::now() < end, "collector spawn deadline elapsed");
+            let child: Child = command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn bounded foreground collector child");
+            // Own the child before taking/configuring either pipe or spawning a reader.
+            let mut pending: Self = Self {
+                child: Some(child),
+                stdout: None,
+                stderr: None,
+                stop: Arc::new(AtomicBool::new(false)),
+                end,
+                reaped: false,
+                cleanup_started: false,
+                cleanup_errors: Vec::new(),
+            };
+            let stdout: std::process::ChildStdout = pending
+                .child
+                .as_mut()
+                .unwrap()
+                .stdout
+                .take()
+                .expect("collector stdout");
+            pending.stdout = Some(PendingPipe::start(stdout, end, Arc::clone(&pending.stop)));
+            let stderr: std::process::ChildStderr = pending
+                .child
+                .as_mut()
+                .unwrap()
+                .stderr
+                .take()
+                .expect("collector stderr");
+            pending.stderr = Some(PendingPipe::start(stderr, end, Arc::clone(&pending.stop)));
+            pending
+        }
+
+        fn poll_pipes(&mut self) {
+            for pipe in [&mut self.stdout, &mut self.stderr].into_iter().flatten() {
+                pipe.poll();
+            }
+        }
+
+        fn check_capture(&mut self) {
+            self.poll_pipes();
+            for pipe in [&self.stdout, &self.stderr].into_iter().flatten() {
+                if let Some(reason) = pipe.error() {
+                    panic!("{reason}");
+                }
+            }
+        }
+
+        pub fn assert_running(&mut self) {
+            assert!(Instant::now() < self.end, "collector deadline elapsed");
+            self.check_capture();
+            assert!(
+                self.child
+                    .as_mut()
+                    .expect("still-owned collector")
+                    .try_wait()
+                    .expect("poll still-owned collector")
+                    .is_none(),
+                "collector exited before its requested sample"
+            );
+            assert!(Instant::now() < self.end, "late collector liveness observation");
+        }
+
+        fn close_pipes(&mut self, end: Instant) -> Result<(), &'static str> {
+            let mut expired: bool = false;
+            loop {
+                self.poll_pipes();
+                if Instant::now() >= end {
+                    expired = true;
+                    self.stop.store(true, Ordering::SeqCst);
+                    break;
+                }
+                let closed: bool = [&self.stdout, &self.stderr]
+                    .into_iter()
+                    .flatten()
+                    .all(|pipe: &PendingPipe| pipe.thread.is_none());
+                if closed {
+                    break;
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            // Cancellation ends the nonblocking reader loops. Retain and join
+            // BOTH handles on failure too; no successful or failed detached reader.
+            // As with the existing strict capture, this is not a guarantee against
+            // globally blocked kernel syscalls or an unscheduled thread.
+            for pipe in [&mut self.stdout, &mut self.stderr].into_iter().flatten() {
+                pipe.join();
+            }
+            if expired || Instant::now() >= end {
+                Err("collector pipes did not close within their deadline")
+            } else {
+                Ok(())
+            }
+        }
+
+        pub fn finish(&mut self) -> Output {
+            let status: ExitStatus = loop {
+                assert!(Instant::now() < self.end, "collector completion deadline elapsed");
+                self.check_capture();
+                if let Some(status) = self.child
+                    .as_mut()
+                    .expect("owned collector")
+                    .try_wait()
+                    .expect("poll foreground collector exit")
+                {
+                    break status;
+                }
+                assert!(
+                    Instant::now() < self.end,
+                    "collector did not exit within its deadline"
+                );
+                std::thread::sleep(POLL_INTERVAL);
+            };
+            let confirmed: ExitStatus = self.child
+                .as_mut()
+                .unwrap()
+                .wait()
+                .expect("confirm actual foreground collector reap");
+            assert_eq!(confirmed, status, "cached collector exit status");
+            self.reaped = true;
+            self.child = None;
+            assert!(Instant::now() < self.end, "collector reap exceeded original deadline");
+            let close_end: Instant = self.end.min(
+                Instant::now()
+                    .checked_add(Duration::from_secs(5))
+                    .expect("collector pipe-close deadline"),
+            );
+            self.close_pipes(close_end)
+                .expect("both complete collector pipe closures");
+            let stdout: PipeResult = self.stdout.as_mut().unwrap().take_complete();
+            let stderr: PipeResult = self.stderr.as_mut().unwrap().take_complete();
+            assert!(Instant::now() < self.end, "collector capture exceeded original deadline");
+            match (stdout, stderr) {
+                (Ok(stdout), Ok(stderr)) => Output {
+                    status,
+                    stdout,
+                    stderr,
+                },
+                (out, err) => panic!(
+                    "collector capture failed: stdout={:?} stderr={:?}",
+                    out.err(),
+                    err.err()
+                ),
+            }
+        }
+
+        /// Failure-only kill/reap plus joined reader release. False means
+        /// unresolved release: the caller must retain its filesystem residue.
+        pub fn cleanup(&mut self) -> bool {
+            if !self.cleanup_started {
+                self.cleanup_started = true;
+                if let Some(child) = self.child.as_mut() {
+                    let needs_kill: bool = match child.try_wait() {
+                        Ok(Some(_status)) => false,
+                        Ok(None) => true,
+                        Err(_error) => {
+                            self.cleanup_errors.push("collector failure cleanup poll failed");
+                            true
+                        }
+                    };
+                    if needs_kill && child.kill().is_err() {
+                        self.cleanup_errors.push("collector failure cleanup kill failed");
+                    }
+                    match child.wait() {
+                        Ok(_status) => {
+                            self.reaped = true;
+                            self.child = None;
+                        }
+                        Err(_error) => {
+                            self.cleanup_errors.push("collector failure cleanup reap failed");
+                        }
+                    }
+                }
+                self.stop.store(true, Ordering::SeqCst);
+                let close_end: Instant = Instant::now()
+                    .checked_add(Duration::from_secs(5))
+                    .expect("collector failure pipe-close deadline");
+                if let Err(reason) = self.close_pipes(close_end) {
+                    self.cleanup_errors.push(reason);
+                }
+                for pipe in [&self.stdout, &self.stderr].into_iter().flatten() {
+                    if let Some(reason) = pipe.error() {
+                        self.cleanup_errors.push(reason);
+                    }
+                }
+            }
+            self.reaped
+                && self.child.is_none()
+                && [&self.stdout, &self.stderr]
+                    .into_iter()
+                    .flatten()
+                    .all(|pipe: &PendingPipe| pipe.thread.is_none())
+        }
+    }
+
+    impl Drop for PendingStrictOutput {
+        fn drop(&mut self) {
+            let released: bool = self.cleanup();
+            for reason in &self.cleanup_errors {
+                eprintln!("{reason}");
+            }
+            if !released {
+                eprintln!("foreground collector release remains unconfirmed");
+            }
+        }
     }
 }

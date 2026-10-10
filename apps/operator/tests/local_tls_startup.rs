@@ -420,6 +420,28 @@ fn direct_peers(network: &Network) -> Vec<DirectPeer> {
         .collect()
 }
 fn start_direct_hosts(network: &Network, peers: &mut [DirectPeer], generation: u64) -> Vec<Host> {
+    #[cfg(target_os = "linux")]
+    {
+        start_direct_hosts_with_local_observations(network, peers, generation, None)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        start_direct_hosts_with_local_observations(network, peers, generation)
+    }
+}
+fn start_direct_hosts_with_local_observations(
+    network: &Network,
+    peers: &mut [DirectPeer],
+    generation: u64,
+    #[cfg(target_os = "linux")] local_observations_socket: Option<&Path>,
+) -> Vec<Host> {
+    #[cfg(target_os = "linux")]
+    if local_observations_socket.is_some() {
+        assert_eq!(
+            generation, 2,
+            "observation opt-in belongs only to the first boot"
+        );
+    }
     assert_eq!(peers.len(), VALIDATORS);
     peers
         .iter_mut()
@@ -452,6 +474,10 @@ fn start_direct_hosts(network: &Network, peers: &mut [DirectPeer], generation: u
                 .arg("--tls-key-pkcs8-der-file")
                 .arg(&peer.key_file)
                 .stderr(Stdio::piped());
+            #[cfg(target_os = "linux")]
+            if let (0, Some(socket)) = (index, local_observations_socket) {
+                command.arg("--local-observations-socket").arg(socket);
+            }
             let (guard, line): (ChildGuard, String) =
                 spawn_bounded_status_line(command, PROCESS_DEADLINE);
             assert!(line.contains("complete=true mode=serving"), "{line}");
@@ -2440,15 +2466,371 @@ fn assert_native_termination_summary(stderr: &[u8], reason: &str) {
     );
 }
 
+#[cfg(target_os = "linux")]
+mod local_observation_collector {
+    use super::compiled_source_host_process::PendingStrictOutput;
+    use rustix::{
+        fd::OwnedFd,
+        fs::{
+            AtFlags, CWD, FileType, Mode, OFlags, Stat, fstat, mkdirat, open, openat, statat,
+            unlinkat,
+        },
+        io::Errno,
+    };
+    use std::{
+        io::ErrorKind,
+        os::unix::net::UnixDatagram,
+        path::{Path, PathBuf},
+        process::{Command, Output},
+        sync::atomic::{AtomicU64, Ordering},
+        time::{Duration, Instant},
+    };
+
+    pub(super) const TIMEOUT_MILLIS: u64 = 300_000;
+    const LEAF: &str = "live.sock";
+    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct DirectoryIdentity {
+        dev: u64,
+        ino: u64,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    }
+
+    impl DirectoryIdentity {
+        fn from_stat(stat: &Stat) -> Self {
+            Self {
+                dev: stat.st_dev,
+                ino: stat.st_ino,
+                mode: stat.st_mode,
+                uid: stat.st_uid,
+                gid: stat.st_gid,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct SocketStamp {
+        identity: DirectoryIdentity,
+        nlink: i128,
+        size: i128,
+        mtime: (i128, i128),
+        ctime: (i128, i128),
+    }
+
+    impl SocketStamp {
+        fn from_stat(stat: &Stat) -> Self {
+            Self {
+                identity: DirectoryIdentity::from_stat(stat),
+                nlink: i128::from(stat.st_nlink),
+                size: i128::from(stat.st_size),
+                mtime: (i128::from(stat.st_mtime), i128::from(stat.st_mtime_nsec)),
+                ctime: (i128::from(stat.st_ctime), i128::from(stat.st_ctime_nsec)),
+            }
+        }
+    }
+
+    pub(super) struct Collector {
+        parent: OwnedFd,
+        parent_identity: DirectoryIdentity,
+        directory: OwnedFd,
+        directory_identity: DirectoryIdentity,
+        name: String,
+        path: PathBuf,
+        socket: PathBuf,
+        socket_stamp: Option<SocketStamp>,
+        capture: Option<PendingStrictOutput>,
+        end: Instant,
+        removed: bool,
+    }
+
+    impl Collector {
+        pub(super) fn start(end: Instant, owner_directory: &Path) -> Self {
+            assert!(Instant::now() < end, "collector setup deadline elapsed");
+            let flags: OFlags =
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+            let parent: OwnedFd =
+                open("/tmp", flags, Mode::empty()).expect("hold caller socket parent");
+            let parent_stat: Stat = fstat(&parent).expect("held caller socket parent identity");
+            let parent_identity: DirectoryIdentity = DirectoryIdentity::from_stat(&parent_stat);
+            assert!(FileType::from_raw_mode(parent_stat.st_mode).is_dir());
+            let owner: Stat = statat(CWD, owner_directory, AtFlags::SYMLINK_NOFOLLOW)
+                .expect("owning fixture directory identity");
+            assert!(FileType::from_raw_mode(owner.st_mode).is_dir());
+            let index: u64 = NEXT_DIRECTORY
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value: u64| {
+                    value.checked_add(1)
+                })
+                .expect("caller socket directory sequence");
+            let name: String = format!("sne-live-{}-{index}", std::process::id());
+            let path: PathBuf = Path::new("/tmp").join(&name);
+            let socket: PathBuf = path.join(LEAF);
+            assert!(socket.is_absolute());
+            assert!(socket.to_str().expect("ASCII socket path").len() <= 100);
+            // Atomic exclusive creation; an existing directory is never adopted.
+            mkdirat(&parent, name.as_str(), Mode::from_raw_mode(0o700))
+                .expect("fresh private caller socket directory");
+            let directory: OwnedFd = openat(&parent, name.as_str(), flags, Mode::empty())
+                .expect("hold fresh caller socket directory");
+            let directory_stat: Stat =
+                fstat(&directory).expect("fresh held caller directory identity");
+            assert!(FileType::from_raw_mode(directory_stat.st_mode).is_dir());
+            assert_eq!(directory_stat.st_mode & 0o7777, 0o700);
+            assert_eq!(directory_stat.st_uid, owner.st_uid);
+            assert_eq!(directory_stat.st_gid, owner.st_gid);
+            let mut collector: Self = Self {
+                parent,
+                parent_identity,
+                directory,
+                directory_identity: DirectoryIdentity::from_stat(&directory_stat),
+                name,
+                path,
+                socket,
+                socket_stamp: None,
+                capture: None,
+                end,
+                removed: false,
+            };
+            collector
+                .check_directories()
+                .expect("initial caller directory attachment");
+            assert!(
+                matches!(
+                    statat(&collector.directory, LEAF, AtFlags::SYMLINK_NOFOLLOW),
+                    Err(Errno::NOENT)
+                ),
+                "new collector leaf must be absent"
+            );
+            assert!(
+                Instant::now() < end,
+                "collector setup exceeded original deadline"
+            );
+            let mut command: Command = Command::new(env!("CARGO_BIN_EXE_native_observations"));
+            command
+                .arg("--socket")
+                .arg(&collector.socket)
+                .args(["--max-samples", "1", "--timeout-ms"])
+                .arg(TIMEOUT_MILLIS.to_string());
+            collector.capture = Some(PendingStrictOutput::spawn(command, end));
+            collector.wait_ready();
+            collector
+        }
+
+        pub(super) fn socket_path(&self) -> &Path {
+            &self.socket
+        }
+
+        pub(super) fn deadline(&self) -> Instant {
+            self.end
+        }
+
+        fn check_directories(&self) -> Result<(), &'static str> {
+            for stat in [
+                fstat(&self.parent).map_err(|_error| "held socket parent unavailable")?,
+                statat(CWD, "/tmp", AtFlags::SYMLINK_NOFOLLOW)
+                    .map_err(|_error| "named socket parent unavailable")?,
+            ] {
+                if DirectoryIdentity::from_stat(&stat) != self.parent_identity {
+                    return Err("caller socket parent attachment changed");
+                }
+            }
+            for stat in [
+                fstat(&self.directory).map_err(|_error| "held caller directory unavailable")?,
+                statat(&self.parent, self.name.as_str(), AtFlags::SYMLINK_NOFOLLOW)
+                    .map_err(|_error| "relative caller directory unavailable")?,
+                statat(CWD, &self.path, AtFlags::SYMLINK_NOFOLLOW)
+                    .map_err(|_error| "named caller directory unavailable")?,
+            ] {
+                // Directory mtime/size/nlink may change when its one socket is created.
+                if DirectoryIdentity::from_stat(&stat) != self.directory_identity {
+                    return Err("private caller directory attachment changed");
+                }
+            }
+            Ok(())
+        }
+
+        fn observe_socket(&self) -> Result<SocketStamp, &'static str> {
+            self.check_directories()?;
+            let held: Stat = statat(&self.directory, LEAF, AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(|_error| "held-directory socket leaf unavailable")?;
+            let named: Stat = statat(CWD, &self.socket, AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(|_error| "named socket leaf unavailable")?;
+            let stamp: SocketStamp = SocketStamp::from_stat(&held);
+            if !FileType::from_raw_mode(held.st_mode).is_socket()
+                || held.st_uid != self.directory_identity.uid
+                || held.st_gid != self.directory_identity.gid
+                || stamp.nlink != 1
+                || stamp != SocketStamp::from_stat(&named)
+            {
+                return Err("collector socket type or attachment refused");
+            }
+            Ok(stamp)
+        }
+
+        fn wait_ready(&mut self) {
+            for _attempt in 0..4_096 {
+                self.capture.as_mut().unwrap().assert_running();
+                self.check_directories()
+                    .expect("caller attachment before readiness probe");
+                let probe: UnixDatagram =
+                    UnixDatagram::unbound().expect("unbound collector readiness probe");
+                probe
+                    .set_nonblocking(true)
+                    .expect("nonblocking collector readiness probe");
+                match probe.connect(&self.socket) {
+                    Ok(()) => {
+                        self.capture.as_mut().unwrap().assert_running();
+                        let stamp: SocketStamp = self
+                            .observe_socket()
+                            .expect("ready collector socket identity");
+                        assert!(Instant::now() < self.end, "late collector readiness");
+                        self.socket_stamp = Some(stamp);
+                        return; // No datagram is ever sent by the readiness probe.
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ErrorKind::NotFound | ErrorKind::ConnectionRefused
+                        ) => {}
+                    Err(_error) => panic!("collector readiness connect refused"),
+                }
+                assert!(
+                    Instant::now() < self.end,
+                    "collector readiness deadline elapsed"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            panic!("collector readiness attempts exhausted");
+        }
+
+        pub(super) fn finish(&mut self) {
+            let output: Output = self.capture.as_mut().unwrap().finish();
+            assert_eq!(
+                output.status.code(), Some(0),
+                "collector must exit ordinarily"
+            );
+            assert!(output.status.success());
+            assert!(
+                output.stderr.is_empty(),
+                "collector success stderr must be empty"
+            );
+            assert!(!output.stdout.is_empty() && output.stdout.len() < 2_048);
+            let snapshot: native_http::NativeHttpSnapshot =
+                native_http::decode_live_summary(&output.stdout)
+                    .expect("entire collector stdout is exactly one canonical live record");
+            assert!(snapshot.connections_admitted > 0);
+            assert!(snapshot.requests_dispatched > 0);
+            assert_eq!(
+                self.observe_socket().expect("retained socket after collector exit"),
+                self.socket_stamp.expect("readiness-bound socket identity"),
+                "collector exit must not remove or replace its caller-owned socket"
+            );
+            assert!(
+                Instant::now() < self.end,
+                "collector completion exceeded original deadline"
+            );
+        }
+
+        fn remove_owned(&mut self) -> Result<(), &'static str> {
+            self.check_directories()?;
+            match self.socket_stamp {
+                Some(expected) => {
+                    if self.observe_socket()? != expected {
+                        return Err("caller refuses to unlink a changed collector socket");
+                    }
+                    unlinkat(&self.directory, LEAF, AtFlags::empty())
+                        .map_err(|_error| "caller socket cleanup failed")?;
+                    self.socket_stamp = None;
+                }
+                None => {
+                    if !matches!(
+                        statat(&self.directory, LEAF, AtFlags::SYMLINK_NOFOLLOW),
+                        Err(Errno::NOENT)
+                    ) {
+                        return Err("unqualified collector leaf retained without adoption");
+                    }
+                }
+            }
+            self.check_directories()?;
+            unlinkat(&self.parent, self.name.as_str(), AtFlags::REMOVEDIR)
+                .map_err(|_error| "caller directory cleanup failed; possible extra leaf retained")?;
+            self.removed = true;
+            Ok(())
+        }
+    }
+
+    impl Drop for Collector {
+        fn drop(&mut self) {
+            let released: bool = self.capture.as_mut().is_none_or(PendingStrictOutput::cleanup);
+            match (released, self.removed) {
+                (true, false) => match self.remove_owned() {
+                    Ok(()) => {}
+                    Err(reason) if std::thread::panicking() => eprintln!("{reason}"),
+                    Err(reason) => panic!("{reason}"),
+                },
+                (false, _) => {
+                    eprintln!("caller socket residue retained: collector release unconfirmed");
+                }
+                (true, true) => {}
+            }
+        }
+    }
+}
+
 #[test]
 fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust_rotation() {
     let network: Network = author_inspect_and_prepare();
     let mut peers: Vec<DirectPeer> = direct_peers(&network);
+    #[cfg(target_os = "linux")]
+    let mut collector: local_observation_collector::Collector = {
+        let end: std::time::Instant = std::time::Instant::now()
+            .checked_add(Duration::from_millis(
+                local_observation_collector::TIMEOUT_MILLIS,
+            ))
+            .expect("one original collector setup-through-completion deadline");
+        local_observation_collector::Collector::start(end, &network.fixture.directory)
+    };
+    #[cfg(target_os = "linux")]
+    let mut hosts: Vec<Host> = start_direct_hosts_with_local_observations(
+        &network,
+        &mut peers,
+        2,
+        Some(collector.socket_path()),
+    );
+    #[cfg(not(target_os = "linux"))]
     let hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 2);
     let lines: Vec<String> = direct_lines(&network, &peers);
     let config: PathBuf = write_config(&network.tls_dir.join("direct-network.conf"), &lines);
     let received: Vec<Vec<u8>> = peers.iter().map(DirectPeer::received).collect();
     let contexts: Vec<(Vec<u8>, Vec<u8>)> = direct_contexts(&peers);
+    #[cfg(target_os = "linux")]
+    {
+        hosts[0].guard.request_usr1(collector.deadline());
+        collector.finish();
+        assert!(
+            hosts[0]
+                .guard
+                .try_wait()
+                .expect("host remains owned after collection")
+                .is_none()
+        );
+        let context: Output = peers[0].context(&peers[0].ca_file);
+        assert!(context.status.success(), "{}", lossy(&context.stderr));
+        assert!(context.stderr.is_empty());
+        assert_eq!(
+            context.stdout, contexts[0].1,
+            "USR1 preserves authenticated context"
+        );
+        assert!(
+            hosts[0]
+                .guard
+                .try_wait()
+                .expect("host remains alive after authenticated context")
+                .is_none()
+        );
+    }
     let original_inputs: Vec<(PathBuf, Vec<u8>)> = std::iter::once(network.genesis.clone())
         .chain(network.signing_keys.iter().cloned())
         .chain(std::iter::once(network.owner_seed.clone()))
