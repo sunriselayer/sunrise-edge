@@ -825,6 +825,75 @@ mod linux {
 
         #[test]
         fn collector_receives_real_local_datagrams_and_retains_own_leaf() {
+            struct CompleteWriter {
+                written: Vec<u8>,
+                flush_calls: usize,
+                refuse_flush: bool,
+            }
+            impl Write for CompleteWriter {
+                fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                    self.written.extend_from_slice(bytes);
+                    Ok(bytes.len())
+                }
+
+                fn flush(&mut self) -> io::Result<()> {
+                    self.flush_calls += 1;
+                    if self.refuse_flush {
+                        return Err(io::Error::new(io::ErrorKind::BrokenPipe, "fixture flush"));
+                    }
+                    Ok(())
+                }
+            }
+            let expected_snapshots: Vec<NativeHttpSnapshot> = vec![
+                NativeHttpSnapshot {
+                    connections_admitted: 71,
+                    connections_refused: 2,
+                    accept_failures: 3,
+                    upgrade_failures: 4,
+                    upgrade_timeouts: 5,
+                    requests_dispatched: 6,
+                    requests_refused: 7,
+                    input_timeouts: 8,
+                    output_timeouts: 9,
+                    connection_failures: 10,
+                    connection_task_failures: 11,
+                    blocking_admitted: 12,
+                    blocking_overloaded: 13,
+                    blocking_closed: 14,
+                    blocking_panics: 15,
+                },
+                NativeHttpSnapshot {
+                    connections_admitted: 72,
+                    connections_refused: 17,
+                    accept_failures: 18,
+                    upgrade_failures: 19,
+                    upgrade_timeouts: 20,
+                    requests_dispatched: 21,
+                    requests_refused: 22,
+                    input_timeouts: 23,
+                    output_timeouts: 24,
+                    connection_failures: 25,
+                    connection_task_failures: 26,
+                    blocking_admitted: 27,
+                    blocking_overloaded: 28,
+                    blocking_closed: 29,
+                    blocking_panics: 30,
+                },
+            ];
+            const EXPECTED_BYTES: &[u8] = concat!(
+                "native_operations schema=1 kind=live connections_admitted=71 ",
+                "connections_refused=2 accept_failures=3 upgrade_failures=4 ",
+                "upgrade_timeouts=5 requests_dispatched=6 requests_refused=7 ",
+                "input_timeouts=8 output_timeouts=9 connection_failures=10 ",
+                "connection_task_failures=11 blocking_admitted=12 blocking_overloaded=13 ",
+                "blocking_closed=14 blocking_panics=15\n",
+                "native_operations schema=1 kind=live connections_admitted=72 ",
+                "connections_refused=17 accept_failures=18 upgrade_failures=19 ",
+                "upgrade_timeouts=20 requests_dispatched=21 requests_refused=22 ",
+                "input_timeouts=23 output_timeouts=24 connection_failures=25 ",
+                "connection_task_failures=26 blocking_admitted=27 blocking_overloaded=28 ",
+                "blocking_closed=29 blocking_panics=30\n",
+            ).as_bytes();
             let fixture: Fixture = Fixture::new();
             let path: String = fixture.socket_path("collector.sock");
             let deadline: Instant = deadline_after(Duration::from_secs(1));
@@ -832,13 +901,40 @@ mod linux {
             let metadata_before: std::fs::Metadata = fs::symlink_metadata(&path).unwrap();
             let sender: UnixDatagram = UnixDatagram::unbound().unwrap();
             sender.connect(&path).unwrap();
-            sender.send(&live_record(71)).unwrap();
+            for snapshot in &expected_snapshots {
+                let record: Vec<u8> = snapshot.live_summary().into_bytes();
+                let sent: usize = sender.send(&record).unwrap();
+                assert_eq!(sent, record.len());
+            }
             let snapshots: Vec<NativeHttpSnapshot> = collector
-                .collect(1, deadline)
+                .collect(2, deadline)
                 .unwrap();
-            assert_eq!(snapshots[0].connections_admitted, 71);
+            assert_eq!(snapshots, expected_snapshots);
+            let mut successful_writer: CompleteWriter = CompleteWriter {
+                written: Vec::new(),
+                flush_calls: 0,
+                refuse_flush: false,
+            };
+            assert_eq!(
+                write_complete_collection(Ok(snapshots.clone()), &mut successful_writer),
+                Ok(())
+            );
+            assert_eq!(successful_writer.written, EXPECTED_BYTES);
+            assert_eq!(successful_writer.flush_calls, 1);
+            let mut failing_writer: CompleteWriter = CompleteWriter {
+                written: Vec::new(),
+                flush_calls: 0,
+                refuse_flush: true,
+            };
+            assert_eq!(
+                write_complete_collection(Ok(snapshots), &mut failing_writer),
+                Err(Error::Output)
+            );
+            assert_eq!(failing_writer.written, EXPECTED_BYTES);
+            assert_eq!(failing_writer.flush_calls, 1);
             let metadata_after: std::fs::Metadata = fs::symlink_metadata(&path).unwrap();
             assert!(metadata_after.file_type().is_socket());
+            assert_eq!(metadata_before.dev(), metadata_after.dev());
             assert_eq!(metadata_before.ino(), metadata_after.ino());
         }
 
