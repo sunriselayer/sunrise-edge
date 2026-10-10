@@ -89,8 +89,12 @@ preflight of additions. `insert_mutation_once` is single-owner insertion;
 `merge_state_exact` explicitly requests identical-contribution composition.
 `finish_metadata` and `finish_invocation_state` retain the existing distinct
 empty-mutation rules. Neither result is a commit receipt or an admission token.
-The original transaction constructors share the same byte accounting rather
-than maintaining a second definition of the bound.
+The original Atomic/Durable transaction constructors share containment and
+represented-byte refusal in the private transaction owner rather than
+maintaining a second definition of the bound. Their existing mutation-set
+admission and empty rules remain distinct; containment is checked before the
+strict represented-byte bound. This pure envelope decision does not perform
+backend CAS, confirm a commit or authorize business effects.
 
 Read-only verification also needs a read-only port. `VersionedStateReader`
 supplies exact value/revision observations without receipt, object, lifecycle

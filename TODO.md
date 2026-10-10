@@ -223,6 +223,13 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   Remaining core/SDK type coupling is explicit, not solved by inventing
   a foundations crate containing execution. Complete SDK decoupling is not
   inferred from these migrated boundaries.
+  Local `61de1226` gives canonical receipt-record binding one pure envelope
+  owner, consumed by core queries and wire queries without changing their
+  outer-ID precedence or caller-local error projection. SDK requested-ID
+  validation remains after wire binding to the returned frame. Eleven source
+  controls retain full record/response bytes and refusal priority. Different
+  exact-slice source review passed; formatting, compilation and execution
+  remain unperformed. This does not close R1 or qualify durable receipts.
 - [ ] **R2 — semantic core/runtime responsibilities:** admission authorizes,
   evaluation proposes, completion assembles one atomic transaction, reconciliation
   exposes confirmed exact output, and repositories expose their actual capability.
@@ -247,6 +254,14 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   required, all hosted owners and independent final integration review before
   normal merge `322dfa3e`. This closes the phase-only extraction, grants no new
   authority, closes neither all R1 nor all R2, and is not an M4/M5 prerequisite.
+  Local `00d72db4` shares direct Atomic/Durable transaction containment and
+  represented-byte refusal in the existing private transaction owner. Each
+  constructor retains its distinct mutation-set admission and empty rules;
+  containment still precedes the strict 64 MiB bound. Four source controls
+  retain order/accounting, exact-boundary acceptance, +1 refusal and earlier
+  Durable count/duplicate errors. Different exact-slice source review passed;
+  formatting, compilation and execution remain unperformed. Backend CAS,
+  commit outcomes and all release prerequisites are unchanged; R2 stays open.
 - [ ] **R3 — attributable tests and economical CI:** share bounded signed-input
   setup, not the implementation-derived oracle; separate pure/store/HTTP/CLI
   owners. Remove equivalent duplicate work only with exact-input coverage proof
