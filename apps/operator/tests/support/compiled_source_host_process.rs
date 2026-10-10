@@ -164,6 +164,61 @@ impl Drop for ChildGuard {
     }
 }
 
+#[cfg(target_os = "linux")]
+impl ChildGuard {
+    /// Explicitly SIGKILL this live owned child and confirm its actual reap.
+    /// `end` bounds polling and successful-result eligibility, not untimed
+    /// syscalls, cached wait, pipe release or the unchanged failure cleanup.
+    /// The caller owns the exclusive waiter and original absolute deadline;
+    /// this proves neither process-group release nor all-path bounded cleanup.
+    pub(crate) fn kill_abruptly_and_reap(mut self, end: Instant) -> (u32, ExitStatus) {
+        use std::os::unix::process::ExitStatusExt;
+
+        assert!(Instant::now() < end, "owned-child SIGKILL deadline elapsed");
+        let before: Option<ExitStatus> = self
+            .try_wait()
+            .expect("poll owned child before explicit SIGKILL");
+        assert!(Instant::now() < end, "pre-SIGKILL poll exceeded deadline");
+        assert!(
+            before.is_none(),
+            "owned child already exited before explicit SIGKILL: {before:?}"
+        );
+        let pid: u32 = self.child_mut().id();
+        assert!(pid > 0 && pid <= i32::MAX as u32, "positive owned child PID");
+        assert!(Instant::now() < end, "explicit SIGKILL deadline elapsed");
+        self.child_mut()
+            .kill()
+            .expect("explicit SIGKILL of this owned unreaped child");
+        assert!(Instant::now() < end, "explicit SIGKILL exceeded deadline");
+
+        let status: ExitStatus = loop {
+            assert!(Instant::now() < end, "owned-child SIGKILL poll deadline elapsed");
+            let observed: Option<ExitStatus> = self
+                .try_wait()
+                .expect("poll this explicitly killed owned child");
+            assert!(Instant::now() < end, "owned-child SIGKILL poll exceeded deadline");
+            if let Some(status) = observed {
+                break status;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(status.signal(), Some(9_i32), "actual owned SIGKILL status");
+        assert_eq!(status.code(), None, "SIGKILL is not an ordinary exit code");
+        assert!(!status.success(), "SIGKILL must not be successful exit");
+        assert!(Instant::now() < end, "owned-child reap confirmation deadline elapsed");
+        let confirmed: ExitStatus = self
+            .child_mut()
+            .wait()
+            .expect("confirm this same child's actual SIGKILL reap");
+        assert!(Instant::now() < end, "owned-child reap confirmation exceeded deadline");
+        assert_eq!(confirmed, status, "same owned child's observed SIGKILL status");
+        assert!(Instant::now() < end, "owned-child SIGKILL result deadline elapsed");
+        let reaped: Child = self.0.take().expect("confirmed SIGKILL-reaped owned child");
+        drop(reaped);
+        (pid, status)
+    }
+}
+
 /// Captures exactly the first LF-terminated line, not whole-stream EOF.
 /// Read errors retain precedence over empty or unterminated successful reads.
 pub(crate) fn read_complete_status_line<R: Read>(input: R) -> std::io::Result<String> {

@@ -3074,3 +3074,216 @@ fn complete_startup_status_line_requires_first_lf_and_preserves_read_failure() {
         "successful CRLF bytes are preserved rather than normalized"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let network: Network = author_inspect_and_prepare();
+    let mut peers: Vec<DirectPeer> = direct_peers(&network);
+    let mut hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 2);
+    assert_eq!(hosts.len(), VALIDATORS);
+    let endpoints: Vec<SocketAddr> = peers
+        .iter()
+        .map(|peer: &DirectPeer| peer.address)
+        .collect();
+    assert!(endpoints.iter().all(|address: &SocketAddr| address.port() != 0));
+    let distinct_endpoints: BTreeSet<SocketAddr> = endpoints.iter().copied().collect();
+    assert_eq!(distinct_endpoints.len(), VALIDATORS);
+    let lines: Vec<String> = direct_lines(&network, &peers);
+    let config: PathBuf = write_config(
+        &network.tls_dir.join("direct-owned-sigkill-network.conf"),
+        &lines,
+    );
+    let received: Vec<Vec<u8>> = peers.iter().map(DirectPeer::received).collect();
+    let contexts: Vec<(Vec<u8>, Vec<u8>)> = direct_contexts(&peers);
+    let original_inputs: Vec<(PathBuf, Vec<u8>)> = std::iter::once(network.genesis.clone())
+        .chain(network.signing_keys.iter().cloned())
+        .chain(std::iter::once(network.owner_seed.clone()))
+        .chain(peers.iter().map(|peer: &DirectPeer| peer.ca_file.clone()))
+        .chain(peers.iter().map(|peer: &DirectPeer| peer.cert_file.clone()))
+        .chain(peers.iter().map(|peer: &DirectPeer| peer.key_file.clone()))
+        .chain(std::iter::once(config.clone()))
+        .map(|path: PathBuf| {
+            let bytes: Vec<u8> = fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
+    assert_eq!(original_inputs.len(), 19);
+    let sender: Address = Address::new(network.fixture.owner);
+    let request: RequestId = RequestId::new(TRANSFER_REQUEST).unwrap();
+    let initial: Observation = observe(
+        &peers,
+        &[ObjectId::new(APP_COIN), ObjectId::new(FEE_COIN)],
+        request,
+        sender,
+    );
+    let nonce: u64 = verify_initial(&network, &initial, sender);
+    let first: Outputs = Outputs::new(&network.artifacts_dir, "direct-owned-sigkill-transfer");
+    let output: Output = run_cli(transfer_args(
+        &network,
+        &config,
+        peers[0].address,
+        &network.owner_seed,
+        TRANSFER_REQUEST,
+        nonce,
+        &first,
+    ));
+    let stdout: String = lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout={stdout} stderr={}",
+        lossy(&output.stderr)
+    );
+    assert_ordered(
+        &stdout,
+        &[
+            "fastvote_signed_intent_out=",
+            "fastvote_certificate_formed=true",
+            "fastvote_certificate_out=",
+            "fastvote_publication_source=",
+            "fastvote_availability_certificate_out=",
+            "apply validator=",
+        ],
+    );
+    assert_eq!(
+        stdout.matches("status=received paid_status=Success").count(),
+        VALIDATORS
+    );
+    let saved: Saved = Saved::read(&first);
+    let committed: Committed = verify_saved_artifacts(&network, &saved, nonce);
+    let ids: Vec<ObjectId> = observed_ids(&committed.result);
+    let committed_view: Observation = observe(&peers, &ids, request, sender);
+    verify_committed_state(&network, &committed, &saved, &committed_view);
+
+    // Parent-side real SQLite handles stay open across all host reaps and the
+    // restart. This is post-acknowledged-commit host failure, not loss of every
+    // connection, WAL loss, an interrupted commit or a power/fsync fault.
+    let stale: Vec<StaleCapability> = (0..VALIDATORS)
+        .map(|index: usize| StaleCapability::hold(&network, index))
+        .collect();
+    assert_eq!(stale.len(), VALIDATORS);
+    // Guarded complete enumeration of the four business collections and their
+    // referenced blobs requires an empty outbox, not nonempty-outbox replay or
+    // equality of physical SQLite pages.
+    let before: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    let owned_pids: Vec<u32> = hosts
+        .iter_mut()
+        .enumerate()
+        .map(|(index, host): (usize, &mut Host)| {
+            assert_eq!(host.address, endpoints[index]);
+            assert!(
+                host.guard.try_wait().expect("owned committed host liveness").is_none(),
+                "committed host exited before the explicit fault"
+            );
+            let pid: u32 = host.guard.child_mut().id();
+            assert!(pid > 0 && pid <= i32::MAX as u32, "positive owned committed host PID");
+            pid
+        })
+        .collect();
+    let distinct_pids: BTreeSet<u32> = owned_pids.iter().copied().collect();
+    assert_eq!(distinct_pids.len(), VALIDATORS);
+    // One original absolute end for all four kills/reaps; no per-child reset.
+    // It bounds polling/eligibility, not kill/wait syscalls or failure cleanup.
+    let end: std::time::Instant = std::time::Instant::now()
+        .checked_add(PROCESS_DEADLINE)
+        .expect("one original owned-host SIGKILL deadline");
+    let crash_receipts: Vec<(u32, std::process::ExitStatus)> = hosts
+        .into_iter()
+        .enumerate()
+        .map(|(index, host): (usize, Host)| {
+            let (pid, status): (u32, std::process::ExitStatus) =
+                host.guard.kill_abruptly_and_reap(end);
+            assert_eq!(pid, owned_pids[index], "same owned host was actually reaped");
+            assert_eq!(status.signal(), Some(9_i32), "actual SIGKILL, not Drop cleanup");
+            assert_eq!(status.code(), None);
+            assert!(!status.success());
+            (pid, status)
+        })
+        .collect();
+    assert_eq!(crash_receipts.len(), VALIDATORS);
+
+    // Every serving host is confirmed reaped before any reopen. The held
+    // parent-side stores remain open; no HTTP query is sent to a stopped host.
+    let stopped: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    assert_unchanged(&before, &stopped, "owned SIGKILL stopped-host state");
+    assert_eq!(&Saved::read(&first), &saved, "SIGKILL preserves saved artifacts");
+    for (path, bytes) in &original_inputs {
+        let actual: Vec<u8> = fs::read(path).unwrap();
+        assert_eq!(&actual, bytes, "SIGKILL preserves input {}", path.display());
+    }
+
+    let mut restarted_hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 3);
+    assert_eq!(restarted_hosts.len(), VALIDATORS);
+    for (index, host) in restarted_hosts.iter().enumerate() {
+        assert_eq!(host.address, endpoints[index], "same nonzero endpoint, no fallback");
+        assert_eq!(peers[index].address, endpoints[index]);
+    }
+    assert_eq!(direct_lines(&network, &peers), lines);
+    let received_again: Vec<Vec<u8>> = peers.iter().map(DirectPeer::received).collect();
+    assert_eq!(received_again, received, "same authenticated serving certificates");
+    assert_eq!(direct_contexts(&peers), contexts, "same authenticated SDK/CLI context");
+    for capability in &stale {
+        // The existing owner creates fresh deadlines now. Its held valid
+        // nonempty CAS/Put and read must refuse specifically as WriterFenced.
+        capability.assert_fenced(network.domain, 3);
+    }
+    let reopened: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    assert_reopened(&before, &reopened, 2, 3);
+    assert_original_intact(
+        &network,
+        &peers,
+        &first,
+        &saved,
+        &reopened,
+        &committed_view,
+        "owned SIGKILL restart before replay",
+    );
+    for (path, bytes) in &original_inputs {
+        let actual: Vec<u8> = fs::read(path).unwrap();
+        assert_eq!(&actual, bytes, "restart preserves input {}", path.display());
+    }
+    let replay: Outputs = Outputs::new(&network.artifacts_dir, "direct-owned-sigkill-replay");
+    let replay_output: Output = run_cli(replay_args(
+        &network,
+        &config,
+        &first.intent,
+        Some(&first),
+        &replay,
+    ));
+    assert_exact_replay(&replay_output, &replay, &saved, "owned SIGKILL saved replay");
+    // Exact receipt/object/nonce bytes and full token/mutation-sequence equality
+    // forbid a second business mutation/receipt commit, not read-only SQL COMMIT.
+    assert_original_intact(
+        &network,
+        &peers,
+        &first,
+        &saved,
+        &reopened,
+        &committed_view,
+        "owned SIGKILL restart after replay",
+    );
+    for (path, bytes) in &original_inputs {
+        let actual: Vec<u8> = fs::read(path).unwrap();
+        assert_eq!(&actual, bytes, "replay preserves input {}", path.display());
+    }
+    for host in &mut restarted_hosts {
+        assert!(
+            host.guard.try_wait().expect("restarted host remains owned after replay").is_none(),
+            "restarted host exited before the separate ordinary tail stop"
+        );
+    }
+    // Only after every crash/restart/replay assertion: ordinary cleanup is not
+    // the abrupt-fault oracle and carries only the existing lifecycle limits.
+    for host in restarted_hosts {
+        host.guard.stop_orderly(PROCESS_DEADLINE);
+    }
+    let after_stop: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    assert_unchanged(&reopened, &after_stop, "owned SIGKILL ordinary tail stop");
+    assert_eq!(&Saved::read(&first), &saved, "tail stop preserves saved artifacts");
+    for (path, bytes) in &original_inputs {
+        let actual: Vec<u8> = fs::read(path).unwrap();
+        assert_eq!(&actual, bytes, "tail stop preserves input {}", path.display());
+    }
+}
