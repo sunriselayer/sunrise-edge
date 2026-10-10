@@ -510,6 +510,58 @@ impl NodeResponse {
     }
 }
 
+/// Refusal from binding canonical dedup bytes to their outer query fields.
+///
+/// The variants retain the decode, request, digest, encode, byte-equality
+/// order. They establish only canonical syntax and field consistency, not
+/// receipt inclusion, execution, storage or signing authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DedupRecordBindingError {
+    /// Canonical record decoding failed before any outer-field comparison.
+    Decode(EnvelopeError),
+    /// The decoded record answers another request.
+    RequestIdentityMismatch {
+        /// Request identity supplied by the outer query fields.
+        expected: RequestId,
+        /// Request identity carried by the decoded record.
+        actual: RequestId,
+    },
+    /// The record's event digest differs from the outer query digest.
+    EventDigestMismatch,
+    /// Canonical re-encoding failed after both identity checks succeeded.
+    Encode(EnvelopeError),
+    /// Re-encoded bytes differ from the exact input record bytes.
+    NonCanonicalReEncoding,
+}
+
+impl fmt::Display for DedupRecordBindingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decode(error) => write!(formatter, "dedup record decode failed: {error}"),
+            Self::RequestIdentityMismatch { expected, actual } => write!(
+                formatter,
+                "dedup record request identity mismatch: expected {expected}, actual {actual}"
+            ),
+            Self::EventDigestMismatch => formatter.write_str("dedup record event digest mismatch"),
+            Self::Encode(error) => write!(formatter, "dedup record encode failed: {error}"),
+            Self::NonCanonicalReEncoding => {
+                formatter.write_str("dedup record does not re-encode canonically")
+            }
+        }
+    }
+}
+
+impl Error for DedupRecordBindingError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Decode(error) | Self::Encode(error) => Some(error),
+            Self::RequestIdentityMismatch { .. }
+            | Self::EventDigestMismatch
+            | Self::NonCanonicalReEncoding => None,
+        }
+    }
+}
+
 /// Canonical completed-request record used for persisted idempotency.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeDedupRecord {
@@ -597,6 +649,34 @@ impl NodeDedupRecord {
         let count: usize = bounded_nested_count(frame.required_u32(4)?, "dedup responses")?;
         let responses: Vec<NodeResponse> = decode_response_list(frame.required_field(5)?, count)?;
         Self::new(request_id, event_digest, responses)
+    }
+
+    /// Decodes a query receipt record and binds its exact canonical bytes.
+    ///
+    /// The caller retains its own outer-frame and storage admission bounds.
+    /// This pure check decodes first, then compares request identity and
+    /// event digest, then requires exact canonical re-encoding. It grants
+    /// no execution, receipt inclusion, storage or signing authority.
+    pub fn decode_bound(
+        bytes: &[u8],
+        expected_request_id: RequestId,
+        expected_event_digest: Digest32,
+    ) -> Result<Self, DedupRecordBindingError> {
+        let record: Self = Self::decode(bytes).map_err(DedupRecordBindingError::Decode)?;
+        if record.request_id() != expected_request_id {
+            return Err(DedupRecordBindingError::RequestIdentityMismatch {
+                expected: expected_request_id,
+                actual: record.request_id(),
+            });
+        }
+        if record.event_digest() != expected_event_digest {
+            return Err(DedupRecordBindingError::EventDigestMismatch);
+        }
+        let re_encoded: Vec<u8> = record.encode().map_err(DedupRecordBindingError::Encode)?;
+        if re_encoded.as_slice() != bytes {
+            return Err(DedupRecordBindingError::NonCanonicalReEncoding);
+        }
+        Ok(record)
     }
 }
 
