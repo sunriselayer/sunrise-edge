@@ -178,8 +178,13 @@ contracts; they do not define protocol rules.
   The [shared compiled-child capture](../../apps/operator/tests/support/compiled_source_host_process.rs)
   returns full `Output` only after successful pipe reads and reader joins; live
   startup returns one LF-terminated first line without waiting for host-stream EOF.
-  Its two pure TLS-target controls preserve read errors and reject missing
-  completion. These are source contracts, not executed tests or all-path cleanup.
+  All ten startup calls pass their actual fixture-chain byte allowance before
+  spawning; the shared reader checks the cap-plus-one physical probe and preserves
+  encountered read/UTF-8 error priority and exact successful bytes. Existing two
+  pure TLS-target controls and four new controls cover refusal, finite never-LF
+  reads and independent maximum producer formats. These are unexecuted source
+  contracts, not heap/timing/whole-EOF or all-path cleanup guarantees; see
+  [DR-0229](../architecture/decisions/0229-bounded-compiled-host-startup-line.md).
 
 ## Successor invocation and immutable transport
 

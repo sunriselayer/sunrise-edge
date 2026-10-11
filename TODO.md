@@ -244,6 +244,11 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   bytes, exact/+1 canonical bounds, nonzero-ID and caller-error priority.
   Formatting, compilation and execution remain unperformed. Raw structural
   encoding is not admission, full SDK decoupling, custody or R1 completion.
+  The validator-set owner now publicly defines the existing generic 10,000
+  validator ceiling. Four durable record-codec consumers use it directly;
+  two copied constants are removed without changing bytes or error priority.
+  The separate active-committee ceiling remains 256. Eight new literal-bound
+  source controls are unexecuted; this does not close R1 or prove live admission.
 - [ ] **R2 — semantic core/runtime responsibilities:** admission authorizes,
   evaluation proposes, completion assembles one atomic transaction, reconciliation
   exposes confirmed exact output, and repositories expose their actual capability.
@@ -291,10 +296,14 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   Shared compiled-child capture now requires successful complete pipe reads and
   both reader joins before returning `Output`. Startup requires one complete
   LF-terminated line, preserving the original read error and exact bytes without
-  waiting for host EOF. Two process-free source controls cover read/channel
-  refusal and complete-first-line behavior; they are outside the original 41
-  selected controls and remain unexecuted. Existing failure-cleanup limits and
-  every real CLI, restart/fence/fault and release gate remain unchanged.
+  waiting for host EOF. All ten startup calls now pass a cap derived before
+  spawning from the actual fixture chain: 428 framing/field bytes plus its
+  UTF-8 bytes, including LF. The shared reader probes at most cap-plus-one
+  physical bytes; encountered read/UTF-8 errors retain priority. Four new
+  process-free controls supplement the existing two, including independent
+  maximum producer formats. All six are outside the original 41 selected
+  controls and remain unexecuted. No heap, whole-EOF or all-path cleanup claim
+  follows; every real CLI, restart/fence/fault and release gate remains unchanged.
 - [ ] **R4 — audit and launch seams:** bind exact source/build/configuration,
   exposed-family authorization, signer/store capabilities and executable
   startup/stop/restart/recovery evidence. DR-0204–0207 relay/native/SDK evidence

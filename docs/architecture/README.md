@@ -79,6 +79,9 @@ roadmap describes a later target state.
   ([DR-0183](decisions/0183-test-observation-ownership.md)):
   private reader/counter/capture mechanics, complete direct/prepared persisted
   equivalence, and distinct replay and cut/import comparison responsibilities.
+- [Bounded compiled-host startup line](decisions/0229-bounded-compiled-host-startup-line.md):
+  fixture-derived byte allowance and finite first-line probing in shared test
+  supervision; source contracts, not runtime or all-path cleanup qualification.
 - [Smart contracts](../smartcontract/README.md): publication/call lifecycle and
   Standard Asset/fee semantics.
 - [Durable local code publication](decisions/0121-durable-local-code-publication.md):
