@@ -1,3 +1,4 @@
+mod certified_publication_ingress;
 mod connection_phase;
 mod envelope_classification;
 mod fastvote_router;
