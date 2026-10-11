@@ -66,3 +66,25 @@ and evidence, not fixture values. Continue independent safe work while those
 prerequisites are obtained.
 
 Progress and remaining work belong only in [TODO.md](../../../TODO.md).
+
+## 2026-10-11 bounded Docker and launch-scope amendment
+
+Date: 2026-10-11 (Asia/Tokyo).
+
+The human now authorizes Docker-only local PostgreSQL and bounded isolated
+Docker disk-full/forced-stop experiments. This supersedes the earlier local-PG
+prohibition only for this disposable Docker scope, not public/production PG,
+host-wide resource changes, real data/keys or foreign workloads. Native plus
+SQLite remains first; PG stays optional except for an applicable selected-
+profile or dependency-acceptance gate. Actual containment, effective noswap,
+PG acceptance and fault/recovery results must still be independently verified.
+An earlier environment-unavailable refusal is not relabeled as a Docker pass.
+
+Actual key/backup/recovery/operator roles and ceremonies, production genesis/
+economic values and public activation are human-owned LAUNCH decisions. They
+are not prerequisites for implementing and verifying parameterized code with
+disposable keys/values. All protected backend/content-verification, authority
+separation, refusal/failure, recovery/rotation/revocation and code-qualification
+contracts above remain. A plaintext seed or test fixture is not a protected
+backend or operational custody. No source/runtime admission, release or
+deployment acceptance follows solely from this amendment.

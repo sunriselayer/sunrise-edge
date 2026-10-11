@@ -200,3 +200,29 @@ decode controls; its original BLOCK remains historical. No runtime, signed
 capacity, quorum, retention, physical durability or custody is qualified.
 R1 and the original twenty completion groups remain open; targeted/full,
 independent exact-head and CI/release gates remain separate.
+
+## 2026-10-11 human amendment: code completion versus network launch
+
+Date: 2026-10-11 (Asia/Tokyo).
+
+The human authorizes local PostgreSQL in Docker and bounded isolated Docker
+disk-full/forced-stop experiments. Host disk filling, global swap/settings,
+foreign workloads, cloud/public activation and real-key operations remain
+outside that authority. The original environment refusal stays historical;
+permission alone supplies no environment, fault, durability or PG result.
+
+Separate SOURCE, VERIFY and LAUNCH within the existing roadmap. Implemented
+source is not verified CODE completion. The original applicable cryptographic,
+atomicity, recovery/fault, advisory, independent review and exact-head required/
+selected-profile/CI gates remain code-verification obligations. Actual keys,
+backup/operator ceremonies, production workload/topology, actual genesis and
+economic values, and public activation belong to human-owned network launch.
+Disposable keys and parameters can verify parameterized code without selecting
+those production values. This deferral does not remove code-side protected
+signing/content verification, genesis/supply invariants or recovery mechanisms.
+
+No checkbox is closed by this scope decision. The original twenty combined
+readiness groups retain their mappings; only their launch-only actions are
+deferred from code completion. A separately provider-stopped dependency workflow
+remains stopped: Docker permission is not acquisition/runtime admission or
+permission to retry/reroute it. Progress belongs in TODO, not this record.

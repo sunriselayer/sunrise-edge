@@ -27,7 +27,7 @@ missing exact locked Rust inputs from official crates.io, without package code
 execution. Acquisition still needs its own admitted bounded protocol; the human
 has selected the [observed acquisition floor policy](docs/architecture/decisions/0225-observed-acquisition-floor-and-current-binding.md)
 with stop before 5 GiB. Source work does not admit unresolved
-runtime prerequisites, global-cache substitution, live PG, deployment, public
+runtime prerequisites, global-cache substitution, deployment, public
 launch, custody or global-host changes.
 
 The current direct human request resumes ordinary Native+SQLite implementation
@@ -35,6 +35,13 @@ and requires resolving acquisition blockers and all twenty open groups. It
 selects monitored stop before the 5 GiB floor, not a full-duration global-space
 guarantee. Acquisition code, combined protocol and runtime admission remain
 pending; no TODO group or release gate is closed by this policy decision.
+
+The 2026-10-11 direct human decision additionally authorizes Docker-only local
+PostgreSQL and bounded isolated Docker disk-full/forced-stop experiments. Keep
+host disks, swap/settings, foreign workloads and real data outside the fault
+scope. This is environment/verification authority, not a successful test,
+dependency-acquisition retry, public deployment or release admission. The
+separately provider-stopped acquisition workflow remains stopped.
 
 ## Established baseline
 
@@ -192,13 +199,14 @@ and final-head hosted gates. Old metadata/scoped helpers must not run with
 substituted source or target bindings. M4's age edge expands shared
 `futures-util` features used by PostgreSQL: the documented PG dependency
 acceptance requirement remains
-unresolved, even though Native+SQLite development may continue. No live PG
-or waived selected-profile check is authorized. Keep the accepted
+unresolved, even though Native+SQLite development may continue. Docker-only
+local PG qualification is now authorized; no selected-profile check is waived.
+Keep the accepted
 [DR-0221](docs/architecture/decisions/0221-encrypted-recovery-closure.md)
 transport/restore requirements intact; DR-0224 adds the thirteenth target to
 the same fresh A/B owner without dropping any original target.
 Rustls advisories, optional PG acceptance, production PKI/custody and M3's
-environment-unavailable memory/noswap choice remain open. Reconcile exact heads
+actual memory/noswap environment qualification remain open. Reconcile exact heads
 and ownership before action; preserve Draft #235 and never auto-merge dependencies.
 
 ## Responsibility-oriented work packages
@@ -338,6 +346,15 @@ need independent owners/worktrees; shared compiler and source ownership stay exp
 
 ## Delivery 4: first public testnet
 
+Track the existing groups separately as SOURCE, VERIFY and LAUNCH. SOURCE
+means implemented code and controls, not verified code completion. CODE
+completion still requires the original applicable exact-head runtime, crypto,
+atomicity, security, fault and independent acceptance gates. LAUNCH is
+human-owned: real operators/key/backup ceremonies, actual genesis/economic
+values, production SLO/topology/resources and public activation. Disposable
+keys and parameters can verify code without choosing production values. Keep
+combined-readiness checkboxes open while any applicable axis is incomplete.
+
 This needs a separately approved release profile and real evidence, not fixtures
 from another profile. The accepted
 [protocol-v3 activation constraint](docs/architecture/core-protocol.md) still
@@ -370,7 +387,7 @@ explicit human approval and release review.
 - [ ] Approve launch, rollback and stop instructions before creating resources
   or admitting public traffic. Continued implementation does not authorize deployment.
 
-## Mainnet completion
+## Mainnet code/verification and launch readiness
 
 Every group remains open until original evidence is complete or an accepted
 human decision explicitly supersedes it. This consolidates S4/S5, Phase 15–17
@@ -420,8 +437,10 @@ and cross-phase criteria; it does not shorten them.
   DR-0215 covers actual ordered returned signatures and retained rereads. Neither
   implements protected key storage. Proposed DR-0214 is independently reviewed
   but leaves local-OS, separate-host and hardware threat models unselected.
-  Select a real trusted review surface and independent key/recovery roles before
-  implementing the backend; plaintext seeds and opaque generic bytes do not qualify.
+  The separately reviewed backend and trusted content-review surface remain code
+  work; plaintext seeds and opaque generic bytes do not qualify. Actual key,
+  administrator and recovery roles/ceremonies are LAUNCH decisions, not a
+  prerequisite to implementing and verifying parameterized code with disposable keys.
 - [ ] **M3 — selected-profile durability:** atomic object/state/nonce/receipt/
   outbox, bounded indexed delivery, full-read revision/ABA, restart, fencing and
   ambiguity reconciliation. DR-0210's real SQLite process/lock tests are narrower
@@ -451,7 +470,10 @@ and cross-phase criteria; it does not shorten them.
   The bounded non-faulting private-namespace capability attempt ended
   ENVIRONMENT_UNAVAILABLE/78: required unprivileged tmpfs noswap was unsupported.
   No SQLite/ENOSPC filler or privilege fallback ran. Retained actual failure/
-  refusal history remains separate; safe host/resource direction needs a human.
+  refusal history remains separate. Docker-only bounded disk-full/forced-stop
+  experiments are now authorized; effective noswap, resource containment and
+  actual SQLite fault/recovery results still require independent qualification.
+  No host-wide resource change or privileged fallback follows from that authority.
 - [ ] **M4 — checkpoint, backup and disaster recovery:** publish/verify required
   checkpoint/state-root and immutable body manifests; encrypted off-host backup,
   isolated exact history/receipt/blob restore, fresh fencing, migration/upgrade
@@ -479,7 +501,8 @@ and cross-phase criteria; it does not shorten them.
   thirteen-target A/B and final-head hosted acceptance are still required. The
   unconditional age edge expands `futures-util` features shared with PostgreSQL,
   so final dependency acceptance also needs the documented selected-PG evidence
-  and pending authority; unchanged PG versions do not waive that obligation.
+  in the newly authorized Docker-only local profile; unchanged PG versions do
+  not waive that obligation. Environment preparation is not PG acceptance.
   Advisory/MSRV/license, runtime and off-host custody qualification remain open.
   Aggregate repeated-walk/decode/deadline cost is still UNKNOWN;
   do not reset or widen the shared budget to force a pass. Both prior design
@@ -613,9 +636,9 @@ and cross-phase criteria; it does not shorten them.
   unformatted, uncompiled and unexecuted, with no whole-source or M5 completion.
   The M5 lock delta only adds direct edges to already locked versions; no PG
   dependency/version changes occur. Locked Rustls 0.23.43 remains affected by
-  RUSTSEC-2026-0285 (patched in >=0.23.45). The shared upgrade and local PG
-  acceptance authority need the pending human decision; no clearance or old-lock
-  exposure recommendation follows. Production PKI, caller authorization,
+  RUSTSEC-2026-0285 (patched in >=0.23.45). The shared upgrade remains unqualified;
+  Docker-only local PG acceptance is now authorized but unperformed. No clearance
+  or old-lock exposure recommendation follows. Production PKI, caller authorization,
   protected custody and revocation remain open.
   Normal local `0c256c4f` under
   [DR-0226](docs/architecture/decisions/0226-native-certified-publication-collector.md)
@@ -682,17 +705,21 @@ with DR-0208; Ledger is deferred, not complete. Other original conditions remain
 | Phase 3 economics and initial network | Delivery 4/M1/M6/M8; claims/bonds/slash/membership remain required |
 | Optional PG rehearsals/faults/workload | Complete selected PG acceptance, M3/M4/M5 when PG is selected; never PG-every-PR |
 
-### Human decisions still required
+### Code-scope and launch decisions
 
-Protected-signing threat/backend, trusted content-review surface and independent
-key/recovery/operator roles; SECURITY policy approval; supported-provider scope;
-real workload/SLO and genesis/economic values; shared Rustls upgrade and
-complete local PG acceptance; any bounded protocol-v3 testnet exception and
-eventual public launch. These choices do not block independent
-safe local implementation, but cannot be replaced with fixture values. M3's
-required noswap host/resource prerequisite and real off-host recovery custody/
-retention remain human choices; the disposable DR-0221 test profile selects
-neither. Do not weaken the actual environment refusal to manufacture a pass.
+Protected-signing threat/backend and trusted content-review design, SECURITY
+policy approval, supported-provider scope, advisory resolution and applicable
+complete local PG verification remain code/verification work or decisions.
+Docker-only local PG and bounded isolated disk-full/forced-stop experiments are
+authorized; their real environment and test evidence remain outstanding.
+
+Real key/backup/recovery/operator roles and ceremonies, off-host retention,
+production workload/SLO/topology, actual genesis/economic values, any public
+protocol-v3 exception and eventual public launch are human-owned LAUNCH work.
+They do not block implementing and verifying parameterized code with disposable
+keys/values. Fixture values neither select production values nor complete an
+operational rehearsal. Preserve the original noswap refusal as a failure; a new
+Docker capability result must be attributable and cannot supply a historical pass.
 
 ## Deferred products
 
@@ -710,9 +737,11 @@ and immutable earlier remediations do not audit the later final release scope.
 
 ## Validation and completion discipline
 
-- Local SQLite, loopback and disposable development keys only. No production
-  D1/Worker writes, cloud resources, public listeners, paid-plan changes, live PG
-  service or public launch without separate authority.
+- Local SQLite, Docker-only local PostgreSQL, loopback and disposable development
+  keys. Bounded isolated Docker disk-full/forced-stop experiments are authorized.
+  No host-wide disk filling/settings changes, foreign workload interference,
+  production D1/Worker writes, cloud resources, public listeners, paid-plan
+  changes, non-Docker PG service or public launch are authorized.
 - Focused checks during iteration, then literal
   `npm ci --prefix adapters/cloudflare-workers` and complete required
   `./scripts/check-all.sh`. Preserve all seven required CI owners and success-only
