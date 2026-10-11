@@ -81,14 +81,15 @@ pub const MAX_ORDERED_CANDIDATE_BYTES: usize = 512 * 1024 + 4096;
 /// Bound on one complete encoded [`OrderedProposeRequest`].
 pub const MAX_ORDERED_PROPOSE_REQUEST_BYTES: usize = MAX_ORDERED_CANDIDATE_BYTES + 1024;
 /// Bound on one encoded `OrderedProposal`: real core cap on the embedded
-/// `consensus::ConsensusProposal` is `consensus::durable::MAX_ENCODED_PROPOSAL_BYTES`
+/// `consensus::ConsensusProposal` is `consensus::MAX_ENCODED_PROPOSAL_BYTES`
 /// (`10 * 1024 * 1024`, confirmed in `crates/consensus/src/durable.rs`),
 /// plus at most one `OrderedCandidate` and frame overhead.
-pub const MAX_ORDERED_PROPOSAL_BYTES: usize = 10 * 1024 * 1024 + MAX_ORDERED_CANDIDATE_BYTES + 4096;
+pub const MAX_ORDERED_PROPOSAL_BYTES: usize =
+    consensus::MAX_ENCODED_PROPOSAL_BYTES + MAX_ORDERED_CANDIDATE_BYTES + 4096;
 /// Bound on one encoded `QuorumCertificate`: real core cap is
-/// `consensus::durable::MAX_ENCODED_CERTIFICATE_BYTES` (`8 * 1024 * 1024`,
+/// `consensus::MAX_ENCODED_CERTIFICATE_BYTES` (`8 * 1024 * 1024`,
 /// confirmed in `crates/consensus/src/durable.rs`).
-pub const MAX_ORDERED_CERTIFICATE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_ORDERED_CERTIFICATE_BYTES: usize = consensus::MAX_ENCODED_CERTIFICATE_BYTES;
 /// Bound on one encoded `OrderedEventOutput`: real core caps its `messages`
 /// at `MAX_ORDERED_EVENT_MESSAGES` (8, confirmed in
 /// `crates/node-core/src/ordered_economics/engine.rs`), each up to one full
@@ -283,5 +284,24 @@ mod tests {
             OrderedProposeRequest::decode(&bytes),
             Err(OrderedProposeRequestError::CanonicalDecoding(_))
         ));
+    }
+
+    #[test]
+    fn ordered_wire_byte_caps_match_literals_and_defining_owner() {
+        let certificate_cap: usize = 8_388_608;
+        let proposal_cap: usize = 11_018_240;
+        let status_cap: usize = 8_388_864;
+        assert_eq!(MAX_ORDERED_CERTIFICATE_BYTES, certificate_cap);
+        assert_eq!(MAX_ORDERED_PROPOSAL_BYTES, proposal_cap);
+        assert_eq!(MAX_ORDERED_STATUS_BYTES, status_cap);
+        assert_eq!(
+            MAX_ORDERED_CERTIFICATE_BYTES,
+            consensus::MAX_ENCODED_CERTIFICATE_BYTES
+        );
+        assert_eq!(
+            MAX_ORDERED_PROPOSAL_BYTES,
+            consensus::MAX_ENCODED_PROPOSAL_BYTES + MAX_ORDERED_CANDIDATE_BYTES + 4096
+        );
+        assert_eq!(MAX_ORDERED_STATUS_BYTES, MAX_ORDERED_CERTIFICATE_BYTES + 256);
     }
 }

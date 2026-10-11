@@ -58,8 +58,8 @@ pub use commit_proof::{
     encode_committed_block_proof,
 };
 pub use durable::{
-    decode_consensus_state, decode_proposal, decode_quorum_certificate, decode_vote,
-    encode_consensus_state,
+    MAX_ENCODED_CERTIFICATE_BYTES, MAX_ENCODED_PROPOSAL_BYTES, decode_consensus_state,
+    decode_proposal, decode_quorum_certificate, decode_vote, encode_consensus_state,
 };
 pub use epoch_transition::{
     EpochTransitionCertificate, EpochTransitionCertifier, EpochTransitionVote,
