@@ -562,6 +562,146 @@ pub(super) fn require_fresh_bond_slash_evidence<S: StructuredStateReader>(
     })
 }
 
+/// An otherwise eligible fresh causal withdrawal must name the whole exact
+/// committed custody reference and its installed resource's release target
+/// before signing. No custody capability, object reservation or execution is
+/// needed to reject an impossible release target. Historical and retained
+/// admission deliberately do not call this gate.
+///
+/// Healthy stale predecessors and ineligible states still reach the existing
+/// commit-time typed refusal, in its original order. Only a healthy, unlocked,
+/// nonmember bond with its exact signed predecessor makes these comparisons
+/// relevant. Load the installed economics policy at the committed bond's own
+/// resource context, without requiring the resource to remain bond-enabled.
+/// That context and custody digest provenance epoch remain untouched: compare
+/// the stored typed reference without rehashing it under the current suite.
+/// Every deciding read uses the caller's one observed reader; its sticky errors
+/// outrank semantic errors when the scope finishes.
+pub(super) fn require_fresh_bond_withdraw_target<S: StructuredStateReader>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<(), OrderedEconomicsError> {
+    let signed: bond_lifecycle::SignedBondLifecycleIntent =
+        decode_signed_bond_lifecycle_intent(&candidate.intent).map_err(|_| {
+            OrderedEconomicsError::Unauthenticated("invalid bond lifecycle candidate intent")
+        })?;
+    let BondLifecycleOperation::Withdraw { leg } = &signed.intent.operation else {
+        return Ok(());
+    };
+    let epoch_record: FastPathEpochRecord = require_live_authority(store, context, env)?;
+    let committee: validator_set::ValidatorSet = fast_path::load_validator_set(
+        store,
+        context,
+        env.policy.domain(),
+        env.resolver(),
+        env.policy.context(),
+        &epoch_record,
+        reads,
+    )
+    .map_err(|_| {
+        OrderedEconomicsError::Prerequisite("fresh bond withdrawal live validator set is unavailable")
+    })?;
+    if committee != *env.policy.engine().validator_set() {
+        return Err(OrderedEconomicsError::Prerequisite(
+            "fresh bond withdrawal live validator set is not the pinned trusted authority",
+        ));
+    }
+    let (bond, bond_bytes): (FastPathBondRecord, Vec<u8>) = committed_bond(
+        store,
+        context,
+        env,
+        signed.intent.validator_id,
+        env.policy
+            .bond_owner_authority(signed.intent.validator_id, &signed.intent.operation),
+        "fresh bond withdrawal requires an existing committed bond row",
+    )?;
+    // Jail precedes signed predecessor checks in the owning preflight.
+    if matches!(bond.state, FastPathBondState::Jailed { .. }) {
+        return Ok(());
+    }
+    match require_signed_predecessor(
+        env,
+        &bond,
+        &bond_bytes,
+        signed.intent.resource_id,
+        signed.intent.expected_generation,
+        Some(signed.intent.expected_previous_row_digest),
+    ) {
+        Ok(()) => {}
+        Err(OrderedEconomicsError::Refused(_)) => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    match bond.state {
+        FastPathBondState::Unbonding { unlock_epoch, .. }
+            if env.policy.context().epoch().get() >= unlock_epoch.get()
+                && committee.get(bond.validator_id).is_none() => {}
+        _ => return Ok(()),
+    }
+    // Admission already authenticated the envelope and this exact embedded leg.
+    let signed_leg: execution::local_execution::SignedLocalExecutionIntent =
+        execution::local_execution::decode_signed_local_execution(leg).map_err(|_| {
+            OrderedEconomicsError::Unauthenticated("invalid bond withdrawal candidate leg")
+        })?;
+    let call: &execution::call::CallIntent = &signed_leg.intent.call;
+    let [entry] = call.access.entries.as_slice() else {
+        return Err(OrderedEconomicsError::Prerequisite(
+            "fresh bond withdrawal requires one exact committed custody write input",
+        ));
+    };
+    if entry.mode != objects::AccessMode::Write || entry.object_ref != bond.custody_object {
+        return Err(OrderedEconomicsError::Prerequisite(
+            "fresh bond withdrawal input is not the exact committed custody reference",
+        ));
+    }
+    // The owning Withdraw loads this historical resource scope, not the
+    // current operation epoch or the latest pinned economics configuration.
+    let policy_key: Vec<u8> =
+        local_instance_state::fastpath_economics_policy_key(&bond.context)?;
+    let policy_row: VersionedStateValue =
+        store.read_versioned_state(context, env.policy.domain(), &policy_key)?;
+    if let Some(previous) = reads.insert(policy_key, policy_row.revision())
+        && previous != policy_row.revision()
+    {
+        return Err(NodeCoreError::StateConflict.into());
+    }
+    let policy: crate::economics::FastPathEconomicsPolicy =
+        crate::economics::decode_fastpath_economics_policy(policy_row.value().ok_or(
+            OrderedEconomicsError::Prerequisite(
+                "fresh bond withdrawal resource economics policy is not installed",
+            ),
+        )?)?;
+    let resource_id: bonds::BondResourceId =
+        bonds::BondResourceId::new(bond.resource_domain, bond.resource).map_err(|_| {
+            OrderedEconomicsError::Prerequisite("committed bond row resource identity is invalid")
+        })?;
+    let resource_index: usize = policy
+        .resources
+        .binary_search_by_key(
+            &resource_id,
+            |entry: &crate::economics::FastPathEconomicsResourcePolicy| entry.resource_id,
+        )
+        .map_err(|_| {
+            OrderedEconomicsError::Prerequisite(
+                "fresh bond withdrawal resource is absent from its economics policy",
+            )
+        })?;
+    let resource: &crate::economics::FastPathEconomicsResourcePolicy =
+        &policy.resources[resource_index];
+    if call.context != *env.policy.context()
+        || call.code != resource.code
+        || call.instance != resource.instance
+        || call.entrypoint != resource.transfer_entrypoint
+    {
+        return Err(OrderedEconomicsError::Prerequisite(
+            "fresh bond withdrawal leg is not the committed resource release target",
+        ));
+    }
+    Ok(())
+}
+
 fn preflight_fee_claim<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,

@@ -2673,6 +2673,15 @@ fn admit_candidate_for_signer_observed<S: StructuredStateReader>(
                     &mut admitted.reads,
                 )?;
             }
+            if env.policy.is_causal() && candidate.kind == OrderedOperationKind::BondLifecycle {
+                preflight::require_fresh_bond_withdraw_target(
+                    store,
+                    context,
+                    env,
+                    candidate,
+                    &mut admitted.reads,
+                )?;
+            }
             Ok(admitted)
         }
         Admission::Completed(outcome) => Err(OrderedEconomicsError::AlreadyCompleted(outcome)),
