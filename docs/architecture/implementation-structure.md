@@ -84,6 +84,16 @@ authority. The dated decoder-bound addendum in
 UNFORMATTED, UNCOMPILED and UNEXECUTED controls, not valid-capacity acceptance,
 universal encoder limits, a Cargo-edge removal or R1 completion.
 
+The frozen-frontier codec owns the vote/page/entry caps exposed as
+`consensus::MAX_FROZEN_FRONTIER_VOTE_BYTES`,
+`consensus::MAX_FROZEN_FRONTIER_PAGE_BYTES` and
+`consensus::MAX_FROZEN_FRONTIER_PAGE_ENTRIES`. Wire preserves its public cap
+names/types as aliases, with a compile-time guard before narrowing entries
+to u16. Vote 8 KiB, page 512 KiB and 128 entries remain unchanged; request
+128 bytes and response framing allowance 64 bytes remain transport-owned.
+The dated frontier-bound addendum in [DR-0200](decisions/0200-maintainability-and-mainnet-roadmap.md)
+records nine unexecuted controls, not signed capacity or persistence authority.
+
 ## Concrete refactoring seams
 
 The following are intended module responsibilities inside existing crates.

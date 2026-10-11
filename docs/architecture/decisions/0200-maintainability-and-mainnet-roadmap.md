@@ -161,3 +161,42 @@ UNEXECUTED, outside the original 41 selectors. This removes copied bounds,
 not all SDK/core coupling. No build benefit, runtime, valid-capacity, custody
 or release qualification is established. R1 remains open; all required
 targeted/full and CI validation remains separate.
+
+## 2026-10-11 R1 frozen-frontier bound ownership
+
+Date: 2026-10-11 (Asia/Tokyo).
+
+The existing frontier codec now publicly owns its 8,192-byte vote cap. Its
+distinct availability/root alias is `MAX_FROZEN_FRONTIER_VOTE_BYTES`, not the
+coincidentally equal availability-vote cap. Wire consumes this owner and the
+existing 524,288-byte page and 128-entry owners, preserving all public wire
+names/types. An adjacent private const assertion checks u16 representability
+before the explicit entry-limit cast; actual compiler qualification is pending.
+Request 128 bytes, response framing allowance 64 bytes and the derived 532,544
+response cap remain transport-owned and unchanged. No Cargo edge changes.
+
+The vote encoder still checks its byte cap after frame construction; its strict
+decoder checks before canonical parsing. No codec body, value, signature,
+error variant/text/priority or caller authority check changes. The byte cap
+grants no authentication, quorum, persistence or custody authority.
+
+Four consensus and five wire source controls independently pin literal caps,
+at-cap canonical refusal versus cap+1 bound refusal, page entry count and exact
+wire refusal order. The 128-entry page structurally round-trips; the independent
+129-entry frame supplies all 129 valid nested identities in fields 4–132,
+with 132 complete fields and literal length 41,441. Its refusal is not a
+missing-body shortcut. Request controls separately retain limit-only 129
+refusal and limit-before-zero-cursor priority after prior framing checks.
+Opaque vote/page wire components round-trip only as an envelope; independently
+framed component+1 cases fit below the outer allowance and retain vote-before-
+page refusal. Outer malformed-at-cap controls do not prove valid capacity.
+
+Independent design and corrected implemented-source reviews approve only this
+five-Rust-path slice. Existing functions, controls and complete vectors remain
+preserved. All nine new controls remain UNFORMATTED, UNCOMPILED and UNEXECUTED,
+outside the original 41. The original review's two design-conformance gaps are
+resolved by the explicit persistence disclaimer and isolated 129/None encode/
+decode controls; its original BLOCK remains historical. No runtime, signed
+capacity, quorum, retention, physical durability or custody is qualified.
+R1 and the original twenty completion groups remain open; targeted/full,
+independent exact-head and CI/release gates remain separate.

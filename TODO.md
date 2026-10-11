@@ -255,6 +255,14 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   Six appended literal-bound source controls are unexecuted, outside the original
   41 selectors. Decoder admission is not valid-capacity, encoder, quorum or
   custody qualification; R1 remains open with all execution/release gates intact.
+  Frozen-frontier vote/page/entry ceilings now have one consensus owner;
+  wire aliases preserve their public names/types and existing 8 KiB/512 KiB/128
+  values. A compile-time guard precedes the entry-limit narrowing to u16;
+  request/framing allowances and all refusal order remain unchanged. Nine
+  literal-bound source controls include a complete 129-entry frame and separate
+  limit-only versus joint-invalid refusals. They remain unformatted, uncompiled
+  and unexecuted, outside the original 41. Structural pages and opaque envelopes
+  do not qualify signed capacity, custody, persistence or R1 completion.
 - [ ] **R2 — semantic core/runtime responsibilities:** admission authorizes,
   evaluation proposes, completion assembles one atomic transaction, reconciliation
   exposes confirmed exact output, and repositories expose their actual capability.
