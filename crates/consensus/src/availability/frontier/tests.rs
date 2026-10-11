@@ -516,3 +516,89 @@ fn page_verifier_resumes_persisted_progress_and_rejects_foreign_or_overrun_state
             .is_err()
     );
 }
+
+#[test]
+fn frozen_frontier_public_caps_match_independent_literals() {
+    let vote_cap: usize = 8_192;
+    let page_cap: usize = 524_288;
+    let entry_cap: usize = 128;
+    assert_eq!(crate::MAX_FROZEN_FRONTIER_VOTE_BYTES, vote_cap);
+    assert_eq!(crate::MAX_FROZEN_FRONTIER_PAGE_BYTES, page_cap);
+    assert_eq!(crate::MAX_FROZEN_FRONTIER_PAGE_ENTRIES, entry_cap);
+    assert_eq!(crate::MAX_FROZEN_FRONTIER_VOTE_BYTES, MAX_FRONTIER_VOTE_BYTES);
+    assert_eq!(crate::MAX_FROZEN_FRONTIER_PAGE_BYTES, MAX_FROZEN_FRONTIER_PAGE_BYTES);
+    assert_eq!(crate::MAX_FROZEN_FRONTIER_PAGE_ENTRIES, MAX_FROZEN_FRONTIER_PAGE_ENTRIES);
+}
+
+#[test]
+fn frozen_frontier_vote_literal_byte_boundary() {
+    let at_cap: Vec<u8> = vec![0u8; 8_192];
+    assert!(matches!(
+        decode_frozen_frontier_vote(&at_cap),
+        Err(FrontierError::Consensus(ConsensusError::CanonicalDecoding(_)))
+    ));
+    let above_cap: Vec<u8> = vec![0u8; 8_193];
+    assert_eq!(
+        decode_frozen_frontier_vote(&above_cap),
+        Err(FrontierError::Invalid("frontier vote frame exceeds bound"))
+    );
+}
+
+#[test]
+fn frozen_frontier_page_literal_byte_boundary() {
+    let at_cap: Vec<u8> = vec![0u8; 524_288];
+    assert!(matches!(
+        decode_frozen_frontier_page(&at_cap),
+        Err(FrontierError::Consensus(ConsensusError::CanonicalDecoding(_)))
+    ));
+    let above_cap: Vec<u8> = vec![0u8; 524_289];
+    assert_eq!(
+        decode_frozen_frontier_page(&above_cap),
+        Err(FrontierError::Invalid("frontier page frame exceeds bound"))
+    );
+}
+
+#[test]
+fn frozen_frontier_page_literal_entry_boundary() {
+    let domain: AtomicityDomainId = fixture().3;
+    let mut entries: Vec<AvailabilityIdentity> = Vec::with_capacity(129);
+    for request_byte in 1u8..=128u8 {
+        entries.push(operation(request_byte, domain));
+    }
+    let mut page: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id: None,
+        entries,
+        terminal: true,
+    };
+    let encoded: Vec<u8> = encode_frozen_frontier_page(&page).unwrap();
+    assert_eq!(decode_frozen_frontier_page(&encoded).unwrap(), page);
+
+    page.entries.push(operation(129, domain));
+    assert_eq!(page.entries.len(), 129);
+    assert_eq!(
+        encode_frozen_frontier_page(&page),
+        Err(FrontierError::Invalid("frontier page entry bound exceeded"))
+    );
+
+    // A complete literal 129-entry frame isolates the count cap from missing
+    // fields, malformed entries, cursor order, and the outer byte cap.
+    let mut frame: CanonicalStruct = CanonicalStruct::new(0xD039, 1);
+    frame.field_bytes(1, Vec::<u8>::new()).unwrap();
+    frame.field_u16(2, 1).unwrap();
+    frame.field_u16(3, 129).unwrap();
+    for (index, entry) in page.entries.iter().enumerate() {
+        let field: u16 = u16::try_from(index + 4).unwrap();
+        let nested: Vec<u8> = encode_availability_identity(entry).unwrap();
+        assert_eq!(entry.chain_id.as_str().len(), 13);
+        assert_eq!(nested.len(), 315);
+        frame.field_bytes(field, nested).unwrap();
+    }
+    let excessive: Vec<u8> = frame.finish().unwrap();
+    let field_count: usize = decode_canonical_frame(&excessive).unwrap().field_count();
+    assert_eq!(field_count, 132);
+    assert_eq!(excessive.len(), 41_441);
+    assert_eq!(
+        decode_frozen_frontier_page(&excessive),
+        Err(FrontierError::Invalid("frontier page field count"))
+    );
+}

@@ -68,6 +68,7 @@ pub mod union;
 pub use frontier::{
     FrontierError, FrozenFrontierAccumulator, FrozenFrontierCertifier, FrozenFrontierIdentity,
     FrozenFrontierPage, FrozenFrontierPageVerifier, FrozenFrontierVote,
+    MAX_FRONTIER_VOTE_BYTES as MAX_FROZEN_FRONTIER_VOTE_BYTES,
     MAX_FROZEN_FRONTIER_PAGE_BYTES, MAX_FROZEN_FRONTIER_PAGE_ENTRIES,
     decode_frozen_frontier_identity, decode_frozen_frontier_page, decode_frozen_frontier_vote,
     encode_frozen_frontier_identity, encode_frozen_frontier_page, encode_frozen_frontier_vote,
