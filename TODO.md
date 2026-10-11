@@ -249,6 +249,12 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   two copied constants are removed without changing bytes or error priority.
   The separate active-committee ceiling remains 256. Eight new literal-bound
   source controls are unexecuted; this does not close R1 or prove live admission.
+  Consensus now publicly owns its unchanged strict certificate/proposal decoder
+  byte caps; wire consumes those constants instead of two copied literals.
+  Candidate/framing/status bounds, bytes and refusal order remain unchanged.
+  Six appended literal-bound source controls are unexecuted, outside the original
+  41 selectors. Decoder admission is not valid-capacity, encoder, quorum or
+  custody qualification; R1 remains open with all execution/release gates intact.
 - [ ] **R2 — semantic core/runtime responsibilities:** admission authorizes,
   evaluation proposes, completion assembles one atomic transaction, reconciliation
   exposes confirmed exact output, and repositories expose their actual capability.

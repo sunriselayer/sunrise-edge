@@ -74,6 +74,16 @@ admission at 256 validators. The bound grants no authority. The dated
 independent literal controls as UNFORMATTED, UNCOMPILED and UNEXECUTED; R1
 remains open, with no measured build benefit, custody or full SDK decoupling claim.
 
+The consensus owner exposes its existing strict certificate/proposal decoder
+caps as `consensus::MAX_ENCODED_CERTIFICATE_BYTES` and
+`consensus::MAX_ENCODED_PROPOSAL_BYTES`. Wire consumes these constants directly;
+its candidate/framing overhead and derived status bound remain transport-owned.
+This removes two copied literals without changing values, parsing order or
+authority. The dated decoder-bound addendum in
+[DR-0200](decisions/0200-maintainability-and-mainnet-roadmap.md) records six
+UNFORMATTED, UNCOMPILED and UNEXECUTED controls, not valid-capacity acceptance,
+universal encoder limits, a Cargo-edge removal or R1 completion.
+
 ## Concrete refactoring seams
 
 The following are intended module responsibilities inside existing crates.

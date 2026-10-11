@@ -130,3 +130,34 @@ duplicate bound definitions, not a Cargo edge or all SDK/core coupling. No
 build benefit, execution result or custody qualification is measured. R1
 remains open; targeted/full validation, independent implementation review and
 required CI gates remain unmet by this slice alone.
+
+## 2026-10-11 R1 consensus decoder-byte bound ownership
+
+Date: 2026-10-11 (Asia/Tokyo).
+
+The existing strict decoder admission caps have one defining consensus owner:
+`MAX_ENCODED_CERTIFICATE_BYTES = 8_388_608` and
+`MAX_ENCODED_PROPOSAL_BYTES = 10_485_760`. Both are additively reexported from
+the crate root; the durable module remains private. Node-wire consumes these
+owners instead of two copied numerical operands. Candidate/framing overhead
+and status derivation remain unchanged and transport-owned: certificate
+8_388_608, ordered proposal 11_018_240 and status 8_388_864 bytes.
+
+The existing `actual > max` checks still precede canonical parsing. Values,
+canonical bytes, codec function bodies, error kinds/fields/text/priority,
+signatures and context/admission checks remain unchanged. These are decoder
+admission caps, not universal encoder limits, admissible capacity, committee
+or custody authority. No manifest or Cargo edge changes.
+
+Five appended consensus controls independently pin the two public literals
+and malformed zero frames at each literal cap and cap+1. At-cap inputs reach
+canonical refusal; cap+1 inputs assert the complete existing typed oversize
+refusal. One appended wire control separately pins all three literal totals
+and their owner/overhead relationships. Existing vectors and controls remain.
+
+Independent design and implemented-source reviews approved only this exact
+four-Rust-path slice. All six controls remain UNFORMATTED, UNCOMPILED and
+UNEXECUTED, outside the original 41 selectors. This removes copied bounds,
+not all SDK/core coupling. No build benefit, runtime, valid-capacity, custody
+or release qualification is established. R1 remains open; all required
+targeted/full and CI validation remains separate.
