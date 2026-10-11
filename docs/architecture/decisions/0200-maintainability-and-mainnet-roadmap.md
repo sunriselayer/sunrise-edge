@@ -97,3 +97,36 @@ is source reasoning, not a measured heap/concurrency ceiling or resource grant.
 UNFORMATTED, UNCOMPILED and UNEXECUTED. This ownership slice changes no Cargo
 edge, protocol bytes, crypto, custody or durable admission and does not close
 R1/M2 or qualify release. Actual validation and all existing gates remain.
+
+## 2026-10-11 R1 generic validator-count bound ownership
+
+Date: 2026-10-11 (Asia/Tokyo).
+
+The existing generic 10,000-member ceiling has one defining owner,
+`validator_set::MAX_VALIDATORS`, exposed additively from the validator-set
+crate. Core's fee-share and validator-entry record codecs consume that owner
+at their four existing encode/decode bound operands. The two private copies
+are removed without changing wire bytes, record APIs, errors or check order.
+Encoders still validate/build their items before the list-bound check;
+decoders still reject excessive counts before looking up missing list items.
+
+The distinct `MAX_FASTPATH_ACTIVE_VALIDATORS = 256` live economics admission
+limit remains unchanged. The generic record ceiling preserves historical
+readability; exposing it grants no membership, key, quorum, custody or durable
+authority and does not widen live admission.
+
+Eight appended source controls use independent literal 10,000/10,001
+boundaries for generic construction/codec and both core record codecs.
+The generic decoder control retains caller-limit clamping and a narrower
+caller cap. Count-only malformed frames retain refusal priority over missing
+members/items. Structural fixtures use ordered u32-derived IDs, unique opaque
+keys and power one, not verified signing keys. Charged settlements have
+strictly ordered shares, a conserved positive total, generation one and no
+claims, so their excessive-count refusal is not an earlier invariant failure.
+Existing complete vectors and committee controls are left unchanged.
+
+UNFORMATTED, UNCOMPILED and UNEXECUTED. This source implementation removes
+duplicate bound definitions, not a Cargo edge or all SDK/core coupling. No
+build benefit, execution result or custody qualification is measured. R1
+remains open; targeted/full validation, independent implementation review and
+required CI gates remain unmet by this slice alone.

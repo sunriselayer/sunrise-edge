@@ -18,6 +18,7 @@ use execution::local_execution::{
     ObjectAuthority, decode_object_authority, encode_object_authority,
 };
 use protocol_types::ExecutionGeneration;
+use validator_set::MAX_VALIDATORS;
 
 const FASTPATH_PREPARED_RECORD_TYPE: u16 = 0x641C;
 const FASTPATH_CERTIFICATE_RECORD_TYPE: u16 = 0x641D;
@@ -39,16 +40,10 @@ const FASTPATH_FEE_SHARE_LIST_TYPE: u16 = 0x6436;
 const FASTPATH_AVAILABILITY_CERTIFICATE_RECORD_TYPE: u16 = 0x6458;
 const ENCODING_VERSION: u16 = 1;
 
-/// Bounds every nested fast-path record list. Locked-object and
-/// certificate-signer lists are bounded by `MAX_FASTPATH_SIGNERS`; locked
-/// objects are bounded by the per-request execution scope/object ceilings.
-/// `MAX_FASTPATH_VALIDATORS` bounds the durable validator set itself.
+/// Locked-object lists retain their per-request ceiling. Fee-share and
+/// validator-entry record lists use the generic validator-count ceiling
+/// [`validator_set::MAX_VALIDATORS`], not the narrower live admission limit.
 const MAX_FASTPATH_LOCKED_OBJECTS: usize = 256;
-/// Mirrors `validator_set::ValidatorSet`'s own private `MAX_VALIDATORS`
-/// bound (10_000); [`validator_set::ValidatorSet::new`] independently
-/// re-enforces it, so a looser bound here could not admit an oversized set.
-const MAX_FASTPATH_SIGNERS: usize = 10_000;
-const MAX_FASTPATH_VALIDATORS: usize = 10_000;
 /// Testnet FastVote economics admission bound. The broader 10,000-entry
 /// decode ceilings remain for historical readability, but one settlement
 /// row is rewritten for each claimant, so admitting 10,000 active payees
@@ -1206,7 +1201,7 @@ pub fn encode_fastpath_settlement_record(
             encode_item_list(
                 FASTPATH_FEE_SHARE_LIST_TYPE,
                 &share_items,
-                MAX_FASTPATH_SIGNERS,
+                MAX_VALIDATORS,
             )?,
         )?;
     }
@@ -1233,7 +1228,7 @@ pub fn decode_fastpath_settlement_record(
             let share_items: Vec<Vec<u8>> = decode_item_list(
                 FASTPATH_FEE_SHARE_LIST_TYPE,
                 frame.required_field(8)?,
-                MAX_FASTPATH_SIGNERS,
+                MAX_VALIDATORS,
             )?;
             let shares: Vec<FastPathFeeShare> = share_items
                 .iter()
@@ -1343,7 +1338,7 @@ pub fn encode_fastpath_validator_set_record(
     let entries_bytes: Vec<u8> = encode_item_list(
         FASTPATH_VALIDATOR_ENTRY_LIST_TYPE,
         &entries,
-        MAX_FASTPATH_VALIDATORS,
+        MAX_VALIDATORS,
     )?;
     let mut frame: CanonicalStruct = CanonicalStruct::new(FASTPATH_VALIDATOR_SET_RECORD_TYPE, 1);
     frame.field_bytes(
@@ -1369,7 +1364,7 @@ pub fn decode_fastpath_validator_set_record(
     let entry_items: Vec<Vec<u8>> = decode_item_list(
         FASTPATH_VALIDATOR_ENTRY_LIST_TYPE,
         frame.required_field(2)?,
-        MAX_FASTPATH_VALIDATORS,
+        MAX_VALIDATORS,
     )?;
     let mut validators: Vec<FastPathValidatorEntry> = Vec::with_capacity(entry_items.len());
     for item in &entry_items {

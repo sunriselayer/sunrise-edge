@@ -63,6 +63,17 @@ encoding grants no authority. This removes one codec call through core, not
 its remaining SDK type/error dependencies or Cargo edge; no build benefit is
 measured. See the dated R1 addendum in [DR-0200](decisions/0200-maintainability-and-mainnet-roadmap.md).
 
+The existing generic validator-count ceiling is defined once by
+`validator_set::MAX_VALIDATORS`. Core fee-share and validator-entry record
+codecs consume it directly, removing two local copies while preserving
+wire bytes, public record APIs, errors and check order. Historical 10,000-entry
+record readability is distinct from unchanged live FastVote economics
+admission at 256 validators. The bound grants no authority. The dated
+2026-10-11 (Asia/Tokyo) addendum in
+[DR-0200](decisions/0200-maintainability-and-mainnet-roadmap.md) records the
+independent literal controls as UNFORMATTED, UNCOMPILED and UNEXECUTED; R1
+remains open, with no measured build benefit, custody or full SDK decoupling claim.
+
 ## Concrete refactoring seams
 
 The following are intended module responsibilities inside existing crates.
