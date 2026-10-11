@@ -480,8 +480,12 @@ fn start_direct_hosts_with_local_observations(
             if let (0, Some(socket)) = (index, local_observations_socket) {
                 command.arg("--local-observations-socket").arg(socket);
             }
+            let startup_byte_cap: std::num::NonZeroUsize =
+                compiled_source_host_process::compiled_host_startup_line_limit(
+                    network.fixture.context.chain_id().as_str(),
+                );
             let (guard, line): (ChildGuard, String) =
-                spawn_bounded_status_line(command, PROCESS_DEADLINE);
+                spawn_bounded_status_line(command, PROCESS_DEADLINE, startup_byte_cap);
             assert!(line.contains("complete=true mode=serving"), "{line}");
             assert_eq!(field(&line, "writer_generation="), generation.to_string());
             let address: SocketAddr = field(&line, "listen=").parse().unwrap();
@@ -545,8 +549,12 @@ fn start_hosts(network: &Network, generation: u64) -> Vec<Host> {
                     "4",
                     "--confirm-offline-fence-advance",
                 ]);
+            let startup_byte_cap: std::num::NonZeroUsize =
+                compiled_source_host_process::compiled_host_startup_line_limit(
+                    network.fixture.context.chain_id().as_str(),
+                );
             let (guard, line): (ChildGuard, String) =
-                spawn_bounded_status_line(command, PROCESS_DEADLINE);
+                spawn_bounded_status_line(command, PROCESS_DEADLINE, startup_byte_cap);
             assert!(
                 line.contains("complete=true mode=serving"),
                 "validator {validator}: {line:?}"
@@ -2997,11 +3005,13 @@ fn complete_process_pipe_capture_preserves_eof_and_refuses_read_or_channel_failu
 fn complete_startup_status_line_requires_first_lf_and_preserves_read_failure() {
     use compiled_source_host_process::read_complete_status_line;
     use std::io::{self, Cursor, Read};
+    use std::num::NonZeroUsize;
 
     let first: &str =
         "complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234\n";
+    let byte_cap: NonZeroUsize = NonZeroUsize::new(first.as_bytes().len()).unwrap();
     let with_tail: Vec<u8> = format!("{first}later output\n").into_bytes();
-    let captured: String = read_complete_status_line(Cursor::new(with_tail)).unwrap();
+    let captured: String = read_complete_status_line(Cursor::new(with_tail), byte_cap).unwrap();
     assert_eq!(captured, first, "only the first complete line is returned");
 
     struct BytesThenError {
@@ -3034,7 +3044,7 @@ fn complete_startup_status_line_requires_first_lf_and_preserves_read_failure() {
         delivered: 0,
         failed: false,
     };
-    assert_eq!(read_complete_status_line(&mut completed).unwrap(), first);
+    assert_eq!(read_complete_status_line(&mut completed, byte_cap).unwrap(), first);
     assert_eq!(completed.delivered, completed.bytes.len());
     assert!(
         !completed.failed,
@@ -3042,13 +3052,13 @@ fn complete_startup_status_line_requires_first_lf_and_preserves_read_failure() {
     );
 
     let empty: io::Error =
-        read_complete_status_line(Cursor::new(Vec::<u8>::new())).unwrap_err();
+        read_complete_status_line(Cursor::new(Vec::<u8>::new()), byte_cap).unwrap_err();
     assert_eq!(empty.kind(), io::ErrorKind::UnexpectedEof);
 
     let unterminated: Vec<u8> =
         b"complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234".to_vec();
     let incomplete: io::Error =
-        read_complete_status_line(Cursor::new(unterminated)).unwrap_err();
+        read_complete_status_line(Cursor::new(unterminated), byte_cap).unwrap_err();
     assert_eq!(incomplete.kind(), io::ErrorKind::UnexpectedEof);
 
     let mut refused: BytesThenError = BytesThenError {
@@ -3056,7 +3066,7 @@ fn complete_startup_status_line_requires_first_lf_and_preserves_read_failure() {
         delivered: 0,
         failed: false,
     };
-    let read_error: io::Error = read_complete_status_line(&mut refused).unwrap_err();
+    let read_error: io::Error = read_complete_status_line(&mut refused, byte_cap).unwrap_err();
     assert_eq!(refused.delivered, refused.bytes.len());
     assert!(refused.failed, "nonempty valid UTF-8 prefix preceded the error");
     assert_eq!(read_error.kind(), io::ErrorKind::ConnectionReset);
@@ -3064,15 +3074,154 @@ fn complete_startup_status_line_requires_first_lf_and_preserves_read_failure() {
 
     let invalid: Vec<u8> = vec![0xff, b'\n'];
     let invalid_error: io::Error =
-        read_complete_status_line(Cursor::new(invalid)).unwrap_err();
+        read_complete_status_line(Cursor::new(invalid), byte_cap).unwrap_err();
     assert_eq!(invalid_error.kind(), io::ErrorKind::InvalidData);
 
     let crlf: Vec<u8> = b"complete=true mode=serving\r\nmore\n".to_vec();
     assert_eq!(
-        read_complete_status_line(Cursor::new(crlf)).unwrap(),
+        read_complete_status_line(Cursor::new(crlf), byte_cap).unwrap(),
         "complete=true mode=serving\r\n",
         "successful CRLF bytes are preserved rather than normalized"
     );
+}
+
+#[test]
+fn bounded_startup_status_line_accepts_exact_cap_and_refuses_lf_one_byte_later() {
+    use compiled_source_host_process::read_complete_status_line;
+    use std::{io::{self, Cursor}, num::NonZeroUsize};
+
+    let byte_cap: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+    let exact: String =
+        read_complete_status_line(Cursor::new(b"1234567\n"), byte_cap).unwrap();
+    assert_eq!(exact.as_bytes(), b"1234567\n");
+    let over: io::Error =
+        read_complete_status_line(Cursor::new(b"12345678\n"), byte_cap).unwrap_err();
+    assert_eq!(over.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(over.to_string(), "compiled host first status line exceeded byte cap");
+    let at_cap_eof: io::Error =
+        read_complete_status_line(Cursor::new(b"12345678"), byte_cap).unwrap_err();
+    assert_eq!(at_cap_eof.kind(), io::ErrorKind::UnexpectedEof);
+}
+
+#[test]
+fn bounded_startup_status_line_counts_the_finite_never_lf_probe() {
+    use compiled_source_host_process::read_complete_status_line;
+    use std::{io::{self, Read}, num::NonZeroUsize};
+
+    struct NeverLf {
+        read_bytes: usize,
+    }
+    impl Read for NeverLf {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            buffer.fill(b'x');
+            self.read_bytes = self.read_bytes.checked_add(buffer.len()).unwrap();
+            Ok(buffer.len())
+        }
+    }
+    let byte_cap: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+    let mut input: NeverLf = NeverLf { read_bytes: 0 };
+    let error: io::Error = read_complete_status_line(&mut input, byte_cap).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "compiled host first status line exceeded byte cap");
+    assert_eq!(input.read_bytes, 9, "this endless reader supplies only the cap-plus-one probe");
+}
+
+#[test]
+fn bounded_startup_status_line_preserves_read_error_at_cap_before_lookahead() {
+    use compiled_source_host_process::read_complete_status_line;
+    use std::{io::{self, Read}, num::NonZeroUsize};
+
+    struct CapPrefixThenError {
+        remaining: usize,
+        delivered: usize,
+        failed: bool,
+    }
+    impl Read for CapPrefixThenError {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if buffer.is_empty() {
+                return Ok(0);
+            }
+            if self.remaining > 0 {
+                let count: usize = buffer.len().min(self.remaining);
+                buffer[..count].fill(b'x');
+                self.remaining -= count;
+                self.delivered += count;
+                return Ok(count);
+            }
+            self.failed = true;
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "status read failed at the cap before lookahead",
+            ))
+        }
+    }
+    let byte_cap: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+    let mut input: CapPrefixThenError = CapPrefixThenError {
+        remaining: 8,
+        delivered: 0,
+        failed: false,
+    };
+    let error: io::Error = read_complete_status_line(&mut input, byte_cap).unwrap_err();
+    assert_eq!(input.delivered, 8);
+    assert!(input.failed, "the real error is encountered before the probe supplies its extra byte");
+    assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+    assert_eq!(error.to_string(), "status read failed at the cap before lookahead");
+}
+
+#[test]
+fn compiled_host_startup_line_limits_cover_literal_maximum_producer_formats() {
+    use compiled_source_host_process::{compiled_host_startup_line_limit, read_complete_status_line};
+    use std::{
+        io::Cursor,
+        net::{Ipv6Addr, SocketAddr, SocketAddrV6},
+        num::NonZeroUsize,
+    };
+
+    let chain: String = "研究".repeat(512);
+    assert_eq!(chain.as_bytes().len(), 3_072);
+    assert_eq!(chain.chars().count(), 1_024);
+    let hexadecimal: &str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    assert_eq!(hexadecimal.as_bytes().len(), 64);
+    let address: SocketAddr = SocketAddr::V6(SocketAddrV6::new(
+        Ipv6Addr::new(0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff),
+        u16::MAX,
+        0,
+        u32::MAX,
+    ));
+    let listen: String = address.to_string();
+    assert_eq!(listen, "[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff%4294967295]:65535");
+    assert_eq!(listen.as_bytes().len(), 58);
+
+    // Independent literal producer templates and maxima, not constructor output.
+    let source: String = format!(
+        "complete=true mode=serving chain_id={chain} validator_id={hexadecimal} domain={hexadecimal} protocol_version={} epoch={} writer_generation={} listen={listen}\n",
+        u32::MAX, u64::MAX, u64::MAX,
+    );
+    let successor: String = format!(
+        "complete=true mode=successor-serving domain={hexadecimal} epoch={} validator_id={hexadecimal} writer_generation={} listen={listen} genesis_digest={hexadecimal}\n",
+        u64::MAX, u64::MAX,
+    );
+    let history: String = format!(
+        "complete=true mode=successor-history-material-only domain={hexadecimal} epoch={} validator_id={hexadecimal} writer_generation={} listen={listen}\n",
+        u64::MAX, u64::MAX,
+    );
+    let pg: String = format!(
+        "complete=true mode=serving chain_id={chain} validator_id={hexadecimal} domain={hexadecimal} protocol_version={} epoch={} writer_generation={} listen={listen} manifest_digest={hexadecimal}\n",
+        u32::MAX, u64::MAX, u64::MAX,
+    );
+    assert_eq!(source.as_bytes().len(), 347 + 3_072);
+    assert_eq!(successor.as_bytes().len(), 399);
+    assert_eq!(history.as_bytes().len(), 333);
+    assert_eq!(pg.as_bytes().len(), 428 + 3_072);
+    let byte_cap: NonZeroUsize = compiled_host_startup_line_limit(&chain);
+    assert_eq!(byte_cap.get(), 3_500);
+    assert_eq!(compiled_host_startup_line_limit("").get(), 428);
+    let lines: [String; 4] = [source, successor, history, pg];
+    for line in lines {
+        let input: Cursor<&[u8]> = Cursor::new(line.as_bytes());
+        let captured: String = read_complete_status_line(input, byte_cap).unwrap();
+        assert_eq!(captured.as_bytes(), line.as_bytes());
+    }
 }
 
 #[cfg(target_os = "linux")]

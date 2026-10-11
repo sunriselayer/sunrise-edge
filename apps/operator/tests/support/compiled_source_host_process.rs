@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 use std::{
     io::{BufRead, BufReader, Read},
+    num::NonZeroUsize,
     process::{Child, Command, ExitStatus, Output, Stdio},
     sync::mpsc,
     time::{Duration, Instant},
@@ -219,12 +220,48 @@ impl ChildGuard {
     }
 }
 
+/// Test-only allowance for the inspected compiled host startup formats, including LF.
+/// The longest fixed envelope is 428 bytes: the optional-manifest format with
+/// maximum-width numeric, hexadecimal and scoped socket-address fields. ChainId
+/// has no protocol length maximum, so use this caller's exact UTF-8 byte length.
+pub(crate) fn compiled_host_startup_line_limit(chain_id: &str) -> NonZeroUsize {
+    let chain_bytes: usize = chain_id.as_bytes().len();
+    let maximum: usize = 428usize
+        .checked_add(chain_bytes)
+        .expect("compiled host startup line byte budget overflow");
+    NonZeroUsize::new(maximum).expect("positive compiled host startup line byte budget")
+}
+
 /// Captures exactly the first LF-terminated line, not whole-stream EOF.
-/// Read errors retain precedence over empty or unterminated successful reads.
-pub(crate) fn read_complete_status_line<R: Read>(input: R) -> std::io::Result<String> {
-    let mut reader: BufReader<R> = BufReader::new(input);
+/// At most byte_cap + 1 physical bytes are probed; BufReader may prefetch past LF.
+/// Encountered Read/UTF-8 errors precede successful-read cap/EOF classification.
+/// Errors beyond the bounded probe are unobserved. Cleanup/timing is unchanged.
+pub(crate) fn read_complete_status_line<R: Read>(
+    input: R,
+    byte_cap: NonZeroUsize,
+) -> std::io::Result<String> {
+    let probe_bytes: usize = byte_cap.get().checked_add(1).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "compiled host startup line probe is not representable",
+        )
+    })?;
+    let probe: u64 = u64::try_from(probe_bytes).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "compiled host startup line probe is not representable",
+        )
+    })?;
+    let bounded: std::io::Take<R> = input.take(probe);
+    let mut reader: BufReader<std::io::Take<R>> = BufReader::new(bounded);
     let mut line: String = String::new();
     let count: usize = reader.read_line(&mut line)?;
+    if count > byte_cap.get() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "compiled host first status line exceeded byte cap",
+        ));
+    }
     if count == 0 || !line.ends_with('\n') {
         return Err(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
@@ -236,10 +273,14 @@ pub(crate) fn read_complete_status_line<R: Read>(input: R) -> std::io::Result<St
 
 /// Spawns `command`, owning the child before its piped stdout is even
 /// taken, and waits up to `deadline` for its first LF-terminated status line.
-/// A timeout, read error, EOF before LF or worker failure panics while the
+/// A timeout, read error, cap breach, EOF before LF or worker failure panics while the
 /// guard still owns the child. Successful first-line capture requires no stream
 /// EOF and does not establish host survival; existing guard cleanup is unchanged.
-pub fn spawn_bounded_status_line(mut command: Command, deadline: Duration) -> (ChildGuard, String) {
+pub fn spawn_bounded_status_line(
+    mut command: Command,
+    deadline: Duration,
+    byte_cap: NonZeroUsize,
+) -> (ChildGuard, String) {
     let child: Child = command
         .stdout(Stdio::piped())
         .spawn()
@@ -249,7 +290,7 @@ pub fn spawn_bounded_status_line(mut command: Command, deadline: Duration) -> (C
         guard.child_mut().stdout.take().expect("piped stdout");
     let (sender, receiver) = mpsc::channel::<std::io::Result<String>>();
     let status_reader: std::thread::JoinHandle<()> = std::thread::spawn(move || {
-        let result: std::io::Result<String> = read_complete_status_line(stdout);
+        let result: std::io::Result<String> = read_complete_status_line(stdout, byte_cap);
         let _ignored: Result<(), mpsc::SendError<std::io::Result<String>>> = sender.send(result);
     });
     let read: std::io::Result<String> = receiver.recv_timeout(deadline).unwrap_or_else(|_| {

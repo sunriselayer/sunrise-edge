@@ -336,8 +336,10 @@ fn start_host(
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    let startup_byte_cap: std::num::NonZeroUsize =
+        process::compiled_host_startup_line_limit(fixture.network.chain_id.as_str());
     let (mut guard, line): (process::ChildGuard, String) =
-        process::spawn_bounded_status_line(command, Duration::from_secs(600));
+        process::spawn_bounded_status_line(command, Duration::from_secs(600), startup_byte_cap);
     // The host prints exactly one flushed line after its startup gate and
     // the actual bind; a failed startup closes stdout without it.
     assert!(

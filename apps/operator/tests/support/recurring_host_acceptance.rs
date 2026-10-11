@@ -209,8 +209,10 @@ pub(super) fn prove_direct_live_tls(
     command
         .arg("--local-observations-socket")
         .arg(collector.socket_path());
+    let startup_byte_cap: std::num::NonZeroUsize =
+        process::compiled_host_startup_line_limit(fixture.network.chain_id.as_str());
     let (guard, line): (process::ChildGuard, String) =
-        process::spawn_bounded_status_line(command, Duration::from_secs(600));
+        process::spawn_bounded_status_line(command, Duration::from_secs(600), startup_byte_cap);
     #[cfg(target_os = "linux")]
     let mut guard: process::ChildGuard = guard;
     assert!(line.contains("mode=successor-serving"), "{line}");
@@ -695,8 +697,10 @@ fn start(
         .args(flags)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    let startup_byte_cap: std::num::NonZeroUsize =
+        process::compiled_host_startup_line_limit(fixture.network.chain_id.as_str());
     let (mut guard, line): (process::ChildGuard, String) =
-        process::spawn_bounded_status_line(command, Duration::from_secs(600));
+        process::spawn_bounded_status_line(command, Duration::from_secs(600), startup_byte_cap);
     assert!(
         !line.is_empty(),
         "recurring host failed: {:?}",
@@ -1123,8 +1127,10 @@ fn prove_direct_history_tls(
                 .arg(collector.socket_path());
         }
         let requested: SocketAddr = address;
+        let startup_byte_cap: std::num::NonZeroUsize =
+            process::compiled_host_startup_line_limit(fixture.network.chain_id.as_str());
         let (guard, line): (process::ChildGuard, String) =
-            process::spawn_bounded_status_line(command, Duration::from_secs(600));
+            process::spawn_bounded_status_line(command, Duration::from_secs(600), startup_byte_cap);
         #[cfg(target_os = "linux")]
         let mut guard: process::ChildGuard = guard;
         assert!(
