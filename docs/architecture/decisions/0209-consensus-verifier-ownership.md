@@ -62,3 +62,22 @@ contracts still depend on node-core: do not remove a required Cargo dependency,
 claim a standalone SDK or assert a compilation speedup without evidence.
 That wider ownership design remains separate. No protocol, signing backend,
 provider qualification, new authority or mainnet gate completion is introduced.
+
+## 2026-10-11 source amendment: malformed signature classification
+
+The original decision preserved malformed-key and malformed-signature errors.
+This amendment supersedes that decision only for an Ed25519 signature with a
+non-64-byte length: after the unchanged public-key construction check, the
+shared adapter maps `CryptoError::InvalidSignatureLength` to `Ok(false)`.
+All other crypto errors still propagate, and both explicit unsupported-scheme
+responses retain their original precedence. Invalid 64-byte signatures remain
+false. No signature is truncated, normalized, accepted or counted toward quorum.
+
+FastVote, availability and epoch-transition aggregation can therefore exclude
+that invalid vote rather than abort the collection of otherwise valid votes.
+Three source controls use real signatures, canonical encode/decode, multiple
+malformed lengths and insertion orders, insufficient quorum and exact reference
+certificate bytes. The existing adapter outcome matrix changes only its 63/65-
+byte signature expectations; malformed-key and infrastructure-error outcomes
+remain. These controls have not been formatted, compiled or executed. Source
+review is not verified remediation, an audit closure or runtime qualification.

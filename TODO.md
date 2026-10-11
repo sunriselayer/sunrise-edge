@@ -359,9 +359,29 @@ and cross-phase criteria; it does not shorten them.
   prefix completion, replay/recovery and deciding-read conflicts. They remain
   uncompiled/unexecuted, not completed security-fix or release verification.
   Historical behavior is retained; already-certified invalid locked history
-  is not repaired by this fresh-only gate. Separate registered-owner Withdraw
-  admission with a wrong custody object remains unresolved. M1 and Delivery 4
-  stay open; these local source changes do not authorize public activation.
+  is not repaired by this fresh-only gate.
+  Normal local `dd0928bb` implements the fresh registered-owner Withdraw gate
+  under [DR-0228](docs/architecture/decisions/0228-fresh-withdraw-release-target-admission.md):
+  the exact full committed custody reference and installed resource's current
+  call context, code, instance and transfer entrypoint precede new leader/vote
+  signing. The resource is read at the committed bond's historical policy
+  context; deciding revisions join the existing admission CAS. Existing typed
+  refusal order, prefix completion and retained/historical replay remain.
+  One independent candidate review found that the original reference-only
+  gate still admitted a different entrypoint. The parent confirmed that route
+  and revised the source; independent approval of that revised delta is not
+  claimed. Genuine recurring SQLite source controls cover both signing paths,
+  wrong full references, a re-signed split target, deciding-read races and replay.
+  They remain uncompiled/unexecuted, not verified remediation.
+  Normal local `713edc5b` changes only the consensus Ed25519 adapter's malformed
+  signature-length classification to `Ok(false)` after the unchanged key check.
+  Its different five-path source review passed; three real-signature aggregator
+  source controls retain quorum/order/certificate-byte expectations. Formatting,
+  compilation and execution have not run. The source amendment is in DR-0209;
+  neither local commit closes a finding or supplies whole-current approval.
+  The final independent audit is incomplete, and required owning/full, final-
+  head CI and release checks remain open. M1 and Delivery 4 stay open; these
+  local source changes do not authorize public activation.
 - [ ] **M2 — protected signing:** actual custody, operator/authority separation,
   exposure controls, exact operation-specific content verification, refusal/
   failure, recovery/rotation/revocation. DR-0208 removes only Ledger-specific

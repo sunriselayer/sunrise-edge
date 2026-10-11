@@ -122,6 +122,7 @@
 - [DR-0225: observed acquisition floor and current binding](0225-observed-acquisition-floor-and-current-binding.md)
 - [DR-0226: exact certified-publication collector admission](0226-native-certified-publication-collector.md)
 - [DR-0227: fresh causal ordered slash evidence admission](0227-fresh-ordered-slash-evidence-admission.md)
+- [DR-0228: fresh registered withdrawal release-target admission](0228-fresh-withdraw-release-target-admission.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong
