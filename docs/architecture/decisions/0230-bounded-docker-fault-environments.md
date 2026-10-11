@@ -1,0 +1,73 @@
+# DR-0230: bounded Docker fault environments
+
+Date: 2026-10-12. Time zone: Asia/Tokyo.
+
+Status: Selected local environment design. Implemented-source review and actual
+execution are separate obligations, not satisfied by this decision.
+
+## Context and scope
+
+[DR-0208](0208-native-sqlite-first-and-protected-signing.md) records the human's
+permission for disposable Docker PostgreSQL and isolated full-filesystem/
+forced-stop experiments. The PC previously exhausted storage; filling its
+filesystem, changing host swap/security/resource settings, privileged devices,
+foreign workloads and production data are not part of these experiments.
+
+## Decision
+
+Use only explicitly pinned, already-cached images and `--pull=never`. Give every
+container and local-driver volume a fresh owner label and unpredictable name.
+No host/source/cache/Docker-socket binds, image acquisition or build fallback.
+Require effective configuration, kernel/filesystem observations and complete
+subprocess termination; requested flags alone are not capability evidence.
+
+The general capability probe uses a fresh 8MiB local-driver tmpfs with literal
+`noswap`, 64MiB container memory and zero allowed swap. Actual bounded writes
+must produce errno28; then only the identity-held filler is removed. The managed
+volume route is explicit, not a fallback that weakens the mount options.
+
+The PostgreSQL ENV probe uses one fresh 512MiB tmpfs with literal `noswap` and
+16,384 inodes. A finite, read-only Python keeper preserves its mount while the
+database process is killed. A short initializer creates only `socket/` and
+`tmp/`. PostgreSQL18 keeps its default `18/docker` data subtree and mounts only
+the socket subtree at its default socket path; all mounts use no-copy.
+
+All containers have read-only roots, private IPC without the dedicated
+`/dev/shm` mount, network none, dropped capabilities, no-new-privileges, explicit
+seccomp, no restart and no logs. Keeper/initializer are each limited to 64MiB,
+0.25 CPU and 32 PIDs; the primary to 512MiB, one CPU and 128 PIDs. Equal Docker
+memory/memory-swap values and effective cgroup checks prohibit container swap.
+These are per-container limits, not an aggregate host-memory reservation.
+Docker-managed system mounts still exist: this is not a sole-writable-system-
+allocation guarantee. The tmpfs capacity, not the WAL soft threshold, is the
+hard data-storage ceiling.
+
+Set each selected PostgreSQL setting separately both during `initdb` and final
+startup. Main shared memory uses anonymous mmap; dynamic mmap files stay inside
+the bounded PGDATA. No host transparent-huge-page change or sync disabling.
+Before baseline SQL or SIGKILL, independently require PID1 to be the exact final
+PostgreSQL executable/argument vector. The entrypoint's temporary bootstrap
+server is not final readiness.
+
+Use a fixed singleton SQL fixture, complete literal comparison, cluster identity,
+effective settings and integer postmaster-start time. Kill and restart the same
+exact primary container; require a later start time, retained cluster/fixture
+and uninterrupted keeper identity. Do not retry an ambiguous fixture write.
+
+The PG experiment has one 90-second deadline, 30 seconds reserved for cleanup,
+and 64KiB aggregate captured evidence including a cleanup reserve. The general
+probe retains its separate 45-second/64KiB limits. Overflow, missing EOF,
+unreaped clients, OOM, changed identity and unresolved release fail. Remove only
+verified owned primary/initializer containers before keeper, then the exact
+volume, without force/prune. Report residue rather than silently widening bounds.
+
+## Acceptance boundary
+
+These probes establish only their observed Docker ENV capabilities. They do not
+run the Rust SQLite/PostgreSQL suite, the existing fresh-client PG crash guard,
+host-URL checks or complete repository validation. They neither reconstruct
+missing dependencies/private inputs nor grant ONE/runtime authority.
+Tmpfs process-retention evidence is not physical-disk, power-loss, custody,
+release or mainnet readiness. Existing source/code/PG/fault/independent-review
+completion gates remain in [TODO.md](../../../TODO.md), with launch choices
+kept separate.

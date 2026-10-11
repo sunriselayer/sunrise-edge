@@ -124,6 +124,7 @@
 - [DR-0227: fresh causal ordered slash evidence admission](0227-fresh-ordered-slash-evidence-admission.md)
 - [DR-0228: fresh registered withdrawal release-target admission](0228-fresh-withdraw-release-target-admission.md)
 - [DR-0229: bounded compiled-host startup line](0229-bounded-compiled-host-startup-line.md)
+- [DR-0230: bounded Docker fault environments](0230-bounded-docker-fault-environments.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

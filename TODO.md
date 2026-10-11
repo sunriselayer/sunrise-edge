@@ -474,6 +474,15 @@ and cross-phase criteria; it does not shorten them.
   experiments are now authorized; effective noswap, resource containment and
   actual SQLite fault/recovery results still require independent qualification.
   No host-wide resource change or privileged fallback follows from that authority.
+  Two ignored Linux SQLite ENOSPC source controls now require an effective
+  64MiB noswap Docker allocation before filling it. They distinguish definite
+  pre-COMMIT refusal from the literal COMMIT-error path, compare all twelve SQL
+  tables and four portable collections, and reconcile the original/reopened
+  baseline before one explicit retry and unchanged receipt-first replay.
+  Positive inline objects are covered; referenced blobs remain guarded empty.
+  Different exact-two-path source review passed. Both controls remain
+  UNFORMATTED, UNCOMPILED and UNEXECUTED, outside the original 41 selectors;
+  Docker ENV capability evidence is not their execution or M3 completion.
 - [ ] **M4 — checkpoint, backup and disaster recovery:** publish/verify required
   checkpoint/state-root and immutable body manifests; encrypted off-host backup,
   isolated exact history/receipt/blob restore, fresh fencing, migration/upgrade

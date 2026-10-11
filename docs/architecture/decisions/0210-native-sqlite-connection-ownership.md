@@ -221,3 +221,41 @@ all three names are outside the original 41 selectors. Synthetic trait reply
 loss after a confirmed operation is not failed SQLite COMMIT, physical I/O,
 ENOSPC, crash/power-loss durability, custody or M3/TODO20 completion. All original
 before-COMMIT/after-COMMIT-before-confirmation and release requirements remain.
+
+## 2026-10-12 (Asia/Tokyo): bounded Docker ENOSPC source controls
+
+The private Linux [ENOSPC module](../../../crates/runtime-sqlite/src/structured/ownership_tests/enospc.rs)
+adds two ignored controls:
+
+- `docker_noswap_enospc_before_commit_publishes_no_partial_write_set`
+- `docker_noswap_enospc_during_literal_commit_remains_indeterminate`
+
+Before any fill, both require the literal `/fault` mount to be an effective
+64MiB tmpfs with noswap, a read-only root, nonroot/capability restrictions,
+512MiB container memory with zero swap, one CPU, 64 PIDs and loopback-only
+interfaces. Bounded positive writes must reach actual errno28; only the held,
+identity-matched filler is closed and removed before recovery. Deadline checks
+do not preempt blocking syscalls or establish all-path cleanup.
+
+The early case requires an independent SQLITE_FULL probe, definite
+`UnavailableBeforeCommit` and zero Before-hook hits. The late case requires a
+successful TRUNCATE checkpoint and zero WAL length/allocated blocks. Its Before
+callback installs the After marker, fills the mount and returns Ok. Before1/
+After0, stable attachment and `Indeterminate(ConnectionLost)` target the literal
+COMMIT-error path, not an injected callback error; the main raw SQLite code is
+discarded and is not asserted.
+
+Independent literal oracles enumerate every column in all twelve SQL tables
+and all pages, descriptors and payload chunks in the four portable collections
+under one unchanged token. Positive inline objects and unrelated/protected rows
+are covered; referenced-blob closure is explicitly empty. After filler removal,
+the original owner and same-file/namespace reopen must both equal baseline before
+one explicit successful retry. Sequence2 becomes3 once, and receipt-first replay
+must leave the complete raw and portable state unchanged.
+
+Different exact-two-path source review passed. UNFORMATTED, UNCOMPILED and
+UNEXECUTED; both names are outside the original 41 selectors. The separate
+[Docker ENV probes](0230-bounded-docker-fault-environments.md) do not execute
+these Rust controls. Actual resource/timing fit and fault outcomes remain open;
+no physical-disk, power, nonempty referenced-blob, custody, full-profile,
+M3/TODO20 or release qualification follows from this source slice.
