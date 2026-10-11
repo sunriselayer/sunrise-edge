@@ -1,6 +1,6 @@
 # Sunrise Edge implementation and mainnet roadmap
 
-Updated: 2026-10-10 (UTC).
+Updated: 2026-10-11 (UTC).
 
 This is the only live queue and readiness tracker. Responsibility contracts
 belong in [architecture](docs/architecture/README.md), actual owners in the
@@ -543,6 +543,15 @@ and cross-phase criteria; it does not shorten them.
   acceptance authority need the pending human decision; no clearance or old-lock
   exposure recommendation follows. Production PKI, caller authorization,
   protected custody and revocation remain open.
+  Normal local `0c256c4f` under
+  [DR-0226](docs/architecture/decisions/0226-native-certified-publication-collector.md)
+  aligns the default-off Native collector with the existing 32 MiB certified
+  publication-retain and canonical drain-import POST bounds in original/live
+  serving. Other methods, raw paths and default/local-route limits are unchanged.
+  A different exact-eight-path source review passed; selector and bounded TCP
+  regression controls are authored but unformatted, uncompiled and unexecuted.
+  Probe dispatch is not valid publication retention or M5 completion; required
+  owning/full, selected-PG, CI and release qualification remain open.
 - [ ] **M6 — economics/genesis approval:** real sets, independent roles, voting
   powers, bond/fee assets/schedules, treasury/supply/distribution, security and
   unbonding parameters, governance authorities, ceremony and supply invariants.
