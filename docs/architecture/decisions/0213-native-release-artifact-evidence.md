@@ -332,3 +332,28 @@ Release-profile process acceptance, canonical/effects/consensus/proof parity,
 advisory review, upgrade/migration/restore, custody/signing, PKI, provider scope
 and public go/no-go stay separate. Required source/repository acceptance remains;
 this outcome does not complete M7 or authorize public release.
+
+## Source amendment: failed held-file acquisition (2026-10-11, Asia/Tokyo)
+
+The native release file holder's initial attachment stat now occurs first inside
+its existing cleanup `try`, immediately after the same successful open. A failed
+initial stat therefore reaches the holder's own close before ownership can be
+returned to a caller. Open flags, prior checks, attachment validation, returned
+fields/methods and the existing catch are unchanged. The original error object
+is preserved when close succeeds; a close failure can still replace it. This
+does not claim universal cleanup or change later I/O failure handling.
+
+Three added source controls require a real captured descriptor and use the
+preheld original stat operation to require `EBADF` before fixture recovery:
+positive acquisition/check/close, exactly sixteen real-open/first-stat failures,
+and comparator second-attachment failure with both descriptors closed. They
+also require unchanged complete owned-fixture bytes and recorded stamps.
+Existing test-only seams restore original methods in `finally`; failure recovery
+may close only captured descriptors matching the owned fixture's device, inode
+and exact descriptor path. Recovery does not make a failed assertion pass.
+
+These controls are UNEXECUTED source declarations, not observed operating-system
+failures or completed release evidence. All original controls, thirteen selected
+targets, recipes, resource/lineage checks and release prerequisites are retained.
+No production hook or API, acquisition workflow or new execution authority is
+introduced. R4, M7, runtime/PG, durability, custody and public launch remain open.

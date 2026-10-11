@@ -310,6 +310,13 @@ These are coherent outcomes, not an obligatory PR per helper or facade.
   is merged; DR-0212 recovery and DR-0213 release evidence extend the actual
   audit handoff. TLS identity is not protocol authority, local workerd is not
   provider rollout, and an evidence manifest grants no serving/signing authority.
+  The native release file holder now places its initial attachment stat inside
+  the existing close-on-failure boundary. Three source controls require real
+  descriptor closure before fixture recovery: success, sixteen first-stat
+  failures and comparator second-attachment failure. They remain unexecuted.
+  Original error identity is conditional on successful close; close-failure
+  precedence, all thirteen targets and release prerequisites remain unchanged.
+  This ordinary resource-ownership correction does not complete R4.
 
 Continue a useful accepted slice rather than reopening completed Delivery 3 or
 requiring unrelated facade extraction before functionality. Concurrent writers
