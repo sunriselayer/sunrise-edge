@@ -103,7 +103,7 @@ pub use node_wire::{
     http_receipt_query_result,
 };
 
-/// Maximum HTTP body size. The allowance above the inner payload covers framing.
+/// Default HTTP body size. The allowance above the inner payload covers framing.
 pub const MAX_HTTP_EVENT_BODY_BYTES: usize = MAX_NODE_PAYLOAD_BYTES + 512;
 /// Bounded native delivery lease; expired work is deliberately redelivered.
 pub const NATIVE_OUTBOX_LEASE_MILLIS: u64 = 30_000;
@@ -146,6 +146,7 @@ pub struct NativeHttpServePolicy {
     response_total_timeout: Duration,
     local_publication: bool,
     local_execution: bool,
+    certified_publication: bool,
 }
 
 impl NativeHttpServePolicy {
@@ -184,6 +185,7 @@ impl NativeHttpServePolicy {
             response_total_timeout: Duration::from_millis(response_total_timeout_millis.get()),
             local_publication: false,
             local_execution: false,
+            certified_publication: false,
         })
     }
 
@@ -208,6 +210,16 @@ impl NativeHttpServePolicy {
         self.local_execution = enabled;
         self
     }
+
+    /// Applies the existing bundle body bound to exact certified publication
+    /// retain and canonical drain-import POST paths at the outer collector.
+    /// This defaults off and mounts no route or grants protocol authority; the
+    /// embedding host must independently compose the certified router.
+    #[must_use]
+    pub const fn with_certified_publication(mut self, enabled: bool) -> Self {
+        self.certified_publication = enabled;
+        self
+    }
 }
 
 impl Default for NativeHttpServePolicy {
@@ -215,6 +227,7 @@ impl Default for NativeHttpServePolicy {
         Self {
             local_publication: false,
             local_execution: false,
+            certified_publication: false,
             max_connections: NonZeroUsize::new(DEFAULT_NATIVE_HTTP_CONNECTIONS)
                 .unwrap_or(NonZeroUsize::MIN),
             header_read_timeout: Duration::from_millis(DEFAULT_NATIVE_HTTP_HEADER_READ_MILLIS),
@@ -1530,9 +1543,7 @@ async fn serve_connection<S>(
         dispatch_bounded_request(
             app.clone(),
             request,
-            policy.body_total_timeout,
-            policy.local_publication,
-            policy.local_execution,
+            policy,
             Arc::clone(&request_read_complete),
             Arc::clone(&request_observations),
         )
@@ -1566,29 +1577,15 @@ async fn serve_connection<S>(
 async fn dispatch_bounded_request(
     app: Router,
     request: Request<Incoming>,
-    body_total_timeout: Duration,
-    local_publication: bool,
-    local_execution: bool,
+    policy: NativeHttpServePolicy,
     request_read_complete: Arc<AtomicBool>,
     observations: Arc<observations::ConnectionObservations>,
 ) -> Result<Response, Infallible> {
     let (parts, incoming) = request.into_parts();
     let body = Body::new(incoming);
-    let limit: usize = if local_publication
-        && parts.method == axum::http::Method::POST
-        && parts.uri.path() == publication::PUBLICATION_PATH
-    {
-        execution::publication::MAX_PUBLICATION_SUBMISSION_BYTES
-    } else if local_execution
-        && parts.method == axum::http::Method::POST
-        && parts.uri.path() == local_execution::EXECUTION_PATH
-    {
-        execution::local_execution::MAX_LOCAL_EXECUTION_INTENT_BYTES
-    } else {
-        MAX_HTTP_EVENT_BODY_BYTES
-    };
+    let limit: usize = request_body_limit(policy, &parts.method, parts.uri.path());
     let collected: Result<Result<Bytes, axum::Error>, tokio::time::error::Elapsed> =
-        timeout(body_total_timeout, to_bytes(body, limit)).await;
+        timeout(policy.body_total_timeout, to_bytes(body, limit)).await;
     // Only this connection's bounded collector ends its ingress-read phase.
     // Terminal size/read/total-time refusals end it too: their response writes
     // remain bounded, and no router work or second request can follow them.
@@ -1621,6 +1618,37 @@ async fn dispatch_bounded_request(
         Err(error) => match error {},
     };
     Ok(response)
+}
+
+fn request_body_limit(
+    policy: NativeHttpServePolicy,
+    method: &axum::http::Method,
+    path: &str,
+) -> usize {
+    if method != &axum::http::Method::POST {
+        return MAX_HTTP_EVENT_BODY_BYTES;
+    }
+    if policy.certified_publication && is_certified_publication_body_path(path) {
+        consensus::bundle::MAX_ENCODED_BUNDLE_BYTES
+    } else if policy.local_publication && path == publication::PUBLICATION_PATH {
+        execution::publication::MAX_PUBLICATION_SUBMISSION_BYTES
+    } else if policy.local_execution && path == local_execution::EXECUTION_PATH {
+        execution::local_execution::MAX_LOCAL_EXECUTION_INTENT_BYTES
+    } else {
+        MAX_HTTP_EVENT_BODY_BYTES
+    }
+}
+
+fn is_certified_publication_body_path(path: &str) -> bool {
+    if path == FASTVOTE_PUBLICATION_RETAIN_PATH {
+        return true;
+    }
+    // Inspect the raw URI path. The existing parser rejects percent encoding,
+    // uppercase hex, trailing slashes and extra segments without normalization.
+    let validator_id: Option<&str> = node_wire::FASTVOTE_DRAIN_IMPORT_PATH
+        .strip_suffix("{validator_id}")
+        .and_then(|prefix: &str| path.strip_prefix(prefix));
+    validator_id.and_then(decode_hex64_selector).is_some()
 }
 
 struct IoIdleTimeoutStream<S> {

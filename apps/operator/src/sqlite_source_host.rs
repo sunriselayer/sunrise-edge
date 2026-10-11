@@ -355,16 +355,18 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         std::io::stdout().flush()?;
         stop.readiness_announced();
         }
+        let serve_policy: native_http::NativeHttpServePolicy =
+            native_http::NativeHttpServePolicy::default().with_certified_publication(true);
         crate::native_operations::serve(blocking_executor, stop, move |shutdown, observations| async move {
         match tls {
             None => native_http::serve_with_stream_upgrade_observed(
-                listener, router, native_http::NativeHttpServePolicy::default(),
+                listener, router, serve_policy,
                 |stream: tokio::net::TcpStream| async move { Ok::<_, std::io::Error>(stream) },
                 shutdown, observations).await,
             Some(acceptor) => native_http::serve_with_stream_upgrade_observed(
                 listener,
                 router,
-                native_http::NativeHttpServePolicy::default(),
+                serve_policy,
                 move |stream: tokio::net::TcpStream| native_tls::accept(acceptor.clone(), stream),
                 shutdown,
                 observations,
