@@ -121,6 +121,7 @@
 - [DR-0224: bounded caller-owned local observation collection](0224-bounded-local-observation-collector.md)
 - [DR-0225: observed acquisition floor and current binding](0225-observed-acquisition-floor-and-current-binding.md)
 - [DR-0226: exact certified-publication collector admission](0226-native-certified-publication-collector.md)
+- [DR-0227: fresh causal ordered slash evidence admission](0227-fresh-ordered-slash-evidence-admission.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

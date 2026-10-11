@@ -351,6 +351,17 @@ and cross-phase criteria; it does not shorten them.
   and signing; remediate significant findings, independently verify fixes and
   retain residual-risk decisions. Updating the proposed SECURITY policy still
   needs human approval; current SECURITY.md has not been changed.
+  [DR-0227](docs/architecture/decisions/0227-fresh-ordered-slash-evidence-admission.md)
+  has independently reviewed source implementation for fresh causal BondSlash:
+  committed evidence identity, typed digest, both object preimages, pinned
+  protocol, exact fenced committee and both signatures precede new signing.
+  Twelve focused source controls cover real Evidence producers, normal slash,
+  prefix completion, replay/recovery and deciding-read conflicts. They remain
+  uncompiled/unexecuted, not completed security-fix or release verification.
+  Historical behavior is retained; already-certified invalid locked history
+  is not repaired by this fresh-only gate. Separate registered-owner Withdraw
+  admission with a wrong custody object remains unresolved. M1 and Delivery 4
+  stay open; these local source changes do not authorize public activation.
 - [ ] **M2 — protected signing:** actual custody, operator/authority separation,
   exposure controls, exact operation-specific content verification, refusal/
   failure, recovery/rotation/revocation. DR-0208 removes only Ledger-specific
