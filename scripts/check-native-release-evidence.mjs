@@ -71,8 +71,8 @@ export function heldFile(p, { executable = false, singleLink = false } = {}) {
     `Not an ordinary executable: ${p}`);
   if (singleLink) requireThat(before.nlink === 1, `Aliased saved file: ${p}`);
   const fd = openSync(p, F.O_RDONLY | F.O_NOFOLLOW | F.O_NONBLOCK);
-  const initial = fstatSync(fd);
   try {
+    const initial = fstatSync(fd);
     requireThat(same(stamp(initial), stamp(before)), `Changed file attachment: ${p}`);
     return {
       fd, initial, path: p,
