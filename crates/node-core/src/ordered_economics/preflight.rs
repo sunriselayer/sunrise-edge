@@ -482,6 +482,86 @@ fn preflight_bond_slash<S: StructuredStateReader>(
     require_leg_nonces(store, context, env, candidate)
 }
 
+/// Fresh causal signing must possess the already-committed evidence which
+/// authorizes this unsigned slash. This is not an execution preflight or a
+/// prospective business refusal: even a currently stale slash must not lock a
+/// future prefix around an absent or invalid proof. Retained/reconciliation
+/// callers deliberately do not use this gate.
+///
+/// The caller supplies its observed read view and admission CAS map. Epoch,
+/// evidence and the actually loaded committee all decide signing and join the
+/// same durable assertion batch as the new proposal/vote identity. The view's
+/// sticky observation error takes precedence when the caller finishes it.
+pub(super) fn require_fresh_bond_slash_evidence<S: StructuredStateReader>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<(), OrderedEconomicsError> {
+    let intent: bond_lifecycle::slash::SlashIntent =
+        bond_lifecycle::slash::decode_slash_intent(&candidate.intent).map_err(|_| {
+            OrderedEconomicsError::Unauthenticated("invalid bond slash candidate intent")
+        })?;
+    require_live_authority(store, context, env)?;
+    let evidence_bytes: Vec<u8> = require_row(
+        store,
+        context,
+        env.policy.domain(),
+        &fastpath_equivocation_evidence_key(
+            env.policy.context().chain_id(),
+            intent.evidence_epoch,
+            *intent.validator_id.as_bytes(),
+            intent.conflict_digest,
+        )?,
+        "fresh bond slash requires committed evidence before signing",
+    )?;
+    let record: equivocation::FastPathEquivocationEvidenceRecord =
+        equivocation::decode_fastpath_equivocation_evidence_record(&evidence_bytes)?;
+    let decoded: equivocation::DecodedEquivocationEvidence =
+        bond_lifecycle::slash::verify_evidence_identity(env.resolver(), &intent, &record)
+            .map_err(|_| {
+                OrderedEconomicsError::Prerequisite("fresh bond slash evidence identity is invalid")
+            })?;
+    // This additional replay boundary is fresh-only. Do not insert it in the
+    // shared historical execution helper or change already-retained artifacts.
+    let evidence_protocol: ProtocolVersion = match &decoded {
+        equivocation::DecodedEquivocationEvidence::FastVote(evidence) => evidence.protocol_version,
+        equivocation::DecodedEquivocationEvidence::ObjectConflict(evidence) => {
+            evidence.protocol_version
+        }
+        equivocation::DecodedEquivocationEvidence::EpochTransition(evidence) => {
+            evidence.protocol_version
+        }
+    };
+    if evidence_protocol != env.policy.context().protocol_version() {
+        return Err(OrderedEconomicsError::Prerequisite(
+            "fresh bond slash evidence protocol is not the pinned profile protocol",
+        ));
+    }
+    let committee: validator_set::ValidatorSet = equivocation::load_historical_validator_set_fenced(
+        store,
+        context,
+        env.policy.domain(),
+        env.resolver(),
+        env.policy.context().chain_id(),
+        env.policy.context().protocol_version(),
+        intent.evidence_epoch,
+        reads,
+    )
+    .map_err(|_| {
+        OrderedEconomicsError::Prerequisite("fresh bond slash evidence committee is unavailable")
+    })?;
+    if committee != *env.policy.engine().validator_set() {
+        return Err(OrderedEconomicsError::Prerequisite(
+            "fresh bond slash evidence committee is not the pinned trusted authority",
+        ));
+    }
+    bond_lifecycle::slash::verify_evidence_proof(&decoded, committee).map_err(|_| {
+        OrderedEconomicsError::Prerequisite("fresh bond slash evidence proof is invalid")
+    })
+}
+
 fn preflight_fee_claim<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,

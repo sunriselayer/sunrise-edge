@@ -57,6 +57,34 @@ A fresh request for already-recorded identical evidence commits only its new
 outer receipt and order/outcome rows with a CAS assertion on the immutable
 evidence. It does not rewrite evidence or wedge the prefix.
 
+## Fresh causal slash admission
+
+[DR-0227](decisions/0227-fresh-ordered-slash-evidence-admission.md) adds one
+shared signing gate for newly admitted causal `BondSlash` proposals and votes.
+The unsigned slash envelope and its submitter's signed leg are not evidence
+authority. Before real signing, the validator privately loads the exact
+committed evidence selector, strictly decodes it, checks chain, protocol,
+epoch, target and the complete typed normalized digest, binds both object
+conflict preimages to their signed hashes, and re-verifies both statements for
+all three evidence families. The independently loaded, chain-anchored committee
+must equal the pinned committee, including its actual keys and schemes.
+
+The current epoch, evidence and committee revisions join the existing observed
+read scope and the proposal/vote's durable CAS. An inconsistent observation
+remains a sticky stop; a concurrent deciding-row change cannot expose a new
+signature even if private signing already occurred. This gate performs no
+economic execution, grants no custody capability and retains no refusal receipt.
+
+A genuine ordered Evidence producer must have committed through its own
+three-chain before the dependent fresh signature. Existing justified-prefix
+completion runs before the signing gate; a retained producer header or a local
+checkpoint marker does not substitute for the committed row. The gate is not
+applied to historical noncausal signing, exact retained proposal/vote replay,
+completed replay or signerless reconciliation. Execution-time loss of evidence
+still stops apply for verified recovery without advancing an unknown prefix.
+The change cannot remove an already quorum-certified invalid ancestor or its
+lock, and defines neither production rollout nor protocol-upgrade activation.
+
 ## Replay and replica observations
 
 The original `OrderedOutcome` is retained atomically with the business receipt
