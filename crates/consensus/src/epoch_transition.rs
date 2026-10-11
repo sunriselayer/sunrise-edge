@@ -654,6 +654,7 @@ pub fn decode_epoch_transition_certificate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Ed25519ConsensusVerifier, UnsupportedSignatureSchemeResponse};
     use ed25519_zebra::{Signature, SigningKey, VerificationKey};
     use protocol_types::HashAlgorithmId;
     use validator_set::ValidatorInfo;
@@ -801,6 +802,70 @@ mod tests {
         let vote = cast(&certifier, 1);
         assert_eq!(vote.signature.len(), 64);
         assert_eq!(certifier.verify_vote(&vote, &Ed25519TestVerifier), Ok(()));
+    }
+
+    #[test]
+    fn production_verifier_excludes_malformed_signatures_without_losing_quorum() {
+        let certifier: EpochTransitionCertifier = certifier(4);
+        let valid_votes: Vec<EpochTransitionVote> =
+            (1..=3).map(|byte| cast(&certifier, byte)).collect();
+        let reference: EpochTransitionCertificate = quorum_certificate(&certifier);
+        let reference_bytes: Vec<u8> = encode_epoch_transition_certificate(&reference).unwrap();
+        let responses: [UnsupportedSignatureSchemeResponse; 2] = [
+            UnsupportedSignatureSchemeResponse::InvalidSignature,
+            UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ];
+        let lengths: [usize; 4] = [1, 63, 65, 4096];
+        let malformed_validators: [u8; 2] = [2, 4];
+        for response in responses {
+            let verifier: Ed25519ConsensusVerifier = Ed25519ConsensusVerifier::new(response);
+            for signature_len in lengths {
+                for validator in malformed_validators {
+                    let mut malformed: EpochTransitionVote = cast(&certifier, validator);
+                    malformed.signature.resize(signature_len, 0);
+                    let wire: Vec<u8> = encode_epoch_transition_vote(&malformed).unwrap();
+                    let decoded: EpochTransitionVote = decode_epoch_transition_vote(&wire).unwrap();
+                    assert_eq!(decoded, malformed);
+                    assert_eq!(
+                        certifier.verify_vote(&decoded, &verifier),
+                        Err(ConsensusError::InvalidSignature(validator_id(validator))),
+                    );
+                    let positions: [usize; 2] = [0, valid_votes.len()];
+                    for position in positions {
+                        let mut relayed: Vec<EpochTransitionVote> = valid_votes.clone();
+                        relayed.insert(position, decoded.clone());
+                        let formed: EpochTransitionCertificate = certifier
+                            .try_form_certificate(
+                                next_epoch(),
+                                current_digest(),
+                                next_digest(),
+                                activation_digest(),
+                                &relayed,
+                                &verifier,
+                            )
+                            .unwrap()
+                            .expect("malformed relay candidate must not discard a valid quorum");
+                        assert_eq!(
+                            encode_epoch_transition_certificate(&formed).unwrap(),
+                            reference_bytes,
+                        );
+                    }
+                    let mut insufficient: Vec<EpochTransitionVote> = valid_votes[..2].to_vec();
+                    insufficient.push(decoded);
+                    assert_eq!(
+                        certifier.try_form_certificate(
+                            next_epoch(),
+                            current_digest(),
+                            next_digest(),
+                            activation_digest(),
+                            &insufficient,
+                            &verifier,
+                        ),
+                        Ok(None),
+                    );
+                }
+            }
+        }
     }
 
     #[test]

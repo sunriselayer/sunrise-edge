@@ -580,6 +580,8 @@ pub enum UnsupportedSignatureSchemeResponse {
 /// keys, membership, context, quorum and historical/live authority remain with
 /// the owning certifier and its caller. Unsupported-scheme behavior must be
 /// selected explicitly; there is no default or caller-defined diagnostic.
+/// Malformed signature lengths are invalid untrusted candidates, not verifier
+/// infrastructure failures. Registered-key errors retain their precedence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ed25519ConsensusVerifier {
     unsupported_scheme_response: UnsupportedSignatureSchemeResponse,
@@ -614,9 +616,11 @@ impl ConsensusVerifier for Ed25519ConsensusVerifier {
         }
         let verifier: Ed25519Verifier = Ed25519Verifier::from_verifying_key_bytes(public_key)
             .map_err(|error| error.to_string())?;
-        verifier
-            .verify_framed(framed, signature)
-            .map_err(|error| error.to_string())
+        match verifier.verify_framed(framed, signature) {
+            Ok(valid) => Ok(valid),
+            Err(CryptoError::InvalidSignatureLength(_)) => Ok(false),
+            Err(error) => Err(error.to_string()),
+        }
     }
 }
 
