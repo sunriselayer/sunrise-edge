@@ -427,6 +427,19 @@ and cross-phase criteria; it does not shorten them.
   handles remain open and the outbox oracle is guarded empty. This is not
   interrupted COMMIT, all-connections-lost, power, disk-failure, ENOSPC or failover
   qualification.
+  Local `3e0f066e` adds three real-file SQLite source controls for the actual
+  signed, request-scoped Native indexed-outbox consumer: confirmed claim/ACK
+  reply-loss reconciliation, unresolved landed claim without sending, and
+  unresolved landed ACK after one exact send. Independent public-codec oracles
+  pin state, nonce, receipt/result and outbound bytes; full four-collection
+  snapshots retain unrelated rows. The object/reference collections are empty,
+  not positive object/blob coverage. Same-request/context probes require live
+  lease ownership and unchanged reconciliation tokens, with post-setup sequence
+  deltas +3/+2/+3 and one application invocation, not one total SQL COMMIT.
+  Different exact-slice source review passed; all three controls remain
+  UNFORMATTED, UNCOMPILED and UNEXECUTED, outside the original 41 selectors.
+  Synthetic reply loss follows confirmed store operations, not failed COMMIT,
+  physical I/O, crash/power, custody or M3 completion. See DR-0210's dated addendum.
   The bounded non-faulting private-namespace capability attempt ended
   ENVIRONMENT_UNAVAILABLE/78: required unprivileged tmpfs noswap was unsupported.
   No SQLite/ENOSPC filler or privilege fallback ran. Retained actual failure/

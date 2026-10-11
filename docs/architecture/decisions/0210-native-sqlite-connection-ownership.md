@@ -180,3 +180,44 @@ confirmation requirements above remain unchanged.
 UNFORMATTED, UNCOMPILED, UNEXECUTED; runtime/resource fit is UNKNOWN. This source
 control does not complete M3/TODO, qualify PostgreSQL or custody, or grant runtime,
 dependency/floor/private-input/ROOT ONE or release authority.
+
+## 2026-10-11 (Asia/Tokyo): request-scoped outbox reply-loss source controls
+
+Local `3e0f066e` adds three controls in the existing
+[Native HTTP tests](../../../crates/native-http/src/tests.rs):
+
+- `sqlite_request_outbox_reconciles_landed_claim_and_ack_reply_loss`
+- `sqlite_request_outbox_unresolved_landed_claim_preserves_first_ambiguity_without_send`
+- `sqlite_request_outbox_unresolved_landed_ack_preserves_first_ambiguity_after_one_send`
+
+The fixture creates a fresh real-file SQLite store and uses the existing valid
+signed submission through the actual typed `ReadOnly` Native consumer. Its
+forwarding wrapper first requires a real successful claim or acknowledgement,
+then masks only that reply as `ConnectionLost`. Native reconciliation must reuse
+the original request and operation context. The refused-reconciliation controls
+return a different second rejection without another delegation, requiring the
+original ambiguity to survive. No production fault hook or new API is introduced.
+
+Independent literal state/payload/nonce frames and public receipt/result/outbound
+codecs define expected bytes, not captured invocation writes or stored post-state.
+One-key pages and seven-byte chunks compare every descriptor and body in all four
+portable collections under the same local token, retaining unrelated rows.
+Immutable referenced blobs use their separate interface outside that token;
+this fixture has empty object/reference collections and proves no positive
+object/blob coverage or content-hash authentication. No handoff-empty-outbox
+guard is invoked.
+
+Before original lease expiry, probes require the complete same-lease claim tuple
+and foreign `NoDueWork`; after ACK, they require same-ACK `Acknowledged`, original
+claim `LeaseIdReuse` and fresh foreign `NoDueWork`. Explicit clock checks surround
+those probes. After setup, the source requires one application transition and
+one `commit_invocation`, with sequence deltas +3/+2/+3 across the three cases.
+Claim ambiguity permits no send or ACK; success and ACK ambiguity require one
+exact canonical send. Reconciliation/probe snapshots must not add mutations.
+These counters do not count all SQL COMMITs or prove a new business replay path.
+
+Different exact-slice source review passed. UNFORMATTED, UNCOMPILED, UNEXECUTED;
+all three names are outside the original 41 selectors. Synthetic trait reply
+loss after a confirmed operation is not failed SQLite COMMIT, physical I/O,
+ENOSPC, crash/power-loss durability, custody or M3/TODO20 completion. All original
+before-COMMIT/after-COMMIT-before-confirmation and release requirements remain.
