@@ -71,3 +71,35 @@ Tmpfs process-retention evidence is not physical-disk, power-loss, custody,
 release or mainnet readiness. Existing source/code/PG/fault/independent-review
 completion gates remain in [TODO.md](../../../TODO.md), with launch choices
 kept separate.
+
+## 2026-10-12: observed environment-only results
+
+The [general probe](../../../scripts/check-docker-fault-environment.mjs), selected
+explicitly with `--managed-volume`, observed positive bounded writes ending in
+errno28 inside its 8MiB noswap allocation, removed its filler and released its
+owned container/volume. This did not execute the Rust SQLite fault controls.
+
+The [PostgreSQL probe](../../../scripts/check-docker-postgres-environment.mjs)
+at source SHA-256 `b751fb1eefe192c745c0169f14ba08d7b92cdc8dfd26bd5794790e198bc24d35`
+completed with direct exit0. It observed SIGKILL exit137 and a later postmaster
+start in the same exact container, the same cluster identity and complete literal
+singleton fixture, and unchanged keeper identity. Effective storage was 512MiB
+noswap with 16,384 inodes; the primary had 512MiB memory and zero allowed swap.
+Its 29,917 captured bytes plus the complete 799-byte final line total 30,716 bytes
+under the unchanged 64KiB bound. Root independently observed the exact owner and
+the whole PG ENV label namespace empty after release; neither container nor
+volume residue remained. No full raw Docker transcript was exported or reviewed
+independently; terminal source guards and the observed final result are distinct.
+
+The fixed SQL selector reads mountinfo once with an overflow byte, checks complete
+input framing and retains every complete row for both selected mounts and
+`/dev/shm`, including duplicates. Versioned byte/count/ordinal framing and the
+original attachment/flag/inode checks remain. Unselected mount bodies are not
+retained. Oversize or malformed input, duplicate/missing mounts, unexpected shm,
+wrong attachment and malformed subset are reviewed source refusal expectations,
+not separately executed adversarial controls.
+
+Earlier probe failures remain failures, not historical passes. These observations
+do not run the product's PG/SQLite suites or establish physical-disk/power-loss,
+custody, full-profile, M3/TODO20 or release qualification. Do not rerun a consumed
+successful probe as a substitute for the remaining product-owned verification.

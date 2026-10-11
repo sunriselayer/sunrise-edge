@@ -474,6 +474,12 @@ and cross-phase criteria; it does not shorten them.
   experiments are now authorized; effective noswap, resource containment and
   actual SQLite fault/recovery results still require independent qualification.
   No host-wide resource change or privileged fallback follows from that authority.
+  The disposable Docker ENV probes now observed actual errno28 inside an 8MiB
+  noswap allocation and PostgreSQL18.6 retaining the fixed committed fixture
+  after SIGKILL/restart of the same container, with a continuous keeper of its
+  512MiB noswap allocation. Exact-owned containers and volumes were removed and
+  independently observed absent. These are environment-only results, not the
+  Rust durability controls, complete selected PG acceptance or M3 completion.
   Two ignored Linux SQLite ENOSPC source controls now require an effective
   64MiB noswap Docker allocation before filling it. They distinguish definite
   pre-COMMIT refusal from the literal COMMIT-error path, compare all twelve SQL
