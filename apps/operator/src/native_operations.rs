@@ -133,16 +133,14 @@ impl StopOwner {
                         .await
                     }
                     Some(_) if live_enabled => {
-                        let deadline: std::time::Instant = match self
-                            .live_observations
-                            .next_eligible()
-                        {
-                            Some(deadline) => deadline,
-                            None => {
-                                self.live_signal = None;
-                                continue;
-                            }
-                        };
+                        let deadline: std::time::Instant =
+                            match self.live_observations.next_eligible() {
+                                Some(deadline) => deadline,
+                                None => {
+                                    self.live_signal = None;
+                                    continue;
+                                }
+                            };
                         tokio::select! {
                             biased;
                             received = self.interrupt.recv() => WaitEvent::Interrupt(received),
@@ -424,8 +422,7 @@ mod tests {
     async fn serving_failure_closes_admission_and_is_not_clean_stop() {
         let executor: NativeBlockingExecutor =
             NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(1).unwrap()));
-        let stop: StopOwner =
-            StopOwner::install(PreparedLocalObservations::disabled()).unwrap();
+        let stop: StopOwner = StopOwner::install(PreparedLocalObservations::disabled()).unwrap();
         let error: io::Error = timeout(
             TEST_DEADLINE,
             serve(

@@ -2344,7 +2344,8 @@ impl AtomicStateTransaction {
         reads: AtomicStateReadSet,
         mutations: AtomicStateMutationSet,
     ) -> Result<Self, RuntimeError> {
-        let represented_bytes: usize = validate_state_transaction_parts(domain, &reads, &mutations)?;
+        let represented_bytes: usize =
+            validate_state_transaction_parts(domain, &reads, &mutations)?;
         Ok(Self {
             domain,
             reads,
@@ -2400,7 +2401,8 @@ impl DurableStateTransaction {
         mutations: Vec<StateMutationEntry>,
     ) -> Result<Self, RuntimeError> {
         let mutations: AtomicStateMutationSet = AtomicStateMutationSet::new_allow_empty(mutations)?;
-        let represented_bytes: usize = validate_state_transaction_parts(domain, &reads, &mutations)?;
+        let represented_bytes: usize =
+            validate_state_transaction_parts(domain, &reads, &mutations)?;
         Ok(Self {
             domain,
             reads,

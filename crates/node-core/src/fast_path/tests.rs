@@ -6388,7 +6388,9 @@ fn fastpath_validator_record_literal_count_boundary() {
         records::decode_fastpath_validator_set_record(&bytes).unwrap(),
         record
     );
-    record.validators.push(literal_count_validator_entry(10_001));
+    record
+        .validators
+        .push(literal_count_validator_entry(10_001));
     assert!(matches!(
         records::encode_fastpath_validator_set_record(&record),
         Err(NodeCoreError::PersistenceInvariant(

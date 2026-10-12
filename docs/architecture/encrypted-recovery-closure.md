@@ -142,7 +142,7 @@ I/O. Each invocation carries the same counters across ALL roles and repeat work.
 | --- | --- |
 | Predecessors / roles | `L <= 16`; exactly `R = 3 + 4L <= 67` |
 | Packaged files | `N <= 32,768`, separate from traversed entries |
-| Traversal | 262,144 root/directory/entry observations, including ignored orphans and repeat walks |
+| Traversal | 2,097,152 root/directory/entry observations, including ignored orphans and repeat walks; revised local profile in the 2026-10-13 DR-0221 amendment |
 | History / component work | 4,096 height materializations and 32,768 cut/history descriptor-component materializations, charged again on repetition before growth |
 | Locator | At most 256 bytes for role + link + name-length + name; name is 1..251 bytes |
 | File body | At most 32 MiB AND the smaller existing owner limit; summed original body bytes are checked too |

@@ -149,8 +149,7 @@ fn bound_dedup_record_preserves_responses_and_canonical_bytes() {
         NodeDedupRecord::new(id, event_digest, vec![response.clone()]).unwrap();
     let encoded: Vec<u8> = record.encode().unwrap();
 
-    let bound: NodeDedupRecord =
-        NodeDedupRecord::decode_bound(&encoded, id, event_digest).unwrap();
+    let bound: NodeDedupRecord = NodeDedupRecord::decode_bound(&encoded, id, event_digest).unwrap();
 
     assert_eq!(bound, record);
     assert_eq!(bound.responses(), &[response]);
@@ -196,8 +195,7 @@ fn bound_dedup_record_rejects_digest_with_matching_request() {
     let id: RequestId = request(0xB7);
     let actual_digest: Digest32 = digest();
     let expected_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha3_256, [0xB8; 32]);
-    let record: NodeDedupRecord =
-        NodeDedupRecord::new(id, actual_digest, Vec::new()).unwrap();
+    let record: NodeDedupRecord = NodeDedupRecord::new(id, actual_digest, Vec::new()).unwrap();
     let encoded: Vec<u8> = record.encode().unwrap();
 
     assert_eq!(

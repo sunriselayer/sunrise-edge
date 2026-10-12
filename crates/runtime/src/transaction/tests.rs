@@ -333,7 +333,10 @@ fn direct_state_constructors_keep_exact_aggregate_boundary() {
                 assert_eq!(state.reads(), &[read(b"a", 0), read(b"b", 7)]);
                 assert_eq!(state.mutations()[0].key(), b"a");
                 assert_eq!(state.mutations()[1].key(), b"b");
-                assert_eq!(state.represented_bytes(), MAX_ATOMIC_STATE_TRANSACTION_BYTES);
+                assert_eq!(
+                    state.represented_bytes(),
+                    MAX_ATOMIC_STATE_TRANSACTION_BYTES
+                );
             } else {
                 assert_eq!(
                     result,

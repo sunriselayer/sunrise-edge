@@ -36,6 +36,13 @@ use protocol_types::{
     ChainId, Digest32, Epoch, HashAlgorithmId, HashPurpose, HashSuite, HashSuiteId,
     HashSuiteSchedule, ProtocolVersion, SignatureSchemeId, ValidatorId,
 };
+use runtime::portable::{
+    DurableCollection, DurablePayloadDescriptor, DurablePortableSnapshotRepository,
+    DurableRecordChunk, DurableRecordChunkOutcome, DurableRecordChunkRequest,
+    DurableRecordDescriptor, DurableRecordKey, DurableRecordMetadata, DurableRecordPage,
+    DurableRecordScan, PortableBlobChunk, PortableBlobChunkOutcome, PortableBlobChunkRequest,
+    PortableBlobDescriptor, PortableBlobRepository, PortableSnapshotToken,
+};
 use runtime::{
     AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, CompareAndSwapResult,
     ComposedRuntime, DurableCommitOutcome, DurableCommitRejection, DurableDomainStateStore,
@@ -50,13 +57,6 @@ use runtime::{
     StructuredDurableDomainStateStore, SystemClock, Transport, VersionedStateValue,
 };
 use runtime_sqlite::{SqliteDurableStore, SqliteNamespace, SqliteStateStore};
-use runtime::portable::{
-    DurableCollection, DurablePayloadDescriptor, DurablePortableSnapshotRepository,
-    DurableRecordChunk, DurableRecordChunkOutcome, DurableRecordChunkRequest,
-    DurableRecordDescriptor, DurableRecordKey, DurableRecordMetadata, DurableRecordPage,
-    DurableRecordScan, PortableBlobChunk, PortableBlobChunkOutcome, PortableBlobChunkRequest,
-    PortableBlobDescriptor, PortableBlobRepository, PortableSnapshotToken,
-};
 use std::{
     collections::{BTreeMap, VecDeque},
     fs,
@@ -5766,8 +5766,7 @@ async fn liveness_does_not_touch_protocol_state() {
 // Real-file storage, with reply loss injected only after successful public
 // trait calls. These controls are not failed-COMMIT, crash, ENOSPC, power-loss,
 // durability or custody evidence. They are source controls, not runtime results.
-type SqliteReplyLossRows =
-    BTreeMap<DurableRecordKey, (DurableRecordDescriptor, Option<Vec<u8>>)>;
+type SqliteReplyLossRows = BTreeMap<DurableRecordKey, (DurableRecordDescriptor, Option<Vec<u8>>)>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SqliteReplyLossSnapshot {
@@ -5819,9 +5818,13 @@ fn sqlite_reply_loss_snapshot(
                         let mut bytes: Vec<u8> = Vec::new();
                         let mut offset: usize = 0;
                         loop {
-                            let request: DurableRecordChunkRequest = DurableRecordChunkRequest::new(
-                                descriptor.clone(), offset, chunk_limit,
-                            ).unwrap();
+                            let request: DurableRecordChunkRequest =
+                                DurableRecordChunkRequest::new(
+                                    descriptor.clone(),
+                                    offset,
+                                    chunk_limit,
+                                )
+                                .unwrap();
                             let chunk: Box<DurableRecordChunk> = match store
                                 .read_portable_chunk_at(context, domain, &token, &request)
                                 .unwrap()
@@ -5841,25 +5844,30 @@ fn sqlite_reply_loss_snapshot(
                     }
                 };
                 if let DurableRecordMetadata::ObjectVersion {
-                    payload: DurablePayloadDescriptor::BlobReference(digest), ..
-                } = descriptor.metadata() {
+                    payload: DurablePayloadDescriptor::BlobReference(digest),
+                    ..
+                } = descriptor.metadata()
+                {
                     let digest: Digest32 = *digest;
-                    if !blobs.contains_key(&digest) {
+                    if let std::collections::btree_map::Entry::Vacant(entry) = blobs.entry(digest) {
                         let blob_descriptor: PortableBlobDescriptor = blob_store
-                            .read_portable_blob_descriptor(&digest).unwrap().unwrap();
+                            .read_portable_blob_descriptor(&digest)
+                            .unwrap()
+                            .unwrap();
                         assert_eq!(blob_descriptor.digest(), digest);
                         let mut bytes: Vec<u8> = Vec::new();
                         let mut offset: usize = 0;
                         loop {
-                            let request: PortableBlobChunkRequest = PortableBlobChunkRequest::new(
-                                blob_descriptor, offset, chunk_limit,
-                            ).unwrap();
-                            let chunk: Box<PortableBlobChunk> = match blob_store
-                                .read_portable_blob_chunk(&request).unwrap()
-                            {
-                                PortableBlobChunkOutcome::Chunk(chunk) => chunk,
-                                PortableBlobChunkOutcome::Corrupt => panic!("referenced blob changed"),
-                            };
+                            let request: PortableBlobChunkRequest =
+                                PortableBlobChunkRequest::new(blob_descriptor, offset, chunk_limit)
+                                    .unwrap();
+                            let chunk: Box<PortableBlobChunk> =
+                                match blob_store.read_portable_blob_chunk(&request).unwrap() {
+                                    PortableBlobChunkOutcome::Chunk(chunk) => chunk,
+                                    PortableBlobChunkOutcome::Corrupt => {
+                                        panic!("referenced blob changed")
+                                    }
+                                };
                             assert_eq!(chunk.request(), &request);
                             bytes.extend_from_slice(chunk.bytes());
                             offset = request.range().end;
@@ -5869,7 +5877,7 @@ fn sqlite_reply_loss_snapshot(
                         }
                         assert_eq!(bytes.len(), blob_descriptor.length());
                         assert_eq!(blob_store.get_blob(&digest).unwrap(), Some(bytes.clone()));
-                        assert!(blobs.insert(digest, (blob_descriptor, bytes)).is_none());
+                        entry.insert((blob_descriptor, bytes));
                     }
                 }
                 assert!(rows.insert(key, (descriptor, payload)).is_none());
@@ -5890,14 +5898,28 @@ fn sqlite_reply_loss_snapshot(
     // Referenced blobs are separate immutable-port reads, not covered or
     // authenticated by that token. Do not use the handoff-empty-outbox guard:
     // even an acknowledged nonempty outbox is intentionally present here.
-    assert_eq!(store.begin_portable_snapshot(context, domain).unwrap(), token);
-    SqliteReplyLossSnapshot { token, pages, rows, blobs }
+    assert_eq!(
+        store.begin_portable_snapshot(context, domain).unwrap(),
+        token
+    );
+    SqliteReplyLossSnapshot {
+        token,
+        pages,
+        rows,
+        blobs,
+    }
 }
 
 fn sqlite_reply_loss_before_expiry(request: RequestOutboxClaimRequest) {
     let now: u64 = SystemClock.now_unix_millis().unwrap();
-    assert!(now >= request.now_unix_millis(), "wall clock moved before claim time");
-    assert!(now < request.lease_expires_at_unix_millis(), "original lease expired");
+    assert!(
+        now >= request.now_unix_millis(),
+        "wall clock moved before claim time"
+    );
+    assert!(
+        now < request.lease_expires_at_unix_millis(),
+        "original lease expired"
+    );
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5934,30 +5956,43 @@ impl SqliteReplyLossStore {
     ) -> SqliteReplyLossSnapshot {
         sqlite_reply_loss_before_expiry(request);
         let before: SqliteReplyLossSnapshot = sqlite_reply_loss_snapshot(
-            self.inner.as_ref(), self.blobs.as_ref(), context, request.domain(),
+            self.inner.as_ref(),
+            self.blobs.as_ref(),
+            context,
+            request.domain(),
         );
         // Construct the complete oracle independently of the claim reply.
         let expected: DurableOutboxClaim = DurableOutboxClaim::from_parts(
-            request.request_id(), 0, request.lease_id(),
-            request.lease_expires_at_unix_millis(), self.expected_payload.clone(),
-        ).unwrap();
+            request.request_id(),
+            0,
+            request.lease_id(),
+            request.lease_expires_at_unix_millis(),
+            self.expected_payload.clone(),
+        )
+        .unwrap();
         sqlite_reply_loss_before_expiry(request);
         assert_eq!(
             self.inner.claim_request_outbox(context, request),
             DurableOutboxClaimOutcome::Claimed(expected),
         );
         let foreign: RequestOutboxClaimRequest = RequestOutboxClaimRequest::new(
-            request.domain(), request.request_id(), request.now_unix_millis(),
+            request.domain(),
+            request.request_id(),
+            request.now_unix_millis(),
             DurableOutboxLeaseId::new([0x73; 32]).unwrap(),
             request.lease_expires_at_unix_millis(),
-        ).unwrap();
+        )
+        .unwrap();
         sqlite_reply_loss_before_expiry(request);
         assert_eq!(
             self.inner.claim_request_outbox(context, foreign),
             DurableOutboxClaimOutcome::NoDueWork,
         );
         let after: SqliteReplyLossSnapshot = sqlite_reply_loss_snapshot(
-            self.inner.as_ref(), self.blobs.as_ref(), context, request.domain(),
+            self.inner.as_ref(),
+            self.blobs.as_ref(),
+            context,
+            request.domain(),
         );
         sqlite_reply_loss_before_expiry(request);
         assert_eq!(after, before);
@@ -5972,12 +6007,21 @@ impl SqliteReplyLossStore {
         let original: (DurableOperationContext, RequestOutboxClaimRequest) =
             *self.claim_calls.lock().unwrap().first().unwrap();
         assert_eq!(*context, original.0);
-        assert_eq!(acknowledgement, DurableOutboxAcknowledgement::new(
-            original.1.domain(), original.1.request_id(), 0, original.1.lease_id(),
-        ));
+        assert_eq!(
+            acknowledgement,
+            DurableOutboxAcknowledgement::new(
+                original.1.domain(),
+                original.1.request_id(),
+                0,
+                original.1.lease_id(),
+            )
+        );
         sqlite_reply_loss_before_expiry(original.1);
         let before: SqliteReplyLossSnapshot = sqlite_reply_loss_snapshot(
-            self.inner.as_ref(), self.blobs.as_ref(), context, acknowledgement.domain(),
+            self.inner.as_ref(),
+            self.blobs.as_ref(),
+            context,
+            acknowledgement.domain(),
         );
         assert_eq!(
             self.inner.acknowledge_outbox(context, acknowledgement),
@@ -5991,17 +6035,23 @@ impl SqliteReplyLossStore {
             DurableOutboxClaimOutcome::Rejected(DurableOutboxClaimRejection::LeaseIdReuse),
         );
         let foreign: RequestOutboxClaimRequest = RequestOutboxClaimRequest::new(
-            original.1.domain(), original.1.request_id(), original.1.now_unix_millis(),
+            original.1.domain(),
+            original.1.request_id(),
+            original.1.now_unix_millis(),
             DurableOutboxLeaseId::new([0x74; 32]).unwrap(),
             original.1.lease_expires_at_unix_millis(),
-        ).unwrap();
+        )
+        .unwrap();
         sqlite_reply_loss_before_expiry(original.1);
         assert_eq!(
             self.inner.claim_request_outbox(context, foreign),
             DurableOutboxClaimOutcome::NoDueWork,
         );
         let after: SqliteReplyLossSnapshot = sqlite_reply_loss_snapshot(
-            self.inner.as_ref(), self.blobs.as_ref(), context, acknowledgement.domain(),
+            self.inner.as_ref(),
+            self.blobs.as_ref(),
+            context,
+            acknowledgement.domain(),
         );
         sqlite_reply_loss_before_expiry(original.1);
         assert_eq!(after, before);
@@ -6011,31 +6061,42 @@ impl SqliteReplyLossStore {
 
 impl DurableDomainStateStore for SqliteReplyLossStore {
     fn get_namespace_lifecycle(
-        &self, context: &DurableOperationContext, domain: AtomicityDomainId,
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
     ) -> Result<runtime::NamespaceLifecycle, DurableReadError> {
         self.inner.get_namespace_lifecycle(context, domain)
     }
 
     fn get_versioned_durable(
-        &self, context: &DurableOperationContext, domain: AtomicityDomainId, key: &[u8],
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        key: &[u8],
     ) -> Result<VersionedStateValue, DurableReadError> {
         self.inner.get_versioned_durable(context, domain, key)
     }
 
     fn get_outgoing_barrier(
-        &self, context: &DurableOperationContext, domain: AtomicityDomainId,
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
     ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
         self.inner.get_outgoing_barrier(context, domain)
     }
 
     fn get_successor_serving(
-        &self, context: &DurableOperationContext, domain: AtomicityDomainId,
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
     ) -> Result<runtime::SuccessorServingSlot, DurableReadError> {
         self.inner.get_successor_serving(context, domain)
     }
 
     fn commit_durable(
-        &self, context: &DurableOperationContext, transaction: AtomicStateTransaction,
+        &self,
+        context: &DurableOperationContext,
+        transaction: AtomicStateTransaction,
     ) -> DurableCommitOutcome {
         self.generic_commits.fetch_add(1, Ordering::SeqCst);
         self.inner.commit_durable(context, transaction)
@@ -6044,36 +6105,52 @@ impl DurableDomainStateStore for SqliteReplyLossStore {
 
 impl StructuredDurableDomainStateStore for SqliteReplyLossStore {
     fn get_object_head(
-        &self, context: &DurableOperationContext, domain: AtomicityDomainId, object_id: ObjectId,
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
     ) -> Result<DurableObjectHead, DurableReadError> {
         self.inner.get_object_head(context, domain, object_id)
     }
 
     fn get_object_version(
-        &self, context: &DurableOperationContext, domain: AtomicityDomainId,
-        object_id: ObjectId, object_version: DurableObjectVersion,
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+        object_version: DurableObjectVersion,
     ) -> Result<Option<DurableObjectVersionRecord>, DurableReadError> {
-        self.inner.get_object_version(context, domain, object_id, object_version)
+        self.inner
+            .get_object_version(context, domain, object_id, object_version)
     }
 
     fn get_request_receipt(
-        &self, context: &DurableOperationContext, domain: AtomicityDomainId,
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
         request_id: DurableRequestId,
     ) -> Result<Option<DurableRequestReceipt>, DurableReadError> {
         self.inner.get_request_receipt(context, domain, request_id)
     }
 
     fn commit_invocation(
-        &self, context: &DurableOperationContext, transaction: DurableInvocationTransaction,
+        &self,
+        context: &DurableOperationContext,
+        transaction: DurableInvocationTransaction,
     ) -> DurableCommitOutcome {
         self.commit_contexts.lock().unwrap().push(*context);
         let domain: AtomicityDomainId = transaction.domain();
         let outcome: DurableCommitOutcome = self.inner.commit_invocation(context, transaction);
         assert_eq!(outcome, DurableCommitOutcome::Committed);
-        let snapshot: SqliteReplyLossSnapshot = sqlite_reply_loss_snapshot(
-            self.inner.as_ref(), self.blobs.as_ref(), context, domain,
+        let snapshot: SqliteReplyLossSnapshot =
+            sqlite_reply_loss_snapshot(self.inner.as_ref(), self.blobs.as_ref(), context, domain);
+        assert!(
+            self.after_invocation
+                .lock()
+                .unwrap()
+                .replace(snapshot)
+                .is_none()
         );
-        assert!(self.after_invocation.lock().unwrap().replace(snapshot).is_none());
         outcome
     }
 
@@ -6088,12 +6165,15 @@ impl StructuredDurableDomainStateStore for SqliteReplyLossStore {
 
 impl IndexedOutboxRepository for SqliteReplyLossStore {
     fn claim_request_outbox(
-        &self, context: &DurableOperationContext, request: RequestOutboxClaimRequest,
+        &self,
+        context: &DurableOperationContext,
+        request: RequestOutboxClaimRequest,
     ) -> DurableOutboxClaimOutcome {
         let call_index: usize = {
-            let mut calls: std::sync::MutexGuard<'_,
-                Vec<(DurableOperationContext, RequestOutboxClaimRequest)>> =
-                self.claim_calls.lock().unwrap();
+            let mut calls: std::sync::MutexGuard<
+                '_,
+                Vec<(DurableOperationContext, RequestOutboxClaimRequest)>,
+            > = self.claim_calls.lock().unwrap();
             if let Some(original) = calls.first() {
                 assert_eq!((*context, request), *original);
             }
@@ -6105,14 +6185,21 @@ impl IndexedOutboxRepository for SqliteReplyLossStore {
             && self.mode == SqliteReplyLossMode::RefuseClaimReconciliation
         {
             // A distinct second refusal, without another SQLite delegation.
-            DurableOutboxClaimOutcome::Rejected(DurableOutboxClaimRejection::UnavailableBeforeCommit)
+            DurableOutboxClaimOutcome::Rejected(
+                DurableOutboxClaimRejection::UnavailableBeforeCommit,
+            )
         } else {
             self.claim_delegations.fetch_add(1, Ordering::SeqCst);
-            let outcome: DurableOutboxClaimOutcome = self.inner.claim_request_outbox(context, request);
+            let outcome: DurableOutboxClaimOutcome =
+                self.inner.claim_request_outbox(context, request);
             let expected: DurableOutboxClaim = DurableOutboxClaim::from_parts(
-                request.request_id(), 0, request.lease_id(),
-                request.lease_expires_at_unix_millis(), self.expected_payload.clone(),
-            ).unwrap();
+                request.request_id(),
+                0,
+                request.lease_id(),
+                request.lease_expires_at_unix_millis(),
+                self.expected_payload.clone(),
+            )
+            .unwrap();
             assert_eq!(outcome, DurableOutboxClaimOutcome::Claimed(expected));
             if call_index == 1 {
                 let snapshot: SqliteReplyLossSnapshot = self.observe_live_claim(context, request);
@@ -6120,7 +6207,10 @@ impl IndexedOutboxRepository for SqliteReplyLossStore {
                 DurableOutboxClaimOutcome::Indeterminate(IndeterminateCommitReason::ConnectionLost)
             } else {
                 let snapshot: SqliteReplyLossSnapshot = sqlite_reply_loss_snapshot(
-                    self.inner.as_ref(), self.blobs.as_ref(), context, request.domain(),
+                    self.inner.as_ref(),
+                    self.blobs.as_ref(),
+                    context,
+                    request.domain(),
                 );
                 sqlite_reply_loss_before_expiry(request);
                 assert_eq!(Some(snapshot), *self.after_claim.lock().unwrap());
@@ -6132,26 +6222,34 @@ impl IndexedOutboxRepository for SqliteReplyLossStore {
     }
 
     fn claim_due_outbox(
-        &self, context: &DurableOperationContext, request: DueOutboxClaimRequest,
+        &self,
+        context: &DurableOperationContext,
+        request: DueOutboxClaimRequest,
     ) -> DurableOutboxClaimOutcome {
         self.due_claims.fetch_add(1, Ordering::SeqCst);
         self.inner.claim_due_outbox(context, request)
     }
 
     fn acknowledge_outbox(
-        &self, context: &DurableOperationContext, acknowledgement: DurableOutboxAcknowledgement,
+        &self,
+        context: &DurableOperationContext,
+        acknowledgement: DurableOutboxAcknowledgement,
     ) -> DurableOutboxAcknowledgementOutcome {
         let call_index: usize = {
-            let mut calls: std::sync::MutexGuard<'_,
-                Vec<(DurableOperationContext, DurableOutboxAcknowledgement)>> =
-                self.ack_calls.lock().unwrap();
+            let mut calls: std::sync::MutexGuard<
+                '_,
+                Vec<(DurableOperationContext, DurableOutboxAcknowledgement)>,
+            > = self.ack_calls.lock().unwrap();
             if let Some(original) = calls.first() {
                 assert_eq!((*context, acknowledgement), *original);
             }
             calls.push((*context, acknowledgement));
             calls.len()
         };
-        assert!(call_index <= 2, "unexpected automatic acknowledgement retry");
+        assert!(
+            call_index <= 2,
+            "unexpected automatic acknowledgement retry"
+        );
         let reply: DurableOutboxAcknowledgementOutcome = if call_index == 2
             && self.mode == SqliteReplyLossMode::RefuseAcknowledgementReconciliation
         {
@@ -6164,12 +6262,18 @@ impl IndexedOutboxRepository for SqliteReplyLossStore {
                 self.inner.acknowledge_outbox(context, acknowledgement);
             assert_eq!(outcome, DurableOutboxAcknowledgementOutcome::Acknowledged);
             if call_index == 1 {
-                let snapshot: SqliteReplyLossSnapshot = self.observe_acknowledged(context, acknowledgement);
+                let snapshot: SqliteReplyLossSnapshot =
+                    self.observe_acknowledged(context, acknowledgement);
                 assert!(self.after_ack.lock().unwrap().replace(snapshot).is_none());
-                DurableOutboxAcknowledgementOutcome::Indeterminate(IndeterminateCommitReason::ConnectionLost)
+                DurableOutboxAcknowledgementOutcome::Indeterminate(
+                    IndeterminateCommitReason::ConnectionLost,
+                )
             } else {
                 let snapshot: SqliteReplyLossSnapshot = sqlite_reply_loss_snapshot(
-                    self.inner.as_ref(), self.blobs.as_ref(), context, acknowledgement.domain(),
+                    self.inner.as_ref(),
+                    self.blobs.as_ref(),
+                    context,
+                    acknowledgement.domain(),
                 );
                 assert_eq!(Some(snapshot), *self.after_ack.lock().unwrap());
                 outcome
@@ -6186,8 +6290,10 @@ fn sqlite_reply_loss_assert_rows(
 ) {
     assert_eq!(&snapshot.rows, expected);
     let collections: [DurableCollection; 4] = [
-        DurableCollection::State, DurableCollection::Receipts,
-        DurableCollection::ObjectHeads, DurableCollection::ObjectVersions,
+        DurableCollection::State,
+        DurableCollection::Receipts,
+        DurableCollection::ObjectHeads,
+        DurableCollection::ObjectVersions,
     ];
     assert_eq!(snapshot.pages.len(), 4);
     for collection in collections {
@@ -6195,16 +6301,29 @@ fn sqlite_reply_loss_assert_rows(
         let pages: &Vec<DurableRecordPage> = snapshot.pages.get(&collection).unwrap();
         assert!(!pages.is_empty());
         assert!(pages.last().unwrap().continuation().is_none());
-        let keys: Vec<DurableRecordKey> = pages.iter()
-            .flat_map(|page: &DurableRecordPage| page.keys().iter().cloned()).collect();
-        let expected_keys: Vec<DurableRecordKey> = expected.keys()
-            .filter(|key: &&DurableRecordKey| key.collection() == collection).cloned().collect();
+        let keys: Vec<DurableRecordKey> = pages
+            .iter()
+            .flat_map(|page: &DurableRecordPage| page.keys().iter().cloned())
+            .collect();
+        let expected_keys: Vec<DurableRecordKey> = expected
+            .keys()
+            .filter(|key: &&DurableRecordKey| key.collection() == collection)
+            .cloned()
+            .collect();
         assert_eq!(keys, expected_keys);
     }
     // This read-only, empty-manifest fixture has no object versions or blob
     // references. Complete empty pages are checked, not positive blob coverage.
-    assert!(snapshot.pages[&DurableCollection::ObjectHeads][0].keys().is_empty());
-    assert!(snapshot.pages[&DurableCollection::ObjectVersions][0].keys().is_empty());
+    assert!(
+        snapshot.pages[&DurableCollection::ObjectHeads][0]
+            .keys()
+            .is_empty()
+    );
+    assert!(
+        snapshot.pages[&DurableCollection::ObjectVersions][0]
+            .keys()
+            .is_empty()
+    );
     assert!(snapshot.blobs.is_empty());
 }
 
@@ -6215,9 +6334,8 @@ fn sqlite_request_outbox_reply_loss_control(mode: SqliteReplyLossMode) {
     let chain: ChainId = ChainId::new("sunrise-test").unwrap();
     let namespace: SqliteNamespace =
         SqliteNamespace::new(chain.clone(), ValidatorId::new([0x44; 32]), domain);
-    let inner: Arc<SqliteDurableStore> = Arc::new(
-        SqliteDurableStore::create_new(&database.path, namespace, fence).unwrap(),
-    );
+    let inner: Arc<SqliteDurableStore> =
+        Arc::new(SqliteDurableStore::create_new(&database.path, namespace, fence).unwrap());
     let blobs: Arc<MemoryBlobStore> = Arc::new(MemoryBlobStore::default());
     let setup_context: DurableOperationContext = live_operation_context(fence, 0xD2);
     install_fastpath_epoch_record(inner.as_ref(), &setup_context, domain);
@@ -6225,17 +6343,26 @@ fn sqlite_request_outbox_reply_loss_control(mode: SqliteReplyLossMode) {
     let unrelated_bytes: Vec<u8> = vec![0x00, 0xFF, 0x00, 0x91, 0x08, 0x00, 0x7F, 0x01, 0x02];
     let setup_transaction: AtomicStateTransaction = AtomicStateTransaction::new(
         domain,
-        AtomicStateReadSet::new(vec![StateReadAssertion::new(
-            unrelated_key.clone(), StateRevision::INITIAL,
-        ).unwrap()]).unwrap(),
-        AtomicStateMutationSet::new(vec![StateMutationEntry::new(
-            unrelated_key.clone(), StateMutation::Put(unrelated_bytes.clone()),
-        ).unwrap()]).unwrap(),
-    ).unwrap();
-    assert_eq!(inner.commit_durable(&setup_context, setup_transaction), DurableCommitOutcome::Committed);
-    let baseline: SqliteReplyLossSnapshot = sqlite_reply_loss_snapshot(
-        inner.as_ref(), blobs.as_ref(), &setup_context, domain,
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(unrelated_key.clone(), StateRevision::INITIAL).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(
+                unrelated_key.clone(),
+                StateMutation::Put(unrelated_bytes.clone()),
+            )
+            .unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        inner.commit_durable(&setup_context, setup_transaction),
+        DurableCommitOutcome::Committed
     );
+    let baseline: SqliteReplyLossSnapshot =
+        sqlite_reply_loss_snapshot(inner.as_ref(), blobs.as_ref(), &setup_context, domain);
     let epoch_key: Vec<u8> =
         node_core::local_instance_state::fastpath_epoch_record_key(&chain).unwrap();
     let epoch_record: node_core::local_instance_state::FastPathEpochRecord =
@@ -6253,11 +6380,18 @@ fn sqlite_request_outbox_reply_loss_control(mode: SqliteReplyLossMode) {
         let bytes: Vec<u8> = bytes;
         let record_key: DurableRecordKey = DurableRecordKey::State(key);
         let descriptor: DurableRecordDescriptor = DurableRecordDescriptor::new(
-            record_key.clone(), DurableRecordMetadata::State {
-                revision: StateRevision::new(1), value_length: Some(bytes.len()),
+            record_key.clone(),
+            DurableRecordMetadata::State {
+                revision: StateRevision::new(1),
+                value_length: Some(bytes.len()),
             },
-        ).unwrap();
-        assert!(baseline_rows.insert(record_key, (descriptor, Some(bytes))).is_none());
+        )
+        .unwrap();
+        assert!(
+            baseline_rows
+                .insert(record_key, (descriptor, Some(bytes)))
+                .is_none()
+        );
     }
     sqlite_reply_loss_assert_rows(&baseline, &baseline_rows);
 
@@ -6280,94 +6414,159 @@ fn sqlite_request_outbox_reply_loss_control(mode: SqliteReplyLossMode) {
     let mut payload_frame: CanonicalStruct = CanonicalStruct::new(0xEF12, 1);
     payload_frame.field_u64(1, 1).unwrap();
     let expected_payload: Vec<u8> = payload_frame.finish().unwrap();
-    let response: NodeResponse =
-        NodeResponse::new(id, NodeResponseStatus::Accepted, Some(expected_payload.clone())).unwrap();
-    let expected_result: Vec<u8> = HttpNodeResult::new(id, vec![response.clone()]).unwrap().encode().unwrap();
-    let expected_receipt_bytes: Vec<u8> =
-        NodeDedupRecord::new(id, event_digest, vec![response]).unwrap().encode().unwrap();
+    let response: NodeResponse = NodeResponse::new(
+        id,
+        NodeResponseStatus::Accepted,
+        Some(expected_payload.clone()),
+    )
+    .unwrap();
+    let expected_result: Vec<u8> = HttpNodeResult::new(id, vec![response.clone()])
+        .unwrap()
+        .encode()
+        .unwrap();
+    let expected_receipt_bytes: Vec<u8> = NodeDedupRecord::new(id, event_digest, vec![response])
+        .unwrap()
+        .encode()
+        .unwrap();
     let expected_receipt: DurableRequestReceipt =
-        DurableRequestReceipt::new(durable_id, event_digest, expected_receipt_bytes.clone()).unwrap();
+        DurableRequestReceipt::new(durable_id, event_digest, expected_receipt_bytes.clone())
+            .unwrap();
     // SenderNonceRecord's schema is pinned literally, encoded with the public
     // canonical codec, not its private constructor or transition implementation.
     let mut nonce_frame: CanonicalStruct = CanonicalStruct::new(0xE006, 1);
-    nonce_frame.field_bytes(1, sender.as_bytes().to_vec()).unwrap();
+    nonce_frame
+        .field_bytes(1, sender.as_bytes().to_vec())
+        .unwrap();
     nonce_frame.field_u64(2, 7).unwrap();
     nonce_frame.field_u64(3, 1).unwrap();
     let expected_nonce: Vec<u8> = nonce_frame.finish().unwrap();
     let layout: PersistenceLayout = PersistenceLayout::new(chain.clone(), ProtocolVersion::new(3));
     let nonce_key: Vec<u8> = layout.sender_nonce_key(*sender.as_bytes(), Epoch::new(7));
     let expected_outbound_event: NodeEvent = NodeEvent::new(
-        chain, ProtocolVersion::new(3), Epoch::new(7), request_id(0xF0),
-        NodeEventKind::ReceiveVote, expected_payload,
-    ).unwrap();
+        chain,
+        ProtocolVersion::new(3),
+        Epoch::new(7),
+        request_id(0xF0),
+        NodeEventKind::ReceiveVote,
+        expected_payload,
+    )
+    .unwrap();
     let expected_outbound: Vec<u8> = expected_outbound_event.encode().unwrap();
     let mut expected_rows: SqliteReplyLossRows = baseline_rows.clone();
     for (key, bytes) in [
-        (node_config.state_key().to_vec(), expected_state), (nonce_key, expected_nonce),
+        (node_config.state_key().to_vec(), expected_state),
+        (nonce_key, expected_nonce),
     ] {
         let key: Vec<u8> = key;
         let bytes: Vec<u8> = bytes;
         let record_key: DurableRecordKey = DurableRecordKey::State(key);
         let descriptor: DurableRecordDescriptor = DurableRecordDescriptor::new(
-            record_key.clone(), DurableRecordMetadata::State {
-                revision: StateRevision::new(1), value_length: Some(bytes.len()),
+            record_key.clone(),
+            DurableRecordMetadata::State {
+                revision: StateRevision::new(1),
+                value_length: Some(bytes.len()),
             },
-        ).unwrap();
-        assert!(expected_rows.insert(record_key, (descriptor, Some(bytes))).is_none());
+        )
+        .unwrap();
+        assert!(
+            expected_rows
+                .insert(record_key, (descriptor, Some(bytes)))
+                .is_none()
+        );
     }
     let receipt_key: DurableRecordKey = DurableRecordKey::Receipt(durable_id);
     let receipt_descriptor: DurableRecordDescriptor = DurableRecordDescriptor::new(
-        receipt_key.clone(), DurableRecordMetadata::Receipt {
-            event_digest, length: NonZeroUsize::new(expected_receipt_bytes.len()).unwrap(),
+        receipt_key.clone(),
+        DurableRecordMetadata::Receipt {
+            event_digest,
+            length: NonZeroUsize::new(expected_receipt_bytes.len()).unwrap(),
         },
-    ).unwrap();
-    assert!(expected_rows.insert(receipt_key, (receipt_descriptor, Some(expected_receipt_bytes))).is_none());
+    )
+    .unwrap();
+    assert!(
+        expected_rows
+            .insert(
+                receipt_key,
+                (receipt_descriptor, Some(expected_receipt_bytes))
+            )
+            .is_none()
+    );
 
     // Construct/reset all measured counters after public setup and its snapshot.
     let store: Arc<SqliteReplyLossStore> = Arc::new(SqliteReplyLossStore {
-        inner: Arc::clone(&inner), blobs: Arc::clone(&blobs), mode,
+        inner: Arc::clone(&inner),
+        blobs: Arc::clone(&blobs),
+        mode,
         expected_payload: expected_outbound.clone(),
         commit_contexts: Mutex::new(Vec::new()),
-        claim_calls: Mutex::new(Vec::new()), claim_replies: Mutex::new(Vec::new()),
-        ack_calls: Mutex::new(Vec::new()), ack_replies: Mutex::new(Vec::new()),
-        claim_delegations: AtomicUsize::new(0), ack_delegations: AtomicUsize::new(0),
-        generic_commits: AtomicUsize::new(0), due_claims: AtomicUsize::new(0),
-        after_invocation: Mutex::new(None), after_claim: Mutex::new(None), after_ack: Mutex::new(None),
+        claim_calls: Mutex::new(Vec::new()),
+        claim_replies: Mutex::new(Vec::new()),
+        ack_calls: Mutex::new(Vec::new()),
+        ack_replies: Mutex::new(Vec::new()),
+        claim_delegations: AtomicUsize::new(0),
+        ack_delegations: AtomicUsize::new(0),
+        generic_commits: AtomicUsize::new(0),
+        due_claims: AtomicUsize::new(0),
+        after_invocation: Mutex::new(None),
+        after_claim: Mutex::new(None),
+        after_ack: Mutex::new(None),
     });
     let machine: CountingMachine = CountingMachine::new(node_config.state_key());
     let transport: Arc<MemoryTransport> = Arc::new(MemoryTransport::default());
     let components: StructuredDurableNativeComponents<
-        SqliteReplyLossStore, MemoryBlobStore, MemoryTransport, SystemClock, FixedIndexedIdentity,
+        SqliteReplyLossStore,
+        MemoryBlobStore,
+        MemoryTransport,
+        SystemClock,
+        FixedIndexedIdentity,
     > = StructuredDurableNativeComponents::new(
-        Arc::clone(&store), Arc::clone(&blobs), Arc::clone(&transport),
-        Arc::new(SystemClock), Arc::new(FixedIndexedIdentity),
+        Arc::clone(&store),
+        Arc::clone(&blobs),
+        Arc::clone(&transport),
+        Arc::new(SystemClock),
+        Arc::new(FixedIndexedIdentity),
     );
     let authority: StructuredDurableRequestAuthority =
         StructuredDurableRequestAuthority::new(fence, 20_000, 30_000).unwrap();
     let before_invocation_ms: u64 = SystemClock.now_unix_millis().unwrap();
     let result: Result<Vec<u8>, InvocationError> = invoke_structured_durable_event_with_execution(
-        &components, &protocol_config, &authority, &node_config, &hash_resolver, &machine,
-        StructuredDurableAuthenticatedExecution::ReadOnly, &event_bytes,
+        &components,
+        &protocol_config,
+        &authority,
+        &node_config,
+        &hash_resolver,
+        &machine,
+        StructuredDurableAuthenticatedExecution::ReadOnly,
+        &event_bytes,
     );
     let after_invocation_ms: u64 = SystemClock.now_unix_millis().unwrap();
     match (mode, result) {
         (SqliteReplyLossMode::ReconcileBoth, Ok(bytes)) => {
             let bytes: Vec<u8> = bytes;
             assert_eq!(bytes, expected_result);
-        },
-        (SqliteReplyLossMode::RefuseClaimReconciliation, Err(InvocationError::Indexed(
-            IndexedOutboxRecoveryError::ClaimIndeterminate(IndeterminateCommitReason::ConnectionLost),
-        ))) => {},
-        (SqliteReplyLossMode::RefuseAcknowledgementReconciliation, Err(InvocationError::Indexed(
-            IndexedOutboxRecoveryError::AcknowledgementIndeterminate(IndeterminateCommitReason::ConnectionLost),
-        ))) => {},
+        }
+        (
+            SqliteReplyLossMode::RefuseClaimReconciliation,
+            Err(InvocationError::Indexed(IndexedOutboxRecoveryError::ClaimIndeterminate(
+                IndeterminateCommitReason::ConnectionLost,
+            ))),
+        ) => {}
+        (
+            SqliteReplyLossMode::RefuseAcknowledgementReconciliation,
+            Err(InvocationError::Indexed(
+                IndexedOutboxRecoveryError::AcknowledgementIndeterminate(
+                    IndeterminateCommitReason::ConnectionLost,
+                ),
+            )),
+        ) => {}
         _ => panic!("wrong typed native request result or original ambiguity lost"),
     }
     assert_eq!(machine.access_plan_calls.load(Ordering::SeqCst), 1);
     assert_eq!(machine.transition_calls.load(Ordering::SeqCst), 1);
     assert_eq!(store.generic_commits.load(Ordering::SeqCst), 0);
     assert_eq!(store.due_claims.load(Ordering::SeqCst), 0);
-    let commit_contexts: Vec<DurableOperationContext> = store.commit_contexts.lock().unwrap().clone();
+    let commit_contexts: Vec<DurableOperationContext> =
+        store.commit_contexts.lock().unwrap().clone();
     assert_eq!(commit_contexts.len(), 1); // One application commit, not one SQL COMMIT.
     let claim_calls: Vec<(DurableOperationContext, RequestOutboxClaimRequest)> =
         store.claim_calls.lock().unwrap().clone();
@@ -6377,25 +6576,52 @@ fn sqlite_request_outbox_reply_loss_control(mode: SqliteReplyLossMode) {
     let original_request: RequestOutboxClaimRequest = claim_calls[0].1;
     assert_eq!(commit_contexts, vec![original_context]);
     assert_eq!(original_context.writer_fence(), fence);
-    assert_eq!(original_context.correlation_id(), StorageCorrelationId::new([0x72; 16]).unwrap());
+    assert_eq!(
+        original_context.correlation_id(),
+        StorageCorrelationId::new([0x72; 16]).unwrap()
+    );
     assert!(original_request.now_unix_millis() >= before_invocation_ms);
     assert!(original_request.now_unix_millis() <= after_invocation_ms);
     assert_eq!(original_request.domain(), domain);
     assert_eq!(original_request.request_id(), durable_id);
-    assert_eq!(original_request.lease_id(), DurableOutboxLeaseId::new([0x71; 32]).unwrap());
-    assert_eq!(original_context.deadline().unix_millis(),
-        original_request.now_unix_millis().checked_add(20_000).unwrap());
-    assert_eq!(original_request.lease_expires_at_unix_millis(),
-        original_request.now_unix_millis().checked_add(30_000).unwrap());
-    sqlite_reply_loss_before_expiry(original_request);
-    let final_snapshot: SqliteReplyLossSnapshot = sqlite_reply_loss_snapshot(
-        inner.as_ref(), blobs.as_ref(), &original_context, domain,
+    assert_eq!(
+        original_request.lease_id(),
+        DurableOutboxLeaseId::new([0x71; 32]).unwrap()
     );
-    assert_eq!(inner.get_request_receipt(&original_context, domain, durable_id).unwrap(), Some(expected_receipt));
-    assert_eq!(inner.begin_portable_snapshot(&original_context, domain).unwrap(), final_snapshot.token);
+    assert_eq!(
+        original_context.deadline().unix_millis(),
+        original_request
+            .now_unix_millis()
+            .checked_add(20_000)
+            .unwrap()
+    );
+    assert_eq!(
+        original_request.lease_expires_at_unix_millis(),
+        original_request
+            .now_unix_millis()
+            .checked_add(30_000)
+            .unwrap()
+    );
     sqlite_reply_loss_before_expiry(original_request);
-    let invocation_snapshot: SqliteReplyLossSnapshot = store.after_invocation.lock().unwrap().clone().unwrap();
-    let claim_snapshot: SqliteReplyLossSnapshot = store.after_claim.lock().unwrap().clone().unwrap();
+    let final_snapshot: SqliteReplyLossSnapshot =
+        sqlite_reply_loss_snapshot(inner.as_ref(), blobs.as_ref(), &original_context, domain);
+    assert_eq!(
+        inner
+            .get_request_receipt(&original_context, domain, durable_id)
+            .unwrap(),
+        Some(expected_receipt)
+    );
+    assert_eq!(
+        inner
+            .begin_portable_snapshot(&original_context, domain)
+            .unwrap(),
+        final_snapshot.token
+    );
+    sqlite_reply_loss_before_expiry(original_request);
+    let invocation_snapshot: SqliteReplyLossSnapshot =
+        store.after_invocation.lock().unwrap().clone().unwrap();
+    let claim_snapshot: SqliteReplyLossSnapshot =
+        store.after_claim.lock().unwrap().clone().unwrap();
     for snapshot in [&invocation_snapshot, &claim_snapshot, &final_snapshot] {
         let snapshot: &SqliteReplyLossSnapshot = snapshot;
         sqlite_reply_loss_assert_rows(snapshot, &expected_rows);
@@ -6403,25 +6629,41 @@ fn sqlite_request_outbox_reply_loss_control(mode: SqliteReplyLossMode) {
         assert_eq!(snapshot.token.domain(), domain);
         assert_eq!(snapshot.token.writer_fence(), fence);
     }
-    assert_eq!(invocation_snapshot.token.mutation_sequence(), baseline.token.mutation_sequence().checked_add(1).unwrap());
-    assert_eq!(claim_snapshot.token.mutation_sequence(), baseline.token.mutation_sequence().checked_add(2).unwrap());
+    assert_eq!(
+        invocation_snapshot.token.mutation_sequence(),
+        baseline.token.mutation_sequence().checked_add(1).unwrap()
+    );
+    assert_eq!(
+        claim_snapshot.token.mutation_sequence(),
+        baseline.token.mutation_sequence().checked_add(2).unwrap()
+    );
     let expected_claim: DurableOutboxClaim = DurableOutboxClaim::from_parts(
-        durable_id, 0, original_request.lease_id(), original_request.lease_expires_at_unix_millis(),
+        durable_id,
+        0,
+        original_request.lease_id(),
+        original_request.lease_expires_at_unix_millis(),
         expected_outbound.clone(),
-    ).unwrap();
+    )
+    .unwrap();
     let claim_replies: Vec<DurableOutboxClaimOutcome> = store.claim_replies.lock().unwrap().clone();
     let ack_calls: Vec<(DurableOperationContext, DurableOutboxAcknowledgement)> =
         store.ack_calls.lock().unwrap().clone();
-    let ack_replies: Vec<DurableOutboxAcknowledgementOutcome> = store.ack_replies.lock().unwrap().clone();
+    let ack_replies: Vec<DurableOutboxAcknowledgementOutcome> =
+        store.ack_replies.lock().unwrap().clone();
     let transported: Vec<Vec<u8>> = transport.drain_outbound().unwrap();
     let ack_snapshot: Option<SqliteReplyLossSnapshot> = store.after_ack.lock().unwrap().clone();
     if mode == SqliteReplyLossMode::RefuseClaimReconciliation {
         assert_eq!(store.claim_delegations.load(Ordering::SeqCst), 1);
         assert_eq!(store.ack_delegations.load(Ordering::SeqCst), 0);
-        assert_eq!(claim_replies, vec![
-            DurableOutboxClaimOutcome::Indeterminate(IndeterminateCommitReason::ConnectionLost),
-            DurableOutboxClaimOutcome::Rejected(DurableOutboxClaimRejection::UnavailableBeforeCommit),
-        ]);
+        assert_eq!(
+            claim_replies,
+            vec![
+                DurableOutboxClaimOutcome::Indeterminate(IndeterminateCommitReason::ConnectionLost),
+                DurableOutboxClaimOutcome::Rejected(
+                    DurableOutboxClaimRejection::UnavailableBeforeCommit
+                ),
+            ]
+        );
         assert!(ack_calls.is_empty());
         assert!(ack_replies.is_empty());
         assert!(ack_snapshot.is_none());
@@ -6429,30 +6671,48 @@ fn sqlite_request_outbox_reply_loss_control(mode: SqliteReplyLossMode) {
         assert_eq!(final_snapshot, claim_snapshot); // +2, no send or ack.
     } else {
         assert_eq!(store.claim_delegations.load(Ordering::SeqCst), 2);
-        assert_eq!(claim_replies, vec![
-            DurableOutboxClaimOutcome::Indeterminate(IndeterminateCommitReason::ConnectionLost),
-            DurableOutboxClaimOutcome::Claimed(expected_claim),
-        ]);
+        assert_eq!(
+            claim_replies,
+            vec![
+                DurableOutboxClaimOutcome::Indeterminate(IndeterminateCommitReason::ConnectionLost),
+                DurableOutboxClaimOutcome::Claimed(expected_claim),
+            ]
+        );
         let expected_ack: DurableOutboxAcknowledgement =
             DurableOutboxAcknowledgement::new(domain, durable_id, 0, original_request.lease_id());
         assert_eq!(ack_calls, vec![(original_context, expected_ack); 2]);
         assert_eq!(transported, vec![expected_outbound]);
         let ack_snapshot: SqliteReplyLossSnapshot = ack_snapshot.unwrap();
         sqlite_reply_loss_assert_rows(&ack_snapshot, &expected_rows);
-        assert_eq!(ack_snapshot.token.mutation_sequence(), baseline.token.mutation_sequence().checked_add(3).unwrap());
+        assert_eq!(
+            ack_snapshot.token.mutation_sequence(),
+            baseline.token.mutation_sequence().checked_add(3).unwrap()
+        );
         assert_eq!(final_snapshot, ack_snapshot); // +3, observation/reconcile add zero.
         if mode == SqliteReplyLossMode::ReconcileBoth {
             assert_eq!(store.ack_delegations.load(Ordering::SeqCst), 2);
-            assert_eq!(ack_replies, vec![
-                DurableOutboxAcknowledgementOutcome::Indeterminate(IndeterminateCommitReason::ConnectionLost),
-                DurableOutboxAcknowledgementOutcome::Acknowledged,
-            ]);
+            assert_eq!(
+                ack_replies,
+                vec![
+                    DurableOutboxAcknowledgementOutcome::Indeterminate(
+                        IndeterminateCommitReason::ConnectionLost
+                    ),
+                    DurableOutboxAcknowledgementOutcome::Acknowledged,
+                ]
+            );
         } else {
             assert_eq!(store.ack_delegations.load(Ordering::SeqCst), 1);
-            assert_eq!(ack_replies, vec![
-                DurableOutboxAcknowledgementOutcome::Indeterminate(IndeterminateCommitReason::ConnectionLost),
-                DurableOutboxAcknowledgementOutcome::Rejected(DurableOutboxAcknowledgementRejection::UnavailableBeforeCommit),
-            ]);
+            assert_eq!(
+                ack_replies,
+                vec![
+                    DurableOutboxAcknowledgementOutcome::Indeterminate(
+                        IndeterminateCommitReason::ConnectionLost
+                    ),
+                    DurableOutboxAcknowledgementOutcome::Rejected(
+                        DurableOutboxAcknowledgementRejection::UnavailableBeforeCommit
+                    ),
+                ]
+            );
         }
     }
 }
@@ -6469,7 +6729,9 @@ fn sqlite_request_outbox_unresolved_landed_claim_preserves_first_ambiguity_witho
 
 #[test]
 fn sqlite_request_outbox_unresolved_landed_ack_preserves_first_ambiguity_after_one_send() {
-    sqlite_request_outbox_reply_loss_control(SqliteReplyLossMode::RefuseAcknowledgementReconciliation);
+    sqlite_request_outbox_reply_loss_control(
+        SqliteReplyLossMode::RefuseAcknowledgementReconciliation,
+    );
 }
 
 // Fault only the supplied read port. The original referenced blob remains in
@@ -6524,17 +6786,22 @@ async fn sqlite_preinstalled_blob_read_refusal_control(
     let validator: ValidatorId = ValidatorId::new([0x44; 32]);
     let domain: AtomicityDomainId = AtomicityDomainId::new([0xBB; 32]).unwrap();
     let namespace: SqliteNamespace = SqliteNamespace::new(chain.clone(), validator, domain);
-    let store: Arc<SqliteDurableStore> = Arc::new(
-        SqliteDurableStore::create_new(&database.path, namespace, fence).unwrap(),
-    );
+    let store: Arc<SqliteDurableStore> =
+        Arc::new(SqliteDurableStore::create_new(&database.path, namespace, fence).unwrap());
     let blobs: Arc<MemoryBlobStore> = Arc::new(MemoryBlobStore::default());
     let transport: Arc<MemoryTransport> = Arc::new(MemoryTransport::default());
     let config: NodeConfig = config();
     let module_id: ModuleId = ModuleId::new([0x72; 32]);
     let (registry, catalog, module_ref): (
-        SystemModuleRegistry, PreinstalledModuleCatalog, ObjectRef,
+        SystemModuleRegistry,
+        PreinstalledModuleCatalog,
+        ObjectRef,
     ) = preinstalled_module_fixture(
-        &resolver(), module_id, 1, preinstalled_write_wasm_bytes(), 64,
+        &resolver(),
+        module_id,
+        1,
+        preinstalled_write_wasm_bytes(),
+        64,
     );
     let protocol_config: ProtocolConfig = preinstalled_protocol_config(domain, registry);
     let signing_key: ed25519_zebra::SigningKey = dev_signing_key(0x53);
@@ -6548,8 +6815,14 @@ async fn sqlite_preinstalled_blob_read_refusal_control(
         .hash_for_purpose(Epoch::new(0), HashPurpose::Object, &original_blob_bytes)
         .unwrap();
     let object_ref: ObjectRef = commit_owned_blob_object(
-        store.as_ref(), blobs.as_ref(), &context, domain, original_object,
-        "sunrise-test", 9, 0x41,
+        store.as_ref(),
+        blobs.as_ref(),
+        &context,
+        domain,
+        original_object,
+        "sunrise-test",
+        9,
+        0x41,
     );
     assert_eq!(object_ref.id, object_id);
     assert_eq!(object_ref.version, 1);
@@ -6562,17 +6835,23 @@ async fn sqlite_preinstalled_blob_read_refusal_control(
         owner_projection: DurableObjectOwnerProjection::from_owner(Owner::Address(sender)).unwrap(),
         routing_projection: DurableObjectRoutingProjection::default(),
     };
-    let original_head: DurableObjectHead = store
-        .get_object_head(&context, domain, object_id).unwrap();
+    let original_head: DurableObjectHead =
+        store.get_object_head(&context, domain, object_id).unwrap();
     assert_eq!(original_head, expected_head);
     let expected_version: DurableObjectVersionRecord =
         DurableObjectVersionRecord::from_blob_reference(
-            object_id, version, selected_digest, 0x40,
+            object_id,
+            version,
+            selected_digest,
+            0x40,
             DurableObjectProvenance::new(chain.clone(), ProtocolVersion::new(3)),
-            9, selected_digest,
+            9,
+            selected_digest,
         );
     let original_version: DurableObjectVersionRecord = store
-        .get_object_version(&context, domain, object_id, version).unwrap().unwrap();
+        .get_object_version(&context, domain, object_id, version)
+        .unwrap()
+        .unwrap();
     assert_eq!(original_version, expected_version);
     assert_eq!(
         original_version.payload(),
@@ -6585,17 +6864,24 @@ async fn sqlite_preinstalled_blob_read_refusal_control(
     let id: RequestId = request_id(0xBD);
     let receipt_id: DurableRequestId = DurableRequestId::new(*id.as_bytes()).unwrap();
     assert_eq!(
-        store.get_request_receipt(&context, domain, receipt_id).unwrap(),
+        store
+            .get_request_receipt(&context, domain, receipt_id)
+            .unwrap(),
         None,
     );
     let initial_nonce: u64 = node_core::query_sender_next_nonce(
-        store.as_ref(), &context, domain, chain.clone(), ProtocolVersion::new(3),
-        Epoch::new(7), sender_bytes,
-    ).unwrap();
+        store.as_ref(),
+        &context,
+        domain,
+        chain.clone(),
+        ProtocolVersion::new(3),
+        Epoch::new(7),
+        sender_bytes,
+    )
+    .unwrap();
     assert_eq!(initial_nonce, 0);
-    let baseline: SqliteReplyLossSnapshot = sqlite_reply_loss_snapshot(
-        store.as_ref(), blobs.as_ref(), &context, domain,
-    );
+    let baseline: SqliteReplyLossSnapshot =
+        sqlite_reply_loss_snapshot(store.as_ref(), blobs.as_ref(), &context, domain);
     assert_eq!(baseline.blobs.len(), 1);
     let baseline_blob: &(PortableBlobDescriptor, Vec<u8>) =
         baseline.blobs.get(&selected_digest).unwrap();
@@ -6613,23 +6899,37 @@ async fn sqlite_preinstalled_blob_read_refusal_control(
     let clock: Arc<SystemClock> = Arc::new(SystemClock);
     let catalog: Arc<PreinstalledModuleCatalog> = Arc::new(catalog);
     let app: Router = preinstalled_app_with_blob_store(
-        Arc::clone(&store), Arc::clone(&faulty_blobs), Arc::clone(&transport), clock,
-        protocol_config, config, catalog, 9,
+        Arc::clone(&store),
+        Arc::clone(&faulty_blobs),
+        Arc::clone(&transport),
+        clock,
+        protocol_config,
+        config,
+        catalog,
+        9,
     );
     let mut manifest: AccessManifest = AccessManifest::new();
-    manifest.push(AccessEntry { object_ref, mode: AccessMode::Write });
+    manifest.push(AccessEntry {
+        object_ref,
+        mode: AccessMode::Write,
+    });
     let event: NodeEvent = signed_preinstalled_wasm_submit_transaction_event(
-        &signing_key, id, 0, manifest, module_ref, vec![1, 2],
+        &signing_key,
+        id,
+        0,
+        manifest,
+        module_ref,
+        vec![1, 2],
     );
     let request_bytes: Vec<u8> = event.encode().unwrap();
     let request: Request<Body> = Request::post(NODE_EVENT_PATH)
         .header(header::CONTENT_TYPE, NODE_EVENT_MEDIA_TYPE)
-        .body(Body::from(request_bytes.clone())).unwrap();
+        .body(Body::from(request_bytes.clone()))
+        .unwrap();
     assert_eq!(faulty_blobs.selected_reads(), 0);
     let response: Response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), expected_status);
-    let response_bytes: Vec<u8> = to_bytes(response.into_body(), 128)
-        .await.unwrap().to_vec();
+    let response_bytes: Vec<u8> = to_bytes(response.into_body(), 128).await.unwrap().to_vec();
     assert_eq!(response_bytes.as_slice(), expected_body);
     assert_eq!(faulty_blobs.selected_reads(), 1);
     let outbound: Vec<Vec<u8>> = transport.drain_outbound().unwrap();
@@ -6639,7 +6939,9 @@ async fn sqlite_preinstalled_blob_read_refusal_control(
         original_head,
     );
     assert_eq!(
-        store.get_object_version(&context, domain, object_id, version).unwrap(),
+        store
+            .get_object_version(&context, domain, object_id, version)
+            .unwrap(),
         Some(original_version),
     );
     assert_eq!(
@@ -6647,17 +6949,24 @@ async fn sqlite_preinstalled_blob_read_refusal_control(
         Some(original_blob_bytes),
     );
     assert_eq!(
-        store.get_request_receipt(&context, domain, receipt_id).unwrap(),
+        store
+            .get_request_receipt(&context, domain, receipt_id)
+            .unwrap(),
         None,
     );
     let final_nonce: u64 = node_core::query_sender_next_nonce(
-        store.as_ref(), &context, domain, chain, ProtocolVersion::new(3),
-        Epoch::new(7), sender_bytes,
-    ).unwrap();
+        store.as_ref(),
+        &context,
+        domain,
+        chain,
+        ProtocolVersion::new(3),
+        Epoch::new(7),
+        sender_bytes,
+    )
+    .unwrap();
     assert_eq!(final_nonce, 0);
-    let after: SqliteReplyLossSnapshot = sqlite_reply_loss_snapshot(
-        store.as_ref(), blobs.as_ref(), &context, domain,
-    );
+    let after: SqliteReplyLossSnapshot =
+        sqlite_reply_loss_snapshot(store.as_ref(), blobs.as_ref(), &context, domain);
     assert_eq!(after, baseline);
     assert_eq!(faulty_blobs.selected_reads(), 1);
 }
@@ -6668,7 +6977,8 @@ async fn sqlite_preinstalled_route_missing_blob_refuses_without_mutation() {
         NativeBlobReadRefusal::Missing,
         StatusCode::SERVICE_UNAVAILABLE,
         b"object-blob-unavailable",
-    ).await;
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -6677,5 +6987,6 @@ async fn sqlite_preinstalled_route_blob_digest_mismatch_refuses_without_mutation
         NativeBlobReadRefusal::DigestMismatch,
         StatusCode::INTERNAL_SERVER_ERROR,
         b"invalid-node-output",
-    ).await;
+    )
+    .await;
 }

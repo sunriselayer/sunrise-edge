@@ -525,9 +525,18 @@ fn frozen_frontier_public_caps_match_independent_literals() {
     assert_eq!(crate::MAX_FROZEN_FRONTIER_VOTE_BYTES, vote_cap);
     assert_eq!(crate::MAX_FROZEN_FRONTIER_PAGE_BYTES, page_cap);
     assert_eq!(crate::MAX_FROZEN_FRONTIER_PAGE_ENTRIES, entry_cap);
-    assert_eq!(crate::MAX_FROZEN_FRONTIER_VOTE_BYTES, MAX_FRONTIER_VOTE_BYTES);
-    assert_eq!(crate::MAX_FROZEN_FRONTIER_PAGE_BYTES, MAX_FROZEN_FRONTIER_PAGE_BYTES);
-    assert_eq!(crate::MAX_FROZEN_FRONTIER_PAGE_ENTRIES, MAX_FROZEN_FRONTIER_PAGE_ENTRIES);
+    assert_eq!(
+        crate::MAX_FROZEN_FRONTIER_VOTE_BYTES,
+        MAX_FRONTIER_VOTE_BYTES
+    );
+    assert_eq!(
+        crate::MAX_FROZEN_FRONTIER_PAGE_BYTES,
+        MAX_FROZEN_FRONTIER_PAGE_BYTES
+    );
+    assert_eq!(
+        crate::MAX_FROZEN_FRONTIER_PAGE_ENTRIES,
+        MAX_FROZEN_FRONTIER_PAGE_ENTRIES
+    );
 }
 
 #[test]
@@ -535,7 +544,9 @@ fn frozen_frontier_vote_literal_byte_boundary() {
     let at_cap: Vec<u8> = vec![0u8; 8_192];
     assert!(matches!(
         decode_frozen_frontier_vote(&at_cap),
-        Err(FrontierError::Consensus(ConsensusError::CanonicalDecoding(_)))
+        Err(FrontierError::Consensus(ConsensusError::CanonicalDecoding(
+            _
+        )))
     ));
     let above_cap: Vec<u8> = vec![0u8; 8_193];
     assert_eq!(
@@ -549,7 +560,9 @@ fn frozen_frontier_page_literal_byte_boundary() {
     let at_cap: Vec<u8> = vec![0u8; 524_288];
     assert!(matches!(
         decode_frozen_frontier_page(&at_cap),
-        Err(FrontierError::Consensus(ConsensusError::CanonicalDecoding(_)))
+        Err(FrontierError::Consensus(ConsensusError::CanonicalDecoding(
+            _
+        )))
     ));
     let above_cap: Vec<u8> = vec![0u8; 524_289];
     assert_eq!(

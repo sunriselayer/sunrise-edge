@@ -287,71 +287,161 @@ impl PrivateStage {
     pub(super) fn complete_entry_count_for_test(&self) -> usize {
         self.complete_entries_for_test
     }
-    fn check_directory(&self, relative: &Path) -> Result<ImmutableArchiveReader, RecoveryError> {
-        self.root
-            .ensure_attached()
-            .map_err(|_| RecoveryError::Attachment)?;
-        let directory: ImmutableArchiveReader =
-            ImmutableArchiveReader::open_bounded(&self.root.root().join(relative), &self.budget)
-                .map_err(|_| RecoveryError::Attachment)?;
-        let metadata: std::fs::Metadata = directory
-            .directory()
-            .metadata()
-            .map_err(|_| RecoveryError::Attachment)?;
-        if self.directory_stamps.get(relative)
-            != Some(&DirectoryStamp::read(directory.directory())?)
+    #[cfg(test)]
+    pub(super) fn capture_counts_for_test(&self) -> (usize, usize) {
+        (self.snapshots.len(), self.directories.len())
+    }
+    fn check_directory(&self, relative: &Path) -> Result<File, RecoveryError> {
+        #[cfg(not(unix))]
         {
-            return Err(RecoveryError::Attachment);
+            let _ = relative;
+            return Err(RecoveryError::Unsupported);
         }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt;
-            if metadata.uid() != self.uid || metadata.mode() & 0o7777 != 0o700 {
+            use rustix::fs::{Mode, OFlags, openat};
+            self.root
+                .ensure_attached()
+                .map_err(|_| RecoveryError::Attachment)?;
+            let mut path: PathBuf = PathBuf::new();
+            let mut held: Option<File> = None;
+            self.check_directory_stamp(&path, self.root.directory())?;
+            // Descend once through the held private root. No component follows a
+            // symlink and every saved prefix keeps its original inode/mode/owner.
+            // Only the current/next directory handles are live, not an FD cache.
+            for component in relative.components() {
+                self.budget
+                    .charge_observations(1)
+                    .map_err(|_| RecoveryError::Quota)?;
+                let Component::Normal(name) = component else {
+                    return Err(RecoveryError::Inventory);
+                };
+                path.push(name);
+                let parent: &File = held.as_ref().unwrap_or(self.root.directory());
+                let directory: File = openat(
+                    parent,
+                    name,
+                    OFlags::RDONLY
+                        | OFlags::DIRECTORY
+                        | OFlags::NOFOLLOW
+                        | OFlags::NONBLOCK
+                        | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map(File::from)
+                .map_err(|_| RecoveryError::Attachment)?;
+                self.check_directory_stamp(&path, &directory)?;
+                held = Some(directory);
+            }
+            self.recheck_directory(relative, held.as_ref().unwrap_or(self.root.directory()))?;
+            match held {
+                Some(directory) => Ok(directory),
+                None => self
+                    .root
+                    .directory()
+                    .try_clone()
+                    .map_err(|_| RecoveryError::Attachment),
+            }
+        }
+    }
+    fn check_directory_stamp(&self, relative: &Path, held: &File) -> Result<(), RecoveryError> {
+        self.budget
+            .charge_observations(1)
+            .map_err(|_| RecoveryError::Quota)?;
+        let stamp: DirectoryStamp = DirectoryStamp::read(held)?;
+        let named: std::fs::Metadata = std::fs::symlink_metadata(self.root.root().join(relative))
+            .map_err(|_| RecoveryError::Attachment)?;
+        if self.directory_stamps.get(relative) != Some(&stamp)
+            || DirectoryStamp::from_metadata(&named)? != stamp
+            || stamp.uid != self.uid
+            || stamp.mode & 0o7777 != 0o700
+        {
+            return Err(RecoveryError::Attachment);
+        }
+        self.budget.check().map_err(|_| RecoveryError::Quota)
+    }
+    fn recheck_directory(&self, relative: &Path, held: &File) -> Result<(), RecoveryError> {
+        self.root
+            .ensure_attached()
+            .map_err(|_| RecoveryError::Attachment)?;
+        self.check_directory_stamp(relative, held)?;
+        // Recheck EVERY original named prefix, not only the final held child.
+        // This also refuses an ancestor replacement which preserves that child.
+        for prefix in relative.ancestors() {
+            self.budget
+                .charge_observations(1)
+                .map_err(|_| RecoveryError::Quota)?;
+            let named: std::fs::Metadata = std::fs::symlink_metadata(self.root.root().join(prefix))
+                .map_err(|_| RecoveryError::Attachment)?;
+            if self.directory_stamps.get(prefix) != Some(&DirectoryStamp::from_metadata(&named)?) {
                 return Err(RecoveryError::Attachment);
             }
         }
-        Ok(directory)
-    }
-    fn sync(&self, relative: &Path) -> Result<(), RecoveryError> {
-        let directory: ImmutableArchiveReader = self.check_directory(relative)?;
-        directory
-            .directory()
-            .sync_all()
-            .map_err(|_| RecoveryError::Publication)?;
-        directory
+        self.check_directory_stamp(relative, held)?;
+        self.root
             .ensure_attached()
             .map_err(|_| RecoveryError::Attachment)
     }
+    fn sync(&self, relative: &Path) -> Result<(), RecoveryError> {
+        let directory: File = self.check_directory(relative)?;
+        directory
+            .sync_all()
+            .map_err(|_| RecoveryError::Publication)?;
+        self.recheck_directory(relative, &directory)
+    }
     fn prepare_parent(&mut self, relative: &Path) -> Result<(), RecoveryError> {
         let parent: &Path = relative.parent().ok_or(RecoveryError::Inventory)?;
+        if self.directories.contains(parent) {
+            return self.check_directory(parent).map(|_| ());
+        }
         let mut path: PathBuf = PathBuf::new();
         for part in parent.components() {
+            self.budget
+                .charge_observations(1)
+                .map_err(|_| RecoveryError::Quota)?;
             if !matches!(part, Component::Normal(_)) {
                 return Err(RecoveryError::Inventory);
             }
             let previous: PathBuf = path.clone();
             path.push(part);
             if self.directories.contains(&path) {
-                self.check_directory(&path)?;
+                // A later full parent descent checks every saved prefix once
+                // before creation; do not repeat complete root walks here.
                 continue;
             }
-            self.check_directory(&previous)?;
+            let parent: File = self.check_directory(&previous)?;
             #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                std::fs::DirBuilder::new()
-                    .mode(0o700)
-                    .create(self.root.root().join(&path))
-                    .map_err(|_| RecoveryError::Publication)?;
-            }
+            let created: File = {
+                rustix::fs::mkdirat(
+                    &parent,
+                    part.as_os_str(),
+                    rustix::fs::Mode::from_bits_truncate(0o700),
+                )
+                .map_err(|_| RecoveryError::Publication)?;
+                self.budget
+                    .charge_observations(1)
+                    .map_err(|_| RecoveryError::Quota)?;
+                rustix::fs::openat(
+                    &parent,
+                    part.as_os_str(),
+                    rustix::fs::OFlags::RDONLY
+                        | rustix::fs::OFlags::DIRECTORY
+                        | rustix::fs::OFlags::NOFOLLOW
+                        | rustix::fs::OFlags::NONBLOCK
+                        | rustix::fs::OFlags::CLOEXEC,
+                    rustix::fs::Mode::empty(),
+                )
+                .map(File::from)
+                .map_err(|_| RecoveryError::Attachment)?
+            };
+            #[cfg(not(unix))]
+            let created: File = return Err(RecoveryError::Unsupported);
             self.directories.insert(path.clone());
-            let created: ImmutableArchiveReader =
-                ImmutableArchiveReader::open_bounded(&self.root.root().join(&path), &self.budget)
-                    .map_err(|_| RecoveryError::Attachment)?;
             self.directory_stamps
-                .insert(path.clone(), DirectoryStamp::read(created.directory())?);
-            self.check_directory(&path)?;
-            self.sync(&previous)?;
+                .insert(path.clone(), DirectoryStamp::read(&created)?);
+            self.recheck_directory(&path, &created)?;
+            parent.sync_all().map_err(|_| RecoveryError::Publication)?;
+            self.recheck_directory(&previous, &parent)?;
         }
         Ok(())
     }
@@ -1018,9 +1108,8 @@ mod publication_controls {
                 .mode(0o700)
                 .create(&path)
                 .expect("create this test's private fixture root");
-            let root: ImmutableArchiveReader =
-                ImmutableArchiveReader::open_bounded(&path, budget)
-                    .expect("hold this test's private fixture root");
+            let root: ImmutableArchiveReader = ImmutableArchiveReader::open_bounded(&path, budget)
+                .expect("hold this test's private fixture root");
             let original: DirectoryStamp =
                 DirectoryStamp::read(root.directory()).expect("stamp fixture root");
             assert_eq!(root.root(), path.as_path());
@@ -1046,7 +1135,10 @@ mod publication_controls {
             let named_stamp: DirectoryStamp = DirectoryStamp::from_metadata(&named)
                 .expect("fixture path still names a directory");
             assert!(attached == self.original, "held fixture identity changed");
-            assert!(named_stamp == self.original, "named fixture identity changed");
+            assert!(
+                named_stamp == self.original,
+                "named fixture identity changed"
+            );
             assert_eq!(self.root.root(), self.path.as_path());
             std::fs::remove_dir_all(&self.path)
                 .expect("remove only the still-attached private fixture root");
@@ -1116,8 +1208,10 @@ mod publication_controls {
         let mut publication: CipherPublication =
             CipherPublication::create(absent_output, budget).unwrap();
         publication.writer().write_all(bytes).unwrap();
-        let original: std::fs::Metadata =
-            publication.file.metadata().expect("capture held pending metadata");
+        let original: std::fs::Metadata = publication
+            .file
+            .metadata()
+            .expect("capture held pending metadata");
         (publication, output, pending, original)
     }
 
@@ -1145,9 +1239,11 @@ mod publication_controls {
     fn pending_create_refusal_and_real_collision_preserve_existing_leaf() {
         let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
         let directory: PublicationTestDirectory = PublicationTestDirectory::new(&budget);
-        let (sentinel_path, sentinel_bytes, sentinel_before):
-            (PathBuf, Vec<u8>, std::fs::Metadata) =
-            create_sentinel(&directory.path, "pending-create-sentinel");
+        let (sentinel_path, sentinel_bytes, sentinel_before): (
+            PathBuf,
+            Vec<u8>,
+            std::fs::Metadata,
+        ) = create_sentinel(&directory.path, "pending-create-sentinel");
         let output: PathBuf = directory.path.join("new-output");
         let pending: PathBuf = CipherPublication::pending_path(&output).unwrap();
         let refused: Result<CipherPublication, RecoveryError> =
@@ -1161,9 +1257,11 @@ mod publication_controls {
         absent(&pending);
         assert_sentinel(&sentinel_path, &sentinel_bytes, &sentinel_before);
 
-        let (collision_sentinel_path, collision_sentinel_bytes, collision_sentinel_before):
-            (PathBuf, Vec<u8>, std::fs::Metadata) =
-            create_sentinel(&directory.path, "collision-sentinel");
+        let (collision_sentinel_path, collision_sentinel_bytes, collision_sentinel_before): (
+            PathBuf,
+            Vec<u8>,
+            std::fs::Metadata,
+        ) = create_sentinel(&directory.path, "collision-sentinel");
         let collision_output: PathBuf = directory.path.join("collision-output");
         let collision_pending: PathBuf =
             CipherPublication::pending_path(&collision_output).unwrap();
@@ -1190,9 +1288,11 @@ mod publication_controls {
     fn create_parent_sync_refusal_retains_only_empty_owned_pending_file() {
         let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
         let directory: PublicationTestDirectory = PublicationTestDirectory::new(&budget);
-        let (sentinel_path, sentinel_bytes, sentinel_before):
-            (PathBuf, Vec<u8>, std::fs::Metadata) =
-            create_sentinel(&directory.path, "create-sync-sentinel");
+        let (sentinel_path, sentinel_bytes, sentinel_before): (
+            PathBuf,
+            Vec<u8>,
+            std::fs::Metadata,
+        ) = create_sentinel(&directory.path, "create-sync-sentinel");
         let output: PathBuf = directory.path.join("create-sync-output");
         let pending: PathBuf = CipherPublication::pending_path(&output).unwrap();
         let refused: Result<CipherPublication, RecoveryError> =
@@ -1224,12 +1324,17 @@ mod publication_controls {
             ("hard-link", PublicationFailureAt::FinalHardLink),
         ];
         for (name, fail_at) in cases {
-            let (sentinel_path, sentinel_bytes, sentinel_before):
-                (PathBuf, Vec<u8>, std::fs::Metadata) =
-                create_sentinel(&directory.path, &format!("{name}-sentinel"));
-            let (publication, output, pending, original):
-                (CipherPublication, PathBuf, PathBuf, std::fs::Metadata) =
-                ready_publication(&directory.path, name, bytes, &budget);
+            let (sentinel_path, sentinel_bytes, sentinel_before): (
+                PathBuf,
+                Vec<u8>,
+                std::fs::Metadata,
+            ) = create_sentinel(&directory.path, &format!("{name}-sentinel"));
+            let (publication, output, pending, original): (
+                CipherPublication,
+                PathBuf,
+                PathBuf,
+                std::fs::Metadata,
+            ) = ready_publication(&directory.path, name, bytes, &budget);
             let refused: Result<(), RecoveryError> = publication.publish_with_failure_at(
                 bytes.len() as u64,
                 content_hash(bytes),
@@ -1253,12 +1358,17 @@ mod publication_controls {
             ("pending-unlink", PublicationFailureAt::PendingUnlink),
         ];
         for (name, fail_at) in cases {
-            let (sentinel_path, sentinel_bytes, sentinel_before):
-                (PathBuf, Vec<u8>, std::fs::Metadata) =
-                create_sentinel(&directory.path, &format!("{name}-sentinel"));
-            let (publication, output, pending, original):
-                (CipherPublication, PathBuf, PathBuf, std::fs::Metadata) =
-                ready_publication(&directory.path, name, bytes, &budget);
+            let (sentinel_path, sentinel_bytes, sentinel_before): (
+                PathBuf,
+                Vec<u8>,
+                std::fs::Metadata,
+            ) = create_sentinel(&directory.path, &format!("{name}-sentinel"));
+            let (publication, output, pending, original): (
+                CipherPublication,
+                PathBuf,
+                PathBuf,
+                std::fs::Metadata,
+            ) = ready_publication(&directory.path, name, bytes, &budget);
             let refused: Result<(), RecoveryError> = publication.publish_with_failure_at(
                 bytes.len() as u64,
                 content_hash(bytes),
@@ -1282,13 +1392,18 @@ mod publication_controls {
     fn final_parent_sync_refusal_retains_final_only_and_success_preserves_sentinels() {
         let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
         let directory: PublicationTestDirectory = PublicationTestDirectory::new(&budget);
-        let (failure_sentinel_path, failure_sentinel_bytes, failure_sentinel_before):
-            (PathBuf, Vec<u8>, std::fs::Metadata) =
-            create_sentinel(&directory.path, "final-sync-sentinel");
+        let (failure_sentinel_path, failure_sentinel_bytes, failure_sentinel_before): (
+            PathBuf,
+            Vec<u8>,
+            std::fs::Metadata,
+        ) = create_sentinel(&directory.path, "final-sync-sentinel");
         let bytes: &[u8] = b"deterministic final-only body";
-        let (publication, output, pending, original):
-            (CipherPublication, PathBuf, PathBuf, std::fs::Metadata) =
-            ready_publication(&directory.path, "final-sync", bytes, &budget);
+        let (publication, output, pending, original): (
+            CipherPublication,
+            PathBuf,
+            PathBuf,
+            std::fs::Metadata,
+        ) = ready_publication(&directory.path, "final-sync", bytes, &budget);
         let refused: Result<(), RecoveryError> = publication.publish_with_failure_at(
             bytes.len() as u64,
             content_hash(bytes),
@@ -1315,12 +1430,17 @@ mod publication_controls {
         assert_eq!(file_stamp(&sentinel_after), file_stamp(&sentinel_before));
         assert_eq!(std::fs::read(&sentinel_output).unwrap(), sentinel);
 
-        let (success_sentinel_path, success_sentinel_bytes, success_sentinel_before):
-            (PathBuf, Vec<u8>, std::fs::Metadata) =
-            create_sentinel(&directory.path, "success-sentinel");
-        let (publication, success_output, success_pending, success_original):
-            (CipherPublication, PathBuf, PathBuf, std::fs::Metadata) =
-            ready_publication(&directory.path, "success", bytes, &budget);
+        let (success_sentinel_path, success_sentinel_bytes, success_sentinel_before): (
+            PathBuf,
+            Vec<u8>,
+            std::fs::Metadata,
+        ) = create_sentinel(&directory.path, "success-sentinel");
+        let (publication, success_output, success_pending, success_original): (
+            CipherPublication,
+            PathBuf,
+            PathBuf,
+            std::fs::Metadata,
+        ) = ready_publication(&directory.path, "success", bytes, &budget);
         publication
             .publish(bytes.len() as u64, content_hash(bytes), bytes.len() as u64)
             .unwrap();

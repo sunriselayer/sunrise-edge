@@ -101,7 +101,7 @@ impl Default for RecoveryLimits {
     fn default() -> Self {
         Self {
             files: 32768,
-            observations: 262144,
+            observations: ArchiveReadLimits::default().observations,
             heights: 4096,
             components: 32768,
             file_bytes: 32 * 1024 * 1024,
@@ -373,10 +373,21 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), RecoveryErr
     budget
         .check_roles(usize::from(3 + 4 * request.links))
         .map_err(|_| RecoveryError::Quota)?;
-    if matches!(&request.mode, Mode::Pack { .. }) {
+    let result: Result<(), RecoveryError> = if matches!(&request.mode, Mode::Pack { .. }) {
         pack(request, &budget)
     } else {
         open(request, &budget)
+    };
+    result.map_err(|error: RecoveryError| classify_failure(error, &budget))
+}
+
+fn classify_failure(error: RecoveryError, budget: &ArchiveReadBudget) -> RecoveryError {
+    // Filesystem/decoder adapters intentionally discard secret-bearing IO
+    // text. A refused ORIGINAL budget must not masquerade as file detachment.
+    if budget.check().is_err() {
+        RecoveryError::Quota
+    } else {
+        error
     }
 }
 
@@ -580,8 +591,7 @@ fn pack(request: Request, budget: &ArchiveReadBudget) -> Result<(), RecoveryErro
     )?;
     println!(
         "business_recovery=packed links={} files={} meaning=local-encrypted-saved-closure-not-import-or-custody",
-        counts.links,
-        counts.files
+        counts.links, counts.files
     );
     Ok(())
 }

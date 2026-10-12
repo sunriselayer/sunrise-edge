@@ -1198,11 +1198,7 @@ pub fn encode_fastpath_settlement_record(
             .collect::<Result<_, _>>()?;
         frame.field_bytes(
             8,
-            encode_item_list(
-                FASTPATH_FEE_SHARE_LIST_TYPE,
-                &share_items,
-                MAX_VALIDATORS,
-            )?,
+            encode_item_list(FASTPATH_FEE_SHARE_LIST_TYPE, &share_items, MAX_VALIDATORS)?,
         )?;
     }
     Ok(frame.finish()?)
@@ -1335,11 +1331,8 @@ pub fn encode_fastpath_validator_set_record(
     for validator in &record.validators {
         entries.push(encode_validator_entry(validator)?);
     }
-    let entries_bytes: Vec<u8> = encode_item_list(
-        FASTPATH_VALIDATOR_ENTRY_LIST_TYPE,
-        &entries,
-        MAX_VALIDATORS,
-    )?;
+    let entries_bytes: Vec<u8> =
+        encode_item_list(FASTPATH_VALIDATOR_ENTRY_LIST_TYPE, &entries, MAX_VALIDATORS)?;
     let mut frame: CanonicalStruct = CanonicalStruct::new(FASTPATH_VALIDATOR_SET_RECORD_TYPE, 1);
     frame.field_bytes(
         1,

@@ -226,3 +226,19 @@ readiness groups retain their mappings; only their launch-only actions are
 deferred from code completion. A separately provider-stopped dependency workflow
 remains stopped: Docker permission is not acquisition/runtime admission or
 permission to retry/reroute it. Progress belongs in TODO, not this record.
+
+## 2026-10-12 R1 retained-receipt reconciliation binding
+
+The common durable reconciliation owner now consumes the existing pure
+`NodeDedupRecord::decode_bound` contract, removing its second implementation of
+nested identity/digest and exact canonical re-encoding checks. Durable lookup
+identity and outer event-digest/RequestIdReuse authority still precede decoding
+in the reconciliation caller. Decode, projection and encoding error categories
+retain their original mapping and order. Returned responses are unchanged and
+replay creates no new outbound work, state/object reads or commit.
+
+Four focused controls supplement the existing genuine idempotent/paid/claim/
+bond replay tests: absence/exact output, joint-invalid outer identity/reuse,
+nested identity/digest substitution and malformed canonical bytes. Source
+review and actual targeted/full acceptance remain separate; no custody,
+inclusion, release or whole R1 completion follows from this migration alone.

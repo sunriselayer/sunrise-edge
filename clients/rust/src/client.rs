@@ -536,10 +536,8 @@ mod tests {
             dedup_record_bytes: sample_dedup_record_bytes(request_id),
         };
         let encoded: Vec<u8> = expected.encode().unwrap();
-        let transport: FakeTransport = FakeTransport::new(vec![ok_response(
-            QUERY_RESULT_MEDIA_TYPE,
-            encoded.clone(),
-        )]);
+        let transport: FakeTransport =
+            FakeTransport::new(vec![ok_response(QUERY_RESULT_MEDIA_TYPE, encoded.clone())]);
         let client: Client<FakeTransport> = Client::new(transport);
 
         let result: HttpReceiptQueryResult = client.query_receipt(request_id).unwrap();
@@ -549,7 +547,10 @@ mod tests {
         let requests: std::cell::Ref<'_, Vec<WireRequest>> = client.transport().requests.borrow();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method, Method::Get);
-        assert_eq!(requests[0].path, format!("/v1/receipts/{}", "22".repeat(32)));
+        assert_eq!(
+            requests[0].path,
+            format!("/v1/receipts/{}", "22".repeat(32))
+        );
     }
 
     #[test]
@@ -574,8 +575,7 @@ mod tests {
             &error,
             ClientError::Wire(node_wire::QueryResultError::InvalidDedupRecord(_))
         ));
-        let source: &(dyn std::error::Error + 'static) =
-            std::error::Error::source(&error).unwrap();
+        let source: &(dyn std::error::Error + 'static) = std::error::Error::source(&error).unwrap();
         assert!(source.source().is_none());
         assert_eq!(client.transport().requests.borrow().len(), 1);
     }
@@ -607,8 +607,7 @@ mod tests {
             ClientError::Wire(node_wire::QueryResultError::RequestIdentityMismatch { expected, actual })
                 if *expected == outer_id && *actual == nested_id
         ));
-        let source: &(dyn std::error::Error + 'static) =
-            std::error::Error::source(&error).unwrap();
+        let source: &(dyn std::error::Error + 'static) = std::error::Error::source(&error).unwrap();
         assert!(source.source().is_none());
         assert_eq!(client.transport().requests.borrow().len(), 1);
     }

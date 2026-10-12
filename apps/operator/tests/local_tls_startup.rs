@@ -2955,8 +2955,7 @@ fn complete_process_pipe_capture_preserves_eof_and_refuses_read_or_channel_failu
             }
             if self.delivered < prefix.len() {
                 let count: usize = buffer.len().min(prefix.len() - self.delivered);
-                buffer[..count]
-                    .copy_from_slice(&prefix[self.delivered..self.delivered + count]);
+                buffer[..count].copy_from_slice(&prefix[self.delivered..self.delivered + count]);
                 self.delivered += count;
                 return Ok(count);
             }
@@ -3007,9 +3006,8 @@ fn complete_startup_status_line_requires_first_lf_and_preserves_read_failure() {
     use std::io::{self, Cursor, Read};
     use std::num::NonZeroUsize;
 
-    let first: &str =
-        "complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234\n";
-    let byte_cap: NonZeroUsize = NonZeroUsize::new(first.as_bytes().len()).unwrap();
+    let first: &str = "complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234\n";
+    let byte_cap: NonZeroUsize = NonZeroUsize::new(first.len()).unwrap();
     let with_tail: Vec<u8> = format!("{first}later output\n").into_bytes();
     let captured: String = read_complete_status_line(Cursor::new(with_tail), byte_cap).unwrap();
     assert_eq!(captured, first, "only the first complete line is returned");
@@ -3044,7 +3042,10 @@ fn complete_startup_status_line_requires_first_lf_and_preserves_read_failure() {
         delivered: 0,
         failed: false,
     };
-    assert_eq!(read_complete_status_line(&mut completed, byte_cap).unwrap(), first);
+    assert_eq!(
+        read_complete_status_line(&mut completed, byte_cap).unwrap(),
+        first
+    );
     assert_eq!(completed.delivered, completed.bytes.len());
     assert!(
         !completed.failed,
@@ -3068,9 +3069,15 @@ fn complete_startup_status_line_requires_first_lf_and_preserves_read_failure() {
     };
     let read_error: io::Error = read_complete_status_line(&mut refused, byte_cap).unwrap_err();
     assert_eq!(refused.delivered, refused.bytes.len());
-    assert!(refused.failed, "nonempty valid UTF-8 prefix preceded the error");
+    assert!(
+        refused.failed,
+        "nonempty valid UTF-8 prefix preceded the error"
+    );
     assert_eq!(read_error.kind(), io::ErrorKind::ConnectionReset);
-    assert_eq!(read_error.to_string(), "status read failed after a real prefix");
+    assert_eq!(
+        read_error.to_string(),
+        "status read failed after a real prefix"
+    );
 
     let invalid: Vec<u8> = vec![0xff, b'\n'];
     let invalid_error: io::Error =
@@ -3088,16 +3095,21 @@ fn complete_startup_status_line_requires_first_lf_and_preserves_read_failure() {
 #[test]
 fn bounded_startup_status_line_accepts_exact_cap_and_refuses_lf_one_byte_later() {
     use compiled_source_host_process::read_complete_status_line;
-    use std::{io::{self, Cursor}, num::NonZeroUsize};
+    use std::{
+        io::{self, Cursor},
+        num::NonZeroUsize,
+    };
 
     let byte_cap: NonZeroUsize = NonZeroUsize::new(8).unwrap();
-    let exact: String =
-        read_complete_status_line(Cursor::new(b"1234567\n"), byte_cap).unwrap();
+    let exact: String = read_complete_status_line(Cursor::new(b"1234567\n"), byte_cap).unwrap();
     assert_eq!(exact.as_bytes(), b"1234567\n");
     let over: io::Error =
         read_complete_status_line(Cursor::new(b"12345678\n"), byte_cap).unwrap_err();
     assert_eq!(over.kind(), io::ErrorKind::InvalidData);
-    assert_eq!(over.to_string(), "compiled host first status line exceeded byte cap");
+    assert_eq!(
+        over.to_string(),
+        "compiled host first status line exceeded byte cap"
+    );
     let at_cap_eof: io::Error =
         read_complete_status_line(Cursor::new(b"12345678"), byte_cap).unwrap_err();
     assert_eq!(at_cap_eof.kind(), io::ErrorKind::UnexpectedEof);
@@ -3106,7 +3118,10 @@ fn bounded_startup_status_line_accepts_exact_cap_and_refuses_lf_one_byte_later()
 #[test]
 fn bounded_startup_status_line_counts_the_finite_never_lf_probe() {
     use compiled_source_host_process::read_complete_status_line;
-    use std::{io::{self, Read}, num::NonZeroUsize};
+    use std::{
+        io::{self, Read},
+        num::NonZeroUsize,
+    };
 
     struct NeverLf {
         read_bytes: usize,
@@ -3122,14 +3137,23 @@ fn bounded_startup_status_line_counts_the_finite_never_lf_probe() {
     let mut input: NeverLf = NeverLf { read_bytes: 0 };
     let error: io::Error = read_complete_status_line(&mut input, byte_cap).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    assert_eq!(error.to_string(), "compiled host first status line exceeded byte cap");
-    assert_eq!(input.read_bytes, 9, "this endless reader supplies only the cap-plus-one probe");
+    assert_eq!(
+        error.to_string(),
+        "compiled host first status line exceeded byte cap"
+    );
+    assert_eq!(
+        input.read_bytes, 9,
+        "this endless reader supplies only the cap-plus-one probe"
+    );
 }
 
 #[test]
 fn bounded_startup_status_line_preserves_read_error_at_cap_before_lookahead() {
     use compiled_source_host_process::read_complete_status_line;
-    use std::{io::{self, Read}, num::NonZeroUsize};
+    use std::{
+        io::{self, Read},
+        num::NonZeroUsize,
+    };
 
     struct CapPrefixThenError {
         remaining: usize,
@@ -3163,14 +3187,22 @@ fn bounded_startup_status_line_preserves_read_error_at_cap_before_lookahead() {
     };
     let error: io::Error = read_complete_status_line(&mut input, byte_cap).unwrap_err();
     assert_eq!(input.delivered, 8);
-    assert!(input.failed, "the real error is encountered before the probe supplies its extra byte");
+    assert!(
+        input.failed,
+        "the real error is encountered before the probe supplies its extra byte"
+    );
     assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
-    assert_eq!(error.to_string(), "status read failed at the cap before lookahead");
+    assert_eq!(
+        error.to_string(),
+        "status read failed at the cap before lookahead"
+    );
 }
 
 #[test]
 fn compiled_host_startup_line_limits_cover_literal_maximum_producer_formats() {
-    use compiled_source_host_process::{compiled_host_startup_line_limit, read_complete_status_line};
+    use compiled_source_host_process::{
+        compiled_host_startup_line_limit, read_complete_status_line,
+    };
     use std::{
         io::Cursor,
         net::{Ipv6Addr, SocketAddr, SocketAddrV6},
@@ -3178,41 +3210,52 @@ fn compiled_host_startup_line_limits_cover_literal_maximum_producer_formats() {
     };
 
     let chain: String = "研究".repeat(512);
-    assert_eq!(chain.as_bytes().len(), 3_072);
+    assert_eq!(chain.len(), 3_072);
     assert_eq!(chain.chars().count(), 1_024);
     let hexadecimal: &str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
-    assert_eq!(hexadecimal.as_bytes().len(), 64);
+    assert_eq!(hexadecimal.len(), 64);
     let address: SocketAddr = SocketAddr::V6(SocketAddrV6::new(
-        Ipv6Addr::new(0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff),
+        Ipv6Addr::new(
+            0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff,
+        ),
         u16::MAX,
         0,
         u32::MAX,
     ));
     let listen: String = address.to_string();
-    assert_eq!(listen, "[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff%4294967295]:65535");
-    assert_eq!(listen.as_bytes().len(), 58);
+    assert_eq!(
+        listen,
+        "[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff%4294967295]:65535"
+    );
+    assert_eq!(listen.len(), 58);
 
     // Independent literal producer templates and maxima, not constructor output.
     let source: String = format!(
         "complete=true mode=serving chain_id={chain} validator_id={hexadecimal} domain={hexadecimal} protocol_version={} epoch={} writer_generation={} listen={listen}\n",
-        u32::MAX, u64::MAX, u64::MAX,
+        u32::MAX,
+        u64::MAX,
+        u64::MAX,
     );
     let successor: String = format!(
         "complete=true mode=successor-serving domain={hexadecimal} epoch={} validator_id={hexadecimal} writer_generation={} listen={listen} genesis_digest={hexadecimal}\n",
-        u64::MAX, u64::MAX,
+        u64::MAX,
+        u64::MAX,
     );
     let history: String = format!(
         "complete=true mode=successor-history-material-only domain={hexadecimal} epoch={} validator_id={hexadecimal} writer_generation={} listen={listen}\n",
-        u64::MAX, u64::MAX,
+        u64::MAX,
+        u64::MAX,
     );
     let pg: String = format!(
         "complete=true mode=serving chain_id={chain} validator_id={hexadecimal} domain={hexadecimal} protocol_version={} epoch={} writer_generation={} listen={listen} manifest_digest={hexadecimal}\n",
-        u32::MAX, u64::MAX, u64::MAX,
+        u32::MAX,
+        u64::MAX,
+        u64::MAX,
     );
-    assert_eq!(source.as_bytes().len(), 347 + 3_072);
-    assert_eq!(successor.as_bytes().len(), 399);
-    assert_eq!(history.as_bytes().len(), 333);
-    assert_eq!(pg.as_bytes().len(), 428 + 3_072);
+    assert_eq!(source.len(), 347 + 3_072);
+    assert_eq!(successor.len(), 399);
+    assert_eq!(history.len(), 333);
+    assert_eq!(pg.len(), 428 + 3_072);
     let byte_cap: NonZeroUsize = compiled_host_startup_line_limit(&chain);
     assert_eq!(byte_cap.get(), 3_500);
     assert_eq!(compiled_host_startup_line_limit("").get(), 428);
@@ -3233,11 +3276,12 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
     let mut peers: Vec<DirectPeer> = direct_peers(&network);
     let mut hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 2);
     assert_eq!(hosts.len(), VALIDATORS);
-    let endpoints: Vec<SocketAddr> = peers
-        .iter()
-        .map(|peer: &DirectPeer| peer.address)
-        .collect();
-    assert!(endpoints.iter().all(|address: &SocketAddr| address.port() != 0));
+    let endpoints: Vec<SocketAddr> = peers.iter().map(|peer: &DirectPeer| peer.address).collect();
+    assert!(
+        endpoints
+            .iter()
+            .all(|address: &SocketAddr| address.port() != 0)
+    );
     let distinct_endpoints: BTreeSet<SocketAddr> = endpoints.iter().copied().collect();
     assert_eq!(distinct_endpoints.len(), VALIDATORS);
     let lines: Vec<String> = direct_lines(&network, &peers);
@@ -3297,7 +3341,9 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
         ],
     );
     assert_eq!(
-        stdout.matches("status=received paid_status=Success").count(),
+        stdout
+            .matches("status=received paid_status=Success")
+            .count(),
         VALIDATORS
     );
     let saved: Saved = Saved::read(&first);
@@ -3323,11 +3369,17 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
         .map(|(index, host): (usize, &mut Host)| {
             assert_eq!(host.address, endpoints[index]);
             assert!(
-                host.guard.try_wait().expect("owned committed host liveness").is_none(),
+                host.guard
+                    .try_wait()
+                    .expect("owned committed host liveness")
+                    .is_none(),
                 "committed host exited before the explicit fault"
             );
             let pid: u32 = host.guard.child_mut().id();
-            assert!(pid > 0 && pid <= i32::MAX as u32, "positive owned committed host PID");
+            assert!(
+                pid > 0 && pid <= i32::MAX as u32,
+                "positive owned committed host PID"
+            );
             pid
         })
         .collect();
@@ -3344,8 +3396,15 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
         .map(|(index, host): (usize, Host)| {
             let (pid, status): (u32, std::process::ExitStatus) =
                 host.guard.kill_abruptly_and_reap(end);
-            assert_eq!(pid, owned_pids[index], "same owned host was actually reaped");
-            assert_eq!(status.signal(), Some(9_i32), "actual SIGKILL, not Drop cleanup");
+            assert_eq!(
+                pid, owned_pids[index],
+                "same owned host was actually reaped"
+            );
+            assert_eq!(
+                status.signal(),
+                Some(9_i32),
+                "actual SIGKILL, not Drop cleanup"
+            );
             assert_eq!(status.code(), None);
             assert!(!status.success());
             (pid, status)
@@ -3357,7 +3416,11 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
     // parent-side stores remain open; no HTTP query is sent to a stopped host.
     let stopped: Vec<SourceBusinessSnapshot> = snapshots(&network);
     assert_unchanged(&before, &stopped, "owned SIGKILL stopped-host state");
-    assert_eq!(&Saved::read(&first), &saved, "SIGKILL preserves saved artifacts");
+    assert_eq!(
+        &Saved::read(&first),
+        &saved,
+        "SIGKILL preserves saved artifacts"
+    );
     for (path, bytes) in &original_inputs {
         let actual: Vec<u8> = fs::read(path).unwrap();
         assert_eq!(&actual, bytes, "SIGKILL preserves input {}", path.display());
@@ -3366,13 +3429,23 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
     let mut restarted_hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 3);
     assert_eq!(restarted_hosts.len(), VALIDATORS);
     for (index, host) in restarted_hosts.iter().enumerate() {
-        assert_eq!(host.address, endpoints[index], "same nonzero endpoint, no fallback");
+        assert_eq!(
+            host.address, endpoints[index],
+            "same nonzero endpoint, no fallback"
+        );
         assert_eq!(peers[index].address, endpoints[index]);
     }
     assert_eq!(direct_lines(&network, &peers), lines);
     let received_again: Vec<Vec<u8>> = peers.iter().map(DirectPeer::received).collect();
-    assert_eq!(received_again, received, "same authenticated serving certificates");
-    assert_eq!(direct_contexts(&peers), contexts, "same authenticated SDK/CLI context");
+    assert_eq!(
+        received_again, received,
+        "same authenticated serving certificates"
+    );
+    assert_eq!(
+        direct_contexts(&peers),
+        contexts,
+        "same authenticated SDK/CLI context"
+    );
     for capability in &stale {
         // The existing owner creates fresh deadlines now. Its held valid
         // nonempty CAS/Put and read must refuse specifically as WriterFenced.
@@ -3401,7 +3474,12 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
         Some(&first),
         &replay,
     ));
-    assert_exact_replay(&replay_output, &replay, &saved, "owned SIGKILL saved replay");
+    assert_exact_replay(
+        &replay_output,
+        &replay,
+        &saved,
+        "owned SIGKILL saved replay",
+    );
     // Exact receipt/object/nonce bytes and full token/mutation-sequence equality
     // forbid a second business mutation/receipt commit, not read-only SQL COMMIT.
     assert_original_intact(
@@ -3419,7 +3497,10 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
     }
     for host in &mut restarted_hosts {
         assert!(
-            host.guard.try_wait().expect("restarted host remains owned after replay").is_none(),
+            host.guard
+                .try_wait()
+                .expect("restarted host remains owned after replay")
+                .is_none(),
             "restarted host exited before the separate ordinary tail stop"
         );
     }
@@ -3430,9 +3511,18 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
     }
     let after_stop: Vec<SourceBusinessSnapshot> = snapshots(&network);
     assert_unchanged(&reopened, &after_stop, "owned SIGKILL ordinary tail stop");
-    assert_eq!(&Saved::read(&first), &saved, "tail stop preserves saved artifacts");
+    assert_eq!(
+        &Saved::read(&first),
+        &saved,
+        "tail stop preserves saved artifacts"
+    );
     for (path, bytes) in &original_inputs {
         let actual: Vec<u8> = fs::read(path).unwrap();
-        assert_eq!(&actual, bytes, "tail stop preserves input {}", path.display());
+        assert_eq!(
+            &actual,
+            bytes,
+            "tail stop preserves input {}",
+            path.display()
+        );
     }
 }

@@ -144,7 +144,8 @@ ci_run_action() {
   case "$1" in
     gate-contract)
       node scripts/test-ci-gates.mjs || return "$?"
-      node scripts/test-native-release-evidence.mjs
+      node scripts/test-native-release-evidence.mjs || return "$?"
+      bash scripts/test-postgres-docker-cleanup.sh
       ;;
     rust-style) ci_check_rust_style ;;
     rust-tests-required)

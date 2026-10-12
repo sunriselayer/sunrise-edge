@@ -277,8 +277,14 @@ mod tests {
         assert_eq!(MAX_FRONTIER_PAGE_LIMIT, entry_cap);
         assert_eq!(MAX_FRONTIER_PAGE_REQUEST_BYTES, request_cap);
         assert_eq!(MAX_FRONTIER_PAGE_RESPONSE_BYTES, response_cap);
-        assert_eq!(MAX_FRONTIER_VOTE_BYTES, consensus::MAX_FROZEN_FRONTIER_VOTE_BYTES);
-        assert_eq!(MAX_FRONTIER_PAGE_BYTES, consensus::MAX_FROZEN_FRONTIER_PAGE_BYTES);
+        assert_eq!(
+            MAX_FRONTIER_VOTE_BYTES,
+            consensus::MAX_FROZEN_FRONTIER_VOTE_BYTES
+        );
+        assert_eq!(
+            MAX_FRONTIER_PAGE_BYTES,
+            consensus::MAX_FROZEN_FRONTIER_PAGE_BYTES
+        );
         assert_eq!(
             usize::from(MAX_FRONTIER_PAGE_LIMIT),
             consensus::MAX_FROZEN_FRONTIER_PAGE_ENTRIES
@@ -297,7 +303,10 @@ mod tests {
             limit: 128,
         };
         let encoded: Vec<u8> = request.encode().unwrap();
-        assert_eq!(FrozenFrontierPageRequest::decode(&encoded).unwrap(), request);
+        assert_eq!(
+            FrozenFrontierPageRequest::decode(&encoded).unwrap(),
+            request
+        );
         let excessive_limit: FrozenFrontierPageRequest = FrozenFrontierPageRequest {
             epoch: Epoch::new(8),
             after_request_id: None,
@@ -366,15 +375,17 @@ mod tests {
         };
         let encoded: Vec<u8> = response.encode().unwrap();
         assert_eq!(encoded.len(), 532_502);
-        assert_eq!(FrozenFrontierPageResponse::decode(&encoded).unwrap(), response);
+        assert_eq!(
+            FrozenFrontierPageResponse::decode(&encoded).unwrap(),
+            response
+        );
 
-        let frame_bytes: fn(&[u8], &[u8]) -> Vec<u8> =
-            |vote: &[u8], page: &[u8]| -> Vec<u8> {
-                let mut frame: CanonicalStruct = CanonicalStruct::new(0xE108, 1);
-                frame.field_bytes(1, vote.to_vec()).unwrap();
-                frame.field_bytes(2, page.to_vec()).unwrap();
-                frame.finish().unwrap()
-            };
+        let frame_bytes: fn(&[u8], &[u8]) -> Vec<u8> = |vote: &[u8], page: &[u8]| -> Vec<u8> {
+            let mut frame: CanonicalStruct = CanonicalStruct::new(0xE108, 1);
+            frame.field_bytes(1, vote.to_vec()).unwrap();
+            frame.field_bytes(2, page.to_vec()).unwrap();
+            frame.finish().unwrap()
+        };
         let cases: [(usize, usize, &'static str, usize); 3] = [
             (8_193, 524_288, "frontier vote bound", 532_503),
             (8_192, 524_289, "frontier page bound", 532_503),
@@ -385,7 +396,10 @@ mod tests {
                 vote: vec![0u8; vote_length],
                 page: vec![0u8; page_length],
             };
-            assert_eq!(excessive.encode(), Err(FrozenFrontierWireError::Invalid(reason)));
+            assert_eq!(
+                excessive.encode(),
+                Err(FrozenFrontierWireError::Invalid(reason))
+            );
             let excessive_bytes: Vec<u8> = frame_bytes(&excessive.vote, &excessive.page);
             assert_eq!(excessive_bytes.len(), encoded_length);
             assert!(excessive_bytes.len() < 532_544);

@@ -1,7 +1,8 @@
 //! Collector admission only: a probe is not a valid publication or import.
 use crate::{
     FASTVOTE_PUBLICATION_RETAIN_PATH, MAX_HTTP_EVENT_BODY_BYTES, NativeHttpObservations,
-    NativeHttpServePolicy, NativeHttpSnapshot, request_body_limit, serve_with_stream_upgrade_observed,
+    NativeHttpServePolicy, NativeHttpSnapshot, request_body_limit,
+    serve_with_stream_upgrade_observed,
 };
 use axum::{
     Router,
@@ -31,8 +32,7 @@ use tokio::{
     time::{error::Elapsed, timeout},
 };
 
-const VALIDATOR_SELECTOR: &str =
-    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const VALIDATOR_SELECTOR: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const CHUNK_BYTES: usize = 16 * 1024;
 const MAX_RESPONSE_HEADER_BYTES: usize = 4 * 1024;
 const MAX_PROBE_RESPONSE_BYTES: usize = 1_024;
@@ -267,11 +267,17 @@ async fn read_bounded_response(reader: &mut OwnedReadHalf) -> io::Result<Vec<u8>
         .find(|(name, _): &(&str, &str)| name.eq_ignore_ascii_case("content-length"))
         .map(|(_, value): (&str, &str)| value.trim())
         .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "probe response omitted content length")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "probe response omitted content length",
+            )
         })?;
-    let length: usize = length_text
-        .parse::<usize>()
-        .map_err(|error: std::num::ParseIntError| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let length: usize =
+        length_text
+            .parse::<usize>()
+            .map_err(|error: std::num::ParseIntError| {
+                io::Error::new(io::ErrorKind::InvalidData, error)
+            })?;
     if length > MAX_PROBE_RESPONSE_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -352,12 +358,11 @@ async fn require_collector_exchange(
         },
         observations.clone(),
     ));
-    let exchange: Result<io::Result<ChunkedExchange>, Elapsed> =
-        timeout(
-            EXCHANGE_TIMEOUT,
-            chunked_exchange(address, &method, path, body_bytes),
-        )
-        .await;
+    let exchange: Result<io::Result<ChunkedExchange>, Elapsed> = timeout(
+        EXCHANGE_TIMEOUT,
+        chunked_exchange(address, &method, path, body_bytes),
+    )
+    .await;
     // Always stop/join the owned listener before checking a failed exchange.
     let shutdown_sent: Result<(), ()> = stop_send.send(());
     let completion: Result<Result<io::Result<()>, JoinError>, Elapsed> =
@@ -407,24 +412,32 @@ async fn native_tcp_collector_enforces_default_and_bundle_boundaries_for_both_ro
     let enabled: NativeHttpServePolicy = default.with_certified_publication(true);
     let drain_path: String = drain_import_path(VALIDATOR_SELECTOR);
     for path in [FASTVOTE_PUBLICATION_RETAIN_PATH, drain_path.as_str()] {
+        require_collector_exchange(default, Method::POST, path, MAX_HTTP_EVENT_BODY_BYTES, true)
+            .await;
         require_collector_exchange(
-            default, Method::POST, path, MAX_HTTP_EVENT_BODY_BYTES, true,
+            default,
+            Method::POST,
+            path,
+            MAX_HTTP_EVENT_BODY_BYTES + 1,
+            false,
         )
         .await;
         require_collector_exchange(
-            default, Method::POST, path, MAX_HTTP_EVENT_BODY_BYTES + 1, false,
+            enabled,
+            Method::POST,
+            path,
+            MAX_HTTP_EVENT_BODY_BYTES + 1,
+            true,
         )
         .await;
+        require_collector_exchange(enabled, Method::POST, path, MAX_ENCODED_BUNDLE_BYTES, true)
+            .await;
         require_collector_exchange(
-            enabled, Method::POST, path, MAX_HTTP_EVENT_BODY_BYTES + 1, true,
-        )
-        .await;
-        require_collector_exchange(
-            enabled, Method::POST, path, MAX_ENCODED_BUNDLE_BYTES, true,
-        )
-        .await;
-        require_collector_exchange(
-            enabled, Method::POST, path, MAX_ENCODED_BUNDLE_BYTES + 1, false,
+            enabled,
+            Method::POST,
+            path,
+            MAX_ENCODED_BUNDLE_BYTES + 1,
+            false,
         )
         .await;
     }
@@ -442,7 +455,11 @@ async fn native_tcp_collector_keeps_unrelated_methods_and_raw_paths_at_default_b
         percent_selector.as_str(),
     ] {
         require_collector_exchange(
-            policy, Method::POST, path, MAX_HTTP_EVENT_BODY_BYTES + 1, false,
+            policy,
+            Method::POST,
+            path,
+            MAX_HTTP_EVENT_BODY_BYTES + 1,
+            false,
         )
         .await;
     }

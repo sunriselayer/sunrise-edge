@@ -1625,7 +1625,7 @@ fn request_body_limit(
     method: &axum::http::Method,
     path: &str,
 ) -> usize {
-    if method != &axum::http::Method::POST {
+    if method != axum::http::Method::POST {
         return MAX_HTTP_EVENT_BODY_BYTES;
     }
     if policy.certified_publication && is_certified_publication_body_path(path) {

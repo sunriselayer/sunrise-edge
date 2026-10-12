@@ -519,10 +519,11 @@ pub(super) fn require_fresh_bond_slash_evidence<S: StructuredStateReader>(
     let record: equivocation::FastPathEquivocationEvidenceRecord =
         equivocation::decode_fastpath_equivocation_evidence_record(&evidence_bytes)?;
     let decoded: equivocation::DecodedEquivocationEvidence =
-        bond_lifecycle::slash::verify_evidence_identity(env.resolver(), &intent, &record)
-            .map_err(|_| {
+        bond_lifecycle::slash::verify_evidence_identity(env.resolver(), &intent, &record).map_err(
+            |_| {
                 OrderedEconomicsError::Prerequisite("fresh bond slash evidence identity is invalid")
-            })?;
+            },
+        )?;
     // This additional replay boundary is fresh-only. Do not insert it in the
     // shared historical execution helper or change already-retained artifacts.
     let evidence_protocol: ProtocolVersion = match &decoded {
@@ -539,19 +540,22 @@ pub(super) fn require_fresh_bond_slash_evidence<S: StructuredStateReader>(
             "fresh bond slash evidence protocol is not the pinned profile protocol",
         ));
     }
-    let committee: validator_set::ValidatorSet = equivocation::load_historical_validator_set_fenced(
-        store,
-        context,
-        env.policy.domain(),
-        env.resolver(),
-        env.policy.context().chain_id(),
-        env.policy.context().protocol_version(),
-        intent.evidence_epoch,
-        reads,
-    )
-    .map_err(|_| {
-        OrderedEconomicsError::Prerequisite("fresh bond slash evidence committee is unavailable")
-    })?;
+    let committee: validator_set::ValidatorSet =
+        equivocation::load_historical_validator_set_fenced(
+            store,
+            context,
+            env.policy.domain(),
+            env.resolver(),
+            env.policy.context().chain_id(),
+            env.policy.context().protocol_version(),
+            intent.evidence_epoch,
+            reads,
+        )
+        .map_err(|_| {
+            OrderedEconomicsError::Prerequisite(
+                "fresh bond slash evidence committee is unavailable",
+            )
+        })?;
     if committee != *env.policy.engine().validator_set() {
         return Err(OrderedEconomicsError::Prerequisite(
             "fresh bond slash evidence committee is not the pinned trusted authority",
@@ -602,7 +606,9 @@ pub(super) fn require_fresh_bond_withdraw_target<S: StructuredStateReader>(
         reads,
     )
     .map_err(|_| {
-        OrderedEconomicsError::Prerequisite("fresh bond withdrawal live validator set is unavailable")
+        OrderedEconomicsError::Prerequisite(
+            "fresh bond withdrawal live validator set is unavailable",
+        )
     })?;
     if committee != *env.policy.engine().validator_set() {
         return Err(OrderedEconomicsError::Prerequisite(
@@ -658,8 +664,7 @@ pub(super) fn require_fresh_bond_withdraw_target<S: StructuredStateReader>(
     }
     // The owning Withdraw loads this historical resource scope, not the
     // current operation epoch or the latest pinned economics configuration.
-    let policy_key: Vec<u8> =
-        local_instance_state::fastpath_economics_policy_key(&bond.context)?;
+    let policy_key: Vec<u8> = local_instance_state::fastpath_economics_policy_key(&bond.context)?;
     let policy_row: VersionedStateValue =
         store.read_versioned_state(context, env.policy.domain(), &policy_key)?;
     if let Some(previous) = reads.insert(policy_key, policy_row.revision())

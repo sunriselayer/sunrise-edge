@@ -4,8 +4,10 @@
 
 use super::compiled_source_host_process::spawn_strict_bounded_output;
 use age::secrecy::ExposeSecret;
+use hashing::HashSuiteResolver;
 use node_core::business_reconstruction::SourceBusinessSnapshot;
-use protocol_types::ValidatorId;
+use node_core::{NodeDedupRecord, RequestId};
+use protocol_types::{Digest32, ValidatorId};
 use runtime::portable::{DurableRecordKey, DurableRecordMetadata, PortableSnapshotToken};
 use runtime::{
     DurableDomainStateStore, DurableOperationContext, ImportBinding, NamespaceLifecycle,
@@ -33,15 +35,61 @@ pub struct Relocation<'a> {
     pub validator: ValidatorId,
     pub expected_state: &'a BTreeMap<Vec<u8>, Vec<u8>>,
     pub expected_business: &'a SourceBusinessSnapshot,
+    pub expected_local_receipts: &'a BTreeMap<DurableRecordKey, Digest32>,
+}
+
+/// The genuine producer explains exact local prepare receipts through the
+/// owning typed record/key/hash APIs. This is not a reserved-prefix exclusion;
+/// any unexplained receipt remains in the complete equality comparison.
+pub fn local_prepare_receipts(
+    snapshot: &SourceBusinessSnapshot,
+    resolver: &HashSuiteResolver,
+) -> BTreeMap<DurableRecordKey, Digest32> {
+    let mut result: BTreeMap<DurableRecordKey, Digest32> = BTreeMap::new();
+    for row in &snapshot.records {
+        let (DurableRecordKey::State(key), Some(bytes)) =
+            (row.descriptor.key(), row.value.as_deref())
+        else {
+            continue;
+        };
+        let Ok(prepared) = node_core::fast_path::records::decode_fastpath_prepared_record(bytes)
+        else {
+            continue;
+        };
+        let expected_key: Vec<u8> = node_core::local_instance_state::fastpath_prepared_record_key(
+            prepared.context.chain_id(),
+            &prepared.request_id,
+        )
+        .unwrap();
+        if key != &expected_key {
+            continue;
+        }
+        let id: [u8; 32] = node_core::local_instance_state::fastpath_synthetic_prepare_request_id(
+            resolver,
+            prepared.context.epoch(),
+            &prepared.request_id,
+        )
+        .unwrap();
+        assert!(
+            result
+                .insert(
+                    DurableRecordKey::Receipt(runtime::DurableRequestId::new(id).unwrap()),
+                    prepared.commitment,
+                )
+                .is_none(),
+            "each source-local prepare receipt has one exact owner"
+        );
+    }
+    result
 }
 
 fn execute(command: Command) -> Output {
     spawn_strict_bounded_output(command, Duration::from_secs(330))
 }
-fn success(output: Output) -> String {
+fn success(stage: &str, output: Output) -> String {
     assert!(
         output.status.success(),
-        "compiled saved-closure stage failed: stdout={:?} stderr={:?}",
+        "compiled saved-closure stage={stage} failed: stdout={:?} stderr={:?}",
         output.stdout,
         output.stderr
     );
@@ -270,7 +318,7 @@ pub fn relocate(input: Relocation<'_>) -> SourceBusinessSnapshot {
             ]);
         command
     };
-    let packed: String = success(execute(pack()));
+    let packed: String = success("pack-saved", execute(pack()));
     assert_eq!(packed, expected_packed);
     for ((_, generated), expected) in roles.iter().zip(&expected) {
         assert_eq!(
@@ -405,7 +453,7 @@ pub fn relocate(input: Relocation<'_>) -> SourceBusinessSnapshot {
             "--out-dir",
             opened.to_str().unwrap(),
         ]);
-    let opened_output: String = success(execute(open));
+    let opened_output: String = success("open-saved", execute(open));
     assert_eq!(opened_output, expected_opened);
     hidden.assert_unavailable();
     assert_eq!(
@@ -474,7 +522,7 @@ pub fn relocate(input: Relocation<'_>) -> SourceBusinessSnapshot {
         ]);
         command
     };
-    let first: String = success(execute(import("create-sqlite", "1")));
+    let first: String = success("create-sqlite", execute(import("create-sqlite", "1")));
     hidden.assert_unavailable();
     assert!(
         first.contains("business_import=partial")
@@ -482,11 +530,14 @@ pub fn relocate(input: Relocation<'_>) -> SourceBusinessSnapshot {
     );
     assert!(!first.contains("business_import=active"));
     assert!(
-        success(execute(import("resume-sqlite", "4096")))
+        success("resume-sqlite", execute(import("resume-sqlite", "4096")))
             .contains("business_import=complete-inactive")
     );
     hidden.assert_unavailable();
-    let replay: String = success(execute(import("resume-sqlite", "1")));
+    let replay: String = success(
+        "resume-sqlite-replay",
+        execute(import("resume-sqlite", "1")),
+    );
     hidden.assert_unavailable();
     assert!(
         replay.contains("business_import=complete-inactive") && replay.contains("new_batches=0")
@@ -532,11 +583,29 @@ pub fn relocate(input: Relocation<'_>) -> SourceBusinessSnapshot {
         "physical instance/namespace is fresh, not copied source custody"
     );
     assert_eq!(recovered.token.writer_fence(), own);
-    assert_eq!(
-        logical_business(&recovered),
+    let restored_business: LogicalBusiness = logical_business(&recovered);
+    let expected_business: LogicalBusiness = without_local_receipts(
         logical_business(input.expected_business),
-        "complete durable receipts and immutable object history keep logical bytes while replica-local revisions/checkpoints are fresh"
+        input.expected_local_receipts,
+    )
+    .expect("every declared local receipt must bind to its exact empty source record");
+    for key in input.expected_local_receipts.keys() {
+        assert!(
+            !restored_business.contains_key(key),
+            "inactive recovery must not copy source-local signing/admission receipt: {key:?}"
+        );
+    }
+    assert_eq!(
+        restored_business.keys().collect::<Vec<&DurableRecordKey>>(),
+        expected_business.keys().collect::<Vec<&DurableRecordKey>>(),
+        "complete original business receipt and object-history inventory survives recovery"
     );
+    for (key, expected) in &expected_business {
+        assert!(
+            restored_business.get(key) == Some(expected),
+            "complete logical metadata and payload differ for {key:?}"
+        );
+    }
     assert_eq!(
         recovered.referenced_blobs, input.expected_business.referenced_blobs,
         "full referenced blob bytes survive cold recovery"
@@ -552,11 +621,48 @@ pub fn relocate(input: Relocation<'_>) -> SourceBusinessSnapshot {
     recovered
 }
 
-fn logical_business(
-    snapshot: &SourceBusinessSnapshot,
-) -> BTreeMap<DurableRecordKey, (DurableRecordMetadata, Option<Vec<u8>>)> {
-    let mut result: BTreeMap<DurableRecordKey, (DurableRecordMetadata, Option<Vec<u8>>)> =
-        BTreeMap::new();
+type LogicalBusiness = BTreeMap<DurableRecordKey, (DurableRecordMetadata, Option<Vec<u8>>)>;
+
+fn without_local_receipts(
+    mut business: LogicalBusiness,
+    local: &BTreeMap<DurableRecordKey, Digest32>,
+) -> Result<LogicalBusiness, &'static str> {
+    for (key, expected_digest) in local {
+        let DurableRecordKey::Receipt(id) = key else {
+            return Err("local registry is not a receipt");
+        };
+        if !node_core::local_instance_state::is_reserved_paid_request_id(id.as_bytes()) {
+            return Err("original business receipt cannot be excluded");
+        }
+        let Some((
+            DurableRecordMetadata::Receipt {
+                event_digest,
+                length,
+            },
+            Some(bytes),
+        )) = business.get(key)
+        else {
+            return Err("declared local receipt is absent or malformed");
+        };
+        if event_digest != expected_digest || length.get() != bytes.len() {
+            return Err("declared local receipt digest/length differs");
+        }
+        let receipt: NodeDedupRecord = NodeDedupRecord::decode_bound(
+            bytes,
+            RequestId::new(*id.as_bytes()).map_err(|_| "local receipt id")?,
+            *expected_digest,
+        )
+        .map_err(|_| "local receipt exact canonical binding")?;
+        if !receipt.responses().is_empty() {
+            return Err("local receipt contains business responses");
+        }
+        business.remove(key);
+    }
+    Ok(business)
+}
+
+fn logical_business(snapshot: &SourceBusinessSnapshot) -> LogicalBusiness {
+    let mut result: LogicalBusiness = BTreeMap::new();
     for record in &snapshot.records {
         if matches!(record.descriptor.key(), DurableRecordKey::State(_)) {
             continue;
@@ -582,4 +688,93 @@ fn logical_business(
         );
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use node_core::{NodeResponse, NodeResponseStatus};
+    use protocol_types::HashAlgorithmId;
+
+    fn receipt_inventory(id: [u8; 32], with_response: bool) -> LogicalBusiness {
+        let request: RequestId = RequestId::new(id).unwrap();
+        let digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x42; 32]);
+        let responses: Vec<NodeResponse> = if with_response {
+            vec![NodeResponse::new(request, NodeResponseStatus::Accepted, None).unwrap()]
+        } else {
+            Vec::new()
+        };
+        let bytes: Vec<u8> = NodeDedupRecord::new(request, digest, responses)
+            .unwrap()
+            .encode()
+            .unwrap();
+        BTreeMap::from([(
+            DurableRecordKey::Receipt(runtime::DurableRequestId::new(id).unwrap()),
+            (
+                DurableRecordMetadata::Receipt {
+                    event_digest: digest,
+                    length: std::num::NonZeroUsize::new(bytes.len()).unwrap(),
+                },
+                Some(bytes),
+            ),
+        )])
+    }
+
+    fn local_id() -> [u8; 32] {
+        let mut id: [u8; 32] = [0x73; 32];
+        id[..8]
+            .copy_from_slice(&node_core::local_instance_state::FASTPATH_SYNTHETIC_REQUEST_ID_TAG);
+        id
+    }
+
+    #[test]
+    fn unexplained_synthetic_and_original_receipts_remain_in_full_inventory() {
+        for id in [local_id(), [0x71; 32]] {
+            let inventory: LogicalBusiness = receipt_inventory(id, false);
+            assert_eq!(
+                without_local_receipts(inventory.clone(), &BTreeMap::new()).unwrap(),
+                inventory
+            );
+            assert_ne!(inventory, BTreeMap::new(), "missing receipt still differs");
+        }
+    }
+
+    #[test]
+    fn only_exact_declared_empty_local_receipt_is_removed() {
+        let key: DurableRecordKey =
+            DurableRecordKey::Receipt(runtime::DurableRequestId::new(local_id()).unwrap());
+        let digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x42; 32]);
+        let declared: BTreeMap<DurableRecordKey, Digest32> = BTreeMap::from([(key, digest)]);
+        assert!(
+            without_local_receipts(receipt_inventory(local_id(), false), &declared)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(without_local_receipts(BTreeMap::new(), &declared).is_err());
+        assert!(without_local_receipts(receipt_inventory(local_id(), true), &declared).is_err());
+        let wrong: BTreeMap<DurableRecordKey, Digest32> = BTreeMap::from([(
+            declared.keys().next().unwrap().clone(),
+            Digest32::new(HashAlgorithmId::Sha2_256, [0x43; 32]),
+        )]);
+        assert!(without_local_receipts(receipt_inventory(local_id(), false), &wrong).is_err());
+    }
+
+    #[test]
+    fn original_receipt_and_changed_canonical_body_cannot_be_excluded() {
+        let original: LogicalBusiness = receipt_inventory([0x71; 32], false);
+        let declared_original: BTreeMap<DurableRecordKey, Digest32> = BTreeMap::from([(
+            original.keys().next().unwrap().clone(),
+            Digest32::new(HashAlgorithmId::Sha2_256, [0x42; 32]),
+        )]);
+        assert!(without_local_receipts(original, &declared_original).is_err());
+        let mut local: LogicalBusiness = receipt_inventory(local_id(), false);
+        let key: DurableRecordKey = local.keys().next().unwrap().clone();
+        let (_, Some(bytes)) = local.get_mut(&key).unwrap() else {
+            panic!("complete fixture receipt");
+        };
+        bytes[0] ^= 1;
+        let declared: BTreeMap<DurableRecordKey, Digest32> =
+            BTreeMap::from([(key, Digest32::new(HashAlgorithmId::Sha2_256, [0x42; 32]))]);
+        assert!(without_local_receipts(local, &declared).is_err());
+    }
 }

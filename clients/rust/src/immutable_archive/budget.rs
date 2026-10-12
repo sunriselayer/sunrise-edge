@@ -24,7 +24,7 @@ pub struct ArchiveReadLimits {
 impl Default for ArchiveReadLimits {
     fn default() -> Self {
         Self {
-            observations: 262_144,
+            observations: 2_097_152,
             heights: 4_096,
             components: 32_768,
             file_bytes: 32 * 1024 * 1024,
@@ -270,7 +270,7 @@ mod tests {
     fn expired_and_upward_limits_refuse() {
         assert!(
             ArchiveReadBudget::new(ArchiveReadLimits {
-                observations: 262_145,
+                observations: 2_097_153,
                 ..Default::default()
             })
             .is_err()
@@ -279,5 +279,26 @@ mod tests {
         budget.state.lock().unwrap().expires = Instant::now();
         assert!(budget.check().is_err());
         assert!(budget.clone().check().is_err());
+    }
+
+    #[test]
+    fn former_observation_ceiling_is_a_downward_shared_limit_not_a_reset() {
+        let limits: ArchiveReadLimits = ArchiveReadLimits {
+            observations: 262_144,
+            ..ArchiveReadLimits::default()
+        };
+        let budget: ArchiveReadBudget = ArchiveReadBudget::new(limits).unwrap();
+        let sibling: ArchiveReadBudget = budget.clone();
+        budget.charge_observations(262_143).unwrap();
+        sibling.charge_observations(1).unwrap();
+        assert!(budget.charge_observations(1).is_err());
+        assert!(sibling.check().is_err());
+        assert!(sibling.charge_observations(0).is_err());
+        let selected: ArchiveReadBudget =
+            ArchiveReadBudget::new(ArchiveReadLimits::default()).unwrap();
+        selected.charge_observations(262_145).unwrap();
+        selected.charge_observations(2_097_152 - 262_145).unwrap();
+        assert!(selected.charge_observations(1).is_err());
+        assert!(selected.clone().check().is_err());
     }
 }

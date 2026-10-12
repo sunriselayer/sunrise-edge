@@ -68,11 +68,10 @@ pub mod union;
 pub use frontier::{
     FrontierError, FrozenFrontierAccumulator, FrozenFrontierCertifier, FrozenFrontierIdentity,
     FrozenFrontierPage, FrozenFrontierPageVerifier, FrozenFrontierVote,
-    MAX_FRONTIER_VOTE_BYTES as MAX_FROZEN_FRONTIER_VOTE_BYTES,
-    MAX_FROZEN_FRONTIER_PAGE_BYTES, MAX_FROZEN_FRONTIER_PAGE_ENTRIES,
-    decode_frozen_frontier_identity, decode_frozen_frontier_page, decode_frozen_frontier_vote,
-    encode_frozen_frontier_identity, encode_frozen_frontier_page, encode_frozen_frontier_vote,
-    verify_frozen_frontier, verify_frozen_frontier_quorum,
+    MAX_FRONTIER_VOTE_BYTES as MAX_FROZEN_FRONTIER_VOTE_BYTES, MAX_FROZEN_FRONTIER_PAGE_BYTES,
+    MAX_FROZEN_FRONTIER_PAGE_ENTRIES, decode_frozen_frontier_identity, decode_frozen_frontier_page,
+    decode_frozen_frontier_vote, encode_frozen_frontier_identity, encode_frozen_frontier_page,
+    encode_frozen_frontier_vote, verify_frozen_frontier, verify_frozen_frontier_quorum,
 };
 
 const AVAILABILITY_IDENTITY_TYPE_ID: u16 = 0xD030;
@@ -924,7 +923,8 @@ mod tests {
     #[test]
     fn production_verifier_excludes_malformed_signatures_without_losing_quorum() {
         let certifier: AvailabilityCertifier = certifier(4);
-        let valid_votes: Vec<AvailabilityVote> = (1..=3).map(|byte| cast(&certifier, byte)).collect();
+        let valid_votes: Vec<AvailabilityVote> =
+            (1..=3).map(|byte| cast(&certifier, byte)).collect();
         let reference: AvailabilityCertificate = quorum_certificate(&certifier);
         let reference_bytes: Vec<u8> = encode_availability_certificate(&reference).unwrap();
         let responses: [UnsupportedSignatureSchemeResponse; 2] = [

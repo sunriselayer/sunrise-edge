@@ -6,9 +6,9 @@
 use super::super::ordered_seal_sqlite_acceptance::{
     acknowledged_output, saved_configured_peer_results, saved_policy_submission_rounds,
 };
-use super::*;
 #[cfg(target_os = "linux")]
 use super::process::local_observation_collector;
+use super::*;
 use crate::acceptance_timing::{AcceptanceSpan, Stage};
 use consensus::readiness::ReadinessCertificate;
 use consensus::{ConsensusMessage, ConsensusVote};
@@ -3222,6 +3222,13 @@ pub(super) fn run(
     let mut unavailable_roots: Vec<PathBuf> = vec![fixture.directory.0.clone()];
     unavailable_roots.extend(inputs.targets.iter().cloned());
     unavailable_roots.extend(targets.paths.iter().cloned());
+    let expected_local_receipts: BTreeMap<
+        runtime::portable::DurableRecordKey,
+        protocol_types::Digest32,
+    > = super::super::encrypted_recovery_acceptance::local_prepare_receipts(
+        &post_freeze.business[0],
+        &fixture.network.resolver,
+    );
     let recovered: node_core::business_reconstruction::SourceBusinessSnapshot =
         super::super::encrypted_recovery_acceptance::relocate(
             super::super::encrypted_recovery_acceptance::Relocation {
@@ -3237,6 +3244,7 @@ pub(super) fn run(
                 validator: ValidatorId::new([0xec; 32]),
                 expected_state: &withdrawal_state,
                 expected_business: &post_freeze.business[0],
+                expected_local_receipts: &expected_local_receipts,
             },
         );
     assert!(recovered.token.namespace() != post_freeze.business[0].token.namespace());

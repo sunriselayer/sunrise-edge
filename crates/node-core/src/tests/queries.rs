@@ -418,14 +418,15 @@ fn query_receipt_outer_digest_mismatch_fails_closed() {
 
     assert!(matches!(
         error,
-        NodeCoreError::PersistenceInvariant("durable receipt projection and canonical record differ")
+        NodeCoreError::PersistenceInvariant(
+            "durable receipt projection and canonical record differ"
+        )
     ));
 }
 
 #[test]
 fn query_receipt_checks_outer_durable_identity_before_nested_decode() {
-    let store: ScriptedDurableStore =
-        ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let store: ScriptedDurableStore = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
     let context: DurableOperationContext = durable_context();
     let req: RequestId = request(0x39);
     let other: RequestId = request(0x3A);
@@ -446,8 +447,7 @@ fn query_receipt_checks_outer_durable_identity_before_nested_decode() {
 
 #[test]
 fn query_receipt_nested_request_and_digest_mismatch_keep_projection_error() {
-    let store: ScriptedDurableStore =
-        ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let store: ScriptedDurableStore = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
     let context: DurableOperationContext = durable_context();
     let req: RequestId = request(0x3C);
     let nested_request_id: RequestId = request(0x3D);
@@ -466,6 +466,8 @@ fn query_receipt_nested_request_and_digest_mismatch_keep_projection_error() {
 
     assert!(matches!(
         error,
-        NodeCoreError::PersistenceInvariant("durable receipt projection and canonical record differ")
+        NodeCoreError::PersistenceInvariant(
+            "durable receipt projection and canonical record differ"
+        )
     ));
 }

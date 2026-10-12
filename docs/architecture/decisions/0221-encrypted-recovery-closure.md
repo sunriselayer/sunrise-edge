@@ -110,3 +110,90 @@ separate from the cheap fixture and encrypted-transport tests. Existing
 cut/import guides remain the sole implemented workflow; live status belongs in
 [TODO](../../../TODO.md). M1-M8 and production/off-host/custody approval are not
 closed by this decision.
+
+## 2026-10-12: Complete-write adapter for synchronous age headers
+
+Actual execution of the existing repeated-short-write/age-round-trip control
+found that age 0.12.1's synchronous header serializer rejects a positive short
+write as `BufferTooSmall`. The private ciphertext writer now completes each
+offered slice through finite positive-progress writes, without buffering,
+changing age/ciphertext framing or increasing a quota. It checks the original
+shared budget before and after every sink write and counts/hashes only the
+accepted prefix. Nonempty zero progress, oversized sink counts, IO errors or
+budget refusal permanently return the same opaque error; any accepted prefix
+remains unqualified residue, not atomic output or rollback.
+
+Keep the original real-age short-write/finish/decrypt control and the zero-write,
+partial-error and final-emission refusal controls. An additional direct control
+refuses the same shared budget during the first positive short write and requires
+one sink call, exact prefix/hash/count and no later write or flush. This addition
+does not replace an original selected control or qualify full CLI relocation,
+custody, off-host backup, whole-source integration or release.
+
+## 2026-10-12: Separate local prepare receipts in the relocation oracle
+
+The real original compiled relocation reached complete inactive installation,
+but its new comparison incorrectly included the source's synthetic FastVote
+prepare receipt. DR-0170/0176 already validate and exclude that local admission
+bookkeeping; it is not an original business response to restore. The other
+original receipts and object heads/versions matched exactly. Production
+reconstruction, import, saved bytes and semantic projection are unchanged.
+
+The genuine producer now derives a closed expected local-receipt registry from
+canonical prepared records, their exact owning State keys and the existing
+epoch/request hash API. Each declared source receipt must bind its exact ID,
+event digest, metadata length and canonical body, with no business responses;
+it must be absent from the recovered inventory. No prefix-wide receipt drop
+is introduced. Unexplained synthetic receipts stay in complete equality, and
+an ordinary receipt cannot enter the exclusion registry. All remaining receipt,
+head/version metadata and payloads and all referenced blob bytes stay exact,
+with only the already accepted physical revision/checkpoint projection.
+
+Pure negative controls cover unexplained/missing receipts, ordinary receipts,
+wrong digests, changed canonical bodies and nonempty responses. Actual original
+and full recurring CLI acceptance are separate owning runs; this correction
+does not claim their results, custody or release acceptance.
+
+## 2026-10-13: Full-role traversal work and refusal classification
+
+A filesystem-only 35-role calibration with 151 generated history heights and
+1,162 one-byte files exhausted the original 262,144-observation budget during
+capture in 0.20 seconds. All six legal component kinds and every logical role
+were retained; these skeleton bytes are not signed business proofs. The same
+budget was already refused when the adapter returned `Attachment`. This
+establishes inadequate local observation allowance for that workload, not a
+unique diagnosis or a successful rerun of the earlier real recurring failure.
+
+The shared opt-in SDK profile now permits at most 2,097,152 observations. Recovery
+reads this ceiling from the defining SDK owner rather than copying it. This is
+an eightfold increase in permitted observation work, including repeated walks
+and ignored orphans; prevalidation inventories can grow further before refusal.
+It is a finite product-profile correction, not a claimed measured minimum or
+universal sixteen-link capacity. Ordinary unbounded constructors are unchanged.
+The same shared irreversible budget, downward overrides, checked arithmetic,
+300-second cooperative deadline and every other role/file/height/component/
+plaintext/ciphertext limit remain. This changes neither dependency acquisition
+budgets, host validation limits nor historical release invocation authority.
+
+Private generated-directory checks descend once through the original held root
+with safe no-follow `openat`, comparing each original prefix's device/inode/
+mode/owner. They recheck every named prefix and root attachment afterward,
+including ancestor replacement which preserves the final child inode. Exclusive
+`mkdirat` uses a checked held parent; sync verifies that original held parent
+afterward. Only current/next directory FDs remain active, not an unbounded FD
+cache. Every actual observation is still charged before its work. No file-stamp,
+body/hash, complete inventory or repeated terminal check is removed.
+
+An invocation failure with an already-refused original budget now projects to
+the existing opaque `Quota` category. A live-budget failure retains its original
+opaque category. No raw IO/provider text, count-reset, automatic retry or
+completion authority is exposed. Simultaneous refusal deliberately takes quota
+precedence; this local diagnostic is not canonical protocol behavior.
+
+Acceptance requires the old 262,144 downward limit to exhaust permanently across
+all clones, direct prefix/root/symlink/mode/unknown-directory refusals and the
+complete filesystem capture/check/age-encryption/publication/completion path.
+Those calibration bodies cannot qualify business proofs. The unchanged genuine
+eight-link/35-role source-free relocation and full required plan still own
+functional acceptance; failed attempts remain failed. Live results belong in
+TODO, not this architectural amendment.

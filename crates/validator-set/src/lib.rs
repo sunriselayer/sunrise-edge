@@ -562,9 +562,8 @@ mod tests {
 
     #[test]
     fn generic_validator_count_bound_accepts_literal_ten_thousand() {
-        let members: Vec<ValidatorInfo> = (1_u32..=10_000_u32)
-            .map(literal_count_validator)
-            .collect();
+        let members: Vec<ValidatorInfo> =
+            (1_u32..=10_000_u32).map(literal_count_validator).collect();
         let set: ValidatorSet = ValidatorSet::new(Epoch::new(9), members).unwrap();
         assert_eq!(set.validators().len(), 10_000);
         let bytes: Vec<u8> = encode_validator_set(&set).unwrap();
@@ -573,9 +572,8 @@ mod tests {
 
     #[test]
     fn generic_validator_count_bound_rejects_literal_ten_thousand_and_one() {
-        let members: Vec<ValidatorInfo> = (1_u32..=10_001_u32)
-            .map(literal_count_validator)
-            .collect();
+        let members: Vec<ValidatorInfo> =
+            (1_u32..=10_001_u32).map(literal_count_validator).collect();
         assert_eq!(
             ValidatorSet::new(Epoch::new(9), members),
             Err(ValidatorSetError::TooManyValidators(10_001))
@@ -599,15 +597,16 @@ mod tests {
 
     #[test]
     fn generic_decoder_preserves_narrower_caller_count_limit() {
-        let members: Vec<ValidatorInfo> = (1_u32..=2_u32)
-            .map(literal_count_validator)
-            .collect();
+        let members: Vec<ValidatorInfo> = (1_u32..=2_u32).map(literal_count_validator).collect();
         let set: ValidatorSet = ValidatorSet::new(Epoch::new(9), members).unwrap();
         let bytes: Vec<u8> = encode_validator_set(&set).unwrap();
         assert_eq!(
             decode_validator_set_with_limits(&bytes, 1, 512),
             Err(ValidatorSetError::TooManyValidators(2))
         );
-        assert_eq!(decode_validator_set_with_limits(&bytes, 2, 512).unwrap(), set);
+        assert_eq!(
+            decode_validator_set_with_limits(&bytes, 2, 512).unwrap(),
+            set
+        );
     }
 }

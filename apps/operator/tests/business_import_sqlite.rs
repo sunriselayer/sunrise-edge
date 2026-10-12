@@ -247,6 +247,11 @@ fn compiled_verified_import_creates_reopens_and_reverifies_without_ordinary_serv
     let (identity, ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
         fixture.history();
     let before: SourceBusinessSnapshot = fixture.snapshot();
+    let expected_local_receipts: BTreeMap<
+        runtime::portable::DurableRecordKey,
+        protocol_types::Digest32,
+    > = encrypted_recovery_acceptance::local_prepare_receipts(&before, &fixture.network.resolver);
+    assert_eq!(expected_local_receipts.len(), 1);
     let history: Directory = Directory::new("import-history-parent");
     let history_root: PathBuf = history.0.join("history");
     fixture.write_history(&history_root, &identity, &ordered);
@@ -557,12 +562,13 @@ fn compiled_verified_import_creates_reopens_and_reverifies_without_ordinary_serv
         cut: &cut.0,
         predecessors: &[],
         genesis: &source_directory.0.join("genesis.bin"),
-        unavailable_roots: &[source_directory.0.clone()],
+        unavailable_roots: std::slice::from_ref(&source_directory.0),
         work: &recovery_directory.0,
         binding: &binding_before,
         validator: ValidatorId::new([0xe8; 32]),
         expected_state: &BTreeMap::new(),
         expected_business: &before,
+        expected_local_receipts: &expected_local_receipts,
     });
     // The entire source-free sequence is over before either attachment returns.
     std::fs::rename(&hidden_state, &source_state).unwrap();

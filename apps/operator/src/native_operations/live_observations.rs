@@ -165,7 +165,7 @@ impl LiveSnapshotCooldown {
         !self.exhausted
             && self
                 .next_eligible
-                .map_or(true, |deadline: Instant| now >= deadline)
+                .is_none_or(|deadline: Instant| now >= deadline)
     }
 
     fn next_eligible(&self) -> Option<Instant> {
@@ -203,12 +203,8 @@ mod tests {
             LOCAL_OBSERVATIONS_SOCKET_FLAG.into(),
             "/tmp/two.sock".into(),
         ];
-        let mut parsed = crate::common::FlagSet::parse(
-            tokens,
-            &[LOCAL_OBSERVATIONS_SOCKET_FLAG],
-            &[],
-        )
-        .unwrap();
+        let mut parsed =
+            crate::common::FlagSet::parse(tokens, &[LOCAL_OBSERVATIONS_SOCKET_FLAG], &[]).unwrap();
         assert!(parsed.optional_one(LOCAL_OBSERVATIONS_SOCKET_FLAG).is_err());
     }
 
@@ -308,7 +304,10 @@ mod tests {
             socket: Some(sender),
             cooldown: LiveSnapshotCooldown::default(),
         };
-        assert_eq!(disconnected.try_send(start, snapshot), LiveSendOutcome::Dropped);
+        assert_eq!(
+            disconnected.try_send(start, snapshot),
+            LiveSendOutcome::Dropped
+        );
         assert_eq!(
             disconnected.try_send(start + Duration::from_millis(500), snapshot),
             LiveSendOutcome::Throttled
@@ -331,16 +330,15 @@ mod tests {
         let start: Instant = Instant::now();
         assert!(start.checked_add(Duration::MAX).is_none());
         assert_eq!(
-            output.try_send_with_interval(
-                start,
-                NativeHttpSnapshot::default(),
-                Duration::MAX,
-            ),
+            output.try_send_with_interval(start, NativeHttpSnapshot::default(), Duration::MAX,),
             LiveSendOutcome::Disabled
         );
         assert!(!output.is_enabled());
         assert_eq!(
-            output.try_send(start + LIVE_SNAPSHOT_INTERVAL, NativeHttpSnapshot::default()),
+            output.try_send(
+                start + LIVE_SNAPSHOT_INTERVAL,
+                NativeHttpSnapshot::default()
+            ),
             LiveSendOutcome::Disabled
         );
         let mut payload: [u8; 2 * 1024] = [0; 2 * 1024];
@@ -357,6 +355,8 @@ mod nonunix_tests {
 
     #[test]
     fn explicit_local_socket_option_refuses_on_non_unix_targets() {
-        assert!(LocalObservationsPath::parse(Some("/tmp/native-observations.sock".into())).is_err());
+        assert!(
+            LocalObservationsPath::parse(Some("/tmp/native-observations.sock".into())).is_err()
+        );
     }
 }

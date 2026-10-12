@@ -24,7 +24,7 @@ from 06:46:39 through 14:46:39 UTC on 2026-10-10. The CI-check recurring
 automation was deleted at that request; no replacement automation was created.
 The newer direct request to resolve dependency acquisition authorizes only
 missing exact locked Rust inputs from official crates.io, without package code
-execution. Acquisition still needs its own admitted bounded protocol; the human
+execution. Acquisition then still needed its own admitted bounded protocol; the human
 has selected the [observed acquisition floor policy](docs/architecture/decisions/0225-observed-acquisition-floor-and-current-binding.md)
 with stop before 5 GiB. Source work does not admit unresolved
 runtime prerequisites, global-cache substitution, deployment, public
@@ -33,15 +33,203 @@ launch, custody or global-host changes.
 The current direct human request resumes ordinary Native+SQLite implementation
 and requires resolving acquisition blockers and all twenty open groups. It
 selects monitored stop before the 5 GiB floor, not a full-duration global-space
-guarantee. Acquisition code, combined protocol and runtime admission remain
-pending; no TODO group or release gate is closed by this policy decision.
+guarantee. That policy decision alone closed no TODO group or release gate.
+Current dependency preparation and actual local execution are recorded below;
+older source/admission snapshots are not the current local-test blocker.
 
 The 2026-10-11 direct human decision additionally authorizes Docker-only local
 PostgreSQL and bounded isolated Docker disk-full/forced-stop experiments. Keep
 host disks, swap/settings, foreign workloads and real data outside the fault
 scope. This is environment/verification authority, not a successful test,
 dependency-acquisition retry, public deployment or release admission. The
-separately provider-stopped acquisition workflow remains stopped.
+historical provider-stopped author is not resumed. The 2026-10-12 direct human
+instruction assigns ordinary official locked-input authoring to the root;
+actual platform safeguards and every acquisition/verification limit remain.
+
+The newer 2026-10-12 direct instruction permits ordinary non-destructive
+implementation, dependency preparation and local verification without repeated
+approval questions. Select 700 newly materialized regular files, including
+control/proof files; directories are counted separately. Existing source,
+shared caches, the retained target and failed evidence are preserved. This does
+not authorize public deployment, real keys, foreign-resource destruction or
+fabricating completion of the launch duties below.
+
+### Current local verification, 2026-10-12
+
+The current working source passed `cargo fmt --all -- --check` after ordinary
+formatting. With exact Node 22.20.0, the native-release fixture owner passed all
+139 controls, including real descriptor closure on initial-stat failure, and
+the CI gate-contract owner passed. The first release-fixture invocation used
+Node 26 and failed its version guard; it remains a failure. These are fixture
+and style results, not native A/B builds, Rust product tests or PG acceptance.
+The dedicated validation runner confines its own compiler unit to 4 GiB memory,
+no swap, two Cargo jobs and 32 MiB retained raw output, and stops its
+own unit if monitored free space drops below 6 GiB. Its actual short execution,
+complete pipe EOF and owned cgroup release were checked.
+Focused runs default to 30 minutes. Complete ordinary local plans may explicitly
+select a finite deadline up to six hours, retaining the existing long CI cases
+and the original-start clock. This does not change acquisition's 300-second
+budget or qualify the historical 30-minute release invocation packet.
+
+The dedicated locked Cargo home was reconstructed and root-verified against
+all 311 archive checksums and 287 complete sparse-index histories before Cargo
+execution. Shared caches, the lock and retained target were not substituted.
+The separate independent data reader did not finish within its original bound;
+that failure remains distinct from root verification and is not independent
+release acceptance. Actual locked/offline all-feature library tests passed:
+canonical-encoding 15, protocol-types 11, hashing 20, crypto 31, runtime 149 and
+runtime-sqlite 96, with zero failures. The two ignored SQLite cases were then
+executed separately in fresh bounded Docker noswap volumes and both passed:
+real ENOSPC before COMMIT and the literal COMMIT-error/reconciliation path.
+Their exact owned containers, volumes and imported test image were observed
+absent after cleanup. This is selected fault-test evidence, not power-loss,
+referenced-blob durability, off-host custody or complete M3 acceptance.
+
+The complete `runtime-postgres --all-targets --all-features` suite passed with
+every optional live prerequisite required, no skipped live cases, zero failures
+and zero ignored cases. All twelve integration targets ran, including real
+SIGKILL/WAL recovery, tablespace ENOSPC, WAL exhaustion, connection exhaustion,
+backup/restore, PgBouncer, blob/range reads, outbox and portable-state fencing.
+There were 22 live integration controls, six library controls and 77 support
+controls repeated within each integration target; repeated support cases are
+not independent live-PG evidence. The same retained tmpfs, cluster identity and
+concrete loopback port were checked across restart, and the bounded parent
+completed with both pipe EOF and its owned cgroup absent. This clears the
+previously unexecuted PG runtime/fault suite, not the separate complete PG
+protocol/soak workflow or whole release acceptance.
+
+The subsequent complete five-group PG profile also passed on the current
+product source (`validation-2b62f729031f40c3a0e75ec1a9e8b8f2.json`):
+pg-storage, pg-lifecycle, pg-drain-history, pg-business-audit and
+pg-recovery-economics, including the original inventory and smoke-soak owners.
+All required live prerequisites remained enabled. Actual exit was 0 after
+707.61 seconds, with both pipe EOFs, no refusal and absent owned compiler
+cgroup; the persistent supervisor independently exited 0. The same retained
+cluster and fixed loopback port survived the profile. Its exact primary owner
+containers and volumes were independently observed absent after cleanup.
+This supplies the previously missing selected-PG local verification, not
+final-head CI, independent security/custody or a completed release group.
+
+Initial PG preparation failures remain preserved: the legacy tmpfs option
+parser rejected `noswap`, mount-output terminal framing failed an inventory
+comparison, readiness mistook the image's temporary Unix-only initializer for
+the final server, and an empty Docker HostPort request changed after restart.
+The corrected runner uses bounded owner-labelled local-driver tmpfs volumes,
+TCP readiness and one concrete endpoint. No test assertion or fault was removed.
+The first core/SDK/operator library build exposed four test-only API errors in
+Withdraw admission controls; their constructor and array-access corrections
+preserve all assertions and domain checks. The next core run passed 1,253 cases
+but failed one slash-evidence fixture's missing-ancestor prerequisite, with seven
+dedicated-lane cases ignored. Its correction uses real signerless authenticated
+proposal observation after the original replay checks, without restoring lost
+evidence or weakening the application refusal; its focused rerun passed, then
+the full core library passed 1,254 cases with zero failures and the same seven
+dedicated-lane ignored cases. SDK library tests passed all 190 cases.
+The operator library initially passed 122 cases and failed the existing real-age
+short-write round-trip control. Actual age header serialization requires a
+complete write: the private CipherWriter now completes finite positive short
+writes under the original byte/deadline budget, hashes/counts only accepted
+bytes and permanently refuses zero progress, IO error or quota refusal.
+The original control and every original assertion remain. A new same-budget
+mid-short-write refusal control is outside the original 41 selected recovery
+names. The corrected complete operator library passed 124 cases, zero failures
+and zero ignored cases. This resolves that real transport defect, not complete
+encrypted CLI relocation, the original selected-lane recurrence or M4 release.
+The next complete five-group PG profile first exposed a test-helper compiler
+error: an unused `_bytes` binding was present in only one branch of an or-pattern.
+Changing it to the nonbinding wildcard preserves every pipe result/error rule.
+The corrected profile then reached the compiled SQLite encrypted-relocation
+owner and failed its exact durable receipt/object-history comparison at
+`encrypted_recovery_acceptance.rs:535`. That historical failed run remains
+preserved. The sole difference was a source-local synthetic FastVote prepare
+receipt which DR-0170/0176 already validate and exclude from business import;
+every shared original receipt and object head/version matched exactly. The
+corrected oracle derives exact expected local IDs/digests from canonical
+prepared records and owning key/hash APIs, validates their full empty source
+records and requires their destination absence. Unknown synthetic and original
+receipts remain in full equality; no production restoration, raw source bytes
+or additional metadata normalization changed. The genuine compiled original
+encrypted relocation and its three added negative controls passed with six
+total passes, zero failures/ignored cases, complete pipe EOF and owned cgroup
+release (`validation-8fc2d1fa3a504660b0ffbf9d29e0dcc4.json`). Full recurring
+relocation and the complete PG/required profiles remain separate gates.
+
+Current-source R1/R2/R3 review found one remaining duplicated pure receipt
+binding in durable reconciliation. It now calls the existing envelope owner,
+preserving outer lookup identity, RequestIdReuse and nested decoding/binding/
+encoding error order. Independent implemented-delta review found no correctness
+issue. All four added actual reconciliation controls passed, including exact
+responses, absent receipt, joint-invalid outer/nested fields and malformed
+bytes, with unchanged receipt storage and zero new reads/commit/outbound work
+(`validation-77288c51fe0041fea36055d2813dc603.json`). Complete required attempts
+also exposed formatting and strict Clippy failures; fixes do not disable lints,
+drop a selector or weaken a functional assertion. Those failed attempts remain
+failed. The first persistent-supervisor complete attempt
+(`validation-301bd452868745298e76305c63693fb0.json`) reached its original
+30-minute unit deadline during compiled e2 recurrence and exited 1; its complete
+pipe EOF and absent owned cgroups do not make the partial recipe a pass.
+The actual unit journal records `timeout`; the monitor's `stopped` field is
+null because the inner unit's own timer acted first. Before that deadline,
+all ordinary workspace Rust tests passed, including node-core 1,258 with seven
+dedicated-lane ignores, SDK 190, operator 124 and Native HTTP 199. The unchanged
+exact core recurrence passed in 600.85 seconds, and compiled readiness passed
+in 30.54 seconds. The separate earlier supervisor interruption with exit 143
+remains incomplete and its cause unknown. Sticky-signal cleanup and complete
+raw capture were corrected and independently reviewed; late/missing terminal
+results still refuse. That required attempt remained incomplete; the subsequent
+complete five-group PG profile passed as recorded above.
+Literal `npm ci --prefix adapters/cloudflare-workers` completed successfully
+with exact Node 22.20.0. Its seven reported high tooling advisories remain a
+separate release hold; no automatic dependency/lock rewrite was performed.
+Old uncompiled/source-only captions below describe their recorded snapshots,
+not a waiver or whole-source pass. Complete required,
+independent review, fresh thirteen-target A/B and final-head hosted gates stay open.
+
+The six-hour-bounded complete required attempt
+(`validation-2a2023f6c25b47a4a64ed28f24249b0d.json`) failed after 12,771.86 seconds,
+with actual exit 101, both pipe EOFs, no timer/floor refusal and absent owned
+compiler cgroup. Strict workspace Clippy and ordinary tests passed, as did all
+seven compiled successors, real e8 activation/withdrawals and the separate
+terminal e8 Freeze/drain. The following `pack-saved` stage returned opaque
+`recovery attachment refused`; no 35-role pack/open success or full required
+PASS is claimed. Its source fixture was removed by the owning test's normal
+cleanup, so the exact underlying refusal remains unproven.
+
+A new filesystem-only 35-role/1,162-file calibration separately demonstrated
+sticky observation exhaustion in 0.20 seconds under the old 262,144 limit.
+Redundant generated-directory walks were reduced without removing body/hash/
+stamp/inventory checks. DR-0221's dated product-profile amendment selects a
+finite 2,097,152-observation ceiling, with old-limit refusal retained explicitly;
+the other product, acquisition and host limits remain distinct and unchanged.
+The full terminal calibration and traversal/refusal controls now passed, including
+actual age encryption, publication/completion, decryption and both EOF checks.
+The new complete strict-Clippy/SDK/operator run
+(`validation-e5d1405528a043b6a6df38314082368c.json`) passed with 191 SDK and
+131 operator cases, zero failures or ignores, both pipe EOFs and the owned
+cgroup released. The filesystem calibration uses synthetic one-byte bodies,
+not signed history: genuine full recurrence/relocation remains a separate gate.
+
+The disposable PG runner now refuses unknown Docker cleanup state rather than
+treating failed inspect as absence. All 43 actual fake-Docker cleanup controls
+passed; the corrected runner also passed the real schema/conformance target
+with one live case and 77 shared support controls
+(`validation-0a2fb454201e4c218fec58f73d7f523b.json`). Complete pipe EOF, exit 0,
+owned cgroup release and absence of its exact labelled resources were checked.
+The new controls run through the existing cheap gate-contract owner; its
+ordered dispatch, omission/duplication and failure-propagation tests passed.
+This is additive cleanup evidence, not another full PG profile or release PASS.
+
+All four bounded SQLite Docker ENOSPC cases also passed
+(`validation-9f49f698c13548bfbff2d0162b15635b.json`): the original two inline
+controls and two new positive referenced-blob controls. The latter preserve two
+independently defined objects with 65,537-byte data payloads and complete
+canonical bodies larger than 64 KiB, all twelve SQL tables and all four
+portable collections through the definite/indeterminate fault outcomes,
+same-file reopen, one authorized retry and receipt-first replay. The completed
+runner exited 0 with both pipe EOFs; successful exact-owner Docker listings
+confirmed its containers, volumes and imported image absent. This is actual
+bounded process/filesystem-fault evidence, not cross-file atomicity, host power
+failure, custody or full M3 completion. No open group is checked by counts alone.
 
 ## Established baseline
 
@@ -173,20 +361,22 @@ partial results are not acceptance of the new combined source.
 The combined `5c28e868` source and its proposed rev3 owning packet received
 different source-only approvals; neither was a corrected runtime invocation.
 They are now baseline evidence, not approval of the later writer/publication/terminal
-source commits below. The inherited private Cargo home is unavailable for an
-unknown reason. Human-authorized local reconstruction is not admitted: exact
-local inputs are incomplete and its replacement protocol remains unqualified.
+source commits below. At that snapshot the inherited private Cargo home was
+unavailable for an unknown reason. Local reconstruction was not admitted:
+exact local inputs were incomplete and its replacement protocol was unqualified.
 The 2026-10-10 direct request now authorizes official acquire-only missing locked
-inputs. The fresh inert census still has 41 missing archives, 36 missing sparse
-name files and three missing version records. No acquisition or quarantine was
-created. The first source-author attempt hit a restricted reference-read denial;
+inputs. That inert census had 41 missing archives, 36 missing sparse
+name files and three missing version records; no acquisition or quarantine had
+been created at that point. The first source-author attempt hit a restricted reference-read denial;
 that read scope was corrected. In the corrected Claude Code attempt on
 2026-10-11, the author reported a safety classifier stopping code generation
 before any source was produced. This is not an observed download, Cargo, disk
 or credential failure, or a demonstrated evidence/IO-cap impossibility. The
-stopped author must not be retried or rerouted; its reported stop needs provider
-review. The bounded acquisition implementation remains incomplete, including
-combined evidence accounting, held-input capture and failure/release proof.
+historical stopped author is not resumed. The later direct human instruction
+assigns ordinary official acquire-only implementation to the root; a real
+platform denial must still stop, not be bypassed. The new root-authored candidate
+had current binding, sealed execution and full readback/release checks, but its
+complete different review, fresh admission and actual acquisition were then pending.
 Global caches and the retained M4 target must not be substituted or repopulated.
 
 Different complete SOURCE_ONLY_APPROVE now covers exact `39640e32`: all 67
@@ -198,10 +388,12 @@ acquisition, runtime admission or TODO-group completion follows.
 The later DR-0224 collector/source-documentation delta is separate from that
 approval; it remains uncompiled, unformatted and unexecuted.
 
-Next: resolve the private-cache prerequisite within the actual authorized scope,
-under the accepted observed floor policy, and bind/review a NEW owning
-packet before any invocation; then execute fresh required, thirteen-target A/B
-and final-head hosted gates. Old metadata/scoped helpers must not run with
+Next: finish current corrected core/SDK/operator and whole-required acceptance,
+then the remaining complete PG protocol/soak profile, independent integration,
+fresh thirteen-target A/B and final-head hosted gates. Root-verified private
+dependency preparation now permits the local tests described above under the
+new direct human instruction; it is not old packet/ONE or release acceptance.
+Old metadata/scoped helpers must not run with
 substituted source or target bindings. M4's age edge expands shared
 `futures-util` features used by PostgreSQL: the documented PG dependency
 acceptance requirement remains

@@ -48,7 +48,8 @@ impl ChildGuard {
         let mut signal: PendingStrictOutput = PendingStrictOutput::spawn(command, signal_end);
         let output: Output = signal.finish();
         assert_eq!(
-            output.status.code(), Some(0),
+            output.status.code(),
+            Some(0),
             "owned-host USR1 helper failed"
         );
         assert!(output.stdout.is_empty() && output.stderr.is_empty());
@@ -185,7 +186,10 @@ impl ChildGuard {
             "owned child already exited before explicit SIGKILL: {before:?}"
         );
         let pid: u32 = self.child_mut().id();
-        assert!(pid > 0 && pid <= i32::MAX as u32, "positive owned child PID");
+        assert!(
+            pid > 0 && pid <= i32::MAX as u32,
+            "positive owned child PID"
+        );
         assert!(Instant::now() < end, "explicit SIGKILL deadline elapsed");
         self.child_mut()
             .kill()
@@ -193,11 +197,17 @@ impl ChildGuard {
         assert!(Instant::now() < end, "explicit SIGKILL exceeded deadline");
 
         let status: ExitStatus = loop {
-            assert!(Instant::now() < end, "owned-child SIGKILL poll deadline elapsed");
+            assert!(
+                Instant::now() < end,
+                "owned-child SIGKILL poll deadline elapsed"
+            );
             let observed: Option<ExitStatus> = self
                 .try_wait()
                 .expect("poll this explicitly killed owned child");
-            assert!(Instant::now() < end, "owned-child SIGKILL poll exceeded deadline");
+            assert!(
+                Instant::now() < end,
+                "owned-child SIGKILL poll exceeded deadline"
+            );
             if let Some(status) = observed {
                 break status;
             }
@@ -206,14 +216,26 @@ impl ChildGuard {
         assert_eq!(status.signal(), Some(9_i32), "actual owned SIGKILL status");
         assert_eq!(status.code(), None, "SIGKILL is not an ordinary exit code");
         assert!(!status.success(), "SIGKILL must not be successful exit");
-        assert!(Instant::now() < end, "owned-child reap confirmation deadline elapsed");
+        assert!(
+            Instant::now() < end,
+            "owned-child reap confirmation deadline elapsed"
+        );
         let confirmed: ExitStatus = self
             .child_mut()
             .wait()
             .expect("confirm this same child's actual SIGKILL reap");
-        assert!(Instant::now() < end, "owned-child reap confirmation exceeded deadline");
-        assert_eq!(confirmed, status, "same owned child's observed SIGKILL status");
-        assert!(Instant::now() < end, "owned-child SIGKILL result deadline elapsed");
+        assert!(
+            Instant::now() < end,
+            "owned-child reap confirmation exceeded deadline"
+        );
+        assert_eq!(
+            confirmed, status,
+            "same owned child's observed SIGKILL status"
+        );
+        assert!(
+            Instant::now() < end,
+            "owned-child SIGKILL result deadline elapsed"
+        );
         let reaped: Child = self.0.take().expect("confirmed SIGKILL-reaped owned child");
         drop(reaped);
         (pid, status)
@@ -225,7 +247,7 @@ impl ChildGuard {
 /// maximum-width numeric, hexadecimal and scoped socket-address fields. ChainId
 /// has no protocol length maximum, so use this caller's exact UTF-8 byte length.
 pub(crate) fn compiled_host_startup_line_limit(chain_id: &str) -> NonZeroUsize {
-    let chain_bytes: usize = chain_id.as_bytes().len();
+    let chain_bytes: usize = chain_id.len();
     let maximum: usize = 428usize
         .checked_add(chain_bytes)
         .expect("compiled host startup line byte budget overflow");
@@ -286,8 +308,7 @@ pub fn spawn_bounded_status_line(
         .spawn()
         .expect("failed to spawn compiled host process");
     let mut guard: ChildGuard = ChildGuard::new(child);
-    let stdout: std::process::ChildStdout =
-        guard.child_mut().stdout.take().expect("piped stdout");
+    let stdout: std::process::ChildStdout = guard.child_mut().stdout.take().expect("piped stdout");
     let (sender, receiver) = mpsc::channel::<std::io::Result<String>>();
     let status_reader: std::thread::JoinHandle<()> = std::thread::spawn(move || {
         let result: std::io::Result<String> = read_complete_status_line(stdout, byte_cap);
@@ -343,10 +364,8 @@ pub fn spawn_bounded_output(mut command: Command, deadline: Duration) -> Output 
         .spawn()
         .expect("failed to spawn compiled host process");
     let mut guard: ChildGuard = ChildGuard::new(child);
-    let stdout: std::process::ChildStdout =
-        guard.child_mut().stdout.take().expect("piped stdout");
-    let stderr: std::process::ChildStderr =
-        guard.child_mut().stderr.take().expect("piped stderr");
+    let stdout: std::process::ChildStdout = guard.child_mut().stdout.take().expect("piped stdout");
+    let stderr: std::process::ChildStderr = guard.child_mut().stderr.take().expect("piped stderr");
     let (out_tx, out_rx) = mpsc::channel::<std::io::Result<Vec<u8>>>();
     let (err_tx, err_rx) = mpsc::channel::<std::io::Result<Vec<u8>>>();
     let stdout_reader: std::thread::JoinHandle<()> = std::thread::spawn(move || {
@@ -596,7 +615,7 @@ mod pending_capture {
         fn error(&self) -> Option<&'static str> {
             match self.result.as_ref() {
                 Some(Err(reason)) => Some(*reason),
-                Some(Ok(_bytes)) | None => None,
+                Some(Ok(_)) | None => None,
             }
         }
 
@@ -684,7 +703,10 @@ mod pending_capture {
                     .is_none(),
                 "collector exited before its requested sample"
             );
-            assert!(Instant::now() < self.end, "late collector liveness observation");
+            assert!(
+                Instant::now() < self.end,
+                "late collector liveness observation"
+            );
         }
 
         fn close_pipes(&mut self, end: Instant) -> Result<(), &'static str> {
@@ -721,9 +743,13 @@ mod pending_capture {
 
         pub fn finish(&mut self) -> Output {
             let status: ExitStatus = loop {
-                assert!(Instant::now() < self.end, "collector completion deadline elapsed");
+                assert!(
+                    Instant::now() < self.end,
+                    "collector completion deadline elapsed"
+                );
                 self.check_capture();
-                if let Some(status) = self.child
+                if let Some(status) = self
+                    .child
                     .as_mut()
                     .expect("owned collector")
                     .try_wait()
@@ -737,7 +763,8 @@ mod pending_capture {
                 );
                 std::thread::sleep(POLL_INTERVAL);
             };
-            let confirmed: ExitStatus = self.child
+            let confirmed: ExitStatus = self
+                .child
                 .as_mut()
                 .unwrap()
                 .wait()
@@ -745,7 +772,10 @@ mod pending_capture {
             assert_eq!(confirmed, status, "cached collector exit status");
             self.reaped = true;
             self.child = None;
-            assert!(Instant::now() < self.end, "collector reap exceeded original deadline");
+            assert!(
+                Instant::now() < self.end,
+                "collector reap exceeded original deadline"
+            );
             let close_end: Instant = self.end.min(
                 Instant::now()
                     .checked_add(Duration::from_secs(5))
@@ -755,7 +785,10 @@ mod pending_capture {
                 .expect("both complete collector pipe closures");
             let stdout: PipeResult = self.stdout.as_mut().unwrap().take_complete();
             let stderr: PipeResult = self.stderr.as_mut().unwrap().take_complete();
-            assert!(Instant::now() < self.end, "collector capture exceeded original deadline");
+            assert!(
+                Instant::now() < self.end,
+                "collector capture exceeded original deadline"
+            );
             match (stdout, stderr) {
                 (Ok(stdout), Ok(stderr)) => Output {
                     status,
@@ -780,12 +813,14 @@ mod pending_capture {
                         Ok(Some(_status)) => false,
                         Ok(None) => true,
                         Err(_error) => {
-                            self.cleanup_errors.push("collector failure cleanup poll failed");
+                            self.cleanup_errors
+                                .push("collector failure cleanup poll failed");
                             true
                         }
                     };
                     if needs_kill && child.kill().is_err() {
-                        self.cleanup_errors.push("collector failure cleanup kill failed");
+                        self.cleanup_errors
+                            .push("collector failure cleanup kill failed");
                     }
                     match child.wait() {
                         Ok(_status) => {
@@ -793,7 +828,8 @@ mod pending_capture {
                             self.child = None;
                         }
                         Err(_error) => {
-                            self.cleanup_errors.push("collector failure cleanup reap failed");
+                            self.cleanup_errors
+                                .push("collector failure cleanup reap failed");
                         }
                     }
                 }
@@ -1074,7 +1110,8 @@ pub(crate) mod local_observation_collector {
         pub(crate) fn finish(&mut self) {
             let output: Output = self.capture.as_mut().unwrap().finish();
             assert_eq!(
-                output.status.code(), Some(0),
+                output.status.code(),
+                Some(0),
                 "collector must exit ordinarily"
             );
             assert!(output.status.success());
@@ -1089,7 +1126,8 @@ pub(crate) mod local_observation_collector {
             assert!(snapshot.connections_admitted > 0);
             assert!(snapshot.requests_dispatched > 0);
             assert_eq!(
-                self.observe_socket().expect("retained socket after collector exit"),
+                self.observe_socket()
+                    .expect("retained socket after collector exit"),
                 self.socket_stamp.expect("readiness-bound socket identity"),
                 "collector exit must not remove or replace its caller-owned socket"
             );
@@ -1120,8 +1158,9 @@ pub(crate) mod local_observation_collector {
                 }
             }
             self.check_directories()?;
-            unlinkat(&self.parent, self.name.as_str(), AtFlags::REMOVEDIR)
-                .map_err(|_error| "caller directory cleanup failed; possible extra leaf retained")?;
+            unlinkat(&self.parent, self.name.as_str(), AtFlags::REMOVEDIR).map_err(
+                |_error| "caller directory cleanup failed; possible extra leaf retained",
+            )?;
             self.removed = true;
             Ok(())
         }
@@ -1129,7 +1168,10 @@ pub(crate) mod local_observation_collector {
 
     impl Drop for Collector {
         fn drop(&mut self) {
-            let released: bool = self.capture.as_mut().is_none_or(PendingStrictOutput::cleanup);
+            let released: bool = self
+                .capture
+                .as_mut()
+                .is_none_or(PendingStrictOutput::cleanup);
             match (released, self.removed) {
                 (true, false) => match self.remove_owned() {
                     Ok(()) => {}

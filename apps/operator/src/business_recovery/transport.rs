@@ -258,6 +258,10 @@ impl<'a, W: Write> CipherWriter<'a, W> {
     pub(super) fn observation(self) -> (u64, [u8; 32]) {
         (self.observed, self.hash.finalize().into())
     }
+    fn fail<T>(&mut self) -> io::Result<T> {
+        self.failed = true;
+        Err(refused())
+    }
 }
 impl<W: Write> Write for CipherWriter<'_, W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -275,25 +279,36 @@ impl<W: Write> Write for CipherWriter<'_, W> {
         if bytes.is_empty() {
             return Ok(0);
         }
-        match self.inner.write(bytes) {
-            Ok(0) => {
-                self.failed = true;
-                return Err(refused());
+        // age's synchronous header serializer requires a complete write.
+        // Complete positive short writes here without buffering or resetting
+        // the invocation budget; count/hash only bytes actually accepted.
+        let mut offset: usize = 0;
+        while offset < bytes.len() {
+            if self.budget.check().is_err() {
+                return self.fail();
             }
-            Ok(written) if written <= bytes.len() => {
-                self.hash.update(&bytes[..written]);
-                self.observed = self
-                    .observed
-                    .checked_add(u64::try_from(written).map_err(|_| refused())?)
-                    .ok_or_else(refused)?;
-                if self.budget.check().is_ok() {
-                    return Ok(written);
-                }
+            let written: usize = match self.inner.write(&bytes[offset..]) {
+                Ok(written) if written > 0 && written <= bytes.len() - offset => written,
+                Ok(_) | Err(_) => return self.fail(),
+            };
+            let Some(end) = offset.checked_add(written) else {
+                return self.fail();
+            };
+            let counted: u64 = match u64::try_from(written) {
+                Ok(counted) => counted,
+                Err(_) => return self.fail(),
+            };
+            let Some(observed) = self.observed.checked_add(counted) else {
+                return self.fail();
+            };
+            self.hash.update(&bytes[offset..end]);
+            self.observed = observed;
+            offset = end;
+            if self.budget.check().is_err() {
+                return self.fail();
             }
-            Ok(_) | Err(_) => {}
         }
-        self.failed = true;
-        Err(refused())
+        Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
         if self.failed

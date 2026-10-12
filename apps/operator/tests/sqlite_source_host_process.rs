@@ -131,10 +131,11 @@ fn start_host(
         compiled_source_host_process::compiled_host_startup_line_limit(
             fixture.network.chain_id.as_str(),
         );
-    let (mut guard, line) =
-        compiled_source_host_process::spawn_bounded_status_line(
-            command, startup_deadline, startup_byte_cap,
-        );
+    let (mut guard, line) = compiled_source_host_process::spawn_bounded_status_line(
+        command,
+        startup_deadline,
+        startup_byte_cap,
+    );
     if line.is_empty() {
         panic!(
             "sqlite-source-host exited before serving: {:?}",

@@ -259,3 +259,21 @@ UNEXECUTED; both names are outside the original 41 selectors. The separate
 these Rust controls. Actual resource/timing fit and fault outcomes remain open;
 no physical-disk, power, nonempty referenced-blob, custody, full-profile,
 M3/TODO20 or release qualification follows from this source slice.
+
+## 2026-10-13 bounded ENOSPC execution update
+
+The prior unexecuted captions remain historical authorship records. Actual run
+`validation-9f49f698c13548bfbff2d0162b15635b` passed both original `Inline`
+and both new positive `Referenced` controls, with exit zero, both output streams
+at EOF and its owning cgroup absent. Referenced setup publishes exactly two
+fixed canonical objects with 65,537 data bytes each; the original blob writer
+and warmed read-only owner stay live, with no blob writes after setup.
+Both complete public blob bodies, purpose-bound digests and codec round trips
+are checked while full, before filler removal. Afterwards, full twelve-table
+and four-portable-collection reconciliation checks exact metadata/payloads and
+NULL-inline/digest reference rows on the original owner and same-file reopen,
+before one authorized retry and unchanged receipt-first replay. Pre-COMMIT
+rejection remains distinct from literal-COMMIT `Indeterminate`; retaining the
+prepublished unreachable target blob is expected residue, not logical commit.
+These executions do not prove cross-file atomicity, physical power-loss,
+custody, full M3 completion or a passed full required rerun.

@@ -698,7 +698,12 @@ mod indeterminate_classification_tests {
                 let reconciliation: Result<SuccessorActivationOutcome, SuccessorActivationError> =
                     Err(failure);
                 let result: Result<SuccessorActivationOutcome, SuccessorActivationError> =
-                    reconcile_after_indeterminate(reconciliation, original_reason, subject, manifest);
+                    reconcile_after_indeterminate(
+                        reconciliation,
+                        original_reason,
+                        subject,
+                        manifest,
+                    );
                 assert!(matches!(
                     result,
                     Err(SuccessorActivationError::Indeterminate(actual))

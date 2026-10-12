@@ -417,9 +417,9 @@ where
             "durable receipt projection and canonical record differ",
         ),
         DedupRecordBindingError::Encode(error) => NodeCoreError::from(error),
-        DedupRecordBindingError::NonCanonicalReEncoding => NodeCoreError::PersistenceInvariant(
-            "durable receipt does not re-encode canonically",
-        ),
+        DedupRecordBindingError::NonCanonicalReEncoding => {
+            NodeCoreError::PersistenceInvariant("durable receipt does not re-encode canonically")
+        }
     })?;
     Ok(ReceiptQueryResult::Present {
         request_id,

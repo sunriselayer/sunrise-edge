@@ -48,9 +48,7 @@ impl core::fmt::Display for NativeHttpLiveRecordError {
 impl std::error::Error for NativeHttpLiveRecordError {}
 
 /// Decodes one canonical DR-0223 live record without retaining input text.
-pub fn decode_live_summary(
-    input: &[u8],
-) -> Result<NativeHttpSnapshot, NativeHttpLiveRecordError> {
+pub fn decode_live_summary(input: &[u8]) -> Result<NativeHttpSnapshot, NativeHttpLiveRecordError> {
     const PREFIX: &[u8] = b"native_operations schema=1 kind=live ";
     if input.len() <= PREFIX.len() + 1
         || input.len() >= MAX_LIVE_RECORD_BYTES
@@ -236,7 +234,10 @@ impl NativeHttpSnapshot {
     /// One fixed-schema live counter record, bounded below 2 KiB for all u64s.
     #[must_use]
     pub fn live_summary(self) -> String {
-        format!("native_operations schema=1 kind=live {}\n", self.counter_fields())
+        format!(
+            "native_operations schema=1 kind=live {}\n",
+            self.counter_fields()
+        )
     }
 
     /// One fixed-schema secret-free record, bounded below 2 KiB for all u64s.
@@ -456,8 +457,7 @@ mod tests {
             "blocking_closed",
             "blocking_panics",
         ];
-        let actual_live_names: Vec<&str> =
-            live_pairs.iter().map(|(name, _)| *name).collect();
+        let actual_live_names: Vec<&str> = live_pairs.iter().map(|(name, _)| *name).collect();
         assert_eq!(actual_live_names, live_names);
         for (_, count) in &live_pairs {
             assert_eq!(count.parse::<u64>().unwrap(), u64::MAX);
@@ -625,8 +625,7 @@ mod tests {
         embedded_lf.insert(valid.len() - 1, b'\n');
         let mut embedded_nul: Vec<u8> = valid.to_vec();
         embedded_nul.insert(valid.len() - 1, 0);
-        const COUNTER_PREFIX: &[u8] =
-            b"native_operations schema=1 kind=live connections_admitted=";
+        const COUNTER_PREFIX: &[u8] = b"native_operations schema=1 kind=live connections_admitted=";
         const COUNTER_SUFFIX: &[u8] = concat!(
             " connections_refused=0 accept_failures=0 upgrade_failures=0 ",
             "upgrade_timeouts=0 requests_dispatched=0 requests_refused=0 ",
@@ -636,9 +635,8 @@ mod tests {
         )
         .as_bytes();
         let with_first_counter = |value: &[u8]| -> Vec<u8> {
-            let mut record: Vec<u8> = Vec::with_capacity(
-                COUNTER_PREFIX.len() + value.len() + COUNTER_SUFFIX.len(),
-            );
+            let mut record: Vec<u8> =
+                Vec::with_capacity(COUNTER_PREFIX.len() + value.len() + COUNTER_SUFFIX.len());
             record.extend_from_slice(COUNTER_PREFIX);
             record.extend_from_slice(value);
             record.extend_from_slice(COUNTER_SUFFIX);
@@ -649,8 +647,14 @@ mod tests {
         let overflow: Vec<u8> = with_first_counter(b"18446744073709551616");
         let non_ascii: Vec<u8> = with_first_counter(b"\xff");
         let malformed: [(&[u8], NativeHttpLiveRecordError); 14] = [
-            (b"native_operations schema=2 kind=live\n", NativeHttpLiveRecordError::Framing),
-            (b"native_operations schema=1 kind=termination\n", NativeHttpLiveRecordError::Framing),
+            (
+                b"native_operations schema=2 kind=live\n",
+                NativeHttpLiveRecordError::Framing,
+            ),
+            (
+                b"native_operations schema=1 kind=termination\n",
+                NativeHttpLiveRecordError::Framing,
+            ),
             (reordered, NativeHttpLiveRecordError::Fields),
             (duplicate, NativeHttpLiveRecordError::Fields),
             (extra, NativeHttpLiveRecordError::Fields),

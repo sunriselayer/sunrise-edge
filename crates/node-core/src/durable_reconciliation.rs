@@ -22,16 +22,21 @@ pub(super) fn reconcile_receipt<S: StructuredStateReader + ?Sized>(
     if receipt.event_digest() != event_digest {
         return Err(NodeCoreError::RequestIdReuse);
     }
-    let record: NodeDedupRecord = NodeDedupRecord::decode(receipt.canonical_bytes())
-        .map_err(|_| NodeCoreError::PersistenceInvariant("invalid durable receipt"))?;
-    if record.request_id() != request_id
-        || record.event_digest() != event_digest
-        || record.encode()? != receipt.canonical_bytes()
-    {
-        return Err(NodeCoreError::PersistenceInvariant(
-            "durable receipt projection and canonical record differ",
-        ));
-    }
+    let record: NodeDedupRecord =
+        NodeDedupRecord::decode_bound(receipt.canonical_bytes(), request_id, event_digest)
+            .map_err(|error: envelope::DedupRecordBindingError| match error {
+                envelope::DedupRecordBindingError::Decode(_) => {
+                    NodeCoreError::PersistenceInvariant("invalid durable receipt")
+                }
+                envelope::DedupRecordBindingError::Encode(error) => error.into(),
+                envelope::DedupRecordBindingError::RequestIdentityMismatch { .. }
+                | envelope::DedupRecordBindingError::EventDigestMismatch
+                | envelope::DedupRecordBindingError::NonCanonicalReEncoding => {
+                    NodeCoreError::PersistenceInvariant(
+                        "durable receipt projection and canonical record differ",
+                    )
+                }
+            })?;
     Ok(Some(NodeOutput::new(
         record.responses().to_vec(),
         Vec::new(),

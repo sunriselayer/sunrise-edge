@@ -47,12 +47,11 @@ pub use availability::{
     MAX_ENCODED_IDENTITY_BYTES as MAX_ENCODED_AVAILABILITY_IDENTITY_BYTES,
     MAX_ENCODED_VOTE_BYTES as MAX_ENCODED_AVAILABILITY_VOTE_BYTES, MAX_FROZEN_FRONTIER_PAGE_BYTES,
     MAX_FROZEN_FRONTIER_PAGE_ENTRIES, MAX_FROZEN_FRONTIER_VOTE_BYTES, bundle,
-    decode_availability_certificate,
-    decode_availability_identity, decode_availability_vote, decode_frozen_frontier_identity,
-    decode_frozen_frontier_page, decode_frozen_frontier_vote, encode_availability_certificate,
-    encode_availability_identity, encode_availability_vote, encode_frozen_frontier_identity,
-    encode_frozen_frontier_page, encode_frozen_frontier_vote, verify_frozen_frontier,
-    verify_frozen_frontier_quorum,
+    decode_availability_certificate, decode_availability_identity, decode_availability_vote,
+    decode_frozen_frontier_identity, decode_frozen_frontier_page, decode_frozen_frontier_vote,
+    encode_availability_certificate, encode_availability_identity, encode_availability_vote,
+    encode_frozen_frontier_identity, encode_frozen_frontier_page, encode_frozen_frontier_vote,
+    verify_frozen_frontier, verify_frozen_frontier_quorum,
 };
 pub use commit_proof::{
     CommittedBlockProof, MAX_ENCODED_COMMITTED_BLOCK_PROOF_BYTES, decode_committed_block_proof,

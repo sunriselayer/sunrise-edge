@@ -265,7 +265,10 @@ impl DurableDomainStateStore for SqliteHandoffFaults<'_> {
         {
             self.reconciliation_barrier_armed.set(false);
             self.reconciliation_read_failures.set(
-                self.reconciliation_read_failures.get().checked_add(1).unwrap(),
+                self.reconciliation_read_failures
+                    .get()
+                    .checked_add(1)
+                    .unwrap(),
             );
             return Err(DurableReadError::Unavailable);
         }

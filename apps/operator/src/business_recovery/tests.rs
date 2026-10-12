@@ -52,9 +52,11 @@ fn real_age_exact_cipher_cap_short_full64k_and_multichunk_need_pre_auth_and_late
     for size in [1usize, 23, 65536, 65537, 131072] {
         let original: Vec<u8> = vec![0x6b; size];
         let bytes: Vec<u8> = encrypted(&original, &identity);
-        let mut limits: RecoveryLimits = RecoveryLimits::default();
-        limits.ciphertext_bytes = bytes.len() as u64;
-        limits.plaintext_bytes = size as u64;
+        let limits: RecoveryLimits = RecoveryLimits {
+            ciphertext_bytes: bytes.len() as u64,
+            plaintext_bytes: size as u64,
+            ..RecoveryLimits::default()
+        };
         let budget: ArchiveReadBudget = limits.budget().unwrap();
         let zeros: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
         let input: ObservedInput = ObservedInput {
@@ -756,6 +758,445 @@ fn output_overlap_placement_refuses_before_any_stage_or_cipher_creation() {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn full_role_sources(
+    directory: &Directory,
+    budget: &ArchiveReadBudget,
+) -> (Vec<SourceRole>, usize) {
+    // Filesystem mechanics only: the small literal bodies are not signed
+    // histories, a verified successor chain, or a qualified recovery package.
+    let source: PathBuf = directory.0.join("source");
+    std::fs::create_dir(&source).unwrap();
+    let genesis: PathBuf = source.join("genesis.bin");
+    std::fs::write(&genesis, [0x61]).unwrap();
+    let roles: Vec<Role> = Role::required(8).unwrap();
+    assert_eq!(roles.len(), 35);
+    let mut sources: Vec<SourceRole> = Vec::new();
+    let mut expected_files: usize = 0;
+    for role in roles {
+        if role.tag == 1 {
+            sources.push(SourceRole::genesis(&genesis, budget).unwrap());
+            expected_files += 1;
+            continue;
+        }
+        let root: PathBuf = role.root(&source).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        let names: Vec<&str> = match role.tag {
+            2 | 4 | 6 => vec!["identity.bin", "chunk-size.bin", "complete"],
+            3 | 5 => vec![
+                "identity.bin",
+                "package.bin",
+                "transfer.bin",
+                "source-token.bin",
+                "complete",
+            ],
+            7 => vec!["certificate.bin"],
+            _ => panic!("closed generated role"),
+        };
+        for name in names {
+            std::fs::write(root.join(name), [role.tag]).unwrap();
+            expected_files += 1;
+        }
+        let heights: u64 = match role.tag {
+            2 => 15,
+            4 => u64::from(role.link) * 2 + 1,
+            6 => u64::from(role.link) * 2 + 2,
+            _ => 0,
+        };
+        for height in 1..=heights {
+            let height_root: PathBuf = root.join(format!("height-{height:020}"));
+            std::fs::create_dir(&height_root).unwrap();
+            std::fs::write(height_root.join("descriptor.bin"), [role.tag]).unwrap();
+            expected_files += 1;
+            for kind in 1..=6_u16 {
+                let component: PathBuf = height_root.join(format!("component-{kind:02}"));
+                std::fs::create_dir(&component).unwrap();
+                let name: &str = "chunk-00000000000000000000.bin";
+                assert!(
+                    role.file_limit(&format!("height-{height:020}/component-{kind:02}/{name}"))
+                        .is_ok()
+                );
+                std::fs::write(component.join(name), [role.tag]).unwrap();
+                expected_files += 1;
+            }
+        }
+        sources.push(SourceRole::archive(role, &root, budget).unwrap());
+    }
+    (sources, expected_files)
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn full_thirtyfive_role_capture_keeps_generated_history_inventory_with_default_budget() {
+    let directory: Directory = Directory::new();
+    let limits: RecoveryLimits = RecoveryLimits::default();
+    let budget: ArchiveReadBudget = limits.budget().unwrap();
+    let (sources, expected_files): (Vec<SourceRole>, usize) =
+        full_role_sources(&directory, &budget);
+    let capture: PathBuf = directory.0.join("capture");
+    let mut stage: PrivateStage =
+        PrivateStage::create(&AbsentOutput::new(&capture, &budget).unwrap(), &budget).unwrap();
+    let result: Result<envelope::Manifest, RecoveryError> = stage.capture(&sources, 8, &limits);
+    let live: bool = budget.check().is_ok();
+    let manifest: envelope::Manifest = result.unwrap_or_else(|error: RecoveryError| {
+        panic!("35-role capture refused: {error:?}, original_budget_live={live}, captured={:?}/{expected_files}", stage.capture_counts_for_test())
+    });
+    assert_eq!(manifest.entries.len(), expected_files);
+    stage.check(&manifest).unwrap();
+    for entry in &manifest.entries {
+        assert_eq!(entry.length, 1);
+        let mut body: Vec<u8> = Vec::new();
+        stage.write_body(&mut body, entry).unwrap();
+        let expected: u8 = if entry.role.tag == 1 {
+            0x61
+        } else {
+            entry.role.tag
+        };
+        assert_eq!(body, [expected]);
+        assert_eq!(entry.hash, <[u8; 32]>::from(Sha256::digest([expected])));
+    }
+    assert!(budget.check().is_ok());
+    assert!(!capture.join(envelope::COMPLETE).exists());
+
+    // Exercise all actual filesystem terminal passes with maintained age.
+    // No defining business verifier is invoked for these skeleton bytes.
+    stage.check(&manifest).unwrap();
+    let identity: age::x25519::Identity = age::x25519::Identity::generate();
+    let ciphertext: PathBuf = directory.0.join("saved.age");
+    let mut publication: CipherPublication =
+        CipherPublication::create(AbsentOutput::new(&ciphertext, &budget).unwrap(), &budget)
+            .unwrap();
+    let counted: CipherWriter<'_, &mut std::fs::File> =
+        CipherWriter::new(publication.writer(), &budget, limits.ciphertext_bytes);
+    let mut writer: age::stream::StreamWriter<CipherWriter<'_, &mut std::fs::File>> =
+        transport::encryptor(&identity.to_public())
+            .unwrap()
+            .wrap_output(counted)
+            .unwrap();
+    manifest.write_prefix(&mut writer).unwrap();
+    let mut expected: Vec<u8> = Vec::new();
+    manifest.write_prefix(&mut expected).unwrap();
+    for (index, entry) in manifest.entries.iter().enumerate() {
+        let header: [u8; 17] = envelope::file_header(index, entry).unwrap();
+        writer.write_all(&header).unwrap();
+        stage.write_body(&mut writer, entry).unwrap();
+        expected.extend_from_slice(&header);
+        expected.push(if entry.role.tag == 1 {
+            0x61
+        } else {
+            entry.role.tag
+        });
+    }
+    let footer: [u8; 49] = manifest.footer().unwrap();
+    writer.write_all(&footer).unwrap();
+    expected.extend_from_slice(&footer);
+    let finished: Result<(u64, [u8; 32]), RecoveryError> = writer
+        .finish()
+        .map(|counted: CipherWriter<'_, &mut std::fs::File>| counted.observation())
+        .map_err(|_| RecoveryError::Transport);
+    let counts: PackedDiagnosticCounts = finish_pack_publication(
+        finished,
+        &mut stage,
+        publication,
+        &manifest,
+        &footer,
+        limits.ciphertext_bytes,
+        &budget,
+    )
+    .unwrap();
+    assert_eq!(counts.links, 8);
+    assert_eq!(counts.files, expected_files);
+    assert_eq!(
+        std::fs::read(capture.join(envelope::COMPLETE)).unwrap(),
+        footer
+    );
+    let input: AttachedRegularFile = AttachedRegularFile::open(
+        &ciphertext,
+        limits.ciphertext_bytes,
+        &budget,
+        AttachedFilePolicy::public(),
+    )
+    .unwrap();
+    let phase: CipherPhase = CipherPhase::header();
+    let mut cipher: CipherReader<'_, AttachedRegularFile> =
+        CipherReader::new(input, &phase, &budget, &limits);
+    let mut actual: Vec<u8> = Vec::new();
+    {
+        let decrypted: age::stream::StreamReader<&mut CipherReader<'_, AttachedRegularFile>> =
+            transport::decrypt(&mut cipher, &phase, &identity).unwrap();
+        let mut plain: PlainReader<'_, _> =
+            PlainReader::new(decrypted, limits.plaintext_bytes, &budget);
+        plain.read_to_end(&mut actual).unwrap();
+        plain.authenticated_eof().unwrap();
+    }
+    cipher.physical_eof().unwrap();
+    assert_eq!(actual, expected);
+    assert!(budget.check().is_ok());
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn full_thirtyfive_role_capture_former_observation_limit_refuses_all_clones_without_completion() {
+    let directory: Directory = Directory::new();
+    let limits: RecoveryLimits = RecoveryLimits {
+        observations: 262_144,
+        ..RecoveryLimits::default()
+    };
+    let budget: ArchiveReadBudget = limits.budget().unwrap();
+    let sibling: ArchiveReadBudget = budget.clone();
+    let (sources, expected_files): (Vec<SourceRole>, usize) =
+        full_role_sources(&directory, &budget);
+    let capture: PathBuf = directory.0.join("capture");
+    let mut stage: PrivateStage =
+        PrivateStage::create(&AbsentOutput::new(&capture, &budget).unwrap(), &budget).unwrap();
+    let error: RecoveryError = stage.capture(&sources, 8, &limits).unwrap_err();
+    assert_eq!(classify_failure(error, &budget), RecoveryError::Quota);
+    assert!(budget.check().is_err());
+    assert!(sibling.check().is_err());
+    assert!(stage.capture_counts_for_test().0 < expected_files);
+    assert!(!capture.join(envelope::COMPLETE).exists());
+}
+
+#[test]
+fn recovery_failure_preserves_live_categories_and_reports_shared_refusal_opaquely() {
+    let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
+    for error in [
+        RecoveryError::Attachment,
+        RecoveryError::Inventory,
+        RecoveryError::Proof,
+        RecoveryError::Transport,
+    ] {
+        assert_eq!(classify_failure(error, &budget), error);
+    }
+    let sibling: ArchiveReadBudget = budget.clone();
+    let _refusal: io::Error = sibling.refuse();
+    for error in [
+        RecoveryError::Attachment,
+        RecoveryError::Inventory,
+        RecoveryError::Proof,
+        RecoveryError::Transport,
+    ] {
+        let actual: RecoveryError = classify_failure(error, &budget);
+        assert_eq!(actual, RecoveryError::Quota);
+        assert_eq!(
+            format!("{actual} {actual:?}"),
+            "recovery quota refused recovery quota refused"
+        );
+        assert!(actual.source().is_none());
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn prefix_stage(directory: &Directory, budget: &ArchiveReadBudget) -> (PrivateStage, Entry) {
+    let path: PathBuf = directory.0.join("capture");
+    let mut stage: PrivateStage =
+        PrivateStage::create(&AbsentOutput::new(&path, budget).unwrap(), budget).unwrap();
+    let entry: Entry = Entry {
+        role: Role {
+            tag: 2,
+            link: u16::MAX,
+        },
+        name: "identity.bin".to_owned(),
+        length: 1,
+        hash: Sha256::digest([0x67]).into(),
+    };
+    stage.receive(&mut Cursor::new([0x67]), &entry).unwrap();
+    let mut original: Vec<u8> = Vec::new();
+    stage.write_body(&mut original, &entry).unwrap();
+    assert_eq!(original, [0x67]);
+    (stage, entry)
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn staged_prefix_replacement_refuses_even_when_final_child_inode_is_preserved() {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let directory: Directory = Directory::new();
+    let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
+    let (stage, entry): (PrivateStage, Entry) = prefix_stage(&directory, &budget);
+    let prefix: PathBuf = stage.root().join("current");
+    let child: PathBuf = prefix.join("history");
+    let original: std::fs::Metadata = std::fs::metadata(&child).unwrap();
+    let saved: PathBuf = stage.root().join("original-current");
+    std::fs::rename(&prefix, &saved).unwrap();
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&prefix)
+        .unwrap();
+    std::fs::rename(saved.join("history"), &child).unwrap();
+    let actual: std::fs::Metadata = std::fs::metadata(&child).unwrap();
+    assert_eq!(
+        (actual.dev(), actual.ino()),
+        (original.dev(), original.ino())
+    );
+    let mut exposed: Vec<u8> = Vec::new();
+    assert_eq!(
+        stage.write_body(&mut exposed, &entry),
+        Err(RecoveryError::Attachment)
+    );
+    assert!(exposed.is_empty());
+    assert!(budget.check().is_ok());
+    assert!(!stage.root().join(envelope::COMPLETE).exists());
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn staged_root_and_prefix_symlink_type_or_mode_changes_refuse_before_body_exposure() {
+    use std::os::unix::fs::PermissionsExt;
+    for case in [
+        "prefix-symlink",
+        "root-symlink",
+        "prefix-file",
+        "prefix-mode",
+        "root-mode",
+    ] {
+        let directory: Directory = Directory::new();
+        let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
+        let (mut stage, entry): (PrivateStage, Entry) = prefix_stage(&directory, &budget);
+        let changed: PathBuf = if matches!(case, "root-symlink" | "root-mode") {
+            stage.root().to_path_buf()
+        } else {
+            stage.root().join("current")
+        };
+        if matches!(case, "prefix-mode" | "root-mode") {
+            std::fs::set_permissions(&changed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        } else {
+            let saved: PathBuf = directory.0.join("original-prefix");
+            std::fs::rename(&changed, &saved).unwrap();
+            if case == "prefix-file" {
+                std::fs::write(&changed, b"not a directory").unwrap();
+            } else {
+                std::os::unix::fs::symlink(&saved, &changed).unwrap();
+            }
+        }
+        let mut exposed: Vec<u8> = Vec::new();
+        assert_eq!(
+            stage.write_body(&mut exposed, &entry),
+            Err(RecoveryError::Attachment),
+            "{case}"
+        );
+        assert!(exposed.is_empty(), "{case}");
+        let attempted: Entry = Entry {
+            role: Role {
+                tag: 3,
+                link: u16::MAX,
+            },
+            ..entry
+        };
+        let mut input: Cursor<[u8; 1]> = Cursor::new([0x67]);
+        assert_eq!(
+            stage.receive(&mut input, &attempted),
+            Err(RecoveryError::Attachment),
+            "{case}"
+        );
+        assert_eq!(input.position(), 0, "{case}");
+        assert!(budget.check().is_ok());
+        assert!(!stage.root().join(envelope::COMPLETE).exists());
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn staged_unknown_preexisting_directory_is_not_adopted_by_held_parent_creation() {
+    use std::os::unix::fs::DirBuilderExt;
+    let directory: Directory = Directory::new();
+    let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
+    let capture: PathBuf = directory.0.join("capture");
+    let mut stage: PrivateStage =
+        PrivateStage::create(&AbsentOutput::new(&capture, &budget).unwrap(), &budget).unwrap();
+    let foreign: PathBuf = capture.join("current");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&foreign)
+        .unwrap();
+    let sentinel: PathBuf = foreign.join("sentinel");
+    std::fs::write(&sentinel, b"retain unknown material").unwrap();
+    let entry: Entry = Entry {
+        role: Role {
+            tag: 2,
+            link: u16::MAX,
+        },
+        name: "identity.bin".to_owned(),
+        length: 1,
+        hash: Sha256::digest([0x67]).into(),
+    };
+    assert_eq!(
+        stage.receive(&mut Cursor::new([0x67]), &entry),
+        Err(RecoveryError::Publication)
+    );
+    assert_eq!(
+        std::fs::read(&sentinel).unwrap(),
+        b"retain unknown material"
+    );
+    assert!(!foreign.join("history").exists());
+    assert!(!capture.join(envelope::COMPLETE).exists());
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn staged_downward_budget_refusal_prevents_later_parent_creation_or_body_reads() {
+    let directory: Directory = Directory::new();
+    let limits: RecoveryLimits = RecoveryLimits {
+        observations: 4096,
+        ..RecoveryLimits::default()
+    };
+    let budget: ArchiveReadBudget = limits.budget().unwrap();
+    let (mut stage, original): (PrivateStage, Entry) = prefix_stage(&directory, &budget);
+    let original_path: PathBuf = stage.root().join("current/history/identity.bin");
+    let mut original_file: std::fs::File = std::fs::File::open(&original_path).unwrap();
+    let before: std::fs::Metadata = original_file.metadata().unwrap();
+    let sibling: ArchiveReadBudget = budget.clone();
+    assert!(sibling.charge_observations(4096).is_err());
+    let entry: Entry = Entry {
+        role: Role {
+            tag: 3,
+            link: u16::MAX,
+        },
+        ..original
+    };
+    let mut input: Cursor<[u8; 1]> = Cursor::new([0x67]);
+    assert_eq!(stage.receive(&mut input, &entry), Err(RecoveryError::Quota));
+    assert_eq!(input.position(), 0);
+    assert!(budget.check().is_err());
+    assert!(sibling.check().is_err());
+    assert!(!stage.root().join("current/cut").exists());
+    assert!(!stage.root().join(envelope::COMPLETE).exists());
+    // Only this original preheld fixture descriptor observes the retained byte.
+    let mut actual: [u8; 1] = [0];
+    original_file.read_exact(&mut actual).unwrap();
+    assert_eq!(actual, [0x67]);
+    let mut probe: [u8; 1] = [0];
+    assert_eq!(original_file.read(&mut probe).unwrap(), 0);
+    let after: std::fs::Metadata = original_file.metadata().unwrap();
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(
+        (
+            before.dev(),
+            before.ino(),
+            before.mode(),
+            before.uid(),
+            before.nlink(),
+            before.len(),
+            before.mtime(),
+            before.mtime_nsec(),
+            before.ctime(),
+            before.ctime_nsec()
+        ),
+        (
+            after.dev(),
+            after.ino(),
+            after.mode(),
+            after.uid(),
+            after.nlink(),
+            after.len(),
+            after.mtime(),
+            after.mtime_nsec(),
+            after.ctime(),
+            after.ctime_nsec()
+        )
+    );
+}
+
 #[test]
 #[cfg(target_os = "linux")]
 fn exclusive_equal_existing_refusal_streamed_hash_publication_and_owned_incomplete_residue() {
@@ -1082,6 +1523,55 @@ fn ciphertext_writer_nonempty_write_zero_is_opaque_and_permanently_refused() {
 }
 
 #[test]
+fn ciphertext_writer_short_write_budget_refusal_counts_only_accepted_prefix() {
+    struct RefusingShortSink {
+        accepted: Arc<Mutex<Vec<u8>>>,
+        calls: Arc<AtomicUsize>,
+        budget: ArchiveReadBudget,
+    }
+    impl Write for RefusingShortSink {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            assert!(!bytes.is_empty());
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let written: usize = bytes.len().min(3);
+            self.accepted
+                .lock()
+                .unwrap()
+                .extend_from_slice(&bytes[..written]);
+            let _: io::Error = self.budget.refuse();
+            Ok(written)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            panic!("the refused writer must not flush its sink")
+        }
+    }
+
+    let budget: ArchiveReadBudget = RecoveryLimits::default().budget().unwrap();
+    let accepted: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let sink: RefusingShortSink = RefusingShortSink {
+        accepted: Arc::clone(&accepted),
+        calls: Arc::clone(&calls),
+        budget: budget.clone(),
+    };
+    let mut writer: transport::CipherWriter<'_, RefusingShortSink> =
+        transport::CipherWriter::new(sink, &budget, 128);
+    let input: &[u8] = b"independent ciphertext bytes";
+    let error: io::Error = writer.write(input).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "recovery transport refused");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(*accepted.lock().unwrap(), input[..3]);
+    assert!(budget.check().is_err());
+    assert!(writer.write(b"later").is_err());
+    assert!(writer.flush().is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let (observed, digest): (u64, [u8; 32]) = writer.observation();
+    assert_eq!(observed, 3);
+    assert_eq!(digest, <[u8; 32]>::from(Sha256::digest(&input[..3])));
+}
+
+#[test]
 fn ciphertext_writer_partial_progress_then_error_preserves_exact_prefix_and_latches() {
     struct PartialThenError {
         accepted: Arc<Mutex<Vec<u8>>>,
@@ -1183,11 +1673,12 @@ fn real_age_finish_final_chunk_write_failure_is_opaque_and_never_completes() {
         transport::CipherWriter::new(sink, &budget, 1_000_000);
     let finish_error: Option<io::Error>;
     {
-        let mut age_writer: age::stream::StreamWriter<&mut transport::CipherWriter<'_, FinishSink>> =
-            transport::encryptor(&recipient)
-                .unwrap()
-                .wrap_output(&mut cipher)
-                .unwrap();
+        let mut age_writer: age::stream::StreamWriter<
+            &mut transport::CipherWriter<'_, FinishSink>,
+        > = transport::encryptor(&recipient)
+            .unwrap()
+            .wrap_output(&mut cipher)
+            .unwrap();
         age_writer
             .write_all(b"finalization-boundary plaintext")
             .unwrap();
@@ -1278,12 +1769,18 @@ impl PackTerminalCheckpoint {
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(path)
             .unwrap();
-        assert_eq!(PackTerminalFileStamp::read(&file.metadata().unwrap()), stamp);
+        assert_eq!(
+            PackTerminalFileStamp::read(&file.metadata().unwrap()),
+            stamp
+        );
         let mut bytes: Vec<u8> = vec![0; usize::try_from(stamp.length).unwrap()];
         file.read_exact(&mut bytes).unwrap();
         let mut probe: [u8; 1] = [0];
         assert_eq!(file.read(&mut probe).unwrap(), 0, "held physical EOF");
-        assert_eq!(PackTerminalFileStamp::read(&file.metadata().unwrap()), stamp);
+        assert_eq!(
+            PackTerminalFileStamp::read(&file.metadata().unwrap()),
+            stamp
+        );
         assert_eq!(
             PackTerminalFileStamp::read(&std::fs::symlink_metadata(path).unwrap()),
             stamp
@@ -1364,7 +1861,10 @@ impl PackTerminalDirectory {
             "recovery-pack-terminal-{}-{sequence}",
             std::process::id()
         ));
-        std::fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&path)
+            .unwrap();
         let named: std::fs::Metadata = std::fs::symlink_metadata(&path).unwrap();
         let identity: PackTerminalRootIdentity = PackTerminalRootIdentity::read(&named);
         assert_eq!(identity.mode & 0o7777, 0o700);
@@ -1679,7 +2179,10 @@ fn pack_terminal_real_age_finish_error_has_no_diagnostic_counts_or_completion_fi
     assert!(std::error::Error::source(&error).is_none());
     pack_terminal_absent(&output);
     pack_terminal_absent(
-        &fixture.directory.path.join("capture/recovery-complete-v1.bin"),
+        &fixture
+            .directory
+            .path
+            .join("capture/recovery-complete-v1.bin"),
     );
     before.assert_unchanged(&pending, &fixture.budget);
     fixture.assert_retained_inputs();
@@ -1726,7 +2229,10 @@ fn pack_terminal_late_equal_output_refusal_preserves_foreign_leaf_and_no_diagnos
     };
     assert_eq!(error, RecoveryError::Publication);
     pack_terminal_absent(
-        &fixture.directory.path.join("capture/recovery-complete-v1.bin"),
+        &fixture
+            .directory
+            .path
+            .join("capture/recovery-complete-v1.bin"),
     );
     owned.assert_unchanged(&pending, &fixture.budget);
     foreign.assert_unchanged(&output, &fixture.budget);
@@ -1766,7 +2272,10 @@ fn pack_terminal_ordinary_success_returns_counts_after_publication_and_stage_com
     pack_terminal_absent(&pending);
     let final_file: PackTerminalCheckpoint = owned.assert_owned_final(&output, &fixture.budget);
     let marker: PackTerminalCheckpoint = PackTerminalCheckpoint::new(
-        &fixture.directory.path.join("capture/recovery-complete-v1.bin"),
+        &fixture
+            .directory
+            .path
+            .join("capture/recovery-complete-v1.bin"),
         &fixture.budget,
     );
     assert_eq!(marker.bytes, fixture.footer);
@@ -1794,8 +2303,10 @@ fn pack_terminal_ordinary_success_returns_counts_after_publication_and_stage_com
     {
         let decrypted: age::stream::StreamReader<&mut CipherReader<'_, std::fs::File>> =
             transport::decrypt(&mut cipher, &phase, &identity).unwrap();
-        let mut plain: PlainReader<'_, age::stream::StreamReader<&mut CipherReader<'_, std::fs::File>>> =
-            PlainReader::new(decrypted, limits.plaintext_bytes, &fixture.budget);
+        let mut plain: PlainReader<
+            '_,
+            age::stream::StreamReader<&mut CipherReader<'_, std::fs::File>>,
+        > = PlainReader::new(decrypted, limits.plaintext_bytes, &fixture.budget);
         let mut observed: Vec<u8> = Vec::new();
         plain.read_to_end(&mut observed).unwrap();
         assert_eq!(observed, fixture.plaintext);

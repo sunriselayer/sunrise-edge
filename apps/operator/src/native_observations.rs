@@ -119,14 +119,20 @@ mod linux {
         }
         let mut parsed: u64 = 0;
         for digit in value.bytes() {
-            parsed = parsed.checked_mul(10)?.checked_add(u64::from(digit - b'0'))?;
+            parsed = parsed
+                .checked_mul(10)?
+                .checked_add(u64::from(digit - b'0'))?;
         }
         Some(parsed)
     }
 
     fn validate_socket_path(value: &str) -> Result<(Vec<String>, String), Error> {
         let bytes: &[u8] = value.as_bytes();
-        if bytes.is_empty() || bytes.len() > MAX_PATH_BYTES || bytes.contains(&0) || !value.starts_with('/') {
+        if bytes.is_empty()
+            || bytes.len() > MAX_PATH_BYTES
+            || bytes.contains(&0)
+            || !value.starts_with('/')
+        {
             return Err(Error::Arguments);
         }
         let mut parts: Vec<&str> = value.split('/').collect();
@@ -134,7 +140,10 @@ mod linux {
             return Err(Error::Arguments);
         }
         parts.remove(0);
-        if parts.iter().any(|part: &&str| part.is_empty() || *part == "." || *part == "..") {
+        if parts
+            .iter()
+            .any(|part: &&str| part.is_empty() || *part == "." || *part == "..")
+        {
             return Err(Error::Arguments);
         }
         let leaf: String = match parts.pop() {
@@ -144,7 +153,8 @@ mod linux {
         if leaf.is_empty() {
             return Err(Error::Arguments);
         }
-        let parent_components: Vec<String> = parts.iter().map(|part: &&str| (*part).to_owned()).collect();
+        let parent_components: Vec<String> =
+            parts.iter().map(|part: &&str| (*part).to_owned()).collect();
         Ok((parent_components, leaf))
     }
 
@@ -172,9 +182,11 @@ mod linux {
                         }
                     }
                     "--max-samples" => {
-                        let parsed: usize = usize::try_from(parse_decimal(text).ok_or(Error::Arguments)?)
-                            .map_err(|_error| Error::Arguments)?;
-                        if !(1..=MAX_SAMPLES).contains(&parsed) || samples.replace(parsed).is_some() {
+                        let parsed: usize =
+                            usize::try_from(parse_decimal(text).ok_or(Error::Arguments)?)
+                                .map_err(|_error| Error::Arguments)?;
+                        if !(1..=MAX_SAMPLES).contains(&parsed) || samples.replace(parsed).is_some()
+                        {
                             return Err(Error::Arguments);
                         }
                     }
@@ -242,7 +254,8 @@ mod linux {
             check_deadline(deadline)?;
             let (components, leaf): (Vec<String>, String) = validate_socket_path(path)?;
             let euid: u32 = effective_uid(deadline)?;
-            let flags: OFlags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+            let flags: OFlags =
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
             let root: OwnedFd = deadline_step(deadline, || {
                 open("/", flags, Mode::empty()).map_err(|_error| Error::Directory)
             })?;
@@ -276,9 +289,19 @@ mod linux {
                 if identity(named) != child_identity {
                     return Err(Error::Directory);
                 }
-                directories.push(HeldDirectory { name: component, fd: child, identity: child_identity });
+                directories.push(HeldDirectory {
+                    name: component,
+                    fd: child,
+                    identity: child_identity,
+                });
             }
-            let chain: Self = Self { root, root_identity, directories, leaf, euid };
+            let chain: Self = Self {
+                root,
+                root_identity,
+                directories,
+                leaf,
+                euid,
+            };
             chain.check_directory_policy(deadline)?;
             chain.check_leaf_absent(deadline)?;
             check_deadline(deadline)?;
@@ -286,7 +309,9 @@ mod linux {
         }
 
         fn final_fd(&self) -> &OwnedFd {
-            self.directories.last().map_or(&self.root, |directory: &HeldDirectory| &directory.fd)
+            self.directories
+                .last()
+                .map_or(&self.root, |directory: &HeldDirectory| &directory.fd)
         }
 
         fn check_directory_policy(&self, deadline: Instant) -> Result<(), Error> {
@@ -321,7 +346,11 @@ mod linux {
 
         fn check_leaf_absent(&self, deadline: Instant) -> Result<(), Error> {
             deadline_step(deadline, || {
-                match statat(self.final_fd(), self.leaf.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
+                match statat(
+                    self.final_fd(),
+                    self.leaf.as_str(),
+                    AtFlags::SYMLINK_NOFOLLOW,
+                ) {
                     Err(Errno::NOENT) => Ok(()),
                     _ => Err(Error::Socket),
                 }
@@ -329,14 +358,20 @@ mod linux {
         }
 
         fn bind_address(&self, deadline: Instant) -> Result<PathBuf, Error> {
-            deadline_step(deadline, || bind_address_for_fd(self.final_fd().as_raw_fd(), &self.leaf))
+            deadline_step(deadline, || {
+                bind_address_for_fd(self.final_fd().as_raw_fd(), &self.leaf)
+            })
         }
 
         fn verify_bound_leaf(&self, deadline: Instant) -> Result<LeafIdentity, Error> {
             self.check_directory_policy(deadline)?;
             let leaf: rustix::fs::Stat = deadline_step(deadline, || {
-                statat(self.final_fd(), self.leaf.as_str(), AtFlags::SYMLINK_NOFOLLOW)
-                    .map_err(|_error| Error::Socket)
+                statat(
+                    self.final_fd(),
+                    self.leaf.as_str(),
+                    AtFlags::SYMLINK_NOFOLLOW,
+                )
+                .map_err(|_error| Error::Socket)
             })?;
             if !FileType::from_raw_mode(leaf.st_mode).is_socket() || leaf.st_uid != self.euid {
                 return Err(Error::Socket);
@@ -361,7 +396,12 @@ mod linux {
     }
 
     fn identity(stat: rustix::fs::Stat) -> DirectoryIdentity {
-        DirectoryIdentity { dev: stat.st_dev, ino: stat.st_ino, uid: stat.st_uid, mode: stat.st_mode }
+        DirectoryIdentity {
+            dev: stat.st_dev,
+            ino: stat.st_ino,
+            uid: stat.st_uid,
+            mode: stat.st_mode,
+        }
     }
 
     fn parse_effective_uid(bytes: &[u8]) -> Result<u32, Error> {
@@ -378,12 +418,14 @@ mod linux {
                     return Err(Error::Directory);
                 }
                 for field in fields.iter() {
-                    let value: &str = std::str::from_utf8(field).map_err(|_error| Error::Directory)?;
+                    let value: &str =
+                        std::str::from_utf8(field).map_err(|_error| Error::Directory)?;
                     if u32::try_from(parse_decimal(value).ok_or(Error::Directory)?).is_err() {
                         return Err(Error::Directory);
                     }
                 }
-                let effective: &str = std::str::from_utf8(fields[1]).map_err(|_error| Error::Directory)?;
+                let effective: &str =
+                    std::str::from_utf8(fields[1]).map_err(|_error| Error::Directory)?;
                 let uid: u32 = u32::try_from(parse_decimal(effective).ok_or(Error::Directory)?)
                     .map_err(|_error| Error::Directory)?;
                 return Ok(uid);
@@ -422,10 +464,18 @@ mod linux {
             })?;
             let leaf_identity: LeafIdentity = directories.verify_bound_leaf(deadline)?;
             check_deadline(deadline)?;
-            Ok(Self { socket, directories, leaf_identity })
+            Ok(Self {
+                socket,
+                directories,
+                leaf_identity,
+            })
         }
 
-        fn collect(self, count: usize, deadline: Instant) -> Result<Vec<NativeHttpSnapshot>, Error> {
+        fn collect(
+            self,
+            count: usize,
+            deadline: Instant,
+        ) -> Result<Vec<NativeHttpSnapshot>, Error> {
             let snapshots: Vec<NativeHttpSnapshot> = receive_samples_with_clock(
                 count,
                 deadline,
@@ -532,7 +582,9 @@ mod linux {
     }
 
     fn collect(args: CollectorArgs) -> Result<Vec<NativeHttpSnapshot>, Error> {
-        let deadline: Instant = Instant::now().checked_add(args.timeout).ok_or(Error::Collection)?;
+        let deadline: Instant = Instant::now()
+            .checked_add(args.timeout)
+            .ok_or(Error::Collection)?;
         let collector: PreparedCollector = PreparedCollector::bind(&args.socket, deadline)?;
         collector.collect(args.samples, deadline)
     }
@@ -626,7 +678,9 @@ mod linux {
         }
 
         fn deadline_after(duration: Duration) -> Instant {
-            Instant::now().checked_add(duration).expect("test deadline representable")
+            Instant::now()
+                .checked_add(duration)
+                .expect("test deadline representable")
         }
 
         #[test]
@@ -678,8 +732,7 @@ mod linux {
             assert_eq!(interrupted, Ok(None));
             assert_eq!(attempts, 1);
 
-            let received: Result<Option<usize>, Error> =
-                receive_attempt(&mut attempts, || Ok(23));
+            let received: Result<Option<usize>, Error> = receive_attempt(&mut attempts, || Ok(23));
             assert_eq!(received, Ok(Some(23)));
             assert_eq!(attempts, 2);
 
@@ -742,7 +795,10 @@ mod linux {
                 },
             );
             let mut output: Vec<u8> = Vec::new();
-            assert_eq!(write_complete_collection(result, &mut output), Err(Error::Collection));
+            assert_eq!(
+                write_complete_collection(result, &mut output),
+                Err(Error::Collection)
+            );
             assert!(output.is_empty());
         }
 
@@ -759,14 +815,21 @@ mod linux {
                 |_remaining: Duration| Ok(()),
                 |buffer: &mut [u8; MAX_RECORD_BYTES]| {
                     sequence += 1;
-                    let bytes: &[u8] = if sequence == 1 { &record } else { b"malformed\n" };
+                    let bytes: &[u8] = if sequence == 1 {
+                        &record
+                    } else {
+                        b"malformed\n"
+                    };
                     let length: usize = bytes.len();
                     buffer[..length].copy_from_slice(bytes);
                     Ok(length)
                 },
             );
             let mut output: Vec<u8> = Vec::new();
-            assert_eq!(write_complete_collection(result, &mut output), Err(Error::Record));
+            assert_eq!(
+                write_complete_collection(result, &mut output),
+                Err(Error::Record)
+            );
             assert!(output.is_empty());
         }
 
@@ -807,16 +870,28 @@ mod linux {
                 argument_vector("/tmp/sock", "1", "0"),
                 argument_vector("/tmp/sock", "1", "300001"),
                 vec![
-                    "--socket".into(), "/tmp/one.sock".into(), "--socket".into(),
-                    "/tmp/two.sock".into(), "--max-samples".into(), "1".into(),
+                    "--socket".into(),
+                    "/tmp/one.sock".into(),
+                    "--socket".into(),
+                    "/tmp/two.sock".into(),
+                    "--max-samples".into(),
+                    "1".into(),
                 ],
                 vec![
-                    "--socket".into(), "/tmp/sock".into(), "--max-samples".into(),
-                    "1".into(), "--max-samples".into(), "2".into(),
+                    "--socket".into(),
+                    "/tmp/sock".into(),
+                    "--max-samples".into(),
+                    "1".into(),
+                    "--max-samples".into(),
+                    "2".into(),
                 ],
                 vec![
-                    "--socket".into(), "/tmp/sock".into(), "--timeout-ms".into(),
-                    "1".into(), "--timeout-ms".into(), "2".into(),
+                    "--socket".into(),
+                    "/tmp/sock".into(),
+                    "--timeout-ms".into(),
+                    "1".into(),
+                    "--timeout-ms".into(),
+                    "2".into(),
                 ],
             ] {
                 assert_eq!(parse_args(invalid.into_iter()), Err(Error::Arguments));
@@ -893,7 +968,8 @@ mod linux {
                 "input_timeouts=23 output_timeouts=24 connection_failures=25 ",
                 "connection_task_failures=26 blocking_admitted=27 blocking_overloaded=28 ",
                 "blocking_closed=29 blocking_panics=30\n",
-            ).as_bytes();
+            )
+            .as_bytes();
             let fixture: Fixture = Fixture::new();
             let path: String = fixture.socket_path("collector.sock");
             let deadline: Instant = deadline_after(Duration::from_secs(1));
@@ -906,9 +982,7 @@ mod linux {
                 let sent: usize = sender.send(&record).unwrap();
                 assert_eq!(sent, record.len());
             }
-            let snapshots: Vec<NativeHttpSnapshot> = collector
-                .collect(2, deadline)
-                .unwrap();
+            let snapshots: Vec<NativeHttpSnapshot> = collector.collect(2, deadline).unwrap();
             assert_eq!(snapshots, expected_snapshots);
             let mut successful_writer: CompleteWriter = CompleteWriter {
                 written: Vec::new(),
@@ -944,7 +1018,10 @@ mod linux {
             let regular: String = fixture.socket_path("regular");
             fs::write(&regular, b"sentinel").unwrap();
             let deadline: Instant = deadline_after(Duration::from_secs(1));
-            assert!(matches!(PreparedCollector::bind(&regular, deadline), Err(Error::Socket)));
+            assert!(matches!(
+                PreparedCollector::bind(&regular, deadline),
+                Err(Error::Socket)
+            ));
             assert_eq!(fs::read(&regular).unwrap(), b"sentinel");
 
             let target: String = fixture.socket_path("target");
@@ -952,14 +1029,25 @@ mod linux {
             let symbolic: String = fixture.socket_path("symbolic");
             std::os::unix::fs::symlink(&target, &symbolic).unwrap();
             let deadline: Instant = deadline_after(Duration::from_secs(1));
-            assert!(matches!(PreparedCollector::bind(&symbolic, deadline), Err(Error::Socket)));
-            assert!(fs::symlink_metadata(&symbolic).unwrap().file_type().is_symlink());
+            assert!(matches!(
+                PreparedCollector::bind(&symbolic, deadline),
+                Err(Error::Socket)
+            ));
+            assert!(
+                fs::symlink_metadata(&symbolic)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
 
             let occupied: String = fixture.socket_path("occupied.sock");
             let owner: UnixDatagram = UnixDatagram::bind(&occupied).unwrap();
             let inode: u64 = fs::symlink_metadata(&occupied).unwrap().ino();
             let deadline: Instant = deadline_after(Duration::from_secs(1));
-            assert!(matches!(PreparedCollector::bind(&occupied, deadline), Err(Error::Socket)));
+            assert!(matches!(
+                PreparedCollector::bind(&occupied, deadline),
+                Err(Error::Socket)
+            ));
             assert_eq!(fs::symlink_metadata(&occupied).unwrap().ino(), inode);
             drop(owner);
         }
@@ -969,13 +1057,28 @@ mod linux {
             let fixture: Fixture = Fixture::new();
             let target_directory: PathBuf = fixture.root.join("real-parent");
             fs::create_dir(&target_directory).unwrap();
-            fs::set_permissions(&target_directory, fs::Permissions::from_mode(DIRECTORY_MODE)).unwrap();
+            fs::set_permissions(
+                &target_directory,
+                fs::Permissions::from_mode(DIRECTORY_MODE),
+            )
+            .unwrap();
             let parent_link: PathBuf = fixture.root.join("parent-link");
             std::os::unix::fs::symlink(&target_directory, &parent_link).unwrap();
-            let through_link: String = parent_link.join("collector.sock").to_string_lossy().into_owned();
+            let through_link: String = parent_link
+                .join("collector.sock")
+                .to_string_lossy()
+                .into_owned();
             let deadline: Instant = deadline_after(Duration::from_secs(1));
-            assert!(matches!(PreparedCollector::bind(&through_link, deadline), Err(Error::Directory)));
-            assert!(fs::symlink_metadata(&parent_link).unwrap().file_type().is_symlink());
+            assert!(matches!(
+                PreparedCollector::bind(&through_link, deadline),
+                Err(Error::Directory)
+            ));
+            assert!(
+                fs::symlink_metadata(&parent_link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
 
             let path: String = fixture.socket_path("invalid.sock");
             let deadline: Instant = deadline_after(Duration::from_secs(1));
@@ -993,8 +1096,7 @@ mod linux {
             let path: String = fixture.socket_path("timeout.sock");
             let deadline: Instant = deadline_after(Duration::from_secs(1));
             let collector: PreparedCollector = PreparedCollector::bind(&path, deadline).unwrap();
-            let result: Result<Vec<NativeHttpSnapshot>, Error> =
-                collector.collect(1, deadline);
+            let result: Result<Vec<NativeHttpSnapshot>, Error> = collector.collect(1, deadline);
             assert_eq!(result, Err(Error::Collection));
             assert!(fs::symlink_metadata(&path).unwrap().file_type().is_socket());
         }
@@ -1015,10 +1117,15 @@ mod linux {
                     self.remaining -= accepted;
                     Ok(accepted)
                 }
-                fn flush(&mut self) -> io::Result<()> { Ok(()) }
+                fn flush(&mut self) -> io::Result<()> {
+                    Ok(())
+                }
             }
             let record: String = NativeHttpSnapshot::default().live_summary();
-            let mut writer: FailingWriter = FailingWriter { remaining: 7, written: Vec::new() };
+            let mut writer: FailingWriter = FailingWriter {
+                remaining: 7,
+                written: Vec::new(),
+            };
             assert_eq!(
                 write_complete_collection(Ok(vec![NativeHttpSnapshot::default()]), &mut writer),
                 Err(Error::Output)
@@ -1031,8 +1138,14 @@ mod linux {
             let mut bytes: [u8; MAX_RECORD_BYTES] = [b'x'; MAX_RECORD_BYTES];
             bytes[0] = b'n';
             assert_eq!(bytes.len(), MAX_RECORD_BYTES);
-            assert_eq!(decode_received_record(&bytes, bytes.len()), Err(Error::Record));
-            assert_eq!(decode_received_record(&bytes, bytes.len() + 1), Err(Error::Record));
+            assert_eq!(
+                decode_received_record(&bytes, bytes.len()),
+                Err(Error::Record)
+            );
+            assert_eq!(
+                decode_received_record(&bytes, bytes.len() + 1),
+                Err(Error::Record)
+            );
         }
 
         #[test]
@@ -1065,10 +1178,18 @@ mod linux {
             let renamed: PathBuf = fixture.root.with_extension("moved");
             fs::rename(&fixture.root, &renamed).unwrap();
             fixture.root = renamed;
-            assert!(matches!(collector.directories.verify_bound_leaf(deadline), Err(Error::Directory)));
+            assert!(matches!(
+                collector.directories.verify_bound_leaf(deadline),
+                Err(Error::Directory)
+            ));
             assert!(fs::symlink_metadata(&path).is_err());
             let moved_leaf: PathBuf = fixture.root.join("attached.sock");
-            assert!(fs::symlink_metadata(moved_leaf).unwrap().file_type().is_socket());
+            assert!(
+                fs::symlink_metadata(moved_leaf)
+                    .unwrap()
+                    .file_type()
+                    .is_socket()
+            );
         }
     }
 }

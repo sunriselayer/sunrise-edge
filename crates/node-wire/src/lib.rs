@@ -1433,26 +1433,24 @@ impl HttpReceiptQueryResult {
                         maximum: MAX_DURABLE_RECEIPT_BYTES,
                     });
                 }
-                let _record: NodeDedupRecord = NodeDedupRecord::decode_bound(
-                    &dedup_record_bytes,
-                    request_id,
-                    event_digest,
-                )
-                .map_err(|error: DedupRecordBindingError| match error {
-                    DedupRecordBindingError::Decode(error)
-                    | DedupRecordBindingError::Encode(error) => {
-                        QueryResultError::InvalidDedupRecord(error)
-                    }
-                    DedupRecordBindingError::RequestIdentityMismatch { expected, actual } => {
-                        QueryResultError::RequestIdentityMismatch { expected, actual }
-                    }
-                    DedupRecordBindingError::EventDigestMismatch => {
-                        QueryResultError::EventDigestMismatch
-                    }
-                    DedupRecordBindingError::NonCanonicalReEncoding => {
-                        QueryResultError::NonCanonicalReEncoding
-                    }
-                })?;
+                let _record: NodeDedupRecord =
+                    NodeDedupRecord::decode_bound(&dedup_record_bytes, request_id, event_digest)
+                        .map_err(|error: DedupRecordBindingError| match error {
+                            DedupRecordBindingError::Decode(error)
+                            | DedupRecordBindingError::Encode(error) => {
+                                QueryResultError::InvalidDedupRecord(error)
+                            }
+                            DedupRecordBindingError::RequestIdentityMismatch {
+                                expected,
+                                actual,
+                            } => QueryResultError::RequestIdentityMismatch { expected, actual },
+                            DedupRecordBindingError::EventDigestMismatch => {
+                                QueryResultError::EventDigestMismatch
+                            }
+                            DedupRecordBindingError::NonCanonicalReEncoding => {
+                                QueryResultError::NonCanonicalReEncoding
+                            }
+                        })?;
                 Ok(Self::Present {
                     request_id,
                     event_digest,

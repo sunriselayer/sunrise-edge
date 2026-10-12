@@ -302,6 +302,9 @@ mod tests {
             MAX_ORDERED_PROPOSAL_BYTES,
             consensus::MAX_ENCODED_PROPOSAL_BYTES + MAX_ORDERED_CANDIDATE_BYTES + 4096
         );
-        assert_eq!(MAX_ORDERED_STATUS_BYTES, MAX_ORDERED_CERTIFICATE_BYTES + 256);
+        assert_eq!(
+            MAX_ORDERED_STATUS_BYTES,
+            MAX_ORDERED_CERTIFICATE_BYTES + 256
+        );
     }
 }
