@@ -784,9 +784,9 @@ impl BlobStore for CountingBlobStore {
 /// exactly like [`commit_owned_object`] but with the canonical body
 /// stored only in `blob_store`, keyed under its own content digest.
 #[allow(clippy::too_many_arguments)]
-fn commit_owned_blob_object<S>(
+fn commit_owned_blob_object<S, B>(
     store: &S,
-    blob_store: &CountingBlobStore,
+    blob_store: &B,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     object: Object,
@@ -796,6 +796,7 @@ fn commit_owned_blob_object<S>(
 ) -> ObjectRef
 where
     S: IndexedOutboxRepository,
+    B: BlobStore,
 {
     install_fastpath_epoch_record(store, context, domain);
     let object_id = object.id;
@@ -6469,4 +6470,212 @@ fn sqlite_request_outbox_unresolved_landed_claim_preserves_first_ambiguity_witho
 #[test]
 fn sqlite_request_outbox_unresolved_landed_ack_preserves_first_ambiguity_after_one_send() {
     sqlite_request_outbox_reply_loss_control(SqliteReplyLossMode::RefuseAcknowledgementReconciliation);
+}
+
+// Fault only the supplied read port. The original referenced blob remains in
+// the separate backing store; these are not physical-corruption or IO faults.
+#[derive(Clone, Copy)]
+enum NativeBlobReadRefusal {
+    Missing,
+    DigestMismatch,
+}
+
+struct NativeBlobReadRefusalStore {
+    backing: Arc<MemoryBlobStore>,
+    selected_digest: Digest32,
+    refusal: NativeBlobReadRefusal,
+    selected_reads: AtomicUsize,
+}
+
+impl NativeBlobReadRefusalStore {
+    fn selected_reads(&self) -> usize {
+        self.selected_reads.load(Ordering::SeqCst)
+    }
+}
+
+impl BlobStore for NativeBlobReadRefusalStore {
+    fn put_blob(&self, digest: Digest32, bytes: Vec<u8>) -> Result<(), RuntimeError> {
+        self.backing.put_blob(digest, bytes)
+    }
+
+    fn get_blob(&self, digest: &Digest32) -> Result<Option<Vec<u8>>, RuntimeError> {
+        if *digest != self.selected_digest {
+            return self.backing.get_blob(digest);
+        }
+        self.selected_reads.fetch_add(1, Ordering::SeqCst);
+        match self.refusal {
+            NativeBlobReadRefusal::Missing => Ok(None),
+            NativeBlobReadRefusal::DigestMismatch => {
+                let substituted_bytes: Vec<u8> = vec![0xEE; 16];
+                Ok(Some(substituted_bytes))
+            }
+        }
+    }
+}
+
+async fn sqlite_preinstalled_blob_read_refusal_control(
+    refusal: NativeBlobReadRefusal,
+    expected_status: StatusCode,
+    expected_body: &'static [u8],
+) {
+    let database: TestDatabase = TestDatabase::new();
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(3).unwrap();
+    let chain: ChainId = ChainId::new("sunrise-test").unwrap();
+    let validator: ValidatorId = ValidatorId::new([0x44; 32]);
+    let domain: AtomicityDomainId = AtomicityDomainId::new([0xBB; 32]).unwrap();
+    let namespace: SqliteNamespace = SqliteNamespace::new(chain.clone(), validator, domain);
+    let store: Arc<SqliteDurableStore> = Arc::new(
+        SqliteDurableStore::create_new(&database.path, namespace, fence).unwrap(),
+    );
+    let blobs: Arc<MemoryBlobStore> = Arc::new(MemoryBlobStore::default());
+    let transport: Arc<MemoryTransport> = Arc::new(MemoryTransport::default());
+    let config: NodeConfig = config();
+    let module_id: ModuleId = ModuleId::new([0x72; 32]);
+    let (registry, catalog, module_ref): (
+        SystemModuleRegistry, PreinstalledModuleCatalog, ObjectRef,
+    ) = preinstalled_module_fixture(
+        &resolver(), module_id, 1, preinstalled_write_wasm_bytes(), 64,
+    );
+    let protocol_config: ProtocolConfig = preinstalled_protocol_config(domain, registry);
+    let signing_key: ed25519_zebra::SigningKey = dev_signing_key(0x53);
+    let sender: Address = dev_sender_address(&signing_key);
+    let sender_bytes: [u8; 32] = *sender.as_bytes();
+    let context: DurableOperationContext = live_operation_context(fence, 0xBB);
+    let object_id: ObjectId = ObjectId::new([0xBC; 32]);
+    let original_object: Object = owned_object(object_id, sender, 0x40);
+    let original_blob_bytes: Vec<u8> = encode_object(&original_object).unwrap();
+    let selected_digest: Digest32 = resolver()
+        .hash_for_purpose(Epoch::new(0), HashPurpose::Object, &original_blob_bytes)
+        .unwrap();
+    let object_ref: ObjectRef = commit_owned_blob_object(
+        store.as_ref(), blobs.as_ref(), &context, domain, original_object,
+        "sunrise-test", 9, 0x41,
+    );
+    assert_eq!(object_ref.id, object_id);
+    assert_eq!(object_ref.version, 1);
+    assert_eq!(object_ref.digest, selected_digest);
+    let version: DurableObjectVersion = DurableObjectVersion::new(1).unwrap();
+    let expected_head: DurableObjectHead = DurableObjectHead::Current {
+        head_revision: ObjectHeadRevision::FIRST,
+        object_version: version,
+        digest: selected_digest,
+        owner_projection: DurableObjectOwnerProjection::from_owner(Owner::Address(sender)).unwrap(),
+        routing_projection: DurableObjectRoutingProjection::default(),
+    };
+    let original_head: DurableObjectHead = store
+        .get_object_head(&context, domain, object_id).unwrap();
+    assert_eq!(original_head, expected_head);
+    let expected_version: DurableObjectVersionRecord =
+        DurableObjectVersionRecord::from_blob_reference(
+            object_id, version, selected_digest, 0x40,
+            DurableObjectProvenance::new(chain.clone(), ProtocolVersion::new(3)),
+            9, selected_digest,
+        );
+    let original_version: DurableObjectVersionRecord = store
+        .get_object_version(&context, domain, object_id, version).unwrap().unwrap();
+    assert_eq!(original_version, expected_version);
+    assert_eq!(
+        original_version.payload(),
+        &DurableObjectPayload::BlobReference(selected_digest),
+    );
+    assert_eq!(
+        blobs.get_blob(&selected_digest).unwrap(),
+        Some(original_blob_bytes.clone()),
+    );
+    let id: RequestId = request_id(0xBD);
+    let receipt_id: DurableRequestId = DurableRequestId::new(*id.as_bytes()).unwrap();
+    assert_eq!(
+        store.get_request_receipt(&context, domain, receipt_id).unwrap(),
+        None,
+    );
+    let initial_nonce: u64 = node_core::query_sender_next_nonce(
+        store.as_ref(), &context, domain, chain.clone(), ProtocolVersion::new(3),
+        Epoch::new(7), sender_bytes,
+    ).unwrap();
+    assert_eq!(initial_nonce, 0);
+    let baseline: SqliteReplyLossSnapshot = sqlite_reply_loss_snapshot(
+        store.as_ref(), blobs.as_ref(), &context, domain,
+    );
+    assert_eq!(baseline.blobs.len(), 1);
+    let baseline_blob: &(PortableBlobDescriptor, Vec<u8>) =
+        baseline.blobs.get(&selected_digest).unwrap();
+    assert_eq!(baseline_blob.0.digest(), selected_digest);
+    assert_eq!(baseline_blob.0.length(), original_blob_bytes.len());
+    assert_eq!(baseline_blob.1.as_slice(), original_blob_bytes.as_slice());
+
+    // Construct the faulting port only after the complete pristine capture.
+    let faulty_blobs: Arc<NativeBlobReadRefusalStore> = Arc::new(NativeBlobReadRefusalStore {
+        backing: Arc::clone(&blobs),
+        selected_digest,
+        refusal,
+        selected_reads: AtomicUsize::new(0),
+    });
+    let clock: Arc<SystemClock> = Arc::new(SystemClock);
+    let catalog: Arc<PreinstalledModuleCatalog> = Arc::new(catalog);
+    let app: Router = preinstalled_app_with_blob_store(
+        Arc::clone(&store), Arc::clone(&faulty_blobs), Arc::clone(&transport), clock,
+        protocol_config, config, catalog, 9,
+    );
+    let mut manifest: AccessManifest = AccessManifest::new();
+    manifest.push(AccessEntry { object_ref, mode: AccessMode::Write });
+    let event: NodeEvent = signed_preinstalled_wasm_submit_transaction_event(
+        &signing_key, id, 0, manifest, module_ref, vec![1, 2],
+    );
+    let request_bytes: Vec<u8> = event.encode().unwrap();
+    let request: Request<Body> = Request::post(NODE_EVENT_PATH)
+        .header(header::CONTENT_TYPE, NODE_EVENT_MEDIA_TYPE)
+        .body(Body::from(request_bytes.clone())).unwrap();
+    assert_eq!(faulty_blobs.selected_reads(), 0);
+    let response: Response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), expected_status);
+    let response_bytes: Vec<u8> = to_bytes(response.into_body(), 128)
+        .await.unwrap().to_vec();
+    assert_eq!(response_bytes.as_slice(), expected_body);
+    assert_eq!(faulty_blobs.selected_reads(), 1);
+    let outbound: Vec<Vec<u8>> = transport.drain_outbound().unwrap();
+    assert!(outbound.is_empty());
+    assert_eq!(
+        store.get_object_head(&context, domain, object_id).unwrap(),
+        original_head,
+    );
+    assert_eq!(
+        store.get_object_version(&context, domain, object_id, version).unwrap(),
+        Some(original_version),
+    );
+    assert_eq!(
+        blobs.get_blob(&selected_digest).unwrap(),
+        Some(original_blob_bytes),
+    );
+    assert_eq!(
+        store.get_request_receipt(&context, domain, receipt_id).unwrap(),
+        None,
+    );
+    let final_nonce: u64 = node_core::query_sender_next_nonce(
+        store.as_ref(), &context, domain, chain, ProtocolVersion::new(3),
+        Epoch::new(7), sender_bytes,
+    ).unwrap();
+    assert_eq!(final_nonce, 0);
+    let after: SqliteReplyLossSnapshot = sqlite_reply_loss_snapshot(
+        store.as_ref(), blobs.as_ref(), &context, domain,
+    );
+    assert_eq!(after, baseline);
+    assert_eq!(faulty_blobs.selected_reads(), 1);
+}
+
+#[tokio::test]
+async fn sqlite_preinstalled_route_missing_blob_refuses_without_mutation() {
+    sqlite_preinstalled_blob_read_refusal_control(
+        NativeBlobReadRefusal::Missing,
+        StatusCode::SERVICE_UNAVAILABLE,
+        b"object-blob-unavailable",
+    ).await;
+}
+
+#[tokio::test]
+async fn sqlite_preinstalled_route_blob_digest_mismatch_refuses_without_mutation() {
+    sqlite_preinstalled_blob_read_refusal_control(
+        NativeBlobReadRefusal::DigestMismatch,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        b"invalid-node-output",
+    ).await;
 }
