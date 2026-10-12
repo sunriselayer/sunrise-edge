@@ -1,6 +1,6 @@
 # Sunrise Edge implementation and mainnet roadmap
 
-Updated: 2026-10-11 (UTC).
+Updated: 2026-10-12 (UTC).
 
 This is the only live queue and readiness tracker. Responsibility contracts
 belong in [architecture](docs/architecture/README.md), actual owners in the
@@ -179,7 +179,13 @@ local inputs are incomplete and its replacement protocol remains unqualified.
 The 2026-10-10 direct request now authorizes official acquire-only missing locked
 inputs. The fresh inert census still has 41 missing archives, 36 missing sparse
 name files and three missing version records. No acquisition or quarantine was
-created: the bounded acquisition implementation remains incomplete, including
+created. The first source-author attempt hit a restricted reference-read denial;
+that read scope was corrected. In the corrected Claude Code attempt on
+2026-10-11, the author reported a safety classifier stopping code generation
+before any source was produced. This is not an observed download, Cargo, disk
+or credential failure, or a demonstrated evidence/IO-cap impossibility. The
+stopped author must not be retried or rerouted; its reported stop needs provider
+review. The bounded acquisition implementation remains incomplete, including
 combined evidence accounting, held-input capture and failure/release proof.
 Global caches and the retained M4 target must not be substituted or repopulated.
 
@@ -489,6 +495,15 @@ and cross-phase criteria; it does not shorten them.
   Different exact-two-path source review passed. Both controls remain
   UNFORMATTED, UNCOMPILED and UNEXECUTED, outside the original 41 selectors;
   Docker ENV capability evidence is not their execution or M3 completion.
+  Two additional nonignored Native HTTP source controls use fresh real SQLite
+  fixtures for missing and digest-mismatched supplied blob reads. Literal bounded
+  HTTP 503/500 responses, full four-collection snapshots/tokens and referenced
+  blob closure, original head/v1/body, nonce zero, no fresh receipt, one selected
+  read and no outbound messages are required. Faults affect only the private
+  supplied getter, not the original backing bytes or physical SQLite I/O.
+  They remain UNFORMATTED, UNCOMPILED and UNEXECUTED, outside the original 41
+  selectors; no full twelve-table, zero-COMMIT, physical fault or M3 completion
+  follows. See DR-0094's 2026-10-12 addendum.
 - [ ] **M4 — checkpoint, backup and disaster recovery:** publish/verify required
   checkpoint/state-root and immutable body manifests; encrypted off-host backup,
   isolated exact history/receipt/blob restore, fresh fencing, migration/upgrade
