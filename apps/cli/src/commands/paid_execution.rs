@@ -178,13 +178,11 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     // Refused immediately, before any FastVote/network peer validation,
     // signer file access, or device I/O: neither Ledger nor custody
     // (publication-only) supports paid contract signing.
-    if matches!(
-        signer_selection,
-        SignerSelection::Ledger { .. } | SignerSelection::Custody { .. }
-    ) {
-        return Err(invalid(
-            "Ledger and custody paid contract signing are not supported",
-        ));
+    if matches!(signer_selection, SignerSelection::Ledger { .. }) {
+        return Err(invalid("Ledger paid contract signing is not supported"));
+    }
+    if matches!(signer_selection, SignerSelection::Custody { .. }) {
+        return Err(invalid("custody paid contract signing is not supported"));
     }
     let load_signer = || -> Result<LocalSigner, CliError> {
         match &signer_selection {

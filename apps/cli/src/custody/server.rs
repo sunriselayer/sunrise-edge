@@ -482,7 +482,7 @@ mod tests {
             wasm_profile: CONTRACT_WASM_ADMISSION_PROFILE_VERSION,
             semantics,
             wasm: vec![0_u8; 8],
-            unverified_abi: Vec::new(),
+            unverified_abi: b"fixture-abi-v1".to_vec(),
             exports: vec!["run".to_string()],
             unverified_dependencies: Vec::new(),
         })

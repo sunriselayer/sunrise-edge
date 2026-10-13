@@ -602,12 +602,14 @@ where
     let signer_selection: SignerSelection = parse_signer_selection(&parsed)?;
     // Refused immediately, before any FastVote/network peer validation,
     // signer file access, or device I/O.
-    if matches!(
-        signer_selection,
-        SignerSelection::Ledger { .. } | SignerSelection::Custody { .. }
-    ) {
+    if matches!(signer_selection, SignerSelection::Ledger { .. }) {
         return Err(invalid(
-            "Ledger and custody paid Standard Asset signing are not supported",
+            "Ledger paid Standard Asset signing is not supported",
+        ));
+    }
+    if matches!(signer_selection, SignerSelection::Custody { .. }) {
+        return Err(invalid(
+            "custody paid Standard Asset signing is not supported",
         ));
     }
     let load_signer = || -> Result<LocalSigner, CliError> {

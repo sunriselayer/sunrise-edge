@@ -225,14 +225,14 @@ mod tests {
             wasm_profile: sunrise_edge_client::CONTRACT_WASM_ADMISSION_PROFILE_VERSION,
             semantics,
             wasm: vec![0_u8; 8],
-            unverified_abi: Vec::new(),
+            unverified_abi: b"fixture-abi-v1".to_vec(),
             exports: vec!["run".to_string()],
             unverified_dependencies: Vec::new(),
         })
         .unwrap();
         let bytes = sunrise_edge_client::publication::encode_code_artifact(&artifact).unwrap();
         let path = dir.child("artifact");
-        std::fs::write(&path, bytes).unwrap();
+        crate::custody::fsperm::test_support::write_mode_file(&path, 0o600, &bytes);
         path
     }
 
