@@ -140,9 +140,10 @@ refuse Ledger. `commands/publication.rs`'s `publish` action builds its own
 local `PreparedPublication` from the same artifact/nonce/request-id, sends
 them to custody, and calls the existing `PreparedPublication::finalize` on
 the returned signature — the same independent frame/key verification every
-other signer path already gets. Connecting, and one connection's combined
-read+decode+sign+write, are each bounded by one single deadline (not
-independently re-granted per read/write step); `serve`'s overall lifetime is
+other signer path already gets. The client allows five seconds to connect and
+ten seconds per write/header/signature/EOF stage, at most 45 seconds of network
+waiting without retries. The server caps one connection's combined
+read+decode+sign+write with one deadline; `serve`'s overall lifetime is
 bounded by one checked absolute deadline plus explicit connection/request
 counts (`--max-connections`, `--max-requests`, `--total-deadline-secs`, each
 validated against a closed accepted range before any config/key/socket I/O).
@@ -178,7 +179,7 @@ pre-I/O custody refusal; the client's impostor-peer-UID refusal; and one
 real-socket round trip (test-owned listener transport wired directly to the
 real `sign_request`/`finalize`) exercising the full request/response framing
 and signature finalization end to end. Genuinely distinct-UID and PTY
-behavior needs a separate Docker fixture (not executed here); see
-`docs/architecture/local-publication-custody.md` for the recipe.
+behavior uses the separately selected Docker fixture described in
+`docs/architecture/local-publication-custody.md`.
 Progress and remaining gates stay in [`TODO.md`](../../../TODO.md); this
 record authorizes no keys, deployment, or public network.

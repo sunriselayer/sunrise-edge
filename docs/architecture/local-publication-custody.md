@@ -3,7 +3,9 @@
 See [DR-0238](decisions/0238-publication-only-local-os-custody.md) for the
 accepted design and its non-claims, and
 [DR-0214](decisions/0214-protected-custody-and-review-boundary.md) for the
-threat-model comparison this implements one candidate of. This document is
+threat-model comparison. The human selected trusted local OS with separate
+processes and permissions on 2026-10-13 for the first publication slice.
+This document is
 the operator-facing contract and the Docker fixture recipe; it does not
 repeat the full design rationale.
 
@@ -18,7 +20,9 @@ repeat the full design rationale.
   directory, and approvals directory.
 - **Operator UID**: runs `publish --custody-socket ... --custody-uid ...
   --custody-expected-public-key ...`. Must be a distinct UID from custody;
-  `serve` refuses at startup otherwise.
+  `serve` refuses at startup otherwise. The operator needs custody's socket
+  group for directory traversal and connection. Group membership grants no
+  signing authority; the server checks the exact pinned peer UID.
 - **Custody administrator**: runs `custody approve`. May be the same UID as
   custody for this slice; a real separate approver role is D04.
 
@@ -48,9 +52,12 @@ chmod 0600 /var/lib/custody/keys/custody.config
 ## Approving one publication (as the custody administrator, on a real terminal)
 
 The administrator must independently obtain the approved canonical artifact
-bytes (for example, the same bytes `contract publish`/`preview` would send,
-produced by the same build the administrator trusts) — never bytes taken from
-a live, untrusted request.
+bytes from their own trusted build inputs — never bytes taken from a live,
+untrusted request. The administrator can use `contract preview --artifact-out`
+with their own approved WASM/ABI/context/publisher/origin inputs to create the
+canonical file. The file must be owned by that UID at mode 0600 under a 0700
+directory. Export creates no approval; see the
+[preview guide](../guides/publication-preview.md).
 
 ```bash
 cargo run -q -p sunrise-edge-cli -- custody approve \
@@ -89,31 +96,43 @@ cargo run -q -p sunrise-edge-cli -- contract publish \
   ... # the remaining flags are identical to --seed-file publish
 ```
 
-## Docker fixture recipe (not executed by this change)
+## Selected Docker fixture
 
-A fixture modeled on `scripts/check-docker-fault-environment.mjs` should, with
-every UID created only inside the image:
+[`check-docker-custody-fixture-1013.mjs`](../../scripts/check-docker-custody-fixture-1013.mjs)
+executes the compiled CLI and one exact ignored test-harness probe under three
+numeric UIDs inside a pinned, network-free container. Its owned managed volume
+is 64MiB noswap; effective kernel limits and exact resource cleanup are checked.
+It creates no host users or services. The selected fixture:
 
-1. Build three users (`custody`, `operator`, `intruder`) with distinct UIDs.
+1. Runs three distinct numeric UIDs (`custody`, `operator`, `intruder`).
 2. As `custody`: run the one-time setup above, then `custody serve` with a
    short `--total-deadline-secs`.
 3. As `operator`: run `custody approve` is not available (different UID);
    instead have `custody` run `approve` through a real PTY
    (`script -qc '... custody approve ...' /dev/null` or an equivalent
    pseudo-terminal wrapper) before `serve` starts, confirm the typed
-   confirmation line round-trips, then confirm `operator`'s `publish` against
-   the running `serve` succeeds and the signature independently verifies.
-4. As `intruder`: confirm connecting to the socket is refused (wrong peer
-   UID), and confirm a second listener bound to an impostor path with the
-   same socket basename but a different UID is refused by the client's own
+   confirmation line round-trips. The operator's real Rust client leg then
+   requests a signature and independently verifies it with SDK finalization.
+   A scripted fixture confirmation is not a real operator ceremony or a
+   submitted publication.
+4. As `intruder`: confirm a connected peer is refused despite sharing the
+   socket group, and confirm a different-UID listener is refused by the client's own
    `peer_cred` check.
 5. Restart `serve` after it self-terminates (bounded lifetime) and confirm
    the approval store is unaffected (approvals persist; a fresh `serve`
    process can still consume them) and that `serve` never created new host
    users or services, only files under the fixture's own owned paths.
 
-This slice of work did not build or run that fixture (see
-[DR-0230](decisions/0230-bounded-docker-fault-environments.md) and
-`scripts/check-docker-fault-environment.mjs` for this repository's existing,
-separately maintained Docker fault-environment profiles); the above is the
-precise recipe for a separate run, not a claim that it has passed.
+Build the CLI and library test harness with the same explicit toolchain and
+locked inputs, then supply their actual absolute executable paths:
+
+```bash
+node scripts/check-docker-custody-fixture-1013.mjs \
+  --cli-binary /absolute/target/debug/sunrise-edge-cli \
+  --test-binary /absolute/target/debug/deps/sunrise_edge_cli-EXACT_HASH
+```
+
+Missing probe inputs fail. A zero-match selector cannot satisfy the JSON and
+test-count oracles. The fixture checks exact serve counters, signature equality
+after restart, and the operator's inability to read the seed or modify approvals.
+Actual results and remaining qualification belong only in [`TODO.md`](../../TODO.md).

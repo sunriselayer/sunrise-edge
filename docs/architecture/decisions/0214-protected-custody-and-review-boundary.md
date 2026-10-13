@@ -2,8 +2,11 @@
 
 Date: 2026-10-07, Asia/Singapore
 
-Status: Proposed contract and threat-model comparison. No replacement custody
-backend, trusted review surface or production qualification is selected.
+Status: Proposed contract and threat-model comparison. On 2026-10-13 the human
+selected trusted local OS with separate processes and permissions for the first
+publication-only slice in [DR-0238](0238-publication-only-local-os-custody.md).
+Other signing families, encrypted custody and production qualification are not
+selected by that scope decision.
 
 ## Context and scope
 

@@ -43,6 +43,10 @@ roadmap describes a later target state.
   ([DR-0237](decisions/0237-bounded-publication-review-presentation.md)):
   exact immutable artifact/frame correspondence, bounded terminal-safe output
   and diagnostic component hashes, without provenance or approval authority.
+- [Publication-only local OS custody](local-publication-custody.md)
+  ([DR-0238](decisions/0238-publication-only-local-os-custody.md)):
+  separate UID/key permissions, independently pinned preimages, exact approval,
+  authenticated local IPC and refusal/restart controls.
 - [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
   an explicitly configured closed HTTPS transport, separate from default
   event-only relays, embedded DO policy and core authority.
