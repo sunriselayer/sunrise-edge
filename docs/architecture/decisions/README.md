@@ -126,6 +126,7 @@
 - [DR-0229: bounded compiled-host startup line](0229-bounded-compiled-host-startup-line.md)
 - [DR-0230: bounded Docker fault environments](0230-bounded-docker-fault-environments.md)
 - [DR-0232: bounded recovery failure reproduction and observation profile](0232-bounded-recovery-failure-reproduction.md)
+- [DR-0234: positive blob closure after total fixture-owner death](0234-positive-blob-total-owner-aftercommit.md)
 - [DR-0236: separated code, verification and launch completion tracking](0236-separated-code-verification-and-launch-tracking.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
