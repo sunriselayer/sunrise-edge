@@ -307,4 +307,162 @@ mod tests {
         ));
         let _ = accept_task.await;
     }
+
+    /// Fixture-only probe for the Docker/Linux-UID acceptance fixture
+    /// (`scripts/check-docker-custody-fixture-1013.mjs`). No production CLI
+    /// surface calls `request_signature` against a socket bound by a
+    /// genuinely distinct real Linux UID without also requiring a live node
+    /// endpoint (`contract publish`'s network round trip), so the fixture
+    /// runs this exact compiled test by name instead of adding a new
+    /// production binary/subcommand. It never reads custody's own config or
+    /// key file — exactly like the real operator path in
+    /// `commands/publication.rs`, every expected-context field and the
+    /// expected publisher arrive as plain public inputs the fixture already
+    /// holds, mirroring `--expected-chain-id`/`--custody-expected-public-key`
+    /// etc. `#[ignore]` keeps this out of the ordinary `cargo test` gate; the
+    /// fixture must pass `--ignored --exact` to run it, and every input
+    /// arrives through an explicit environment variable with no default, so
+    /// a missing prerequisite is a hard failure, never a silent skip.
+    #[ignore = "exercised only by the Docker/Linux-UID custody fixture; see scripts/check-docker-custody-fixture-1013.mjs"]
+    #[test]
+    fn fixture_distinct_uid_round_trip() {
+        fn required(name: &'static str) -> String {
+            std::env::var(name)
+                .unwrap_or_else(|_| panic!("custody fixture prerequisite missing: {name}"))
+        }
+        fn required_hex32(name: &'static str) -> [u8; 32] {
+            crate::hex::decode_hex_32(name, &required(name))
+                .unwrap_or_else(|error| panic!("custody fixture: {name} is invalid: {error}"))
+        }
+        fn required_parsed<T: std::str::FromStr>(name: &'static str) -> T
+        where
+            T::Err: std::fmt::Display,
+        {
+            required(name)
+                .parse()
+                .unwrap_or_else(|error| panic!("custody fixture: {name} is invalid: {error}"))
+        }
+
+        let mode = required("CUSTODY_FIXTURE_MODE");
+        let chain_id = sunrise_edge_client::ChainId::new(&required("CUSTODY_FIXTURE_CHAIN_ID"))
+            .expect("custody fixture: CUSTODY_FIXTURE_CHAIN_ID is invalid");
+        let protocol_version = sunrise_edge_client::ProtocolVersion::new(required_parsed(
+            "CUSTODY_FIXTURE_PROTOCOL_VERSION",
+        ));
+        let epoch = sunrise_edge_client::Epoch::new(required_parsed("CUSTODY_FIXTURE_EPOCH"));
+        let hash_suite_id =
+            sunrise_edge_client::HashSuiteId::new(required_parsed("CUSTODY_FIXTURE_HASH_SUITE_ID"));
+        let domain = sunrise_edge_client::AtomicityDomainId::new(required_hex32(
+            "CUSTODY_FIXTURE_DOMAIN_HEX",
+        ))
+        .expect("custody fixture: CUSTODY_FIXTURE_DOMAIN_HEX is invalid");
+        let publisher_bytes = required_hex32("CUSTODY_FIXTURE_PUBLISHER_HEX");
+        let publisher = sunrise_edge_client::Address::new(publisher_bytes);
+        let nonce: u64 = required_parsed("CUSTODY_FIXTURE_NONCE");
+        let request_id =
+            sunrise_edge_client::RequestId::new(required_hex32("CUSTODY_FIXTURE_REQUEST_ID_HEX"))
+                .expect("custody fixture: CUSTODY_FIXTURE_REQUEST_ID_HEX is invalid");
+
+        let expected = sunrise_edge_client::ExpectedProtocolContext::new(
+            chain_id.clone(),
+            protocol_version,
+            epoch,
+            hash_suite_id,
+            sunrise_edge_client::ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
+            sunrise_edge_client::SignatureSchemeId::Ed25519.as_u16(),
+            sunrise_edge_client::ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
+            domain,
+        )
+        .expect("custody fixture: expected protocol context is invalid");
+        let resolver = sunrise_edge_client::local_publication_resolver(&expected)
+            .expect("custody fixture: resolver construction failed");
+        let context =
+            sunrise_edge_client::PublicationContext::new(chain_id.clone(), protocol_version, epoch)
+                .expect("custody fixture: publication context is invalid");
+        // Fixed, non-secret, deterministic fixture content (not real code,
+        // not a real origin seed): identical on every invocation, so the
+        // artifact `custody approve` is shown out of band and the artifact
+        // `serve` re-derives under its own pinned config are byte-identical.
+        let origin =
+            sunrise_edge_client::PackageOrigin::unverified(chain_id, publisher_bytes, [0x5E; 32])
+                .expect("custody fixture: package origin is invalid");
+        let semantics =
+            sunrise_edge_client::local_publication_profile_semantics(&resolver, &context)
+                .expect("custody fixture: semantics commitment failed");
+        // Optional, defaulted (not a required prerequisite): lets the
+        // fixture's changed-artifact negative case build a frame that
+        // differs from the one `custody approve` was shown, without a
+        // second probe mode.
+        let wasm_first_byte: u8 = std::env::var("CUSTODY_FIXTURE_WASM_FIRST_BYTE")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        let mut wasm = vec![0_u8; 8];
+        wasm[0] = wasm_first_byte;
+        let artifact = sunrise_edge_client::CodeArtifact::new(sunrise_edge_client::ArtifactParts {
+            context,
+            origin,
+            revision: 1,
+            wasm_profile: sunrise_edge_client::CONTRACT_WASM_ADMISSION_PROFILE_VERSION,
+            semantics,
+            wasm,
+            unverified_abi: Vec::new(),
+            exports: vec!["run".to_string()],
+            unverified_dependencies: Vec::new(),
+        })
+        .expect("custody fixture: artifact construction is invalid");
+
+        match mode.as_str() {
+            // Run once, independently of custody and before `custody
+            // approve`, to produce the exact canonical artifact bytes the
+            // custody administrator pins as `--approved-artifact`.
+            "generate-artifact" => {
+                let artifact_out = required("CUSTODY_FIXTURE_ARTIFACT_OUT");
+                let bytes = sunrise_edge_client::publication::encode_code_artifact(&artifact)
+                    .expect("custody fixture: artifact encoding failed");
+                std::fs::write(&artifact_out, &bytes)
+                    .expect("custody fixture: writing the generated artifact failed");
+                println!(
+                    "{{\"mode\":\"generate-artifact\",\"artifact_bytes\":{}}}",
+                    bytes.len()
+                );
+            }
+            // Run as the operator UID against the already-running `serve`
+            // process (a genuinely distinct real Linux UID), then
+            // independently re-verify the returned signature exactly as
+            // `commands/publication.rs` does via `PreparedPublication::finalize`.
+            "sign-and-verify" => {
+                let prepared = sunrise_edge_client::PreparedPublication::prepare(
+                    publisher, &resolver, &expected, artifact, nonce, request_id,
+                )
+                .expect("custody fixture: local PreparedPublication::prepare failed");
+                let target = CustodyTarget {
+                    socket: std::path::PathBuf::from(required("CUSTODY_FIXTURE_SOCKET")),
+                    custody_uid: required_parsed("CUSTODY_FIXTURE_CUSTODY_UID"),
+                    expected_public_key: publisher_bytes,
+                };
+                let signature = request_signature(
+                    &target,
+                    prepared.artifact(),
+                    prepared.nonce(),
+                    prepared.request_id(),
+                )
+                .expect("custody fixture: request_signature failed");
+                let submission = prepared
+                    .finalize(signature.to_vec())
+                    .expect("custody fixture: independent finalize/verify failed");
+                // The signature is a public value attached to the
+                // publication (not key material); printing it lets the
+                // fixture confirm byte-for-byte equality across a
+                // `serve` restart against the same persisted approval.
+                println!(
+                    "{{\"mode\":\"sign-and-verify\",\"verified\":true,\"nonce\":{},\"request_id\":\"{}\",\"signature_hex\":\"{}\"}}",
+                    submission.request().nonce(),
+                    crate::hex::encode_hex(submission.request_id()),
+                    crate::hex::encode_hex(&signature),
+                );
+            }
+            other => panic!("custody fixture: unknown CUSTODY_FIXTURE_MODE {other:?}"),
+        }
+    }
 }
