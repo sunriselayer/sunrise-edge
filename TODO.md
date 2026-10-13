@@ -48,8 +48,8 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 旧検証用home/targetのidentityを復元したとは扱いません。
 保存済み `f093fb6c` は `3a5c8249` としてこのブランチへ統合済みで、mainは未変更です。
 
-直前の確認ではGitの作業コピー登録が存在する一方、そのパスがENOENTでした。
-削除・移動・クラッシュのどれが原因かは未確定です。今回の文書編集は
+再構成時の確認ではGitの作業コピー登録が存在する一方、そのパスがENOENTでした。
+当時は原因未確定でしたが、その後のチャット照合で手動削除を確認しました。今回の文書編集は
 キャッシュ外の専用作業コピーで行い、main・履歴・既存ブランチを変更しません。
 
 復帰作業は次の2件です。製品機能の完了数には含めません。
@@ -73,6 +73,17 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 | E5: c69 CI | [run `38339555677`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38339555677)、対象 `c69fa2f042c498c38440f0b100f0146f093d11a7`。7 unconditional owners + success-only checkの全terminal success | main未統合。f093や今回の新しい署名consumerの検証結果ではない |
 | E6: c69 final照合 | 独立Opus source reviewでR1/R2/R3/D01の各技術範囲を確認。rootが完全hostedログとGitHub commit APIを別に照合 | CI checkout `e63abd5e099361e8d1b3d886c1987008f7cb5bd3` のtreeはc69と同じ `10cfe7dd8b7802557288b00146572109ad7dab0b`。parentsはffcf/c69。欠落したローカルrawを復元したとは扱わない |
 | E7: 新しいSQLite owning | f093統合後のblob outer controlが成功。helperのinert通常呼び出しを含む2 passed/0 failed。続くSQLite libは98 passed/0 failed/5 ignored | Rust 1.97.1、locked/offline、共有cacheはread-only namespace、新規target。4GiB/no swap/1 CPU/128 PIDs。host/power/media/fsync・Docker ENOSPCの新規合格ではない |
+| E8: 新しいSQLite ENOSPC | 既存5 ignored controlsを各1回のfresh Docker allocationで実行し、5 passed/0 failed。outer service exit 0、21.45秒、各回のexact owner container/volume releaseを確認 | E7の同じSQLite test executable (SHA-256 `e4f75d8f315fda4f40082600c928df59f510442f22d9043a8198a38704b9edda`) を使用。SQLite crateに3a5c8249→d5395ba6の変更なし。512MiB/no additional swap、64MiB noswap、64 PIDs、1 CPU、network none。全体required、power/host/media/fsyncの証明ではない |
+
+`d5395ba6` の新しい5-group PG実行は最後のfixture exportで失敗しました。
+task-local Cargo wrapperが `SUNRISE_EDGE_ESCROW_FIXTURE_DIR` を継承しなかったことを
+実際のpanicとdriver照合で確認しました。rawログを保存し、成功とは扱いません。
+owning live testsとlifecycle/drain-history/business-auditの部分成功は全体合格へ転用しません。
+生成owner `c05374cd203b1e743d19b7f69aeb6a2a` のcontainer/volume残存がないことを確認しました。
+compiler serviceの4GiB上限はreclaimを観測して6GiBへ変更しましたが、Dockerの
+512MiB/no additional swap上限は維持しました。wrapperには閉じたfixture変数と
+task-owned temporary outputだけを追加し、SQLiteのexport→compiled inventoryの
+同じscriptがexit 0で完了しました。実際の5-group PG/current-source再実行は未完了です。
 
 E5/E6の実recipeは、core recurrence 1 passed/0 failed、readiness SQLite
 1 passed/0 failed、compiled recurring SQLite 1 passed/0 failed (21,192.42秒) です。
@@ -196,7 +207,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
     full-read revision/ABA、reopen・fencing・ambiguity reconciliationと実際のfault boundaries。
   - 状態: c69のENOSPC/blob controlsとE3は以前の合格。f093は今回の作業ブランチへ
     `3a5c8249` として統合済み。新しいowningとSQLite libはE7で成功。
-    ignoredの5故障試験・combined required・残る物理faultは未完了。
+    ignoredの5 ENOSPC controlsはE8で新しく成功。combined required・残る物理faultは未完了。
   - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。
     trait reply-loss、process SIGKILL、power/host/media/fsync faultは別証拠。
     全12 SQL tables・4 portable collections・positive blob/oracleを省略しない。
@@ -342,7 +353,8 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
 2. M2のpreviewはsource review/owning/CLIまで成功。選択済みのlocal OS custodyを
    実装し、独立review・別UID/PTY/refusal/restartで確認する。
    D03 toolingはowning成功・統合済み。残るRustls/shared PG/current-source条件を処理する。
-3. M3のf093統合と新しいowningはE7で成功。残るselected-profile fault/combined条件を進める。
+3. M3のf093統合と新しいowningはE7、既存5 ENOSPC controlsはE8で成功。
+   残るselected-profile fault/combined条件を進める。
    M4で既に成功した暗号化復元を未実装として作り直さない。
 4. sourceを固定しM7と必要なGを実行、D02/D03/M1の未達を処理する。
    D05/M5は同一の実case表で進める。
