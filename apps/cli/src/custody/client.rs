@@ -171,7 +171,7 @@ mod tests {
             revision: 1,
             wasm_profile: sunrise_edge_client::CONTRACT_WASM_ADMISSION_PROFILE_VERSION,
             semantics,
-            wasm: vec![0_u8; 8],
+            wasm: crate::test_support::publication_wasm(),
             unverified_abi: b"fixture-abi-v1".to_vec(),
             exports: vec!["run".to_string()],
             unverified_dependencies: Vec::new(),
@@ -444,7 +444,7 @@ mod tests {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(0);
-        let mut wasm = vec![0_u8; 8];
+        let mut wasm: Vec<u8> = crate::test_support::publication_wasm();
         wasm[0] = wasm_first_byte;
         let artifact = sunrise_edge_client::CodeArtifact::new(sunrise_edge_client::ArtifactParts {
             context,
@@ -467,8 +467,18 @@ mod tests {
                 let artifact_out = required("CUSTODY_FIXTURE_ARTIFACT_OUT");
                 let bytes = sunrise_edge_client::publication::encode_code_artifact(&artifact)
                     .expect("custody fixture: artifact encoding failed");
-                std::fs::write(&artifact_out, &bytes)
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut file: std::fs::File = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&artifact_out)
+                    .expect("custody fixture: creating the generated artifact failed");
+                file.write_all(&bytes)
                     .expect("custody fixture: writing the generated artifact failed");
+                file.sync_all()
+                    .expect("custody fixture: synchronizing preimage failed");
                 println!(
                     "{{\"mode\":\"generate-artifact\",\"artifact_bytes\":{}}}",
                     bytes.len()

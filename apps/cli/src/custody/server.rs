@@ -481,7 +481,7 @@ mod tests {
             revision: 1,
             wasm_profile: CONTRACT_WASM_ADMISSION_PROFILE_VERSION,
             semantics,
-            wasm: vec![0_u8; 8],
+            wasm: crate::test_support::publication_wasm(),
             unverified_abi: b"fixture-abi-v1".to_vec(),
             exports: vec!["run".to_string()],
             unverified_dependencies: Vec::new(),
@@ -630,6 +630,8 @@ mod tests {
 
         let signature = sign_request(&config, &signer, &approvals_dir.0, &request).unwrap();
         assert_eq!(signature.len(), wire::CUSTODY_SIGNATURE_BYTES);
+        let independently_verified = prepared.finalize(signature.to_vec()).unwrap();
+        assert_eq!(independently_verified.request_id(), request_id.as_bytes());
     }
 
     #[test]

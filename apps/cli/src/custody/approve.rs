@@ -224,7 +224,7 @@ mod tests {
             revision: 1,
             wasm_profile: sunrise_edge_client::CONTRACT_WASM_ADMISSION_PROFILE_VERSION,
             semantics,
-            wasm: vec![0_u8; 8],
+            wasm: crate::test_support::publication_wasm(),
             unverified_abi: b"fixture-abi-v1".to_vec(),
             exports: vec!["run".to_string()],
             unverified_dependencies: Vec::new(),

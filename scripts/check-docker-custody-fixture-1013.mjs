@@ -283,8 +283,8 @@ def phase_setup():
     ]
     for path, mode, uid, gid in entries:
         os.mkdir(path, mode)
-        os.chown(path, uid, gid)
         os.chmod(path, mode)
+        os.chown(path, uid, gid)
 
 
 def phase_missing_prerequisite_fails():
@@ -338,7 +338,6 @@ def phase_write_config(public_key):
     finally:
         os.close(fd)
     os.chown(config_path, CUSTODY_UID, CUSTODY_GID)
-    os.chmod(config_path, 0o600)
     return config_path
 
 
@@ -360,7 +359,6 @@ def phase_generate_artifact(public_key, request_id_hex, nonce, out_path, wasm_fi
     size = os.stat(out_path).st_size
     if size != evidence["artifact_bytes"]:
         raise FixtureFailure("the generated artifact file size does not match its own reported byte count")
-    os.chmod(out_path, 0o600)
     artifact_stat = os.stat(out_path)
     if artifact_stat.st_uid != CUSTODY_UID or stat.S_IMODE(artifact_stat.st_mode) != 0o600:
         raise FixtureFailure("the independently approved preimage is not custody-owned mode 0600")
@@ -538,13 +536,17 @@ def phase_intruder_wrong_peer_uid(socket_path):
             os.setuid(INTRUDER_UID)
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.settimeout(5)
+            connected = False
             try:
                 sock.connect(socket_path)
+                connected = True
                 sock.sendall(b"\x00\x00\x00\x01\x00")
                 data = sock.recv(16)
                 os._exit(0 if data == b"" else 3)
-            except (ConnectionRefusedError, ConnectionResetError, BrokenPipeError, socket.timeout):
-                os._exit(0)
+            except (ConnectionResetError, BrokenPipeError):
+                os._exit(0 if connected else 2)
+            except OSError:
+                os._exit(2)
             finally:
                 sock.close()
         finally:
@@ -665,12 +667,23 @@ def main():
 
     first = expect_sign_success(public_key, socket_path, MAIN_REQUEST_ID, 1)
     serve_summary = wait_serve(serve_proc, extra_seconds=20)
+    expected_summary = {
+        "connections_accepted": "6", "requests_handled": "5",
+        "requests_signed": "1", "requests_refused": "4",
+    }
+    if dict(line.split("=", 1) for line in serve_summary.splitlines()) != expected_summary:
+        raise FixtureFailure("serve counts do not prove exact peer/request refusals")
 
     if os.path.lexists(socket_path):
         raise FixtureFailure("cleanly exited custody left its bound socket behind")
     second_proc = start_serve(socket_path, total_deadline_secs=10, max_connections=1, max_requests=1)
     second = expect_sign_success(public_key, socket_path, MAIN_REQUEST_ID, 1)
-    wait_serve(second_proc, extra_seconds=8)
+    restarted_summary = wait_serve(second_proc, extra_seconds=8)
+    if dict(line.split("=", 1) for line in restarted_summary.splitlines()) != {
+        "connections_accepted": "1", "requests_handled": "1",
+        "requests_signed": "1", "requests_refused": "0",
+    }:
+        raise FixtureFailure("restarted serve counts do not match the one approved request")
     if os.path.lexists(socket_path):
         raise FixtureFailure("restarted custody left its bound socket behind")
 
