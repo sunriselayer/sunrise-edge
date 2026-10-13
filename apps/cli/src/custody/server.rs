@@ -765,7 +765,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn serve_refuses_an_unapproved_request_end_to_end_over_a_real_socket() {
+    async fn serve_refuses_a_wrong_peer_uid_before_reading_a_request() {
         let config_dir = TempDir::new(0o700);
         let socket_dir = TempDir::new(SOCKET_DIR_MODE);
         let approvals_dir = TempDir::new(approvals::APPROVALS_DIR_MODE);
@@ -784,7 +784,7 @@ mod tests {
         let bounds = ServeBounds {
             max_connections: 1,
             max_requests: 1,
-            total_deadline: Duration::from_millis(500),
+            total_deadline: Duration::from_secs(2),
         };
         let serve_socket_path = socket_path.clone();
         let serve_approvals_dir = approvals_dir.0.clone();
@@ -799,10 +799,15 @@ mod tests {
             .await
         });
 
-        // Give the listener a moment to bind before connecting.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let connect_result = UnixStream::connect(&socket_path).await;
-        drop(connect_result);
+        // Observe the actual bound socket rather than guessing task readiness.
+        timeout(Duration::from_secs(1), async {
+            while socket_identity(&socket_path).is_none() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(UnixStream::connect(&socket_path).await.unwrap());
 
         let summary = serve_task.await.unwrap().unwrap();
         assert_eq!(summary.connections_accepted, 1);

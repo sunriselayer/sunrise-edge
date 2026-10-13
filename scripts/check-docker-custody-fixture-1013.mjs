@@ -267,6 +267,30 @@ def last_json_line(raw_bytes):
 
 
 def phase_setup():
+    for path, expected in [
+        ("/sys/fs/cgroup/memory.max", "536870912"),
+        ("/sys/fs/cgroup/memory.swap.max", "0"),
+        ("/sys/fs/cgroup/pids.max", "64"),
+        ("/sys/fs/cgroup/cpu.max", "100000 100000"),
+    ]:
+        with open(path) as source:
+            if source.read(128).strip() != expected:
+                raise FixtureFailure("effective custody fixture resource bound differs")
+    with open("/proc/self/mountinfo") as source:
+        mounts = source.read(65537)
+    if len(mounts) > 65536:
+        raise FixtureFailure("fixture mount inventory exceeds bound")
+    rows = [line.split() for line in mounts.splitlines() if line.split()[4] == ROOT]
+    if len(rows) != 1:
+        raise FixtureFailure("fixture allocation is not one literal mount")
+    row = rows[0]
+    separator = row.index("-")
+    options = set(row[5].split(",")) | set(row[separator + 3].split(","))
+    if row[separator + 1] != "tmpfs" or not {"rw", "noswap", "nosuid", "nodev", "noexec"}.issubset(options):
+        raise FixtureFailure("fixture allocation lacks effective tmpfs/noswap isolation")
+    allocation = os.statvfs(ROOT)
+    if allocation.f_frsize * allocation.f_blocks != 64 * 1024 * 1024:
+        raise FixtureFailure("fixture allocation is not exactly 64MiB")
     os.umask(0)
     entries = [
         (f"{ROOT}/custody-keys", 0o700, CUSTODY_UID, CUSTODY_GID),
@@ -496,7 +520,7 @@ def start_serve(socket_path, total_deadline_secs, max_connections, max_requests)
 
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=preexec, env={}, cwd="/")
     bind_deadline = time.monotonic() + 10
-    while not os.path.exists(socket_path):
+    while not os.path.exists(socket_path) or stat.S_IMODE(os.stat(socket_path).st_mode) != 0o660:
         if time.monotonic() > bind_deadline:
             proc.kill()
             raise FixtureFailure("custody serve did not bind its socket in time")
