@@ -240,7 +240,7 @@ def harness_argv():
     return [
         LD_SO, "--library-path", LIB_DIR, HARNESS,
         "custody::client::tests::fixture_distinct_uid_round_trip",
-        "--exact", "--ignored", "--nocapture",
+        "--exact", "--ignored", "--nocapture", "--format", "terse",
     ]
 
 
@@ -261,6 +261,8 @@ def harness_env(mode, **overrides):
 
 def last_json_line(raw_bytes):
     text = raw_bytes.decode("utf8", "replace")
+    if "1 passed; 0 failed; 0 ignored" not in text:
+        raise FixtureFailure("the exact fixture probe did not complete one successful test")
     for line in reversed(text.splitlines()):
         line = line.strip()
         if line.startswith("{"):
@@ -821,7 +823,8 @@ async function docker(args, cleanup = false) {
         stderr: Buffer.concat(stderr).toString('utf8'),
       };
       if (code !== 0 || signal !== null) {
-        const error = new Error(`Docker refused ${args[0]}: ${answer.stderr.trim()}`);
+        const diagnostic = answer.stderr.trim() || answer.stdout.trim();
+        const error = new Error(`Docker refused ${args[0]}: ${diagnostic}`);
         error.command = args[0];
         return rejectOnce(error);
       }
