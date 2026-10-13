@@ -13,11 +13,11 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 
 - コード・検証対象: **14件** (R1-R4、D01-D03・D05、M1-M5・M7)。
 - 公開準備対象: **6件** (D04・D06-D08、M6・M8)。実装キューとは別です。
-- 再構成時点: **旧20件の完了確定は0件、既存の完了履歴は9件**。
+- 再開後: **旧20件のうち4件完了、16件未完了、既存の完了履歴は9件**。
   再分類・延期・重複する検証の共用を、機能の完了件数には数えません。
-- R1・R2・R3・D01は完了候補です。過去に確認したローカル結果に加え、
-  対象ソースのCI完了と最終照合を確認してからチェックします。
-  作業フォルダ・検証資料の所在確認も未解決なので、自動で4件完了とはしません。
+- R1・R2・R3・D01は、保存ソース・欠落資料・実際のCI tested treeと
+  完了したrecipeの最終照合および独立source reviewを終えました。
+  以下の完了は `c69fa2f0` の各行の技術範囲で、main統合・今回の新規delta・公開認定とは別です。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -37,7 +37,16 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 | 復元修正 | `c69fa2f0` / `codex/fresh-slash-evidence-1011` はGitに残存。PR #301の対象 | mainへ統合済みとは扱わない |
 | Blob強制停止テスト | `f093fb6c` / `codex/blob-crash-1013` はGitに残存 | c69の総合テストに含めない |
 | 署名試作 | `codex/publication-review-1013` のHEADはc69。試作は未コミットだった | 現在の回収可否は不明。実装済みとは扱わない |
-| 旧作業コピー・専用キャッシュ・raw検証資料 | `/home/yu/.cache/sunrise-edge-worktrees` と `sunrise-edge-continuation-1007-QxQ44s` は所在不明 | 原因不明。Git登録が残っていてもファイルの存在を意味しない |
+| 旧作業コピー・専用キャッシュ・raw検証資料 | 人がキャッシュを手動削除したと以前のチャットで確認。旧パスは不在 | 未コミット署名試作・ローカルrawは未回収。Git登録はファイル残存の証明ではない |
+
+2026-10-13の再開時に以前のチャットを照合し、人がキャッシュを削除したと確認しました。
+再構成時は原因不明でしたが、現在の消失原因は手動削除です。
+コミット済みソースは残存し、今回の統合先はキャッシュ外の
+`/home/yu/src/github.com/sunriselayer/sunrise-edge-todo-completion-1013`、
+ブランチ `codex/todo-completion-1013`、起点は指定された `f655bd40` です。
+未コミット署名試作と削除されたローカルraw資料は未回収です。
+旧検証用home/targetのidentityを復元したとは扱いません。
+保存済み `f093fb6c` は `3a5c8249` としてこのブランチへ統合済みで、mainは未変更です。
 
 直前の確認ではGitの作業コピー登録が存在する一方、そのパスがENOENTでした。
 削除・移動・クラッシュのどれが原因かは未確定です。今回の文書編集は
@@ -61,7 +70,32 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 | E2: selected PG | `validation-9999f12b88c94f6987e84dcbe6d409cf`。5グループを実行しexit 0、766.16秒。前後のソース対応も確認済み | 別ソース・新しい依存には転用しない。PG-every-PRには戻さない |
 | E3: Blob owner-loss | `validation-0fed3d1a6460413294be623cb89e7fb1`。Dockerの1ケース合格、512MiB/no additional swap、64MiB noswap、所有資源cleanup確認 | AfterCommitの全fixture所有者SIGKILL。interrupted COMMIT/power/fsyncの証明ではない |
 | E4: 署名試作 | `validation-892dea33e428435cbd7a586326984566`。SDK 8ケース合格後、operatorコンパイルがENOSPCで停止 | operator・CLI・5ケースDockerの一連実行は未完了。試作ソース回収可否も不明 |
-| E5: c69 CI | run `38339555677`。2026-10-13 16:54 JST確認: 6 owners成功、recurring-sqlite実行中 | 7 owners + success-only checkの最終成功は未確認。再実行・中断はしていない |
+| E5: c69 CI | [run `38339555677`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38339555677)、対象 `c69fa2f042c498c38440f0b100f0146f093d11a7`。7 unconditional owners + success-only checkの全terminal success | main未統合。f093や今回の新しい署名consumerの検証結果ではない |
+| E6: c69 final照合 | 独立Opus source reviewでR1/R2/R3/D01の各技術範囲を確認。rootが完全hostedログとGitHub commit APIを別に照合 | CI checkout `e63abd5e099361e8d1b3d886c1987008f7cb5bd3` のtreeはc69と同じ `10cfe7dd8b7802557288b00146572109ad7dab0b`。parentsはffcf/c69。欠落したローカルrawを復元したとは扱わない |
+| E7: 新しいSQLite owning | f093統合後のblob outer controlが成功。helperのinert通常呼び出しを含む2 passed/0 failed。続くSQLite libは98 passed/0 failed/5 ignored | Rust 1.97.1、locked/offline、共有cacheはread-only namespace、新規target。4GiB/no swap/1 CPU/128 PIDs。host/power/media/fsync・Docker ENOSPCの新規合格ではない |
+
+E5/E6の実recipeは、core recurrence 1 passed/0 failed、readiness SQLite
+1 passed/0 failed、compiled recurring SQLite 1 passed/0 failed (21,192.42秒) です。
+exact selectorは閉じたregistry/recipeで一つのtestへ結び付き、quiet出力のdotだけでなく
+本物のe8 terminal-unlock、saved-closure pack/openと既存8-link/35-role assertionsの
+sourceも照合しました。通常rust-testsに含まれるauthor/inspection/four-store/TLS/CLI/
+bad-pin/refusal/restartケースの実test成功も確認済みです。
+
+今回の新しい専用キャッシュはキャッシュ外の
+`/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013` に分離します。
+保持されている共有キャッシュの非秘密metadata・lock checksum照合で、46パッケージに
+archiveまたは展開済みmanifestの不足を確認しました。ネットワーク禁止の新しい限定ビルドは
+`age` のindex不足でexit 101、compiler前に停止しました。失敗を成功扱いしません。
+復元は別途source reviewした取得処理で行い、lockと共有cacheを変更せず、以前の
+32MiB network / 16MiB per file / 700 files / 128MiB生成 / 512MiB gross I/O /
+256KiB evidence / 300秒と5GiB観測監視の上限を維持します。
+既存展開sourceへの明示参照は新しいofflineビルドの入力であり、古い専用cacheの復元や
+M7のfresh A/B・provenance合格を意味しません。
+取得はexit 0、network 5,991,554 bytes / gross I/O 116,957,679 bytes /
+生成25,915,058 bytes / 599 files / 3.61秒でした。観測した最小空きは
+266,264,657,920 bytes、最大観測間隔0.116秒。全checksumをlockと照合し、
+所有serviceは終了・回収済みです。コンパイラ入力はbwrapで共有cacheをread-onlyにし、
+不足archiveもread-onlyで同じoffline入力viewへ結び付けています。
 
 以前のopaque Quota失敗の唯一の原因は未確定です。有限の観測予算修正・
 再現コントロールとE1の成功は、失敗履歴を書き換えません。
@@ -73,23 +107,26 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 共通の検証は後述Gを一度記録し、同一ソース・同一範囲なら複数項目から参照します。
 単なる整理のために新しいframework、SDK foundations crate、重いCI laneを追加しません。
 
-- [ ] **R1: データ・codec・error・boundsの定義元を一本化する**
+- [x] **R1: データ・codec・error・boundsの定義元を一本化する**
   - 対象: 実装 + 検証。実際のcore/wire/SDK/host呼び出しを移行し、コピーした規則を除去する。
     既存bytes・error優先順位・権限境界を保つ。全SDK依存の解消を新条件にはしない。
-  - 状態: c69の移行・ローカル検証は確認済み。完了候補。
-  - 次: 保存ソース・証拠を照合し、E5と最終独立確認でこの範囲を確定する。
+  - 状態: c69の移行をE5/E6で確定。receipt binding、E009署名codec、validator/
+    consensus/frontier boundsのownerとactual callers、既存bytes/error orderを確認。
+    evaluator自身の確定出力比較はquery bindingとは異なる規則なので無理に統一しない。
 
-- [ ] **R2: admission・evaluation・commit・reconciliationの責務を揃える**
+- [x] **R2: admission・evaluation・commit・reconciliationの責務を揃える**
   - 対象: 実装 + 検証。判断を一つのownerへ置き、actual CAS/Conflict/Rejected/Indeterminate、
     receipt-first replay、正当なprefix進行とmemory reconstructionを維持する。
-  - 状態: c69の実装・ローカル検証は確認済み。完了候補。
-  - 次: R1と同じ共通結果を参照して最終照合する。無関係なfacade分割は要求しない。
+  - 状態: c69の実装をE5/E6で確定。transaction parts・ordinary write lifecycleの
+    shared owners、Memory/SQL callersとreceipt-first/CAS/Indeterminateの保持を確認。
+    PostgreSQL固有規則と各evaluatorの結果照合はそれぞれのownerに残す。
 
-- [ ] **R3: テストとCIの責任範囲を明確にする**
+- [x] **R3: テストとCIの責任範囲を明確にする**
   - 対象: 実装 + 検証。fixtureは入力、独立oracleは期待値を所有する。重複削減は
     exact-input coverageと実測がある場合だけ。元のrecurrence・delay・restart・faultを保持する。
-  - 状態: registry・capture・controlsのc69ローカル検証は確認済み。完了候補。
-  - 次: E5と実際のrecipe/selector/結果を照合する。件数やstartupだけで合格にしない。
+  - 状態: c69のregistry・capture・controlsをE5/E6で確定。7 ownersはrequired actionの
+    全範囲を保持し、3つのlong controlsを各1回実行。8リンク/e8 withdrawals/35 rolesの
+    元の負荷・restart/refusal assertionsは削減していない。
 
 - [ ] **R4: source/build/configurationと実行可能な手順を結び付ける**
   - 対象: 実装 + 検証。公開するfamily・signer/store capabilityと
@@ -97,11 +134,11 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
   - 状態: 既存manifest/fixtureはある。現在版13-target A/Bと最終handoffは未完了。
   - 次: M7の同一証拠を使い、実際の配置選択はD04/D07へ引き継ぐ。
 
-- [ ] **D01: Native起動・操作の技術統合を確定する**
+- [x] **D01: Native起動・操作の技術統合を確定する**
   - 対象: 検証。author → 独立inspection → 4つの独立store → authenticated TLS →
     compiled CLI → restart・exact replay・refusalを実行する。
-  - 状態: E1のローカル条件を満たした完了候補。公開テストネット稼働の宣言ではない。
-  - 次: c69のE5・最終照合を完了する。D04/D06の実値選択をローカルコード検証へ持ち込まない。
+  - 状態: c69のE5/E6と実際のcompiled local TLS startup/recurrenceで技術統合を確定。
+    公開テストネット稼働・実validator独立運用の宣言ではない。
 
 - [ ] **D02: 最終機能・権限範囲を独立監査する**
   - 対象: 検証。economics/FastVote、generic contracts、ingress、lifecycleを対象にし、
@@ -113,6 +150,10 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
   - 対象: 実装 + 検証。実際の使用・露出・修正版の互換性を確認し、対応または
     残余リスクを記録する。MSRV/licenseも保持する。7 high entriesは7独立advisoriesとは限らない。
   - 状態: tooling/Rustlsの対応・最終clearanceは未完了。
+    再開後のnpm auditは7 high entries。別候補 `05ddad13` ではVitest plugin 1.4.0 /
+    Wrangler 4.149.0 / peerと一致するworkers-types 5.20261006.1、および互換範囲の
+    brace-expansion/source-map-jsを固定し、npm auditは0件。literal npm-ciは成功、
+    Cloudflare owning gateは検証中なので未統合。Rustls 0.23.43とPR #298は別の未達。
   - 次: bundled copyも含めて修正版の実体を確認する。forced bulk updateやPATによるreadはしない。
 
 - [ ] **D05: exposed ingress/operationsのコードを検証する**
@@ -140,8 +181,10 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 - [ ] **M3: selected SQLite profileのdurabilityを検証する**
   - 対象: 検証。atomic object/state/nonce/receipt/outbox、indexed delivery、
     full-read revision/ABA、reopen・fencing・ambiguity reconciliationと実際のfault boundaries。
-  - 状態: c69のENOSPC/blob controlsとE3が合格。f093は未統合。
-  - 次: f093をreview済み範囲で統合し、残るselected-profile coverageを対応表で埋める。
+  - 状態: c69のENOSPC/blob controlsとE3は以前の合格。f093は今回の作業ブランチへ
+    `3a5c8249` として統合済み。新しいowningとSQLite libはE7で成功。
+    ignoredの5故障試験・combined required・残る物理faultは未完了。
+  - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。
     trait reply-loss、process SIGKILL、power/host/media/fsync faultは別証拠。
     全12 SQL tables・4 portable collections・positive blob/oracleを省略しない。
     selected-profileのhost/power/storage faults、ENOSPC/resource exhaustion、
@@ -281,11 +324,11 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
 
 ## 次の実行順
 
-1. 所在不明の作業・検証資料を照合し、今回の再構成を独立確認する。
-   この段階ではcompiler/helper、依存再取得、故障試験を起動しない。
-2. E5のterminalが出たらR1/R2/R3/D01を対象ソースと最終照合し、
-   条件を満たした分だけチェックする。公開準備が未着手でもコード作業は進める。
-3. M2の欠落/未検証範囲とM3のf093統合を進める。
+1. 所在・欠落範囲の照合、新しいbounded依存cache、E5/E6とR1/R2/R3/D01の
+   最終照合は完了。削除されたローカルraw/署名試作は未回収として保持する。
+2. M2のpublication previewは独立review指摘を処理し、owning/CLI controlsで確認する。
+   D03 tooling候補のowning gateと残るRustls/PG条件を処理する。
+3. M3のf093統合と新しいowningはE7で成功。残るselected-profile fault/combined条件を進める。
    M4で既に成功した暗号化復元を未実装として作り直さない。
 4. sourceを固定しM7と必要なGを実行、D02/D03/M1の未達を処理する。
    D05/M5は同一の実case表で進める。
