@@ -54,8 +54,7 @@ fn semantics_for_selected_profile(
         sunrise_edge_client::local_execution::local_execution_semantics(resolver, context)
             .map_err(failure)
     } else {
-        sunrise_edge_client::local_publication_profile_semantics(resolver, context)
-            .map_err(failure)
+        sunrise_edge_client::local_publication_profile_semantics(resolver, context).map_err(failure)
     }
 }
 

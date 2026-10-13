@@ -13,7 +13,7 @@ use crate::args::{ArgsError, parse_flags, scalar};
 use crate::error::CliError;
 
 /// Dispatches local validation, authenticated publication, or verified query.
-/// Only `validate` avoids signer, transport and node context construction.
+/// `validate` and `preview` avoid signer and transport construction.
 pub fn run<I>(args: I) -> Result<(), CliError>
 where
     I: IntoIterator<Item = OsString>,

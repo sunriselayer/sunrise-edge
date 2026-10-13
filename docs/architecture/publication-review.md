@@ -50,9 +50,11 @@ Building one:
   sequences.
 - Does not render raw WASM or ABI declaration bytes as display text (this is
   metadata-only preview, not semantic/code-safety review); instead shows a
-  resolver-computed digest of each, using the artifact commitment's own
-  existing `ContractCode` hash purpose (no new hash domain or crypto
-  identifier). The exact unmodified bytes remain available to SDK callers via
+  explicitly diagnostic hash of each under the existing `ContractCode`
+  purpose. These values grant no publication identity/commitment, verified
+  `canonical_code_hash`/`module_ref`, provenance or approval. The commitment
+  hashes the complete encoded artifact; `artifact_digest` and `frame_hex`
+  retain their original bound meaning. Exact bytes remain available via
   `artifact_bytes()`, the same reused buffer `build` already verified
   round-trips exactly.
 - Renders every field through one small internal bounded renderer that counts

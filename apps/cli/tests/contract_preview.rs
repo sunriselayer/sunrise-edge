@@ -248,8 +248,7 @@ fn preview_prints_a_supplied_dependency_reference() {
     let fixture = Fixture::new(BARE_ABI);
     let publisher: LocalSigner = LocalSigner::from_seed([7; 32]);
     let dependency = UnverifiedDependencyRef::new(
-        PackageOrigin::unverified(ChainId::new("preview-e2e").unwrap(), [40; 32], [1; 32])
-            .unwrap(),
+        PackageOrigin::unverified(ChainId::new("preview-e2e").unwrap(), [40; 32], [1; 32]).unwrap(),
         1,
         PublicationContext::new(
             expected().chain_id().clone(),

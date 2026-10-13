@@ -78,9 +78,12 @@ and `DependencyReview`. `PublicationReview::build` takes only a `&PreparedPublic
    formatting, never through a caller-supplied string. Raw WASM/ABI bytes
    are deliberately not rendered as display text (this is a metadata-only
    preview of them, not a semantic/code-safety review); instead, a
-   resolver-computed digest of each (same existing `ContractCode` hash
-   purpose the artifact commitment itself uses, no new hash domain) is
-   shown, and the exact unmodified bytes remain available to SDK callers via
+   explicitly diagnostic hash of each under the existing `ContractCode`
+   purpose is shown. These raw-component values are not publication identity
+   or commitment, verified `canonical_code_hash`/`module_ref`, code provenance
+   or approval. The commitment hashes the complete encoded artifact;
+   `artifact_digest` and `frame_hex` retain their original bound meaning.
+   The exact unmodified bytes remain available to SDK callers via
    `PublicationReview::artifact_bytes` (the same reused, verified-round-trip
    buffer) for independent inspection or hashing with any tool.
 5. Renders every one of those fields through one small internal

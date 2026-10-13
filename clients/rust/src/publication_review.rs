@@ -394,9 +394,9 @@ pub struct PublicationReview {
     wasm_profile: u32,
     wasm_profile_name: &'static str,
     wasm_bytes_len: usize,
-    wasm_digest_hex: String,
+    diagnostic_wasm_contract_code_hash_hex: String,
     unverified_abi_bytes_len: usize,
-    abi_digest_hex: String,
+    diagnostic_abi_bytes_hash_hex: String,
     semantics_hex: String,
     artifact_digest_hex: String,
     exports: Vec<String>,
@@ -498,10 +498,11 @@ impl PublicationReview {
 
         let epoch = prepared.context().epoch();
         let hash_suite_id: u16 = prepared.resolver().suite_for_epoch(epoch)?.id.get();
-        let wasm_digest: Digest32 =
-            prepared
-                .resolver()
-                .hash_for_purpose(epoch, HashPurpose::ContractCode, artifact.wasm())?;
+        let wasm_digest: Digest32 = prepared.resolver().hash_for_purpose(
+            epoch,
+            HashPurpose::ContractCode,
+            artifact.wasm(),
+        )?;
         let abi_digest: Digest32 = prepared.resolver().hash_for_purpose(
             epoch,
             HashPurpose::ContractCode,
@@ -536,14 +537,17 @@ impl PublicationReview {
         let wasm_profile_name_value: &'static str = wasm_profile_name(artifact.wasm_profile())?;
         renderer.push("wasm_profile_name", wasm_profile_name_value)?;
         renderer.push("wasm_bytes", artifact.wasm().len().to_string())?;
-        let wasm_digest_hex: String = wasm_digest.to_string();
-        renderer.push("wasm_digest", wasm_digest_hex.clone())?;
+        let diagnostic_wasm_contract_code_hash_hex: String = wasm_digest.to_string();
         renderer.push(
-            "abi_bytes",
-            artifact.unverified_abi().len().to_string(),
+            "diagnostic_wasm_contract_code_hash",
+            diagnostic_wasm_contract_code_hash_hex.clone(),
         )?;
-        let abi_digest_hex: String = abi_digest.to_string();
-        renderer.push("abi_digest", abi_digest_hex.clone())?;
+        renderer.push("abi_bytes", artifact.unverified_abi().len().to_string())?;
+        let diagnostic_abi_bytes_hash_hex: String = abi_digest.to_string();
+        renderer.push(
+            "diagnostic_abi_bytes_hash",
+            diagnostic_abi_bytes_hash_hex.clone(),
+        )?;
         let semantics_hex: String = prepared.semantics().to_string();
         renderer.push("semantics", semantics_hex.clone())?;
         let artifact_digest_hex: String = prepared.artifact_digest().to_string();
@@ -553,15 +557,13 @@ impl PublicationReview {
         let mut exports: Vec<String> = Vec::with_capacity(exports_source.len());
         renderer.push("export_count", exports_source.len().to_string())?;
         for (index, export) in exports_source.iter().enumerate() {
-            let safe: String =
-                display_safe("export", export, MAX_CONTRACT_ENTRYPOINT_NAME_BYTES)?;
+            let safe: String = display_safe("export", export, MAX_CONTRACT_ENTRYPOINT_NAME_BYTES)?;
             renderer.push(format!("export[{index}]"), safe.clone())?;
             exports.push(safe);
         }
 
         let dependencies_source: &[UnverifiedDependencyRef] = artifact.unverified_dependencies();
-        let mut dependencies: Vec<DependencyReview> =
-            Vec::with_capacity(dependencies_source.len());
+        let mut dependencies: Vec<DependencyReview> = Vec::with_capacity(dependencies_source.len());
         renderer.push("dependency_count", dependencies_source.len().to_string())?;
         for (index, dependency) in dependencies_source.iter().enumerate() {
             let review: DependencyReview = DependencyReview::build(dependency)?;
@@ -573,10 +575,7 @@ impl PublicationReview {
                 format!("dependency[{index}].publisher"),
                 review.publisher_hex.clone(),
             )?;
-            renderer.push(
-                format!("dependency[{index}].seed"),
-                review.seed_hex.clone(),
-            )?;
+            renderer.push(format!("dependency[{index}].seed"), review.seed_hex.clone())?;
             renderer.push(
                 format!("dependency[{index}].revision"),
                 review.revision.to_string(),
@@ -614,9 +613,9 @@ impl PublicationReview {
             wasm_profile: artifact.wasm_profile(),
             wasm_profile_name: wasm_profile_name_value,
             wasm_bytes_len: artifact.wasm().len(),
-            wasm_digest_hex,
+            diagnostic_wasm_contract_code_hash_hex,
             unverified_abi_bytes_len: artifact.unverified_abi().len(),
-            abi_digest_hex,
+            diagnostic_abi_bytes_hash_hex,
             semantics_hex,
             artifact_digest_hex,
             exports,
@@ -701,36 +700,38 @@ impl PublicationReview {
     /// or code-safety review of the WASM content: raw WASM bytes are not
     /// rendered as display text. The exact bytes are unmodified inside
     /// [`Self::artifact_bytes`] for independent inspection or hashing with
-    /// any tool, and [`Self::wasm_digest_hex`] commits to them directly.
+    /// any tool. [`Self::diagnostic_wasm_contract_code_hash_hex`] is only a
+    /// diagnostic comparison value, not authenticated code provenance.
     #[must_use]
     pub const fn wasm_bytes_len(&self) -> usize {
         self.wasm_bytes_len
     }
 
-    /// Resolver-computed digest of the exact retained WASM bytes, using the
-    /// same existing `ContractCode` hash purpose [`PreparedPublication`]'s
-    /// own commitment uses. No new hash domain or crypto identifier.
+    /// Diagnostic hash of the retained WASM bytes under `ContractCode`.
+    /// It grants no registry identity, verified `canonical_code_hash`,
+    /// `module_ref`, provenance or approval. The publication commitment
+    /// hashes the complete encoded artifact instead of this raw component.
     #[must_use]
-    pub fn wasm_digest_hex(&self) -> &str {
-        &self.wasm_digest_hex
+    pub fn diagnostic_wasm_contract_code_hash_hex(&self) -> &str {
+        &self.diagnostic_wasm_contract_code_hash_hex
     }
 
     /// Exact unverified ABI declaration byte length. This is metadata-only
     /// preview, not a semantic or code-safety review of the ABI content: raw
     /// ABI bytes are not rendered as display text. The exact bytes are
     /// unmodified inside [`Self::artifact_bytes`], and
-    /// [`Self::abi_digest_hex`] commits to them directly.
+    /// [`Self::diagnostic_abi_bytes_hash_hex`] is only a diagnostic comparison.
     #[must_use]
     pub const fn unverified_abi_bytes_len(&self) -> usize {
         self.unverified_abi_bytes_len
     }
 
-    /// Resolver-computed digest of the exact retained unverified ABI bytes,
-    /// using the same existing `ContractCode` hash purpose. No new hash
-    /// domain or crypto identifier.
+    /// Diagnostic hash of unverified ABI bytes under the existing
+    /// `ContractCode` purpose. It is neither code identity nor the
+    /// publication commitment, and grants no provenance or approval.
     #[must_use]
-    pub fn abi_digest_hex(&self) -> &str {
-        &self.abi_digest_hex
+    pub fn diagnostic_abi_bytes_hash_hex(&self) -> &str {
+        &self.diagnostic_abi_bytes_hash_hex
     }
 
     /// Presentation-recomputed and matched profile semantics commitment
@@ -828,5 +829,34 @@ impl PublicationReview {
             out.push('\n');
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DependencyReview, PublicationReviewError};
+    use abi::package_types::PackageOrigin;
+    use execution::publication::{PublicationContext, UnverifiedDependencyRef};
+    use protocol_types::{ChainId, Digest32, Epoch, HashAlgorithmId, ProtocolVersion};
+
+    #[test]
+    fn dependency_presentation_refuses_control_bytes_before_copying() {
+        let chain: ChainId = ChainId::new("dependency\u{1}chain").unwrap();
+        let context: PublicationContext =
+            PublicationContext::new(chain.clone(), ProtocolVersion::new(1), Epoch::new(0)).unwrap();
+        let origin: PackageOrigin = PackageOrigin::unverified(chain, [22; 32], [5; 32]).unwrap();
+        let dependency: UnverifiedDependencyRef = UnverifiedDependencyRef::new(
+            origin,
+            1,
+            context,
+            Digest32::new(HashAlgorithmId::Sha2_256, [0xAB; 32]),
+        )
+        .unwrap();
+        assert!(matches!(
+            DependencyReview::build(&dependency),
+            Err(PublicationReviewError::UndisplayableField(
+                "dependency.chain_id"
+            ))
+        ));
     }
 }

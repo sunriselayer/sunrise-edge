@@ -46,9 +46,9 @@ revision=1
 wasm_profile=1
 wasm_profile_name=publication-only
 wasm_bytes=<exact length>
-wasm_digest=<algorithm>:<hex>
+diagnostic_wasm_contract_code_hash=<algorithm>:<hex>
 abi_bytes=<exact length>
-abi_digest=<algorithm>:<hex>
+diagnostic_abi_bytes_hash=<algorithm>:<hex>
 semantics=<algorithm>:<hex>
 artifact_digest=<algorithm>:<hex>
 export_count=<n>
@@ -67,9 +67,12 @@ request_id=<hex>
 frame_hex=<hex>
 ```
 
-`wasm_digest`/`abi_digest` are resolver-computed digests of the exact
-retained WASM/ABI bytes (the same `ContractCode` hash purpose the artifact
-commitment itself uses); the raw bytes are not printed as text, since binary
+`diagnostic_wasm_contract_code_hash`/`diagnostic_abi_bytes_hash` are diagnostic
+hashes of retained WASM/ABI bytes under `ContractCode`. They are not publication
+identity or commitment, verified `canonical_code_hash`/`module_ref`, provenance
+or approval. The publication commitment hashes the complete encoded artifact;
+`artifact_digest` and `frame_hex` retain their original bound meaning.
+The raw bytes are not printed as text, since binary
 content is not safely displayable and this is a metadata-only preview of
 them, not a semantic or code-safety review. An SDK caller that needs the
 exact bytes themselves (not only their length and digest) reads
@@ -78,7 +81,7 @@ exact bytes themselves (not only their length and digest) reads
 
 Two previews differing only by `--origin-seed` differ in `origin_seed_hex`
 (and `artifact_digest`) directly, not only in an opaque digest; previews
-differing only in the WASM or ABI file differ in `wasm_digest`/`abi_digest`
+differing only in the WASM or ABI file differ in `diagnostic_wasm_contract_code_hash`/`diagnostic_abi_bytes_hash`
 directly.
 
 Failure refuses outright and prints a sanitized `error=...` line on stderr; it
