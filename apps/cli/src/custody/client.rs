@@ -95,6 +95,20 @@ async fn request_signature_async(
             .map_err(CustodyError::IoFailed)?;
         response_bytes.extend_from_slice(&signature);
     }
+    // Exactly one response occupies this connection. Require its EOF as
+    // well as the fixed fields so unknown trailing bytes cannot disappear
+    // before the strict wire decoder sees them.
+    let mut trailing: [u8; 1] = [0];
+    let extra: usize = timeout(IO_DEADLINE, stream.read(&mut trailing))
+        .await
+        .map_err(|_| CustodyError::IoTimedOut)?
+        .map_err(CustodyError::IoFailed)?;
+    if extra != 0 {
+        return Err(CustodyError::Wire(wire::CustodyWireError::LengthMismatch {
+            declared: response_bytes.len(),
+            actual: response_bytes.len() + extra,
+        }));
+    }
 
     match wire::decode_response(&response_bytes).map_err(CustodyError::Wire)? {
         CustodyResponse::Signed { signature } => Ok(signature),
@@ -306,6 +320,39 @@ mod tests {
             } if expected == wrong_expected_uid && actual == this_uid
         ));
         let _ = accept_task.await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transport_refuses_a_signed_response_with_trailing_bytes() {
+        let socket_dir: TempDir = TempDir::new(server::SOCKET_DIR_MODE);
+        let socket_path: std::path::PathBuf = socket_dir.child("custody.sock");
+        let listener: tokio::net::UnixListener =
+            tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let this_uid: u32 = own_uid().await.unwrap();
+        let serving = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request: [u8; 5] = [0; 5];
+            stream.read_exact(&mut request).await.unwrap();
+            let mut response: Vec<u8> = wire::encode_response(&CustodyResponse::Signed {
+                signature: [0; wire::CUSTODY_SIGNATURE_BYTES],
+            });
+            response.push(0xfe);
+            stream.write_all(&response).await.unwrap();
+        });
+        let target: CustodyTarget = CustodyTarget {
+            socket: socket_path,
+            custody_uid: this_uid,
+            expected_public_key: [0x11; 32],
+        };
+        let error: CustodyError = request_signature_async(&target, &[1]).await.unwrap_err();
+        assert!(matches!(
+            error,
+            CustodyError::Wire(wire::CustodyWireError::LengthMismatch {
+                declared: 66,
+                actual: 67,
+            })
+        ));
+        serving.await.unwrap();
     }
 
     /// Fixture-only probe for the Docker/Linux-UID acceptance fixture

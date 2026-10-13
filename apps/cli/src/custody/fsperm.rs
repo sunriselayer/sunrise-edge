@@ -183,7 +183,7 @@ pub(super) fn read_private_file(
 /// parent directory that must already be exactly `expected_dir_mode`.
 /// Refuses to follow an existing symlink. When `replace` is `false`, refuses
 /// if `path` already exists (used for key generation); when `true`, creates
-/// or atomically truncates an existing regular file (used for idempotent
+/// or truncates an existing regular file (used for idempotent
 /// approval records), but still refuses an existing symlink or non-regular
 /// file at `path`.
 pub(super) fn write_private_file(

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Docker/Linux-UID/PTY acceptance fixture for the publication-only local OS
-// custody candidate (commit c9ca5e55; DR-0238,
+// custody implementation (DR-0238,
 // docs/architecture/local-publication-custody.md). This is Docker-only
 // capability/behavior evidence for genuinely distinct real Linux UIDs and a
 // real pseudo-terminal, not a Rust unit-test substitute and not a claim that
@@ -23,7 +23,7 @@
 //                                  added to apps/cli/src/custody/client.rs.
 //
 // Exact owning command (see this file's own header comment for how to
-// obtain --test-binary; this repository does not execute Docker itself):
+// obtain --test-binary; this is a separately selected Docker profile):
 //   node scripts/check-docker-custody-fixture-1013.mjs \
 //     --cli-binary /abs/path/to/target/.../sunrise-edge-cli \
 //     --test-binary /abs/path/to/target/.../deps/sunrise_edge_cli-<hash>
@@ -360,6 +360,10 @@ def phase_generate_artifact(public_key, request_id_hex, nonce, out_path, wasm_fi
     size = os.stat(out_path).st_size
     if size != evidence["artifact_bytes"]:
         raise FixtureFailure("the generated artifact file size does not match its own reported byte count")
+    os.chmod(out_path, 0o600)
+    artifact_stat = os.stat(out_path)
+    if artifact_stat.st_uid != CUSTODY_UID or stat.S_IMODE(artifact_stat.st_mode) != 0o600:
+        raise FixtureFailure("the independently approved preimage is not custody-owned mode 0600")
 
 
 def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, expires_in_seconds):
@@ -442,6 +446,8 @@ def phase_approve_without_terminal(config_path, artifact_path):
     rc, _out, _err = run_exec(argv, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], timeout=10)
     if rc == 0:
         raise FixtureFailure("custody approve succeeded without a real terminal on stdin/stdout")
+    if b"custody approve requires an interactive terminal" not in _err:
+        raise FixtureFailure("non-terminal approval failed for a different reason")
 
 
 def phase_operator_cannot_read_or_edit(request_id_hex):
@@ -604,7 +610,7 @@ def expect_sign_failure(label, public_key, socket_path, request_id_hex, nonce, w
     rc, _out, err = run_exec(harness_argv(), OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID], env=env, timeout=15)
     if rc == 0:
         raise FixtureFailure(f"{label}: signing unexpectedly succeeded")
-    if b"NoApproval" not in err and b"Refused" not in err:
+    if b"Refused(NoApproval)" not in err:
         raise FixtureFailure(f"{label}: did not report the expected closed refusal")
 
 
@@ -660,12 +666,13 @@ def main():
     first = expect_sign_success(public_key, socket_path, MAIN_REQUEST_ID, 1)
     serve_summary = wait_serve(serve_proc, extra_seconds=20)
 
-    if not os.path.exists(socket_path):
-        raise FixtureFailure("the custody socket was removed on serve exit; serve must never unlink it itself")
-    os.unlink(socket_path)  # a fresh serve refuses a stale socket otherwise
+    if os.path.lexists(socket_path):
+        raise FixtureFailure("cleanly exited custody left its bound socket behind")
     second_proc = start_serve(socket_path, total_deadline_secs=10, max_connections=1, max_requests=1)
     second = expect_sign_success(public_key, socket_path, MAIN_REQUEST_ID, 1)
     wait_serve(second_proc, extra_seconds=8)
+    if os.path.lexists(socket_path):
+        raise FixtureFailure("restarted custody left its bound socket behind")
 
     if first["signature_hex"] != second["signature_hex"]:
         raise FixtureFailure("the restarted serve process did not reproduce the identical persisted signature")
