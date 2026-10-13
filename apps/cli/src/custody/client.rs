@@ -391,7 +391,7 @@ mod tests {
         }
 
         let mode = required("CUSTODY_FIXTURE_MODE");
-        let chain_id = sunrise_edge_client::ChainId::new(&required("CUSTODY_FIXTURE_CHAIN_ID"))
+        let chain_id = sunrise_edge_client::ChainId::new(required("CUSTODY_FIXTURE_CHAIN_ID"))
             .expect("custody fixture: CUSTODY_FIXTURE_CHAIN_ID is invalid");
         let protocol_version = sunrise_edge_client::ProtocolVersion::new(required_parsed(
             "CUSTODY_FIXTURE_PROTOCOL_VERSION",
