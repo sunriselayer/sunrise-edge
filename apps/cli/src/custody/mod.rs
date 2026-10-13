@@ -47,6 +47,12 @@ const MAX_CONNECTIONS: &str = "--max-connections";
 const MAX_REQUESTS: &str = "--max-requests";
 const TOTAL_DEADLINE_SECS: &str = "--total-deadline-secs";
 
+/// Emits an explicitly requested canonical review preimage without overwrite.
+/// This creates no approval and shares the custody filesystem policy.
+pub(crate) fn write_review_preimage(path: &Path, bytes: &[u8]) -> Result<(), CustodyError> {
+    fsperm::write_private_file(path, 0o700, 0o600, bytes, false)
+}
+
 pub(crate) fn run<I>(args: I) -> Result<(), CliError>
 where
     I: IntoIterator<Item = OsString>,

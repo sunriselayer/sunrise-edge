@@ -377,6 +377,7 @@ where
         scalar("--expected-hash-suite-id"),
         scalar("--expected-domain"),
         scalar("--publisher"),
+        scalar("--artifact-out"),
         scalar("--wasm"),
         scalar("--abi"),
         scalar("--entrypoints"),
@@ -422,6 +423,9 @@ where
         request_id,
     )?;
     let review: PublicationReview = PublicationReview::build(&prepared).map_err(failure)?;
+    if let Some(path) = parsed.get("--artifact-out") {
+        crate::custody::write_review_preimage(Path::new(path), review.artifact_bytes())?;
+    }
     // The complete bounded output is built in full before the single print,
     // rather than interleaving work with partial `println!` calls.
     let mut output: String = String::from("preview=true\npublished=false\n");

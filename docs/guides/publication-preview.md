@@ -28,6 +28,14 @@ general-calls structural profile instead of the bare publication-only
 profile. `--nonce` is required: preview never queries a node for the next
 nonce, unlike `publish`.
 
+For a separately approved local-custody publication, the custody administrator
+can add `--artifact-out /absolute/private-directory/artifact.bin` to save the
+exact canonical preimage from their own trusted build inputs. The existing
+parent must be owned by the current UID at mode 0700. The output is a new
+0600 file; overwrite and symlinks are refused. Output failure prints no partial
+review. This emits bytes only and creates no approval. Feed that independent
+file to `custody approve`; a live caller request is never the approval input.
+
 Success prints line-oriented fields, including every field
 [DR-0214](../architecture/decisions/0214-protected-custody-and-review-boundary.md)
 names as required publication review input:

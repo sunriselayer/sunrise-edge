@@ -441,3 +441,72 @@ fn preview_requires_explicit_supported_flags() {
         assert!(output.stdout.is_empty());
     }
 }
+
+#[test]
+fn preview_exports_exact_private_preimage_and_refuses_overwrite_or_lax_parent() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture: Fixture = Fixture::new(BARE_ABI);
+    let publisher: LocalSigner = LocalSigner::from_seed([7; 32]);
+    let directory: PathBuf = next_path("private");
+    fs::create_dir(&directory).unwrap();
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let artifact_path: PathBuf = directory.join("artifact.bin");
+    let mut args: Vec<String> = base_flags(&publisher.address().to_string());
+    args.extend([
+        "--wasm".into(),
+        fixture.wasm.display().to_string(),
+        "--abi".into(),
+        fixture.abi.display().to_string(),
+        "--entrypoints".into(),
+        "run".into(),
+        "--request-id".into(),
+        "09".repeat(32),
+        "--nonce".into(),
+        "5".into(),
+        "--artifact-out".into(),
+        artifact_path.display().to_string(),
+    ]);
+    let output: Output = run_preview(&args);
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let bytes: Vec<u8> = fs::read(&artifact_path).unwrap();
+    let artifact: CodeArtifact =
+        sunrise_edge_client::publication::decode_code_artifact(&bytes).unwrap();
+    assert_eq!(artifact.wasm(), VALID_WASM);
+    assert_eq!(artifact.unverified_abi(), BARE_ABI);
+    assert_eq!(
+        artifact.origin().publisher(),
+        publisher.address().as_bytes()
+    );
+    assert_eq!(
+        bytes,
+        sunrise_edge_client::publication::encode_code_artifact(&artifact).unwrap()
+    );
+    assert_eq!(
+        fs::metadata(&artifact_path).unwrap().permissions().mode() & 0o7777,
+        0o600
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        expected_output(
+            publisher.address(),
+            1,
+            VALID_WASM,
+            BARE_ABI,
+            vec!["run".into()],
+            vec![],
+            [9; 32],
+            5,
+        )
+    );
+    let overwrite: Output = run_preview(&args);
+    assert!(!overwrite.status.success());
+    assert!(overwrite.stdout.is_empty());
+    assert_eq!(fs::read(&artifact_path).unwrap(), bytes);
+    fs::remove_file(&artifact_path).unwrap();
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+    let lax_parent: Output = run_preview(&args);
+    assert!(!lax_parent.status.success());
+    assert!(lax_parent.stdout.is_empty());
+    assert!(!artifact_path.exists());
+    fs::remove_dir(&directory).unwrap();
+}
