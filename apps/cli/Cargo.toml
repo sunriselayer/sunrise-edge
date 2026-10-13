@@ -17,6 +17,10 @@ protocol-types.workspace = true
 sunrise-edge-client.workspace = true
 sunrise-edge-ledger.workspace = true
 public-standard-asset = { path = "../../contracts/standard-asset" }
+# Promoted from dev-only: `custody serve`/`custody` publication client use
+# `UnixListener`/`UnixStream::peer_cred` (see `src/custody/`), not a new
+# dependency or raw libc/rustix socket API.
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 
 [features]
 default = []
@@ -40,4 +44,3 @@ runtime.workspace = true
 wat.workspace = true
 rustls.workspace = true
 sunrise-edge-devnet.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }

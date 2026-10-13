@@ -2,6 +2,7 @@
 
 use crate::{
     args::{ParsedArgs, parse_flags, scalar, switch},
+    custody::{CustodyTarget, request_signature},
     error::CliError,
     hex::decode_hex_32,
     net::{connect_publication, tls_flag_specs},
@@ -15,6 +16,23 @@ use sunrise_edge_client::{
     LocalSigner, PackageOrigin, PreparedPublication, PublicationContext, PublicationReview,
     RequestId, UnverifiedDependencyRef, local_publication_resolver,
 };
+
+/// The publication-signing identity: either the development-only in-memory
+/// seed signer, or a pinned publication-only custody target (`crate::custody`).
+/// Ledger publication signing is rejected earlier, before this is built.
+enum PublishSigner {
+    Local(LocalSigner),
+    Custody(CustodyTarget),
+}
+
+impl PublishSigner {
+    fn address(&self) -> Address {
+        match self {
+            Self::Local(signer) => signer.address(),
+            Self::Custody(target) => Address::new(target.expected_public_key),
+        }
+    }
+}
 
 fn failure(error: impl Error + Send + Sync + 'static) -> CliError {
     CliError::Publication(Box::new(error))
@@ -156,14 +174,23 @@ where
         return Err(invalid("choose --executable or --general-calls, not both"));
     }
     // Reject hardware signing before file access, device selection, or network I/O.
-    let signer: Option<LocalSigner> = if action == "publish" {
+    let signer: Option<PublishSigner> = if action == "publish" {
         match parse_signer_selection(&parsed)? {
-            SignerSelection::Local { seed_file } => Some(LocalSigner::from_seed(load_dev_seed(
-                Path::new(&seed_file),
-            )?)),
+            SignerSelection::Local { seed_file } => Some(PublishSigner::Local(
+                LocalSigner::from_seed(load_dev_seed(Path::new(&seed_file))?),
+            )),
             SignerSelection::Ledger { .. } => {
                 return Err(invalid("Ledger publication signing is not supported"));
             }
+            SignerSelection::Custody {
+                socket,
+                custody_uid,
+                expected_public_key,
+            } => Some(PublishSigner::Custody(CustodyTarget {
+                socket: std::path::PathBuf::from(socket),
+                custody_uid,
+                expected_public_key,
+            })),
         }
     } else {
         None
@@ -219,7 +246,18 @@ where
             nonce,
             request_id,
         )?;
-        let submission = prepared.sign_and_finalize_with(&signer)?;
+        let submission = match &signer {
+            PublishSigner::Local(local_signer) => prepared.sign_and_finalize_with(local_signer)?,
+            PublishSigner::Custody(target) => {
+                let signature = request_signature(
+                    target,
+                    prepared.artifact(),
+                    prepared.nonce(),
+                    prepared.request_id(),
+                )?;
+                prepared.finalize(signature.to_vec())?
+            }
+        };
         let result = client.submit_publication(&submission)?;
         println!("request_id={request_id}");
         println!("nonce={nonce}");

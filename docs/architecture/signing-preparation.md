@@ -78,3 +78,13 @@ Its contract is independently design-reviewed, not provider selection or M2
 qualification. It explicitly defers an additional presentation layer without a
 concrete trusted review consumer; repeating these prepared-owner guarantees is
 not another security boundary.
+
+[DR-0238](decisions/0238-publication-only-local-os-custody.md) implements one
+of DR-0214's compared candidates ("dedicated encrypted local custody," without
+the encryption) for `PreparedPublication` only. Its `serve` process never
+receives a caller-supplied frame: it rebuilds `PreparedPublication` from its
+own pinned config and the caller's bounded artifact/nonce/request-id, and
+`custody approve` is the human-review consumer of `PublicationReview` this
+document's "Separate M2 requirements" section above anticipates. It does not
+migrate any other prepared owner, `ConsensusSigner`, readiness, or genesis/
+admin signing, and it is not an at-rest-encryption or compromised-root claim.
