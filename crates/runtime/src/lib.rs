@@ -39,7 +39,7 @@ pub use successor_serving::{
     SuccessorServingSlot, decode_successor_serving_record, decode_successor_serving_slot,
     encode_successor_serving_record, encode_successor_serving_slot,
 };
-use transaction::represented_transaction_bytes;
+use transaction::validate_state_transaction_parts;
 pub use transaction::{StateAssemblyError, StateObservationSet, StateTransactionBuilder};
 
 use core::{fmt, mem::size_of};
@@ -2344,23 +2344,8 @@ impl AtomicStateTransaction {
         reads: AtomicStateReadSet,
         mutations: AtomicStateMutationSet,
     ) -> Result<Self, RuntimeError> {
-        if mutations.mutations().iter().any(|mutation| {
-            reads
-                .reads()
-                .binary_search_by(|read| read.key.as_slice().cmp(mutation.key()))
-                .is_err()
-        }) {
-            return Err(RuntimeError::StateMutationWithoutRead);
-        }
-
-        let represented_bytes = represented_transaction_bytes(domain, &reads, &mutations);
-        if represented_bytes > MAX_ATOMIC_STATE_TRANSACTION_BYTES {
-            return Err(RuntimeError::StateTransactionTooLarge {
-                bytes: represented_bytes,
-                maximum: MAX_ATOMIC_STATE_TRANSACTION_BYTES,
-            });
-        }
-
+        let represented_bytes: usize =
+            validate_state_transaction_parts(domain, &reads, &mutations)?;
         Ok(Self {
             domain,
             reads,
@@ -2415,22 +2400,9 @@ impl DurableStateTransaction {
         reads: AtomicStateReadSet,
         mutations: Vec<StateMutationEntry>,
     ) -> Result<Self, RuntimeError> {
-        let mutations = AtomicStateMutationSet::new_allow_empty(mutations)?;
-        if mutations.mutations().iter().any(|mutation| {
-            reads
-                .reads()
-                .binary_search_by(|read| read.key.as_slice().cmp(mutation.key()))
-                .is_err()
-        }) {
-            return Err(RuntimeError::StateMutationWithoutRead);
-        }
-        let represented_bytes = represented_transaction_bytes(domain, &reads, &mutations);
-        if represented_bytes > MAX_ATOMIC_STATE_TRANSACTION_BYTES {
-            return Err(RuntimeError::StateTransactionTooLarge {
-                bytes: represented_bytes,
-                maximum: MAX_ATOMIC_STATE_TRANSACTION_BYTES,
-            });
-        }
+        let mutations: AtomicStateMutationSet = AtomicStateMutationSet::new_allow_empty(mutations)?;
+        let represented_bytes: usize =
+            validate_state_transaction_parts(domain, &reads, &mutations)?;
         Ok(Self {
             domain,
             reads,

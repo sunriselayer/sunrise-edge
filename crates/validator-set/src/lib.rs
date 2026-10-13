@@ -17,7 +17,10 @@ use std::error::Error;
 const VALIDATOR_INFO_TYPE_ID: u16 = 0xC001;
 const VALIDATOR_SET_TYPE_ID: u16 = 0xC002;
 const ENCODING_VERSION: u16 = 1;
-const MAX_VALIDATORS: usize = 10_000;
+/// Generic validator-count ceiling for construction and canonical records.
+/// Owning protocols may impose narrower live admission limits while retaining
+/// historical record readability. This bound grants no membership or authority.
+pub const MAX_VALIDATORS: usize = 10_000;
 const MAX_PUBLIC_KEY_BYTES: usize = 512;
 
 /// Validator-set construction and encoding errors.
@@ -542,5 +545,68 @@ mod tests {
         trailing.push(0);
         assert!(decode_validator_set(&trailing).is_err());
         assert!(decode_validator_set(&claimed_set(&[], 0, 0)).is_err());
+    }
+
+    // Opaque, unique keys exercise structural bounds, not signature admission.
+    fn literal_count_validator(ordinal: u32) -> ValidatorInfo {
+        let ordinal_bytes: [u8; 4] = ordinal.to_be_bytes();
+        let mut id_bytes: [u8; 32] = [0; 32];
+        id_bytes[28..].copy_from_slice(&ordinal_bytes);
+        ValidatorInfo {
+            id: ValidatorId::new(id_bytes),
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: ordinal_bytes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn generic_validator_count_bound_accepts_literal_ten_thousand() {
+        let members: Vec<ValidatorInfo> =
+            (1_u32..=10_000_u32).map(literal_count_validator).collect();
+        let set: ValidatorSet = ValidatorSet::new(Epoch::new(9), members).unwrap();
+        assert_eq!(set.validators().len(), 10_000);
+        let bytes: Vec<u8> = encode_validator_set(&set).unwrap();
+        assert_eq!(decode_validator_set(&bytes).unwrap(), set);
+    }
+
+    #[test]
+    fn generic_validator_count_bound_rejects_literal_ten_thousand_and_one() {
+        let members: Vec<ValidatorInfo> =
+            (1_u32..=10_001_u32).map(literal_count_validator).collect();
+        assert_eq!(
+            ValidatorSet::new(Epoch::new(9), members),
+            Err(ValidatorSetError::TooManyValidators(10_001))
+        );
+    }
+
+    #[test]
+    fn generic_decoder_literal_count_precedes_missing_members_and_clamps_caller_limit() {
+        let mut frame: CanonicalStruct = CanonicalStruct::new(0xC002, 1);
+        frame.field_u32(4, 10_001).unwrap();
+        let bytes: Vec<u8> = frame.finish().unwrap();
+        assert_eq!(
+            decode_validator_set(&bytes),
+            Err(ValidatorSetError::TooManyValidators(10_001))
+        );
+        assert_eq!(
+            decode_validator_set_with_limits(&bytes, usize::MAX, 512),
+            Err(ValidatorSetError::TooManyValidators(10_001))
+        );
+    }
+
+    #[test]
+    fn generic_decoder_preserves_narrower_caller_count_limit() {
+        let members: Vec<ValidatorInfo> = (1_u32..=2_u32).map(literal_count_validator).collect();
+        let set: ValidatorSet = ValidatorSet::new(Epoch::new(9), members).unwrap();
+        let bytes: Vec<u8> = encode_validator_set(&set).unwrap();
+        assert_eq!(
+            decode_validator_set_with_limits(&bytes, 1, 512),
+            Err(ValidatorSetError::TooManyValidators(2))
+        );
+        assert_eq!(
+            decode_validator_set_with_limits(&bytes, 2, 512).unwrap(),
+            set
+        );
     }
 }

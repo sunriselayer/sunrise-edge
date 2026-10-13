@@ -28,6 +28,9 @@ mod control_reconstruction;
 #[path = "causal_placement/registration.rs"]
 pub(crate) mod registration;
 
+#[path = "causal_placement/slash_evidence.rs"]
+mod slash_evidence;
+
 struct CausalFixture {
     network: Network,
     manifest: GenesisManifest,

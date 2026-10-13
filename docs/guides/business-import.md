@@ -81,7 +81,7 @@ does not erase import origin. Exact original business replay remains receipt-
 first and non-executing under the current fence; new execution and cached
 protocol signatures/ACKs remain refused in every import phase.
 
-The native durable schema is version 3. Older initialized durable files are
+The native SQLite structured-file schema is version 5. Older initialized durable files are
 unsupported, not automatically migrated or reset. Preserve any needed old
 data separately and request an explicitly scoped preservation workflow.
 SQLite evidence does not certify PostgreSQL, D1, a deployed DO host, readiness
@@ -129,3 +129,35 @@ all-or-none verified predecessor chain described in the
 context is derived from that chain, not selected by changing the declared epoch.
 Import/saved verification accept no signer key; their verified business closure
 does not acquire serving or signing authority.
+
+## Encrypted local relocation
+
+[DR-0221](../architecture/decisions/0221-encrypted-recovery-closure.md) and the
+[encrypted recovery contract](../architecture/encrypted-recovery-closure.md)
+define authenticated encryption of the original saved bytes, including every
+explicit predecessor role for later cuts. The source implements
+`business_recovery pack-saved` and `business_recovery open-saved` for the selected
+disposable local single-recovery-X25519 profile. This implementation candidate
+is not validator signing custody, off-host retention or a qualified backup
+destination.
+
+The opener requires completed authentication, exact inventory/physical EOF and
+independent original-root proof verification in private staging before accepting
+its output. It never creates SQLite or grants activation. Subsequent
+create/resume still uses the existing verifier and inactive boundaries above;
+independent external pins are not read from the encrypted input. These are
+implemented source boundaries, not completed runtime or release qualification.
+
+The implemented exact-TOTAL-cap same-cursor probe can establish physical EOF
+only from a real underlying zero; it never qualifies plaintext or replaces
+final authentication, the subsequent explicit EOF/stamp checks or proofs.
+
+Continue using the existing inactive import rehearsal until the candidate's
+validation completes; runnable encrypted-recovery instructions remain deferred.
+Do not treat source presence as backup qualification or create a real recovery
+key. Owning/full/source-free validation, all 35 original/current/predecessor
+roles from the complete eight-predecessor e8 closure, thirteen fresh Native A/B
+targets, final-head hosted CI/review, dependency/PG acceptance and host-resource/
+custody gates remain pending.
+Current evidence and remaining M4
+requirements belong in [TODO](../../TODO.md).

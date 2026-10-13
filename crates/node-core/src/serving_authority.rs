@@ -121,8 +121,9 @@ impl fmt::Display for SuccessorArtifactError {
 impl Error for SuccessorArtifactError {}
 
 /// Closed refusal of successor verification or activation. Every variant
-/// proves no destination write occurred, except [`Self::Indeterminate`],
-/// which preserves the existing reply-loss boundary.
+/// proves this activation attempt made no destination write, except
+/// [`Self::Indeterminate`], which preserves the existing reply-loss boundary.
+/// This says nothing about writes already persisted by an earlier attempt.
 #[derive(Debug)]
 pub enum SuccessorActivationError {
     /// An artifact could not be supplied.
@@ -149,7 +150,8 @@ pub enum SuccessorActivationError {
     /// The destination proved the activation was not committed.
     Rejected(DurableCommitRejection),
     /// The destination could not prove whether activation committed, and a
-    /// fresh slot read did not show this exact record.
+    /// fresh exact-slot observation plus full immutable reconciliation did
+    /// not complete successfully. Preserve the original commit reason.
     Indeterminate(IndeterminateCommitReason),
     /// DR-0191: more link pins than the configured local budget. Refused
     /// before any artifact access; never truncated.

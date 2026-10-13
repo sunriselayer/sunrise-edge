@@ -14,6 +14,7 @@ use std::{
     num::NonZeroU32,
     path::{Path, PathBuf},
 };
+use sunrise_edge_client::immutable_archive::ArchiveReadBudget;
 
 pub(crate) const CHAIN_FLAGS: &[&str] = &[
     "--successor-max-links",
@@ -32,6 +33,57 @@ pub(crate) struct SuccessorChainInputs {
 }
 
 impl SuccessorChainInputs {
+    pub(crate) fn links(&self) -> &[(PathBuf, PathBuf, PathBuf, PathBuf)] {
+        &self.links
+    }
+
+    /// Generated recovery paths preserve explicit predecessor order and the
+    /// independently supplied budget. This never infers a link from a listing.
+    pub(crate) fn saved(
+        root: &Path,
+        count: usize,
+        budget: SuccessorChainBudget,
+    ) -> Result<Self, Box<dyn Error>> {
+        require_successor_chain_budget(count, budget)?;
+        if count > 16 {
+            return Err("local recovery link ceiling exceeded".into());
+        }
+        let mut links: Vec<(PathBuf, PathBuf, PathBuf, PathBuf)> = Vec::with_capacity(count);
+        for index in 0..count {
+            let link: PathBuf = root.join(format!("predecessors/link-{index:05}"));
+            links.push((
+                link.join("plan-history"),
+                link.join("cut"),
+                link.join("manifest-history"),
+                link.join("certificate"),
+            ));
+        }
+        Ok(Self { links, budget })
+    }
+
+    pub(crate) fn open_bounded(
+        &self,
+        read_budget: &ArchiveReadBudget,
+    ) -> Result<SuccessorChainArtifactFiles, Box<dyn Error>> {
+        let directories: Vec<SuccessorLinkArchiveDirectories<'_>> = self
+            .links
+            .iter()
+            .map(
+                |(history, cut, manifest, certificate)| SuccessorLinkArchiveDirectories {
+                    plan_history: history,
+                    cut,
+                    manifest_history: manifest,
+                    certificate,
+                },
+            )
+            .collect();
+        Ok(SuccessorChainArtifactFiles::open_bounded(
+            &directories,
+            self.budget,
+            read_budget,
+        )?)
+    }
+
     pub(crate) fn parse_required(flags: &mut FlagSet) -> Result<Self, Box<dyn Error>> {
         Self::parse_roles(
             flags,

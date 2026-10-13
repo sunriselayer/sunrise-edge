@@ -20,6 +20,8 @@ mod https_relay;
 mod offline_genesis_fixture;
 
 use compiled_cli_process::edge_cli_command;
+#[cfg(target_os = "linux")]
+use compiled_source_host_process::local_observation_collector;
 use compiled_source_host_process::{ChildGuard, spawn_bounded_output, spawn_bounded_status_line};
 use consensus::{
     AvailabilityCertificate, AvailabilityCertifier, FastCertificate,
@@ -420,6 +422,28 @@ fn direct_peers(network: &Network) -> Vec<DirectPeer> {
         .collect()
 }
 fn start_direct_hosts(network: &Network, peers: &mut [DirectPeer], generation: u64) -> Vec<Host> {
+    #[cfg(target_os = "linux")]
+    {
+        start_direct_hosts_with_local_observations(network, peers, generation, None)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        start_direct_hosts_with_local_observations(network, peers, generation)
+    }
+}
+fn start_direct_hosts_with_local_observations(
+    network: &Network,
+    peers: &mut [DirectPeer],
+    generation: u64,
+    #[cfg(target_os = "linux")] local_observations_socket: Option<&Path>,
+) -> Vec<Host> {
+    #[cfg(target_os = "linux")]
+    if local_observations_socket.is_some() {
+        assert_eq!(
+            generation, 2,
+            "observation opt-in belongs only to the first boot"
+        );
+    }
     assert_eq!(peers.len(), VALIDATORS);
     peers
         .iter_mut()
@@ -452,8 +476,16 @@ fn start_direct_hosts(network: &Network, peers: &mut [DirectPeer], generation: u
                 .arg("--tls-key-pkcs8-der-file")
                 .arg(&peer.key_file)
                 .stderr(Stdio::piped());
+            #[cfg(target_os = "linux")]
+            if let (0, Some(socket)) = (index, local_observations_socket) {
+                command.arg("--local-observations-socket").arg(socket);
+            }
+            let startup_byte_cap: std::num::NonZeroUsize =
+                compiled_source_host_process::compiled_host_startup_line_limit(
+                    network.fixture.context.chain_id().as_str(),
+                );
             let (guard, line): (ChildGuard, String) =
-                spawn_bounded_status_line(command, PROCESS_DEADLINE);
+                spawn_bounded_status_line(command, PROCESS_DEADLINE, startup_byte_cap);
             assert!(line.contains("complete=true mode=serving"), "{line}");
             assert_eq!(field(&line, "writer_generation="), generation.to_string());
             let address: SocketAddr = field(&line, "listen=").parse().unwrap();
@@ -517,8 +549,12 @@ fn start_hosts(network: &Network, generation: u64) -> Vec<Host> {
                     "4",
                     "--confirm-offline-fence-advance",
                 ]);
+            let startup_byte_cap: std::num::NonZeroUsize =
+                compiled_source_host_process::compiled_host_startup_line_limit(
+                    network.fixture.context.chain_id().as_str(),
+                );
             let (guard, line): (ChildGuard, String) =
-                spawn_bounded_status_line(command, PROCESS_DEADLINE);
+                spawn_bounded_status_line(command, PROCESS_DEADLINE, startup_byte_cap);
             assert!(
                 line.contains("complete=true mode=serving"),
                 "validator {validator}: {line:?}"
@@ -2444,11 +2480,54 @@ fn assert_native_termination_summary(stderr: &[u8], reason: &str) {
 fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust_rotation() {
     let network: Network = author_inspect_and_prepare();
     let mut peers: Vec<DirectPeer> = direct_peers(&network);
+    #[cfg(target_os = "linux")]
+    let mut collector: local_observation_collector::Collector = {
+        let end: std::time::Instant = std::time::Instant::now()
+            .checked_add(Duration::from_millis(
+                local_observation_collector::TIMEOUT_MILLIS,
+            ))
+            .expect("one original collector setup-through-completion deadline");
+        local_observation_collector::Collector::start(end, &network.fixture.directory)
+    };
+    #[cfg(target_os = "linux")]
+    let mut hosts: Vec<Host> = start_direct_hosts_with_local_observations(
+        &network,
+        &mut peers,
+        2,
+        Some(collector.socket_path()),
+    );
+    #[cfg(not(target_os = "linux"))]
     let hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 2);
     let lines: Vec<String> = direct_lines(&network, &peers);
     let config: PathBuf = write_config(&network.tls_dir.join("direct-network.conf"), &lines);
     let received: Vec<Vec<u8>> = peers.iter().map(DirectPeer::received).collect();
     let contexts: Vec<(Vec<u8>, Vec<u8>)> = direct_contexts(&peers);
+    #[cfg(target_os = "linux")]
+    {
+        hosts[0].guard.request_usr1(collector.deadline());
+        collector.finish();
+        assert!(
+            hosts[0]
+                .guard
+                .try_wait()
+                .expect("host remains owned after collection")
+                .is_none()
+        );
+        let context: Output = peers[0].context(&peers[0].ca_file);
+        assert!(context.status.success(), "{}", lossy(&context.stderr));
+        assert!(context.stderr.is_empty());
+        assert_eq!(
+            context.stdout, contexts[0].1,
+            "USR1 preserves authenticated context"
+        );
+        assert!(
+            hosts[0]
+                .guard
+                .try_wait()
+                .expect("host remains alive after authenticated context")
+                .is_none()
+        );
+    }
     let original_inputs: Vec<(PathBuf, Vec<u8>)> = std::iter::once(network.genesis.clone())
         .chain(network.signing_keys.iter().cloned())
         .chain(std::iter::once(network.owner_seed.clone()))
@@ -2837,5 +2916,613 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
     for host in hosts {
         let stderr: Vec<u8> = host.guard.stop_orderly_interrupt_observed(PROCESS_DEADLINE);
         assert_native_termination_summary(&stderr, "sigint");
+    }
+}
+
+#[test]
+fn complete_process_pipe_capture_preserves_eof_and_refuses_read_or_channel_failure() {
+    use compiled_source_host_process::{
+        CompletePipeError, read_complete_pipe, receive_complete_pipe,
+    };
+    use std::{
+        io::{self, Cursor, Read},
+        sync::mpsc,
+    };
+
+    let expected: Vec<u8> = vec![0x00, 0xff, 0x07, 0x0a, 0x80];
+    let complete: io::Result<Vec<u8>> = read_complete_pipe(Cursor::new(expected.clone()));
+    let (sender, receiver) = mpsc::channel::<io::Result<Vec<u8>>>();
+    sender.send(complete).unwrap();
+    let captured: Vec<u8> = receive_complete_pipe(&receiver, Duration::ZERO).unwrap();
+    assert_eq!(captured, expected);
+
+    let empty: io::Result<Vec<u8>> = read_complete_pipe(Cursor::new(Vec::<u8>::new()));
+    sender.send(empty).unwrap();
+    assert_eq!(
+        receive_complete_pipe(&receiver, Duration::ZERO).unwrap(),
+        Vec::<u8>::new(),
+        "successful empty EOF is not missing completion"
+    );
+
+    struct PrefixThenError {
+        delivered: usize,
+    }
+    impl Read for PrefixThenError {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let prefix: [u8; 4] = [0x04, 0x03, 0x02, 0x01];
+            if buffer.is_empty() {
+                return Ok(0);
+            }
+            if self.delivered < prefix.len() {
+                let count: usize = buffer.len().min(prefix.len() - self.delivered);
+                buffer[..count].copy_from_slice(&prefix[self.delivered..self.delivered + count]);
+                self.delivered += count;
+                return Ok(count);
+            }
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "capture failed after a real prefix",
+            ))
+        }
+    }
+    let mut refusing: PrefixThenError = PrefixThenError { delivered: 0 };
+    let refused: io::Result<Vec<u8>> = read_complete_pipe(&mut refusing);
+    assert_eq!(
+        refusing.delivered, 4,
+        "read really delivered its nonempty prefix"
+    );
+    sender.send(refused).unwrap();
+    match receive_complete_pipe(&receiver, Duration::ZERO) {
+        Err(CompletePipeError::Read(error)) => {
+            assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+            assert_eq!(error.to_string(), "capture failed after a real prefix");
+        }
+        other => panic!("read failure must preserve its original error, got {other:?}"),
+    }
+    drop(sender);
+
+    let (disconnected_sender, disconnected_receiver) = mpsc::channel::<io::Result<Vec<u8>>>();
+    drop(disconnected_sender);
+    assert!(matches!(
+        receive_complete_pipe(&disconnected_receiver, Duration::ZERO),
+        Err(CompletePipeError::Receive(
+            mpsc::RecvTimeoutError::Disconnected
+        ))
+    ));
+
+    let (pending_sender, pending_receiver) = mpsc::channel::<io::Result<Vec<u8>>>();
+    let pending: Result<Vec<u8>, CompletePipeError> =
+        receive_complete_pipe(&pending_receiver, Duration::ZERO);
+    assert!(matches!(
+        pending,
+        Err(CompletePipeError::Receive(mpsc::RecvTimeoutError::Timeout))
+    ));
+    drop(pending_sender);
+}
+
+#[test]
+fn complete_startup_status_line_requires_first_lf_and_preserves_read_failure() {
+    use compiled_source_host_process::read_complete_status_line;
+    use std::io::{self, Cursor, Read};
+    use std::num::NonZeroUsize;
+
+    let first: &str = "complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234\n";
+    let byte_cap: NonZeroUsize = NonZeroUsize::new(first.len()).unwrap();
+    let with_tail: Vec<u8> = format!("{first}later output\n").into_bytes();
+    let captured: String = read_complete_status_line(Cursor::new(with_tail), byte_cap).unwrap();
+    assert_eq!(captured, first, "only the first complete line is returned");
+
+    struct BytesThenError {
+        bytes: &'static [u8],
+        delivered: usize,
+        failed: bool,
+    }
+    impl Read for BytesThenError {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if buffer.is_empty() {
+                return Ok(0);
+            }
+            if self.delivered < self.bytes.len() {
+                let count: usize = buffer.len().min(self.bytes.len() - self.delivered);
+                buffer[..count]
+                    .copy_from_slice(&self.bytes[self.delivered..self.delivered + count]);
+                self.delivered += count;
+                return Ok(count);
+            }
+            self.failed = true;
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "status read failed after a real prefix",
+            ))
+        }
+    }
+
+    let mut completed: BytesThenError = BytesThenError {
+        bytes: b"complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234\n",
+        delivered: 0,
+        failed: false,
+    };
+    assert_eq!(
+        read_complete_status_line(&mut completed, byte_cap).unwrap(),
+        first
+    );
+    assert_eq!(completed.delivered, completed.bytes.len());
+    assert!(
+        !completed.failed,
+        "a complete first line does not require another read or stream EOF"
+    );
+
+    let empty: io::Error =
+        read_complete_status_line(Cursor::new(Vec::<u8>::new()), byte_cap).unwrap_err();
+    assert_eq!(empty.kind(), io::ErrorKind::UnexpectedEof);
+
+    let unterminated: Vec<u8> =
+        b"complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234".to_vec();
+    let incomplete: io::Error =
+        read_complete_status_line(Cursor::new(unterminated), byte_cap).unwrap_err();
+    assert_eq!(incomplete.kind(), io::ErrorKind::UnexpectedEof);
+
+    let mut refused: BytesThenError = BytesThenError {
+        bytes: b"complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234",
+        delivered: 0,
+        failed: false,
+    };
+    let read_error: io::Error = read_complete_status_line(&mut refused, byte_cap).unwrap_err();
+    assert_eq!(refused.delivered, refused.bytes.len());
+    assert!(
+        refused.failed,
+        "nonempty valid UTF-8 prefix preceded the error"
+    );
+    assert_eq!(read_error.kind(), io::ErrorKind::ConnectionReset);
+    assert_eq!(
+        read_error.to_string(),
+        "status read failed after a real prefix"
+    );
+
+    let invalid: Vec<u8> = vec![0xff, b'\n'];
+    let invalid_error: io::Error =
+        read_complete_status_line(Cursor::new(invalid), byte_cap).unwrap_err();
+    assert_eq!(invalid_error.kind(), io::ErrorKind::InvalidData);
+
+    let crlf: Vec<u8> = b"complete=true mode=serving\r\nmore\n".to_vec();
+    assert_eq!(
+        read_complete_status_line(Cursor::new(crlf), byte_cap).unwrap(),
+        "complete=true mode=serving\r\n",
+        "successful CRLF bytes are preserved rather than normalized"
+    );
+}
+
+#[test]
+fn bounded_startup_status_line_accepts_exact_cap_and_refuses_lf_one_byte_later() {
+    use compiled_source_host_process::read_complete_status_line;
+    use std::{
+        io::{self, Cursor},
+        num::NonZeroUsize,
+    };
+
+    let byte_cap: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+    let exact: String = read_complete_status_line(Cursor::new(b"1234567\n"), byte_cap).unwrap();
+    assert_eq!(exact.as_bytes(), b"1234567\n");
+    let over: io::Error =
+        read_complete_status_line(Cursor::new(b"12345678\n"), byte_cap).unwrap_err();
+    assert_eq!(over.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        over.to_string(),
+        "compiled host first status line exceeded byte cap"
+    );
+    let at_cap_eof: io::Error =
+        read_complete_status_line(Cursor::new(b"12345678"), byte_cap).unwrap_err();
+    assert_eq!(at_cap_eof.kind(), io::ErrorKind::UnexpectedEof);
+}
+
+#[test]
+fn bounded_startup_status_line_counts_the_finite_never_lf_probe() {
+    use compiled_source_host_process::read_complete_status_line;
+    use std::{
+        io::{self, Read},
+        num::NonZeroUsize,
+    };
+
+    struct NeverLf {
+        read_bytes: usize,
+    }
+    impl Read for NeverLf {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            buffer.fill(b'x');
+            self.read_bytes = self.read_bytes.checked_add(buffer.len()).unwrap();
+            Ok(buffer.len())
+        }
+    }
+    let byte_cap: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+    let mut input: NeverLf = NeverLf { read_bytes: 0 };
+    let error: io::Error = read_complete_status_line(&mut input, byte_cap).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "compiled host first status line exceeded byte cap"
+    );
+    assert_eq!(
+        input.read_bytes, 9,
+        "this endless reader supplies only the cap-plus-one probe"
+    );
+}
+
+#[test]
+fn bounded_startup_status_line_preserves_read_error_at_cap_before_lookahead() {
+    use compiled_source_host_process::read_complete_status_line;
+    use std::{
+        io::{self, Read},
+        num::NonZeroUsize,
+    };
+
+    struct CapPrefixThenError {
+        remaining: usize,
+        delivered: usize,
+        failed: bool,
+    }
+    impl Read for CapPrefixThenError {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if buffer.is_empty() {
+                return Ok(0);
+            }
+            if self.remaining > 0 {
+                let count: usize = buffer.len().min(self.remaining);
+                buffer[..count].fill(b'x');
+                self.remaining -= count;
+                self.delivered += count;
+                return Ok(count);
+            }
+            self.failed = true;
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "status read failed at the cap before lookahead",
+            ))
+        }
+    }
+    let byte_cap: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+    let mut input: CapPrefixThenError = CapPrefixThenError {
+        remaining: 8,
+        delivered: 0,
+        failed: false,
+    };
+    let error: io::Error = read_complete_status_line(&mut input, byte_cap).unwrap_err();
+    assert_eq!(input.delivered, 8);
+    assert!(
+        input.failed,
+        "the real error is encountered before the probe supplies its extra byte"
+    );
+    assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+    assert_eq!(
+        error.to_string(),
+        "status read failed at the cap before lookahead"
+    );
+}
+
+#[test]
+fn compiled_host_startup_line_limits_cover_literal_maximum_producer_formats() {
+    use compiled_source_host_process::{
+        compiled_host_startup_line_limit, read_complete_status_line,
+    };
+    use std::{
+        io::Cursor,
+        net::{Ipv6Addr, SocketAddr, SocketAddrV6},
+        num::NonZeroUsize,
+    };
+
+    let chain: String = "研究".repeat(512);
+    assert_eq!(chain.len(), 3_072);
+    assert_eq!(chain.chars().count(), 1_024);
+    let hexadecimal: &str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    assert_eq!(hexadecimal.len(), 64);
+    let address: SocketAddr = SocketAddr::V6(SocketAddrV6::new(
+        Ipv6Addr::new(
+            0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff,
+        ),
+        u16::MAX,
+        0,
+        u32::MAX,
+    ));
+    let listen: String = address.to_string();
+    assert_eq!(
+        listen,
+        "[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff%4294967295]:65535"
+    );
+    assert_eq!(listen.len(), 58);
+
+    // Independent literal producer templates and maxima, not constructor output.
+    let source: String = format!(
+        "complete=true mode=serving chain_id={chain} validator_id={hexadecimal} domain={hexadecimal} protocol_version={} epoch={} writer_generation={} listen={listen}\n",
+        u32::MAX,
+        u64::MAX,
+        u64::MAX,
+    );
+    let successor: String = format!(
+        "complete=true mode=successor-serving domain={hexadecimal} epoch={} validator_id={hexadecimal} writer_generation={} listen={listen} genesis_digest={hexadecimal}\n",
+        u64::MAX,
+        u64::MAX,
+    );
+    let history: String = format!(
+        "complete=true mode=successor-history-material-only domain={hexadecimal} epoch={} validator_id={hexadecimal} writer_generation={} listen={listen}\n",
+        u64::MAX,
+        u64::MAX,
+    );
+    let pg: String = format!(
+        "complete=true mode=serving chain_id={chain} validator_id={hexadecimal} domain={hexadecimal} protocol_version={} epoch={} writer_generation={} listen={listen} manifest_digest={hexadecimal}\n",
+        u32::MAX,
+        u64::MAX,
+        u64::MAX,
+    );
+    assert_eq!(source.len(), 347 + 3_072);
+    assert_eq!(successor.len(), 399);
+    assert_eq!(history.len(), 333);
+    assert_eq!(pg.len(), 428 + 3_072);
+    let byte_cap: NonZeroUsize = compiled_host_startup_line_limit(&chain);
+    assert_eq!(byte_cap.get(), 3_500);
+    assert_eq!(compiled_host_startup_line_limit("").get(), 428);
+    let lines: [String; 4] = [source, successor, history, pg];
+    for line in lines {
+        let input: Cursor<&[u8]> = Cursor::new(line.as_bytes());
+        let captured: String = read_complete_status_line(input, byte_cap).unwrap();
+        assert_eq!(captured.as_bytes(), line.as_bytes());
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let network: Network = author_inspect_and_prepare();
+    let mut peers: Vec<DirectPeer> = direct_peers(&network);
+    let mut hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 2);
+    assert_eq!(hosts.len(), VALIDATORS);
+    let endpoints: Vec<SocketAddr> = peers.iter().map(|peer: &DirectPeer| peer.address).collect();
+    assert!(
+        endpoints
+            .iter()
+            .all(|address: &SocketAddr| address.port() != 0)
+    );
+    let distinct_endpoints: BTreeSet<SocketAddr> = endpoints.iter().copied().collect();
+    assert_eq!(distinct_endpoints.len(), VALIDATORS);
+    let lines: Vec<String> = direct_lines(&network, &peers);
+    let config: PathBuf = write_config(
+        &network.tls_dir.join("direct-owned-sigkill-network.conf"),
+        &lines,
+    );
+    let received: Vec<Vec<u8>> = peers.iter().map(DirectPeer::received).collect();
+    let contexts: Vec<(Vec<u8>, Vec<u8>)> = direct_contexts(&peers);
+    let original_inputs: Vec<(PathBuf, Vec<u8>)> = std::iter::once(network.genesis.clone())
+        .chain(network.signing_keys.iter().cloned())
+        .chain(std::iter::once(network.owner_seed.clone()))
+        .chain(peers.iter().map(|peer: &DirectPeer| peer.ca_file.clone()))
+        .chain(peers.iter().map(|peer: &DirectPeer| peer.cert_file.clone()))
+        .chain(peers.iter().map(|peer: &DirectPeer| peer.key_file.clone()))
+        .chain(std::iter::once(config.clone()))
+        .map(|path: PathBuf| {
+            let bytes: Vec<u8> = fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
+    assert_eq!(original_inputs.len(), 19);
+    let sender: Address = Address::new(network.fixture.owner);
+    let request: RequestId = RequestId::new(TRANSFER_REQUEST).unwrap();
+    let initial: Observation = observe(
+        &peers,
+        &[ObjectId::new(APP_COIN), ObjectId::new(FEE_COIN)],
+        request,
+        sender,
+    );
+    let nonce: u64 = verify_initial(&network, &initial, sender);
+    let first: Outputs = Outputs::new(&network.artifacts_dir, "direct-owned-sigkill-transfer");
+    let output: Output = run_cli(transfer_args(
+        &network,
+        &config,
+        peers[0].address,
+        &network.owner_seed,
+        TRANSFER_REQUEST,
+        nonce,
+        &first,
+    ));
+    let stdout: String = lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout={stdout} stderr={}",
+        lossy(&output.stderr)
+    );
+    assert_ordered(
+        &stdout,
+        &[
+            "fastvote_signed_intent_out=",
+            "fastvote_certificate_formed=true",
+            "fastvote_certificate_out=",
+            "fastvote_publication_source=",
+            "fastvote_availability_certificate_out=",
+            "apply validator=",
+        ],
+    );
+    assert_eq!(
+        stdout
+            .matches("status=received paid_status=Success")
+            .count(),
+        VALIDATORS
+    );
+    let saved: Saved = Saved::read(&first);
+    let committed: Committed = verify_saved_artifacts(&network, &saved, nonce);
+    let ids: Vec<ObjectId> = observed_ids(&committed.result);
+    let committed_view: Observation = observe(&peers, &ids, request, sender);
+    verify_committed_state(&network, &committed, &saved, &committed_view);
+
+    // Parent-side real SQLite handles stay open across all host reaps and the
+    // restart. This is post-acknowledged-commit host failure, not loss of every
+    // connection, WAL loss, an interrupted commit or a power/fsync fault.
+    let stale: Vec<StaleCapability> = (0..VALIDATORS)
+        .map(|index: usize| StaleCapability::hold(&network, index))
+        .collect();
+    assert_eq!(stale.len(), VALIDATORS);
+    // Guarded complete enumeration of the four business collections and their
+    // referenced blobs requires an empty outbox, not nonempty-outbox replay or
+    // equality of physical SQLite pages.
+    let before: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    let owned_pids: Vec<u32> = hosts
+        .iter_mut()
+        .enumerate()
+        .map(|(index, host): (usize, &mut Host)| {
+            assert_eq!(host.address, endpoints[index]);
+            assert!(
+                host.guard
+                    .try_wait()
+                    .expect("owned committed host liveness")
+                    .is_none(),
+                "committed host exited before the explicit fault"
+            );
+            let pid: u32 = host.guard.child_mut().id();
+            assert!(
+                pid > 0 && pid <= i32::MAX as u32,
+                "positive owned committed host PID"
+            );
+            pid
+        })
+        .collect();
+    let distinct_pids: BTreeSet<u32> = owned_pids.iter().copied().collect();
+    assert_eq!(distinct_pids.len(), VALIDATORS);
+    // One original absolute end for all four kills/reaps; no per-child reset.
+    // It bounds polling/eligibility, not kill/wait syscalls or failure cleanup.
+    let end: std::time::Instant = std::time::Instant::now()
+        .checked_add(PROCESS_DEADLINE)
+        .expect("one original owned-host SIGKILL deadline");
+    let crash_receipts: Vec<(u32, std::process::ExitStatus)> = hosts
+        .into_iter()
+        .enumerate()
+        .map(|(index, host): (usize, Host)| {
+            let (pid, status): (u32, std::process::ExitStatus) =
+                host.guard.kill_abruptly_and_reap(end);
+            assert_eq!(
+                pid, owned_pids[index],
+                "same owned host was actually reaped"
+            );
+            assert_eq!(
+                status.signal(),
+                Some(9_i32),
+                "actual SIGKILL, not Drop cleanup"
+            );
+            assert_eq!(status.code(), None);
+            assert!(!status.success());
+            (pid, status)
+        })
+        .collect();
+    assert_eq!(crash_receipts.len(), VALIDATORS);
+
+    // Every serving host is confirmed reaped before any reopen. The held
+    // parent-side stores remain open; no HTTP query is sent to a stopped host.
+    let stopped: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    assert_unchanged(&before, &stopped, "owned SIGKILL stopped-host state");
+    assert_eq!(
+        &Saved::read(&first),
+        &saved,
+        "SIGKILL preserves saved artifacts"
+    );
+    for (path, bytes) in &original_inputs {
+        let actual: Vec<u8> = fs::read(path).unwrap();
+        assert_eq!(&actual, bytes, "SIGKILL preserves input {}", path.display());
+    }
+
+    let mut restarted_hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 3);
+    assert_eq!(restarted_hosts.len(), VALIDATORS);
+    for (index, host) in restarted_hosts.iter().enumerate() {
+        assert_eq!(
+            host.address, endpoints[index],
+            "same nonzero endpoint, no fallback"
+        );
+        assert_eq!(peers[index].address, endpoints[index]);
+    }
+    assert_eq!(direct_lines(&network, &peers), lines);
+    let received_again: Vec<Vec<u8>> = peers.iter().map(DirectPeer::received).collect();
+    assert_eq!(
+        received_again, received,
+        "same authenticated serving certificates"
+    );
+    assert_eq!(
+        direct_contexts(&peers),
+        contexts,
+        "same authenticated SDK/CLI context"
+    );
+    for capability in &stale {
+        // The existing owner creates fresh deadlines now. Its held valid
+        // nonempty CAS/Put and read must refuse specifically as WriterFenced.
+        capability.assert_fenced(network.domain, 3);
+    }
+    let reopened: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    assert_reopened(&before, &reopened, 2, 3);
+    assert_original_intact(
+        &network,
+        &peers,
+        &first,
+        &saved,
+        &reopened,
+        &committed_view,
+        "owned SIGKILL restart before replay",
+    );
+    for (path, bytes) in &original_inputs {
+        let actual: Vec<u8> = fs::read(path).unwrap();
+        assert_eq!(&actual, bytes, "restart preserves input {}", path.display());
+    }
+    let replay: Outputs = Outputs::new(&network.artifacts_dir, "direct-owned-sigkill-replay");
+    let replay_output: Output = run_cli(replay_args(
+        &network,
+        &config,
+        &first.intent,
+        Some(&first),
+        &replay,
+    ));
+    assert_exact_replay(
+        &replay_output,
+        &replay,
+        &saved,
+        "owned SIGKILL saved replay",
+    );
+    // Exact receipt/object/nonce bytes and full token/mutation-sequence equality
+    // forbid a second business mutation/receipt commit, not read-only SQL COMMIT.
+    assert_original_intact(
+        &network,
+        &peers,
+        &first,
+        &saved,
+        &reopened,
+        &committed_view,
+        "owned SIGKILL restart after replay",
+    );
+    for (path, bytes) in &original_inputs {
+        let actual: Vec<u8> = fs::read(path).unwrap();
+        assert_eq!(&actual, bytes, "replay preserves input {}", path.display());
+    }
+    for host in &mut restarted_hosts {
+        assert!(
+            host.guard
+                .try_wait()
+                .expect("restarted host remains owned after replay")
+                .is_none(),
+            "restarted host exited before the separate ordinary tail stop"
+        );
+    }
+    // Only after every crash/restart/replay assertion: ordinary cleanup is not
+    // the abrupt-fault oracle and carries only the existing lifecycle limits.
+    for host in restarted_hosts {
+        host.guard.stop_orderly(PROCESS_DEADLINE);
+    }
+    let after_stop: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    assert_unchanged(&reopened, &after_stop, "owned SIGKILL ordinary tail stop");
+    assert_eq!(
+        &Saved::read(&first),
+        &saved,
+        "tail stop preserves saved artifacts"
+    );
+    for (path, bytes) in &original_inputs {
+        let actual: Vec<u8> = fs::read(path).unwrap();
+        assert_eq!(
+            &actual,
+            bytes,
+            "tail stop preserves input {}",
+            path.display()
+        );
     }
 }

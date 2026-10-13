@@ -12,9 +12,10 @@ use std::collections::BTreeMap;
 mod codec;
 mod source;
 pub use codec::{
-    decode_ordered_history_height_descriptor, decode_ordered_history_identity,
-    decode_ordered_history_summary, encode_ordered_history_height_descriptor,
-    encode_ordered_history_identity, encode_ordered_history_summary,
+    decode_ordered_history_height_descriptor, decode_ordered_history_height_descriptor_bounded,
+    decode_ordered_history_identity, decode_ordered_history_summary,
+    encode_ordered_history_height_descriptor, encode_ordered_history_identity,
+    encode_ordered_history_summary,
 };
 pub(crate) use source::{assemble_verified_material, identity_at_height};
 pub use source::{

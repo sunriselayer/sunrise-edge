@@ -35,6 +35,7 @@ pub(super) enum HandoffFaultPlan {
     SuccessorCompletionReplyLoss,
     SuccessorCompletionLiveRace,
     LoseCommittedActivationReply,
+    LoseCommittedActivationReplyThenFailReconciliation,
     ActivationUndispatchedAmbiguity,
     CompetingActivationBeforeCommit,
 }
@@ -54,6 +55,8 @@ pub(super) enum PendingHandoffFault {
     SuccessorCompletionCommittedReplyLoss,
     SuccessorCompletionLiveRace,
     ActivationCommittedReplyLoss,
+    ActivationCommittedReplyLossBeforeReconciliationFailure,
+    ReconciliationBarrierReadFailure,
     ActivationUndispatchedAmbiguity,
     CompetingActivationBeforeCommit,
 }
@@ -67,6 +70,8 @@ pub(super) struct SqliteHandoffFaults<'a> {
     race_blobs: Option<&'a SqliteBlobStore>,
     race_key: Option<Vec<u8>>,
     activation_competitor: RefCell<Option<ActivationCompetitor<'a>>>,
+    reconciliation_barrier_armed: Cell<bool>,
+    pub(super) reconciliation_read_failures: Cell<usize>,
     pub(super) outgoing_getter_calls: Cell<usize>,
     pub(super) ordinary_durable_calls: Cell<usize>,
     pub(super) ordinary_invocation_calls: Cell<usize>,
@@ -114,6 +119,10 @@ impl<'a> SqliteHandoffFaults<'a> {
             HandoffFaultPlan::LoseCommittedActivationReply => {
                 vec![PendingHandoffFault::ActivationCommittedReplyLoss]
             }
+            HandoffFaultPlan::LoseCommittedActivationReplyThenFailReconciliation => vec![
+                PendingHandoffFault::ActivationCommittedReplyLossBeforeReconciliationFailure,
+                PendingHandoffFault::ReconciliationBarrierReadFailure,
+            ],
             HandoffFaultPlan::ActivationUndispatchedAmbiguity => {
                 vec![PendingHandoffFault::ActivationUndispatchedAmbiguity]
             }
@@ -127,6 +136,8 @@ impl<'a> SqliteHandoffFaults<'a> {
             race_blobs: None,
             race_key: None,
             activation_competitor: RefCell::new(None),
+            reconciliation_barrier_armed: Cell::new(false),
+            reconciliation_read_failures: Cell::new(0),
             outgoing_getter_calls: Cell::new(0),
             ordinary_durable_calls: Cell::new(0),
             ordinary_invocation_calls: Cell::new(0),
@@ -248,6 +259,19 @@ impl DurableDomainStateStore for SqliteHandoffFaults<'_> {
         c: &DurableOperationContext,
         d: AtomicityDomainId,
     ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        if self.reconciliation_barrier_armed.get()
+            && self.successor_activation_calls.get() == 1
+            && self.consume(PendingHandoffFault::ReconciliationBarrierReadFailure)
+        {
+            self.reconciliation_barrier_armed.set(false);
+            self.reconciliation_read_failures.set(
+                self.reconciliation_read_failures
+                    .get()
+                    .checked_add(1)
+                    .unwrap(),
+            );
+            return Err(DurableReadError::Unavailable);
+        }
         self.inner.get_outgoing_barrier(c, d)
     }
 
@@ -527,6 +551,16 @@ impl SuccessorServingRepository for SqliteHandoffFaults<'_> {
             record,
             transaction,
         );
+        if actual == DurableCommitOutcome::Committed
+            && self.consume(
+                PendingHandoffFault::ActivationCommittedReplyLossBeforeReconciliationFailure,
+            )
+        {
+            self.reconciliation_barrier_armed.set(true);
+            return DurableCommitOutcome::Indeterminate(
+                IndeterminateCommitReason::CancellationRequested,
+            );
+        }
         self.lose_committed_reply(PendingHandoffFault::ActivationCommittedReplyLoss, actual)
     }
 

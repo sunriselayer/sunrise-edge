@@ -9,6 +9,8 @@ mod causal_genesis_fixture;
 mod compiled_executable_snapshot;
 #[path = "support/compiled_source_host_process.rs"]
 mod compiled_source_host_process;
+#[path = "support/encrypted_recovery_acceptance.rs"]
+mod encrypted_recovery_acceptance;
 #[path = "business_cut/fixture.rs"]
 mod fixture;
 #[path = "support/genesis_fixture.rs"]
@@ -692,6 +694,7 @@ async fn run_conditional_readiness(recurring: bool) {
         "the competing variant's preparation never changes source state or receipts"
     );
     drop(initial_readiness);
+    drop(archive); // No held original cut/staging directory survives cold recovery.
     ordered_seal_sqlite_acceptance::run_compiled_four_host_seal(
         &executables,
         &fixture,

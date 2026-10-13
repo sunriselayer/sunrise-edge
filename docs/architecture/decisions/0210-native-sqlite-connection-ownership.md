@@ -145,3 +145,135 @@ The existing shared SQL engine retains every logical commit, receipt, outbox,
 namespace and writer-generation rule. Private `cfg(test)` commit hooks are
 absent from released builds and do not add a public maintenance capability.
 Implementation, integration and qualification status remain only in TODO.
+
+## 2026-10-10: compiled serving-host SIGKILL source control
+
+The existing [TLS process target](../../../apps/operator/tests/local_tls_startup.rs)
+adds the nonignored Linux control
+`actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence`.
+Its [private child owner](../../../apps/operator/tests/support/compiled_source_host_process.rs)
+adds `ChildGuard::kill_abruptly_and_reap`, not a production signal or storage API.
+
+The fixture authenticates an acknowledged paid CLI transfer before the fault.
+All four live owned children must return actual signal-9/no-exit-code status
+and confirmed reap receipts under one original eligibility/polling end. Restart
+retains the same four database/blob paths, namespaces, keys, certificates,
+configuration and nonzero endpoints, advancing the writer fence from 2 to 3.
+Pre-held stale read and valid nonempty CAS/Put capabilities must refuse as
+`WriterFenced`. Complete logical snapshots compare State, Receipts, ObjectHeads,
+ObjectVersions, referenced blob bytes and mutation sequence; they are continuity
+observations, not independently reconstructed cut authority. Canonical saved
+artifacts, paid receipt/result, public object/nonce query bytes and all 19 input
+files remain equal. Saved CLI replay must return all four original results
+without a second business mutation/receipt commit. Read-only SQL COMMIT is not
+excluded. Ordinary tail stop follows those assertions and is not the fault oracle.
+
+Parent-side SQLite handles remain open across host reaps/restart. The outbox
+oracle is guarded empty, not nonempty-outbox delivery; physical pages and
+unreferenced blobs are not compared. The shared end bounds polling and success
+eligibility, not kill/wait syscalls, scheduling, legacy Drop cleanup, readers or
+process-group release. This is post-acknowledged serving-host failure, not loss
+of every connection, WAL loss, interrupted COMMIT, power/fsync, disk failure,
+ENOSPC or failover qualification. Existing before-COMMIT and after-COMMIT-before-
+confirmation requirements above remain unchanged.
+
+UNFORMATTED, UNCOMPILED, UNEXECUTED; runtime/resource fit is UNKNOWN. This source
+control does not complete M3/TODO, qualify PostgreSQL or custody, or grant runtime,
+dependency/floor/private-input/ROOT ONE or release authority.
+
+## 2026-10-11 (Asia/Tokyo): request-scoped outbox reply-loss source controls
+
+Local `3e0f066e` adds three controls in the existing
+[Native HTTP tests](../../../crates/native-http/src/tests.rs):
+
+- `sqlite_request_outbox_reconciles_landed_claim_and_ack_reply_loss`
+- `sqlite_request_outbox_unresolved_landed_claim_preserves_first_ambiguity_without_send`
+- `sqlite_request_outbox_unresolved_landed_ack_preserves_first_ambiguity_after_one_send`
+
+The fixture creates a fresh real-file SQLite store and uses the existing valid
+signed submission through the actual typed `ReadOnly` Native consumer. Its
+forwarding wrapper first requires a real successful claim or acknowledgement,
+then masks only that reply as `ConnectionLost`. Native reconciliation must reuse
+the original request and operation context. The refused-reconciliation controls
+return a different second rejection without another delegation, requiring the
+original ambiguity to survive. No production fault hook or new API is introduced.
+
+Independent literal state/payload/nonce frames and public receipt/result/outbound
+codecs define expected bytes, not captured invocation writes or stored post-state.
+One-key pages and seven-byte chunks compare every descriptor and body in all four
+portable collections under the same local token, retaining unrelated rows.
+Immutable referenced blobs use their separate interface outside that token;
+this fixture has empty object/reference collections and proves no positive
+object/blob coverage or content-hash authentication. No handoff-empty-outbox
+guard is invoked.
+
+Before original lease expiry, probes require the complete same-lease claim tuple
+and foreign `NoDueWork`; after ACK, they require same-ACK `Acknowledged`, original
+claim `LeaseIdReuse` and fresh foreign `NoDueWork`. Explicit clock checks surround
+those probes. After setup, the source requires one application transition and
+one `commit_invocation`, with sequence deltas +3/+2/+3 across the three cases.
+Claim ambiguity permits no send or ACK; success and ACK ambiguity require one
+exact canonical send. Reconciliation/probe snapshots must not add mutations.
+These counters do not count all SQL COMMITs or prove a new business replay path.
+
+Different exact-slice source review passed. UNFORMATTED, UNCOMPILED, UNEXECUTED;
+all three names are outside the original 41 selectors. Synthetic trait reply
+loss after a confirmed operation is not failed SQLite COMMIT, physical I/O,
+ENOSPC, crash/power-loss durability, custody or M3/TODO20 completion. All original
+before-COMMIT/after-COMMIT-before-confirmation and release requirements remain.
+
+## 2026-10-12 (Asia/Tokyo): bounded Docker ENOSPC source controls
+
+The private Linux [ENOSPC module](../../../crates/runtime-sqlite/src/structured/ownership_tests/enospc.rs)
+adds two ignored controls:
+
+- `docker_noswap_enospc_before_commit_publishes_no_partial_write_set`
+- `docker_noswap_enospc_during_literal_commit_remains_indeterminate`
+
+Before any fill, both require the literal `/fault` mount to be an effective
+64MiB tmpfs with noswap, a read-only root, nonroot/capability restrictions,
+512MiB container memory with zero swap, one CPU, 64 PIDs and loopback-only
+interfaces. Bounded positive writes must reach actual errno28; only the held,
+identity-matched filler is closed and removed before recovery. Deadline checks
+do not preempt blocking syscalls or establish all-path cleanup.
+
+The early case requires an independent SQLITE_FULL probe, definite
+`UnavailableBeforeCommit` and zero Before-hook hits. The late case requires a
+successful TRUNCATE checkpoint and zero WAL length/allocated blocks. Its Before
+callback installs the After marker, fills the mount and returns Ok. Before1/
+After0, stable attachment and `Indeterminate(ConnectionLost)` target the literal
+COMMIT-error path, not an injected callback error; the main raw SQLite code is
+discarded and is not asserted.
+
+Independent literal oracles enumerate every column in all twelve SQL tables
+and all pages, descriptors and payload chunks in the four portable collections
+under one unchanged token. Positive inline objects and unrelated/protected rows
+are covered; referenced-blob closure is explicitly empty. After filler removal,
+the original owner and same-file/namespace reopen must both equal baseline before
+one explicit successful retry. Sequence2 becomes3 once, and receipt-first replay
+must leave the complete raw and portable state unchanged.
+
+Different exact-two-path source review passed. UNFORMATTED, UNCOMPILED and
+UNEXECUTED; both names are outside the original 41 selectors. The separate
+[Docker ENV probes](0230-bounded-docker-fault-environments.md) do not execute
+these Rust controls. Actual resource/timing fit and fault outcomes remain open;
+no physical-disk, power, nonempty referenced-blob, custody, full-profile,
+M3/TODO20 or release qualification follows from this source slice.
+
+## 2026-10-13 bounded ENOSPC execution update
+
+The prior unexecuted captions remain historical authorship records. Actual run
+`validation-9f49f698c13548bfbff2d0162b15635b` passed both original `Inline`
+and both new positive `Referenced` controls, with exit zero, both output streams
+at EOF and its owning cgroup absent. Referenced setup publishes exactly two
+fixed canonical objects with 65,537 data bytes each; the original blob writer
+and warmed read-only owner stay live, with no blob writes after setup.
+Both complete public blob bodies, purpose-bound digests and codec round trips
+are checked while full, before filler removal. Afterwards, full twelve-table
+and four-portable-collection reconciliation checks exact metadata/payloads and
+NULL-inline/digest reference rows on the original owner and same-file reopen,
+before one authorized retry and unchanged receipt-first replay. Pre-COMMIT
+rejection remains distinct from literal-COMMIT `Indeterminate`; retaining the
+prepublished unreachable target blob is expected residue, not logical commit.
+These executions do not prove cross-file atomicity, physical power-loss,
+custody, full M3 completion or a passed full required rerun.

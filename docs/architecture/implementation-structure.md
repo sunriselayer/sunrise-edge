@@ -55,6 +55,45 @@ codec error deliberately changes without an admission-error compatibility
 adapter. This does not remove other SDK/core Cargo edges or establish a build
 improvement. The code map identifies actual definitions after migration.
 
+The existing E009 submission-signature encoding and two message-family
+constants have one execution owner, consumed directly by SDK preparation and
+through the compatible typed core wrapper. RequestId validation, core admission
+and the SDK's existing error projection remain caller-owned. Raw zero/empty
+encoding grants no authority. This removes one codec call through core, not
+its remaining SDK type/error dependencies or Cargo edge; no build benefit is
+measured. See the dated R1 addendum in [DR-0200](decisions/0200-maintainability-and-mainnet-roadmap.md).
+
+The existing generic validator-count ceiling is defined once by
+`validator_set::MAX_VALIDATORS`. Core fee-share and validator-entry record
+codecs consume it directly, removing two local copies while preserving
+wire bytes, public record APIs, errors and check order. Historical 10,000-entry
+record readability is distinct from unchanged live FastVote economics
+admission at 256 validators. The bound grants no authority. The dated
+2026-10-11 (Asia/Tokyo) addendum in
+[DR-0200](decisions/0200-maintainability-and-mainnet-roadmap.md) records the
+independent literal controls as UNFORMATTED, UNCOMPILED and UNEXECUTED; R1
+remains open, with no measured build benefit, custody or full SDK decoupling claim.
+
+The consensus owner exposes its existing strict certificate/proposal decoder
+caps as `consensus::MAX_ENCODED_CERTIFICATE_BYTES` and
+`consensus::MAX_ENCODED_PROPOSAL_BYTES`. Wire consumes these constants directly;
+its candidate/framing overhead and derived status bound remain transport-owned.
+This removes two copied literals without changing values, parsing order or
+authority. The dated decoder-bound addendum in
+[DR-0200](decisions/0200-maintainability-and-mainnet-roadmap.md) records six
+UNFORMATTED, UNCOMPILED and UNEXECUTED controls, not valid-capacity acceptance,
+universal encoder limits, a Cargo-edge removal or R1 completion.
+
+The frozen-frontier codec owns the vote/page/entry caps exposed as
+`consensus::MAX_FROZEN_FRONTIER_VOTE_BYTES`,
+`consensus::MAX_FROZEN_FRONTIER_PAGE_BYTES` and
+`consensus::MAX_FROZEN_FRONTIER_PAGE_ENTRIES`. Wire preserves its public cap
+names/types as aliases, with a compile-time guard before narrowing entries
+to u16. Vote 8 KiB, page 512 KiB and 128 entries remain unchanged; request
+128 bytes and response framing allowance 64 bytes remain transport-owned.
+The dated frontier-bound addendum in [DR-0200](decisions/0200-maintainability-and-mainnet-roadmap.md)
+records nine unexecuted controls, not signed capacity or persistence authority.
+
 ## Concrete refactoring seams
 
 The following are intended module responsibilities inside existing crates.

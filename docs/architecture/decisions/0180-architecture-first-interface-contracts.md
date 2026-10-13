@@ -66,3 +66,18 @@ completion; tech-lead review is not the independent security audit. No live
 deployment, timeout unlock, maintenance bypass, Standard Asset privilege,
 new readiness/Seal/serving authority or production certification is approved
 by this plan.
+
+## 2026-10-10: Shared direct transaction envelope decision
+
+Atomic and Durable direct constructors now delegate mutation/read containment
+and represented-byte refusal to the existing private transaction owner.
+Atomic retains its already-admitted nonempty mutation set; Durable still
+admits, orders and bounds its supplied mutation set before delegation and
+permits the existing read-only case. The shared decision retains containment
+before unchanged saturating accounting and the strict 64 MiB limit.
+
+Direct controls cover typed order/accounting, conversion and empty rules,
+containment-before-size, exact-limit versus +1, and earlier Durable
+count/duplicate errors. These are independently reviewed source expectations,
+not executed acceptance. Backend CAS, operation context, commit ambiguity and
+business admission retain their existing owners; R2 remains open in TODO.

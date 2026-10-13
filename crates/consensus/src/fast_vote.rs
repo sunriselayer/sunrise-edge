@@ -843,19 +843,75 @@ mod tests {
                 certifier.verify_vote(&wrong_scheme, &verifier),
                 Err(ConsensusError::SignatureSchemeMismatch(validator_id(1))),
             );
-            // The generic bound accepts 63 bytes. Crypto checks the exact
-            // Ed25519 length, and verify_vote maps that adapter error to
-            // Authenticator, just as the former FastPath adapter did.
+            // The generic codec still accepts 63 bytes. The production
+            // adapter classifies that malformed Ed25519 candidate as
+            // invalid without concealing an infrastructure failure.
             assert_eq!(
                 certifier.verify_vote(&short_signature, &verifier),
-                Err(ConsensusError::Authenticator(
-                    "signature has an invalid length: 63 bytes".to_string(),
-                )),
+                Err(ConsensusError::InvalidSignature(validator_id(1))),
             );
             assert_eq!(
                 certifier.verify_vote(&wrong_payload, &verifier),
                 Err(ConsensusError::InvalidSignature(validator_id(1))),
             );
+        }
+    }
+
+    #[test]
+    fn production_verifier_excludes_malformed_signatures_without_losing_quorum() {
+        let certifier: FastPathCertifier = certifier(4);
+        let valid_votes: Vec<FastVote> = (1..=3).map(|byte| cast(&certifier, byte)).collect();
+        let reference: FastCertificate = quorum_certificate(&certifier);
+        let reference_bytes: Vec<u8> = encode_fast_certificate(&reference).unwrap();
+        let responses: [UnsupportedSignatureSchemeResponse; 2] = [
+            UnsupportedSignatureSchemeResponse::InvalidSignature,
+            UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ];
+        let lengths: [usize; 4] = [1, 63, 65, 4096];
+        let malformed_validators: [u8; 2] = [2, 4];
+        for response in responses {
+            let verifier: Ed25519ConsensusVerifier = Ed25519ConsensusVerifier::new(response);
+            for signature_len in lengths {
+                for validator in malformed_validators {
+                    let mut malformed: FastVote = cast(&certifier, validator);
+                    malformed.signature.resize(signature_len, 0);
+                    let wire: Vec<u8> = encode_fast_vote(&malformed).unwrap();
+                    let decoded: FastVote = decode_fast_vote(&wire).unwrap();
+                    assert_eq!(decoded, malformed);
+                    assert_eq!(
+                        certifier.verify_vote(&decoded, &verifier),
+                        Err(ConsensusError::InvalidSignature(validator_id(validator))),
+                    );
+                    let positions: [usize; 2] = [0, valid_votes.len()];
+                    for position in positions {
+                        let mut relayed: Vec<FastVote> = valid_votes.clone();
+                        relayed.insert(position, decoded.clone());
+                        let formed: FastCertificate = certifier
+                            .try_form_certificate(
+                                tx_hash(),
+                                effects_hash(),
+                                locked_objects_digest(),
+                                &relayed,
+                                &verifier,
+                            )
+                            .unwrap()
+                            .expect("malformed relay candidate must not discard a valid quorum");
+                        assert_eq!(encode_fast_certificate(&formed).unwrap(), reference_bytes);
+                    }
+                    let mut insufficient: Vec<FastVote> = valid_votes[..2].to_vec();
+                    insufficient.push(decoded);
+                    assert_eq!(
+                        certifier.try_form_certificate(
+                            tx_hash(),
+                            effects_hash(),
+                            locked_objects_digest(),
+                            &insufficient,
+                            &verifier,
+                        ),
+                        Ok(None),
+                    );
+                }
+            }
         }
     }
 

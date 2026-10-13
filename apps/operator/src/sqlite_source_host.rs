@@ -63,6 +63,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--created-checkpoint",
     "--timeout-seconds",
     "--max-concurrent",
+    crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG,
     native_tls::CERT_FLAG,
     native_tls::KEY_FLAG,
 ];
@@ -139,6 +140,10 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         return Err("--max-concurrent must be 1..=256".into());
     }
     let tls_inputs: NativeTlsInputs = NativeTlsInputs::parse(&mut flags)?;
+    let local_observations_path: Option<crate::native_operations::LocalObservationsPath> =
+        crate::native_operations::LocalObservationsPath::parse(
+            flags.optional_one(crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG)?,
+        )?;
     flags.finish()?;
     if !confirmed {
         return Err(
@@ -153,6 +158,8 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     if !listen_addr.ip().is_loopback() {
         return Err("--listen must be a loopback address".into());
     }
+    let local_observations: crate::native_operations::PreparedLocalObservations =
+        crate::native_operations::PreparedLocalObservations::connect(local_observations_path)?;
     let tls: Option<tokio_rustls::TlsAcceptor> = tls_inputs.load()?;
 
     let resolver: HashSuiteResolver =
@@ -334,7 +341,7 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let mut stop = crate::native_operations::StopOwner::install()?;
+        let mut stop = crate::native_operations::StopOwner::install(local_observations)?;
         let listener = tokio::net::TcpListener::bind(listen_addr).await?;
         let bound_addr = listener.local_addr()?;
         if !stop.stop_before_readiness() {
@@ -346,17 +353,20 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         );
         use std::io::Write;
         std::io::stdout().flush()?;
+        stop.readiness_announced();
         }
+        let serve_policy: native_http::NativeHttpServePolicy =
+            native_http::NativeHttpServePolicy::default().with_certified_publication(true);
         crate::native_operations::serve(blocking_executor, stop, move |shutdown, observations| async move {
         match tls {
             None => native_http::serve_with_stream_upgrade_observed(
-                listener, router, native_http::NativeHttpServePolicy::default(),
+                listener, router, serve_policy,
                 |stream: tokio::net::TcpStream| async move { Ok::<_, std::io::Error>(stream) },
                 shutdown, observations).await,
             Some(acceptor) => native_http::serve_with_stream_upgrade_observed(
                 listener,
                 router,
-                native_http::NativeHttpServePolicy::default(),
+                serve_policy,
                 move |stream: tokio::net::TcpStream| native_tls::accept(acceptor.clone(), stream),
                 shutdown,
                 observations,
@@ -435,6 +445,37 @@ mod tests {
                 .to_string()
                 .contains("--confirm-offline-fence-advance")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_observations_option_defaults_off_and_invalid_forms_refuse_before_io() {
+        let default_error: String = run(args_with("127.0.0.1:0", false))
+            .unwrap_err()
+            .to_string();
+        assert!(default_error.contains("--confirm-offline-fence-advance"));
+
+        let overlong_path: String = format!("/{}", "a".repeat(100));
+        let invalid_values: Vec<(String, &str)> = vec![
+            ("relative.sock".into(), "requires an absolute path"),
+            ("/tmp/a\0b".into(), "without NUL"),
+            (overlong_path, "path exceeds 100 bytes"),
+        ];
+        for (value, expected) in invalid_values {
+            let mut args: Vec<OsString> = args_with("127.0.0.1:0", true);
+            args.push(crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG.into());
+            args.push(value.into());
+            let error: String = run(args).unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+        }
+
+        let mut duplicate_args: Vec<OsString> = args_with("127.0.0.1:0", true);
+        for path in ["/tmp/first.sock", "/tmp/second.sock"] {
+            duplicate_args.push(crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG.into());
+            duplicate_args.push(path.into());
+        }
+        let duplicate_error: String = run(duplicate_args).unwrap_err().to_string();
+        assert!(duplicate_error.contains("must be supplied at most once"));
     }
 
     #[test]

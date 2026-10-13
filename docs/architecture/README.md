@@ -79,6 +79,9 @@ roadmap describes a later target state.
   ([DR-0183](decisions/0183-test-observation-ownership.md)):
   private reader/counter/capture mechanics, complete direct/prepared persisted
   equivalence, and distinct replay and cut/import comparison responsibilities.
+- [Bounded compiled-host startup line](decisions/0229-bounded-compiled-host-startup-line.md):
+  fixture-derived byte allowance and finite first-line probing in shared test
+  supervision; source contracts, not runtime or all-path cleanup qualification.
 - [Smart contracts](../smartcontract/README.md): publication/call lifecycle and
   Standard Asset/fee semantics.
 - [Durable local code publication](decisions/0121-durable-local-code-publication.md):
@@ -155,6 +158,11 @@ roadmap describes a later target state.
   ([DR-0176](decisions/0176-verified-inactive-business-import.md)):
   private raw-plan derivation, permanent import origin, atomic bounded storage
   and core/live-response guards; no readiness, Seal or activation authority.
+- [Encrypted saved-business-closure transport](encrypted-recovery-closure.md)
+  ([DR-0221](decisions/0221-encrypted-recovery-closure.md), accepted design):
+  disposable local X25519/age transport for original and full successor saved
+  roles, opt-in bounded reads and independent inactive verification; source
+  candidate, not execution, real custody or off-host recovery qualification.
 - [Conditional readiness and ordered Seal](conditional-readiness-seal.md)
   ([DR-0178](decisions/0178-conditional-readiness-wire-and-retention.md)):
   private fresh staging verification, actual-key-bound votes, weighted public

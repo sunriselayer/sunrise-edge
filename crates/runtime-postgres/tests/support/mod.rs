@@ -986,6 +986,139 @@ pub fn parse_device_id(output: &str) -> u64 {
         .unwrap_or_else(|_| panic!("stat -c %d produced a non-numeric device id: {output:?}"))
 }
 
+/// Checks the complete kernel mount table, not just the requested Docker
+/// options. A missing/unsupported `noswap`, wrong size, bind root, duplicate
+/// mount or nested mount refuses the fault before any filler command runs.
+fn validate_noswap_tmpfs_mounts(output: &str, expected_mounts: &[(&str, u64)]) -> io::Result<()> {
+    let invalid: fn(String) -> io::Error =
+        |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
+    if output.is_empty()
+        || !output.ends_with('\n')
+        || output.contains('\r')
+        || output.contains('\0')
+    {
+        return Err(invalid(
+            "mountinfo was empty, malformed or incomplete".to_owned(),
+        ));
+    }
+    let mut seen: Vec<bool> = vec![false; expected_mounts.len()];
+    for line in output.lines() {
+        let (mount, filesystem): (&str, &str) = line
+            .split_once(" - ")
+            .ok_or_else(|| invalid("mountinfo record has no filesystem separator".to_owned()))?;
+        let fields: Vec<&str> = mount.split_ascii_whitespace().collect();
+        let filesystem_fields: Vec<&str> = filesystem.split_ascii_whitespace().collect();
+        if fields.len() < 6 || filesystem_fields.len() != 3 {
+            return Err(invalid(
+                "mountinfo record has an invalid field count".to_owned(),
+            ));
+        }
+        for (index, &(path, size_bytes)) in expected_mounts.iter().enumerate() {
+            let mountpoint: &str = fields[4];
+            if mountpoint != path {
+                if mountpoint
+                    .strip_prefix(path)
+                    .is_some_and(|suffix: &str| suffix.starts_with('/'))
+                {
+                    return Err(invalid(format!(
+                        "unexpected mount beneath fault tmpfs {path}"
+                    )));
+                }
+                continue;
+            }
+            if seen[index] {
+                return Err(invalid(format!("duplicate fault tmpfs mount {path}")));
+            }
+            let mount_options: &str = fields[5];
+            let super_options: &str = filesystem_fields[2];
+            if fields[3] != "/" || filesystem_fields[0] != "tmpfs" {
+                return Err(invalid(format!("{path} is not a whole tmpfs mount")));
+            }
+            if !mount_options.split(',').any(|option: &str| option == "rw")
+                || mount_options.split(',').any(|option: &str| option == "ro")
+                || !super_options.split(',').any(|option: &str| option == "rw")
+                || super_options
+                    .split(',')
+                    .any(|option: &str| option == "ro" || option == "swap")
+                || super_options
+                    .split(',')
+                    .filter(|option: &&str| *option == "noswap")
+                    .count()
+                    != 1
+            {
+                return Err(invalid(format!(
+                    "{path} is not an effective writable noswap tmpfs"
+                )));
+            }
+            let mut effective_size: Option<u64> = None;
+            for option in super_options.split(',') {
+                if let Some(size) = option.strip_prefix("size=") {
+                    if effective_size.is_some() {
+                        return Err(invalid(format!("duplicate tmpfs size for {path}")));
+                    }
+                    effective_size = Some(parse_tmpfs_size_bytes(size)?);
+                }
+            }
+            if effective_size != Some(size_bytes) {
+                return Err(invalid(format!(
+                    "{path} tmpfs size is {effective_size:?}, expected {size_bytes} bytes"
+                )));
+            }
+            seen[index] = true;
+        }
+    }
+    for (index, &(path, _)) in expected_mounts.iter().enumerate() {
+        if !seen[index] {
+            return Err(invalid(format!("missing fault tmpfs mount {path}")));
+        }
+    }
+    Ok(())
+}
+
+/// Kernel tmpfs sizes may be printed in bytes or binary k/m/g units.
+fn parse_tmpfs_size_bytes(value: &str) -> io::Result<u64> {
+    let (digits, multiplier): (&str, u64) = match value.as_bytes().last().copied() {
+        Some(b'k') => (&value[..value.len() - 1], 1024),
+        Some(b'm') => (&value[..value.len() - 1], 1024 * 1024),
+        Some(b'g') => (&value[..value.len() - 1], 1024 * 1024 * 1024),
+        _ => (value, 1),
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte: u8| byte.is_ascii_digit()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid tmpfs size",
+        ));
+    }
+    let units: u64 = digits
+        .parse()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "tmpfs size exceeds u64"))?;
+    units.checked_mul(multiplier).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "tmpfs size multiplication overflow",
+        )
+    })
+}
+
+fn verify_noswap_tmpfs_mounts(
+    container_id: &ContainerId,
+    expected_mounts: &[(&str, u64)],
+) -> io::Result<()> {
+    let mountinfo: String = run_docker_command_bounded_output(
+        docker_argv_command(&[
+            "exec",
+            "--user",
+            "postgres",
+            "--",
+            container_id.as_str(),
+            "cat",
+            "/proc/self/mountinfo",
+        ]),
+        "docker exec (fault tmpfs mountinfo)",
+    )?;
+    validate_noswap_tmpfs_mounts(&mountinfo, expected_mounts)
+}
+
 /// Process- and call-unique counter mixed into [`random_hex_token`]. Not a
 /// cryptographic RNG: these tokens only need to avoid colliding with another
 /// concurrent or prior disposable container/marker, never to resist an
@@ -1041,6 +1174,145 @@ const PGDATA_TMPFS_BYTES: u64 = 512 * 1024 * 1024;
 /// only filesystem the scenario fills.
 const BOUNDED_TMPFS_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Docker's local driver forwards these options to the Linux tmpfs mount,
+/// unlike `docker run --tmpfs`, whose option allowlist can reject `noswap`.
+/// Named volumes are not removed by `docker rm --volumes`, so this guard
+/// separately owns and removes only its exact labelled local-driver volume.
+struct FaultTmpfsVolume {
+    name: String,
+    owner: String,
+    options: String,
+}
+
+const FAULT_OWNER_LABEL: &str = "sunrise-edge.pg-fault-owner";
+const FAULT_VOLUME_INSPECT: &str = "{{.Name}}|{{.Driver}}|{{index .Labels \"sunrise-edge.pg-fault-owner\"}}|{{index .Options \"type\"}}|{{index .Options \"device\"}}|{{index .Options \"o\"}}";
+
+impl FaultTmpfsVolume {
+    fn create(owner: &str, role: &str, bytes: u64, mode: &str) -> io::Result<Self> {
+        let name: String = format!("{owner}-{role}");
+        let filter: String = format!("name=^{name}$");
+        let existing: String = run_docker_command_bounded_output(
+            docker_argv_command(&["volume", "ls", "--filter", &filter, "--format", "{{.Name}}"]),
+            "docker volume ls (fault volume absence)",
+        )?;
+        if !existing.trim().is_empty() {
+            return Err(io::Error::other(format!(
+                "fault volume {name} already exists"
+            )));
+        }
+        let volume: Self = Self {
+            name,
+            owner: owner.to_owned(),
+            options: format!("rw,nosuid,nodev,noexec,noswap,size={bytes},mode={mode}"),
+        };
+        let label: String = format!("{FAULT_OWNER_LABEL}={owner}");
+        let options: String = format!("o={}", volume.options);
+        // The guard already exists if creation succeeds but a later CLI
+        // observation fails. Drop refuses any mismatched/unknown ownership.
+        let output: String = run_docker_command_bounded_output(
+            docker_argv_command(&[
+                "volume",
+                "create",
+                "--driver",
+                "local",
+                "--label",
+                &label,
+                "--opt",
+                "type=tmpfs",
+                "--opt",
+                "device=tmpfs",
+                "--opt",
+                &options,
+                &volume.name,
+            ]),
+            "docker volume create (bounded noswap fault volume)",
+        )?;
+        if output.trim() != volume.name {
+            return Err(io::Error::other(
+                "docker returned an unexpected fault volume name",
+            ));
+        }
+        volume.verify()?;
+        Ok(volume)
+    }
+
+    fn verify(&self) -> io::Result<()> {
+        let output: String = run_docker_command_bounded_output(
+            docker_argv_command(&[
+                "volume",
+                "inspect",
+                "--format",
+                FAULT_VOLUME_INSPECT,
+                &self.name,
+            ]),
+            "docker volume inspect (fault ownership/options)",
+        )?;
+        let expected: String = format!(
+            "{}|local|{}|tmpfs|tmpfs|{}",
+            self.name, self.owner, self.options
+        );
+        if output.trim() != expected {
+            return Err(io::Error::other(format!(
+                "fault volume {} has different ownership/driver/options",
+                self.name
+            )));
+        }
+        Ok(())
+    }
+
+    fn mount(&self, destination: &str) -> String {
+        format!(
+            "type=volume,src={},dst={destination},volume-nocopy",
+            self.name
+        )
+    }
+}
+
+impl Drop for FaultTmpfsVolume {
+    fn drop(&mut self) {
+        let result: io::Result<()> = self.verify().and_then(|()| {
+            run_docker_command_bounded(
+                docker_argv_command(&["volume", "rm", &self.name]),
+                "docker volume rm (owned fault volume)",
+            )
+        });
+        if let Err(error) = result {
+            // Never force removal: a still-attached volume must remain if
+            // container cleanup failed. Preserve the exact cleanup target.
+            eprintln!(
+                "FaultTmpfsVolume: retained {} (owner {}): {error}",
+                self.name, self.owner
+            );
+        }
+    }
+}
+
+/// Failed launches have no returned ID. Resolve the exact generated name and
+/// owner label first, then remove only the independently observed actual ID.
+fn cleanup_fault_container_name(name: &str) -> io::Result<()> {
+    let output: String = run_docker_command_bounded_output(
+        docker_argv_command(&[
+            "container",
+            "inspect",
+            "--format",
+            "{{.Id}}|{{.Name}}|{{index .Config.Labels \"sunrise-edge.pg-fault-owner\"}}",
+            name,
+        ]),
+        "docker inspect (failed fault launch ownership)",
+    )?;
+    let parts: Vec<&str> = output.trim().split('|').collect();
+    if parts.len() != 3 || parts[1] != format!("/{name}") || parts[2] != name {
+        return Err(io::Error::other(
+            "failed fault launch has different ownership",
+        ));
+    }
+    let id: ContainerId = ContainerId::parse(parts[0]).map_err(io::Error::other)?;
+    run_docker_command_bounded(
+        docker_argv_command(&["rm", "--force", "--volumes", id.as_str()]),
+        "docker rm (failed owned fault launch)",
+    )
+}
+
 /// A disposable, RAM-backed PostgreSQL container for the disk-full scenario.
 /// Every mount is tmpfs with an explicit size cap so the fault the test
 /// injects can never grow the host's real filesystem; see
@@ -1055,6 +1327,8 @@ pub struct DisposablePostgresContainer {
     container_id: ContainerId,
     published_port: u16,
     postgres_password: String,
+    pgdata_volume: FaultTmpfsVolume,
+    bounded_volume: FaultTmpfsVolume,
 }
 
 impl DisposablePostgresContainer {
@@ -1071,11 +1345,15 @@ impl DisposablePostgresContainer {
             std::process::id(),
             random_hex_token(16)
         );
-        let pgdata_mount =
-            format!("type=tmpfs,destination=/var/lib/postgresql,tmpfs-size={PGDATA_TMPFS_BYTES}");
-        let bounded_mount = format!(
-            "type=tmpfs,destination=/bounded,tmpfs-size={BOUNDED_TMPFS_BYTES},tmpfs-mode=0777"
-        );
+        let pgdata_volume: FaultTmpfsVolume =
+            FaultTmpfsVolume::create(&container_name, "pgdata", PGDATA_TMPFS_BYTES, "1777")
+                .unwrap_or_else(|error| panic!("disk-full PGDATA volume failed: {error}"));
+        let bounded_volume: FaultTmpfsVolume =
+            FaultTmpfsVolume::create(&container_name, "bounded", BOUNDED_TMPFS_BYTES, "0777")
+                .unwrap_or_else(|error| panic!("disk-full tablespace volume failed: {error}"));
+        let pgdata_mount: String = pgdata_volume.mount("/var/lib/postgresql");
+        let bounded_mount: String = bounded_volume.mount("/bounded");
+        let owner_label: String = format!("{FAULT_OWNER_LABEL}={container_name}");
         let password_env = format!("POSTGRES_PASSWORD={postgres_password}");
         let run_output_result = run_docker_command_bounded_output(
             docker_argv_command(&[
@@ -1085,6 +1363,8 @@ impl DisposablePostgresContainer {
                 &container_name,
                 "--label",
                 "sunrise-edge-test=disk-full",
+                "--label",
+                &owner_label,
                 "--publish",
                 "127.0.0.1::5432",
                 "--memory",
@@ -1111,21 +1391,13 @@ impl DisposablePostgresContainer {
             "docker run (disk-full container)",
         );
         let run_output = run_output_result.unwrap_or_else(|error| {
-            let cleanup_error = run_docker_command_bounded(
-                docker_argv_command(&["rm", "--force", "--volumes", &container_name]),
-                "docker rm after failed run",
-            )
-            .err();
+            let cleanup_error: Option<io::Error> = cleanup_fault_container_name(&container_name).err();
             panic!(
                 "docker run (disk-full container) failed: {error}; cleanup by exact generated name returned {cleanup_error:?}"
             )
         });
         let container_id = ContainerId::parse(run_output.trim()).unwrap_or_else(|error| {
-            let cleanup_error = run_docker_command_bounded(
-                docker_argv_command(&["rm", "--force", "--volumes", &container_name]),
-                "docker rm after invalid run output",
-            )
-            .err();
+            let cleanup_error: Option<io::Error> = cleanup_fault_container_name(&container_name).err();
             panic!(
                 "docker run produced an invalid container id {run_output:?}: {error}; cleanup by exact generated name returned {cleanup_error:?}"
             )
@@ -1134,7 +1406,12 @@ impl DisposablePostgresContainer {
             container_id,
             published_port: 0,
             postgres_password,
+            pgdata_volume,
+            bounded_volume,
         };
+        container
+            .verify_tmpfs_mounts()
+            .unwrap_or_else(|error| panic!("disk-full tmpfs containment failed: {error}"));
         let port_output = run_docker_command_bounded_output(
             docker_argv_command(&["port", container.container_id.as_str(), "5432/tcp"]),
             "docker port (disk-full container)",
@@ -1169,6 +1446,7 @@ impl DisposablePostgresContainer {
     /// server user can perform, so no exec in this scenario ever needs
     /// `--user root`.
     pub fn exec(&self, args: &[&str]) -> io::Result<String> {
+        self.verify_tmpfs_mounts()?;
         let mut full_args: Vec<&str> = vec![
             "exec",
             "--user",
@@ -1178,6 +1456,18 @@ impl DisposablePostgresContainer {
         ];
         full_args.extend_from_slice(args);
         run_docker_command_bounded_output(docker_argv_command(&full_args), "docker exec")
+    }
+
+    fn verify_tmpfs_mounts(&self) -> io::Result<()> {
+        self.pgdata_volume.verify()?;
+        self.bounded_volume.verify()?;
+        verify_noswap_tmpfs_mounts(
+            &self.container_id,
+            &[
+                ("/var/lib/postgresql", PGDATA_TMPFS_BYTES),
+                ("/bounded", BOUNDED_TMPFS_BYTES),
+            ],
+        )
     }
 }
 
@@ -1352,6 +1642,8 @@ pub struct WalFullPostgresContainer {
     container_id: ContainerId,
     published_port: u16,
     postgres_password: String,
+    pgdata_volume: FaultTmpfsVolume,
+    wal_volume: FaultTmpfsVolume,
 }
 
 impl WalFullPostgresContainer {
@@ -1368,12 +1660,19 @@ impl WalFullPostgresContainer {
             std::process::id(),
             random_hex_token(16)
         );
-        let pgdata_mount = format!(
-            "type=tmpfs,destination=/var/lib/postgresql,tmpfs-size={WAL_FULL_PGDATA_TMPFS_BYTES}"
-        );
-        let wal_mount = format!(
-            "type=tmpfs,destination={WAL_FULL_WAL_MOUNT},tmpfs-size={WAL_FULL_WAL_TMPFS_BYTES},tmpfs-mode=0777"
-        );
+        let pgdata_volume: FaultTmpfsVolume = FaultTmpfsVolume::create(
+            &container_name,
+            "pgdata",
+            WAL_FULL_PGDATA_TMPFS_BYTES,
+            "1777",
+        )
+        .unwrap_or_else(|error| panic!("wal-full PGDATA volume failed: {error}"));
+        let wal_volume: FaultTmpfsVolume =
+            FaultTmpfsVolume::create(&container_name, "wal", WAL_FULL_WAL_TMPFS_BYTES, "0777")
+                .unwrap_or_else(|error| panic!("wal-full WAL volume failed: {error}"));
+        let pgdata_mount: String = pgdata_volume.mount("/var/lib/postgresql");
+        let wal_mount: String = wal_volume.mount(WAL_FULL_WAL_MOUNT);
+        let owner_label: String = format!("{FAULT_OWNER_LABEL}={container_name}");
         let password_env = format!("POSTGRES_PASSWORD={postgres_password}");
         let waldir_env = format!("POSTGRES_INITDB_WALDIR={WAL_FULL_WAL_DIRECTORY}");
         // The only place this module hands a string to a shell: the
@@ -1391,6 +1690,8 @@ impl WalFullPostgresContainer {
                 &container_name,
                 "--label",
                 "sunrise-edge-test=wal-full",
+                "--label",
+                &owner_label,
                 "--entrypoint",
                 "sh",
                 "--publish",
@@ -1421,21 +1722,13 @@ impl WalFullPostgresContainer {
             "docker run (wal-full container)",
         );
         let run_output = run_output_result.unwrap_or_else(|error| {
-            let cleanup_error = run_docker_command_bounded(
-                docker_argv_command(&["rm", "--force", "--volumes", &container_name]),
-                "docker rm after failed run",
-            )
-            .err();
+            let cleanup_error: Option<io::Error> = cleanup_fault_container_name(&container_name).err();
             panic!(
                 "docker run (wal-full container) failed: {error}; cleanup by exact generated name returned {cleanup_error:?}"
             )
         });
         let container_id = ContainerId::parse(run_output.trim()).unwrap_or_else(|error| {
-            let cleanup_error = run_docker_command_bounded(
-                docker_argv_command(&["rm", "--force", "--volumes", &container_name]),
-                "docker rm after invalid run output",
-            )
-            .err();
+            let cleanup_error: Option<io::Error> = cleanup_fault_container_name(&container_name).err();
             panic!(
                 "docker run produced an invalid container id {run_output:?}: {error}; cleanup by exact generated name returned {cleanup_error:?}"
             )
@@ -1444,7 +1737,12 @@ impl WalFullPostgresContainer {
             container_id,
             published_port: 0,
             postgres_password,
+            pgdata_volume,
+            wal_volume,
         };
+        container
+            .verify_tmpfs_mounts()
+            .unwrap_or_else(|error| panic!("wal-full tmpfs containment failed: {error}"));
         let port_output = run_docker_command_bounded_output(
             docker_argv_command(&["port", container.container_id.as_str(), "5432/tcp"]),
             "docker port (wal-full container)",
@@ -1478,6 +1776,7 @@ impl WalFullPostgresContainer {
     /// write/removal, and `pg_ctl status`/`start`) is an action the
     /// unprivileged `postgres` server user can perform.
     pub fn exec(&self, args: &[&str]) -> io::Result<String> {
+        self.verify_tmpfs_mounts()?;
         let mut full_args: Vec<&str> = vec![
             "exec",
             "--user",
@@ -1487,6 +1786,18 @@ impl WalFullPostgresContainer {
         ];
         full_args.extend_from_slice(args);
         run_docker_command_bounded_output(docker_argv_command(&full_args), "docker exec")
+    }
+
+    fn verify_tmpfs_mounts(&self) -> io::Result<()> {
+        self.pgdata_volume.verify()?;
+        self.wal_volume.verify()?;
+        verify_noswap_tmpfs_mounts(
+            &self.container_id,
+            &[
+                ("/var/lib/postgresql", WAL_FULL_PGDATA_TMPFS_BYTES),
+                (WAL_FULL_WAL_MOUNT, WAL_FULL_WAL_TMPFS_BYTES),
+            ],
+        )
     }
 
     /// True while the container's PID 1 (the supervisor script) is still
@@ -2835,6 +3146,105 @@ impl Drop for PgBouncerProxyContainer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FAULT_MOUNTS: [(&str, u64); 2] = [
+        ("/var/lib/postgresql", 536_870_912),
+        ("/bounded", 67_108_864),
+    ];
+
+    fn fault_mountinfo() -> &'static str {
+        "100 90 0:40 / /var/lib/postgresql rw,nosuid,nodev,relatime - tmpfs tmpfs rw,size=524288k,noswap\n\
+         101 90 0:41 / /bounded rw,nosuid,nodev,relatime - tmpfs tmpfs rw,size=65536k,noswap\n"
+    }
+
+    #[test]
+    fn fault_tmpfs_mountinfo_accepts_complete_noswap_mounts() {
+        assert!(validate_noswap_tmpfs_mounts(fault_mountinfo(), &FAULT_MOUNTS).is_ok());
+        let byte_sizes: String = fault_mountinfo()
+            .replace("size=524288k", "size=536870912")
+            .replace("size=65536k", "size=64m");
+        assert!(validate_noswap_tmpfs_mounts(&byte_sizes, &FAULT_MOUNTS).is_ok());
+        let wal_mountinfo: String = fault_mountinfo().replace("/bounded", "/pgwal");
+        let wal_mounts: [(&str, u64); 2] =
+            [("/var/lib/postgresql", 536_870_912), ("/pgwal", 67_108_864)];
+        assert!(validate_noswap_tmpfs_mounts(&wal_mountinfo, &wal_mounts).is_ok());
+    }
+
+    #[test]
+    fn fault_tmpfs_mountinfo_rejects_missing_noswap_and_substring() {
+        let rejected_options: [&str; 5] = [
+            "",
+            ",noswapx",
+            ",noswap=1",
+            ",noswap,noswap",
+            ",noswap,swap",
+        ];
+        for option in rejected_options {
+            let output: String = fault_mountinfo().replace(",noswap", option);
+            assert_eq!(
+                validate_noswap_tmpfs_mounts(&output, &FAULT_MOUNTS)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidData,
+            );
+        }
+    }
+
+    #[test]
+    fn fault_tmpfs_mountinfo_rejects_wrong_size_and_overflow() {
+        let rejected_sizes: [&str; 4] = [
+            "65535k",
+            "18446744073709551615g",
+            "65536k,size=65536k",
+            "+65536k",
+        ];
+        for size in rejected_sizes {
+            let output: String = fault_mountinfo().replace("size=65536k", &format!("size={size}"));
+            assert!(validate_noswap_tmpfs_mounts(&output, &FAULT_MOUNTS).is_err());
+        }
+        let missing_size: String = fault_mountinfo().replace(",size=65536k", "");
+        assert!(validate_noswap_tmpfs_mounts(&missing_size, &FAULT_MOUNTS).is_err());
+    }
+
+    #[test]
+    fn fault_tmpfs_mountinfo_rejects_missing_duplicate_or_shadowing_mount() {
+        let missing: &str = fault_mountinfo().split_once('\n').unwrap().1;
+        assert!(validate_noswap_tmpfs_mounts(missing, &FAULT_MOUNTS).is_err());
+        let duplicate: String = format!("{}{}", fault_mountinfo(), fault_mountinfo());
+        assert!(validate_noswap_tmpfs_mounts(&duplicate, &FAULT_MOUNTS).is_err());
+        let shadowing: String = format!(
+            "{}102 101 0:42 / /bounded/tablespace rw - ext4 /dev/example rw\n",
+            fault_mountinfo(),
+        );
+        assert!(validate_noswap_tmpfs_mounts(&shadowing, &FAULT_MOUNTS).is_err());
+    }
+
+    #[test]
+    fn fault_tmpfs_mountinfo_rejects_non_tmpfs_bind_and_read_only() {
+        let rejected: [String; 4] = [
+            fault_mountinfo().replace(" - tmpfs tmpfs ", " - ext4 /dev/example "),
+            fault_mountinfo().replace("0:41 / /bounded", "0:41 /subdirectory /bounded"),
+            fault_mountinfo().replace("/bounded rw,", "/bounded ro,"),
+            fault_mountinfo().replace("tmpfs rw,", "tmpfs ro,"),
+        ];
+        for output in rejected {
+            assert!(validate_noswap_tmpfs_mounts(&output, &FAULT_MOUNTS).is_err());
+        }
+    }
+
+    #[test]
+    fn fault_tmpfs_mountinfo_rejects_malformed_or_incomplete_records() {
+        let rejected: [String; 5] = [
+            String::new(),
+            fault_mountinfo().trim_end_matches('\n').to_owned(),
+            fault_mountinfo().replace(" - ", " "),
+            fault_mountinfo().replace("tmpfs tmpfs rw,", "tmpfs rw,"),
+            fault_mountinfo().replace('\n', "\r\n"),
+        ];
+        for output in rejected {
+            assert!(validate_noswap_tmpfs_mounts(&output, &FAULT_MOUNTS).is_err());
+        }
+    }
 
     #[test]
     fn container_id_accepts_min_and_max_length_lowercase_hex() {

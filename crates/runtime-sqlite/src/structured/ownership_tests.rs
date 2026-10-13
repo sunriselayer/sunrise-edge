@@ -1,4 +1,7 @@
 //! Real local process and attachment evidence, not power-loss qualification.
+#[cfg(target_os = "linux")]
+mod enospc;
+
 use super::*;
 use crate::rusqlite_backend::CommitBoundary;
 use hashing::{BuiltinHashFunction, HashFunction};

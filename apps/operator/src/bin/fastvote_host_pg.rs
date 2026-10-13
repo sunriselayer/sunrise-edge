@@ -580,7 +580,9 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
         );
         use std::io::Write;
         std::io::stdout().flush()?;
-        native_http::serve(listener, router, async {
+        let serve_policy: native_http::NativeHttpServePolicy =
+            native_http::NativeHttpServePolicy::default().with_certified_publication(true);
+        native_http::serve_with_policy(listener, router, serve_policy, async {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 abi.workspace = true
+age.workspace = true
 bonds.workspace = true
 consensus.workspace = true
 crypto.workspace = true
@@ -28,13 +29,16 @@ runtime.workspace = true
 runtime-postgres.workspace = true
 runtime-sqlite.workspace = true
 rustls.workspace = true
+sha2.workspace = true
 sunrise-edge-client.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal"] }
 tokio-rustls.workspace = true
 validator-set.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+rustix.workspace = true
 
 [dev-dependencies]
 canonical-encoding.workspace = true

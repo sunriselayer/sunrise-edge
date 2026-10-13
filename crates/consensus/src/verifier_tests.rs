@@ -94,14 +94,14 @@ fn ed25519_outcome_matrix_is_identical_for_both_refusal_responses() {
             public_key: &public_key,
             framed: &framed,
             signature: &signature[..63],
-            expected: Err("signature has an invalid length: 63 bytes".to_string()),
+            expected: Ok(false),
         },
         VerificationCase {
             label: "long signature",
             public_key: &public_key,
             framed: &framed,
             signature: &long_signature,
-            expected: Err("signature has an invalid length: 65 bytes".to_string()),
+            expected: Ok(false),
         },
         VerificationCase {
             label: "key error precedes signature error",

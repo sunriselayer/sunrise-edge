@@ -207,19 +207,37 @@ where
             // also pass before the activation is reported.
             match destination.get_successor_serving(operation, domain) {
                 Ok(SuccessorServingSlot::Serving(observation)) if observation.record == record => {
-                    reconcile_serving(
+                    let reconciliation: Result<
+                        SuccessorActivationOutcome,
+                        SuccessorActivationError,
+                    > = reconcile_serving(
                         root,
                         warrant.chain.current(),
                         destination,
                         operation,
                         signer,
                         &observation,
-                    )?;
-                    Ok(SuccessorActivationOutcome::Activated { subject, manifest })
+                    );
+                    reconcile_after_indeterminate(reconciliation, reason, subject, manifest)
                 }
                 _ => Err(SuccessorActivationError::Indeterminate(reason)),
             }
         }
+    }
+}
+
+// This mapper owns only the result classification after an ambiguous commit.
+// Its caller must supply the result of the complete immutable reconciliation;
+// no later refusal can prove that the preceding activation did not commit.
+fn reconcile_after_indeterminate(
+    reconciliation: Result<SuccessorActivationOutcome, SuccessorActivationError>,
+    original_reason: IndeterminateCommitReason,
+    subject: Digest32,
+    manifest: Digest32,
+) -> Result<SuccessorActivationOutcome, SuccessorActivationError> {
+    match reconciliation {
+        Ok(_outcome) => Ok(SuccessorActivationOutcome::Activated { subject, manifest }),
+        Err(_error) => Err(SuccessorActivationError::Indeterminate(original_reason)),
     }
 }
 
@@ -645,4 +663,93 @@ fn activation_transaction<S: StructuredDurableDomainStateStore + ?Sized>(
         None,
     )
     .map_err(too_large)
+}
+
+#[cfg(test)]
+mod indeterminate_classification_tests {
+    use super::*;
+    use protocol_types::HashAlgorithmId;
+
+    const REASONS: [IndeterminateCommitReason; 3] = [
+        IndeterminateCommitReason::DeadlineExceeded,
+        IndeterminateCommitReason::ConnectionLost,
+        IndeterminateCommitReason::CancellationRequested,
+    ];
+
+    fn attempted_identity() -> (Digest32, Digest32) {
+        (
+            Digest32::new(HashAlgorithmId::Blake3_256, [0x31; 32]),
+            Digest32::new(HashAlgorithmId::Blake3_256, [0x32; 32]),
+        )
+    }
+
+    #[test]
+    fn failed_reconciliation_preserves_original_activation_ambiguity() {
+        let (subject, manifest): (Digest32, Digest32) = attempted_identity();
+        for original_reason in REASONS {
+            let failures: [SuccessorActivationError; 5] = [
+                SuccessorActivationError::from(DurableReadError::Unavailable),
+                SuccessorActivationError::from(DurableReadError::DeadlineExceeded),
+                invalid("serving successor namespace is not unsealed"),
+                SuccessorActivationError::Unsupported("successor port unavailable"),
+                SuccessorActivationError::Rejected(DurableCommitRejection::InactiveNamespace),
+            ];
+            for failure in failures {
+                let reconciliation: Result<SuccessorActivationOutcome, SuccessorActivationError> =
+                    Err(failure);
+                let result: Result<SuccessorActivationOutcome, SuccessorActivationError> =
+                    reconcile_after_indeterminate(
+                        reconciliation,
+                        original_reason,
+                        subject,
+                        manifest,
+                    );
+                assert!(matches!(
+                    result,
+                    Err(SuccessorActivationError::Indeterminate(actual))
+                        if actual == original_reason
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn later_indeterminate_reason_does_not_replace_original_activation_reason() {
+        let (subject, manifest): (Digest32, Digest32) = attempted_identity();
+        for original_reason in REASONS {
+            let later_reason: IndeterminateCommitReason =
+                if original_reason == IndeterminateCommitReason::ConnectionLost {
+                    IndeterminateCommitReason::DeadlineExceeded
+                } else {
+                    IndeterminateCommitReason::ConnectionLost
+                };
+            let reconciliation: Result<SuccessorActivationOutcome, SuccessorActivationError> =
+                Err(SuccessorActivationError::Indeterminate(later_reason));
+            let result: Result<SuccessorActivationOutcome, SuccessorActivationError> =
+                reconcile_after_indeterminate(reconciliation, original_reason, subject, manifest);
+            assert!(matches!(
+                result,
+                Err(SuccessorActivationError::Indeterminate(actual))
+                    if actual == original_reason
+            ));
+        }
+    }
+
+    #[test]
+    fn successful_reconciliation_reports_exact_attempted_activation_identity() {
+        let (subject, manifest): (Digest32, Digest32) = attempted_identity();
+        for original_reason in REASONS {
+            let reconciliation: Result<SuccessorActivationOutcome, SuccessorActivationError> =
+                Ok(SuccessorActivationOutcome::AlreadyActivated { subject, manifest });
+            let result: Result<SuccessorActivationOutcome, SuccessorActivationError> =
+                reconcile_after_indeterminate(reconciliation, original_reason, subject, manifest);
+            assert!(matches!(
+                result,
+                Ok(SuccessorActivationOutcome::Activated {
+                    subject: actual_subject,
+                    manifest: actual_manifest,
+                }) if actual_subject == subject && actual_manifest == manifest
+            ));
+        }
+    }
 }

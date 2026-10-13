@@ -123,3 +123,18 @@ Migrate real callers, delete duplicated list parsing and binding mechanisms,
 review the actual full source, and pass the complete storage-neutral gate plus
 required CI before normal merge. No new crate, universal typed-handler trait,
 new authority, protocol version, provider certification or deployed service.
+
+## 2026-10-10: Canonical receipt-record binding
+
+The pure envelope owner now exposes one closed receipt-record binding result:
+decode, compare request ID, compare event digest, encode and compare exact
+canonical bytes, in that order. Core queries and wire queries consume this
+decision while retaining their earlier outer-ID check and original typed or
+string error projection. The SDK still checks its requested selector after
+the wire result has bound the inner record to the returned outer frame.
+
+Full record/response-byte and refusal-priority controls remain caller-owned.
+Different exact-slice source review passed; formatting, compilation and
+execution remain unperformed. Syntactic binding is not receipt inclusion,
+authenticated storage, successful business execution or custody assurance,
+and it does not remove the remaining SDK/core dependency edges or close R1.

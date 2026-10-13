@@ -3,6 +3,7 @@
 pub mod business_cut;
 pub mod business_import;
 mod business_pins;
+pub mod business_recovery;
 pub mod business_snapshot;
 pub mod common;
 pub mod conditional_readiness;
@@ -12,6 +13,7 @@ mod genesis_output;
 pub mod host_protocol_context;
 pub mod host_runtime;
 pub mod immutable_archive;
+pub mod native_observations;
 mod native_operations;
 mod native_tls;
 pub mod ordered_seal;

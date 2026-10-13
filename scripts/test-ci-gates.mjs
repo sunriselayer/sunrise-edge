@@ -381,6 +381,7 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   const expectedContractCommands = [
     ["node", ["scripts/test-ci-gates.mjs"]],
     ["node", ["scripts/test-native-release-evidence.mjs"]],
+    ["bash", ["scripts/test-postgres-docker-cleanup.sh"]],
   ];
   function checkContractTrace(log) {
     assert.deepEqual(log.map(({ tool, args }) => [tool, args]), expectedContractCommands);
@@ -496,6 +497,20 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     assert.throws(() => checkContractTrace(mutated.log),
       "a removed or duplicated owner must fail independent command expectations");
   }
+  const cleanupContractCommand = "bash scripts/test-postgres-docker-cleanup.sh";
+  for (const [index, replacement] of [
+    ": # intentionally removed cleanup contract owner",
+    `${cleanupContractCommand}\n      ${cleanupContractCommand}`,
+  ].entries()) {
+    const changed = safeExecutionText.replace(cleanupContractCommand, replacement);
+    assert.notEqual(changed, safeExecutionText);
+    const mutatedPath = join(directory, `cleanup-contract-owner-mutation-${index}.sh`);
+    writeFileSync(mutatedPath, changed, { flag: "wx", mode: 0o700 });
+    const mutated = runBash([functionScript, registry, mutatedPath, "ci_run_action", "gate-contract"]);
+    assert.equal(mutated.status, 0, mutated.stderr);
+    assert.throws(() => checkContractTrace(mutated.log),
+      "a removed or duplicated cleanup owner must fail independent command expectations");
+  }
   const unguardedContract = safeExecutionText.replace(
     'node scripts/test-ci-gates.mjs || return "$?"', "node scripts/test-ci-gates.mjs");
   assert.notEqual(unguardedContract, safeExecutionText);
@@ -507,6 +522,17 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   assert.equal(hiddenContractFailure.status, 0,
     "the mutation must reproduce an error hidden by nested disabled errexit");
   checkContractTrace(hiddenContractFailure.log);
+  const unguardedNativeContract = safeExecutionText.replace(
+    'node scripts/test-native-release-evidence.mjs || return "$?"', "node scripts/test-native-release-evidence.mjs");
+  assert.notEqual(unguardedNativeContract, safeExecutionText);
+  const unguardedNativeContractPath = join(directory, "unguarded-native-contract-mutation.sh");
+  writeFileSync(unguardedNativeContractPath, unguardedNativeContract, { flag: "wx", mode: 0o700 });
+  const hiddenNativeContractFailure = runBash(
+    [functionScript, registry, unguardedNativeContractPath, "ci_run_action", "gate-contract"],
+    { CI_MOCK_FAIL_ARG: "scripts/test-native-release-evidence.mjs" });
+  assert.equal(hiddenNativeContractFailure.status, 0,
+    "a successful cleanup owner must expose the unguarded native-contract failure mutation");
+  checkContractTrace(hiddenNativeContractFailure.log);
   const required = passed(run("scripts/check-all.sh"));
   const full = passed(run("scripts/check-all.sh", ["--full"], pgEnvironment));
   const lanes = new Map(groups.map((group) => [group, passed(run("scripts/check-all.sh", ["--group", group], postgresGroups.includes(group) ? pgEnvironment : {}))]));
@@ -520,13 +546,14 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     [["cargo", "test"], ["cargo", "test"]], "core-only recurrence must not gain a CLI prerequisite");
   const union = [...lanes.values()].flat();
   function contractEvents(log) {
-    return log.filter(({ tool, args }) => tool === "node" && expectedContractCommands.some(
-      ([, expected]) => args[0] === expected[0]));
+    return log.filter(({ tool, args }) => expectedContractCommands.some(
+      ([expectedTool, expectedArgs]) => tool === expectedTool && args.length === expectedArgs.length &&
+        args.every((argument, index) => argument === expectedArgs[index])));
   }
   for (const log of [required, full, lanes.get("lint")]) {
     checkContractTrace(contractEvents(log));
     assert.deepEqual(log.slice(0, expectedContractCommands.length), contractEvents(log),
-      "both contract tests must finish before any later gate action");
+      "all three contract tests must finish before any later gate action");
   }
   for (const [group, log] of lanes) {
     if (group !== "lint") assert.deepEqual(contractEvents(log), [],
@@ -559,6 +586,7 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   assert.deepEqual(full.filter(({ tool }) => tool === "deno").map(({ args, cwd }) => [args, relative(root, cwd)]),
     ["deno", "vercel", "supabase-edge", "aws-lambda"].map((name) => [["task", "check"], `adapters/${name}`]));
   assert.deepEqual(full.filter(({ tool, args }) => tool === "bash" && args[0].startsWith("scripts/")).map(({ args }) => args), [
+    ["scripts/test-postgres-docker-cleanup.sh"],
     ["scripts/check-fee-escrow-inventory.sh"], ["scripts/check-fee-escrow-inventory-pg.sh"],
     ["scripts/check-fastvote-pg.sh"], ["scripts/check-postgres-soak.sh", "--self-test-cli"],
     ["scripts/check-postgres-soak.sh", "--smoke"], ["scripts/build-cloudflare-validator.sh"],
@@ -585,6 +613,7 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   assert.equal(ignoredExecutions(required).length, recurringCases.length);
   assert.deepEqual(ignoredExecutions(required).map(ignoredName).sort(), recurringCases.map((row) => row[3]).sort());
   assert.deepEqual(required.filter(({ tool, args }) => tool === "bash").map(({ args }) => args), [
+    ["scripts/test-postgres-docker-cleanup.sh"],
     ["scripts/check-fee-escrow-inventory.sh"], ["scripts/check-postgres-soak.sh", "--self-test-cli"], ["scripts/build-cloudflare-validator.sh"],
   ]);
   assert.deepEqual(required.filter(({ tool, args }) => tool === "cargo" && args[0] === "test").map(({ args }) => args), [
@@ -823,4 +852,4 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }
-console.log("CI gate contract passed: 7 required lanes, 5 explicit PostgreSQL lanes, 19 retained plus 3 new required-recurrence ignored selectors, two DB/compiler-free contract owners, complete required/full coverage and fail-closed dispatch/results");
+console.log("CI gate contract passed: 7 required lanes, 5 explicit PostgreSQL lanes, 19 retained plus 3 new required-recurrence ignored selectors, three DB/compiler-free contract owners, complete required/full coverage and fail-closed dispatch/results");

@@ -48,10 +48,13 @@ couplings before treating either as a minimal standalone protocol SDK.
 HTTP, clients and provider adapters cannot replace core authorization.
 
 The pure [`node-core::envelope`](../../crates/node-core/src/envelope.rs)
-owner defines request/event/response/dedup data, canonical nested lists and
-their bounds. The core facade reexports existing type paths and retains event
-digest/context authority. `node-wire` consumes that list codec and owns only
-HTTP result framing, outer-request binding and the single-acknowledgement view.
+owner defines request/event/response/dedup data, canonical nested lists, their
+bounds and pure canonical receipt-record request/event binding. The core
+facade reexports existing type paths and retains event digest/context authority.
+Core and wire queries consume the same record binding decision while keeping
+their outer-ID check and caller-local error projection. `node-wire` owns
+HTTP result framing, outer-request binding and the single-acknowledgement view;
+the SDK separately checks the caller's requested receipt selector.
 Its narrow errors do not remove the remaining real core verifier Cargo edges.
 
 The pure [publication-query owner](../../crates/execution/src/publication/query_result.rs)
@@ -64,6 +67,14 @@ selector, semantics and authentication checks stay separate. Independent
 [execution frame controls](../../crates/execution/tests/publication_query_result.rs)
 and unchanged [literal core vectors](../../crates/node-core/src/publication/tests.rs)
 pin this boundary. Other SDK/core dependencies remain.
+
+The raw [submission-signature codec](../../crates/execution/src/lib.rs) owns
+the unchanged E009/version1 field layout and both signature-message families.
+[SDK preparation](../../clients/rust/src/transaction.rs) consumes it directly;
+the [typed core wrapper](../../crates/node-core/src/transaction_auth.rs) and
+public reexports preserve existing APIs. Raw zero/empty operands are syntax,
+not authenticated requests. Core admission and the SDK's RequestId/error
+coupling remain separate; seven new source controls are not executed evidence.
 
 ## Find the owner
 
@@ -97,7 +108,7 @@ pin this boundary. Other SDK/core dependencies remain.
 | Storage implementations | No request supplies its own authoritative domain or writer generation | [`runtime` traits](../../crates/runtime/src/lib.rs) define atomic state, receipts, objects, outbox and fencing | [PostgreSQL](../../crates/runtime-postgres/src/lib.rs), [SQLite](../../crates/runtime-sqlite/src/lib.rs), [SQL-durable](../../crates/runtime-sql-durable/src/lib.rs); [PostgreSQL tests](../../crates/runtime-postgres/tests), [SQLite tests](../../crates/runtime-sqlite/tests) |
 | Native SQLite connection and physical attachment | Structured/import and writable blob constructors; read-only blob inspection retains its narrower contract | Private [connection/settings owner](../../crates/runtime-sqlite/src/native_connection.rs), [metadata/directory owner](../../crates/runtime-sqlite/src/native_files.rs) and [native transaction backend](../../crates/runtime-sqlite/src/rusqlite_backend.rs); logical decisions stay in the shared SQL engine | [Real process-kill, external-lock and attachment controls](../../crates/runtime-sqlite/src/structured/ownership_tests.rs), existing import/Seal/restart and blob tests; local process evidence is not power-loss, off-host recovery or live writer authority |
 | Runtime operation context and component composition | Existing public paths remain reexported from [`runtime`](../../crates/runtime/src/lib.rs); no request supplies authority | Private [operation](../../crates/runtime/src/operation.rs) owns writer fence, deadline, correlation and pre-dispatch cancellation; private [composition](../../crates/runtime/src/composition.rs) wires supplied state/blob/signing/transport/time/scheduler components | Existing bounds/cancellation tests and [root-API component wiring tests](../../crates/runtime/src/tests.rs). Memory stores stay ordinarily compiled for private reconstruction; wiring does not certify provider durability |
-| Observed transaction assembly and read-only verification | [`runtime` transaction builder](../../crates/runtime/src/transaction.rs) and [state/structured read ports](../../crates/runtime/src/state_read.rs), reexported from the runtime facade | Domain-bound observation consistency, explicit strict/exact mutation composition and shared bounds; [paid completion](../../crates/node-core/src/paid_execution.rs) and [fee claims](../../crates/node-core/src/fee_claims.rs) own their strict assembly. Read-only [prepared material](../../crates/node-core/src/fast_path/prepared_material.rs) and [bond-chain verification](../../crates/node-core/src/bond_lifecycle/registration/handler.rs) do not own persistence | [Assembly tests](../../crates/runtime/src/transaction/tests.rs), [genuine paid refusal/replay regression](../../crates/node-core/src/paid_execution/observed_completion_tests.rs), reader negative-capability doc tests, real adapter checks and existing captured reconstruction tests. A builder/reader is not an authenticated snapshot, protocol warrant or confirmed write |
+| Observed transaction assembly and read-only verification | [`runtime` transaction builder](../../crates/runtime/src/transaction.rs) and [state/structured read ports](../../crates/runtime/src/state_read.rs), reexported from the runtime facade | Domain-bound observation consistency, explicit strict/exact mutation composition and shared bounds. Direct Atomic/Durable constructors share containment and represented-byte refusal in that private owner, retaining distinct mutation-set admission and empty rules; [paid completion](../../crates/node-core/src/paid_execution.rs) and [fee claims](../../crates/node-core/src/fee_claims.rs) own their strict assembly. Read-only [prepared material](../../crates/node-core/src/fast_path/prepared_material.rs) and [bond-chain verification](../../crates/node-core/src/bond_lifecycle/registration/handler.rs) do not own persistence | [Assembly and direct-constructor controls](../../crates/runtime/src/transaction/tests.rs), [genuine paid refusal/replay regression](../../crates/node-core/src/paid_execution/observed_completion_tests.rs), reader negative-capability doc tests, real adapter checks and existing captured reconstruction tests. A builder/reader is not an authenticated snapshot, protocol warrant or confirmed write |
 | Writer-free original operation and atomic ordered completion | Private [owning proposals](../../crates/node-core/src/operation_preparation.rs), the fee/bond/evidence/control owners above and actual direct committing wrappers | [Observed read scope](../../crates/node-core/src/ordered_economics/observed_read.rs) records deciding physical CAS reads for execution and signing; [completion](../../crates/node-core/src/ordered_economics/completion.rs) shares original evaluation and real confirmation across live/recovery/private replay. Business owners retain their separate logical generation operands; no intercepted commit or fake writable store remains | Genuine preparation tests in each owner, [observation negatives](../../crates/node-core/src/ordered_economics/observed_read/tests.rs), [completion negatives](../../crates/node-core/src/ordered_economics/completion/tests.rs) and [typed real SQLite handoff faults](../../crates/node-core/src/ordered_economics/tests/causal_placement/control_reconstruction/frozen_completion/sqlite_handoff_faults.rs). A prepared proposal cannot expose output as confirmed persistence |
 | Test observation capabilities, not business fixtures | Private test-only [reader](../../crates/node-core/src/test_support/reader_view.rs), [publication counter](../../crates/node-core/src/test_support/counted_blobs.rs) and [complete capture](../../crates/node-core/src/test_support/capture.rs) | Real fee/bond/registration owners compose genuine prior operations and distinct quorum voters; same-signer mirrors establish complete direct/prepared equality without normalizing local history | [Storage-port capture negatives](../../crates/node-core/src/test_support/capture/tests.rs) exercise real reads and row/body differences, not business authority or blob-backed execution. Production replay/source audit and cut/import comparison keep their distinct owning verifiers |
 
@@ -164,6 +175,16 @@ contracts; they do not define protocol rules.
   [neutral compiled-CLI locator](../../apps/operator/tests/support/compiled_cli_process.rs)
   is also reused by existing optional PostgreSQL tests, without importing their
   fixture/deployment authority into local acceptance.
+  The [shared compiled-child capture](../../apps/operator/tests/support/compiled_source_host_process.rs)
+  returns full `Output` only after successful pipe reads and reader joins; live
+  startup returns one LF-terminated first line without waiting for host-stream EOF.
+  All ten startup calls pass their actual fixture-chain byte allowance before
+  spawning; the shared reader checks the cap-plus-one physical probe and preserves
+  encountered read/UTF-8 error priority and exact successful bytes. Existing two
+  pure TLS-target controls and four new controls cover refusal, finite never-LF
+  reads and independent maximum producer formats. These are unexecuted source
+  contracts, not heap/timing/whole-EOF or all-path cleanup guarantees; see
+  [DR-0229](../architecture/decisions/0229-bounded-compiled-host-startup-line.md).
 
 ## Successor invocation and immutable transport
 
@@ -198,8 +219,19 @@ contracts; they do not define protocol rules.
   queued, detached and unwinding synchronous work independently of telemetry.
   [Fixed local observations](../../crates/native-http/src/observations.rs)
   belong to existing accept/upgrade/collector/I/O branches, not protocol state
-  or a public metrics endpoint. [Focused lifecycle controls](../../crates/native-http/src/tests/native_operations.rs)
+  or a public metrics endpoint. The [opt-in local exporter](../../apps/operator/src/native_operations/live_observations.rs)
+  owns path validation, an unbound nonblocking datagram sender and charged
+  cooldown; the stop owner retains readiness, signal selection and drain.
+  [Focused lifecycle controls](../../crates/native-http/src/tests/native_operations.rs)
   and the existing four-store direct-TLS fixture retain distinct oracles.
+- [Bounded foreground observation collector](../../apps/operator/src/native_observations.rs)
+  owns exact CLI arguments, Linux retained-directory/socket lifetime, one setup/
+  receive deadline, finite attempts and complete-collection output. The shared
+  [live decoder](../../crates/native-http/src/observations.rs) owns the fixed
+  15-counter grammar beside the unchanged encoders. The collector never unlinks
+  a socket, signals a node or authenticates senders. The existing
+  [Native release owner](../../scripts/check-native-release-evidence.mjs) includes
+  its actual binary as the thirteenth target, not an extra build lane.
 
 - [Core authority](../../crates/node-core/src/serving_authority.rs) separates
   historical evidence from fresh issuer-bound warrants.

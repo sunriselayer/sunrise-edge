@@ -160,8 +160,9 @@ pub(crate) fn is_successor_scoped_key(key: &[u8]) -> bool {
 }
 
 /// DR-0191 Section 4: whether `key` is one of the five live safety rows of
-/// exactly the successor `scope` (singletons exactly; view families with
-/// exactly one 8-byte view suffix). A chain scope owns no such row.
+/// exactly `scope` (singletons exactly; view families with exactly one
+/// 8-byte view suffix). A successor scope selects epoch-scoped rows; a chain
+/// scope selects the corresponding ordinary rows.
 pub(crate) fn is_key_of_scope(
     key: &[u8],
     chain: &ChainId,

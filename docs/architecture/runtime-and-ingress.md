@@ -232,9 +232,10 @@ Phase 15 adds the `native-http` crate around node-core using Axum and Tokio.
 `POST /v1/events` accepts exactly one body with media type
 `application/vnd.sunrise-edge.node-event`, no unrecognized media-type
 parameters, and no content encoding other than absent or `identity`. The body
-limit is 16 MiB plus a fixed 512-byte framing allowance; the inner node event
-still enforces its independent canonical and payload bounds. Successful calls
-return a versioned canonical `HttpNodeResult` as
+limit is `MAX_HTTP_EVENT_BODY_BYTES`, defined as
+`node_core::MAX_NODE_PAYLOAD_BYTES + 512` for the framing allowance; the inner
+node event still enforces its independent canonical and payload bounds.
+Successful calls return a versioned canonical `HttpNodeResult` as
 `application/vnd.sunrise-edge.node-result`. Nested responses retain stable
 request IDs and adapter-neutral canonical `NodeResponse` framing.
 
@@ -353,6 +354,34 @@ ingress timer then. The one-request connection, header/body caps and deadlines,
 connection/blocking permits, EOF/errors and independent response-write timers
 remain unchanged. This phase marker is transport metadata, not execution,
 signing or storage authority; operation deadlines remain with their owners.
+
+[DR-0226](decisions/0226-native-certified-publication-collector.md) gives the
+outer collector a separate, default-off
+`NativeHttpServePolicy::with_certified_publication` opt-in. Only POST to the
+exact `/v1/fastvote/publications/retain` path or
+`/v1/fastvote/drain/import/` followed by exactly 64 lowercase ASCII hex
+characters uses `consensus::bundle::MAX_ENCODED_BUNDLE_BYTES`. The latter uses
+the existing selector decoder. Selection uses the raw URI path, excluding the
+query, with no trimming, normalization or percent decoding. Trailing slashes,
+extra segments, malformed selectors, other methods and unrelated paths retain
+their existing collector bounds. Router-local limits and all signature,
+membership, serving-epoch, writer-fence and commit checks remain independent.
+
+The original PostgreSQL FastVote host opts in on its existing plaintext serve
+call. Original SQLite and activated-successor serving opt in on both existing
+plaintext and direct-TLS branches. Signerless successor history, devnet and
+default serve policies stay unchanged. Enabling collector admission mounts no
+route and grants no execution, signing, retention or import authority; disabled
+and direct-mutation route refusals remain with their existing routers.
+
+Focused raw-TCP controls use bounded chunked writes and a test-only Bytes
+probe with its Axum extractor limit explicitly raised to the bundle ceiling.
+They require the exact received length on dispatch and zero handler/dispatch
+counts on collector rejection, at the default and bundle boundaries. This
+isolates collector compatibility, not semantic retention of a valid large
+publication. Connection/header/input/output deadlines, permits, cancellation,
+request-read phase completion and ambiguous commit behavior are unchanged; the
+global default body and response ceilings are not raised.
 
 Canonical event decoding, node-core invocation, synchronous runtime/store
 calls, request-scoped outbox delivery, and canonical result encoding run as one

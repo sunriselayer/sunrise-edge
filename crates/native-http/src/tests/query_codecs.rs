@@ -609,6 +609,53 @@ fn receipt_query_result_rejects_nested_event_digest_mismatch() {
 }
 
 #[test]
+fn receipt_query_result_checks_request_before_event_digest() {
+    let outer_id: RequestId = request_id(0x5C);
+    let nested_id: RequestId = request_id(0x5D);
+    let outer_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x5E; 32]);
+    let nested_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha3_256, [0x5F; 32]);
+    let record: NodeDedupRecord =
+        NodeDedupRecord::new(nested_id, nested_digest, Vec::new()).unwrap();
+    let nested_bytes: Vec<u8> = record.encode().unwrap();
+    let bytes: Vec<u8> = present_receipt_frame(outer_id, outer_digest, nested_bytes);
+
+    let error: QueryResultError = HttpReceiptQueryResult::decode(&bytes).unwrap_err();
+
+    assert_eq!(
+        error,
+        QueryResultError::RequestIdentityMismatch {
+            expected: outer_id,
+            actual: nested_id,
+        }
+    );
+    assert!(std::error::Error::source(&error).is_none());
+}
+
+#[test]
+fn receipt_query_result_rejects_other_envelope_before_outer_binding() {
+    let outer_id: RequestId = request_id(0x62);
+    let nested_id: RequestId = request_id(0x63);
+    let outer_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x64; 32]);
+    let response: NodeResponse =
+        NodeResponse::new(nested_id, NodeResponseStatus::Accepted, None).unwrap();
+    let nested_bytes: Vec<u8> = response.encode().unwrap();
+    let bytes: Vec<u8> = present_receipt_frame(outer_id, outer_digest, nested_bytes);
+
+    let error: QueryResultError = HttpReceiptQueryResult::decode(&bytes).unwrap_err();
+
+    assert_eq!(
+        error,
+        QueryResultError::InvalidDedupRecord(node_core::EnvelopeError::CanonicalDecoding(
+            CanonicalDecodingError::UnexpectedTypeId {
+                expected: 0xE003,
+                actual: 0xE002,
+            }
+        ))
+    );
+    assert!(std::error::Error::source(&error).is_none());
+}
+
+#[test]
 fn next_nonce_query_result_round_trip_is_bounded_and_stable() {
     let result = HttpNextNonceQueryResult::new(Address::new([0x61; 32]), Epoch::new(7), 42);
     let encoded = result.encode().unwrap();

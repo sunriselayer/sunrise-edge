@@ -16,8 +16,8 @@ export const RUST_VERSION = "1.97.1";
 export const TARGET = "x86_64-unknown-linux-gnu";
 export const NAMES = Object.freeze([
   "sqlite_genesis", "standard_asset_genesis", "genesis_inspect", "sqlite_source_host",
-  "business_cut", "business_import", "conditional_readiness", "ordered_seal",
-  "successor_activation", "successor_host", "sunrise-edge-cli",
+  "business_cut", "business_import", "business_recovery", "conditional_readiness", "ordered_seal",
+  "successor_activation", "successor_host", "native_observations", "sunrise-edge-cli",
 ]);
 const PACKAGES = ["sunrise-edge-operator", "sunrise-edge-cli"];
 const SCRIPT = fileURLToPath(import.meta.url);
@@ -71,8 +71,8 @@ export function heldFile(p, { executable = false, singleLink = false } = {}) {
     `Not an ordinary executable: ${p}`);
   if (singleLink) requireThat(before.nlink === 1, `Aliased saved file: ${p}`);
   const fd = openSync(p, F.O_RDONLY | F.O_NOFOLLOW | F.O_NONBLOCK);
-  const initial = fstatSync(fd);
   try {
+    const initial = fstatSync(fd);
     requireThat(same(stamp(initial), stamp(before)), `Changed file attachment: ${p}`);
     return {
       fd, initial, path: p,
@@ -1345,7 +1345,7 @@ export async function runFixtureEvidence(args, doubles, callerEnv = {}) {
 if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT) {
   try {
     await runNativeReleaseEvidence(process.argv.slice(2));
-    process.stdout.write("Two native builds and eleven full-byte comparisons succeeded; local evidence only.\n");
+    process.stdout.write(`Two native builds and ${NAMES.length} full-byte comparisons succeeded; local evidence only.\n`);
   } catch (e) {
     process.stderr.write(`${e.message}\n`); process.exitCode = 1;
   }

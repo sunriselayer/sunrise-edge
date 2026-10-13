@@ -393,7 +393,10 @@ fn query_receipt_corrupt_bytes_fail_closed() {
 
     let error = query_request_receipt(&store, &context, domain(0x73), req).unwrap_err();
 
-    assert!(matches!(error, NodeCoreError::PersistenceInvariant(_)));
+    assert!(matches!(
+        error,
+        NodeCoreError::PersistenceInvariant("invalid durable receipt")
+    ));
 }
 
 #[test]
@@ -413,5 +416,58 @@ fn query_receipt_outer_digest_mismatch_fails_closed() {
 
     let error = query_request_receipt(&store, &context, domain(0x74), req).unwrap_err();
 
-    assert!(matches!(error, NodeCoreError::PersistenceInvariant(_)));
+    assert!(matches!(
+        error,
+        NodeCoreError::PersistenceInvariant(
+            "durable receipt projection and canonical record differ"
+        )
+    ));
+}
+
+#[test]
+fn query_receipt_checks_outer_durable_identity_before_nested_decode() {
+    let store: ScriptedDurableStore = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let context: DurableOperationContext = durable_context();
+    let req: RequestId = request(0x39);
+    let other: RequestId = request(0x3A);
+    let durable_request_id: DurableRequestId = DurableRequestId::new(*other.as_bytes()).unwrap();
+    let event_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x3B; 32]);
+    let receipt: DurableRequestReceipt =
+        DurableRequestReceipt::new(durable_request_id, event_digest, vec![0xEE, 0x00]).unwrap();
+    store.receipt.lock().unwrap().replace(receipt);
+
+    let error: NodeCoreError =
+        query_request_receipt(&store, &context, domain(0x75), req).unwrap_err();
+
+    assert!(matches!(
+        error,
+        NodeCoreError::PersistenceInvariant("durable receipt lookup returned another request")
+    ));
+}
+
+#[test]
+fn query_receipt_nested_request_and_digest_mismatch_keep_projection_error() {
+    let store: ScriptedDurableStore = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let context: DurableOperationContext = durable_context();
+    let req: RequestId = request(0x3C);
+    let nested_request_id: RequestId = request(0x3D);
+    let durable_request_id: DurableRequestId = DurableRequestId::new(*req.as_bytes()).unwrap();
+    let outer_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x3E; 32]);
+    let nested_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha3_256, [0x3F; 32]);
+    let dedup: NodeDedupRecord =
+        NodeDedupRecord::new(nested_request_id, nested_digest, Vec::new()).unwrap();
+    let canonical_bytes: Vec<u8> = dedup.encode().unwrap();
+    let receipt: DurableRequestReceipt =
+        DurableRequestReceipt::new(durable_request_id, outer_digest, canonical_bytes).unwrap();
+    store.receipt.lock().unwrap().replace(receipt);
+
+    let error: NodeCoreError =
+        query_request_receipt(&store, &context, domain(0x76), req).unwrap_err();
+
+    assert!(matches!(
+        error,
+        NodeCoreError::PersistenceInvariant(
+            "durable receipt projection and canonical record differ"
+        )
+    ));
 }

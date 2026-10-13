@@ -115,7 +115,17 @@
 - [DR-0216: owned local TLS stop, restart and explicit trust rotation](0216-local-tls-stop-restart-rotation.md)
 - [DR-0217: one publication-query codec and narrow error owner](0217-publication-query-contract-owner.md)
 - [DR-0219: direct Native TLS under one connection lifecycle](0219-native-direct-tls-connection-ownership.md)
+- [DR-0221: bounded encrypted saved-business-closure transport (accepted design)](0221-encrypted-recovery-closure.md)
 - [DR-0222: Native stop, actual work drain and bounded observations](0222-native-stop-and-operational-observations.md)
+- [DR-0223: opt-in local Native observation export](0223-local-native-observation-export.md)
+- [DR-0224: bounded caller-owned local observation collection](0224-bounded-local-observation-collector.md)
+- [DR-0225: observed acquisition floor and current binding](0225-observed-acquisition-floor-and-current-binding.md)
+- [DR-0226: exact certified-publication collector admission](0226-native-certified-publication-collector.md)
+- [DR-0227: fresh causal ordered slash evidence admission](0227-fresh-ordered-slash-evidence-admission.md)
+- [DR-0228: fresh registered withdrawal release-target admission](0228-fresh-withdraw-release-target-admission.md)
+- [DR-0229: bounded compiled-host startup line](0229-bounded-compiled-host-startup-line.md)
+- [DR-0230: bounded Docker fault environments](0230-bounded-docker-fault-environments.md)
+- [DR-0232: bounded recovery failure reproduction and observation profile](0232-bounded-recovery-failure-reproduction.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong
