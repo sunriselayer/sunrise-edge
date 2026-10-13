@@ -194,24 +194,22 @@ pub(super) fn write_private_file(
     replace: bool,
 ) -> Result<(), CustodyError> {
     require_private_dir(parent_of(path)?, expected_dir_mode)?;
-    if replace {
-        if let Ok(existing) = fs::symlink_metadata(path) {
-            if existing.file_type().is_symlink() {
-                return Err(CustodyError::Symlink(path.to_path_buf()));
-            }
-            if !existing.is_file() {
-                return Err(CustodyError::NotARegularFile(path.to_path_buf()));
-            }
-            // Refuse to truncate/take over a file this process does not
-            // already own, even though its mode happens to match.
-            let own_uid = current_effective_uid()?;
-            if existing.uid() != own_uid {
-                return Err(CustodyError::UnexpectedOwner {
-                    path: path.to_path_buf(),
-                    expected: own_uid,
-                    actual: existing.uid(),
-                });
-            }
+    if replace && let Ok(existing) = fs::symlink_metadata(path) {
+        if existing.file_type().is_symlink() {
+            return Err(CustodyError::Symlink(path.to_path_buf()));
+        }
+        if !existing.is_file() {
+            return Err(CustodyError::NotARegularFile(path.to_path_buf()));
+        }
+        // Refuse to truncate/take over a file this process does not
+        // already own, even though its mode happens to match.
+        let own_uid = current_effective_uid()?;
+        if existing.uid() != own_uid {
+            return Err(CustodyError::UnexpectedOwner {
+                path: path.to_path_buf(),
+                expected: own_uid,
+                actual: existing.uid(),
+            });
         }
     }
     let mut options = fs::OpenOptions::new();

@@ -21,7 +21,7 @@ use sunrise_edge_client::{
 /// seed signer, or a pinned publication-only custody target (`crate::custody`).
 /// Ledger publication signing is rejected earlier, before this is built.
 enum PublishSigner {
-    Local(LocalSigner),
+    Local(Box<LocalSigner>),
     Custody(CustodyTarget),
 }
 
@@ -176,9 +176,9 @@ where
     // Reject hardware signing before file access, device selection, or network I/O.
     let signer: Option<PublishSigner> = if action == "publish" {
         match parse_signer_selection(&parsed)? {
-            SignerSelection::Local { seed_file } => Some(PublishSigner::Local(
+            SignerSelection::Local { seed_file } => Some(PublishSigner::Local(Box::new(
                 LocalSigner::from_seed(load_dev_seed(Path::new(&seed_file))?),
-            )),
+            ))),
             SignerSelection::Ledger { .. } => {
                 return Err(invalid("Ledger publication signing is not supported"));
             }
@@ -247,7 +247,9 @@ where
             request_id,
         )?;
         let submission = match &signer {
-            PublishSigner::Local(local_signer) => prepared.sign_and_finalize_with(local_signer)?,
+            PublishSigner::Local(local_signer) => {
+                prepared.sign_and_finalize_with(local_signer.as_ref())?
+            }
             PublishSigner::Custody(target) => {
                 let signature = request_signature(
                     target,

@@ -219,15 +219,12 @@ pub(super) async fn serve_async(
         // `io_deadline` to each read and write (which could let one
         // connection run up to several multiples of `io_deadline` past the
         // absolute deadline).
-        let signed = match timeout(
+        let signed: bool = timeout(
             io_deadline,
             handle_one_connection(stream, &config, &signer, approvals_dir),
         )
         .await
-        {
-            Ok(signed) => signed,
-            Err(_elapsed) => false,
-        };
+        .unwrap_or_default();
         summary.requests_handled += 1;
         if signed {
             summary.requests_signed += 1;
