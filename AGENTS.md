@@ -159,6 +159,14 @@ policy. Do not edit an old vector and call the change compatible.
 Keep foundational crates low in the dependency graph. Avoid cycles and avoid
 making protocol primitives depend on execution engines, runtimes, or adapters.
 
+## Cloudflare CLI
+
+Use Cloudflare CLI (`cf` or `cloudflare`) for future Cloudflare operations.
+Do not directly invoke Wrangler. This is the user's selected CLI policy.
+Discover commands with `cf cli search` using anonymous descriptions of the
+action and resource type; exclude domains, names, IDs and credentials.
+Inspect the discovered command's help or schema before using it.
+
 ## Workflow
 
 1. Inspect `git status` and preserve unrelated user changes.
