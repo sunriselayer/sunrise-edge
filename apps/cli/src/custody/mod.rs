@@ -31,7 +31,6 @@ pub(crate) mod wire;
 
 use std::ffi::OsString;
 use std::path::Path;
-use std::time::Duration;
 
 use crate::args::{ArgsError, ParsedArgs, parse_flags, scalar};
 use crate::error::CliError;
@@ -77,17 +76,16 @@ where
         scalar(TOTAL_DEADLINE_SECS),
     ];
     let parsed: ParsedArgs = parse_flags(args, &specs)?;
+    // Pure argument validation first, before any config/key file I/O.
+    let bounds = server::ServeBounds::new(
+        parse_u32(MAX_CONNECTIONS, parsed.require(MAX_CONNECTIONS)?)?,
+        parse_u32(MAX_REQUESTS, parsed.require(MAX_REQUESTS)?)?,
+        parse_u32(TOTAL_DEADLINE_SECS, parsed.require(TOTAL_DEADLINE_SECS)?)?,
+    )?;
     let config = config::CustodyConfig::load(Path::new(parsed.require(CONFIG)?))?;
     let signer = keyfile::load_signer(Path::new(parsed.require(KEY_FILE)?))?;
     let socket_path = Path::new(parsed.require(SOCKET)?);
     let approvals_dir = Path::new(parsed.require(APPROVALS_DIR)?);
-    let bounds = server::ServeBounds {
-        max_connections: parse_u32(MAX_CONNECTIONS, parsed.require(MAX_CONNECTIONS)?)?,
-        max_requests: parse_u32(MAX_REQUESTS, parsed.require(MAX_REQUESTS)?)?,
-        total_deadline: Duration::from_secs(
-            parse_u32(TOTAL_DEADLINE_SECS, parsed.require(TOTAL_DEADLINE_SECS)?)?.into(),
-        ),
-    };
     let summary = server::run(config, signer, socket_path, approvals_dir, bounds)?;
     println!("connections_accepted={}", summary.connections_accepted);
     println!("requests_handled={}", summary.requests_handled);

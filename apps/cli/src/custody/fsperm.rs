@@ -15,8 +15,12 @@ use std::path::Path;
 
 use super::error::CustodyError;
 
+/// Includes the setuid/setgid/sticky bits (`0o7000`) in addition to the
+/// ordinary owner/group/other permission bits (`0o0777`): a setuid/setgid
+/// file masked away by a narrower `0o777` comparison would silently pass an
+/// "exactly mode 0600" check while still carrying a dangerous special bit.
 fn exact_mode(metadata: &fs::Metadata) -> u32 {
-    metadata.permissions().mode() & 0o777
+    metadata.permissions().mode() & 0o7777
 }
 
 fn io_error(path: &Path, source: std::io::Error) -> CustodyError {
@@ -26,7 +30,41 @@ fn io_error(path: &Path, source: std::io::Error) -> CustodyError {
     }
 }
 
-/// Verifies `dir` is a non-symlink directory at exactly `expected_mode`.
+/// Reads this process's own current effective UID from a safe, bounded
+/// parse of `/proc/self/status`'s `Uid:` line (Linux-specific), rather than
+/// an `unsafe` `libc::geteuid` call or a new dependency. Unlike
+/// `super::selfuid::own_uid`, this needs no Tokio runtime: it is called from
+/// plain synchronous config/key/approval loading paths that run before any
+/// runtime exists, as well as from inside `serve`'s own async context, and
+/// must not spin up a nested runtime in either case.
+fn current_effective_uid() -> Result<u32, CustodyError> {
+    /// Generous bound for one bounded read of `/proc/self/status`, which is
+    /// a small fixed-shape pseudo-file; this bounds the read before any
+    /// parsing is attempted rather than reading to an unbounded `String`.
+    const MAX_STATUS_BYTES: usize = 8192;
+    let status_path = Path::new("/proc/self/status");
+    let mut file = fs::File::open(status_path).map_err(|source| io_error(status_path, source))?;
+    let mut buffer = String::new();
+    file.by_ref()
+        .take(u64::try_from(MAX_STATUS_BYTES).unwrap_or(u64::MAX))
+        .read_to_string(&mut buffer)
+        .map_err(|source| io_error(status_path, source))?;
+    for line in buffer.lines() {
+        // The `Uid:` line is `Uid:\t<real>\t<effective>\t<saved>\t<fs>`; the
+        // effective UID is the second whitespace-separated field.
+        if let Some(rest) = line.strip_prefix("Uid:") {
+            return rest
+                .split_whitespace()
+                .nth(1)
+                .and_then(|field| field.parse::<u32>().ok())
+                .ok_or(CustodyError::SelfUidUnavailable);
+        }
+    }
+    Err(CustodyError::SelfUidUnavailable)
+}
+
+/// Verifies `dir` is a non-symlink directory at exactly `expected_mode`,
+/// owned by this process's own current effective UID.
 pub(super) fn require_private_dir(dir: &Path, expected_mode: u32) -> Result<(), CustodyError> {
     let metadata = fs::symlink_metadata(dir).map_err(|source| io_error(dir, source))?;
     if metadata.file_type().is_symlink() {
@@ -41,6 +79,14 @@ pub(super) fn require_private_dir(dir: &Path, expected_mode: u32) -> Result<(), 
             path: dir.to_path_buf(),
             expected: expected_mode,
             actual: mode,
+        });
+    }
+    let own_uid = current_effective_uid()?;
+    if metadata.uid() != own_uid {
+        return Err(CustodyError::UnexpectedOwner {
+            path: dir.to_path_buf(),
+            expected: own_uid,
+            actual: metadata.uid(),
         });
     }
     Ok(())
@@ -80,6 +126,14 @@ pub(super) fn read_private_file(
             actual: pre_mode,
         });
     }
+    let own_uid = current_effective_uid()?;
+    if pre_open.uid() != own_uid {
+        return Err(CustodyError::UnexpectedOwner {
+            path: path.to_path_buf(),
+            expected: own_uid,
+            actual: pre_open.uid(),
+        });
+    }
     let pre_identity = (pre_open.dev(), pre_open.ino());
 
     let mut file = fs::File::open(path).map_err(|source| io_error(path, source))?;
@@ -93,6 +147,17 @@ pub(super) fn read_private_file(
             path: path.to_path_buf(),
             expected: expected_file_mode,
             actual: opened_mode,
+        });
+    }
+    // Re-checked on the already-opened handle too, not only on the
+    // pre-open path metadata: a handle's metadata cannot be changed by a
+    // later filesystem replacement, so this closes the same TOCTOU race the
+    // dev/ino identity check below closes for file identity.
+    if opened.uid() != own_uid {
+        return Err(CustodyError::UnexpectedOwner {
+            path: path.to_path_buf(),
+            expected: own_uid,
+            actual: opened.uid(),
         });
     }
     if (opened.dev(), opened.ino()) != pre_identity {
@@ -136,6 +201,16 @@ pub(super) fn write_private_file(
             }
             if !existing.is_file() {
                 return Err(CustodyError::NotARegularFile(path.to_path_buf()));
+            }
+            // Refuse to truncate/take over a file this process does not
+            // already own, even though its mode happens to match.
+            let own_uid = current_effective_uid()?;
+            if existing.uid() != own_uid {
+                return Err(CustodyError::UnexpectedOwner {
+                    path: path.to_path_buf(),
+                    expected: own_uid,
+                    actual: existing.uid(),
+                });
             }
         }
     }
@@ -303,5 +378,55 @@ mod tests {
             Err(CustodyError::Symlink(_))
         ));
         assert_eq!(fs::read(&victim).unwrap(), b"untouched");
+    }
+
+    /// Cross-checks the two independent, differently-implemented current-UID
+    /// derivations this crate relies on: `current_effective_uid`'s bounded
+    /// synchronous `/proc/self/status` parse (used by every fsperm check,
+    /// including from plain sync code with no Tokio runtime), and
+    /// `selfuid::own_uid`'s async `UnixStream::pair`/`peer_cred` derivation
+    /// (used by `serve`'s own startup operator-UID check). They must agree.
+    #[tokio::test(flavor = "current_thread")]
+    async fn current_effective_uid_matches_the_async_peer_cred_derived_uid() {
+        let sync_uid = current_effective_uid().unwrap();
+        let async_uid = super::super::selfuid::own_uid().await.unwrap();
+        assert_eq!(sync_uid, async_uid);
+    }
+
+    /// Every fixture file/directory in this test module is created by this
+    /// same test process, so it is always owned by this process's own
+    /// current effective UID; this proves the added owner check does not
+    /// spuriously reject that completely ordinary case. A genuine
+    /// wrong-owner fixture needs a second real UID (root, or `chown`
+    /// privileges) and is exercised by the separate distinct-UID Docker
+    /// fixture, not here.
+    #[test]
+    fn read_private_file_accepts_a_file_owned_by_this_process() {
+        let dir = TempDir::new(0o700);
+        let path = dir.child("config");
+        write_mode_file(&path, 0o600, b"hello");
+        let own_uid = current_effective_uid().unwrap();
+        assert_eq!(fs::symlink_metadata(&path).unwrap().uid(), own_uid);
+        assert_eq!(fs::symlink_metadata(&dir.0).unwrap().uid(), own_uid);
+        read_private_file(&path, 0o600, 0o700, 4096).unwrap();
+    }
+
+    /// A setuid/setgid/sticky bit is not masked away by the exact-mode
+    /// check: `0o4600` must be rejected even though `0o4600 & 0o777 ==
+    /// 0o600`, proving special bits are compared, not only the ordinary
+    /// owner/group/other bits.
+    #[test]
+    fn rejects_a_file_with_an_unexpected_setuid_bit() {
+        let dir = TempDir::new(0o700);
+        let path = dir.child("config");
+        write_mode_file(&path, 0o4600, b"hello");
+        assert!(matches!(
+            read_private_file(&path, 0o600, 0o700, 4096),
+            Err(CustodyError::UnexpectedMode {
+                expected: 0o600,
+                actual: 0o4600,
+                ..
+            })
+        ));
     }
 }

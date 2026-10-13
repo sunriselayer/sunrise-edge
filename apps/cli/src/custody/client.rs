@@ -126,7 +126,7 @@ mod tests {
     use super::super::config::CustodyConfig;
     use super::super::fsperm::test_support::TempDir;
     use super::super::selfuid::own_uid;
-    use super::super::server::{self, ServeBounds};
+    use super::super::server;
     use super::super::{approvals, wire};
     use super::*;
     use sunrise_edge_client::{ArtifactParts, PackageOrigin, PublicationContext};
@@ -165,18 +165,25 @@ mod tests {
         .unwrap()
     }
 
-    /// Exercises a full signed round trip over a real Unix socket: real
-    /// framing, a real `peer_cred` check on both the client and server
-    /// side, a real approval-store lookup, and independent signature
-    /// verification via `PreparedPublication::finalize`. This calls
-    /// `serve_async` directly rather than the public `server::run`, because
-    /// in a single test process the only available peer necessarily shares
-    /// this process's own UID, so `config.operator_uid` is set to that same
-    /// UID here. `server::run`'s separate "operator UID must differ from
-    /// custody's own UID" startup invariant is covered on its own in
-    /// `server::tests::run_refuses_at_startup_when_operator_uid_equals_custodys_own_uid`;
-    /// genuinely distinct-UID behavior needs the separate Docker fixture
-    /// (see the custody guide), not an in-process test.
+    /// Exercises a full signed round trip over a real Unix socket, using the
+    /// real client (`request_signature_async`/`connect_and_check_peer`) and
+    /// the real signing decision (`server::sign_request`, which itself
+    /// rebuilds `PreparedPublication` and verifies its own produced
+    /// signature via `finalize`), wired to a **test-owned** listener rather
+    /// than `server::serve_async`.
+    ///
+    /// This is deliberate, not a simplification: `serve_async` always
+    /// enforces "operator UID must differ from custody's own UID" at
+    /// startup (see `server::tests::run_refuses_at_startup_when_operator_uid_equals_custodys_own_uid`,
+    /// which proves that invariant on its own and must not be weakened to
+    /// make this test pass). In one test process, this operator (the
+    /// connecting client) and custody (the accepting peer) are necessarily
+    /// the same UID, so a real `serve_async` would always legitimately
+    /// refuse before ever binding here. Binding the listener directly in
+    /// the test exercises the actual wire framing and `sign_request`/
+    /// `finalize` wiring end to end without touching that invariant.
+    /// Genuinely distinct-UID behavior is the separate Docker fixture's
+    /// responsibility (see the custody guide), not this in-process test's.
     #[tokio::test(flavor = "current_thread")]
     async fn round_trip_signs_an_approved_request_over_a_real_socket() {
         let config_dir = TempDir::new(0o700);
@@ -223,22 +230,35 @@ mod tests {
         )
         .unwrap();
 
-        let bounds = ServeBounds {
-            max_connections: 1,
-            max_requests: 1,
-            total_deadline: Duration::from_secs(5),
-        };
-        let serve_socket_path = socket_path.clone();
+        // Test-owned transport: bind and serve exactly one request using
+        // the real wire codec and the real `sign_request`, without going
+        // through `serve_async`'s bind/permission/operator-UID logic.
+        let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let serve_config = config.clone();
+        let serve_signer = signer.clone();
         let serve_approvals_dir = approvals_dir.0.clone();
         let serve_task = tokio::spawn(async move {
-            server::serve_async(
-                config,
-                signer,
-                &serve_socket_path,
+            let (mut stream, _addr) = listener.accept().await.unwrap();
+            let mut length_bytes = [0_u8; wire::CUSTODY_LENGTH_PREFIX_BYTES];
+            stream.read_exact(&mut length_bytes).await.unwrap();
+            let declared_len = u32::from_be_bytes(length_bytes) as usize;
+            let mut buffer = vec![0_u8; declared_len];
+            stream.read_exact(&mut buffer).await.unwrap();
+            let request = wire::decode_request(&buffer).unwrap();
+            let response = match server::sign_request(
+                &serve_config,
+                &serve_signer,
                 &serve_approvals_dir,
-                bounds,
-            )
-            .await
+                &request,
+            ) {
+                Ok(signature) => CustodyResponse::Signed { signature },
+                Err(status) => CustodyResponse::Refused { status },
+            };
+            stream
+                .write_all(&wire::encode_response(&response))
+                .await
+                .unwrap();
+            response
         });
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -260,8 +280,8 @@ mod tests {
         let submission = prepared.finalize(signature.to_vec()).unwrap();
         assert_eq!(*submission.request().signature(), signature);
 
-        let summary = serve_task.await.unwrap().unwrap();
-        assert_eq!(summary.requests_signed, 1);
+        let served_response = serve_task.await.unwrap();
+        assert_eq!(served_response, CustodyResponse::Signed { signature });
     }
 
     #[tokio::test(flavor = "current_thread")]

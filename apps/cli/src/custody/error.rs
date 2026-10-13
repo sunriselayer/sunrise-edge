@@ -74,8 +74,6 @@ pub enum CustodyError {
     /// `custody approve` requires a real interactive terminal on stdin and
     /// stdout; it never approves from a pipe or redirected file.
     ApproveRequiresTerminal,
-    /// The approved artifact file exceeded the bounded publication size.
-    ApprovedArtifactTooLarge { maximum: usize },
     /// Decoding or recomputing the approved publication failed.
     Publication(Box<dyn std::error::Error + Send + Sync>),
     /// The operator's typed confirmation line did not exactly match the
@@ -112,6 +110,37 @@ pub enum CustodyError {
     /// A key file's contents were not exactly 64 hex digits (plus an
     /// optional trailing newline).
     KeyFileMalformed,
+    /// A command other than publication selected `SignerSelection::Custody`.
+    /// Custody signs publication submissions only; every other family is
+    /// refused here, before any file, network, or device I/O.
+    PublicationOnly { command: &'static str },
+    /// A directory or file required to be owned by this process's own
+    /// current effective UID was owned by a different UID.
+    UnexpectedOwner {
+        path: PathBuf,
+        expected: u32,
+        actual: u32,
+    },
+    /// This process's own effective UID could not be determined from a
+    /// bounded parse of `/proc/self/status`.
+    SelfUidUnavailable,
+    /// The independently supplied `--approved-artifact` file decoded, but
+    /// its bytes were not exactly the canonical encoding of the artifact it
+    /// decodes to: re-encoding the decoded artifact produced different
+    /// bytes. A decodable-but-non-canonical preimage is refused rather than
+    /// silently accepted, since the approval record binds the canonical
+    /// frame, not merely "some encoding that decodes to the same value."
+    ApprovedPreimageNotCanonical,
+    /// A `serve` lifetime/count bound (`--max-connections`, `--max-requests`,
+    /// or `--total-deadline-secs`) was outside its closed accepted range.
+    ServeBoundOutOfRange {
+        field: &'static str,
+        value: u64,
+        minimum: u64,
+        maximum: u64,
+    },
+    /// Computing the absolute total serve deadline overflowed.
+    DeadlineOverflow,
 }
 
 impl fmt::Display for CustodyError {
@@ -183,10 +212,6 @@ impl fmt::Display for CustodyError {
             Self::ApproveRequiresTerminal => {
                 f.write_str("custody approve requires an interactive terminal on stdin and stdout")
             }
-            Self::ApprovedArtifactTooLarge { maximum } => write!(
-                f,
-                "custody approved artifact file exceeds the maximum {maximum} bytes"
-            ),
             Self::Publication(error) => {
                 write!(f, "custody publication recomputation failed: {error}")
             }
@@ -218,6 +243,36 @@ impl fmt::Display for CustodyError {
             ),
             Self::KeyFileMalformed => {
                 f.write_str("custody key file contents are not exactly 64 hex digits")
+            }
+            Self::PublicationOnly { command } => write!(
+                f,
+                "custody signing is publication-only; not supported for {command}"
+            ),
+            Self::UnexpectedOwner {
+                path,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "custody path {path:?} must be owned by UID {expected} (this process's own effective UID), got {actual}"
+            ),
+            Self::SelfUidUnavailable => f.write_str(
+                "could not determine this process's own effective UID from /proc/self/status",
+            ),
+            Self::ApprovedPreimageNotCanonical => f.write_str(
+                "--approved-artifact decoded, but its bytes are not the exact canonical re-encoding of the decoded artifact",
+            ),
+            Self::ServeBoundOutOfRange {
+                field,
+                value,
+                minimum,
+                maximum,
+            } => write!(
+                f,
+                "{field}={value} is outside the accepted closed range [{minimum}, {maximum}]"
+            ),
+            Self::DeadlineOverflow => {
+                f.write_str("computing the absolute total serve deadline overflowed")
             }
         }
     }

@@ -25,6 +25,7 @@ use crate::parse::parse_u64;
 use super::approvals::{self, ApprovalRecord};
 use super::config::CustodyConfig;
 use super::error::CustodyError;
+use super::fsperm::read_private_file;
 use super::wire::MAX_CUSTODY_ARTIFACT_BYTES;
 
 const CONFIG: &str = "--config";
@@ -33,6 +34,13 @@ const APPROVED_ARTIFACT: &str = "--approved-artifact";
 const NONCE: &str = "--nonce";
 const REQUEST_ID: &str = "--request-id";
 const EXPIRES_IN_SECONDS: &str = "--expires-in-seconds";
+
+/// Required exact mode for the independently pinned `--approved-artifact`
+/// preimage file: the same `0600` under `0700` policy as the config and key
+/// files, since this file is just as security-sensitive as those (it is the
+/// one input the human review and the written approval record trust).
+const APPROVED_ARTIFACT_FILE_MODE: u32 = 0o600;
+const APPROVED_ARTIFACT_DIR_MODE: u32 = 0o700;
 
 /// Maximum accepted bytes for one typed confirmation line.
 const MAX_CONFIRMATION_LINE_BYTES: usize = 1024;
@@ -55,12 +63,26 @@ where
     let expected = config.expected_context()?;
     let resolver = sunrise_edge_client::local_publication_resolver(&expected)?;
 
-    let artifact_bytes = read_bounded(
-        parsed.require(APPROVED_ARTIFACT)?,
+    let artifact_bytes = read_private_file(
+        Path::new(parsed.require(APPROVED_ARTIFACT)?),
+        APPROVED_ARTIFACT_FILE_MODE,
+        APPROVED_ARTIFACT_DIR_MODE,
         MAX_CUSTODY_ARTIFACT_BYTES,
     )?;
     let artifact = sunrise_edge_client::publication::decode_code_artifact(&artifact_bytes)
         .map_err(|error| CliError::from(CustodyError::Publication(Box::new(error))))?;
+    // The preimage must be exactly the canonical encoding of what it
+    // decodes to, not merely something that decodes successfully: a
+    // decodable-but-non-canonical preimage could let an administrator
+    // believe they approved one exact byte sequence while actually
+    // approving whatever canonical bytes `encode_code_artifact` produces
+    // for the decoded value, which could legitimately differ.
+    let reencoded_artifact_bytes =
+        sunrise_edge_client::publication::encode_code_artifact(&artifact)
+            .map_err(|error| CliError::from(CustodyError::Publication(Box::new(error))))?;
+    if reencoded_artifact_bytes != artifact_bytes {
+        return Err(CustodyError::ApprovedPreimageNotCanonical.into());
+    }
     let nonce = parse_u64(NONCE, parsed.require(NONCE)?)?;
     let request_id = RequestId::new(decode_hex_32(REQUEST_ID, parsed.require(REQUEST_ID)?)?)?;
 
@@ -122,32 +144,19 @@ where
     Ok(())
 }
 
-fn read_bounded(path: &str, maximum: usize) -> Result<Vec<u8>, CliError> {
-    use std::io::Read;
-    let mut bytes: Vec<u8> = Vec::new();
-    std::fs::File::open(path)
-        .map_err(|error| {
-            CliError::from(CustodyError::Io {
-                path: std::path::PathBuf::from(path),
-                source: error,
-            })
-        })?
-        .take((maximum + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|error| {
-            CliError::from(CustodyError::Io {
-                path: std::path::PathBuf::from(path),
-                source: error,
-            })
-        })?;
-    if bytes.len() > maximum {
-        return Err(CustodyError::ApprovedArtifactTooLarge { maximum }.into());
-    }
-    Ok(bytes)
-}
-
-/// Reads one line from stdin, bounded to `max_bytes`, refusing rather than
-/// truncating or blocking forever on a missing newline.
+/// Reads one line from stdin, bounded to `max_bytes`. Refuses only when that
+/// byte bound is exceeded before a newline or end-of-input appears; reaching
+/// end-of-input with no trailing newline is *not* itself refused here — the
+/// accumulated bytes are returned as-is, and the caller's exact-match
+/// confirmation comparison is what rejects an incomplete or wrong line, not
+/// a special case for an absent trailing newline.
+///
+/// This still blocks indefinitely in wall-clock time waiting for the
+/// operator to type something: giving a blocking stdin read a time bound
+/// without a background thread is not possible with only `std`, and this
+/// slice adds no new thread/spawn or dependency to do it. `custody approve`
+/// is an attended, interactive operation; its only bound here is on bytes,
+/// not time.
 fn read_bounded_confirmation_line(max_bytes: usize) -> Result<String, CustodyError> {
     use std::io::Read;
     let stdin = std::io::stdin();

@@ -141,6 +141,14 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             SignerSelection::Ledger { .. } => {
                 return Err(invalid("Ledger local execution signing is not supported"));
             }
+            // Custody is publication-only; refused before any file,
+            // network, or device I/O.
+            SignerSelection::Custody { .. } => {
+                return Err(crate::custody::CustodyError::PublicationOnly {
+                    command: "local execution",
+                }
+                .into());
+            }
         }
     };
     let expected: ExpectedProtocolContext = super::standard_asset::parse_expected_context(&parsed)?;
@@ -342,6 +350,30 @@ mod tests {
     use std::cell::Cell;
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    /// Local/general execution must refuse custody signing before any
+    /// file, network, or device I/O — in particular before ever requiring
+    /// `--endpoint`, which this call deliberately omits.
+    #[test]
+    fn rejects_custody_signer_selection_before_any_io() {
+        let error = run(
+            "instantiate",
+            vec![
+                OsString::from("--custody-socket"),
+                OsString::from("/nonexistent/custody.sock"),
+                OsString::from("--custody-uid"),
+                OsString::from("1001"),
+                OsString::from("--custody-expected-public-key"),
+                OsString::from("ab".repeat(32)),
+            ],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CliError::Custody(inner)
+                if matches!(*inner, crate::custody::CustodyError::PublicationOnly { command: "local execution" })
+        ));
+    }
 
     #[test]
     fn existing_result_or_same_output_paths_stop_before_submit() {

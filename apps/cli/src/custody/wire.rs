@@ -149,12 +149,19 @@ pub fn decode_request(bytes: &[u8]) -> Result<SignPublicationRequest, CustodyWir
     if bytes[1] != CUSTODY_SIGN_PUBLICATION_MESSAGE {
         return Err(CustodyWireError::UnsupportedMessageType(bytes[1]));
     }
-    let nonce = u64::from_be_bytes(bytes[2..10].try_into().expect("exact 8-byte slice"));
+    let nonce = u64::from_be_bytes(
+        bytes[2..10]
+            .try_into()
+            .map_err(|_| CustodyWireError::Truncated)?,
+    );
     let mut request_id_bytes = [0_u8; 32];
     request_id_bytes.copy_from_slice(&bytes[10..42]);
     let request_id = RequestId::new(request_id_bytes).map_err(CustodyWireError::RequestId)?;
-    let artifact_len =
-        u32::from_be_bytes(bytes[42..46].try_into().expect("exact 4-byte slice")) as usize;
+    let artifact_len = u32::from_be_bytes(
+        bytes[42..46]
+            .try_into()
+            .map_err(|_| CustodyWireError::Truncated)?,
+    ) as usize;
     if artifact_len > MAX_CUSTODY_ARTIFACT_BYTES {
         return Err(CustodyWireError::ArtifactTooLarge {
             actual: artifact_len,

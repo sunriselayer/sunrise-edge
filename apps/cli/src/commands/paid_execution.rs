@@ -175,8 +175,16 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         super::fastvote_network::validate_paid_network_flags(&parsed)?;
     }
     let signer_selection: SignerSelection = parse_signer_selection(&parsed)?;
-    if matches!(signer_selection, SignerSelection::Ledger { .. }) {
-        return Err(invalid("Ledger paid contract signing is not supported"));
+    // Refused immediately, before any FastVote/network peer validation,
+    // signer file access, or device I/O: neither Ledger nor custody
+    // (publication-only) supports paid contract signing.
+    if matches!(
+        signer_selection,
+        SignerSelection::Ledger { .. } | SignerSelection::Custody { .. }
+    ) {
+        return Err(invalid(
+            "Ledger and custody paid contract signing are not supported",
+        ));
     }
     let load_signer = || -> Result<LocalSigner, CliError> {
         match &signer_selection {
@@ -185,6 +193,9 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             }
             SignerSelection::Ledger { .. } => {
                 Err(invalid("Ledger paid contract signing is not supported"))
+            }
+            SignerSelection::Custody { .. } => {
+                Err(invalid("custody paid contract signing is not supported"))
             }
         }
     };
@@ -560,6 +571,26 @@ mod tests {
     };
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    /// Paid execution must refuse custody signing immediately after
+    /// parsing the signer selection, before any FastVote/network peer
+    /// validation, signer file access, or device I/O.
+    #[test]
+    fn rejects_custody_signer_selection_before_any_io() {
+        let error = run(
+            "paid-call",
+            vec![
+                OsString::from("--custody-socket"),
+                OsString::from("/nonexistent/custody.sock"),
+                OsString::from("--custody-uid"),
+                OsString::from("1001"),
+                OsString::from("--custody-expected-public-key"),
+                OsString::from("ab".repeat(32)),
+            ],
+        )
+        .unwrap_err();
+        assert!(matches!(error, CliError::LocalExecution(_)));
+    }
 
     fn temporary_path(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(

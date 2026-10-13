@@ -112,5 +112,8 @@ every UID created only inside the image:
    process can still consume them) and that `serve` never created new host
    users or services, only files under the fixture's own owned paths.
 
-This repository does not execute Docker; the above is the precise recipe for
-a separate run, not a claim that it has passed.
+This slice of work did not build or run that fixture (see
+[DR-0230](decisions/0230-bounded-docker-fault-environments.md) and
+`scripts/check-docker-fault-environment.mjs` for this repository's existing,
+separately maintained Docker fault-environment profiles); the above is the
+precise recipe for a separate run, not a claim that it has passed.

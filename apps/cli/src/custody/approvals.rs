@@ -88,8 +88,16 @@ pub fn read_approval(
     }
     let mut publisher_bytes = [0_u8; 32];
     publisher_bytes.copy_from_slice(&bytes[1..33]);
-    let not_after_unix_seconds = u64::from_be_bytes(bytes[33..41].try_into().expect("8 bytes"));
-    let frame_len = u32::from_be_bytes(bytes[41..45].try_into().expect("4 bytes")) as usize;
+    let not_after_unix_seconds = u64::from_be_bytes(
+        bytes[33..41]
+            .try_into()
+            .map_err(|_| CustodyError::ApprovalMalformed)?,
+    );
+    let frame_len = u32::from_be_bytes(
+        bytes[41..45]
+            .try_into()
+            .map_err(|_| CustodyError::ApprovalMalformed)?,
+    ) as usize;
     let expected_total = RECORD_HEADER_BYTES
         .checked_add(frame_len)
         .ok_or(CustodyError::ApprovalMalformed)?;

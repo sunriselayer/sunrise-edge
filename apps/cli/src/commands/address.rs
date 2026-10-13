@@ -32,6 +32,11 @@ where
             account,
             expected_firmware_version,
         } => run_with_ledger(&hid_path, account, &expected_firmware_version),
+        // Custody is publication-only; refused before any file, network,
+        // or device I/O, not merely once some other command path fails.
+        SignerSelection::Custody { .. } => {
+            Err(crate::custody::CustodyError::PublicationOnly { command: "address" }.into())
+        }
     }
 }
 
@@ -85,6 +90,29 @@ mod tests {
     fn rejects_an_unknown_flag() {
         let error = run(vec![OsString::from("--bogus"), OsString::from("x")]).unwrap_err();
         assert!(matches!(error, CliError::Args(ArgsError::UnknownFlag(flag)) if flag == "--bogus"));
+    }
+
+    /// `address` must refuse custody signing before any file, network, or
+    /// device I/O: this supplies a syntactically complete custody selection
+    /// (an unreachable socket path, an arbitrary UID, and an arbitrary key)
+    /// and proves the result is the typed publication-only refusal, not an
+    /// I/O failure from actually trying to connect.
+    #[test]
+    fn rejects_custody_signer_selection_before_any_io() {
+        let error = run(vec![
+            OsString::from("--custody-socket"),
+            OsString::from("/nonexistent/custody.sock"),
+            OsString::from("--custody-uid"),
+            OsString::from("1001"),
+            OsString::from("--custody-expected-public-key"),
+            OsString::from("ab".repeat(32)),
+        ])
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CliError::Custody(inner)
+                if matches!(*inner, crate::custody::CustodyError::PublicationOnly { command: "address" })
+        ));
     }
 
     #[test]
