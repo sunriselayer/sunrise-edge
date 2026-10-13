@@ -39,6 +39,8 @@ const endpoint = 'unix:///var/run/docker.sock';
 const owner = randomUUID();
 const name = `sunrise-edge-custody-fixture-1013-${owner}`;
 const label = 'sunrise-edge.custody-fixture-1013-owner';
+const volumeName = `${name}-memory`;
+const volumeOptions = 'rw,nosuid,nodev,noexec,size=64m,nr_inodes=16384,mode=0711,uid=0,gid=0,noswap';
 const deadline = performance.now() + 280_000;
 const outputLimit = 65_536;
 const cleanupReserve = 16_384;
@@ -51,6 +53,8 @@ let outputBytes = 0;
 let containerId;
 let primaryError;
 let result;
+let volumeExpected = false;
+let volumeMountpoint;
 
 // ---- argument parsing: explicit, absolute, pre-validated host paths only ----
 
@@ -845,9 +849,45 @@ async function inspect(reference, cleanup = false, withConfiguration = false) {
   return state;
 }
 
+async function findVolume(cleanup = false) {
+  const captured = await docker(['volume', 'ls', '-q', '--filter', `name=^${volumeName}$`], cleanup);
+  const found = captured.stdout.trim();
+  if (found && found !== volumeName) throw new Error('volume lookup is not exact');
+  return found === volumeName;
+}
+
+async function inspectVolume(cleanup = false) {
+  const captured = await docker(['volume', 'inspect', volumeName], cleanup);
+  const rows = JSON.parse(captured.stdout);
+  if (!Array.isArray(rows) || rows.length !== 1) throw new Error('volume inspection is not unique');
+  const volume = rows[0];
+  if (volume.Name !== volumeName || volume.Driver !== 'local' || volume.Scope !== 'local' ||
+      volume.Labels?.[label] !== owner ||
+      JSON.stringify(Object.keys(volume.Options ?? {}).sort()) !== '["device","o","type"]' ||
+      volume.Options.type !== 'tmpfs' || volume.Options.device !== 'tmpfs' ||
+      volume.Options.o !== volumeOptions || typeof volume.Mountpoint !== 'string' ||
+      !volume.Mountpoint.startsWith('/') || volume.Mountpoint.includes('\0')) {
+    throw new Error('volume is not the exact owned noswap allocation');
+  }
+  if (volumeMountpoint !== undefined && volume.Mountpoint !== volumeMountpoint) {
+    throw new Error('owned volume attachment changed');
+  }
+  volumeMountpoint = volume.Mountpoint;
+  return volume;
+}
+
 try {
   const localImage = await docker(['image', 'inspect', '--format', '{{.Id}}', image]);
   if (localImage.stdout.trim() !== imageId) throw new Error('pinned local image attachment differs');
+  if (await findVolume()) throw new Error('fresh custody volume already exists');
+  volumeExpected = true;
+  const createdVolume = await docker([
+    'volume', 'create', '--driver', 'local', '--name', volumeName,
+    '--label', `${label}=${owner}`, '--opt', 'type=tmpfs', '--opt', 'device=tmpfs',
+    '--opt', `o=${volumeOptions}`,
+  ]);
+  if (createdVolume.stdout.trim() !== volumeName) throw new Error('volume creation identity differs');
+  await inspectVolume();
   const created = await docker([
     'create', '--pull=never', '--name', name, '--label', `${label}=${owner}`,
     '--network', 'none', '--read-only', '--cap-drop', 'ALL',
@@ -855,7 +895,7 @@ try {
     '--security-opt', 'no-new-privileges', '--user', '0:0',
     '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
     '--pids-limit', '64', '--log-driver', 'none',
-    '--tmpfs', '/work:rw,nosuid,nodev,noexec,size=64m,mode=0711,noswap',
+    '--mount', `type=volume,source=${volumeName},target=/work,volume-nocopy`,
     ...binds.flatMap((bind) => ['--mount', bind]),
     '--entrypoint', '/usr/local/bin/python3', image, '-I', '-B', '-c', probe,
   ]);
@@ -865,8 +905,14 @@ try {
   const initial = await inspect(containerId, false, true);
   const config = initial.HostConfig;
   const mounts = initial.Mounts;
+  const allocations = mounts.filter((mount) => mount.Type === 'volume');
+  if (allocations.length !== 1 || allocations[0].Name !== volumeName ||
+      allocations[0].Destination !== '/work' || allocations[0].RW !== true ||
+      allocations[0].Source !== volumeMountpoint) throw new Error('owned allocation attachment differs');
+  const readonlyMounts = mounts.filter((mount) => mount.Type === 'bind');
   const expectedMountCount = 3 + closure.libs.size; // cli + harness + ld.so + each shared library
-  if (!Array.isArray(mounts) || mounts.length !== expectedMountCount || !mounts.every((mount) => mount.Type === 'bind' && mount.RW === false)) {
+  if (!Array.isArray(mounts) || mounts.length !== expectedMountCount + 1 ||
+      readonlyMounts.length !== expectedMountCount || !readonlyMounts.every((mount) => mount.RW === false)) {
     throw new Error('bind mounts are not exactly the owned read-only custody/library closure');
   }
   if (config.Memory !== 512 * 1024 * 1024 || config.MemorySwap !== 512 * 1024 * 1024 ||
@@ -877,7 +923,7 @@ try {
       JSON.stringify([...config.CapAdd].sort()) !== JSON.stringify(['CAP_CHOWN', 'CAP_DAC_OVERRIDE', 'CAP_SETGID', 'CAP_SETUID']) ||
       !config.SecurityOpt.includes('no-new-privileges') ||
       JSON.stringify(initial.Config.Entrypoint) !== '["/usr/local/bin/python3"]' ||
-      typeof (config.Tmpfs ?? {})['/work'] !== 'string' || (config.Tmpfs['/work'] ?? '').length === 0 ||
+      Object.keys(config.Tmpfs ?? {}).length !== 0 ||
       (config.Binds ?? []).length !== 0) {
     throw new Error(`effective Docker configuration differs: ${JSON.stringify({
       memory: config.Memory, swap: config.MemorySwap, pids: config.PidsLimit,
@@ -925,6 +971,12 @@ try {
     }
     const remaining = await docker(['container', 'ls', '-aq', '--no-trunc', '--filter', `label=${label}=${owner}`], true);
     if (remaining.stdout.trim()) throw new Error('owned fixture container residue remains');
+    if (volumeExpected && await findVolume(true)) {
+      await inspectVolume(true);
+      await docker(['volume', 'rm', volumeName], true);
+    }
+    const volumes = await docker(['volume', 'ls', '-q', '--filter', `label=${label}=${owner}`], true);
+    if (volumes.stdout.trim()) throw new Error('owned fixture volume residue remains');
   } catch (error) {
     primaryError = new Error(`${primaryError?.message ?? 'fixture'}; cleanup unresolved: ${error.message}; owned name=${name}`);
   }
