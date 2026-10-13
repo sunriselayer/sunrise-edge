@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-10-14 (Asia/Singapore)。これは唯一の現行作業表です。
+更新: 2026-10-14 (JST)。これは唯一の現行作業表です。
 設計は[architecture](docs/architecture/README.md)、実装場所は
 [code map](docs/development/code-map.md)、整理の決定は
 [DR-0236](docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md)に置きます。
@@ -168,10 +168,27 @@ rollback後directory syncも独立correctness reviewとE13の回帰controlsで�
 これらのcorrectness reviewはM1/D02の独立security監査の代替ではありません。
 
 5672の[hosted CI run `38410087138`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38410087138)
-は6/7 ownersがsuccess、recurring-sqliteが進行中でsuccess-only checkは未完了です。
+は6/7 ownersがsuccess、recurring-sqliteが360分の枠でCANCELLED、success-only checkはFAILUREです。
 checkout `6eaf4cf84f4055fba71f2760bc04a58ba9f69f7a` のtreeは5672と同じ15c2。
-local E11をhosted terminal successとして扱いません。進行中のCIをcancelしないため、
-このTODOだけの状態更新commitはローカルに保存し、PR #303のremote headは5672を維持します。
+local E11をhosted terminal successとして扱いません。timeoutの実ログを照合し、
+元8リンク/e8 withdrawals/35 roles・拒否controls・待機時間を維持して実行条件を修正します。
+旧pending状態の間はCIをcancelしないため状態更新commitをローカルに保持しました。
+
+## 作業終了時の環境整理
+
+これは製品の旧20項目とは別の作業TODOです。
+
+- [ ] **専用Node 22を終了後に削除する**: 必要な検証・再実行が終わり、使用中の
+  所有プロセスがないことを確認して、今回取得した
+  `/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/node-22.20.0-1013`
+  のNode実行ファイルとarchiveだけを削除する。`receipt.json` はvalidation直下へ
+  保存し、取得hash・manifest・raw検証ログを保持する。既存のnvm/system Nodeは対象外。
+- [ ] **今後のNode管理をnvmに統一する**: 既存nvmを使い、選択profileの固定versionを
+  明示する。必要な22.20.0を別versionで代用せず、taskだけのためにglobal defaultを
+  変更しない。専用Nodeを削除する前に、再実行するwrapperの参照先も確認する。
+- [ ] **Cloudflare CLIへの残る移行を確認する**: 今後の操作は`cf` / `cloudflare`へ統一。
+  既存の型生成・テスト内に残るWrangler依存は未移行として扱い、互換性と元の型/契約
+  checksを確認して置換する。新たな直接Wrangler呼び出しは行わない。
 
 ## コード・検証: 14件
 
