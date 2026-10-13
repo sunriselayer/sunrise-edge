@@ -167,6 +167,15 @@ pub(super) async fn serve_async(
         path: socket_path.to_path_buf(),
         source,
     })?;
+    // Captured once, immediately after bind and before any later step can
+    // fail (chmod changes none of these identity fields), so the cleanup
+    // unlink on every exit from here on, a failed chmod included, can prove
+    // it is removing exactly the socket this process bound — never a path
+    // something else replaced in the meantime.
+    let bound_socket = BoundSocketCleanup {
+        path: socket_path,
+        identity: socket_identity(socket_path),
+    };
     std::fs::set_permissions(
         socket_path,
         std::fs::Permissions::from_mode(SOCKET_FILE_MODE),
@@ -175,10 +184,6 @@ pub(super) async fn serve_async(
         path: socket_path.to_path_buf(),
         source,
     })?;
-    // Captured once, immediately after bind+chmod, so the cleanup unlink
-    // below can prove it is removing exactly the socket this process
-    // bound — never a path something else replaced in the meantime.
-    let bound_identity = socket_identity(socket_path);
 
     // One absolute, checked deadline for this entire invocation: accept,
     // and the combined read+write of every connection, are all bounded
@@ -233,8 +238,28 @@ pub(super) async fn serve_async(
         }
     }
 
-    unlink_bound_socket_if_unreplaced(socket_path, bound_identity);
+    // Every earlier return dropped this guard as well; the bounded end
+    // unlinks here, while the listener is still open.
+    drop(bound_socket);
     Ok(summary)
+}
+
+/// Unlinks the one socket path a `serve` invocation bound when dropped, on
+/// every exit after a successful `bind` (a failed chmod, a deadline
+/// overflow, or the normal bounded end alike), but only while that path is
+/// still exactly the socket captured right after `bind`. Dropping the
+/// listener alone closes its descriptor but never removes the path, which
+/// would otherwise make the next `serve` at the same path fail with
+/// `SocketAlreadyExists` even though nothing is listening.
+struct BoundSocketCleanup<'a> {
+    path: &'a Path,
+    identity: Option<SocketIdentity>,
+}
+
+impl Drop for BoundSocketCleanup<'_> {
+    fn drop(&mut self) {
+        unlink_bound_socket_if_unreplaced(self.path, self.identity);
+    }
 }
 
 /// A bound Unix socket's identity: device/inode (proves it is the same
@@ -270,7 +295,7 @@ fn socket_identity(path: &Path) -> Option<SocketIdentity> {
 /// left behind). This is what lets a later `serve` reuse the same path
 /// (restart) without ever deleting something this process did not create.
 /// Best-effort: any failure here is silently not fatal to an otherwise
-/// successful `serve` invocation.
+/// successful `serve` invocation, and never masks a failed one's error.
 fn unlink_bound_socket_if_unreplaced(socket_path: &Path, bound_identity: Option<SocketIdentity>) {
     let Some(bound) = bound_identity else {
         return;
@@ -850,8 +875,9 @@ mod tests {
         assert_eq!(std::fs::read(&socket_path).unwrap(), b"not a socket");
     }
 
-    /// A missing captured identity (bind/chmod never actually completed, so
-    /// nothing was ever confirmed bound) must never attempt an unlink.
+    /// A missing captured identity (the stat right after bind found no
+    /// socket there, so nothing was ever confirmed bound) must never attempt
+    /// an unlink.
     #[test]
     fn unlink_does_nothing_when_no_identity_was_captured() {
         let dir = TempDir::new(SOCKET_DIR_MODE);
@@ -898,5 +924,58 @@ mod tests {
             assert_eq!(summary.connections_accepted, 0);
             assert!(std::fs::symlink_metadata(&socket_path).is_err());
         }
+    }
+
+    /// A startup failure after a successful bind must not leak the bound
+    /// socket path. An unrepresentable deadline (reachable only by building
+    /// `ServeBounds` directly, bypassing `ServeBounds::new`) fails after
+    /// bind+chmod through the same cleanup a failed chmod takes, and a later
+    /// `serve` at the same path must still bind rather than be refused with
+    /// `SocketAlreadyExists`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn serve_unlinks_its_socket_when_startup_fails_after_bind() {
+        let config_dir = TempDir::new(0o700);
+        let socket_dir = TempDir::new(SOCKET_DIR_MODE);
+        let approvals_dir = TempDir::new(approvals::APPROVALS_DIR_MODE);
+        let signer = sunrise_edge_client::LocalSigner::from_seed([0x41; 32]);
+        let publisher_hex = crate::hex::encode_hex(signer.address().as_bytes());
+        let this_uid = own_uid().await.unwrap();
+        let other_uid = this_uid.wrapping_add(1).max(1);
+        let config_path = write_config(&config_dir, &publisher_hex, other_uid);
+        let socket_path = socket_dir.child("custody.sock");
+
+        let unrepresentable = ServeBounds {
+            max_connections: 1,
+            max_requests: 1,
+            total_deadline: Duration::MAX,
+        };
+        let error = serve_async(
+            CustodyConfig::load(&config_path).unwrap(),
+            signer.clone(),
+            &socket_path,
+            &approvals_dir.0,
+            unrepresentable,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, CustodyError::DeadlineOverflow));
+        assert!(std::fs::symlink_metadata(&socket_path).is_err());
+
+        let bounded = ServeBounds {
+            max_connections: 1,
+            max_requests: 1,
+            total_deadline: Duration::from_millis(100),
+        };
+        let summary = serve_async(
+            CustodyConfig::load(&config_path).unwrap(),
+            signer,
+            &socket_path,
+            &approvals_dir.0,
+            bounded,
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary.connections_accepted, 0);
+        assert!(std::fs::symlink_metadata(&socket_path).is_err());
     }
 }

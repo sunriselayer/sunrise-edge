@@ -11,9 +11,15 @@
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::error::CustodyError;
+
+/// Bounded number of distinct private sibling names one non-replacing write
+/// tries. A name is only ever already taken by a concurrent write in this
+/// same process, or by an orphan an earlier writer with the same process ID
+/// left behind (for example, after a crash).
+const MAX_PENDING_ATTEMPTS: usize = 16;
 
 /// Includes the setuid/setgid/sticky bits (`0o7000`) in addition to the
 /// ordinary owner/group/other permission bits (`0o0777`): a setuid/setgid
@@ -180,12 +186,14 @@ pub(super) fn read_private_file(
 }
 
 /// Writes `contents` to `path` as a private file at exactly `mode`, under a
-/// parent directory that must already be exactly `expected_dir_mode`.
-/// Refuses to follow an existing symlink. When `replace` is `false`, refuses
-/// if `path` already exists (used for key generation); when `true`, creates
-/// or truncates an existing regular file (used for idempotent
-/// approval records), but still refuses an existing symlink or non-regular
-/// file at `path`.
+/// parent directory that must already be exactly `expected_dir_mode`, and
+/// returns only after both the bytes and the directory entry are
+/// synchronized. Refuses to follow an existing symlink. When `replace` is
+/// `false`, refuses if `path` already exists (used for key generation and
+/// review preimages) and never leaves incomplete bytes there; see
+/// `publish_new_private_file`. When `true`, creates or truncates an existing
+/// regular file (used for idempotent approval records), but still refuses an
+/// existing symlink or non-regular file at `path`.
 pub(super) fn write_private_file(
     path: &Path,
     expected_dir_mode: u32,
@@ -193,8 +201,12 @@ pub(super) fn write_private_file(
     contents: &[u8],
     replace: bool,
 ) -> Result<(), CustodyError> {
-    require_private_dir(parent_of(path)?, expected_dir_mode)?;
-    if replace && let Ok(existing) = fs::symlink_metadata(path) {
+    let parent = parent_of(path)?;
+    require_private_dir(parent, expected_dir_mode)?;
+    if !replace {
+        return publish_new_private_file(path, parent, mode, contents);
+    }
+    if let Ok(existing) = fs::symlink_metadata(path) {
         if existing.file_type().is_symlink() {
             return Err(CustodyError::Symlink(path.to_path_buf()));
         }
@@ -212,24 +224,119 @@ pub(super) fn write_private_file(
             });
         }
     }
-    let mut options = fs::OpenOptions::new();
-    options.write(true).mode(mode);
-    if replace {
-        options.create(true).truncate(true);
-    } else {
-        options.create_new(true);
-    }
-    let mut file = options
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(mode)
         .open(path)
         .map_err(|source| io_error(path, source))?;
-    use std::io::Write;
-    file.write_all(contents)
-        .map_err(|source| io_error(path, source))?;
-    // `OpenOptionsExt::mode` only applies to a newly created file; an
-    // existing file keeps its prior mode unless set explicitly here.
-    file.set_permissions(fs::Permissions::from_mode(mode))
-        .map_err(|source| io_error(path, source))?;
+    write_synced(&mut file, mode, contents).map_err(|source| io_error(path, source))?;
+    sync_directory(parent)
+}
+
+/// Publishes `contents` as a new private file at `path` without ever
+/// replacing an existing entry or exposing incomplete bytes there. The bytes
+/// are first written, given exactly `mode`, and synchronized in a freshly
+/// created sibling inside the same private directory, then linked into place
+/// with `link(2)`, which atomically refuses every existing destination (never
+/// following a symlink), and the directory is synchronized before success is
+/// reported. A failed write therefore leaves nothing at `path` to block an
+/// identical retry, and a crash can leave at most an orphaned sibling that no
+/// reader treats as the published file. Cleanup only ever removes an entry
+/// that is still this call's own inode.
+fn publish_new_private_file(
+    path: &Path,
+    parent: &Path,
+    mode: u32,
+    contents: &[u8],
+) -> Result<(), CustodyError> {
+    let (pending_path, mut pending) = create_pending_sibling(path, parent, mode)?;
+    let published = write_synced(&mut pending, mode, contents)
+        .and_then(|()| fs::hard_link(&pending_path, path))
+        .map_err(|source| io_error(path, source));
+    // The sibling is never the published file: remove it on every outcome.
+    // On success, the directory synchronization below makes that durable.
+    remove_if_same_file(&pending_path, &pending);
+    published?;
+    if let Err(error) = sync_directory(parent) {
+        // Never report an entry that may not be durable, and never leave it
+        // behind to block an identical retry either.
+        remove_if_same_file(path, &pending);
+        return Err(error);
+    }
     Ok(())
+}
+
+/// The private sibling name a non-replacing write tries on `attempt`.
+fn pending_sibling_name(attempt: usize) -> String {
+    format!(".custody-pending-{}-{attempt}", std::process::id())
+}
+
+/// Exclusively creates (`O_EXCL`) a fresh sibling at `mode` inside `parent`,
+/// trying a bounded number of distinct names. Creation errors name `path`,
+/// the file the caller actually asked to write; running out of names is
+/// reported against `parent`, which holds the conflicting entries.
+fn create_pending_sibling(
+    path: &Path,
+    parent: &Path,
+    mode: u32,
+) -> Result<(PathBuf, fs::File), CustodyError> {
+    for attempt in 0..MAX_PENDING_ATTEMPTS {
+        let pending_path = parent.join(pending_sibling_name(attempt));
+        // The caller may itself have chosen a sibling-shaped file name.
+        if pending_path == path {
+            continue;
+        }
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&pending_path)
+        {
+            Ok(file) => return Ok((pending_path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(source) => return Err(io_error(path, source)),
+        }
+    }
+    Err(io_error(
+        parent,
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "every bounded private sibling name is already taken",
+        ),
+    ))
+}
+
+/// Writes all of `contents`, sets exactly `mode` (`OpenOptionsExt::mode`
+/// only applies to a newly created file, narrowed by the umask; an existing
+/// file keeps its prior mode unless set explicitly here), then synchronizes
+/// the file's data and metadata.
+fn write_synced(file: &mut fs::File, mode: u32, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    file.write_all(contents)?;
+    file.set_permissions(fs::Permissions::from_mode(mode))?;
+    file.sync_all()
+}
+
+/// Synchronizes `dir` itself, so entries just created in or removed from it
+/// are durable before success is reported.
+fn sync_directory(dir: &Path) -> Result<(), CustodyError> {
+    fs::File::open(dir)
+        .and_then(|handle| handle.sync_all())
+        .map_err(|source| io_error(dir, source))
+}
+
+/// Removes `path` only while it is still exactly `file`'s own inode, never a
+/// symlink or a replacement left at that path. Best-effort: a failed cleanup
+/// never masks the result being reported.
+fn remove_if_same_file(path: &Path, file: &fs::File) {
+    let (Ok(current), Ok(held)) = (fs::symlink_metadata(path), file.metadata()) else {
+        return;
+    };
+    if (current.dev(), current.ino()) == (held.dev(), held.ino()) {
+        let _ = fs::remove_file(path);
+    }
 }
 
 #[cfg(test)]
@@ -344,6 +451,17 @@ mod tests {
         ));
     }
 
+    /// Every entry name in `dir`, sorted, so a test can prove exactly which
+    /// entries a write left behind (in particular, no private sibling).
+    fn entry_names(dir: &TempDir) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
     #[test]
     fn write_private_file_refuses_an_existing_path_when_not_replacing() {
         let dir = TempDir::new(0o700);
@@ -351,6 +469,90 @@ mod tests {
         write_private_file(&path, 0o700, 0o600, b"first", false).unwrap();
         assert!(write_private_file(&path, 0o700, 0o600, b"second", false).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"first");
+        // The refused write also removed its own private sibling.
+        assert_eq!(entry_names(&dir), ["key"]);
+    }
+
+    /// A new (non-replacing) write publishes exactly the requested bytes at
+    /// exactly the requested mode, and leaves no private sibling behind.
+    #[test]
+    fn write_private_file_publishes_a_new_file_without_leaving_a_sibling() {
+        let dir = TempDir::new(0o700);
+        let path = dir.child("key");
+        write_private_file(&path, 0o700, 0o600, b"complete", false).unwrap();
+        assert_eq!(
+            read_private_file(&path, 0o600, 0o700, 4096).unwrap(),
+            b"complete"
+        );
+        assert_eq!(entry_names(&dir), ["key"]);
+    }
+
+    /// `link(2)` refuses every existing destination, so a non-replacing
+    /// write never follows or replaces a symlink at the target path, not
+    /// even a dangling one, and still removes its own private sibling.
+    #[test]
+    fn write_private_file_never_replaces_a_symlink_when_not_replacing() {
+        let dir = TempDir::new(0o700);
+        let victim = dir.child("victim");
+        let link = dir.child("key");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        assert!(write_private_file(&link, 0o700, 0o600, b"attack", false).is_err());
+        let metadata = fs::symlink_metadata(&link).unwrap();
+        assert!(metadata.file_type().is_symlink());
+        assert!(fs::symlink_metadata(&victim).is_err());
+        assert_eq!(entry_names(&dir), ["key"]);
+    }
+
+    /// A crashed earlier writer can leave at most an orphaned (possibly
+    /// partial) private sibling, never a partial file at the target path.
+    /// Such an orphan never blocks a later write, and that write never
+    /// deletes it, since it is not that write's own file.
+    #[test]
+    fn an_orphaned_pending_sibling_never_blocks_a_new_write() {
+        let dir = TempDir::new(0o700);
+        let orphan_name = pending_sibling_name(0);
+        let orphan = dir.child(&orphan_name);
+        write_mode_file(&orphan, 0o600, b"partial");
+        let path = dir.child("key");
+        write_private_file(&path, 0o700, 0o600, b"complete", false).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"complete");
+        assert_eq!(fs::read(&orphan).unwrap(), b"partial");
+        assert_eq!(entry_names(&dir), [orphan_name.as_str(), "key"]);
+    }
+
+    /// The sibling search is bounded: once every bounded name is taken, the
+    /// write is refused without creating the target or touching an orphan.
+    #[test]
+    fn write_private_file_refuses_once_every_sibling_name_is_taken() {
+        let dir = TempDir::new(0o700);
+        for attempt in 0..MAX_PENDING_ATTEMPTS {
+            let orphan = dir.child(&pending_sibling_name(attempt));
+            write_mode_file(&orphan, 0o600, b"orphan");
+        }
+        let path = dir.child("key");
+        assert!(write_private_file(&path, 0o700, 0o600, b"complete", false).is_err());
+        assert!(fs::symlink_metadata(&path).is_err());
+        assert_eq!(entry_names(&dir).len(), MAX_PENDING_ATTEMPTS);
+    }
+
+    /// Cleanup removes a path only while it is still the cleaner's own
+    /// inode: its own file is removed, a replacement survives untouched.
+    #[test]
+    fn remove_if_same_file_removes_only_its_own_inode() {
+        let dir = TempDir::new(0o700);
+        let own = dir.child("own");
+        write_mode_file(&own, 0o600, b"own");
+        remove_if_same_file(&own, &fs::File::open(&own).unwrap());
+        assert!(fs::symlink_metadata(&own).is_err());
+
+        let replaced = dir.child("replaced");
+        write_mode_file(&replaced, 0o600, b"original");
+        // Held open, so the replacement can never reuse the original inode.
+        let original = fs::File::open(&replaced).unwrap();
+        fs::remove_file(&replaced).unwrap();
+        write_mode_file(&replaced, 0o600, b"replacement");
+        remove_if_same_file(&replaced, &original);
+        assert_eq!(fs::read(&replaced).unwrap(), b"replacement");
     }
 
     #[test]
