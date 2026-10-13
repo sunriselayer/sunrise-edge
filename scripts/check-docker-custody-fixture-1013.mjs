@@ -874,12 +874,18 @@ try {
       config.NetworkMode !== 'none' || config.ReadonlyRootfs !== true ||
       config.LogConfig.Type !== 'none' || initial.Config.User !== '0:0' ||
       JSON.stringify(config.CapDrop) !== '["ALL"]' ||
-      JSON.stringify([...config.CapAdd].sort()) !== JSON.stringify(['CHOWN', 'DAC_OVERRIDE', 'SETGID', 'SETUID']) ||
+      JSON.stringify([...config.CapAdd].sort()) !== JSON.stringify(['CAP_CHOWN', 'CAP_DAC_OVERRIDE', 'CAP_SETGID', 'CAP_SETUID']) ||
       !config.SecurityOpt.includes('no-new-privileges') ||
       JSON.stringify(initial.Config.Entrypoint) !== '["/usr/local/bin/python3"]' ||
       typeof (config.Tmpfs ?? {})['/work'] !== 'string' || (config.Tmpfs['/work'] ?? '').length === 0 ||
       (config.Binds ?? []).length !== 0) {
-    throw new Error('effective Docker container configuration differs from the fixed fixture policy');
+    throw new Error(`effective Docker configuration differs: ${JSON.stringify({
+      memory: config.Memory, swap: config.MemorySwap, pids: config.PidsLimit,
+      cpu: config.NanoCpus, network: config.NetworkMode, readonly: config.ReadonlyRootfs,
+      log: config.LogConfig.Type, user: initial.Config.User, capAdd: config.CapAdd,
+      capDrop: config.CapDrop, security: config.SecurityOpt, entrypoint: initial.Config.Entrypoint,
+      tmpfs: config.Tmpfs, binds: config.Binds,
+    })}`);
   }
 
   const completed = await docker(['start', '--attach', containerId]);
