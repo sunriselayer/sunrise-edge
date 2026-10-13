@@ -204,7 +204,7 @@ pub(super) fn write_private_file(
     let parent = parent_of(path)?;
     require_private_dir(parent, expected_dir_mode)?;
     if !replace {
-        return publish_new_private_file(path, parent, mode, contents);
+        return publish_new_private_file(path, parent, mode, contents, fs::File::sync_all);
     }
     if let Ok(existing) = fs::symlink_metadata(path) {
         if existing.file_type().is_symlink() {
@@ -243,14 +243,24 @@ pub(super) fn write_private_file(
 /// following a symlink), and the directory is synchronized before success is
 /// reported. A failed write therefore leaves nothing at `path` to block an
 /// identical retry, and a crash can leave at most an orphaned sibling that no
-/// reader treats as the published file. Cleanup only ever removes an entry
-/// that is still this call's own inode.
+/// reader treats as the published file. A link whose directory
+/// synchronization fails may already be durable regardless, so it is removed
+/// again and that removal is synchronized too, through the same directory
+/// handle; otherwise a crash after the reported failure could still leave the
+/// complete file in place. Cleanup only ever removes an entry that is still
+/// this call's own inode. `sync` synchronizes that held directory handle
+/// (`fs::File::sync_all`, unless a test injects a failure).
 fn publish_new_private_file(
     path: &Path,
     parent: &Path,
     mode: u32,
     contents: &[u8],
+    mut sync: impl FnMut(&fs::File) -> std::io::Result<()>,
 ) -> Result<(), CustodyError> {
+    // Held from before the link, so the link and any rollback of it are both
+    // synchronized through this one handle, and a directory this call cannot
+    // even open never receives an entry at all.
+    let directory = fs::File::open(parent).map_err(|source| io_error(parent, source))?;
     let (pending_path, mut pending) = create_pending_sibling(path, parent, mode)?;
     let published = write_synced(&mut pending, mode, contents)
         .and_then(|()| fs::hard_link(&pending_path, path))
@@ -259,11 +269,16 @@ fn publish_new_private_file(
     // On success, the directory synchronization below makes that durable.
     remove_if_same_file(&pending_path, &pending);
     published?;
-    if let Err(error) = sync_directory(parent) {
+    if let Err(source) = sync(&directory) {
         // Never report an entry that may not be durable, and never leave it
-        // behind to block an identical retry either.
+        // behind to block an identical retry either. A failed
+        // synchronization does not prove the link never reached the disk, so
+        // its removal is synchronized too; otherwise a crash after this
+        // reported failure could still leave the complete file in place. Both
+        // steps are best-effort cleanup that never masks this failure.
         remove_if_same_file(path, &pending);
-        return Err(error);
+        let _ = sync(&directory);
+        return Err(io_error(parent, source));
     }
     Ok(())
 }
@@ -533,6 +548,44 @@ mod tests {
         assert!(write_private_file(&path, 0o700, 0o600, b"complete", false).is_err());
         assert!(fs::symlink_metadata(&path).is_err());
         assert_eq!(entry_names(&dir).len(), MAX_PENDING_ATTEMPTS);
+    }
+
+    /// A link whose directory synchronization fails is removed again, and
+    /// that removal is itself synchronized through the same held directory
+    /// handle: the link may already be durable regardless, so an
+    /// unsynchronized removal could let a crash keep the complete file, which
+    /// a non-replacing retry such as `keygen` would then refuse.
+    #[test]
+    fn a_failed_directory_sync_removes_the_link_and_synchronizes_the_removal() {
+        const INJECTED: &str = "injected directory sync failure";
+        let dir = TempDir::new(0o700);
+        let path = dir.child("key");
+        let parent = fs::metadata(&dir.0).unwrap();
+        let mut synchronized: Vec<Vec<String>> = Vec::new();
+        let fail_first = |directory: &fs::File| {
+            let held = directory.metadata().unwrap();
+            assert_eq!((held.dev(), held.ino()), (parent.dev(), parent.ino()));
+            synchronized.push(entry_names(&dir));
+            if synchronized.len() == 1 {
+                return Err(std::io::Error::other(INJECTED));
+            }
+            directory.sync_all()
+        };
+        let result = publish_new_private_file(&path, &dir.0, 0o600, b"complete", fail_first);
+        assert!(matches!(
+            result,
+            Err(CustodyError::Io { path: failed, source })
+                if failed == dir.0 && source.to_string() == INJECTED
+        ));
+        // The first synchronization saw exactly the link; the second ran only
+        // after the rollback had removed it again.
+        assert_eq!(synchronized.len(), 2);
+        assert_eq!(synchronized[0], ["key"]);
+        assert!(synchronized[1].is_empty());
+        // Nothing is left behind to block an identical retry.
+        assert!(entry_names(&dir).is_empty());
+        write_private_file(&path, 0o700, 0o600, b"complete", false).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"complete");
     }
 
     /// Cleanup removes a path only while it is still the cleaner's own
