@@ -152,8 +152,14 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
   - 状態: tooling/Rustlsの対応・最終clearanceは未完了。
     再開後のnpm auditは7 high entries。別候補 `05ddad13` ではVitest plugin 1.4.0 /
     Wrangler 4.149.0 / peerと一致するworkers-types 5.20261006.1、および互換範囲の
-    brace-expansion/source-map-jsを固定し、npm auditは0件。literal npm-ciは成功、
-    Cloudflare owning gateは検証中なので未統合。Rustls 0.23.43とPR #298は別の未達。
+    brace-expansion/source-map-jsを固定し、npm auditは0件。literal npm-ciとCloudflare
+    owning gate (13 + 28 + 10 + 15 workerd tests、型/lint/WASM/native oracle) が成功し、
+    `70d0109a` / `5ceb4d22` として今回のブランチへ統合済み。
+    初回peer不一致・生成型hash不一致の失敗は保存し、force/legacy-peer-depsや
+    型check省略は使っていない。生成宣言は実際の新Wranglerで更新した。
+    Rustlsは既存PR #298と同じ0.23.45の限定pinを `5df02926` に適用。
+    [maintainer advisory](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc)
+    とchecksumを照合済み。shared PG/current-source/full qualificationはまだ未完了。
   - 次: bundled copyも含めて修正版の実体を確認する。forced bulk updateやPATによるreadはしない。
 
 - [ ] **D05: exposed ingress/operationsのコードを検証する**
@@ -174,6 +180,13 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
     exact operation-specific content、refusal/failure、recovery/rotation/revocation。
     automatic protocol signingと人のasset/governance approvalは区別する。
   - 状態: publication-only Linux試作の回収可否が不明。E4はSDK部分だけの成功。
+    新しい[publication metadata preview](docs/architecture/publication-review.md) と
+    CLI `contract preview` は実装し、独立指摘を処理してsource approval済み。
+    SDKの8 owning controls、compiled CLIの7 controlsが成功。診断hashとartifact
+    identityを区別し、実approvalやprotected key backendの合格には数えない。
+    人は再開中に「ローカルOSを信頼し、鍵を別プロセス・別権限で保護」を選択済み。
+    publication専用のcustody実装は別作業ブランチで進行中。real keys・host users/
+    servicesを作成せず、他familyやautomatic protocol signingをこの範囲で閉じない。
   - 次: 所在確認後、未達のbackend/consumerとoperator・CLI・実UID/PTY/Dockerの
     controlsを進める。全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
     実鍵・実administrator/recovery役割とceremonyはD04/D06/D07へ残す。Ledgerは別途deferred。
@@ -326,8 +339,9 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
 
 1. 所在・欠落範囲の照合、新しいbounded依存cache、E5/E6とR1/R2/R3/D01の
    最終照合は完了。削除されたローカルraw/署名試作は未回収として保持する。
-2. M2のpublication previewは独立review指摘を処理し、owning/CLI controlsで確認する。
-   D03 tooling候補のowning gateと残るRustls/PG条件を処理する。
+2. M2のpreviewはsource review/owning/CLIまで成功。選択済みのlocal OS custodyを
+   実装し、独立review・別UID/PTY/refusal/restartで確認する。
+   D03 toolingはowning成功・統合済み。残るRustls/shared PG/current-source条件を処理する。
 3. M3のf093統合と新しいowningはE7で成功。残るselected-profile fault/combined条件を進める。
    M4で既に成功した暗号化復元を未実装として作り直さない。
 4. sourceを固定しM7と必要なGを実行、D02/D03/M1の未達を処理する。
