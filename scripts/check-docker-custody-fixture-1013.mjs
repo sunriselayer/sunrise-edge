@@ -34,6 +34,7 @@ import { existsSync, statSync } from 'node:fs';
 import { basename } from 'node:path';
 
 const image = 'python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea';
+const imageId = 'sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea';
 const endpoint = 'unix:///var/run/docker.sock';
 const owner = randomUUID();
 const name = `sunrise-edge-custody-fixture-1013-${owner}`;
@@ -838,13 +839,15 @@ async function inspect(reference, cleanup = false, withConfiguration = false) {
   if (state === null || Array.isArray(state) || typeof state !== 'object') {
     throw new Error('container inspection is not unique');
   }
-  if (state.Name !== `/${name}` || state.Config.Labels?.[label] !== owner || state.Image !== image) {
+  if (state.Name !== `/${name}` || state.Config.Labels?.[label] !== owner || state.Image !== imageId) {
     throw new Error('container is not the exact owned custody fixture');
   }
   return state;
 }
 
 try {
+  const localImage = await docker(['image', 'inspect', '--format', '{{.Id}}', image]);
+  if (localImage.stdout.trim() !== imageId) throw new Error('pinned local image attachment differs');
   const created = await docker([
     'create', '--pull=never', '--name', name, '--label', `${label}=${owner}`,
     '--network', 'none', '--read-only', '--cap-drop', 'ALL',
