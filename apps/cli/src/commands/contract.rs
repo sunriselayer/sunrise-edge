@@ -21,7 +21,7 @@ where
     let mut args = args.into_iter();
     let action: OsString = args.next().ok_or(CliError::MissingContractAction)?;
     let action: &str = action.to_str().ok_or(ArgsError::NonUtf8Token)?;
-    if action == "publish" || action == "query" {
+    if action == "publish" || action == "query" || action == "preview" {
         return super::publication::run(action, args);
     }
     if matches!(action, "instantiate" | "call" | "query-instance") {

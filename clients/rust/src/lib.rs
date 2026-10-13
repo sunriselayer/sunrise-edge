@@ -73,6 +73,7 @@ pub mod ordered_history_archive;
 pub mod ordered_history_client;
 pub mod paid_execution_client;
 pub mod publication_client;
+pub mod publication_review;
 mod signing_frame;
 pub mod successor_artifacts;
 pub mod successor_authority;
@@ -171,6 +172,11 @@ pub use protocol_types::{HashSuite, HashSuiteSchedule};
 pub use publication_client::{
     PreparedPublication, PublicationQueryResult, build_signed_publication,
     local_publication_resolver,
+};
+pub use publication_review::{
+    DependencyReview, MAX_REVIEW_CHAIN_ID_DISPLAY_BYTES, MAX_REVIEW_DEPENDENCIES,
+    MAX_REVIEW_DISPLAY_BYTES, MAX_REVIEW_EXPORTS, MAX_REVIEW_EXPORT_DISPLAY_BYTES,
+    MAX_REVIEW_TOTAL_FIELDS, MAX_REVIEW_WORK_BYTES, PublicationReview, PublicationReviewError,
 };
 pub use signing_view::{
     ClearSigningPolicy, ClearSigningPolicyError, ClearSigningView, DeviceSigningProfile,
