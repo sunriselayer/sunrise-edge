@@ -131,6 +131,7 @@
 - [DR-0237: bounded publication metadata review](0237-bounded-publication-review-presentation.md)
 - [DR-0238: publication-only local OS custody](0238-publication-only-local-os-custody.md)
 - [DR-0239: registry dependency target-kind scope for closure target checks](0239-registry-dependency-target-kind-scope.md)
+- [DR-0240: recurring CI compilation profile](0240-recurring-ci-compilation-profile.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

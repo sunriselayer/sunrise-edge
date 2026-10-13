@@ -69,6 +69,18 @@ Stable `check` runs with `always()` and accepts explicit success from exactly
 these seven dependencies. Missing, failed, cancelled, skipped and unknown
 results are errors.
 
+The hosted `recurring-sqlite` lane selects Cargo dev/test optimization level 2
+for its complete process workload, with debug assertions and overflow checks
+explicitly enabled in both profiles. Ordinary builds retain workspace level 1;
+the existing curve-only level 3 override remains. A redundant node-core level 1
+override is omitted so this package inherits the selected level without losing
+its explicit safety checks. No selector, fixture, epoch, wait, fault, restart or
+refusal changes, and the 360-minute job budget remains. The independent gate
+contract rejects missing/weakened settings or their use in another lane.
+[DR-0240](decisions/0240-recurring-ci-compilation-profile.md) owns this choice.
+Record the actual compilation profile with source and results; optimization
+does not itself prove completion or a speed improvement.
+
 ## Explicit PostgreSQL acceptance
 
 The separate `postgres checks` workflow is manually dispatched for the selected

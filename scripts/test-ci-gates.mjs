@@ -12,6 +12,27 @@ const registry = join(root, "scripts/ci-gates.sh");
 const execution = join(root, "scripts/ci-execution.sh");
 const requiredGroups = ["lint", "rust-tests", "portable-tools", "cloudflare", "core-recurrence", "readiness-sqlite", "recurring-sqlite"];
 const postgresGroups = ["pg-storage", "pg-lifecycle", "pg-drain-history", "pg-business-audit", "pg-recovery-economics"];
+const cargoManifest = readFileSync(join(root, "Cargo.toml"), "utf8");
+function profileBlock(name) {
+  const start = cargoManifest.indexOf(`[${name}]\n`);
+  assert.notEqual(start, -1);
+  const tail = cargoManifest.slice(start + name.length + 3);
+  return tail.slice(0, tail.search(/\n\[/) < 0 ? tail.length : tail.search(/\n\[/));
+}
+// A named package override would silently defeat the lane's selected level.
+assert.match(profileBlock("profile.dev"), /^opt-level = 1$/m);
+assert.doesNotMatch(cargoManifest, /^\[profile\.test(?:\.|\])/m);
+assert.match(profileBlock("profile.dev.package.curve25519-dalek"), /^opt-level = 3$/m);
+assert.doesNotMatch(profileBlock("profile.dev.package.node-core"), /^opt-level\s*=/m);
+for (const [, name] of cargoManifest.matchAll(/^\[(profile\.dev\.package\.[^\]\n]+)\]$/gm)) {
+  if (/^opt-level\s*=/m.test(profileBlock(name))) {
+    assert.equal(name, "profile.dev.package.curve25519-dalek");
+  }
+}
+for (const name of ["profile.dev", "profile.dev.package.curve25519-dalek", "profile.dev.package.node-core"]) {
+  assert.match(profileBlock(name), /^debug-assertions = true$/m);
+  assert.match(profileBlock(name), /^overflow-checks = true$/m);
+}
 const groups = [
   "lint", "rust-tests", "pg-storage", "pg-lifecycle", "pg-drain-history",
   "pg-business-audit", "pg-recovery-economics", "portable-tools", "cloudflare",
@@ -172,6 +193,8 @@ function checkWorkflow(text, profile) {
     `        run: node scripts/check-ci-results.mjs${pg ? " --profile postgres" : ""}`,
   ]);
   assert(!/continue-on-error:|paths:|paths-ignore:/.test(text));
+  assert.equal([...text.matchAll(/CARGO_PROFILE_(?:DEV|TEST)_(?:OPT_LEVEL|DEBUG_ASSERTIONS|OVERFLOW_CHECKS):/g)].length,
+    pg ? 0 : 6);
   if (!pg) assert(!/services:|SUNRISE_EDGE_TEST_POSTGRES_|pg-/.test(text));
   for (const name of members) {
     const job = jobs.get(name);
@@ -191,6 +214,16 @@ function checkWorkflow(text, profile) {
     for (const fault of faults) {
       assert.equal(job.includes(`SUNRISE_EDGE_TEST_POSTGRES_${fault}_REQUIRED: "1"`), name === "pg-storage");
     }
+    const compilationLines = job.split("\n").filter((line) =>
+      /CARGO_PROFILE_(DEV|TEST)_(OPT_LEVEL|DEBUG_ASSERTIONS|OVERFLOW_CHECKS):/.test(line));
+    assert.deepEqual(compilationLines, name === "recurring-sqlite" ? [
+      '      CARGO_PROFILE_DEV_OPT_LEVEL: "2"',
+      '      CARGO_PROFILE_TEST_OPT_LEVEL: "2"',
+      '      CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: "true"',
+      '      CARGO_PROFILE_TEST_DEBUG_ASSERTIONS: "true"',
+      '      CARGO_PROFILE_DEV_OVERFLOW_CHECKS: "true"',
+      '      CARGO_PROFILE_TEST_OVERFLOW_CHECKS: "true"',
+    ] : []);
   }
   if (pg) {
     assert(jobs.get("pg-storage").includes("SUNRISE_EDGE_TEST_POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}"));
@@ -253,6 +286,14 @@ for (const [profile, members, path] of profiles) {
       sdkNodeSetup.replace("22.20.0", "26.9.0")), profile));
     for (const extra of ["  SUNRISE_EDGE_TEST_POSTGRES_URL: unused\n", "  services:\n    postgres: unused\n"]) {
       assert.throws(() => checkWorkflow(workflow.replace("env:\n", `env:\n${extra}`), profile));
+    }
+    for (const setting of ["DEV_OPT_LEVEL", "TEST_OPT_LEVEL", "DEV_DEBUG_ASSERTIONS",
+      "TEST_DEBUG_ASSERTIONS", "DEV_OVERFLOW_CHECKS", "TEST_OVERFLOW_CHECKS"]) {
+      const value = setting.endsWith("OPT_LEVEL") ? "2" : "true";
+      const line = `      CARGO_PROFILE_${setting}: "${value}"\n`;
+      assert.throws(() => checkWorkflow(workflow.replace(line, ""), profile));
+      assert.throws(() => checkWorkflow(workflow.replace(line,
+        line.replace(`"${value}"`, setting.endsWith("OPT_LEVEL") ? '"0"' : '"false"')), profile));
     }
   }
 

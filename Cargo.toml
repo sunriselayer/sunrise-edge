@@ -119,9 +119,9 @@ opt-level = 3
 debug-assertions = true
 overflow-checks = true
 
-# Keep the recurring verifier's package-level safety settings explicit. This
-# opt-level matches the workspace dev default; no test or proof is omitted.
+# Keep the recurring verifier's package-level safety settings explicit while
+# inheriting the selected dev/test optimization level. Ordinary builds remain
+# at the workspace level 1; the recurring CI lane may select level 2.
 [profile.dev.package.node-core]
-opt-level = 1
 debug-assertions = true
 overflow-checks = true

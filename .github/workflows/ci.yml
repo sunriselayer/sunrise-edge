@@ -111,6 +111,15 @@ jobs:
   recurring-sqlite:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # Optimize the complete unchanged workload; keep every development check.
+    # This affects compilation only, never epochs, waits, fixtures or selectors.
+    env:
+      CARGO_PROFILE_DEV_OPT_LEVEL: "2"
+      CARGO_PROFILE_TEST_OPT_LEVEL: "2"
+      CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: "true"
+      CARGO_PROFILE_TEST_DEBUG_ASSERTIONS: "true"
+      CARGO_PROFILE_DEV_OVERFLOW_CHECKS: "true"
+      CARGO_PROFILE_TEST_OVERFLOW_CHECKS: "true"
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
