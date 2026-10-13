@@ -103,3 +103,30 @@ Earlier probe failures remain failures, not historical passes. These observation
 do not run the product's PG/SQLite suites or establish physical-disk/power-loss,
 custody, full-profile, M3/TODO20 or release qualification. Do not rerun a consumed
 successful probe as a substitute for the remaining product-owned verification.
+
+## 2026-10-13: product-owned blob-publication fault boundary
+
+The original four SQLite fault controls prepublish both known blobs and fault
+the structured commit. A fifth control instead starts with only the unrelated
+blob and invokes the ordinary public `put_blob` once while the same bounded
+Docker filesystem has observed errno28. Its target remains absent; the full
+physical blob tables and all twelve structured tables/four portable collections
+must remain equal before release, after release and after existing-only reopen.
+Both public blob owners verify complete descriptor/chunk/hash/codec closure.
+
+An added SQLite-owned maintenance connection checkpoints the actual blob WAL
+to the full `(0,0,0)` result and verifies zero WAL length/blocks before filling.
+A DISTINCT absent digest then probes a raw INSERT on that same blob database,
+requiring actual `SQLITE_FULL` and checked rollback/autocommit. This is not the
+hidden raw cause or statement of the public `put_blob` error. The held filler
+observes errno28 again after each operation: restored exhaustion is not a claim
+of uninterrupted fullness inside SQLite. Sidecar observers and maintenance
+owners close before original blob owners' last-close; main inodes remain bound.
+
+One authorized successful blob retry after release may add exactly the target
+body. Duplicate publication is idempotent and every structured field must stay
+unchanged. No structured commit, fresh production hook or dependency is added.
+The original four case bodies remain; their stronger shared blob observer also
+needs fresh execution. The exact new executable must be rebuilt and rebound
+before the five-case runner is used. Source/format review alone is not execution,
+cross-file atomicity, power/fsync/storage-media, custody or complete M3 acceptance.

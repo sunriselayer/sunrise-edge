@@ -2,6 +2,10 @@
 //! Only ciphertext and a disposable typed identity cross into the cold root.
 #![allow(dead_code)] // Compiled by both original and full recurring owners.
 
+#[cfg(unix)]
+#[path = "recovery_reproducer.rs"]
+mod recovery_reproducer;
+
 use super::compiled_source_host_process::spawn_strict_bounded_output;
 use age::secrecy::ExposeSecret;
 use hashing::HashSuiteResolver;
@@ -19,7 +23,7 @@ use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     process::{Command, Output},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub struct Relocation<'a> {
@@ -318,7 +322,49 @@ pub fn relocate(input: Relocation<'_>) -> SourceBusinessSnapshot {
             ]);
         command
     };
-    let packed: String = success("pack-saved", execute(pack()));
+    let pack_command: Command = pack();
+    #[cfg(unix)]
+    let pack_arguments: Result<Vec<OsString>, recovery_reproducer::Refusal> =
+        recovery_reproducer::public_arguments(&pack_command);
+    let pack_started: Instant = Instant::now();
+    let pack_output: Output = execute(pack_command);
+    let pack_elapsed: Duration = pack_started.elapsed();
+    eprintln!(
+        "compiled saved-closure stage=pack-saved elapsed_ms={} success={}",
+        pack_elapsed.as_millis(),
+        pack_output.status.success()
+    );
+    if !pack_output.status.success() {
+        #[cfg(unix)]
+        let retained: Result<PathBuf, recovery_reproducer::Failure> = match &pack_arguments {
+            Ok(arguments) => recovery_reproducer::retain(recovery_reproducer::Request {
+                program: input.recovery,
+                arguments,
+                roles: &roles,
+                inventories: &expected,
+                identity: &key,
+                work: input.work,
+                excluded_roots: input.unavailable_roots,
+                output: &pack_output,
+                elapsed: pack_elapsed,
+            }),
+            Err(reason) => Err(recovery_reproducer::Failure {
+                reason: *reason,
+                root: None,
+            }),
+        };
+        #[cfg(unix)]
+        match retained {
+            Ok(root) => eprintln!("failed pack reproducer DATA retained at {}", root.display()),
+            Err(failure) => eprintln!(
+                "failed pack reproducer refused: {:?}; owned partial root={:?}",
+                failure.reason, failure.root
+            ),
+        }
+        #[cfg(not(unix))]
+        eprintln!("failed pack reproducer refused: Unix filesystem checks unavailable");
+    }
+    let packed: String = success("pack-saved", pack_output);
     assert_eq!(packed, expected_packed);
     for ((_, generated), expected) in roles.iter().zip(&expected) {
         assert_eq!(

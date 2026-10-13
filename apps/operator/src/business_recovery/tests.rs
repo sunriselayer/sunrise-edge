@@ -763,6 +763,22 @@ fn full_role_sources(
     directory: &Directory,
     budget: &ArchiveReadBudget,
 ) -> (Vec<SourceRole>, usize) {
+    full_role_sources_with_history(directory, budget, None)
+}
+
+#[cfg(target_os = "linux")]
+struct HistoryShape {
+    current: u64,
+    plans: [u64; 8],
+    manifests: [u64; 8],
+}
+
+#[cfg(target_os = "linux")]
+fn full_role_sources_with_history(
+    directory: &Directory,
+    budget: &ArchiveReadBudget,
+    shape: Option<&HistoryShape>,
+) -> (Vec<SourceRole>, usize) {
     // Filesystem mechanics only: the small literal bodies are not signed
     // histories, a verified successor chain, or a qualified recovery package.
     let source: PathBuf = directory.0.join("source");
@@ -797,11 +813,16 @@ fn full_role_sources(
             std::fs::write(root.join(name), [role.tag]).unwrap();
             expected_files += 1;
         }
-        let heights: u64 = match role.tag {
-            2 => 15,
-            4 => u64::from(role.link) * 2 + 1,
-            6 => u64::from(role.link) * 2 + 2,
-            _ => 0,
+        let heights: u64 = match (shape, role.tag) {
+            (Some(shape), 2) => shape.current,
+            (Some(shape), 4) => shape.plans[usize::from(role.link)],
+            (Some(shape), 6) => shape.manifests[usize::from(role.link)],
+            _ => match role.tag {
+                2 => 15,
+                4 => u64::from(role.link) * 2 + 1,
+                6 => u64::from(role.link) * 2 + 2,
+                _ => 0,
+            },
         };
         for height in 1..=heights {
             let height_root: PathBuf = root.join(format!("height-{height:020}"));
@@ -828,21 +849,54 @@ fn full_role_sources(
 #[test]
 #[cfg(target_os = "linux")]
 fn full_thirtyfive_role_capture_keeps_generated_history_inventory_with_default_budget() {
+    assert_full_role_terminal_capture(None);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn genuine_eight_link_history_shape_keeps_full_filesystem_encrypted_terminal_closure() {
+    // Actual generated prefix lengths of the compiled eight-link producer.
+    // Six one-byte components per height intentionally exercise all legal
+    // layout kinds. These are NOT signed history or business-proof bodies.
+    let shape: HistoryShape = HistoryShape {
+        current: 15,
+        plans: [9, 30, 24, 15, 15, 15, 15, 15],
+        manifests: [13, 34, 28, 19, 19, 19, 19, 19],
+    };
+    assert_eq!(
+        shape.current + shape.plans.iter().sum::<u64>() + shape.manifests.iter().sum::<u64>(),
+        323
+    );
+    assert_full_role_terminal_capture(Some(&shape));
+}
+
+#[cfg(target_os = "linux")]
+fn assert_full_role_terminal_capture(shape: Option<&HistoryShape>) {
     let directory: Directory = Directory::new();
     let limits: RecoveryLimits = RecoveryLimits::default();
     let budget: ArchiveReadBudget = limits.budget().unwrap();
     let (sources, expected_files): (Vec<SourceRole>, usize) =
-        full_role_sources(&directory, &budget);
+        full_role_sources_with_history(&directory, &budget, shape);
+    if shape.is_some() {
+        assert_eq!(expected_files, 2_366);
+    } else {
+        assert_eq!(expected_files, 1_162);
+    }
     let capture: PathBuf = directory.0.join("capture");
     let mut stage: PrivateStage =
         PrivateStage::create(&AbsentOutput::new(&capture, &budget).unwrap(), &budget).unwrap();
     let result: Result<envelope::Manifest, RecoveryError> = stage.capture(&sources, 8, &limits);
     let live: bool = budget.check().is_ok();
     let manifest: envelope::Manifest = result.unwrap_or_else(|error: RecoveryError| {
-        panic!("35-role capture refused: {error:?}, original_budget_live={live}, captured={:?}/{expected_files}", stage.capture_counts_for_test())
+        panic!("35-role capture refused: {error:?}, reason={:?}, original_budget_live={live}, captured={:?}/{expected_files}", budget.refusal_reason(), stage.capture_counts_for_test())
     });
     assert_eq!(manifest.entries.len(), expected_files);
-    stage.check(&manifest).unwrap();
+    stage.check(&manifest).unwrap_or_else(|error| {
+        panic!(
+            "initial stage check: {error:?}, reason={:?}",
+            budget.refusal_reason()
+        )
+    });
     for entry in &manifest.entries {
         assert_eq!(entry.length, 1);
         let mut body: Vec<u8> = Vec::new();
@@ -860,7 +914,12 @@ fn full_thirtyfive_role_capture_keeps_generated_history_inventory_with_default_b
 
     // Exercise all actual filesystem terminal passes with maintained age.
     // No defining business verifier is invoked for these skeleton bytes.
-    stage.check(&manifest).unwrap();
+    stage.check(&manifest).unwrap_or_else(|error| {
+        panic!(
+            "pre-encryption stage check: {error:?}, reason={:?}",
+            budget.refusal_reason()
+        )
+    });
     let identity: age::x25519::Identity = age::x25519::Identity::generate();
     let ciphertext: PathBuf = directory.0.join("saved.age");
     let mut publication: CipherPublication =
@@ -879,7 +938,14 @@ fn full_thirtyfive_role_capture_keeps_generated_history_inventory_with_default_b
     for (index, entry) in manifest.entries.iter().enumerate() {
         let header: [u8; 17] = envelope::file_header(index, entry).unwrap();
         writer.write_all(&header).unwrap();
-        stage.write_body(&mut writer, entry).unwrap();
+        stage
+            .write_body(&mut writer, entry)
+            .unwrap_or_else(|error: RecoveryError| {
+                panic!(
+                    "encryption body: {error:?}, reason={:?}",
+                    budget.refusal_reason()
+                )
+            });
         expected.extend_from_slice(&header);
         expected.push(if entry.role.tag == 1 {
             0x61
@@ -903,7 +969,12 @@ fn full_thirtyfive_role_capture_keeps_generated_history_inventory_with_default_b
         limits.ciphertext_bytes,
         &budget,
     )
-    .unwrap();
+    .unwrap_or_else(|error| {
+        panic!(
+            "terminal publication: {error:?}, reason={:?}",
+            budget.refusal_reason()
+        )
+    });
     assert_eq!(counts.links, 8);
     assert_eq!(counts.files, expected_files);
     assert_eq!(

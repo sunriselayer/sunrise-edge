@@ -6,10 +6,13 @@
 
 use super::*;
 use crate::SqliteBlobStore;
+use crate::native_connection::NativeConnection;
 use runtime::portable::{
     DurableCollection, DurablePayloadDescriptor, DurableRecordChunk, DurableRecordMetadata,
+    PortableBlobChunk, PortableBlobChunkOutcome, PortableBlobChunkRequest, PortableBlobDescriptor,
+    PortableBlobRepository,
 };
-use runtime::{BlobStore, IndeterminateCommitReason, ObjectHeadRevision};
+use runtime::{BlobStore, IndeterminateCommitReason, ObjectHeadRevision, RuntimeError};
 use runtime_sql_durable::{SqlRow, SqlRows, SqlSession, SqlSessionError, SqlValue};
 use std::{
     collections::BTreeMap,
@@ -33,6 +36,12 @@ static SERIAL: Mutex<()> = Mutex::new(());
 enum ObjectFixture {
     Inline,
     Referenced,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlobSetup {
+    BothPrepublished,
+    UnrelatedOnly,
 }
 
 fn unix_millis() -> u64 {
@@ -769,7 +778,8 @@ fn expected_reference_keys(target_present: bool) -> BTreeMap<DurableRecordKey, D
 }
 
 // The original publication owner AND its warmed read-only observer remain
-// alive through the structured fault. No blob write occurs after new().
+// alive through the structured fault. The original four controls perform no
+// blob write after new(); the fifth uses an explicit absent-target put fault.
 struct BlobFixture {
     // Fields drop in declaration order: discard live-sidecar observations
     // before either SQLite owner can perform legitimate last-close cleanup.
@@ -779,10 +789,16 @@ struct BlobFixture {
     path: PathBuf,
     main_identity: Identity,
     expected: BTreeMap<Digest32, (Object, Vec<u8>)>,
+    setup: BlobSetup,
+    target_published: bool,
 }
 
 impl BlobFixture {
     fn new(directory: &FaultDirectory) -> Self {
+        Self::with_setup(directory, BlobSetup::BothPrepublished)
+    }
+
+    fn with_setup(directory: &FaultDirectory, setup: BlobSetup) -> Self {
         directory.check();
         let path: PathBuf = directory.path.join("blob.db");
         let writer: SqliteBlobStore = SqliteBlobStore::create_new_fresh(&path).unwrap();
@@ -802,6 +818,9 @@ impl BlobFixture {
         let mut expected: BTreeMap<Digest32, (Object, Vec<u8>)> = BTreeMap::new();
         for target in [false, true] {
             let target: bool = target;
+            if target && setup == BlobSetup::UnrelatedOnly {
+                continue;
+            }
             let (object, canonical, digest): (Object, Vec<u8>, Digest32) =
                 literal_referenced_object(target);
             assert_eq!(writer.get_blob(&digest).unwrap(), None);
@@ -810,7 +829,10 @@ impl BlobFixture {
             assert!(expected.insert(digest, (object, canonical)).is_none());
             directory.check();
         }
-        assert_eq!(expected.len(), 2);
+        match setup {
+            BlobSetup::BothPrepublished => assert_eq!(expected.len(), 2),
+            BlobSetup::UnrelatedOnly => assert_eq!(expected.len(), 1),
+        }
         writer.sync_created().unwrap();
         let reader: SqliteBlobStore = SqliteBlobStore::open_existing(&path).unwrap();
         // Warm both reads and attach any legitimate read-side sidecars before
@@ -826,14 +848,21 @@ impl BlobFixture {
             path,
             main_identity,
             expected,
+            setup,
+            target_published: setup == BlobSetup::BothPrepublished,
         };
         let observed: BTreeMap<Digest32, Vec<u8>> = fixture.observe(directory);
-        assert_eq!(observed.len(), 2);
+        match setup {
+            BlobSetup::BothPrepublished => assert_eq!(observed.len(), 2),
+            BlobSetup::UnrelatedOnly => assert_eq!(observed.len(), 1),
+        }
         fixture
     }
 
     fn observe(&self, directory: &FaultDirectory) -> BTreeMap<Digest32, Vec<u8>> {
         directory.check();
+        let expected_count: usize = if self.target_published { 2 } else { 1 };
+        assert_eq!(self.expected.len(), expected_count);
         self.attachment.lock().unwrap().check().unwrap();
         let named: Metadata = fs::symlink_metadata(&self.path).unwrap();
         assert!(named.is_file() && !named.file_type().is_symlink() && named.nlink() == 1);
@@ -859,6 +888,39 @@ impl BlobFixture {
                 let object: Object = objects::decode_object(&actual).unwrap();
                 assert_eq!(&object, expected_object);
                 assert_eq!(objects::encode_object(&object).unwrap(), actual);
+                let descriptor: PortableBlobDescriptor = owner
+                    .read_portable_blob_descriptor(expected_digest)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(descriptor.digest(), *expected_digest);
+                assert_eq!(descriptor.length(), expected_bytes.len());
+                let mut chunks: Vec<u8> = Vec::new();
+                let mut offset: usize = 0;
+                loop {
+                    directory.check();
+                    let request: PortableBlobChunkRequest = PortableBlobChunkRequest::new(
+                        descriptor,
+                        offset,
+                        NonZeroUsize::new(64 * 1024).unwrap(),
+                    )
+                    .unwrap();
+                    let chunk: Box<PortableBlobChunk> =
+                        match owner.read_portable_blob_chunk(&request).unwrap() {
+                            PortableBlobChunkOutcome::Chunk(chunk) => chunk,
+                            PortableBlobChunkOutcome::Corrupt => panic!("known blob chunk changed"),
+                        };
+                    assert_eq!(chunk.request(), &request);
+                    assert!(!chunk.bytes().is_empty());
+                    let next: usize = offset.checked_add(chunk.bytes().len()).unwrap();
+                    assert_eq!(next, request.range().end);
+                    chunks.extend_from_slice(chunk.bytes());
+                    offset = next;
+                    if chunk.is_last() {
+                        break;
+                    }
+                }
+                assert_eq!(offset, descriptor.length());
+                assert_eq!(&chunks, expected_bytes);
                 observed_bytes = Some(actual);
                 self.attachment.lock().unwrap().check().unwrap();
                 directory.check();
@@ -869,7 +931,13 @@ impl BlobFixture {
                     .is_none()
             );
         }
-        assert_eq!(observed.len(), 2);
+        match self.setup {
+            BlobSetup::BothPrepublished => {
+                assert!(self.target_published);
+                assert_eq!(observed.len(), 2);
+            }
+            BlobSetup::UnrelatedOnly => assert_eq!(observed.len(), expected_count),
+        }
         observed
     }
 
@@ -882,6 +950,8 @@ impl BlobFixture {
             path,
             main_identity,
             expected,
+            setup,
+            target_published,
         }: Self = self;
         // Old live-sidecar observations must be discarded BEFORE last-close.
         // ImportFile retains directories only, never an independent main/SHM FD.
@@ -904,9 +974,16 @@ impl BlobFixture {
             path,
             main_identity,
             expected,
+            setup,
+            target_published,
         };
         let observed: BTreeMap<Digest32, Vec<u8>> = reopened.observe(directory);
-        assert_eq!(observed.len(), 2);
+        match setup {
+            BlobSetup::BothPrepublished => assert_eq!(observed.len(), 2),
+            BlobSetup::UnrelatedOnly => {
+                assert_eq!(observed.len(), if target_published { 2 } else { 1 });
+            }
+        }
         reopened
     }
 }
@@ -1676,7 +1753,13 @@ fn seed(
                 );
             assert_eq!(version, expected_version);
             assert_eq!(baseline.references, expected_reference_keys(false));
-            assert_eq!(baseline.blobs.len(), 2);
+            match blobs.unwrap().setup {
+                BlobSetup::BothPrepublished => assert_eq!(baseline.blobs.len(), 2),
+                BlobSetup::UnrelatedOnly => {
+                    assert!(!blobs.unwrap().target_published);
+                    assert_eq!(baseline.blobs.len(), 1);
+                }
+            }
             assert_referenced_version_sql(&baseline, false);
         }
     }
@@ -1942,4 +2025,350 @@ fn docker_noswap_enospc_before_commit_preserves_referenced_blob_closure() {
 #[ignore = "requires a fresh isolated Docker /fault 64MiB tmpfs noswap and exact outer limits"]
 fn docker_noswap_enospc_during_literal_commit_preserves_referenced_blob_closure() {
     enospc_during_literal_commit(ObjectFixture::Referenced);
+}
+
+type BlobSqlRow = (i64, Vec<u8>, Vec<u8>);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BlobSqlImage {
+    metadata: Vec<(i64, Vec<u8>)>,
+    blobs: Vec<BlobSqlRow>,
+}
+
+// Enumerate every physical row/column, including unknown digest keys, rather
+// than using point reads of only the fixture's expected keys as the SQL oracle.
+fn blob_sql_image(
+    maintenance: &mut NativeConnection,
+    directory: &FaultDirectory,
+    target_present: bool,
+) -> BlobSqlImage {
+    directory.check();
+    assert!(maintenance.sqlite.is_autocommit());
+    let expected_count: i64 = if target_present { 2 } else { 1 };
+    let image: BlobSqlImage = maintenance
+        .inspect(|connection: &Connection| -> Result<BlobSqlImage, crate::native_connection::NativeError> {
+            let table_count: i64 = connection.query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+                [],
+                |row: &rusqlite::Row<'_>| -> rusqlite::Result<i64> { row.get(0) },
+            )?;
+            assert_eq!(table_count, 2);
+            let mut tables_statement: rusqlite::Statement<'_> = connection.prepare(
+                "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )?;
+            let tables: Vec<String> = tables_statement
+                .query_map([], |row: &rusqlite::Row<'_>| -> rusqlite::Result<String> { row.get(0) })?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            assert_eq!(tables, vec![String::from("blob_metadata"), String::from("blobs")]);
+            for (query, expected) in [
+                ("PRAGMA table_info(blob_metadata)", vec!["id", "schema_identity"]),
+                ("PRAGMA table_info(blobs)", vec!["digest_algorithm", "digest_bytes", "content"]),
+            ] {
+                let query: &str = query;
+                let expected: Vec<&str> = expected;
+                let mut statement: rusqlite::Statement<'_> = connection.prepare(query)?;
+                let columns: Vec<String> = statement
+                    .query_map([], |row: &rusqlite::Row<'_>| -> rusqlite::Result<String> { row.get(1) })?
+                    .collect::<rusqlite::Result<Vec<String>>>()?;
+                assert_eq!(columns, expected);
+            }
+            let metadata_count: i64 = connection.query_row(
+                "SELECT count(*) FROM blob_metadata", [],
+                |row: &rusqlite::Row<'_>| -> rusqlite::Result<i64> { row.get(0) },
+            )?;
+            assert_eq!(metadata_count, 1);
+            let metadata_length: i64 = connection.query_row(
+                "SELECT length(schema_identity) FROM blob_metadata", [],
+                |row: &rusqlite::Row<'_>| -> rusqlite::Result<i64> { row.get(0) },
+            )?;
+            assert_eq!(metadata_length, i64::try_from(crate::SQLITE_BLOB_SCHEMA_IDENTITY.len()).unwrap());
+            let blob_count: i64 = connection.query_row(
+                "SELECT count(*) FROM blobs", [],
+                |row: &rusqlite::Row<'_>| -> rusqlite::Result<i64> { row.get(0) },
+            )?;
+            assert_eq!(blob_count, expected_count);
+            let largest: i64 = connection.query_row(
+                "SELECT max(length(content)) FROM blobs", [],
+                |row: &rusqlite::Row<'_>| -> rusqlite::Result<i64> { row.get(0) },
+            )?;
+            let (_object, canonical, _digest): (Object, Vec<u8>, Digest32) = literal_referenced_object(false);
+            assert!(largest > 0 && largest <= i64::try_from(canonical.len()).unwrap());
+            let mut metadata_statement: rusqlite::Statement<'_> = connection.prepare(
+                "SELECT id, schema_identity FROM blob_metadata ORDER BY id",
+            )?;
+            let metadata: Vec<(i64, Vec<u8>)> = metadata_statement
+                .query_map([], |row: &rusqlite::Row<'_>| -> rusqlite::Result<(i64, Vec<u8>)> {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<(i64, Vec<u8>)>>>()?;
+            let mut blobs_statement: rusqlite::Statement<'_> = connection.prepare(
+                "SELECT digest_algorithm, digest_bytes, content FROM blobs ORDER BY digest_algorithm, digest_bytes",
+            )?;
+            let blobs: Vec<BlobSqlRow> = blobs_statement
+                .query_map([], |row: &rusqlite::Row<'_>| -> rusqlite::Result<BlobSqlRow> {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect::<rusqlite::Result<Vec<BlobSqlRow>>>()?;
+            Ok(BlobSqlImage { metadata, blobs })
+        })
+        .unwrap();
+    assert!(maintenance.sqlite.is_autocommit());
+    assert_eq!(
+        image.metadata,
+        vec![(1_i64, crate::SQLITE_BLOB_SCHEMA_IDENTITY.to_vec())]
+    );
+    let mut expected: Vec<BlobSqlRow> = Vec::new();
+    for target in [false, true] {
+        let target: bool = target;
+        if target && !target_present {
+            continue;
+        }
+        let (_object, canonical, digest): (Object, Vec<u8>, Digest32) =
+            literal_referenced_object(target);
+        expected.push((
+            i64::from(digest.algorithm().as_u16()),
+            digest.bytes().to_vec(),
+            canonical,
+        ));
+    }
+    expected.sort();
+    assert_eq!(image.blobs, expected);
+    directory.check();
+    image
+}
+
+fn assert_blob_keys_absent(blobs: &BlobFixture, directory: &FaultDirectory, keys: &[Digest32]) {
+    for owner in [&blobs.writer, &blobs.reader] {
+        let owner: &SqliteBlobStore = owner;
+        for key in keys {
+            let key: &Digest32 = key;
+            directory.check();
+            assert_eq!(owner.get_blob(key).unwrap(), None);
+            assert_eq!(owner.read_portable_blob_descriptor(key).unwrap(), None);
+        }
+    }
+    blobs.attachment.lock().unwrap().check().unwrap();
+    directory.check();
+}
+
+fn probe_blob_full(
+    maintenance: &mut NativeConnection,
+    directory: &FaultDirectory,
+    probe_digest: Digest32,
+) {
+    directory.check();
+    let NativeConnection { sqlite, identity }: &mut NativeConnection = maintenance;
+    identity.check().unwrap();
+    assert!(sqlite.is_autocommit());
+    let transaction: rusqlite::Transaction<'_> = sqlite
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    assert_eq!(
+        transaction.drop_behavior(),
+        rusqlite::DropBehavior::Rollback
+    );
+    identity.check().unwrap();
+    let bytes: Vec<u8> = vec![0xd2; LARGE_STATE_BYTES];
+    let result: rusqlite::Result<usize> = transaction.execute(
+        "INSERT INTO blobs (digest_algorithm, digest_bytes, content) VALUES (?1, ?2, ?3)",
+        rusqlite::params![
+            i64::from(probe_digest.algorithm().as_u16()),
+            probe_digest.bytes().as_slice(),
+            bytes,
+        ],
+    );
+    match result {
+        Err(rusqlite::Error::SqliteFailure(error, _)) => {
+            assert_eq!(error.extended_code & 0xff, rusqlite::ffi::SQLITE_FULL);
+        }
+        other => panic!("same-blob-file probe did not observe raw SQLITE_FULL: {other:?}"),
+    }
+    identity.check().unwrap();
+    // SQLITE_FULL may already have rolled back the whole transaction. finish
+    // checks autocommit and otherwise performs the default checked Rollback;
+    // an unconditional ROLLBACK would falsely fail an already-aborted probe.
+    transaction.finish().unwrap();
+    assert!(sqlite.is_autocommit());
+    identity.check().unwrap();
+    directory.check();
+}
+
+fn assert_structured_image_unchanged(baseline: &CompleteImage, current: &CompleteImage) {
+    // Successful blob recovery intentionally changes current.blobs, not any
+    // structured field. Do not weaken equality before that explicit addition.
+    assert_eq!(current.sql, baseline.sql);
+    assert_eq!(current.token, baseline.token);
+    assert_eq!(current.pages, baseline.pages);
+    assert_eq!(current.rows, baseline.rows);
+    assert_eq!(current.references, baseline.references);
+}
+
+#[test]
+#[ignore = "requires a fresh isolated Docker /fault 64MiB tmpfs noswap and exact outer limits"]
+fn docker_noswap_enospc_put_blob_refuses_without_structured_publication() {
+    let _serial: MutexGuard<'static, ()> = serial_guard();
+    let directory: Arc<FaultDirectory> = FaultDirectory::new();
+    let path: PathBuf = directory.path.join("state.db");
+    let probe: Connection = probe_database(&directory.path.join("probe.db"));
+    let store: Arc<SqliteDurableStore> =
+        Arc::new(SqliteDurableStore::create_new(&path, namespace(), fence(1)).unwrap());
+    let blobs: BlobFixture = BlobFixture::with_setup(&directory, BlobSetup::UnrelatedOnly);
+    let baseline: CompleteImage = seed(&store, &directory, ObjectFixture::Referenced, Some(&blobs));
+    let mut maintenance: NativeConnection =
+        NativeConnection::open_existing(&blobs.path, true).unwrap();
+    let checkpoint: (i64, i64, i64) = maintenance
+        .inspect(|connection: &Connection| -> Result<(i64, i64, i64), crate::native_connection::NativeError> {
+            Ok(connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [],
+                |row: &rusqlite::Row<'_>| -> rusqlite::Result<(i64, i64, i64)> {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?)
+        })
+        .unwrap();
+    assert_eq!(checkpoint, (0, 0, 0));
+    wal_empty(&blobs.path);
+    blobs.attachment.lock().unwrap().check().unwrap();
+    let baseline_sql: BlobSqlImage = blob_sql_image(&mut maintenance, &directory, false);
+    let (target_object, target_bytes, target_digest): (Object, Vec<u8>, Digest32) =
+        literal_referenced_object(true);
+    let probe_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [211; 32]);
+    let (_unrelated, _bytes, unrelated_digest): (Object, Vec<u8>, Digest32) =
+        literal_referenced_object(false);
+    assert_ne!(probe_digest, target_digest);
+    assert_ne!(probe_digest, unrelated_digest);
+    assert_blob_keys_absent(&blobs, &directory, &[target_digest, probe_digest]);
+    assert_eq!(
+        complete_image(&store, &directory, ObjectFixture::Referenced, Some(&blobs)),
+        baseline
+    );
+
+    let mut filler: Filler = Filler::new(Arc::clone(&directory));
+    filler.fill();
+    assert_eq!(filler.enospc_observations, 1);
+    wal_empty(&blobs.path);
+    let result: Result<(), RuntimeError> =
+        blobs.writer.put_blob(target_digest, target_bytes.clone());
+    assert_eq!(result, Err(RuntimeError::DurableStoreUnavailable));
+    filler.fill();
+    assert_eq!(filler.enospc_observations, 2);
+    maintenance.identity.check().unwrap();
+    assert!(maintenance.sqlite.is_autocommit());
+    assert_blob_keys_absent(&blobs, &directory, &[target_digest, probe_digest]);
+    assert_eq!(
+        blob_sql_image(&mut maintenance, &directory, false),
+        baseline_sql
+    );
+    assert_eq!(
+        complete_image(&store, &directory, ObjectFixture::Referenced, Some(&blobs)),
+        baseline
+    );
+
+    // This DISTINCT absent digest probes SQLite on the same physical blob
+    // file. Its raw code is not the hidden error/stage of the public put.
+    probe_blob_full(&mut maintenance, &directory, probe_digest);
+    filler.fill();
+    assert_eq!(filler.enospc_observations, 3);
+    assert_blob_keys_absent(&blobs, &directory, &[target_digest, probe_digest]);
+    assert_eq!(
+        blob_sql_image(&mut maintenance, &directory, false),
+        baseline_sql
+    );
+    assert_eq!(
+        complete_image(&store, &directory, ObjectFixture::Referenced, Some(&blobs)),
+        baseline
+    );
+    filler.remove();
+    assert_blob_keys_absent(&blobs, &directory, &[target_digest, probe_digest]);
+    assert_eq!(
+        blob_sql_image(&mut maintenance, &directory, false),
+        baseline_sql
+    );
+    assert_eq!(
+        complete_image(&store, &directory, ObjectFixture::Referenced, Some(&blobs)),
+        baseline
+    );
+
+    let original_main: Metadata = fs::symlink_metadata(&path).unwrap();
+    assert!(
+        original_main.is_file()
+            && !original_main.file_type().is_symlink()
+            && original_main.nlink() == 1
+    );
+    let original_identity: Identity = identity(&original_main);
+    // Drop the added SQLite owner (including its sidecar observations) before
+    // original blob owners last-close. BlobFixture then drops its observer
+    // before its original reader/writer; no independent main/SHM FD exists.
+    drop(maintenance);
+    drop(store);
+    let mut blobs: BlobFixture = blobs.reopen(&directory);
+    let named: Metadata = fs::symlink_metadata(&path).unwrap();
+    assert!(named.is_file() && !named.file_type().is_symlink() && named.nlink() == 1);
+    assert_eq!(identity(&named), original_identity);
+    let reopened: SqliteDurableStore =
+        SqliteDurableStore::open_existing(&path, namespace()).unwrap();
+    let mut maintenance: NativeConnection =
+        NativeConnection::open_existing(&blobs.path, true).unwrap();
+    assert_blob_keys_absent(&blobs, &directory, &[target_digest, probe_digest]);
+    assert_eq!(
+        blob_sql_image(&mut maintenance, &directory, false),
+        baseline_sql
+    );
+    assert_eq!(
+        complete_image(
+            &reopened,
+            &directory,
+            ObjectFixture::Referenced,
+            Some(&blobs)
+        ),
+        baseline
+    );
+
+    // One explicit authorized blob retry; no structured commit is invoked.
+    directory.check();
+    assert_eq!(
+        blobs.writer.put_blob(target_digest, target_bytes.clone()),
+        Ok(())
+    );
+    assert!(
+        blobs
+            .expected
+            .insert(target_digest, (target_object, target_bytes.clone()))
+            .is_none()
+    );
+    blobs.target_published = true;
+    let committed_sql: BlobSqlImage = blob_sql_image(&mut maintenance, &directory, true);
+    let current: CompleteImage = complete_image(
+        &reopened,
+        &directory,
+        ObjectFixture::Referenced,
+        Some(&blobs),
+    );
+    assert_structured_image_unchanged(&baseline, &current);
+    assert_target_absent(&reopened, &directory, &current);
+    let expected_blobs: BTreeMap<Digest32, Vec<u8>> = [
+        (target_digest, target_bytes.clone()),
+        (unrelated_digest, literal_referenced_object(false).1),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(current.blobs, expected_blobs);
+    assert_blob_keys_absent(&blobs, &directory, &[probe_digest]);
+    directory.check();
+    assert_eq!(blobs.writer.put_blob(target_digest, target_bytes), Ok(()));
+    assert_eq!(
+        blob_sql_image(&mut maintenance, &directory, true),
+        committed_sql
+    );
+    assert_eq!(
+        complete_image(
+            &reopened,
+            &directory,
+            ObjectFixture::Referenced,
+            Some(&blobs)
+        ),
+        current
+    );
+    drop(maintenance);
+    drop(reopened);
+    drop(blobs);
+    drop(probe);
 }

@@ -24,11 +24,40 @@ pub struct ArchiveReadLimits {
 impl Default for ArchiveReadLimits {
     fn default() -> Self {
         Self {
-            observations: 2_097_152,
+            observations: 8_388_608,
             heights: 4_096,
             components: 32_768,
             file_bytes: 32 * 1024 * 1024,
             deadline: Duration::from_secs(300),
+        }
+    }
+}
+
+/// Static local refusal category only. It contains no path, provider error,
+/// counter, input bytes or authority; inspecting it cannot reset the budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArchiveReadRefusal {
+    Observations,
+    Heights,
+    Components,
+    FileBytes,
+    Deadline,
+    Admission,
+    Poisoned,
+}
+
+impl ArchiveReadRefusal {
+    /// Bounded public diagnostic label, never transport or proof authority.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Observations => "observations",
+            Self::Heights => "heights",
+            Self::Components => "components",
+            Self::FileBytes => "file-bytes",
+            Self::Deadline => "deadline",
+            Self::Admission => "admission",
+            Self::Poisoned => "poisoned",
         }
     }
 }
@@ -38,7 +67,7 @@ struct Counts {
     observations: u64,
     heights: u64,
     components: u64,
-    refused: bool,
+    refusal: Option<ArchiveReadRefusal>,
 }
 
 struct State {
@@ -85,8 +114,11 @@ impl ArchiveReadBudget {
 
     fn live(&self) -> io::Result<MutexGuard<'_, State>> {
         let mut state: MutexGuard<'_, State> = self.state.lock().map_err(|_| refused())?;
-        if state.counts.refused || Instant::now() >= state.expires {
-            state.counts.refused = true;
+        if state.counts.refusal.is_some() {
+            return Err(refused());
+        }
+        if Instant::now() >= state.expires {
+            state.counts.refusal = Some(ArchiveReadRefusal::Deadline);
             return Err(refused());
         }
         Ok(state)
@@ -101,9 +133,26 @@ impl ArchiveReadBudget {
     /// Permanently refuses this handle and all its clones after an admission error.
     pub fn refuse(&self) -> io::Error {
         if let Ok(mut state) = self.state.lock() {
-            state.counts.refused = true;
+            state
+                .counts
+                .refusal
+                .get_or_insert(ArchiveReadRefusal::Admission);
         }
         refused()
+    }
+
+    /// Reads the first irreversible refusal without filesystem access, a new
+    /// deadline, a counter refund or another work admission. All clones share it.
+    #[must_use]
+    pub fn refusal_reason(&self) -> Option<ArchiveReadRefusal> {
+        match self.state.lock() {
+            Ok(state) => state.counts.refusal,
+            Err(error) => error
+                .into_inner()
+                .counts
+                .refusal
+                .or(Some(ArchiveReadRefusal::Poisoned)),
+        }
     }
 
     fn add(&self, amount: u64, kind: u8) -> io::Result<()> {
@@ -117,7 +166,11 @@ impl ArchiveReadBudget {
             .checked_add(amount)
             .filter(|next: &u64| *next <= ceiling)
         else {
-            state.counts.refused = true;
+            state.counts.refusal = Some(match kind {
+                0 => ArchiveReadRefusal::Observations,
+                1 => ArchiveReadRefusal::Heights,
+                _ => ArchiveReadRefusal::Components,
+            });
             return Err(refused());
         };
         match kind {
@@ -147,7 +200,7 @@ impl ArchiveReadBudget {
             .checked_add(count)
             .is_none_or(|next: u64| next > state.limits.heights)
         {
-            state.counts.refused = true;
+            state.counts.refusal = Some(ArchiveReadRefusal::Heights);
             return Err(refused());
         }
         Ok(())
@@ -158,7 +211,7 @@ impl ArchiveReadBudget {
     pub fn check_height_target(&self, count: u64) -> io::Result<()> {
         let mut state: MutexGuard<'_, State> = self.live()?;
         if count > state.limits.heights {
-            state.counts.refused = true;
+            state.counts.refusal = Some(ArchiveReadRefusal::Heights);
             return Err(refused());
         }
         Ok(())
@@ -178,7 +231,7 @@ impl ArchiveReadBudget {
             .checked_add(count)
             .is_none_or(|next: u64| next > state.limits.components)
         {
-            state.counts.refused = true;
+            state.counts.refusal = Some(ArchiveReadRefusal::Components);
             return Err(refused());
         }
         Ok(())
@@ -188,11 +241,11 @@ impl ArchiveReadBudget {
     pub fn remaining_components(&self) -> io::Result<usize> {
         let mut state: MutexGuard<'_, State> = self.live()?;
         let Some(remaining) = state.limits.components.checked_sub(state.counts.components) else {
-            state.counts.refused = true;
+            state.counts.refusal = Some(ArchiveReadRefusal::Components);
             return Err(refused());
         };
         let Ok(remaining) = usize::try_from(remaining) else {
-            state.counts.refused = true;
+            state.counts.refusal = Some(ArchiveReadRefusal::Components);
             return Err(refused());
         };
         Ok(remaining)
@@ -212,11 +265,11 @@ impl ArchiveReadBudget {
     pub fn check_component_bytes(&self, count: u64, owner_maximum: usize) -> io::Result<()> {
         let mut state: MutexGuard<'_, State> = self.live()?;
         let Ok(owner_maximum) = u64::try_from(owner_maximum) else {
-            state.counts.refused = true;
+            state.counts.refusal = Some(ArchiveReadRefusal::FileBytes);
             return Err(refused());
         };
         if count > owner_maximum || count > state.limits.file_bytes {
-            state.counts.refused = true;
+            state.counts.refusal = Some(ArchiveReadRefusal::FileBytes);
             return Err(refused());
         }
         Ok(())
@@ -225,7 +278,7 @@ impl ArchiveReadBudget {
     pub(super) fn file_limit(&self, maximum: usize) -> io::Result<u64> {
         let mut state: MutexGuard<'_, State> = self.live()?;
         let Ok(maximum) = u64::try_from(maximum) else {
-            state.counts.refused = true;
+            state.counts.refusal = Some(ArchiveReadRefusal::FileBytes);
             return Err(refused());
         };
         Ok(maximum.min(state.limits.file_bytes))
@@ -270,7 +323,7 @@ mod tests {
     fn expired_and_upward_limits_refuse() {
         assert!(
             ArchiveReadBudget::new(ArchiveReadLimits {
-                observations: 2_097_153,
+                observations: 8_388_609,
                 ..Default::default()
             })
             .is_err()
@@ -297,8 +350,93 @@ mod tests {
         let selected: ArchiveReadBudget =
             ArchiveReadBudget::new(ArchiveReadLimits::default()).unwrap();
         selected.charge_observations(262_145).unwrap();
-        selected.charge_observations(2_097_152 - 262_145).unwrap();
+        selected.charge_observations(8_388_608 - 262_145).unwrap();
         assert!(selected.charge_observations(1).is_err());
         assert!(selected.clone().check().is_err());
+    }
+
+    #[test]
+    fn two_million_observation_profile_remains_a_sticky_downward_limit() {
+        let budget: ArchiveReadBudget = ArchiveReadBudget::new(ArchiveReadLimits {
+            observations: 2_097_152,
+            ..ArchiveReadLimits::default()
+        })
+        .unwrap();
+        let sibling: ArchiveReadBudget = budget.clone();
+        budget.charge_observations(2_097_151).unwrap();
+        sibling.charge_observations(1).unwrap();
+        assert!(budget.charge_observations(1).is_err());
+        assert_eq!(
+            sibling.refusal_reason(),
+            Some(ArchiveReadRefusal::Observations)
+        );
+        assert!(sibling.check().is_err());
+        assert!(sibling.charge_observations(0).is_err());
+    }
+
+    #[test]
+    fn first_refusal_category_is_shared_and_cannot_be_overwritten() {
+        for (kind, expected) in [
+            (0_u8, ArchiveReadRefusal::Observations),
+            (1_u8, ArchiveReadRefusal::Heights),
+            (2_u8, ArchiveReadRefusal::Components),
+        ] {
+            let budget: ArchiveReadBudget = ArchiveReadBudget::new(ArchiveReadLimits {
+                observations: 1,
+                heights: 1,
+                components: 1,
+                ..ArchiveReadLimits::default()
+            })
+            .unwrap();
+            assert_eq!(budget.refusal_reason(), None);
+            let sibling: ArchiveReadBudget = budget.clone();
+            budget.add(1, kind).unwrap();
+            assert!(sibling.add(1, kind).is_err());
+            assert_eq!(budget.refusal_reason(), Some(expected));
+            budget.state.lock().unwrap().expires = Instant::now();
+            assert!(budget.check().is_err());
+            let _error: io::Error = sibling.refuse();
+            assert!(sibling.add(0, kind).is_err());
+            assert_eq!(sibling.refusal_reason(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn refusal_categories_identify_deadline_file_and_admission_without_inputs() {
+        let budget: ArchiveReadBudget = ArchiveReadBudget::new(Default::default()).unwrap();
+        budget.state.lock().unwrap().expires = Instant::now();
+        assert!(budget.check().is_err());
+        let _error: io::Error = budget.refuse();
+        assert_eq!(budget.refusal_reason(), Some(ArchiveReadRefusal::Deadline));
+        let budget: ArchiveReadBudget = ArchiveReadBudget::new(Default::default()).unwrap();
+        assert!(budget.check_component_bytes(2, 1).is_err());
+        assert_eq!(budget.refusal_reason(), Some(ArchiveReadRefusal::FileBytes));
+        let budget: ArchiveReadBudget = ArchiveReadBudget::new(Default::default()).unwrap();
+        let _error: io::Error = budget.refuse();
+        assert_eq!(budget.refusal_reason(), Some(ArchiveReadRefusal::Admission));
+        assert!(budget.check().is_err());
+        assert_eq!(budget.refusal_reason().unwrap().label(), "admission");
+    }
+
+    #[test]
+    fn poisoned_state_keeps_prior_refusal_but_never_reopens_work() {
+        for prior in [None, Some(ArchiveReadRefusal::Observations)] {
+            let budget: ArchiveReadBudget = ArchiveReadBudget::new(Default::default()).unwrap();
+            if prior.is_some() {
+                assert!(budget.charge_observations(u64::MAX).is_err());
+            }
+            let poisoned: Result<(), _> = std::panic::catch_unwind(|| {
+                let _guard: MutexGuard<'_, State> = budget.state.lock().unwrap();
+                panic!("test-only mutex poison");
+            });
+            assert!(poisoned.is_err());
+            let expected: ArchiveReadRefusal = prior.unwrap_or(ArchiveReadRefusal::Poisoned);
+            assert_eq!(budget.refusal_reason(), Some(expected));
+            assert!(budget.check().is_err());
+            assert!(budget.charge_observations(0).is_err());
+            let _error: io::Error = budget.refuse();
+            assert!(budget.state.is_poisoned());
+            assert_eq!(budget.refusal_reason(), Some(expected));
+        }
     }
 }

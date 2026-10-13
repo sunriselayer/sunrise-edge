@@ -1,6 +1,6 @@
 # Sunrise Edge implementation and mainnet roadmap
 
-Updated: 2026-10-12 (UTC).
+Updated: 2026-10-13 (UTC).
 
 This is the only live queue and readiness tracker. Responsibility contracts
 belong in [architecture](docs/architecture/README.md), actual owners in the
@@ -54,7 +54,7 @@ shared caches, the retained target and failed evidence are preserved. This does
 not authorize public deployment, real keys, foreign-resource destruction or
 fabricating completion of the launch duties below.
 
-### Current local verification, 2026-10-12
+### Current local verification, 2026-10-13
 
 The current working source passed `cargo fmt --all -- --check` after ordinary
 formatting. With exact Node 22.20.0, the native-release fixture owner passed all
@@ -208,6 +208,71 @@ The new complete strict-Clippy/SDK/operator run
 131 operator cases, zero failures or ignores, both pipe EOFs and the owned
 cgroup released. The filesystem calibration uses synthetic one-byte bodies,
 not signed history: genuine full recurrence/relocation remains a separate gate.
+
+The following genuine full required attempt at `4ed170f3`
+(`validation-bc406c8b1e2b46bcb905451e32fea271.json`) also failed: exit 101,
+both pipe EOFs, no timer/floor stop, 12,960.54 seconds and absent owned cgroups
+and recorded process groups. The original plus seven recurrent successors,
+e8 withdrawals and terminal Freeze/drain ran, but `pack-saved` returned
+`recovery quota refused`; its specific limit is not yet established and no
+35-role pack/open or complete required PASS follows. All twenty open groups
+remain open. DR-0232 adds first-refusal diagnostics and bounded failed-input
+reproduction; neither relaxes admission. Its separate observation-profile
+amendment raises only that ceiling from2,097,152 to8,388,608 after a323-height/
+2,366-file mechanical control actually exhausted the old allowance. All other
+caps and assertions remain. This is not the minimum required allowance or
+the unique historical failure cause; genuine recovery remains a separate gate.
+
+The corrected observation profile passed the complete owning library run
+(`validation-342ea58bd42a4b2985550ed100881745.json`):195 SDK,132 operator and
+96 SQLite cases, zero failures, with the five Docker-only cases ignored in
+that ordinary run and separately executed below. Both old refusal allowances,
+the first-refusal/poison controls and the323-height/2,366-file full mechanical
+capture/age/publication/completion/decryption/authenticated+physical EOF control
+passed. This is not a genuine signed eight-link restore or complete required PASS.
+
+All five selected Docker SQLite fault controls passed using the freshly rebuilt
+exact executable, including the new public blob-publication failure boundary
+(`validation-820a9b842ca945c7a69a9c1d62c08383.json`). Full physical blob rows,
+twelve structured SQL tables and four portable collections remain exact across
+failure/release/existing-only reopen; one explicit blob retry and duplicate
+idempotence passed. Actual exit0, both EOFs, owned cgroup release and independent
+successful empty owner-labelled Docker container/volume/image listings were
+verified. The separate same-blob-file SQLITE_FULL probe does not reveal the
+public put's hidden raw error; none of this closes whole M3 or power/custody gates.
+
+The next fresh complete PG attempt
+(`validation-1dcee620903541bea27bbc9fa2763d20.json`) failed during compilation of
+the added recovery-reproducer support, before live Rust PG cases. The parent
+started validation before that source handoff was complete; that sequencing
+error and its compiler errors remain NONPASS. Both EOFs, exit101, cgroup release
+and exact owned Docker absence were checked. Earlier complete PG results remain
+their own successful scopes, not acceptance of this newer candidate.
+
+The failure-only reproducer is now source-reviewed and tested. Its held-root
+componentwise creation/readback checks preserve every original successful
+relocation assertion and never execute retained DATA. The first focused run
+(`validation-034bc6b328064c79b7c4727faa00e50a.json`) exposed a prefix-refusal
+classification mismatch; it remains failed. Mapping only NOFOLLOW directory
+NOTDIR/LOOP errors to Identity corrected that mismatch without weakening the
+negative assertion. The next two-control run passed. Strict Clippy then refused
+four equivalent-expression lints; those were corrected without lint suppression.
+The complete workspace formatting/strict-Clippy and both controls subsequently
+passed together (`validation-2946cc2a5b674a33afae638bc49cbea1.json`), exit0,
+both EOFs, no refusal and absent owned cgroup. Actual input copies are limited
+to256MiB retained aggregate; copying plus two readbacks is not a512MiB gross-IO cap.
+
+The fresh frozen-current five-group PG profile also passed
+(`validation-9999f12b88c94f6987e84dcbe6d409cf.json`): pg-storage, pg-lifecycle,
+pg-drain-history, pg-business-audit and pg-recovery-economics, with all live
+prerequisites required, the original inventory and smoke-soak owners, and the
+same retained cluster/loopback endpoint. Actual exit0 after766.16seconds,
+both EOFs, no timer/floor stop and absent owned compiler cgroup were observed;
+pre/post source bindings matched. Repeated support tests are not additional
+live controls. Complete raw-output and cleanup review remains separate from
+genuine35-role recurring relocation, complete required, final-head CI and
+release acceptance. The twenty readiness boxes are not checked by these
+scoped successes alone.
 
 The disposable PG runner now refuses unknown Docker cleanup state rather than
 treating failed inspect as absence. All 43 actual fake-Docker cleanup controls
@@ -875,6 +940,13 @@ and cross-phase criteria; it does not shorten them.
   powers, bond/fee assets/schedules, treasury/supply/distribution, security and
   unbonding parameters, governance authorities, ceremony and supply invariants.
   Never invent production values or infer power from bonds to make examples launchable.
+  The parameterized author/inspector, generic installation and checked supply
+  code exist and their bounded owning controls executed successfully in the
+  required run above before its later M4 failure. Final-source integrated and
+  security qualification remains distinct. Actual economic values, independent
+  operators and genesis/key ceremonies are human-owned LAUNCH-deferred, not
+  missing-code prerequisites. This combined readiness checkbox stays open;
+  twenty open readiness groups do not mean twenty unimplemented code tasks.
 - [ ] **M7 — reproducible supported-runtime release:** pinned source/compiler/
   dependencies/build provenance, two actual fresh artifact builds and byte
   equality, canonical/digest/effects/consensus/proof parity, conformance/property/

@@ -378,7 +378,16 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), RecoveryErr
     } else {
         open(request, &budget)
     };
-    result.map_err(|error: RecoveryError| classify_failure(error, &budget))
+    result.map_err(|error: RecoveryError| {
+        let classified: RecoveryError = classify_failure(error, &budget);
+        if let Some(reason) = budget.refusal_reason() {
+            // Static category only: no source path, key, provider text or
+            // counter escapes the fieldless error boundary. This is not a
+            // completion marker, proof permit or another budget admission.
+            eprintln!("recovery_budget_refusal={}", reason.label());
+        }
+        classified
+    })
 }
 
 fn classify_failure(error: RecoveryError, budget: &ArchiveReadBudget) -> RecoveryError {

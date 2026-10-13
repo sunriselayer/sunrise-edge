@@ -15,7 +15,7 @@ use std::{
 mod bounded;
 mod budget;
 mod held_file;
-pub use budget::{ArchiveReadBudget, ArchiveReadLimits};
+pub use budget::{ArchiveReadBudget, ArchiveReadLimits, ArchiveReadRefusal};
 pub use held_file::{AttachedFilePolicy, AttachedFileStamp, AttachedRegularFile};
 #[cfg(test)]
 mod tests;
