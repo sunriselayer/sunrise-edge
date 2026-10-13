@@ -174,9 +174,8 @@ pub use publication_client::{
     local_publication_resolver,
 };
 pub use publication_review::{
-    DependencyReview, MAX_REVIEW_CHAIN_ID_DISPLAY_BYTES, MAX_REVIEW_DEPENDENCIES,
-    MAX_REVIEW_DISPLAY_BYTES, MAX_REVIEW_EXPORTS, MAX_REVIEW_EXPORT_DISPLAY_BYTES,
-    MAX_REVIEW_TOTAL_FIELDS, MAX_REVIEW_WORK_BYTES, PublicationReview, PublicationReviewError,
+    DependencyReview, MAX_REVIEW_DISPLAY_BYTES, MAX_REVIEW_TOTAL_FIELDS, PublicationReview,
+    PublicationReviewError,
 };
 pub use signing_view::{
     ClearSigningPolicy, ClearSigningPolicyError, ClearSigningView, DeviceSigningProfile,

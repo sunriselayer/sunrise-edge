@@ -11,9 +11,9 @@ use crate::{
 };
 use std::{error::Error, ffi::OsString, fs::File, io::Read, path::Path};
 use sunrise_edge_client::{
-    Address, ArtifactParts, CodeArtifact, ExpectedProtocolContext, LocalSigner, PackageOrigin,
-    PreparedPublication, PublicationContext, PublicationReview, RequestId, UnverifiedDependencyRef,
-    local_publication_resolver,
+    Address, ArtifactParts, CodeArtifact, Digest32, ExpectedProtocolContext, HashSuiteResolver,
+    LocalSigner, PackageOrigin, PreparedPublication, PublicationContext, PublicationReview,
+    RequestId, UnverifiedDependencyRef, local_publication_resolver,
 };
 
 fn failure(error: impl Error + Send + Sync + 'static) -> CliError {
@@ -24,6 +24,100 @@ fn invalid(message: &'static str) -> CliError {
         std::io::ErrorKind::InvalidInput,
         message,
     ))
+}
+
+/// Selects the structural WASM profile from mutually exclusive CLI flags.
+/// Shared by `publish` and `preview` so the mapping exists exactly once.
+fn selected_wasm_profile(parsed: &ParsedArgs) -> u32 {
+    if parsed.is_present("--general-calls") {
+        3
+    } else if parsed.is_present("--executable") {
+        2
+    } else {
+        1
+    }
+}
+
+/// Computes the one profile semantics commitment matching
+/// `selected_wasm_profile`'s choice, under the trusted resolver/context.
+/// Shared by `publish` and `preview` so the profile/semantics pairing exists
+/// exactly once rather than as two independently maintained copies.
+fn semantics_for_selected_profile(
+    parsed: &ParsedArgs,
+    resolver: &HashSuiteResolver,
+    context: &PublicationContext,
+) -> Result<Digest32, CliError> {
+    if parsed.is_present("--general-calls") {
+        sunrise_edge_client::local_execution::general_execution_semantics(resolver, context)
+            .map_err(failure)
+    } else if parsed.is_present("--executable") {
+        sunrise_edge_client::local_execution::local_execution_semantics(resolver, context)
+            .map_err(failure)
+    } else {
+        sunrise_edge_client::local_publication_profile_semantics(resolver, context)
+            .map_err(failure)
+    }
+}
+
+/// Builds the exact `CodeArtifact` from already-resolved context/origin/
+/// semantics plus the shared file-based construction flags (entrypoints,
+/// wasm, abi, dependencies). Shared by `publish` (called after
+/// `client.query_verified_context`) and `preview` (called with no client at
+/// all, after the same context/origin/semantics construction); every bound
+/// enforced here is `CodeArtifact`'s own existing bound, not a separate copy.
+fn build_artifact_from_flags(
+    parsed: &ParsedArgs,
+    context: PublicationContext,
+    origin: PackageOrigin,
+    semantics: Digest32,
+    wasm_profile: u32,
+) -> Result<CodeArtifact, CliError> {
+    let names: &str = parsed.require("--entrypoints")?;
+    if names.len()
+        > sunrise_edge_client::MAX_CONTRACT_ENTRYPOINTS
+            * (sunrise_edge_client::MAX_CONTRACT_ENTRYPOINT_NAME_BYTES + 1)
+    {
+        return Err(CliError::ContractEntrypointListTooLarge);
+    }
+    let exports: Vec<String> = names.split(',').map(str::to_owned).collect();
+    let wasm: Vec<u8> = read_bounded(
+        parsed.require("--wasm")?,
+        sunrise_edge_client::MAX_CONTRACT_WASM_BYTES,
+    )?;
+    let abi: Vec<u8> = read_bounded(
+        parsed.require("--abi")?,
+        sunrise_edge_client::publication::MAX_ABI_DECLARATION_BYTES,
+    )?;
+    if wasm_profile == 2 || wasm_profile == 3 {
+        sunrise_edge_client::executable_abi::decode_executable_abi(&abi).map_err(failure)?;
+    }
+    let mut dependencies: Vec<UnverifiedDependencyRef> = Vec::new();
+    if let Some(paths) = parsed.get("--dependencies") {
+        if paths.len() > 32 * 4096 {
+            return Err(invalid("dependency file list is too large"));
+        }
+        for path in paths.split(',') {
+            if dependencies.len() == 32 {
+                return Err(invalid("at most 32 dependency references are allowed"));
+            }
+            dependencies.push(
+                sunrise_edge_client::decode_dependency_ref(&read_bounded(path, 1024)?)
+                    .map_err(failure)?,
+            );
+        }
+    }
+    CodeArtifact::new(ArtifactParts {
+        context,
+        origin,
+        revision: 1,
+        wasm_profile,
+        semantics,
+        wasm,
+        unverified_abi: abi,
+        exports,
+        unverified_dependencies: dependencies,
+    })
+    .map_err(failure)
 }
 
 pub(super) fn run<I>(action: &str, args: I) -> Result<(), CliError>
@@ -83,16 +177,7 @@ where
         expected.epoch(),
     )
     .map_err(failure)?;
-    let semantics = if parsed.is_present("--general-calls") {
-        sunrise_edge_client::local_execution::general_execution_semantics(&resolver, &context)
-            .map_err(failure)?
-    } else if parsed.is_present("--executable") {
-        sunrise_edge_client::local_execution::local_execution_semantics(&resolver, &context)
-            .map_err(failure)?
-    } else {
-        sunrise_edge_client::local_publication_profile_semantics(&resolver, &context)
-            .map_err(failure)?
-    };
+    let semantics: Digest32 = semantics_for_selected_profile(&parsed, &resolver, &context)?;
     let publisher: [u8; 32] = match &signer {
         Some(signer) => *signer.address().as_bytes(),
         None => decode_hex_32("--publisher", parsed.require("--publisher")?)?,
@@ -107,58 +192,9 @@ where
     // No signature is produced before independent locally expected context verification.
     if let Some(signer) = signer {
         client.query_verified_context(&expected)?;
-        let names: &str = parsed.require("--entrypoints")?;
-        if names.len()
-            > sunrise_edge_client::MAX_CONTRACT_ENTRYPOINTS
-                * (sunrise_edge_client::MAX_CONTRACT_ENTRYPOINT_NAME_BYTES + 1)
-        {
-            return Err(CliError::ContractEntrypointListTooLarge);
-        }
-        let exports: Vec<String> = names.split(',').map(str::to_owned).collect();
-        let wasm: Vec<u8> = read_bounded(
-            parsed.require("--wasm")?,
-            sunrise_edge_client::MAX_CONTRACT_WASM_BYTES,
-        )?;
-        let abi: Vec<u8> = read_bounded(
-            parsed.require("--abi")?,
-            sunrise_edge_client::publication::MAX_ABI_DECLARATION_BYTES,
-        )?;
-        if parsed.is_present("--executable") || parsed.is_present("--general-calls") {
-            sunrise_edge_client::executable_abi::decode_executable_abi(&abi).map_err(failure)?;
-        }
-        let mut dependencies: Vec<UnverifiedDependencyRef> = Vec::new();
-        if let Some(paths) = parsed.get("--dependencies") {
-            if paths.len() > 32 * 4096 {
-                return Err(invalid("dependency file list is too large"));
-            }
-            for path in paths.split(',') {
-                if dependencies.len() == 32 {
-                    return Err(invalid("at most 32 dependency references are allowed"));
-                }
-                dependencies.push(
-                    sunrise_edge_client::decode_dependency_ref(&read_bounded(path, 1024)?)
-                        .map_err(failure)?,
-                );
-            }
-        }
-        let artifact: CodeArtifact = CodeArtifact::new(ArtifactParts {
-            context,
-            origin,
-            revision: 1,
-            wasm_profile: if parsed.is_present("--general-calls") {
-                3
-            } else if parsed.is_present("--executable") {
-                2
-            } else {
-                1
-            },
-            semantics,
-            wasm,
-            unverified_abi: abi,
-            exports,
-            unverified_dependencies: dependencies,
-        })
-        .map_err(failure)?;
+        let wasm_profile: u32 = selected_wasm_profile(&parsed);
+        let artifact: CodeArtifact =
+            build_artifact_from_flags(&parsed, context, origin, semantics, wasm_profile)?;
         let request_id: RequestId = RequestId::new(decode_hex_32(
             "--request-id",
             parsed.require("--request-id")?,
@@ -285,8 +321,9 @@ where
 /// Bounded, non-authorizing local presentation of an exact publication.
 ///
 /// Builds the SAME immutable [`PreparedPublication`] the `publish` action
-/// signs, then independently recomputes and displays its material fields via
-/// [`PublicationReview`]. No signing seed is loaded, no signer or node is
+/// signs (via the exact same [`build_artifact_from_flags`] helper), then
+/// builds its complete bounded [`PublicationReview`] rendering before
+/// printing anything. No signing seed is loaded, no signer or node is
 /// contacted, no TLS/endpoint flags are accepted, and nothing is submitted;
 /// `--nonce` is therefore required rather than queried from a node.
 fn run_preview<I>(args: I) -> Result<(), CliError>
@@ -322,16 +359,7 @@ where
         expected.epoch(),
     )
     .map_err(failure)?;
-    let semantics = if parsed.is_present("--general-calls") {
-        sunrise_edge_client::local_execution::general_execution_semantics(&resolver, &context)
-            .map_err(failure)?
-    } else if parsed.is_present("--executable") {
-        sunrise_edge_client::local_execution::local_execution_semantics(&resolver, &context)
-            .map_err(failure)?
-    } else {
-        sunrise_edge_client::local_publication_profile_semantics(&resolver, &context)
-            .map_err(failure)?
-    };
+    let semantics: Digest32 = semantics_for_selected_profile(&parsed, &resolver, &context)?;
     let publisher: [u8; 32] = decode_hex_32("--publisher", parsed.require("--publisher")?)?;
     let origin: PackageOrigin = PackageOrigin::unverified(
         expected.chain_id().clone(),
@@ -339,58 +367,9 @@ where
         decode_hex_32("--origin-seed", parsed.require("--origin-seed")?)?,
     )
     .map_err(failure)?;
-    let names: &str = parsed.require("--entrypoints")?;
-    if names.len()
-        > sunrise_edge_client::MAX_CONTRACT_ENTRYPOINTS
-            * (sunrise_edge_client::MAX_CONTRACT_ENTRYPOINT_NAME_BYTES + 1)
-    {
-        return Err(CliError::ContractEntrypointListTooLarge);
-    }
-    let exports: Vec<String> = names.split(',').map(str::to_owned).collect();
-    let wasm: Vec<u8> = read_bounded(
-        parsed.require("--wasm")?,
-        sunrise_edge_client::MAX_CONTRACT_WASM_BYTES,
-    )?;
-    let abi: Vec<u8> = read_bounded(
-        parsed.require("--abi")?,
-        sunrise_edge_client::publication::MAX_ABI_DECLARATION_BYTES,
-    )?;
-    if parsed.is_present("--executable") || parsed.is_present("--general-calls") {
-        sunrise_edge_client::executable_abi::decode_executable_abi(&abi).map_err(failure)?;
-    }
-    let mut dependencies: Vec<UnverifiedDependencyRef> = Vec::new();
-    if let Some(paths) = parsed.get("--dependencies") {
-        if paths.len() > 32 * 4096 {
-            return Err(invalid("dependency file list is too large"));
-        }
-        for path in paths.split(',') {
-            if dependencies.len() == 32 {
-                return Err(invalid("at most 32 dependency references are allowed"));
-            }
-            dependencies.push(
-                sunrise_edge_client::decode_dependency_ref(&read_bounded(path, 1024)?)
-                    .map_err(failure)?,
-            );
-        }
-    }
-    let artifact: CodeArtifact = CodeArtifact::new(ArtifactParts {
-        context,
-        origin,
-        revision: 1,
-        wasm_profile: if parsed.is_present("--general-calls") {
-            3
-        } else if parsed.is_present("--executable") {
-            2
-        } else {
-            1
-        },
-        semantics,
-        wasm,
-        unverified_abi: abi,
-        exports,
-        unverified_dependencies: dependencies,
-    })
-    .map_err(failure)?;
+    let wasm_profile: u32 = selected_wasm_profile(&parsed);
+    let artifact: CodeArtifact =
+        build_artifact_from_flags(&parsed, context, origin, semantics, wasm_profile)?;
     let request_id: RequestId = RequestId::new(decode_hex_32(
         "--request-id",
         parsed.require("--request-id")?,
@@ -406,45 +385,11 @@ where
         request_id,
     )?;
     let review: PublicationReview = PublicationReview::build(&prepared).map_err(failure)?;
-    println!("preview=true");
-    println!("published=false");
-    println!("publisher={}", review.publisher_hex());
-    println!("chain_id={}", review.chain_id());
-    println!("protocol_version={}", review.protocol_version());
-    println!("epoch={}", review.epoch());
-    println!("revision={}", review.revision());
-    println!("wasm_profile={}", review.wasm_profile());
-    println!("wasm_profile_name={}", review.wasm_profile_name());
-    println!("wasm_bytes={}", review.wasm_bytes_len());
-    println!("abi_bytes={}", review.unverified_abi_bytes_len());
-    println!("semantics={}", review.semantics_hex());
-    println!("artifact_digest={}", review.artifact_digest_hex());
-    println!("export_count={}", review.exports().len());
-    for (index, export) in review.exports().iter().enumerate() {
-        println!("export[{index}]={export}");
-    }
-    println!("dependency_count={}", review.dependencies().len());
-    for (index, dependency) in review.dependencies().iter().enumerate() {
-        println!("dependency[{index}].chain_id={}", dependency.chain_id());
-        println!(
-            "dependency[{index}].publisher={}",
-            dependency.publisher_hex()
-        );
-        println!("dependency[{index}].seed={}", dependency.seed_hex());
-        println!("dependency[{index}].revision={}", dependency.revision());
-        println!(
-            "dependency[{index}].protocol_version={}",
-            dependency.protocol_version()
-        );
-        println!("dependency[{index}].epoch={}", dependency.epoch());
-        println!(
-            "dependency[{index}].artifact_digest={}",
-            dependency.artifact_digest_hex()
-        );
-    }
-    println!("nonce={}", review.nonce());
-    println!("request_id={}", review.request_id_hex());
-    println!("signable_frame_bytes={}", prepared.signable_frame().len());
+    // The complete bounded output is built in full before the single print,
+    // rather than interleaving work with partial `println!` calls.
+    let mut output: String = String::from("preview=true\npublished=false\n");
+    output.push_str(&review.render());
+    print!("{output}");
     Ok(())
 }
 

@@ -36,14 +36,19 @@ names as required publication review input:
 preview=true
 published=false
 publisher=<hex>
+origin_chain_id=devnet
+origin_seed_hex=<hex>
 chain_id=devnet
 protocol_version=1
 epoch=0
+hash_suite_id=1
 revision=1
 wasm_profile=1
 wasm_profile_name=publication-only
 wasm_bytes=<exact length>
+wasm_digest=<algorithm>:<hex>
 abi_bytes=<exact length>
+abi_digest=<algorithm>:<hex>
 semantics=<algorithm>:<hex>
 artifact_digest=<algorithm>:<hex>
 export_count=<n>
@@ -59,19 +64,37 @@ dependency[0].epoch=...
 dependency[0].artifact_digest=...
 nonce=0
 request_id=<hex>
-signable_frame_bytes=<exact length>
+frame_hex=<hex>
 ```
+
+`wasm_digest`/`abi_digest` are resolver-computed digests of the exact
+retained WASM/ABI bytes (the same `ContractCode` hash purpose the artifact
+commitment itself uses); the raw bytes are not printed as text, since binary
+content is not safely displayable and this is a metadata-only preview of
+them, not a semantic or code-safety review. An SDK caller that needs the
+exact bytes themselves (not only their length and digest) reads
+`PublicationReview::artifact_bytes()`. `frame_hex` is the exact bytes
+`contract publish` would sign, as lowercase hex.
+
+Two previews differing only by `--origin-seed` differ in `origin_seed_hex`
+(and `artifact_digest`) directly, not only in an opaque digest; previews
+differing only in the WASM or ABI file differ in `wasm_digest`/`abi_digest`
+directly.
 
 Failure refuses outright and prints a sanitized `error=...` line on stderr; it
 never prints a partial or truncated review. Refusal reasons include a chain
-identifier or export name containing a non-printable or control byte, an
-artifact commitment or semantics digest that does not match the artifact's
-own declared profile, or exceeding an explicit field/byte bound.
+identifier or export name containing a non-printable or control byte, a
+semantics digest that does not match the artifact's own declared profile
+(checked by independently recomputing the one existing semantics function for
+that exact profile), or exceeding an explicit field/byte bound.
 
 This proves bounded structural, commitment and semantics self-consistency
-between the exact artifact and the exact bytes `publish` would sign. It is
-not code-safety or business-semantics approval, and it does not authorize
-publishing; only `contract publish` with a real signer submits anything. See
+between the exact artifact and the exact bytes `publish` would sign; a
+matching semantics digest means the declared profile and declared semantics
+are mutually self-consistent, not that the code's logic is safe or matches
+that profile's name. It is not code-safety or business-semantics approval,
+and it does not authorize publishing; only `contract publish` with a real
+signer submits anything. See
 [the publication review contract](../architecture/publication-review.md),
 [DR-0237](../architecture/decisions/0237-bounded-publication-review-presentation.md),
 [local contract validation](contracts.md) for structural WASM checks before
