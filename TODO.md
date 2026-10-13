@@ -74,6 +74,23 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 | E6: c69 final照合 | 独立Opus source reviewでR1/R2/R3/D01の各技術範囲を確認。rootが完全hostedログとGitHub commit APIを別に照合 | CI checkout `e63abd5e099361e8d1b3d886c1987008f7cb5bd3` のtreeはc69と同じ `10cfe7dd8b7802557288b00146572109ad7dab0b`。parentsはffcf/c69。欠落したローカルrawを復元したとは扱わない |
 | E7: 新しいSQLite owning | f093統合後のblob outer controlが成功。helperのinert通常呼び出しを含む2 passed/0 failed。続くSQLite libは98 passed/0 failed/5 ignored | Rust 1.97.1、locked/offline、共有cacheはread-only namespace、新規target。4GiB/no swap/1 CPU/128 PIDs。host/power/media/fsync・Docker ENOSPCの新規合格ではない |
 | E8: 新しいSQLite ENOSPC | 既存5 ignored controlsを各1回のfresh Docker allocationで実行し、5 passed/0 failed。outer service exit 0、21.45秒、各回のexact owner container/volume releaseを確認 | E7の同じSQLite test executable (SHA-256 `e4f75d8f315fda4f40082600c928df59f510442f22d9043a8198a38704b9edda`) を使用。SQLite crateに3a5c8249→d5395ba6の変更なし。512MiB/no additional swap、64MiB noswap、64 PIDs、1 CPU、network none。全体required、power/host/media/fsyncの証明ではない |
+| E9: publication-only local OS custody | 独立source reviewで指摘を処理し `64a42475` を承認。親がcompiled CLI lib 274 passed/0 failed/1 ignored、preview/export 8 passed/0 failedと実Docker/UID/PTY fixtureを別に実行。UID分離・private key/approval拒否・正当な署名・各拒否・再起動同一signatureを確認 | CLI/libは54869f26、fixtureは46aad542、exportは49ab0964の対象範囲。実UID 12001/12002/12003、512MiB/no additional swap/64 PIDs/1 CPU、64MiB noswap volume、network noneをkernelで確認。署名1・拒否4、restart署名1、exact owner container/volume release。scripted PTYであり実ceremony・実publication submit・全M2の合格ではない |
+
+E9の新しい試験では、既存Ledgerエラー文言の変更、empty ABI/invalid WASM、
+preimage権限・Docker metadata表記・`--tmpfs` のnoswap非対応を実際の失敗で確認して
+修正しました。元のWASM/ABI/UID/fault checksは弱めていません。
+managed volumeは既存ENOSPCと同じ方式を使い、合格ログ `custody-os7.log` と
+失敗ログを専用validationディレクトリに保存しています。clippyの指摘もlint overrideを
+使わず修正中です。combined current-source/full qualificationはまだ未完了です。
+
+M7の固定Node 22.20.0は未導入だったため、人が別の限定取得を承認しました。
+公式archiveのSHA-256と30,737,976 bytesを照合し、生成153,921,504 bytes /
+gross I/O 184,659,480 bytes / 3 artifact files / 6.38秒で取得が完了しました。
+network/archive 32MiB、Node本体128MiB、生成192MiB、gross I/O 512MiB、
+300秒と5GiB観測の新しい上限内です。Node file hash/0755/current UIDと
+実際の `v22.20.0` を確認し、共有cache・既存Nodeは変更していません。
+これは13-target A/Bの合格ではありません。symlinkを含む現在のprivate Cargo入力は
+そのままM7へ使わず、read-only input viewの別preparation/admissionを進めています。
 
 `d5395ba6` の新しい5-group PG実行は最後のfixture exportで失敗しました。
 task-local Cargo wrapperが `SUNRISE_EDGE_ESCROW_FIXTURE_DIR` を継承しなかったことを
@@ -196,8 +213,11 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
     SDKの8 owning controls、compiled CLIの7 controlsが成功。診断hashとartifact
     identityを区別し、実approvalやprotected key backendの合格には数えない。
     人は再開中に「ローカルOSを信頼し、鍵を別プロセス・別権限で保護」を選択済み。
-    publication専用のcustody実装は別作業ブランチで進行中。real keys・host users/
-    servicesを作成せず、他familyやautomatic protocol signingをこの範囲で閉じない。
+    publication専用の[local OS custody](docs/architecture/local-publication-custody.md) は
+    今回のブランチへ統合し、独立reviewとE9の実UID/PTY/refusal/restartを確認済み。
+    `preview --artifact-out` が独立した承認preimageの作成を支える。
+    real keys・host users/servicesは作成していない。他family、automatic protocol
+    signing、全current-source qualificationとrecovery/rotation/revocationは未完了。
   - 次: 所在確認後、未達のbackend/consumerとoperator・CLI・実UID/PTY/Dockerの
     controlsを進める。全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
     実鍵・実administrator/recovery役割とceremonyはD04/D06/D07へ残す。Ledgerは別途deferred。

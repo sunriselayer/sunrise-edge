@@ -86,7 +86,8 @@ variants are documented as defensive regression insurance, unreachable for any
   which is unchanged and still independently verifies the returned signature.
 - Not protected custody, operator/key-role separation, a separated review
   host/device, or recovery/rotation/revocation. DR-0214's threat-boundary
-  comparison and provider selection remain entirely open.
+  comparison is separate. The first publication-only local OS custody slice
+  is described in [DR-0238](decisions/0238-publication-only-local-os-custody.md).
 
 ## CLI consumer
 
@@ -107,10 +108,8 @@ exact usage.
 
 ## Relationship to DR-0214's remaining open work
 
-This closes DR-0214's named "safe next slice" only. It does not select a
-custody threat boundary, wire any provider (local OS, separated host, or
-hardware), define operator/key-role separation, or implement
-recovery/rotation/revocation. A future trusted review surface may reuse
-`PublicationReview` as its content source, but trusting that surface's own
-policy, configuration provenance and operator boundary is separate design and
-qualification work, tracked in `TODO.md`'s M2 row.
+This preview supplies immutable content and self-consistency checks.
+[DR-0238](decisions/0238-publication-only-local-os-custody.md) consumes it in
+the separately selected local OS custody process with pinned independent
+preimages and explicit approval. Other signing families, recovery/rotation/
+revocation and full qualification remain in `TODO.md`'s M2 row.

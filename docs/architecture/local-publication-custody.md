@@ -105,12 +105,9 @@ is 64MiB noswap; effective kernel limits and exact resource cleanup are checked.
 It creates no host users or services. The selected fixture:
 
 1. Runs three distinct numeric UIDs (`custody`, `operator`, `intruder`).
-2. As `custody`: run the one-time setup above, then `custody serve` with a
-   short `--total-deadline-secs`.
-3. As `operator`: run `custody approve` is not available (different UID);
-   instead have `custody` run `approve` through a real PTY
-   (`script -qc '... custody approve ...' /dev/null` or an equivalent
-   pseudo-terminal wrapper) before `serve` starts, confirm the typed
+2. As `custody`: run setup and independently prepare the canonical artifact.
+3. Run `custody approve` as custody through Python `pty.fork()` before
+   starting bounded `custody serve`. Confirm the typed
    confirmation line round-trips. The operator's real Rust client leg then
    requests a signature and independently verifies it with SDK finalization.
    A scripted fixture confirmation is not a real operator ceremony or a
