@@ -357,3 +357,14 @@ failures or completed release evidence. All original controls, thirteen selected
 targets, recipes, resource/lineage checks and release prerequisites are retained.
 No production hook or API, acquisition workflow or new execution authority is
 introduced. R4, M7, runtime/PG, durability, custody and public launch remain open.
+
+## Source amendment: registry target-kind scope (2026-10-13, Asia/Singapore)
+
+[DR-0239](0239-registry-dependency-target-kind-scope.md) narrows which
+selected-package targets require a held source file before Cargo introspection.
+A registry dependency's declared `example`/`test`/`bench`/`bin` target, which
+this recipe never selects, is no longer required to exist on disk; a workspace
+target and a registry `lib`/`proc-macro`/`custom-build` target still are, and
+the existing package/source-boundary check still applies to every target.
+This fixes a false refusal, not a relaxation of the closed recipe, shipped
+thirteen-target binding or any archive/expanded/tool/resource observation.

@@ -20,6 +20,8 @@ export const NAMES = Object.freeze([
   "successor_activation", "successor_host", "native_observations", "sunrise-edge-cli",
 ]);
 const PACKAGES = ["sunrise-edge-operator", "sunrise-edge-cli"];
+const REGISTRY_LIBRARY_KINDS = new Set(["lib", "rlib", "dylib", "cdylib", "staticlib"]);
+const REGISTRY_UNSELECTED_KINDS = new Set(["bin", "example", "test", "bench"]);
 const SCRIPT = fileURLToPath(import.meta.url);
 const GiB = 1024 ** 3;
 export const LIMITS = Object.freeze({
@@ -658,8 +660,17 @@ export function resolveClosure(ctx) {
       requireThat(ctx.source.files.some(f => f.path === p.manifest_path), "Uncommitted path dependency manifest");
     }
     for (const target of p.targets) {
+      absolute(target.src_path);
       requireThat(within(p.source ? p.expanded : ctx.args.source, target.src_path), "Target source escapes package/source");
-      heldFile(target.src_path).close();
+      if (!p.source) { heldFile(target.src_path).close(); continue; }
+      // Published registry crates may legitimately omit declared example/test/bench/bin
+      // sources (e.g. cookie-factory 0.3.3); this recipe never selects those targets.
+      requireThat(Array.isArray(target.kind) && target.kind.length > 0, "Malformed registry target kind");
+      const library = target.kind.every(k => REGISTRY_LIBRARY_KINDS.has(k));
+      const buildOrMacro = same(target.kind, ["proc-macro"]) || same(target.kind, ["custom-build"]);
+      const unselected = target.kind.length === 1 && REGISTRY_UNSELECTED_KINDS.has(target.kind[0]);
+      requireThat(library || buildOrMacro || unselected, `Unsupported registry target kind: ${target.kind.join(",")}`);
+      if (library || buildOrMacro) heldFile(target.src_path).close();
     }
   }
   for (const name of NAMES) {
@@ -983,6 +994,8 @@ function validateObservation(message, closure, compiler, observations) {
   const declared = target && pkg.targets.find(t => t.name === target.name && same(t.kind, target.kind) &&
     same(t.crate_types, target.crate_types) && t.src_path === target.src_path);
   requireThat(declared, "Cargo target identity mismatch");
+  requireThat(!pkg.source || !declared.kind.some(kind => REGISTRY_UNSELECTED_KINDS.has(kind)),
+    "Cargo observed unselected registry target");
   if (message.reason === "compiler-message") { observations.diagnostics++; return; }
   requireThat(message.fresh === false && message.profile && message.profile.test === false &&
     message.manifest_path === pkg.manifest_path, "Unexpected reused/nonrelease or wrong-manifest Cargo artifact");
