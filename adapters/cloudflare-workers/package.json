@@ -11,8 +11,8 @@
     "check": "npm run typecheck && npm run lint && npm test"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.0.0",
-    "@cloudflare/workers-types": "5.20260823.1",
+    "@cloudflare/vitest-plugin": "1.4.0",
+    "@cloudflare/workers-types": "5.20261006.1",
     "@eslint/js": "10.0.1",
     "@types/node": "26.2.0",
     "eslint": "10.9.0",
@@ -20,6 +20,6 @@
     "typescript-7": "npm:typescript@7.0.2",
     "typescript-eslint": "8.67.0",
     "vitest": "4.1.11",
-    "wrangler": "4.125.0"
+    "wrangler": "4.149.0"
   }
 }

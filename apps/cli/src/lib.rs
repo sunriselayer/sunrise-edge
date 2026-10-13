@@ -24,6 +24,7 @@
 
 mod args;
 mod commands;
+mod custody;
 mod error;
 mod hex;
 mod net;
@@ -85,6 +86,7 @@ where
             commands::standard_asset::run(command.as_str(), iterator)
         }
         "economics" => commands::ordered_economics_network::run(iterator),
+        "custody" => custody::run(iterator),
         other => Err(CliError::UnknownCommand(other.to_string())),
     }
 }
