@@ -336,7 +336,7 @@ fn write_synced(file: &mut fs::File, mode: u32, contents: &[u8]) -> std::io::Res
 
 /// Synchronizes `dir` itself, so entries just created in or removed from it
 /// are durable before success is reported.
-fn sync_directory(dir: &Path) -> Result<(), CustodyError> {
+pub(super) fn sync_directory(dir: &Path) -> Result<(), CustodyError> {
     fs::File::open(dir)
         .and_then(|handle| handle.sync_all())
         .map_err(|source| io_error(dir, source))

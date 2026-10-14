@@ -8,7 +8,7 @@
 //! Every accepted connection is checked against exactly one pinned operator
 //! UID via `UnixStream::peer_cred` (an existing, safe Tokio API) before any
 //! byte is read from it. `serve` never writes an approval record; it only
-//! ever reads the store `custody approve` writes.
+//! ever reads the records `custody approve` and `custody revoke` write.
 
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -431,6 +431,14 @@ pub(super) fn sign_request(
         return Err(CustodyResponseStatus::NoApproval);
     }
 
+    // Re-read on every request, immediately before signing. Revocation is
+    // not a way to retract signatures already produced or in flight; stop
+    // and wait for serve before an administrator needs that stronger fence.
+    if super::revoke::is_revoked(approvals_dir, &prepared.request_id())
+        .map_err(|_| CustodyResponseStatus::Internal)?
+    {
+        return Err(CustodyResponseStatus::NoApproval);
+    }
     let submission = prepared
         .sign_and_finalize_with(signer)
         .map_err(|_| CustodyResponseStatus::Internal)?;
@@ -652,8 +660,45 @@ mod tests {
 
         let signature = sign_request(&config, &signer, &approvals_dir.0, &request).unwrap();
         assert_eq!(signature.len(), wire::CUSTODY_SIGNATURE_BYTES);
+        let retained_frame: Vec<u8> = prepared.signable_frame().to_vec();
         let independently_verified = prepared.finalize(signature.to_vec()).unwrap();
         assert_eq!(independently_verified.request_id(), request_id.as_bytes());
+
+        let approval_path = approvals_dir.child(&request_id.to_string());
+        let old_approval = std::fs::read(&approval_path).unwrap();
+        super::super::revoke::revoke(&approvals_dir.0, &request_id).unwrap();
+        assert_eq!(
+            sign_request(&config, &signer, &approvals_dir.0, &request),
+            Err(CustodyResponseStatus::NoApproval)
+        );
+        // Recovering an old approval does not recover signing authority.
+        std::fs::write(&approval_path, &old_approval).unwrap();
+        assert_eq!(
+            sign_request(&config, &signer, &approvals_dir.0, &request),
+            Err(CustodyResponseStatus::NoApproval)
+        );
+        assert!(matches!(
+            approvals::write_approval(
+                &approvals_dir.0,
+                &request_id,
+                &ApprovalRecord {
+                    publisher: config.publisher(),
+                    not_after_unix_seconds: u64::MAX,
+                    frame: retained_frame,
+                },
+            ),
+            Err(CustodyError::ApprovalRevoked)
+        ));
+        assert_eq!(std::fs::read(&approval_path).unwrap(), old_approval);
+        super::super::fsperm::test_support::write_mode_file(
+            &approvals_dir.child(&format!("{request_id}.revoked")),
+            approvals::APPROVAL_FILE_MODE,
+            b"bad",
+        );
+        assert_eq!(
+            sign_request(&config, &signer, &approvals_dir.0, &request),
+            Err(CustodyResponseStatus::Internal)
+        );
     }
 
     #[test]

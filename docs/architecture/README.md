@@ -47,6 +47,9 @@ roadmap describes a later target state.
   ([DR-0238](decisions/0238-publication-only-local-os-custody.md)):
   separate UID/key permissions, independently pinned preimages, exact approval,
   authenticated local IPC and refusal/restart controls.
+- [Publication custody lifecycle](publication-custody-lifecycle.md)
+  ([DR-0244](decisions/0244-publication-approval-revocation-and-key-lifecycle.md)):
+  durable request cancellation and stopped disposable-key recovery/rotation.
 - [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
   an explicitly configured closed HTTPS transport, separate from default
   event-only relays, embedded DO policy and core authority.

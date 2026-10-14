@@ -47,6 +47,9 @@ pub fn write_approval(
     request_id: &RequestId,
     record: &ApprovalRecord,
 ) -> Result<(), CustodyError> {
+    if super::revoke::is_revoked(dir, request_id)? {
+        return Err(CustodyError::ApprovalRevoked);
+    }
     let frame_len =
         u32::try_from(record.frame.len()).map_err(|_| CustodyError::ApprovalMalformed)?;
     let mut bytes = Vec::with_capacity(RECORD_HEADER_BYTES + record.frame.len());
@@ -56,7 +59,12 @@ pub fn write_approval(
     bytes.extend_from_slice(&frame_len.to_be_bytes());
     bytes.extend_from_slice(&record.frame);
     let path = record_path(dir, request_id);
-    write_private_file(&path, APPROVALS_DIR_MODE, APPROVAL_FILE_MODE, &bytes, true)
+    write_private_file(&path, APPROVALS_DIR_MODE, APPROVAL_FILE_MODE, &bytes, true)?;
+    // A concurrent revocation wins even if this write already completed.
+    if super::revoke::is_revoked(dir, request_id)? {
+        return Err(CustodyError::ApprovalRevoked);
+    }
+    Ok(())
 }
 
 /// Reads the approval record for `request_id`, if any. Only ever called by

@@ -85,6 +85,9 @@ where
     }
     let nonce = parse_u64(NONCE, parsed.require(NONCE)?)?;
     let request_id = RequestId::new(decode_hex_32(REQUEST_ID, parsed.require(REQUEST_ID)?)?)?;
+    if super::revoke::is_revoked(Path::new(parsed.require(APPROVALS_DIR)?), &request_id)? {
+        return Err(CustodyError::ApprovalRevoked.into());
+    }
 
     let prepared = PreparedPublication::prepare(
         config.publisher(),
@@ -268,6 +271,26 @@ mod tests {
         assert!(matches!(
             error,
             CliError::Custody(inner) if matches!(*inner, CustodyError::ApproveRequiresTerminal)
+        ));
+        let id = RequestId::new([0xaa; 32]).unwrap();
+        super::super::revoke::revoke(&approvals_dir.0, &id).unwrap();
+        let args: Vec<OsString> = vec![
+            OsString::from(CONFIG),
+            config_path.into_os_string(),
+            OsString::from(APPROVALS_DIR),
+            approvals_dir.0.clone().into_os_string(),
+            OsString::from(APPROVED_ARTIFACT),
+            artifact_path.into_os_string(),
+            OsString::from(NONCE),
+            OsString::from("1"),
+            OsString::from(REQUEST_ID),
+            OsString::from(id.to_string()),
+            OsString::from(EXPIRES_IN_SECONDS),
+            OsString::from("60"),
+        ];
+        assert!(matches!(
+            run(args),
+            Err(CliError::Custody(inner)) if matches!(*inner, CustodyError::ApprovalRevoked)
         ));
     }
 }

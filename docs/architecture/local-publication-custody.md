@@ -74,6 +74,10 @@ exactly. Only an exact match writes the approval record.
 
 ## Serving (as the custody UID)
 
+Approval cancellation and stopped key recovery/rotation are described in the
+[lifecycle guide](publication-custody-lifecycle.md). Revocations persist alongside
+approval records and must be retained when recovering keys or old approvals.
+
 ```bash
 cargo run -q -p sunrise-edge-cli -- custody serve \
   --config /var/lib/custody/keys/custody.config \
@@ -119,6 +123,12 @@ It creates no host users or services. The selected fixture:
    the approval store is unaffected (approvals persist; a fresh `serve`
    process can still consume them) and that `serve` never created new host
    users or services, only files under the fixture's own owned paths.
+6. Refuse operator cancellation; durably cancel as custody, repeat cancellation,
+   refuse reapproval and verify refusal after a fresh signer restart. Recover a
+   disposable private key inside the custody UID and verify the same exact
+   signature while retaining cancellation through an old approval-file restore.
+   Verify missing-key and mismatched-key/config startup refusals and a separately
+   approved new publisher, without changing the original controls or limits.
 
 Build the CLI and library test harness with the same explicit toolchain and
 locked inputs, then supply their actual absolute executable paths:
