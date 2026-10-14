@@ -8,6 +8,11 @@ provider qualification. Actual native rebuilding, required repository/process
 acceptance and M7 completion need separate evidence; neither this guide nor fixture
 results claims those gates.
 
+[Native release handoff](../architecture/native-release-handoff.md) binds each
+of these thirteen saved artifacts, by source, to its accepted capability and
+existing operator runbook; it does not change how this runner selects,
+builds, or compares them.
+
 ## Prerequisites and ownership
 
 An owner must first approve the implementation and recipe, commit all inputs
@@ -20,7 +25,8 @@ The lease lives in mode-0700 `/tmp/sunrise-edge-native-evidence-<uid>`; it is re
 only by its recorded owner after descendants stop. A stale/conflicting lease fails
 closed; there is no automatic scavenging or general approval-token interface.
 
-Use installed Node exactly 22.20.0 and explicit installed Cargo/rustc/rustdoc
+[DR-0243](../architecture/decisions/0243-node24-validation-profile.md) supersedes the old Node pin.
+Use installed Node exactly 24.19.0 and explicit installed Cargo/rustc/rustdoc
 1.97.1 paths, not PATH defaults or rustup proxies. Supply explicit Git, GNU CC,
 AR and GNU linker paths and an existing absolute Cargo cache. Driver aliases are
 resolved and recorded. The source must be a clean committed repository root with
@@ -151,9 +157,9 @@ After approval, commit/freeze and budget allocation, substitute the exact review
 SHA and absolute paths. The installed Node must invoke the committed source script:
 
 ```sh
-/absolute/installed/node-22.20.0 /absolute/clean-source/scripts/check-native-release-evidence.mjs \
+/absolute/installed/node-24.19.0 /absolute/clean-source/scripts/check-native-release-evidence.mjs \
   --source /absolute/clean-source --expected-sha REVIEWED_40_HEX_COMMITTED_SHA \
-  --node /absolute/installed/node-22.20.0 --git /usr/bin/git \
+  --node /absolute/installed/node-24.19.0 --git /usr/bin/git \
   --cargo /absolute/toolchain-1.97.1/bin/cargo \
   --rustc /absolute/toolchain-1.97.1/bin/rustc \
   --rustdoc /absolute/toolchain-1.97.1/bin/rustdoc \
@@ -180,7 +186,7 @@ Doubles cannot select a production bypass or set native
 `complete=true`:
 
 ```sh
-/absolute/installed/node-22.20.0 scripts/test-native-release-evidence.mjs
+/absolute/installed/node-24.19.0 scripts/test-native-release-evidence.mjs
 ```
 
 Even successful native evidence is same-host/shared-cache equality, not upstream

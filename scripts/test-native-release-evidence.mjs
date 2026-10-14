@@ -12,7 +12,7 @@ import { gzipSync } from "node:zlib";
 import { NODE_VERSION, NAMES, TARGET, LIMITS, parseCli, validateCallerEnv, verifyRegistryPackage,
   verifyCargoOk, heldFile, compareFiles, compareArtifacts, runFixtureEvidence, runNativeReleaseEvidence } from "./check-native-release-evidence.mjs";
 
-assert.equal(process.version, NODE_VERSION, "Use installed pinned Node 22.20.0");
+assert.equal(process.version, NODE_VERSION, "Use installed pinned Node 24.19.0");
 const root = mkdtempSync("/tmp/sunrise-edge-native-fixtures-");
 let passed = 0;
 const sha = b => createHash("sha256").update(b).digest("hex");

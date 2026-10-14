@@ -406,7 +406,29 @@ impl Guard {
         }
         match held {
             Some(file) => Ok(file),
-            None => self.directory.try_clone().map_err(|_| Refusal::Io),
+            // A cloned descriptor shares the original open instance, whose
+            // cached Btrfs directory-read state omits entries created after
+            // that instance was opened. A fresh openat(".") starts a new
+            // open instance so later-created entries are observed.
+            None => {
+                let next: File = openat(
+                    &self.directory,
+                    std::ffi::OsStr::new("."),
+                    directory_flags(),
+                    Mode::empty(),
+                )
+                .map(File::from)
+                .map_err(|_| Refusal::Io)?;
+                let actual: DirectoryStamp =
+                    DirectoryStamp::metadata(&next.metadata().map_err(|_| Refusal::Io)?)?;
+                if self.prefixes.get(&prefix) != Some(&actual)
+                    || DirectoryStamp::named(&self.directory, std::ffi::OsStr::new("."))? != actual
+                {
+                    return Err(Refusal::Identity);
+                }
+                self.recheck(&prefix, &next)?;
+                Ok(next)
+            }
         }
     }
     fn create_directory(&mut self, relative: &Path, limit: usize) -> Result<(), Refusal> {
@@ -1796,5 +1818,60 @@ mod tests {
         std::fs::remove_dir_all(&fixture).unwrap(); // Original checked fresh test identity only.
         std::fs::remove_file(&sentinel).unwrap();
         std::fs::remove_dir(&outside).unwrap(); // Never recursively remove the outside sentinel directory.
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn descend_empty_path_reopens_root_and_observes_entries_created_after_guard_open() {
+        let now: u128 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let fixture: PathBuf = std::env::temp_dir().join(format!(
+            "sunrise-edge-reproducer-descend-{}-{now}",
+            std::process::id()
+        ));
+        DirBuilder::new().mode(0o700).create(&fixture).unwrap();
+        let end: Instant = Instant::now() + Duration::from_secs(300);
+        let (uid, _metadata_bytes): (u32, usize) = effective_uid(end).unwrap();
+        let root: Guard = Guard::new(&fixture, true, uid, end)
+            .unwrap_or_else(|reason| panic!("static refusal: {reason:?}"));
+        let list_root = |root: &Guard| -> BTreeSet<OsString> {
+            let held: File = root
+                .descend(Path::new(""))
+                .unwrap_or_else(|reason| panic!("static refusal: {reason:?}"));
+            let mut stream: Dir = Dir::new(held).unwrap();
+            let mut names: BTreeSet<OsString> = BTreeSet::new();
+            while let Some(entry) = stream.read() {
+                let entry: rustix::fs::DirEntry = entry.unwrap();
+                let name: &str = entry.file_name().to_str().unwrap();
+                if !matches!(name, "." | "..") {
+                    names.insert(OsString::from(name));
+                }
+            }
+            names
+        };
+        // Reading the empty-relative root twice, before any entry exists,
+        // must not itself wedge later reads into an exhausted/stale state.
+        assert!(list_root(&root).is_empty());
+        assert!(list_root(&root).is_empty());
+        DirBuilder::new()
+            .mode(0o700)
+            .create(fixture.join("created-after-open"))
+            .unwrap();
+        // A fresh root listing, obtained the same way after Guard::new()'s
+        // original root open, must observe the entry created afterward.
+        assert_eq!(
+            list_root(&root),
+            BTreeSet::from([OsString::from("created-after-open")])
+        );
+        // Repeating the listing again must keep observing it, not revert to
+        // a cached/exhausted view from the shared original open instance.
+        assert_eq!(
+            list_root(&root),
+            BTreeSet::from([OsString::from("created-after-open")])
+        );
+        drop(root);
+        std::fs::remove_dir_all(&fixture).unwrap();
     }
 }

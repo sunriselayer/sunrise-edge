@@ -638,12 +638,14 @@ node-core deployment, including platform-generated rejection and timeout paths.
 
 ## 39. Repository validation gate
 
-The repository pins Rust 1.97.1, Node.js 22.20.0 in CI, and Deno 2.9.4.
+The repository pins Rust 1.97.1, Node.js 24.19.0 in CI, and Deno 2.9.4.
 [`Repository validation`](repository-validation.md) defines the complete serial
 local entrypoint, isolated parallel CI lanes and the success-only required
 `check` result. The partition preserves Rust formatting/all-feature tests and
 Clippy, live PostgreSQL/fault acceptance, independent vectors, Cloudflare
 type/lint/workerd validation, all four portable adapter suites and hygiene.
+[DR-0243](decisions/0243-node24-validation-profile.md) supersedes the earlier Node
+pin for every Node lane, including the real SDK relay fixtures.
 
 This is an As-Is regression gate, not release provenance. Production still
 requires reviewed periodic updates to the pinned action revisions, dependency

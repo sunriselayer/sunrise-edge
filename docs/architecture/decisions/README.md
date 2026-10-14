@@ -132,6 +132,9 @@
 - [DR-0238: publication-only local OS custody](0238-publication-only-local-os-custody.md)
 - [DR-0239: registry dependency target-kind scope for closure target checks](0239-registry-dependency-target-kind-scope.md)
 - [DR-0240: recurring CI compilation profile](0240-recurring-ci-compilation-profile.md)
+- [DR-0241: native release handoff artifact-to-capability/runbook bindings](0241-native-release-handoff-bindings.md)
+- [DR-0242: recovery reproducer fresh root-directory streams](0242-recovery-reproducer-fresh-directory-streams.md)
+- [DR-0243: Node 24 validation profile](0243-node24-validation-profile.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

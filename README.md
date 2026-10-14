@@ -67,7 +67,8 @@ lifetime, or cloud provider.
 
 - Rust 1.97.1 through rustup (the repository toolchain file selects it).
 - Cargo, installed with Rust through [rustup](https://rustup.rs/).
-- Node.js 22.20.0 for SDK relay integration, and npm for the Cloudflare workerd suite.
+- Node.js 24.19.0 for all Node validation and SDK relay tests; npm for the
+  Cloudflare workerd suite. Select it with `nvm use` (see `.nvmrc`).
 - Deno 2.9.4 for portable adapter checks.
 
 ### Build and test
