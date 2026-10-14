@@ -19,6 +19,9 @@ administrator-owned `ID.revoked` file in the existing private approval store.
 Its adapter-local bytes are version 1 followed by the exact 32-byte request ID.
 The existing synchronized, non-replacing private-file publication primitive
 provides complete bytes, exclusive creation and directory synchronization.
+Unlike key generation, a revocation whose directory synchronization fails is
+reported as failed without removing its linked record: an overlapping identical
+retry may already have reported that record durable.
 An identical record permits an idempotent retry that synchronizes the directory
 again before success; malformed, inaccessible,
 unknown-version, wrong-owner/mode and symlink records fail closed. No delete,

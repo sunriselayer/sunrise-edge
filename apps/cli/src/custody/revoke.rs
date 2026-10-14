@@ -12,7 +12,9 @@ use crate::hex::decode_hex_32;
 
 use super::approvals::{APPROVAL_FILE_MODE, APPROVALS_DIR_MODE};
 use super::error::CustodyError;
-use super::fsperm::{read_private_file, require_private_dir, sync_directory, write_private_file};
+use super::fsperm::{
+    publish_retained_private_file, read_private_file, require_private_dir, sync_directory,
+};
 
 const RECORD_VERSION: u8 = 1;
 const RECORD_BYTES: usize = 1 + 32;
@@ -43,21 +45,34 @@ pub(super) fn is_revoked(dir: &Path, request_id: &RequestId) -> Result<bool, Cus
 }
 
 /// Publish complete bytes without overwrite and synchronize the directory.
-/// An identical existing record makes an explicit retry idempotent.
+/// An identical existing record makes an explicit retry idempotent, so a
+/// linked record is never removed again, not even when this call's own
+/// directory synchronization fails: an overlapping retry may already have
+/// reported it durable.
 pub(super) fn revoke(dir: &Path, request_id: &RequestId) -> Result<(), CustodyError> {
-    revoke_with_retry_sync(dir, request_id, sync_directory)
+    revoke_with_syncs(dir, request_id, std::fs::File::sync_all, sync_directory)
 }
 
-fn revoke_with_retry_sync(
+/// `publish_sync` synchronizes the directory after this call's own link and
+/// `retry_sync` after an identical existing record is found; tests inject
+/// failures into either.
+fn revoke_with_syncs(
     dir: &Path,
     request_id: &RequestId,
-    sync: impl FnOnce(&Path) -> Result<(), CustodyError>,
+    publish_sync: impl FnMut(&std::fs::File) -> std::io::Result<()>,
+    retry_sync: impl FnOnce(&Path) -> Result<(), CustodyError>,
 ) -> Result<(), CustodyError> {
     let mut bytes: [u8; RECORD_BYTES] = [0; RECORD_BYTES];
     bytes[0] = RECORD_VERSION;
     bytes[1..].copy_from_slice(request_id.as_bytes());
     let path: PathBuf = record_path(dir, request_id);
-    match write_private_file(&path, APPROVALS_DIR_MODE, APPROVAL_FILE_MODE, &bytes, false) {
+    match publish_retained_private_file(
+        &path,
+        APPROVALS_DIR_MODE,
+        APPROVAL_FILE_MODE,
+        &bytes,
+        publish_sync,
+    ) {
         Ok(()) => Ok(()),
         Err(error @ CustodyError::Io { .. })
             if matches!(&error, CustodyError::Io { source, .. }
@@ -66,7 +81,7 @@ fn revoke_with_retry_sync(
             if is_revoked(dir, request_id)? {
                 // A concurrent/previous writer may have linked the complete
                 // synced bytes but not yet synced the directory entry.
-                sync(dir)
+                retry_sync(dir)
             } else {
                 // Sibling-name exhaustion can also return AlreadyExists.
                 Err(error)
@@ -135,7 +150,7 @@ mod tests {
         let dir = TempDir::new(APPROVALS_DIR_MODE);
         let id = RequestId::new([6; 32]).unwrap();
         revoke(&dir.0, &id).unwrap();
-        let error = revoke_with_retry_sync(&dir.0, &id, |path| {
+        let error = revoke_with_syncs(&dir.0, &id, std::fs::File::sync_all, |path| {
             assert_eq!(path, dir.0);
             Err(CustodyError::Io {
                 path: path.to_path_buf(),
@@ -144,6 +159,35 @@ mod tests {
         })
         .unwrap_err();
         assert!(matches!(error, CustodyError::Io { .. }));
+        assert!(is_revoked(&dir.0, &id).unwrap());
+        revoke(&dir.0, &id).unwrap();
+    }
+
+    /// A second, overlapping revoke finds the first's complete linked bytes,
+    /// synchronizes the directory itself and reports success before the
+    /// first's own directory synchronization fails. The first reports that
+    /// failure but never removes the marker already reported as durable.
+    #[test]
+    fn overlapping_revoke_success_survives_a_failed_first_directory_sync() {
+        let dir = TempDir::new(APPROVALS_DIR_MODE);
+        let id = RequestId::new([5; 32]).unwrap();
+        let mut first_writer_syncs: usize = 0;
+        let error = revoke_with_syncs(
+            &dir.0,
+            &id,
+            |_directory| {
+                first_writer_syncs += 1;
+                if first_writer_syncs == 1 {
+                    revoke(&dir.0, &id).unwrap();
+                }
+                Err(std::io::Error::other("injected first-writer directory-sync failure"))
+            },
+            sync_directory,
+        )
+        .unwrap_err();
+        assert!(matches!(error, CustodyError::Io { .. }));
+        // No rollback or second synchronization ran; the marker remains.
+        assert_eq!(first_writer_syncs, 1);
         assert!(is_revoked(&dir.0, &id).unwrap());
         revoke(&dir.0, &id).unwrap();
     }

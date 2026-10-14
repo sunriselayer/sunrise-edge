@@ -204,7 +204,14 @@ pub(super) fn write_private_file(
     let parent = parent_of(path)?;
     require_private_dir(parent, expected_dir_mode)?;
     if !replace {
-        return publish_new_private_file(path, parent, mode, contents, fs::File::sync_all);
+        return publish_new_private_file(
+            path,
+            parent,
+            mode,
+            contents,
+            OnSyncFailure::RemoveLink,
+            fs::File::sync_all,
+        );
     }
     if let Ok(existing) = fs::symlink_metadata(path) {
         if existing.file_type().is_symlink() {
@@ -235,6 +242,48 @@ pub(super) fn write_private_file(
     sync_directory(parent)
 }
 
+/// Publishes `contents` exactly like a non-replacing `write_private_file`,
+/// except that a link whose directory synchronization fails is kept rather
+/// than removed again (`OnSyncFailure::RetainLink`); that failure is still
+/// reported, never success. Used for revocation records, whose identical
+/// retry is idempotent and whose presence only ever reduces authority.
+/// `sync` synchronizes the held directory handle (`fs::File::sync_all`,
+/// unless a test injects a failure).
+pub(super) fn publish_retained_private_file(
+    path: &Path,
+    expected_dir_mode: u32,
+    mode: u32,
+    contents: &[u8],
+    sync: impl FnMut(&fs::File) -> std::io::Result<()>,
+) -> Result<(), CustodyError> {
+    let parent = parent_of(path)?;
+    require_private_dir(parent, expected_dir_mode)?;
+    publish_new_private_file(
+        path,
+        parent,
+        mode,
+        contents,
+        OnSyncFailure::RetainLink,
+        sync,
+    )
+}
+
+/// What a non-replacing publication does with its own link when the
+/// directory synchronization after that link fails. Either way, the failure
+/// is reported, never success.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OnSyncFailure {
+    /// Remove the link again, and synchronize that removal, so an identical
+    /// retry that refuses an existing path (such as `keygen`) is not blocked.
+    RemoveLink,
+    /// Keep the link, for a record whose identical retry is idempotent and
+    /// whose presence only ever reduces authority (a revocation): an
+    /// overlapping identical retry may already have found the complete
+    /// linked bytes, synchronized the directory itself and reported durable
+    /// success, which removing the link here would silently undo.
+    RetainLink,
+}
+
 /// Publishes `contents` as a new private file at `path` without ever
 /// replacing an existing entry or exposing incomplete bytes there. The bytes
 /// are first written, given exactly `mode`, and synchronized in a freshly
@@ -244,17 +293,20 @@ pub(super) fn write_private_file(
 /// reported. A failed write therefore leaves nothing at `path` to block an
 /// identical retry, and a crash can leave at most an orphaned sibling that no
 /// reader treats as the published file. A link whose directory
-/// synchronization fails may already be durable regardless, so it is removed
-/// again and that removal is synchronized too, through the same directory
-/// handle; otherwise a crash after the reported failure could still leave the
-/// complete file in place. Cleanup only ever removes an entry that is still
-/// this call's own inode. `sync` synchronizes that held directory handle
-/// (`fs::File::sync_all`, unless a test injects a failure).
+/// synchronization fails may already be durable regardless, so under
+/// `OnSyncFailure::RemoveLink` it is removed again and that removal is
+/// synchronized too, through the same directory handle; otherwise a crash
+/// after the reported failure could still leave the complete file in place.
+/// `OnSyncFailure::RetainLink` keeps it and reports only the failure. Cleanup
+/// only ever removes an entry that is still this call's own inode. `sync`
+/// synchronizes that held directory handle (`fs::File::sync_all`, unless a
+/// test injects a failure).
 fn publish_new_private_file(
     path: &Path,
     parent: &Path,
     mode: u32,
     contents: &[u8],
+    on_sync_failure: OnSyncFailure,
     mut sync: impl FnMut(&fs::File) -> std::io::Result<()>,
 ) -> Result<(), CustodyError> {
     // Held from before the link, so the link and any rollback of it are both
@@ -270,14 +322,17 @@ fn publish_new_private_file(
     remove_if_same_file(&pending_path, &pending);
     published?;
     if let Err(source) = sync(&directory) {
-        // Never report an entry that may not be durable, and never leave it
-        // behind to block an identical retry either. A failed
-        // synchronization does not prove the link never reached the disk, so
-        // its removal is synchronized too; otherwise a crash after this
-        // reported failure could still leave the complete file in place. Both
-        // steps are best-effort cleanup that never masks this failure.
-        remove_if_same_file(path, &pending);
-        let _ = sync(&directory);
+        // Never report an entry that may not be durable.
+        if on_sync_failure == OnSyncFailure::RemoveLink {
+            // Never leave it behind to block an identical retry either. A
+            // failed synchronization does not prove the link never reached
+            // the disk, so its removal is synchronized too; otherwise a crash
+            // after this reported failure could still leave the complete file
+            // in place. Both steps are best-effort cleanup that never masks
+            // this failure.
+            remove_if_same_file(path, &pending);
+            let _ = sync(&directory);
+        }
         return Err(io_error(parent, source));
     }
     Ok(())
@@ -571,7 +626,14 @@ mod tests {
             }
             directory.sync_all()
         };
-        let result = publish_new_private_file(&path, &dir.0, 0o600, b"complete", fail_first);
+        let result = publish_new_private_file(
+            &path,
+            &dir.0,
+            0o600,
+            b"complete",
+            OnSyncFailure::RemoveLink,
+            fail_first,
+        );
         assert!(matches!(
             result,
             Err(CustodyError::Io { path: failed, source })
@@ -586,6 +648,41 @@ mod tests {
         assert!(entry_names(&dir).is_empty());
         write_private_file(&path, 0o700, 0o600, b"complete", false).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"complete");
+    }
+
+    /// A retained link whose directory synchronization fails keeps its
+    /// complete bytes, and only the failure is reported, with no rollback or
+    /// second synchronization: an overlapping identical retry, such as a
+    /// second revocation, may already have reported that link durable.
+    #[test]
+    fn a_failed_directory_sync_keeps_a_retained_link_in_place() {
+        const INJECTED: &str = "injected directory sync failure";
+        let dir = TempDir::new(0o700);
+        let path = dir.child("record");
+        let mut synchronized: Vec<Vec<String>> = Vec::new();
+        let result = publish_new_private_file(
+            &path,
+            &dir.0,
+            0o600,
+            b"complete",
+            OnSyncFailure::RetainLink,
+            |_directory| {
+                synchronized.push(entry_names(&dir));
+                Err(std::io::Error::other(INJECTED))
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(CustodyError::Io { path: failed, source })
+                if failed == dir.0 && source.to_string() == INJECTED
+        ));
+        assert_eq!(synchronized.len(), 1);
+        assert_eq!(synchronized[0], ["record"]);
+        assert_eq!(
+            read_private_file(&path, 0o600, 0o700, 4096).unwrap(),
+            b"complete"
+        );
+        assert_eq!(entry_names(&dir), ["record"]);
     }
 
     /// Cleanup removes a path only while it is still the cleaner's own
