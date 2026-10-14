@@ -109,7 +109,7 @@ pub fn start(
     }
     let child: Child = command
         .spawn()
-        .expect("Node 22.20.0 is a mandatory owning-test prerequisite, never skipped");
+        .expect("Node 24.19.0 is a mandatory owning-test prerequisite, never skipped");
     let (sender, output): (mpsc::SyncSender<String>, Receiver<String>) = mpsc::sync_channel(8);
     let mut server: OwnedServer = OwnedServer { child, output };
     let stdout: std::process::ChildStdout = server.child.stdout.take().unwrap();

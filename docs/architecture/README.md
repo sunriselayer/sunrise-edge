@@ -215,6 +215,11 @@ roadmap describes a later target state.
   ([DR-0172](decisions/0172-storage-neutral-required-validation.md)):
   seven required storage-neutral owners and separately selected complete PG
   acceptance, each with a success-only result; no mandatory database product.
+- [Native release handoff: artifact-to-capability/runbook bindings](native-release-handoff.md)
+  ([DR-0241](decisions/0241-native-release-handoff-bindings.md)): the thirteen
+  DR-0213 evidence artifacts bound to their source owner, actual modes,
+  accepted capability, and existing runbook; documentation only, no R4/M7
+  completion claim.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:

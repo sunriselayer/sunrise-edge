@@ -8,7 +8,7 @@ import { createCertifiedVercelHandler } from "../../../../adapters/vercel/src/ad
 // real native loopback HTTP response, never a canonical fixture answer. The
 // native listener is unauthenticated; this bridge never implies the native
 // side or its own caller holds any client/origin authentication.
-equal(process.version, "v22.20.0", "owning rust-tests lane must supply pinned Node");
+equal(process.version, "v24.19.0", "owning rust-tests lane must supply pinned Node");
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 const input = lines[Symbol.asyncIterator]();
 const configLine = await input.next();

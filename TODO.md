@@ -213,9 +213,15 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
   `node-cleanup-1014-receipt.json`。rawログ・manifest・元の`receipt.json`を保持した。
   既存nvm/system Nodeのidentityとdefaultを前後で照合した。
 - [x] **今後のローカルNode管理をnvmに統一する**: 既存nvmと選択profileの固定versionを
-  使う運用ルールをAGENTS.mdへ記録した。global defaultを維持し、必要な22.20.0を
+  使う運用ルールをAGENTS.mdへ記録した。global defaultを維持し、選択profileの固定versionを
   別versionで代用しない。今回の専用Cargo/check-all wrapper 5件は元file/hashを保存して
   退役させた。次回はnvmの固定runtimeを明示して新しいsource/profile用に準備する。
+- [ ] **Node 24で現行の検証profileを揃える**: 既存nvmの24.19.0でCI、SDK relay、
+  Native evidenceの固定条件と完全required検証を揃える。過去の22.20.0の証拠は
+  元のsource/profileの記録として保持する。22.20.0の再取得案は利用者の方針変更で
+  未実行のまま取り下げた。24.19.0は既存versionなので削除対象へ追加しない。
+  Node 24のSDK 11 targets/294 tests、CI契約とNative 151 fixtureは成功。
+  新sourceの完全requiredとactual Native A/Bを完了してから閉じる。
 - [ ] **Cloudflare CLIへの残る移行を確認する**: 今後の操作は`cf` / `cloudflare`へ統一。
   既存の型生成・テスト内に残るWrangler依存は未移行として扱い、互換性と元の型/契約
   checksを確認して置換する。新たな直接Wrangler呼び出しは行わない。
@@ -251,6 +257,10 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
     startup/stop/restart/recovery手順を同じrelease artifactへ結び付ける。
   - 状態: 既存manifest/fixtureに加え、現在版13-target実A/Bは50a4のE15で成功。
     全family/store capabilityとstartup/stop/restart/recoveryを束ねる最終handoffは未完了。
+    13-targetのcomposition/手順bindingをDR-0241へ追加した。最初のrelease実行確認は
+    Btrfs上のtest-support directory列挙で停止し、rawログ/失敗rootを保持した。
+    DR-0242のfresh-open修正後、同じcaseと既存refusal/new regression 3件は
+    Btrfs/tmpfsの両方で成功。完全requiredと13-target release実行確認は継続中。
   - 次: M7の同一証拠を使い、実際の配置選択はD04/D07へ引き継ぐ。
 
 - [x] **D01: Native起動・操作の技術統合を確定する**
