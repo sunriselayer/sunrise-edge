@@ -171,8 +171,17 @@ function fixture(label, scenario = {}) {
     target("sunrise-edge-cli", path.join(source, "apps/cli/src/main.rs"), "bin")], { default: [], "usb-hid": [] });
   workspace("sunrise-edge-ledger", "crates/ledger", [target("sunrise_edge_ledger", path.join(source, "crates/ledger/src/lib.rs"))], { default: [], "usb-hid": [] });
   workspace("runtime-postgres", "crates/runtime-postgres", [target("runtime_postgres", path.join(source, "crates/runtime-postgres/src/lib.rs"))]);
-  packages.push({ ...dep, features: {}, dependencies: [], targets: [target("vcpkg", path.join(dep.expanded, "src/lib.rs")),
-    target("build-script-build", path.join(dep.expanded, "build.rs"), "custom-build")] });
+  const depTargets = [target("vcpkg", path.join(dep.expanded, "src/lib.rs")),
+    target("build-script-build", path.join(dep.expanded, "build.rs"), "custom-build")];
+  for (const extra of scenario.registryExtraTargets ?? []) {
+    // A declared but unselected example/test/bench/bin target may have no backing
+    // file at all (published crates can omit them); an escaped one still writes a
+    // real file outside the package root to prove the boundary check still fires.
+    const src = extra.escape ? path.join(parent, `escaped-${extra.name}.rs`) : path.join(dep.expanded, extra.rel);
+    if (extra.escape) file(src, "// escaped unselected registry target fixture\n");
+    depTargets.push(target(extra.name, src, extra.kind));
+  }
+  packages.push({ ...dep, features: {}, dependencies: [], targets: depTargets });
   const lockedPackages = [...packages]; let cachedOnly;
   if (scenario.cachedOnly || scenario.missingUnrelatedArchive) {
     const name = "unused-cache-fixture", version = "1.0.0";
@@ -249,9 +258,10 @@ function fixture(label, scenario = {}) {
       if (scenario.fault === "spawn") return spawn("/nonexistent-native-fixture-tool", [], options);
       const artifacts = [];
       for (const p of data.closure.selected) for (const t of p.targets) {
+        if (p.source && ["bin", "example", "test", "bench"].some(kind => t.kind.includes(kind)) && !scenario.emitUnselected) continue;
         const shipped = data.closure.shipped.find(s => s.name === t.name && s.packageId === p.id);
         const output = shipped ? path.join(data.compiler, TARGET, "release", t.name) : path.join(data.compiler, "release/deps", `${p.name}-${t.name}`);
-        artifacts.push({ reason: "compiler-artifact", package_id: p.id, manifest_path: p.manifest_path, target: t,
+        artifacts.push({ reason: scenario.unselectedDiagnostic && t.kind.includes("example") ? "compiler-message" : "compiler-artifact", package_id: p.id, manifest_path: p.manifest_path, target: t,
           profile: { test: false, opt_level: t.kind.includes("custom-build") ? "0" : "3" }, features: [], fresh: false,
           executable: shipped ? output : null, filenames: [output] });
       }
@@ -436,6 +446,67 @@ try {
     assert.ok(r.builds.a.observations.dependencies.some(a => a.target.kind.includes("custom-build")));
     assert.equal(r.inputs.tools.linkerRoles.target.linker, path.join(f.tools, "ld"));
     assert.match(r.inputs.tools.linkerRoles.host.implementation, /rust-lld$/);
+  });
+  await check("omitted declared registry example accepted only as unselected target", async () => {
+    // cookie-factory 0.3.3 declares examples in Cargo metadata that the published
+    // crate never ships; this must not require a held file for an unselected kind.
+    const f = fixture("registry-example-omitted", { registryExtraTargets: [
+      ...(["example", "test", "bench", "bin"].map(kind => ({ name: `unselected-${kind}`, kind, rel: `${kind}/missing.rs` }))),
+    ] });
+    assert.ok(["example", "test", "bench", "bin"].every(kind => !existsSync(path.join(f.dep.expanded, `${kind}/missing.rs`))));
+    const r = await runFixtureEvidence(f.args, f.doubles);
+    assert.equal(r.complete, false); assert.equal(r.fixturePassed, true);
+    assert.equal(r.comparisons.length, NAMES.length);
+    assert.ok(["example", "test", "bench", "bin"].every(kind => !existsSync(path.join(f.dep.expanded, `${kind}/missing.rs`))));
+  });
+  for (const [label, rel] of [["library", "src/lib.rs"], ["build-script", "build.rs"]])
+    await check(`missing registry ${label} source refused before any build`, async () => {
+      const f = fixture(`registry-missing-${label}`);
+      unlinkSync(path.join(f.dep.expanded, rel));
+      await badRun(f, /ENOENT/);
+      assert.deepEqual(f.calls.builds, { a: 0, b: 0 });
+    });
+  for (const kind of ["bin", "example", "test", "bench"])
+    await check(`observed unselected registry ${kind} refuses completion`, async () => {
+      const f = fixture(`registry-unselected-${kind}-artifact`, { emitUnselected: true, registryExtraTargets: [
+        { name: `unselected-${kind}`, kind, rel: `${kind}/missing.rs` },
+      ] });
+      await badRun(f, /Cargo observed unselected registry target/);
+      assert.deepEqual(f.calls.builds, { a: 1, b: 0 });
+    });
+  await check("observed unselected registry diagnostic refuses before diagnostic early return", async () => {
+    const f = fixture("registry-unselected-example-diagnostic", { emitUnselected: true, unselectedDiagnostic: true,
+      registryExtraTargets: [{ name: "unselected-example", kind: "example", rel: "example/missing.rs" }],
+    });
+    await badRun(f, /Cargo observed unselected registry target/);
+    assert.deepEqual(f.calls.builds, { a: 1, b: 0 });
+  });
+  await check("missing registry proc-macro source refused before any build", async () => {
+    const f = fixture("registry-missing-proc-macro", { registryExtraTargets: [
+      { name: "missing-macro", kind: "proc-macro", rel: "macro/missing.rs" },
+    ] });
+    await badRun(f, /ENOENT/); assert.deepEqual(f.calls.builds, { a: 0, b: 0 });
+  });
+  await check("noncanonical unselected registry source refuses traversal before build", async () => {
+    const f = fixture("registry-example-traversal");
+    f.packages.find(p => p.name === "vcpkg").targets.push({
+      name: "traversal-example", kind: ["example"], crate_types: ["bin"],
+      src_path: `${f.dep.expanded}/examples/../../escaped.rs`, edition: "2021",
+    });
+    await badRun(f, /Noncanonical absolute path/); assert.deepEqual(f.calls.builds, { a: 0, b: 0 });
+  });
+  await check("unknown registry target kind refuses before any build", async () => {
+    const f = fixture("registry-unknown-kind", { registryExtraTargets: [
+      { name: "unknown", kind: "future-target-kind", rel: "unknown/missing.rs" },
+    ] });
+    await badRun(f, /Unsupported registry target kind/); assert.deepEqual(f.calls.builds, { a: 0, b: 0 });
+  });
+  await check("escaped unselected registry target is still refused", async () => {
+    const f = fixture("registry-example-escaped", { registryExtraTargets: [
+      { name: "escaped-example", kind: "example", escape: true },
+    ] });
+    await badRun(f, /Target source escapes package\/source/);
+    assert.deepEqual(f.calls.builds, { a: 0, b: 0 });
   });
   await check("child-local restrictive umask preserves exact raw and saved artifact modes", async () => {
     const parentMask = process.umask(); const raw = {};
