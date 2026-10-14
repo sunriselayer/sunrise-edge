@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-10-14 (JST)。これは唯一の現行作業表です。
+更新: 2026-10-15 (JST)。これは唯一の現行作業表です。
 設計は[architecture](docs/architecture/README.md)、実装場所は
 [code map](docs/development/code-map.md)、整理の決定は
 [DR-0236](docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md)に置きます。
@@ -13,13 +13,15 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 
 - コード・検証対象: **14件** (R1-R4、D01-D03・D05、M1-M5・M7)。
 - 公開準備対象: **6件** (D04・D06-D08、M6・M8)。実装キューとは別です。
-- 再開後: **旧20件のうち5件完了、15件未完了、既存の完了履歴は9件**。
+- 再開後: **旧20件のうち6件完了、14件未完了、既存の完了履歴は9件**。
   再分類・延期・重複する検証の共用を、機能の完了件数には数えません。
 - R1・R2・R3・D01は、保存ソース・欠落資料・実際のCI tested treeと
   完了したrecipeの最終照合および独立source reviewを終えました。
   R1/R2/R3/D01の完了は `c69fa2f0` の各行の技術範囲です。D03は現在の50a4の
   locked advisory reviewと修正版実体・互換性の確認を終えました。各sourceの技術範囲と
   main統合・独立security監査・公開認定は区別します。
+- R4は `537c8777` のE17/E18/E19で13-targetの技術handoffを完了しました。
+  local完全gateの終端未確認E20と、M2/M3/M4/M7・公開条件は未完了のまま保持します。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -51,11 +53,16 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 保存済み `f093fb6c` は `3a5c8249` としてこのブランチへ統合済みで、mainは未変更です。
 
 実装のDraftは[PR #302](https://github.com/sunriselayer/sunrise-edge/pull/302)、
-M7の限定修正はその上の[PR #303](https://github.com/sunriselayer/sunrise-edge/pull/303)です。
-最新の検証対象は `50a464c846e86aace0d9545dfad5fb298bc4813b`、
-tree `eff704ddad3be9e7730c53776fe5d8c019d7ea4f`。専用作業コピーは
-`/home/yu/src/github.com/sunriselayer/sunrise-edge-native-closure-fix-1013` です。
-以下の状態記録だけを更新しても、実装qualificationの対象pinは50a4のまま保持します。
+M7の限定修正はその上の[PR #303](https://github.com/sunriselayer/sunrise-edge/pull/303)、
+Node 24対応・復旧reproducer修正・R4 handoffは
+[PR #304](https://github.com/sunriselayer/sunrise-edge/pull/304)です。
+現在の実装qualification対象は `537c8777870f7b304f5373afde4dd2cb147c420d`、
+tree `f079832474ccd1ad4fe7ad4f29743dae24b843c7`。専用作業コピーは
+`/home/yu/src/github.com/sunriselayer/sunrise-edge-release-handoff-1014` です。
+source qualificationは同一treeのhosted E17、Native A/BはE18、実RELEASEの
+手順検証はE19に記録します。local完全gateの終端は未確認としてE20へ残します。
+後続の状態文書だけの更新も、実装qualificationの対象pinを537cに保持します。
+50a4 / tree eff704ddのE14-E16と旧作業コピーは過去の対象として保持します。
 
 再構成時の確認ではGitの作業コピー登録が存在する一方、そのパスがENOENTでした。
 当時は原因未確定でしたが、その後のチャット照合で手動削除を確認しました。今回の文書編集は
@@ -150,9 +157,15 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E11: complete required | `14fb7410` のliteral npm-ci +完全check-allはexit 0、13,584.298秒。続く `56727192` の同じ全体gateもexit 0、14,318.546秒。core 535.70秒/readiness 29.35秒/recurring 11,423.56秒、元8リンク/e8 withdrawals/35 rolesのpack/open/source-free restore成功 | 古い成功を最新sourceへ転用しない。038bの途中実行は候補変更で停止し、成功に数えない。5672はliteral npm-ciから再実行。local requiredはPG/実provider/監査/公開認定ではない |
 | E12: actual Native A/B | `56727192` / tree `15c2c0dd`、Node 22.20.0 / Rust 1.97.1 / Linux x86_64 GNU。fresh build 2回、13ターゲット全byte/mode/owner比較成功、exit 0、739.627秒。保存した26 ELF64のSHA-256を親でも照合。4一時ディレクトリとsource leaseを解放 | `native-local`、fixtureではない。同一ホストのtrusted OS範囲。cross-machine/hermetic/upstream authenticity・他provider・全M7/release認定ではない |
 | E13: 5672 custody | `56727192`、CLI lib 281 passed/0 failed/1 ignored。fresh compiled CLIを使う実Docker/UID/PTY fixtureもexit 0、3.441秒。UID分離・秘密file拒否・署名1/拒否4・restart同一signature・exact owner releaseを確認 | E9と同じpublication-only/scripted PTY範囲。実ceremony・実publication submit・他family・復旧/rotation/revocationの完了ではない |
-| E14: current complete required | `50a464c8` / tree `eff704dd`、literal npm-ci +完全check-allがexit 0、12,915.092秒、outer EOF/exit 0。core 452.93秒/readiness 23.67秒/recurring 9,709.47秒。元8リンク/e8 withdrawals/35 rolesのpack/open/source-free restoreと後続adapter checksを完走 | CI dev/test opt2、curve opt3、debug assertions/overflow checks有効、debug-info 0。case/待機時間削減なし。local requiredはPG/実provider/独立監査/公開認定ではない |
+| E14: 50a4 complete required | `50a464c8` / tree `eff704dd`、literal npm-ci +完全check-allがexit 0、12,915.092秒、outer EOF/exit 0。core 452.93秒/readiness 23.67秒/recurring 9,709.47秒。元8リンク/e8 withdrawals/35 rolesのpack/open/source-free restoreと後続adapter checksを完走 | CI dev/test opt2、curve opt3、debug assertions/overflow checks有効、debug-info 0。case/待機時間削減なし。local requiredはPG/実provider/独立監査/公開認定ではない |
 | E15: actual Native release A/B | `50a464c8` / tree `eff704dd`、固定release recipe。2 fresh builds/13ターゲット全byte/mode/owner比較成功、exit 0、709.267秒。26 ELF64のhashを親でも照合し、4専有directoryとsource leaseを解放 | Node 22.20.0 / Rust 1.97.1 / Linux x86_64 GNUの同一ホストtrusted OS範囲。CI dev/test opt2はこのrelease recipeに使っていない。fixture/cross-machine/hermetic/全M7/release認定ではない |
-| E16: current locked advisory review | `50a464c8`、npm audit 0件、Cargo.lock全311 registry versionsのOSV query 0 matches。旧f655 npm lockの7 high entriesと旧Rustls 0.23.43の既知advisoryを同じ手法で検出。変更npm lock全69 entriesのdeclared licenseに変更なし。実loaded sharp 0.35.5 / libvips 8.18.7 / librsvg 2.63.2も確認 | point-in-time public advisory metadataと実体/宣言metadataの確認。独立security監査・legal clearance・低いMSRVのbuild matrix・実provider/公開認定ではない |
+| E16: 50a4 locked advisory review | `50a464c8`、npm audit 0件、Cargo.lock全311 registry versionsのOSV query 0 matches。旧f655 npm lockの7 high entriesと旧Rustls 0.23.43の既知advisoryを同じ手法で検出。変更npm lock全69 entriesのdeclared licenseに変更なし。実loaded sharp 0.35.5 / libvips 8.18.7 / librsvg 2.63.2も確認 | point-in-time public advisory metadataと実体/宣言metadataの確認。独立security監査・legal clearance・低いMSRVのbuild matrix・実provider/公開認定ではない |
+
+
+| E17: Node24 hosted source qualification | `537c8777` / tree `f0798324`。run `38528903004` attempt 1、7 required owners + checkの全8 jobs SUCCESS。全8 checkout `37e23bf9` の同一treeを実ログ/Git commitで照合。Node設定5 lanesは実v24.19.0。core/readiness/recurringは952.18/52.36/11,381.89秒で各1 passed/0 failed | sourceのrequired CI qualification。local完全commandの終端、PG、実provider、独立security監査、公開認定へ転用しない |
+| E18: Node24 actual Native release A/B | `537c8777` / tree `f0798324`、Node 24.19.0 / Rust 1.97.1 / Linux x86_64 GNU。2 fresh builds、13ターゲット全byte/mode/owner比較成功、exit 0/outer EOF、861.388秒。26 ELF64/324,416,048 bytesを親でもhash照合。UMask0077の実mode0700を保持し、4専有directoryとsource leaseを解放 | 固定RELEASE recipe、same-host trusted OS範囲。modeを正規化していない。fixture/cross-machine/hermetic/upstream authenticity・全M7/release認定ではない |
+| E19: R4 actual RELEASE runtime | `537c8777`、E18の13 readonly RELEASE child bindingsとdev/test opt2 oracleを分離。10 whole driversの報告pass合計84 + 2 exact ignored各1 passed、全12 actual exit 0/EOF。元8リンク/e8 withdrawals/35 roles、restart/refusal/delay、pack/open/source-free restoreを完走。実helper waitでexit 0、10,545.017秒。10 drivers/13 host debug/13 RELEASEの前後hash一致、1,451,827,200 bytes peak/swap 0、private run TMP・mount/PID/networkを解放 | local/dev-signerのR4技術範囲。全M2/M3/M4/M7、PG、実provider、独立監査、public/production readinessではない。in-process oracleはRELEASEへ差し替えていない |
+| E20: Node24 local full terminal unconfirmed | `537c8777`のliteral npm-ci +完全check-all rawに143 Rust pass summaries/0 failed、core/readiness/recurring 564.11/27.60/11,119.93秒、66 workerd testsと全4 portable adaptersの成功を記録。wait clientのactual outer exit 143/EOF | main process terminalと全体command成功は未確認。回収済みunitのinactive/success/status0既定値を成功証拠にしない。terminalExit/allRequiredStepsExecutedはnullで保持し、local exit 0と呼ばない |
 
 新しいrawの保存先は `/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013`。
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -173,6 +186,20 @@ E16は `npm-audit-50a4-receipt.json` / `cargo-osv-50a4-receipt.json`、
 `npm-lock-metadata-delta-50a4.json` / `sharp-runtime-50a4.json` です。
 14fb/5672/50a4の両lock hashは同じですが、入力対応だけで別sourceのPG/custody結果を
 新しい全体合格へ転用しません。
+
+
+E17は `hosted-node24-537c.log` / `hosted-node24-537c-receipt.json` と
+`hosted-node24-537c-run-metadata.json` / `hosted-node24-537c-checkout-commit.json`。
+E18は `native-node24-ab2-537c-1014.log` / `native-node24-537c-receipt.json` と
+`native-output-parent-1013/native-537c8777-node24-2-1014/manifest.json`、manifest SHA-256
+`073ae468a1568798bbee7d9566a332b5c2c7266350072b6c7642a86a2e0bfab7`。
+E19は `r4-runtime-node24-537c.log` / `r4-runtime-node24-537c-receipt.json` /
+`r4-runtime-node24-537c-terminal.json` / `r4-runtime-node24-537c-collected.json`。
+raw SHA-256 `dcdaaddd446c88f0794a47d5c6c597287c7f6b5ffa9e34bcf165ad073b47e1fc`。
+E20は `node24-required-r4-2-1014.log` / `node24-required-537c-receipt.json`。
+独立Opusのsource/profile admission reviewと親の実raw/前後hash/cleanup照合を終えました。
+E17によるsource qualificationとE20のlocal終端未確認を区別します。
+旧50a4のrelease実行停止raw・Btrfsの失敗root・probe資料も保持しています。
 
 実M7の初回は、正式なcookie-factory 0.3.3 archiveに同梱されない未選択exampleを
 held inputにしてビルド前に停止しました。欠損cacheとは扱わず、library/proc-macro/
@@ -216,12 +243,17 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
   使う運用ルールをAGENTS.mdへ記録した。global defaultを維持し、選択profileの固定versionを
   別versionで代用しない。今回の専用Cargo/check-all wrapper 5件は元file/hashを保存して
   退役させた。次回はnvmの固定runtimeを明示して新しいsource/profile用に準備する。
-- [ ] **Node 24で現行の検証profileを揃える**: 既存nvmの24.19.0でCI、SDK relay、
-  Native evidenceの固定条件と完全required検証を揃える。過去の22.20.0の証拠は
-  元のsource/profileの記録として保持する。22.20.0の再取得案は利用者の方針変更で
-  未実行のまま取り下げた。24.19.0は既存versionなので削除対象へ追加しない。
-  Node 24のSDK 11 targets/294 tests、CI契約とNative 151 fixtureは成功。
-  新sourceの完全requiredとactual Native A/Bを完了してから閉じる。
+- [x] **Node 24で現行の検証profileを揃える**: CI、SDK relay、Native evidenceを
+  既存nvmの24.19.0へ統一し、DR-0243と`.nvmrc`へ固定した。SDK 11 targets/294 tests、
+  CI契約、Native 151 fixture、Cloudflare type/lint/workerd 66 testsが成功。
+  同一treeの全7 required owners + checkはE17、actual Native A/BはE18、
+  実RELEASEのR4はE19で成功した。過去22.20.0の証拠を保持し、nvmへの22.20.0
+  再取得案は未実行のまま取り下げた。既存24.19.0/22.23.2とglobal defaultは維持した。
+  E20のlocal完全command終端未確認は次の独立記録TODOへ残す。
+- [ ] **local完全gateの終端記録を確定する**: E20の旧実行はouter143/terminal nullの
+  まま保持する。次の実装変更に必要なliteral npm-ci +完全check-allでは、E19と同じ
+  所有controller内でactual subprocess exitを保存し、最後の無出力stepとEOFも記録する。
+  現在sourceのCI合格E17を、E20のlocal exit 0へ書き換えない。
 - [ ] **Cloudflare CLIへの残る移行を確認する**: 今後の操作は`cf` / `cloudflare`へ統一。
   既存の型生成・テスト内に残るWrangler依存は未移行として扱い、互換性と元の型/契約
   checksを確認して置換する。新たな直接Wrangler呼び出しは行わない。
@@ -252,16 +284,19 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
     全範囲を保持し、3つのlong controlsを各1回実行。8リンク/e8 withdrawals/35 rolesの
     元の負荷・restart/refusal assertionsは削減していない。
 
-- [ ] **R4: source/build/configurationと実行可能な手順を結び付ける**
+- [x] **R4: source/build/configurationと実行可能な手順を結び付ける**
   - 対象: 実装 + 検証。公開するfamily・signer/store capabilityと
     startup/stop/restart/recovery手順を同じrelease artifactへ結び付ける。
-  - 状態: 既存manifest/fixtureに加え、現在版13-target実A/Bは50a4のE15で成功。
-    全family/store capabilityとstartup/stop/restart/recoveryを束ねる最終handoffは未完了。
-    13-targetのcomposition/手順bindingをDR-0241へ追加した。最初のrelease実行確認は
-    Btrfs上のtest-support directory列挙で停止し、rawログ/失敗rootを保持した。
-    DR-0242のfresh-open修正後、同じcaseと既存refusal/new regression 3件は
-    Btrfs/tmpfsの両方で成功。完全requiredと13-target release実行確認は継続中。
-  - 次: M7の同一証拠を使い、実際の配置選択はD04/D07へ引き継ぐ。
+  - 状態: DR-0241とNative handoff設計で13 targetsの実mode・family・signer/store・
+    既存手順を対応付けた。537cのE17 source qualification、E18実A/BとE19実RELEASE
+    runtimeを照合し、起動/TLS/compiled CLI/stop/restart/fence/refusal/recoveryを確認した。
+    元8リンク/e8 withdrawals/35 rolesを維持し、全12 runsがactual exit 0/EOF。
+    13 RELEASE/13 host debug/10 driversの前後hash一致と所有資源releaseを確認した。
+    旧Btrfs失敗raw/rootを保持し、DR-0242のfresh-open修正と同一case/拒否/回帰を検証した。
+    E20のlocal終端未確認は残し、R4の根拠へlocal exit 0を捏造しない。
+  - 限界: same-host local/dev-signerの技術handoff。実配置・public/production PKI・
+    全M2/M3/M4/M7・独立監査・公開判断は対応する未完了行に保持する。
+  - 次: D04/D07/D08の実際の配置・操作・公開判断へ、この固定artifact/手順を引き継ぐ。
 
 - [x] **D01: Native起動・操作の技術統合を確定する**
   - 対象: 検証。author → 独立inspection → 4つの独立store → authenticated TLS →
@@ -378,9 +413,9 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
   - 対象: 実装 + 検証。source/compiler/deps/build provenance、2回のfresh 13-target
     Nativeビルドと全byte比較、canonical/digest/effects/consensus/proof parity、
     conformance/property/fuzz/adversarial/long-run・upgrade/restore・advisory qualification。
-  - 状態: 古い11-target A/Bは既存baseline。現在版13-target実A/Bは50a4のE15で成功。
-    完全requiredはE14、固定release recipeはE15、hostedは上記50a4のrun。残る独立監査・upgrade/restore・実provider基準により全M7は未完了。
-  - 次: E15のsource/tool/profile pinをR4/D03/Gから共用し、未達qualificationを進める。
+  - 状態: 古い11-target A/Bは既存baseline。50a4のE14/E15を保持し、537cのsource CIはE17、13-target実A/BはE18、実RELEASE runtimeはE19で成功。
+    E20のlocal完全gate終端は未確認。残る独立監査・upgrade/restore・実provider基準により全M7は未完了。
+  - 次: E18/E19のsource/tool/profile pinをR4/Gから共用し、未達qualificationを進める。
     過去の11/12-target成功やcheap fixtureを13-target成功にはしない。
     広告する他providerにはPhase 16/17の実provider基準を残す。ローカルadapterの合格で閉じない。
 
@@ -499,7 +534,8 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
 3. M3のf093統合と新しいowningはE7、既存5 ENOSPC controlsはE8で成功。
    残るselected-profile fault/combined条件を進める。
    M4で既に成功した暗号化復元を未実装として作り直さない。
-4. E15の13-target実A/BとE14の完全required・hostedを保持し、残るG/qualificationを進める。
+4. R4とNode24 profileはE17/E18/E19で技術範囲を完了。E20のlocal終端未確認と
+   未達qualificationを保持し、次の実装変更では所有controllerのactual exit記録を使う。
    D02/M1のprovider-stopped taskは再試行・迂回せず、未達として保持する。
    D05/M5は同一の実case表で進める。
 5. コード・検証が揃ってから人の公開準備へ引き渡す。新たな許可/実値が必要な

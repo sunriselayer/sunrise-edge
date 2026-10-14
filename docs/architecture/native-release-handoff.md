@@ -58,8 +58,8 @@ build/comparison timings, are current status and stay only in
 [TODO](../../TODO.md); a passing comparison for one source is evidence for that
 exact source only and is not, by itself, evidence that any preserved/shipped
 RELEASE binary was ever executed. Actually exercising a saved RELEASE binary's
-runtime behavior is a separate, later rehearsal; see
-["Post-comparison local runtime rehearsal" below](#post-comparison-local-runtime-rehearsal-future-separate).
+runtime behavior is a separate post-comparison rehearsal; see
+["Separate post-comparison local runtime rehearsal" below](#separate-post-comparison-local-runtime-rehearsal).
 PostgreSQL-backed hosts (for example `fastvote_host_pg`) are a separate,
 excluded optional deployment profile and are never one of these thirteen
 artifacts.
@@ -142,22 +142,23 @@ processes, but neither claims a writer fence; see the distinct rules for each
 above. Every remaining row is a true single-invocation tool with no restart or
 daemon lifecycle attached.
 
-## Post-comparison local runtime rehearsal (future, separate)
+## Separate post-comparison local runtime rehearsal
 
-This section records a design boundary only; the rehearsal it describes has
-not been implemented or executed, and this slice adds no new executable,
-parser, framework, or change to
+This section defines the boundary for a separately controlled runtime
+rehearsal. Its source qualification and actual execution results belong only
+in `TODO.md`; this contract adds no new repository executable, parser,
+framework, or change to
 [`scripts/check-native-release-evidence.mjs`](../../scripts/check-native-release-evidence.mjs)
 or its fixture comparer/oracle. [DR-0213](decisions/0213-native-release-artifact-evidence.md)'s
 rule that its build/comparison phase never executes a compared output stays
 unchanged and is not reopened by this section; it governs only that phase.
 
-A later, separately reviewed slice may add a distinct post-comparison local
-runtime rehearsal, strictly after a DR-0213 run reaches verified full
+A separately reviewed post-comparison local runtime rehearsal starts
+strictly after a DR-0213 run reaches verified full
 thirteen-artifact comparison and completes its own owned compiler/temp
 cleanup. In a separately reviewed, controlled namespace, each saved RELEASE
 ELF may be read-only bound onto the exact child executable path that the
-existing dev/test acceptance driver (the `recurring-sqlite` lane in
+existing dev/test acceptance drivers (including the `recurring-sqlite` lane in
 [repository-validation.md](repository-validation.md#required-storage-neutral-checks),
 [DR-0240](decisions/0240-recurring-ci-compilation-profile.md)) resolves for
 that same binary name, so the driver's children execute the verified RELEASE
