@@ -21,7 +21,8 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   locked advisory reviewと修正版実体・互換性の確認を終えました。各sourceの技術範囲と
   main統合・独立security監査・公開認定は区別します。
 - R4は `537c8777` のE17/E18/E19で13-targetの技術handoffを完了しました。
-  local完全gateの終端未確認E20と、M2/M3/M4/M7・公開条件は未完了のまま保持します。
+  旧local完全gateの終端未確認E20は保持し、新しいM2 sourceの完全gateはE22で成功。
+  M2/M3/M4/M7・公開条件は未完了のまま保持します。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -56,12 +57,19 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 M7の限定修正はその上の[PR #303](https://github.com/sunriselayer/sunrise-edge/pull/303)、
 Node 24対応・復旧reproducer修正・R4 handoffは
 [PR #304](https://github.com/sunriselayer/sunrise-edge/pull/304)です。
-現在の実装qualification対象は `537c8777870f7b304f5373afde4dd2cb147c420d`、
+R4の実装qualification対象は `537c8777870f7b304f5373afde4dd2cb147c420d`、
 tree `f079832474ccd1ad4fe7ad4f29743dae24b843c7`。専用作業コピーは
 `/home/yu/src/github.com/sunriselayer/sunrise-edge-release-handoff-1014` です。
 source qualificationは同一treeのhosted E17、Native A/BはE18、実RELEASEの
 手順検証はE19に記録します。local完全gateの終端は未確認としてE20へ残します。
-後続の状態文書だけの更新も、実装qualificationの対象pinを537cに保持します。
+R4の後続状態文書だけの更新も、この13-target qualificationの対象pinを537cに保持します。
+
+publication承認取消・鍵復旧/交換は、その上の[PR #305](https://github.com/sunriselayer/sunrise-edge/pull/305)。
+現在のM2実装sourceは `1b796c3c1d516837797d840ff663c5d0c40fb363`、
+tree `ecfebae57054b524d2a8a7af5c34c9110663ae0d`。作業コピーは
+`/home/yu/src/github.com/sunriselayer/sunrise-edge-custody-lifecycle-1015` です。
+対象別のcustody検証はE21、local完全gateと同一treeのhosted CIはE22。
+このsourceを537cのNative A/B・実RELEASE artifactとして扱いません。
 50a4 / tree eff704ddのE14-E16と旧作業コピーは過去の対象として保持します。
 
 再構成時の確認ではGitの作業コピー登録が存在する一方、そのパスがENOENTでした。
@@ -166,6 +174,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E18: Node24 actual Native release A/B | `537c8777` / tree `f0798324`、Node 24.19.0 / Rust 1.97.1 / Linux x86_64 GNU。2 fresh builds、13ターゲット全byte/mode/owner比較成功、exit 0/outer EOF、861.388秒。26 ELF64/324,416,048 bytesを親でもhash照合。UMask0077の実mode0700を保持し、4専有directoryとsource leaseを解放 | 固定RELEASE recipe、same-host trusted OS範囲。modeを正規化していない。fixture/cross-machine/hermetic/upstream authenticity・全M7/release認定ではない |
 | E19: R4 actual RELEASE runtime | `537c8777`、E18の13 readonly RELEASE child bindingsとdev/test opt2 oracleを分離。10 whole driversの報告pass合計84 + 2 exact ignored各1 passed、全12 actual exit 0/EOF。元8リンク/e8 withdrawals/35 roles、restart/refusal/delay、pack/open/source-free restoreを完走。実helper waitでexit 0、10,545.017秒。10 drivers/13 host debug/13 RELEASEの前後hash一致、1,451,827,200 bytes peak/swap 0、private run TMP・mount/PID/networkを解放 | local/dev-signerのR4技術範囲。全M2/M3/M4/M7、PG、実provider、独立監査、public/production readinessではない。in-process oracleはRELEASEへ差し替えていない |
 | E20: Node24 local full terminal unconfirmed | `537c8777`のliteral npm-ci +完全check-all rawに143 Rust pass summaries/0 failed、core/readiness/recurring 564.11/27.60/11,119.93秒、66 workerd testsと全4 portable adaptersの成功を記録。wait clientのactual outer exit 143/EOF | main process terminalと全体command成功は未確認。回収済みunitのinactive/success/status0既定値を成功証拠にしない。terminalExit/allRequiredStepsExecutedはnullで保持し、local exit 0と呼ばない |
+| E21: publication cancellation/recovery/rotation | `bc4d1a25` / tree `fc2fab91`、CLI build・custody 71 passed/0 failed/1 ignored・実Docker/UID/PTYが全actual exit 0/EOF。取消は同一serveとrestart・古いapproval復元後に拒否。停止後の同一鍵復旧は同一signature、新鍵/設定の両方向取り違えは拒否、新identityは独立approval必須。6 lifecycle summariesと元のUID/refusal/restart controlsを維持 | publication-only local trusted OS、scripted PTY。全store rollback耐性・既発行signature取消・on-chain account移行・他family/実鍵/実ceremonyは含まない。後続1b79の差分はテストのrustfmtだけ |
+| E22: M2 complete required + hosted CI | `1b796c3c` / tree `ecfebae5`、literal npm-ci +完全check-allがactual exit 0/EOF、13,040.839秒。143 Rust success summaries/報告pass合計4,150/0 failed、core/readiness/recurringは505.25/26.47/10,730.31秒。元8リンク/e8 withdrawals/35 rolesのsource-free復元と全adapterを完走。[run `38607184408`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38607184408) attempt 1の7 owners + checkが全SUCCESS、全8 checkout `bbd4c95e` のtree一致を照合 | Node 24.19.0 / Rust 1.97.1、CI dev/test opt2・curve opt3、debug assertions/overflow checks有効、case/待機削減なし。local sourceは実行前後clean同一pin。PG/新13-target release A/B/独立security監査/実provider/公開認定ではない。旧E20はnullのまま |
 
 新しいrawの保存先は `/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013`。
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -200,6 +210,23 @@ E20は `node24-required-r4-2-1014.log` / `node24-required-537c-receipt.json`。
 独立Opusのsource/profile admission reviewと親の実raw/前後hash/cleanup照合を終えました。
 E17によるsource qualificationとE20のlocal終端未確認を区別します。
 旧50a4のrelease実行停止raw・Btrfsの失敗root・probe資料も保持しています。
+
+E21は `m2-lifecycle-pinned-bc4d-1015-terminal.json` / `-receipt.json` /
+`m2-lifecycle-pinned-bc4d-1015.log`。取消記録の並行再試行が成功した後に先行処理が
+sync失敗しても記録を消さない修正を含み、独立correctness review済みです。
+旧動作へ一時的に戻す隔離negative controlはactual exit 101/1 failedとなり、元のbytesへ
+戻した正常sourceで71件と実UID/PTYを再確認しました。rawは
+`m2-mutant-overlap-bc4d-1015-receipt.json` / `.log` として保持します。
+E22は `m2-lifecycle-required-1b79-1015-terminal.json` / `.log`、raw 650,200 bytes、
+SHA-256 `ea6707a917753844f46b98e8624f6a057bd330c4fc3ba8cdd7d3c008c2aa037d`。
+所有controllerが各processの実wait/EOFと前後sourceを記録し、npm-ciは1.844秒、
+check-allは13,038.980秒で全required stepsを完了。unit invocationは
+`dcf846e3b63841cdba7d9c17bdd0d880`、観測peak 3,226,845,184 bytes、swap 0。
+hostedは `hosted-m2-1b79-1015-receipt.json` / `.log` とrun metadata/checkout commit。
+raw 1,428,951 bytes、SHA-256
+`d1e1b1f153127b823e0246b64fbbd276c49cf7120a1fd12d8260cf88e5928b51`。
+先行8910のlocal完全gateはsource更新で停止しterminal nullのまま、bc4dの完全gateは
+rustfmtでactual exit 1/EOFとなった失敗を保持。旧CIのcancelも成功へ転用しません。
 
 実M7の初回は、正式なcookie-factory 0.3.3 archiveに同梱されない未選択exampleを
 held inputにしてビルド前に停止しました。欠損cacheとは扱わず、library/proc-macro/
@@ -249,11 +276,11 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
   同一treeの全7 required owners + checkはE17、actual Native A/BはE18、
   実RELEASEのR4はE19で成功した。過去22.20.0の証拠を保持し、nvmへの22.20.0
   再取得案は未実行のまま取り下げた。既存24.19.0/22.23.2とglobal defaultは維持した。
-  E20のlocal完全command終端未確認は次の独立記録TODOへ残す。
-- [ ] **local完全gateの終端記録を確定する**: E20の旧実行はouter143/terminal nullの
-  まま保持する。次の実装変更に必要なliteral npm-ci +完全check-allでは、E19と同じ
-  所有controller内でactual subprocess exitを保存し、最後の無出力stepとEOFも記録する。
-  現在sourceのCI合格E17を、E20のlocal exit 0へ書き換えない。
+  E20のlocal完全command終端未確認は旧履歴として残し、新しい完全実行はE22へ記録した。
+- [x] **local完全gateの終端記録を確定する**: 新しいM2 source `1b796c3c` でliteral
+  npm-ci +完全check-allのactual exit 0/EOF・全steps完了・前後cleanを所有controllerが
+  保存した (E22)。最後の無出力stepを含む全commandの終端が対象。
+  E20の旧実行はouter143/terminal nullのまま保持し、成功へ書き換えない。
 - [ ] **Cloudflare CLIへの残る移行を確認する**: 今後の操作は`cf` / `cloudflare`へ統一。
   既存の型生成・テスト内に残るWrangler依存は未移行として扱い、互換性と元の型/契約
   checksを確認して置換する。新たな直接Wrangler呼び出しは行わない。
@@ -369,11 +396,15 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
     publication専用の[local OS custody](docs/architecture/local-publication-custody.md) は
     今回のブランチへ統合し、独立reviewとE9の実UID/PTY/refusal/restartを確認済み。
     `preview --artifact-out` が独立した承認preimageの作成を支える。
-    real keys・host users/servicesは作成していない。他family、automatic protocol
-    signingとrecovery/rotation/revocationは未完了。5672のcustody範囲はE13、
-    50a4のcomplete requiredはE14を参照する。
-  - 次: 他family/automatic protocol signingの未達backend/consumerと復旧手順を設計・
-    検証する。全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
+    publication-onlyの[取消・鍵復旧/交換](docs/architecture/publication-custody-lifecycle.md) を
+    E21で検証し、M2 sourceの完全required/CIはE22で成功。real keys・host users/servicesは
+    作成していない。他family/automatic protocol signingと各lifecycleは未完了。
+  - [x] publication承認取消: 同一serve/restart/古いapproval復元後の拒否と並行sync失敗を検証。
+  - [x] publication鍵復旧: serve停止後に同一鍵を新pathへ復旧し、取消を保持して署名一致を検証。
+  - [x] publication鍵交換: 新鍵/設定/独立approvalと旧新の取り違え拒否を検証。
+  - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
+    接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
+    全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
     実鍵・実administrator/recovery役割とceremonyはD04/D06/D07へ残す。Ledgerは別途deferred。
 
 - [ ] **M3: selected SQLite profileのdurabilityを検証する**
@@ -414,8 +445,10 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
     Nativeビルドと全byte比較、canonical/digest/effects/consensus/proof parity、
     conformance/property/fuzz/adversarial/long-run・upgrade/restore・advisory qualification。
   - 状態: 古い11-target A/Bは既存baseline。50a4のE14/E15を保持し、537cのsource CIはE17、13-target実A/BはE18、実RELEASE runtimeはE19で成功。
-    E20のlocal完全gate終端は未確認。残る独立監査・upgrade/restore・実provider基準により全M7は未完了。
-  - 次: E18/E19のsource/tool/profile pinをR4/Gから共用し、未達qualificationを進める。
+    E20の旧local完全gate終端は未確認。新しいM2 sourceの完全required/CIはE22で成功したが、
+    E18/E19のNative artifact/source pinとは異なる。残る独立監査・upgrade/restore・実provider基準により全M7は未完了。
+  - 次: E18/E19のsource/tool/profile pinをR4/Gから共用し、新sourceのrelease claimには
+    そのsourceの13-target A/B・実RELEASE bindingを用意する。未達qualificationを進める。
     過去の11/12-target成功やcheap fixtureを13-target成功にはしない。
     広告する他providerにはPhase 16/17の実provider基準を残す。ローカルadapterの合格で閉じない。
 
@@ -529,13 +562,14 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
 1. 所在・欠落範囲の照合、新しいbounded依存cache、E5/E6とR1/R2/R3/D01の
    最終照合は完了。削除されたローカルraw/署名試作は未回収として保持する。
 2. M2のpreview/exportとpublication-only local OS custodyは実装・独立correctness
-   review・実UID/PTY/refusal/restartまで成功。残る他family・復旧/rotation/revocationを進める。
+   review・実UID/PTY/refusal/restartに加え、publicationの取消・鍵復旧/交換をE21/E22で検証済み。
+   残る他family/automatic signingと各lifecycleを進める。
    D03の元scopeはE14/E15/E16・hosted終端成功で完了。公開前の露出/新advisory確認はD04/M8へ対応する。
 3. M3のf093統合と新しいowningはE7、既存5 ENOSPC controlsはE8で成功。
    残るselected-profile fault/combined条件を進める。
    M4で既に成功した暗号化復元を未実装として作り直さない。
-4. R4とNode24 profileはE17/E18/E19で技術範囲を完了。E20のlocal終端未確認と
-   未達qualificationを保持し、次の実装変更では所有controllerのactual exit記録を使う。
+4. R4とNode24 profileはE17/E18/E19で技術範囲を完了。E20の旧local終端未確認と
+   未達qualificationを保持。新しいM2 sourceの所有controllerによる完全gate成功はE22へ記録済み。
    D02/M1のprovider-stopped taskは再試行・迂回せず、未達として保持する。
    D05/M5は同一の実case表で進める。
 5. コード・検証が揃ってから人の公開準備へ引き渡す。新たな許可/実値が必要な
