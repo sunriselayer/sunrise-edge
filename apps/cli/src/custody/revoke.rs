@@ -180,7 +180,9 @@ mod tests {
                 if first_writer_syncs == 1 {
                     revoke(&dir.0, &id).unwrap();
                 }
-                Err(std::io::Error::other("injected first-writer directory-sync failure"))
+                Err(std::io::Error::other(
+                    "injected first-writer directory-sync failure",
+                ))
             },
             sync_directory,
         )
