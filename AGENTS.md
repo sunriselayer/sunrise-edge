@@ -167,6 +167,13 @@ Discover commands with `cf cli search` using anonymous descriptions of the
 action and resource type; exclude domains, names, IDs and credentials.
 Inspect the discovered command's help or schema before using it.
 
+## Local Node versions
+
+Use the existing nvm for future local Node version management. Select the exact
+Node version required by the chosen validation profile; do not substitute another
+installed minor version or change the global default solely for a task. A missing
+task runtime must fail explicitly rather than silently fall back to system Node.
+
 ## Workflow
 
 1. Inspect `git status` and preserve unrelated user changes.
