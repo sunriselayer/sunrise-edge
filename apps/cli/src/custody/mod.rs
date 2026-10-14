@@ -10,6 +10,7 @@
 //! - `custody keygen` generates custody's own private key file.
 //! - `custody approve` is the only writer of approval records, and the only
 //!   human-review entry point.
+//! - `custody revoke` durably cancels a request ID without erasing its approval.
 //! - `custody serve` is a bounded-lifetime, one-request-at-a-time signer
 //!   that only ever reads the approval store.
 //!
@@ -25,6 +26,7 @@ pub(crate) mod error;
 mod fsperm;
 mod keyfile;
 mod keygen;
+mod revoke;
 mod selfuid;
 mod server;
 pub(crate) mod wire;
@@ -63,6 +65,7 @@ where
     match action {
         "keygen" => keygen::run(args),
         "approve" => approve::run(args),
+        "revoke" => revoke::run(args),
         "serve" => run_serve(args),
         other => Err(CliError::UnknownCustodyAction(other.to_string())),
     }

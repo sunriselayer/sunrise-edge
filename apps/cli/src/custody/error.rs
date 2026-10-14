@@ -69,6 +69,10 @@ pub enum CustodyError {
 
     /// An approval record was structurally malformed.
     ApprovalMalformed,
+    /// The request ID has a durable administrator-owned revocation record.
+    ApprovalRevoked,
+    /// A revocation record is not its exact supported version/request ID.
+    RevocationMalformed,
     /// An approval record declared an unsupported record version.
     ApprovalUnsupportedVersion(u8),
     /// `custody approve` requires a real interactive terminal on stdin and
@@ -203,6 +207,8 @@ impl fmt::Display for CustodyError {
             }
             Self::Wire(error) => write!(f, "custody wire codec rejected a frame: {error}"),
             Self::ApprovalMalformed => f.write_str("custody approval record is malformed"),
+            Self::ApprovalRevoked => f.write_str("custody approval request ID is revoked"),
+            Self::RevocationMalformed => f.write_str("custody revocation record is malformed"),
             Self::ApprovalUnsupportedVersion(version) => {
                 write!(
                     f,
