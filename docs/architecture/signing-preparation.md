@@ -53,6 +53,16 @@ pre-sign boundaries, not key protection. Genuine registration and historical
 fee-claim controls remain inside the original owning operator recurrence; merely
 compiling those controls does not prove that expensive workflow passed.
 
+## Fee-claim review consumer
+
+[Saved successor fee-claim review](fee-claim-review.md) consumes the retained
+`PreparedFeeClaim` through `FeeClaimReview`. Seed-free prepare exports and offline
+review/development-sign commands use the same canonical inputs and independently
+verified workflow. Displayed host-proposed economics and generic leg arguments
+are not semantic approval or current-row proof. This adds no protected fee-claim
+backend or publication-custody permission; [DR-0245](decisions/0245-saved-successor-fee-claim-review.md)
+records the exact boundary.
+
 ## Separate M2 requirements
 
 Mechanical signature validity is not independent human content review. A future

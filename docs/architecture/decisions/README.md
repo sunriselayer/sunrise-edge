@@ -136,6 +136,7 @@
 - [DR-0242: recovery reproducer fresh root-directory streams](0242-recovery-reproducer-fresh-directory-streams.md)
 - [DR-0243: Node 24 validation profile](0243-node24-validation-profile.md)
 - [DR-0244: publication approval revocation and stopped key lifecycle](0244-publication-approval-revocation-and-key-lifecycle.md)
+- [DR-0245: saved successor fee-claim review and development signing](0245-saved-successor-fee-claim-review.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

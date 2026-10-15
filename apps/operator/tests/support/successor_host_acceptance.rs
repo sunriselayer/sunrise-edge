@@ -1254,6 +1254,15 @@ fn imported_escrow_fee_claim(
     assert_eq!(retained.claimant(), objects::Address::new(public));
     assert_eq!(retained.signable_frame(), frame);
     assert_eq!(retained.request(), &request_frame);
+    let review: sunrise_edge_client::FeeClaimReview =
+        sunrise_edge_client::FeeClaimReview::build(&retained).unwrap();
+    assert!(review.render_text().contains(&hex(&frame)));
+    assert!(review.render_text().contains(&hex(&public)));
+    assert!(
+        review
+            .render_text()
+            .contains(&prepared.certificate_epoch.get().to_string())
+    );
     let external =
         external_signer::TestSigner::new(claimant.seed, external_signer::Behavior::Valid);
     assert_eq!(
@@ -1416,7 +1425,7 @@ fn imported_escrow_fee_claim(
             leg_file.to_str().unwrap().into(),
         ]);
     }
-    cli(&["economics", "fee-claim-prepare"], tail);
+    cli(&["economics", "fee-claim-prepare"], tail.clone());
     let cli_candidate: node_core::ordered_economics::OrderedCandidate =
         node_core::ordered_economics::decode_ordered_candidate(&std::fs::read(&candidate).unwrap())
             .unwrap();
@@ -1424,6 +1433,166 @@ fn imported_escrow_fee_claim(
         cli_candidate.intent, original_claim,
         "the actual development CLI retains original historical claim bytes"
     );
+    // The actual seed-free peer preparation and independent offline review/sign
+    // consumer reuse this genuine verified workflow, including its historical
+    // certificate committee after current membership changes. No extra host,
+    // shortened recurrence or fabricated trusted workflow is introduced.
+    let private: PathBuf = candidate.with_extension("review-private");
+    std::fs::create_dir(&private).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let request_path: PathBuf = private.join("request.bin");
+    let intent_path: PathBuf = private.join("intent.bin");
+    let mut seed_free: Vec<String> = Vec::new();
+    for pair in tail.chunks_exact(2) {
+        if !["--claimant-seed-file", "--created-checkpoint", "--out"].contains(&pair[0].as_str()) {
+            seed_free.extend_from_slice(pair);
+        }
+    }
+    seed_free.extend([
+        "--claimant-public-key".into(),
+        hex(&public),
+        "--review-request-out".into(),
+        request_path.to_str().unwrap().into(),
+        "--review-intent-out".into(),
+        intent_path.to_str().unwrap().into(),
+    ]);
+    let refuse_cli = |action: &str, tail: Vec<String>| -> String {
+        let mut arguments: Vec<OsString> =
+            vec![OsString::from("economics"), OsString::from(action)];
+        arguments.extend(tail.into_iter().map(OsString::from));
+        tokio::task::block_in_place(|| sunrise_edge_cli::run(arguments))
+            .unwrap_err()
+            .to_string()
+    };
+    let replace_flag = |values: &[String], flag: &str, value: &str| -> Vec<String> {
+        let mut replaced: Vec<String> = Vec::new();
+        let mut found: bool = false;
+        for pair in values.chunks_exact(2) {
+            replaced.push(pair[0].clone());
+            if pair[0] == flag {
+                replaced.push(value.to_string());
+                found = true;
+            } else {
+                replaced.push(pair[1].clone());
+            }
+        }
+        assert!(found, "missing flag {flag}");
+        replaced
+    };
+    let other_public: [u8; 32] =
+        ed25519_zebra::VerificationKey::from(&fixture.network.validators[2].signing_key).into();
+    assert_ne!(other_public, public);
+    let wrong_claimant: Vec<String> =
+        replace_flag(&seed_free, "--claimant-public-key", &hex(&other_public));
+    assert!(!refuse_cli("fee-claim-prepare", wrong_claimant).is_empty());
+    assert!(!request_path.exists() && !intent_path.exists());
+    cli(&["economics", "fee-claim-prepare"], seed_free.clone());
+    assert!(refuse_cli("fee-claim-prepare", seed_free).contains("already exists"));
+    let saved_request: Vec<u8> = std::fs::read(&request_path).unwrap();
+    let saved_intent: Vec<u8> = std::fs::read(&intent_path).unwrap();
+    assert_eq!(saved_request, request_frame.encode().unwrap());
+    assert_eq!(
+        saved_intent,
+        node_core::fee_claims::codec::encode_fee_claim_intent(&prepared).unwrap()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [&request_path, &intent_path] {
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+    let mut offline: Vec<String> = Vec::new();
+    for pair in flags.chunks_exact(2) {
+        if ![
+            "--ordered-network",
+            "--deadline-seconds",
+            "--per-request-cap-seconds",
+        ]
+        .contains(&pair[0].as_str())
+        {
+            offline.extend_from_slice(pair);
+        }
+    }
+    offline.extend([
+        "--request".into(),
+        request_path.to_str().unwrap().into(),
+        "--intent".into(),
+        intent_path.to_str().unwrap().into(),
+    ]);
+    cli(&["economics", "fee-claim-review"], offline.clone());
+    for (label, altered_intent) in [
+        ("recipient", &other_recipient),
+        ("certificate", &later_epoch),
+    ] {
+        let altered_path: PathBuf = private.join(format!("altered-{label}.bin"));
+        std::fs::write(
+            &altered_path,
+            node_core::fee_claims::codec::encode_fee_claim_intent(altered_intent).unwrap(),
+        )
+        .unwrap();
+        let altered: Vec<String> =
+            replace_flag(&offline, "--intent", altered_path.to_str().unwrap());
+        assert!(!refuse_cli("fee-claim-review", altered.clone()).is_empty());
+        let refused_out: PathBuf = private.join(format!("refused-{label}.candidate"));
+        let mut altered_sign: Vec<String> = altered;
+        altered_sign.extend([
+            "--claimant-seed-file".into(),
+            seed_file.to_str().unwrap().into(),
+            "--created-checkpoint".into(),
+            HOST_CHECKPOINT.to_string(),
+            "--out".into(),
+            refused_out.to_str().unwrap().into(),
+        ]);
+        assert!(!refuse_cli("fee-claim-sign", altered_sign).is_empty());
+        assert!(!refused_out.exists());
+    }
+    let wrong_seed: PathBuf = private.join("wrong.seed");
+    std::fs::write(&wrong_seed, hex(&fixture.network.validators[2].seed)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wrong_seed, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let wrong_key_out: PathBuf = private.join("wrong-key.candidate");
+    let mut wrong_sign: Vec<String> = offline.clone();
+    wrong_sign.extend([
+        "--claimant-seed-file".into(),
+        wrong_seed.to_str().unwrap().into(),
+        "--created-checkpoint".into(),
+        HOST_CHECKPOINT.to_string(),
+        "--out".into(),
+        wrong_key_out.to_str().unwrap().into(),
+    ]);
+    assert!(
+        refuse_cli("fee-claim-sign", wrong_sign)
+            .contains("signing key is not the requested claimant public key")
+    );
+    assert!(!wrong_key_out.exists());
+    let offline_candidate: PathBuf = candidate.with_extension("offline.candidate");
+    offline.extend([
+        "--claimant-seed-file".into(),
+        seed_file.to_str().unwrap().into(),
+        "--created-checkpoint".into(),
+        HOST_CHECKPOINT.to_string(),
+        "--out".into(),
+        offline_candidate.to_str().unwrap().into(),
+    ]);
+    cli(&["economics", "fee-claim-sign"], offline);
+    assert_eq!(
+        std::fs::read(&offline_candidate).unwrap(),
+        std::fs::read(&candidate).unwrap(),
+        "the independently reviewed saved bytes produce the exact legacy signed candidate"
+    );
+    assert_eq!(saved_request, std::fs::read(&request_path).unwrap());
+    assert_eq!(saved_intent, std::fs::read(&intent_path).unwrap());
     let mut submit: Vec<String> = flags;
     submit.extend([
         "--candidate".to_string(),

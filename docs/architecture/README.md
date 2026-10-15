@@ -43,6 +43,10 @@ roadmap describes a later target state.
   ([DR-0237](decisions/0237-bounded-publication-review-presentation.md)):
   exact immutable artifact/frame correspondence, bounded terminal-safe output
   and diagnostic component hashes, without provenance or approval authority.
+- [Saved successor fee-claim review](fee-claim-review.md)
+  ([DR-0245](decisions/0245-saved-successor-fee-claim-review.md)):
+  seed-free canonical exports, bounded exact-content inspection and offline
+  development signing under the independently verified historical committee.
 - [Publication-only local OS custody](local-publication-custody.md)
   ([DR-0238](decisions/0238-publication-only-local-os-custody.md)):
   separate UID/key permissions, independently pinned preimages, exact approval,

@@ -55,6 +55,28 @@ pub(crate) fn write_review_preimage(path: &Path, bytes: &[u8]) -> Result<(), Cus
     fsperm::write_private_file(path, 0o700, 0o600, bytes, false)
 }
 
+/// Read-only preflight for a fresh review export. The exclusive writer repeats
+/// the policy at publication; this check is not a reservation or authority.
+pub(crate) fn check_review_preimage_destination(path: &Path) -> Result<(), CustodyError> {
+    // The writer's own parent resolution: a bare file name is refused here
+    // too, rather than passing against the current directory.
+    fsperm::require_private_dir(fsperm::parent_of(path)?, 0o700)?;
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Err(CustodyError::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "review preimage destination already exists",
+            ),
+        }),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(CustodyError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
 pub(crate) fn run<I>(args: I) -> Result<(), CliError>
 where
     I: IntoIterator<Item = OsString>,
@@ -101,4 +123,47 @@ where
     println!("requests_signed={}", summary.requests_signed);
     println!("requests_refused={}", summary.requests_refused);
     Ok(())
+}
+
+#[cfg(test)]
+mod review_destination_tests {
+    use super::fsperm::test_support::TempDir;
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn fresh_review_export_preflight_refuses_existing_symlink_and_open_parent() {
+        let directory: TempDir = TempDir::new(0o700);
+        let fresh = directory.child("fresh-review");
+        check_review_preimage_destination(&fresh).unwrap();
+        assert!(!fresh.exists(), "preflight must not reserve or publish");
+        std::fs::write(&fresh, b"retained").unwrap();
+        assert!(check_review_preimage_destination(&fresh).is_err());
+        assert_eq!(std::fs::read(&fresh).unwrap(), b"retained");
+        let alias = directory.child("alias-review");
+        symlink(directory.child("absent"), &alias).unwrap();
+        assert!(check_review_preimage_destination(&alias).is_err());
+        std::fs::set_permissions(
+            directory.child(".").as_path(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        assert!(check_review_preimage_destination(&directory.child("another-review")).is_err());
+    }
+
+    /// A bare file name has no explicit parent, so the writer refuses it. The
+    /// preflight refuses it identically, before any I/O and whatever the
+    /// current directory is, instead of passing and failing after a peer call.
+    #[test]
+    fn review_export_preflight_refuses_a_bare_file_name_like_the_writer() {
+        let bare: &Path = Path::new("bare-review");
+        assert!(matches!(
+            check_review_preimage_destination(bare),
+            Err(CustodyError::NotADirectory(_))
+        ));
+        assert!(matches!(
+            write_review_preimage(bare, b"unused"),
+            Err(CustodyError::NotADirectory(_))
+        ));
+    }
 }

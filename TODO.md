@@ -65,11 +65,19 @@ source qualificationは同一treeのhosted E17、Native A/BはE18、実RELEASE�
 R4の後続状態文書だけの更新も、この13-target qualificationの対象pinを537cに保持します。
 
 publication承認取消・鍵復旧/交換は、その上の[PR #305](https://github.com/sunriselayer/sunrise-edge/pull/305)。
-現在のM2実装sourceは `1b796c3c1d516837797d840ff663c5d0c40fb363`、
+publicationのM2実装sourceは `1b796c3c1d516837797d840ff663c5d0c40fb363`、
 tree `ecfebae57054b524d2a8a7af5c34c9110663ae0d`。作業コピーは
 `/home/yu/src/github.com/sunriselayer/sunrise-edge-custody-lifecycle-1015` です。
 対象別のcustody検証はE21、local完全gateと同一treeのhosted CIはE22。
 このsourceを537cのNative A/B・実RELEASE artifactとして扱いません。
+fee-claimの非承認表示・保存内容の開発用署名は、その上の
+[PR #306](https://github.com/sunriselayer/sunrise-edge/pull/306)。対象は
+`cf2dd35fb488377e0d8584fc19144f44e48707ad` / tree
+`01bcfe95ec91b882ebf6bd8424c733514afa924f`、作業コピーは
+`/home/yu/src/github.com/sunriselayer/sunrise-edge-fee-claim-review-1015`。
+限定検証はE23、local完全gateと同一treeのhosted CIはE24で成功しました。
+後続の状態文書だけの更新も、実装qualificationの対象pinをcf2dに保持します。
+このsourceの新しい13-target Native A/B・実RELEASE認定は行っていません。
 50a4 / tree eff704ddのE14-E16と旧作業コピーは過去の対象として保持します。
 
 再構成時の確認ではGitの作業コピー登録が存在する一方、そのパスがENOENTでした。
@@ -176,6 +184,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E20: Node24 local full terminal unconfirmed | `537c8777`のliteral npm-ci +完全check-all rawに143 Rust pass summaries/0 failed、core/readiness/recurring 564.11/27.60/11,119.93秒、66 workerd testsと全4 portable adaptersの成功を記録。wait clientのactual outer exit 143/EOF | main process terminalと全体command成功は未確認。回収済みunitのinactive/success/status0既定値を成功証拠にしない。terminalExit/allRequiredStepsExecutedはnullで保持し、local exit 0と呼ばない |
 | E21: publication cancellation/recovery/rotation | `bc4d1a25` / tree `fc2fab91`、CLI build・custody 71 passed/0 failed/1 ignored・実Docker/UID/PTYが全actual exit 0/EOF。取消は同一serveとrestart・古いapproval復元後に拒否。停止後の同一鍵復旧は同一signature、新鍵/設定の両方向取り違えは拒否、新identityは独立approval必須。6 lifecycle summariesと元のUID/refusal/restart controlsを維持 | publication-only local trusted OS、scripted PTY。全store rollback耐性・既発行signature取消・on-chain account移行・他family/実鍵/実ceremonyは含まない。後続1b79の差分はテストのrustfmtだけ |
 | E22: M2 complete required + hosted CI | `1b796c3c` / tree `ecfebae5`、literal npm-ci +完全check-allがactual exit 0/EOF、13,040.839秒。143 Rust success summaries/報告pass合計4,150/0 failed、core/readiness/recurringは505.25/26.47/10,730.31秒。元8リンク/e8 withdrawals/35 rolesのsource-free復元と全adapterを完走。[run `38607184408`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38607184408) attempt 1の7 owners + checkが全SUCCESS、全8 checkout `bbd4c95e` のtree一致を照合 | Node 24.19.0 / Rust 1.97.1、CI dev/test opt2・curve opt3、debug assertions/overflow checks有効、case/待機削減なし。local sourceは実行前後clean同一pin。PG/新13-target release A/B/独立security監査/実provider/公開認定ではない。旧E20はnullのまま |
+| E23: saved fee-claim review components | `cf2dd35f` / tree `01bcfe95`、SDK fee-claim 23 passed、CLI fee-claim 4 passed、custody 73 passed/1 ignored、CLI buildと実Docker/UID/PTYが全actual exit 0/EOF、55.737秒。元のpublication controlsと6 lifecycle summariesを保持。独立correctness reviewと指摘処理済み | 非承認の内容表示・development signing。SDKのfocused renderer testsだけをhistorical committeeの認証証明にしない。private exportのparent判定はwriterと共通。初回の実行file mode0700によるDocker失敗を保持し、child umask0022で新しく生成した実mode0755を使用。chmod正規化なし |
+| E24: fee-claim complete local required | `cf2dd35f` / tree `01bcfe95`、literal npm-ci +完全check-allがactual exit 0/EOF、14,049.412秒。143 Rust success summaries/報告pass合計4,166/0 failed、core/readiness/recurringは495.01/26.99/11,124.30秒。元8リンク/e8 withdrawals/35 rolesのsource-free復元と全adapterを完走。実Split/ZeroShareでseed-free保存→offline review/sign、legacy候補の全byte一致・別鍵/受取人/証明epoch/上書き拒否を実行 | local前後clean同一source、Node24.19.0/Rust1.97.1、dev/test opt2・curve opt3・debug assertions/overflow有効、case/待機削減なし。[hosted run `38674732337`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38674732337) attempt 1は7 required owners + checkの全8 jobs SUCCESS。全8 actual checkout `29f91118` / tree `01bcfe95` が対象sourceと一致。FinalTransferはfocused structural renderer coverage。PG/新13-target Native A/B・RELEASE/実provider/独立security監査/公開認定ではない |
 
 新しいrawの保存先は `/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013`。
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -227,6 +237,25 @@ raw 1,428,951 bytes、SHA-256
 `d1e1b1f153127b823e0246b64fbbd276c49cf7120a1fd12d8260cf88e5928b51`。
 先行8910のlocal完全gateはsource更新で停止しterminal nullのまま、bc4dの完全gateは
 rustfmtでactual exit 1/EOFとなった失敗を保持。旧CIのcancelも成功へ転用しません。
+
+E23は `fee-claim-targeted-cf2d-1015-terminal.json` / `.log` / `-inputs.json`。
+raw 12,030 bytes、SHA-256
+`cb2747dca1a0d5f769a612ff74848a3e486e0e8e80f44d9c5827df15f309621d`。
+E24は `fee-claim-required-cf2d-1015-terminal.json` / `.log` / `-collected.json`、
+raw 673,218 bytes、SHA-256
+`baa202fce34921828e7cc21240c3d086f6508aefadbd5c09b9501b58e9fcbedb`。
+npm-ciは1.828秒、完全check-allは14,047.564秒。所有controllerが全stepsの実wait/EOFと
+前後source/cleanを保存し、unit invocation `c842ef8b5d344cd29ec6efbad134386f` の
+観測peak 3,789,402,112 bytes / swap 0を別記録した。既存nvmのversion/defaultは維持。
+9178の初回Dockerは分離UIDが生成物mode0700を読めずactual exit 1、診断はloaderの
+Permission denied/127。元実行fileのbytes/modeと失敗rawを保存し、成功へ書き換えない。
+1feの限定検証成功はそのsourceだけの履歴。1feの完全gateはcf2dのparent判定修正で停止し
+terminal nullのまま保持、旧CI `38673793393` のcancelも全体成功に数えません。
+hosted rawは `hosted-fee-claim-cf2d-1015.log` / `-receipt.json`、run metadata/jobsと
+checkout commitを別保存。raw 1,481,063 bytes、SHA-256
+`d5d081f096a7e59eeb893b5e863d29d82d5f00be7929a6736facc630ccf56716`。
+CI merge checkout `29f91118a5d7b5f8954e16d999a93836d7d8a242` のparentsはa089/cf2d、
+treeはcf2dと同じ `01bcfe95ec91b882ebf6bd8424c733514afa924f` と実ログ/Git APIで照合済み。
 
 実M7の初回は、正式なcookie-factory 0.3.3 archiveに同梱されない未選択exampleを
 held inputにしてビルド前に停止しました。欠損cacheとは扱わず、library/proc-macro/
@@ -402,6 +431,10 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
   - [x] publication承認取消: 同一serve/restart/古いapproval復元後の拒否と並行sync失敗を検証。
   - [x] publication鍵復旧: serve停止後に同一鍵を新pathへ復旧し、取消を保持して署名一致を検証。
   - [x] publication鍵交換: 新鍵/設定/独立approvalと旧新の取り違え拒否を検証。
+  - [x] [fee-claimの非承認表示・保存内容の開発用署名](docs/architecture/fee-claim-review.md):
+    seed-free canonical exportとoffline review/signをE23/E24で検証し、local完全gate・同一treeの
+    hosted CIを完了。実Split/ZeroShareの候補byte一致とCLI拒否、FinalTransferのstructural
+    rendererを確認。protected fee-claim approval/backend・操作意味の承認は未完了。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
@@ -445,7 +478,7 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
     Nativeビルドと全byte比較、canonical/digest/effects/consensus/proof parity、
     conformance/property/fuzz/adversarial/long-run・upgrade/restore・advisory qualification。
   - 状態: 古い11-target A/Bは既存baseline。50a4のE14/E15を保持し、537cのsource CIはE17、13-target実A/BはE18、実RELEASE runtimeはE19で成功。
-    E20の旧local完全gate終端は未確認。新しいM2 sourceの完全required/CIはE22で成功したが、
+    E20の旧local完全gate終端は未確認。後続M2 sourceの完全required/CIはE22/E24で成功したが、
     E18/E19のNative artifact/source pinとは異なる。残る独立監査・upgrade/restore・実provider基準により全M7は未完了。
   - 次: E18/E19のsource/tool/profile pinをR4/Gから共用し、新sourceのrelease claimには
     そのsourceの13-target A/B・実RELEASE bindingを用意する。未達qualificationを進める。
@@ -563,13 +596,14 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
    最終照合は完了。削除されたローカルraw/署名試作は未回収として保持する。
 2. M2のpreview/exportとpublication-only local OS custodyは実装・独立correctness
    review・実UID/PTY/refusal/restartに加え、publicationの取消・鍵復旧/交換をE21/E22で検証済み。
-   残る他family/automatic signingと各lifecycleを進める。
+   fee-claimの非承認表示・保存内容のdevelopment signingはE23/E24のlocal完全gateとhosted CIまで成功。
+   残るprotected backend/操作意味の承認、他family/automatic signingと各lifecycleを進める。
    D03の元scopeはE14/E15/E16・hosted終端成功で完了。公開前の露出/新advisory確認はD04/M8へ対応する。
 3. M3のf093統合と新しいowningはE7、既存5 ENOSPC controlsはE8で成功。
    残るselected-profile fault/combined条件を進める。
    M4で既に成功した暗号化復元を未実装として作り直さない。
 4. R4とNode24 profileはE17/E18/E19で技術範囲を完了。E20の旧local終端未確認と
-   未達qualificationを保持。新しいM2 sourceの所有controllerによる完全gate成功はE22へ記録済み。
+   未達qualificationを保持。後続M2 sourceの所有controllerによる完全gate成功はE22/E24へ記録済み。
    D02/M1のprovider-stopped taskは再試行・迂回せず、未達として保持する。
    D05/M5は同一の実case表で進める。
 5. コード・検証が揃ってから人の公開準備へ引き渡す。新たな許可/実値が必要な
