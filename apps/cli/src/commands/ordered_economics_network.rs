@@ -79,7 +79,7 @@ const MAX_RESULTS_BYTES: usize = 64 * 1024 * 1024;
 /// [`sunrise_edge_client::local_publication_resolver`]'s own internal
 /// construction: DR-0153's closed profile pins the existing genesis
 /// consensus parameters/hash suite, never a remote-provided schedule.
-fn genesis_hash_suite_resolver(
+pub(super) fn genesis_hash_suite_resolver(
     chain_id: ChainId,
     protocol_version: ProtocolVersion,
 ) -> Result<sunrise_edge_client::HashSuiteResolver, CliError> {
@@ -1036,6 +1036,9 @@ fn run_fee_claim_prepare<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
         "--request-id",
         "--claimant-validator-id",
         "--claimant-seed-file",
+        "--claimant-public-key",
+        "--review-request-out",
+        "--review-intent-out",
         "--recipient",
         "--signed-leg",
         "--created-checkpoint",
@@ -1047,6 +1050,8 @@ fn run_fee_claim_prepare<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
             "fee-claim-prepare is a successor workflow and requires the --successor-* artifact flags",
         ));
     }
+    let mode: super::fee_claim_review::PrepareMode<'_> =
+        super::fee_claim_review::prepare_mode(&parsed)?;
     let escrow_request_id: [u8; 32] = decode_hex_32(
         "--escrow-request-id",
         parsed.require("--escrow-request-id")?,
@@ -1064,10 +1069,13 @@ fn run_fee_claim_prepare<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
     let peer: sunrise_edge_client::ValidatorId = sunrise_edge_client::ValidatorId::new(
         decode_hex_32("--prepare-peer", parsed.require("--prepare-peer")?)?,
     );
-    let created_checkpoint: u64 = parse_u64(
-        "--created-checkpoint",
-        parsed.require("--created-checkpoint")?,
-    )?;
+    let created_checkpoint: Option<u64> = match &mode {
+        super::fee_claim_review::PrepareMode::Development => Some(parse_u64(
+            "--created-checkpoint",
+            parsed.require("--created-checkpoint")?,
+        )?),
+        super::fee_claim_review::PrepareMode::Review { .. } => None,
+    };
     let signed_leg: Option<Vec<u8>> = match parsed.get("--signed-leg") {
         Some(path) => Some(read_bounded(
             path,
@@ -1085,20 +1093,38 @@ fn run_fee_claim_prepare<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
         .iter()
         .find(|endpoint| endpoint.validator_id == peer)
         .ok_or_else(|| invalid("--prepare-peer must name a configured --ordered-network peer"))?;
-    let out: &str = parsed.require("--out")?;
-    let mut reserved: Vec<ReservedArtifact> =
-        reserve_artifacts(&[(out, "ordered-economics-candidate")], &[])?;
-    let mut artifact: ReservedArtifact = reserved
-        .pop()
-        .ok_or_else(|| invalid("missing fee claim candidate reservation"))?;
-    // The seed is read only after every local pin and the output reservation
-    // succeeded, and is never printed.
-    let seed: [u8; 32] =
-        crate::seed::load_dev_seed(Path::new(parsed.require("--claimant-seed-file")?))
-            .map_err(failure)?;
-    let signer: sunrise_edge_client::LocalSigner =
-        sunrise_edge_client::LocalSigner::from_seed(seed);
-    let claimant_public_key: [u8; 32] = *signer.address().as_bytes();
+    // Development mode preserves the existing reservation-before-seed order.
+    // Review mode creates no candidate and never reads a seed.
+    let mut artifact: Option<ReservedArtifact> = match &mode {
+        super::fee_claim_review::PrepareMode::Development => {
+            let mut reserved: Vec<ReservedArtifact> = reserve_artifacts(
+                &[(parsed.require("--out")?, "ordered-economics-candidate")],
+                &[],
+            )?;
+            Some(
+                reserved
+                    .pop()
+                    .ok_or_else(|| invalid("missing fee claim candidate reservation"))?,
+            )
+        }
+        super::fee_claim_review::PrepareMode::Review { .. } => None,
+    };
+    let signer: Option<sunrise_edge_client::LocalSigner> = match &mode {
+        super::fee_claim_review::PrepareMode::Development => {
+            let seed: [u8; 32] =
+                crate::seed::load_dev_seed(Path::new(parsed.require("--claimant-seed-file")?))
+                    .map_err(failure)?;
+            Some(sunrise_edge_client::LocalSigner::from_seed(seed))
+        }
+        super::fee_claim_review::PrepareMode::Review { .. } => None,
+    };
+    let claimant_public_key: [u8; 32] = match (&mode, &signer) {
+        (super::fee_claim_review::PrepareMode::Review { public_key, .. }, None) => *public_key,
+        (super::fee_claim_review::PrepareMode::Development, Some(signer)) => {
+            *signer.address().as_bytes()
+        }
+        _ => return Err(invalid("inconsistent fee claim preparation mode")),
+    };
     let request: sunrise_edge_client::FeeClaimPrepareRequest =
         sunrise_edge_client::FeeClaimPrepareRequest {
             context: workflow.expected_context().clone(),
@@ -1120,14 +1146,31 @@ fn run_fee_claim_prepare<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
     let prepared: sunrise_edge_client::PreparedFeeClaim<'_> =
         sunrise_edge_client::PreparedFeeClaim::prepare(workflow, &request, intent)
             .map_err(failure)?;
-    let signed: Vec<u8> = prepared.sign_and_finalize_with(&signer).map_err(failure)?;
+    if let super::fee_claim_review::PrepareMode::Review {
+        request_out,
+        intent_out,
+        ..
+    } = mode
+    {
+        return super::fee_claim_review::export_review(&prepared, request_out, intent_out);
+    }
+    let signer: &sunrise_edge_client::LocalSigner = signer
+        .as_ref()
+        .ok_or_else(|| invalid("missing development signer"))?;
+    let checkpoint: u64 =
+        created_checkpoint.ok_or_else(|| invalid("missing development checkpoint"))?;
+    let signed: Vec<u8> = prepared.sign_and_finalize_with(signer).map_err(failure)?;
     let encoded: Vec<u8> =
-        sunrise_edge_client::fee_claim_candidate(workflow, request_id, signed, created_checkpoint)
+        sunrise_edge_client::fee_claim_candidate(workflow, request_id, signed, checkpoint)
             .map_err(failure)?;
     let candidate = sunrise_edge_client::ordered_economics_core::decode_ordered_candidate(&encoded)
         .map_err(failure)?;
     authenticate_ordered_candidate(&loaded.policy, &candidate).map_err(failure)?;
-    artifact.persist(&encoded)?;
+    artifact
+        .as_mut()
+        .ok_or_else(|| invalid("missing development output"))?
+        .persist(&encoded)?;
+    let out: &str = parsed.require("--out")?;
     println!(
         "fee_claim_candidate_bytes={} out={out} epoch={}",
         encoded.len(),
@@ -1154,6 +1197,8 @@ pub(crate) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
         "ordered-freeze-build" => run_freeze_build(iterator),
         "drain-set-build" => run_drain_set_build(iterator),
         "fee-claim-prepare" => run_fee_claim_prepare(iterator),
+        "fee-claim-review" => super::fee_claim_review::run(iterator, false),
+        "fee-claim-sign" => super::fee_claim_review::run(iterator, true),
         other => Err(invalid(format!("unknown economics subcommand: {other}"))),
     }
 }

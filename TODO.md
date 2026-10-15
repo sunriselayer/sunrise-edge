@@ -402,6 +402,8 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
   - [x] publication承認取消: 同一serve/restart/古いapproval復元後の拒否と並行sync失敗を検証。
   - [x] publication鍵復旧: serve停止後に同一鍵を新pathへ復旧し、取消を保持して署名一致を検証。
   - [x] publication鍵交換: 新鍵/設定/独立approvalと旧新の取り違え拒否を検証。
+  - 作業中: fee-claimのseed-free canonical exportと、同じ保存内容のoffline review/development
+    signingを追加中。現時点は検証未完了で、protected fee-claim approval/backendの完了ではない。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。

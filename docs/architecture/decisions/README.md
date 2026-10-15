@@ -140,3 +140,4 @@
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong
 in [`TODO.md`](../../../TODO.md).
+- [DR-0245: saved successor fee-claim review and development signing](0245-saved-successor-fee-claim-review.md)

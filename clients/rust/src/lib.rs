@@ -64,6 +64,7 @@ pub mod fastvote_drain_driver;
 pub mod fastvote_frontier_client;
 pub mod fastvote_publication_client;
 pub mod fee_claim_client;
+pub mod fee_claim_review;
 pub mod immutable_archive;
 pub mod key;
 pub mod local_execution_client;
@@ -140,9 +141,11 @@ pub use consensus::{
     encode_frozen_frontier_vote,
 };
 pub use fee_claim_client::{
-    FeeClaimPreparationError, PreparedFeeClaim, fee_claim_candidate,
+    FeeClaimIntent, FeeClaimOperation, FeeClaimPreparationError, MAX_FEE_CLAIM_INTENT_BYTES,
+    PreparedFeeClaim, decode_fee_claim_intent, encode_fee_claim_intent, fee_claim_candidate,
     require_successor_fee_claim_request, sign_prepared_fee_claim, verify_prepared_fee_claim,
 };
+pub use fee_claim_review::{FeeClaimReview, FeeClaimReviewError};
 pub use node_core::admission_profile::{
     ExternalRequestLane, VerifiedAdmissionProfile, require_external_request_lane,
 };
@@ -164,6 +167,7 @@ pub use node_wire::{
 };
 pub use node_wire::{
     FEE_CLAIM_PREPARE_PATH, FeeClaimPrepareRequest, MAX_FEE_CLAIM_PREPARE_LEG_BYTES,
+    MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES,
 };
 pub use paid_execution_client::{
     PAID_EXECUTION_PATH, PAID_FEE_POLICY_PATH, PreparedPaidExecution, build_signed_paid_execution,

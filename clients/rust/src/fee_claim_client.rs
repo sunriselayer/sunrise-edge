@@ -18,9 +18,10 @@ use crate::{
 use execution::local_execution::{SignedLocalExecutionIntent, decode_signed_local_execution};
 use execution::publication::PublicationContext;
 use node_core::NodeCoreError;
-use node_core::fee_claims::codec::{
-    FeeClaimCodecError, FeeClaimIntent, FeeClaimOperation, SignedFeeClaimIntent,
-    decode_fee_claim_intent, encode_signed_fee_claim_intent,
+pub use node_core::fee_claims::codec::{
+    FeeClaimCodecError, FeeClaimIntent, FeeClaimOperation, MAX_FEE_CLAIM_INTENT_BYTES,
+    SignedFeeClaimIntent, decode_fee_claim_intent, encode_fee_claim_intent,
+    encode_signed_fee_claim_intent,
 };
 use node_core::fee_claims::{FeeClaimError, fee_claim_intent_digest, fee_claim_signing_frame};
 use node_core::ordered_economics::{

@@ -55,6 +55,30 @@ pub(crate) fn write_review_preimage(path: &Path, bytes: &[u8]) -> Result<(), Cus
     fsperm::write_private_file(path, 0o700, 0o600, bytes, false)
 }
 
+/// Read-only preflight for a fresh review export. The exclusive writer repeats
+/// the policy at publication; this check is not a reservation or authority.
+pub(crate) fn check_review_preimage_destination(path: &Path) -> Result<(), CustodyError> {
+    let parent: &Path = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fsperm::require_private_dir(parent, 0o700)?;
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Err(CustodyError::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "review preimage destination already exists",
+            ),
+        }),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(CustodyError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
 pub(crate) fn run<I>(args: I) -> Result<(), CliError>
 where
     I: IntoIterator<Item = OsString>,
