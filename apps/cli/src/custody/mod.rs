@@ -58,11 +58,9 @@ pub(crate) fn write_review_preimage(path: &Path, bytes: &[u8]) -> Result<(), Cus
 /// Read-only preflight for a fresh review export. The exclusive writer repeats
 /// the policy at publication; this check is not a reservation or authority.
 pub(crate) fn check_review_preimage_destination(path: &Path) -> Result<(), CustodyError> {
-    let parent: &Path = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    fsperm::require_private_dir(parent, 0o700)?;
+    // The writer's own parent resolution: a bare file name is refused here
+    // too, rather than passing against the current directory.
+    fsperm::require_private_dir(fsperm::parent_of(path)?, 0o700)?;
     match std::fs::symlink_metadata(path) {
         Ok(_) => Err(CustodyError::Io {
             path: path.to_path_buf(),
@@ -151,5 +149,21 @@ mod review_destination_tests {
         )
         .unwrap();
         assert!(check_review_preimage_destination(&directory.child("another-review")).is_err());
+    }
+
+    /// A bare file name has no explicit parent, so the writer refuses it. The
+    /// preflight refuses it identically, before any I/O and whatever the
+    /// current directory is, instead of passing and failing after a peer call.
+    #[test]
+    fn review_export_preflight_refuses_a_bare_file_name_like_the_writer() {
+        let bare: &Path = Path::new("bare-review");
+        assert!(matches!(
+            check_review_preimage_destination(bare),
+            Err(CustodyError::NotADirectory(_))
+        ));
+        assert!(matches!(
+            write_review_preimage(bare, b"unused"),
+            Err(CustodyError::NotADirectory(_))
+        ));
     }
 }

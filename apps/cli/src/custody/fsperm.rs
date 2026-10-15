@@ -98,7 +98,10 @@ pub(super) fn require_private_dir(dir: &Path, expected_mode: u32) -> Result<(), 
     Ok(())
 }
 
-fn parent_of(path: &Path) -> Result<&Path, CustodyError> {
+/// The explicit, non-empty parent directory of `path`. A bare file name (or
+/// the root) has none and is refused, never resolved against the current
+/// directory; destination preflights share this with every reader and writer.
+pub(super) fn parent_of(path: &Path) -> Result<&Path, CustodyError> {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .ok_or_else(|| CustodyError::NotADirectory(path.to_path_buf()))
