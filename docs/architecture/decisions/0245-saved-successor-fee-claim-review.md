@@ -17,8 +17,8 @@ local development signer and finalization; it is not protected custody.
 The SDK review accepts only the immutable prepared owner. It presents the exact
 request/escrow identities, historical certificate epoch and committee claimant,
 resource, amount/recipient, row generation and digests, fee/payout object refs,
-operation and complete decoded signed-leg content, canonical bytes and signing
-frame. All text is bounded and terminal-safe; unsupported, malformed or
+operation and complete decoded signed-leg content, raw leg bytes and signing
+frame. The saved intent file is the exact canonical byte record. All text is bounded and terminal-safe; unsupported, malformed or
 oversized presentation refuses without truncation. Generic argument bytes and
 code references are identified as uninterpreted, not business approval.
 

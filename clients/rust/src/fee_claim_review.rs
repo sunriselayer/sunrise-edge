@@ -1138,7 +1138,10 @@ impl FeeClaimReview {
                         "operation.expected_payout",
                         object_ref,
                     )?),
-                    None => None,
+                    None => {
+                        renderer.push("operation.expected_payout", "none_legacy_v1")?;
+                        None
+                    }
                 };
                 FeeClaimOperationReview::Split {
                     leg: leg_review,
@@ -1445,7 +1448,7 @@ mod tests {
     }
 
     #[test]
-    fn split_v1_has_no_expected_payout_field() {
+    fn split_v1_makes_the_absent_expected_payout_explicit() {
         let leg: Vec<u8> = signed_leg(Vec::new());
         let intent: FeeClaimIntent = base_intent(
             FeeClaimOperation::Split {
@@ -1455,6 +1458,11 @@ mod tests {
             5,
         );
         let review: FeeClaimReview = built(&intent).unwrap();
+        assert!(
+            review
+                .render_text()
+                .contains("operation.expected_payout=none_legacy_v1")
+        );
         match review.operation() {
             FeeClaimOperationReview::Split {
                 leg,

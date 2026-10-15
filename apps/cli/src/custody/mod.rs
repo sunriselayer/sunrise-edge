@@ -126,3 +126,30 @@ where
     println!("requests_refused={}", summary.requests_refused);
     Ok(())
 }
+
+#[cfg(test)]
+mod review_destination_tests {
+    use super::fsperm::test_support::TempDir;
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn fresh_review_export_preflight_refuses_existing_symlink_and_open_parent() {
+        let directory: TempDir = TempDir::new(0o700);
+        let fresh = directory.child("fresh-review");
+        check_review_preimage_destination(&fresh).unwrap();
+        assert!(!fresh.exists(), "preflight must not reserve or publish");
+        std::fs::write(&fresh, b"retained").unwrap();
+        assert!(check_review_preimage_destination(&fresh).is_err());
+        assert_eq!(std::fs::read(&fresh).unwrap(), b"retained");
+        let alias = directory.child("alias-review");
+        symlink(directory.child("absent"), &alias).unwrap();
+        assert!(check_review_preimage_destination(&alias).is_err());
+        std::fs::set_permissions(
+            directory.child(".").as_path(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        assert!(check_review_preimage_destination(&directory.child("another-review")).is_err());
+    }
+}
