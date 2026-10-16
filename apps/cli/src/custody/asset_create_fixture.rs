@@ -13,7 +13,7 @@
 //! non-empty `NodeDedupRecord`, and an idempotent replay of the exact
 //! captured signed bytes.
 //!
-//! Custody now mediates this family too (DR-0255/M2): `custody prepare-
+//! Custody mediates this family too (DR-0255/M2): `custody prepare-
 //! create`/`approve-create`/`sign-create`/`serve-create` under the closed
 //! wire kind 5 (see `custody::asset_create`, `asset_create_wire`,
 //! `asset_create_commands`). The Docker orchestration
@@ -22,11 +22,8 @@
 //! typed confirmation)/offline sign-create against a real `serve-create`
 //! process under the distinct custody UID, then the actual `standard_asset
 //! create-asset` CLI itself signing through the same custody socket — and
-//! this module verifies the resulting submission/result/instance-ref triple
-//! exactly as it did before that wiring landed: the decoded signed bytes are
-//! bit-identical regardless of which of those two custody-mediated signing
-//! calls produced them, so this independent verification logic needed no
-//! change once custody added that mediation.
+//! this module independently verifies the resulting submission/result/
+//! instance-ref triple against the live backend.
 //!
 //! `#[ignore]` keeps this out of the ordinary `cargo test` gate; the Docker
 //! fixture runs it by its exact name, like the transfer/split-merge/mint-burn
@@ -48,9 +45,10 @@ use sunrise_edge_client::{
     local_execution::{InstanceRecord, decode_instance_record, instance_target},
 };
 
-/// Never used elsewhere in this fixture family: transfer/split/merge/mint/
-/// burn already occupy 0x5a, 0x11, 0x22, 0x33, 0x44, 0x99, 0x91, 0x92, 0x93,
-/// 0x94.
+/// Never used elsewhere in this fixture family: the custody lifecycle,
+/// transfer, split/merge and mint/burn phases already occupy request IDs
+/// 0x5a, 0x11, 0x22, 0x33, 0x44, 0x75, 0x91, 0x92, 0x93 and 0x94 (0x99 is a
+/// public key value, `WRONG_PUBLIC_KEY_HEX`, never a request ID).
 const CREATE_REQUEST_ID: [u8; 32] = [0x95; 32];
 
 fn required(name: &str) -> String {
@@ -107,9 +105,22 @@ fn current_inline(result: HttpObjectQueryResult, label: &'static str) -> (Vec<u8
 
 /// Identifies the exact two objects a successful create-asset `Instantiate`
 /// creates beyond its own fee/refund/reservation effects: the Definition and
-/// the zero-supply TreasuryCap, distinguished only by the Definition's fixed
-/// canonical body (never by trusting effect order or any embedded amount).
-fn new_definition_and_cap(result: &PaidExecutionResult) -> (ObjectId, ObjectId) {
+/// the zero-supply TreasuryCap, each identified by its own independently
+/// derived scoped nominal type hash (never by trusting effect order, body
+/// shape, or any embedded amount). Returns both object IDs plus the two
+/// derived type hashes, so callers can repeat the same type check against a
+/// later live query instead of only this one decoded result.
+fn new_definition_and_cap(
+    result: &PaidExecutionResult,
+    resolver: &sunrise_edge_client::HashSuiteResolver,
+    epoch: Epoch,
+    origin: &sunrise_edge_client::PackageOrigin,
+) -> (
+    ObjectId,
+    ObjectId,
+    sunrise_edge_client::Digest32,
+    sunrise_edge_client::Digest32,
+) {
     let charged = result
         .charged
         .as_ref()
@@ -137,16 +148,34 @@ fn new_definition_and_cap(result: &PaidExecutionResult) -> (ObjectId, ObjectId) 
         2,
         "create-asset initializer must create exactly Definition and TreasuryCap beyond its fee/refund/reservation effects"
     );
-    let expected_definition_body: Vec<u8> = public_standard_asset::definition_body().unwrap();
+    let definition_type: sunrise_edge_client::Digest32 =
+        sunrise_edge_client::package_types::derive_scoped_type_id(
+            resolver,
+            epoch,
+            &public_standard_asset::definition_type_tag(origin).unwrap(),
+        )
+        .unwrap();
     let definition: &Object = created
         .iter()
         .copied()
-        .find(|object: &&Object| object.data == expected_definition_body)
+        .find(|object: &&Object| object.type_hash == definition_type)
         .expect("create-asset initializer omitted Definition");
+    assert_eq!(
+        definition.data,
+        public_standard_asset::definition_body().unwrap(),
+        "Definition must carry its fixed canonical body"
+    );
+    let cap_type: sunrise_edge_client::Digest32 =
+        sunrise_edge_client::package_types::derive_scoped_type_id(
+            resolver,
+            epoch,
+            &public_standard_asset::treasury_cap_type_tag(origin, &definition.id).unwrap(),
+        )
+        .unwrap();
     let cap: &Object = created
         .iter()
         .copied()
-        .find(|object: &&Object| object.id != definition.id)
+        .find(|object: &&Object| object.type_hash == cap_type)
         .expect("create-asset initializer omitted TreasuryCap");
     assert_eq!(
         public_standard_asset::treasury_supply(&cap.data).unwrap(),
@@ -154,7 +183,7 @@ fn new_definition_and_cap(result: &PaidExecutionResult) -> (ObjectId, ObjectId) 
         "a freshly created asset's TreasuryCap must start at zero supply"
     );
     assert_ne!(definition.id, cap.id);
-    (definition.id, cap.id)
+    (definition.id, cap.id, definition_type, cap_type)
 }
 
 fn require_receipt(
@@ -317,7 +346,12 @@ fn distinct_uid_create_asset_probe() {
             // reinterpretation of it.
             assert_eq!(encode_paid_execution_result(&result).unwrap(), result_bytes);
 
-            let (definition_id, cap_id) = new_definition_and_cap(&result);
+            let (definition_id, cap_id, definition_type, cap_type) = new_definition_and_cap(
+                &result,
+                protocol.resolver(),
+                protocol.epoch(),
+                manifest.fee_policy.code.origin(),
+            );
 
             // Independent durable instance query: never trust the local
             // `--instance-ref-out` file alone.
@@ -356,6 +390,10 @@ fn distinct_uid_create_asset_probe() {
                 definition_object.schema_version,
                 public_standard_asset::SCHEMA_VERSION
             );
+            assert_eq!(
+                definition_object.type_hash, definition_type,
+                "live Definition must carry the independently derived Definition nominal type"
+            );
 
             let (cap_bytes, cap_version) = current_inline(
                 client.query_object(cap_id).unwrap(),
@@ -368,6 +406,10 @@ fn distinct_uid_create_asset_probe() {
             assert_eq!(
                 cap_object.schema_version,
                 public_standard_asset::SCHEMA_VERSION
+            );
+            assert_eq!(
+                cap_object.type_hash, cap_type,
+                "live TreasuryCap must carry the independently derived TreasuryCap nominal type"
             );
             assert_eq!(
                 public_standard_asset::treasury_supply(&cap_object.data).unwrap(),
