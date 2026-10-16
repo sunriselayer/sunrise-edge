@@ -82,7 +82,7 @@ CODE/VERIFY 8件の継続作業は[PR #307](https://github.com/sunriselayer/sunr
 の `426e8359` / tree `b7fa71cd` に、genesis Standard Asset transfer専用custody・
 待機中workの取消・旧host生存中のfence拒否を固定しました。component controlsと
 Native A/B・RELEASE CLIはE25-E27で成功。同一treeのhosted CIはE36で全8 jobsが成功。
-ローカル完全requiredは長時間recurrence実行中です。
+ローカル完全requiredもE38で終端成功を確認しました。
 後続の[PR #308](https://github.com/sunriselayer/sunrise-edge/pull/308) は
 `b568037f` / tree `2a691d63`。recovery/ordered contextの追加停止確認と、importの
 独立history floorを実装し、対象Native HTTP 206件、parse/comparison 12件、
@@ -211,7 +211,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E22: M2 complete required + hosted CI | `1b796c3c` / tree `ecfebae5`、literal npm-ci +完全check-allがactual exit 0/EOF、13,040.839秒。143 Rust success summaries/報告pass合計4,150/0 failed、core/readiness/recurringは505.25/26.47/10,730.31秒。元8リンク/e8 withdrawals/35 rolesのsource-free復元と全adapterを完走。[run `38607184408`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38607184408) attempt 1の7 owners + checkが全SUCCESS、全8 checkout `bbd4c95e` のtree一致を照合 | Node 24.19.0 / Rust 1.97.1、CI dev/test opt2・curve opt3、debug assertions/overflow checks有効、case/待機削減なし。local sourceは実行前後clean同一pin。PG/新13-target release A/B/独立security監査/実provider/公開認定ではない。旧E20はnullのまま |
 | E23: saved fee-claim review components | `cf2dd35f` / tree `01bcfe95`、SDK fee-claim 23 passed、CLI fee-claim 4 passed、custody 73 passed/1 ignored、CLI buildと実Docker/UID/PTYが全actual exit 0/EOF、55.737秒。元のpublication controlsと6 lifecycle summariesを保持。独立correctness reviewと指摘処理済み | 非承認の内容表示・development signing。SDKのfocused renderer testsだけをhistorical committeeの認証証明にしない。private exportのparent判定はwriterと共通。初回の実行file mode0700によるDocker失敗を保持し、child umask0022で新しく生成した実mode0755を使用。chmod正規化なし |
 | E24: fee-claim complete local required | `cf2dd35f` / tree `01bcfe95`、literal npm-ci +完全check-allがactual exit 0/EOF、14,049.412秒。143 Rust success summaries/報告pass合計4,166/0 failed、core/readiness/recurringは495.01/26.99/11,124.30秒。元8リンク/e8 withdrawals/35 rolesのsource-free復元と全adapterを完走。実Split/ZeroShareでseed-free保存→offline review/sign、legacy候補の全byte一致・別鍵/受取人/証明epoch/上書き拒否を実行 | local前後clean同一source、Node24.19.0/Rust1.97.1、dev/test opt2・curve opt3・debug assertions/overflow有効、case/待機削減なし。[hosted run `38674732337`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38674732337) attempt 1は7 required owners + checkの全8 jobs SUCCESS。全8 actual checkout `29f91118` / tree `01bcfe95` が対象sourceと一致。FinalTransferはfocused structural renderer coverage。PG/新13-target Native A/B・RELEASE/実provider/独立security監査/公開認定ではない |
-| E25: transfer・queued stop・overlapping TLS components | `426e8359` / tree `b7fa71cd`。custody 78 passed/2 ignored、Standard Asset 17 passed、Native operations 7 passed、全12 actual TLS controls、CLI build、対象3 crate Clippy、実Docker/UID/PTYを含む全7 commandsがactual exit 0/EOF、255.769秒。元publicationと6 lifecycle、whole-coin transferの実SQLite/WASM実行・offline/CLI署名byte一致・receipt replay・取消を確認。前後source clean/input binary不変 | component qualification。原2 ignoredのfixtureはDocker ownerが別途実行。全M2/M3/D05/M5・独立監査・実provider/公開認定ではない。同sourceの完全requiredとhosted CIは長時間recurrence実行中 |
+| E25: transfer・queued stop・overlapping TLS components | `426e8359` / tree `b7fa71cd`。custody 78 passed/2 ignored、Standard Asset 17 passed、Native operations 7 passed、全12 actual TLS controls、CLI build、対象3 crate Clippy、実Docker/UID/PTYを含む全7 commandsがactual exit 0/EOF、255.769秒。元publicationと6 lifecycle、whole-coin transferの実SQLite/WASM実行・offline/CLI署名byte一致・receipt replay・取消を確認。前後source clean/input binary不変 | component qualification。原2 ignoredのfixtureはDocker ownerが別途実行。全M2/M3/D05/M5・独立監査・実provider/公開認定ではない。同sourceの完全requiredとhosted CIはE38/E36で終端成功 |
 | E26: 426e actual Native release A/B | `426e8359` / tree `b7fa71cd`、固定Node24.19.0/Rust1.97.1/Linux GNU recipe。2 fresh builds・13ターゲット全byte/mode/owner比較成功、actual exit 0/EOF、858.399秒。保存26 ELFを親でも照合。生成umask0022の実mode0755を維持し、chmod正規化なし。4専有作業dirとsource leaseを解放 | same-host trusted OS。fixture/cross-machine/hermetic/upstream authenticity・全13 RELEASE runtime・全M7・公開認定ではない。後続sourceへ借用しない |
 | E27: 426e RELEASE CLI custody | E26保存の実RELEASE CLIをE25と同sourceのdev/test harnessへ渡し、元publication・6 lifecycle・実transfer/取消/再起動拒否をactual exit 0/EOF、3.670秒で確認。CLIとharnessの前後hash一致 | RELEASEなのはCLI child。SQLite/WASM hostはdev/test harness内で動き、全13 RELEASE runtime qualificationとは区別する |
 | E28: b568 actual Native release A/B | `b568037f` / tree `2a691d63`、固定Node24.19.0/Rust1.97.1/Linux GNU recipe。2 fresh builds・13ターゲット全byte/mode/owner比較成功、actual exit 0/EOF、931.235秒。親が保存26 ELFを照合。生成umask0022の実mode0755を維持し、4専有dirとsource leaseを解放 | same-host trusted OS。新しいfloor/stop sourceの実build証拠。cross-machine/hermetic・全13 runtime・独立監査・全M7/公開認定ではない |
@@ -224,6 +224,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E35: combined 7c57 actual RELEASE CLI custody | E34保存の実RELEASE CLI + 同sourceで保存したdev/test opt2 harnessで、元publication・6 lifecycle・transfer・自分宛てsplit/mergeを実UID/PTYで全actual0/EOF、4.392秒。全byte署名一致、非空receipt・replay・nonce・取消/restartを検証。sourceと両ELFの前後hash/metadata一致、owned container/volume解放 | RELEASEなのはCLI child。SQLite/WASM oracleはdev/test。他者宛てはprepare/approval controlsのみで、この実CLI round tripには含めない。全M2・全13 runtime・公開認定ではない |
 | E36: 426e hosted complete CI | [run `38839795270`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38839795270) の7 owners + aggregate checkが全8 jobs terminal SUCCESS。全8 actual checkoutは `47636cf615a8ebfc73bde33f8149dae71c1e4e53`、tree `b7fa71cd083b8f257708b3f43378a310ff785267` は `426e8359` と一致。親 `f21477d9` + `426e8359`、各raw log hashとcommit metadataも照合 | Node24.19.0固定、元long cases/待機を保持したsource qualification。ローカル完全requiredの終端、後続b568/4312/e603/92fd/7c57のCI、独立security監査・公開認定へ転用しない |
 | E37: import closure pins and successor floor source | `53e324c1` / tree `499ef2e8`。独立に保持したcut/package/planの3 digestを全て指定または全て省略し、既存の完全証明再検証後・destination create/open前で追加拒否。新6件を含むoperator lib全150件、compiled import driver全11件、fmt、operator全target/all-feature Clippy、元conditional driverの実ELF生成を含む全5 commandsがactual0/EOF、359.714秒。guard除去時の新1件は意図したmismatch assertionでactual101、exact bytes復元後はactual0/EOF。負対照controllerは637.965秒で完了し、元コード・raw hashを親でも照合。両変更の独立correctness review承認 | 新しい後継floor controlは元recurringケースのfirst successor linkへ追加し、Freeze/DrainSet/empty-three-chain済みの既存history/cutを使用。元8リンク/e8 withdrawals/35 roles/待機を保持。ただしこのsourceでは当該long caseをまだ実行しておらず、compileだけの成功をend-to-end合格にしない。全M4/M7、完全required/CI、新Native A/B、checkpoint/state-root・whole-store rollback・公開認定は未完了 |
+| E38: 426e complete required and hosted CI | `426e8359` / tree `b7fa71cd`。literal npm-ci +完全check-allがactual0/EOF、16,941.054秒。元8リンク/e8 withdrawals/35-role source-free復元と全adapterを維持。Rust success summaries143・報告pass合計4,176・failed0。前後HEAD/clean state、Node24と全wrapper hash・raw hashを親で照合。同treeのhosted CI全8 jobs SUCCESSはE36 | 426eのsource qualification。新source b568/7c57/277f、全M2/M3/M4/M5/M7・独立security監査・公開認定へ流用しない。426eの既存transfer component owning/full/RELEASE CLIを確認した結果であり、後続common trustの統合はE34/E35の限定証拠と最終source gateを分ける |
+
 
 
 
@@ -528,11 +530,12 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     seed-free canonical exportとoffline review/signをE23/E24で検証し、local完全gate・同一treeの
     hosted CIを完了。実Split/ZeroShareの候補byte一致とCLI拒否、FinalTransferのstructural
     rendererを確認。protected fee-claim approval/backend・操作意味の承認は未完了。
-  - [ ] [genesis Standard Asset transferの専用custody](docs/architecture/standard-asset-transfer-custody.md):
+  - [x] [genesis Standard Asset transferの専用custody component](docs/architecture/standard-asset-transfer-custody.md):
     独立genesis/code/instance/policy pin、完全object preimageからの金額/参照検証、
-    exact approval・別UID署名・既存transfer CLIを接続。component controlsは成功したが、
-    E25のclean source componentsとE26/E27のRELEASE CLIまで確認。完全gate/CIと
-    最終照合は未完了。他operation/epoch/自動署名は対象外。
+    exact approval・別UID署名・既存transfer CLIを接続。426eのE25-E27とE38/E36で
+    owning・RELEASE CLI・完全required/同tree CIを確認。後続common trust統合は
+    E34/E35の対象証拠として分け、最終source gate/全M2は未完了に保つ。
+    他operation/epoch/自動署名の合格へ転用しない。
   - [x] [genesis Standard Asset split/mergeの専用custody component](docs/architecture/standard-asset-split-merge-custody.md):
     E33の実CLI/別UID/PTYで自分宛ての分割→結合、完全内容とframe、金額・消費入力・実receipt/replay・
     取消と再起動を検証。他者宛てはprepare/approval controls、overflowは純粋なpreparationで確認。

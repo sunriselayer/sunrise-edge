@@ -113,6 +113,44 @@ pub(crate) fn request_merge_signature(
     runtime.block_on(request_signature_async(target, &frame))
 }
 
+/// Sends mint preimages only (kind 4), by analogy with
+/// [`request_transfer_signature`]. The caller finalizes its own immutable
+/// paid intent.
+pub(crate) fn request_mint_signature(
+    target: &CustodyTarget,
+    request: &super::asset_mint_burn::AssetMintRequest,
+) -> Result<[u8; wire::CUSTODY_SIGNATURE_BYTES], CustodyError> {
+    let frame: Vec<u8> = super::asset_mint_burn_wire::encode(
+        &super::asset_mint_burn::AssetMintBurnRequest::Mint(Box::new(request.clone())),
+    )
+    .map_err(CustodyError::Wire)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(CustodyError::Runtime)?;
+    runtime.block_on(request_signature_async(target, &frame))
+}
+
+/// Sends burn preimages only (kind 4), by analogy with
+/// [`request_transfer_signature`]. The caller finalizes its own immutable
+/// paid intent.
+pub(crate) fn request_burn_signature(
+    target: &CustodyTarget,
+    request: &super::asset_mint_burn::AssetBurnRequest,
+) -> Result<[u8; wire::CUSTODY_SIGNATURE_BYTES], CustodyError> {
+    let frame: Vec<u8> = super::asset_mint_burn_wire::encode(
+        &super::asset_mint_burn::AssetMintBurnRequest::Burn(Box::new(request.clone())),
+    )
+    .map_err(CustodyError::Wire)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(CustodyError::Runtime)?;
+    runtime.block_on(request_signature_async(target, &frame))
+}
+
 pub(super) async fn request_signature_async(
     target: &CustodyTarget,
     frame: &[u8],

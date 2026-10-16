@@ -222,7 +222,8 @@ fn distinct_uid_mint_burn_probe() {
             );
         }
         "after-mint" => {
-            let fee_coin: ObjectId = ObjectId::new(required_hex32("CUSTODY_MINT_BURN_FEE_COIN_HEX"));
+            let fee_coin: ObjectId =
+                ObjectId::new(required_hex32("CUSTODY_MINT_BURN_FEE_COIN_HEX"));
             assert_eq!(
                 fee_coin, genesis_fee_coin,
                 "fee coin id must match the independently derived genesis fee coin"
@@ -373,7 +374,8 @@ fn distinct_uid_mint_burn_probe() {
         "verify-burn" => {
             let expected_cap: ObjectId = ObjectId::new(required_hex32("CUSTODY_MINT_BURN_CAP_HEX"));
             assert_eq!(expected_cap, cap_id);
-            let fee_coin: ObjectId = ObjectId::new(required_hex32("CUSTODY_MINT_BURN_FEE_COIN_HEX"));
+            let fee_coin: ObjectId =
+                ObjectId::new(required_hex32("CUSTODY_MINT_BURN_FEE_COIN_HEX"));
             assert_eq!(fee_coin, genesis_fee_coin);
             let burned_coin: ObjectId =
                 ObjectId::new(required_hex32("CUSTODY_MINT_BURN_NEW_COIN_HEX"));

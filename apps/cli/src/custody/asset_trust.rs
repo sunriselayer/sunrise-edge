@@ -25,6 +25,7 @@ use sunrise_edge_client::{
 
 use public_standard_asset::{
     ASSET_OPAQUE_DOMAIN, REQUIRED_WASM_PROFILE, SCHEMA_VERSION, build_package, coin_type_tag,
+    treasury_cap_type_tag,
 };
 
 use crate::error::CliError;
@@ -61,6 +62,11 @@ pub(super) struct PinnedAssetTrust {
     pub(super) origin: PackageOrigin,
     pub(super) asset: ObjectId,
     pub(super) coin_tag: ScopedTypeTag,
+    /// The genesis Standard Asset `TreasuryCap` nominal type for this asset,
+    /// used only by the mint/burn family (DR-0253); every other family
+    /// leaves this unused. Computed once here, alongside `coin_tag`, from
+    /// the same verified `origin`/`asset`, never re-derived per request.
+    pub(super) cap_tag: ScopedTypeTag,
 }
 
 impl PinnedAssetTrust {
@@ -220,6 +226,7 @@ impl PinnedAssetTrust {
         }
 
         let genesis_digest: Digest32 = root.digest();
+        let cap_tag: ScopedTypeTag = treasury_cap_type_tag(&origin, &asset).map_err(failure)?;
         Ok(Self {
             resolver,
             expected,
@@ -230,6 +237,7 @@ impl PinnedAssetTrust {
             origin,
             asset,
             coin_tag,
+            cap_tag,
         })
     }
 
@@ -267,6 +275,35 @@ impl PinnedAssetTrust {
             &object.type_hash,
             self.expected.epoch(),
             &self.coin_tag,
+        )
+        .map_err(failure)?;
+        if !matches {
+            return Err(invalid(type_message));
+        }
+        Ok(())
+    }
+
+    /// Identical shape to [`Self::validate_owned_coin`], checked against the
+    /// genesis `TreasuryCap` nominal type instead of `Coin` (DR-0253's
+    /// mint/burn family only).
+    pub(super) fn validate_owned_cap(
+        &self,
+        object: &Object,
+        owner_message: &'static str,
+        schema_message: &'static str,
+        type_message: &'static str,
+    ) -> Result<(), CliError> {
+        if object.owner != Owner::Address(self.publisher) {
+            return Err(invalid(owner_message));
+        }
+        if object.schema_version != SCHEMA_VERSION {
+            return Err(invalid(schema_message));
+        }
+        let matches: bool = verify_scoped_type_id(
+            &self.resolver,
+            &object.type_hash,
+            self.expected.epoch(),
+            &self.cap_tag,
         )
         .map_err(failure)?;
         if !matches {
