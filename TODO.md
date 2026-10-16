@@ -521,8 +521,9 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     E25のclean source componentsとE26/E27のRELEASE CLIまで確認。完全gate/CIと
     最終照合は未完了。他operation/epoch/自動署名は対象外。
   - [x] [genesis Standard Asset split/mergeの専用custody component](docs/architecture/standard-asset-split-merge-custody.md):
-    E33の実CLI/別UID/PTY、完全内容とframe、分割先が自分/他者の場合の境界、金額・overflow・
-    消費入力・実receipt/replay・取消と再起動を検証。splitは他者への部分送金も許す。
+    E33の実CLI/別UID/PTYで自分宛ての分割→結合、完全内容とframe、金額・消費入力・実receipt/replay・
+    取消と再起動を検証。他者宛てはprepare/approval controls、overflowは純粋なpreparationで確認。
+    splitは他者への部分送金も許すが、この実CLI round tripの相手は自分だけ。
     publication kind1/transfer kind2は閉じたまま維持し、mint/burn/create-assetは対象外。
     各family全lifecycle・自動署名・最終sourceの完全gate/CIは引き続き未完了。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
