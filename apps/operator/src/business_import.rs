@@ -20,7 +20,7 @@ use node_core::business_reconstruction::{
     },
 };
 use protocol_types::ValidatorId;
-use runtime::{DurableOperationContext, WriterFenceGeneration};
+use runtime::{DurableOperationContext, ImportBinding, WriterFenceGeneration};
 use runtime_sqlite::{SqliteBlobStore, SqliteImportTarget, SqliteNamespace};
 use std::{error::Error, ffi::OsString, num::NonZeroUsize, path::PathBuf};
 
@@ -42,8 +42,58 @@ const FLAGS: &[&str] = &[
     "--history-floor-epoch",
     "--history-floor-height",
     "--history-floor-digest",
+    "--expected-cut-digest",
+    "--expected-package-digest",
+    "--expected-plan-digest",
 ];
-const HELP: &str = "Verified business installation only; leaves a CompleteInactive import and never performs readiness, Seal, activation or signing.\nModes: create-sqlite | resume-sqlite.\nRequire local pins: --chain-id --protocol-version --epoch --domain --suite epoch:id:tx:object:effects:code:config:certificate --genesis-manifest --expected-genesis-digest --ordered-history-dir.\nRequire: --cut-dir (complete saved cut), --state-db, --blob-db, --validator-id (destination-local namespace, not membership authority).\nOptional: --timeout-seconds 1..3600 (300), --max-new-batches 1..4096 (4096), and a successor chain (all five or none): --successor-max-links once plus one or more equal-count repeated --successor-plan-history-dir --successor-cut-dir --successor-manifest-history-dir --successor-certificate-dir links, up to that budget, pinning the saved cut's successor authority; no signer key is accepted here.\nOptional, all three or none: --history-floor-epoch --history-floor-height --history-floor-digest, an operator-retained ordered-history position from an earlier independent verification. Refuses unless the verified current epoch matches exactly and the authenticated ordered history at that height has exactly that block digest; refusal-only, never checkpoint, state-root, latest-state, readiness or activation authority, and never read from the cut, history archive or successor artifacts being restored.\nCreation requires two fresh database paths outside the pinned cut and ordered-history archives; resumption opens existing verified import-origin state and writable blob schemas only. No normal bootstrap, source writer copying, repair, reset, private key or network endpoint. Every invocation independently reexecutes saved proofs and verifies the complete destination before CompleteInactive. Missing, corrupt, foreign or ordinary targets refuse.";
+const HELP: &str = "Verified business installation only; leaves a CompleteInactive import and never performs readiness, Seal, activation or signing.\nModes: create-sqlite | resume-sqlite.\nRequire local pins: --chain-id --protocol-version --epoch --domain --suite epoch:id:tx:object:effects:code:config:certificate --genesis-manifest --expected-genesis-digest --ordered-history-dir.\nRequire: --cut-dir (complete saved cut), --state-db, --blob-db, --validator-id (destination-local namespace, not membership authority).\nOptional: --timeout-seconds 1..3600 (300), --max-new-batches 1..4096 (4096), and a successor chain (all five or none): --successor-max-links once plus one or more equal-count repeated --successor-plan-history-dir --successor-cut-dir --successor-manifest-history-dir --successor-certificate-dir links, up to that budget, pinning the saved cut's successor authority; no signer key is accepted here.\nOptional, all three or none: --history-floor-epoch --history-floor-height --history-floor-digest, an operator-retained ordered-history position from an earlier independent verification. Refuses unless the verified current epoch matches exactly and the authenticated ordered history at that height has exactly that block digest; refusal-only, never checkpoint, state-root, latest-state, readiness or activation authority, and never read from the cut, history archive or successor artifacts being restored.\nOptional, all three or none: --expected-cut-digest --expected-package-digest --expected-plan-digest, operator-retained closure-identity pins from an earlier independent run or verification. Compared against the independently reverified cut/package/plan identity immediately after reconstruction and before any destination is created or opened. Refusal-only, never checkpoint, state-root, latest-state or activation authority, and never read from the cut, history archive or successor artifacts being restored.\nCreation requires two fresh database paths outside the pinned cut and ordered-history archives; resumption opens existing verified import-origin state and writable blob schemas only. No normal bootstrap, source writer copying, repair, reset, private key or network endpoint. Every invocation independently reexecutes saved proofs and verifies the complete destination before CompleteInactive. Missing, corrupt, foreign or ordinary targets refuse.";
+
+/// Operator-retained closure-identity pins from an earlier independent run or
+/// verification, kept outside the cut/history/successor artifacts being
+/// restored. All three or none; refusal-only, never checkpoint, state-root,
+/// latest-state, readiness or activation authority.
+struct ClosureIdentityPins {
+    cut_digest: [u8; 32],
+    package_digest: [u8; 32],
+    plan_digest: [u8; 32],
+}
+
+impl ClosureIdentityPins {
+    /// All three flags or none. Parsing performs no file I/O.
+    fn parse_optional(flags: &mut FlagSet) -> Result<Option<Self>, Box<dyn Error>> {
+        let cut: Option<String> = flags.optional_one("--expected-cut-digest")?;
+        let package: Option<String> = flags.optional_one("--expected-package-digest")?;
+        let plan: Option<String> = flags.optional_one("--expected-plan-digest")?;
+        match (cut, package, plan) {
+            (None, None, None) => Ok(None),
+            (Some(cut), Some(package), Some(plan)) => Ok(Some(Self {
+                cut_digest: parse_hex_32(&cut, "--expected-cut-digest")?,
+                package_digest: parse_hex_32(&package, "--expected-package-digest")?,
+                plan_digest: parse_hex_32(&plan, "--expected-plan-digest")?,
+            })),
+            _ => Err(
+                "--expected-cut-digest, --expected-package-digest and --expected-plan-digest must be supplied together or not at all"
+                    .into(),
+            ),
+        }
+    }
+
+    /// Must be called after independent saved-proof verification, before any
+    /// destination database is opened or created. Grants no new authority:
+    /// success only permits the original independent verification to stand.
+    fn require(&self, binding: &ImportBinding) -> Result<(), Box<dyn Error>> {
+        if binding.cut_digest.bytes() != self.cut_digest
+            || binding.package_digest.bytes() != self.package_digest
+            || binding.plan_digest.bytes() != self.plan_digest
+        {
+            return Err(
+                "verified closure identity does not match the independently retained cut/package/plan digest pins"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+}
 
 /// Runs the same strictly pinned composition as the `business_import` binary.
 /// Destination file I/O starts only after independent raw-plan verification.
@@ -90,6 +140,8 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     )?)?)
     .ok_or("zero new-batch limit")?;
     let history_floor: Option<HistoryFloor> = HistoryFloor::parse_optional(&mut flags)?;
+    let closure_pins: Option<ClosureIdentityPins> =
+        ClosureIdentityPins::parse_optional(&mut flags)?;
     flags.finish()?;
     if state_file == blob_file {
         return Err("state and blob database paths must be distinct".into());
@@ -131,6 +183,11 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         }
         None => verify_saved_business_import(private, &saved)?,
     };
+    // Compares only the independently reverified closure identity; no
+    // destination database has been opened or created yet.
+    if let Some(expected) = &closure_pins {
+        expected.require(verified.binding())?;
+    }
     let namespace: SqliteNamespace =
         SqliteNamespace::new(pins.context.chain_id().clone(), validator, pins.domain);
     // Recheck the held input identities after reconstruction, before any
@@ -210,5 +267,166 @@ mod tests {
             assert!(run([OsString::from(mode)]).is_err());
         }
         assert!(run([]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod closure_identity_pin_tests {
+    use super::*;
+    use protocol_types::{
+        AtomicityDomainId, ChainId, Digest32, Epoch, ExecutionGeneration, HashAlgorithmId,
+        ProtocolVersion,
+    };
+    use runtime::ImportContext;
+
+    fn flags(pairs: &[(&str, &str)]) -> FlagSet {
+        let tokens: Vec<OsString> = pairs
+            .iter()
+            .flat_map(|(flag, value)| [OsString::from(*flag), OsString::from(*value)])
+            .collect();
+        FlagSet::parse(
+            tokens,
+            &[
+                "--expected-cut-digest",
+                "--expected-package-digest",
+                "--expected-plan-digest",
+            ],
+            &[],
+        )
+        .unwrap()
+    }
+
+    fn digest(byte: u8) -> Digest32 {
+        Digest32::new(HashAlgorithmId::Sha2_256, [byte; 32])
+    }
+
+    fn test_binding() -> ImportBinding {
+        ImportBinding {
+            context: ImportContext {
+                chain_id: ChainId::new("closure-pin-test-chain").unwrap(),
+                protocol_version: ProtocolVersion::new(1),
+                epoch: Epoch::new(1),
+            },
+            domain: AtomicityDomainId::new([0x02; 32]).unwrap(),
+            genesis_digest: digest(0x01),
+            validator_set_digest: digest(0x02),
+            cut_digest: digest(0x10),
+            package_digest: digest(0x11),
+            plan_digest: digest(0x12),
+            row_count: 0,
+            blob_count: 0,
+            generation_floor: ExecutionGeneration::new(0),
+        }
+    }
+
+    #[test]
+    fn parse_missing_all_three_is_none() {
+        let mut set: FlagSet = flags(&[]);
+        assert!(
+            ClosureIdentityPins::parse_optional(&mut set)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn parse_partial_subsets_refuse() {
+        let cut: String = "10".repeat(32);
+        let package: String = "11".repeat(32);
+        let plan: String = "12".repeat(32);
+        let subsets: Vec<Vec<(&str, &str)>> = vec![
+            vec![("--expected-cut-digest", cut.as_str())],
+            vec![("--expected-package-digest", package.as_str())],
+            vec![("--expected-plan-digest", plan.as_str())],
+            vec![
+                ("--expected-cut-digest", cut.as_str()),
+                ("--expected-package-digest", package.as_str()),
+            ],
+            vec![
+                ("--expected-cut-digest", cut.as_str()),
+                ("--expected-plan-digest", plan.as_str()),
+            ],
+            vec![
+                ("--expected-package-digest", package.as_str()),
+                ("--expected-plan-digest", plan.as_str()),
+            ],
+        ];
+        for pairs in subsets {
+            let mut set: FlagSet = flags(&pairs);
+            assert!(ClosureIdentityPins::parse_optional(&mut set).is_err());
+        }
+    }
+
+    #[test]
+    fn parse_malformed_hex_refuses() {
+        let package: String = "11".repeat(32);
+        let plan: String = "12".repeat(32);
+        let mut set: FlagSet = flags(&[
+            ("--expected-cut-digest", "not-hex"),
+            ("--expected-package-digest", package.as_str()),
+            ("--expected-plan-digest", plan.as_str()),
+        ]);
+        assert!(ClosureIdentityPins::parse_optional(&mut set).is_err());
+    }
+
+    #[test]
+    fn parse_valid_accepts_all_three() {
+        let cut: String = "10".repeat(32);
+        let package: String = "11".repeat(32);
+        let plan: String = "12".repeat(32);
+        let mut set: FlagSet = flags(&[
+            ("--expected-cut-digest", cut.as_str()),
+            ("--expected-package-digest", package.as_str()),
+            ("--expected-plan-digest", plan.as_str()),
+        ]);
+        let pins: ClosureIdentityPins = ClosureIdentityPins::parse_optional(&mut set)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pins.cut_digest, [0x10; 32]);
+        assert_eq!(pins.package_digest, [0x11; 32]);
+        assert_eq!(pins.plan_digest, [0x12; 32]);
+    }
+
+    #[test]
+    fn require_accepts_exact_binding() {
+        let binding: ImportBinding = test_binding();
+        let pins: ClosureIdentityPins = ClosureIdentityPins {
+            cut_digest: binding.cut_digest.bytes(),
+            package_digest: binding.package_digest.bytes(),
+            plan_digest: binding.plan_digest.bytes(),
+        };
+        assert!(pins.require(&binding).is_ok());
+    }
+
+    #[test]
+    fn require_refuses_each_single_field_mismatch() {
+        let binding: ImportBinding = test_binding();
+        let base: ClosureIdentityPins = ClosureIdentityPins {
+            cut_digest: binding.cut_digest.bytes(),
+            package_digest: binding.package_digest.bytes(),
+            plan_digest: binding.plan_digest.bytes(),
+        };
+        let mut wrong_cut: ClosureIdentityPins = ClosureIdentityPins {
+            cut_digest: base.cut_digest,
+            package_digest: base.package_digest,
+            plan_digest: base.plan_digest,
+        };
+        wrong_cut.cut_digest[31] ^= 1;
+        assert!(wrong_cut.require(&binding).is_err());
+        let mut wrong_package: ClosureIdentityPins = ClosureIdentityPins {
+            cut_digest: base.cut_digest,
+            package_digest: base.package_digest,
+            plan_digest: base.plan_digest,
+        };
+        wrong_package.package_digest[31] ^= 1;
+        assert!(wrong_package.require(&binding).is_err());
+        let mut wrong_plan: ClosureIdentityPins = ClosureIdentityPins {
+            cut_digest: base.cut_digest,
+            package_digest: base.package_digest,
+            plan_digest: base.plan_digest,
+        };
+        wrong_plan.plan_digest[31] ^= 1;
+        assert!(wrong_plan.require(&binding).is_err());
+        assert!(base.require(&binding).is_ok());
     }
 }

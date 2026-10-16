@@ -49,6 +49,19 @@ alone does not choose between forks. This optional refusal guard does not prove
 whole-state freshness or permit activation; see
 [DR-0248](../architecture/decisions/0248-import-ordered-history-freshness-floor.md).
 
+To enforce an earlier independently retained closure identity, add all three
+`--expected-cut-digest`, `--expected-package-digest` and `--expected-plan-digest`
+arguments to create or resume, each the hex digest printed by an earlier run or
+verification you trust and kept outside the cut/history/successor artifacts
+being restored. All three or none; a strict subset or malformed hex refuses
+before any file access. The comparison runs immediately after the independent
+saved-proof reverification and before any destination database is created or
+opened; a mismatch in any one digest refuses with one fixed message. This
+pins one saved package's closure only; it is not a state root, quorum
+publication, latest-state/owned-fast-path freshness proof, whole-store
+rollback detection, old-writer exclusion, activation or cross-file atomicity
+claim. See [DR-0252](../architecture/decisions/0252-import-closure-identity-pins.md).
+
 Creation reserves fresh paths and a destination-local fence; it never reuses
 an ordinary namespace or copies source-local authority. Creation failure may
 leave reserved files. Do not delete/repair metadata or force resumption of

@@ -69,3 +69,53 @@ a conflicting digest, a foreign epoch and a partial flag set; input archives
 must stay unchanged. Exact tip and interior ancestors reach `CompleteInactive`.
 A mismatched resume floor leaves existing destination bytes unchanged. The
 original full import suite and complete required repository gate remain.
+
+## 2026-10-16 addendum: floor oracle added over the existing successor import
+
+A genuine positive `business_import` admission via `load_with_successor`
+already existed before this addendum: `install_next` in
+`apps/operator/tests/support/recurring_host_acceptance.rs` (the
+recurring-sqlite ignored lane's per-epoch handoff) already runs compiled
+`business_import create-sqlite` with the real `--successor-*` link flags
+(`current_operator_pins`, built from `link_flags(links, true)`) against a
+genuinely frozen, drained, empty-three-chain current-epoch history and cut
+it exports immediately before, and already asserts
+`business_import=complete-inactive`. What this addendum adds is narrow: an
+independent ordered-history floor oracle layered on top of that same,
+already-proven admission, scoped to the first successor link
+(`links.len() == 1`, current epoch e+1) only.
+
+`successor_import_history_floor_controls`, called from `install_next` in
+`apps/operator/tests/support/recurring_host_acceptance.rs` right after that
+function's own existing current-epoch history export, frozen/drained cut
+export and compiled import loop, reuses exactly that call's own `history`,
+`cut` and `current_operator_pins(fixture, links, history)` -- no new history
+or cut export, no hand-rebuilt CLI flags, no production, runtime or
+canonical-byte change. On a fresh extra destination it reads the
+independently decoded `history` archive identity (asserting its epoch is
+explicitly the current successor epoch and its committed height is at least
+2, so an interior ancestor is never silently skipped) and runs
+`create-sqlite`/`resume-sqlite` with `--history-floor-*`: a floor above the
+tip, a conflicting digest at the tip, and a foreign epoch must each refuse
+with `require_history_floor`'s exact message before a destination is
+created (`symlink_metadata` reports both database files absent); the exact
+tip must reach `CompleteInactive`; the interior ancestor must then resume
+successfully with the same cut/package/plan binding; a wrong floor on resume
+must refuse and leave the destination's existing bytes unchanged; a final
+resume with no floor must still succeed with `new_batches=0` and the same
+binding. Every read-only input -- the one link's four archives, `history`
+and `cut` -- is snapshotted before the first control and reasserted
+unchanged after every later one.
+
+These controls run inside the full `recurring-sqlite` ignored case
+(`compiled_registered_replacement_and_recurring_successor_hosts`) and add
+real wall-clock work. The original eight links, e8 withdrawals, 35-role
+source-free recovery and all waits and refusal controls remain in that case.
+Execution is still pending. The placement requires the existing current-epoch
+Freeze/DrainSet and empty-three-chain cut; the earlier active successor phase
+cannot provide that cut.
+
+This remains a narrow ordered-history position bound only. It does not add
+checkpoint or state-root commitments, does not prove absence, and does not
+detect or exclude a whole-store rollback or an old physical writer; those
+stay open, tracked in [TODO](../../../TODO.md).
