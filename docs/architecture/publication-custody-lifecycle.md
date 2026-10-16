@@ -66,15 +66,27 @@ Changing a file or pin cannot revoke signatures already emitted. There is no
 automatic rollback to an old key. If identity, revocation freshness or nonce
 reconciliation is uncertain, keep signing stopped and reconcile first.
 
-## Test coverage added for the asset families (not yet executed)
+## Asset-family fixture coverage
 
 `scripts/check-docker-custody-fixture-1013.mjs` previously proved recovery,
 rotation and the key/config startup mismatch only through the publication-only
 synthetic wire probe. The dispatcher-level `KeyFileAddressMismatch` check
 (`run_with_policy` in the CLI) is shared by every family, so that part is
 already covered once and is intentionally not duplicated per asset family.
-Two family-bound gaps were added instead. Authored source-only; no passing
-Docker fixture run of these controls is recorded yet.
+The added controls passed on 2026-10-17: actual exit 0/EOF in 5.558s on
+test source `be3b4896`, using the A/B-produced `9de634a7` RELEASE CLI and
+the retained `4d2c97e0` dev/test-opt2 oracle. All compiled Rust/Cargo inputs
+are identical. Original controls, source/binary hashes and metadata, and
+owned container/volume cleanup were independently checked. `TODO.md` E67
+owns this result and its limits; the test-only source has no new whole-M7
+or complete-required/CI qualification.
+
+The first attempt hit Linux's single-argument size limit before container
+creation. The fixture now sends a bounded compressed bootstrap, verifies
+the decoded length and SHA-256 before execution, and runs the identical
+136,386-byte Python program. Its bootstrap argument is 31,025 bytes.
+Digest mismatch and trailing compressed data are rejected before execution.
+Container and fixture resource/deadline limits are unchanged.
 
 - **Recovered-key control against the own-created mint/burn profile**
   (`phase_own_asset_mint_burn`), following the stop-all-signers-first ordering
@@ -82,18 +94,18 @@ Docker fixture run of these controls is recorded yet.
   first finishes its full 6/4/2 lifecycle (including revoking
   `OWN_MINT_REQUEST_ID`/`OWN_BURN_REQUEST_ID` and refusing both on that same
   still-running process), then its own revoked-restart (2/0/2) also finishes
-  and the socket is confirmed gone after each — no signer using the original key file
-  is left running anywhere. Only then is a genuinely new recovery request
+  and the socket is confirmed gone after each. No custody signer using the
+  original key file remains running. Only then is a new recovery request
   prepared and independently approved (through the real attended PTY
   `approve-burn` review) over the SAME already-captured own-burn cap/coin/
-  fee preimages and the same 3600-second expiry window, under a new dedicated request ID — reapproving
-  or resigning a revoked ID is never done.
+  fee preimages and the same 3600-second expiry window, under a new dedicated
+  request ID. A revoked ID is not reapproved or signed.
 
   `request_id` is itself part of the signed `CallIntent`
   (`asset_mint_burn.rs`'s own
   `request_id: *request.request_id.as_bytes()`), so a byte-for-byte
   signature comparison is only meaningful over the identical frame, never
-  across two different request IDs. The fixture proves it the correct way:
+  across two different request IDs. For this comparison,
   **before the seed is copied anywhere**, the ORIGINAL key file signs this
   exact SAME newly approved frame once, through its own dedicated bounded
   `serve-mint-burn` on a distinct socket (1 connection/1 signed/0 refused),
@@ -123,7 +135,7 @@ Docker fixture run of these controls is recorded yet.
   the existing same-UID `stop_owned_process` signal helper only (no
   `CAP_KILL`/`FOWNER`), and every socket path is asserted gone after each
   stop, the same pattern `main()` and `phase_new_identity` already use.
-- **Rotation refusal using a genuinely different already-generated config**
+- **Rotation refusal with a new publisher configuration**
   (`family_rotation_config` + `expect_prepare_rotation_refusal`, one per
   family). A freshly generated keypair and a config identical to each
   phase's own (same chain/protocol/epoch/domain/operator pin, only the
@@ -161,7 +173,7 @@ to match exactly, the same way it already required the pre-existing
 **Still open, not covered by this addition:** a true rotated-identity
 *positive* business acceptance (minting/transferring against an object the
 rotated identity actually owns) still requires first moving ownership
-on-chain, which remains a separate, costlier addition and is not implied by
+on-chain, which remains a separate protocol action and is not implied by
 any refusal check above. Automatic/unattended signing, full key rotation of
 the other four families' own live `serve` processes (only the own-created
 profile gets the recovered-key serve round trip above), and any other

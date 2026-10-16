@@ -254,6 +254,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E64: 9de6 actual Native A/B and RELEASE CLI | `9de634a7` / tree`229b397f`。13-targetの2 fresh buildsがactual0/EOF、1,399.459秒、全13組のbyte/mode/owner一致。別targetの13 debug +10 driver compileもactual0/EOF、1,562.884秒。26+23 ELF・Cargo JSON/source/profile/raw・4専有dir/lease解放を独立照合。実RELEASE CLIの元5 families/6 publication lifecycleとown-created Asset mint/burnもactual0/EOF、5.620秒 | Node24/Rust1.97.1・same-host trusted OS。oracleはcode `4d2c97e0` の保持済みdev/test2 CLI harnessで、全code/Node入力同一・3 doc/TODOだけの差分を確認。全tracked files/両ELF/rawとcontainer/volume解放を再照合。原12 runtimeはcheck/private13ROmapping probe成功まで、実12ケース未実行。重い並行検証の終端後に進める。完全required/CI・新しい鍵復旧テスト・全M2/M7・独立監査/公開認定は含めない |
 | E65: f973 original R4 runtime timeout | 原12ケース中11ケースはactual0/EOF。最後の元recurring successor selectorが共有18,000秒の上限で停止し、controller actual1/EOF、18,002.004秒。helper・終端/inner receipt・両raw hash・clean sourceとunit停止を親で照合 | 最後のattemptはEOF/wait未完、killとterminationを確認。専有TMPをforensicsとして保持し、再実行・上限変更なし。E59のCI成功と分け、原12 Native runtime・全D05/M5/M7の合格に数えない。新source 9de6の実runtimeは、現在実行中の完全required controllersの終端後に進める |
 | E66: 10a4 complete required and hosted CI | `10a47db1` / tree`ede55f33`。literal npm-ci +完全check-allがactual0/EOF、26,021.786秒。Rust success summaries144・報告pass合計4,266・ignored33・failed0。E60全8 CI raw、前後source/tree/clean・Node24・全wrapper/rawを親で再照合 | genesis mint/burn sourceのstorage-neutral qualification。E61の原12 RELEASE runtime失敗を保持し、後続application-pin/鍵復旧source・PG・全M2/M7・独立監査/公開認定へ借用しない |
+| E67: stopped asset key recovery and rotation refusal | test source `be3b4896` / tree`e8878c44`、A/B生成`9de634a7`実RELEASE CLI + compiled inputs同一の`4d2c97e0`保持oracleでactual0/EOF、5.558秒。元5 families/6 publication lifecycleを保持し、own-created mint/burnの全signer停止→同じ新規requestの元鍵reference→鍵復旧→完全署名byte一致を確認。復旧前からの取消と新規取消を保持し、restart後も両方拒否。reference1/1/1/0、復旧3/3/1/2、restart2/2/0/2を内外で検証。5 profilesのnew publisherで旧owner/creatorを拒否、出力なしも確認 | source/両ELFのhash/mode/owner/identity不変、container/volume解放、生成880,006 bytes。initial argv E2BIG失敗を保持し、同一136,386-byte programを31,025-byte bootstrapへ圧縮、長さ/digest検証後に実行。復元一致・digest/trailing-data拒否と独立reviewを確認。元のresource/deadline/UID/capability/全assertionは維持。新test-only sourceの13-target/完全required/CI、正の所有権移行・他profileの鍵復旧・automatic signing・全M2/M7・独立監査/公開認定は含めない |
 
 
 
@@ -593,8 +594,15 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     Node/Rust sourceと入力ELF不変・専有container/volume解放を親で再照合した。
     同じtrusted OSのown-created profileで、現在性やassetとinstanceの起源をfetch証明しない。
     9de6の13-target Native A/Bと実RELEASE CLIはE64で成功。
-    作成assetのtransfer/split/merge、新familyの鍵復旧/交換、automatic protocol signingと
+    同profileの停止後鍵復旧はE67で確認。
+    作成assetのtransfer/split/merge、他profileの鍵復旧・所有権移行を含む鍵交換、automatic protocol signingと
     最終source完全required/CI・原12 RELEASE runtime・全M2は未完了。
+  - [x] [own-created mint/burnの停止後鍵復旧と5 profilesの鍵交換時拒否](docs/architecture/publication-custody-lifecycle.md#asset-family-fixture-coverage):
+    E67で元鍵のsignerを停止してから復旧し、同じ新規承認frameでのreference署名一致、
+    復旧前の取消・新規取消・restart後の両拒否を実CLI/別UID/PTYで検証。
+    新publisherで旧Coin/Cap/fee/creatorを拒否し、出力が作られないことも確認。
+    元5 families/6 lifecycleと全件数を維持。正の所有権移行、他profileのlive鍵復旧/交換、
+    automatic protocol signingと全M2・最終source全体gateは未完了。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
