@@ -160,7 +160,7 @@ where
 /// slice adds no new thread/spawn or dependency to do it. `custody approve`
 /// is an attended, interactive operation; its only bound here is on bytes,
 /// not time.
-fn read_bounded_confirmation_line(max_bytes: usize) -> Result<String, CustodyError> {
+pub(super) fn read_bounded_confirmation_line(max_bytes: usize) -> Result<String, CustodyError> {
     use std::io::Read;
     let stdin = std::io::stdin();
     let mut handle = stdin.lock();

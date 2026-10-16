@@ -82,7 +82,7 @@ pub enum SignerSelection {
         /// this host requires before opening the Sunrise application.
         expected_firmware_version: ExpectedFirmwareVersion,
     },
-    /// A publication-only local custody process (`crate::custody`), reached
+    /// An operation-specific local custody process (`crate::custody`), reached
     /// over a pinned Unix socket. Every field is explicit; none has a
     /// default or environment-variable fallback.
     Custody {

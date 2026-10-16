@@ -61,7 +61,21 @@ pub fn request_signature(
     runtime.block_on(request_signature_async(target, &frame))
 }
 
-async fn request_signature_async(
+/// Sends transfer preimages only. The caller finalizes its own immutable paid intent.
+pub(crate) fn request_transfer_signature(
+    target: &CustodyTarget,
+    request: &super::asset_transfer::AssetTransferRequest,
+) -> Result<[u8; wire::CUSTODY_SIGNATURE_BYTES], CustodyError> {
+    let frame: Vec<u8> = super::asset_wire::encode(request).map_err(CustodyError::Wire)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(CustodyError::Runtime)?;
+    runtime.block_on(request_signature_async(target, &frame))
+}
+
+pub(super) async fn request_signature_async(
     target: &CustodyTarget,
     frame: &[u8],
 ) -> Result<[u8; wire::CUSTODY_SIGNATURE_BYTES], CustodyError> {

@@ -753,6 +753,15 @@ impl NativeBlockingExecutor {
         self.observations.clone()
     }
 
+    /// Returns a trusted cancellation signal backed by this executor's own
+    /// stop state (DR-0222). `is_cancelled()` becomes true from the moment
+    /// `close` is called on this executor or any of its clones, independent
+    /// of permit admission; it never reflects a merely saturated pool.
+    #[must_use]
+    pub fn stop_cancellation(&self) -> Arc<dyn InvocationCancellation> {
+        Arc::new(StopCancellation(Arc::clone(&self.lifecycle)))
+    }
+
     fn try_acquire(&self) -> Result<lifecycle::BlockingPermit, TryAcquireError> {
         let result: Result<lifecycle::BlockingPermit, TryAcquireError> =
             self.lifecycle.acquire(&self.permits, &self.observations);
@@ -762,6 +771,17 @@ impl NativeBlockingExecutor {
             Err(TryAcquireError::Closed) => self.observations.0.blocking_closed.increment(),
         }
         result
+    }
+}
+
+/// Private [`InvocationCancellation`] backed by an executor's own stop
+/// state. Constructed only through [`NativeBlockingExecutor::stop_cancellation`].
+#[derive(Debug)]
+struct StopCancellation(Arc<lifecycle::BlockingLifecycle>);
+
+impl InvocationCancellation for StopCancellation {
+    fn is_cancelled(&self) -> bool {
+        self.0.is_closed()
     }
 }
 
@@ -2349,6 +2369,7 @@ where
     if initial_cancelled {
         return cancelled_before_storage_response();
     }
+    let stop_cancellation: Arc<dyn InvocationCancellation> = blocking_executor.stop_cancellation();
     let permit = match blocking_executor.try_acquire() {
         Ok(permit) => permit,
         Err(TryAcquireError::NoPermits) => return overload_response(),
@@ -2358,6 +2379,9 @@ where
     };
     let blocking_work = tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        if stop_cancellation.is_cancelled() {
+            return Err(InvocationError::CancelledBeforeStorage);
+        }
         work(body)
     });
     let result = match blocking_work.await {
@@ -2458,6 +2482,7 @@ where
     if initial_cancelled {
         return cancelled_before_storage_response();
     }
+    let stop_cancellation: Arc<dyn InvocationCancellation> = blocking_executor.stop_cancellation();
     let permit = match blocking_executor.try_acquire() {
         Ok(permit) => permit,
         Err(TryAcquireError::NoPermits) => return overload_response(),
@@ -2467,6 +2492,9 @@ where
     };
     let blocking_work = tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        if stop_cancellation.is_cancelled() {
+            return Err(QueryInvocationError::CancelledBeforeStorage);
+        }
         work()
     });
     let result = match blocking_work.await {

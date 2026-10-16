@@ -54,6 +54,10 @@ roadmap describes a later target state.
 - [Publication custody lifecycle](publication-custody-lifecycle.md)
   ([DR-0244](decisions/0244-publication-approval-revocation-and-key-lifecycle.md)):
   durable request cancellation and stopped disposable-key recovery/rotation.
+- [Genesis Standard Asset transfer custody](standard-asset-transfer-custody.md)
+  ([DR-0246](decisions/0246-genesis-standard-asset-transfer-custody.md)):
+  independent object preimages and known-code whole-coin review, separate
+  transfer-only signer and the ordinary paid CLI consumer.
 - [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
   an explicitly configured closed HTTPS transport, separate from default
   event-only relays, embedded DO policy and core authority.

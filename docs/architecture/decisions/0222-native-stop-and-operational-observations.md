@@ -63,3 +63,27 @@ release audit and launch authority remain separate requirements.
 Source-bound design inspection: `native-operations-design-review-20261008.md`,
 SHA-256 `26a082e01d395a72d2134387bf9fb2c992ef6e91b72718b7d6846911cc14d153`.
 It explicitly blocks clean-drain claims based only on connection joins.
+
+## 2026-10-16 addendum: queued work observes the same stop owner
+
+`NativeBlockingExecutor::stop_cancellation` exposes the existing lifecycle's
+closed bit through the runtime cancellation trait. Saturation does not cancel
+an invocation. Native SQLite's structured and ordered-economics compositions
+receive this same trusted stop signal through their existing pre-storage checks.
+
+The shared `publication::admitted`, structured-event and structured-query
+dispatchers also check the signal when an admitted blocking job actually
+starts, including hosts without an explicit component signal. A job queued behind Tokio's blocking
+thread limit can therefore refuse before entering its work closure after stop.
+The original permit owner still drains on refusal. Dispatch after close retains
+the existing closed-admission response and request-shape precedence.
+
+There is no attempt to interrupt a work closure already entered, abort a commit
+or classify a lost reply as rollback. This is a cooperative check, not an atomic
+fence between all subsequent instructions and a concurrent stop. The existing
+drain remains the completion fence. The generic dispatch check also covers the
+successor/history callers; it does not add a universal storage-cancellation API.
+PG host-specific composition and real capacity/PKI/incident policy remain under
+their original qualification scopes. Results are recorded only in TODO.md.
+`blocking_admitted` counts permit admission, including work later refused at
+the queued-job check; it is not a count of executed storage or business calls.

@@ -277,3 +277,27 @@ rejection remains distinct from literal-COMMIT `Indeterminate`; retaining the
 prepublished unreachable target blob is expected residue, not logical commit.
 These executions do not prove cross-file atomicity, physical power-loss,
 custody, full M3 completion or a passed full required rerun.
+
+## 2026-10-16 overlapping host-generation control
+
+The owning Native TLS fixture adds an adversarial overlapping startup: four
+generation-two hosts stay alive while four replacement processes open the same
+state/blob files and claim generation three. This deliberately supplies the
+offline-fence confirmation while the old hosts remain live; it tests containment
+under that misuse, not permission for a supported live operational handoff.
+
+Retained old read/CAS capabilities must report the specific new writer fence.
+Old HTTP query and authenticated certified-apply routes must refuse with their
+existing redacted unavailability responses; those bodies alone do not identify
+the internal failure cause. Replacements must retain the complete acknowledged
+business view and reproduce the original certified receipt without mutation.
+A fresh transfer uses the first settlement's sender-owned refund coin and the
+remaining distinct Write fee source, with a new request and nonce. It verifies
+ordinary signatures, both quorums, exact input/recipient/value, replica query
+agreement and unchanged complete business snapshots after receipt-first replay.
+
+Both generations retain separate TLS files and real owned PIDs through the
+observation; all children are subsequently stopped and reaped through the
+existing owner. No lock, fence, original test or startup permission is weakened.
+The control adds no cross-host restore activation, physical power/media/fsync
+qualification or independent rollback anchor. Results belong only in TODO.md.

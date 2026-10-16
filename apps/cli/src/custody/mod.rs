@@ -1,18 +1,22 @@
-//! Publication-only, protected local OS custody (DR-0238; see
+//! Operation-specific protected local OS custody (DR-0238/0246; see
 //! `docs/architecture/local-publication-custody.md`).
 //!
 //! Trusted local OS/root, key held in a separate process under a distinct
-//! UID. One publication family only: no generic `ExternalSigner`, no
-//! automatic/consensus/genesis signing route, and no network-facing HTTP
+//! UID. Separate publication and genesis Standard Asset transfer invocations:
+//! no generic `ExternalSigner`, no
+//! automatic/consensus/genesis-authority signing route, and no network-facing HTTP
 //! endpoint. At-rest encryption and compromised-root resistance are
 //! explicitly NOT claimed by this first OS-permission model.
 //!
 //! - `custody keygen` generates custody's own private key file.
-//! - `custody approve` is the only writer of approval records, and the only
-//!   human-review entry point.
+//! - `custody approve` and `approve-transfer` independently review their own
+//!   operation family before writing whole-frame approval records.
 //! - `custody revoke` durably cancels a request ID without erasing its approval.
 //! - `custody serve` is a bounded-lifetime, one-request-at-a-time signer
 //!   that only ever reads the approval store.
+//! - `custody serve-transfer` uses the same owner with a transfer-only policy.
+//! - `custody prepare-transfer` exports preimages without approval, and
+//!   `sign-transfer` finalizes an offline, protected paid intent.
 //!
 //! The publication CLI client leg lives in [`client`] and is consumed by
 //! `commands/publication.rs` through [`SignerSelection::Custody`]
@@ -20,6 +24,13 @@
 
 mod approvals;
 mod approve;
+mod asset_commands;
+#[cfg(test)]
+mod asset_fixture;
+mod asset_transfer;
+#[cfg(test)]
+mod asset_transfer_tests;
+mod asset_wire;
 pub(crate) mod client;
 mod config;
 pub(crate) mod error;
@@ -38,6 +49,7 @@ use crate::args::{ArgsError, ParsedArgs, parse_flags, scalar};
 use crate::error::CliError;
 use crate::parse::parse_u32;
 
+pub(crate) use asset_transfer::AssetTransferRequest;
 pub(crate) use client::{CustodyTarget, request_signature};
 pub(crate) use error::CustodyError;
 
@@ -86,9 +98,13 @@ where
     let action: &str = action.to_str().ok_or(ArgsError::NonUtf8Token)?;
     match action {
         "keygen" => keygen::run(args),
+        "prepare-transfer" => asset_commands::prepare(args),
         "approve" => approve::run(args),
         "revoke" => revoke::run(args),
         "serve" => run_serve(args),
+        "approve-transfer" => asset_commands::approve(args),
+        "serve-transfer" => asset_commands::serve(args),
+        "sign-transfer" => asset_commands::sign(args),
         other => Err(CliError::UnknownCustodyAction(other.to_string())),
     }
 }
