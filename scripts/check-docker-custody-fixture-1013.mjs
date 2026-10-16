@@ -14,10 +14,14 @@
 // idempotent on an exact repeat, refusing reapproval before any terminal is
 // ever touched, and leaving every later signature attempt for that id with
 // the ordinary `NoApproval` refusal), a custody-owned private recovery of
-// the same disposable seed through a backup/restored path pair, and a
-// second, independently keyed custody identity. None of this ever prints or
-// argv-passes key material; every copy of key bytes happens inside a
-// custody-UID child process; only the child's exit status crosses that boundary.
+// the same disposable seed through a backup/restored path pair, a second,
+// independently keyed custody identity, the distinct-UID protected
+// whole-coin transfer family (DR-0246), the distinct-UID protected
+// split/merge family (DR-0249), and the distinct-UID protected genesis
+// TreasuryCap mint/burn family (DR-0253, a fourth closed wire kind 4, never
+// kind 1/2/3). None of this ever prints or argv-passes key material; every
+// copy of key bytes happens inside a custody-UID child process; only the
+// child's exit status crosses that boundary.
 //
 // This script never executes anything itself at import time beyond Docker
 // CLI subprocesses and `ldd` on two already-compiled host paths it is given;
@@ -199,10 +203,15 @@ NEW_IDENTITY_REQUEST_ID = "44" * 32
 WRONG_PUBLIC_KEY_HEX = "99" * 32
 SPLIT_REQUEST_ID = "91" * 32
 MERGE_REQUEST_ID = "92" * 32
+MINT_REQUEST_ID = "93" * 32
+BURN_REQUEST_ID = "94" * 32
 # Half of apps/devnet's DEVNET_PAID_SPEND_COIN_BALANCE (10_000_000); the
 # split amount must stay strictly between zero and the held balance.
 SPLIT_AMOUNT = 5_000_000
 RECOMBINED_AMOUNT = 10_000_000
+# The whole minted Coin is burned in full (burn has no amount argument), so
+# this amount is never partial and never leaves a mint-only residue.
+MINT_AMOUNT = 5_000_000
 
 INTERNAL_DEADLINE = time.monotonic() + 230.0
 OUTPUT_CAP = 262_144
@@ -1362,6 +1371,266 @@ def phase_split_merge(public_key):
     }
 
 
+def phase_mint_burn(public_key):
+    # Fresh phase directories only: this reuses the exact same one-owner,
+    # one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
+    # already builds (via its own unmodified "generate"/"serve" modes),
+    # booted into a brand-new store here. It never touches phase_transfer's
+    # or phase_split_merge's own directories, genesis, coins or assertions.
+    # The TreasuryCap preimage those modes never export is independently
+    # rebuilt by 'asset_mint_burn_fixture::distinct_uid_mint_burn_probe's own
+    # "generate-cap" mode instead.
+    custody_dir, operator_dir = f"{ROOT}/custody-mint-burn", f"{ROOT}/operator/mint-burn"
+    for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
+        os.mkdir(path, 0o700)
+        os.chown(path, uid, gid)
+    probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
+                  "custody::asset_fixture::distinct_uid_transfer_probe", "--exact", "--ignored", "--nocapture", "--format", "terse"]
+    def probe_env(mode, directory):
+        return {"CUSTODY_TRANSFER_MODE": mode, "CUSTODY_TRANSFER_DIR": directory, "CUSTODY_TRANSFER_PUBLIC_KEY": public_key}
+    rc, out, err = run_exec(probe_argv, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], env=probe_env("generate", custody_dir))
+    if rc != 0:
+        raise FixtureFailure(f"mint/burn preimage generation failed: {err!r}")
+    generated = last_json_line(out)
+
+    mint_burn_probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
+        "custody::asset_mint_burn_fixture::distinct_uid_mint_burn_probe", "--exact", "--ignored", "--nocapture", "--format", "terse"]
+    def mint_burn_env(mode, **overrides):
+        env = {
+            "CUSTODY_MINT_BURN_MODE": mode,
+            "CUSTODY_MINT_BURN_DIR": custody_dir,
+            "CUSTODY_MINT_BURN_PUBLIC_KEY": public_key,
+        }
+        env.update(overrides)
+        return env
+    rc, out, err = run_exec(mint_burn_probe_argv, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], env=mint_burn_env("generate-cap"))
+    if rc != 0:
+        raise FixtureFailure(f"mint/burn cap preimage generation failed: {err!r}")
+    generated_cap = last_json_line(out)
+    if generated_cap.get("mode") != "generate-cap" or generated_cap.get("digest") != generated["digest"]:
+        raise FixtureFailure("mint/burn cap preimage generation did not match the shared genesis digest")
+    cap_hex = generated_cap["cap_hex"]
+
+    config_text = f"chain_id=custody-whole-coin-test\nprotocol_version=7\nepoch=0\nhash_suite_id=1\ndomain={DOMAIN_HEX}\npublisher_public_key={public_key}\noperator_uid={OPERATOR_UID}\n"
+    with open(f"{custody_dir}/config", "x") as output:
+        output.write(config_text)
+    os.chmod(f"{custody_dir}/config", 0o600)
+    os.chown(f"{custody_dir}/config", CUSTODY_UID, CUSTODY_GID)
+    def trust_flags(directory):
+        return ["--config", f"{directory}/config", "--genesis-manifest-file", f"{directory}/genesis.bin", "--genesis-digest", generated["digest"]]
+
+    def copy_private(src_dir, dst_dir, name, dst_uid, dst_gid):
+        with open(f"{src_dir}/{name}", "rb") as source:
+            content = source.read(1024 * 1024)
+        with open(f"{dst_dir}/{name}", "xb") as target:
+            target.write(content)
+        os.chmod(f"{dst_dir}/{name}", 0o600)
+        os.chown(f"{dst_dir}/{name}", dst_uid, dst_gid)
+
+    approvals = f"{ROOT}/custody-approvals"
+    socket_path = f"{ROOT}/run/mint-burn.sock"
+    signer = ["--custody-socket", socket_path, "--custody-uid", str(CUSTODY_UID), "--custody-expected-public-key", public_key]
+
+    def serve_command(count):
+        return cli_argv("custody", "serve-mint-burn", *trust_flags(custody_dir),
+            "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
+            "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
+
+    # ---- mint: prepare / approve / offline sign / actual CLI mint ----
+    prepare_mint = cli_argv("custody", "prepare-mint", *trust_flags(custody_dir),
+        "--cap-file", f"{custody_dir}/cap.bin", "--fee-source-file", f"{custody_dir}/fee.bin",
+        "--amount", str(MINT_AMOUNT), "--recipient", public_key, "--nonce", "0", "--request-id", MINT_REQUEST_ID,
+        "--max-fee", "1000000", "--gas-limit", "200000", "--out", f"{custody_dir}/mint-request.bin")
+    rc, out, err = run_exec(prepare_mint, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    if rc != 0 or b"mint_request_exported=true" not in out:
+        raise FixtureFailure(f"mint prepare failed: {err!r}")
+    for name in ["config", "genesis.bin", "mint-request.bin"]:
+        copy_private(custody_dir, operator_dir, name, OPERATOR_UID, OPERATOR_GID)
+
+    approve_mint = cli_argv("custody", "approve-mint", *trust_flags(custody_dir),
+        "--request-file", f"{custody_dir}/mint-request.bin", "--approvals-dir", approvals, "--expires-in-seconds", "3600")
+    rc, _out, refusal = run_exec(approve_mint, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
+        raise FixtureFailure("mint approval unexpectedly accepted a pipe")
+    phase_approve_via_pty(None, None, 0, MINT_REQUEST_ID, 3600, command=approve_mint)
+
+    serve = None
+    native = None
+    try:
+        serve = start_serve(socket_path, 30, 6, 6, command=serve_command(6))
+        sign_mint = cli_argv("custody", "sign-mint", *trust_flags(operator_dir),
+            "--request-file", f"{operator_dir}/mint-request.bin", *signer)
+        rc, _out, err = run_exec([*sign_mint, "--out", f"{operator_dir}/offline-mint.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"protected offline mint sign failed: {err!r}")
+
+        os.chmod(ROOT, 0o755)
+        phase_operator_cannot_read_or_edit(MINT_REQUEST_ID)
+        native = subprocess.Popen(probe_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            preexec_fn=lambda: (os.setgroups([OPERATOR_GID]), os.setgid(OPERATOR_GID), os.setuid(OPERATOR_UID)),
+            env=probe_env("serve", operator_dir), cwd="/")
+        address = None
+        startup_end = time.monotonic() + min(10, remaining())
+        prefix = b""
+        while address is None:
+            if time.monotonic() >= startup_end:
+                native.kill(); native.wait(timeout=5)
+                raise FixtureFailure("mint/burn native host did not start")
+            ready, _, _ = select.select([native.stdout], [], [], min(1, remaining()))
+            if ready:
+                line = native.stdout.readline(16385)
+                if not line:
+                    tail, failure = native.communicate(timeout=min(5, remaining()))
+                    charge_output(len(tail) + len(failure))
+                    raise FixtureFailure(f"mint/burn native host exited before its address: {failure[:16384]!r}")
+                prefix += line; charge_output(len(line))
+                if len(prefix) > 16384:
+                    raise FixtureFailure("mint/burn native startup output exceeds bound")
+                if line.startswith(b'{"address":'):
+                    address = json.loads(line)["address"]
+
+        mint_command = cli_argv("mint", "--endpoint", address, *signer,
+            "--expected-chain-id", "custody-whole-coin-test", "--expected-protocol-version", "7",
+            "--expected-epoch", "0", "--expected-hash-suite-id", "1", "--expected-domain", DOMAIN_HEX,
+            "--treasury-cap", cap_hex, "--amount", str(MINT_AMOUNT), "--recipient", public_key,
+            "--nonce", "0", "--request-id", MINT_REQUEST_ID, "--max-fee", "1000000", "--gas-limit", "200000",
+            "--submission-out", f"{operator_dir}/mint-submission.bin", "--result-out", f"{operator_dir}/mint-result.bin")
+        rc, out, err = run_exec(mint_command, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0 or b"paid_status=Success" not in out:
+            raise FixtureFailure(f"actual protected mint CLI failed: {out!r} {err!r}")
+        with open(f"{operator_dir}/offline-mint.bin", "rb") as source:
+            offline_mint = source.read(1048577)
+        with open(f"{operator_dir}/mint-submission.bin", "rb") as source:
+            if source.read(1048577) != offline_mint:
+                raise FixtureFailure("offline and actual CLI mint signed bytes differ")
+
+        # ---- after-mint: independent verification plus fresh burn preimages ----
+        rc, out, err = run_exec(mint_burn_probe_argv, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID],
+            env=mint_burn_env("after-mint", CUSTODY_MINT_BURN_DIR=operator_dir, CUSTODY_MINT_BURN_ENDPOINT=address,
+                CUSTODY_MINT_BURN_CAP_HEX=cap_hex, CUSTODY_MINT_BURN_FEE_COIN_HEX=generated["fee"],
+                CUSTODY_MINT_BURN_MINT_AMOUNT=str(MINT_AMOUNT)))
+        after_mint = last_json_line(out)
+        if rc != 0 or after_mint.get("mode") != "after-mint" or after_mint.get("verified") is not True:
+            raise FixtureFailure(f"after-mint verification failed: {err!r}")
+        if after_mint.get("next_nonce") != 1:
+            raise FixtureFailure("after-mint next_nonce did not reach 1")
+        new_coin_hex = after_mint["new_coin_hex"]
+
+        burn_inputs_dir = f"{custody_dir}/burn-inputs"
+        os.mkdir(burn_inputs_dir, 0o700)
+        os.chown(burn_inputs_dir, CUSTODY_UID, CUSTODY_GID)
+        for name in ["cap.bin", "coin.bin", "fee.bin"]:
+            copy_private(operator_dir, burn_inputs_dir, name, CUSTODY_UID, CUSTODY_GID)
+
+        # ---- burn: prepare / approve / offline sign / actual CLI burn ----
+        prepare_burn = cli_argv("custody", "prepare-burn", *trust_flags(custody_dir),
+            "--cap-file", f"{burn_inputs_dir}/cap.bin", "--coin-file", f"{burn_inputs_dir}/coin.bin",
+            "--fee-source-file", f"{burn_inputs_dir}/fee.bin", "--nonce", "1", "--request-id", BURN_REQUEST_ID,
+            "--max-fee", "1000000", "--gas-limit", "200000", "--out", f"{custody_dir}/burn-request.bin")
+        rc, out, err = run_exec(prepare_burn, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0 or b"burn_request_exported=true" not in out:
+            raise FixtureFailure(f"burn prepare failed: {err!r}")
+        copy_private(custody_dir, operator_dir, "burn-request.bin", OPERATOR_UID, OPERATOR_GID)
+
+        approve_burn = cli_argv("custody", "approve-burn", *trust_flags(custody_dir),
+            "--request-file", f"{custody_dir}/burn-request.bin", "--approvals-dir", approvals, "--expires-in-seconds", "3600")
+        rc, _out, refusal = run_exec(approve_burn, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
+            raise FixtureFailure("burn approval unexpectedly accepted a pipe")
+        phase_approve_via_pty(None, None, 1, BURN_REQUEST_ID, 3600, command=approve_burn)
+
+        sign_burn = cli_argv("custody", "sign-burn", *trust_flags(operator_dir),
+            "--request-file", f"{operator_dir}/burn-request.bin", *signer)
+        rc, _out, err = run_exec([*sign_burn, "--out", f"{operator_dir}/offline-burn.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"protected offline burn sign failed: {err!r}")
+
+        burn_command = cli_argv("burn", "--endpoint", address, *signer,
+            "--expected-chain-id", "custody-whole-coin-test", "--expected-protocol-version", "7",
+            "--expected-epoch", "0", "--expected-hash-suite-id", "1", "--expected-domain", DOMAIN_HEX,
+            "--treasury-cap", cap_hex, "--coin", new_coin_hex,
+            "--nonce", "1", "--request-id", BURN_REQUEST_ID, "--max-fee", "1000000", "--gas-limit", "200000",
+            "--submission-out", f"{operator_dir}/burn-submission.bin", "--result-out", f"{operator_dir}/burn-result.bin")
+        rc, out, err = run_exec(burn_command, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0 or b"paid_status=Success" not in out:
+            raise FixtureFailure(f"actual protected burn CLI failed: {out!r} {err!r}")
+        with open(f"{operator_dir}/offline-burn.bin", "rb") as source:
+            offline_burn = source.read(1048577)
+        with open(f"{operator_dir}/burn-submission.bin", "rb") as source:
+            if source.read(1048577) != offline_burn:
+                raise FixtureFailure("offline and actual CLI burn signed bytes differ")
+
+        # ---- verify-burn: independent verification plus both-request replay ----
+        rc, out, err = run_exec(mint_burn_probe_argv, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID],
+            env=mint_burn_env("verify-burn", CUSTODY_MINT_BURN_DIR=operator_dir, CUSTODY_MINT_BURN_ENDPOINT=address,
+                CUSTODY_MINT_BURN_CAP_HEX=cap_hex, CUSTODY_MINT_BURN_FEE_COIN_HEX=generated["fee"],
+                CUSTODY_MINT_BURN_NEW_COIN_HEX=new_coin_hex))
+        verify_burn = last_json_line(out)
+        if (rc != 0 or verify_burn.get("mode") != "verify-burn" or verify_burn.get("verified") is not True
+                or verify_burn.get("replay_equal") is not True or verify_burn.get("next_nonce") != 2):
+            raise FixtureFailure(f"verify-burn verification failed: {err!r}")
+
+        # ---- revocation: both requests refused, same process, no output ----
+        rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", MINT_REQUEST_ID),
+            CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"mint revoke failed: {err!r}")
+        rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", BURN_REQUEST_ID),
+            CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"burn revoke failed: {err!r}")
+        rc, _out, refusal = run_exec([*sign_mint, "--out", f"{operator_dir}/revoked-mint.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-mint.bin"):
+            raise FixtureFailure("revoked mint produced signed output")
+        rc, _out, refusal = run_exec([*sign_burn, "--out", f"{operator_dir}/revoked-burn.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-burn.bin"):
+            raise FixtureFailure("revoked burn produced signed output")
+
+        summary = wait_serve(serve, extra_seconds=10)
+        check_summary("mint_burn", summary, {
+            "connections_accepted": "6", "requests_handled": "6",
+            "requests_signed": "4", "requests_refused": "2",
+        })
+
+        with open(f"{operator_dir}/stop-native", "xb") as completed:
+            completed.write(b"complete\n")
+        os.chmod(f"{operator_dir}/stop-native", 0o600)
+        os.chown(f"{operator_dir}/stop-native", OPERATOR_UID, OPERATOR_GID)
+        out, err = native.communicate(timeout=min(25, remaining()))
+        charge_output(len(out) + len(err))
+        if native.returncode != 0 or b"1 passed; 0 failed; 0 ignored" not in out:
+            raise FixtureFailure(f"mint/burn native host did not finish cleanly: {err!r}")
+    finally:
+        for process in [native, serve]:
+            if process is not None and process.poll() is None:
+                process.kill(); process.wait(timeout=5)
+        os.chmod(ROOT, 0o711)
+
+    restarted = start_serve(socket_path, 30, 2, 2, command=serve_command(2))
+    try:
+        rc, _out, refusal = run_exec([*sign_mint, "--out", f"{operator_dir}/revoked-mint-restart.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-mint-restart.bin"):
+            raise FixtureFailure("revoked mint produced output after restart")
+        rc, _out, refusal = run_exec([*sign_burn, "--out", f"{operator_dir}/revoked-burn-restart.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-burn-restart.bin"):
+            raise FixtureFailure("revoked burn produced output after restart")
+        restarted_summary = wait_serve(restarted, extra_seconds=8)
+        check_summary("mint_burn revoked restart", restarted_summary,
+            {"connections_accepted": "2", "requests_handled": "2", "requests_signed": "0", "requests_refused": "2"})
+    finally:
+        if restarted.poll() is None:
+            restarted.kill(); restarted.wait(timeout=5)
+
+    return {
+        "actual_cli": True, "mint_self": True, "after_mint_verified": True,
+        "burn_verified": verify_burn.get("verified") is True,
+        "offline_bytes_equal": True, "replay_equal": verify_burn.get("replay_equal") is True,
+        "revoked": True, "revoked_after_restart": True,
+        "serve_summary": summary.strip().splitlines(),
+        "restart_summary": restarted_summary.strip().splitlines(),
+    }
+
+
 def main():
     phase_setup()
     phase_missing_prerequisite_fails()
@@ -1470,6 +1739,7 @@ def main():
 
     transfer_summary = phase_transfer(public_key)
     split_merge_summary = phase_split_merge(public_key)
+    mint_burn_summary = phase_mint_burn(public_key)
 
     total_bytes = 0
     for dirpath, _dirnames, filenames in os.walk(ROOT):
@@ -1493,6 +1763,7 @@ def main():
         "new_identity_verified": True,
         "transfer": transfer_summary,
         "split_merge": split_merge_summary,
+        "mint_burn": mint_burn_summary,
         "lifecycle_summaries": [live_summary.strip().splitlines(), third_summary.strip().splitlines(), *recovery_summaries,
                                 restored_approval_summary, new_identity_summary],
     }, sort_keys=True))
@@ -1734,6 +2005,22 @@ try {
   for (const [key, counts] of [['serve_summary', [6, 6, 4, 2]], ['restart_summary', [2, 2, 0, 2]]]) {
     if (JSON.stringify(result.split_merge[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
       throw new Error('the split/merge serve counters are incomplete or differ');
+    }
+  }
+  // `phase_mint_burn`'s own `check_summary` calls already enforce the exact
+  // kind-4 serve counts (6/6/4/2, then 2/2/0/2 after revocation and
+  // restart) by raising inside the container on any mismatch, exactly like
+  // `phase_split_merge`'s own serve-count enforcement above; this check
+  // only requires every one of its own completion flags, the same shape as
+  // the `result.split_merge` check immediately above.
+  if (!result.mint_burn || ['actual_cli', 'mint_self', 'after_mint_verified', 'burn_verified',
+      'offline_bytes_equal', 'replay_equal', 'revoked', 'revoked_after_restart']
+    .some((key) => result.mint_burn[key] !== true)) {
+    throw new Error('the distinct-UID protected mint/burn evidence is incomplete');
+  }
+  for (const [key, counts] of [['serve_summary', [6, 6, 4, 2]], ['restart_summary', [2, 2, 0, 2]]]) {
+    if (JSON.stringify(result.mint_burn[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
+      throw new Error('the mint/burn serve counters are incomplete or differ');
     }
   }
   if (!Array.isArray(result.lifecycle_summaries) || result.lifecycle_summaries.length !== expectedLifecycle.length ||
