@@ -87,7 +87,7 @@ Native A/B・RELEASE CLIはE25-E27で成功。同一treeのhosted CIはE36で全
 `b568037f` / tree `2a691d63`。recovery/ordered contextの追加停止確認と、importの
 独立history floorを実装し、対象Native HTTP 206件、parse/comparison 12件、
 compiled import全10件、手動構成SQLite/HTTP全3件・Clippyが成功しました。
-これは本番host constructor/signalの配線証明ではありません。完全required/CIは実行中です。
+これは本番host constructor/signalの配線証明ではありません。完全required/CIはE42/E39で成功しました。
 同sourceのNative A/Bと、RELEASE childでのimport全10件はE28/E29。
 正常停止TLS交代後の新規取引はE30 / `4312d547`、後継live/historyの停止確認は
 E31 / `e60337b3` とE32 / `92fd5c93` に固定し、それぞれDraft PR #309-#311で確認できます。
@@ -95,7 +95,8 @@ E31 / `e60337b3` とE32 / `92fd5c93` に固定し、それぞれDraft PR #309-#3
 これらを `codex/coin-ops-custody-1016` へ通常mergeした統合sourceは
 [PR #312](https://github.com/sunriselayer/sunrise-edge/pull/312) の `7c5778b0` / tree `710b4c3d`。
 対象9 commandsと実Dockerを再検証し、Native A/BをE34、実RELEASE CLIをE35で確認しました。
-同sourceの元10 whole + 2 exact ignoredの全R4 RELEASE runtimeは実行中です。
+同sourceのhosted CIはE46で成功し、元10 whole + 2 exact ignoredのR4 RELEASE runtimeは
+最後のcaseで共有時間上限に達して失敗しました (E47)。全R4成功には数えません。
 E28/E29のsourceに後続差分を含めたことにはしません。
 復元の追加拒否と後継floorの統合code sourceは `53e324c1` / tree `499ef2e8`、
 `codex/successor-floor-1016`。E37の対象検証は成功し、後継floorのlong case・
@@ -231,6 +232,10 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E42: b568 complete required and hosted CI | `b568037f` / tree `2a691d63`。literal npm-ci +完全check-allがactual0/EOF、19,899.251秒。元8リンク/e8 withdrawals/35-role source-free復元と全adapterを維持。Rust success summaries144・報告pass合計4,196・failed0。前後HEAD/clean state、Node24と全wrapper/raw hashを親で再照合。同treeのhosted CI全8 jobs SUCCESSはE39、全8 raw logも再hash確認 | b568のsource qualificationのみ。新F sourceのsuccessor floor oracle、10a4のmint/burn、原12 RELEASE runtime、全M2/M3/M4/M5/M7・独立監査/実provider/公開認定は別条件として保持する |
 | E43: 10a4 actual Native A/B and RELEASE CLI custody | `10a47db1` / tree `ede55f33`。固定Node24.19.0/Rust1.97.1の13ターゲット・2 fresh buildsが全byte/mode/owner一致、actual0/EOF、1,529.682秒。親が保存26 ELFを再hash/byte比較し、4専有dir・source leaseを解放。13 debug + 10 driverの別targetコンパイルもactual0/EOF、1,709.378秒、23 ELFとCargo JSONを再照合。同sourceの実RELEASE CLIで元publication・6 lifecycle・transfer・split/mergeとmint→burnの別UID/PTYを全actual0/EOF、5.655秒。source/ELF前後不変、所有container/volume解放 | RELEASEなのはCLI child。SQLite/WASM oracleは保持した32cfのdev/test opt2 harnessで、10a4との差分はTODOだけ、他の全code bytes一致を検証。原12 RELEASE runtimeはcheck/probeを通して実行中、同sourceの完全required/CIも未終端。全M2/M4/M7・cross-machine/hermetic・独立監査/実provider/公開認定ではない |
 | E44: compiled SQLite ordered-router SIGTERM wiring | `3b51aa67`。元4件を残したcompiled process全5件/0 failed/0 ignored、fmt、operator全target/all-feature Clippy、実Cargo JSON artifactの全4 commandsがactual0/EOF、188.498秒。実leader/genesis/policyのowned hostへSIGTERMを送り、Expect/100-continue + idle EOF/接続拒否のbarrier後に本文を渡して保存record/blob不変・正確な取消応答と通常summaryを確認。fresh正対照では実LeaderProposalRecordをHTTP proposal/再計算digestと照合 | source-only独立correctness reviewのB1実DBパスとwant-channel証明を修正、test source承認。N1 pre-runclose除去は実書込みによる不変assertionでactual101/EOF、N2 cancellation Noneはrecord/blob不変後に別admission拒否bodyでactual101/EOF。固定した元test ELFで実行し、同じchild build recipeでexact bytes復元後はactual0/EOF。controller全469.101秒、元source全hash/clean・全raw hash・wrapper/保持ELFを親で再照合、owned peers0/専用TMP除去。N2のdynamic metrics観測とは呼ばない。Docs証拠参照も修正し別承認。ordered host wiring限定、実binary内late window・他family/TLS・全D05/M5/完全required/CI/RELEASE/独立監査/公開認定ではない |
+| E45: 4312 complete required and hosted CI | `4312d547` / tree `3c0960d6`。literal npm-ci +完全check-allがactual0/EOF、23,545.999秒。Rust success summaries144・報告pass合計4,196・ignored31・failed0。前後source/tree/clean、Node24・全wrapper・raw logとE39全8 CI raw logのhashを親で再照合 | 同sourceのstorage-neutral qualification。PG・後続source・全M3/M4/M5/M7・独立監査・公開認定へ転用しない |
+| E46: e603/7c57 hosted complete CI | [run `38852510726`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38852510726) / [run `38856074268`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38856074268)、各attempt1の全8 jobs terminal SUCCESS。全raw logのactual checkout `c4b9bc5e` / `8ca49bca`、tree `3c8b49ec` / `710b4c3d` は対象head `e60337b3` / `7c5778b0` と一致。両merge parentsと全raw hashを親で照合 | この2 sourceのhosted qualificationのみ。local完全requiredは終端待ち。E47のR4 runtime失敗、全milestone・独立監査・公開条件を成功へ置き換えない |
+| E47: 7c57 R4 runtime deadline failure | 原10 whole +2 exact ignoredを同一範囲で実行し、最初の11 casesはactual0/EOF。最後のrecurring successor caseはe8 closure出力後に共有18,000秒の上限へ到達し、controller terminalExit1、18,002.485秒。失敗receipt/rawと専有TMPを保持。sourceは前後clean同一pin、systemd unit終了済み | 原12ケース全体の成功ではない。自動再実行・case/待機削減・上限変更はしていない。進行中の後続sourceの試験結果とも区別する |
+| E48: f973 actual Native A/B and RELEASE CLI custody | `f973c02d` / tree `63877d27`。固定Node24.19.0/Rust1.97.1の13-target・2 fresh buildsが全byte/mode/owner一致、actual0/EOF、1,606.111秒。保存26 ELFを親で再hash/byte比較し、4専有dir・leaseを解放。別targetの13 debug +10 driverコンパイルもactual0/EOF、1,782.877秒、23 ELF/Cargo JSONを再照合。実RELEASE CLIで元publication・6 lifecycle・transfer・split/merge・mint/burnの全UID/PTYをactual0/EOF、9.104秒 | RELEASEなのはCLI child。SQLite/WASM oracleは保持した32cf dev/test opt2 harnessで、全CLI bytesとharness sourceの一致を確認。source/両ELF不変、owned container/volume解放。原12 runtimeはcheck0/probe0後に実行中、source全体required/CIは未終端。same-host trusted OSの範囲で、全D05/M2/M5/M7・独立監査・公開認定ではない |
 
 
 

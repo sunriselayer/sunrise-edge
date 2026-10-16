@@ -37,8 +37,11 @@ coin's exact amount from their own verified preimages, rejects a zero-amount
 coin, and rejects a checked-subtraction underflow before any approval or
 signing step. Both require a positive maximum fee strictly below the fee
 source balance, with the refund returned to the sender — the same fee shape
-as every other family. `create-asset`, other packages/instances/epochs and
-automatic protocol signing stay out of scope.
+as every other family. `create-asset` is its own separate kind-5 custody
+family (see [Standard Asset create-asset
+custody](standard-asset-create-asset-custody.md), DR-0255), not an
+extension of this one. Other packages/instances/epochs and automatic
+protocol signing stay out of scope.
 
 The complete bounded review displays the operation, sender and (for `mint`)
 recipient, the `TreasuryCap` reference and its Write access mode, (for
@@ -92,8 +95,9 @@ canonical preimage (the `TreasuryCap`, then the `Coin` for `burn`) and sends
 them to custody alongside the fee source preimage; the protected side
 independently decodes, validates ownership/schema/nominal type, and
 recomputes every reference, amount and the exact before/after supply before
-rendering its own review. `create-asset` keeps its existing custody
-refusal; `transfer`/`split`/`merge` are unaffected and stay on kind 2/3.
+rendering its own review. `create-asset` is now supported under its own
+separate kind-5 family (DR-0255), not an extension of this one;
+`transfer`/`split`/`merge` are unaffected and stay on kind 2/3.
 
 No genesis change is required to exercise this family against the existing
 one-owner Docker fixture: its single development owner is both the sole

@@ -22,6 +22,8 @@ use tokio::time::timeout;
 use sunrise_edge_client::LocalSigner;
 
 use super::approvals;
+use super::asset_create::{AssetCreateRequest, AssetCreateTrust};
+use super::asset_create_wire;
 use super::asset_mint_burn::{AssetMintBurnRequest, AssetMintBurnTrust};
 use super::asset_mint_burn_wire;
 use super::asset_split_merge::{AssetSplitMergeRequest, AssetSplitMergeTrust};
@@ -201,11 +203,32 @@ pub(super) fn run_mint_burn(
     )
 }
 
+/// A distinct invocation and decoder; no other family ever accepts the
+/// kind-5 create-asset family (DR-0255).
+pub(super) fn run_create(
+    config: CustodyConfig,
+    signer: LocalSigner,
+    socket_path: &Path,
+    approvals_dir: &Path,
+    bounds: ServeBounds,
+    trust: AssetCreateTrust,
+) -> Result<ServeSummary, CustodyError> {
+    run_with_policy(
+        config,
+        signer,
+        socket_path,
+        approvals_dir,
+        bounds,
+        SigningPolicy::Create(Box::new(trust)),
+    )
+}
+
 enum SigningPolicy {
     Publication,
     Transfer(Box<AssetTransferTrust>),
     SplitMerge(Box<AssetSplitMergeTrust>),
     MintBurn(Box<AssetMintBurnTrust>),
+    Create(Box<AssetCreateTrust>),
 }
 
 fn run_with_policy(
@@ -438,6 +461,7 @@ async fn handle_one_connection(
         SigningPolicy::Transfer(_) => super::asset_wire::MAX_REQUEST_BYTES,
         SigningPolicy::SplitMerge(_) => asset_split_merge_wire::MAX_REQUEST_BYTES,
         SigningPolicy::MintBurn(_) => asset_mint_burn_wire::MAX_REQUEST_BYTES,
+        SigningPolicy::Create(_) => asset_create_wire::MAX_REQUEST_BYTES,
     };
     let frame = match read_request_frame(&mut stream, maximum).await {
         Ok(frame) => frame,
@@ -461,6 +485,11 @@ async fn handle_one_connection(
             .map_err(|error| refusal_status_for_wire_error(&error))
             .and_then(|request| {
                 sign_mint_burn_request(config, signer, approvals_dir, trust, &request)
+            }),
+        SigningPolicy::Create(trust) => asset_create_wire::decode(&frame)
+            .map_err(|error| refusal_status_for_wire_error(&error))
+            .and_then(|request| {
+                sign_create_request(config, signer, approvals_dir, trust, &request)
             }),
     };
     match result {
@@ -610,6 +639,46 @@ pub(super) fn sign_mint_burn_request(
         || approval.publisher != config.publisher()
         || approval.frame != prepared.signable_frame()
         || super::revoke::is_revoked(approvals_dir, &request_id)
+            .map_err(|_| CustodyResponseStatus::Internal)?
+    {
+        return Err(CustodyResponseStatus::NoApproval);
+    }
+    let signed = prepared
+        .sign_and_finalize_with(signer)
+        .map_err(|_| CustodyResponseStatus::Internal)?;
+    Ok(signed.signature)
+}
+
+/// Pure, synchronous create-asset signing decision: rebuilds the exact
+/// `PreparedPaidExecution` under custody's own pinned create-asset trust
+/// (never a caller-supplied target/code/digest), checks it against the
+/// stored human approval record, signs, and relies on
+/// `sign_and_finalize_with`'s own internal verification before returning.
+pub(super) fn sign_create_request(
+    config: &CustodyConfig,
+    signer: &LocalSigner,
+    approvals_dir: &Path,
+    trust: &AssetCreateTrust,
+    request: &AssetCreateRequest,
+) -> Result<[u8; wire::CUSTODY_SIGNATURE_BYTES], CustodyResponseStatus> {
+    if signer.address() != config.publisher() {
+        return Err(CustodyResponseStatus::Internal);
+    }
+    let prepared = trust
+        .prepare_create(request)
+        .map_err(|_| CustodyResponseStatus::Malformed)?
+        .prepared;
+    let now: u64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| CustodyResponseStatus::Internal)?
+        .as_secs();
+    let approval = approvals::read_approval(approvals_dir, &request.request_id)
+        .map_err(|_| CustodyResponseStatus::Internal)?
+        .ok_or(CustodyResponseStatus::NoApproval)?;
+    if approvals::is_expired(&approval, now)
+        || approval.publisher != config.publisher()
+        || approval.frame != prepared.signable_frame()
+        || super::revoke::is_revoked(approvals_dir, &request.request_id)
             .map_err(|_| CustodyResponseStatus::Internal)?
     {
         return Err(CustodyResponseStatus::NoApproval);

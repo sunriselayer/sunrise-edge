@@ -87,6 +87,7 @@ enum CustodySigningRequest {
     Merge(crate::custody::AssetMergeRequest),
     Mint(crate::custody::AssetMintRequest),
     Burn(crate::custody::AssetBurnRequest),
+    Create(crate::custody::AssetCreateRequest),
 }
 
 impl AssetSigner {
@@ -121,6 +122,9 @@ impl AssetSigner {
                     }
                     CustodySigningRequest::Burn(request) => {
                         crate::custody::client::request_burn_signature(target, request)?
+                    }
+                    CustodySigningRequest::Create(request) => {
+                        crate::custody::client::request_create_signature(target, request)?
                     }
                 };
                 Ok(prepared.finalize(signature.to_vec())?)
@@ -670,6 +674,7 @@ where
         && action != "merge"
         && action != "mint"
         && action != "burn"
+        && action != "create-asset"
     {
         return Err(invalid(
             "custody paid Standard Asset signing is not supported",
@@ -832,6 +837,7 @@ where
         if target == policy.instance {
             return Err(invalid("asset instance collides with the fee instance"));
         }
+        let custody_create: bool = matches!(signer, AssetSigner::Custody(_));
         let call: CallIntent = CallIntent {
             context,
             request_id: *request_id.as_bytes(),
@@ -860,7 +866,30 @@ where
             gas_limit,
             Vec::new(),
         )?;
-        let signed = signer.sign(prepared, None)?;
+        let custody_request: Option<CustodySigningRequest> = if custody_create {
+            let HttpObjectQueryResult::CurrentInline {
+                canonical_object_bytes: fee_bytes,
+                ..
+            } = &queried_fee
+            else {
+                return Err(invalid(
+                    "custody fee source requires canonical inline preimage",
+                ));
+            };
+            Some(CustodySigningRequest::Create(
+                crate::custody::AssetCreateRequest {
+                    seed: instance_seed,
+                    fee_bytes: fee_bytes.clone(),
+                    nonce,
+                    request_id,
+                    max_fee: prepared.intent().consent.max_fee.get(),
+                    gas_limit,
+                },
+            ))
+        } else {
+            None
+        };
+        let signed = signer.sign(prepared, custody_request.as_ref())?;
         let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
         let record_bytes: Vec<u8> = encode_instance_record(&record).map_err(failure)?;
         let result: PaidExecutionResult = if let Some((endpoints, certifier, admission)) = &network
@@ -1152,13 +1181,17 @@ mod tests {
         package_types::{PackageOrigin, derive_scoped_type_id},
     };
 
-    /// `create-asset` must refuse custody signing immediately after parsing
-    /// the signer selection, before any FastVote/network peer validation,
-    /// signer file access, or device I/O.
+    /// An unknown action still refuses before any signer-selection check at
+    /// all, since `run`'s own action match rejects it first. There is no
+    /// longer any defined action for which the (now unreachable in
+    /// practice) "custody paid Standard Asset signing is not supported"
+    /// gate inside `run` actually fires: `transfer`/`split`/`merge`/
+    /// `mint`/`burn`/`create-asset` are every action `run` accepts, and
+    /// custody now supports all six.
     #[test]
-    fn rejects_custody_signer_selection_before_any_io() {
+    fn rejects_an_unknown_action_before_any_signer_selection() {
         let error: CliError = run(
-            "create-asset",
+            "mint-and-burn",
             vec![
                 OsString::from("--custody-socket"),
                 OsString::from("/nonexistent/custody.sock"),
@@ -1173,18 +1206,18 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("custody paid Standard Asset signing is not supported")
+                .contains("unknown Standard Asset operation")
         );
     }
 
-    /// `split`/`merge` (DR-0249) and `mint`/`burn` (DR-0253) are the
-    /// coin/cap-owner-only families; they must pass the custody-selection
-    /// gate itself (unlike `create-asset`, which stays closed above) and
-    /// fail only on a later, genuinely missing requirement — never on the
-    /// "not supported" refusal.
+    /// `split`/`merge` (DR-0249), `mint`/`burn` (DR-0253) and `create-asset`
+    /// (DR-0255) must all pass the custody-selection gate itself and fail
+    /// only on a later, genuinely missing requirement — never on the "not
+    /// supported" refusal.
     #[test]
-    fn allows_custody_signer_selection_for_split_merge_mint_burn_before_other_required_flags() {
-        for action in ["split", "merge", "mint", "burn"] {
+    fn allows_custody_signer_selection_for_split_merge_mint_burn_create_before_other_required_flags()
+     {
+        for action in ["split", "merge", "mint", "burn", "create-asset"] {
             let error = run(
                 action,
                 vec![

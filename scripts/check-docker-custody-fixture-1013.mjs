@@ -17,9 +17,13 @@
 // the same disposable seed through a backup/restored path pair, a second,
 // independently keyed custody identity, the distinct-UID protected
 // whole-coin transfer family (DR-0246), the distinct-UID protected
-// split/merge family (DR-0249), and the distinct-UID protected genesis
+// split/merge family (DR-0249), the distinct-UID protected genesis
 // TreasuryCap mint/burn family (DR-0253, a fourth closed wire kind 4, never
-// kind 1/2/3). None of this ever prints or argv-passes key material; every
+// kind 1/2/3), and the distinct-UID protected create-asset family (DR-0255,
+// a fifth closed wire kind 5, never kind 1-4): the only family whose paid
+// `Instantiate` targets a fresh derived instance rather than the pinned
+// genesis one, with no pre-existing owned Coin/TreasuryCap input, only a
+// fee source. None of this ever prints or argv-passes key material; every
 // copy of key bytes happens inside a custody-UID child process; only the
 // child's exit status crosses that boundary.
 //
@@ -205,6 +209,12 @@ SPLIT_REQUEST_ID = "91" * 32
 MERGE_REQUEST_ID = "92" * 32
 MINT_REQUEST_ID = "93" * 32
 BURN_REQUEST_ID = "94" * 32
+CREATE_REQUEST_ID = "95" * 32
+# The new application instance's own creator-scoped logical seed (DR-0255):
+# public, caller-supplied, never a private key. Custody independently
+# rederives the exact InstanceTarget from this seed plus its own pinned
+# sender/context/code; it is never trusted as signing authority by itself.
+CREATE_INSTANCE_SEED_HEX = "5f" * 32
 # Half of apps/devnet's DEVNET_PAID_SPEND_COIN_BALANCE (10_000_000); the
 # split amount must stay strictly between zero and the held balance.
 SPLIT_AMOUNT = 5_000_000
@@ -1633,6 +1643,214 @@ def phase_mint_burn(public_key):
     }
 
 
+def phase_create_asset(public_key):
+    # Fresh phase directories only: this reuses the exact same one-owner,
+    # one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
+    # already builds (via its own unmodified "generate"/"serve" modes), with
+    # the SAME custody-held publisher used by transfer/split-merge/mint-burn
+    # (dev_owners[0]/mint authority, distinct from the genesis signer/fee
+    # recipient), booted into a brand-new store here. It never touches any
+    # other phase's own genesis, coins, custody-approvals entries, or
+    # assertions.
+    #
+    # DR-0255/M2: a fifth closed wire kind (5), under custody's own
+    # prepare-create/approve-create/sign-create/serve-create commands. The
+    # only family whose Instantiate targets a FRESH derived instance rather
+    # than the pinned genesis one, and whose own custody request carries no
+    # pre-existing owned Coin/TreasuryCap input, only a fee source. Shape
+    # mirrors phase_transfer's single-operation lifecycle (one signed
+    # request, not two like split/merge or mint/burn): offline sign-create
+    # plus the actual CLI's own custody-mediated signing both succeed against
+    # the live approval, then revocation leaves both the same server and a
+    # fresh restart refusing further signatures.
+    custody_dir, operator_dir = f"{ROOT}/custody-create", f"{ROOT}/operator/create"
+    for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
+        os.mkdir(path, 0o700)
+        os.chown(path, uid, gid)
+    probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
+                  "custody::asset_fixture::distinct_uid_transfer_probe", "--exact", "--ignored", "--nocapture", "--format", "terse"]
+    def probe_env(mode, directory):
+        return {"CUSTODY_TRANSFER_MODE": mode, "CUSTODY_TRANSFER_DIR": directory, "CUSTODY_TRANSFER_PUBLIC_KEY": public_key}
+    rc, out, err = run_exec(probe_argv, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], env=probe_env("generate", custody_dir))
+    if rc != 0:
+        raise FixtureFailure(f"create-asset preimage generation failed: {err!r}")
+    generated = last_json_line(out)
+    config_text = f"chain_id=custody-whole-coin-test\nprotocol_version=7\nepoch=0\nhash_suite_id=1\ndomain={DOMAIN_HEX}\npublisher_public_key={public_key}\noperator_uid={OPERATOR_UID}\n"
+    with open(f"{custody_dir}/config", "x") as output:
+        output.write(config_text)
+    os.chmod(f"{custody_dir}/config", 0o600)
+    os.chown(f"{custody_dir}/config", CUSTODY_UID, CUSTODY_GID)
+    def trust_flags(directory):
+        return ["--config", f"{directory}/config", "--genesis-manifest-file", f"{directory}/genesis.bin", "--genesis-digest", generated["digest"]]
+
+    def copy_private(src_dir, dst_dir, name, dst_uid, dst_gid):
+        with open(f"{src_dir}/{name}", "rb") as source:
+            content = source.read(1024 * 1024)
+        with open(f"{dst_dir}/{name}", "xb") as target:
+            target.write(content)
+        os.chmod(f"{dst_dir}/{name}", 0o600)
+        os.chown(f"{dst_dir}/{name}", dst_uid, dst_gid)
+
+    approvals = f"{ROOT}/custody-approvals"
+    socket_path = f"{ROOT}/run/create.sock"
+    signer = ["--custody-socket", socket_path, "--custody-uid", str(CUSTODY_UID), "--custody-expected-public-key", public_key]
+
+    def serve_command(count):
+        return cli_argv("custody", "serve-create", *trust_flags(custody_dir),
+            "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
+            "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
+
+    # ---- create: prepare / approve (real PTY, full typed confirmation) / ----
+    # offline sign / actual CLI create-asset, with --fee-source and the real
+    # canonical fee preimage, never a Coin/TreasuryCap input.
+    prepare_create = cli_argv("custody", "prepare-create", *trust_flags(custody_dir),
+        "--seed", CREATE_INSTANCE_SEED_HEX, "--fee-source-file", f"{custody_dir}/fee.bin",
+        "--nonce", "0", "--request-id", CREATE_REQUEST_ID,
+        "--max-fee", "1000000", "--gas-limit", "200000", "--out", f"{custody_dir}/create-request.bin")
+    rc, out, err = run_exec(prepare_create, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    if rc != 0 or b"create_request_exported=true" not in out:
+        raise FixtureFailure(f"create prepare failed: {err!r}")
+    for name in ["config", "genesis.bin", "create-request.bin"]:
+        copy_private(custody_dir, operator_dir, name, OPERATOR_UID, OPERATOR_GID)
+
+    approve_create = cli_argv("custody", "approve-create", *trust_flags(custody_dir),
+        "--request-file", f"{custody_dir}/create-request.bin", "--approvals-dir", approvals, "--expires-in-seconds", "3600")
+    rc, _out, refusal = run_exec(approve_create, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
+        raise FixtureFailure("create approval unexpectedly accepted a pipe")
+    # phase_approve_via_pty captures whatever exact "Type exactly to
+    # approve:\n<confirmation>" line approve-create actually prints (its
+    # own full "APPROVE-CREATE sender=... seed=... new_instance_*
+    # fee_balance=... max_fee=... nonce=... request_id=... not_after=..."
+    # shape, distinct from every other family's confirmation text) and
+    # echoes it back verbatim; it never hardcodes the text itself.
+    phase_approve_via_pty(None, None, 0, CREATE_REQUEST_ID, 3600, command=approve_create)
+
+    serve = None
+    native = None
+    try:
+        serve = start_serve(socket_path, 30, 3, 3, command=serve_command(3))
+        sign_create = cli_argv("custody", "sign-create", *trust_flags(operator_dir),
+            "--request-file", f"{operator_dir}/create-request.bin", *signer)
+        rc, _out, err = run_exec([*sign_create, "--out", f"{operator_dir}/offline-create.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"protected offline create sign failed: {err!r}")
+
+        os.chmod(ROOT, 0o755)
+        phase_operator_cannot_read_or_edit(CREATE_REQUEST_ID)
+        native = subprocess.Popen(probe_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            preexec_fn=lambda: (os.setgroups([OPERATOR_GID]), os.setgid(OPERATOR_GID), os.setuid(OPERATOR_UID)),
+            env=probe_env("serve", operator_dir), cwd="/")
+        address = None
+        startup_end = time.monotonic() + min(10, remaining())
+        prefix = b""
+        while address is None:
+            if time.monotonic() >= startup_end:
+                native.kill(); native.wait(timeout=5)
+                raise FixtureFailure("create-asset native host did not start")
+            ready, _, _ = select.select([native.stdout], [], [], min(1, remaining()))
+            if ready:
+                line = native.stdout.readline(16385)
+                if not line:
+                    tail, failure = native.communicate(timeout=min(5, remaining()))
+                    charge_output(len(tail) + len(failure))
+                    raise FixtureFailure(f"create-asset native host exited before its address: {failure[:16384]!r}")
+                prefix += line; charge_output(len(line))
+                if len(prefix) > 16384:
+                    raise FixtureFailure("create-asset native startup output exceeds bound")
+                if line.startswith(b'{"address":'):
+                    address = json.loads(line)["address"]
+
+        # The real standard_asset create-asset CLI, custody-mediated: the
+        # required --fee-source plus --instance-seed/--instance-ref-out it
+        # already had, now driven through --custody-socket/--custody-uid/
+        # --custody-expected-public-key like every other protected family.
+        create_command = cli_argv("create-asset", "--endpoint", address, *signer,
+            "--expected-chain-id", "custody-whole-coin-test", "--expected-protocol-version", "7",
+            "--expected-epoch", "0", "--expected-hash-suite-id", "1", "--expected-domain", DOMAIN_HEX,
+            "--fee-source", generated["fee"], "--nonce", "0", "--request-id", CREATE_REQUEST_ID,
+            "--max-fee", "1000000", "--gas-limit", "200000",
+            "--instance-seed", CREATE_INSTANCE_SEED_HEX, "--instance-ref-out", f"{operator_dir}/create-instance.bin",
+            "--submission-out", f"{operator_dir}/create-submission.bin", "--result-out", f"{operator_dir}/create-result.bin")
+        rc, out, err = run_exec(create_command, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0 or b"paid_status=Success" not in out:
+            raise FixtureFailure(f"actual protected create-asset CLI failed: {out!r} {err!r}")
+        with open(f"{operator_dir}/offline-create.bin", "rb") as source:
+            offline_create = source.read(1048577)
+        with open(f"{operator_dir}/create-submission.bin", "rb") as source:
+            if source.read(1048577) != offline_create:
+                raise FixtureFailure("offline and actual CLI create signed bytes differ")
+
+        # ---- after-create: independent verification plus exact replay ----
+        create_probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
+            "custody::asset_create_fixture::distinct_uid_create_asset_probe", "--exact", "--ignored", "--nocapture", "--format", "terse"]
+        create_env = {
+            "CUSTODY_CREATE_MODE": "after-create",
+            "CUSTODY_CREATE_DIR": operator_dir,
+            "CUSTODY_CREATE_PUBLIC_KEY": public_key,
+            "CUSTODY_CREATE_ENDPOINT": address,
+            "CUSTODY_CREATE_INSTANCE_SEED_HEX": CREATE_INSTANCE_SEED_HEX,
+        }
+        rc, out, err = run_exec(create_probe_argv, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID], env=create_env)
+        after_create = last_json_line(out)
+        if (rc != 0 or after_create.get("mode") != "after-create" or after_create.get("verified") is not True
+                or after_create.get("replay_equal") is not True or after_create.get("next_nonce") != 1):
+            raise FixtureFailure(f"after-create verification failed: {err!r}")
+
+        # ---- revocation: refused on the same server, no signed output ----
+        rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", CREATE_REQUEST_ID),
+            CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"create revoke failed: {err!r}")
+        rc, _out, refusal = run_exec([*sign_create, "--out", f"{operator_dir}/revoked-create.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-create.bin"):
+            raise FixtureFailure("revoked create produced signed output")
+
+        summary = wait_serve(serve, extra_seconds=10)
+        check_summary("create", summary, {
+            "connections_accepted": "3", "requests_handled": "3",
+            "requests_signed": "2", "requests_refused": "1",
+        })
+
+        with open(f"{operator_dir}/stop-native", "xb") as completed:
+            completed.write(b"complete\n")
+        os.chmod(f"{operator_dir}/stop-native", 0o600)
+        os.chown(f"{operator_dir}/stop-native", OPERATOR_UID, OPERATOR_GID)
+        out, err = native.communicate(timeout=min(25, remaining()))
+        charge_output(len(out) + len(err))
+        if native.returncode != 0 or b"1 passed; 0 failed; 0 ignored" not in out:
+            raise FixtureFailure(f"create-asset native host did not finish cleanly: {err!r}")
+    finally:
+        for process in [native, serve]:
+            if process is not None and process.poll() is None:
+                process.kill(); process.wait(timeout=5)
+        os.chmod(ROOT, 0o711)
+
+    # ---- restart: the same revoked request id stays refused ----
+    restarted = start_serve(socket_path, 30, 1, 1, command=serve_command(1))
+    try:
+        rc, _out, refusal = run_exec([*sign_create, "--out", f"{operator_dir}/revoked-create-restart.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-create-restart.bin"):
+            raise FixtureFailure("revoked create produced output after restart")
+        restarted_summary = wait_serve(restarted, extra_seconds=8)
+        check_summary("create revoked restart", restarted_summary,
+            {"connections_accepted": "1", "requests_handled": "1", "requests_signed": "0", "requests_refused": "1"})
+    finally:
+        if restarted.poll() is None:
+            restarted.kill(); restarted.wait(timeout=5)
+
+    return {
+        "actual_cli": True, "create_self": True, "after_create_verified": True,
+        "replay_equal": after_create.get("replay_equal") is True,
+        "definition_hex": after_create.get("definition_hex"),
+        "treasury_cap_hex": after_create.get("treasury_cap_hex"),
+        "offline_bytes_equal": True,
+        "revoked": True, "revoked_after_restart": True,
+        "serve_summary": summary.strip().splitlines(),
+        "restart_summary": restarted_summary.strip().splitlines(),
+    }
+
+
 def main():
     phase_setup()
     phase_missing_prerequisite_fails()
@@ -1742,6 +1960,7 @@ def main():
     transfer_summary = phase_transfer(public_key)
     split_merge_summary = phase_split_merge(public_key)
     mint_burn_summary = phase_mint_burn(public_key)
+    create_asset_summary = phase_create_asset(public_key)
 
     total_bytes = 0
     for dirpath, _dirnames, filenames in os.walk(ROOT):
@@ -1766,6 +1985,7 @@ def main():
         "transfer": transfer_summary,
         "split_merge": split_merge_summary,
         "mint_burn": mint_burn_summary,
+        "create_asset": create_asset_summary,
         "lifecycle_summaries": [live_summary.strip().splitlines(), third_summary.strip().splitlines(), *recovery_summaries,
                                 restored_approval_summary, new_identity_summary],
     }, sort_keys=True))
@@ -2023,6 +2243,27 @@ try {
   for (const [key, counts] of [['serve_summary', [6, 6, 4, 2]], ['restart_summary', [2, 2, 0, 2]]]) {
     if (JSON.stringify(result.mint_burn[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
       throw new Error('the mint/burn serve counters are incomplete or differ');
+    }
+  }
+  // `phase_create_asset`'s own `check_summary` calls already enforce the
+  // exact kind-5 serve counts (3/3/2/1, then 1/1/0/1 after revocation and
+  // restart) by raising inside the container on any mismatch, exactly like
+  // `phase_transfer`'s own serve-count enforcement above (create-asset is a
+  // single-operation family, like transfer, not a two-operation family like
+  // split/merge or mint/burn); this check only requires every one of its
+  // own completion flags, plus independently verified by
+  // `asset_create_fixture`'s own `after-create` mode (created Definition/
+  // TreasuryCap, durable instance query, dedup receipt, exact-replay).
+  if (!result.create_asset || ['actual_cli', 'create_self', 'after_create_verified', 'replay_equal',
+      'offline_bytes_equal', 'revoked', 'revoked_after_restart']
+    .some((key) => result.create_asset[key] !== true) ||
+    typeof result.create_asset.definition_hex !== 'string' || typeof result.create_asset.treasury_cap_hex !== 'string' ||
+    result.create_asset.definition_hex === result.create_asset.treasury_cap_hex) {
+    throw new Error('the distinct-UID create-asset evidence is incomplete');
+  }
+  for (const [key, counts] of [['serve_summary', [3, 3, 2, 1]], ['restart_summary', [1, 1, 0, 1]]]) {
+    if (JSON.stringify(result.create_asset[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
+      throw new Error('the create-asset serve counters are incomplete or differ');
     }
   }
   if (!Array.isArray(result.lifecycle_summaries) || result.lifecycle_summaries.length !== expectedLifecycle.length ||
