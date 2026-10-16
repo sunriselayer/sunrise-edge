@@ -78,15 +78,20 @@ fee-claimの非承認表示・保存内容の開発用署名は、その上の
 限定検証はE23、local完全gateと同一treeのhosted CIはE24で成功しました。
 後続の状態文書だけの更新も、実装qualificationの対象pinをcf2dに保持します。
 このsourceの新しい13-target Native A/B・実RELEASE認定は行っていません。
-その後のCODE/VERIFY 8件の継続作業は `codex/asset-custody-1016`、作業コピーは
-`/home/yu/src/github.com/sunriselayer/sunrise-edge-asset-custody-1016`。
-genesis Standard Asset transferの専用custodyと、停止ownerから待機中のblocking
-workへの取消伝播を実装中です。component検証ではCLI custody 77 passed/2 ignored、
-Native operations 7 passed、実Dockerの旧publication/lifecycle controlsと追加transfer
-controlsが成功しました。追加分は別UID/PTY、offlineと実CLIのsigned byte一致、
-実SQLite/WASMの全額移転・再送・取消後と再起動後の拒否を含みます。
-この作業sourceのclean pin・完全required/CI・最終照合は未完了で、E24や全M2/D05/M5の
-合格へ置き換えません。初回DockerのSQLite祖先directory読取EACCESと診断失敗も保持します。
+CODE/VERIFY 8件の継続作業は[PR #307](https://github.com/sunriselayer/sunrise-edge/pull/307)
+の `426e8359` / tree `b7fa71cd` に、genesis Standard Asset transfer専用custody・
+待機中workの取消・旧host生存中のfence拒否を固定しました。component controlsと
+Native A/B・RELEASE CLIはE25-E27で成功。完全required/CIは長時間recurrence実行中です。
+後続の[PR #308](https://github.com/sunriselayer/sunrise-edge/pull/308) は
+`b568037f` / tree `2a691d63`。recovery/ordered contextの追加停止確認と、importの
+独立history floorを実装し、対象Native HTTP 206件、parse/comparison 12件、
+compiled import全10件、手動構成SQLite/HTTP全3件・Clippyが成功しました。
+これは本番host constructor/signalの配線証明ではありません。完全required/CIは実行中です。
+同sourceのNative A/Bと、RELEASE childでのimport全10件はE28/E29。
+今回の正常停止TLS交代後の新規取引はこの上の作業中差分であり、E28/E29のsourceに
+含めません。各完全gate・全M2-M5/M7の最終照合は未完了として保持します。
+初回DockerのSQLite祖先directory読取EACCES、manual fixtureのsetup counter誤り、
+import testのsource retirement不足と各修正前失敗も保持します。
 50a4 / tree eff704ddのE14-E16と旧作業コピーは過去の対象として保持します。
 
 再構成時の確認ではGitの作業コピー登録が存在する一方、そのパスがENOENTでした。
@@ -198,6 +203,11 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E25: transfer・queued stop・overlapping TLS components | `426e8359` / tree `b7fa71cd`。custody 78 passed/2 ignored、Standard Asset 17 passed、Native operations 7 passed、全12 actual TLS controls、CLI build、対象3 crate Clippy、実Docker/UID/PTYを含む全7 commandsがactual exit 0/EOF、255.769秒。元publicationと6 lifecycle、whole-coin transferの実SQLite/WASM実行・offline/CLI署名byte一致・receipt replay・取消を確認。前後source clean/input binary不変 | component qualification。原2 ignoredのfixtureはDocker ownerが別途実行。全M2/M3/D05/M5・独立監査・実provider/公開認定ではない。同sourceの完全requiredとhosted CIは長時間recurrence実行中 |
 | E26: 426e actual Native release A/B | `426e8359` / tree `b7fa71cd`、固定Node24.19.0/Rust1.97.1/Linux GNU recipe。2 fresh builds・13ターゲット全byte/mode/owner比較成功、actual exit 0/EOF、858.399秒。保存26 ELFを親でも照合。生成umask0022の実mode0755を維持し、chmod正規化なし。4専有作業dirとsource leaseを解放 | same-host trusted OS。fixture/cross-machine/hermetic/upstream authenticity・全13 RELEASE runtime・全M7・公開認定ではない。後続sourceへ借用しない |
 | E27: 426e RELEASE CLI custody | E26保存の実RELEASE CLIをE25と同sourceのdev/test harnessへ渡し、元publication・6 lifecycle・実transfer/取消/再起動拒否をactual exit 0/EOF、3.670秒で確認。CLIとharnessの前後hash一致 | RELEASEなのはCLI child。SQLite/WASM hostはdev/test harness内で動き、全13 RELEASE runtime qualificationとは区別する |
+| E28: b568 actual Native release A/B | `b568037f` / tree `2a691d63`、固定Node24.19.0/Rust1.97.1/Linux GNU recipe。2 fresh builds・13ターゲット全byte/mode/owner比較成功、actual exit 0/EOF、931.235秒。親が保存26 ELFを照合。生成umask0022の実mode0755を維持し、4専有dirとsource leaseを解放 | same-host trusted OS。新しいfloor/stop sourceの実build証拠。cross-machine/hermetic・全13 runtime・独立監査・全M7/公開認定ではない |
+| E29: b568 RELEASE import component | E28の13 readonly RELEASE child bindingsの隔離環境で、`business_import_sqlite` whole driver全10件/0 failed/0 ignored、actual exit 0/EOF、6.053秒。genesis import/create/resumeと追加history floor、既存借用controlsを保持。driver・13 debug・13 RELEASEの計27 binary hashとraw logを親でも再照合。PID/network namespaceの分離、owned pids 2→2、private TMP除去を確認 | child binariesだけがRELEASE、driver/in-process oracleはdev/test opt2。原12 drivers・2 long ignoredのR4 runtime全体、successor floorの個別end-to-end、全M4/M7/公開認定ではない |
+| E30: fresh business after authorized stopped TLS rotation | b568上のこの差分。元の全assertion/helper/待機/資金を削らず、正常停止後に最終generation4で新規有料送金を実CLIから確定。全4 replicasの独立intent/両quorum・exact mutation/version/body・新旧receipt・nonce・exact再送/full snapshotを確認。元12 TLS cases、formatとoperator全target Clippyの全3 commandsがactual exit 0/EOF、40.845秒。独立correctness review指摘を処理し再承認 | selected stopped same-file handoffのcomponent。先のoverlap拒否fixtureとは別。live handoff/cross-host/物理fault・全M3/公開認定ではない。完全required/CIは未完了 |
+
+
 
 
 新しいrawの保存先は `/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013`。
@@ -305,6 +315,21 @@ E26は `native-426e-1016-terminal.json` と
 E27は `release-cli-custody-426e-1016-terminal.json` / `.log`、raw SHA-256
 `3f66c384240ed43c97c5aabd98561431b19de88af498e2f0571429afdcf1e10c`。
 いずれも426eに固定した範囲。新しいfloor/stop sourceの完全gateへは借用しません。
+E28は `native-b568-1016-terminal.json` と
+`native-output-parent-1013/native-b568037f-1016/manifest.json`、manifest SHA-256
+`3c97a9a33782f7f650e0addd3e9449ae684bc91a0205b0bd4304a10f9742a5af`。
+E29は `native-b568-release-import-1016-terminal.json` と
+`run-native-b568-release-import-view-1016-receipt.json`、complete driver rawは
+`run-native-b568-release-import-view-1016.log`、SHA-256
+`1667abb0524741c98c169f93ec05f927de234a374ff62112e2a3434f449393aa`。
+最終helperは独立correctness reviewの指摘処理後、同一SHAでcheck/probe/runtimeを実行しました。
+各rawは上記sourceだけの証拠であり、後続変更や長時間完全gateの成功へ置き換えません。
+E30は `stopped-fresh-targeted2-1016-terminal.json` / `.log`、raw SHA-256
+`1ae264a72c9db004fc1e3c0e6bc91678725aa9dc3fc25f4d9a860eac72bc8479`。同receiptのsourceBefore/Afterで
+実test/doc bytesの同一性を照合しました。初回の12 cases成功も保持し、fee sourceの
+説明訂正とreceipt/effect oracle追加後の再実行を最終component証拠に使います。
+
+
 
 ## 作業終了時の環境整理
 
@@ -479,6 +504,9 @@ E27は `release-cli-custody-426e-1016-terminal.json` / `.log`、raw SHA-256
     新規送金・両quorum・全business snapshot不変を確認。offline確認flagを意図的に
     重ねる拒否境界の検証で、正規live handoff手順・別host復元・物理faultの合格にはしない。
     現sourceの完全gate/CIと最終照合は未完了。
+  - [x] 正常停止・TLS trust交代後の新規business: E30の実CLI/4 replicasで確認。
+    保存済み再送に加え、新規nonce/返金Coinを使った取引の確定と新旧receipt保存を検証。
+    componentの完了であり、このsourceの完全gate/CIと残るM3条件は保持する。
   - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。
     trait reply-loss、process SIGKILL、power/host/media/fsync faultは別証拠。
     全12 SQL tables・4 portable collections・positive blob/oracleを省略しない。
@@ -494,7 +522,8 @@ E27は `release-cli-custody-426e-1016-terminal.json` / `.log`、raw SHA-256
     未達技術条件を残し、全M4/releaseは未完了。
   - [ ] [独立に保持したordered history floor](docs/architecture/decisions/0248-import-ordered-history-freshness-floor.md):
     実import create/resumeへの追加拒否を実装。parse/comparison 12件・元9件を保持したcompiled import全10件・Clippy・
-    独立component reviewは成功。新sourceの完全gate/CIは未完了。
+    独立component reviewは成功。E29で同sourceのRELEASE child import全10件も成功。
+    新sourceの完全gate/CIとsuccessor floorの個別end-to-endは未完了。
     同一epoch内の履歴位置だけを拘束し、published checkpoint/state-root・owned fast-pathの
     whole-store rollback検出・旧writer除外の未達条件は維持する。
   - 次: source/artifact対応、M7、残るmanifest/upgrade/fencing範囲を照合する。
@@ -526,7 +555,8 @@ E27は `release-cli-custody-426e-1016-terminal.json` / `.log`、raw SHA-256
   - 状態: 古い11-target A/Bは既存baseline。50a4のE14/E15を保持し、537cのsource CIはE17、13-target実A/BはE18、実RELEASE runtimeはE19で成功。
     E20の旧local完全gate終端は未確認。後続M2 sourceの完全required/CIはE22/E24で成功したが、
     E18/E19のNative artifact/source pinとは異なる。426eの新A/BとRELEASE CLIはE26/E27で
-    確認したが、全13 RELEASE runtimeと完全source qualificationは未完了。残る独立監査・
+    確認。後続b568の13-target A/Bと限定RELEASE importはE28/E29で成功したが、
+    原12 driversの全RELEASE runtimeと完全source qualificationは未完了。残る独立監査・
     upgrade/restore・実provider基準により全M7は未完了。
   - 次: E18/E19のsource/tool/profile pinをR4/Gから共用し、新sourceのrelease claimには
     そのsourceの13-target A/B・実RELEASE bindingを用意する。未達qualificationを進める。

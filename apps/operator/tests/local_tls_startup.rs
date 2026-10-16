@@ -2926,6 +2926,180 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
     for (path, bytes) in original_inputs {
         assert_eq!(fs::read(&path).unwrap(), bytes, "{}", path.display());
     }
+
+    // Only after every original replay/refusal/conflict/input-preservation
+    // control above: one genuinely new paid transfer through the final
+    // generation-4 authenticated TLS peers, using the first settlement's own
+    // refund Coin as input and the still-live FEE_COIN as a distinct
+    // fee source after its first reservation, with a fresh request ID and nonce+1.
+    let refund = committed.result.charged.as_ref().unwrap();
+    let refund_ref: &objects::ObjectRef = refund.refund_output.as_ref().unwrap();
+    assert!(refund.refund.get() > 0);
+    assert_eq!(
+        created(&committed.result, refund_ref.id).owner,
+        Owner::Address(sender)
+    );
+    let fresh_request_bytes: [u8; 32] = [0x0c; 32];
+    let fresh_request: RequestId = RequestId::new(fresh_request_bytes).unwrap();
+    let fresh_nonce: u64 = peers[0]
+        .client()
+        .query_next_nonce(sender)
+        .unwrap()
+        .next_nonce();
+    assert_eq!(fresh_nonce, nonce.checked_add(1).unwrap());
+    let fresh: Outputs = Outputs::new(&network.artifacts_dir, "direct-stopped-rotation-fresh");
+    let mut fresh_args: Vec<OsString> = transfer_args(
+        &network,
+        &new_config,
+        peers[0].address,
+        &network.owner_seed,
+        fresh_request_bytes,
+        fresh_nonce,
+        &fresh,
+    );
+    replace(
+        &mut fresh_args,
+        "--coin",
+        hex(refund_ref.id.as_bytes()).into(),
+    );
+    let fresh_output: Output = run_cli(fresh_args);
+    assert!(
+        fresh_output.status.success(),
+        "fresh post-stopped-rotation transfer: stdout={} stderr={}",
+        lossy(&fresh_output.stdout),
+        lossy(&fresh_output.stderr)
+    );
+    assert_eq!(
+        lossy(&fresh_output.stdout)
+            .matches("status=received paid_status=Success")
+            .count(),
+        VALIDATORS
+    );
+    let fresh_saved: Saved = Saved::read(&fresh);
+    let fresh_committed: Committed =
+        verify_saved_request_artifacts(&network, &fresh_saved, fresh_nonce, fresh_request_bytes);
+    let fresh_signed: &SignedPaidIntent = &fresh_committed.signed;
+    let fresh_result: &PaidExecutionResult = &fresh_committed.result;
+    let execution::paid_execution::PaidApplication::Call(fresh_call) =
+        &fresh_signed.intent.application
+    else {
+        panic!("ordinary fresh transfer Call");
+    };
+    assert_eq!(fresh_call.entrypoint, "transfer");
+    let [input] = fresh_call.access.entries.as_slice() else {
+        panic!("one exact fresh coin");
+    };
+    assert_eq!(input.object_ref, *refund_ref);
+    assert_eq!(input.mode, objects::AccessMode::Write);
+    let fresh_recipient: [u8; 32] = VerificationKey::from(&SigningKey::from(RECIPIENT_SEED)).into();
+    assert_eq!(
+        fresh_call.arguments,
+        public_standard_asset::transfer_arguments(&fresh_recipient).unwrap()
+    );
+    assert!(fresh_signed.intent.authorizations.is_empty());
+    let fresh_certificate: FastCertificate =
+        decode_fast_certificate(&fresh_saved.certificate).unwrap();
+    let fresh_availability: AvailabilityCertificate =
+        decode_availability_certificate(&fresh_saved.availability).unwrap();
+    let mut fresh_ids: Vec<ObjectId> = observed_ids(fresh_result);
+    fresh_ids.push(refund_ref.id);
+    fresh_ids.sort_unstable();
+    fresh_ids.dedup();
+    let fresh_view: Observation = observe(&peers, &fresh_ids, fresh_request, sender);
+    let (fresh_version, _fresh_digest, fresh_canonical): (u64, Digest32, Vec<u8>) =
+        current_inline(fresh_view.objects.get(&refund_ref.id).unwrap());
+    let transferred: Object = objects::decode_object(&fresh_canonical).unwrap();
+    let fresh_effects: Vec<&ObjectEffect> = effects_for(fresh_result, refund_ref.id);
+    let [
+        ObjectEffect::Mutated {
+            previous_version,
+            new_object,
+        },
+    ] = fresh_effects.as_slice()
+    else {
+        panic!("fresh input must have exactly one mutation: {fresh_effects:?}");
+    };
+    let previous_refund: &Object = created(&committed.result, refund_ref.id);
+    assert_eq!(*previous_version, refund_ref.version);
+    assert_eq!(fresh_version, new_object.version);
+    assert_eq!(fresh_canonical, encode_object(new_object).unwrap());
+    assert_eq!(new_object.data, previous_refund.data);
+    assert_eq!(new_object.type_hash, previous_refund.type_hash);
+    assert_eq!(new_object.schema_version, previous_refund.schema_version);
+    assert_ne!(refund_ref.id, fresh_signed.intent.consent.source.id);
+    assert_eq!(
+        transferred.owner,
+        Owner::Address(Address::new(fresh_recipient))
+    );
+    assert_eq!(coin_amount(&transferred.data).unwrap(), refund.refund.get());
+    match HttpReceiptQueryResult::decode(&fresh_view.receipt).unwrap() {
+        HttpReceiptQueryResult::Present {
+            request_id,
+            event_digest,
+            dedup_record_bytes,
+        } => {
+            assert_eq!(request_id, fresh_request);
+            assert_eq!(event_digest, fresh_committed.tx_hash);
+            let record: NodeDedupRecord = NodeDedupRecord::decode(&dedup_record_bytes).unwrap();
+            assert_eq!(record.encode().unwrap(), dedup_record_bytes);
+            assert_eq!(record.request_id(), fresh_request);
+            assert_eq!(record.event_digest(), fresh_committed.tx_hash);
+            let [response] = record.responses() else {
+                panic!("fresh receipt must contain exactly one response");
+            };
+            assert_eq!(response.request_id(), fresh_request);
+            assert_eq!(response.status(), NodeResponseStatus::Accepted);
+            assert_eq!(response.payload(), Some(fresh_saved.result.as_slice()));
+        }
+        other => panic!("fresh receipt missing: {other:?}"),
+    }
+    for peer in &peers {
+        assert_eq!(
+            peer.client()
+                .query_receipt(request)
+                .unwrap()
+                .encode()
+                .unwrap(),
+            committed_view.receipt,
+            "first settlement receipt survives fresh business"
+        );
+    }
+    let fresh_snapshot: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    for (index, peer) in peers.iter().enumerate() {
+        assert_eq!(
+            peer.client().query_next_nonce(sender).unwrap().next_nonce(),
+            fresh_nonce.checked_add(1).unwrap()
+        );
+        let replayed: PaidExecutionResult = peer
+            .client()
+            .apply_published_fastvote(
+                fresh_signed,
+                &network.fixture.resolver,
+                &fresh_certificate,
+                &fresh_availability,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            &replayed, fresh_result,
+            "direct host {index} fresh receipt replay"
+        );
+    }
+    assert_unchanged(
+        &fresh_snapshot,
+        &snapshots(&network),
+        "fresh post-stopped-rotation receipt replay",
+    );
+    assert_eq!(
+        observe(&peers, &fresh_ids, fresh_request, sender),
+        fresh_view
+    );
+    assert_eq!(
+        Saved::read(&first),
+        saved,
+        "original transfer artifacts retained after fresh commit"
+    );
+
     for host in hosts {
         let stderr: Vec<u8> = host.guard.stop_orderly_interrupt_observed(PROCESS_DEADLINE);
         assert_native_termination_summary(&stderr, "sigint");
