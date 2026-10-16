@@ -43,6 +43,13 @@ roadmap describes a later target state.
   [DR-0251](decisions/0251-successor-historical-read-stop-check.md) rechecks
   the separate signerless successor-history read boundary's own executor
   before its policy/storage resolution.
+- [Native source-host SIGTERM wiring oracle](native-source-host-sigterm-wiring-oracle.md)
+  ([DR-0254](decisions/0254-native-source-host-sigterm-wiring-oracle.md)):
+  a real compiled `sqlite_source_host` process and a real SIGTERM prove the
+  production constructor wires that signal to the exact executor the
+  ordered-economics `propose` route's own cancellation check honors, through
+  a deterministic listener-drop barrier; wiring only, not the late
+  pre-storage window isolation DR-0247 already covers separately.
 - [Independent import history floor](decisions/0248-import-ordered-history-freshness-floor.md):
   retained same-epoch ancestor pins refuse older or conflicting ordered history
   before opening or creating destination databases; no checkpoint/state-root or activation authority.
