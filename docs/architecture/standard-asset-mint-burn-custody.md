@@ -19,8 +19,13 @@ The published WASM remains the sole execution oracle. Custody never computes
 new protocol math and never changes what the contract itself enforces
 on-chain; it independently decodes the exact same inputs the contract would
 read and performs the exact same checked arithmetic as an *advance, local*
-review, so the human approver sees the true outcome before ever typing the
-confirmation line — not merely the caller's claimed amount.
+review, so the human approver sees the outcome for the referenced cap/coin
+preimage versions before ever typing the confirmation line — not merely the
+caller's claimed amount. This is computed from caller-supplied, hash-bound
+preimages, not independently fetched live chain state; currentness is still
+enforced only at execution (the review's own
+`freshness=enforced-at-execution-not-preparation` line), not at this
+preparation step.
 
 `mint` owns one `TreasuryCap` (Write) and a distinct owned fee source.
 Custody decodes the cap's current supply from its own verified preimage,
@@ -98,8 +103,12 @@ which owns no `Coin` or `TreasuryCap`.
 
 ## Lifecycle and limits
 
-`custody revoke`, recovery and rotation reuse the existing durable store and
-lifecycle exactly as DR-0246/DR-0249 describe; nothing about expiry,
-revocation or key recovery changes for this family. Actual source and
+`custody revoke` reuses the existing durable store exactly as DR-0246/
+DR-0249 describe, and this family's own revocation, expiry, and tampered-
+or restored-record refusals are directly tested
+(`asset_mint_burn_tests.rs`). Key recovery and rotation share the same code
+paths as every other family and are not expected to differ, but — unlike
+revocation — neither is exercised by a mint/burn-specific test; this is not
+new-family acceptance evidence for recovery or rotation. Actual source and
 execution qualification, including any Docker fixture extension, belong in
 [TODO.md](../../TODO.md).

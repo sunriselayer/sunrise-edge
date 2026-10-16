@@ -11,8 +11,12 @@
 //! review of the exact same arithmetic the contract performs, computed from
 //! the caller-supplied canonical preimages under custody's own pinned
 //! trust — never from the caller's claimed amounts or claimed outcome — so
-//! a human approver sees the true before/after `TreasuryCap` supply before
-//! ever typing the confirmation line. `mint` owns the `TreasuryCap` (Write)
+//! a human approver sees the before/after `TreasuryCap` supply for the
+//! exact referenced cap/coin preimage versions before ever typing the
+//! confirmation line. This is not independently fetched live chain state;
+//! currentness is still enforced only at execution (see
+//! `freshness=enforced-at-execution-not-preparation` in the rendered
+//! review). `mint` owns the `TreasuryCap` (Write)
 //! and creates a fresh `Coin` for the reviewed amount/recipient; `burn`
 //! consumes a whole owned `Coin` (Consume) together with the `TreasuryCap`
 //! (Write) — never a partial amount — and the exact consumed Coin amount

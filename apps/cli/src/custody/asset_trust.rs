@@ -1,15 +1,19 @@
 //! Shared pinned genesis/code/instance/fee-policy trust for every Standard
-//! Asset custody family (DR-0246 transfer; DR-0249 split/merge).
+//! Asset custody family (DR-0246 transfer; DR-0249 split/merge; DR-0253
+//! mint/burn).
 //!
 //! [`PinnedAssetTrust::new`] binds one locally pinned [`CustodyConfig`] to
 //! one independently [`VerifiedGenesisRoot`]: every protocol-context field,
 //! the one publisher identity ever signed for, and the exact in-tree genesis
 //! Standard Asset code/instance/policy are fixed once here, never
 //! renegotiated from a caller. Each family's own trust module (`asset_transfer`,
-//! `asset_split_merge`) wraps one `PinnedAssetTrust` and adds only its own
-//! per-entrypoint argument/amount/overflow checks and `CallIntent` shape; the
-//! genesis chain is verified exactly once, in exactly one place, for every
-//! family.
+//! `asset_split_merge`, `asset_mint_burn`) wraps one `PinnedAssetTrust` and
+//! adds only its own per-entrypoint argument/amount/overflow checks and
+//! `CallIntent` shape; the genesis chain is verified exactly once, in
+//! exactly one place, for every family. `cap_tag`/`validate_owned_cap`
+//! (DR-0253) are the one addition to this shared struct: the genesis
+//! `TreasuryCap` nominal type, derived from the same verified origin/asset
+//! as `coin_tag`, used only by `asset_mint_burn`.
 
 use sunrise_edge_client::local_execution::generic_object_result_semantics;
 use sunrise_edge_client::package_types::{ScopedTypeArg, ScopedTypeTag, verify_scoped_type_id};

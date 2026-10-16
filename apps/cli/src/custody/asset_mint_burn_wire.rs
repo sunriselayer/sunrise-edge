@@ -387,6 +387,26 @@ mod tests {
         ));
     }
 
+    /// Mirrors `decode_rejects_an_object_length_over_the_bound` for every
+    /// one of burn's own three declared-length fields (`cap_len`,
+    /// `coin_len`, `fee_len`), not only mint's single `cap_len`/`fee_len`
+    /// pair: burn's own header has a distinct field layout and byte offsets
+    /// (`BURN_HEADER_BYTES` vs `MINT_HEADER_BYTES`), so this bound must be
+    /// independently proven for each burn field rather than assumed from
+    /// mint's coverage.
+    #[test]
+    fn decode_rejects_a_burn_object_length_over_the_bound() {
+        let over_bound: [u8; 4] = (MAX_AUTHENTICATED_OBJECT_BODY_BYTES as u32 + 1).to_be_bytes();
+        for range in [59..63, 63..67, 67..71] {
+            let mut burn_bytes = encode(&burn_sample()).unwrap();
+            burn_bytes[range].copy_from_slice(&over_bound);
+            assert!(matches!(
+                decode(&burn_bytes),
+                Err(CustodyWireError::ArtifactTooLarge { .. })
+            ));
+        }
+    }
+
     #[test]
     fn decode_rejects_a_zero_request_id() {
         let mut bytes = encode(&mint_sample()).unwrap();
@@ -397,17 +417,30 @@ mod tests {
         ));
     }
 
-    /// Stable encoding vector: a fixed, pinned-byte mint request. A change
-    /// to this byte layout is an adapter wire-format break.
+    /// Pins the literal discriminant values themselves, independently of
+    /// the named constants the encoder/decoder use: if `SIGN_MINT_BURN_MESSAGE`
+    /// were ever renumbered to 5, or `MINT_OPERATION_TAG`/`BURN_OPERATION_TAG`
+    /// were ever swapped, a vector built from the constants (rather than
+    /// literals) would silently stay "correct" and catch nothing.
+    #[test]
+    fn literal_version_kind_and_tag_bytes_are_pinned() {
+        assert_eq!(CUSTODY_WIRE_VERSION, 1);
+        assert_eq!(SIGN_MINT_BURN_MESSAGE, 4);
+        assert_eq!(MINT_OPERATION_TAG, 1);
+        assert_eq!(BURN_OPERATION_TAG, 2);
+    }
+
+    /// Stable encoding vector: a fixed, pinned-byte mint request, with the
+    /// version/kind/tag prefix written as literal bytes (`[1, 4, 1]`), not
+    /// the named constants, so a future accidental renumbering of any of
+    /// `CUSTODY_WIRE_VERSION`/`SIGN_MINT_BURN_MESSAGE`/`MINT_OPERATION_TAG`
+    /// cannot silently keep this vector passing. A change to this byte
+    /// layout is an adapter wire-format break.
     #[test]
     fn mint_encoding_is_stable() {
         let request = mint_sample();
         let encoded = encode(&request).unwrap();
-        let mut expected = vec![
-            CUSTODY_WIRE_VERSION,
-            SIGN_MINT_BURN_MESSAGE,
-            MINT_OPERATION_TAG,
-        ];
+        let mut expected = vec![1_u8, 4, 1];
         expected.extend_from_slice(&23_u64.to_be_bytes());
         expected.extend_from_slice(&[7; 32]);
         expected.extend_from_slice(&17_u64.to_be_bytes());
@@ -421,16 +454,14 @@ mod tests {
         assert_eq!(encoded, expected);
     }
 
-    /// Stable encoding vector: a fixed, pinned-byte burn request.
+    /// Stable encoding vector: a fixed, pinned-byte burn request, with the
+    /// version/kind/tag prefix written as literal bytes (`[1, 4, 2]`), for
+    /// the same reason as `mint_encoding_is_stable`.
     #[test]
     fn burn_encoding_is_stable() {
         let request = burn_sample();
         let encoded = encode(&request).unwrap();
-        let mut expected = vec![
-            CUSTODY_WIRE_VERSION,
-            SIGN_MINT_BURN_MESSAGE,
-            BURN_OPERATION_TAG,
-        ];
+        let mut expected = vec![1_u8, 4, 2];
         expected.extend_from_slice(&9_u64.to_be_bytes());
         expected.extend_from_slice(&[8; 32]);
         expected.extend_from_slice(&3_u64.to_be_bytes());

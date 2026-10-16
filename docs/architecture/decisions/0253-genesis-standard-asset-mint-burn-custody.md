@@ -82,9 +82,14 @@ separate genesis authority, which owns no `Coin` or `TreasuryCap`.
 
 No protocol encodings, cryptographic domains, execution effects, fee quote
 ordering or historical vectors change. The kind-4 message is outside the
-protocol namespace, by the same reasoning as kind 1/2/3. Approval, expiry
-and revocation reuse the existing whole-frame store and lifecycle exactly;
-nothing about recovery, rotation or revocation changes for this family.
+protocol namespace, by the same reasoning as kind 1/2/3. Approval and
+expiry reuse the existing whole-frame store exactly; revocation is tested
+directly for this family (tamper, expire, revoke, and refuse-to-restore-a-
+revoked-record cases in `asset_mint_burn_tests.rs`). Key recovery and
+rotation are architecturally shared code paths with every other family and
+are not expected to differ, but — unlike revocation — neither is exercised
+by a mint/burn-specific test; this decision record does not itself
+constitute acceptance evidence for recovery/rotation under this family.
 
 ## Limits
 

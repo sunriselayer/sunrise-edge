@@ -1493,6 +1493,7 @@ def phase_mint_burn(public_key):
             "--expected-chain-id", "custody-whole-coin-test", "--expected-protocol-version", "7",
             "--expected-epoch", "0", "--expected-hash-suite-id", "1", "--expected-domain", DOMAIN_HEX,
             "--treasury-cap", cap_hex, "--amount", str(MINT_AMOUNT), "--recipient", public_key,
+            "--fee-source", generated["fee"],
             "--nonce", "0", "--request-id", MINT_REQUEST_ID, "--max-fee", "1000000", "--gas-limit", "200000",
             "--submission-out", f"{operator_dir}/mint-submission.bin", "--result-out", f"{operator_dir}/mint-result.bin")
         rc, out, err = run_exec(mint_command, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
@@ -1549,6 +1550,7 @@ def phase_mint_burn(public_key):
             "--expected-chain-id", "custody-whole-coin-test", "--expected-protocol-version", "7",
             "--expected-epoch", "0", "--expected-hash-suite-id", "1", "--expected-domain", DOMAIN_HEX,
             "--treasury-cap", cap_hex, "--coin", new_coin_hex,
+            "--fee-source", generated["fee"],
             "--nonce", "1", "--request-id", BURN_REQUEST_ID, "--max-fee", "1000000", "--gas-limit", "200000",
             "--submission-out", f"{operator_dir}/burn-submission.bin", "--result-out", f"{operator_dir}/burn-result.bin")
         rc, out, err = run_exec(burn_command, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])

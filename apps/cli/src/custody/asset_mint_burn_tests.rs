@@ -372,9 +372,63 @@ fn mint_rejects_zero_overflowing_amount_and_bad_recipient() {
     let mut bad_recipient = fixture.mint_request.clone();
     bad_recipient.recipient = [0; 32];
     assert!(trust.prepare_mint(&bad_recipient).is_err());
+}
+
+/// `mint`'s cap/fee distinctness guard (`cap_object.id == fee_object.id`
+/// in `asset_mint_burn.rs`) can never actually fire from two preimages that
+/// otherwise pass their own checks: the cap slot requires the genesis
+/// `TreasuryCap` nominal type and the fee slot requires the genesis `Coin`
+/// nominal type, so one object cannot satisfy both type checks at once —
+/// it is defense-in-depth, not a reachable guard. Swapping `fee_bytes` into
+/// `cap_bytes` is still refused, but by the earlier `TreasuryCap` type
+/// check, not the distinctness guard. This asserts that exact error
+/// message rather than treating `is_err()` alone as proof the distinctness
+/// guard works.
+#[test]
+fn mint_cap_fee_type_collision_is_refused_by_the_type_guard_not_distinctness() {
+    let fixture: Fixture = Fixture::new();
+    let trust = fixture.trust();
     let mut same_as_fee = fixture.mint_request.clone();
     same_as_fee.cap_bytes = same_as_fee.fee_bytes.clone();
-    assert!(trust.prepare_mint(&same_as_fee).is_err());
+    let error = trust.prepare_mint(&same_as_fee).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("mint cap is not the genesis Standard Asset TreasuryCap type")
+    );
+}
+
+/// `max_fee` must be strictly less than the fee balance: both the exact
+/// boundary (`max_fee == fee_balance`) and a value above it must be
+/// refused, not only the already-covered `max_fee == 0` case.
+#[test]
+fn mint_rejects_a_max_fee_at_or_above_the_fee_balance() {
+    let fixture: Fixture = Fixture::new();
+    let trust = fixture.trust();
+    let fee_balance: u64 = public_standard_asset::coin_amount(
+        &objects::decode_object(&fixture.mint_request.fee_bytes)
+            .unwrap()
+            .data,
+    )
+    .unwrap();
+    let mut at_balance = fixture.mint_request.clone();
+    at_balance.max_fee = fee_balance;
+    assert!(trust.prepare_mint(&at_balance).is_err());
+    let mut above_balance = fixture.mint_request.clone();
+    above_balance.max_fee = fee_balance + 1;
+    assert!(trust.prepare_mint(&above_balance).is_err());
+}
+
+/// A non-canonical fee preimage (decodable but not the exact canonical
+/// re-encoding) is refused in `mint`, mirroring the existing cap-preimage
+/// coverage in `mint_rejects_wrong_owner_type_schema_and_trailing_preimage_bytes`.
+#[test]
+fn mint_rejects_a_noncanonical_fee_preimage() {
+    let fixture: Fixture = Fixture::new();
+    let trust = fixture.trust();
+    let mut trailing = fixture.mint_request.clone();
+    trailing.fee_bytes.push(0);
+    assert!(trust.prepare_mint(&trailing).is_err());
 }
 
 #[test]
@@ -415,27 +469,105 @@ fn mint_rejects_a_zero_max_fee_and_a_zero_gas_limit() {
 }
 
 #[test]
-fn burn_rejects_shared_identity_foreign_fee_and_unowned_inputs() {
+fn burn_rejects_foreign_fee_and_unowned_inputs() {
     let fixture: Fixture = Fixture::new();
     let trust = fixture.trust();
-    let mut same_cap_coin = fixture.burn_request.clone();
-    same_cap_coin.coin_bytes = same_cap_coin.cap_bytes.clone();
-    assert!(trust.prepare_burn(&same_cap_coin).is_err());
-    let mut fee_equals_cap = fixture.burn_request.clone();
-    fee_equals_cap.fee_bytes = fee_equals_cap.cap_bytes.clone();
-    assert!(trust.prepare_burn(&fee_equals_cap).is_err());
-    let mut fee_equals_coin = fixture.burn_request.clone();
-    fee_equals_coin.fee_bytes = fee_equals_coin.coin_bytes.clone();
-    assert!(trust.prepare_burn(&fee_equals_coin).is_err());
     let original: Object = objects::decode_object(&fixture.burn_request.coin_bytes).unwrap();
     let mut wrong_owner: Object = original.clone();
     wrong_owner.owner = Owner::Address(Address::new([0x42; 32]));
     let mut wrong_owner_request = fixture.burn_request.clone();
     wrong_owner_request.coin_bytes = objects::encode_object(&wrong_owner).unwrap();
     assert!(trust.prepare_burn(&wrong_owner_request).is_err());
-    let mut trailing = fixture.burn_request.clone();
-    trailing.coin_bytes.push(0);
-    assert!(trust.prepare_burn(&trailing).is_err());
+}
+
+/// A non-canonical cap or coin preimage (decodable but not the exact
+/// canonical re-encoding) is refused in `burn`, for both inputs
+/// independently — not just the coin, which the removed combined test
+/// previously checked alone.
+#[test]
+fn burn_rejects_a_noncanonical_cap_or_coin_preimage() {
+    let fixture: Fixture = Fixture::new();
+    let trust = fixture.trust();
+    let mut trailing_cap = fixture.burn_request.clone();
+    trailing_cap.cap_bytes.push(0);
+    assert!(trust.prepare_burn(&trailing_cap).is_err());
+    let mut trailing_coin = fixture.burn_request.clone();
+    trailing_coin.coin_bytes.push(0);
+    assert!(trust.prepare_burn(&trailing_coin).is_err());
+}
+
+/// `burn`'s cap/coin and fee/cap distinctness guards (`cap_object.id ==
+/// coin_object.id` and `fee_object.id == cap_object.id` in
+/// `asset_mint_burn.rs`) can never actually fire from preimages that
+/// otherwise pass their own checks, for the same structural reason as
+/// mint's cap/fee guard: the cap slot requires the genesis `TreasuryCap`
+/// nominal type while the coin and fee slots both require the genesis
+/// `Coin` nominal type, so no single object can satisfy a `TreasuryCap`
+/// check and a `Coin` check at once. Both swaps below are still refused,
+/// but by the earlier type check, not the distinctness guard — this
+/// asserts the exact error message rather than treating `is_err()` alone
+/// as proof either distinctness guard works.
+#[test]
+fn burn_cap_coin_and_fee_cap_type_collisions_are_refused_by_the_type_guard_not_distinctness() {
+    let fixture: Fixture = Fixture::new();
+    let trust = fixture.trust();
+    let mut same_cap_coin = fixture.burn_request.clone();
+    same_cap_coin.coin_bytes = same_cap_coin.cap_bytes.clone();
+    let coin_error = trust.prepare_burn(&same_cap_coin).unwrap_err();
+    assert!(
+        coin_error
+            .to_string()
+            .contains("burn coin is not the genesis Standard Asset Coin type")
+    );
+    let mut fee_equals_cap = fixture.burn_request.clone();
+    fee_equals_cap.fee_bytes = fee_equals_cap.cap_bytes.clone();
+    let fee_error = trust.prepare_burn(&fee_equals_cap).unwrap_err();
+    assert!(
+        fee_error
+            .to_string()
+            .contains("fee source is not the genesis Standard Asset Coin type")
+    );
+}
+
+/// `burn`'s fee/coin distinctness guard (`fee_object.id == coin_object.id`)
+/// is the one guard in this family that two otherwise-valid preimages can
+/// actually reach: the fee and coin slots both require the genesis `Coin`
+/// nominal type, so passing the same coin preimage for both legitimately
+/// passes every type/owner/schema check and is refused only by the
+/// distinctness guard itself.
+#[test]
+fn burn_rejects_fee_coin_identity_via_the_distinctness_guard() {
+    let fixture: Fixture = Fixture::new();
+    let trust = fixture.trust();
+    let mut fee_equals_coin = fixture.burn_request.clone();
+    fee_equals_coin.fee_bytes = fee_equals_coin.coin_bytes.clone();
+    let error = trust.prepare_burn(&fee_equals_coin).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("fee source must be distinct from every burn application input")
+    );
+}
+
+/// `max_fee` must be strictly less than the fee balance: both the exact
+/// boundary (`max_fee == fee_balance`) and a value above it must be
+/// refused, not only the already-covered `max_fee == 0` case.
+#[test]
+fn burn_rejects_a_max_fee_at_or_above_the_fee_balance() {
+    let fixture: Fixture = Fixture::new();
+    let trust = fixture.trust();
+    let fee_balance: u64 = public_standard_asset::coin_amount(
+        &objects::decode_object(&fixture.burn_request.fee_bytes)
+            .unwrap()
+            .data,
+    )
+    .unwrap();
+    let mut at_balance = fixture.burn_request.clone();
+    at_balance.max_fee = fee_balance;
+    assert!(trust.prepare_burn(&at_balance).is_err());
+    let mut above_balance = fixture.burn_request.clone();
+    above_balance.max_fee = fee_balance + 1;
+    assert!(trust.prepare_burn(&above_balance).is_err());
 }
 
 #[test]
