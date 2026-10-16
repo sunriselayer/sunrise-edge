@@ -197,6 +197,12 @@ EXPIRING_REQUEST_ID = "22" * 32
 RECOVERY_REQUEST_ID = "33" * 32
 NEW_IDENTITY_REQUEST_ID = "44" * 32
 WRONG_PUBLIC_KEY_HEX = "99" * 32
+SPLIT_REQUEST_ID = "91" * 32
+MERGE_REQUEST_ID = "92" * 32
+# Half of apps/devnet's DEVNET_PAID_SPEND_COIN_BALANCE (10_000_000); the
+# split amount must stay strictly between zero and the held balance.
+SPLIT_AMOUNT = 5_000_000
+RECOMBINED_AMOUNT = 10_000_000
 
 INTERNAL_DEADLINE = time.monotonic() + 230.0
 OUTPUT_CAP = 262_144
@@ -1105,6 +1111,257 @@ def phase_transfer(public_key):
     return {"actual_cli":True, "whole_coin":True, "offline_bytes_equal":True, "replay_equal":True, "revoked":True, "revoked_after_restart":True}
 
 
+def phase_split_merge(public_key):
+    # Fresh phase directories only: this reuses the exact same one-owner,
+    # one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
+    # already builds (via its own unmodified "generate"/"serve" modes),
+    # booted into a brand-new store here. It never touches phase_transfer's
+    # own custody-transfer/operator/transfer directories, genesis, coins or
+    # assertions.
+    custody_dir, operator_dir = f"{ROOT}/custody-split-merge", f"{ROOT}/operator/split-merge"
+    for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
+        os.mkdir(path, 0o700)
+        os.chown(path, uid, gid)
+    probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
+                  "custody::asset_fixture::distinct_uid_transfer_probe", "--exact", "--ignored", "--nocapture", "--format", "terse"]
+    def probe_env(mode, directory):
+        return {"CUSTODY_TRANSFER_MODE": mode, "CUSTODY_TRANSFER_DIR": directory, "CUSTODY_TRANSFER_PUBLIC_KEY": public_key}
+    rc, out, err = run_exec(probe_argv, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], env=probe_env("generate", custody_dir))
+    if rc != 0:
+        raise FixtureFailure(f"split/merge preimage generation failed: {err!r}")
+    generated = last_json_line(out)
+    config_text = f"chain_id=custody-whole-coin-test\nprotocol_version=7\nepoch=0\nhash_suite_id=1\ndomain={DOMAIN_HEX}\npublisher_public_key={public_key}\noperator_uid={OPERATOR_UID}\n"
+    with open(f"{custody_dir}/config", "x") as output:
+        output.write(config_text)
+    os.chmod(f"{custody_dir}/config", 0o600)
+    os.chown(f"{custody_dir}/config", CUSTODY_UID, CUSTODY_GID)
+    def trust_flags(directory):
+        return ["--config", f"{directory}/config", "--genesis-manifest-file", f"{directory}/genesis.bin", "--genesis-digest", generated["digest"]]
+
+    def copy_private(src_dir, dst_dir, name, dst_uid, dst_gid):
+        with open(f"{src_dir}/{name}", "rb") as source:
+            content = source.read(1024 * 1024)
+        with open(f"{dst_dir}/{name}", "xb") as target:
+            target.write(content)
+        os.chmod(f"{dst_dir}/{name}", 0o600)
+        os.chown(f"{dst_dir}/{name}", dst_uid, dst_gid)
+
+    approvals = f"{ROOT}/custody-approvals"
+    socket_path = f"{ROOT}/run/split-merge.sock"
+    signer = ["--custody-socket", socket_path, "--custody-uid", str(CUSTODY_UID), "--custody-expected-public-key", public_key]
+
+    def serve_command(count):
+        return cli_argv("custody", "serve-split-merge", *trust_flags(custody_dir),
+            "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
+            "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
+
+    # ---- split: prepare / approve / offline sign / actual CLI split ----
+    prepare_split = cli_argv("custody", "prepare-split", *trust_flags(custody_dir),
+        "--coin-file", f"{custody_dir}/coin.bin", "--fee-source-file", f"{custody_dir}/fee.bin",
+        "--amount", str(SPLIT_AMOUNT), "--recipient", public_key, "--nonce", "0", "--request-id", SPLIT_REQUEST_ID,
+        "--max-fee", "1000000", "--gas-limit", "200000", "--out", f"{custody_dir}/split-request.bin")
+    rc, out, err = run_exec(prepare_split, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    if rc != 0 or b"split_request_exported=true" not in out:
+        raise FixtureFailure(f"split prepare failed: {err!r}")
+    for name in ["config", "genesis.bin", "split-request.bin"]:
+        copy_private(custody_dir, operator_dir, name, OPERATOR_UID, OPERATOR_GID)
+
+    approve_split = cli_argv("custody", "approve-split", *trust_flags(custody_dir),
+        "--request-file", f"{custody_dir}/split-request.bin", "--approvals-dir", approvals, "--expires-in-seconds", "3600")
+    rc, _out, refusal = run_exec(approve_split, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
+        raise FixtureFailure("split approval unexpectedly accepted a pipe")
+    phase_approve_via_pty(None, None, 0, SPLIT_REQUEST_ID, 3600, command=approve_split)
+
+    serve = None
+    native = None
+    try:
+        serve = start_serve(socket_path, 30, 6, 6, command=serve_command(6))
+        sign_split = cli_argv("custody", "sign-split", *trust_flags(operator_dir),
+            "--request-file", f"{operator_dir}/split-request.bin", *signer)
+        rc, _out, err = run_exec([*sign_split, "--out", f"{operator_dir}/offline-split.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"protected offline split sign failed: {err!r}")
+
+        os.chmod(ROOT, 0o755)
+        phase_operator_cannot_read_or_edit(SPLIT_REQUEST_ID)
+        native = subprocess.Popen(probe_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            preexec_fn=lambda: (os.setgroups([OPERATOR_GID]), os.setgid(OPERATOR_GID), os.setuid(OPERATOR_UID)),
+            env=probe_env("serve", operator_dir), cwd="/")
+        address = None
+        startup_end = time.monotonic() + min(10, remaining())
+        prefix = b""
+        while address is None:
+            if time.monotonic() >= startup_end:
+                native.kill(); native.wait(timeout=5)
+                raise FixtureFailure("split/merge native host did not start")
+            ready, _, _ = select.select([native.stdout], [], [], min(1, remaining()))
+            if ready:
+                line = native.stdout.readline(16385)
+                if not line:
+                    tail, failure = native.communicate(timeout=min(5, remaining()))
+                    charge_output(len(tail) + len(failure))
+                    raise FixtureFailure(f"split/merge native host exited before its address: {failure[:16384]!r}")
+                prefix += line; charge_output(len(line))
+                if len(prefix) > 16384:
+                    raise FixtureFailure("split/merge native startup output exceeds bound")
+                if line.startswith(b'{"address":'):
+                    address = json.loads(line)["address"]
+
+        split_command = cli_argv("split", "--endpoint", address, *signer,
+            "--expected-chain-id", "custody-whole-coin-test", "--expected-protocol-version", "7",
+            "--expected-epoch", "0", "--expected-hash-suite-id", "1", "--expected-domain", DOMAIN_HEX,
+            "--coin", generated["coin"], "--fee-source", generated["fee"], "--amount", str(SPLIT_AMOUNT),
+            "--recipient", public_key, "--nonce", "0", "--request-id", SPLIT_REQUEST_ID,
+            "--max-fee", "1000000", "--gas-limit", "200000",
+            "--submission-out", f"{operator_dir}/split-submission.bin", "--result-out", f"{operator_dir}/split-result.bin")
+        rc, out, err = run_exec(split_command, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0 or b"paid_status=Success" not in out:
+            raise FixtureFailure(f"actual protected split CLI failed: {out!r} {err!r}")
+        with open(f"{operator_dir}/offline-split.bin", "rb") as source:
+            offline_split = source.read(1048577)
+        with open(f"{operator_dir}/split-submission.bin", "rb") as source:
+            if source.read(1048577) != offline_split:
+                raise FixtureFailure("offline and actual CLI split signed bytes differ")
+
+        # ---- after-split: independent verification plus fresh merge preimages ----
+        split_merge_probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
+            "custody::asset_split_merge_fixture::distinct_uid_split_merge_probe", "--exact", "--ignored", "--nocapture", "--format", "terse"]
+        def split_merge_env(mode, **overrides):
+            env = {
+                "CUSTODY_SPLIT_MERGE_MODE": mode,
+                "CUSTODY_SPLIT_MERGE_DIR": operator_dir,
+                "CUSTODY_SPLIT_MERGE_ENDPOINT": address,
+                "CUSTODY_SPLIT_MERGE_PUBLIC_KEY": public_key,
+                "CUSTODY_SPLIT_MERGE_ORIGINAL_COIN_HEX": generated["coin"],
+                "CUSTODY_SPLIT_MERGE_FEE_COIN_HEX": generated["fee"],
+            }
+            env.update(overrides)
+            return env
+        rc, out, err = run_exec(split_merge_probe_argv, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID],
+            env=split_merge_env("after-split", CUSTODY_SPLIT_MERGE_SPLIT_AMOUNT=str(SPLIT_AMOUNT)))
+        after_split = last_json_line(out)
+        if rc != 0 or after_split.get("mode") != "after-split" or after_split.get("verified") is not True:
+            raise FixtureFailure(f"after-split verification failed: {err!r}")
+        if after_split.get("next_nonce") != 1:
+            raise FixtureFailure("after-split next_nonce did not reach 1")
+        new_coin_hex = after_split["new_coin_hex"]
+
+        merge_inputs_dir = f"{custody_dir}/merge-inputs"
+        os.mkdir(merge_inputs_dir, 0o700)
+        os.chown(merge_inputs_dir, CUSTODY_UID, CUSTODY_GID)
+        for name in ["into.bin", "from.bin", "fee.bin"]:
+            copy_private(operator_dir, merge_inputs_dir, name, CUSTODY_UID, CUSTODY_GID)
+
+        # ---- merge: prepare / approve / offline sign / actual CLI merge ----
+        prepare_merge = cli_argv("custody", "prepare-merge", *trust_flags(custody_dir),
+            "--into-file", f"{merge_inputs_dir}/into.bin", "--from-file", f"{merge_inputs_dir}/from.bin",
+            "--fee-source-file", f"{merge_inputs_dir}/fee.bin", "--nonce", "1", "--request-id", MERGE_REQUEST_ID,
+            "--max-fee", "1000000", "--gas-limit", "200000", "--out", f"{custody_dir}/merge-request.bin")
+        rc, out, err = run_exec(prepare_merge, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0 or b"merge_request_exported=true" not in out:
+            raise FixtureFailure(f"merge prepare failed: {err!r}")
+        copy_private(custody_dir, operator_dir, "merge-request.bin", OPERATOR_UID, OPERATOR_GID)
+
+        approve_merge = cli_argv("custody", "approve-merge", *trust_flags(custody_dir),
+            "--request-file", f"{custody_dir}/merge-request.bin", "--approvals-dir", approvals, "--expires-in-seconds", "3600")
+        rc, _out, refusal = run_exec(approve_merge, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
+            raise FixtureFailure("merge approval unexpectedly accepted a pipe")
+        phase_approve_via_pty(None, None, 1, MERGE_REQUEST_ID, 3600, command=approve_merge)
+
+        sign_merge = cli_argv("custody", "sign-merge", *trust_flags(operator_dir),
+            "--request-file", f"{operator_dir}/merge-request.bin", *signer)
+        rc, _out, err = run_exec([*sign_merge, "--out", f"{operator_dir}/offline-merge.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"protected offline merge sign failed: {err!r}")
+
+        merge_command = cli_argv("merge", "--endpoint", address, *signer,
+            "--expected-chain-id", "custody-whole-coin-test", "--expected-protocol-version", "7",
+            "--expected-epoch", "0", "--expected-hash-suite-id", "1", "--expected-domain", DOMAIN_HEX,
+            "--into", generated["coin"], "--from", new_coin_hex, "--fee-source", generated["fee"],
+            "--nonce", "1", "--request-id", MERGE_REQUEST_ID, "--max-fee", "1000000", "--gas-limit", "200000",
+            "--submission-out", f"{operator_dir}/merge-submission.bin", "--result-out", f"{operator_dir}/merge-result.bin")
+        rc, out, err = run_exec(merge_command, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0 or b"paid_status=Success" not in out:
+            raise FixtureFailure(f"actual protected merge CLI failed: {out!r} {err!r}")
+        with open(f"{operator_dir}/offline-merge.bin", "rb") as source:
+            offline_merge = source.read(1048577)
+        with open(f"{operator_dir}/merge-submission.bin", "rb") as source:
+            if source.read(1048577) != offline_merge:
+                raise FixtureFailure("offline and actual CLI merge signed bytes differ")
+
+        # ---- verify-merge: independent verification plus both-request replay ----
+        rc, out, err = run_exec(split_merge_probe_argv, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID],
+            env=split_merge_env("verify-merge",
+                CUSTODY_SPLIT_MERGE_NEW_COIN_HEX=new_coin_hex,
+                CUSTODY_SPLIT_MERGE_RECOMBINED_AMOUNT=str(RECOMBINED_AMOUNT)))
+        verify_merge = last_json_line(out)
+        if (rc != 0 or verify_merge.get("mode") != "verify-merge" or verify_merge.get("verified") is not True
+                or verify_merge.get("replay_equal") is not True or verify_merge.get("next_nonce") != 2):
+            raise FixtureFailure(f"verify-merge verification failed: {err!r}")
+
+        # ---- revocation: both requests refused, same process, no output ----
+        rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", SPLIT_REQUEST_ID),
+            CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"split revoke failed: {err!r}")
+        rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", MERGE_REQUEST_ID),
+            CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"merge revoke failed: {err!r}")
+        rc, _out, refusal = run_exec([*sign_split, "--out", f"{operator_dir}/revoked-split.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-split.bin"):
+            raise FixtureFailure("revoked split produced signed output")
+        rc, _out, refusal = run_exec([*sign_merge, "--out", f"{operator_dir}/revoked-merge.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-merge.bin"):
+            raise FixtureFailure("revoked merge produced signed output")
+
+        summary = wait_serve(serve, extra_seconds=10)
+        check_summary("split_merge", summary, {
+            "connections_accepted": "6", "requests_handled": "6",
+            "requests_signed": "4", "requests_refused": "2",
+        })
+
+        with open(f"{operator_dir}/stop-native", "xb") as completed:
+            completed.write(b"complete\n")
+        os.chmod(f"{operator_dir}/stop-native", 0o600)
+        os.chown(f"{operator_dir}/stop-native", OPERATOR_UID, OPERATOR_GID)
+        out, err = native.communicate(timeout=min(25, remaining()))
+        charge_output(len(out) + len(err))
+        if native.returncode != 0 or b"1 passed; 0 failed; 0 ignored" not in out:
+            raise FixtureFailure(f"split/merge native host did not finish cleanly: {err!r}")
+    finally:
+        for process in [native, serve]:
+            if process is not None and process.poll() is None:
+                process.kill(); process.wait(timeout=5)
+        os.chmod(ROOT, 0o711)
+
+    restarted = start_serve(socket_path, 30, 2, 2, command=serve_command(2))
+    try:
+        rc, _out, refusal = run_exec([*sign_split, "--out", f"{operator_dir}/revoked-split-restart.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-split-restart.bin"):
+            raise FixtureFailure("revoked split produced output after restart")
+        rc, _out, refusal = run_exec([*sign_merge, "--out", f"{operator_dir}/revoked-merge-restart.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-merge-restart.bin"):
+            raise FixtureFailure("revoked merge produced output after restart")
+        restarted_summary = wait_serve(restarted, extra_seconds=8)
+        check_summary("split_merge revoked restart", restarted_summary,
+            {"connections_accepted": "2", "requests_handled": "2", "requests_signed": "0", "requests_refused": "2"})
+    finally:
+        if restarted.poll() is None:
+            restarted.kill(); restarted.wait(timeout=5)
+
+    return {
+        "actual_cli": True, "split_self": True, "after_split_verified": True,
+        "merge_verified": verify_merge.get("verified") is True,
+        "offline_bytes_equal": True, "replay_equal": verify_merge.get("replay_equal") is True,
+        "revoked": True, "revoked_after_restart": True,
+        "serve_summary": summary.strip().splitlines(),
+        "restart_summary": restarted_summary.strip().splitlines(),
+    }
+
+
 def main():
     phase_setup()
     phase_missing_prerequisite_fails()
@@ -1212,6 +1469,7 @@ def main():
     new_identity_summary = phase_new_identity(socket_path, public_key)
 
     transfer_summary = phase_transfer(public_key)
+    split_merge_summary = phase_split_merge(public_key)
 
     total_bytes = 0
     for dirpath, _dirnames, filenames in os.walk(ROOT):
@@ -1234,6 +1492,7 @@ def main():
         "revocation_retained_through_recovery": True,
         "new_identity_verified": True,
         "transfer": transfer_summary,
+        "split_merge": split_merge_summary,
         "lifecycle_summaries": [live_summary.strip().splitlines(), third_summary.strip().splitlines(), *recovery_summaries,
                                 restored_approval_summary, new_identity_summary],
     }, sort_keys=True))
@@ -1460,7 +1719,23 @@ try {
     .some((key) => result.transfer[key] !== true)) {
     throw new Error('the distinct-UID protected transfer evidence is incomplete');
   }
+  // `phase_split_merge`'s own `check_summary` calls already enforce the
+  // exact kind-3 serve counts (6/6/4/2, then 2/2/0/2 after revocation and
+  // restart) by raising inside the container on any mismatch, exactly like
+  // `phase_transfer`'s own serve-count enforcement above; this check only
+  // requires every one of its own completion flags, the same shape as the
+  // `result.transfer` check immediately above.
+  if (!result.split_merge || ['actual_cli', 'split_self', 'after_split_verified', 'merge_verified',
+      'offline_bytes_equal', 'replay_equal', 'revoked', 'revoked_after_restart']
+    .some((key) => result.split_merge[key] !== true)) {
+    throw new Error('the distinct-UID protected split/merge evidence is incomplete');
+  }
   const countKeys = ['connections_accepted', 'requests_handled', 'requests_signed', 'requests_refused'];
+  for (const [key, counts] of [['serve_summary', [6, 6, 4, 2]], ['restart_summary', [2, 2, 0, 2]]]) {
+    if (JSON.stringify(result.split_merge[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
+      throw new Error('the split/merge serve counters are incomplete or differ');
+    }
+  }
   if (!Array.isArray(result.lifecycle_summaries) || result.lifecycle_summaries.length !== expectedLifecycle.length ||
       result.lifecycle_summaries.some((summary, index) =>
         JSON.stringify(summary) !== JSON.stringify(countKeys.map((key, column) => `${key}=${expectedLifecycle[index][column]}`)))) {

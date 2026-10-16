@@ -68,6 +68,11 @@ roadmap describes a later target state.
   ([DR-0246](decisions/0246-genesis-standard-asset-transfer-custody.md)):
   independent object preimages and known-code whole-coin review, separate
   transfer-only signer and the ordinary paid CLI consumer.
+- [Genesis Standard Asset split/merge custody](standard-asset-split-merge-custody.md)
+  ([DR-0249](decisions/0249-genesis-standard-asset-split-merge-custody.md)):
+  shares the transfer family's genesis/code/instance/policy pin, adds a
+  separate kind-3 split/merge signer and overflow-checked review, and
+  connects the ordinary paid `split`/`merge` CLI consumer.
 - [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
   an explicitly configured closed HTTPS transport, separate from default
   event-only relays, embedded DO policy and core authority.
