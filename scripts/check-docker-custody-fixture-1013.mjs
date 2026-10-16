@@ -47,7 +47,8 @@
 //     --cli-binary /abs/path/to/target/.../sunrise-edge-cli \
 //     --test-binary /abs/path/to/target/.../deps/sunrise_edge_cli-<hash>
 import { spawn, execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
 import { performance } from 'node:perf_hooks';
 import { existsSync, statSync } from 'node:fs';
 import { basename } from 'node:path';
@@ -2551,6 +2552,25 @@ except Exception as error:  # last resort: never a silent success on an unexpect
 // scripts/check-docker-fault-environment.mjs's own wrapper exactly, since
 // that is this repository's accepted pattern for Docker-only evidence.
 
+function probeCommand() {
+  const source = Buffer.from(probe, 'utf8');
+  if (source.length > 256 * 1024) throw new Error('fixture program exceeds its transport bound');
+  const packed = deflateSync(source).toString('base64');
+  const digest = createHash('sha256').update(source).digest('hex');
+  // Keep one argv below Linux's per-argument limit without changing the
+  // program, mounts, standard input, privileges or fixture resource bounds.
+  const command = [
+    'import base64,hashlib,zlib',
+    '__custody_decoder=zlib.decompressobj()',
+    `__custody_probe=__custody_decoder.decompress(base64.b64decode(${JSON.stringify(packed)},validate=True),${source.length + 1})`,
+    `if len(__custody_probe)!=${source.length} or not __custody_decoder.eof or __custody_decoder.unused_data or __custody_decoder.unconsumed_tail: raise RuntimeError('fixture program transport length differs')`,
+    `if hashlib.sha256(__custody_probe).hexdigest()!=${JSON.stringify(digest)}: raise RuntimeError('fixture program transport digest differs')`,
+    "exec(compile(__custody_probe,'<custody-fixture>','exec'))",
+  ].join('\n');
+  if (Buffer.byteLength(command, 'utf8') > 64 * 1024) throw new Error('fixture bootstrap exceeds its argument bound');
+  return command;
+}
+
 async function docker(args, cleanup = false) {
   const allowance = Math.floor(deadline - performance.now() - (cleanup ? 0 : 25_000));
   const remaining = cleanup ? Math.min(5_000, allowance) : allowance;
@@ -2696,7 +2716,7 @@ try {
     '--pids-limit', '64', '--log-driver', 'none',
     '--mount', `type=volume,source=${volumeName},target=/work,volume-nocopy`,
     ...binds.flatMap((bind) => ['--mount', bind]),
-    '--entrypoint', '/usr/local/bin/python3', image, '-I', '-B', '-c', probe,
+    '--entrypoint', '/usr/local/bin/python3', image, '-I', '-B', '-c', probeCommand(),
   ]);
   containerId = created.stdout.trim();
   if (!/^[0-9a-f]{64}$/.test(containerId)) throw new Error('invalid exact container identity');
