@@ -88,8 +88,11 @@ Native A/B・RELEASE CLIはE25-E27で成功。完全required/CIは長時間recur
 compiled import全10件、手動構成SQLite/HTTP全3件・Clippyが成功しました。
 これは本番host constructor/signalの配線証明ではありません。完全required/CIは実行中です。
 同sourceのNative A/Bと、RELEASE childでのimport全10件はE28/E29。
-今回の正常停止TLS交代後の新規取引はこの上の作業中差分であり、E28/E29のsourceに
-含めません。各完全gate・全M2-M5/M7の最終照合は未完了として保持します。
+正常停止TLS交代後の新規取引はE30 / `4312d547`、後継live/historyの停止確認は
+E31 / `e60337b3` とE32 / `92fd5c93` に固定し、それぞれDraft PR #309-#311で確認できます。
+分割・結合custodyの最初のcomponent sourceはE33 / `bcb9a1c9`。
+これらを `codex/coin-ops-custody-1016` へ通常mergeし、統合sourceを別に検証します。
+E28/E29のsourceに後続差分を含めたことにはしません。各完全gate・全M2-M5/M7の最終照合は未完了として保持します。
 初回DockerのSQLite祖先directory読取EACCES、manual fixtureのsetup counter誤り、
 import testのsource retirement不足と各修正前失敗も保持します。
 50a4 / tree eff704ddのE14-E16と旧作業コピーは過去の対象として保持します。
@@ -208,6 +211,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E30: fresh business after authorized stopped TLS rotation | b568上のこの差分。元の全assertion/helper/待機/資金を削らず、正常停止後に最終generation4で新規有料送金を実CLIから確定。全4 replicasの独立intent/両quorum・exact mutation/version/body・新旧receipt・nonce・exact再送/full snapshotを確認。元12 TLS cases、formatとoperator全target Clippyの全3 commandsがactual exit 0/EOF、40.845秒。独立correctness review指摘を処理し再承認 | selected stopped same-file handoffのcomponent。先のoverlap拒否fixtureとは別。live handoff/cross-host/物理fault・全M3/公開認定ではない。完全required/CIは未完了 |
 | E31: successor late-stop boundary | 4312上のこの差分。同じexecutorのstopをidentity/clock/deadline後・fresh authority解決前に再確認。Native HTTP全213件とformat/operator全target Clippyが全actual exit 0/EOF。guardを外すと対象2件が409対503でactual101になり、exact bytes復元後は2件actual0/EOF。E30統合後も全12 TLS casesとClippy/formatの全3 commandsがactual0/EOF、374.159秒。独立correctness review承認 | 手動構成のactual router component + compiled TLS controls。実signal/factoryの当該guardだけの配線分離oracle・全D05/M5の完了ではない。実行済みstorageのabort/rollbackやprotocol変更は追加せず、完全required/CIは未完了 |
 | E32: historical successor late-stop boundary | e603上のこの差分。signerless履歴hostの別read ownerでも、identity/clock/deadline後・fresh policy解決前に同じexecutorのstopを再確認。Native HTTP全218件、format、native-http/operator全target Clippyの全3 commandsがactual0/EOF、366.549秒。guard除去時は対象1件がactual101、exact bytes復元後は1件actual0/EOF。独立correctness review承認 | 手動構成actual routerのsummary controlと、同じreadを使う3 history routesのsource対応。compiled signal配線単独の検証・物理fault・全D05/M5の完了ではない。完全required/CIは未完了 |
+| E33: genesis Standard Asset split/merge custody component | `bcb9a1c9` / tree `4619ceab`。共通の独立genesis/code/instance/policy pinを保ち、専用kind3で分割・結合の完全preimage/内容表示/正確な期限・frame approvalと実CLIを接続。custody 98 passed/3 ignored、Standard Asset 18 passed、CLI build・Clippy・fmt/構文・compiler artifact記録の全7 commandsがactual0/EOF、92.870秒。実Docker/UID/PTYは元publication・6 lifecycle・送金と追加分割→結合を全actual0/EOF、4.687秒。両独立correctness review指摘を処理し再承認 | 3 ignored entriesは同じharnessのDocker ownerが別途実行。5Mへ分割・10Mへ結合、送信元/新coinのcanonical effectとquery、nonce2、非空の一致receipt、exact replay、取消後/restart拒否・入出力binary不変と所有資源解放を確認。trusted OS/local genesis profileのみ。自動署名/TreasuryCap/他family・epoch/全M2・完全required/CI・RELEASE認定ではない。E30-E32統合後のsourceは新しく完全検証する |
+
 
 
 
@@ -349,6 +354,15 @@ E32は `history-stop-targeted-1016-terminal.json` / `.log`、raw SHA-256
 `history-stop-negative-1016-terminal.json` / `.log`、raw SHA-256
 `c603dac0ffa1f3b5a9ec5b7047f7e3b31adecc2a8ec545f573416b8c74abcd5d`。負対照actual101と復元後actual0を分けて保存し、
 2 Rust filesのbyte復元・最初の全218件との一致を親でも照合しました。
+
+E33は `coin-ops-core-targeted4-1016-terminal.json` / `.log`、raw SHA-256
+`eb8d73a64f26e522c4fe5cfd0be6ed07166ca38396d7ff72bc10e4586d90de16`。実UID/PTYは
+`coin-ops-docker-1016-terminal.json` / `.log`、raw SHA-256
+`f4cacba2d8736c0437d00226d03e99913070db1f023362cb5a8338dbd9f83920`。compilerの実package ID/src path/test executableは
+`coin-ops-compiler-artifact-observation-1016.json`。親もsourceBefore/Afterと
+両入力ELFのhash/mode/owner/identity不変を照合しました。Node/Python構文、private
+preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・失敗は保持し、修正後の
+実行だけを成功に数えます。outer280秒/inner230秒・出力・コンテナ上限は維持しました。
 
 ## 作業終了時の環境整理
 
@@ -506,6 +520,11 @@ E32は `history-stop-targeted-1016-terminal.json` / `.log`、raw SHA-256
     exact approval・別UID署名・既存transfer CLIを接続。component controlsは成功したが、
     E25のclean source componentsとE26/E27のRELEASE CLIまで確認。完全gate/CIと
     最終照合は未完了。他operation/epoch/自動署名は対象外。
+  - [x] [genesis Standard Asset split/mergeの専用custody component](docs/architecture/standard-asset-split-merge-custody.md):
+    E33の実CLI/別UID/PTY、完全内容とframe、分割先が自分/他者の場合の境界、金額・overflow・
+    消費入力・実receipt/replay・取消と再起動を検証。splitは他者への部分送金も許す。
+    publication kind1/transfer kind2は閉じたまま維持し、mint/burn/create-assetは対象外。
+    各family全lifecycle・自動署名・最終sourceの完全gate/CIは引き続き未完了。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
