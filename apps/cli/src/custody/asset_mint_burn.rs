@@ -24,10 +24,11 @@
 
 use protocol_types::HashPurpose;
 
-use sunrise_edge_client::call::CallIntent;
+use sunrise_edge_client::call::{CallIntent, InstanceTarget};
+use sunrise_edge_client::package_types::ScopedTypeTag;
 use sunrise_edge_client::{
     AccessEntry, AccessManifest, AccessMode, Amount, Digest32, Epoch, FeeSourceConsent, Object,
-    ObjectRef, PaidApplication, PreparedPaidExecution, RequestId, ReservationAccessKind,
+    ObjectId, ObjectRef, PaidApplication, PreparedPaidExecution, RequestId, ReservationAccessKind,
     VerifiedGenesisRoot,
 };
 
@@ -38,6 +39,7 @@ use public_standard_asset::{
 use crate::error::CliError;
 use crate::hex::encode_hex;
 
+use super::asset_application_pin::ApplicationAssetPin;
 use super::asset_trust::{PinnedAssetTrust, safe_ascii};
 use super::config::CustodyConfig;
 
@@ -115,17 +117,108 @@ pub(super) struct PreparedAssetBurn {
 
 /// The mint/burn family's own trust: the shared genesis pin plus the
 /// `mint`/`burn`-specific `prepare`/review logic, including the
-/// independently rebuilt checked supply arithmetic.
+/// independently rebuilt checked supply arithmetic. `application` is the
+/// optional, independently local, pinned non-genesis asset/instance pair
+/// (DR-0258): when absent, every behavior below is byte-identical to the
+/// original genesis-only family.
 pub(super) struct AssetMintBurnTrust {
     trust: PinnedAssetTrust,
+    application: Option<ApplicationAssetPin>,
 }
 
 impl AssetMintBurnTrust {
-    /// Binds `config` to `root` via the shared [`PinnedAssetTrust`] pin.
-    pub(super) fn new(config: CustodyConfig, root: VerifiedGenesisRoot) -> Result<Self, CliError> {
-        Ok(Self {
-            trust: PinnedAssetTrust::new(config, root)?,
-        })
+    /// Binds `config` to `root` via the shared [`PinnedAssetTrust`] pin, and
+    /// optionally verifies and binds one local application asset/instance
+    /// pin (`asset`'s `ObjectId` plus its own exact canonical
+    /// `InstanceRecord` bytes). `application` is caller-local input only;
+    /// it is never taken from, or validated against, the peer wire request.
+    pub(super) fn new(
+        config: CustodyConfig,
+        root: VerifiedGenesisRoot,
+        application: Option<(ObjectId, Vec<u8>)>,
+    ) -> Result<Self, CliError> {
+        let trust: PinnedAssetTrust = PinnedAssetTrust::new(config, root)?;
+        let application: Option<ApplicationAssetPin> = match application {
+            Some((asset, instance_ref_bytes)) => Some(ApplicationAssetPin::new(
+                &trust,
+                asset,
+                &instance_ref_bytes,
+            )?),
+            None => None,
+        };
+        Ok(Self { trust, application })
+    }
+
+    /// This family's effective asset: the pinned application asset when one
+    /// is bound, otherwise the pinned genesis fee asset.
+    fn asset(&self) -> ObjectId {
+        self.application
+            .as_ref()
+            .map(|pin| pin.asset)
+            .unwrap_or(self.trust.asset)
+    }
+
+    /// This family's effective application instance target, mirroring
+    /// [`Self::asset`].
+    fn instance(&self) -> &InstanceTarget {
+        self.application
+            .as_ref()
+            .map(|pin| &pin.instance)
+            .unwrap_or(&self.trust.fee_policy.instance)
+    }
+
+    fn coin_tag(&self) -> &ScopedTypeTag {
+        self.application
+            .as_ref()
+            .map(|pin| &pin.coin_tag)
+            .unwrap_or(&self.trust.coin_tag)
+    }
+
+    fn cap_tag(&self) -> &ScopedTypeTag {
+        self.application
+            .as_ref()
+            .map(|pin| &pin.cap_tag)
+            .unwrap_or(&self.trust.cap_tag)
+    }
+
+    /// Validates one application `TreasuryCap` input against this family's
+    /// effective `cap_tag` (DR-0258's pinned application cap, or the genesis
+    /// cap when unpinned) — distinct from the fee source, which always
+    /// validates against the genesis `Coin` nominal type regardless of any
+    /// application pin.
+    fn validate_application_cap(
+        &self,
+        object: &Object,
+        owner_message: &'static str,
+        schema_message: &'static str,
+        type_message: &'static str,
+    ) -> Result<(), CliError> {
+        self.trust.validate_owned_object(
+            object,
+            self.cap_tag(),
+            owner_message,
+            schema_message,
+            type_message,
+        )
+    }
+
+    /// Validates one application `Coin` input (burn's consumed coin) against
+    /// this family's effective `coin_tag`, mirroring
+    /// [`Self::validate_application_cap`]. Never used for the fee source.
+    fn validate_application_coin(
+        &self,
+        object: &Object,
+        owner_message: &'static str,
+        schema_message: &'static str,
+        type_message: &'static str,
+    ) -> Result<(), CliError> {
+        self.trust.validate_owned_object(
+            object,
+            self.coin_tag(),
+            owner_message,
+            schema_message,
+            type_message,
+        )
     }
 
     fn object_digest(&self, bytes: &[u8]) -> Result<Digest32, CliError> {
@@ -169,7 +262,7 @@ impl AssetMintBurnTrust {
             "fee source preimage exceeds the maximum accepted size",
             "fee source preimage is not the exact canonical object encoding",
         )?;
-        self.trust.validate_owned_cap(
+        self.validate_application_cap(
             &cap_object,
             "mint cap is not owned by the pinned custody publisher",
             "mint cap schema does not match the genesis Standard Asset schema",
@@ -229,9 +322,9 @@ impl AssetMintBurnTrust {
             sender: *self.trust.publisher.as_bytes(),
             nonce: request.nonce,
             code: self.trust.fee_policy.code.clone(),
-            instance: self.trust.fee_policy.instance.clone(),
+            instance: self.instance().clone(),
             entrypoint: MINT_ENTRYPOINT.to_owned(),
-            type_arguments: vec![asset_type_argument(&self.trust.asset)],
+            type_arguments: vec![asset_type_argument(&self.asset())],
             access,
             arguments: mint_arguments(request.amount, &request.recipient).map_err(failure)?,
             gas_limit: request.gas_limit,
@@ -291,13 +384,13 @@ impl AssetMintBurnTrust {
             "fee source preimage exceeds the maximum accepted size",
             "fee source preimage is not the exact canonical object encoding",
         )?;
-        self.trust.validate_owned_cap(
+        self.validate_application_cap(
             &cap_object,
             "burn cap is not owned by the pinned custody publisher",
             "burn cap schema does not match the genesis Standard Asset schema",
             "burn cap is not the genesis Standard Asset TreasuryCap type",
         )?;
-        self.trust.validate_owned_coin(
+        self.validate_application_coin(
             &coin_object,
             "burn coin is not owned by the pinned custody publisher",
             "burn coin schema does not match the genesis Standard Asset schema",
@@ -373,9 +466,9 @@ impl AssetMintBurnTrust {
             sender: *self.trust.publisher.as_bytes(),
             nonce: request.nonce,
             code: self.trust.fee_policy.code.clone(),
-            instance: self.trust.fee_policy.instance.clone(),
+            instance: self.instance().clone(),
             entrypoint: BURN_ENTRYPOINT.to_owned(),
-            type_arguments: vec![asset_type_argument(&self.trust.asset)],
+            type_arguments: vec![asset_type_argument(&self.asset())],
             access,
             arguments: no_arguments().map_err(failure)?,
             gas_limit: request.gas_limit,
@@ -464,6 +557,33 @@ impl AssetMintBurnTrust {
             "instance_record_digest={}\n",
             self.trust.fee_policy.instance.record_digest
         ));
+        // Both identities (DR-0258): the genesis fee identity lines above
+        // never change meaning or value. When no local application pin is
+        // bound, nothing further is appended here, so the review is
+        // byte-identical to the original genesis-only family. When one is
+        // bound, this is the *effective* target `CallIntent.instance` and
+        // `type_arguments` above actually use (see `Self::asset`/
+        // `Self::instance`), shown alongside, never in place of, genesis.
+        if let Some(application) = &self.application {
+            out.push_str("application_pinned=true\n");
+            out.push_str(&format!("application_asset={}\n", application.asset));
+            out.push_str(&format!(
+                "application_instance_creator={}\n",
+                encode_hex(&application.instance.creator)
+            ));
+            out.push_str(&format!(
+                "application_instance_seed={}\n",
+                encode_hex(&application.instance.seed)
+            ));
+            out.push_str(&format!(
+                "application_instance_revision={}\n",
+                application.instance.revision
+            ));
+            out.push_str(&format!(
+                "application_instance_record_digest={}\n",
+                application.instance.record_digest
+            ));
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

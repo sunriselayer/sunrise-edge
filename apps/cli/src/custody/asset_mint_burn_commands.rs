@@ -27,7 +27,7 @@ use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
-use sunrise_edge_client::{PublicationContext, RequestId, VerifiedGenesisRoot};
+use sunrise_edge_client::{ObjectId, PublicationContext, RequestId, VerifiedGenesisRoot};
 
 const CONFIG: &str = "--config";
 const GENESIS: &str = "--genesis-manifest-file";
@@ -35,6 +35,10 @@ const GENESIS_DIGEST: &str = "--genesis-digest";
 const REQUEST: &str = "--request-file";
 const OUT: &str = "--out";
 const APPROVALS: &str = "--approvals-dir";
+/// Matches the public Standard Asset CLI's own flag name
+/// (`commands/standard_asset.rs`); see `application_pin_selection`.
+const ASSET: &str = "--asset";
+const INSTANCE_REF: &str = "--instance-ref";
 
 fn fail(error: impl std::error::Error + Send + Sync + 'static) -> CliError {
     CliError::LocalExecution(Box::new(error))
@@ -48,7 +52,37 @@ fn invalid(message: &'static str) -> CliError {
 }
 
 fn trust_specs() -> Vec<crate::args::FlagSpec> {
-    vec![scalar(CONFIG), scalar(GENESIS), scalar(GENESIS_DIGEST)]
+    vec![
+        scalar(CONFIG),
+        scalar(GENESIS),
+        scalar(GENESIS_DIGEST),
+        scalar(ASSET),
+        scalar(INSTANCE_REF),
+    ]
+}
+
+/// Reads the optional, independently local DR-0258 application asset pin:
+/// `--asset` (a 32-byte object id) and `--instance-ref` (a bounded canonical
+/// `InstanceRecord` private file), all-or-none. Neither value ever comes
+/// from the peer wire request; both are read directly from local operator
+/// input, exactly like `--genesis-manifest-file`.
+fn application_pin_selection(parsed: &ParsedArgs) -> Result<Option<(ObjectId, Vec<u8>)>, CliError> {
+    match (parsed.get(ASSET), parsed.get(INSTANCE_REF)) {
+        (None, None) => Ok(None),
+        (Some(asset), Some(path)) => {
+            let asset: ObjectId = ObjectId::new(decode_hex_32(ASSET, asset)?);
+            let bytes: Vec<u8> = read_private_file(
+                Path::new(path),
+                0o600,
+                0o700,
+                super::asset_application_pin::MAX_APPLICATION_INSTANCE_RECORD_BYTES,
+            )?;
+            Ok(Some((asset, bytes)))
+        }
+        _ => Err(invalid(
+            "--asset and --instance-ref must be provided together",
+        )),
+    }
 }
 
 fn load_trust(parsed: &ParsedArgs, config: &CustodyConfig) -> Result<AssetMintBurnTrust, CliError> {
@@ -69,7 +103,8 @@ fn load_trust(parsed: &ParsedArgs, config: &CustodyConfig) -> Result<AssetMintBu
     let digest: [u8; 32] = decode_hex_32(GENESIS_DIGEST, parsed.require(GENESIS_DIGEST)?)?;
     let root: VerifiedGenesisRoot =
         VerifiedGenesisRoot::verify_bytes(&resolver, &bytes, digest, &context).map_err(fail)?;
-    AssetMintBurnTrust::new(config.clone(), root)
+    let application: Option<(ObjectId, Vec<u8>)> = application_pin_selection(parsed)?;
+    AssetMintBurnTrust::new(config.clone(), root, application)
 }
 
 fn owned_object(parsed: &ParsedArgs, flag: &'static str) -> Result<Vec<u8>, CliError> {
@@ -473,4 +508,80 @@ pub(super) fn sign_burn<I: IntoIterator<Item = OsString>>(args: I) -> Result<(),
         request.request_id
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod application_pin_selection_tests {
+    use super::super::fsperm::test_support::{TempDir, write_mode_file};
+    use super::*;
+
+    fn parsed_with(values: &[&str]) -> ParsedArgs {
+        let specs = trust_specs();
+        parse_flags(values.iter().map(OsString::from), &specs).unwrap()
+    }
+
+    #[test]
+    fn neither_flag_selects_no_application_pin() {
+        let parsed = parsed_with(&[]);
+        assert_eq!(application_pin_selection(&parsed).unwrap(), None);
+    }
+
+    #[test]
+    fn asset_without_instance_ref_is_refused() {
+        let asset_hex: String = "aa".repeat(32);
+        let parsed = parsed_with(&[ASSET, asset_hex.as_str()]);
+        let error = application_pin_selection(&parsed).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("--asset and --instance-ref must be provided together")
+        );
+    }
+
+    #[test]
+    fn instance_ref_without_asset_is_refused() {
+        let directory = TempDir::new(0o700);
+        let path = directory.child("instance-ref");
+        write_mode_file(&path, 0o600, b"unused");
+        let parsed = parsed_with(&[INSTANCE_REF, path.to_str().unwrap()]);
+        let error = application_pin_selection(&parsed).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("--asset and --instance-ref must be provided together")
+        );
+    }
+
+    #[test]
+    fn both_flags_read_the_asset_id_and_the_exact_instance_ref_file_bytes() {
+        let directory = TempDir::new(0o700);
+        let path = directory.child("instance-ref");
+        let record_bytes: Vec<u8> = vec![1, 2, 3, 4];
+        write_mode_file(&path, 0o600, &record_bytes);
+        let asset_hex: String = "bb".repeat(32);
+        let instance_ref_path: &str = path.to_str().unwrap();
+        let parsed = parsed_with(&[ASSET, asset_hex.as_str(), INSTANCE_REF, instance_ref_path]);
+        let (asset, bytes) = application_pin_selection(&parsed).unwrap().unwrap();
+        assert_eq!(
+            asset,
+            ObjectId::new(decode_hex_32(ASSET, &asset_hex).unwrap())
+        );
+        assert_eq!(bytes, record_bytes);
+    }
+
+    #[test]
+    fn an_oversized_instance_ref_file_is_refused_before_decoding() {
+        let directory = TempDir::new(0o700);
+        let path = directory.child("instance-ref");
+        let oversized: Vec<u8> = vec![
+            0u8;
+            super::super::asset_application_pin::MAX_APPLICATION_INSTANCE_RECORD_BYTES
+                + 1
+        ];
+        write_mode_file(&path, 0o600, &oversized);
+        let asset_hex: String = "cc".repeat(32);
+        let instance_ref_path: &str = path.to_str().unwrap();
+        let parsed = parsed_with(&[ASSET, asset_hex.as_str(), INSTANCE_REF, instance_ref_path]);
+        assert!(application_pin_selection(&parsed).is_err());
+    }
 }

@@ -100,6 +100,13 @@ roadmap describes a later target state.
   `AssetCreateTrust`, but — unlike every other family — independently
   derives a *fresh* application `InstanceTarget` for a separate kind-5
   signer, and connects the ordinary paid `create-asset` CLI consumer.
+- [Optional mint/burn application asset pin](decisions/0258-mint-burn-application-asset-pin.md)
+  (DR-0258; see also
+  [mint/burn custody](standard-asset-mint-burn-custody.md#optional-application-asset-pin-dr-0258)):
+  one small, independently local, all-or-none non-genesis asset/instance pin
+  for mint/burn only, so it can target a `create-asset`-created asset; no
+  new wire kind/version, no change to genesis fee authority or to any other
+  family.
 - [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
   an explicitly configured closed HTTPS transport, separate from default
   event-only relays, embedded DO policy and core authority.

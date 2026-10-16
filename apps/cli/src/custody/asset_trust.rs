@@ -10,10 +10,10 @@
 //! `asset_split_merge`, `asset_mint_burn`) wraps one `PinnedAssetTrust` and
 //! adds only its own per-entrypoint argument/amount/overflow checks and
 //! `CallIntent` shape; the genesis chain is verified exactly once, in
-//! exactly one place, for every family. `cap_tag`/`validate_owned_cap`
-//! (DR-0253) are the one addition to this shared struct: the genesis
-//! `TreasuryCap` nominal type, derived from the same verified origin/asset
-//! as `coin_tag`, used only by `asset_mint_burn`.
+//! exactly one place, for every family. The genesis `TreasuryCap` nominal
+//! type is derived from the same verified origin/asset as `coin_tag`.
+//! Mint/burn now uses the shared explicit-tag
+//! validator for both its default and optional locally pinned application.
 
 use sunrise_edge_client::local_execution::generic_object_result_semantics;
 use sunrise_edge_client::package_types::{ScopedTypeArg, ScopedTypeTag, verify_scoped_type_id};
@@ -268,31 +268,25 @@ impl PinnedAssetTrust {
         schema_message: &'static str,
         type_message: &'static str,
     ) -> Result<(), CliError> {
-        if object.owner != Owner::Address(self.publisher) {
-            return Err(invalid(owner_message));
-        }
-        if object.schema_version != SCHEMA_VERSION {
-            return Err(invalid(schema_message));
-        }
-        let matches: bool = verify_scoped_type_id(
-            &self.resolver,
-            &object.type_hash,
-            self.expected.epoch(),
+        self.validate_owned_object(
+            object,
             &self.coin_tag,
+            owner_message,
+            schema_message,
+            type_message,
         )
-        .map_err(failure)?;
-        if !matches {
-            return Err(invalid(type_message));
-        }
-        Ok(())
     }
 
-    /// Identical shape to [`Self::validate_owned_coin`], checked against the
-    /// genesis `TreasuryCap` nominal type instead of `Coin` (DR-0253's
-    /// mint/burn family only).
-    pub(super) fn validate_owned_cap(
+    /// Owner/schema/nominal-type check against an explicit `tag`, rather than
+    /// one of this trust's own fixed `coin_tag`/`cap_tag` fields. Used by
+    /// [`Self::validate_owned_coin`] (the genesis nominal type) and, separately,
+    /// by the mint/burn family's optional application pin (DR-0258), which
+    /// derives its own `Coin`/
+    /// `TreasuryCap` nominal types from a locally pinned, non-genesis asset.
+    pub(super) fn validate_owned_object(
         &self,
         object: &Object,
+        tag: &ScopedTypeTag,
         owner_message: &'static str,
         schema_message: &'static str,
         type_message: &'static str,
@@ -307,7 +301,7 @@ impl PinnedAssetTrust {
             &self.resolver,
             &object.type_hash,
             self.expected.epoch(),
-            &self.cap_tag,
+            tag,
         )
         .map_err(failure)?;
         if !matches {

@@ -105,6 +105,40 @@ genesis owner and the fixed `mint_authority`, so it already owns the
 installed `TreasuryCap<A>` — distinct from the separate genesis authority,
 which owns no `Coin` or `TreasuryCap`.
 
+## Optional application asset pin (DR-0258)
+
+[DR-0258](decisions/0258-mint-burn-application-asset-pin.md) adds one
+optional, independently local pin to this family only: `--asset` (a 32-byte
+object id) and `--instance-ref` (a bounded canonical `InstanceRecord`
+private file), all-or-none, accepted by `prepare-mint`/`approve-mint`/
+`sign-mint`/`serve-mint-burn` and their `-burn` equivalents, matching the
+public Standard Asset CLI's own flag names. Neither value ever comes from
+the peer wire request. Omitting both flags is byte-identical to the
+genesis-only behavior described above. When bound, the new
+`asset_application_pin` module independently verifies the record's context,
+exact genesis-verified code, revision one, known initializer and the pinned
+custody publisher as creator, rejects a derived instance or asset that
+aliases the pinned genesis fee instance/asset, and derives this asset's own
+`Coin`/`TreasuryCap` nominal types — never from a peer-supplied target. The
+fee source keeps validating against the genesis `Coin` type regardless; only
+the application `TreasuryCap`/`Coin` inputs and the `CallIntent` target use
+the pinned asset. The review shows both the genesis and (when bound) the
+pinned application identity. This lets mint/burn target an asset created by
+the separate `create-asset` family (DR-0255), which no prior family could
+do; `transfer`/`split`/`merge`/`create-asset` are unaffected and keep
+refusing a custody signer combined with these flags. See DR-0258 for the
+exact verification and compatibility details, and TODO.md for qualification
+status.
+
+Each role must own its instance pin file at mode `0600` in an owned `0700`
+directory. Public `create-asset --instance-ref-out` output follows the
+operator's file-creation mask, so its owner must make it private or install
+an owned private copy before passing it to a custody command. The custody
+process receives its own independently trusted protected copy; the peer
+request never supplies that path or changes the server's application pin.
+The local fixture keeps its existing capabilities and uses each process's
+own UID for error cleanup signals.
+
 ## Lifecycle and limits
 
 `custody revoke` reuses the existing durable store exactly as DR-0246/
