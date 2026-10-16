@@ -206,6 +206,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E28: b568 actual Native release A/B | `b568037f` / tree `2a691d63`、固定Node24.19.0/Rust1.97.1/Linux GNU recipe。2 fresh builds・13ターゲット全byte/mode/owner比較成功、actual exit 0/EOF、931.235秒。親が保存26 ELFを照合。生成umask0022の実mode0755を維持し、4専有dirとsource leaseを解放 | same-host trusted OS。新しいfloor/stop sourceの実build証拠。cross-machine/hermetic・全13 runtime・独立監査・全M7/公開認定ではない |
 | E29: b568 RELEASE import component | E28の13 readonly RELEASE child bindingsの隔離環境で、`business_import_sqlite` whole driver全10件/0 failed/0 ignored、actual exit 0/EOF、6.053秒。genesis import/create/resumeと追加history floor、既存借用controlsを保持。driver・13 debug・13 RELEASEの計27 binary hashとraw logを親でも再照合。PID/network namespaceの分離、owned pids 2→2、private TMP除去を確認 | child binariesだけがRELEASE、driver/in-process oracleはdev/test opt2。原12 drivers・2 long ignoredのR4 runtime全体、successor floorの個別end-to-end、全M4/M7/公開認定ではない |
 | E30: fresh business after authorized stopped TLS rotation | b568上のこの差分。元の全assertion/helper/待機/資金を削らず、正常停止後に最終generation4で新規有料送金を実CLIから確定。全4 replicasの独立intent/両quorum・exact mutation/version/body・新旧receipt・nonce・exact再送/full snapshotを確認。元12 TLS cases、formatとoperator全target Clippyの全3 commandsがactual exit 0/EOF、40.845秒。独立correctness review指摘を処理し再承認 | selected stopped same-file handoffのcomponent。先のoverlap拒否fixtureとは別。live handoff/cross-host/物理fault・全M3/公開認定ではない。完全required/CIは未完了 |
+| E31: successor late-stop boundary | 4312上のこの差分。同じexecutorのstopをidentity/clock/deadline後・fresh authority解決前に再確認。Native HTTP全213件とformat/operator全target Clippyが全actual exit 0/EOF。guardを外すと対象2件が409対503でactual101になり、exact bytes復元後は2件actual0/EOF。E30統合後も全12 TLS casesとClippy/formatの全3 commandsがactual0/EOF、374.159秒。独立correctness review承認 | 手動構成のactual router component + compiled TLS controls。実signal/factoryの当該guardだけの配線分離oracle・全D05/M5の完了ではない。実行済みstorageのabort/rollbackやprotocol変更は追加せず、完全required/CIは未完了 |
+
 
 
 
@@ -330,6 +332,15 @@ E30は `stopped-fresh-targeted2-1016-terminal.json` / `.log`、raw SHA-256
 説明訂正とreceipt/effect oracle追加後の再実行を最終component証拠に使います。
 
 
+
+E31は `successor-stop-targeted-1016-terminal.json` / `.log`、raw SHA-256
+`95cd4d9b5552851ffef5530fe166f9cefd44e21f209a299df566787ac304ff3d`。
+負対照は `successor-stop-negative-1016-terminal.json` / `.log`、raw SHA-256
+`fef766daeefac7f2cf6c530bef2d2ce7964ef4aeaeec89812192651603393fac`。controller exit 0は期待した失敗の検出と復元成功を表し、
+guard欠落時のtest exit 101をtest成功へ読み替えません。
+統合後は `successor-stop-merged-targeted-1016-terminal.json` / `.log`、raw SHA-256
+`f681007eaeae58f61165e0c7d391a405f15e6359e42ffc36bec19304de804ecd`。新guard/testの2 Rust filesは最初の213件実行時ともbyte一致し、
+統合後のsourceBefore/Afterも一致します。既存の別sourceへ成功を借用しません。
 
 ## 作業終了時の環境整理
 
@@ -545,6 +556,9 @@ E30は `stopped-fresh-targeted2-1016-terminal.json` / `.log`、raw SHA-256
     negative controlとNative HTTP 206件/Clippy・独立component reviewは成功。
     手動構成の実SQLite/HTTP ownerも全3件成功。新sourceの完全gate/CIは未完了で、
     このfixtureを本番host constructor/signalの配線証明に数えない。
+  - [x] [後継hostの権限解決直前の停止確認](docs/architecture/decisions/0250-successor-operation-context-stop-check.md):
+    E31で既存executorから直接再確認し、read/mutation・旧error優先順位・欠落guardの負対照を検証。
+    初期admission確認だけでは観測できない遅いstopを拒否。全D05/M5と完全gate/CIは保持する。
   - 次: D05と一本のcase/coverage表を使う。実workload/SLOに対するcapacity、
     actual production PKI、alerts/response・spend適用はD04/D07で決め、適用後に検証する。
 
