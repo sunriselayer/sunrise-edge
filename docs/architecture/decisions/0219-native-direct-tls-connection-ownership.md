@@ -183,3 +183,21 @@ optional local implementation and cannot be invented from disposable fixtures.
 Only numeric loopback, disposable keys/certificates and privately owned local
 stores are in scope. No provider write/deployment, public listener, paid service,
 credential/root action or public-network/mainnet activation is authorized.
+
+## 2026-10-16: Fresh business after stopped trust rotation
+
+The original four-store direct TLS fixture retains its full stopped rotation,
+exact replay, wrong-domain, discarded-confirmation, conflicting-intent and input
+preservation checks. After those controls, its final generation-4 hosts accept
+one new paid transfer through the real compiled CLI and the current TLS trust
+configuration. The input is the earlier settlement's sender-owned refund Coin;
+the distinct, still-live fee Coin after its first reservation funds the new
+request and next nonce.
+
+The existing independent verifier authenticates and canonically re-encodes the
+saved intent and both quorum certificates. Four replicas must expose the new
+owner/value and next nonce, then replay the exact new receipt without changing
+the complete business snapshots. The original saved artifacts remain exact.
+This is a stopped same-file handoff acceptance boundary. It grants no concurrent
+writer handoff, cross-host recovery, power/media/fsync durability or production
+PKI authority. Current qualification status remains in TODO.md.
