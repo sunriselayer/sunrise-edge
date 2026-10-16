@@ -18,6 +18,13 @@
 //! existing in-process four-validator network, including SealWarrantFault,
 //! which wraps DurableDomainStateStore from inside the test process with no
 //! compiled-binary equivalent hook; that coverage is left unchanged.
+//!
+//! DR-0256 adds one additional selected real-SIGTERM oracle against the
+//! certified FastVote router's own unsigned, no-payload frontier-maintenance
+//! `advance` route. That route carries no signed intent, candidate or
+//! certificate, so this remains within the existing boundary above: this
+//! file still never drives a paid FastVote prepare/apply/publication call or
+//! a Seal through the compiled binary.
 
 #[path = "support/causal_genesis_fixture.rs"]
 mod causal_genesis_fixture;
@@ -30,7 +37,10 @@ mod fixture;
 pub mod genesis_fixture;
 
 use canonical_encoding::{decode_canonical_frame, decode_digest32};
-use consensus::{ConsensusProposal, QuorumCertificate, decode_proposal};
+use consensus::{
+    ConsensusProposal, QuorumCertificate, decode_availability_identity,
+    decode_frozen_frontier_identity, decode_proposal,
+};
 use fixture::Fixture;
 use node_core::business_reconstruction::{SourceBusinessSnapshot, SourceSnapshotRecord};
 use node_core::ordered_economics::{
@@ -40,6 +50,7 @@ use node_core::ordered_economics::{
 use node_wire::ordered_economics::{
     ORDERED_ECONOMICS_PROPOSE_PATH, ORDERED_PROPOSE_REQUEST_MEDIA_TYPE, OrderedProposeRequest,
 };
+use node_wire::{FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH, NODE_EVENT_MEDIA_TYPE};
 use protocol_types::{Digest32, ValidatorId};
 use runtime::{
     Clock, DurableDomainStateStore, DurableOperationContext, OutgoingBarrier, StorageCorrelationId,
@@ -795,6 +806,40 @@ fn send_signal(pid: u32, signal_name: &str) {
 /// new one.
 const LEADER_PROPOSAL_RECORD_TYPE_ID: u16 = 0x644B;
 
+/// `node_core::ordered_economics::frontier`'s own frame type ids
+/// (`crates/node-core/src/ordered_economics/frontier.rs`,
+/// `FRONTIER_CURSOR_TYPE`/`FRONTIER_ENTRY_TYPE`/`FRONTIER_FINAL_TYPE`). That
+/// module is crate-private, so this oracle cites these already-allocated
+/// identifiers rather than importing or re-deriving them, following the
+/// same pattern as `LEADER_PROPOSAL_RECORD_TYPE_ID` above.
+const FRONTIER_CURSOR_RECORD_TYPE_ID: u16 = 0x6459;
+const FRONTIER_ENTRY_RECORD_TYPE_ID: u16 = 0x6452;
+const FRONTIER_FINAL_RECORD_TYPE_ID: u16 = 0x645A;
+const FRONTIER_CURSOR_INDEXED_VERSION: u16 = 2;
+const FRONTIER_ENTRY_RECORD_VERSION: u16 = 1;
+
+/// True once any record's value decodes to a frontier cursor, entry or
+/// final frame. Used only to confirm a fresh validator's own frontier state
+/// starts genuinely absent before this oracle's compiled host ever opens
+/// its file.
+fn has_any_frontier_record(records: &[SourceSnapshotRecord]) -> bool {
+    for record in records {
+        let Some(value) = record.value.as_ref() else {
+            continue;
+        };
+        let Ok(frame) = decode_canonical_frame(value) else {
+            continue;
+        };
+        if frame.require_type(FRONTIER_CURSOR_RECORD_TYPE_ID).is_ok()
+            || frame.require_type(FRONTIER_ENTRY_RECORD_TYPE_ID).is_ok()
+            || frame.require_type(FRONTIER_FINAL_RECORD_TYPE_ID).is_ok()
+        {
+            return true;
+        }
+    }
+    false
+}
+
 #[test]
 fn compiled_sqlite_source_host_sigterm_cancels_withheld_propose_not_a_delivered_one() {
     // ---- Negative half: a real SIGTERM, a real withheld body, zero writes. ----
@@ -1136,5 +1181,378 @@ fn compiled_sqlite_source_host_sigterm_cancels_withheld_propose_not_a_delivered_
     assert!(
         saw_leader_proposal_record,
         "capture_source_business_snapshot must see the durable LeaderProposalRecord (type 0x644B); a writer-fence-only metadata change is not sensitivity"
+    );
+}
+
+/// DR-0256: selected frozen-frontier-maintenance real SIGTERM wiring oracle.
+/// See `docs/architecture/native-frontier-sigterm-wiring-oracle.md` for the
+/// exact, limited claim. This isolates the compiled host's own SIGTERM ->
+/// `NativeBlockingExecutor::close()` -> certified FastVote router's
+/// `advance_frontier` route's own `publication::admitted()` cancellation
+/// wiring, a genuinely separate wiring path from the ordered-economics
+/// `propose` route the sibling oracle above isolates. It is not a
+/// real-binary late-pre-storage window isolation, a paid FastVote
+/// prepare/apply/publication call, a Seal, a successor/historical/TLS
+/// qualification, or a D05/M5 closure.
+#[test]
+fn compiled_sqlite_source_host_sigterm_cancels_withheld_frontier_advance_not_a_delivered_one() {
+    // ---- Negative half: a real SIGTERM, a real withheld empty chunked body, zero writes. ----
+    let mut fixture: Fixture = Fixture::new();
+    fixture.freeze_and_complete();
+    // `Fixture::freeze_and_complete`'s own `.take(3)` finalize loop
+    // (`business_cut/fixture.rs:424-460`) only finalizes the frontier for
+    // the first three stores, so index 3 starts with no cursor, entry or
+    // final record and one retained publication still available to advance.
+    let idx: usize = 3;
+    let validator_id: ValidatorId = fixture.network.validators[idx].validator_id;
+
+    let genesis: PathBuf = fixture.directory.0.join("genesis.bin");
+    std::fs::write(&genesis, &fixture.network.manifest_bytes).unwrap();
+    let blob_db: PathBuf = fixture.directory.0.join("blobs.sqlite");
+    let key_path: PathBuf = fixture.directory.0.join("frontier.key");
+    std::fs::write(&key_path, fixture.network.validators[idx].seed).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let state_db: PathBuf = fixture.directory.0.join(format!("state-{idx}.sqlite"));
+
+    let before: SourceBusinessSnapshot = business_records(
+        &fixture.stores[idx],
+        &fixture,
+        fixture.stores[idx].writer_fence().unwrap(),
+        0xF0,
+    );
+    assert!(
+        !has_any_frontier_record(&before.records),
+        "validator index 3's own frontier state must start absent before this oracle's one owned host ever opens its file"
+    );
+    // Close every in-process handle before the compiled host claims the
+    // writer fence against the exact same files.
+    fixture.stores.clear();
+
+    let (mut guard, address, generation) = start_leader_host(
+        &fixture,
+        &genesis,
+        &blob_db,
+        &state_db,
+        &key_path,
+        validator_id,
+    );
+    assert_eq!(
+        generation, 2,
+        "the fixture's stores close at writer fence 1, so the first real compiled claim is exactly generation 2"
+    );
+    let stderr_pipe = guard
+        .child_mut()
+        .stderr
+        .take()
+        .expect("owned host stderr must be piped for this oracle");
+
+    // Connection A: send only the request head with `Expect: 100-continue`
+    // and `Transfer-Encoding: chunked`, deliberately withholding even the
+    // empty terminating chunk. `advance_frontier` only requires an empty
+    // body (`fastvote.rs:194`) and never inspects `Content-Length`, so
+    // chunked framing with the terminator withheld is the only way to keep
+    // this exact route's own request in flight without ever sending a
+    // nonempty payload.
+    let mut connection_a: TcpStream = TcpStream::connect(address).unwrap();
+    connection_a.set_nodelay(true).unwrap();
+    let head: String = format!(
+        "POST {FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH} HTTP/1.1\r\nHost: {address}\r\nContent-Type: {NODE_EVENT_MEDIA_TYPE}\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n",
+    );
+    connection_a.write_all(head.as_bytes()).unwrap();
+
+    // Same local hyper proof DR-0254 already establishes for a
+    // `Content-Length`-bearing `Expect`-continue request, independent of
+    // framing: see `docs/architecture/native-frontier-sigterm-wiring-oracle.md`.
+    let continue_deadline: Instant = Instant::now() + Duration::from_secs(5);
+    let continue_bytes: Vec<u8> = read_until(
+        &mut connection_a,
+        continue_deadline,
+        b"\r\n\r\n",
+        256,
+        "connection A's 100-continue handshake",
+    );
+    assert_eq!(continue_bytes, b"HTTP/1.1 100 Continue\r\n\r\n");
+
+    // Connection C: a second, otherwise-untouched idle connection.
+    let connection_c: TcpStream = TcpStream::connect(address).unwrap();
+    connection_c.set_nodelay(true).unwrap();
+
+    // A real SIGTERM against the owned PID. Its effect is observed only
+    // through the deterministic barrier below, never a sleep.
+    send_signal(guard.child_mut().id(), "TERM");
+
+    // Deterministic listener-drop barrier, identical to the sibling oracle
+    // above: both effects below can only follow the already-closed
+    // executor's own `shutdown` future resolving.
+    let barrier_deadline: Instant = Instant::now() + Duration::from_secs(5);
+    wait_for_eof_or_reset(&connection_c, barrier_deadline);
+    drop(connection_c);
+    match TcpStream::connect(address) {
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
+        other => panic!(
+            "expected exactly one fresh ConnectionRefused once the listener dropped: {other:?}"
+        ),
+    }
+
+    // Now release connection A's withheld zero-length chunk terminator.
+    connection_a.write_all(b"0\r\n\r\n").unwrap();
+    let response_deadline: Instant = Instant::now() + Duration::from_secs(5);
+    let (status, response_body): (u16, Vec<u8>) =
+        read_http_response(&mut connection_a, response_deadline);
+    drop(connection_a);
+
+    // Reap the owned host: a bounded poll, this suite's existing
+    // convention, with an explicit SIGKILL-then-panic fallback.
+    let exit_deadline: Instant = Instant::now() + Duration::from_secs(10);
+    let exit_status: ExitStatus = loop {
+        if let Some(status) = guard.try_wait().expect("poll owned host after SIGTERM") {
+            break status;
+        }
+        if Instant::now() >= exit_deadline {
+            send_signal(guard.child_mut().id(), "KILL");
+            let _ = guard.child_mut().wait();
+            panic!("owned host did not exit within the bounded post-SIGTERM deadline");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(
+        exit_status.code(),
+        Some(0),
+        "SIGTERM must still produce an ordinary successful host exit"
+    );
+    const STDERR_CAP: usize = 2 * 1024;
+    let mut stderr_bytes: Vec<u8> = Vec::new();
+    stderr_pipe
+        .take(STDERR_CAP as u64 + 1)
+        .read_to_end(&mut stderr_bytes)
+        .expect("read owned host termination summary");
+    assert!(
+        stderr_bytes.len() <= STDERR_CAP,
+        "owned host termination summary exceeded its bounded cap"
+    );
+    let stderr_text: String = String::from_utf8(stderr_bytes).unwrap();
+    drop(guard);
+
+    // Exact business records/referenced blobs unchanged FIRST.
+    let namespace: SqliteNamespace = SqliteNamespace::new(
+        fixture.network.chain_id.clone(),
+        validator_id,
+        fixture.network.domain,
+    );
+    let reopened_store: SqliteDurableStore =
+        SqliteDurableStore::open_existing(&state_db, namespace).unwrap();
+    let current_fence: WriterFenceGeneration = reopened_store.writer_fence().unwrap();
+    assert_eq!(
+        current_fence.get(),
+        2,
+        "no second claim happened; only the one owned host ever opened this file"
+    );
+    let after: SourceBusinessSnapshot =
+        business_records(&reopened_store, &fixture, current_fence, 0xF1);
+    assert_eq!(
+        after.records, before.records,
+        "a withheld-chunked-body frontier advance cancelled before storage must leave every business record unchanged"
+    );
+    assert_eq!(
+        after.referenced_blobs, before.referenced_blobs,
+        "a withheld-chunked-body frontier advance cancelled before storage must leave every referenced blob unchanged"
+    );
+
+    // Then the exact response and the exact actual metrics.
+    assert_eq!(status, 503, "{}", String::from_utf8_lossy(&response_body));
+    assert_eq!(response_body, b"invocation-cancelled-before-storage");
+    assert!(stderr_text.contains("stop=sigterm"), "{stderr_text}");
+    assert!(
+        stderr_text.contains(" blocking_admitted=0 "),
+        "{stderr_text}"
+    );
+    assert!(stderr_text.contains(" blocking_closed=0 "), "{stderr_text}");
+
+    // ---- Positive sensitivity control: a fresh fixture, zero-chunk sent before SIGTERM. ----
+    let mut positive_fixture: Fixture = Fixture::new();
+    positive_fixture.freeze_and_complete();
+    let positive_validator_id: ValidatorId = positive_fixture.network.validators[idx].validator_id;
+
+    let positive_genesis: PathBuf = positive_fixture.directory.0.join("genesis.bin");
+    std::fs::write(&positive_genesis, &positive_fixture.network.manifest_bytes).unwrap();
+    let positive_blob_db: PathBuf = positive_fixture.directory.0.join("blobs.sqlite");
+    let positive_key_path: PathBuf = positive_fixture.directory.0.join("frontier.key");
+    std::fs::write(
+        &positive_key_path,
+        positive_fixture.network.validators[idx].seed,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&positive_key_path, std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+    }
+    let positive_state_db: PathBuf = positive_fixture
+        .directory
+        .0
+        .join(format!("state-{idx}.sqlite"));
+
+    let positive_before: SourceBusinessSnapshot = business_records(
+        &positive_fixture.stores[idx],
+        &positive_fixture,
+        positive_fixture.stores[idx].writer_fence().unwrap(),
+        0xF2,
+    );
+    assert!(!has_any_frontier_record(&positive_before.records));
+    positive_fixture.stores.clear();
+
+    let (positive_guard, positive_address, positive_generation) = start_leader_host(
+        &positive_fixture,
+        &positive_genesis,
+        &positive_blob_db,
+        &positive_state_db,
+        &positive_key_path,
+        positive_validator_id,
+    );
+    assert_eq!(positive_generation, 2);
+
+    let mut positive_connection: TcpStream = TcpStream::connect(positive_address).unwrap();
+    positive_connection.set_nodelay(true).unwrap();
+    let positive_head: String = format!(
+        "POST {FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH} HTTP/1.1\r\nHost: {positive_address}\r\nContent-Type: {NODE_EVENT_MEDIA_TYPE}\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n",
+    );
+    positive_connection
+        .write_all(positive_head.as_bytes())
+        .unwrap();
+    let positive_continue_deadline: Instant = Instant::now() + Duration::from_secs(5);
+    let positive_continue_bytes: Vec<u8> = read_until(
+        &mut positive_connection,
+        positive_continue_deadline,
+        b"\r\n\r\n",
+        256,
+        "positive connection's 100-continue handshake",
+    );
+    assert_eq!(positive_continue_bytes, b"HTTP/1.1 100 Continue\r\n\r\n");
+    // The zero-length chunk terminator is sent before any signal here.
+    positive_connection.write_all(b"0\r\n\r\n").unwrap();
+    let positive_response_deadline: Instant = Instant::now() + Duration::from_secs(5);
+    let (positive_status, positive_response_body): (u16, Vec<u8>) =
+        read_http_response(&mut positive_connection, positive_response_deadline);
+    drop(positive_connection);
+    assert_eq!(
+        positive_status,
+        204,
+        "{}",
+        String::from_utf8_lossy(&positive_response_body)
+    );
+    assert!(
+        positive_response_body.is_empty(),
+        "a FrozenFrontierStep::Advanced step returns an empty 204 body"
+    );
+
+    // Reuses this suite's own existing signal+wait+capture helper: there is
+    // no withheld body here, so nothing else needs to run concurrently with
+    // the stop. No second advance call is made, so no final vote exists.
+    let positive_stderr: Vec<u8> = positive_guard.stop_orderly_terminate(Duration::from_secs(10));
+    let positive_stderr_text: String = String::from_utf8(positive_stderr).unwrap();
+    assert!(
+        positive_stderr_text.contains("stop=sigterm"),
+        "{positive_stderr_text}"
+    );
+    assert!(
+        positive_stderr_text.contains(" blocking_admitted=1 "),
+        "{positive_stderr_text}"
+    );
+
+    let positive_namespace: SqliteNamespace = SqliteNamespace::new(
+        positive_fixture.network.chain_id.clone(),
+        positive_validator_id,
+        positive_fixture.network.domain,
+    );
+    let positive_reopened: SqliteDurableStore =
+        SqliteDurableStore::open_existing(&positive_state_db, positive_namespace).unwrap();
+    let positive_fence: WriterFenceGeneration = positive_reopened.writer_fence().unwrap();
+    let positive_after: SourceBusinessSnapshot =
+        business_records(&positive_reopened, &positive_fixture, positive_fence, 0xF3);
+
+    let added: Vec<&SourceSnapshotRecord> = positive_after
+        .records
+        .iter()
+        .filter(|record| !positive_before.records.contains(record))
+        .collect();
+    let removed_count: usize = positive_before
+        .records
+        .iter()
+        .filter(|record| !positive_after.records.contains(record))
+        .count();
+    assert_eq!(
+        removed_count, 0,
+        "an admitted frontier advance must never remove an existing business record"
+    );
+    assert_eq!(
+        added.len(),
+        2,
+        "an admitted frontier advance must add exactly the new cursor and entry records, nothing else"
+    );
+    assert_eq!(
+        positive_after.referenced_blobs, positive_before.referenced_blobs,
+        "an admitted frontier advance must not change any referenced blob"
+    );
+
+    let mut saw_cursor_record: bool = false;
+    let mut saw_entry_record: bool = false;
+    for record in added {
+        let Some(value) = record.value.as_ref() else {
+            continue;
+        };
+        let Ok(frame) = decode_canonical_frame(value) else {
+            continue;
+        };
+        assert!(
+            frame.require_type(FRONTIER_FINAL_RECORD_TYPE_ID).is_err(),
+            "a single Advanced step must never also retain a final frontier record (type 0x645A)"
+        );
+        if frame.require_type(FRONTIER_CURSOR_RECORD_TYPE_ID).is_ok() {
+            frame
+                .require_version(FRONTIER_CURSOR_INDEXED_VERSION)
+                .unwrap();
+            let identity: consensus::FrozenFrontierIdentity =
+                decode_frozen_frontier_identity(frame.required_field(1).unwrap()).unwrap();
+            let last_request_id: [u8; 32] = frame.required_field(2).unwrap().try_into().unwrap();
+            let physical_last_request_id: [u8; 32] =
+                frame.required_field(3).unwrap().try_into().unwrap();
+            assert_eq!(identity.entry_count, 1);
+            assert_eq!(identity.closure_request_id, [0xCB; 32]);
+            assert_eq!(last_request_id, positive_fixture.network.request_id);
+            assert_eq!(
+                physical_last_request_id,
+                positive_fixture.network.request_id
+            );
+            saw_cursor_record = true;
+            continue;
+        }
+        if frame.require_type(FRONTIER_ENTRY_RECORD_TYPE_ID).is_ok() {
+            frame
+                .require_version(FRONTIER_ENTRY_RECORD_VERSION)
+                .unwrap();
+            let closure_request_id: [u8; 32] = frame.required_field(1).unwrap().try_into().unwrap();
+            let closure_height: u64 = frame.required_u64(2).unwrap();
+            let ordinal: u64 = frame.required_u64(3).unwrap();
+            let publication: consensus::AvailabilityIdentity =
+                decode_availability_identity(frame.required_field(4).unwrap()).unwrap();
+            assert_eq!(closure_request_id, [0xCB; 32]);
+            assert!(closure_height > 0);
+            assert_eq!(ordinal, 1);
+            assert_eq!(publication.request_id, positive_fixture.network.request_id);
+            saw_entry_record = true;
+        }
+    }
+    assert!(
+        saw_cursor_record,
+        "capture_source_business_snapshot must see the durable frontier cursor record (type 0x6459)"
+    );
+    assert!(
+        saw_entry_record,
+        "capture_source_business_snapshot must see the durable frontier entry record (type 0x6452)"
     );
 }

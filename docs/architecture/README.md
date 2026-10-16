@@ -50,6 +50,10 @@ roadmap describes a later target state.
   ordered-economics `propose` route's own cancellation check honors, through
   a deterministic listener-drop barrier; wiring only, not the late
   pre-storage window isolation DR-0247 already covers separately.
+  [DR-0256](decisions/0256-native-frontier-sigterm-wiring-oracle.md) extends
+  the same barrier to the certified FastVote router's own, separately wired
+  frontier-maintenance `advance` route
+  ([native frontier-maintenance SIGTERM wiring oracle](native-frontier-sigterm-wiring-oracle.md)).
 - [Independent import history floor](decisions/0248-import-ordered-history-freshness-floor.md):
   retained same-epoch ancestor pins refuse older or conflicting ordered history
   before opening or creating destination databases; no checkpoint/state-root or activation authority.
