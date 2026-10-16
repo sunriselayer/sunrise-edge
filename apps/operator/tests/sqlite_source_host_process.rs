@@ -574,7 +574,6 @@ fn business_records(
 /// Spawns the leader's own compiled host with its stderr piped (so this
 /// oracle can read its one termination-summary line), otherwise identical
 /// to `start_host`'s own argument set.
-#[allow(clippy::too_many_arguments)]
 fn start_leader_host(
     fixture: &Fixture,
     genesis: &Path,
@@ -813,7 +812,14 @@ fn compiled_sqlite_source_host_sigterm_cancels_withheld_propose_not_a_delivered_
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let state_db: PathBuf = fixture.directory.0.join("state-leader.sqlite");
+    // Matches `Fixture::build`'s own naming (`business_cut/fixture.rs`:
+    // `directory.0.join(format!("state-{index}.sqlite"))`), so this is the
+    // exact same file `fixture.stores[leader.index]` already opened, not a
+    // fresh, nonexistent one.
+    let state_db: PathBuf = fixture
+        .directory
+        .0
+        .join(format!("state-{}.sqlite", leader.index));
 
     let before: SourceBusinessSnapshot = business_records(
         &fixture.stores[leader.index],
@@ -859,27 +865,25 @@ fn compiled_sqlite_source_host_sigterm_cancels_withheld_propose_not_a_delivered_
     );
     connection_a.write_all(head.as_bytes()).unwrap();
 
-    // Local hyper 1.11.0 proof (Cargo.lock-pinned `hyper` 1.11.0, checksum
-    // `d22053281f852e11534f5198498373cbb59295120a20771d90f7ed1897490a72`; it
-    // is not fetched under BASE/cargo-home/registry/src, which holds only
-    // this repository's unrelated offline-build inputs -- confirmed absent
-    // by directory listing -- so this cites the same locked version's real
-    // source as found in the ordinary cargo registry cache instead):
-    // `proto/h1/conn.rs:409-415` only buffers "HTTP/1.1 100 Continue\r\n\r\n"
-    // from `poll_read_body` while `state.reading` is `Reading::Continue`;
-    // `proto/h1/dispatch.rs:216-290`'s `poll_read` only reaches that state
-    // through its `body_tx` branch, gated by `can_read_body()`
-    // (`proto/h1/conn.rs:187-192`); and `poll_loop`
-    // (`proto/h1/dispatch.rs:166-214`) always runs `poll_read` then
-    // `poll_write` (which first polls this crate's own service future, here
-    // `dispatch_bounded_request`) then `poll_flush` in that order on every
-    // single poll. So the buffered Continue line cannot reach the socket
-    // (`poll_flush`) before `dispatch_bounded_request`
-    // (`crates/native-http/src/lib.rs:1597-1608`) has already been polled at
-    // least once inside `to_bytes(body, limit)` -- and `dispatch_bounded_request`
-    // itself only runs inside a connection task that already passed this
-    // crate's own per-connection shutdown checks
-    // (`crates/native-http/src/lib.rs:1481`, `:1486`, `:1550`).
+    // Local hyper proof, against the real source of the exact
+    // `Cargo.lock`-pinned `hyper 1.11.0`
+    // (checksum `d22053281f852e11534f5198498373cbb59295120a20771d90f7ed1897490a72`,
+    // `Cargo.lock:1154-1157`). The gate is the body's own "want" channel, not
+    // merely `poll_loop`'s read/write/flush order:
+    // `dispatch.rs:304-311`'s `poll_read_head` creates this request's body
+    // channel with `wanter = wants.contains(Wants::EXPECT)` (true here), so
+    // `body/incoming.rs:114-122`'s `new_channel` starts it at `WANT_PENDING`.
+    // `dispatch.rs:222-229`'s `poll_read` calls `Sender::poll_ready`
+    // (`incoming.rs:362-368`), which calls `poll_want`
+    // (`incoming.rs:370-377`): `Poll::Pending` while `WANT_PENDING`, parking
+    // before `conn.rs:409-415`'s `poll_read_body` (the arm that actually
+    // buffers `b"HTTP/1.1 100 Continue\r\n\r\n"`) is ever reached. Only
+    // `Incoming::poll_frame` (`incoming.rs:193-234`) sends `WANT_READY`
+    // (`incoming.rs:220`), and that is called only by `to_bytes(body, limit)`
+    // inside this crate's own `dispatch_bounded_request`
+    // (`crates/native-http/src/lib.rs:1604-1608`) -- itself only reached by a
+    // connection task that already passed every per-connection shutdown
+    // check (`crates/native-http/src/lib.rs:1481`, `:1486`, `:1550`).
     let continue_deadline: Instant = Instant::now() + Duration::from_secs(5);
     let continue_bytes: Vec<u8> = read_until(
         &mut connection_a,
@@ -907,6 +911,11 @@ fn compiled_sqlite_source_host_sigterm_cancels_withheld_propose_not_a_delivered_
     // (`apps/operator/src/native_operations.rs:272-276`) calls
     // `stop_executor.close()` strictly before it resolves. So observing both
     // effects below proves the executor is already closed.
+    //
+    // A third, unrelated way C could see EOF/reset is its own 5-second
+    // header-read timeout firing while the listener is still open. That
+    // case still fails closed here: the fresh connect right after would
+    // then succeed instead of being refused, and the `match` below panics.
     let barrier_deadline: Instant = Instant::now() + Duration::from_secs(5);
     wait_for_eof_or_reset(&connection_c, barrier_deadline);
     drop(connection_c);
@@ -946,8 +955,19 @@ fn compiled_sqlite_source_host_sigterm_cancels_withheld_propose_not_a_delivered_
     );
     // The host has already exited, so its stderr write end is already
     // closed: this is a bounded, already-terminated read, not an open wait.
-    let stderr_bytes: Vec<u8> = compiled_source_host_process::read_complete_pipe(stderr_pipe)
+    // Bounded the same way as this suite's existing stderr capture
+    // (`support/compiled_source_host_process.rs`'s `stop_with_signal`): one
+    // extra byte over the cap turns a silent truncation into a failure.
+    const STDERR_CAP: usize = 2 * 1024;
+    let mut stderr_bytes: Vec<u8> = Vec::new();
+    stderr_pipe
+        .take(STDERR_CAP as u64 + 1)
+        .read_to_end(&mut stderr_bytes)
         .expect("read owned host termination summary");
+    assert!(
+        stderr_bytes.len() <= STDERR_CAP,
+        "owned host termination summary exceeded its bounded cap"
+    );
     let stderr_text: String = String::from_utf8(stderr_bytes).unwrap();
     drop(guard);
 
@@ -1006,7 +1026,10 @@ fn compiled_sqlite_source_host_sigterm_cancels_withheld_propose_not_a_delivered_
         std::fs::set_permissions(&positive_key_path, std::fs::Permissions::from_mode(0o600))
             .unwrap();
     }
-    let positive_state_db: PathBuf = positive_fixture.directory.0.join("state-leader.sqlite");
+    let positive_state_db: PathBuf = positive_fixture
+        .directory
+        .0
+        .join(format!("state-{}.sqlite", positive_leader.index));
 
     let positive_before: SourceBusinessSnapshot = business_records(
         &positive_fixture.stores[positive_leader.index],

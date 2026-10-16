@@ -28,15 +28,18 @@ effects can only follow `drop(listener)`/`shutdown_sender.send(true)`
 (`crates/native-http/src/lib.rs`), which only run after the `shutdown` future
 `apps/operator/src/native_operations.rs::serve` builds has already resolved
 -- and that exact future's own body calls `stop_executor.close()` strictly
-before it resolves. Connection A's own in-flight state is independently
-proved by observing an automatic `HTTP/1.1 100 Continue` after sending its
-head with `Expect: 100-continue` and withholding its body; the local `hyper
-1.11.0` source cited in
+before it resolves. Connection A's own in-flight state is independently proved by observing an
+automatic `HTTP/1.1 100 Continue` after sending its head with
+`Expect: 100-continue` and withholding its body. The real `hyper 1.11.0`
+source cited in
 [the design document](../native-source-host-sigterm-wiring-oracle.md)
-establishes that this can only happen after this crate's own
-`dispatch_bounded_request` has already been polled on a connection task that
-already passed every per-connection shutdown check -- not from memory of
-hyper's general `Expect` handling.
+establishes the actual gate: the body channel's own "want" state starts
+`WANT_PENDING` for an `Expect`-bearing request, and only
+`Incoming::poll_frame` -- called here only by `to_bytes` inside this crate's
+own `dispatch_bounded_request` -- sends `WANT_READY`, before which the
+automatic Continue write cannot happen. That call only runs on a connection
+task that already passed every per-connection shutdown check. This is read
+from the real source, not from memory of hyper's general `Expect` handling.
 
 A second, independent, fresh fixture in the same test sends the identical
 request's body before any signal, requiring an ordinary `200`,

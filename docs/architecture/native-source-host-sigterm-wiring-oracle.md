@@ -66,6 +66,11 @@ observe `ConnectionRefused`. Because `stop_executor.close()` runs strictly
 before the `shutdown` future resolves, observing both of those effects from
 outside the process proves the executor was already closed.
 
+Connection C's own 5-second header-read timeout is a third, unrelated way it
+could see EOF/reset while the listener is still open. That case still fails
+closed: the fresh connect immediately afterward would then succeed instead
+of being refused, and the oracle requires exactly that refusal.
+
 The oracle therefore:
 
 1. Opens connection A, sends only the `POST /v1/ordered-economics/propose`
@@ -93,39 +98,36 @@ circuits before ever calling `try_acquire()`.
 ## Step 1's own local proof: why `Expect: 100-continue` proves A is in flight
 
 The oracle must not rely on remembered hyper behavior. Read directly, against
-this workspace's `Cargo.lock`-pinned `hyper 1.11.0`
-(checksum `d22053281f852e11534f5198498373cbb59295120a20771d90f7ed1897490a72`):
+the real source of the exact `Cargo.lock`-pinned `hyper 1.11.0`
+(checksum `d22053281f852e11534f5198498373cbb59295120a20771d90f7ed1897490a72`,
+`Cargo.lock:1154-1157`). The gate is the body's own "want" channel, not
+merely the connection's read/write/flush poll order:
 
-- `proto/h1/conn.rs:187-192` (`can_read_body`): true for both
-  `Reading::Body` and `Reading::Continue`.
-- `proto/h1/conn.rs:409-415` (`poll_read_body`, `Reading::Continue` arm):
-  buffers `b"HTTP/1.1 100 Continue\r\n\r\n"` into the connection's own write
-  buffer the first time this arm runs, then recurses into `Reading::Body`.
-- `proto/h1/dispatch.rs:216-290` (`Dispatcher::poll_read`): only reaches
-  `poll_read_body` through its `body_tx` branch, gated by `can_read_body()`.
-- `proto/h1/dispatch.rs:166-214` (`Dispatcher::poll_loop`): on every single
-  poll of the connection, always runs `poll_read`, then `poll_write` (which
-  is what first polls this crate's own service future -- here
-  `dispatch_bounded_request`), then `poll_flush`, in that fixed order.
+- `proto/h1/dispatch.rs:304-311` (`poll_read_head`): creates this request's
+  body channel with `wanter = wants.contains(Wants::EXPECT)`, true here.
+- `body/incoming.rs:114-122` (`Incoming::new_channel`): when `wanter` is
+  true, the channel starts at `WANT_PENDING`, not `WANT_READY`.
+- `proto/h1/dispatch.rs:222-229` (`Dispatcher::poll_read`'s `body_tx`
+  branch): calls `Sender::poll_ready`
+  (`body/incoming.rs:362-368`), which calls `poll_want`
+  (`body/incoming.rs:370-377`): `Poll::Pending` while `WANT_PENDING`. This
+  parks before `proto/h1/conn.rs:409-415`'s `poll_read_body`
+  (`Reading::Continue` arm, the code that actually buffers
+  `b"HTTP/1.1 100 Continue\r\n\r\n"`) is ever reached.
+- `body/incoming.rs:193-234` (`Incoming::poll_frame`): sends `WANT_READY`
+  (`body/incoming.rs:220`) on every call, unconditionally, before touching
+  any data.
 
-So the buffered Continue line cannot reach the socket (`poll_flush`) before
-`dispatch_bounded_request` (`crates/native-http/src/lib.rs:1597-1608`,
-specifically `to_bytes(body, limit)`) has already been polled at least once
-on that same connection task -- and that task only runs after already
-passing every one of this crate's own per-connection shutdown checks
+So the buffered Continue line cannot reach the socket before
+`Incoming::poll_frame` has already been called at least once -- and the only
+caller of that method here is `to_bytes(body, limit)` inside this crate's own
+`dispatch_bounded_request` (`crates/native-http/src/lib.rs:1604-1608`), which
+itself only runs inside a connection task that already passed every one of
+this crate's own per-connection shutdown checks
 (`crates/native-http/src/lib.rs:1481`, `:1486`, `:1550`). Observing
 `HTTP/1.1 100 Continue` on connection A is therefore direct, local evidence
 that A's exchange is already dispatched and specifically blocked on its own
 withheld body, not on some unrelated early refusal.
-
-This exact `hyper 1.11.0` source is not present under
-`BASE/cargo-home/registry/src` (`BASE` =
-`/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013`); that
-tree holds only this repository's own prior offline-build inputs (`age`,
-`cookie-factory`, and similar), confirmed absent by directory listing. The
-citations above are against the same `Cargo.lock`-pinned `hyper` version's
-real source as fetched into the ordinary local cargo registry cache. This
-substitution is recorded here rather than silently assumed.
 
 ## Positive sensitivity control
 
