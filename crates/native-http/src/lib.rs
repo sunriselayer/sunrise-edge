@@ -1995,7 +1995,9 @@ impl Error for IndexedOutboxRecoveryError {
 /// The scheduler supplies no cursor, domain, clock, fence, or deadline. Trusted
 /// embedding composition supplies immutable authority and identity sources.
 /// Claim and acknowledgement ambiguity each receive one same-identity
-/// reconciliation attempt; an unreconciled claim is never sent.
+/// reconciliation attempt; an unreconciled claim is never sent. An admitted job
+/// still queued when shared admission closes refuses before accessing runtime;
+/// a recovery that has already entered its work continues to completion.
 pub async fn recover_indexed_outbox_once<R, I>(
     runtime: Arc<R>,
     authority: IndexedOutboxRecoveryAuthority,
@@ -2007,6 +2009,7 @@ where
     R::State: IndexedOutboxRepository,
     I: IndexedOutboxIdentitySource + Send + Sync + 'static,
 {
+    let stop: Arc<dyn InvocationCancellation> = blocking_executor.stop_cancellation();
     let permit = match blocking_executor.try_acquire() {
         Ok(permit) => permit,
         Err(TryAcquireError::NoPermits) => {
@@ -2018,6 +2021,9 @@ where
     };
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        if stop.is_cancelled() {
+            return Err(IndexedOutboxRecoveryError::AdmissionClosed);
+        }
         recover_indexed_outbox_once_blocking(runtime.as_ref(), authority, identities.as_ref())
     })
     .await
@@ -2159,7 +2165,8 @@ where
 /// and page size, and must invoke this function again while a continuation is
 /// returned. A later sweep restarts with `after = None`. This function creates
 /// no loop or background task and shares admission with HTTP when given the
-/// same [`NativeBlockingExecutor`].
+/// same [`NativeBlockingExecutor`]. An admitted job still queued when admission
+/// closes refuses before discovery; already entered work still completes.
 pub async fn recover_outboxes_once<R, L>(
     runtime: Arc<R>,
     config: NodeConfig,
@@ -2176,6 +2183,7 @@ where
     let layout = PersistenceLayout::new(config.chain_id().clone(), config.protocol_version());
     let scan = StateKeyScan::new(layout.outbox_prefix(), after, scan_limit)
         .map_err(NativeOutboxRecoveryError::Runtime)?;
+    let stop: Arc<dyn InvocationCancellation> = blocking_executor.stop_cancellation();
     let permit = match blocking_executor.try_acquire() {
         Ok(permit) => permit,
         Err(TryAcquireError::NoPermits) => {
@@ -2187,6 +2195,9 @@ where
     };
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        if stop.is_cancelled() {
+            return Err(NativeOutboxRecoveryError::AdmissionClosed);
+        }
         recover_outboxes_once_blocking(runtime.as_ref(), &config, lease_ids.as_ref(), &scan)
     })
     .await

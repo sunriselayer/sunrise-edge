@@ -36,6 +36,11 @@ roadmap describes a later target state.
   ([DR-0222](decisions/0222-native-stop-and-operational-observations.md)):
   explicit SIGINT/SIGTERM ownership, actual admitted-work drain and bounded
   secret-free counters; no protocol, public-readiness or deployment authority.
+  [DR-0247](decisions/0247-native-stop-before-storage-continuation.md) extends
+  cooperative checks to queued scheduler recovery and ordered storage context.
+- [Independent import history floor](decisions/0248-import-ordered-history-freshness-floor.md):
+  retained same-epoch ancestor pins refuse older or conflicting ordered history
+  before opening or creating destination databases; no checkpoint/state-root or activation authority.
 - [Immutable operation signing preparation](signing-preparation.md): one
   mechanical frame/identity owner, operation-specific immutable trust inputs,
   actual SDK/CLI consumers and the separate custody/content-review boundary.

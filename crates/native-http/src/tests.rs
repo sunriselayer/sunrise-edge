@@ -10,6 +10,7 @@ mod output_budget;
 mod query_codecs;
 mod query_http;
 mod query_protocol_context;
+mod recovery_stop;
 mod tls_connection;
 use super::*;
 use abi::{AccessEntry, AccessManifest};
