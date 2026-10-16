@@ -38,6 +38,8 @@ roadmap describes a later target state.
   secret-free counters; no protocol, public-readiness or deployment authority.
   [DR-0247](decisions/0247-native-stop-before-storage-continuation.md) extends
   cooperative checks to queued scheduler recovery and ordered storage context.
+  [DR-0250](decisions/0250-successor-operation-context-stop-check.md) rechecks
+  the same successor executor before fresh authority and storage resolution.
 - [Independent import history floor](decisions/0248-import-ordered-history-freshness-floor.md):
   retained same-epoch ancestor pins refuse older or conflicting ordered history
   before opening or creating destination databases; no checkpoint/state-root or activation authority.

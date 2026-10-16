@@ -49,6 +49,15 @@ context. These cooperative checks do not make cancellation atomic with a
 storage call. The real SQLite/HTTP test composition does not invoke the
 production host constructor or signal owner and cannot qualify that wiring.
 
+[DR-0250](decisions/0250-successor-operation-context-stop-check.md) extends
+the same cooperative check to the recurring-successor host's own
+`operation_context`: after identity/clock/deadline preparation succeeds, it
+derives cancellation from the same `blocking_executor` every successor route
+already shares and refuses before `with_authority` resolves fresh authority or
+touches storage. Existing error priority and authority behavior are otherwise
+unchanged, and this does not qualify the compiled successor host's or CLI's
+executor wiring either.
+
 No started database operation is aborted, declared rolled back, or turned into
 a Rejected receipt because the host or client is stopping. A lost response
 remains unknown until the exact saved intent and receipt reconcile it. Keep all
