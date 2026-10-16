@@ -322,7 +322,11 @@ mod closure_identity_pin_tests {
     #[test]
     fn parse_missing_all_three_is_none() {
         let mut set: FlagSet = flags(&[]);
-        assert!(ClosureIdentityPins::parse_optional(&mut set).unwrap().is_none());
+        assert!(
+            ClosureIdentityPins::parse_optional(&mut set)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

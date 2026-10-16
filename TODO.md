@@ -81,7 +81,8 @@ fee-claimの非承認表示・保存内容の開発用署名は、その上の
 CODE/VERIFY 8件の継続作業は[PR #307](https://github.com/sunriselayer/sunrise-edge/pull/307)
 の `426e8359` / tree `b7fa71cd` に、genesis Standard Asset transfer専用custody・
 待機中workの取消・旧host生存中のfence拒否を固定しました。component controlsと
-Native A/B・RELEASE CLIはE25-E27で成功。完全required/CIは長時間recurrence実行中です。
+Native A/B・RELEASE CLIはE25-E27で成功。同一treeのhosted CIはE36で全8 jobsが成功。
+ローカル完全requiredは長時間recurrence実行中です。
 後続の[PR #308](https://github.com/sunriselayer/sunrise-edge/pull/308) は
 `b568037f` / tree `2a691d63`。recovery/ordered contextの追加停止確認と、importの
 独立history floorを実装し、対象Native HTTP 206件、parse/comparison 12件、
@@ -91,7 +92,10 @@ compiled import全10件、手動構成SQLite/HTTP全3件・Clippyが成功しま
 正常停止TLS交代後の新規取引はE30 / `4312d547`、後継live/historyの停止確認は
 E31 / `e60337b3` とE32 / `92fd5c93` に固定し、それぞれDraft PR #309-#311で確認できます。
 分割・結合custodyの最初のcomponent sourceはE33 / `bcb9a1c9`。
-これらを `codex/coin-ops-custody-1016` へ通常mergeし、統合sourceを別に検証します。
+これらを `codex/coin-ops-custody-1016` へ通常mergeした統合sourceは
+[PR #312](https://github.com/sunriselayer/sunrise-edge/pull/312) の `7c5778b0` / tree `710b4c3d`。
+対象9 commandsと実Dockerを再検証し、Native A/BをE34、実RELEASE CLIをE35で確認しました。
+同sourceの元10 whole + 2 exact ignoredの全R4 RELEASE runtimeは実行中です。
 E28/E29のsourceに後続差分を含めたことにはしません。各完全gate・全M2-M5/M7の最終照合は未完了として保持します。
 初回DockerのSQLite祖先directory読取EACCES、manual fixtureのsetup counter誤り、
 import testのsource retirement不足と各修正前失敗も保持します。
@@ -212,6 +216,9 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E31: successor late-stop boundary | 4312上のこの差分。同じexecutorのstopをidentity/clock/deadline後・fresh authority解決前に再確認。Native HTTP全213件とformat/operator全target Clippyが全actual exit 0/EOF。guardを外すと対象2件が409対503でactual101になり、exact bytes復元後は2件actual0/EOF。E30統合後も全12 TLS casesとClippy/formatの全3 commandsがactual0/EOF、374.159秒。独立correctness review承認 | 手動構成のactual router component + compiled TLS controls。実signal/factoryの当該guardだけの配線分離oracle・全D05/M5の完了ではない。実行済みstorageのabort/rollbackやprotocol変更は追加せず、完全required/CIは未完了 |
 | E32: historical successor late-stop boundary | e603上のこの差分。signerless履歴hostの別read ownerでも、identity/clock/deadline後・fresh policy解決前に同じexecutorのstopを再確認。Native HTTP全218件、format、native-http/operator全target Clippyの全3 commandsがactual0/EOF、366.549秒。guard除去時は対象1件がactual101、exact bytes復元後は1件actual0/EOF。独立correctness review承認 | 手動構成actual routerのsummary controlと、同じreadを使う3 history routesのsource対応。compiled signal配線単独の検証・物理fault・全D05/M5の完了ではない。完全required/CIは未完了 |
 | E33: genesis Standard Asset split/merge custody component | `bcb9a1c9` / tree `4619ceab`。共通の独立genesis/code/instance/policy pinを保ち、専用kind3で分割・結合の完全preimage/内容表示/正確な期限・frame approvalと実CLIを接続。custody 98 passed/3 ignored、Standard Asset 18 passed、CLI build・Clippy・fmt/構文・compiler artifact記録の全7 commandsがactual0/EOF、92.870秒。実Docker/UID/PTYは元publication・6 lifecycle・送金と追加分割→結合を全actual0/EOF、4.687秒。両独立correctness review指摘を処理し再承認 | 3 ignored entriesは同じharnessのDocker ownerが別途実行。5Mへ分割・10Mへ結合、送信元/新coinのcanonical effectとquery、nonce2、非空の一致receipt、exact replay、取消後/restart拒否・入出力binary不変と所有資源解放を確認。trusted OS/local genesis profileのみ。自動署名/TreasuryCap/他family・epoch/全M2・完全required/CI・RELEASE認定ではない。E30-E32統合後のsourceは新しく完全検証する |
+| E34: combined 7c57 actual Native release A/B | `7c5778b0` / tree `710b4c3d`。M2 custodyと全late-stop/TLSを統合し、対象9 commandsが全actual0/EOF、712.548秒。固定Node24.19.0/Rust1.97.1の2 fresh buildsで13ターゲット全byte/mode/owner一致、actual0/EOF、1,128.808秒。保存26 ELFを親で再hash照合、実mode0755を正規化せず保持。4専有dir・source lease解放 | same-host trusted OSのRELEASE build証拠。cross-machine/hermetic・独立監査・全M7/公開認定ではない。原12 RELEASE runtime・同sourceの完全required/CIは終端未確認 |
+| E35: combined 7c57 actual RELEASE CLI custody | E34保存の実RELEASE CLI + 同sourceで保存したdev/test opt2 harnessで、元publication・6 lifecycle・transfer・自分宛てsplit/mergeを実UID/PTYで全actual0/EOF、4.392秒。全byte署名一致、非空receipt・replay・nonce・取消/restartを検証。sourceと両ELFの前後hash/metadata一致、owned container/volume解放 | RELEASEなのはCLI child。SQLite/WASM oracleはdev/test。他者宛てはprepare/approval controlsのみで、この実CLI round tripには含めない。全M2・全13 runtime・公開認定ではない |
+| E36: 426e hosted complete CI | [run `38839795270`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38839795270) の7 owners + aggregate checkが全8 jobs terminal SUCCESS。全8 actual checkoutは `47636cf615a8ebfc73bde33f8149dae71c1e4e53`、tree `b7fa71cd083b8f257708b3f43378a310ff785267` は `426e8359` と一致。親 `f21477d9` + `426e8359`、各raw log hashとcommit metadataも照合 | Node24.19.0固定、元long cases/待機を保持したsource qualification。ローカル完全requiredの終端、後続b568/4312/e603/92fd/7c57のCI、独立security監査・公開認定へ転用しない |
 
 
 

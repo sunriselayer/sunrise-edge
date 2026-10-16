@@ -2165,6 +2165,22 @@ fn install_next(
         success(vote.expect("successful create-sqlite precedes vote-sqlite"));
         votes.push(vote_file);
     }
+    // DR-0248: the independent ordered-history floor over `business_import`'s
+    // own `load_with_successor` admission path, scoped to the first
+    // successor link only. Reuses exactly this call's own genuine current
+    // (e+1) history/cut and `current_operator_pins`; no new history or cut
+    // export, no production/runtime/wait change.
+    if links.len() == 1 {
+        successor_import_history_floor_controls(
+            executables,
+            fixture,
+            links,
+            current,
+            history,
+            &cut,
+            directory,
+        );
+    }
     let certificate: PathBuf = directory.join("readiness-certificate");
     std::fs::create_dir(&certificate).unwrap();
     let mut flags: Vec<String> = current_operator_pins(fixture, links, history);
@@ -2204,6 +2220,294 @@ fn install_next(
         );
     }
     (next, cut, certificate)
+}
+
+/// Recursive byte snapshot used only to prove every read-only input archive
+/// is unchanged across the floor controls below; not a production codec.
+fn successor_floor_snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    let mut files: BTreeMap<PathBuf, Option<Vec<u8>>> = BTreeMap::new();
+    let mut pending: Vec<PathBuf> = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path: PathBuf = entry.unwrap().path();
+            let metadata: std::fs::Metadata = std::fs::symlink_metadata(&path).unwrap();
+            assert!(!metadata.file_type().is_symlink());
+            let relative: PathBuf = path.strip_prefix(root).unwrap().to_path_buf();
+            let contents: Option<Vec<u8>> = if metadata.is_dir() {
+                pending.push(path);
+                None
+            } else {
+                assert!(metadata.is_file());
+                Some(std::fs::read(&path).unwrap())
+            };
+            assert!(files.insert(relative, contents).is_none());
+        }
+    }
+    files
+}
+
+fn successor_floor_identity_fields(text: &str) -> Vec<&str> {
+    text.split_whitespace()
+        .filter(|word| {
+            word.starts_with("cut=") || word.starts_with("package=") || word.starts_with("plan=")
+        })
+        .collect()
+}
+
+fn successor_floor_absent(path: &Path) {
+    assert!(matches!(
+        std::fs::symlink_metadata(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    ));
+}
+
+/// DR-0248's independent ordered-history floor, exercised through
+/// `business_import`'s own `load_with_successor` admission path, scoped to
+/// the first successor link (`links.len() == 1`, current epoch e+1). Reuses
+/// exactly this call's own genuine current history/cut and
+/// `current_operator_pins`; the imported current epoch is the genuine
+/// successor e+1 this `install_next` call already proved, never genesis.
+fn successor_import_history_floor_controls(
+    executables: &CompiledExecutableSnapshot,
+    fixture: &Fixture,
+    links: &[Link],
+    current: &SuccessorWorkflowAuthority,
+    history: &Path,
+    cut: &Path,
+    directory: &Path,
+) {
+    assert_eq!(links.len(), 1, "scoped to the first successor link only");
+    let archive: sunrise_edge_client::immutable_archive::ImmutableArchiveReader =
+        sunrise_edge_client::immutable_archive::ImmutableArchiveReader::open(history).unwrap();
+    let identity_bytes: Vec<u8> =
+        sunrise_edge_client::ordered_history_archive::read_regular_archive_file(
+            archive.root(),
+            Path::new("identity.bin"),
+            node_core::ordered_economics::MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
+        )
+        .unwrap();
+    let identity: node_core::ordered_economics::OrderedHistoryIdentity =
+        node_core::ordered_economics::decode_ordered_history_identity(&identity_bytes).unwrap();
+    let epoch: u64 = current.expected_context().epoch().get();
+    assert_eq!(
+        identity.context.epoch().get(),
+        epoch,
+        "the independently verified current successor history identity is explicitly e+1"
+    );
+    let tip_height: u64 = identity.through_height;
+    assert!(
+        tip_height >= 2,
+        "the first successor epoch's own frozen/drained history must have more than one height"
+    );
+    let tip_digest: [u8; 32] = identity.through_digest.bytes();
+    let interior_bytes: Vec<u8> =
+        sunrise_edge_client::ordered_history_archive::read_regular_archive_file(
+            archive.root(),
+            Path::new("height-00000000000000000001/descriptor.bin"),
+            node_core::ordered_economics::MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
+        )
+        .unwrap();
+    let interior: node_core::ordered_economics::OrderedHistoryHeightDescriptor =
+        node_core::ordered_economics::decode_ordered_history_height_descriptor(&interior_bytes)
+            .unwrap();
+    let interior_digest: [u8; 32] = interior.block_digest.bytes();
+
+    let root: PathBuf = directory.join("successor-floor");
+    std::fs::create_dir(&root).unwrap();
+    let state: PathBuf = root.join("state.sqlite");
+    let blobs: PathBuf = root.join("blobs.sqlite");
+    let fresh_validator: ValidatorId = ValidatorId::new([0xF5; 32]);
+    let import_binary: &str = executables.business_import.to_str().unwrap();
+    let base_flags = |floor: Option<(u64, u64, [u8; 32])>| -> Vec<String> {
+        let mut flags: Vec<String> = current_operator_pins(fixture, links, history);
+        flags.extend([
+            "--cut-dir".into(),
+            cut.to_str().unwrap().into(),
+            "--state-db".into(),
+            state.to_str().unwrap().into(),
+            "--blob-db".into(),
+            blobs.to_str().unwrap().into(),
+            "--validator-id".into(),
+            hex(fresh_validator.as_bytes()),
+            "--max-new-batches".into(),
+            "4096".into(),
+            "--timeout-seconds".into(),
+            "300".into(),
+        ]);
+        if let Some((floor_epoch, floor_height, floor_digest)) = floor {
+            flags.extend([
+                "--history-floor-epoch".into(),
+                floor_epoch.to_string(),
+                "--history-floor-height".into(),
+                floor_height.to_string(),
+                "--history-floor-digest".into(),
+                hex(&floor_digest),
+            ]);
+        }
+        flags
+    };
+
+    let link_snapshots: Vec<[BTreeMap<PathBuf, Option<Vec<u8>>>; 4]> = links
+        .iter()
+        .map(|link| {
+            [
+                successor_floor_snapshot(&link.plan_history),
+                successor_floor_snapshot(&link.cut),
+                successor_floor_snapshot(&link.manifest_history),
+                successor_floor_snapshot(&link.certificate),
+            ]
+        })
+        .collect();
+    let original_history: BTreeMap<PathBuf, Option<Vec<u8>>> = successor_floor_snapshot(history);
+    let original_cut: BTreeMap<PathBuf, Option<Vec<u8>>> = successor_floor_snapshot(cut);
+    let assert_inputs_unchanged = || {
+        for (link, snapshot) in links.iter().zip(&link_snapshots) {
+            assert_eq!(successor_floor_snapshot(&link.plan_history), snapshot[0]);
+            assert_eq!(successor_floor_snapshot(&link.cut), snapshot[1]);
+            assert_eq!(
+                successor_floor_snapshot(&link.manifest_history),
+                snapshot[2]
+            );
+            assert_eq!(successor_floor_snapshot(&link.certificate), snapshot[3]);
+        }
+        assert_eq!(successor_floor_snapshot(history), original_history);
+        assert_eq!(successor_floor_snapshot(cut), original_cut);
+    };
+
+    // Negative: a floor above the exact authenticated tip refuses before
+    // any destination is created, under the genuine successor authority.
+    let above: Output = operator_output(
+        import_binary,
+        "create-sqlite",
+        base_flags(Some((epoch, tip_height.checked_add(1).unwrap(), [0u8; 32]))),
+    );
+    assert!(!above.status.success());
+    assert!(
+        String::from_utf8_lossy(&above.stderr).contains("below the independent history floor"),
+        "{}",
+        String::from_utf8_lossy(&above.stderr),
+    );
+    successor_floor_absent(&state);
+    successor_floor_absent(&blobs);
+    assert_inputs_unchanged();
+
+    // Negative: a conflicting digest at the exact tip height refuses, even
+    // though the height itself matches the genuinely authenticated tip.
+    let mut flipped_tip: [u8; 32] = tip_digest;
+    flipped_tip[31] ^= 1;
+    let wrong_digest: Output = operator_output(
+        import_binary,
+        "create-sqlite",
+        base_flags(Some((epoch, tip_height, flipped_tip))),
+    );
+    assert!(!wrong_digest.status.success());
+    assert!(
+        String::from_utf8_lossy(&wrong_digest.stderr)
+            .contains("does not extend the independent history floor block"),
+        "{}",
+        String::from_utf8_lossy(&wrong_digest.stderr),
+    );
+    successor_floor_absent(&state);
+    successor_floor_absent(&blobs);
+    assert_inputs_unchanged();
+
+    // Negative: a genuinely foreign epoch refuses before height/digest are
+    // even compared, regardless of how plausible the rest of the floor is.
+    let foreign_epoch: Output = operator_output(
+        import_binary,
+        "create-sqlite",
+        base_flags(Some((epoch.checked_sub(1).unwrap(), 1, tip_digest))),
+    );
+    assert!(!foreign_epoch.status.success());
+    assert!(
+        String::from_utf8_lossy(&foreign_epoch.stderr)
+            .contains("history floor epoch differs from the verified current epoch"),
+        "{}",
+        String::from_utf8_lossy(&foreign_epoch.stderr),
+    );
+    successor_floor_absent(&state);
+    successor_floor_absent(&blobs);
+    assert_inputs_unchanged();
+
+    // Positive: the exact authenticated tip is accepted and the genuine
+    // successor import completes -- CompleteInactive, never genesis.
+    let accept_tip: Output = operator_output(
+        import_binary,
+        "create-sqlite",
+        base_flags(Some((epoch, tip_height, tip_digest))),
+    );
+    assert!(
+        accept_tip.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&accept_tip.stdout),
+        String::from_utf8_lossy(&accept_tip.stderr),
+    );
+    let accept_text: String = String::from_utf8_lossy(&accept_tip.stdout).into_owned();
+    assert!(accept_text.contains("business_import=complete-inactive"));
+    assert_inputs_unchanged();
+
+    // Positive interior ancestor: a genuinely committed earlier height is
+    // also accepted, on the already-completed destination, via resume.
+    let accept_interior: Output = operator_output(
+        import_binary,
+        "resume-sqlite",
+        base_flags(Some((epoch, 1, interior_digest))),
+    );
+    assert!(
+        accept_interior.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&accept_interior.stdout),
+        String::from_utf8_lossy(&accept_interior.stderr),
+    );
+    let interior_text: String = String::from_utf8_lossy(&accept_interior.stdout).into_owned();
+    assert!(interior_text.contains("business_import=complete-inactive"));
+    assert_eq!(
+        successor_floor_identity_fields(&accept_text),
+        successor_floor_identity_fields(&interior_text)
+    );
+    assert_inputs_unchanged();
+
+    // Negative resume: a wrong floor on resume reaches the same verified
+    // successor gate and leaves the existing destination bytes unchanged.
+    let state_before: Vec<u8> = std::fs::read(&state).unwrap();
+    let blobs_before: Vec<u8> = std::fs::read(&blobs).unwrap();
+    let resume_wrong: Output = operator_output(
+        import_binary,
+        "resume-sqlite",
+        base_flags(Some((epoch, tip_height, flipped_tip))),
+    );
+    assert!(!resume_wrong.status.success());
+    assert!(
+        String::from_utf8_lossy(&resume_wrong.stderr)
+            .contains("does not extend the independent history floor block"),
+        "{}",
+        String::from_utf8_lossy(&resume_wrong.stderr),
+    );
+    assert_eq!(std::fs::read(&state).unwrap(), state_before);
+    assert_eq!(std::fs::read(&blobs).unwrap(), blobs_before);
+    assert_inputs_unchanged();
+
+    // Valid resume with no floor at all retains the original successor
+    // import semantics: still CompleteInactive, no new batches, same binding.
+    let resume_valid: Output = operator_output(import_binary, "resume-sqlite", base_flags(None));
+    assert!(
+        resume_valid.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&resume_valid.stdout),
+        String::from_utf8_lossy(&resume_valid.stderr),
+    );
+    let resume_text: String = String::from_utf8_lossy(&resume_valid.stdout).into_owned();
+    assert!(resume_text.contains("business_import=complete-inactive"));
+    assert!(resume_text.contains("new_batches=0"));
+    assert_eq!(
+        successor_floor_identity_fields(&accept_text),
+        successor_floor_identity_fields(&resume_text)
+    );
+    assert_eq!(
+        successor_floor_identity_fields(&interior_text),
+        successor_floor_identity_fields(&resume_text)
+    );
+    assert_inputs_unchanged();
 }
 
 fn inspect_old_share(

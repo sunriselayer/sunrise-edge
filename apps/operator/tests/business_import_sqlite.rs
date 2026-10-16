@@ -908,10 +908,7 @@ fn compiled_import_closure_pins_refuse_before_destination_and_accept_exact_ident
     ));
     assert!(unpinned.contains("business_import=complete-inactive"));
     let unpinned_fields: Vec<&str> = identity_fields(&unpinned);
-    let cut_digest: String = unpinned_fields[0]
-        .strip_prefix("cut=")
-        .unwrap()
-        .to_string();
+    let cut_digest: String = unpinned_fields[0].strip_prefix("cut=").unwrap().to_string();
     let package_digest: String = unpinned_fields[1]
         .strip_prefix("package=")
         .unwrap()
@@ -972,9 +969,21 @@ fn compiled_import_closure_pins_refuse_before_destination_and_accept_exact_ident
     let flipped_package: String = flipped_last_byte(&package_digest);
     let flipped_plan: String = flipped_last_byte(&plan_digest);
     let mismatches: [(&str, &str, &str); 3] = [
-        (flipped_cut.as_str(), package_digest.as_str(), plan_digest.as_str()),
-        (cut_digest.as_str(), flipped_package.as_str(), plan_digest.as_str()),
-        (cut_digest.as_str(), package_digest.as_str(), flipped_plan.as_str()),
+        (
+            flipped_cut.as_str(),
+            package_digest.as_str(),
+            plan_digest.as_str(),
+        ),
+        (
+            cut_digest.as_str(),
+            flipped_package.as_str(),
+            plan_digest.as_str(),
+        ),
+        (
+            cut_digest.as_str(),
+            package_digest.as_str(),
+            flipped_plan.as_str(),
+        ),
     ];
     for (bad_cut, bad_package, bad_plan) in mismatches {
         let mut attempt: Command = command(
@@ -1015,7 +1024,11 @@ fn compiled_import_closure_pins_refuse_before_destination_and_accept_exact_ident
         pinned_validator,
         "4096",
     );
-    accept.args(closure_pin_arguments(&cut_digest, &package_digest, &plan_digest));
+    accept.args(closure_pin_arguments(
+        &cut_digest,
+        &package_digest,
+        &plan_digest,
+    ));
     let accepted: String = success(offline_output(accept, source_paths));
     assert!(accepted.contains("business_import=complete-inactive"));
     assert_eq!(identity_fields(&unpinned), identity_fields(&accepted));
@@ -1058,7 +1071,11 @@ fn compiled_import_closure_pins_refuse_before_destination_and_accept_exact_ident
         pinned_validator,
         "4096",
     );
-    wrong_resume.args(closure_pin_arguments(&cut_digest, &package_digest, &flipped_plan));
+    wrong_resume.args(closure_pin_arguments(
+        &cut_digest,
+        &package_digest,
+        &flipped_plan,
+    ));
     let wrong: Output = offline_output(wrong_resume, source_paths);
     assert!(!wrong.status.success());
     assert!(
@@ -1084,7 +1101,11 @@ fn compiled_import_closure_pins_refuse_before_destination_and_accept_exact_ident
         pinned_validator,
         "4096",
     );
-    exact_resume.args(closure_pin_arguments(&cut_digest, &package_digest, &plan_digest));
+    exact_resume.args(closure_pin_arguments(
+        &cut_digest,
+        &package_digest,
+        &plan_digest,
+    ));
     let resumed: String = success(offline_output(exact_resume, source_paths));
     assert!(resumed.contains("business_import=complete-inactive"));
     assert!(resumed.contains("new_batches=0"));
