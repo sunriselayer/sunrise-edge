@@ -156,6 +156,14 @@ where
     };
     let context: DurableOperationContext =
         DurableOperationContext::new(host.writer_fence, deadline, identity.correlation_id);
+    // DR-0251: the shared admission pool's own stop signal is rechecked here,
+    // after identity/clock/deadline preparation but before the policy/storage
+    // reads below, mirroring `successor::operation_context`'s own boundary.
+    // The surrounding `publication::admitted` entry guard cannot observe a
+    // close that lands during this function's own clock read.
+    if host.blocking_executor.stop_cancellation().is_cancelled() {
+        return cancelled_before_storage_response();
+    }
     let policy: OrderedEconomicsPolicy = match host
         .policy_source
         .ordered_policy(host.store.as_ref(), &context)

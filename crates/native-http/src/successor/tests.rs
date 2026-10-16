@@ -464,6 +464,184 @@ impl SuccessorHistoricalPolicySource<MemoryDurableStateStore> for RefusingHistor
     }
 }
 
+/// Same read-only composition as the mounting test below, but with an
+/// explicit clock, identity source and blocking executor so a test can
+/// arrange the historical `read` boundary's own stop check deterministically.
+fn historical_host_with<C, I>(
+    policy_source: Arc<RefusingHistoricalPolicy>,
+    clock: Arc<C>,
+    identities: Arc<I>,
+    blocking_executor: NativeBlockingExecutor,
+) -> SuccessorHistoricalComposition<MemoryDurableStateStore>
+where
+    C: Clock + Send + Sync + 'static,
+    I: IndexedOutboxIdentitySource + Send + Sync + 'static,
+{
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    SuccessorHistoricalComposition {
+        store: Arc::new(MemoryDurableStateStore::new(fence)),
+        policy_source,
+        blobs: Arc::new(MemoryBlobStore::default()),
+        clock,
+        identities,
+        writer_fence: fence,
+        operation_timeout: Duration::from_secs(5),
+        domain: AtomicityDomainId::new([1; 32]).unwrap(),
+        blocking_executor,
+    }
+}
+
+/// DR-0251: the historical read boundary's own `blocking_executor` stop
+/// check is rechecked after identity/clock/deadline preparation but before
+/// `policy_source.ordered_policy`, matching `successor::operation_context`'s
+/// boundary. The generic `publication::admitted` entry guard cannot observe
+/// a close that lands during this function's own clock read, so the summary
+/// route must still refuse before ever reaching the policy source once the
+/// shared executor is closed inside the clock call.
+#[tokio::test]
+async fn closed_blocking_executor_refuses_historical_summary_before_policy() {
+    let executor: NativeBlockingExecutor =
+        NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(2).unwrap()));
+    let policy_source: Arc<RefusingHistoricalPolicy> =
+        Arc::new(RefusingHistoricalPolicy(AtomicUsize::new(0)));
+    let host: SuccessorHistoricalComposition<MemoryDurableStateStore> = historical_host_with(
+        policy_source.clone(),
+        Arc::new(ClosingClock(executor.clone())),
+        Arc::new(Identities(AtomicU64::new(1))),
+        executor,
+    );
+    let router: Router = successor_history_router(host).unwrap();
+    let (status, body): (StatusCode, Vec<u8>) = send(
+        &router,
+        "GET",
+        node_wire::ordered_history::ORDERED_HISTORY_SUMMARY_PATH,
+        None,
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body, b"invocation-cancelled-before-storage");
+    assert_eq!(policy_source.0.load(Ordering::SeqCst), 0);
+}
+
+/// Counterpart to the closed case above on the exact same route: with no
+/// stop signal, the fresh policy source is still reached exactly once and
+/// the preexisting `ordered-history-unavailable` refusal is unchanged.
+#[tokio::test]
+async fn open_blocking_executor_historical_summary_counterpart_reaches_policy_once() {
+    let executor: NativeBlockingExecutor =
+        NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(2).unwrap()));
+    let policy_source: Arc<RefusingHistoricalPolicy> =
+        Arc::new(RefusingHistoricalPolicy(AtomicUsize::new(0)));
+    let host: SuccessorHistoricalComposition<MemoryDurableStateStore> = historical_host_with(
+        policy_source.clone(),
+        Arc::new(SystemClock),
+        Arc::new(Identities(AtomicU64::new(1))),
+        executor,
+    );
+    let router: Router = successor_history_router(host).unwrap();
+    let (status, body): (StatusCode, Vec<u8>) = send(
+        &router,
+        "GET",
+        node_wire::ordered_history::ORDERED_HISTORY_SUMMARY_PATH,
+        None,
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body, b"ordered-history-unavailable");
+    assert_eq!(policy_source.0.load(Ordering::SeqCst), 1);
+}
+
+/// Closing admission during identity preparation does not mask its own
+/// failure: the historical `read` boundary returns the identity-sourced
+/// `ordered-history-unavailable` refusal before its new cancellation
+/// checkpoint, and the policy source is never reached either way.
+#[tokio::test]
+async fn historical_identity_error_outranks_a_closed_blocking_executor() {
+    let executor: NativeBlockingExecutor =
+        NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(2).unwrap()));
+    let policy_source: Arc<RefusingHistoricalPolicy> =
+        Arc::new(RefusingHistoricalPolicy(AtomicUsize::new(0)));
+    let host: SuccessorHistoricalComposition<MemoryDurableStateStore> = historical_host_with(
+        policy_source.clone(),
+        Arc::new(SystemClock),
+        Arc::new(FailingIdentities(executor.clone())),
+        executor.clone(),
+    );
+    let router: Router = successor_history_router(host).unwrap();
+    let (status, body): (StatusCode, Vec<u8>) = send(
+        &router,
+        "GET",
+        node_wire::ordered_history::ORDERED_HISTORY_SUMMARY_PATH,
+        None,
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body, b"ordered-history-unavailable");
+    assert_eq!(policy_source.0.load(Ordering::SeqCst), 0);
+    assert!(executor.stop_cancellation().is_cancelled());
+}
+
+/// Closing admission during a failing clock read keeps the same
+/// `ordered-history-unavailable` refusal and never reaches the policy source.
+#[tokio::test]
+async fn historical_clock_error_outranks_a_closed_blocking_executor() {
+    let executor: NativeBlockingExecutor =
+        NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(2).unwrap()));
+    let policy_source: Arc<RefusingHistoricalPolicy> =
+        Arc::new(RefusingHistoricalPolicy(AtomicUsize::new(0)));
+    let host: SuccessorHistoricalComposition<MemoryDurableStateStore> = historical_host_with(
+        policy_source.clone(),
+        Arc::new(FailingClock(executor.clone())),
+        Arc::new(Identities(AtomicU64::new(1))),
+        executor.clone(),
+    );
+    let router: Router = successor_history_router(host).unwrap();
+    let (status, body): (StatusCode, Vec<u8>) = send(
+        &router,
+        "GET",
+        node_wire::ordered_history::ORDERED_HISTORY_SUMMARY_PATH,
+        None,
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body, b"ordered-history-unavailable");
+    assert_eq!(policy_source.0.load(Ordering::SeqCst), 0);
+    assert!(executor.stop_cancellation().is_cancelled());
+}
+
+/// Closing admission during the clock read retains deadline-overflow
+/// priority over the new cancellation checkpoint.
+#[tokio::test]
+async fn historical_deadline_overflow_outranks_a_closed_blocking_executor() {
+    let executor: NativeBlockingExecutor =
+        NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(2).unwrap()));
+    let policy_source: Arc<RefusingHistoricalPolicy> =
+        Arc::new(RefusingHistoricalPolicy(AtomicUsize::new(0)));
+    let host: SuccessorHistoricalComposition<MemoryDurableStateStore> = historical_host_with(
+        policy_source.clone(),
+        Arc::new(OverflowingClock(executor.clone())),
+        Arc::new(Identities(AtomicU64::new(1))),
+        executor.clone(),
+    );
+    let router: Router = successor_history_router(host).unwrap();
+    let (status, body): (StatusCode, Vec<u8>) = send(
+        &router,
+        "GET",
+        node_wire::ordered_history::ORDERED_HISTORY_SUMMARY_PATH,
+        None,
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body, b"ordered-history-unavailable");
+    assert_eq!(policy_source.0.load(Ordering::SeqCst), 0);
+    assert!(executor.stop_cancellation().is_cancelled());
+}
+
 #[tokio::test]
 async fn historical_material_router_mounts_only_three_read_routes_and_reverifies() {
     let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
