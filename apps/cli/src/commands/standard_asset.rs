@@ -1157,26 +1157,24 @@ mod tests {
     /// signer file access, or device I/O.
     #[test]
     fn rejects_custody_signer_selection_before_any_io() {
-        for action in ["create-asset"] {
-            let error = run(
-                action,
-                vec![
-                    OsString::from("--custody-socket"),
-                    OsString::from("/nonexistent/custody.sock"),
-                    OsString::from("--custody-uid"),
-                    OsString::from("1001"),
-                    OsString::from("--custody-expected-public-key"),
-                    OsString::from("ab".repeat(32)),
-                ],
-            )
-            .unwrap_err();
-            assert!(matches!(error, CliError::LocalExecution(_)));
-            assert!(
-                error
-                    .to_string()
-                    .contains("custody paid Standard Asset signing is not supported")
-            );
-        }
+        let error: CliError = run(
+            "create-asset",
+            vec![
+                OsString::from("--custody-socket"),
+                OsString::from("/nonexistent/custody.sock"),
+                OsString::from("--custody-uid"),
+                OsString::from("1001"),
+                OsString::from("--custody-expected-public-key"),
+                OsString::from("ab".repeat(32)),
+            ],
+        )
+        .unwrap_err();
+        assert!(matches!(error, CliError::LocalExecution(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("custody paid Standard Asset signing is not supported")
+        );
     }
 
     /// `split`/`merge` (DR-0249) and `mint`/`burn` (DR-0253) are the
