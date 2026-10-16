@@ -1,22 +1,26 @@
-//! Operation-specific protected local OS custody (DR-0238/0246; see
+//! Operation-specific protected local OS custody (DR-0238/0246/0249; see
 //! `docs/architecture/local-publication-custody.md`).
 //!
 //! Trusted local OS/root, key held in a separate process under a distinct
-//! UID. Separate publication and genesis Standard Asset transfer invocations:
-//! no generic `ExternalSigner`, no
+//! UID. Separate publication, genesis Standard Asset transfer and genesis
+//! Standard Asset split/merge invocations: no generic `ExternalSigner`, no
 //! automatic/consensus/genesis-authority signing route, and no network-facing HTTP
 //! endpoint. At-rest encryption and compromised-root resistance are
 //! explicitly NOT claimed by this first OS-permission model.
 //!
 //! - `custody keygen` generates custody's own private key file.
-//! - `custody approve` and `approve-transfer` independently review their own
-//!   operation family before writing whole-frame approval records.
+//! - `custody approve`, `approve-transfer`, `approve-split` and
+//!   `approve-merge` independently review their own operation family before
+//!   writing whole-frame approval records.
 //! - `custody revoke` durably cancels a request ID without erasing its approval.
 //! - `custody serve` is a bounded-lifetime, one-request-at-a-time signer
 //!   that only ever reads the approval store.
 //! - `custody serve-transfer` uses the same owner with a transfer-only policy.
-//! - `custody prepare-transfer` exports preimages without approval, and
-//!   `sign-transfer` finalizes an offline, protected paid intent.
+//! - `custody serve-split-merge` uses the same owner with the DR-0249
+//!   split/merge policy, under one closed kind-3 decoder.
+//! - `custody prepare-transfer`/`prepare-split`/`prepare-merge` export
+//!   preimages without approval; `sign-transfer`/`sign-split`/`sign-merge`
+//!   finalize an offline, protected paid intent.
 //!
 //! The publication CLI client leg lives in [`client`] and is consumed by
 //! `commands/publication.rs` through [`SignerSelection::Custody`]
@@ -27,9 +31,17 @@ mod approve;
 mod asset_commands;
 #[cfg(test)]
 mod asset_fixture;
+mod asset_split_merge;
+mod asset_split_merge_commands;
+#[cfg(test)]
+mod asset_split_merge_fixture;
+#[cfg(test)]
+mod asset_split_merge_tests;
+mod asset_split_merge_wire;
 mod asset_transfer;
 #[cfg(test)]
 mod asset_transfer_tests;
+mod asset_trust;
 mod asset_wire;
 pub(crate) mod client;
 mod config;
@@ -49,6 +61,7 @@ use crate::args::{ArgsError, ParsedArgs, parse_flags, scalar};
 use crate::error::CliError;
 use crate::parse::parse_u32;
 
+pub(crate) use asset_split_merge::{AssetMergeRequest, AssetSplitRequest};
 pub(crate) use asset_transfer::AssetTransferRequest;
 pub(crate) use client::{CustodyTarget, request_signature};
 pub(crate) use error::CustodyError;
@@ -105,6 +118,13 @@ where
         "approve-transfer" => asset_commands::approve(args),
         "serve-transfer" => asset_commands::serve(args),
         "sign-transfer" => asset_commands::sign(args),
+        "prepare-split" => asset_split_merge_commands::prepare_split(args),
+        "approve-split" => asset_split_merge_commands::approve_split(args),
+        "sign-split" => asset_split_merge_commands::sign_split(args),
+        "prepare-merge" => asset_split_merge_commands::prepare_merge(args),
+        "approve-merge" => asset_split_merge_commands::approve_merge(args),
+        "sign-merge" => asset_split_merge_commands::sign_merge(args),
+        "serve-split-merge" => asset_split_merge_commands::serve(args),
         other => Err(CliError::UnknownCustodyAction(other.to_string())),
     }
 }

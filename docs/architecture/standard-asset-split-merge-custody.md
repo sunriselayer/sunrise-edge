@@ -1,0 +1,99 @@
+# Genesis Standard Asset split/merge custody
+
+[DR-0249](decisions/0249-genesis-standard-asset-split-merge-custody.md) adds
+one more coin-owner-only family to the trusted-local-OS boundary. This guide
+describes the implemented contract; qualification status belongs in
+[TODO.md](../../TODO.md).
+
+## Trust and operation
+
+Custody's genesis/code/instance/policy pin is the exact same verification as
+[genesis Standard Asset transfer custody](standard-asset-transfer-custody.md),
+factored into a shared private `PinnedAssetTrust` so this family never
+reimplements or re-derives it; only the entrypoint and amount checks differ.
+
+`split` owns the source `Coin` (Write) and a distinct owned fee source.
+The amount must be strictly between zero and the held balance — never zero,
+never the full balance. The recipient may legitimately equal the pinned
+publisher: splitting one's own coin is an ordinary operation, not a transfer,
+and is never refused for matching the sender. `split`'s recipient is just as
+legitimately a genuinely foreign address: this family can move part of a
+coin's value to anyone, exactly like `transfer` moves a whole coin, so
+enabling `serve-split-merge` authorizes real transfers-by-split, not merely
+self-only housekeeping.
+
+`merge` owns a destination `Coin` (Write) and a distinct owned source `Coin`
+(Consume), plus a distinct owned fee source. The source amount must be
+positive, and the destination/source checked sum is refused on overflow
+before any network or signing step, mirroring the published contract's own
+checked-overflow guard exactly.
+
+Both require a positive maximum fee strictly below the fee source balance,
+with the refund returned to the sender — the same fee shape as `transfer`.
+`mint` and `burn` both require the `TreasuryCap` and stay unsupported in this
+profile; `create-asset`, other packages/instances/epochs and automatic
+protocol signing stay out of scope.
+
+The complete bounded review displays the source value(s), the split amount/
+recipient/remainder or the merge values and checked total, every input
+reference and access mode, the fee balance/ceiling/refund/full policy,
+context/nonce/request fields and the complete signed frame.
+
+## Independent preparation, approval and serving
+
+```bash
+sunrise-edge-cli custody prepare-split \
+  --config /private/config \
+  --genesis-manifest-file /private/genesis.bin --genesis-digest <64-hex-pin> \
+  --coin-file /private/coin.bin --fee-source-file /private/fee.bin \
+  --amount <strictly-between-zero-and-held> --recipient <64-hex-address> \
+  --nonce 0 --request-id <64-hex-request> \
+  --max-fee 1000000 --gas-limit 200000 --out /private/split-request.bin
+
+sunrise-edge-cli custody approve-split \
+  --config /private/config \
+  --genesis-manifest-file /private/genesis.bin --genesis-digest <64-hex-pin> \
+  --request-file /private/split-request.bin --approvals-dir /private/approvals \
+  --expires-in-seconds 3600
+
+sunrise-edge-cli custody serve-split-merge \
+  --config /private/config --key-file /private/custody.seed \
+  --genesis-manifest-file /private/genesis.bin --genesis-digest <64-hex-pin> \
+  --socket /custody-run/split-merge.sock --approvals-dir /private/approvals \
+  --max-connections 8 --max-requests 8 --total-deadline-secs 300
+```
+
+`prepare-merge`/`approve-merge` take `--into-file`/`--from-file` in place of
+`--coin-file`/`--amount`/`--recipient`; one `serve-split-merge` invocation
+accepts both operations under the one closed kind-3 decoder, exactly as
+`serve-transfer` is the sole kind-2 consumer. Approval requires a real
+terminal, renders the full review and requires the exact typed
+`APPROVE-SPLIT`/`APPROVE-MERGE` confirmation line. `custody sign-split` and
+`sign-merge` are the offline alternatives, exporting the ordinary signed
+paid intent after independent finalization.
+
+## Actual CLI consumer
+
+The existing `standard_asset split`/`merge` CLI accepts the same three
+custody signer flags `transfer` already does, with its ordinary endpoint/
+context, coin or into/from, fee, nonce, request and gas flags. It captures
+every owned application input's exact canonical preimage (in `split`'s one-
+input or `merge`'s into-then-from two-input order) and sends them to custody
+alongside the fee source preimage; the protected side independently decodes,
+validates ownership/schema/nominal type, and recomputes every reference and
+amount before rendering its own review. `mint`, `burn` and `create-asset`
+keep their existing custody refusal; `transfer` is unaffected and stays on
+kind 2.
+
+## Lifecycle and limits
+
+`custody revoke`, recovery and rotation reuse the existing durable store and
+lifecycle exactly as DR-0246 describes; nothing about expiry, revocation or
+key recovery changes for this family. The separately owned Docker fixture extends the original publication, six
+lifecycle and transfer controls with an actual CLI split-to-self then merge
+round trip in fresh stores. It uses the same fixed container image, resource,
+output and time bounds and no-network policy. It checks the exact offline/CLI
+bytes, authenticated requests and result/query correspondence, funded amounts,
+consumed input, nonce, nonempty matching receipts and exact replay observations,
+then durable revocation in the same process and after restart. Actual source
+and execution qualification belong in [TODO.md](../../TODO.md).

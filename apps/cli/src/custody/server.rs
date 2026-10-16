@@ -1,5 +1,6 @@
 //! Bounded-lifetime, one-request-at-a-time operation-specific custody signer.
-//! `serve` accepts publication; `serve-transfer` accepts the DR-0246 family.
+//! `serve` accepts publication; `serve-transfer` accepts the DR-0246 family;
+//! `serve-split-merge` accepts the DR-0249 split/merge family.
 //!
 //! This is an optional host facility with an explicit bounded lifetime and
 //! request count, not a protocol daemon assumption: it never spawns, never
@@ -21,6 +22,8 @@ use tokio::time::timeout;
 use sunrise_edge_client::LocalSigner;
 
 use super::approvals;
+use super::asset_split_merge::{AssetSplitMergeRequest, AssetSplitMergeTrust};
+use super::asset_split_merge_wire;
 use super::asset_transfer::AssetTransferTrust;
 use super::config::CustodyConfig;
 use super::error::CustodyError;
@@ -156,9 +159,30 @@ pub(super) fn run_transfer(
     )
 }
 
+/// A distinct invocation and decoder; neither publication nor transfer
+/// custody ever accepts the kind-3 split/merge family.
+pub(super) fn run_split_merge(
+    config: CustodyConfig,
+    signer: LocalSigner,
+    socket_path: &Path,
+    approvals_dir: &Path,
+    bounds: ServeBounds,
+    trust: AssetSplitMergeTrust,
+) -> Result<ServeSummary, CustodyError> {
+    run_with_policy(
+        config,
+        signer,
+        socket_path,
+        approvals_dir,
+        bounds,
+        SigningPolicy::SplitMerge(Box::new(trust)),
+    )
+}
+
 enum SigningPolicy {
     Publication,
     Transfer(Box<AssetTransferTrust>),
+    SplitMerge(Box<AssetSplitMergeTrust>),
 }
 
 fn run_with_policy(
@@ -389,6 +413,7 @@ async fn handle_one_connection(
     let maximum: usize = match policy {
         SigningPolicy::Publication => wire::MAX_CUSTODY_REQUEST_FRAME_BYTES,
         SigningPolicy::Transfer(_) => super::asset_wire::MAX_REQUEST_BYTES,
+        SigningPolicy::SplitMerge(_) => asset_split_merge_wire::MAX_REQUEST_BYTES,
     };
     let frame = match read_request_frame(&mut stream, maximum).await {
         Ok(frame) => frame,
@@ -402,6 +427,11 @@ async fn handle_one_connection(
             .map_err(|error| refusal_status_for_wire_error(&error))
             .and_then(|request| {
                 sign_transfer_request(config, signer, approvals_dir, trust, &request)
+            }),
+        SigningPolicy::SplitMerge(trust) => asset_split_merge_wire::decode(&frame)
+            .map_err(|error| refusal_status_for_wire_error(&error))
+            .and_then(|request| {
+                sign_split_merge_request(config, signer, approvals_dir, trust, &request)
             }),
     };
     match result {
@@ -456,6 +486,56 @@ pub(super) fn sign_transfer_request(
     }
     let signed = transfer
         .prepared
+        .sign_and_finalize_with(signer)
+        .map_err(|_| CustodyResponseStatus::Internal)?;
+    Ok(signed.signature)
+}
+
+/// Pure, synchronous split/merge signing decision: rebuilds the exact
+/// `PreparedPaidExecution` under custody's own pinned split/merge trust
+/// (never the caller's claimed amount/overflow outcome), checks it against
+/// the stored human approval record, signs, and relies on
+/// `sign_and_finalize_with`'s own internal verification before returning.
+pub(super) fn sign_split_merge_request(
+    config: &CustodyConfig,
+    signer: &LocalSigner,
+    approvals_dir: &Path,
+    trust: &AssetSplitMergeTrust,
+    request: &AssetSplitMergeRequest,
+) -> Result<[u8; wire::CUSTODY_SIGNATURE_BYTES], CustodyResponseStatus> {
+    if signer.address() != config.publisher() {
+        return Err(CustodyResponseStatus::Internal);
+    }
+    let (request_id, prepared) = match request {
+        AssetSplitMergeRequest::Split(split) => {
+            let prepared = trust
+                .prepare_split(split)
+                .map_err(|_| CustodyResponseStatus::Malformed)?;
+            (split.request_id, prepared.prepared)
+        }
+        AssetSplitMergeRequest::Merge(merge) => {
+            let prepared = trust
+                .prepare_merge(merge)
+                .map_err(|_| CustodyResponseStatus::Malformed)?;
+            (merge.request_id, prepared.prepared)
+        }
+    };
+    let now: u64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| CustodyResponseStatus::Internal)?
+        .as_secs();
+    let approval = approvals::read_approval(approvals_dir, &request_id)
+        .map_err(|_| CustodyResponseStatus::Internal)?
+        .ok_or(CustodyResponseStatus::NoApproval)?;
+    if approvals::is_expired(&approval, now)
+        || approval.publisher != config.publisher()
+        || approval.frame != prepared.signable_frame()
+        || super::revoke::is_revoked(approvals_dir, &request_id)
+            .map_err(|_| CustodyResponseStatus::Internal)?
+    {
+        return Err(CustodyResponseStatus::NoApproval);
+    }
+    let signed = prepared
         .sign_and_finalize_with(signer)
         .map_err(|_| CustodyResponseStatus::Internal)?;
     Ok(signed.signature)
