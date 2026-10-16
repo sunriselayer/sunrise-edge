@@ -7,37 +7,31 @@ the accepted decision record. This page is the implementation-facing summary;
 ## What this is
 
 A deterministic, real-compiled-binary, real-`SIGTERM` oracle for the
-production `sqlite_source_host` host (used by every acceptance in
-`apps/operator/tests/sqlite_source_host_process.rs`). It proves that a real
-`SIGTERM` closes the exact `NativeBlockingExecutor` the host's constructor
-injects into both the certified FastVote router and the opt-in ordered-
-economics router (`apps/operator/src/sqlite_source_host.rs`), and that the
-ordered-economics `propose` route's own `admitted()`/`build_context()`
-cancellation check (`crates/native-http/src/publication.rs`,
-`crates/native-http/src/ordered_economics.rs`) honors that same close before
-any durable write.
+production `sqlite_source_host` host. It exercises the constructor's ordered-
+economics router: a real signal closes its `NativeBlockingExecutor`, and a
+request whose HTTP exchange was already in flight observes the same
+cancellation and is refused before any durable business write. The host also
+composes a certified FastVote router; this oracle does not exercise that
+router's signal wiring.
 
 ## What it is not
 
-- **Not** a real-binary late pre-storage window isolation. The actual gap
-  between admission and `build_context`'s guard (between
-  `crates/native-http/src/publication.rs`'s `admitted()` recheck and
-  `crates/native-http/src/ordered_economics.rs`'s `build_context()`) is a
-  handful of pure, synchronous, in-memory steps with no externally
-  controllable seam; this oracle cannot and does not land a stop inside that
-  specific window through a real compiled process. That isolation remains
-  the dedicated manual-router fixture
-  (`apps/operator/tests/sqlite_source_host_stop_cancellation_oracle.rs`),
-  which composes the same public router/executor/store types directly and
-  saturates a one-thread blocking pool to make "admitted but still queued"
-  deterministic. The two fixtures are complementary, not duplicates: this one
-  proves the real host wires the real signal to the real executor; the other
-  proves the late guard inside that wiring.
+- **Not** a real-binary late pre-storage window isolation. The synchronous
+  window between `publication::admitted`'s job recheck and
+  `ordered_economics::build_context` has no externally controlled seam here.
+  The late check is covered separately by
+  `crates/native-http/src/tests/ordered_history_http.rs`'s
+  `status_cancellation_during_build_context_stops_before_storage_after_identity_and_clock`
+  and its companion controls. The manual SQLite/HTTP fixture
+  `sqlite_source_host_stop_cancellation_oracle.rs` covers another boundary:
+  queued work refused by the dispatcher's job recheck, plus a fresh post-stop
+  request that observes injected router cancellation. It does not isolate
+  `build_context` or the production factory/signal owner.
 - **Not** a FastVote, successor, historical-read or TLS qualification. Only
   the ordered-economics `propose` route is exercised.
-- **Not** a D05/M5 closure. `TODO.md`'s open D05/M5 items (capacity policy,
-  monitoring/incident wiring, production PKI, and the remaining qualification
-  gates) are unaffected by this fixture.
+- **Not** a D05/M5 closure. The remaining code and verification conditions in
+  `TODO.md` stay open. Applying production PKI, topology and workload/SLO
+  values belongs to D04/D07.
 
 ## The deterministic barrier
 
@@ -148,16 +142,19 @@ without the specific `LeaderProposalRecord` actually being present.
 
 ## Composition with existing evidence
 
-This fixture is a third, narrower leg alongside:
+This ordered-router wiring fixture composes with distinct, bounded evidence:
 
-- the manual-router late-guard oracle
-  (`sqlite_source_host_stop_cancellation_oracle.rs`), which isolates
-  `build_context`'s own cooperative check with a saturated blocking pool; and
-- the existing successor/historical late-stop boundaries (DR-0250, DR-0251),
-  which recheck their own executors at their own later resolution points.
+- Native HTTP `ordered_history_http.rs`'s
+  `status_cancellation_during_build_context_stops_before_storage_after_identity_and_clock`
+  and companions exercise the late context check after identity/clock work.
+- `sqlite_source_host_stop_cancellation_oracle.rs` manually composes real
+  SQLite/HTTP components to cover queued dispatcher refusal and a fresh
+  post-stop router refusal. It cannot detect factory or OS-signal wiring
+  changes and does not isolate the late context check.
+- DR-0250/DR-0251 cover the successor and historical executors' own later
+  resolution points at component level.
 
-Together they claim: the real compiled host wires a real `SIGTERM` to the
-real `NativeBlockingExecutor` (this fixture), and every handler that shares
-that executor honors its close before its own first storage call (the
-others). No single fixture claims the whole chain end to end inside one real
-process.
+Each claim remains attached to its own route and boundary. Together these
+show selected runtime cancellation paths and the actual ordered host's
+signal wiring; no single fixture observes the real-binary late window or
+qualifies every accepted handler family.

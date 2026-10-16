@@ -230,6 +230,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E41: genesis Standard Asset mint/burn custody component | `32cf6f04` / tree `fbf1a5e1`。専用kind4のmint/burnで独立genesis/code/instance/policy pin・canonical cap/coin preimage・checked供給量・exact frame/単一期限の承認と実CLIを接続。custody 128 passed/4 ignored、Standard Asset 18 passed、CLI build・Clippy・fmt/Node構文・Cargo JSONの全7 commandsがactual0/EOF、138.504秒。実Docker/UID/PTYは元publication・6 lifecycle・transfer・split/mergeと新mint→burnを全actual0/EOF、5.314秒。両独立correctness reviewの指摘を処理・再承認。親が後続のtest-only Debug型制約/単一要素loopを修正し、初回失敗2件の記録も保持 | 同じpublisherへ5Mをmintし、作ったCoin全体をburn。live SQLite/WASMでcap供給量S→S+5M→S・version・消費Coin tombstone・nonce2、署名全byte一致、非空Accepted dedup payloadと保存結果の一致、captured request再送、取消後とrestart後の拒否を検証。source/wrapper/実ELF前後不変、owned container/volume解放、実mode0755のCLI/harnessを別inodeへ保持。trusted OS/local genesisのみ。新familyの鍵復旧/交換・自動protocol署名・create-asset・他family/epoch・全M2・完全required/CI/RELEASE・独立監査/公開認定ではない |
 | E42: b568 complete required and hosted CI | `b568037f` / tree `2a691d63`。literal npm-ci +完全check-allがactual0/EOF、19,899.251秒。元8リンク/e8 withdrawals/35-role source-free復元と全adapterを維持。Rust success summaries144・報告pass合計4,196・failed0。前後HEAD/clean state、Node24と全wrapper/raw hashを親で再照合。同treeのhosted CI全8 jobs SUCCESSはE39、全8 raw logも再hash確認 | b568のsource qualificationのみ。新F sourceのsuccessor floor oracle、10a4のmint/burn、原12 RELEASE runtime、全M2/M3/M4/M5/M7・独立監査/実provider/公開認定は別条件として保持する |
 | E43: 10a4 actual Native A/B and RELEASE CLI custody | `10a47db1` / tree `ede55f33`。固定Node24.19.0/Rust1.97.1の13ターゲット・2 fresh buildsが全byte/mode/owner一致、actual0/EOF、1,529.682秒。親が保存26 ELFを再hash/byte比較し、4専有dir・source leaseを解放。13 debug + 10 driverの別targetコンパイルもactual0/EOF、1,709.378秒、23 ELFとCargo JSONを再照合。同sourceの実RELEASE CLIで元publication・6 lifecycle・transfer・split/mergeとmint→burnの別UID/PTYを全actual0/EOF、5.655秒。source/ELF前後不変、所有container/volume解放 | RELEASEなのはCLI child。SQLite/WASM oracleは保持した32cfのdev/test opt2 harnessで、10a4との差分はTODOだけ、他の全code bytes一致を検証。原12 RELEASE runtimeはcheck/probeを通して実行中、同sourceの完全required/CIも未終端。全M2/M4/M7・cross-machine/hermetic・独立監査/実provider/公開認定ではない |
+| E44: compiled SQLite ordered-router SIGTERM wiring | `3b51aa67`。元4件を残したcompiled process全5件/0 failed/0 ignored、fmt、operator全target/all-feature Clippy、実Cargo JSON artifactの全4 commandsがactual0/EOF、188.498秒。実leader/genesis/policyのowned hostへSIGTERMを送り、Expect/100-continue + idle EOF/接続拒否のbarrier後に本文を渡して保存record/blob不変・正確な取消応答と通常summaryを確認。fresh正対照では実LeaderProposalRecordをHTTP proposal/再計算digestと照合 | source-only独立correctness reviewのB1実DBパスとwant-channel証明を修正、test source承認。N1 pre-runclose除去は実書込みによる不変assertionでactual101/EOF、N2 cancellation Noneはrecord/blob不変後に別admission拒否bodyでactual101/EOF。固定した元test ELFで実行し、同じchild build recipeでexact bytes復元後はactual0/EOF。controller全469.101秒、元source全hash/clean・全raw hash・wrapper/保持ELFを親で再照合、owned peers0/専用TMP除去。N2のdynamic metrics観測とは呼ばない。Docs証拠参照も修正し別承認。ordered host wiring限定、実binary内late window・他family/TLS・全D05/M5/完全required/CI/RELEASE/独立監査/公開認定ではない |
 
 
 
@@ -624,6 +625,10 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
   - [x] [signerless履歴hostのpolicy解決前の停止確認](docs/architecture/decisions/0251-successor-historical-read-stop-check.md):
     E32で別compositionのread ownerも検証。停止hookはadmission後に入り、未開始policyを0回、
     open対照では1回呼ぶことと、error優先順位・欠落guardの負対照を確認した。
+  - [x] [compiled SQLite ordered-routerの実SIGTERM配線 component](docs/architecture/decisions/0254-native-source-host-sigterm-wiring-oracle.md):
+    E44でin-flight HTTPの本文を停止後に渡す拒否とfresh提案の実保存を確認。close除去/N2注入除去の
+    実負対照・exact復元後の正常成功を検証。ordered routerだけのfactory/signal配線であり、
+    実binary内のlate windowやFastVote/successor/historical/TLS・全D05/M5の完了ではない。
   - 次: D05と一本のcase/coverage表を使う。実workload/SLOに対するcapacity、
     actual production PKI、alerts/response・spend適用はD04/D07で決め、適用後に検証する。
 

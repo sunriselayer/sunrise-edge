@@ -10,16 +10,18 @@ criteria belong in [TODO](../../../TODO.md).
 Add one deterministic real-factory, real-compiled-process, real-`SIGTERM`
 oracle to the existing exclusively-owned
 `apps/operator/tests/sqlite_source_host_process.rs`, reusing its private
-`Fixture`/`start_host` construction and every existing case/helper/
-assertion/bound unchanged. The oracle isolates the production
+`Fixture` and bounded `ChildGuard`, adding a stderr-piped
+`start_leader_host` launcher while leaving the original `start_host` and
+every existing case/helper/assertion/bound unchanged.
+The oracle isolates the production
 `sqlite_source_host` constructor's own wiring: a real `SIGTERM` closes the
-exact `NativeBlockingExecutor` instance it injects into both the certified
-FastVote router and the opt-in ordered-economics router
-(`apps/operator/src/sqlite_source_host.rs`), and the ordered-economics
-`propose` route's own `publication::admitted()`/`build_context()`
-cancellation check (`crates/native-http/src/publication.rs`,
-`crates/native-http/src/ordered_economics.rs`) honors that close before any
-durable write.
+`NativeBlockingExecutor` used by its ordered-economics router
+(`apps/operator/src/sqlite_source_host.rs`), and that router's `propose`
+route observes the same cancellation before durable business storage. The
+constructor also composes FastVote, which this oracle does not exercise.
+The relevant cancellation path is implemented in
+`crates/native-http/src/publication.rs` and
+`crates/native-http/src/ordered_economics.rs`.
 
 The barrier that proves the executor is already closed, from outside the
 process, without a sleep: idle connection C observing EOF/reset, followed by
@@ -83,8 +85,9 @@ restoring exact bytes afterward:
   `0`.
 - Removing `ordered_economics.rs`'s late `build_context` guard is *expected*
   to leave this oracle passing, since this fixture never lands inside that
-  specific late window through a real binary; that isolation remains the
-  separate manual-router fixture noted below.
+  specific late window through a real binary. The separate native-http unit
+  controls noted below exercise the late context check; the manual SQLite/
+  HTTP fixture covers a different dispatcher boundary.
 
 ## Compatibility and limits
 
@@ -94,8 +97,12 @@ production hook. The fixture spawns only the existing compiled
 `sqlite_source_host` binary as this suite already does elsewhere.
 
 This is wiring evidence only. It does not isolate the real-binary late
-pre-storage window (that remains
-`sqlite_source_host_stop_cancellation_oracle.rs`'s manual-router,
-saturated-blocking-pool fixture), does not qualify FastVote, successor,
-historical-read or TLS paths, and does not close D05/M5 or any whole-gate
-requirement. Final status and remaining criteria stay in `TODO.md`.
+pre-storage window. The late `build_context` check is covered by
+`crates/native-http/src/tests/ordered_history_http.rs`'s
+`status_cancellation_during_build_context_stops_before_storage_after_identity_and_clock`
+and its companion controls. The manual
+`sqlite_source_host_stop_cancellation_oracle.rs` covers queued dispatcher
+refusal and a fresh post-stop router refusal; it does not isolate that late
+check or the production signal wiring. This oracle does not qualify
+FastVote, successor, historical-read or TLS paths and does not close D05/M5
+or any whole-gate requirement. Final status and remaining criteria stay in `TODO.md`.
