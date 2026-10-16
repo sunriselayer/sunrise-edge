@@ -8,6 +8,9 @@ processes and permissions on 2026-10-13 for the first publication slice.
 This document is
 the operator-facing contract and the Docker fixture recipe; it does not
 repeat the full design rationale.
+The separate [Standard Asset transfer profile](standard-asset-transfer-custody.md)
+uses a distinct invocation and message family. Publication `serve` remains
+publication-only.
 
 > [!WARNING]
 > This is a development-only fixture, not a production key-management

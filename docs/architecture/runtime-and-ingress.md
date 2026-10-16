@@ -400,8 +400,12 @@ blocking job or release its work permit before actual completion. A lost
 confirmation is unknown and reconciles by exact saved intent and receipt, not
 new signing or an invented rollback/rejection. Connection handshake/output
 budgets do not promise globally bounded host shutdown or storage cancellation.
-Operational cancellation policy, measured load capacity and circuit breaking
-remain required.
+The Native SQLite host connects its stop owner to the existing cooperative
+cancellation checks. The shared admitted, structured-event and query dispatchers refuse queued blocking
+jobs if stop occurred before their work closure starts; already entered work
+still completes and drains. This check is not an atomic storage-abort fence.
+Measured load capacity, broader cancellation policy and circuit breaking remain
+required; DR-0222 records the exact stop boundary.
 
 An embedding scheduler may call `recover_outboxes_once` without an active HTTP
 request. It scans one bounded outbox-key page, validates delivery/batch identity

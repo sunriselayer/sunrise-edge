@@ -62,6 +62,10 @@ where
     if cancelled {
         return cancelled_before_storage_response();
     }
+    // Read before `try_acquire` so a close that lands exactly between
+    // acquisition and blocking-thread dispatch is still observed below,
+    // without changing the outer dispatch-closed refusal's own priority.
+    let stop_cancellation = executor.stop_cancellation();
     let permit = match executor.try_acquire() {
         Ok(permit) => permit,
         Err(TryAcquireError::NoPermits) => return overload_response(),
@@ -71,6 +75,13 @@ where
     };
     match tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        // DR-0222: admitted work that has not yet reached storage refuses
+        // once stop is requested, even if it was queued behind a saturated
+        // blocking thread pool rather than the permit semaphore. Work that
+        // already called `work()` is never interrupted here.
+        if stop_cancellation.is_cancelled() {
+            return cancelled_before_storage_response();
+        }
         work()
     })
     .await

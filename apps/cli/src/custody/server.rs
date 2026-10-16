@@ -1,5 +1,5 @@
-//! `custody serve`: a bounded-lifetime, one-request-at-a-time publication
-//! signer.
+//! Bounded-lifetime, one-request-at-a-time operation-specific custody signer.
+//! `serve` accepts publication; `serve-transfer` accepts the DR-0246 family.
 //!
 //! This is an optional host facility with an explicit bounded lifetime and
 //! request count, not a protocol daemon assumption: it never spawns, never
@@ -21,6 +21,7 @@ use tokio::time::timeout;
 use sunrise_edge_client::LocalSigner;
 
 use super::approvals;
+use super::asset_transfer::AssetTransferTrust;
 use super::config::CustodyConfig;
 use super::error::CustodyError;
 use super::fsperm::require_private_dir;
@@ -126,6 +127,48 @@ pub fn run(
     approvals_dir: &Path,
     bounds: ServeBounds,
 ) -> Result<ServeSummary, CustodyError> {
+    run_with_policy(
+        config,
+        signer,
+        socket_path,
+        approvals_dir,
+        bounds,
+        SigningPolicy::Publication,
+    )
+}
+
+/// A distinct invocation and decoder; publication custody never accepts this family.
+pub(super) fn run_transfer(
+    config: CustodyConfig,
+    signer: LocalSigner,
+    socket_path: &Path,
+    approvals_dir: &Path,
+    bounds: ServeBounds,
+    trust: AssetTransferTrust,
+) -> Result<ServeSummary, CustodyError> {
+    run_with_policy(
+        config,
+        signer,
+        socket_path,
+        approvals_dir,
+        bounds,
+        SigningPolicy::Transfer(Box::new(trust)),
+    )
+}
+
+enum SigningPolicy {
+    Publication,
+    Transfer(Box<AssetTransferTrust>),
+}
+
+fn run_with_policy(
+    config: CustodyConfig,
+    signer: LocalSigner,
+    socket_path: &Path,
+    approvals_dir: &Path,
+    bounds: ServeBounds,
+    policy: SigningPolicy,
+) -> Result<ServeSummary, CustodyError> {
     if signer.address() != config.publisher() {
         return Err(CustodyError::KeyFileAddressMismatch);
     }
@@ -134,21 +177,42 @@ pub fn run(
         .enable_time()
         .build()
         .map_err(CustodyError::Runtime)?;
-    runtime.block_on(serve_async(
+    runtime.block_on(serve_async_with_policy(
         config,
         signer,
         socket_path,
         approvals_dir,
         bounds,
+        &policy,
     ))
 }
 
+#[cfg(test)]
 pub(super) async fn serve_async(
     config: CustodyConfig,
     signer: LocalSigner,
     socket_path: &Path,
     approvals_dir: &Path,
     bounds: ServeBounds,
+) -> Result<ServeSummary, CustodyError> {
+    serve_async_with_policy(
+        config,
+        signer,
+        socket_path,
+        approvals_dir,
+        bounds,
+        &SigningPolicy::Publication,
+    )
+    .await
+}
+
+async fn serve_async_with_policy(
+    config: CustodyConfig,
+    signer: LocalSigner,
+    socket_path: &Path,
+    approvals_dir: &Path,
+    bounds: ServeBounds,
+    policy: &SigningPolicy,
 ) -> Result<ServeSummary, CustodyError> {
     let this_uid = own_uid().await.map_err(CustodyError::PeerCredentials)?;
     if config.operator_uid() == this_uid {
@@ -226,7 +290,7 @@ pub(super) async fn serve_async(
         // absolute deadline).
         let signed: bool = timeout(
             io_deadline,
-            handle_one_connection(stream, &config, &signer, approvals_dir),
+            handle_one_connection(stream, &config, &signer, approvals_dir, policy),
         )
         .await
         .unwrap_or_default();
@@ -320,20 +384,27 @@ async fn handle_one_connection(
     config: &CustodyConfig,
     signer: &LocalSigner,
     approvals_dir: &Path,
+    policy: &SigningPolicy,
 ) -> bool {
-    let frame = match read_request_frame(&mut stream).await {
+    let maximum: usize = match policy {
+        SigningPolicy::Publication => wire::MAX_CUSTODY_REQUEST_FRAME_BYTES,
+        SigningPolicy::Transfer(_) => super::asset_wire::MAX_REQUEST_BYTES,
+    };
+    let frame = match read_request_frame(&mut stream, maximum).await {
         Ok(frame) => frame,
         Err(_) => return false,
     };
-    let request = match wire::decode_request(&frame) {
-        Ok(request) => request,
-        Err(error) => {
-            let status = refusal_status_for_wire_error(&error);
-            let _ = write_response(&mut stream, &CustodyResponse::Refused { status }).await;
-            return false;
-        }
+    let result: Result<[u8; wire::CUSTODY_SIGNATURE_BYTES], CustodyResponseStatus> = match policy {
+        SigningPolicy::Publication => wire::decode_request(&frame)
+            .map_err(|error| refusal_status_for_wire_error(&error))
+            .and_then(|request| sign_request(config, signer, approvals_dir, &request)),
+        SigningPolicy::Transfer(trust) => super::asset_wire::decode(&frame)
+            .map_err(|error| refusal_status_for_wire_error(&error))
+            .and_then(|request| {
+                sign_transfer_request(config, signer, approvals_dir, trust, &request)
+            }),
     };
-    match sign_request(config, signer, approvals_dir, &request) {
+    match result {
         Ok(signature) => {
             let _ = write_response(&mut stream, &CustodyResponse::Signed { signature }).await;
             true
@@ -355,17 +426,55 @@ fn refusal_status_for_wire_error(error: &CustodyWireError) -> CustodyResponseSta
     }
 }
 
-async fn read_request_frame(stream: &mut UnixStream) -> Result<Vec<u8>, CustodyError> {
+pub(super) fn sign_transfer_request(
+    config: &CustodyConfig,
+    signer: &LocalSigner,
+    approvals_dir: &Path,
+    trust: &AssetTransferTrust,
+    request: &super::asset_transfer::AssetTransferRequest,
+) -> Result<[u8; wire::CUSTODY_SIGNATURE_BYTES], CustodyResponseStatus> {
+    if signer.address() != config.publisher() {
+        return Err(CustodyResponseStatus::Internal);
+    }
+    let transfer = trust
+        .prepare(request)
+        .map_err(|_| CustodyResponseStatus::Malformed)?;
+    let now: u64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| CustodyResponseStatus::Internal)?
+        .as_secs();
+    let approval = approvals::read_approval(approvals_dir, &request.request_id)
+        .map_err(|_| CustodyResponseStatus::Internal)?
+        .ok_or(CustodyResponseStatus::NoApproval)?;
+    if approvals::is_expired(&approval, now)
+        || approval.publisher != config.publisher()
+        || approval.frame != transfer.prepared.signable_frame()
+        || super::revoke::is_revoked(approvals_dir, &request.request_id)
+            .map_err(|_| CustodyResponseStatus::Internal)?
+    {
+        return Err(CustodyResponseStatus::NoApproval);
+    }
+    let signed = transfer
+        .prepared
+        .sign_and_finalize_with(signer)
+        .map_err(|_| CustodyResponseStatus::Internal)?;
+    Ok(signed.signature)
+}
+
+async fn read_request_frame(
+    stream: &mut UnixStream,
+    maximum: usize,
+) -> Result<Vec<u8>, CustodyError> {
     let mut length_bytes = [0_u8; wire::CUSTODY_LENGTH_PREFIX_BYTES];
     stream
         .read_exact(&mut length_bytes)
         .await
         .map_err(CustodyError::IoFailed)?;
     let declared_len = u32::from_be_bytes(length_bytes) as usize;
-    if declared_len > wire::MAX_CUSTODY_REQUEST_FRAME_BYTES {
+    if declared_len > maximum {
         return Err(CustodyError::Wire(CustodyWireError::FrameTooLarge {
             actual: declared_len,
-            maximum: wire::MAX_CUSTODY_REQUEST_FRAME_BYTES,
+            maximum,
         }));
     }
     let mut buffer = vec![0_u8; declared_len];

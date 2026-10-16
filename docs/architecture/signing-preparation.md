@@ -98,3 +98,11 @@ own pinned config and the caller's bounded artifact/nonce/request-id, and
 document's "Separate M2 requirements" section above anticipates. It does not
 migrate any other prepared owner, `ConsensusSigner`, readiness, or genesis/
 admin signing, and it is not an at-rest-encryption or compromised-root claim.
+
+[DR-0246](decisions/0246-genesis-standard-asset-transfer-custody.md) adds a
+separate [genesis Standard Asset transfer](standard-asset-transfer-custody.md)
+consumer of `PreparedPaidExecution`. Its custody process pins genesis and the
+in-tree code/fee semantics, reconstructs signed object references from canonical
+preimages and renders their amounts before exact-frame approval. The original
+publication server remains closed to this family. This does not migrate other
+paid operations, fee claims, automatic consensus/readiness or genesis/admin keys.

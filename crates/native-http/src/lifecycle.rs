@@ -22,6 +22,15 @@ impl BlockingLifecycle {
         permits.close();
     }
 
+    /// Returns whether `close` has already been called. Shared by every
+    /// clone of the owning [`crate::NativeBlockingExecutor`].
+    pub(crate) fn is_closed(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .closed
+    }
+
     pub(crate) fn acquire(
         self: &Arc<Self>,
         permits: &Arc<Semaphore>,

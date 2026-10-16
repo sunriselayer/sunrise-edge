@@ -271,12 +271,13 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         NoOutboundTransport,
         SystemClock,
         SequentialIdentitySource,
-    > = StructuredDurableNativeComponents::new(
+    > = StructuredDurableNativeComponents::with_cancellation(
         store_arc.clone(),
         blob_arc.clone(),
         Arc::new(NoOutboundTransport),
         clock_arc.clone(),
         identities_arc.clone(),
+        blocking_executor.stop_cancellation(),
     );
 
     let ordered_policy: OrderedEconomicsPolicy =
@@ -320,7 +321,7 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         seal: Some(seal),
         signer: ordered_signer,
         blocking_executor: blocking_executor.clone(),
-        cancellation: None,
+        cancellation: Some(blocking_executor.stop_cancellation()),
     };
     let ordered_router = certified_ordered_economics_router(ordered_state);
 

@@ -408,8 +408,8 @@ def phase_generate_artifact(public_key, request_id_hex, nonce, out_path, wasm_fi
         raise FixtureFailure("the independently approved preimage is not custody-owned mode 0600")
 
 
-def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, expires_in_seconds):
-    argv = cli_argv(
+def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, expires_in_seconds, command=None):
+    argv = command or cli_argv(
         "custody", "approve",
         "--config", config_path,
         "--approvals-dir", f"{ROOT}/custody-approvals",
@@ -673,8 +673,9 @@ def phase_recover_private_key(source_key_path):
 def start_serve(
     socket_path, total_deadline_secs, max_connections, max_requests,
     key_file=f"{ROOT}/custody-keys/custody.seed", config_path=f"{ROOT}/custody-keys/custody.config",
+    command=None,
 ):
-    argv = cli_argv(
+    argv = command or cli_argv(
         "custody", "serve",
         "--config", config_path,
         "--key-file", key_file,
@@ -965,6 +966,145 @@ def phase_new_identity(socket_path, old_public_key):
     return summary.strip().splitlines()
 
 
+def phase_transfer(public_key):
+    custody_dir, operator_dir = f"{ROOT}/custody-transfer", f"{ROOT}/operator/transfer"
+    for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
+        os.mkdir(path, 0o700)
+        os.chown(path, uid, gid)
+    probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
+                  "custody::asset_fixture::distinct_uid_transfer_probe", "--exact", "--ignored", "--nocapture", "--format", "terse"]
+    def probe_env(mode, directory):
+        return {"CUSTODY_TRANSFER_MODE": mode, "CUSTODY_TRANSFER_DIR": directory, "CUSTODY_TRANSFER_PUBLIC_KEY": public_key}
+    rc, out, err = run_exec(probe_argv, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], env=probe_env("generate", custody_dir))
+    if rc != 0:
+        raise FixtureFailure(f"transfer preimage generation failed: {err!r}")
+    generated = last_json_line(out)
+    config_text = f"chain_id=custody-whole-coin-test\nprotocol_version=7\nepoch=0\nhash_suite_id=1\ndomain={DOMAIN_HEX}\npublisher_public_key={public_key}\noperator_uid={OPERATOR_UID}\n"
+    with open(f"{custody_dir}/config", "x") as output:
+        output.write(config_text)
+    os.chmod(f"{custody_dir}/config", 0o600)
+    os.chown(f"{custody_dir}/config", CUSTODY_UID, CUSTODY_GID)
+    def trust_flags(directory):
+        return ["--config", f"{directory}/config", "--genesis-manifest-file", f"{directory}/genesis.bin", "--genesis-digest", generated["digest"]]
+    request_id = "75" * 32
+    command = cli_argv("custody", "prepare-transfer", *trust_flags(custody_dir),
+        "--coin-file", f"{custody_dir}/coin.bin", "--fee-source-file", f"{custody_dir}/fee.bin",
+        "--recipient", generated["recipient"], "--nonce", "0", "--request-id", request_id,
+        "--max-fee", "1000000", "--gas-limit", "200000", "--out", f"{custody_dir}/request.bin")
+    rc, out, err = run_exec(command, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    if rc != 0 or b"transfer_request_exported=true" not in out:
+        raise FixtureFailure(f"transfer prepare failed: {err!r}")
+    for name in ["config", "genesis.bin", "request.bin"]:
+        with open(f"{custody_dir}/{name}", "rb") as source:
+            content = source.read(1024 * 1024)
+        with open(f"{operator_dir}/{name}", "xb") as target:
+            target.write(content)
+        os.chmod(f"{operator_dir}/{name}", 0o600)
+        os.chown(f"{operator_dir}/{name}", OPERATOR_UID, OPERATOR_GID)
+    approvals = f"{ROOT}/custody-approvals"
+    approve = cli_argv("custody", "approve-transfer", *trust_flags(custody_dir),
+        "--request-file", f"{custody_dir}/request.bin", "--approvals-dir", approvals, "--expires-in-seconds", "3600")
+    rc, _out, refusal = run_exec(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
+        raise FixtureFailure("transfer approval unexpectedly accepted a pipe")
+    phase_approve_via_pty(None, None, 0, request_id, 3600, command=approve)
+    socket_path = f"{ROOT}/run/transfer.sock"
+    def serve_command(count):
+        return cli_argv("custody", "serve-transfer", *trust_flags(custody_dir),
+            "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
+            "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
+    signer = ["--custody-socket", socket_path, "--custody-uid", str(CUSTODY_UID), "--custody-expected-public-key", public_key]
+    serve = start_serve(socket_path, 30, 3, 3, command=serve_command(3))
+    sign = cli_argv("custody", "sign-transfer", *trust_flags(operator_dir), "--request-file", f"{operator_dir}/request.bin", *signer)
+    rc, _out, err = run_exec([*sign, "--out", f"{operator_dir}/offline.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+    if rc != 0:
+        raise FixtureFailure(f"protected offline transfer sign failed: {err!r}")
+    # SQLite pins readable ancestor directory descriptors. The original
+    # publication phase used an execute-only volume root. Only this new
+    # SQLite phase exposes the fixed top-level names; every key, approval,
+    # operator and database directory stays private and no write permission
+    # is granted. Re-run the actual operator key/approval refusals here.
+    os.chmod(ROOT, 0o755)
+    phase_operator_cannot_read_or_edit(request_id)
+    def operator_identity():
+        os.setgroups([OPERATOR_GID]); os.setgid(OPERATOR_GID); os.setuid(OPERATOR_UID)
+    native = subprocess.Popen(probe_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=operator_identity,
+        env=probe_env("serve", operator_dir), cwd="/")
+    address = None
+    startup_end = time.monotonic() + min(10, remaining())
+    prefix = b""
+    while address is None:
+        if time.monotonic() >= startup_end:
+            native.kill(); native.wait(timeout=5)
+            raise FixtureFailure("transfer native host did not start")
+        ready, _, _ = select.select([native.stdout], [], [], min(1, remaining()))
+        if ready:
+            line = native.stdout.readline(16385)
+            if not line:
+                tail, failure = native.communicate(timeout=min(5, remaining()))
+                charge_output(len(tail) + len(failure))
+                raise FixtureFailure(f"transfer native host exited before its address: {failure[:16384]!r}")
+            prefix += line; charge_output(len(line))
+            if len(prefix) > 16384:
+                raise FixtureFailure("transfer native startup output exceeds bound")
+            if line.startswith(b'{"address":'):
+                address = json.loads(line)["address"]
+    try:
+        command = cli_argv("transfer", "--endpoint", address, *signer,
+            "--expected-chain-id", "custody-whole-coin-test", "--expected-protocol-version", "7",
+            "--expected-epoch", "0", "--expected-hash-suite-id", "1", "--expected-domain", DOMAIN_HEX,
+            "--coin", generated["coin"], "--fee-source", generated["fee"], "--recipient", generated["recipient"],
+            "--nonce", "0", "--request-id", request_id, "--max-fee", "1000000", "--gas-limit", "200000",
+            "--submission-out", f"{operator_dir}/submission.bin", "--result-out", f"{operator_dir}/result.bin")
+        rc, out, err = run_exec(command, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0 or b"paid_status=Success" not in out:
+            raise FixtureFailure(f"actual protected transfer CLI failed: {out!r} {err!r}")
+        with open(f"{operator_dir}/offline.bin", "rb") as source:
+            offline = source.read(1048577)
+        with open(f"{operator_dir}/submission.bin", "rb") as source:
+            if source.read(1048577) != offline:
+                raise FixtureFailure("offline and actual CLI transfer signed bytes differ")
+        environment = probe_env("verify", operator_dir)
+        environment["CUSTODY_TRANSFER_ENDPOINT"] = address
+        rc, out, err = run_exec(probe_argv, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID], env=environment)
+        verified = last_json_line(out)
+        if rc != 0 or verified.get("whole_coin") is not True or verified.get("replay_equal") is not True:
+            raise FixtureFailure(f"actual transfer/replay verification failed: {err!r}")
+        rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", request_id),
+            CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"transfer revoke failed: {err!r}")
+        rc, _out, refusal = run_exec([*sign, "--out", f"{operator_dir}/revoked.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked.bin"):
+            raise FixtureFailure("revoked transfer produced signed output")
+        summary = wait_serve(serve, extra_seconds=8)
+        check_summary("transfer", summary, {"connections_accepted":"3", "requests_handled":"3", "requests_signed":"2", "requests_refused":"1"})
+        with open(f"{operator_dir}/stop-native", "xb") as completed:
+            completed.write(b"complete\n")
+        os.chmod(f"{operator_dir}/stop-native", 0o600)
+        os.chown(f"{operator_dir}/stop-native", OPERATOR_UID, OPERATOR_GID)
+        out, err = native.communicate(timeout=min(25, remaining()))
+        charge_output(len(out) + len(err))
+        if native.returncode != 0 or b"1 passed; 0 failed; 0 ignored" not in out:
+            raise FixtureFailure(f"transfer native host did not finish cleanly: {err!r}")
+    finally:
+        for process in [native, serve]:
+            if process.poll() is None:
+                process.kill(); process.wait(timeout=5)
+        os.chmod(ROOT, 0o711)
+    restarted = start_serve(socket_path, 30, 1, 1, command=serve_command(1))
+    try:
+        rc, _out, refusal = run_exec([*sign, "--out", f"{operator_dir}/revoked-restart.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-restart.bin"):
+            raise FixtureFailure("revoked transfer produced output after restart")
+        check_summary("transfer revoked restart", wait_serve(restarted, extra_seconds=8),
+            {"connections_accepted":"1", "requests_handled":"1", "requests_signed":"0", "requests_refused":"1"})
+    finally:
+        if restarted.poll() is None:
+            restarted.kill(); restarted.wait(timeout=5)
+    return {"actual_cli":True, "whole_coin":True, "offline_bytes_equal":True, "replay_equal":True, "revoked":True, "revoked_after_restart":True}
+
+
 def main():
     phase_setup()
     phase_missing_prerequisite_fails()
@@ -1071,6 +1211,8 @@ def main():
     # ---- A second, independently keyed custody identity ----
     new_identity_summary = phase_new_identity(socket_path, public_key)
 
+    transfer_summary = phase_transfer(public_key)
+
     total_bytes = 0
     for dirpath, _dirnames, filenames in os.walk(ROOT):
         for filename in filenames:
@@ -1091,6 +1233,7 @@ def main():
         "recovery_signature_match": True,
         "revocation_retained_through_recovery": True,
         "new_identity_verified": True,
+        "transfer": transfer_summary,
         "lifecycle_summaries": [live_summary.strip().splitlines(), third_summary.strip().splitlines(), *recovery_summaries,
                                 restored_approval_summary, new_identity_summary],
     }, sort_keys=True))
@@ -1313,6 +1456,10 @@ try {
     throw new Error('the fixture evidence line is incomplete');
   }
   const expectedLifecycle = [[2, 2, 1, 1], [1, 1, 0, 1], [1, 1, 1, 0], [1, 1, 1, 0], [1, 1, 0, 1], [3, 3, 1, 2]];
+  if (!result.transfer || ['actual_cli', 'whole_coin', 'offline_bytes_equal', 'replay_equal', 'revoked', 'revoked_after_restart']
+    .some((key) => result.transfer[key] !== true)) {
+    throw new Error('the distinct-UID protected transfer evidence is incomplete');
+  }
   const countKeys = ['connections_accepted', 'requests_handled', 'requests_signed', 'requests_refused'];
   if (!Array.isArray(result.lifecycle_summaries) || result.lifecycle_summaries.length !== expectedLifecycle.length ||
       result.lifecycle_summaries.some((summary, index) =>

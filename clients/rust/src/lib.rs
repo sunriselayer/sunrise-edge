@@ -86,6 +86,7 @@ pub use abi::package_types::PackageOrigin;
 pub use abi::{decode_access_manifest, executable_abi};
 pub use client::{Client, ReceiptPollBounds, SubmitTransactionRequest};
 pub use context::{ExpectedProtocolContext, ExpectedProtocolContextError, ProtocolContextMismatch};
+pub use crypto::{Ed25519OwnerAddressPolicy, validate_ed25519_owner_address};
 pub use error::ClientError;
 pub use execution::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION;
 pub use execution::paid_execution::{
@@ -219,9 +220,13 @@ pub use execution::{
     decode_event_record, decode_execution_effects, decode_object_effect, publication,
     validate_contract_wasm,
 };
+pub use node_core::genesis::MAX_GENESIS_MANIFEST_BYTES;
 pub use node_core::ordered_economics as ordered_economics_core;
 pub use node_core::publication::local_publication_profile_semantics;
-pub use node_core::{EnvelopeError, NodeCoreError, NodeResponse, NodeResponseStatus, RequestId};
+pub use node_core::{
+    EnvelopeError, MAX_AUTHENTICATED_OBJECT_BODY_BYTES, NodeCoreError, NodeResponse,
+    NodeResponseStatus, RequestId,
+};
 pub use node_wire::ordered_economics;
 pub use node_wire::ordered_history as ordered_history_wire;
 pub use node_wire::{
@@ -235,6 +240,7 @@ pub use node_wire::{
 };
 pub use objects::{
     AccessMode, Address, Object, ObjectError, ObjectId, ObjectRef, Owner, decode_object,
+    encode_object,
 };
 pub use validator_set::{ValidatorInfo, ValidatorSet};
 

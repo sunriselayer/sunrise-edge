@@ -34,6 +34,11 @@ and pre-spawn refusal must not leak tracking. Closing is permanent for that
 executor. Live reopening constructs a new host and advances the existing writer
 fence. Signerless history reopening claims or advances no live writer fence.
 
+The trusted stop signal also refuses a shared-dispatch blocking job if it has
+not entered its work closure yet. `blocking_admitted` still counts that permit
+admission, including queued jobs later refused after stop. It does not count
+executed storage operations or successful business calls.
+
 No started database operation is aborted, declared rolled back, or turned into
 a Rejected receipt because the host or client is stopping. A lost response
 remains unknown until the exact saved intent and receipt reconcile it. Keep all

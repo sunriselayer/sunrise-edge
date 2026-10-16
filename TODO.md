@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-10-15 (JST)。これは唯一の現行作業表です。
+更新: 2026-10-16 (JST)。これは唯一の現行作業表です。
 設計は[architecture](docs/architecture/README.md)、実装場所は
 [code map](docs/development/code-map.md)、整理の決定は
 [DR-0236](docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md)に置きます。
@@ -78,6 +78,15 @@ fee-claimの非承認表示・保存内容の開発用署名は、その上の
 限定検証はE23、local完全gateと同一treeのhosted CIはE24で成功しました。
 後続の状態文書だけの更新も、実装qualificationの対象pinをcf2dに保持します。
 このsourceの新しい13-target Native A/B・実RELEASE認定は行っていません。
+その後のCODE/VERIFY 8件の継続作業は `codex/asset-custody-1016`、作業コピーは
+`/home/yu/src/github.com/sunriselayer/sunrise-edge-asset-custody-1016`。
+genesis Standard Asset transferの専用custodyと、停止ownerから待機中のblocking
+workへの取消伝播を実装中です。component検証ではCLI custody 77 passed/2 ignored、
+Native operations 7 passed、実Dockerの旧publication/lifecycle controlsと追加transfer
+controlsが成功しました。追加分は別UID/PTY、offlineと実CLIのsigned byte一致、
+実SQLite/WASMの全額移転・再送・取消後と再起動後の拒否を含みます。
+この作業sourceのclean pin・完全required/CI・最終照合は未完了で、E24や全M2/D05/M5の
+合格へ置き換えません。初回DockerのSQLite祖先directory読取EACCESと診断失敗も保持します。
 50a4 / tree eff704ddのE14-E16と旧作業コピーは過去の対象として保持します。
 
 再構成時の確認ではGitの作業コピー登録が存在する一方、そのパスがENOENTでした。
@@ -435,6 +444,10 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
     seed-free canonical exportとoffline review/signをE23/E24で検証し、local完全gate・同一treeの
     hosted CIを完了。実Split/ZeroShareの候補byte一致とCLI拒否、FinalTransferのstructural
     rendererを確認。protected fee-claim approval/backend・操作意味の承認は未完了。
+  - [ ] [genesis Standard Asset transferの専用custody](docs/architecture/standard-asset-transfer-custody.md):
+    独立genesis/code/instance/policy pin、完全object preimageからの金額/参照検証、
+    exact approval・別UID署名・既存transfer CLIを接続。component controlsは成功したが、
+    clean sourceの完全gate/CIと最終照合は未完了。他operation/epoch/自動署名は対象外。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
@@ -447,6 +460,11 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
     `3a5c8249` として統合済み。新しいowningとSQLite libはE7で成功。
     ignoredの5 ENOSPC controlsはE8で新しく成功。combined requiredの状態はE14。
     host/power/media/fsync・実writer failover/TLS rotationの条件は未完了。
+    追加の同一file上の旧host生存中・新generation起動controlsはcomponentで成功。
+    旧read/CASの具体的WriterFenced、旧HTTPの汎用503、新hostの保存済み再送と返金coinの
+    新規送金・両quorum・全business snapshot不変を確認。offline確認flagを意図的に
+    重ねる拒否境界の検証で、正規live handoff手順・別host復元・物理faultの合格にはしない。
+    現sourceの完全gate/CIと最終照合は未完了。
   - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。
     trait reply-loss、process SIGKILL、power/host/media/fsync faultは別証拠。
     全12 SQL tables・4 portable collections・positive blob/oracleを省略しない。
@@ -470,6 +488,10 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
   - 対象: 実装 + 検証。D05に加え、backpressure/request/work/capacity policy、
     monitoring/incident/validator運用を再現可能なコード・手順へ結び付ける。
   - 状態: local TLS/stop/collectorは実装・部分検証済み。public operationsは未認定。
+    追加のstop cancellationは共有admitted/structured-event/query dispatcherのjob開始前とSQLite hostの既存
+    pre-storage checksを接続。待機中workの拒否・既実行workの完走・drain/拒否優先順位を
+    component検証済み。live hostでこの配線だけを分離するoracleと完全gateは未完了。
+    admitted counterには待機後の取消も含み、業務実行件数とは解釈しない。
   - 次: D05と一本のcase/coverage表を使う。実workload/SLOに対するcapacity、
     actual production PKI、alerts/response・spend適用はD04/D07で決め、適用後に検証する。
 

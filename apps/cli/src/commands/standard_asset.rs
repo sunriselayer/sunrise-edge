@@ -72,6 +72,37 @@ fn invalid(message: &'static str) -> CliError {
     ))
 }
 
+enum AssetSigner {
+    Local(Box<LocalSigner>),
+    Custody(crate::custody::CustodyTarget),
+}
+
+impl AssetSigner {
+    fn address(&self) -> Address {
+        match self {
+            Self::Local(signer) => signer.address(),
+            Self::Custody(target) => Address::new(target.expected_public_key),
+        }
+    }
+
+    fn sign(
+        &self,
+        prepared: PreparedPaidExecution,
+        request: Option<&crate::custody::AssetTransferRequest>,
+    ) -> Result<sunrise_edge_client::SignedPaidIntent, CliError> {
+        match self {
+            Self::Local(signer) => Ok(prepared.sign_and_finalize_with(signer.as_ref())?),
+            Self::Custody(target) => {
+                let request =
+                    request.ok_or_else(|| invalid("custody requires exact transfer preimages"))?;
+                let signature: [u8; 64] =
+                    crate::custody::client::request_transfer_signature(target, request)?;
+                Ok(prepared.finalize(signature.to_vec())?)
+            }
+        }
+    }
+}
+
 fn common_specs() -> Vec<FlagSpec> {
     let mut specs: Vec<FlagSpec> = vec![
         scalar(ENDPOINT),
@@ -607,27 +638,47 @@ where
             "Ledger paid Standard Asset signing is not supported",
         ));
     }
-    if matches!(signer_selection, SignerSelection::Custody { .. }) {
+    if matches!(signer_selection, SignerSelection::Custody { .. }) && action != "transfer" {
         return Err(invalid(
             "custody paid Standard Asset signing is not supported",
         ));
     }
-    let load_signer = || -> Result<LocalSigner, CliError> {
+    if let SignerSelection::Custody {
+        expected_public_key,
+        ..
+    } = &signer_selection
+    {
+        if parsed.get(ASSET).is_some() || parsed.get(INSTANCE_REF).is_some() {
+            return Err(invalid("custody transfer requires the genesis asset"));
+        }
+        if let Some(value) = parsed.get(REFUND_RECIPIENT)
+            && decode_hex_32(REFUND_RECIPIENT, value)? != *expected_public_key
+        {
+            return Err(invalid("custody transfer requires the sender refund"));
+        }
+    }
+    let load_signer = || -> Result<AssetSigner, CliError> {
         match &signer_selection {
-            SignerSelection::Local { seed_file } => {
-                Ok(LocalSigner::from_seed(load_dev_seed(Path::new(seed_file))?))
-            }
+            SignerSelection::Local { seed_file } => Ok(AssetSigner::Local(Box::new(
+                LocalSigner::from_seed(load_dev_seed(Path::new(seed_file))?),
+            ))),
             SignerSelection::Ledger { .. } => Err(invalid(
                 "Ledger paid Standard Asset signing is not supported",
             )),
-            SignerSelection::Custody { .. } => Err(invalid(
-                "custody paid Standard Asset signing is not supported",
-            )),
+            SignerSelection::Custody {
+                socket,
+                custody_uid,
+                expected_public_key,
+            } => Ok(AssetSigner::Custody(crate::custody::CustodyTarget {
+                socket: socket.into(),
+                custody_uid: *custody_uid,
+                expected_public_key: *expected_public_key,
+            })),
         }
     };
     // Keep direct mode's existing local-input order. Network mode validates
     // the selected cohort peer before reading the signing seed.
-    let direct_signer: Option<LocalSigner> = if budget.is_none() {
+    let direct_signer: Option<AssetSigner> = if budget.is_none() {
         Some(load_signer()?)
     } else {
         None
@@ -667,7 +718,7 @@ where
     if let Some(budget) = budget {
         budget.ensure_live()?;
     }
-    let signer: LocalSigner = match direct_signer {
+    let signer: AssetSigner = match direct_signer {
         Some(signer) => signer,
         None => load_signer()?,
     };
@@ -777,7 +828,7 @@ where
             gas_limit,
             Vec::new(),
         )?;
-        let signed = prepared.sign_and_finalize_with(&signer)?;
+        let signed = signer.sign(prepared, None)?;
         let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
         let record_bytes: Vec<u8> = encode_instance_record(&record).map_err(failure)?;
         let result: PaidExecutionResult = if let Some((endpoints, certifier, admission)) = &network
@@ -844,6 +895,8 @@ where
         genesis_asset,
     )?;
     let operation: AssetOperation = operation(action, &parsed)?;
+    let custody_transfer: bool = matches!(signer, AssetSigner::Custody(_));
+    let mut transfer_preimage: Option<Vec<u8>> = None;
     let mut access: AccessManifest = AccessManifest::new();
     for (id, mode, kind, flag) in &operation.inputs {
         let tag: ScopedTypeTag = expected_tag(*kind, target.code.origin(), &target.asset)?;
@@ -857,6 +910,25 @@ where
                 &tag,
                 flag,
             )?
+        } else if custody_transfer {
+            let result: HttpObjectQueryResult = client.query_object(*id)?;
+            let reference: ObjectRef = validate_owned_input(
+                &result,
+                &resolver,
+                &expected,
+                signer.address(),
+                *id,
+                &tag,
+                flag,
+            )?;
+            if let HttpObjectQueryResult::CurrentInline {
+                canonical_object_bytes,
+                ..
+            } = result
+            {
+                transfer_preimage = Some(canonical_object_bytes);
+            }
+            reference
         } else {
             owned_input(
                 &client,
@@ -901,7 +973,30 @@ where
         gas_limit,
         Vec::new(),
     )?;
-    let signed = prepared.sign_and_finalize_with(&signer)?;
+    let transfer_request: Option<crate::custody::AssetTransferRequest> = if custody_transfer {
+        let HttpObjectQueryResult::CurrentInline {
+            canonical_object_bytes: fee_bytes,
+            ..
+        } = &queried_fee
+        else {
+            return Err(invalid(
+                "custody fee source requires canonical inline preimage",
+            ));
+        };
+        Some(crate::custody::AssetTransferRequest {
+            coin_bytes: transfer_preimage
+                .ok_or_else(|| invalid("custody transfer coin and fee source must be distinct"))?,
+            fee_bytes: fee_bytes.clone(),
+            recipient: decode_hex_32(RECIPIENT, parsed.require(RECIPIENT)?)?,
+            nonce,
+            request_id,
+            max_fee: prepared.intent().consent.max_fee.get(),
+            gas_limit,
+        })
+    } else {
+        None
+    };
+    let signed = signer.sign(prepared, transfer_request.as_ref())?;
     let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
     let result: PaidExecutionResult = if let Some((endpoints, certifier, admission)) = &network {
         super::fastvote_network::run_network_submit(
@@ -948,24 +1043,58 @@ mod tests {
         package_types::{PackageOrigin, derive_scoped_type_id},
     };
 
-    /// Every paid Standard Asset action must refuse custody signing
+    /// Other paid Standard Asset actions must refuse custody signing
     /// immediately after parsing the signer selection, before any
     /// FastVote/network peer validation, signer file access, or device I/O.
     #[test]
     fn rejects_custody_signer_selection_before_any_io() {
-        let error = run(
-            "transfer",
-            vec![
-                OsString::from("--custody-socket"),
-                OsString::from("/nonexistent/custody.sock"),
-                OsString::from("--custody-uid"),
-                OsString::from("1001"),
-                OsString::from("--custody-expected-public-key"),
-                OsString::from("ab".repeat(32)),
-            ],
-        )
-        .unwrap_err();
-        assert!(matches!(error, CliError::LocalExecution(_)));
+        for action in ["create-asset", "split", "merge", "mint", "burn"] {
+            let error = run(
+                action,
+                vec![
+                    OsString::from("--custody-socket"),
+                    OsString::from("/nonexistent/custody.sock"),
+                    OsString::from("--custody-uid"),
+                    OsString::from("1001"),
+                    OsString::from("--custody-expected-public-key"),
+                    OsString::from("ab".repeat(32)),
+                ],
+            )
+            .unwrap_err();
+            assert!(matches!(error, CliError::LocalExecution(_)));
+        }
+    }
+
+    #[test]
+    fn custody_transfer_rejects_foreign_asset_or_refund_before_endpoint_access() {
+        for (flag, value, reason) in [
+            (
+                ASSET,
+                "11".repeat(32),
+                "custody transfer requires the genesis asset",
+            ),
+            (
+                REFUND_RECIPIENT,
+                "11".repeat(32),
+                "custody transfer requires the sender refund",
+            ),
+        ] {
+            let error = run(
+                "transfer",
+                vec![
+                    OsString::from("--custody-socket"),
+                    OsString::from("/nonexistent/custody.sock"),
+                    OsString::from("--custody-uid"),
+                    OsString::from("12001"),
+                    OsString::from("--custody-expected-public-key"),
+                    OsString::from("ab".repeat(32)),
+                    OsString::from(flag),
+                    OsString::from(value),
+                ],
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(reason));
+        }
     }
     use execution::{
         ExecutionEffects, ExecutionStatus,
