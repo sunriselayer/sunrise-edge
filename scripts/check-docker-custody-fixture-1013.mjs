@@ -1651,6 +1651,23 @@ def phase_mint_burn(public_key):
     }
 
 
+def stop_owned_process(process, uid, gid):
+    # CAP_KILL is deliberately absent. Signal only our Popen child, as its UID,
+    # using the already permitted SETUID/SETGID boundary and one shared 5s cap.
+    if process is None or process.poll() is not None:
+        return
+    cleanup_deadline = time.monotonic() + 5
+    code = "import os,sys\ntry: os.kill(int(sys.argv[1]),9)\nexcept ProcessLookupError: pass"
+    rc, _out, err = run_exec([sys.executable, "-I", "-S", "-c", code, str(process.pid)],
+        uid, gid, [gid], timeout=5)
+    if rc != 0:
+        raise FixtureFailure(f"owned child cleanup signal failed: {err!r}")
+    left = cleanup_deadline - time.monotonic()
+    if left <= 0:
+        raise FixtureFailure("owned child cleanup exceeded its original 5s bound")
+    process.wait(timeout=left)
+
+
 def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, generated, definition_hex, cap_hex):
     # DR-0258: runs while phase_create_asset's own native backend (address)
     # is still alive, reusing its custody/operator directories and the exact
@@ -1677,6 +1694,14 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
 
     for name in ["own-cap.bin", "own-fee.bin", "create-instance.bin"]:
         copy_private(operator_dir, custody_dir, name, CUSTODY_UID, CUSTODY_GID)
+
+    # Public CLI output becomes the operator's own independently local pin.
+    # Its owner sets the required private mode; the supervisor needs no FOWNER.
+    rc, _out, err = run_exec(
+        [sys.executable, "-I", "-S", "-c", "import os,sys;os.chmod(sys.argv[1],0o600)", f"{operator_dir}/create-instance.bin"],
+        OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID], timeout=5)
+    if rc != 0:
+        raise FixtureFailure(f"operator instance pin could not be made private: {err!r}")
 
     approvals = f"{ROOT}/custody-approvals"
     socket_path = f"{ROOT}/run/create-mint-burn.sock"
@@ -1827,7 +1852,7 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
         })
     finally:
         if serve is not None and serve.poll() is None:
-            serve.kill(); serve.wait(timeout=5)
+            stop_owned_process(serve, CUSTODY_UID, CUSTODY_GID)
 
     restarted = start_serve(socket_path, 30, 2, 2, command=serve_command(2))
     try:
@@ -1842,7 +1867,7 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
             {"connections_accepted": "2", "requests_handled": "2", "requests_signed": "0", "requests_refused": "2"})
     finally:
         if restarted.poll() is None:
-            restarted.kill(); restarted.wait(timeout=5)
+            stop_owned_process(restarted, CUSTODY_UID, CUSTODY_GID)
 
     return {
         "actual_cli": True, "own_mint_self": True, "after_own_mint_verified": True,
@@ -2043,9 +2068,8 @@ def phase_create_asset(public_key):
         if native.returncode != 0 or b"1 passed; 0 failed; 0 ignored" not in out:
             raise FixtureFailure(f"create-asset native host did not finish cleanly: {err!r}")
     finally:
-        for process in [native, serve]:
-            if process is not None and process.poll() is None:
-                process.kill(); process.wait(timeout=5)
+        for process, uid, gid in [(native, OPERATOR_UID, OPERATOR_GID), (serve, CUSTODY_UID, CUSTODY_GID)]:
+            stop_owned_process(process, uid, gid)
         os.chmod(ROOT, 0o711)
 
     # ---- restart: the same revoked request id stays refused ----
@@ -2059,7 +2083,7 @@ def phase_create_asset(public_key):
             {"connections_accepted": "1", "requests_handled": "1", "requests_signed": "0", "requests_refused": "1"})
     finally:
         if restarted.poll() is None:
-            restarted.kill(); restarted.wait(timeout=5)
+            stop_owned_process(restarted, CUSTODY_UID, CUSTODY_GID)
 
     return {
         "actual_cli": True, "create_self": True, "after_create_verified": True,
