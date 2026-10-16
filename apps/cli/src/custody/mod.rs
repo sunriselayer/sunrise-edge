@@ -1,18 +1,22 @@
-//! Operation-specific protected local OS custody (DR-0238/0246/0249; see
-//! `docs/architecture/local-publication-custody.md`).
+//! Operation-specific protected local OS custody (DR-0238/0246/0249/0253/
+//! 0255; see `docs/architecture/local-publication-custody.md`).
 //!
 //! Trusted local OS/root, key held in a separate process under a distinct
 //! UID. Separate publication, genesis Standard Asset transfer, genesis
-//! Standard Asset split/merge, and genesis Standard Asset mint/burn
-//! invocations: no generic `ExternalSigner`, no automatic/consensus/genesis-
-//! authority signing route, and no network-facing HTTP endpoint. At-rest
-//! encryption and compromised-root resistance are explicitly NOT claimed by
-//! this first OS-permission model.
+//! Standard Asset split/merge, genesis Standard Asset mint/burn, and
+//! Standard Asset `create-asset` (paid `Instantiate`) invocations: no
+//! generic `ExternalSigner`, no automatic/consensus/genesis-authority
+//! signing route, and no network-facing HTTP endpoint. At-rest encryption
+//! and compromised-root resistance are explicitly NOT claimed by this first
+//! OS-permission model. Unlike every other family, `create-asset` targets a
+//! fresh application instance it independently derives, never the pinned
+//! genesis instance; see `asset_create`.
 //!
 //! - `custody keygen` generates custody's own private key file.
 //! - `custody approve`, `approve-transfer`, `approve-split`, `approve-merge`,
-//!   `approve-mint` and `approve-burn` independently review their own
-//!   operation family before writing whole-frame approval records.
+//!   `approve-mint`, `approve-burn` and `approve-create` independently
+//!   review their own operation family before writing whole-frame approval
+//!   records.
 //! - `custody revoke` durably cancels a request ID without erasing its approval.
 //! - `custody serve` is a bounded-lifetime, one-request-at-a-time signer
 //!   that only ever reads the approval store.
@@ -21,10 +25,12 @@
 //!   split/merge policy, under one closed kind-3 decoder.
 //! - `custody serve-mint-burn` uses the same owner with the DR-0253
 //!   mint/burn policy, under one closed kind-4 decoder.
+//! - `custody serve-create` uses the same owner with the DR-0255
+//!   create-asset policy, under one closed kind-5 decoder.
 //! - `custody prepare-transfer`/`prepare-split`/`prepare-merge`/
-//!   `prepare-mint`/`prepare-burn` export preimages without approval;
-//!   `sign-transfer`/`sign-split`/`sign-merge`/`sign-mint`/`sign-burn`
-//!   finalize an offline, protected paid intent.
+//!   `prepare-mint`/`prepare-burn`/`prepare-create` export preimages without
+//!   approval; `sign-transfer`/`sign-split`/`sign-merge`/`sign-mint`/
+//!   `sign-burn`/`sign-create` finalize an offline, protected paid intent.
 //!
 //! The publication CLI client leg lives in [`client`] and is consumed by
 //! `commands/publication.rs` through [`SignerSelection::Custody`]
@@ -33,6 +39,13 @@
 mod approvals;
 mod approve;
 mod asset_commands;
+mod asset_create;
+mod asset_create_commands;
+#[cfg(test)]
+mod asset_create_fixture;
+#[cfg(test)]
+mod asset_create_tests;
+mod asset_create_wire;
 #[cfg(test)]
 mod asset_fixture;
 mod asset_mint_burn;
@@ -72,6 +85,7 @@ use crate::args::{ArgsError, ParsedArgs, parse_flags, scalar};
 use crate::error::CliError;
 use crate::parse::parse_u32;
 
+pub(crate) use asset_create::AssetCreateRequest;
 pub(crate) use asset_mint_burn::{AssetBurnRequest, AssetMintRequest};
 pub(crate) use asset_split_merge::{AssetMergeRequest, AssetSplitRequest};
 pub(crate) use asset_transfer::AssetTransferRequest;
@@ -144,6 +158,10 @@ where
         "approve-burn" => asset_mint_burn_commands::approve_burn(args),
         "sign-burn" => asset_mint_burn_commands::sign_burn(args),
         "serve-mint-burn" => asset_mint_burn_commands::serve(args),
+        "prepare-create" => asset_create_commands::prepare_create(args),
+        "approve-create" => asset_create_commands::approve_create(args),
+        "sign-create" => asset_create_commands::sign_create(args),
+        "serve-create" => asset_create_commands::serve(args),
         other => Err(CliError::UnknownCustodyAction(other.to_string())),
     }
 }

@@ -90,6 +90,12 @@ roadmap describes a later target state.
   pin, adds a separate kind-4 mint/burn signer with an independently
   rebuilt checked-supply review, and connects the ordinary paid
   `mint`/`burn` CLI consumer.
+- [Standard Asset create-asset custody](standard-asset-create-asset-custody.md)
+  ([DR-0255](decisions/0255-standard-asset-create-asset-custody.md)): shares
+  the same `PinnedAssetTrust` genesis/code/policy pin via a new
+  `AssetCreateTrust`, but — unlike every other family — independently
+  derives a *fresh* application `InstanceTarget` for a separate kind-5
+  signer, and connects the ordinary paid `create-asset` CLI consumer.
 - [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
   an explicitly configured closed HTTPS transport, separate from default
   event-only relays, embedded DO policy and core authority.

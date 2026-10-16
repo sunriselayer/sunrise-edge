@@ -34,8 +34,10 @@ with the refund returned to the sender — the same fee shape as `transfer`.
 *this* split/merge profile; they are their own separate kind-4 custody
 family (see [genesis Standard Asset mint/burn
 custody](standard-asset-mint-burn-custody.md), DR-0253), not an extension of
-this one. `create-asset`, other packages/instances/epochs and automatic
-protocol signing stay out of scope here.
+this one. `create-asset` is likewise its own separate kind-5 custody family
+(see [Standard Asset create-asset custody](standard-asset-create-asset-custody.md),
+DR-0255). Other packages/instances/epochs and automatic protocol signing
+stay out of scope here.
 
 The complete bounded review displays the source value(s), the split amount/
 recipient/remainder or the merge values and checked total, every input
@@ -84,9 +86,10 @@ every owned application input's exact canonical preimage (in `split`'s one-
 input or `merge`'s into-then-from two-input order) and sends them to custody
 alongside the fee source preimage; the protected side independently decodes,
 validates ownership/schema/nominal type, and recomputes every reference and
-amount before rendering its own review. `mint`, `burn` and `create-asset`
-keep their existing custody refusal; `transfer` is unaffected and stays on
-kind 2.
+amount before rendering its own review. `mint` and `burn` keep their
+existing custody refusal in this profile (they are DR-0253's own kind-4
+family); `create-asset` is now supported under its own separate kind-5
+family (DR-0255); `transfer` is unaffected and stays on kind 2.
 
 ## Lifecycle and limits
 
