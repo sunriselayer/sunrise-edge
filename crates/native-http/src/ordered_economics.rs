@@ -214,6 +214,14 @@ where
             "ordered-economics-deadline-overflow",
         )
     })?;
+    // Cooperative recheck after identity/clock/deadline preparation but
+    // before any caller proceeds to its first storage call, mirroring
+    // `ordered_history.rs`'s and `fastvote.rs`'s own post-`build_context`
+    // check. Centralized here so every one of this module's seven handlers
+    // gets it without each duplicating the same policy.
+    if state.is_cancelled() {
+        return Err(crate::cancelled_before_storage_response());
+    }
     Ok(DurableOperationContext::new(
         state.writer_fence,
         deadline,

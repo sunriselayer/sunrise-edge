@@ -39,6 +39,16 @@ not entered its work closure yet. `blocking_admitted` still counts that permit
 admission, including queued jobs later refused after stop. It does not count
 executed storage operations or successful business calls.
 
+[DR-0247](decisions/0247-native-stop-before-storage-continuation.md) applies
+the same queued-entry stop check to both optional scheduler recovery APIs.
+They return their existing typed `AdmissionClosed` before runtime access;
+already entered claim/send/acknowledgement work retains its reconciliation.
+Ordered economics also rechecks its injected cancellation after the existing
+identity/clock/deadline preparation and before returning the first storage
+context. These cooperative checks do not make cancellation atomic with a
+storage call. The real SQLite/HTTP test composition does not invoke the
+production host constructor or signal owner and cannot qualify that wiring.
+
 No started database operation is aborted, declared rolled back, or turned into
 a Rejected receipt because the host or client is stopping. A lost response
 remains unknown until the exact saved intent and receipt reconcile it. Keep all

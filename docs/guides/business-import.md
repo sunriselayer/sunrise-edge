@@ -39,6 +39,16 @@ BUSINESS_IMPORT_BIN="${CARGO_TARGET_DIR:-target}/debug/business_import"
 ```
 
 Input parsing and independent plan verification precede destination creation.
+
+To enforce an earlier independently verified ordered-history position, add all
+three `--history-floor-epoch`, `--history-floor-height` and
+`--history-floor-digest` arguments to both create and resume. Retain these pins
+outside the history/cut being restored. The epoch must match exactly; the
+verified history must include that exact ancestor block digest. A newer tip
+alone does not choose between forks. This optional refusal guard does not prove
+whole-state freshness or permit activation; see
+[DR-0248](../architecture/decisions/0248-import-ordered-history-freshness-floor.md).
+
 Creation reserves fresh paths and a destination-local fence; it never reuses
 an ordinary namespace or copies source-local authority. Creation failure may
 leave reserved files. Do not delete/repair metadata or force resumption of

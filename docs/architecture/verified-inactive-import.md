@@ -26,6 +26,24 @@ membership, readiness or activation proof. Import preserves the outgoing
 context and authenticated generation floor; it does not admit a successor
 generation or silently switch the defining-code/economics epoch.
 
+## Independently retained ordered-history floor
+
+[DR-0248](decisions/0248-import-ordered-history-freshness-floor.md) adds optional
+`--history-floor-epoch`, `--history-floor-height` and `--history-floor-digest`
+pins to both import modes. Supply all three from an earlier independently
+verified observation retained outside the artifacts being restored. After
+authenticating the entire current-epoch history, import refuses a target below
+the floor or a different block digest at that height, before opening or creating destination databases.
+It also refuses either direction of epoch mismatch. No flags preserves the
+original behavior; every accepted cut still undergoes the original independent
+proof reconstruction and exact history binding.
+
+The floor bounds one ordered-history position. It does not authenticate a
+whole-state root, latest network state or owned fast-path position, detect
+every store rollback, exclude an old writer or grant activation. Encrypted
+recovery retains its existing exact cut/package pins. Published checkpoint
+authority remains a separate requirement.
+
 ## Permanent storage origin
 
 | Lifecycle | Durable meaning | Fresh execution and protocol signing |

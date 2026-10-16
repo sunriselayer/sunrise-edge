@@ -195,6 +195,10 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E22: M2 complete required + hosted CI | `1b796c3c` / tree `ecfebae5`、literal npm-ci +完全check-allがactual exit 0/EOF、13,040.839秒。143 Rust success summaries/報告pass合計4,150/0 failed、core/readiness/recurringは505.25/26.47/10,730.31秒。元8リンク/e8 withdrawals/35 rolesのsource-free復元と全adapterを完走。[run `38607184408`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38607184408) attempt 1の7 owners + checkが全SUCCESS、全8 checkout `bbd4c95e` のtree一致を照合 | Node 24.19.0 / Rust 1.97.1、CI dev/test opt2・curve opt3、debug assertions/overflow checks有効、case/待機削減なし。local sourceは実行前後clean同一pin。PG/新13-target release A/B/独立security監査/実provider/公開認定ではない。旧E20はnullのまま |
 | E23: saved fee-claim review components | `cf2dd35f` / tree `01bcfe95`、SDK fee-claim 23 passed、CLI fee-claim 4 passed、custody 73 passed/1 ignored、CLI buildと実Docker/UID/PTYが全actual exit 0/EOF、55.737秒。元のpublication controlsと6 lifecycle summariesを保持。独立correctness reviewと指摘処理済み | 非承認の内容表示・development signing。SDKのfocused renderer testsだけをhistorical committeeの認証証明にしない。private exportのparent判定はwriterと共通。初回の実行file mode0700によるDocker失敗を保持し、child umask0022で新しく生成した実mode0755を使用。chmod正規化なし |
 | E24: fee-claim complete local required | `cf2dd35f` / tree `01bcfe95`、literal npm-ci +完全check-allがactual exit 0/EOF、14,049.412秒。143 Rust success summaries/報告pass合計4,166/0 failed、core/readiness/recurringは495.01/26.99/11,124.30秒。元8リンク/e8 withdrawals/35 rolesのsource-free復元と全adapterを完走。実Split/ZeroShareでseed-free保存→offline review/sign、legacy候補の全byte一致・別鍵/受取人/証明epoch/上書き拒否を実行 | local前後clean同一source、Node24.19.0/Rust1.97.1、dev/test opt2・curve opt3・debug assertions/overflow有効、case/待機削減なし。[hosted run `38674732337`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38674732337) attempt 1は7 required owners + checkの全8 jobs SUCCESS。全8 actual checkout `29f91118` / tree `01bcfe95` が対象sourceと一致。FinalTransferはfocused structural renderer coverage。PG/新13-target Native A/B・RELEASE/実provider/独立security監査/公開認定ではない |
+| E25: transfer・queued stop・overlapping TLS components | `426e8359` / tree `b7fa71cd`。custody 78 passed/2 ignored、Standard Asset 17 passed、Native operations 7 passed、全12 actual TLS controls、CLI build、対象3 crate Clippy、実Docker/UID/PTYを含む全7 commandsがactual exit 0/EOF、255.769秒。元publicationと6 lifecycle、whole-coin transferの実SQLite/WASM実行・offline/CLI署名byte一致・receipt replay・取消を確認。前後source clean/input binary不変 | component qualification。原2 ignoredのfixtureはDocker ownerが別途実行。全M2/M3/D05/M5・独立監査・実provider/公開認定ではない。同sourceの完全requiredとhosted CIは長時間recurrence実行中 |
+| E26: 426e actual Native release A/B | `426e8359` / tree `b7fa71cd`、固定Node24.19.0/Rust1.97.1/Linux GNU recipe。2 fresh builds・13ターゲット全byte/mode/owner比較成功、actual exit 0/EOF、858.399秒。保存26 ELFを親でも照合。生成umask0022の実mode0755を維持し、chmod正規化なし。4専有作業dirとsource leaseを解放 | same-host trusted OS。fixture/cross-machine/hermetic/upstream authenticity・全13 RELEASE runtime・全M7・公開認定ではない。後続sourceへ借用しない |
+| E27: 426e RELEASE CLI custody | E26保存の実RELEASE CLIをE25と同sourceのdev/test harnessへ渡し、元publication・6 lifecycle・実transfer/取消/再起動拒否をactual exit 0/EOF、3.670秒で確認。CLIとharnessの前後hash一致 | RELEASEなのはCLI child。SQLite/WASM hostはdev/test harness内で動き、全13 RELEASE runtime qualificationとは区別する |
+
 
 新しいrawの保存先は `/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013`。
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -292,6 +296,15 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
 のtreeは50a4と同じ `eff704ddad3be9e7730c53776fe5d8c019d7ea4f` です。全8 checkoutの実ログを照合し、
 `hosted-ci2-50a4.log` / `hosted-50a4-receipt.json`を保存しました。raw SHA-256は
 `9642d8707876f5e40888ccd9302887fb5f121313f024d7b9b1798123eca32862`。
+
+E25は `technical-eight-targeted-1016-terminal.json` / `.log`、raw SHA-256
+`94653591bfa8364856ab3a48d1ba3c0b359da9b189bc67e6dbb0b725a3ffbfa5`。
+E26は `native-426e-1016-terminal.json` と
+`native-output-parent-1013/native-426e8359-1016/manifest.json`、manifest SHA-256
+`8b2d40f8d047ce2fe16a6cc45568226f8a232205e73c1657539a430360f751ed`。
+E27は `release-cli-custody-426e-1016-terminal.json` / `.log`、raw SHA-256
+`3f66c384240ed43c97c5aabd98561431b19de88af498e2f0571429afdcf1e10c`。
+いずれも426eに固定した範囲。新しいfloor/stop sourceの完全gateへは借用しません。
 
 ## 作業終了時の環境整理
 
@@ -447,7 +460,8 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
   - [ ] [genesis Standard Asset transferの専用custody](docs/architecture/standard-asset-transfer-custody.md):
     独立genesis/code/instance/policy pin、完全object preimageからの金額/参照検証、
     exact approval・別UID署名・既存transfer CLIを接続。component controlsは成功したが、
-    clean sourceの完全gate/CIと最終照合は未完了。他operation/epoch/自動署名は対象外。
+    E25のclean source componentsとE26/E27のRELEASE CLIまで確認。完全gate/CIと
+    最終照合は未完了。他operation/epoch/自動署名は対象外。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
@@ -478,6 +492,11 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
   - 状態: E1の35-role source-free restoreは合格。新しいcomplete requiredの状態はE14。
     checkpoint/state-root・closure-level immutable manifest・upgrade/rollback/stopの
     未達技術条件を残し、全M4/releaseは未完了。
+  - [ ] [独立に保持したordered history floor](docs/architecture/decisions/0248-import-ordered-history-freshness-floor.md):
+    実import create/resumeへの追加拒否を実装。parse/comparison 12件・元9件を保持したcompiled import全10件・Clippy・
+    独立component reviewは成功。新sourceの完全gate/CIは未完了。
+    同一epoch内の履歴位置だけを拘束し、published checkpoint/state-root・owned fast-pathの
+    whole-store rollback検出・旧writer除外の未達条件は維持する。
   - 次: source/artifact対応、M7、残るmanifest/upgrade/fencing範囲を照合する。
     元の8リンク・e8 withdrawals・35 rolesと全拒否controlsを維持する。
     age等のshared PG feature edgeはE10の14fb全5グループで再検証済み。
@@ -492,6 +511,11 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
     pre-storage checksを接続。待機中workの拒否・既実行workの完走・drain/拒否優先順位を
     component検証済み。live hostでこの配線だけを分離するoracleと完全gateは未完了。
     admitted counterには待機後の取消も含み、業務実行件数とは解釈しない。
+  - [ ] [scheduler recoveryとordered contextの停止確認](docs/architecture/decisions/0247-native-stop-before-storage-continuation.md):
+    既存型のAdmissionClosedとstorage直前のcooperative checkを追加。actual recovery APIの欠落guard
+    negative controlとNative HTTP 206件/Clippy・独立component reviewは成功。
+    手動構成の実SQLite/HTTP ownerも全3件成功。新sourceの完全gate/CIは未完了で、
+    このfixtureを本番host constructor/signalの配線証明に数えない。
   - 次: D05と一本のcase/coverage表を使う。実workload/SLOに対するcapacity、
     actual production PKI、alerts/response・spend適用はD04/D07で決め、適用後に検証する。
 
@@ -501,7 +525,9 @@ recurring owningは14,824.48秒、job全体15,094秒。checkout `678509cb5b43b41
     conformance/property/fuzz/adversarial/long-run・upgrade/restore・advisory qualification。
   - 状態: 古い11-target A/Bは既存baseline。50a4のE14/E15を保持し、537cのsource CIはE17、13-target実A/BはE18、実RELEASE runtimeはE19で成功。
     E20の旧local完全gate終端は未確認。後続M2 sourceの完全required/CIはE22/E24で成功したが、
-    E18/E19のNative artifact/source pinとは異なる。残る独立監査・upgrade/restore・実provider基準により全M7は未完了。
+    E18/E19のNative artifact/source pinとは異なる。426eの新A/BとRELEASE CLIはE26/E27で
+    確認したが、全13 RELEASE runtimeと完全source qualificationは未完了。残る独立監査・
+    upgrade/restore・実provider基準により全M7は未完了。
   - 次: E18/E19のsource/tool/profile pinをR4/Gから共用し、新sourceのrelease claimには
     そのsourceの13-target A/B・実RELEASE bindingを用意する。未達qualificationを進める。
     過去の11/12-target成功やcheap fixtureを13-target成功にはしない。
