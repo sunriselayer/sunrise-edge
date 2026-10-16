@@ -46,6 +46,10 @@ roadmap describes a later target state.
 - [Independent import history floor](decisions/0248-import-ordered-history-freshness-floor.md):
   retained same-epoch ancestor pins refuse older or conflicting ordered history
   before opening or creating destination databases; no checkpoint/state-root or activation authority.
+- [Independent import closure-identity pins](decisions/0252-import-closure-identity-pins.md):
+  retained exact cut/package/plan digest pins refuse a differing independently
+  reverified closure before opening or creating destination databases; no
+  checkpoint/state-root or activation authority.
 - [Immutable operation signing preparation](signing-preparation.md): one
   mechanical frame/identity owner, operation-specific immutable trust inputs,
   actual SDK/CLI consumers and the separate custody/content-review boundary.

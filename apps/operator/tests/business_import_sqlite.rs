@@ -216,6 +216,27 @@ fn floor_arguments(epoch: u64, height: u64, digest: &str) -> Vec<OsString> {
     ]
 }
 
+fn closure_pin_arguments(cut: &str, package: &str, plan: &str) -> Vec<OsString> {
+    vec![
+        OsString::from("--expected-cut-digest"),
+        OsString::from(cut),
+        OsString::from("--expected-package-digest"),
+        OsString::from(package),
+        OsString::from("--expected-plan-digest"),
+        OsString::from(plan),
+    ]
+}
+
+fn flipped_last_byte(digest: &str) -> String {
+    let mut bytes: Vec<u8> = (0..digest.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&digest[index..index + 2], 16).unwrap())
+        .collect();
+    let last: usize = bytes.len() - 1;
+    bytes[last] ^= 1;
+    hex(&bytes)
+}
+
 fn identity_fields(text: &str) -> Vec<&str> {
     text.split_whitespace()
         .filter(|word| {
@@ -802,4 +823,285 @@ fn compiled_import_history_floor_refuses_before_destination_and_accepts_authenti
     assert_eq!(std::fs::read(&blob_file).unwrap(), blobs_before);
     assert_eq!(files(&cut.0), original_files);
     assert!(history_files(&history_root) == original_history_files);
+}
+
+#[test]
+fn compiled_import_closure_pins_refuse_before_destination_and_accept_exact_identity() {
+    let mut fixture: Fixture = Fixture::new();
+    fixture.freeze_and_complete();
+    std::fs::write(
+        fixture.directory.0.join("genesis.bin"),
+        &fixture.network.manifest_bytes,
+    )
+    .unwrap();
+    let (identity, ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
+        fixture.history();
+    let history: Directory = Directory::new("closure-pin-history-parent");
+    let history_root: PathBuf = history.0.join("history");
+    fixture.write_history(&history_root, &identity, &ordered);
+    let pins: Vec<OsString> = pinned_arguments(&fixture, &identity, &history_root);
+    let source_state: PathBuf = fixture.directory.0.join("state-0.sqlite");
+    let source_blobs: PathBuf = fixture.directory.0.join("blobs.sqlite");
+    let cut: Directory = Directory::new("closure-pin-saved-cut");
+    let mut export: Command = cut_command(&pins, &cut.0, "export-sqlite");
+    export.args([
+        "--state-db",
+        source_state.to_str().unwrap(),
+        "--blob-db",
+        source_blobs.to_str().unwrap(),
+        "--validator-id",
+        &hex(fixture.network.validators[0].validator_id.as_bytes()),
+        "--page-size",
+        "128",
+        "--chunk-size",
+        "1048576",
+        "--max-new-work",
+        "4096",
+        "--timeout-seconds",
+        "300",
+    ]);
+    assert!(
+        success(export.output().unwrap()).contains("business_cut=complete"),
+        "the actual compiled exporter must produce the saved cut",
+    );
+    let original_files: BTreeMap<String, Vec<u8>> = files(&cut.0);
+    let original_history_files: BTreeMap<PathBuf, Option<Vec<u8>>> = history_files(&history_root);
+    // Close every source owner, same as the other offline import controls:
+    // the independently retained pins below never come from these sources.
+    fixture.close_source_owners();
+    std::fs::rename(
+        &source_state,
+        fixture
+            .directory
+            .0
+            .join("offline-closure-pin-source-state.sqlite"),
+    )
+    .unwrap();
+    std::fs::rename(
+        &source_blobs,
+        fixture
+            .directory
+            .0
+            .join("offline-closure-pin-source-blobs.sqlite"),
+    )
+    .unwrap();
+    let source_paths: [&Path; 2] = [source_state.as_path(), source_blobs.as_path()];
+    assert_unavailable(source_paths);
+
+    // Establish the independently retained pins from a genuinely separate,
+    // unpinned, earlier-completed run against another fresh destination.
+    let unpinned_validator: ValidatorId = ValidatorId::new([0xF4; 32]);
+    let unpinned_destination: Directory = Directory::new("closure-pin-unpinned-destination");
+    let unpinned_state: PathBuf = unpinned_destination.0.join("state.sqlite");
+    let unpinned_blobs: PathBuf = unpinned_destination.0.join("blobs.sqlite");
+    let unpinned: String = success(offline_output(
+        command(
+            &pins,
+            &cut.0,
+            &unpinned_state,
+            &unpinned_blobs,
+            "create-sqlite",
+            unpinned_validator,
+            "4096",
+        ),
+        source_paths,
+    ));
+    assert!(unpinned.contains("business_import=complete-inactive"));
+    let unpinned_fields: Vec<&str> = identity_fields(&unpinned);
+    let cut_digest: String = unpinned_fields[0]
+        .strip_prefix("cut=")
+        .unwrap()
+        .to_string();
+    let package_digest: String = unpinned_fields[1]
+        .strip_prefix("package=")
+        .unwrap()
+        .to_string();
+    let plan_digest: String = unpinned_fields[2]
+        .strip_prefix("plan=")
+        .unwrap()
+        .to_string();
+
+    let pinned_validator: ValidatorId = ValidatorId::new([0xF5; 32]);
+    let failure_destination: Directory = Directory::new("closure-pin-failure-destination");
+    let failure_state: PathBuf = failure_destination.0.join("state.sqlite");
+    let failure_blobs: PathBuf = failure_destination.0.join("blobs.sqlite");
+
+    // A strict subset of the three flags refuses before any destination file,
+    // the same as a missing flag entirely.
+    let subsets: Vec<Vec<OsString>> = vec![
+        vec![
+            OsString::from("--expected-cut-digest"),
+            OsString::from(cut_digest.clone()),
+        ],
+        vec![
+            OsString::from("--expected-package-digest"),
+            OsString::from(package_digest.clone()),
+        ],
+        vec![
+            OsString::from("--expected-cut-digest"),
+            OsString::from(cut_digest.clone()),
+            OsString::from("--expected-package-digest"),
+            OsString::from(package_digest.clone()),
+        ],
+    ];
+    for subset in subsets {
+        let mut attempt: Command = command(
+            &pins,
+            &cut.0,
+            &failure_state,
+            &failure_blobs,
+            "create-sqlite",
+            pinned_validator,
+            "4096",
+        );
+        attempt.args(subset);
+        let output: Output = offline_output(attempt, source_paths);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("must be supplied together or not at all")
+        );
+        assert_unavailable([failure_state.as_path(), failure_blobs.as_path()]);
+    }
+    assert_eq!(files(&cut.0), original_files);
+    assert!(history_files(&history_root) == original_history_files);
+
+    // Exactly one flipped final byte in each of the three pins, in turn, must
+    // reach the new comparison and refuse before any fresh destination file.
+    let flipped_cut: String = flipped_last_byte(&cut_digest);
+    let flipped_package: String = flipped_last_byte(&package_digest);
+    let flipped_plan: String = flipped_last_byte(&plan_digest);
+    let mismatches: [(&str, &str, &str); 3] = [
+        (flipped_cut.as_str(), package_digest.as_str(), plan_digest.as_str()),
+        (cut_digest.as_str(), flipped_package.as_str(), plan_digest.as_str()),
+        (cut_digest.as_str(), package_digest.as_str(), flipped_plan.as_str()),
+    ];
+    for (bad_cut, bad_package, bad_plan) in mismatches {
+        let mut attempt: Command = command(
+            &pins,
+            &cut.0,
+            &failure_state,
+            &failure_blobs,
+            "create-sqlite",
+            pinned_validator,
+            "4096",
+        );
+        attempt.args(closure_pin_arguments(bad_cut, bad_package, bad_plan));
+        let output: Output = offline_output(attempt, source_paths);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(
+                "verified closure identity does not match the independently retained cut/package/plan digest pins"
+            ),
+            "unexpected stderr: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert_unavailable([failure_state.as_path(), failure_blobs.as_path()]);
+    }
+    assert_eq!(files(&cut.0), original_files);
+    assert!(history_files(&history_root) == original_history_files);
+
+    // Exact pins taken from the earlier independent run reach CompleteInactive
+    // on a genuinely fresh destination, with the same reported identities.
+    let destination: Directory = Directory::new("closure-pin-destination");
+    let state_file: PathBuf = destination.0.join("state.sqlite");
+    let blob_file: PathBuf = destination.0.join("blobs.sqlite");
+    let mut accept: Command = command(
+        &pins,
+        &cut.0,
+        &state_file,
+        &blob_file,
+        "create-sqlite",
+        pinned_validator,
+        "4096",
+    );
+    accept.args(closure_pin_arguments(&cut_digest, &package_digest, &plan_digest));
+    let accepted: String = success(offline_output(accept, source_paths));
+    assert!(accepted.contains("business_import=complete-inactive"));
+    assert_eq!(identity_fields(&unpinned), identity_fields(&accepted));
+
+    let namespace: SqliteNamespace = SqliteNamespace::new(
+        fixture.network.chain_id.clone(),
+        pinned_validator,
+        fixture.network.domain,
+    );
+    let complete_residue = |state: &Path| -> (ImportBinding, PortableSnapshotToken) {
+        let residue: SqliteDurableStore =
+            SqliteDurableStore::open_historical(state, namespace.clone()).unwrap();
+        let own_writer: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+        assert_eq!(residue.writer_fence().unwrap(), own_writer);
+        let context: DurableOperationContext = observation_context(own_writer);
+        let lifecycle: NamespaceLifecycle = residue
+            .get_namespace_lifecycle(&context, namespace.domain())
+            .unwrap();
+        let NamespaceLifecycle::CompleteInactive { binding, .. } = lifecycle else {
+            panic!("exact closure pins must retain the completed inactive import origin");
+        };
+        let token: PortableSnapshotToken = residue
+            .begin_portable_snapshot(&context, namespace.domain())
+            .unwrap();
+        (binding, token)
+    };
+    let (binding_before, token_before): (ImportBinding, PortableSnapshotToken) =
+        complete_residue(&state_file);
+
+    // A wrong resume plan pin refuses and leaves the existing destination
+    // contents, inner resume binding and portable token unchanged.
+    let state_before: Vec<u8> = std::fs::read(&state_file).unwrap();
+    let blobs_before: Vec<u8> = std::fs::read(&blob_file).unwrap();
+    let mut wrong_resume: Command = command(
+        &pins,
+        &cut.0,
+        &state_file,
+        &blob_file,
+        "resume-sqlite",
+        pinned_validator,
+        "4096",
+    );
+    wrong_resume.args(closure_pin_arguments(&cut_digest, &package_digest, &flipped_plan));
+    let wrong: Output = offline_output(wrong_resume, source_paths);
+    assert!(!wrong.status.success());
+    assert!(
+        String::from_utf8_lossy(&wrong.stderr).contains(
+            "verified closure identity does not match the independently retained cut/package/plan digest pins"
+        )
+    );
+    assert_eq!(std::fs::read(&state_file).unwrap(), state_before);
+    assert_eq!(std::fs::read(&blob_file).unwrap(), blobs_before);
+    let (binding_after, token_after): (ImportBinding, PortableSnapshotToken) =
+        complete_residue(&state_file);
+    assert_eq!(binding_after, binding_before);
+    assert_eq!(token_after, token_before);
+
+    // Resume with the exact pins succeeds, and the inner existing full-binding
+    // resume check still enforces agreement; no new batches are installed.
+    let mut exact_resume: Command = command(
+        &pins,
+        &cut.0,
+        &state_file,
+        &blob_file,
+        "resume-sqlite",
+        pinned_validator,
+        "4096",
+    );
+    exact_resume.args(closure_pin_arguments(&cut_digest, &package_digest, &plan_digest));
+    let resumed: String = success(offline_output(exact_resume, source_paths));
+    assert!(resumed.contains("business_import=complete-inactive"));
+    assert!(resumed.contains("new_batches=0"));
+    assert_eq!(identity_fields(&accepted), identity_fields(&resumed));
+    let (binding_final, token_final): (ImportBinding, PortableSnapshotToken) =
+        complete_residue(&state_file);
+    assert_eq!(binding_final, binding_before);
+    assert_eq!(token_final, token_before);
+
+    assert_eq!(
+        files(&cut.0),
+        original_files,
+        "closure-pin controls never rewrite the saved cut"
+    );
+    assert!(
+        history_files(&history_root) == original_history_files,
+        "closure-pin controls preserve all original history files and directories"
+    );
+    assert_unavailable(source_paths);
 }
