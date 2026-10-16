@@ -30,9 +30,12 @@ checked-overflow guard exactly.
 
 Both require a positive maximum fee strictly below the fee source balance,
 with the refund returned to the sender — the same fee shape as `transfer`.
-`mint` and `burn` both require the `TreasuryCap` and stay unsupported in this
-profile; `create-asset`, other packages/instances/epochs and automatic
-protocol signing stay out of scope.
+`mint` and `burn` both require the `TreasuryCap` and stay unsupported in
+*this* split/merge profile; they are their own separate kind-4 custody
+family (see [genesis Standard Asset mint/burn
+custody](standard-asset-mint-burn-custody.md), DR-0253), not an extension of
+this one. `create-asset`, other packages/instances/epochs and automatic
+protocol signing stay out of scope here.
 
 The complete bounded review displays the source value(s), the split amount/
 recipient/remainder or the merge values and checked total, every input

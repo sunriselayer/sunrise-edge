@@ -77,6 +77,12 @@ roadmap describes a later target state.
   shares the transfer family's genesis/code/instance/policy pin, adds a
   separate kind-3 split/merge signer and overflow-checked review, and
   connects the ordinary paid `split`/`merge` CLI consumer.
+- [Genesis Standard Asset mint/burn custody](standard-asset-mint-burn-custody.md)
+  ([DR-0253](decisions/0253-genesis-standard-asset-mint-burn-custody.md)):
+  shares the transfer/split/merge families' genesis/code/instance/policy
+  pin, adds a separate kind-4 mint/burn signer with an independently
+  rebuilt checked-supply review, and connects the ordinary paid
+  `mint`/`burn` CLI consumer.
 - [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
   an explicitly configured closed HTTPS transport, separate from default
   event-only relays, embedded DO policy and core authority.

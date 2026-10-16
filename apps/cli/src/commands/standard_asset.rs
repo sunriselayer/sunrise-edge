@@ -85,6 +85,8 @@ enum CustodySigningRequest {
     Transfer(crate::custody::AssetTransferRequest),
     Split(crate::custody::AssetSplitRequest),
     Merge(crate::custody::AssetMergeRequest),
+    Mint(crate::custody::AssetMintRequest),
+    Burn(crate::custody::AssetBurnRequest),
 }
 
 impl AssetSigner {
@@ -113,6 +115,12 @@ impl AssetSigner {
                     }
                     CustodySigningRequest::Merge(request) => {
                         crate::custody::client::request_merge_signature(target, request)?
+                    }
+                    CustodySigningRequest::Mint(request) => {
+                        crate::custody::client::request_mint_signature(target, request)?
+                    }
+                    CustodySigningRequest::Burn(request) => {
+                        crate::custody::client::request_burn_signature(target, request)?
                     }
                 };
                 Ok(prepared.finalize(signature.to_vec())?)
@@ -660,6 +668,8 @@ where
         && action != "transfer"
         && action != "split"
         && action != "merge"
+        && action != "mint"
+        && action != "burn"
     {
         return Err(invalid(
             "custody paid Standard Asset signing is not supported",
@@ -1057,6 +1067,39 @@ where
                     },
                 ))
             }
+            "mint" => Some(CustodySigningRequest::Mint(
+                crate::custody::AssetMintRequest {
+                    cap_bytes: inputs.next().ok_or_else(|| {
+                        invalid("custody mint cap and fee source must be distinct")
+                    })?,
+                    fee_bytes: fee_bytes.clone(),
+                    amount: parse_u64(AMOUNT, parsed.require(AMOUNT)?)?,
+                    recipient: decode_hex_32(RECIPIENT, parsed.require(RECIPIENT)?)?,
+                    nonce,
+                    request_id,
+                    max_fee: prepared.intent().consent.max_fee.get(),
+                    gas_limit,
+                },
+            )),
+            "burn" => {
+                let cap_bytes = inputs
+                    .next()
+                    .ok_or_else(|| invalid("custody burn requires both distinct owned inputs"))?;
+                let coin_bytes = inputs
+                    .next()
+                    .ok_or_else(|| invalid("custody burn requires both distinct owned inputs"))?;
+                Some(CustodySigningRequest::Burn(
+                    crate::custody::AssetBurnRequest {
+                        cap_bytes,
+                        coin_bytes,
+                        fee_bytes: fee_bytes.clone(),
+                        nonce,
+                        request_id,
+                        max_fee: prepared.intent().consent.max_fee.get(),
+                        gas_limit,
+                    },
+                ))
+            }
             _ => None,
         }
     } else {
@@ -1109,40 +1152,39 @@ mod tests {
         package_types::{PackageOrigin, derive_scoped_type_id},
     };
 
-    /// Other paid Standard Asset actions must refuse custody signing
-    /// immediately after parsing the signer selection, before any
-    /// FastVote/network peer validation, signer file access, or device I/O.
+    /// `create-asset` must refuse custody signing immediately after parsing
+    /// the signer selection, before any FastVote/network peer validation,
+    /// signer file access, or device I/O.
     #[test]
     fn rejects_custody_signer_selection_before_any_io() {
-        for action in ["create-asset", "mint", "burn"] {
-            let error = run(
-                action,
-                vec![
-                    OsString::from("--custody-socket"),
-                    OsString::from("/nonexistent/custody.sock"),
-                    OsString::from("--custody-uid"),
-                    OsString::from("1001"),
-                    OsString::from("--custody-expected-public-key"),
-                    OsString::from("ab".repeat(32)),
-                ],
-            )
-            .unwrap_err();
-            assert!(matches!(error, CliError::LocalExecution(_)));
-            assert!(
-                error
-                    .to_string()
-                    .contains("custody paid Standard Asset signing is not supported")
-            );
-        }
+        let error: CliError = run(
+            "create-asset",
+            vec![
+                OsString::from("--custody-socket"),
+                OsString::from("/nonexistent/custody.sock"),
+                OsString::from("--custody-uid"),
+                OsString::from("1001"),
+                OsString::from("--custody-expected-public-key"),
+                OsString::from("ab".repeat(32)),
+            ],
+        )
+        .unwrap_err();
+        assert!(matches!(error, CliError::LocalExecution(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("custody paid Standard Asset signing is not supported")
+        );
     }
 
-    /// `split` and `merge` are the coin-owner-only family DR-0249 adds; they
-    /// must pass the custody-selection gate itself (unlike `create-asset`/
-    /// `mint`/`burn`, which stay closed above) and fail only on a later,
-    /// genuinely missing requirement — never on the "not supported" refusal.
+    /// `split`/`merge` (DR-0249) and `mint`/`burn` (DR-0253) are the
+    /// coin/cap-owner-only families; they must pass the custody-selection
+    /// gate itself (unlike `create-asset`, which stays closed above) and
+    /// fail only on a later, genuinely missing requirement — never on the
+    /// "not supported" refusal.
     #[test]
-    fn allows_custody_signer_selection_for_split_and_merge_before_other_required_flags() {
-        for action in ["split", "merge"] {
+    fn allows_custody_signer_selection_for_split_merge_mint_burn_before_other_required_flags() {
+        for action in ["split", "merge", "mint", "burn"] {
             let error = run(
                 action,
                 vec![

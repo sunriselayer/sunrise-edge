@@ -22,6 +22,8 @@ use tokio::time::timeout;
 use sunrise_edge_client::LocalSigner;
 
 use super::approvals;
+use super::asset_mint_burn::{AssetMintBurnRequest, AssetMintBurnTrust};
+use super::asset_mint_burn_wire;
 use super::asset_split_merge::{AssetSplitMergeRequest, AssetSplitMergeTrust};
 use super::asset_split_merge_wire;
 use super::asset_transfer::AssetTransferTrust;
@@ -179,10 +181,31 @@ pub(super) fn run_split_merge(
     )
 }
 
+/// A distinct invocation and decoder; no other family ever accepts the
+/// kind-4 mint/burn family (DR-0253).
+pub(super) fn run_mint_burn(
+    config: CustodyConfig,
+    signer: LocalSigner,
+    socket_path: &Path,
+    approvals_dir: &Path,
+    bounds: ServeBounds,
+    trust: AssetMintBurnTrust,
+) -> Result<ServeSummary, CustodyError> {
+    run_with_policy(
+        config,
+        signer,
+        socket_path,
+        approvals_dir,
+        bounds,
+        SigningPolicy::MintBurn(Box::new(trust)),
+    )
+}
+
 enum SigningPolicy {
     Publication,
     Transfer(Box<AssetTransferTrust>),
     SplitMerge(Box<AssetSplitMergeTrust>),
+    MintBurn(Box<AssetMintBurnTrust>),
 }
 
 fn run_with_policy(
@@ -414,6 +437,7 @@ async fn handle_one_connection(
         SigningPolicy::Publication => wire::MAX_CUSTODY_REQUEST_FRAME_BYTES,
         SigningPolicy::Transfer(_) => super::asset_wire::MAX_REQUEST_BYTES,
         SigningPolicy::SplitMerge(_) => asset_split_merge_wire::MAX_REQUEST_BYTES,
+        SigningPolicy::MintBurn(_) => asset_mint_burn_wire::MAX_REQUEST_BYTES,
     };
     let frame = match read_request_frame(&mut stream, maximum).await {
         Ok(frame) => frame,
@@ -432,6 +456,11 @@ async fn handle_one_connection(
             .map_err(|error| refusal_status_for_wire_error(&error))
             .and_then(|request| {
                 sign_split_merge_request(config, signer, approvals_dir, trust, &request)
+            }),
+        SigningPolicy::MintBurn(trust) => asset_mint_burn_wire::decode(&frame)
+            .map_err(|error| refusal_status_for_wire_error(&error))
+            .and_then(|request| {
+                sign_mint_burn_request(config, signer, approvals_dir, trust, &request)
             }),
     };
     match result {
@@ -518,6 +547,56 @@ pub(super) fn sign_split_merge_request(
                 .prepare_merge(merge)
                 .map_err(|_| CustodyResponseStatus::Malformed)?;
             (merge.request_id, prepared.prepared)
+        }
+    };
+    let now: u64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| CustodyResponseStatus::Internal)?
+        .as_secs();
+    let approval = approvals::read_approval(approvals_dir, &request_id)
+        .map_err(|_| CustodyResponseStatus::Internal)?
+        .ok_or(CustodyResponseStatus::NoApproval)?;
+    if approvals::is_expired(&approval, now)
+        || approval.publisher != config.publisher()
+        || approval.frame != prepared.signable_frame()
+        || super::revoke::is_revoked(approvals_dir, &request_id)
+            .map_err(|_| CustodyResponseStatus::Internal)?
+    {
+        return Err(CustodyResponseStatus::NoApproval);
+    }
+    let signed = prepared
+        .sign_and_finalize_with(signer)
+        .map_err(|_| CustodyResponseStatus::Internal)?;
+    Ok(signed.signature)
+}
+
+/// Pure, synchronous mint/burn signing decision: rebuilds the exact
+/// `PreparedPaidExecution` under custody's own pinned mint/burn trust
+/// (never the caller's claimed amount/supply outcome), checks it against
+/// the stored human approval record, signs, and relies on
+/// `sign_and_finalize_with`'s own internal verification before returning.
+pub(super) fn sign_mint_burn_request(
+    config: &CustodyConfig,
+    signer: &LocalSigner,
+    approvals_dir: &Path,
+    trust: &AssetMintBurnTrust,
+    request: &AssetMintBurnRequest,
+) -> Result<[u8; wire::CUSTODY_SIGNATURE_BYTES], CustodyResponseStatus> {
+    if signer.address() != config.publisher() {
+        return Err(CustodyResponseStatus::Internal);
+    }
+    let (request_id, prepared) = match request {
+        AssetMintBurnRequest::Mint(mint) => {
+            let prepared = trust
+                .prepare_mint(mint)
+                .map_err(|_| CustodyResponseStatus::Malformed)?;
+            (mint.request_id, prepared.prepared)
+        }
+        AssetMintBurnRequest::Burn(burn) => {
+            let prepared = trust
+                .prepare_burn(burn)
+                .map_err(|_| CustodyResponseStatus::Malformed)?;
+            (burn.request_id, prepared.prepared)
         }
     };
     let now: u64 = SystemTime::now()

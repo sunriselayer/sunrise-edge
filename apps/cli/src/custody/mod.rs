@@ -2,24 +2,28 @@
 //! `docs/architecture/local-publication-custody.md`).
 //!
 //! Trusted local OS/root, key held in a separate process under a distinct
-//! UID. Separate publication, genesis Standard Asset transfer and genesis
-//! Standard Asset split/merge invocations: no generic `ExternalSigner`, no
-//! automatic/consensus/genesis-authority signing route, and no network-facing HTTP
-//! endpoint. At-rest encryption and compromised-root resistance are
-//! explicitly NOT claimed by this first OS-permission model.
+//! UID. Separate publication, genesis Standard Asset transfer, genesis
+//! Standard Asset split/merge, and genesis Standard Asset mint/burn
+//! invocations: no generic `ExternalSigner`, no automatic/consensus/genesis-
+//! authority signing route, and no network-facing HTTP endpoint. At-rest
+//! encryption and compromised-root resistance are explicitly NOT claimed by
+//! this first OS-permission model.
 //!
 //! - `custody keygen` generates custody's own private key file.
-//! - `custody approve`, `approve-transfer`, `approve-split` and
-//!   `approve-merge` independently review their own operation family before
-//!   writing whole-frame approval records.
+//! - `custody approve`, `approve-transfer`, `approve-split`, `approve-merge`,
+//!   `approve-mint` and `approve-burn` independently review their own
+//!   operation family before writing whole-frame approval records.
 //! - `custody revoke` durably cancels a request ID without erasing its approval.
 //! - `custody serve` is a bounded-lifetime, one-request-at-a-time signer
 //!   that only ever reads the approval store.
 //! - `custody serve-transfer` uses the same owner with a transfer-only policy.
 //! - `custody serve-split-merge` uses the same owner with the DR-0249
 //!   split/merge policy, under one closed kind-3 decoder.
-//! - `custody prepare-transfer`/`prepare-split`/`prepare-merge` export
-//!   preimages without approval; `sign-transfer`/`sign-split`/`sign-merge`
+//! - `custody serve-mint-burn` uses the same owner with the DR-0253
+//!   mint/burn policy, under one closed kind-4 decoder.
+//! - `custody prepare-transfer`/`prepare-split`/`prepare-merge`/
+//!   `prepare-mint`/`prepare-burn` export preimages without approval;
+//!   `sign-transfer`/`sign-split`/`sign-merge`/`sign-mint`/`sign-burn`
 //!   finalize an offline, protected paid intent.
 //!
 //! The publication CLI client leg lives in [`client`] and is consumed by
@@ -31,6 +35,13 @@ mod approve;
 mod asset_commands;
 #[cfg(test)]
 mod asset_fixture;
+mod asset_mint_burn;
+mod asset_mint_burn_commands;
+#[cfg(test)]
+mod asset_mint_burn_fixture;
+#[cfg(test)]
+mod asset_mint_burn_tests;
+mod asset_mint_burn_wire;
 mod asset_split_merge;
 mod asset_split_merge_commands;
 #[cfg(test)]
@@ -61,6 +72,7 @@ use crate::args::{ArgsError, ParsedArgs, parse_flags, scalar};
 use crate::error::CliError;
 use crate::parse::parse_u32;
 
+pub(crate) use asset_mint_burn::{AssetBurnRequest, AssetMintRequest};
 pub(crate) use asset_split_merge::{AssetMergeRequest, AssetSplitRequest};
 pub(crate) use asset_transfer::AssetTransferRequest;
 pub(crate) use client::{CustodyTarget, request_signature};
@@ -125,6 +137,13 @@ where
         "approve-merge" => asset_split_merge_commands::approve_merge(args),
         "sign-merge" => asset_split_merge_commands::sign_merge(args),
         "serve-split-merge" => asset_split_merge_commands::serve(args),
+        "prepare-mint" => asset_mint_burn_commands::prepare_mint(args),
+        "approve-mint" => asset_mint_burn_commands::approve_mint(args),
+        "sign-mint" => asset_mint_burn_commands::sign_mint(args),
+        "prepare-burn" => asset_mint_burn_commands::prepare_burn(args),
+        "approve-burn" => asset_mint_burn_commands::approve_burn(args),
+        "sign-burn" => asset_mint_burn_commands::sign_burn(args),
+        "serve-mint-burn" => asset_mint_burn_commands::serve(args),
         other => Err(CliError::UnknownCustodyAction(other.to_string())),
     }
 }
