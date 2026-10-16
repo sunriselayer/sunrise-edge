@@ -207,6 +207,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E29: b568 RELEASE import component | E28の13 readonly RELEASE child bindingsの隔離環境で、`business_import_sqlite` whole driver全10件/0 failed/0 ignored、actual exit 0/EOF、6.053秒。genesis import/create/resumeと追加history floor、既存借用controlsを保持。driver・13 debug・13 RELEASEの計27 binary hashとraw logを親でも再照合。PID/network namespaceの分離、owned pids 2→2、private TMP除去を確認 | child binariesだけがRELEASE、driver/in-process oracleはdev/test opt2。原12 drivers・2 long ignoredのR4 runtime全体、successor floorの個別end-to-end、全M4/M7/公開認定ではない |
 | E30: fresh business after authorized stopped TLS rotation | b568上のこの差分。元の全assertion/helper/待機/資金を削らず、正常停止後に最終generation4で新規有料送金を実CLIから確定。全4 replicasの独立intent/両quorum・exact mutation/version/body・新旧receipt・nonce・exact再送/full snapshotを確認。元12 TLS cases、formatとoperator全target Clippyの全3 commandsがactual exit 0/EOF、40.845秒。独立correctness review指摘を処理し再承認 | selected stopped same-file handoffのcomponent。先のoverlap拒否fixtureとは別。live handoff/cross-host/物理fault・全M3/公開認定ではない。完全required/CIは未完了 |
 | E31: successor late-stop boundary | 4312上のこの差分。同じexecutorのstopをidentity/clock/deadline後・fresh authority解決前に再確認。Native HTTP全213件とformat/operator全target Clippyが全actual exit 0/EOF。guardを外すと対象2件が409対503でactual101になり、exact bytes復元後は2件actual0/EOF。E30統合後も全12 TLS casesとClippy/formatの全3 commandsがactual0/EOF、374.159秒。独立correctness review承認 | 手動構成のactual router component + compiled TLS controls。実signal/factoryの当該guardだけの配線分離oracle・全D05/M5の完了ではない。実行済みstorageのabort/rollbackやprotocol変更は追加せず、完全required/CIは未完了 |
+| E32: historical successor late-stop boundary | e603上のこの差分。signerless履歴hostの別read ownerでも、identity/clock/deadline後・fresh policy解決前に同じexecutorのstopを再確認。Native HTTP全218件、format、native-http/operator全target Clippyの全3 commandsがactual0/EOF、366.549秒。guard除去時は対象1件がactual101、exact bytes復元後は1件actual0/EOF。独立correctness review承認 | 手動構成actual routerのsummary controlと、同じreadを使う3 history routesのsource対応。compiled signal配線単独の検証・物理fault・全D05/M5の完了ではない。完全required/CIは未完了 |
+
 
 
 
@@ -341,6 +343,12 @@ guard欠落時のtest exit 101をtest成功へ読み替えません。
 統合後は `successor-stop-merged-targeted-1016-terminal.json` / `.log`、raw SHA-256
 `f681007eaeae58f61165e0c7d391a405f15e6359e42ffc36bec19304de804ecd`。新guard/testの2 Rust filesは最初の213件実行時ともbyte一致し、
 統合後のsourceBefore/Afterも一致します。既存の別sourceへ成功を借用しません。
+
+E32は `history-stop-targeted-1016-terminal.json` / `.log`、raw SHA-256
+`e7e2f1d38e0a4930c13e275531d81249ba62470bc250b795bcf12486fc003c8d`。負対照は
+`history-stop-negative-1016-terminal.json` / `.log`、raw SHA-256
+`c603dac0ffa1f3b5a9ec5b7047f7e3b31adecc2a8ec545f573416b8c74abcd5d`。負対照actual101と復元後actual0を分けて保存し、
+2 Rust filesのbyte復元・最初の全218件との一致を親でも照合しました。
 
 ## 作業終了時の環境整理
 
@@ -559,6 +567,9 @@ guard欠落時のtest exit 101をtest成功へ読み替えません。
   - [x] [後継hostの権限解決直前の停止確認](docs/architecture/decisions/0250-successor-operation-context-stop-check.md):
     E31で既存executorから直接再確認し、read/mutation・旧error優先順位・欠落guardの負対照を検証。
     初期admission確認だけでは観測できない遅いstopを拒否。全D05/M5と完全gate/CIは保持する。
+  - [x] [signerless履歴hostのpolicy解決前の停止確認](docs/architecture/decisions/0251-successor-historical-read-stop-check.md):
+    E32で別compositionのread ownerも検証。停止hookはadmission後に入り、未開始policyを0回、
+    open対照では1回呼ぶことと、error優先順位・欠落guardの負対照を確認した。
   - 次: D05と一本のcase/coverage表を使う。実workload/SLOに対するcapacity、
     actual production PKI、alerts/response・spend適用はD04/D07で決め、適用後に検証する。
 

@@ -58,6 +58,17 @@ touches storage. Existing error priority and authority behavior are otherwise
 unchanged, and this does not qualify the compiled successor host's or CLI's
 executor wiring either.
 
+[DR-0251](decisions/0251-successor-historical-read-stop-check.md) applies the
+same cooperative check to the separate signerless successor-history read
+owner, `successor::historical::read`, which has its own composition and does
+not call `operation_context`. After its own identity/clock/deadline
+preparation succeeds, it derives cancellation from the same
+`SuccessorHistoricalComposition::blocking_executor` all three signerless
+history routes share and refuses before `policy_source.ordered_policy` runs.
+Existing `ordered-history-unavailable` error priority is otherwise unchanged,
+and this does not qualify the compiled successor-history host's or CLI's
+executor wiring either.
+
 No started database operation is aborted, declared rolled back, or turned into
 a Rejected receipt because the host or client is stopping. A lost response
 remains unknown until the exact saved intent and receipt reconcile it. Keep all
