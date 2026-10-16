@@ -1096,7 +1096,8 @@ fn application_pin_rejects_wrong_context_code_initializer_or_creator_with_the_ex
     wrong_initializer.initializer = "not-init".to_owned();
 
     let mut wrong_creator = base_record.clone();
-    wrong_creator.creator = [0x61; 32];
+    wrong_creator.creator = fixture.manifest.genesis_authority;
+    assert_ne!(wrong_creator.creator, base_record.creator);
 
     const EXPECTED_MESSAGE: &str = "application instance record does not match the pinned custody context, code, revision, initializer or creator";
     for record in [wrong_context, wrong_code, wrong_initializer, wrong_creator] {
