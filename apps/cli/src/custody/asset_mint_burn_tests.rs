@@ -390,7 +390,10 @@ fn mint_cap_fee_type_collision_is_refused_by_the_type_guard_not_distinctness() {
     let trust = fixture.trust();
     let mut same_as_fee = fixture.mint_request.clone();
     same_as_fee.cap_bytes = same_as_fee.fee_bytes.clone();
-    let error = trust.prepare_mint(&same_as_fee).unwrap_err();
+    let error: crate::CliError = trust
+        .prepare_mint(&same_as_fee)
+        .err()
+        .expect("TreasuryCap slot must refuse a Coin preimage");
     assert!(
         error
             .to_string()
@@ -513,7 +516,10 @@ fn burn_cap_coin_and_fee_cap_type_collisions_are_refused_by_the_type_guard_not_d
     let trust = fixture.trust();
     let mut same_cap_coin = fixture.burn_request.clone();
     same_cap_coin.coin_bytes = same_cap_coin.cap_bytes.clone();
-    let coin_error = trust.prepare_burn(&same_cap_coin).unwrap_err();
+    let coin_error: crate::CliError = trust
+        .prepare_burn(&same_cap_coin)
+        .err()
+        .expect("burn Coin slot must refuse a TreasuryCap preimage");
     assert!(
         coin_error
             .to_string()
@@ -521,7 +527,10 @@ fn burn_cap_coin_and_fee_cap_type_collisions_are_refused_by_the_type_guard_not_d
     );
     let mut fee_equals_cap = fixture.burn_request.clone();
     fee_equals_cap.fee_bytes = fee_equals_cap.cap_bytes.clone();
-    let fee_error = trust.prepare_burn(&fee_equals_cap).unwrap_err();
+    let fee_error: crate::CliError = trust
+        .prepare_burn(&fee_equals_cap)
+        .err()
+        .expect("fee Coin slot must refuse a TreasuryCap preimage");
     assert!(
         fee_error
             .to_string()
@@ -541,7 +550,10 @@ fn burn_rejects_fee_coin_identity_via_the_distinctness_guard() {
     let trust = fixture.trust();
     let mut fee_equals_coin = fixture.burn_request.clone();
     fee_equals_coin.fee_bytes = fee_equals_coin.coin_bytes.clone();
-    let error = trust.prepare_burn(&fee_equals_coin).unwrap_err();
+    let error: crate::CliError = trust
+        .prepare_burn(&fee_equals_coin)
+        .err()
+        .expect("burn must refuse the same Coin as the fee source");
     assert!(
         error
             .to_string()
