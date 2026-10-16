@@ -53,7 +53,11 @@ instant its head is sent and could never be held open. The oracle instead
 sends `Transfer-Encoding: chunked` with `Expect: 100-continue` and withholds
 even the empty terminating `0\r\n\r\n` chunk. The decoded body stays empty
 once the terminator finally arrives, satisfying `body.is_empty()` without
-ever sending a nonempty payload.
+ever sending a nonempty payload. The `axum-core 0.5.6` `Bytes` extractor
+(`extract/request_parts.rs`) collects `into_limited_body()`; the limiter in
+`ext_traits/request.rs` maps the body using its extension limit and does
+not inspect `Transfer-Encoding`. Thus the rebuilt zero-byte body remains
+empty when extracted, even though the original chunked header is retained.
 
 This still proves the same in-flight state DR-0254 established. Read
 directly against the real source of the exact `Cargo.lock`-pinned

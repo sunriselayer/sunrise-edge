@@ -157,9 +157,10 @@ This ordered-router wiring fixture composes with distinct, bounded evidence:
   ([native frontier-maintenance SIGTERM wiring oracle](native-frontier-sigterm-wiring-oracle.md))
   reuses this same deterministic listener-drop barrier against a second,
   separately wired route on the same compiled host: the certified FastVote
-  router's `advance_frontier`, gated by its own
-  `StructuredDurableNativeComponents::with_cancellation` flag rather than
-  this page's ordered-economics `cancellation: Some(...)` field.
+  router's `advance_frontier`, gated by its own, separately wired
+  `StructuredDurableNativeComponents::with_cancellation` reference to the
+  same executor stop state, rather than this page's ordered-economics
+  `cancellation: Some(...)` reference.
 
 Each claim remains attached to its own route and boundary. Together these
 show selected runtime cancellation paths and the actual ordered host's

@@ -95,11 +95,20 @@ restoring exact bytes afterward:
   to `StructuredDurableNativeComponents::new(...)` (no cancellation wired).
   Expected: no write still holds (admission now fails inside
   `try_acquire()`/the blocking-pool close instead), but the exact
-  response/metrics assertions fail: `blocking-admission-closed` instead of
-  `invocation-cancelled-before-storage`, and `blocking_closed=1` instead of
-  `0`. `OrderedEconomicsState.cancellation` and DR-0254's own oracle stay
+  response-body assertion fails first: `blocking-admission-closed`
+  instead of `invocation-cancelled-before-storage`, after the record/blob
+  checks pass. The source predicts `blocking_closed=1`, but the test panics
+  before reaching its metrics assertions; this is not a dynamic N2 metric
+  observation. `OrderedEconomicsState.cancellation` and DR-0254's own oracle stay
   untouched by this change: their separate reference to the same executor
   stop state remains wired.
+
+The chunked-specific proof also uses the pinned `hyper 1.11.0`
+`proto/h1/role.rs` and `proto/h1/decode.rs`: `role.rs` gives a chunked
+request `DecodedLength::CHUNKED` with `expect_continue`, so `conn.rs`
+does not take its zero-length Expect shortcut; `decode.rs` ends the body
+empty on the terminating zero chunk. These steps extend the original DR-0254 want-channel proof; they are
+not claims that DR-0254 already cited those additional parser files.
 
 ## Compatibility and limits
 
