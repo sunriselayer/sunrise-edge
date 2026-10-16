@@ -96,7 +96,11 @@ E31 / `e60337b3` とE32 / `92fd5c93` に固定し、それぞれDraft PR #309-#3
 [PR #312](https://github.com/sunriselayer/sunrise-edge/pull/312) の `7c5778b0` / tree `710b4c3d`。
 対象9 commandsと実Dockerを再検証し、Native A/BをE34、実RELEASE CLIをE35で確認しました。
 同sourceの元10 whole + 2 exact ignoredの全R4 RELEASE runtimeは実行中です。
-E28/E29のsourceに後続差分を含めたことにはしません。各完全gate・全M2-M5/M7の最終照合は未完了として保持します。
+E28/E29のsourceに後続差分を含めたことにはしません。
+復元の追加拒否と後継floorの統合code sourceは `53e324c1` / tree `499ef2e8`、
+`codex/successor-floor-1016`。E37の対象検証は成功し、後継floorのlong case・
+最終sourceの完全required/CIとNative releaseは未完了です。
+各完全gate・全M2-M5/M7の最終照合は未完了として保持します。
 初回DockerのSQLite祖先directory読取EACCES、manual fixtureのsetup counter誤り、
 import testのsource retirement不足と各修正前失敗も保持します。
 50a4 / tree eff704ddのE14-E16と旧作業コピーは過去の対象として保持します。
@@ -219,6 +223,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E34: combined 7c57 actual Native release A/B | `7c5778b0` / tree `710b4c3d`。M2 custodyと全late-stop/TLSを統合し、対象9 commandsが全actual0/EOF、712.548秒。固定Node24.19.0/Rust1.97.1の2 fresh buildsで13ターゲット全byte/mode/owner一致、actual0/EOF、1,128.808秒。保存26 ELFを親で再hash照合、実mode0755を正規化せず保持。4専有dir・source lease解放 | same-host trusted OSのRELEASE build証拠。cross-machine/hermetic・独立監査・全M7/公開認定ではない。原12 RELEASE runtime・同sourceの完全required/CIは終端未確認 |
 | E35: combined 7c57 actual RELEASE CLI custody | E34保存の実RELEASE CLI + 同sourceで保存したdev/test opt2 harnessで、元publication・6 lifecycle・transfer・自分宛てsplit/mergeを実UID/PTYで全actual0/EOF、4.392秒。全byte署名一致、非空receipt・replay・nonce・取消/restartを検証。sourceと両ELFの前後hash/metadata一致、owned container/volume解放 | RELEASEなのはCLI child。SQLite/WASM oracleはdev/test。他者宛てはprepare/approval controlsのみで、この実CLI round tripには含めない。全M2・全13 runtime・公開認定ではない |
 | E36: 426e hosted complete CI | [run `38839795270`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38839795270) の7 owners + aggregate checkが全8 jobs terminal SUCCESS。全8 actual checkoutは `47636cf615a8ebfc73bde33f8149dae71c1e4e53`、tree `b7fa71cd083b8f257708b3f43378a310ff785267` は `426e8359` と一致。親 `f21477d9` + `426e8359`、各raw log hashとcommit metadataも照合 | Node24.19.0固定、元long cases/待機を保持したsource qualification。ローカル完全requiredの終端、後続b568/4312/e603/92fd/7c57のCI、独立security監査・公開認定へ転用しない |
+| E37: import closure pins and successor floor source | `53e324c1` / tree `499ef2e8`。独立に保持したcut/package/planの3 digestを全て指定または全て省略し、既存の完全証明再検証後・destination create/open前で追加拒否。新6件を含むoperator lib全150件、compiled import driver全11件、fmt、operator全target/all-feature Clippy、元conditional driverの実ELF生成を含む全5 commandsがactual0/EOF、359.714秒。guard除去時の新1件は意図したmismatch assertionでactual101、exact bytes復元後はactual0/EOF。負対照controllerは637.965秒で完了し、元コード・raw hashを親でも照合。両変更の独立correctness review承認 | 新しい後継floor controlは元recurringケースのfirst successor linkへ追加し、Freeze/DrainSet/empty-three-chain済みの既存history/cutを使用。元8リンク/e8 withdrawals/35 roles/待機を保持。ただしこのsourceでは当該long caseをまだ実行しておらず、compileだけの成功をend-to-end合格にしない。全M4/M7、完全required/CI、新Native A/B、checkpoint/state-root・whole-store rollback・公開認定は未完了 |
+
 
 
 
@@ -572,6 +578,14 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     新sourceの完全gate/CIとsuccessor floorの個別end-to-endは未完了。
     同一epoch内の履歴位置だけを拘束し、published checkpoint/state-root・owned fast-pathの
     whole-store rollback検出・旧writer除外の未達条件は維持する。
+  - [x] [独立closure identityの追加拒否component](docs/architecture/decisions/0252-import-closure-identity-pins.md):
+    E37で既存のcut/package/plan digest pinを実import create/resumeへ接続し、正しい復元、
+    3種の単一digest不一致、partial/malformed parse、resume時のDB bytes・binding/token不変を検証。
+    guard欠落の負対照も検出した。信頼するローカル入力によるexact closureの追加拒否であり、
+    公開checkpoint/state-root・latest-state・全owned fast-path rollbackやactivation権限は追加しない。
+    最終sourceの完全required/CIは未完了として保持する。
+  - 後継epochのhistory floorはE37で実genuine successor importの既存loopへ追加し、
+    元long caseを変えずにコンパイル済み。actual long caseの終端確認は未完了。
   - 次: source/artifact対応、M7、残るmanifest/upgrade/fencing範囲を照合する。
     元の8リンク・e8 withdrawals・35 rolesと全拒否controlsを維持する。
     age等のshared PG feature edgeはE10の14fb全5グループで再検証済み。
@@ -608,7 +622,10 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     E20の旧local完全gate終端は未確認。後続M2 sourceの完全required/CIはE22/E24で成功したが、
     E18/E19のNative artifact/source pinとは異なる。426eの新A/BとRELEASE CLIはE26/E27で
     確認。後続b568の13-target A/Bと限定RELEASE importはE28/E29で成功したが、
-    原12 driversの全RELEASE runtimeと完全source qualificationは未完了。残る独立監査・
+    原12 driversの全RELEASE runtimeと完全source qualificationは未完了。
+    統合7c57の13-target A/Bと実RELEASE CLIはE34/E35で成功し、元12ケースのruntimeは実行中。
+    復元の後続code source 53e3はE37の対象検証を完了したが、新sourceの完全gate/CIと
+    Native releaseを7c57の成功から借用しない。残る独立監査・
     upgrade/restore・実provider基準により全M7は未完了。
   - 次: E18/E19のsource/tool/profile pinをR4/Gから共用し、新sourceのrelease claimには
     そのsourceの13-target A/B・実RELEASE bindingを用意する。未達qualificationを進める。
