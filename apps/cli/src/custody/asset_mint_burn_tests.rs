@@ -402,7 +402,7 @@ fn authenticated_outer_genesis_does_not_waive_mint_burn_trust_checks() {
         manifest.context(),
     )
     .unwrap();
-    assert!(AssetMintBurnTrust::new(fixture.config.clone(), root).is_err());
+    assert!(AssetMintBurnTrust::new(fixture.config.clone(), root, None).is_err());
 }
 
 #[test]

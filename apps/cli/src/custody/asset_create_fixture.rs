@@ -748,15 +748,7 @@ fn distinct_uid_create_asset_probe() {
                 cap_object.schema_version,
                 public_standard_asset::SCHEMA_VERSION
             );
-            assert!(
-                sunrise_edge_client::package_types::verify_scoped_type_id(
-                    protocol.resolver(),
-                    &cap_object.type_hash,
-                    protocol.epoch(),
-                    &cap_type,
-                )
-                .unwrap()
-            );
+            assert_eq!(cap_object.type_hash, cap_type);
             assert_eq!(
                 public_standard_asset::treasury_supply(&cap_object.data).unwrap(),
                 OWN_ASSET_MINT_AMOUNT
@@ -963,15 +955,7 @@ fn distinct_uid_create_asset_probe() {
             );
             let cap_object = objects::decode_object(&cap_bytes).unwrap();
             assert_eq!(cap_object.owner, Owner::Address(publisher));
-            assert!(
-                sunrise_edge_client::package_types::verify_scoped_type_id(
-                    protocol.resolver(),
-                    &cap_object.type_hash,
-                    protocol.epoch(),
-                    &cap_type,
-                )
-                .unwrap()
-            );
+            assert_eq!(cap_object.type_hash, cap_type);
             assert_eq!(
                 public_standard_asset::treasury_supply(&cap_object.data).unwrap(),
                 0
