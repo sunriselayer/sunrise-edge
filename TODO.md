@@ -245,6 +245,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E55: 92fd complete required and hosted CI | `92fd5c93` / tree `37346f60`。literal npm-ci +完全check-allがactual0/EOF、26,045.599秒。Rust success summaries144・報告pass合計4,208・ignored31・failed0。同treeの全8 CI jobsもSUCCESS、親が前後source/tree/clean・Node24・全wrapper/raw・全8 CI raw hashを再照合 | signerless history stopを含むこのsourceのstorage-neutral qualification。後続source・PG・全D05/M5/M7・独立監査/公開認定へ借用しない |
 | E56: 7c57 complete required and hosted CI | `7c5778b0` / tree `710b4c3d`。literal npm-ci +完全check-allがactual0/EOF、25,726.089秒。Rust success summaries144・報告pass合計4,229・ignored32・failed0。同treeの全8 CI jobsもSUCCESS、親が前後source/tree/clean・Node24・全wrapper/raw・全8 CI raw hashを再照合 | split/merge custodyを含むこのsourceのstorage-neutral qualification。E47の原12 R4 runtime時間上限失敗は保持し、全M2/M5/M7・独立監査/公開認定に数えない |
 | E57: 277f original R4 runtime timeout | `277fd2c5`。原10 whole +2 exact ignoredの12ケース中、11ケースはactual0/EOF、最後の元recurring successor selectorが共有18,000秒の上限で停止。controllerはactual1/EOF、18,002.967秒。親がhelper・終端/inner receipt・両raw hash、unit停止を確認 | 失敗のまま保持。最後のattemptはEOF/wait未完、killとterminationは確認。専有TMPをforensicsとして残し、自動再実行・上限変更なし。E53のCI long case成功とは分け、原12 Native runtime・全M4/M7の合格に数えない |
+| E58: c04e actual Native A/B and RELEASE CLI | `c04e5a38` / tree `ea3cf658`。13-target・2 fresh buildsは全byte/mode/owner一致、actual0/EOF、1,516.457秒。別targetの13 debug +10 driver buildもactual0/EOF、1,666.261秒。親が26+23 ELF・Cargo JSON/source/profile/raw・4専有dir/lease解放を照合。実RELEASE CLIの元5 families/6 lifecycle UID/PTYもactual0/EOF、5.863秒 | Node24/Rust1.97.1・same-host trusted OS。CLI oracleはcompiled inputs同一の8995 dev/test2保持harnessで、新frontier operator integration testのRELEASE oracleには数えない。原12 runtimeはcheck/probe成功までで未起動。新しい0258 application-pin実装、全M2/M5/M7・独立監査/公開認定は含めない |
+| E59: f973 hosted CI | [run `38886425920`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38886425920) attempt1の全7 owners + checkがSUCCESS。全8 raw checkout`b77346ba` / tree`63877d27`がhead`f973c02d`と同じtreeで、両merge parents・local clean pin/tree・全raw hashを親で再照合 | ordered SIGTERM wiring sourceのexact CI qualification。local完全required・原12 RELEASE runtimeと後続source、全D05/M5/M7・独立監査/公開認定は別条件 |
 
 
 
@@ -576,6 +578,18 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     feeはgenesis context、applicationは独立導出したnew instanceであり、seedの事前freshnessや
     作成IDの事前予測は主張しない。作成assetの他custody操作・新familyの鍵復旧/交換・
     最終source完全gate/CI/Native releaseと全M2は未完了。
+  - [ ] [mint/burnの任意application asset pin](docs/architecture/decisions/0258-mint-burn-application-asset-pin.md):
+    DR-0258の設計として、既存genesisのみmint/burnへ`--asset`/`--instance-ref`の
+    all-or-none local pinを追加し、create-assetが作ったnon-genesisの
+    TreasuryCap/Coinを対象にできるようにする。context/exact code/revision1/
+    initializer/creator検証とgenesis fee instance/assetとの別名拒否、
+    fee側はgenesis Coin type限定のまま、type confusion・cross-application
+    stale approval・genesis approvalの新asset不正流用拒否を含むpure unit tests
+    (`asset_mint_burn_commands.rs`/`asset_mint_burn_tests.rs`)を追加した
+    (未実行、確認済みではない)。独立sourceレビューはpinの配線自体は確認したが、
+    テスト自体はcompile/実行していない。実CLI/serve round trip・Docker fixture
+    拡張・別UID・rustfmt・完全required/CIは未実行。transfer/split/merge/
+    create-assetは変更せず既存の拒否のまま維持する。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。

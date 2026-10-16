@@ -210,6 +210,11 @@ MERGE_REQUEST_ID = "92" * 32
 MINT_REQUEST_ID = "93" * 32
 BURN_REQUEST_ID = "94" * 32
 CREATE_REQUEST_ID = "95" * 32
+# DR-0258: the application-pinned mint/burn request IDs for the asset this
+# same fixture run just created, distinct from MINT_REQUEST_ID/BURN_REQUEST_ID
+# (93/94) below, which only ever target the pinned genesis TreasuryCap.
+OWN_MINT_REQUEST_ID = "96" * 32
+OWN_BURN_REQUEST_ID = "97" * 32
 # The new application instance's own creator-scoped logical seed (DR-0255):
 # public, caller-supplied, never a private key. Custody independently
 # rederives the exact InstanceTarget from this seed plus its own pinned
@@ -222,6 +227,9 @@ RECOMBINED_AMOUNT = 10_000_000
 # The whole minted Coin is burned in full (burn has no amount argument), so
 # this amount is never partial and never leaves a mint-only residue.
 MINT_AMOUNT = 5_000_000
+# DR-0258: minted then fully burned against the asset this fixture run just
+# created, independent of MINT_AMOUNT above (the pinned genesis TreasuryCap).
+OWN_ASSET_MINT_AMOUNT = 5_000_000
 
 INTERNAL_DEADLINE = time.monotonic() + 230.0
 OUTPUT_CAP = 262_144
@@ -1643,6 +1651,211 @@ def phase_mint_burn(public_key):
     }
 
 
+def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, generated, definition_hex, cap_hex):
+    # DR-0258: runs while phase_create_asset's own native backend (address)
+    # is still alive, reusing its custody/operator directories and the exact
+    # genesis fee trust those already set up. serve-create's own socket is
+    # already dead by this point (it exits once its own fixed request
+    # budget is spent), so this opens its own separate kind-4
+    # serve-mint-burn process on a fresh socket, pinned via --asset/
+    # --instance-ref to the asset phase_create_asset's own earlier steps
+    # just created, never the pinned genesis TreasuryCap. Shape mirrors
+    # phase_mint_burn's own two-operation (mint then burn) lifecycle exactly,
+    # but never starts a second native backend.
+    def trust_flags(directory):
+        return ["--config", f"{directory}/config", "--genesis-manifest-file", f"{directory}/genesis.bin", "--genesis-digest", generated["digest"]]
+    def application_flags(directory):
+        return [*trust_flags(directory), "--asset", definition_hex, "--instance-ref", f"{directory}/create-instance.bin"]
+
+    def copy_private(src_dir, dst_dir, name, dst_uid, dst_gid):
+        with open(f"{src_dir}/{name}", "rb") as source:
+            content = source.read(1024 * 1024)
+        with open(f"{dst_dir}/{name}", "xb") as target:
+            target.write(content)
+        os.chmod(f"{dst_dir}/{name}", 0o600)
+        os.chown(f"{dst_dir}/{name}", dst_uid, dst_gid)
+
+    for name in ["own-cap.bin", "own-fee.bin", "create-instance.bin"]:
+        copy_private(operator_dir, custody_dir, name, CUSTODY_UID, CUSTODY_GID)
+
+    approvals = f"{ROOT}/custody-approvals"
+    socket_path = f"{ROOT}/run/create-mint-burn.sock"
+    signer = ["--custody-socket", socket_path, "--custody-uid", str(CUSTODY_UID), "--custody-expected-public-key", public_key]
+
+    def serve_command(count):
+        return cli_argv("custody", "serve-mint-burn", *application_flags(custody_dir),
+            "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
+            "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
+
+    # ---- own-mint: prepare / approve / offline sign / actual CLI mint ----
+    prepare_mint = cli_argv("custody", "prepare-mint", *application_flags(custody_dir),
+        "--cap-file", f"{custody_dir}/own-cap.bin", "--fee-source-file", f"{custody_dir}/own-fee.bin",
+        "--amount", str(OWN_ASSET_MINT_AMOUNT), "--recipient", public_key, "--nonce", "1", "--request-id", OWN_MINT_REQUEST_ID,
+        "--max-fee", "1000000", "--gas-limit", "200000", "--out", f"{custody_dir}/own-mint-request.bin")
+    rc, out, err = run_exec(prepare_mint, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    if rc != 0 or b"mint_request_exported=true" not in out:
+        raise FixtureFailure(f"own-asset mint prepare failed: {err!r}")
+    copy_private(custody_dir, operator_dir, "own-mint-request.bin", OPERATOR_UID, OPERATOR_GID)
+
+    approve_mint = cli_argv("custody", "approve-mint", *application_flags(custody_dir),
+        "--request-file", f"{custody_dir}/own-mint-request.bin", "--approvals-dir", approvals, "--expires-in-seconds", "3600")
+    rc, _out, refusal = run_exec(approve_mint, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
+        raise FixtureFailure("own-asset mint approval unexpectedly accepted a pipe")
+    phase_approve_via_pty(None, None, 1, OWN_MINT_REQUEST_ID, 3600, command=approve_mint)
+
+    create_probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
+        "custody::asset_create_fixture::distinct_uid_create_asset_probe", "--exact", "--ignored", "--nocapture", "--format", "terse"]
+    own_env = {
+        "CUSTODY_CREATE_MODE": "after-own-mint",
+        "CUSTODY_CREATE_DIR": operator_dir,
+        "CUSTODY_CREATE_PUBLIC_KEY": public_key,
+        "CUSTODY_CREATE_ENDPOINT": address,
+    }
+
+    serve = None
+    try:
+        serve = start_serve(socket_path, 30, 6, 6, command=serve_command(6))
+        sign_mint = cli_argv("custody", "sign-mint", *application_flags(operator_dir),
+            "--request-file", f"{operator_dir}/own-mint-request.bin", *signer)
+        rc, _out, err = run_exec([*sign_mint, "--out", f"{operator_dir}/own-offline-mint.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"protected offline own-asset mint sign failed: {err!r}")
+
+        mint_command = cli_argv("mint", "--endpoint", address, *signer,
+            "--expected-chain-id", "custody-whole-coin-test", "--expected-protocol-version", "7",
+            "--expected-epoch", "0", "--expected-hash-suite-id", "1", "--expected-domain", DOMAIN_HEX,
+            "--treasury-cap", cap_hex, "--amount", str(OWN_ASSET_MINT_AMOUNT), "--recipient", public_key,
+            "--asset", definition_hex, "--instance-ref", f"{operator_dir}/create-instance.bin",
+            "--fee-source", generated["fee"],
+            "--nonce", "1", "--request-id", OWN_MINT_REQUEST_ID, "--max-fee", "1000000", "--gas-limit", "200000",
+            "--submission-out", f"{operator_dir}/own-mint-submission.bin", "--result-out", f"{operator_dir}/own-mint-result.bin")
+        rc, out, err = run_exec(mint_command, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0 or b"paid_status=Success" not in out:
+            raise FixtureFailure(f"actual protected own-asset mint CLI failed: {out!r} {err!r}")
+        with open(f"{operator_dir}/own-offline-mint.bin", "rb") as source:
+            offline_mint = source.read(1048577)
+        with open(f"{operator_dir}/own-mint-submission.bin", "rb") as source:
+            if source.read(1048577) != offline_mint:
+                raise FixtureFailure("offline and actual CLI own-asset mint signed bytes differ")
+
+        rc, out, err = run_exec(create_probe_argv, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID], env=own_env)
+        after_own_mint = last_json_line(out)
+        if (rc != 0 or after_own_mint.get("mode") != "after-own-mint" or after_own_mint.get("verified") is not True
+                or after_own_mint.get("next_nonce") != 2):
+            raise FixtureFailure(f"after-own-mint verification failed: {err!r}")
+        new_coin_hex = after_own_mint["new_coin_hex"]
+
+        # Distinct source names from after-create's own own-cap.bin/own-fee.bin
+        # (copied into custody_dir earlier, for the mint leg): after-own-mint
+        # exports the post-mint burn-input preimages under own-burn-cap.bin/
+        # own-burn-fee.bin precisely to avoid colliding with those, since
+        # write_review_preimage never overwrites an existing path.
+        burn_inputs_dir = f"{custody_dir}/own-burn-inputs"
+        os.mkdir(burn_inputs_dir, 0o700)
+        os.chown(burn_inputs_dir, CUSTODY_UID, CUSTODY_GID)
+        for name in ["own-burn-cap.bin", "own-coin.bin", "own-burn-fee.bin"]:
+            copy_private(operator_dir, burn_inputs_dir, name, CUSTODY_UID, CUSTODY_GID)
+
+        # ---- own-burn: prepare / approve / offline sign / actual CLI burn ----
+        prepare_burn = cli_argv("custody", "prepare-burn", *application_flags(custody_dir),
+            "--cap-file", f"{burn_inputs_dir}/own-burn-cap.bin", "--coin-file", f"{burn_inputs_dir}/own-coin.bin",
+            "--fee-source-file", f"{burn_inputs_dir}/own-burn-fee.bin", "--nonce", "2", "--request-id", OWN_BURN_REQUEST_ID,
+            "--max-fee", "1000000", "--gas-limit", "200000", "--out", f"{custody_dir}/own-burn-request.bin")
+        rc, out, err = run_exec(prepare_burn, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0 or b"burn_request_exported=true" not in out:
+            raise FixtureFailure(f"own-asset burn prepare failed: {err!r}")
+        copy_private(custody_dir, operator_dir, "own-burn-request.bin", OPERATOR_UID, OPERATOR_GID)
+
+        approve_burn = cli_argv("custody", "approve-burn", *application_flags(custody_dir),
+            "--request-file", f"{custody_dir}/own-burn-request.bin", "--approvals-dir", approvals, "--expires-in-seconds", "3600")
+        rc, _out, refusal = run_exec(approve_burn, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
+            raise FixtureFailure("own-asset burn approval unexpectedly accepted a pipe")
+        phase_approve_via_pty(None, None, 2, OWN_BURN_REQUEST_ID, 3600, command=approve_burn)
+
+        sign_burn = cli_argv("custody", "sign-burn", *application_flags(operator_dir),
+            "--request-file", f"{operator_dir}/own-burn-request.bin", *signer)
+        rc, _out, err = run_exec([*sign_burn, "--out", f"{operator_dir}/own-offline-burn.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"protected offline own-asset burn sign failed: {err!r}")
+
+        burn_command = cli_argv("burn", "--endpoint", address, *signer,
+            "--expected-chain-id", "custody-whole-coin-test", "--expected-protocol-version", "7",
+            "--expected-epoch", "0", "--expected-hash-suite-id", "1", "--expected-domain", DOMAIN_HEX,
+            "--treasury-cap", cap_hex, "--coin", new_coin_hex,
+            "--asset", definition_hex, "--instance-ref", f"{operator_dir}/create-instance.bin",
+            "--fee-source", generated["fee"],
+            "--nonce", "2", "--request-id", OWN_BURN_REQUEST_ID, "--max-fee", "1000000", "--gas-limit", "200000",
+            "--submission-out", f"{operator_dir}/own-burn-submission.bin", "--result-out", f"{operator_dir}/own-burn-result.bin")
+        rc, out, err = run_exec(burn_command, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0 or b"paid_status=Success" not in out:
+            raise FixtureFailure(f"actual protected own-asset burn CLI failed: {out!r} {err!r}")
+        with open(f"{operator_dir}/own-offline-burn.bin", "rb") as source:
+            offline_burn = source.read(1048577)
+        with open(f"{operator_dir}/own-burn-submission.bin", "rb") as source:
+            if source.read(1048577) != offline_burn:
+                raise FixtureFailure("offline and actual CLI own-asset burn signed bytes differ")
+
+        rc, out, err = run_exec(create_probe_argv, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID],
+            env={**own_env, "CUSTODY_CREATE_MODE": "verify-own-burn"})
+        verify_own_burn = last_json_line(out)
+        if (rc != 0 or verify_own_burn.get("mode") != "verify-own-burn" or verify_own_burn.get("verified") is not True
+                or verify_own_burn.get("replay_equal") is not True or verify_own_burn.get("next_nonce") != 3):
+            raise FixtureFailure(f"verify-own-burn verification failed: {err!r}")
+
+        # ---- revocation: both requests refused, same process, no output ----
+        rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", OWN_MINT_REQUEST_ID),
+            CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"own-asset mint revoke failed: {err!r}")
+        rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", OWN_BURN_REQUEST_ID),
+            CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"own-asset burn revoke failed: {err!r}")
+        rc, _out, refusal = run_exec([*sign_mint, "--out", f"{operator_dir}/own-revoked-mint.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/own-revoked-mint.bin"):
+            raise FixtureFailure("revoked own-asset mint produced signed output")
+        rc, _out, refusal = run_exec([*sign_burn, "--out", f"{operator_dir}/own-revoked-burn.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/own-revoked-burn.bin"):
+            raise FixtureFailure("revoked own-asset burn produced signed output")
+
+        summary = wait_serve(serve, extra_seconds=10)
+        check_summary("own_mint_burn", summary, {
+            "connections_accepted": "6", "requests_handled": "6",
+            "requests_signed": "4", "requests_refused": "2",
+        })
+    finally:
+        if serve is not None and serve.poll() is None:
+            serve.kill(); serve.wait(timeout=5)
+
+    restarted = start_serve(socket_path, 30, 2, 2, command=serve_command(2))
+    try:
+        rc, _out, refusal = run_exec([*sign_mint, "--out", f"{operator_dir}/own-revoked-mint-restart.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/own-revoked-mint-restart.bin"):
+            raise FixtureFailure("revoked own-asset mint produced output after restart")
+        rc, _out, refusal = run_exec([*sign_burn, "--out", f"{operator_dir}/own-revoked-burn-restart.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/own-revoked-burn-restart.bin"):
+            raise FixtureFailure("revoked own-asset burn produced output after restart")
+        restarted_summary = wait_serve(restarted, extra_seconds=8)
+        check_summary("own_mint_burn revoked restart", restarted_summary,
+            {"connections_accepted": "2", "requests_handled": "2", "requests_signed": "0", "requests_refused": "2"})
+    finally:
+        if restarted.poll() is None:
+            restarted.kill(); restarted.wait(timeout=5)
+
+    return {
+        "actual_cli": True, "own_mint_self": True, "after_own_mint_verified": True,
+        "own_burn_verified": verify_own_burn.get("verified") is True,
+        "offline_bytes_equal": True, "replay_equal": verify_own_burn.get("replay_equal") is True,
+        "revoked": True, "revoked_after_restart": True,
+        "asset_hex": after_own_mint.get("asset_hex"),
+        "new_coin_hex": new_coin_hex,
+        "serve_summary": summary.strip().splitlines(),
+        "restart_summary": restarted_summary.strip().splitlines(),
+    }
+
+
 def phase_create_asset(public_key):
     # Fresh phase directories only: this reuses the exact same one-owner,
     # one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
@@ -1812,6 +2025,15 @@ def phase_create_asset(public_key):
             "requests_signed": "2", "requests_refused": "1",
         })
 
+        # DR-0258: before this phase's own native backend is ever stopped,
+        # independently exercise an application-pinned mint-then-burn round
+        # trip against the asset it just created, through a separate
+        # kind-4 serve-mint-burn process.
+        own_mint_burn_summary = phase_own_asset_mint_burn(
+            custody_dir, operator_dir, public_key, address, generated,
+            after_create["definition_hex"], after_create["treasury_cap_hex"],
+        )
+
         with open(f"{operator_dir}/stop-native", "xb") as completed:
             completed.write(b"complete\n")
         os.chmod(f"{operator_dir}/stop-native", 0o600)
@@ -1848,7 +2070,7 @@ def phase_create_asset(public_key):
         "revoked": True, "revoked_after_restart": True,
         "serve_summary": summary.strip().splitlines(),
         "restart_summary": restarted_summary.strip().splitlines(),
-    }
+    }, own_mint_burn_summary
 
 
 def main():
@@ -1960,7 +2182,7 @@ def main():
     transfer_summary = phase_transfer(public_key)
     split_merge_summary = phase_split_merge(public_key)
     mint_burn_summary = phase_mint_burn(public_key)
-    create_asset_summary = phase_create_asset(public_key)
+    create_asset_summary, created_asset_mint_burn_summary = phase_create_asset(public_key)
 
     total_bytes = 0
     for dirpath, _dirnames, filenames in os.walk(ROOT):
@@ -1986,6 +2208,7 @@ def main():
         "split_merge": split_merge_summary,
         "mint_burn": mint_burn_summary,
         "create_asset": create_asset_summary,
+        "created_asset_mint_burn": created_asset_mint_burn_summary,
         "lifecycle_summaries": [live_summary.strip().splitlines(), third_summary.strip().splitlines(), *recovery_summaries,
                                 restored_approval_summary, new_identity_summary],
     }, sort_keys=True))
@@ -2264,6 +2487,31 @@ try {
   for (const [key, counts] of [['serve_summary', [3, 3, 2, 1]], ['restart_summary', [1, 1, 0, 1]]]) {
     if (JSON.stringify(result.create_asset[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
       throw new Error('the create-asset serve counters are incomplete or differ');
+    }
+  }
+  // `phase_own_asset_mint_burn`'s own `check_summary` calls already enforce
+  // the exact kind-4 serve counts (6/6/4/2, then 2/2/0/2 after revocation
+  // and restart) for the application-pinned mint/burn custody family
+  // (DR-0258), targeting the asset `phase_create_asset`'s own earlier steps
+  // just created rather than the pinned genesis TreasuryCap, by raising
+  // inside the container on any mismatch, exactly like `phase_mint_burn`'s
+  // own serve-count enforcement above; this check only requires every one
+  // of its own completion flags, plus independently verified by
+  // `asset_create_fixture`'s own `after-own-mint`/`verify-own-burn` modes
+  // (TreasuryCap supply 0->5,000,000->0, a fresh Coin created then
+  // tombstoned, the exact same genesis fee Coin reused, and idempotent
+  // replay of both requests).
+  if (!result.created_asset_mint_burn || ['actual_cli', 'own_mint_self', 'after_own_mint_verified', 'own_burn_verified',
+      'offline_bytes_equal', 'replay_equal', 'revoked', 'revoked_after_restart']
+    .some((key) => result.created_asset_mint_burn[key] !== true) ||
+    typeof result.created_asset_mint_burn.asset_hex !== 'string' || typeof result.created_asset_mint_burn.new_coin_hex !== 'string' ||
+    result.created_asset_mint_burn.asset_hex !== result.create_asset.definition_hex ||
+    result.created_asset_mint_burn.new_coin_hex === result.created_asset_mint_burn.asset_hex) {
+    throw new Error('the application-pinned own-asset mint/burn evidence is incomplete');
+  }
+  for (const [key, counts] of [['serve_summary', [6, 6, 4, 2]], ['restart_summary', [2, 2, 0, 2]]]) {
+    if (JSON.stringify(result.created_asset_mint_burn[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
+      throw new Error('the own-asset mint/burn serve counters are incomplete or differ');
     }
   }
   if (!Array.isArray(result.lifecycle_summaries) || result.lifecycle_summaries.length !== expectedLifecycle.length ||

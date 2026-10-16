@@ -685,7 +685,14 @@ where
         ..
     } = &signer_selection
     {
-        if parsed.get(ASSET).is_some() || parsed.get(INSTANCE_REF).is_some() {
+        // DR-0258: only `mint`/`burn` accept an optional, independently
+        // local application asset/instance pin under custody signing.
+        // `transfer`/`split`/`merge` stay pinned to the genesis asset only,
+        // unwidened; `create-asset` never defines these flags at all.
+        let custody_application_pin_allowed: bool = action == "mint" || action == "burn";
+        if !custody_application_pin_allowed
+            && (parsed.get(ASSET).is_some() || parsed.get(INSTANCE_REF).is_some())
+        {
             return Err(invalid("custody signing requires the genesis asset"));
         }
         if let Some(value) = parsed.get(REFUND_RECIPIENT)
@@ -1267,6 +1274,59 @@ mod tests {
             )
             .unwrap_err();
             assert!(error.to_string().contains(reason));
+        }
+    }
+
+    /// DR-0258: `mint`/`burn` accept the optional, independently local
+    /// application asset/instance pin under custody signing (all-or-none,
+    /// same as the public CLI's own `--asset`/`--instance-ref` pair); the
+    /// un-widened families `transfer`/`split`/`merge` keep refusing it with
+    /// the exact same "genesis asset" message as before.
+    #[test]
+    fn custody_mint_and_burn_allow_the_application_pin_but_other_families_still_refuse_it() {
+        for action in ["mint", "burn"] {
+            let error = run(
+                action,
+                vec![
+                    OsString::from("--custody-socket"),
+                    OsString::from("/nonexistent/custody.sock"),
+                    OsString::from("--custody-uid"),
+                    OsString::from("12002"),
+                    OsString::from("--custody-expected-public-key"),
+                    OsString::from("ab".repeat(32)),
+                    OsString::from(ASSET),
+                    OsString::from("11".repeat(32)),
+                    OsString::from(INSTANCE_REF),
+                    OsString::from("/nonexistent/instance-ref.bin"),
+                ],
+            )
+            .unwrap_err();
+            assert!(
+                !error
+                    .to_string()
+                    .contains("custody signing requires the genesis asset")
+            );
+        }
+        for action in ["transfer", "split", "merge"] {
+            let error = run(
+                action,
+                vec![
+                    OsString::from("--custody-socket"),
+                    OsString::from("/nonexistent/custody.sock"),
+                    OsString::from("--custody-uid"),
+                    OsString::from("12003"),
+                    OsString::from("--custody-expected-public-key"),
+                    OsString::from("ab".repeat(32)),
+                    OsString::from(ASSET),
+                    OsString::from("11".repeat(32)),
+                ],
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("custody signing requires the genesis asset")
+            );
         }
     }
     use execution::{

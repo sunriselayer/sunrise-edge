@@ -10,7 +10,10 @@
 //! and compromised-root resistance are explicitly NOT claimed by this first
 //! OS-permission model. Unlike every other family, `create-asset` targets a
 //! fresh application instance it independently derives, never the pinned
-//! genesis instance; see `asset_create`.
+//! genesis instance; see `asset_create`. mint/burn additionally accepts one
+//! optional, independently local, pinned non-genesis application asset/
+//! instance pair (DR-0258); omitting it is byte-identical to the original
+//! genesis-only behavior. See `asset_application_pin`.
 //!
 //! - `custody keygen` generates custody's own private key file.
 //! - `custody approve`, `approve-transfer`, `approve-split`, `approve-merge`,
@@ -38,6 +41,7 @@
 
 mod approvals;
 mod approve;
+mod asset_application_pin;
 mod asset_commands;
 mod asset_create;
 mod asset_create_commands;

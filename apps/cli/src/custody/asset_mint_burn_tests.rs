@@ -113,19 +113,144 @@ impl Fixture {
         }
     }
 
-    fn trust(&self) -> AssetMintBurnTrust {
+    fn root(&self) -> VerifiedGenesisRoot {
         let bytes: Vec<u8> = node_core::genesis::encode_genesis_manifest(&self.manifest).unwrap();
         let digest =
             node_core::genesis::genesis_manifest_commitment(&self.resolver, &self.manifest)
                 .unwrap();
-        let root: VerifiedGenesisRoot = VerifiedGenesisRoot::verify_bytes(
+        VerifiedGenesisRoot::verify_bytes(
             &self.resolver,
             &bytes,
             digest.bytes(),
             self.manifest.context(),
         )
+        .unwrap()
+    }
+
+    fn trust(&self) -> AssetMintBurnTrust {
+        AssetMintBurnTrust::new(self.config.clone(), self.root(), None).unwrap()
+    }
+
+    /// Builds a locally pinned, non-genesis application asset/instance: a
+    /// fresh `InstanceRecord` under the exact same genesis-verified Standard
+    /// Asset code, with this fixture's own publisher as creator, revision
+    /// one and the known initializer — exactly the shape `create-asset`
+    /// (DR-0255) would have produced, without actually executing it.
+    fn application_instance_record(
+        &self,
+        seed: [u8; 32],
+    ) -> execution::local_execution::InstanceRecord {
+        execution::local_execution::InstanceRecord {
+            context: self.manifest.context().clone(),
+            creator: *self.signer.address().as_bytes(),
+            seed,
+            code: self.manifest.fee_policy.code.clone(),
+            revision: 1,
+            initializer: public_standard_asset::INITIALIZER.to_owned(),
+        }
+    }
+
+    /// Builds a trust with one application pin bound, targeting a fresh
+    /// instance derived from `seed` plus a synthetic owned `TreasuryCap`
+    /// object (`cap_supply`, as the published initializer would create one)
+    /// under that pinned asset's own derived nominal type.
+    fn application_pinned_trust_and_cap(
+        &self,
+        seed: [u8; 32],
+        asset: sunrise_edge_client::ObjectId,
+        cap_id: sunrise_edge_client::ObjectId,
+        cap_supply: u64,
+    ) -> (AssetMintBurnTrust, Vec<u8>) {
+        let record = self.application_instance_record(seed);
+        let record_bytes: Vec<u8> =
+            execution::local_execution::encode_instance_record(&record).unwrap();
+        let trust = AssetMintBurnTrust::new(
+            self.config.clone(),
+            self.root(),
+            Some((asset, record_bytes)),
+        )
         .unwrap();
-        AssetMintBurnTrust::new(self.config.clone(), root).unwrap()
+        let cap_tag = public_standard_asset::treasury_cap_type_tag(
+            self.manifest.fee_policy.code.origin(),
+            &asset,
+        )
+        .unwrap();
+        let cap_object = sunrise_edge_client::Object {
+            id: cap_id,
+            version: 1,
+            owner: Owner::Address(self.signer.address()),
+            type_hash: sunrise_edge_client::package_types::derive_scoped_type_id(
+                &self.resolver,
+                self.config.expected_context().unwrap().epoch(),
+                &cap_tag,
+            )
+            .unwrap(),
+            schema_version: public_standard_asset::SCHEMA_VERSION,
+            data: encode_call_value(
+                &public_standard_asset::treasury_cap_body_layout(),
+                &CallValue::U64(cap_supply),
+            )
+            .unwrap(),
+        };
+        (trust, objects::encode_object(&cap_object).unwrap())
+    }
+
+    /// Builds a synthetic owned `Coin` object under the pinned application
+    /// `asset`'s own derived nominal type (never the genesis one), mirroring
+    /// `application_pinned_trust_and_cap` but for `Coin` instead of
+    /// `TreasuryCap`. Used both to prove a pinned application's own `Coin`
+    /// is still refused as a fee source (fee always requires the genesis
+    /// `Coin` type) and to prepare a positive pinned `burn`.
+    fn application_coin_bytes(
+        &self,
+        asset: sunrise_edge_client::ObjectId,
+        coin_id: sunrise_edge_client::ObjectId,
+        amount: u64,
+    ) -> Vec<u8> {
+        let coin_tag =
+            public_standard_asset::coin_type_tag(self.manifest.fee_policy.code.origin(), &asset)
+                .unwrap();
+        let coin_object = sunrise_edge_client::Object {
+            id: coin_id,
+            version: 1,
+            owner: Owner::Address(self.signer.address()),
+            type_hash: sunrise_edge_client::package_types::derive_scoped_type_id(
+                &self.resolver,
+                self.config.expected_context().unwrap().epoch(),
+                &coin_tag,
+            )
+            .unwrap(),
+            schema_version: public_standard_asset::SCHEMA_VERSION,
+            data: encode_call_value(
+                &public_standard_asset::coin_body_layout(),
+                &CallValue::U64(amount),
+            )
+            .unwrap(),
+        };
+        objects::encode_object(&coin_object).unwrap()
+    }
+
+    /// Builds a second, constructor-only `CustodyConfig` whose `publisher`
+    /// is the verified genesis Standard Asset instance's own creator (the
+    /// separate genesis authority that actually instantiated it), instead of
+    /// this fixture's own mint/burn publisher. This never touches the
+    /// fixture's own signer, key file, or any real credential: it exists
+    /// only so an application-pin record whose `creator` legitimately
+    /// equals *this* trust's own publisher can derive the exact genesis
+    /// `InstanceTarget`, reaching the alias-refusal guard honestly rather
+    /// than by weakening it.
+    fn genesis_authority_config(&self) -> CustodyConfig {
+        let genesis_authority: Address = Address::new(self.manifest.fee_policy.instance.creator);
+        let expected = self.config.expected_context().unwrap();
+        let text: String = format!(
+            "chain_id={}\nprotocol_version=7\nepoch=0\nhash_suite_id=1\ndomain={}\npublisher_public_key={}\noperator_uid=12099\n",
+            expected.chain_id(),
+            crate::hex::encode_hex(expected.domain().as_bytes()),
+            genesis_authority,
+        );
+        let path = self._directory.child("genesis-authority-config");
+        write_mode_file(&path, 0o600, text.as_bytes());
+        CustodyConfig::load(&path).unwrap()
     }
 }
 
@@ -810,5 +935,421 @@ fn exact_approval_refuses_tampered_frame_signer_binding_expiry_and_restored_revo
             &burn_request,
         ),
         Err(CustodyResponseStatus::Internal)
+    );
+}
+
+/// DR-0258: omitting `--asset`/`--instance-ref` entirely (the `None`
+/// application argument every other test in this file already uses via
+/// `Fixture::trust`) must keep `prepare_mint`'s review, supply arithmetic and
+/// `CallIntent` target byte-identical to the original genesis-only family —
+/// in particular, no `application_pinned` line is ever rendered.
+#[test]
+fn no_application_pin_renders_no_application_lines_and_keeps_the_genesis_target() {
+    let fixture: Fixture = Fixture::new();
+    let prepared = fixture.trust().prepare_mint(&fixture.mint_request).unwrap();
+    assert!(!prepared.review.contains("application_pinned"));
+    assert!(!prepared.review.contains("application_asset"));
+    let sunrise_edge_client::PaidApplication::Call(call) = &prepared.prepared.intent().application
+    else {
+        panic!("mint must be a paid Call application");
+    };
+    assert_eq!(call.instance, fixture.manifest.fee_policy.instance);
+}
+
+/// A bound application pin independently derives a fresh, non-genesis
+/// `InstanceTarget`/nominal type pair and targets *that* instead of the
+/// pinned genesis instance, while the genesis identity fields in the review
+/// stay present and unchanged alongside the new `application_*` ones (both
+/// identities, never only one).
+#[test]
+fn application_pin_targets_the_pinned_asset_instance_and_cap_type_instead_of_genesis() {
+    let fixture: Fixture = Fixture::new();
+    let asset: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xA1; 32]);
+    let cap_id: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xA2; 32]);
+    let (trust, cap_bytes) =
+        fixture.application_pinned_trust_and_cap([0xA3; 32], asset, cap_id, 500);
+    let mut request: AssetMintRequest = fixture.mint_request.clone();
+    request.cap_bytes = cap_bytes;
+    request.request_id = RequestId::new([0xA4; 32]).unwrap();
+    let prepared = trust.prepare_mint(&request).unwrap();
+    assert_eq!(prepared.supply_before, 500);
+    assert_eq!(prepared.supply_after, 500 + request.amount);
+    assert!(prepared.review.contains("application_pinned=true\n"));
+    assert!(
+        prepared
+            .review
+            .contains(&format!("application_asset={asset}\n"))
+    );
+    // The genesis identity line is still present and unchanged.
+    assert!(prepared.review.contains(&format!(
+        "instance_creator={}\n",
+        crate::hex::encode_hex(&fixture.manifest.fee_policy.instance.creator)
+    )));
+    let sunrise_edge_client::PaidApplication::Call(call) = &prepared.prepared.intent().application
+    else {
+        panic!("mint must be a paid Call application");
+    };
+    assert_ne!(call.instance, fixture.manifest.fee_policy.instance);
+    assert_eq!(call.code, fixture.manifest.fee_policy.code);
+    assert_eq!(
+        call.type_arguments,
+        vec![public_standard_asset::asset_type_argument(&asset)]
+    );
+}
+
+/// The fee source always validates against the genesis `Coin` nominal type,
+/// even when an application pin is bound: a pinned application's own
+/// `Coin` — same object *shape*/schema as the genesis `Coin`, differing only
+/// in its nominal asset type — must still be refused as a fee source,
+/// proving fee/application validation stay separate at the nominal-type
+/// level, not merely by object kind (a `TreasuryCap` would trivially fail
+/// this check for an unrelated reason).
+#[test]
+fn application_pin_still_requires_the_genesis_fee_coin_not_an_application_typed_coin() {
+    let fixture: Fixture = Fixture::new();
+    let asset: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xB1; 32]);
+    let cap_id: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xB2; 32]);
+    let fee_like_id: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xB3; 32]);
+    let (trust, cap_bytes) =
+        fixture.application_pinned_trust_and_cap([0xB4; 32], asset, cap_id, 10);
+    let application_coin_bytes: Vec<u8> = fixture.application_coin_bytes(asset, fee_like_id, 999);
+    let mut request: AssetMintRequest = fixture.mint_request.clone();
+    request.cap_bytes = cap_bytes;
+    request.fee_bytes = application_coin_bytes;
+    let error: crate::CliError = trust.prepare_mint(&request).err().expect(
+        "an application-typed (pinned-asset) Coin must never satisfy the genesis fee Coin nominal type check",
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("fee source is not the genesis Standard Asset Coin type")
+    );
+}
+
+/// A genesis-identity cap preimage is refused once an application pin is
+/// bound: the pinned asset's own derived `TreasuryCap` nominal type differs
+/// from the genesis one, so `type confusion` between the two is rejected.
+#[test]
+fn application_pin_rejects_a_genesis_cap_preimage_as_type_confusion() {
+    let fixture: Fixture = Fixture::new();
+    let asset: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xC1; 32]);
+    let cap_id: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xC2; 32]);
+    let (trust, _cap_bytes) =
+        fixture.application_pinned_trust_and_cap([0xC3; 32], asset, cap_id, 10);
+    // `fixture.mint_request.cap_bytes` is the genesis TreasuryCap preimage.
+    let error: crate::CliError = trust.prepare_mint(&fixture.mint_request).err().expect(
+        "a genesis TreasuryCap preimage must never satisfy a pinned application's own cap type",
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("mint cap is not the genesis Standard Asset TreasuryCap type")
+    );
+}
+
+/// The application record must match the pinned exact context, exact
+/// genesis code, known initializer, and the pinned custody publisher as
+/// creator. A valid base record (every field held fixed except the one
+/// under test) is accepted first, proving each variant below changes
+/// exactly one field relative to a record that otherwise passes. Every
+/// variant is then independently exercised — not only via `is_err()`, but
+/// also by asserting the resulting value is the typed
+/// `CliError::LocalExecution` carrying this check's own exact combined
+/// message (`ApplicationAssetPin::new` reports context/code/revision/
+/// initializer/creator mismatches as one shared message, not a distinct one
+/// per field, so asserting that one message for every variant is the
+/// strongest claim this test can truthfully make without changing that
+/// production message).
+#[test]
+fn application_pin_rejects_wrong_context_code_initializer_or_creator_with_the_exact_message() {
+    let fixture: Fixture = Fixture::new();
+    let asset: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xD1; 32]);
+    let base_record = fixture.application_instance_record([0xD2; 32]);
+    let base_bytes = execution::local_execution::encode_instance_record(&base_record).unwrap();
+    assert!(
+        super::asset_mint_burn::AssetMintBurnTrust::new(
+            fixture.config.clone(),
+            fixture.root(),
+            Some((asset, base_bytes)),
+        )
+        .is_ok()
+    );
+
+    let mut wrong_context = base_record.clone();
+    wrong_context.context = PublicationContext::new(
+        wrong_context.context.chain_id().clone(),
+        wrong_context.context.protocol_version(),
+        Epoch::new(wrong_context.context.epoch().get() + 1),
+    )
+    .unwrap();
+
+    let mut wrong_code = base_record.clone();
+    wrong_code.code = sunrise_edge_client::publication::UnverifiedDependencyRef::new(
+        wrong_code.code.origin().clone(),
+        1,
+        wrong_code.context.clone(),
+        sunrise_edge_client::Digest32::new(protocol_types::HashAlgorithmId::Sha2_256, [0x55; 32]),
+    )
+    .unwrap();
+
+    let mut wrong_initializer = base_record.clone();
+    wrong_initializer.initializer = "not-init".to_owned();
+
+    let mut wrong_creator = base_record.clone();
+    wrong_creator.creator = [0x61; 32];
+
+    const EXPECTED_MESSAGE: &str = "application instance record does not match the pinned custody context, code, revision, initializer or creator";
+    for record in [wrong_context, wrong_code, wrong_initializer, wrong_creator] {
+        let bytes = execution::local_execution::encode_instance_record(&record).unwrap();
+        let result = super::asset_mint_burn::AssetMintBurnTrust::new(
+            fixture.config.clone(),
+            fixture.root(),
+            Some((asset, bytes)),
+        );
+        let error: crate::CliError = result
+            .err()
+            .expect("each single-field mismatch must be refused");
+        assert!(
+            matches!(&error, crate::CliError::LocalExecution(_)),
+            "every mismatch must surface as the same typed CliError variant"
+        );
+        assert!(error.to_string().contains(EXPECTED_MESSAGE));
+    }
+}
+
+/// A non-one revision is refused even earlier than this trust ever sees it:
+/// `encode_instance_record` itself requires exactly revision one.
+#[test]
+fn application_pin_instance_record_with_a_non_one_revision_cannot_even_be_encoded() {
+    let fixture: Fixture = Fixture::new();
+    let mut wrong_revision = fixture.application_instance_record([0xD3; 32]);
+    wrong_revision.revision = 2;
+    assert!(execution::local_execution::encode_instance_record(&wrong_revision).is_err());
+}
+
+/// A pinned application asset must not alias the pinned genesis fee asset:
+/// construction fails even when every other field is otherwise valid.
+#[test]
+fn application_pin_rejects_the_genesis_fee_asset_as_the_pinned_application_asset() {
+    let fixture: Fixture = Fixture::new();
+    let record = fixture.application_instance_record([0xE1; 32]);
+    let bytes = execution::local_execution::encode_instance_record(&record).unwrap();
+    let genesis_asset: sunrise_edge_client::ObjectId =
+        match fixture.manifest.fee_policy.type_arguments.as_slice() {
+            [sunrise_edge_client::package_types::ScopedTypeArg::Opaque { value, .. }] => {
+                sunrise_edge_client::ObjectId::new(*value)
+            }
+            _ => panic!("genesis fee policy must carry exactly one opaque asset argument"),
+        };
+    assert!(
+        super::asset_mint_burn::AssetMintBurnTrust::new(
+            fixture.config.clone(),
+            fixture.root(),
+            Some((genesis_asset, bytes)),
+        )
+        .is_err()
+    );
+}
+
+/// A record whose `creator` honestly equals *this* trust's own publisher
+/// (so it passes the creator check without weakening it), but whose
+/// `seed`/`creator`/context/code combination hashes to exactly the pinned
+/// genesis fee instance, is refused by the alias guard specifically — not
+/// by the creator check. Reached via a constructor-only `CustodyConfig`
+/// whose publisher is set to the genesis instance's own verified creator
+/// (`genesis_authority_config`); no real signer/key material changes.
+#[test]
+fn application_pin_rejects_a_record_that_actually_derives_the_genesis_fee_instance() {
+    let fixture: Fixture = Fixture::new();
+    let genesis_authority_config: CustodyConfig = fixture.genesis_authority_config();
+    let alias_record = execution::local_execution::InstanceRecord {
+        context: fixture.manifest.context().clone(),
+        creator: fixture.manifest.fee_policy.instance.creator,
+        seed: fixture.manifest.fee_policy.instance.seed,
+        code: fixture.manifest.fee_policy.code.clone(),
+        revision: 1,
+        initializer: public_standard_asset::INITIALIZER.to_owned(),
+    };
+    let bytes = execution::local_execution::encode_instance_record(&alias_record).unwrap();
+    let asset: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xF1; 32]);
+    let error: crate::CliError = super::asset_mint_burn::AssetMintBurnTrust::new(
+        genesis_authority_config,
+        fixture.root(),
+        Some((asset, bytes)),
+    )
+    .err()
+    .expect("a record that actually derives the genesis fee instance must be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("application instance must not alias the pinned genesis fee instance")
+    );
+}
+
+/// Positive pinned `burn`: a pinned application's own `TreasuryCap` and
+/// `Coin` (both derived from the same pinned asset) are accepted together,
+/// exercising `validate_application_coin`'s success path, not only its
+/// refusals.
+#[test]
+fn application_pin_prepares_a_valid_burn_through_validate_application_coin() {
+    let fixture: Fixture = Fixture::new();
+    let asset: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xB5; 32]);
+    let cap_id: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xB6; 32]);
+    let coin_id: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xB7; 32]);
+    let (trust, cap_bytes) =
+        fixture.application_pinned_trust_and_cap([0xB8; 32], asset, cap_id, 1_000);
+    let coin_bytes: Vec<u8> = fixture.application_coin_bytes(asset, coin_id, 100);
+    let mut request: AssetBurnRequest = fixture.burn_request.clone();
+    request.cap_bytes = cap_bytes;
+    request.coin_bytes = coin_bytes;
+    request.request_id = RequestId::new([0xB9; 32]).unwrap();
+    let prepared = trust.prepare_burn(&request).unwrap();
+    assert_eq!(prepared.supply_before, 1_000);
+    assert_eq!(prepared.burn_amount, 100);
+    assert_eq!(prepared.supply_after, 900);
+}
+
+/// A genesis `Coin` preimage is refused as a pinned application's own burn
+/// `Coin`: its nominal type is the genesis one, not the pinned asset's.
+#[test]
+fn application_pin_rejects_a_genesis_coin_as_the_application_burn_coin() {
+    let fixture: Fixture = Fixture::new();
+    let asset: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xBA; 32]);
+    let cap_id: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xBB; 32]);
+    let (trust, cap_bytes) =
+        fixture.application_pinned_trust_and_cap([0xBC; 32], asset, cap_id, 1_000);
+    let mut request: AssetBurnRequest = fixture.burn_request.clone();
+    request.cap_bytes = cap_bytes;
+    // `fixture.burn_request.coin_bytes` is the genesis Coin preimage.
+    let error: crate::CliError = trust
+        .prepare_burn(&request)
+        .err()
+        .expect("a genesis Coin preimage must never satisfy a pinned application's own coin type");
+    assert!(
+        error
+            .to_string()
+            .contains("burn coin is not the genesis Standard Asset Coin type")
+    );
+}
+
+/// Decodable but non-canonical (trailing-byte) application `InstanceRecord`
+/// bytes are refused before any field is ever inspected.
+#[test]
+fn application_pin_rejects_a_noncanonical_instance_record_with_trailing_bytes() {
+    let fixture: Fixture = Fixture::new();
+    let asset: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xBD; 32]);
+    let record = fixture.application_instance_record([0xBE; 32]);
+    let mut bytes = execution::local_execution::encode_instance_record(&record).unwrap();
+    bytes.push(0);
+    assert!(
+        super::asset_mint_burn::AssetMintBurnTrust::new(
+            fixture.config.clone(),
+            fixture.root(),
+            Some((asset, bytes)),
+        )
+        .is_err()
+    );
+}
+
+/// A stale approval for a *different* application under the exact same
+/// pinned asset is refused: the cap/coin nominal-type checks alone cannot
+/// distinguish two instances sharing one asset (both pass identically), so
+/// only the full approved frame — which also encodes the targeted instance —
+/// can, and does, refuse the mismatch.
+#[test]
+fn stale_approval_for_a_different_instance_under_the_same_pinned_asset_is_refused() {
+    let fixture: Fixture = Fixture::new();
+    let asset: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xC5; 32]);
+    let cap_id: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xC6; 32]);
+    let (trust_s1, cap_bytes) =
+        fixture.application_pinned_trust_and_cap([0xC7; 32], asset, cap_id, 10);
+    let (trust_s2, _unused_cap_bytes) =
+        fixture.application_pinned_trust_and_cap([0xC8; 32], asset, cap_id, 10);
+
+    let mut request: AssetMintRequest = fixture.mint_request.clone();
+    request.cap_bytes = cap_bytes;
+    request.request_id = RequestId::new([0xC9; 32]).unwrap();
+
+    // The premise: the exact same cap preimage (same pinned asset, two
+    // different instances) passes *both* trusts' own cap-type check
+    // identically, since that check depends only on the asset.
+    let approved_frame: Vec<u8> = trust_s1
+        .prepare_mint(&request)
+        .unwrap()
+        .prepared
+        .signable_frame()
+        .to_vec();
+    assert!(trust_s2.prepare_mint(&request).is_ok());
+
+    let approvals_dir: TempDir = TempDir::new(0o700);
+    approvals::write_approval(
+        &approvals_dir.0,
+        &request.request_id,
+        &ApprovalRecord {
+            publisher: fixture.signer.address(),
+            not_after_unix_seconds: u64::MAX,
+            frame: approved_frame,
+        },
+    )
+    .unwrap();
+
+    let wire_request = super::asset_mint_burn::AssetMintBurnRequest::Mint(Box::new(request));
+    assert_eq!(
+        server::sign_mint_burn_request(
+            &fixture.config,
+            &fixture.signer,
+            &approvals_dir.0,
+            &trust_s2,
+            &wire_request,
+        ),
+        Err(CustodyResponseStatus::NoApproval)
+    );
+}
+
+/// A genesis (no-pin) approval cannot authorize a pinned-application
+/// request: the genesis-prepared frame targets the genesis instance, so it
+/// never matches a pinned trust's own, differently targeted, prepared frame.
+#[test]
+fn a_genesis_approval_cannot_authorize_a_pinned_application_request() {
+    let fixture: Fixture = Fixture::new();
+    let asset: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xCA; 32]);
+    let cap_id: sunrise_edge_client::ObjectId = sunrise_edge_client::ObjectId::new([0xCB; 32]);
+    let (trust, cap_bytes) =
+        fixture.application_pinned_trust_and_cap([0xCC; 32], asset, cap_id, 10);
+
+    let genesis_frame: Vec<u8> = fixture
+        .trust()
+        .prepare_mint(&fixture.mint_request)
+        .unwrap()
+        .prepared
+        .signable_frame()
+        .to_vec();
+
+    let mut request: AssetMintRequest = fixture.mint_request.clone();
+    request.cap_bytes = cap_bytes;
+    request.request_id = RequestId::new([0xCD; 32]).unwrap();
+
+    let approvals_dir: TempDir = TempDir::new(0o700);
+    approvals::write_approval(
+        &approvals_dir.0,
+        &request.request_id,
+        &ApprovalRecord {
+            publisher: fixture.signer.address(),
+            not_after_unix_seconds: u64::MAX,
+            frame: genesis_frame,
+        },
+    )
+    .unwrap();
+
+    let wire_request = super::asset_mint_burn::AssetMintBurnRequest::Mint(Box::new(request));
+    assert_eq!(
+        server::sign_mint_burn_request(
+            &fixture.config,
+            &fixture.signer,
+            &approvals_dir.0,
+            &trust,
+            &wire_request,
+        ),
+        Err(CustodyResponseStatus::NoApproval)
     );
 }
