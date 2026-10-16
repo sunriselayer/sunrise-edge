@@ -147,6 +147,20 @@ pub enum CustodyError {
     },
     /// Computing the absolute total serve deadline overflowed.
     DeadlineOverflow,
+
+    /// A fee-claim request/intent pair's `operation` was not `ZeroShare`.
+    NotZeroShare,
+    /// A `ZeroShare` fee-claim intent declared a nonzero `share_amount`.
+    NonZeroShareAmount,
+    /// A `ZeroShare` fee-claim request carried a `signed_leg`.
+    UnexpectedSignedLeg,
+    /// The request's and intent's `request_id` fields differed.
+    RequestIdMismatch,
+    /// The intent's `request_id` was all-zero.
+    ZeroRequestId,
+    /// The request's claimed public key did not match the one custody is
+    /// pinned to sign for, checked before any workflow or socket I/O.
+    ZeroShareClaimantMismatch,
 }
 
 impl fmt::Display for CustodyError {
@@ -283,6 +297,22 @@ impl fmt::Display for CustodyError {
             Self::DeadlineOverflow => {
                 f.write_str("computing the absolute total serve deadline overflowed")
             }
+            Self::NotZeroShare => {
+                f.write_str("fee claim custody accepts only FeeClaimOperation::ZeroShare")
+            }
+            Self::NonZeroShareAmount => {
+                f.write_str("a ZeroShare fee claim intent must declare share_amount=0")
+            }
+            Self::UnexpectedSignedLeg => {
+                f.write_str("a ZeroShare fee claim request must not carry a signed_leg")
+            }
+            Self::RequestIdMismatch => {
+                f.write_str("fee claim request and intent request_id fields differ")
+            }
+            Self::ZeroRequestId => f.write_str("fee claim intent request_id must be nonzero"),
+            Self::ZeroShareClaimantMismatch => f.write_str(
+                "fee claim request claimant_public_key does not match the pinned custody key",
+            ),
         }
     }
 }

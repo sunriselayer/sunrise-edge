@@ -56,6 +56,9 @@ pub enum CustodyWireError {
     LengthMismatch { declared: usize, actual: usize },
     /// The request id was zero or otherwise rejected.
     RequestId(EnvelopeError),
+    /// An inner canonical codec (a `FeeClaimPrepareRequest` or
+    /// `FeeClaimIntent` frame carried inside a kind-7 request) refused.
+    InnerCodec(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl fmt::Display for CustodyWireError {
@@ -84,6 +87,7 @@ impl fmt::Display for CustodyWireError {
                 "custody wire frame declared length {declared} but actual remaining length is {actual}"
             ),
             Self::RequestId(error) => write!(f, "custody wire request id rejected: {error}"),
+            Self::InnerCodec(error) => write!(f, "custody wire inner codec rejected: {error}"),
         }
     }
 }
@@ -92,6 +96,7 @@ impl std::error::Error for CustodyWireError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::RequestId(error) => Some(error),
+            Self::InnerCodec(error) => Some(error.as_ref()),
             _ => None,
         }
     }

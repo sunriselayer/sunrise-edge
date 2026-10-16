@@ -33,6 +33,11 @@
 //! - `custody serve-fee-split` uses DR-0269's closed kind-6 Leg/Claim
 //!   owner, genuine successor workflow and original historical key. Its two
 //!   complete phase approvals share the existing permanent request tombstone.
+//! - `custody approve-fee-claim`/`serve-fee-claim` use the same owner with
+//!   the DR-0257 protected ZeroShare fee-claim policy, under one closed
+//!   kind-7 decoder; see `fee_claim_zero`. There is no `sign-fee-claim`
+//!   custody command: the sole signing consumer is the existing `economics
+//!   fee-claim-sign` with its three custody signer flags.
 //! - `custody prepare-transfer`/`prepare-split`/`prepare-merge`/
 //!   `prepare-mint`/`prepare-burn`/`prepare-create` export preimages without
 //!   approval; `sign-transfer`/`sign-split`/`sign-merge`/`sign-mint`/
@@ -90,6 +95,9 @@ mod bond_wire;
 pub(crate) mod client;
 mod config;
 pub(crate) mod error;
+mod fee_claim_zero;
+mod fee_claim_zero_commands;
+mod fee_claim_zero_wire;
 mod fsperm;
 mod keyfile;
 mod keygen;
@@ -115,8 +123,9 @@ pub(crate) use asset_create::AssetCreateRequest;
 pub(crate) use asset_mint_burn::{AssetBurnRequest, AssetMintRequest};
 pub(crate) use asset_split_merge::{AssetMergeRequest, AssetSplitRequest};
 pub(crate) use asset_transfer::AssetTransferRequest;
-pub(crate) use client::{CustodyTarget, request_signature};
+pub(crate) use client::{CustodyTarget, request_fee_claim_zero_signature, request_signature};
 pub(crate) use error::CustodyError;
+pub(crate) use fee_claim_zero::require_zero_share_profile;
 
 const CONFIG: &str = "--config";
 const KEY_FILE: &str = "--key-file";
@@ -214,6 +223,8 @@ where
         "serve-bond-approvals" => bond_commands::serve_broker(args),
         "serve-bond-inner" => bond_commands::serve_worker(args, bond_wire::BondPhase::Inner),
         "serve-bond-outer" => bond_commands::serve_worker(args, bond_wire::BondPhase::Outer),
+        "approve-fee-claim" => fee_claim_zero_commands::approve_fee_claim(args),
+        "serve-fee-claim" => fee_claim_zero_commands::serve(args),
         other => Err(CliError::UnknownCustodyAction(other.to_string())),
     }
 }

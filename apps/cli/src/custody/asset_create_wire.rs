@@ -146,6 +146,7 @@ mod tests {
         assert!(super::super::asset_wire::decode(&bytes).is_err());
         assert!(super::super::asset_split_merge_wire::decode(&bytes).is_err());
         assert!(super::super::asset_mint_burn_wire::decode(&bytes).is_err());
+        assert!(super::super::fee_claim_zero_wire::decode(&bytes).is_err());
         for end in 0..bytes.len() {
             assert!(decode(&bytes[..end]).is_err());
         }

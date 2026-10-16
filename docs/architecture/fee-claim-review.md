@@ -2,7 +2,11 @@
 
 [DR-0245](decisions/0245-saved-successor-fee-claim-review.md) defines this
 non-authorizing inspection and development-signing slice. Live status belongs
-in [TODO](../../TODO.md).
+in [TODO](../../TODO.md). The separate
+[protected ZeroShare fee-claim custody](fee-claim-custody.md)
+([DR-0257](decisions/0257-protected-zero-share-fee-claim-custody.md)) adds a
+protected signer alternative to `economics fee-claim-sign` below; it is not a
+new command, and this document's review/dev-sign behavior is unchanged.
 
 ## Exact inputs and authority
 
@@ -53,15 +57,22 @@ optional repeated `--suite` and the complete ordered `--successor-*` link flags
 loads bounded canonical files, rebuilds the verified workflow and prepared owner,
 and prints the review without network I/O or signing.
 
-`economics fee-claim-sign` uses those same saved files and local pins, plus
-`--claimant-seed-file`, `--created-checkpoint` and a fresh `--out`. It checks that
-the saved operation can be fully rendered before loading the development seed,
-then signs the retained frame, independently verifies the signature and
-reauthenticates the wrapped candidate. The checkpoint is an explicit outer
-candidate field; the saved request/intent determine the signed fee-claim bytes.
-Signing is development-only and does not imply that anyone approved a previous
-printout. A changed saved file is checked as a different operation under the same
-pinned authority; a screen view is not an approval record.
+`economics fee-claim-sign` uses those same saved files and local pins, plus a
+fresh `--out`, and exactly one signer selection: the development-only
+`--claimant-seed-file` and `--created-checkpoint`, or the protected custody
+trio `--custody-socket`/`--custody-uid`/`--custody-expected-public-key`
+(see [fee-claim-custody.md](fee-claim-custody.md)). Selection is checked from
+arguments alone, before any file I/O; a partial custody trio or a mixture of
+both groups refuses with the same typed errors every other signer-capable
+command uses. It checks that the saved operation can be fully rendered before
+loading the development seed or contacting custody, then signs the retained
+frame, independently verifies the signature and reauthenticates the wrapped
+candidate. The checkpoint is an explicit outer candidate field the claimant's
+signature does not cover and custody never approves; an operator can rewrap a
+signed claim with a different checkpoint. Development signing does not imply
+that anyone approved a previous printout. A changed saved file is checked as a
+different operation under the same pinned authority; a screen view is not an
+approval record.
 
 ## Validation boundary
 

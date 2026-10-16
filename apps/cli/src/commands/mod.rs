@@ -7,7 +7,7 @@ pub mod context;
 pub mod contract;
 mod fastvote_frontier;
 mod fastvote_network;
-mod fee_claim_review;
+pub(crate) mod fee_claim_review;
 pub(crate) mod hash_suite_pins;
 mod input_file;
 mod local_execution;

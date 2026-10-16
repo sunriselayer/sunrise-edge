@@ -19,7 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::time::timeout;
 
-use sunrise_edge_client::LocalSigner;
+use sunrise_edge_client::{ExternalSigner, LocalSigner};
 
 use super::approvals;
 use super::asset_create::{AssetCreateRequest, AssetCreateTrust};
@@ -31,6 +31,8 @@ use super::asset_split_merge_wire;
 use super::asset_transfer::AssetTransferTrust;
 use super::config::CustodyConfig;
 use super::error::CustodyError;
+use super::fee_claim_zero::{FeeClaimZeroTrust, require_zero_share_profile};
+use super::fee_claim_zero_wire::{self, FeeClaimZeroRequest};
 use super::fsperm::require_private_dir;
 use super::selfuid::own_uid;
 use super::wire::{self, CustodyResponse, CustodyResponseStatus, CustodyWireError};
@@ -223,6 +225,26 @@ pub(super) fn run_create(
     )
 }
 
+/// A distinct invocation and decoder; no other family ever accepts the
+/// kind-7 ZeroShare fee-claim family (DR-0257).
+pub(super) fn run_fee_claim_zero(
+    config: CustodyConfig,
+    signer: LocalSigner,
+    socket_path: &Path,
+    approvals_dir: &Path,
+    bounds: ServeBounds,
+    trust: FeeClaimZeroTrust,
+) -> Result<ServeSummary, CustodyError> {
+    run_with_policy(
+        config,
+        signer,
+        socket_path,
+        approvals_dir,
+        bounds,
+        SigningPolicy::FeeClaimZero(Box::new(trust)),
+    )
+}
+
 enum SigningPolicy {
     Publication,
     Transfer(Box<AssetTransferTrust>),
@@ -230,6 +252,7 @@ enum SigningPolicy {
     MintBurn(Box<AssetMintBurnTrust>),
     Create(Box<AssetCreateTrust>),
     PositiveFeeSplit(Box<super::positive_fee_split::PositiveFeeSplitTrust>),
+    FeeClaimZero(Box<FeeClaimZeroTrust>),
 }
 
 pub(super) fn run_positive_fee_split(
@@ -493,6 +516,7 @@ async fn handle_one_connection(
         SigningPolicy::MintBurn(_) => asset_mint_burn_wire::MAX_REQUEST_BYTES,
         SigningPolicy::Create(_) => asset_create_wire::MAX_REQUEST_BYTES,
         SigningPolicy::PositiveFeeSplit(_) => super::positive_fee_split_wire::MAX_REQUEST_BYTES,
+        SigningPolicy::FeeClaimZero(_) => fee_claim_zero_wire::MAX_FEE_CLAIM_ZERO_REQUEST_BYTES,
     };
     let frame = match read_request_frame(&mut stream, maximum).await {
         Ok(frame) => frame,
@@ -528,6 +552,11 @@ async fn handle_one_connection(
                 trust
                     .sign_approved(signer, approvals_dir, &request)
                     .map_err(|_| CustodyResponseStatus::NoApproval)
+            }),
+        SigningPolicy::FeeClaimZero(trust) => fee_claim_zero_wire::decode(&frame)
+            .map_err(|error| refusal_status_for_wire_error(&error))
+            .and_then(|request| {
+                sign_fee_claim_zero_request(config, signer, approvals_dir, trust, &request)
             }),
     };
     match result {
@@ -725,6 +754,110 @@ pub(super) fn sign_create_request(
         .sign_and_finalize_with(signer)
         .map_err(|_| CustodyResponseStatus::Internal)?;
     Ok(signed.signature)
+}
+
+/// Wraps `&LocalSigner` as an [`ExternalSigner`] that records the exact
+/// bytes [`ExternalSigner::sign_frame`] returns, so a raw signature can be
+/// recovered after a `PreparedFeeClaim::sign_and_finalize_external` call
+/// that otherwise returns only the full encoded `SignedFeeClaimIntent`
+/// bytes. This keeps the SDK's own scheme/identity preflight
+/// (`sign_external_after_preflight`) in front of signing, and `finalize`'s
+/// own signature verification runs on the same call before this capture is
+/// ever trusted by a caller.
+struct CapturingSigner<'a> {
+    inner: &'a LocalSigner,
+    captured: std::cell::Cell<Option<[u8; wire::CUSTODY_SIGNATURE_BYTES]>>,
+}
+
+impl<'a> CapturingSigner<'a> {
+    fn new(inner: &'a LocalSigner) -> Self {
+        Self {
+            inner,
+            captured: std::cell::Cell::new(None),
+        }
+    }
+
+    fn captured_signature(&self) -> Option<[u8; wire::CUSTODY_SIGNATURE_BYTES]> {
+        self.captured.get()
+    }
+}
+
+impl ExternalSigner for CapturingSigner<'_> {
+    type Error = <LocalSigner as ExternalSigner>::Error;
+
+    fn signature_scheme_id(&self) -> sunrise_edge_client::SignatureSchemeId {
+        self.inner.signature_scheme_id()
+    }
+
+    fn address(&self) -> sunrise_edge_client::Address {
+        self.inner.address()
+    }
+
+    fn sign_frame(&self, framed_message: &[u8]) -> Result<Vec<u8>, Self::Error> {
+        let signature: Vec<u8> = self.inner.sign_frame(framed_message)?;
+        if let Ok(fixed) = <[u8; wire::CUSTODY_SIGNATURE_BYTES]>::try_from(signature.as_slice()) {
+            self.captured.set(Some(fixed));
+        }
+        Ok(signature)
+    }
+}
+
+/// Pure, synchronous ZeroShare fee-claim signing decision: runs the cheap
+/// profile guard, rebuilds the exact `PreparedFeeClaim` under custody's own
+/// pinned successor workflow (never the caller's claimed context or
+/// committee), checks it against the stored human approval record, signs
+/// through a capturing external signer (which keeps the SDK's own
+/// scheme/identity preflight and `finalize`'s own verification ahead of
+/// trusting the captured bytes), and returns the raw signature.
+pub(super) fn sign_fee_claim_zero_request(
+    config: &CustodyConfig,
+    signer: &LocalSigner,
+    approvals_dir: &Path,
+    trust: &FeeClaimZeroTrust,
+    request: &FeeClaimZeroRequest,
+) -> Result<[u8; wire::CUSTODY_SIGNATURE_BYTES], CustodyResponseStatus> {
+    if signer.address() != config.publisher() {
+        return Err(CustodyResponseStatus::Internal);
+    }
+    require_zero_share_profile(
+        &request.request,
+        &request.intent,
+        *config.publisher().as_bytes(),
+    )
+    .map_err(|_| CustodyResponseStatus::Malformed)?;
+    let prepared = sunrise_edge_client::PreparedFeeClaim::prepare(
+        trust.workflow(),
+        &request.request,
+        request.intent.clone(),
+    )
+    .map_err(|_| CustodyResponseStatus::Malformed)?;
+    if prepared.claimant() != config.publisher() {
+        return Err(CustodyResponseStatus::PublisherMismatch);
+    }
+    let request_id = sunrise_edge_client::RequestId::new(request.intent.request_id)
+        .map_err(|_| CustodyResponseStatus::Malformed)?;
+    let now: u64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| CustodyResponseStatus::Internal)?
+        .as_secs();
+    let approval = approvals::read_approval(approvals_dir, &request_id)
+        .map_err(|_| CustodyResponseStatus::Internal)?
+        .ok_or(CustodyResponseStatus::NoApproval)?;
+    if approvals::is_expired(&approval, now)
+        || approval.publisher != config.publisher()
+        || approval.frame != prepared.signable_frame()
+        || super::revoke::is_revoked(approvals_dir, &request_id)
+            .map_err(|_| CustodyResponseStatus::Internal)?
+    {
+        return Err(CustodyResponseStatus::NoApproval);
+    }
+    let capturing: CapturingSigner<'_> = CapturingSigner::new(signer);
+    prepared
+        .sign_and_finalize_external(&capturing)
+        .map_err(|_| CustodyResponseStatus::Internal)?;
+    capturing
+        .captured_signature()
+        .ok_or(CustodyResponseStatus::Internal)
 }
 
 pub(super) async fn read_request_frame(
