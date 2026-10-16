@@ -130,6 +130,15 @@ refusing a custody signer combined with these flags. See DR-0258 for the
 exact verification and compatibility details, and TODO.md for qualification
 status.
 
+Each role must own its instance pin file at mode `0600` in an owned `0700`
+directory. Public `create-asset --instance-ref-out` output follows the
+operator's file-creation mask, so its owner must make it private or install
+an owned private copy before passing it to a custody command. The custody
+process receives its own independently trusted protected copy; the peer
+request never supplies that path or changes the server's application pin.
+The local fixture keeps its existing capabilities and uses each process's
+own UID for error cleanup signals.
+
 ## Lifecycle and limits
 
 `custody revoke` reuses the existing durable store exactly as DR-0246/

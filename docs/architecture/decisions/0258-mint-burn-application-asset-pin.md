@@ -116,9 +116,9 @@ approval mechanism comparing it.
 
 ## Tests
 
-Pure, owning unit tests were added in this slice. These have been **written,
-not run**: no `cargo check`/`test`/`clippy`/`fmt` was executed while adding
-them, and nothing here is compiler-verified.
+The owning unit tests below, CLI build, formatting and all-target/all-feature
+Clippy are executed as one source-pinned check set. Exact source/result
+qualification is recorded in [TODO.md](../../../TODO.md).
 
 `asset_mint_burn_commands.rs` (`application_pin_selection_tests`) covers
 all-or-none flag parsing, exact asset-id/record-byte round-tripping, and the
@@ -141,16 +141,22 @@ own-creator instance, refused only by the full frame comparison even though
 both instances' cap/coin type checks pass identically; and a genesis (no
 pin) approval that cannot authorize a pinned-application request. The last
 two call `server::sign_mint_burn_request` directly as a pure in-process
-function (no Unix socket, no live `serve` process). No live CLI, Docker
-fixture, or full required/CI gate run is part of this slice. Qualification
-status and any Docker fixture extension belong in
-[TODO.md](../../../TODO.md), not here.
+function (no Unix socket or `serve` process in those unit cases).
+
+The bounded distinct-UID Docker fixture separately keeps the backend that
+created the asset alive, then drives actual protected mint/burn CLI calls,
+compares offline signatures, checks typed live objects and full bound
+receipts, replays both requests and tests revocation/restart refusals. Its
+replay footprint is the Definition, genesis spend/fee Coins, every mint/burn
+effect ID, publisher nonce, two receipts and retained instance record;
+it is not a full-store, all-table or cross-file snapshot. Source-specific
+results and remaining full required/CI/Native gates belong in TODO.md.
 
 ## Limits
 
 Same trusted OS/root, separate-UID model and limits as DR-0238/DR-0246/
-DR-0249/DR-0253/DR-0255. This decision adds no key generation, key storage,
-or fixture change, and claims no real keys, host users, public services,
+DR-0249/DR-0253/DR-0255. This decision adds no key generation or key-storage API,
+and claims no real keys, host users, public services,
 network activation, or security audit. It does not widen `transfer`/
 `split`/`merge`/`create-asset`, does not change genesis fee authority or the
 meaning of the shared `PinnedAssetTrust` genesis pin for any family, and

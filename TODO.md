@@ -247,6 +247,10 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E57: 277f original R4 runtime timeout | `277fd2c5`。原10 whole +2 exact ignoredの12ケース中、11ケースはactual0/EOF、最後の元recurring successor selectorが共有18,000秒の上限で停止。controllerはactual1/EOF、18,002.967秒。親がhelper・終端/inner receipt・両raw hash、unit停止を確認 | 失敗のまま保持。最後のattemptはEOF/wait未完、killとterminationは確認。専有TMPをforensicsとして残し、自動再実行・上限変更なし。E53のCI long case成功とは分け、原12 Native runtime・全M4/M7の合格に数えない |
 | E58: c04e actual Native A/B and RELEASE CLI | `c04e5a38` / tree `ea3cf658`。13-target・2 fresh buildsは全byte/mode/owner一致、actual0/EOF、1,516.457秒。別targetの13 debug +10 driver buildもactual0/EOF、1,666.261秒。親が26+23 ELF・Cargo JSON/source/profile/raw・4専有dir/lease解放を照合。実RELEASE CLIの元5 families/6 lifecycle UID/PTYもactual0/EOF、5.863秒 | Node24/Rust1.97.1・same-host trusted OS。CLI oracleはcompiled inputs同一の8995 dev/test2保持harnessで、新frontier operator integration testのRELEASE oracleには数えない。原12 runtimeはcheck/probe成功までで未起動。新しい0258 application-pin実装、全M2/M5/M7・独立監査/公開認定は含めない |
 | E59: f973 hosted CI | [run `38886425920`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38886425920) attempt1の全7 owners + checkがSUCCESS。全8 raw checkout`b77346ba` / tree`63877d27`がhead`f973c02d`と同じtreeで、両merge parents・local clean pin/tree・全raw hashを親で再照合 | ordered SIGTERM wiring sourceのexact CI qualification。local完全required・原12 RELEASE runtimeと後続source、全D05/M5/M7・独立監査/公開認定は別条件 |
+| E60: 10a4 hosted CI | [run `38876217021`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38876217021) attempt1の全7 owners + checkがSUCCESS。全8 raw checkout`efd6a15c` / tree`ede55f33`がhead`10a47db1`と同じtreeで、両merge parents・local clean pin/tree・全raw hashを親で再照合 | genesis mint/burn sourceのexact CI qualification。後続のapplication pin source、local完全requiredと原12 RELEASE runtime、全M2/M7・独立監査/公開認定は別条件 |
+| E61: 10a4 original R4 runtime timeout | 原12ケース中11ケースはactual0/EOF。最後の元recurring successor selectorが共有18,000秒の上限で停止し、controller actual1/EOF、18,002.073秒。親がhelper・終端/inner receipt・両raw hashとunit停止を照合 | 最後のattemptはEOF/wait未完、killとterminationを確認。専有TMPをforensicsとして残し、再実行・上限変更なし。E60のCI成功と分け、原12 runtime・全M7の合格に数えない |
+| E62: own-created application mint/burn custody | `4d2c97e0` / tree`59019e02`。custody163 passed/5 ignored、Standard Asset19 passed、fmt/Node/CLI build/全target全feature Clippy/Cargo JSONの全7 commandsがactual0/EOF、9.986秒。実Docker/別UID/PTYの通常実行はactual0/EOF、5.369秒。作成assetで供給量0→5M→0、cap version1→2→3、新Coin1→tombstone、nonce1→2→3、非空Accepted/full result、offline/実CLIの全署名byte一致を確認 | 元5 families/6 lifecycle・取消/restartを保持。新profileの6/6/4/2、restart2/2/0/2、exact replayのDefinition/genesis spend/fee・全effect IDs・nonce3/2 receipts/InstanceRecord不変を確認。全store/all tables/cross-file snapshotとは呼ばない。source/raw/両ELFを親で照合し、container/volume残存なし。cap追加なし、60/230/280/30秒を維持。pure/fixture指摘修正を独立承認。最終source完全required/CI/新Native release、他creator・全M2/M7・独立監査/公開認定は未完了 |
+| E63: 277f complete required and hosted CI | `277fd2c5` / tree`39d05ad1`。literal npm-ci +完全check-allがactual0/EOF、26,575.667秒。Rust success summaries144・報告pass合計4,236・ignored32・failed0。E53全8 CI raw、前後source/tree/clean・Node24・全wrapper/rawを親で再照合 | closure pins/history floor sourceのstorage-neutral qualification。E57の原12 RELEASE runtime失敗は保持し、published checkpoint/state-root・latest owned rollback・PG・全M4/M7・独立監査/公開認定や後続sourceへ転用しない |
 
 
 
@@ -576,20 +580,17 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     E49で別UIDの操作内容承認・署名・実CLI送信とnew instance、独立型IDのDefinition/TreasuryCap・
     供給量0・非空receipt/再送・取消/restart拒否を確認。承認後のseed/nonce/max_fee変更を拒否する。
     feeはgenesis context、applicationは独立導出したnew instanceであり、seedの事前freshnessや
-    作成IDの事前予測は主張しない。作成assetの他custody操作・新familyの鍵復旧/交換・
+    作成IDの事前予測は主張しない。作成assetのmint/burnはE62で確認し、transfer/split/merge・新familyの鍵復旧/交換・
     最終source完全gate/CI/Native releaseと全M2は未完了。
-  - [ ] [mint/burnの任意application asset pin](docs/architecture/decisions/0258-mint-burn-application-asset-pin.md):
-    DR-0258の設計として、既存genesisのみmint/burnへ`--asset`/`--instance-ref`の
-    all-or-none local pinを追加し、create-assetが作ったnon-genesisの
-    TreasuryCap/Coinを対象にできるようにする。context/exact code/revision1/
-    initializer/creator検証とgenesis fee instance/assetとの別名拒否、
-    fee側はgenesis Coin type限定のまま、type confusion・cross-application
-    stale approval・genesis approvalの新asset不正流用拒否を含むpure unit tests
-    (`asset_mint_burn_commands.rs`/`asset_mint_burn_tests.rs`)を追加した
-    (未実行、確認済みではない)。独立sourceレビューはpinの配線自体は確認したが、
-    テスト自体はcompile/実行していない。実CLI/serve round trip・Docker fixture
-    拡張・別UID・rustfmt・完全required/CIは未実行。transfer/split/merge/
-    create-assetは変更せず既存の拒否のまま維持する。
+  - [x] [mint/burnの任意application asset pin](docs/architecture/decisions/0258-mint-burn-application-asset-pin.md):
+    E62でgenesis feeと独立local application pinを分け、作成assetの実mint/burnを確認。
+    型・context/code/creator・alias・異なるinstance/旧genesis承認の流用拒否、
+    全163 custody unit/19 Standard Asset testsと実UID/PTY/CLI・再送・取消/restartを検証。
+    公開instance参照のprivate設定への移行はfile ownerが行い、後処理のsignalも同じUIDで送る。
+    Node/Rust sourceと入力ELF不変・専有container/volume解放を親で再照合した。
+    同じtrusted OSのown-created profileで、現在性やassetとinstanceの起源をfetch証明しない。
+    作成assetのtransfer/split/merge、新familyの鍵復旧/交換、automatic protocol signingと
+    最終source完全required/CI/新Native release・全M2は未完了。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
@@ -627,7 +628,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     実import create/resumeへの追加拒否を実装。parse/comparison 12件・元9件を保持したcompiled import全10件・Clippy・
     独立component reviewは成功。E29で同sourceのRELEASE child import全10件も成功。
     E53の同tree CIと元long caseでgenuine successorの拒否/受理/resumeも確認した。
-    新sourceのローカル完全gateは実行中。原12 Native runtimeはE57の時間上限失敗。
+    同sourceのローカル完全gateはE63で成功。原12 Native runtimeはE57の時間上限失敗。
     同一epoch内の履歴位置だけを拘束し、published checkpoint/state-root・owned fast-pathの
     whole-store rollback検出・旧writer除外の未達条件は維持する。
   - [x] [独立closure identityの追加拒否component](docs/architecture/decisions/0252-import-closure-identity-pins.md):
@@ -635,7 +636,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     3種の単一digest不一致、partial/malformed parse、resume時のDB bytes・binding/token不変を検証。
     guard欠落の負対照も検出した。信頼するローカル入力によるexact closureの追加拒否であり、
     公開checkpoint/state-root・latest-state・全owned fast-path rollbackやactivation権限は追加しない。
-    同sourceのCIはE53で成功。ローカル完全requiredは実行中、原12 Native runtimeはE57の失敗として保持する。
+    同sourceのCIとローカル完全requiredはE53/E63で成功し、原12 Native runtimeはE57の失敗として保持する。
   - 後継epochのhistory floorはE37で実genuine successor importの既存loopへ追加し、
     元long caseを変えずにE53のactual CI終端成功を確認した。
   - 次: source/artifact対応、M7、残るmanifest/upgrade/fencing範囲を照合する。
@@ -688,7 +689,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     原12 driversの全RELEASE runtimeと完全source qualificationは未完了。
     統合7c57の13-target A/Bと実RELEASE CLIはE34/E35で成功し、元12ケースのruntimeはE47の時間上限失敗として保持。
     復元の後続source 277fはE53のCIを完了したが、原12 Native runtimeはE57で失敗。
-    ローカル完全gateは実行中で、Native releaseを7c57の成功から借用しない。残る独立監査・
+    ローカル完全gateもE63で成功したが、原12 Native runtimeのE57失敗を保持する。後続sourceへ資格を借用しない。残る独立監査・
     upgrade/restore・実provider基準により全M7は未完了。
   - 次: E18/E19のsource/tool/profile pinをR4/Gから共用し、新sourceのrelease claimには
     そのsourceの13-target A/B・実RELEASE bindingを用意する。未達qualificationを進める。
