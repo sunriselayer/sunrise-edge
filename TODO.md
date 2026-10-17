@@ -43,7 +43,7 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   W5f6bのliteral npm ci +完全requiredは全commands actual0で完走しました (E150)。
   同5f原12 RELEASE runtimeも全12 cases・98 passed/0 failed/3 ignoredで完走しました (E151)。
   MBのliteral npm ciは成功。旧ad3の完全requiredは、後段の直接Wrangler呼出しを避けるため中断しました (E157)。
-  移行済みe4fb/50fbのcf版完全requiredを継続し、旧ad3の途中結果は全体成功へ加算しません。
+  移行済みe4fbのcf版完全requiredはE162で成功。50fbは継続中で、旧ad3の途中結果は全体成功へ加算しません。
   [Draft PR #321](https://github.com/sunriselayer/sunrise-edge/pull/321) の全8 CIはE142で成功を照合。
   [Draft PR #322](https://github.com/sunriselayer/sunrise-edge/pull/322) は全8 CI成功を実ログ/checkoutで照合 (E152)。
   #323は全8 CI成功をraw/checkoutまで照合しました (E160)。旧local中断E157は保持。
@@ -56,7 +56,7 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   Cloudflare CLIへの5-profile統一は実npm ci・typegen・10拒否controlsに加え、修正後の
   型照合・TS・lint・全4 Vitest計66 testsまで成功しました (E147/E148)。
   新source `e4fb6e55` は[Draft PR #324](https://github.com/sunriselayer/sunrise-edge/pull/324)。
-  literal npm ciと全8 hosted CIは成功しました (E161)。同headのlocal完全requiredは実行中です。
+  同headのliteral npm ci・local完全required・全8 hosted CIは終端まで成功を照合しました (E161/E162)。
   この文書更新は別worktreeで行い、実行中のsource/HEAD/TODOは変更していません。
   E133の自然失敗原因は未確定で、旧失敗と当時source-onlyだったE134/E135を保持します。
   祖先の成功を新source全体の合格へ付け替えず、全M2/M7は未完了です。
@@ -402,6 +402,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E160: historical MB/ad3 complete hosted CI | `ad3ce3a0`の[run39031278823](https://github.com/sunriselayer/sunrise-edge/actions/runs/39031278823) attempt1は元7 ownersとsuccess-only check全8がSUCCESS。8 raw 1,558,299 bytesとactual merge`44453eb8` / tree`d3fdc54a` / parents`[5f6b,ad3c]`をroot・独立peerが照合。147 Rust summariesは4,397 passed/0 failed/41 ignored。元7 epoch spans・epoch8 freeze-drain/unlock・saved closure、2 unique 1,832-byte withdrawal候補と各rounds3 ACK manifest stemの一致を実rawで確認。親`ci-run-39031278823-parent-qualified-1018.json` (`7d3c974f`) | 5fからの差分はfixture MJSと設計3 filesだけで、元selectors/8links/delay7/35rolesのsource contractは不変。collectorはactual0/両実EOF/wait/reap。旧ad3 hosted CIの資格だけで、直接Wranglerを含む旧sourceのcf-only適合や中断済みlocal完全required E157の成功にはしない。e4fb/50fbの完全source資格・Native・独立security監査・全M2/M7/公開認定へ転用しない |
 
 | E161: current Cloudflare CLI migration hosted all8 | `e4fb6e55`の[run39044872288](https://github.com/sunriselayer/sunrise-edge/actions/runs/39044872288) attempt1は元7 ownersとsuccess-only check全8がSUCCESS。8 raw 1,557,386 bytesとactual merge`18c6f005` / tree`bb7cad0c` / parents`[ad3c,e4fb]`をroot・独立peerが照合。147 Rust summariesは4,397 passed/0 failed/42 ignored。実cf `1.0.0-beta.13`の型照合・TS7とVitest全4 groups計66 testsも成功。親`ci-run-39044872288-parent-qualified-1018.json` (`9b49ccb8`) | 元7 epoch spans・epoch8 freeze-drain/unlock・saved closure、2 unique 1,832-byte候補と各rounds3 ACK manifest stemを実rawで照合。元selectors/8links/delay7/35rolesのsource contractを保持。collectorはactual0/両実EOF/wait/reap。直接CLIはcfへ統一し、SDK内部のtransitive Wranglerと区別する。local完全requiredは実行中で、50fb・全M2/M7・独立security監査・provider deployment/公開認定へ転用しない |
+| E162: current Cloudflare CLI migration local complete required | exact `e4fb6e55` / tree`bb7cad0c`のliteral npm ci +完全check-allが両actual0・各merged実EOF/waitで自然終了、17,653.508秒。147 Rust summariesは4,397 passed/0 failed/42 ignored、cf全4 Vitest計66 tests。rootと独立peerが全747,390-byte raw、1215 source Ns/Git・360 tools・3 seed proofs・7 directory tuplesを照合。親`cloudflare-cli-migration-required-final-parent-qualified-1018.json` (`a78654d3`) | 実rawで7 epoch spans/e8 freeze-drain・unlockと2 unique 1,832-byte候補/各rounds3 ACK manifest stemを照合。cold-open・8links/delay7/35rolesは元の成功source predicateへ対応し、削除artifactを再構成しない。全8 hosted CIのE161と合わせ、このCLI移行確認だけ完了。保存293 observationsのkernel limitsと同invocation自然終了/MainPID・CG不在を確認。未保存のOOM counters/全child census/detached outer EOFは主張しない。最初のreader marker仮定失敗・旧E157中断を保持し、50fb・全M2/M7・独立source/security監査・provider/deployment/公開認定へ転用しない |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -714,10 +715,10 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
   npm-ci +完全check-allのactual exit 0/EOF・全steps完了・前後cleanを所有controllerが
   保存した (E22)。最後の無出力stepを含む全commandの終端が対象。
   E20の旧実行はouter143/terminal nullのまま保持し、成功へ書き換えない。
-- [ ] **Cloudflare CLIへの残る移行を確認する**: 直接の操作・型生成を`cf` / `cloudflare`へ統一。
+- [x] **Cloudflare CLIへの残る移行を確認する**: 直接の操作・型生成を`cf` / `cloudflare`へ統一。
   5 profilesの実typegen・10拒否controlsと全4 Vitest計66 testsはE147/E148で成功。
-  既存Vitest plugin内部のtransitive Wrangler SDKは保持する。残るe4fb完全required/全8 CIを
-  照合し、後続Rustls更新sourceのqualificationとは区別して完了を記録する。
+  既存Vitest plugin内部のtransitive Wrangler SDKは保持する。exact e4fbの完全requiredと
+  全8 CIをE161/E162で照合し、この移行確認を完了した。後続Rustls更新sourceの資格は別途照合する。
 
 ## コード・検証: 14件
 
