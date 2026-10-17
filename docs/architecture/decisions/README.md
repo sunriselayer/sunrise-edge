@@ -149,3 +149,4 @@ in [`TODO.md`](../../../TODO.md).
 - [DR-0264: original ordered protocol custody worker](0264-original-ordered-protocol-custody-worker.md)
 - [DR-0265: stopped Native storage-profile software upgrade](0265-stopped-native-storage-profile-upgrade.md)
 - [DR-0268: certified FastVote protocol custody worker](0268-certified-fastvote-protocol-custody-worker.md)
+- [DR-0271: current certified FastVote multi-UID component fixture](0271-certified-fastvote-multiuid-fixture.md)

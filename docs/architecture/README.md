@@ -105,6 +105,8 @@ roadmap describes a later target state.
   ([DR-0268](decisions/0268-certified-fastvote-protocol-custody-worker.md)):
   separate local-OS worker profile for the complete existing certified router,
   with authority/key/confirmed retention together and a keyless HTTP/TLS frontend.
+  The [selected multi-UID fixture](local-certified-protocol-custody-fixture.md)
+  specifies actual paid/quorum/retention, TLS, restart and pre-DrainSet controls.
 - [Publication custody lifecycle](publication-custody-lifecycle.md)
   ([DR-0244](decisions/0244-publication-approval-revocation-and-key-lifecycle.md)):
   durable request cancellation and stopped disposable-key recovery/rotation.
