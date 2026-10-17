@@ -43,8 +43,8 @@ def bounded_read(path, cap):
 
 def make_directory(path, mode, uid=0, gid=0):
     os.mkdir(path, mode)
-    os.chown(path, uid, gid)
     os.chmod(path, mode)
+    os.chown(path, uid, gid)
 
 
 def new_file(path, data, uid=0, gid=0, mode=0o600):
@@ -59,8 +59,8 @@ def new_file(path, data, uid=0, gid=0, mode=0o600):
                 raise RuntimeError('generated file write incomplete')
             offset += written
         os.fsync(fd)
-        os.fchown(fd, uid, gid)
         os.fchmod(fd, mode)
+        os.fchown(fd, uid, gid)
     finally:
         os.close(fd)
 
