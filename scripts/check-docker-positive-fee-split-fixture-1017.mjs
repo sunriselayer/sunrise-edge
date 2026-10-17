@@ -63,7 +63,7 @@ OPERATOR_UID,OPERATOR_GID=12002,12002
 INTRUDER_UID,INTRUDER_GID=12003,12003
 LD='/mnt/libs/ld.so'; LIB='/mnt/libs'; CLI='/mnt/bin/cli'; HARNESS='/mnt/bin/harness'
 END=time.monotonic()+230
-RAW_CAP=262144
+RAW_CAP=655360
 PIPE_CAP=65536
 children=[]; operations=[]; services=[]; peer_controls=[]; approval_evidence=[]; raw_used=0; uncaptured_observed=0; raw_failed=False
 owned={};reaped=set();captures={};signal_controls=[];signal_pids={}
