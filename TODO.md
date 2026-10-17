@@ -319,6 +319,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E115: certified FastVote drain page boundary | `d58c874a`の実UID attemptはAのprepare/retention/replay・有料apply/replay、B新規apply、C保存、元ordered Freeze、frontier初回/再送を通過後、drain-firstでpage.terminalのfixture assertionが失敗。actual1/両実EOF/wait、outer24.301秒 | 完全復号73138 bytes、全125 role recordsのwait/EOF・U+FFFDなし/再構成UTF8 54106 bytes一致、全15 Docker clientsと専有資源解放・1190 source/全入力を照合。親の追加2 read-only不在queriesも0/空。満杯ページはnonterminalとする既存仕様に対し、3 entriesの要求limit3をterminalと誤認。`94eee3b3`で要求limitだけ4へ変更し、実entry数3/terminal/全署名・stage/import/confirm検証と既存limit1の全stream検証を維持。後段drain/union/最終lifecycle合格は未達で、oracle EOFはabort時の二次観測として保存 |
 | E116: positive Split complete-evidence budget amendment | 元97 operationsの実normal prefixと残り固定command/resultだけでframed rawの下限322101 bytesとなり、旧262144-byte上限で完了不能と確認。`f14473ed`のexact no_approval/socket後処理に続き、`a4f6c1a8`でraw allowanceだけ655360 bytesへ変更し、ADR-0270へ2026-10-17の修正理由と有限capture条件を記録 | 全97操作・完全pipe/PTY/command/result bytesを維持。per-stream64KiB/meta256KiB/candidate64KiB・mounted-copy1MiB、512MiB/no swap/64MiB volume・各時間/UID/authority/拒否条件は保持。raw640KiB+meta256KiB+candidate64KiBと通常tar overheadは既存1MiB以内。任意fragmentationの完了保証ではなく、実captureが全量収まった場合だけ成功。旧profile/全失敗証拠/inert component5は保存。新component6/runtimeは未実行 |
 | E117: certified drain-boundary strict producer | 別branch `94eee3b3` / tree`b6aecc27`。要求page limitだけを4へ直した全6 commandsがactual0/両実EOF/wait、inner20.611秒/outer20.680秒。実CargoJSONから新harnessを含む5保持ELFを固定 | 親と独立reviewが1190 source/Git blobs・17 tools・9入力、完全raw744 frames/21 operations、旧4 compiler bins・旧5保持ELFの不変、全PID/cgroup・TMP6回収を確認。component buildのみで、修正後の実UID/TLS後段drain/union/最終lifecycle・全M2/M7の合格は未達 |
+| E118: positive Split 640KiB-profile component gates | 別branch `a4f6c1a8` / tree`65090b4b`。同じ全7 commandsがactual0/両実EOF/wait、inner9.875秒/outer9.961秒。CLI全406 passed/0 failed/7 ignoredと元9 policy/custody controls、追加exporter4 passed/0 failed/0 ignored、strict3crate Clippy・fmt/diffが成功 | 親と独立reviewが1195 source/Git blobs・17 tools・311 archives、完全raw807 frames/17 operationsと実CargoJSON/profile、20 target ELF・新保持CLI lib、旧保持物3個と973 failure files/141 directoriesの保持、全PID/cgroup・TMP6回収を確認。元targetを明示reuseし再compileなし。modified Node/Python fixtureはこのcomponentで未実行で、実97操作のUID/PTY/genuine submission・全M2/M7の成功には数えない |
 
 
 
@@ -439,6 +440,7 @@ E115は `m2-certified-fastvote-fixture-runtime4-independent-qualified-failure-10
 E116は `positive-fee-split-fixed97-raw-budget-1017.json` / append-only addendum、
 `positive-fee-split-uid-a4f6-source-inputs-1017.json` とADR-0270。
 E117は `m2-certified-fastvote-fixture-build6-parent-qualified-1017.json` とactual raw/terminal。
+E118は `positive-fee-split-uid-build6-parent-qualified-1017.json` とactual raw/terminal。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
