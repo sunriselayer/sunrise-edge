@@ -524,7 +524,7 @@ fn frontend(mut config: Config, certified: bool) -> Result<()> {
             StopOwner::install(PreparedLocalObservations::connect(None).map_err(|_| refused())?)?;
         let end: Instant = Instant::now().checked_add(total).ok_or_else(refused)?;
         let app: Application = if certified {
-            let query_config: protocol_config::ProtocolConfig = crate::host_protocol_context::host_query_protocol_config(&resolver, domain, epoch)?;
+            let query_config: protocol_config::ProtocolConfig = crate::host_protocol_context::host_query_protocol_config(&resolver, domain, epoch).map_err(|_| refused())?;
             let target: Arc<native_http::certified_custody::Frontend> = Arc::new(native_http::certified_custody::Frontend::new(socket, worker_uid, validator, domain, &root, resolver, query_config, timeout, end, max_requests, executor.clone())?);
             target.preflight().await?;
             native_http::certified_custody::frontend_router(target)
