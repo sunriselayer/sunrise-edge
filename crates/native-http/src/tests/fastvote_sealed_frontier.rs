@@ -828,6 +828,43 @@ async fn cached_frontier_and_drain_progress_are_genuine_before_sealing_and_block
         0,
         "reading an already-retained cached vote must never sign"
     );
+    #[cfg(target_os = "linux")]
+    {
+        // The new profile returns the very same genuinely committed cached votes
+        // through authenticated IPC and independent frontend certifiers. Preserve
+        // every original direct/core and subsequent sealed-refusal assertion.
+        crate::certified_custody::assert_confirmed_round_trip(
+            router.clone(),
+            &root,
+            signer_id,
+            domain(),
+            resolver(),
+            active_protocol_config(domain()),
+            vec![
+                (
+                    node_wire::FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
+                    frontier_request.clone(),
+                    frontier_bytes.clone(),
+                ),
+                (
+                    node_wire::FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,
+                    drain_request.clone(),
+                    drain_bytes.clone(),
+                ),
+                (
+                    node_wire::FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
+                    Vec::new(),
+                    consensus::encode_frozen_frontier_vote(&finalized_vote).unwrap(),
+                ),
+            ],
+        )
+        .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "cached worker results must not sign again"
+        );
+    }
     let token: PortableSnapshotToken = store.begin_portable_snapshot(&operation, domain()).unwrap();
     let mut seal_request: [u8; 32] = [0xB9; 32];
     seal_request[0] |= 0x80;

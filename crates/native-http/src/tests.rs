@@ -6991,3 +6991,9 @@ async fn sqlite_preinstalled_route_blob_digest_mismatch_refuses_without_mutation
     )
     .await;
 }
+
+// Actual existing certified factory for the separate transport differential controls.
+#[cfg(target_os = "linux")]
+pub(crate) fn certified_custody_test_router() -> Router {
+    fastvote_router::certified_router()
+}

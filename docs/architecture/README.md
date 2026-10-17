@@ -101,6 +101,10 @@ roadmap describes a later target state.
   ([DR-0264](decisions/0264-original-ordered-protocol-custody-worker.md)):
   distinct-UID authority-owning worker and ordered-only HTTP frontend; existing
   protocol owners/bytes retained, with no per-request raw signature endpoint.
+- [Certified FastVote protocol custody](certified-fastvote-protocol-custody.md)
+  ([DR-0268](decisions/0268-certified-fastvote-protocol-custody-worker.md)):
+  separate local-OS worker profile for the complete existing certified router,
+  with authority/key/confirmed retention together and a keyless HTTP/TLS frontend.
 - [Publication custody lifecycle](publication-custody-lifecycle.md)
   ([DR-0244](decisions/0244-publication-approval-revocation-and-key-lifecycle.md)):
   durable request cancellation and stopped disposable-key recovery/rotation.

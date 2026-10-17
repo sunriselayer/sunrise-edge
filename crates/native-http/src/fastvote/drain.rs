@@ -87,15 +87,12 @@ where
     C: Clock + Send + Sync + 'static,
     I: IndexedOutboxIdentitySource + Send + Sync + 'static,
 {
-    if !has_supported_content_type(&headers) || has_unsupported_content_encoding(&headers) {
-        return error_response(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported-fastvote-content",
-        );
+    if let Err(response) = custody_content_guard(&headers) {
+        return response;
     }
-    let body: Bytes = match body {
-        Ok(body) => body,
-        Err(error) => return error_response(error.status(), "body-rejected"),
+    let body: Bytes = match custody_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
     };
     if body.len() > node_wire::MAX_RETAINED_PUBLICATION_SOURCE_REQUEST_BYTES {
         return error_response(
@@ -198,15 +195,12 @@ where
     C: Clock + Send + Sync + 'static,
     I: IndexedOutboxIdentitySource + Send + Sync + 'static,
 {
-    if !has_supported_content_type(&headers) || has_unsupported_content_encoding(&headers) {
-        return error_response(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported-fastvote-content",
-        );
+    if let Err(response) = custody_content_guard(&headers) {
+        return response;
     }
-    let body: Bytes = match body {
+    let body: Bytes = match custody_body(body) {
         Ok(value) => value,
-        Err(error) => return error_response(error.status(), "body-rejected"),
+        Err(response) => return response,
     };
     if body.len() > node_wire::MAX_DRAIN_MEMBER_APPLY_REQUEST_BYTES {
         return error_response(StatusCode::PAYLOAD_TOO_LARGE, "drain-apply-too-large");
@@ -428,15 +422,12 @@ where
     C: Clock + Send + Sync + 'static,
     I: IndexedOutboxIdentitySource + Send + Sync + 'static,
 {
-    if !has_supported_content_type(&headers) || has_unsupported_content_encoding(&headers) {
-        return error_response(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported-fastvote-content",
-        );
+    if let Err(response) = custody_content_guard(&headers) {
+        return response;
     }
-    let body: Bytes = match body {
+    let body: Bytes = match custody_body(body) {
         Ok(value) => value,
-        Err(error) => return error_response(error.status(), "body-rejected"),
+        Err(response) => return response,
     };
     if body.len() > node_wire::MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES {
         return error_response(StatusCode::PAYLOAD_TOO_LARGE, "drain-page-too-large");
@@ -521,19 +512,16 @@ where
     C: Clock + Send + Sync + 'static,
     I: IndexedOutboxIdentitySource + Send + Sync + 'static,
 {
-    if !has_supported_content_type(&headers) || has_unsupported_content_encoding(&headers) {
-        return error_response(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported-fastvote-content",
-        );
+    if let Err(response) = custody_content_guard(&headers) {
+        return response;
     }
     let validator_bytes: [u8; 32] = match decode_hex64_selector(&validator_hex) {
         Some(value) => value,
         None => return error_response(StatusCode::BAD_REQUEST, "invalid-drain-validator"),
     };
-    let body: Bytes = match body {
+    let body: Bytes = match custody_body(body) {
         Ok(value) => value,
-        Err(error) => return error_response(error.status(), "body-rejected"),
+        Err(response) => return response,
     };
     if body.len() > MAX_ENCODED_BUNDLE_BYTES {
         return error_response(StatusCode::PAYLOAD_TOO_LARGE, "drain-bundle-too-large");
@@ -622,15 +610,12 @@ where
     C: Clock + Send + Sync + 'static,
     I: IndexedOutboxIdentitySource + Send + Sync + 'static,
 {
-    if !has_supported_content_type(&headers) || has_unsupported_content_encoding(&headers) {
-        return error_response(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported-fastvote-content",
-        );
+    if let Err(response) = custody_content_guard(&headers) {
+        return response;
     }
-    let body: Bytes = match body {
+    let body: Bytes = match custody_body(body) {
         Ok(value) => value,
-        Err(error) => return error_response(error.status(), "body-rejected"),
+        Err(response) => return response,
     };
     if body.len() > node_wire::MAX_DRAIN_MEMBER_CONFIRM_REQUEST_BYTES {
         return error_response(StatusCode::PAYLOAD_TOO_LARGE, "drain-confirm-too-large");
@@ -706,15 +691,12 @@ where
     C: Clock + Send + Sync + 'static,
     I: IndexedOutboxIdentitySource + Send + Sync + 'static,
 {
-    if !has_supported_content_type(&headers) || has_unsupported_content_encoding(&headers) {
-        return error_response(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported-fastvote-content",
-        );
+    if let Err(response) = custody_content_guard(&headers) {
+        return response;
     }
-    let body: Bytes = match body {
+    let body: Bytes = match custody_body(body) {
         Ok(value) => value,
-        Err(error) => return error_response(error.status(), "body-rejected"),
+        Err(response) => return response,
     };
     if body.len() > node_wire::MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES {
         return error_response(StatusCode::PAYLOAD_TOO_LARGE, "drain-union-too-large");
@@ -814,15 +796,12 @@ where
     C: Clock + Send + Sync + 'static,
     I: IndexedOutboxIdentitySource + Send + Sync + 'static,
 {
-    if !has_supported_content_type(&headers) || has_unsupported_content_encoding(&headers) {
-        return error_response(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported-fastvote-content",
-        );
+    if let Err(response) = custody_content_guard(&headers) {
+        return response;
     }
-    let body: Bytes = match body {
+    let body: Bytes = match custody_body(body) {
         Ok(value) => value,
-        Err(error) => return error_response(error.status(), "body-rejected"),
+        Err(response) => return response,
     };
     if body.len() > node_wire::MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES {
         return error_response(StatusCode::PAYLOAD_TOO_LARGE, "drain-progress-too-large");

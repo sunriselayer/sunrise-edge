@@ -90,6 +90,13 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     }
     if tokens
         .first()
+        .is_some_and(|value| value == "certified-worker" || value == "certified-frontend")
+    {
+        let worker: bool = tokens.remove(0) == "certified-worker";
+        return crate::protocol_custody::run_certified(worker, tokens);
+    }
+    if tokens
+        .first()
         .is_some_and(|value| value == "anchor-checkpoint")
     {
         tokens.remove(0);
@@ -173,7 +180,13 @@ fn run_original(tokens: Vec<OsString>, worker: Option<WorkerMode>) -> Result<(),
     } else {
         flags.one("--listen")?
     };
-    let created_checkpoint: u64 = if worker.is_some() {
+    #[cfg(target_os = "linux")]
+    let certified_worker: bool = worker
+        .as_ref()
+        .is_some_and(crate::protocol_custody::Worker::is_certified);
+    #[cfg(not(target_os = "linux"))]
+    let certified_worker: bool = false;
+    let created_checkpoint: u64 = if worker.is_some() && !certified_worker {
         "0".into()
     } else {
         flags.one("--created-checkpoint")?
@@ -383,6 +396,28 @@ fn run_original(tokens: Vec<OsString>, worker: Option<WorkerMode>) -> Result<(),
 
     #[cfg(target_os = "linux")]
     if let Some(worker) = worker {
+        if worker.is_certified() {
+            let router = certified_fastvote_router_with_executor(
+                components,
+                fastvote,
+                protocol_config,
+                authority,
+                node_config,
+                resolver,
+                Vec::new(),
+                blocking_executor.clone(),
+            )
+            .map_err(|error| format!("failed to compose certified FastVote router: {error}"))?;
+            return worker.serve_certified(
+                router,
+                blocking_executor,
+                native_http::certified_custody::Identity::new(
+                    validator,
+                    domain,
+                    root.digest().bytes(),
+                ),
+            );
+        }
         return worker.serve(
             ordered_router,
             blocking_executor,
