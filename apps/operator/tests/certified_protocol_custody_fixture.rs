@@ -1633,18 +1633,17 @@ fn closed_after_freeze() {
         )
         .into();
     let bytes: Vec<u8> = encode_signed_paid_intent(&fresh).unwrap();
+    authenticate_paid_intent(&resolver(), &context(), &bytes).unwrap();
     for endpoint in endpoints() {
-        assert_eq!(
-            send(
-                &endpoint,
-                Method::Post,
-                FASTVOTE_PREPARE_PATH,
-                Some(NODE_EVENT_MEDIA_TYPE),
-                bytes.clone()
-            )
-            .status,
-            400
+        let response: WireResponse = send(
+            &endpoint,
+            Method::Post,
+            FASTVOTE_PREPARE_PATH,
+            Some(NODE_EVENT_MEDIA_TYPE),
+            bytes.clone(),
         );
+        assert_eq!(response.status, 500);
+        assert_eq!(response.body, b"invalid-node-output");
         let ack: Vec<u8> = success(
             send(
                 &endpoint,
