@@ -282,6 +282,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E83: compiled complete checkpoint and prior-release upgrade | `07ebbc5a` / tree`c66689d9`のdefault TLS15 passed/1 ignoredがactual0/EOF、42.422秒。4台の実pack/open・旧source不在・独立authority一致・fresh fence/有料取引が成功。明示的な旧9de6 RELEASEを使う追加upgradeもactual0/EOF、5.490秒で全旧4台の取引→停止→schema identityだけの移行→旧版拒否/停止bytes不変→新fence3/新規取引/再送に成功 | owning全体はClippyのテスト内空文字比較1箇所でactual1/EOF、238.042秒の失敗として保持し、成功prefixを別途資格照合。等価な`is_empty`への変更だけの`fee693ff` / tree`4ac28a26`でfmt/全target全feature strict Clippy/diffはactual0/EOF、5.580秒。1174 tracked inputs・実driver/旧ELF/rawを親で再hash。全体required/CI・Native・全M4は未完了 |
 | E84: original ordered multi-UID build/inventory and first setup failure | `44077af2` / tree`7e67ceeb`で4 bins + ignored fixture harnessの実CargoJSON build、fmt、Node/Python構文、strict Clippyの全6 commandsがactual0/両EOF/wait、owning15.83秒。5 ELFは通常0755のまま別inodeへ保持。read-only inventoryもactual0、0.59秒で12 source/5 ELF/4 loader-librariesを照合 | 最初のbuildのunused shared test helper失敗を保存し、単一関数だけに理由付きlint属性を追加。実UID fixture初回はdirectory chmodのEPERMでactual1/両EOF/wait、1.17秒、role child開始0。専有container/volume解放と不在を再確認。権限設定を所有権移譲前へ移す限定修正を統合し、修正後の実UID owningは未実行。build成功をM2/runtime成功に数えない |
 | E85: partial-write mechanism refusal and stopped assessment | 別の小さいQEMU mechanismは実`max-transfer512`の制約拒否でactual1、0.285秒。子processのEOF/wait/reap/socket不在、実disk全old bytesと失敗rawを保存 | mixed bytes・SQLite/WAL・M3成功には数えない。続く実WAL source assessmentはprovider safetyで停止し、再試行・別agentへの迂回を行わない。supporting mechanism2の準備sourceも未実行で保全。独立anchorの9 casesと、この停止taskは別に扱う |
+| E86: anchored SQLite library and failed first guest boot | `80c028a9` / tree`11e9044c`でSQLite lib全120 passed/7 ignored、3 packagesの全target全feature strict Clippy、fmt/diffの全5 commandsがactual0/両EOF/wait、19.84秒。前のbuild ownerは実CargoJSON package IDの照合誤りで失敗したまま保持し、正しいIDだけで別attemptを実行 | 1180 tracked inputs・18 VM inputs・通常0755の保持ELFを親で再hash。初回guestはinit exit76でactual1、2.07秒、product control成功0。全6 childrenのEOF/wait/reap・socket不在・raw/imagesを保持。続くboot修正taskもprovider safetyで停止したため、再試行・迂回せず未達を保持。library成功を9 boundariesの実guest成功へ読み替えない |
+| E87: original ordered multi-UID second setup failure | `80c028a9`の新build/inventoryはactual0。実UID owningは準備probe成功後、実authorの親directory読み取りでEACCESとなりactual1/両EOF/wait、1.54秒。全15 Docker clientsのwait/EOF/PID不在と専有container/volume解放・不在を親で再確認 | `6e84e3a1`でroot-owned public routing ancestorsだけを0755へ合わせた。private leaves0700・private files0600・caps・拒否controlsを維持。修正後の実4-worker/4-frontend owningは未実行で、M2/runtime成功には数えない |
 
 
 
@@ -327,6 +329,15 @@ E83は `checkpoint-upgrade-owning4-1017-terminal.json` / `.log` と
 Clippy修正後は `checkpoint-upgrade-lint5-parent-qualified-1017.json` と
 `checkpoint-upgrade-lint5-1017-terminal.json` / `.log`、raw SHA-256は
 `2ff7660d6181f881204905cc2e30da0703f09052962b74c38e62ce6a99f28a26`。
+E86は `m3-anchored-library-build2-parent-qualified-failure-1017.json` /
+`m3-anchored-library-build3-parent-qualified-1017.json` /
+`m3-anchored-vm1-parent-qualified-failure-1017.json` と `qga1017a/terminal.json`。
+guest raw SHA-256は `e33c54ab54e106080bb810b729fbefe56607ac10611cc4778621429b7318b998`。
+停止は `m3-anchored-boot-provider-stop-1017.json` に保持する。
+E87は `m2-ordered-fixture-build3-parent-qualified-1017.json` /
+`m2-ordered-fixture-inventory3-parent-qualified-1017.json` /
+`m2-ordered-fixture-runtime3-parent-qualified-failure-1017.json` と
+`m2-ordered-fixture-runtime3-1017-terminal.json` / `-complete.json`。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -681,7 +692,9 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     frontendは鍵/DB/fenceを持たない。E82のfunctional controlsと独立source reviewは成功。
     別UID・TLS・停止/restart/replay fixtureを実装。E84で5 ELFのbuild/strict Clippyと
     全入力inventoryは成功したが、初回runtimeは準備時のEPERMで失敗。所有権移譲前に
-    権限を設定する修正を統合し、修正後の実4-worker/4-frontend owningは未実行。
+    権限を設定し、E87の次attemptで準備probeは成功したが実authorのEACCESで失敗。
+    public routing ancestorsだけを0755へ合わせ、private leaves/拒否controlsは保持。
+    この修正後の実4-worker/4-frontend owningは未実行。
     後継epoch・FastVote/readiness・他signing family・全M2へ転用しない。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
@@ -720,7 +733,9 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     Pendingと旧sourceの不一致は既存契約どおり安全停止し、完全new sourceとPendingが
     一致する場合だけ既存factoryで照合・確定してfresh fence/new workへ進む。
     通常profileのE79を流用せず、全12+2+authority tablesとpositive bodiesを検証する。
-    source/controllerの実build・guest owningは未実行。
+    E86でSQLite library全120件・strict Clippyは成功したが、実guestは初期化時に失敗し、
+    product control成功0。boot修正taskもprovider safetyで停止したため再試行・迂回しない。
+    source/raw/imagesを保持し、9 boundariesの実guest owningは未達として残す。
   - [ ] selected virtual deviceのpartial persistent write:
     元のgeneric torn-write条件を保持。実WAL extent・対象sector・混在した保存bytesと
     cold receipt-first none/allを対応付ける。単なるEIOやtransfer上限だけで完了にしない。
