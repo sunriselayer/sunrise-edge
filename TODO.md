@@ -331,6 +331,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E127: certified exact-refusal strict producer | `5d8d7f46`の全6 commandsがactual0/両実EOF/wait、inner21.244秒/outer21.334秒。完全raw725 frames/904514 bytes/21 operations、新harnessを含む5実CargoJSON保持ELFを固定 | 1190 source/Git・17 tools・9入力、旧4 compiler bins/旧5保持ELF不変と全PID/cgroup/TMP8回収を親と独立reviewで照合。component成功のみで、修正後の実別UID/TLS後段lifecycleは別attemptで検証する |
 | E128: genuine positive Split actual distinct-UID protected submission | `207ea842`で元first-successor selectorが1 passed/0 failed/0 ignored、actual0/両実EOF/wait、inner49.791秒/outer49.870秒。別UIDのLeg/Claim承認・署名・取消・鍵復旧・再起動・expiryと実protected Aの元ordered提出が成功 | 完全outer152 frames/13 operations、inner351 frames/97 operations、22 host operations、8 successful PTY/2拒否、8canonical approvalsと9exact normal socket wait/不在/FD閉鎖を照合。raw456372/meta320761/tar783360 bytesを全量保持。1195 source/Git・全tools/runtime bindings、旧1581 failure files/270 dirs/保持4個と309保持files/64 dirs、全37 saved host PIDs/cgroup/TMP回収を確認。既知fixture鍵の選択範囲であり、本番鍵秘匿・全M2/M7・統合head全体の資格ではない |
 | E129: certified FastVote actual distinct-UID/TLS lifecycle | `5d8d7f46`の実4-worker/4-keyless-TLS fixtureがactual0/両実EOF/wait、outer30.526秒。全39 required controls・147 roles・27 probes・32 read-only SQL oracle exchangesが成功。4つの明示startup拒否だけexit1 | 完全wire10430 bytes/復号84355 bytesを厳密照合し、全childにU+FFFDなし・再構成UTF8 59099 bytes一致。全17 Docker clientsが0で終了し、専有資源は明確に削除。全1190 source/Git・5 ELF/4 libraries・toolsと旧失敗を保存。3署名family、A/B実apply/保存済み再送、C pre-import409/no-DrainSet409・nonce2/C未適用、元ordered Freeze、frontier/union3とfence6再開後の全source/body/anchor imageを検証。親の追加2不在queriesも0/空。全M2/M7・統合head全体の資格にはしない |
+| E130: final7658 literal complete required | `7658629a` / tree`7ab61388`でliteral npm ci --prefix adapters/cloudflare-workers と ./scripts/check-all.sh がともにactual0/merged pipe実EOF/wait。inner合計15878.474秒、完全log706439 bytes。Rust145 summariesの合計4366 passed/0 failed/39 ignored、元3 extended lanesと各provider checksが成功 | 1180 source/Git・50 tools/aliases・311 locked archive checksumsと元8links/e8terminal withdrawals/35roles/delay7 assertionsを照合。unit invocation一致/最終journal/owner MainPID0/ExecMain0、cgroupと既知owner/Cargo/fixture PIDs不在を確認。detached dispatchのためlong outer capture/両外部EOF/reapを主張しない。既存TMP/cacheは保持。7658の選択required資格であり、新統合head・原12 RELEASE runtime・hosted CI・全M7/監査/公開の資格ではない |
 
 
 
@@ -463,6 +464,7 @@ E126は `m7-canonical-mutation-build1-parent-qualified-1017.json` / independent 
 E127は `m2-certified-fastvote-fixture-build8-parent-qualified-1017.json` とactual raw/receipt/terminal。
 E128は `positive-fee-split-uid-genuine5-parent-qualified-1017.json` / actual-runtime qualificationとcomplete retained public evidence。
 E129は `m2-certified-fastvote-fixture-runtime7-parent-qualified-1017.json` / independent qualificationとactual complete/raw/decoded success。
+E130は `technical-six-required-final-parent-qualified-1017.json` / independent qualificationとactual merged log/terminal/journal。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
