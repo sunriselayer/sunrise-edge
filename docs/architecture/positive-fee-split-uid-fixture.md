@@ -98,8 +98,12 @@ no stdout/stderr EOF is invented for it. Three fixed-role regression children
 must be killed and reaped under UID12001/12002/12003. All failure cleanup shares
 one5-second deadline. Signal, drain, reap, accounting or fsync failures cannot
 skip the separate bounded metadata-finalization attempt. Failure drains retain
-only bounded stream prefixes and record observed byte counts and incomplete
-capture; they cannot become a successful complete transcript.
+only64KiB per pipe stream and record observed byte counts and incomplete capture;
+exceeding that admission bound kills/drains/reaps within the same cleanup budget
+and cannot become a successful complete transcript. Liveness/concurrency uses
+non-reaping `waitid` with `WNOWAIT`. An exited child's PID remains held until its
+recorded final wait; every actual wait updates the reaped registry before a
+later signal can be considered. No `Popen.poll()` may release that ownership.
 
 The original inline owner uses the existing8GiB/swap0/CPU2/tasks512/2500s envelope.
 The separately bounded Docker payload uses512MiB/no extra swap/CPU1/pids64,

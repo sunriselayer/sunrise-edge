@@ -64,9 +64,10 @@ INTRUDER_UID,INTRUDER_GID=12003,12003
 LD='/mnt/libs/ld.so'; LIB='/mnt/libs'; CLI='/mnt/bin/cli'; HARNESS='/mnt/bin/harness'
 END=time.monotonic()+230
 RAW_CAP=262144
+PIPE_CAP=65536
 children=[]; operations=[]; services=[]; peer_controls=[]; approval_evidence=[]; raw_used=0; uncaptured_observed=0; raw_failed=False
-owned={};reaped=set();captures={};signal_controls=[]
-raw_fd=None
+owned={};reaped=set();captures={};signal_controls=[];signal_pids={}
+raw_fd=None;failure_cleanup_end=None
 
 def left():
     value=END-time.monotonic()
@@ -100,8 +101,23 @@ def demote(uid,groups):
         os.setgroups(groups);os.setgid(uid);os.setuid(uid)
     return action
 
+def child_running(pid):
+    if pid in reaped:return False
+    if pid not in owned:raise RuntimeError('liveness target is not an owned child')
+    # Observe only. Keeping an exited child unreaped holds its PID until the
+    # single recorded final wait, including the saved-UID signal handoff.
+    try:observed=os.waitid(os.P_PID,pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
+    except ChildProcessError:raise RuntimeError('owned child was reaped outside its recorded wait')
+    if observed is not None and observed.si_pid!=pid:raise RuntimeError('owned child wait observation differs')
+    return observed is None
+
+def failure_cleanup_budget():
+    global failure_cleanup_end
+    if failure_cleanup_end is None:failure_cleanup_end=time.monotonic()+5
+    return failure_cleanup_end
+
 def launch(argv,uid,groups,env=None):
-    if sum(p.poll() is None for p in children)>=8: raise RuntimeError('positive concurrent child cap exceeded')
+    if sum(child_running(p.pid) for p in children)+len(pty_pids)+len(signal_pids)>=8: raise RuntimeError('positive concurrent child cap exceeded')
     item=before(argv,uid,groups,'pipes')
     p=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                        preexec_fn=demote(uid,groups),env=env or {},cwd='/')
@@ -116,10 +132,11 @@ def signal_owned(pid,sig,deadline):
     # from immutable PID/UID attribution saved before work and remains unreaped.
     if pid in reaped:return True
     if pid not in owned:raise RuntimeError('signal target is not an owned child')
+    child_running(pid)  # A terminal observation still leaves this exact PID held.
     uid,target_index=owned[pid]
     if uid not in (CUSTODY_UID,OPERATOR_UID,INTRUDER_UID):raise RuntimeError('signal UID is not a fixed role')
     if sig not in (signal.SIGKILL,signal.SIGTERM):raise RuntimeError('signal kind outside cleanup profile')
-    if sum(p.poll() is None for p in children)+len(pty_pids)>=8:raise RuntimeError('signal-owner concurrent child cap')
+    if sum(child_running(p.pid) for p in children)+len(pty_pids)+len(signal_pids)>=8:raise RuntimeError('signal-owner concurrent child cap')
     item=before([],uid,[uid],'signal-owner')
     item.update(noPipes=True,forkAction='signal-saved-owned-child',targetPid=pid,targetOperation=target_index,signal=int(sig))
     helper=os.fork()
@@ -132,11 +149,11 @@ def signal_owned(pid,sig,deadline):
             except PermissionError:os._exit(4)
             os._exit(0)
         except BaseException:os._exit(5)
-    item['pid']=helper;status=None
+    item['pid']=helper;signal_pids[helper]=item['index'];status=None
     end=min(deadline,time.monotonic()+1)
     while status is None and time.monotonic()<end:
         got,value=os.waitpid(helper,os.WNOHANG)
-        if got:status=value
+        if got:status=value;reaped.add(helper);del signal_pids[helper]
         else:time.sleep(.005)
     item.update(waitCompleted=status is not None,pidAbsent=not os.path.exists('/proc/'+str(helper)),exit=os.waitstatus_to_exitcode(status) if status is not None else None)
     frame({'operation':item['index'],'stream':'result'},json.dumps(item,sort_keys=True).encode())
@@ -154,9 +171,9 @@ def finish(p,item,timeout=20,cleanup_deadline=None):
         if not item[name+'Eof']:
             pipes[handle.fileno()]=(name,buffers[name]);os.set_blocking(handle.fileno(),False)
     failure=None;kill_end=None
-    while pipes or p.poll() is None:
+    while pipes or child_running(p.pid):
         if failure is None and time.monotonic()>=deadline:
-            failure='owned child deadline';kill_end=time.monotonic()+5 if cleanup_deadline is None else cleanup_deadline
+            failure='owned child deadline';kill_end=failure_cleanup_budget() if cleanup_deadline is None else cleanup_deadline
             try:signal_owned(p.pid,signal.SIGKILL,kill_end)
             except BaseException as error:failure+='; '+repr(error)
         if kill_end is not None and time.monotonic()>=kill_end:raise RuntimeError('owned child reap/EOF unresolved: '+failure)
@@ -166,9 +183,18 @@ def finish(p,item,timeout=20,cleanup_deadline=None):
                 item[name+'ObservedBytes']+=len(data)
                 # A failed raw capture still drains/reaps under the same deadline,
                 # but cannot grow an unbounded in-memory failure transcript.
-                remaining=RAW_CAP-len(buf)
+                remaining=PIPE_CAP-len(buf)
                 if remaining>0:buf.extend(data[:remaining])
-                frame({'operation':item['index'],'stream':name},data)
+                try:frame({'operation':item['index'],'stream':name},data)
+                except BaseException as error:
+                    if not raw_failed:raise
+                    failure=failure or repr(error)
+                if item[name+'ObservedBytes']>PIPE_CAP:
+                    item['pipeStreamCapExceeded']=True;failure=failure or 'complete pipe stream exceeds64KiB'
+                if failure is not None and kill_end is None:
+                    kill_end=failure_cleanup_budget() if cleanup_deadline is None else cleanup_deadline
+                    try:signal_owned(p.pid,signal.SIGKILL,kill_end)
+                    except BaseException as error:failure+='; '+repr(error)
             else:item[name+'Eof']=True;del pipes[fd]
     p.wait(timeout=max(.001,min(1,deadline-time.monotonic())));reaped.add(p.pid)
     item.update(waitCompleted=True,exit=p.returncode,pidAbsent=not os.path.exists('/proc/'+str(p.pid)))
@@ -295,17 +321,17 @@ def approve(case,phase,ttl=600,success=True):
                         expiry=int(line[len(expected):]);os.write(fd,(line+'\n').encode('ascii'));sent=True
             if status is None:
                 got,status_value=os.waitpid(pid,os.WNOHANG)
-                if got:status=status_value
+                if got:status=status_value;reaped.add(pid)
     except BaseException as e:
         error=e
     finally:
         if status is None:
-            cleanup_end=time.monotonic()+5
+            cleanup_end=failure_cleanup_budget()
             try:signal_owned(pid,signal.SIGKILL,cleanup_end)
             except BaseException as caught:error=error or caught
             while status is None and time.monotonic()<cleanup_end:
                 got,value=os.waitpid(pid,os.WNOHANG)
-                if got:status=value
+                if got:status=value;reaped.add(pid)
                 else:time.sleep(.01)
         os.close(fd)
         if status is not None:pty_pids.discard(pid);reaped.add(pid)
@@ -330,7 +356,7 @@ def start(count,key=None):
              '--max-connections',str(count),'--max-requests',str(count),'--total-deadline-secs','30')
     p,item=launch(argv,CUSTODY_UID,[CUSTODY_GID]);end=time.monotonic()+min(5,left())
     while not os.path.exists(SOCKET):
-        if p.poll() is not None or time.monotonic()>end:raise RuntimeError('positive serve did not bind')
+        if not child_running(p.pid) or time.monotonic()>end:raise RuntimeError('positive serve did not bind')
         time.sleep(.02)
     s=os.lstat(SOCKET)
     if not stat.S_ISSOCK(s.st_mode) or stat.S_IMODE(s.st_mode)!=0o660 or s.st_uid!=CUSTODY_UID:raise RuntimeError('socket identity/mode')
@@ -454,7 +480,7 @@ def main():
     listener_process,listener_item=launch(['/usr/local/bin/python3','-I','-B','-c',listener,impostor],INTRUDER_UID,[INTRUDER_GID])
     ready=time.monotonic()+min(3,left())
     while not os.path.exists(impostor):
-        if listener_process.poll() is not None or time.monotonic()>ready:raise RuntimeError('impostor listener did not bind')
+        if not child_running(listener_process.pid) or time.monotonic()>ready:raise RuntimeError('impostor listener did not bind')
         time.sleep(.01)
     bad=OROOT+'/cases/A/impostor.leg'
     _out,err=run(cli('custody','sign-fee-split-leg',*OARGS,'--request',OROOT+'/cases/A/leg.request','--custody-socket',impostor,'--custody-uid',str(CUSTODY_UID),'--custody-expected-public-key',pins['claimant'],'--out',bad),OPERATOR_UID,[OPERATOR_GID],success=False)
@@ -547,15 +573,15 @@ try:
 except BaseException as error:
     failure=repr(error)
 finally:
-    cleanup_end=time.monotonic()+5
+    cleanup_end=failure_cleanup_budget()
     # A kill, reap or drain error must never skip later children or metadata.
     for process in children:
         try:
-            if process.poll() is None:signal_owned(process.pid,signal.SIGKILL,cleanup_end)
+            if child_running(process.pid):signal_owned(process.pid,signal.SIGKILL,cleanup_end)
             item=operations[owned[process.pid][1]]
             if not item.get('waitCompleted') or not item.get('captureComplete'):
                 finish(process,item,cleanup_deadline=cleanup_end)
-            else:process.wait(timeout=max(.001,cleanup_end-time.monotonic()))
+            else:process.wait(timeout=max(.001,cleanup_end-time.monotonic()));reaped.add(process.pid)
         except BaseException as error:failure=(failure or '')+'; child cleanup unresolved '+repr(error)
     for pid in list(pty_pids):
         try:
@@ -566,6 +592,18 @@ finally:
                 time.sleep(.005)
             if status is None:raise RuntimeError('PTY reap unresolved')
         except BaseException as error:failure=(failure or '')+'; PTY cleanup unresolved '+repr(error)
+    for pid,index in list(signal_pids.items()):
+        try:
+            status=None
+            while time.monotonic()<cleanup_end:
+                got,value=os.waitpid(pid,os.WNOHANG)
+                if got:status=value;reaped.add(pid);del signal_pids[pid];break
+                time.sleep(.005)
+            item=operations[index]
+            item.update(waitCompleted=status is not None,pidAbsent=not os.path.exists('/proc/'+str(pid)),exit=os.waitstatus_to_exitcode(status) if status is not None else None)
+            frame({'operation':index,'stream':'result'},json.dumps(item,sort_keys=True).encode())
+            if status is None:raise RuntimeError('UID signal owner final reap unresolved')
+        except BaseException as error:failure=(failure or '')+'; UID signal owner cleanup '+repr(error)
     try:
         if raw_fd is not None:os.fsync(raw_fd)
     except BaseException as error:failure=(failure or '')+'; raw fsync '+repr(error)
