@@ -305,6 +305,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E101: certified FastVote UID fixture compile failure | 別branch `77978850` / tree`391d0362`。four-bin compileはactual0/429.609秒。続く追加ignored harness compileはactual101で停止し、outeractual1/両実EOF/wait、463.679秒。後続syntax/fmt/strict Clippy、inventory・Docker/runtimeは未実行 | 独立に1190 source・17 tools・完全raw838 frames/7 operationsと四つの実CargoJSON bin identities、失敗TMP/target、全PID/cgroupとouter終端を照合。保持ELF directory・build receipt・harness ELFは未生成。ObjectEffectのimport先とDrainSignerProgressRequest.signer参照の2件だけを `b8edcabb` で修正し、全assertions/oraclesを維持。修正後producer2・実別UID/TLS・統合/全体qualificationは未完了。旧失敗rawを成功へ置換しない |
 | E102: positive Split UID component strict-lint failure | 別branch `1ed3e8f`。CLI全406 passed/0 failed/7 ignoredと追加genuine/exporter helper compileはactual0。続くstrict Clippyは未使用ExternalSigner importのためactual101。outeractual1/両実EOF/wait、943.091秒 | 全1195 source・17 tools・20実ELF、完全raw1561 frames/10 operations、全PID/cgroup回収を独立照合。failed TMP/targetと旧rawを保持。fmt/diff・実別UID/PTY・genuine inline submissionは未実行。`a41bd6c5`でimportのみ修正し、同じ全gatesの再検証を準備。全M2/M7の成功には数えない |
 | E103: certified FastVote UID fixture version-binding compile failure | 別branch `b8edcabb`。four-bin compileはactual0、追加harnessはobject.versionのu64をrusqliteへ直接渡す型誤りE0277でactual101。outeractual1/両実EOF/wait、1.933秒 | 全1190 source・17 tools・完全raw389 frames/7 operationsと既存四つの実bin不変を独立照合。追加harness/保持5ELF receipt・後続gates・inventory/runtimeは未生成または未実行。`71d79292`で実ownerの8-byte big-endian BLOB表現へ検証queryだけを合わせ、元canonical bytes assertionを維持。修正後producerは未実行。旧失敗とTMP/targetを保持し、成功へ置換しない |
+| E104: positive Split UID component strict gates | 別branch `a41bd6c5` / tree`656f11f9`。同じ全6 commandsがactual0/両実EOF/wait、inner81.108秒/outer81.181秒。CLI全406 passed/0 failed/7 ignored、新4 policy/5 custody controls、genuine helper compile・strict3crate Clippy・fmt/diffが成功 | 親が1195 source/Git blobs・17 tools、完全raw878 frames/16 operations/548 CargoJSONと現19 target ELF+新保持CLI libを再照合。旧target18 identitiesは不変、CLI libだけ正当なactual再compileとして明示し、旧保持物と全失敗証拠を保存。全PID/cgroup・TMP回収。追加UID probeはcompileのみで、実genuine/UID/PTY/全M2/M7は未達 |
+| E105: certified FastVote actual five-ELF producer | 別branch `71d79292` / tree`6fe0772b`。全6 build/構文/fmt/strict Clippy commandsがactual0/両実EOF/wait、inner218.836秒/outer218.924秒。実CargoJSONから4 binsと追加harnessを通常0755・single link・別inodeの5保持ELFへ固定 | 親が1190 source/Git blobs・17 tools、完全raw770 frames/21 operations/728 CargoJSON、全5 source/保持物・既存4 binsの全前後identityを再照合。target1の明示reuseでfresh buildとは呼ばない。全PID/cgroup・TMP3回収、過去2失敗は保持。追加harnessは未実行で、inventory・実別UID/TLS/全M2/M7の成功には数えない |
 
 
 
@@ -407,6 +409,8 @@ E100は `certified-fastvote-component5-parent-qualified-1017.json` とactual raw
 E101は `m2-certified-fastvote-fixture-build1-independent-qualified-failure-1017.json` とactual raw/terminal。
 E102は `positive-fee-split-uid-build2-independent-failure-qualified-1017.json` とactual raw/terminal。
 E103は `m2-certified-fastvote-fixture-build2-independent-qualified-failure-1017.json` とactual raw/terminal。
+E104は `positive-fee-split-uid-build3-parent-qualified-1017.json` とactual raw/terminal。
+E105は `m2-certified-fastvote-fixture-build3-parent-qualified-1017.json` とactual raw/terminal。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -769,6 +773,19 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     actual0/両EOF/wait。全76 role childrenを回収し、署名・不正UID拒否・停止中503・
     再起動fence3/保存済み再送・QC・新規height2を検証。完全rawと専有資源の不在を照合。
     後継epoch・FastVote/readiness・他signing family・全M2へ転用しない。
+  - [x] [positive Standard Asset fee-claim Splitの操作内容policyとprepare consumers](docs/architecture/positive-fee-claim-split-policy.md):
+    E96/E99で実genuine後継authority・保存host request/intentと、元oracleとの署名対象byte一致を確認。
+    E104で追加UID fixtureを含む現componentのCLI406件とstrict gatesが成功。
+    immutableな意味の確認であり、現在のescrow残高・nonce・entitlementの保証にはしない。
+  - [x] [certified FastVote protected workerの通常component](docs/architecture/certified-fastvote-protocol-custody.md):
+    E100のnative245件/operator159件とstrict gatesを確認。鍵・DB・独立anchor/fenceはworkerだけが持ち、
+    frontendはclosed contractと既存coreのauthority/confirmed retentionを保持する。
+  - [ ] [genuine positive Splitの別UID・PTY lifecycle](docs/architecture/positive-fee-split-uid-fixture.md):
+    component build成功後、Leg/Claim両phaseの承認・署名・取消・鍵復旧・再起動と、
+    元genuine selector内で実protected candidateを提出する追加fixtureの実行を準備中。
+  - [ ] [certified FastVoteの実別UID・TLS lifecycle](docs/architecture/local-certified-protocol-custody-fixture.md):
+    修正後の5 ELF producerは成功。実署名・保存済み再送・停止中拒否・fence/restart・
+    frontier/progress/readinessと独立read-only SQL oracleの実行は未完了。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
