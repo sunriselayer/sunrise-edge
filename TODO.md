@@ -30,7 +30,7 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   このDraftの存在を完全required/CI・Nativeまたは親項目の完了には数えません。
   positive Splitとcertified FastVoteの追加実装は、別の統合branch
   `codex/positive-certified-integration-1017` の `3b4aa7ff` に通常mergeしました。
-  このbranchの結合後検証・追加UID fixtureは未完了です。7658で継続中の
+  追加UID fixtureはE128/E129で選択範囲の実行・照合が完了し、このbranchの結合後全体検証を進めます。7658で実施した
   完全required/CI・原12 RELEASE runtimeの結果を、この新sourceへ付け替えません。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
@@ -330,6 +330,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E126: bounded canonical mutation actual campaign | 統合head `ab8ff2da` / tree`2b3c93f2`で4固定seeds・256 originals/4096 mutations/12固定controlsの4364 decoder inputsを検査する非ignored testが1 passed/0 failed/0 ignored。crate全target/all-feature strict Clippyと追加test rustfmtもactual0 | 完全raw33 frames/11 operations、1207 source/Git・15 tools・311 checksum-pinned archives、実Cargo Running由来ELFと全PID/cgroup/TMPを親と独立reviewで照合。inner2.763秒/outer2.830秒。有限の固定入力campaignで、unique inputs/各case transcript・coverage-guided/exhaustive fuzz・security監査・全M7の成功とは呼ばない |
 | E127: certified exact-refusal strict producer | `5d8d7f46`の全6 commandsがactual0/両実EOF/wait、inner21.244秒/outer21.334秒。完全raw725 frames/904514 bytes/21 operations、新harnessを含む5実CargoJSON保持ELFを固定 | 1190 source/Git・17 tools・9入力、旧4 compiler bins/旧5保持ELF不変と全PID/cgroup/TMP8回収を親と独立reviewで照合。component成功のみで、修正後の実別UID/TLS後段lifecycleは別attemptで検証する |
 | E128: genuine positive Split actual distinct-UID protected submission | `207ea842`で元first-successor selectorが1 passed/0 failed/0 ignored、actual0/両実EOF/wait、inner49.791秒/outer49.870秒。別UIDのLeg/Claim承認・署名・取消・鍵復旧・再起動・expiryと実protected Aの元ordered提出が成功 | 完全outer152 frames/13 operations、inner351 frames/97 operations、22 host operations、8 successful PTY/2拒否、8canonical approvalsと9exact normal socket wait/不在/FD閉鎖を照合。raw456372/meta320761/tar783360 bytesを全量保持。1195 source/Git・全tools/runtime bindings、旧1581 failure files/270 dirs/保持4個と309保持files/64 dirs、全37 saved host PIDs/cgroup/TMP回収を確認。既知fixture鍵の選択範囲であり、本番鍵秘匿・全M2/M7・統合head全体の資格ではない |
+| E129: certified FastVote actual distinct-UID/TLS lifecycle | `5d8d7f46`の実4-worker/4-keyless-TLS fixtureがactual0/両実EOF/wait、outer30.526秒。全39 required controls・147 roles・27 probes・32 read-only SQL oracle exchangesが成功。4つの明示startup拒否だけexit1 | 完全wire10430 bytes/復号84355 bytesを厳密照合し、全childにU+FFFDなし・再構成UTF8 59099 bytes一致。全17 Docker clientsが0で終了し、専有資源は明確に削除。全1190 source/Git・5 ELF/4 libraries・toolsと旧失敗を保存。3署名family、A/B実apply/保存済み再送、C pre-import409/no-DrainSet409・nonce2/C未適用、元ordered Freeze、frontier/union3とfence6再開後の全source/body/anchor imageを検証。親の追加2不在queriesも0/空。全M2/M7・統合head全体の資格にはしない |
 
 
 
@@ -461,6 +462,7 @@ E125は `positive-fee-split-uid-build7-parent-qualified-1017.json` とactual raw
 E126は `m7-canonical-mutation-build1-parent-qualified-1017.json` / independent qualificationとactual raw/ELF/terminal。
 E127は `m2-certified-fastvote-fixture-build8-parent-qualified-1017.json` とactual raw/receipt/terminal。
 E128は `positive-fee-split-uid-genuine5-parent-qualified-1017.json` / actual-runtime qualificationとcomplete retained public evidence。
+E129は `m2-certified-fastvote-fixture-runtime7-parent-qualified-1017.json` / independent qualificationとactual complete/raw/decoded success。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -835,10 +837,11 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     Leg/Claim両phase承認・署名・取消・鍵復旧・再起動・expiryと実protected candidate提出が成功。
     全97/22操作・9socket controls・完全証拠と回収を照合。既知fixture鍵の選択範囲であり、
     本番鍵秘匿・最終統合head全体gate・全M2の完了にはしない。旧4失敗は保持する。
-  - [ ] [certified FastVoteの実別UID・TLS lifecycle](docs/architecture/local-certified-protocol-custody-fixture.md):
-    修正後の5 ELF producerは成功。実署名・保存済み再送・停止中拒否・fence/restart・
-    frontier/progress/readinessと独立read-only SQL oracleの実行を検証中。
-    E108/E111/E115/E119/E124の各失敗を保持。既存canonical profile・page契約・全entryのdrain proof import・exact closed refusalへfixtureを合わせ、全署名/context/oracleを維持。E127のstrict producer後、修正後runtimeを検証する。
+  - [x] [certified FastVoteの実別UID・TLS lifecycle](docs/architecture/local-certified-protocol-custody-fixture.md):
+    E127のstrict producer後、E129で実署名・保存済み再送・停止中拒否・fence6 restart・
+    frontier/progress/union3と全source/body/anchor imageのread-only SQL oracleが成功。
+    全39 controls・147 roles・27 probes・32 oracle exchangesと完全証拠/回収を照合。
+    E108/E111/E115/E119/E124の失敗は保持し、最終統合head全体gate・全M2とは分ける。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
