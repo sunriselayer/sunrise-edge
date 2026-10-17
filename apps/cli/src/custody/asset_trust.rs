@@ -280,7 +280,7 @@ impl PinnedAssetTrust {
     /// Owner/schema/nominal-type check against an explicit `tag`, rather than
     /// one of this trust's own fixed `coin_tag`/`cap_tag` fields. Used by
     /// [`Self::validate_owned_coin`] (the genesis nominal type) and, separately,
-    /// by the mint/burn family's optional application pin (DR-0258), which
+    /// by the asset families' optional application pin (DR-0258/0261), which
     /// derives its own `Coin`/
     /// `TreasuryCap` nominal types from a locally pinned, non-genesis asset.
     pub(super) fn validate_owned_object(

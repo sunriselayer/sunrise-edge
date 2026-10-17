@@ -1,11 +1,13 @@
 //! Optional, immutable, locally pinned non-genesis Standard Asset
-//! application target for the mint/burn family only (DR-0258). Distinct from
+//! application target for mint/burn and transfer/split/merge (DR-0258/0261).
+//! Distinct from
 //! [`super::asset_trust::PinnedAssetTrust`]'s shared genesis pin: this module
 //! never changes what the genesis pin verifies or means for any other
 //! family. It lets an operator additionally pin one independently verified
 //! application instance (its own `InstanceRecord` file plus the asset's
 //! `Definition` object id) created earlier by the separate `create-asset`
-//! family (DR-0255), so mint/burn can target it instead of the pinned
+//! family (DR-0255), so these operation families can target it instead of
+//! the pinned
 //! genesis instance — never from a value or preimage the untrusted peer
 //! request supplies.
 
@@ -18,7 +20,13 @@ use sunrise_edge_client::package_types::ScopedTypeTag;
 
 use public_standard_asset::{INITIALIZER, coin_type_tag, treasury_cap_type_tag};
 
+use std::path::Path;
+
+use crate::args::ParsedArgs;
 use crate::error::CliError;
+use crate::hex::{decode_hex_32, encode_hex};
+
+use super::fsperm::read_private_file;
 
 use super::asset_trust::PinnedAssetTrust;
 
@@ -39,11 +47,35 @@ fn invalid(message: &'static str) -> CliError {
     ))
 }
 
+/// Reads the all-or-none application pin from local command flags, never
+/// from a peer request. Every Call-family custody command uses this bounded
+/// private-file reader; omitting both flags performs no file I/O.
+pub(super) fn application_pin_selection(
+    parsed: &ParsedArgs,
+) -> Result<Option<(ObjectId, Vec<u8>)>, CliError> {
+    match (parsed.get("--asset"), parsed.get("--instance-ref")) {
+        (None, None) => Ok(None),
+        (Some(asset), Some(path)) => {
+            let asset: ObjectId = ObjectId::new(decode_hex_32("--asset", asset)?);
+            let bytes: Vec<u8> = read_private_file(
+                Path::new(path),
+                0o600,
+                0o700,
+                MAX_APPLICATION_INSTANCE_RECORD_BYTES,
+            )?;
+            Ok(Some((asset, bytes)))
+        }
+        _ => Err(invalid(
+            "--asset and --instance-ref must be provided together",
+        )),
+    }
+}
+
 /// One independently verified, locally pinned, non-genesis Standard Asset
 /// application target: a `Definition`/`TreasuryCap` pair created earlier
 /// under the exact verified in-tree Standard Asset code, the pinned custody
 /// publisher as creator, revision one and the known initializer. Built once
-/// from two local inputs an operator supplies directly to a mint/burn
+/// from two local inputs an operator supplies directly to an asset
 /// custody command (never from the peer wire request): the asset's
 /// `ObjectId` and its own canonical `InstanceRecord` bytes.
 pub(super) struct ApplicationAssetPin {
@@ -54,6 +86,29 @@ pub(super) struct ApplicationAssetPin {
 }
 
 impl ApplicationAssetPin {
+    /// Appends the effective application identity alongside the unchanged
+    /// genesis fee identity. Callers do not invoke this when no pin is bound.
+    pub(super) fn render_review(&self, out: &mut String) {
+        out.push_str("application_pinned=true\n");
+        out.push_str(&format!("application_asset={}\n", self.asset));
+        out.push_str(&format!(
+            "application_instance_creator={}\n",
+            encode_hex(&self.instance.creator)
+        ));
+        out.push_str(&format!(
+            "application_instance_seed={}\n",
+            encode_hex(&self.instance.seed)
+        ));
+        out.push_str(&format!(
+            "application_instance_revision={}\n",
+            self.instance.revision
+        ));
+        out.push_str(&format!(
+            "application_instance_record_digest={}\n",
+            self.instance.record_digest
+        ));
+    }
+
     /// Decodes `instance_ref_bytes` as one bounded, exact-canonical
     /// `InstanceRecord` (`decode_instance_record` itself requires the exact
     /// canonical re-encoding and a bounded size), verifies it against

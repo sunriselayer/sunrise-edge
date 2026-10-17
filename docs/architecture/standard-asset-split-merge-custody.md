@@ -44,6 +44,17 @@ recipient/remainder or the merge values and checked total, every input
 reference and access mode, the fee balance/ceiling/refund/full policy,
 context/nonce/request fields and the complete signed frame.
 
+## Optional own-created application pin
+
+[DR-0261](decisions/0261-created-standard-asset-coin-custody.md) additionally
+accepts a local `--asset`/`--instance-ref` pair for every prepare, approve,
+sign and serve role and the ordinary Standard Asset CLI. Application Coins
+and the Call target use that publisher-created asset's verified local pin;
+fees always use the genesis Coin and policy. Both identities appear in the
+review. Omitting both flags preserves the genesis behavior below. See the
+[application Coin guide](standard-asset-application-coin-custody.md) for the
+pin, compatibility and qualification boundary.
+
 ## Independent preparation, approval and serving
 
 ```bash

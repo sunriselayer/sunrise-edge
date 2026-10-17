@@ -104,9 +104,13 @@ roadmap describes a later target state.
   (DR-0258; see also
   [mint/burn custody](standard-asset-mint-burn-custody.md#optional-application-asset-pin-dr-0258)):
   one small, independently local, all-or-none non-genesis asset/instance pin
-  for mint/burn only, so it can target a `create-asset`-created asset; no
-  new wire kind/version, no change to genesis fee authority or to any other
-  family.
+  introduced for mint/burn to target a `create-asset`-created asset; no
+  new wire kind/version or change to genesis fee authority. DR-0261 below
+  extends that same pin to transfer/split/merge.
+- [Own-created Standard Asset Coin custody](standard-asset-application-coin-custody.md)
+  ([DR-0261](decisions/0261-created-standard-asset-coin-custody.md)):
+  extends the same immutable local pin to transfer and split/merge, keeping
+  genesis fee typing, whole-frame approval and no-pin bytes unchanged.
 - [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
   an explicitly configured closed HTTPS transport, separate from default
   event-only relays, embedded DO policy and core authority.

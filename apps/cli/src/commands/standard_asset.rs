@@ -685,15 +685,12 @@ where
         ..
     } = &signer_selection
     {
-        // DR-0258: only `mint`/`burn` accept an optional, independently
-        // local application asset/instance pin under custody signing.
-        // `transfer`/`split`/`merge` stay pinned to the genesis asset only,
-        // unwidened; `create-asset` never defines these flags at all.
-        let custody_application_pin_allowed: bool = action == "mint" || action == "burn";
-        if !custody_application_pin_allowed
-            && (parsed.get(ASSET).is_some() || parsed.get(INSTANCE_REF).is_some())
-        {
-            return Err(invalid("custody signing requires the genesis asset"));
+        // DR-0261: transfer/split/merge join mint/burn's independently
+        // local application pin. Reject a partial pair before endpoint or
+        // signer I/O. The protected process pins the same target separately;
+        // these client flags never select or replace its trust.
+        if action != "create-asset" {
+            let _application: Option<(ObjectId, &str)> = application_selection(&parsed)?;
         }
         if let Some(value) = parsed.get(REFUND_RECIPIENT)
             && decode_hex_32(REFUND_RECIPIENT, value)? != *expected_public_key
@@ -1246,12 +1243,12 @@ mod tests {
     }
 
     #[test]
-    fn custody_transfer_rejects_foreign_asset_or_refund_before_endpoint_access() {
+    fn custody_transfer_rejects_partial_asset_pin_or_foreign_refund_before_endpoint_access() {
         for (flag, value, reason) in [
             (
                 ASSET,
                 "11".repeat(32),
-                "custody signing requires the genesis asset",
+                "--asset and --instance-ref must be provided together",
             ),
             (
                 REFUND_RECIPIENT,
@@ -1277,56 +1274,51 @@ mod tests {
         }
     }
 
-    /// DR-0258: `mint`/`burn` accept the optional, independently local
-    /// application asset/instance pin under custody signing (all-or-none,
-    /// same as the public CLI's own `--asset`/`--instance-ref` pair); the
-    /// un-widened families `transfer`/`split`/`merge` keep refusing it with
-    /// the exact same "genesis asset" message as before.
+    /// Every supported Call family accepts the pair, while a partial pair
+    /// refuses before any endpoint or pin-file access. create-asset has no
+    /// such flags: its parser already rejects them as unknown.
     #[test]
-    fn custody_mint_and_burn_allow_the_application_pin_but_other_families_still_refuse_it() {
-        for action in ["mint", "burn"] {
-            let error = run(
-                action,
-                vec![
-                    OsString::from("--custody-socket"),
-                    OsString::from("/nonexistent/custody.sock"),
-                    OsString::from("--custody-uid"),
-                    OsString::from("12002"),
-                    OsString::from("--custody-expected-public-key"),
-                    OsString::from("ab".repeat(32)),
-                    OsString::from(ASSET),
-                    OsString::from("11".repeat(32)),
-                    OsString::from(INSTANCE_REF),
-                    OsString::from("/nonexistent/instance-ref.bin"),
-                ],
-            )
-            .unwrap_err();
+    fn custody_call_families_accept_an_application_pair_and_refuse_partial_pins() {
+        for action in ["transfer", "split", "merge", "mint", "burn"] {
+            let common: Vec<OsString> = vec![
+                OsString::from("--custody-socket"),
+                OsString::from("/nonexistent/custody.sock"),
+                OsString::from("--custody-uid"),
+                OsString::from("12002"),
+                OsString::from("--custody-expected-public-key"),
+                OsString::from("ab".repeat(32)),
+            ];
+            let mut both: Vec<OsString> = common.clone();
+            both.extend([
+                OsString::from(ASSET),
+                OsString::from("11".repeat(32)),
+                OsString::from(INSTANCE_REF),
+                OsString::from("/nonexistent/instance-ref.bin"),
+            ]);
+            let error: CliError = run(action, both).unwrap_err();
             assert!(
                 !error
                     .to_string()
                     .contains("custody signing requires the genesis asset")
             );
-        }
-        for action in ["transfer", "split", "merge"] {
-            let error = run(
-                action,
-                vec![
-                    OsString::from("--custody-socket"),
-                    OsString::from("/nonexistent/custody.sock"),
-                    OsString::from("--custody-uid"),
-                    OsString::from("12003"),
-                    OsString::from("--custody-expected-public-key"),
-                    OsString::from("ab".repeat(32)),
-                    OsString::from(ASSET),
-                    OsString::from("11".repeat(32)),
-                ],
-            )
-            .unwrap_err();
             assert!(
-                error
+                !error
                     .to_string()
-                    .contains("custody signing requires the genesis asset")
+                    .contains("--asset and --instance-ref must be provided together")
             );
+            for (flag, value) in [
+                (ASSET, "11".repeat(32)),
+                (INSTANCE_REF, "/nonexistent/instance-ref.bin".to_owned()),
+            ] {
+                let mut partial: Vec<OsString> = common.clone();
+                partial.extend([OsString::from(flag), OsString::from(value)]);
+                let error: CliError = run(action, partial).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("--asset and --instance-ref must be provided together")
+                );
+            }
         }
     }
     use execution::{

@@ -108,7 +108,7 @@ which owns no `Coin` or `TreasuryCap`.
 ## Optional application asset pin (DR-0258)
 
 [DR-0258](decisions/0258-mint-burn-application-asset-pin.md) adds one
-optional, independently local pin to this family only: `--asset` (a 32-byte
+optional, independently local pin to this family: `--asset` (a 32-byte
 object id) and `--instance-ref` (a bounded canonical `InstanceRecord`
 private file), all-or-none, accepted by `prepare-mint`/`approve-mint`/
 `sign-mint`/`serve-mint-burn` and their `-burn` equivalents, matching the
@@ -125,10 +125,10 @@ the application `TreasuryCap`/`Coin` inputs and the `CallIntent` target use
 the pinned asset. The review shows both the genesis and (when bound) the
 pinned application identity. This lets mint/burn target an asset created by
 the separate `create-asset` family (DR-0255), which no prior family could
-do; `transfer`/`split`/`merge`/`create-asset` are unaffected and keep
-refusing a custody signer combined with these flags. See DR-0258 for the
-exact verification and compatibility details, and TODO.md for qualification
-status.
+do. [DR-0261](decisions/0261-created-standard-asset-coin-custody.md) subsequently
+extends the same local pin to transfer/split/merge; create-asset remains its
+separate profile. See DR-0258 for this family's original verification and
+compatibility details, and TODO.md for qualification status.
 
 Each role must own its instance pin file at mode `0600` in an owned `0700`
 directory. Public `create-asset --instance-ref-out` output follows the
