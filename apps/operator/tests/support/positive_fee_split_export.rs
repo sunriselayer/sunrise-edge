@@ -217,8 +217,8 @@ impl Export {
                     }
                 }
             }
-            // Every directory is reconstructed by a copied leaf. Empty or
-            // surplus directories refuse instead of disappearing from export.
+            // Structural transport closure: every directory is reconstructed
+            // by a copied leaf. This does not decode descriptor inventories.
             assert_eq!(directories, required_directories);
         }
         for name in &names {

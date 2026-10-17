@@ -28,8 +28,12 @@ reloaded and checked before the index is published last.
 Plan-history and manifest-history use the existing held nested archive reader.
 Every directory must satisfy the defining ordered-history generated-directory
 contract, every file must have its defining relative-file bound, and directory
-markers must equal all copied leaf ancestors. Empty/surplus directories,
-unknown names, symlinks and nonregular leaves refuse. Both history roles share
+markers must equal all copied leaf ancestors. Empty or invalid directories,
+unknown names, symlinks and nonregular leaves refuse. This is structural
+transport closure: syntactically valid nonempty surplus history attachments
+are retained. Neither the copier nor the ordinary SDK reload closes the exact
+descriptor-derived semantic inventory. SDK verification still supplies the
+existing successor authority. Both history roles share
 one local read budget of 65,536 observations, 1 MiB per file and 300 seconds, with no
 height/component decoding by the copier. The original 16 MiB / 256-file export
 limits remain in force. The complete before/after nested inventories must agree.

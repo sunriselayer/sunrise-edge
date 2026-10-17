@@ -19,9 +19,11 @@ fixture constants provide no production key-secrecy claim.
 
 Use the existing held nested ordered-history reader for both history roles,
 with its exact generated-directory and relative-file contracts. Preserve every
-committed leaf, require directory closure and before/after inventory equality,
+committed leaf, require structural directory closure and before/after inventory equality,
 and keep cut/certificate flat. The selected transport must admit the same
 canonical nested shapes before independently verifying the complete SDK chain.
+This copier does not decode or close the descriptor-derived semantic inventory;
+syntactically valid nonempty surplus history attachments are retained.
 No symlink/nonregular refusal, export allowance or authority check is relaxed.
 
 Exercise both protected signatures, exact phase approvals, permanent revocation
