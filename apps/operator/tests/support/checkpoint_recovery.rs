@@ -174,6 +174,24 @@ fn replace_value(command: &Command, flag: &str, value: OsString) -> Command {
     replaced
 }
 
+fn recovery_success(output: Output) -> String {
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "actual compiled recovery exit"
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "successful recovery stderr must be empty"
+    );
+    let line: String = String::from_utf8(output.stdout).expect("recovery diagnostic is UTF-8");
+    assert!(
+        line.ends_with('\n') && line.lines().count() == 1 && !line.contains('\r'),
+        "one complete recovery diagnostic line"
+    );
+    line
+}
+
 fn refusal(output: Output, message: &str) {
     assert_eq!(
         output.status.code(),
@@ -312,7 +330,7 @@ pub(super) fn pack_and_restore(network: &Network) -> RestoredCheckpoint {
                 "mode-irrelevant flag has no publication",
             );
         }
-        let line: String = success(run(
+        let line: String = recovery_success(run(
             pack_command(
                 network,
                 index,
@@ -422,7 +440,7 @@ pub(super) fn pack_and_restore(network: &Network) -> RestoredCheckpoint {
                 "missing authority refuses before receiving candidate files",
             );
         }
-        let line: String = success(run(
+        let line: String = recovery_success(run(
             open_command(network, index, &recipients[index], &parent, "restored"),
             end,
         ));
