@@ -203,12 +203,15 @@ impl Frontend {
                 if route == Route::Source {
                     let request: FastVoteApplyRequest =
                         FastVoteApplyRequest::decode(&input.body).map_err(|_| refused())?;
+                    let certificate: consensus::FastCertificate =
+                        consensus::decode_fast_certificate(&request.certificate)
+                            .map_err(|_| refused())?;
                     if bundle.signed_intent != request.signed_paid_intent
-                        || bundle.certificate.tx_hash != request.certificate.tx_hash
+                        || bundle.certificate.tx_hash != certificate.tx_hash
                         || bundle.certificate.execution_effects_hash
-                            != request.certificate.execution_effects_hash
+                            != certificate.execution_effects_hash
                         || bundle.certificate.locked_objects_digest
-                            != request.certificate.locked_objects_digest
+                            != certificate.locked_objects_digest
                     {
                         return Err(refused());
                     }

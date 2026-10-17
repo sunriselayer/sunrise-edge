@@ -4,7 +4,7 @@
 use axum::{
     Router,
     body::{Body, Bytes, to_bytes},
-    extract::{DefaultBodyLimit, FromRequest, FromRequestParts, MatchedPath, Path, State},
+    extract::{DefaultBodyLimit, FromRequest, FromRequestParts, Path, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -793,16 +793,10 @@ fn header_values(headers: &HeaderMap, name: HeaderName) -> io::Result<Vec<Vec<u8
     Ok(values)
 }
 async fn proxy(
+    route: Route,
     State(frontend): State<Arc<Frontend>>,
-    matched: MatchedPath,
     request: Request<Body>,
 ) -> Response {
-    let Some(route) = Route::ALL
-        .into_iter()
-        .find(|route: &Route| route.spec().path == matched.as_str())
-    else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
     let (mut parts, body) = request.into_parts();
     let parameters: Vec<String> = match route.spec().keys.len() {
         0 => Vec::new(),
@@ -891,14 +885,16 @@ pub fn frontend_router(frontend: Arc<Frontend>) -> Application {
     let mut router: Router<Arc<Frontend>> = Router::new();
     for route in Route::ALL {
         let spec: Spec = route.spec();
+        let handler =
+            move |state: State<Arc<Frontend>>, request: Request<Body>| proxy(route, state, request);
         router = router.route(
             spec.path,
             if route == Route::Live {
                 get(crate::liveness)
             } else if route.method() == Method::GET {
-                get(proxy)
+                get(handler)
             } else {
-                post(proxy).layer(DefaultBodyLimit::max(spec.request))
+                post(handler).layer(DefaultBodyLimit::max(spec.request))
             },
         );
     }

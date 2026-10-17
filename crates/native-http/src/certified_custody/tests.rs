@@ -980,7 +980,7 @@ fn historical_apply_keeps_exact_paid_binding_and_charged_failure_status() {
         let mut request: Input = input(Route::Apply);
         request.body = FastVoteApplyRequest {
             signed_paid_intent: signed_bytes,
-            certificate,
+            certificate: consensus::encode_fast_certificate(&certificate).unwrap(),
         }
         .encode()
         .unwrap();
