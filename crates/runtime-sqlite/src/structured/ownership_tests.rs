@@ -1,4 +1,6 @@
 //! Real local process and attachment evidence, not power-loss qualification.
+#[cfg(unix)]
+mod anchor;
 #[cfg(target_os = "linux")]
 mod blob_crash;
 #[cfg(target_os = "linux")]

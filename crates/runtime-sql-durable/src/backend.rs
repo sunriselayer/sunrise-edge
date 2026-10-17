@@ -293,6 +293,12 @@ impl From<SqlDecodeError> for SqlSessionError {
 /// the text and parameters directly to one `sql.exec` call inside
 /// `storage.transactionSync`.
 pub trait SqlSession {
+    /// Exact local storage profile selected by the trusted composition.
+    /// This does not select or change protocol encoding.
+    fn namespace_schema_identity(&self) -> &'static [u8] {
+        crate::schema::SQL_DURABLE_SCHEMA_IDENTITY
+    }
+
     /// Executes one statement and returns its bounded rows and
     /// affected-row count.
     fn exec(&mut self, statement: &str, params: &[SqlValue]) -> Result<SqlRows, SqlSessionError>;

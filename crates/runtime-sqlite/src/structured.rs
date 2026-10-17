@@ -352,6 +352,57 @@ fn open_verified_connection(
 }
 
 impl SqliteDurableStore {
+    /// Publishes one current local acknowledgement after exact independent
+    /// reinspection. Requires this store to own the independent anchor lease.
+    pub fn independent_anchor_checkpoint(
+        &self,
+    ) -> Result<crate::AnchorCheckpoint, SqliteDurableStoreError> {
+        self.engine
+            .backend()
+            .anchor_checkpoint()
+            .map_err(operator_backend_error)
+    }
+
+    /// Opens an explicitly enrolled local namespace. Missing, copied, pending
+    /// or rolled-back authority refuses; this never enrolls or recreates it.
+    pub fn open_anchored(
+        path: impl AsRef<Path>,
+        blobs: impl AsRef<Path>,
+        anchor: impl AsRef<Path>,
+        namespace: SqliteNamespace,
+    ) -> Result<Self, SqliteDurableStoreError> {
+        let anchor =
+            crate::anchor::IndependentAnchor::open(anchor.as_ref(), path.as_ref(), blobs.as_ref())
+                .map_err(|_| SqliteDurableStoreError::Unavailable)?;
+        let connection: NativeConnection = open_verified_connection(path)?;
+        let backend: NativeSqlBackend = NativeSqlBackend::anchored(connection, anchor);
+        verify_ordinary_namespace(&backend, &namespace)?;
+        Ok(Self {
+            engine: SqlDurableEngine::new(backend, namespace),
+        })
+    }
+
+    /// Historical counterpart retaining independent freshness checks without
+    /// changing Sealed/import lifecycle authority or historical decoding.
+    pub fn open_historical_anchored(
+        path: impl AsRef<Path>,
+        blobs: impl AsRef<Path>,
+        anchor: impl AsRef<Path>,
+        namespace: SqliteNamespace,
+    ) -> Result<Self, SqliteDurableStoreError> {
+        let owner =
+            crate::anchor::IndependentAnchor::open(anchor.as_ref(), path.as_ref(), blobs.as_ref())
+                .map_err(|_| SqliteDurableStoreError::Unavailable)?;
+        let connection: NativeConnection = open_verified_connection(path)?;
+        let backend: NativeSqlBackend = NativeSqlBackend::anchored(connection, owner);
+        read_operator_step(&backend, |session, _| {
+            schema::open_namespace_historical(session, &namespace)
+        })?;
+        Ok(Self {
+            engine: SqlDurableEngine::new(backend, namespace),
+        })
+    }
+
     /// Opens an already initialized database for an operator operation.
     /// Unlike `open`, this never creates a file or bootstraps a schema.
     pub fn open_existing(
@@ -433,7 +484,12 @@ impl SqliteDurableStore {
         namespace: SqliteNamespace,
     ) -> Result<Self, SqliteDurableStoreError> {
         let connection: NativeConnection = open_verified_connection(path)?;
-        let backend = NativeSqlBackend::from_owned(connection);
+        let anchored: bool = connection.sqlite.query_row(
+            "SELECT schema_identity FROM durable_metadata WHERE id=1",
+            [],
+            |row| Ok(row.get_ref(0)?.as_blob()? == schema::SQL_ANCHORED_SCHEMA_IDENTITY),
+        )?;
+        let backend = NativeSqlBackend::historical(connection, anchored);
         read_operator_step(&backend, |session, _now| {
             schema::open_namespace_historical(session, &namespace)
         })?;

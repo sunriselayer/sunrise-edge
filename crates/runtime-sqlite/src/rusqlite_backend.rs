@@ -6,6 +6,7 @@
 //! types, never business logic. `runtime-sql-durable` itself never
 //! depends on `rusqlite`.
 
+use crate::anchor::{AnchorGuard, IndependentAnchor};
 use crate::native_connection::{
     DEFAULT_BUSY_TIMEOUT, MAX_BUSY_TIMEOUT_MILLIS, NativeConnection, NativeError,
 };
@@ -18,7 +19,7 @@ use rusqlite::Connection;
 use rusqlite::types::ValueRef;
 use rusqlite::{Transaction, TransactionBehavior, types::Value as RusqliteValue};
 use std::{
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -67,9 +68,13 @@ fn value_ref_to_sql_value(value: ValueRef<'_>) -> Result<SqlValue, SqlSessionErr
 /// kept open across `exec` calls.
 pub(crate) struct RusqliteSession<'a> {
     transaction: &'a Transaction<'a>,
+    schema_identity: &'static [u8],
 }
 
 impl SqlSession for RusqliteSession<'_> {
+    fn namespace_schema_identity(&self) -> &'static [u8] {
+        self.schema_identity
+    }
     fn exec(&mut self, statement: &str, params: &[SqlValue]) -> Result<SqlRows, SqlSessionError> {
         let mut prepared = self.transaction.prepare(statement).map_err(rejected)?;
         let bound: Vec<RusqliteValue> = params.iter().map(sql_value_to_rusqlite).collect();
@@ -112,6 +117,9 @@ impl SqlSession for RusqliteSession<'_> {
 /// deadline instead of always waiting the fixed operator default.
 pub(crate) struct NativeSqlBackend {
     connection: Mutex<NativeConnection>,
+    anchor: Option<Arc<IndependentAnchor>>,
+    schema_identity: &'static [u8],
+    historical_only: bool,
     #[cfg(test)]
     commit_hook: Mutex<Option<TestCommitHook>>,
 }
@@ -133,9 +141,57 @@ impl NativeSqlBackend {
     pub(crate) const fn from_owned(connection: NativeConnection) -> Self {
         Self {
             connection: Mutex::new(connection),
+            anchor: None,
+            schema_identity: runtime_sql_durable::schema::SQL_DURABLE_SCHEMA_IDENTITY,
+            historical_only: false,
             #[cfg(test)]
             commit_hook: Mutex::new(None),
         }
+    }
+
+    pub(crate) fn anchor_checkpoint(&self) -> Result<crate::AnchorCheckpoint, SqlBackendError> {
+        let anchor = self.anchor.as_ref().ok_or(SqlBackendError::Unavailable)?;
+        let mut guard = anchor
+            .lock(None)
+            .map_err(|_| SqlBackendError::Unavailable)?;
+        let mut owned = self
+            .connection
+            .lock()
+            .map_err(|_| SqlBackendError::Unavailable)?;
+        owned
+            .identity
+            .check()
+            .map_err(|_| SqlBackendError::Unavailable)?;
+        let tx = owned
+            .sqlite
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| SqlBackendError::Unavailable)?;
+        guard.check(&tx).map_err(|_| SqlBackendError::Unavailable)?;
+        let checkpoint: crate::AnchorCheckpoint = guard
+            .checkpoint()
+            .map_err(|_| SqlBackendError::Unavailable)?;
+        tx.rollback().map_err(|_| SqlBackendError::Unavailable)?;
+        owned
+            .identity
+            .check()
+            .map_err(|_| SqlBackendError::Unavailable)?;
+        Ok(checkpoint)
+    }
+
+    pub(crate) fn anchored(connection: NativeConnection, anchor: Arc<IndependentAnchor>) -> Self {
+        let mut backend: Self = Self::from_owned(connection);
+        backend.anchor = Some(anchor);
+        backend.schema_identity = runtime_sql_durable::schema::SQL_ANCHORED_SCHEMA_IDENTITY;
+        backend
+    }
+
+    pub(crate) fn historical(connection: NativeConnection, anchored: bool) -> Self {
+        let mut backend: Self = Self::from_owned(connection);
+        if anchored {
+            backend.schema_identity = runtime_sql_durable::schema::SQL_ANCHORED_SCHEMA_IDENTITY;
+            backend.historical_only = true;
+        }
+        backend
     }
 
     #[cfg(test)]
@@ -191,6 +247,18 @@ impl SqlBackend for NativeSqlBackend {
         budget: TransactionBudget,
         run: impl FnOnce(&mut dyn SqlSession, u64) -> Result<TransactionDecision<T>, SqlSessionError>,
     ) -> Result<T, SqlBackendError> {
+        let deadline: Option<u64> = match budget {
+            TransactionBudget::Deadline(value) => Some(value),
+            TransactionBudget::OperatorDefault => None,
+        };
+        // Global order: independent anchor, state connection, readonly body
+        // connection. No state owner can wait for an anchor while holding SQL.
+        let mut anchor_guard: Option<AnchorGuard<'_>> = self
+            .anchor
+            .as_ref()
+            .map(|anchor| anchor.lock(deadline))
+            .transpose()
+            .map_err(|_| SqlBackendError::Unavailable)?;
         let mut owned = self
             .connection
             .lock()
@@ -226,8 +294,15 @@ impl SqlBackend for NativeSqlBackend {
             let _ = transaction.rollback();
             return Err(SqlBackendError::Unavailable);
         };
+        if let Some(anchor) = &mut anchor_guard
+            && anchor.check(&transaction).is_err()
+        {
+            let _ = transaction.rollback();
+            return Err(SqlBackendError::Unavailable);
+        }
         let mut session = RusqliteSession {
             transaction: &transaction,
+            schema_identity: self.schema_identity,
         };
         match run(&mut session, now) {
             Err(error) => {
@@ -247,6 +322,16 @@ impl SqlBackend for NativeSqlBackend {
                 Ok(value)
             }
             Ok(TransactionDecision::Commit(value)) => {
+                if self.historical_only {
+                    let _ = transaction.rollback();
+                    return Err(SqlBackendError::Unavailable);
+                }
+                if let Some(anchor) = &mut anchor_guard
+                    && anchor.prepare(&transaction).is_err()
+                {
+                    let _ = transaction.rollback();
+                    return Err(SqlBackendError::Unavailable);
+                }
                 #[cfg(test)]
                 self.test_boundary(CommitBoundary::BeforeDispatch)?;
                 if identity.check().is_err() {
@@ -261,6 +346,13 @@ impl SqlBackend for NativeSqlBackend {
                     .map_err(|_| SqlBackendError::CommitIndeterminate)?;
                 if identity.check().is_err() {
                     return Err(SqlBackendError::CommitIndeterminate);
+                }
+                if let Some(anchor) = &mut anchor_guard {
+                    // Reinspect actual committed rows before acknowledging or
+                    // releasing any value. A failure retains durable Pending.
+                    anchor
+                        .check(connection)
+                        .map_err(|_| SqlBackendError::CommitIndeterminate)?;
                 }
                 Ok(value)
             }

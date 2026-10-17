@@ -57,6 +57,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--genesis-manifest",
     "--expected-genesis-digest",
     "--signing-key-file",
+    crate::local_anchor::FLAG,
     "--state-db",
     "--blob-db",
     "--listen",
@@ -79,7 +80,23 @@ const MAX_HOST_TIMEOUT_SECONDS: u64 = native_http::MAX_INDEXED_OUTBOX_OPERATION_
 /// after the single fence claim, under the context this host actually
 /// serves with; the Tokio HTTP loop below is transport only.
 pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>> {
+    let mut tokens: Vec<OsString> = tokens.into_iter().collect();
+    if tokens
+        .first()
+        .is_some_and(|value| value == "anchor-checkpoint")
+    {
+        tokens.remove(0);
+        return crate::local_anchor::checkpoint(tokens);
+    }
+    if tokens
+        .first()
+        .is_some_and(|value| value == "anchor-enroll" || value == "anchor-inspect")
+    {
+        let inspect: bool = tokens.remove(0) == "anchor-inspect";
+        return crate::local_anchor::enroll(inspect, tokens);
+    }
     let mut flags: FlagSet = FlagSet::parse(tokens, VALUE_FLAGS, BOOL_FLAGS)?;
+    let anchor: Option<PathBuf> = crate::local_anchor::parse(&mut flags)?;
     let confirmed: bool = flags.bool("--confirm-offline-fence-advance");
     let chain: ChainId =
         ChainId::new(flags.one("--chain-id")?).map_err(|_| "invalid --chain-id")?;
@@ -180,7 +197,8 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     }
 
     let namespace: SqliteNamespace = SqliteNamespace::new(chain.clone(), validator, domain);
-    let store: SqliteDurableStore = SqliteDurableStore::open_existing(&state_db, namespace)?;
+    let store: SqliteDurableStore =
+        crate::local_anchor::open_original(&state_db, &blob_db, anchor.as_deref(), namespace)?;
     let previous: WriterFenceGeneration = store.writer_fence()?;
     let timeout_millis: u64 = timeout_seconds
         .checked_mul(1000)

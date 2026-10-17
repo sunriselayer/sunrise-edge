@@ -296,3 +296,5 @@ separate operational references:
 Current work queues, gate summaries, and roadmap sequencing belong only in
 [`TODO.md`](../../TODO.md). Architecture documents may describe implemented
 behavior and preserve historical evidence inside accepted decision records.
+
+- [Independent local checkpoint anchor](local-checkpoint-anchor.md): opt-in local storage acknowledgement, complete typed state/body roots, crash reconciliation and clone exclusion; [DR-0259](decisions/0259-independent-local-checkpoint-anchor.md).
