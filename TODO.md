@@ -311,6 +311,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E107: positive Split genuine public-export failure | `a41bd6c5`で実CLI producerはactual0、続く元first-successor selectorはmanifest-historyのnested directoryを平坦archive APIで読むためactual101。outeractual1/両実EOF/wait、64.096秒 | 独立に1195 source/Git blobs・19 own/17 component tools、全11 runtime bindingsと4 libraries、完全raw141 frames/9 operations・全PID/cgroup回収を確認。完全な公開資料は未生成で、144 source filesの部分copyとindexを含む145 filesだけを保持。元fixtureはunwind時にRAII削除されており、元history treeを保持したとは呼ばない。Node/UID phases成功0。既存nested-history owner契約へexporterと読み手を合わせ、元拒否条件・完全authority検証を維持して再検証する |
 | E108: certified FastVote strict phase-marker failure | `71d79292`の初回実UID attemptはactual1/両実EOF/wait、inner1.264秒/outer1.329秒。UID12001/gid12001/caps0のprepare-inputs probe自体は1 passed/0 failed/0 ignored・endpoint counts全0で成功したが、libtestの行prefixにより厳密な行頭marker検査が拒否 | 全1190 source/Git blobs・22 fixture sources・5 ELF/4 libraries、完全Node JSON・636-byte wire/583-byte復号とsole child全264 UTF8 bytes、全15 fixture clientsの終端・専有資源解放を独立照合。親の追加2 read-only queriesでも対象container/volume不在を確認。worker/署名段階は未到達。`5be398ec`でRust markerの先頭改行だけを修正し、strict parser/全件数・拒否条件は維持。修正後producerはE109で成功、runtimeは未実行 |
 | E109: certified FastVote marker correction strict producer | 別branch `5be398ec` / tree`b6aad460`。全6 commandsがactual0/両実EOF/wait、inner23.459秒/outer23.543秒。新markerを含む追加harnessと4 binsの通常0755・single link・別inodeの5保持ELFを固定 | 親と独立reviewが1190 source/Git blobs・17 tools、完全raw694 frames/21 operations、全5 source/保持ELFと旧4 compiler bins・旧5保持ELFの不変、全PID/cgroup・TMP4回収を確認。strict parserと全元assertionを維持。component buildのみで、修正後の実別UID/TLS runtime・全M2/M7は未完了 |
+| E110: positive Split nested-history correction and four regressions | 別branch `fff121c2` / tree`a9c1aca8`。全7 commandsがactual0/両実EOF/wait、inner109.913秒/outer110.001秒。全CLI406 passed/0 failed/7 ignored、history exportの4 named regressionsは4 passed/0 failed/0 ignored、strict Clippy/fmt/diffも成功 | 親が1195 source/Git blobs・17 tools、完全raw842 frames/17 operationsと現20 target+新保持ELFを再照合。flat cut契約を維持し、履歴だけ既存bounded recursive APIへ接続。structural transport closureであり、descriptor由来のsemantic exact inventoryとは呼ばない。旧保持2件・失敗319 files/10 dirsは保存、全PID/cgroup/TMP回収。修正後genuine/UID/PTYは未実行 |
 
 
 
@@ -421,6 +422,7 @@ E108は `m2-certified-fastvote-fixture-runtime2-independent-qualified-failure-10
 追加不在確認は `m2-certified-fastvote-fixture-runtime2-root-owned-absence-1017.json`。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 E109は `m2-certified-fastvote-fixture-build4-parent-qualified-1017.json` とactual raw/terminal。
+E110は `positive-fee-split-uid-build4-parent-qualified-1017.json` とactual raw/terminal。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
 `required-current3.log` / `required-14fb-receipt.json` と
@@ -792,7 +794,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
   - [ ] [genuine positive Splitの別UID・PTY lifecycle](docs/architecture/positive-fee-split-uid-fixture.md):
     component build成功後、Leg/Claim両phaseの承認・署名・取消・鍵復旧・再起動と、
     元genuine selector内で実protected candidateを提出する追加fixtureを検証中。
-    初回はE107のnested-history exportで停止し、Node/UIDには未到達。修正後の再実行を準備する。
+    初回はE107のnested-history exportで停止し、Node/UIDには未到達。修正後はE110の全CLI406件・export回帰4件とstrict gatesが成功、実genuine/UIDの再実行を準備する。
   - [ ] [certified FastVoteの実別UID・TLS lifecycle](docs/architecture/local-certified-protocol-custody-fixture.md):
     修正後の5 ELF producerは成功。実署名・保存済み再送・停止中拒否・fence/restart・
     frontier/progress/readinessと独立read-only SQL oracleの実行を検証中。
