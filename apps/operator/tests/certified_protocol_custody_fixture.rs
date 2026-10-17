@@ -22,6 +22,7 @@ use consensus::{
     FrozenFrontierPage, FrozenFrontierPageVerifier, FrozenFrontierVote,
     UnsupportedSignatureSchemeResponse,
 };
+use execution::ObjectEffect;
 use execution::call::CallIntent;
 use execution::paid_execution::{
     FeeSourceConsent, PaidApplication, PaidExecutionResult, PaidExecutionStatus,
@@ -36,7 +37,7 @@ use node_core::ordered_economics::{
     decode_ordered_outcome, encode_freeze_intent, encode_ordered_candidate, encode_ordered_outcome,
 };
 use node_wire::*;
-use objects::{Address, Object, ObjectEffect, ObjectId, ObjectRef, Owner};
+use objects::{Address, Object, ObjectId, ObjectRef, Owner};
 use offline_genesis_fixture::{Fixture, hex};
 use protocol_types::{
     AtomicityDomainId, ChainId, Digest32, Epoch, HashSuiteId, ProtocolVersion, ValidatorId,
@@ -1339,7 +1340,7 @@ fn drain(replay: bool) {
                 Some(NODE_EVENT_MEDIA_TYPE),
                 DrainSignerProgressRequest {
                     epoch: Epoch::new(0),
-                    validator: vote.validator,
+                    signer: vote.validator,
                 }
                 .encode()
                 .unwrap(),
