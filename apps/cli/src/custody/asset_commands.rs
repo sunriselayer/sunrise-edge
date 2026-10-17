@@ -2,6 +2,7 @@
 
 use super::{
     approvals::{self, ApprovalRecord},
+    asset_application_pin::application_pin_selection,
     asset_transfer::{AssetTransferRequest, AssetTransferTrust},
     asset_wire,
     config::CustodyConfig,
@@ -20,7 +21,7 @@ use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
-use sunrise_edge_client::{PublicationContext, VerifiedGenesisRoot};
+use sunrise_edge_client::{ObjectId, PublicationContext, VerifiedGenesisRoot};
 
 const CONFIG: &str = "--config";
 const GENESIS: &str = "--genesis-manifest-file";
@@ -41,7 +42,13 @@ fn invalid(message: &'static str) -> CliError {
 }
 
 fn trust_specs() -> Vec<crate::args::FlagSpec> {
-    vec![scalar(CONFIG), scalar(GENESIS), scalar(GENESIS_DIGEST)]
+    vec![
+        scalar(CONFIG),
+        scalar(GENESIS),
+        scalar(GENESIS_DIGEST),
+        scalar("--asset"),
+        scalar("--instance-ref"),
+    ]
 }
 
 fn load_trust(parsed: &ParsedArgs, config: &CustodyConfig) -> Result<AssetTransferTrust, CliError> {
@@ -62,7 +69,8 @@ fn load_trust(parsed: &ParsedArgs, config: &CustodyConfig) -> Result<AssetTransf
     let digest: [u8; 32] = decode_hex_32(GENESIS_DIGEST, parsed.require(GENESIS_DIGEST)?)?;
     let root: VerifiedGenesisRoot =
         VerifiedGenesisRoot::verify_bytes(&resolver, &bytes, digest, &context).map_err(fail)?;
-    AssetTransferTrust::new(config.clone(), root)
+    let application: Option<(ObjectId, Vec<u8>)> = application_pin_selection(parsed)?;
+    AssetTransferTrust::new(config.clone(), root, application)
 }
 
 fn read_request(parsed: &ParsedArgs) -> Result<AssetTransferRequest, CliError> {
@@ -269,4 +277,41 @@ pub(super) fn sign<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliE
         request.request_id
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod application_pin_flag_tests {
+    use super::super::fsperm::test_support::{TempDir, write_mode_file};
+    use super::*;
+
+    #[test]
+    fn role_specs_load_the_bounded_local_application_pin() {
+        let directory: TempDir = TempDir::new(0o700);
+        let pin_path = directory.child("application-instance");
+        let pin_bytes: Vec<u8> = vec![1, 2, 3];
+        write_mode_file(&pin_path, 0o600, &pin_bytes);
+        let asset: String = "aa".repeat(32);
+        let parsed: ParsedArgs = parse_flags(
+            [
+                "--asset",
+                &asset,
+                "--instance-ref",
+                pin_path.to_str().unwrap(),
+            ]
+            .into_iter()
+            .map(OsString::from),
+            &trust_specs(),
+        )
+        .unwrap();
+        assert_eq!(
+            application_pin_selection(&parsed).unwrap(),
+            Some((ObjectId::new([0xaa; 32]), pin_bytes)),
+        );
+    }
+
+    #[test]
+    fn role_specs_without_a_pin_preserve_genesis_selection() {
+        let parsed: ParsedArgs = parse_flags(Vec::<OsString>::new(), &trust_specs()).unwrap();
+        assert_eq!(application_pin_selection(&parsed).unwrap(), None);
+    }
 }

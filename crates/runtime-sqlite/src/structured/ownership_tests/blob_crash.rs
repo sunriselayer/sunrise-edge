@@ -1,6 +1,8 @@
 //! Successful blob + structured COMMIT, unconfirmed return, then total owner death.
 //! Not interrupted COMMIT, power loss, cross-file atomicity or custody evidence.
 
+mod guest_fault;
+
 use super::*;
 use crate::native_connection::{NativeConnection, NativeError};
 use crate::{SQLITE_BLOB_SCHEMA_IDENTITY, SqliteBlobStore};

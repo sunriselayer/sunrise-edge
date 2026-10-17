@@ -50,6 +50,7 @@ const FLAGS: &[&str] = &[
     "--ordered-history-dir",
     "--cut-dir",
     "--certificate",
+    crate::local_anchor::FLAG,
     "--state-db",
     "--blob-db",
     "--validator-id",
@@ -72,6 +73,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     let mut accepted: Vec<&'static str> = FLAGS.to_vec();
     accepted.extend_from_slice(CHAIN_FLAGS);
     let mut flags: FlagSet = FlagSet::parse(values, &accepted, &[])?;
+    let anchor: Option<PathBuf> = crate::local_anchor::parse(&mut flags)?;
     let chain_inputs: Option<SuccessorChainInputs> =
         SuccessorChainInputs::parse_optional(&mut flags)?;
     let inputs: BusinessPinInputs = BusinessPinInputs::parse(&mut flags)?;
@@ -191,13 +193,14 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     };
     let candidate_bytes: Vec<u8> = encode_ordered_candidate(&candidate)?;
     let source: Option<ExistingSqliteSource> = if pins.successor_authority().is_none() {
-        Some(ExistingSqliteSource::open(
+        Some(ExistingSqliteSource::open_with_anchor(
             &state_path,
             &blob_path,
             pins.context.chain_id().clone(),
             validator,
             pins.domain,
             timeout,
+            anchor.as_deref(),
         )?)
     } else {
         None
@@ -210,8 +213,10 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
                     .ok_or("successor Seal source requires --signer-key-file")?,
             )?;
             let public_key: [u8; 32] = ed25519_zebra::VerificationKey::from(&key).into();
-            let target: SqliteImportTarget = SqliteImportTarget::open_existing(
+            let target: SqliteImportTarget = crate::local_anchor::open_import(
                 &state_path,
+                &blob_path,
+                anchor.as_deref(),
                 SqliteNamespace::new(pins.context.chain_id().clone(), validator, pins.domain),
                 authority.import_binding(),
             )?;

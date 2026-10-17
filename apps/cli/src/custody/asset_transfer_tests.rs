@@ -105,7 +105,7 @@ impl Fixture {
             self.manifest.context(),
         )
         .unwrap();
-        AssetTransferTrust::new(self.config.clone(), root).unwrap()
+        AssetTransferTrust::new(self.config.clone(), root, None).unwrap()
     }
 }
 
@@ -145,7 +145,7 @@ fn authenticated_outer_genesis_does_not_waive_fee_instance_or_nested_signature_c
             manifest.context(),
         )
         .unwrap();
-        assert!(AssetTransferTrust::new(fixture.config.clone(), root).is_err());
+        assert!(AssetTransferTrust::new(fixture.config.clone(), root, None).is_err());
     }
 }
 

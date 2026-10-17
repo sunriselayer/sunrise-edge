@@ -266,6 +266,88 @@ pub(crate) fn reject_unsupported_request(
     None
 }
 
+/// The deployment frontend uses these same cheap HTTP guards before IPC.
+/// Protocol admission, signature checks, identity, clock and storage still
+/// belong exclusively to the existing worker router handlers.
+#[cfg(target_os = "linux")]
+#[allow(clippy::result_large_err)]
+pub(crate) fn custody_request_body(
+    headers: &HeaderMap,
+    body: Result<Bytes, axum::extract::rejection::BytesRejection>,
+    path: &str,
+) -> Result<Bytes, Response> {
+    use node_wire::ordered_history::{
+        MAX_ORDERED_HISTORY_COMPONENT_REQUEST_BYTES, MAX_ORDERED_HISTORY_HEIGHT_REQUEST_BYTES,
+        ORDERED_HISTORY_COMPONENT_PATH, ORDERED_HISTORY_HEIGHT_PATH, ORDERED_HISTORY_SUMMARY_PATH,
+    };
+    match path {
+        ORDERED_HISTORY_HEIGHT_PATH => {
+            return ordered_history::post_body(
+                headers,
+                body,
+                MAX_ORDERED_HISTORY_HEIGHT_REQUEST_BYTES,
+            );
+        }
+        ORDERED_HISTORY_COMPONENT_PATH => {
+            return ordered_history::post_body(
+                headers,
+                body,
+                MAX_ORDERED_HISTORY_COMPONENT_REQUEST_BYTES,
+            );
+        }
+        ORDERED_HISTORY_SUMMARY_PATH => return ordered_history::summary_body(headers, body),
+        _ => {}
+    }
+    // Ordinary handlers use Bytes rather than Result<Bytes>: their extractor
+    // failure precedes all media/encoding/body checks.
+    let body: Bytes = body.map_err(IntoResponse::into_response)?;
+    if path == ORDERED_ECONOMICS_TICK_PATH {
+        return match reject_unsupported_tick(headers, &body) {
+            Some(response) => Err(response),
+            None => Ok(body),
+        };
+    }
+    let (media, max): (&str, usize) = match path {
+        ORDERED_ECONOMICS_PROPOSE_PATH => (
+            ORDERED_PROPOSE_REQUEST_MEDIA_TYPE,
+            MAX_ORDERED_PROPOSE_REQUEST_BYTES,
+        ),
+        ORDERED_ECONOMICS_PROPOSAL_PATH | ORDERED_ECONOMICS_OBSERVE_PATH => {
+            (ORDERED_PROPOSAL_MEDIA_TYPE, MAX_ORDERED_PROPOSAL_BYTES)
+        }
+        ORDERED_ECONOMICS_CERTIFICATE_PATH => (
+            ORDERED_CERTIFICATE_MEDIA_TYPE,
+            MAX_ORDERED_CERTIFICATE_BYTES,
+        ),
+        _ => {
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ordered-custody-refusal-invariant",
+            ));
+        }
+    };
+    match reject_unsupported_request(headers, &body, media, max) {
+        Some(response) => Err(response),
+        None => Ok(body),
+    }
+}
+
+fn reject_unsupported_tick(headers: &HeaderMap, body: &Bytes) -> Option<Response> {
+    if crate::has_unsupported_content_encoding(headers) {
+        return Some(error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported-ordered-content-encoding",
+        ));
+    }
+    if !body.is_empty() {
+        return Some(error_response(
+            StatusCode::BAD_REQUEST,
+            "ordered-tick-body-must-be-empty",
+        ));
+    }
+    None
+}
+
 async fn propose_handler<S, C, I, Sig>(
     State(state): State<SharedOrderedEconomicsState<S, C, I, Sig>>,
     headers: HeaderMap,
@@ -608,6 +690,13 @@ where
     .await
 }
 
+#[allow(clippy::result_large_err)]
+pub(crate) fn decode_ordered_outcome_selector(selector: &str) -> Result<[u8; 32], Response> {
+    crate::decode_hex64_selector(selector)
+        .filter(|bytes| *bytes != [0; 32])
+        .ok_or_else(|| error_response(StatusCode::BAD_REQUEST, "invalid-ordered-request-id"))
+}
+
 async fn outcome_handler<S, C, I, Sig>(
     State(state): State<SharedOrderedEconomicsState<S, C, I, Sig>>,
     Path(selector): Path<String>,
@@ -618,10 +707,9 @@ where
     I: IndexedOutboxIdentitySource + Send + Sync + 'static,
     Sig: ConsensusSigner + Send + Sync + 'static,
 {
-    let Some(request_id) =
-        crate::decode_hex64_selector(&selector).filter(|bytes| *bytes != [0; 32])
-    else {
-        return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-request-id");
+    let request_id: [u8; 32] = match decode_ordered_outcome_selector(&selector) {
+        Ok(request_id) => request_id,
+        Err(response) => return response,
     };
     let executor = state.blocking_executor.clone();
     publication::admitted(state.is_cancelled(), executor, move || {
@@ -710,14 +798,8 @@ where
     I: IndexedOutboxIdentitySource + Send + Sync + 'static,
     Sig: ConsensusSigner + Send + Sync + 'static,
 {
-    if crate::has_unsupported_content_encoding(&headers) {
-        return error_response(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported-ordered-content-encoding",
-        );
-    }
-    if !body.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "ordered-tick-body-must-be-empty");
+    if let Some(response) = reject_unsupported_tick(&headers, &body) {
+        return response;
     }
     let cancelled = state.is_cancelled();
     let executor = state.blocking_executor.clone();

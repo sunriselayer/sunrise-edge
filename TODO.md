@@ -26,6 +26,8 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 - D05/M5の選択済みNative/closed relayの技術範囲はE71/E73で完了。
   残るコード・検証の親項目はD02/M1/M2/M3/M4/M7の6件です。
   元M5の実PKI・capacity・alerts・運用の公開条件はD04/D07/M8に残ります。
+  継続中の統合変更は[Draft PR #320](https://github.com/sunriselayer/sunrise-edge/pull/320)。
+  このDraftの存在を完全required/CI・Nativeまたは親項目の完了には数えません。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -268,6 +270,24 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E71: 9de6 complete required and hosted CI | `9de634a7` / tree`229b397f`。literal npm-ci +完全check-allがactual0/EOF、17,587.750秒。Rust success summaries144・報告pass合計4,304・ignored34・failed0。[run `38922549356`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38922549356) attempt1の全7 owners + checkもSUCCESS。前後source/tree/clean・Node24本体・全wrapper/raw・全8 CI raw/checkout/tree/parentsを親で再照合 | own-created Asset mint/burn custody sourceのexact storage-neutral qualification。原12 RELEASE runtime・後続source資格・全M2/M7・PG・独立監査/公開認定とは分ける |
 | E72: b4 test-only hosted CI | `b4d20a4a` / tree`1e934d3a`。[run `38930807287`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38930807287) attempt1の全7 owners + checkがSUCCESS。全8 raw checkout`b2dd371d`のtree一致・merge parents・clean local sourceと全raw hashを親で再照合 | E67の鍵復旧test-only headのexact CI。literal local完全required/このheadの13-targetは未実行。E71のsourceとして付け替えない |
 | E73: D05/M5 technical final coverage | E71の完全required/全8 CI成功と独立functional reviewで下の共通case表を最終照合。c04e→b4のoperator/native-http/shared relay・gate dispatcher/workflowはbyte同一。9de6→b4の差分はTODO/guideと別実行のDocker custody fixtureのみで、通常required/CIの入力は不変。E67/E72は別sourceの限定資格として保持 | 選択済みloopback Native + closed certified relayの技術範囲を完了。元M5総合readiness・原12 RELEASE runtime/M7・独立security監査・実provider/公開認定ではない。実PKI/capacity/alerts/spend/topology/rehearsalはD04/D07/M8 |
+| E74: combined application Coin / complete-owner-loss / anchored TLS | `d4dd0109` / tree`aaff6747`。全9 owning commandsがactual0/EOF/wait、675.094秒。custody174 passed/6 ignored、Standard Asset19 passed、実compiled local TLS全14 passed。全4 sole-owner SIGKILL/reap後のwriter交代と、新しい独立anchor付きの同復旧controlも成功。fmt/Node syntax・全target全feature strict Clippyも成功 | 親が1157 tracked files・固定Node24/全wrapper/raw hash・前後clean sourceを照合。component gateでありliteral完全required/CI・13-target Native・全M2/M3/M4/M7ではない。旧retained-handle controlと元13 TLS selectorsは保持 |
+| E75: own-created application Coin actual custody | 同じ`d4dd0109`の実CLI/新ignored oracleを通常dev/test opt2で生成し、実mode0755を保持した別inodeへ保存。Docker/別UID/PTYがactual0/EOF/wait、6.564秒。mint→split→merge→whole burn→mint→他者へのwhole transfer、全6段階の保存済み再送と供給量5M→0→5M、最終nonce9/cap6を検証 | 元5 families/6 lifecycleとE67を保持。新5 groupsの取消/restart・正確な件数・offline byte一致を確認。親が全source/両ELF/raw hashと専有container/volume消滅を照合。RELEASE・全storeの等値性・他profileの鍵復旧/交換・automatic signing・全M2は主張しない |
+| E76: independent local checkpoint anchor | `7d5d91dd` / tree`64a3079a`でruntime-sqlite111 passed/5 original ignored、新anchor13 controls、strict全target全feature Clippyがactual0/EOF/wait。別`.lease` inodeでの排他、12 SQL tablesと閉じたbody manifest、COMMIT前Pending/後の照合、stale clone拒否と現行cloneのfresh fencingを検証 | 初回compile失敗とClippy失敗を保存。24入力を親で再hashし、統合d4ddとの差分は設計index/ADRの2文書だけ。実compiled anchor inspect/enroll/checkpointと4-host TLS復旧はE74で追加実行。local ACKの独立anchorでありquorum checkpoint・完全暗号化backup・upgrade・全M4ではない |
+| E77: ordinary-v5 actual guest faults, first failed attempt | `6c4ea77b`のfmt・pure parser・SQLite lib112 passed/6 ignored・strict Clippy・Cargo JSONが全actual0/EOF/wait、94.423秒。保持ELFで実VMを起動し、caller ACK後とSQLite COMMIT後/caller ACK前の2電源断・cold復旧は全12+2 tables/4 collections/2 bodies/fresh fence/new work/replayを完了。続くwrite-only仮想block EIOは実COMMITから1034 (FSYNC) として返り、778だけを期待したfixtureがactual1/EOF、6.394秒で失敗 | 失敗原本`qg1017a`の全images/rawとouter wait1を保持。kernel WRITE EIO・実QMP device eventを照合。writeのcold復旧とflush-only caseは未実行。全child wait/EOF/reap・socket消滅を確認。writeback時の分類を修正して別sourceで再検証する。ordinary v5のみであり、anchor v6・物理hardware・全M3の資格にはしない |
+| E78: encrypted checkpoint first owning failure | 統合`c68e34ed` / tree`34c0b1d4`。fmtはactual0、SQLite libはactual101/EOF/wait、115 passed/2 failed/6 ignored、全体55.014秒。positive fixtureがreadonly blob ownerへputした誤りと、閉じたWAL snapshotのreadonly照合後にsidecarsが残る問題を検出 | operator age controls・Clippy等の後続3 commandsは未実行。raw/終端/sourceを失敗のまま保持。strict sidecar refusalを維持して修正中であり、完全backup/restore・このsourceの全体gate成功とは数えない |
+| E79: ordinary SQLite actual virtual faults | `62432e47` / tree`1d823321`の保持ELFで全4 cases・8 bootsがactual0/EOF、10.477秒。ACK後/COMMIT後ACK前はcold full write setがall、write-only/flush-only EIOはnone。全caseで12+2 tables/4 portable collections/2 positive bodies・receipt先行照合・fresh fence・新規state/receipt/outbox・exact replayが成功。両EIOの実COMMIT codeは1034、独立flush-only caseが正確なFSYNC条件を満たした | `ordinary`は既存schema/v6・PRAGMA user_version5で、独立anchorは使わない。各実rule/QMP graph/device event/kernel EIOと全15 child wait/EOF/reap・socket/cgroup消滅、全入力/失敗原本hashを親で照合。build2のcontroller1は生成dirのuntracked判定失敗として保持し、5 commandsの実0と別inode ELFを別途資格照合した。物理hardware・anchor付きprofile・最終source全体gate・全M3ではない |
+| E80: checkpoint corrected native/age and first compiled fixture failure | `22250784` / tree`4ba328e4`のowningはactual101/EOF/wait、383.828秒。修正後SQLite lib119 passed/6 ignored、実ageの5 controlsと元14 compiled TLSは全成功。新15thはcompiled packがexit0の後、fixtureが別command用の`complete=true`表示を要求して失敗 | raw/終端と全sourceを保存し、厳格な実診断照合を持つfixtureへ修正する。新15th・後続Clippy/全体gateの成功とは数えない。既存Native/age結果とcompiled pack/open全体資格を区別する |
+| E81: checkpoint compiled inventory failure | `98e45e05` / tree`76ad2e8b`の新15thはactual101/EOF/wait、owning全体23.192秒。復元後の通常SQLite検査の後、closed inventoryが期待4 leafに対して6 leafとなり失敗 | rawには余分なleaf名がない。sourceの呼出順から通常readonly WAL検査の副作用と診断し、archiveの厳格な一覧検査を最初の通常open前へ移した。元raw/終端は保持。4台continuation・fresh business・後続Clippyの成功とは数えない |
+| E82: original ordered custody functional component | `976deed4` / tree`5f81352e`で全7 commandsがactual0/EOF/wait、696.548秒。新IPC/署名応答9、元routerとの応答比較4、role/private config3、既存DR-0215 local-signature16 controlsが全成功。fmtと全target全feature strict Clippyも成功 | 独立source reviewの3指摘を修正し、統合code/testは承認candidateとbyte一致。親が1172 tracked inputs・Node24・wrapper/controller/raw・clean sourceを再照合。別UIDの実4-worker/frontend・完全required/CI・Native・全M2・security監査は未完了 |
+| E83: compiled complete checkpoint and prior-release upgrade | `07ebbc5a` / tree`c66689d9`のdefault TLS15 passed/1 ignoredがactual0/EOF、42.422秒。4台の実pack/open・旧source不在・独立authority一致・fresh fence/有料取引が成功。明示的な旧9de6 RELEASEを使う追加upgradeもactual0/EOF、5.490秒で全旧4台の取引→停止→schema identityだけの移行→旧版拒否/停止bytes不変→新fence3/新規取引/再送に成功 | owning全体はClippyのテスト内空文字比較1箇所でactual1/EOF、238.042秒の失敗として保持し、成功prefixを別途資格照合。等価な`is_empty`への変更だけの`fee693ff` / tree`4ac28a26`でfmt/全target全feature strict Clippy/diffはactual0/EOF、5.580秒。1174 tracked inputs・実driver/旧ELF/rawを親で再hash。全体required/CI・Native・全M4は未完了 |
+| E84: original ordered multi-UID build/inventory and first setup failure | `44077af2` / tree`7e67ceeb`で4 bins + ignored fixture harnessの実CargoJSON build、fmt、Node/Python構文、strict Clippyの全6 commandsがactual0/両EOF/wait、owning15.83秒。5 ELFは通常0755のまま別inodeへ保持。read-only inventoryもactual0、0.59秒で12 source/5 ELF/4 loader-librariesを照合 | 最初のbuildのunused shared test helper失敗を保存し、単一関数だけに理由付きlint属性を追加。実UID fixture初回はdirectory chmodのEPERMでactual1/両EOF/wait、1.17秒、role child開始0。専有container/volume解放と不在を再確認。権限設定を所有権移譲前へ移す限定修正を統合し、修正後の実UID owningは未実行。build成功をM2/runtime成功に数えない |
+| E85: partial-write mechanism refusal and stopped assessment | 別の小さいQEMU mechanismは実`max-transfer512`の制約拒否でactual1、0.285秒。子processのEOF/wait/reap/socket不在、実disk全old bytesと失敗rawを保存 | mixed bytes・SQLite/WAL・M3成功には数えない。続く実WAL source assessmentはprovider safetyで停止し、再試行・別agentへの迂回を行わない。supporting mechanism2の準備sourceも未実行で保全。独立anchorの9 casesと、この停止taskは別に扱う |
+| E86: anchored SQLite library and failed first guest boot | `80c028a9` / tree`11e9044c`でSQLite lib全120 passed/7 ignored、3 packagesの全target全feature strict Clippy、fmt/diffの全5 commandsがactual0/両EOF/wait、19.84秒。前のbuild ownerは実CargoJSON package IDの照合誤りで失敗したまま保持し、正しいIDだけで別attemptを実行 | 1180 tracked inputs・18 VM inputs・通常0755の保持ELFを親で再hash。初回guestはinit exit76でactual1、2.07秒、product control成功0。全6 childrenのEOF/wait/reap・socket不在・raw/imagesを保持。続くboot修正taskもprovider safetyで停止したため、再試行・迂回せず未達を保持。library成功を9 boundariesの実guest成功へ読み替えない |
+| E87: original ordered multi-UID second setup failure | `80c028a9`の新build/inventoryはactual0。実UID owningは準備probe成功後、実authorの親directory読み取りでEACCESとなりactual1/両EOF/wait、1.54秒。全15 Docker clientsのwait/EOF/PID不在と専有container/volume解放・不在を親で再確認 | `6e84e3a1`でroot-owned public routing ancestorsだけを0755へ合わせた。private leaves0700・private files0600・caps・拒否controlsを維持。修正後の実4-worker/4-frontend owningは未実行で、M2/runtime成功には数えない |
+| E88: read-only anchor inspection and actual five ENOSPC controls | `4db1229f` / tree`c09cd519`。自動修正の後にも残ったwritable historical preflightを除き、同じreadonly snapshotで既存header/WAL/shared namespace検証とroot走査を実行。writer保持中・12拒否入力・authority非更新の3新規controlsを含むSQLite全123 passed/7 ignoredとstrict Clippy/fmt/diffが全actual0/両EOF/wait、64.387秒。元5 ENOSPC selectorsもactual0、26.992秒 | 全1180 tracked inputs・実CargoJSON/保持ELF・全framed rawを親で照合。ENOSPCの全86 clientsと専有5 container/volumeの解放・不在を再確認。既存historical/writable factoryと全5 fault controlsを保持。普通のcorrectness reviewは最終security監査ではなく、VM・全M3・最終完全gateの成功にも数えない |
+| E89: original ordered fixture bounded output failure | `4db1229f`で4 bins + fixture harness、構文、strict Clippyの全6 commandsがactual0/両EOF/wait、195.059秒。通常0755の5 ELFとread-only inventoryも再照合。実UID attemptは64KiB内の出力配分を超え、actual1/両EOF/wait、13.937秒 | inner start clientはSIGKILL、観測stdout58102 bytesの完全rawを保持できなかったためproduct成功0として扱う。outer Node rawは完全。全15 clientsのwait/EOF/PID不在と専有container/volume解放・不在を確認。上限・oracle・拒否controlsを維持して完全ログのtransportを修正し、別attemptで検証する |
+| E90: lossless complete-output transport source | `1973380a`で全child stdout/stderrを含む既存JSONをzlib/base64で転送し、正確なwireと復号resultを両方保持する。Node24の実16 controlsでPython相互運用、decoded512KiB境界、破損/末尾/連結stream・length/hash/base64/UTF8/JSON拒否が成功 | 64KiB wire/metadata・16KiB cleanup reserve、inner256KiB/stream64KiB、既存期限/caps/oracle/拒否controlsは維持。decoded allocation512KiBを明示し、outer最大serialization1,442,020 bytesが既存4MiB未満であることを確認。親が全既存Python owner/control AST・raw codec結果を照合。synthetic codec成功であり、修正後の実UID owningは未実行 |
+| E91: original ordered actual multi-UID custody | `226c861a` / tree`f4513fbd`。全6 build/構文/strict Clippy commandsとread-only inventoryがactual0。実4-worker/4-frontend TLS fixtureもactual0/両EOF/wait、13.728秒。全76 role childrenと17 Docker clientsを回収し、署名・保存済み再送・停止中503・再起動fence3・QC・新規height2・不正UID/authority/入力の拒否が成功 | 親が1180 source/21 inputs・通常0755の5 ELF/4 librariesを再照合。完全child raw45653 bytes、wire7442 bytesと復号JSON58103 bytesの正確な対応を独立確認。専有container/volume解放・不在を確認し、全旧失敗を保持。original orderedのlocal OS custody componentのみで、後継epoch・他family・全M2・最終完全gate/CI/Native・独立監査/公開認定ではない |
 
 
 
@@ -278,6 +298,70 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 
 
 新しいrawの保存先は `/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013`。
+E74は `technical-six-owning-1017-terminal.json` / `.log` と親の
+`technical-six-owning-parent-qualified-1017.json`。raw SHA-256は
+`498730b69ea721f978e8597fb8f14b90675a6451505db4b2b8b15d7560f29be5`。
+E75は `d4dd-coin-custody-fixture-1017-terminal.json` / `.log` と
+`d4dd-coin-custody-fixture-parent-qualified-1017.json`、raw SHA-256は
+`cff27046aa8aac4798ba7c0eea5b1813179d81adb23cb05557452db6dc8ef849`。
+E76は `checkpoint-anchor-component-qualified-1017.json` /
+`checkpoint-anchor-parent-qualified-1017.json` と
+`checkpoint-anchor-d4dd-code-correspondence-1017.json`、成功raw SHA-256は
+`d66d292bc7ad6a745f945cf63ab2750b63cd93cab862bfd5b37c93d5a953cd86`。
+E77は `m3-qemu-product-build-1017-terminal.json` / `.raw` と
+`m3-qemu-product-vm-attempt1-qualified-failure-1017.json` / `qg1017a/terminal.json`。
+VM raw SHA-256は `29e90314983a21418f6b80047d0434d635e7345eb29c77477f3c975391c08157`。
+E78は `checkpoint-v2-owning-1017-terminal.json` / `.log` と
+`checkpoint-v2-owning-failure-qualified-1017.json`、raw SHA-256は
+`98b3f98cf32b54a8307799f831edc188d33b1ea1f1b89d03110ce7de2b758164`。
+E79は `m3-qemu-product-build2-parent-qualified-1017.json` /
+`m3-qemu-product-vm-attempt2-qualified-1017.json` /
+`m3-qemu-product-vm2-parent-qualified-1017.json` と `qg1017b/terminal.json`。
+VM raw SHA-256は `cb32205d920fa6d727740bc2862857f31950a2b1b5ada6d7899626d772b08c68`。
+E80は `checkpoint-v2-owning2-1017-terminal.json` / `.log` と
+`checkpoint-v2-owning2-failure-qualified-1017.json`、raw SHA-256は
+`e9cbf7fbfaa6f440214a81295543654a5589a0e7a3ed79b6ceb93d71ec36a5bb`。
+E81は `checkpoint-v2-owning3-1017-terminal.json` / `.log` と
+`checkpoint-v2-owning3-failure-qualified-1017.json`、raw SHA-256は
+`5ff30e574b182b15b072131dfaf694df3cacbbac46b711273f6dca8998eecf71`。
+E82は `ordered-worker-component-owning1-1017-terminal.json` / `.log` と
+`ordered-worker-component-owning1-parent-qualified-1017.json`、raw SHA-256は
+`f9f3ac5fb51d29491de2589eb9b44a0142cc19c17751745e0861c30b7233ef45`。
+E83は `checkpoint-upgrade-owning4-1017-terminal.json` / `.log` と
+`checkpoint-upgrade-owning4-parent-prefix-qualified-1017.json`、raw SHA-256は
+`8c6239d44ab9223dae29338dab0629e062c4baff96c23224cd70c0560a2546b8`。
+Clippy修正後は `checkpoint-upgrade-lint5-parent-qualified-1017.json` と
+`checkpoint-upgrade-lint5-1017-terminal.json` / `.log`、raw SHA-256は
+`2ff7660d6181f881204905cc2e30da0703f09052962b74c38e62ce6a99f28a26`。
+E86は `m3-anchored-library-build2-parent-qualified-failure-1017.json` /
+`m3-anchored-library-build3-parent-qualified-1017.json` /
+`m3-anchored-vm1-parent-qualified-failure-1017.json` と `qga1017a/terminal.json`。
+guest raw SHA-256は `e33c54ab54e106080bb810b729fbefe56607ac10611cc4778621429b7318b998`。
+停止は `m3-anchored-boot-provider-stop-1017.json` に保持する。
+E87は `m2-ordered-fixture-build3-parent-qualified-1017.json` /
+`m2-ordered-fixture-inventory3-parent-qualified-1017.json` /
+`m2-ordered-fixture-runtime3-parent-qualified-failure-1017.json` と
+`m2-ordered-fixture-runtime3-1017-terminal.json` / `-complete.json`。
+E88は `sqlite-library-inspection-build4-parent-qualified-1017.json` /
+`sqlite-final-five-inspection4-parent-qualified-1017.json` と
+`sqlite-library-inspection-build4-1017-terminal.json` / `.raw`、
+`enospc-final-inspection4/terminal.json` / `raw.log`。
+library raw SHA-256は `891ad3015b03388da289df829520c1e710c27f1558f92e7cd7c74bf421f9839b`、
+ENOSPC raw SHA-256は `1a161db14ebac9262cb9778dc8f55b58439099f9ba664eec61e8e7e730c40d4b`。
+E89は `m2-ordered-fixture-build4-final-parent-qualified-1017.json` /
+`m2-ordered-fixture-inventory4-final-parent-qualified-1017.json` /
+`m2-ordered-fixture-runtime4-final-parent-qualified-failure-1017.json`。
+E90は `m2-original-ordered-fixture-complete-output-transport-source-1017.json` /
+`m2-ordered-output-transport-1017-pure-check.json` /
+`m2-ordered-output-transport-parent-source-review-1017.json`。
+E91は `m2-ordered-fixture-build5-parent-qualified-1017.json` /
+`m2-ordered-fixture-inventory5-parent-qualified-1017.json` /
+`m2-ordered-fixture-runtime5-parent-qualified-1017.json` と
+`m2-ordered-fixture-runtime5-1017-terminal.json` / `-complete.json`。
+完全runtime JSONのSHA-256は
+`256294416e9bb1ad48a194f56c8dcc36123c6005e9f884f19c09a181e7b25f79`。
+これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
+
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
 `required-current3.log` / `required-14fb-receipt.json` と
 `required-current5.log` / `required-5672-receipt.json`、
@@ -600,7 +684,8 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     E49で別UIDの操作内容承認・署名・実CLI送信とnew instance、独立型IDのDefinition/TreasuryCap・
     供給量0・非空receipt/再送・取消/restart拒否を確認。承認後のseed/nonce/max_fee変更を拒否する。
     feeはgenesis context、applicationは独立導出したnew instanceであり、seedの事前freshnessや
-    作成IDの事前予測は主張しない。作成assetのmint/burnはE62で確認し、transfer/split/merge・新familyの鍵復旧/交換・
+    作成IDの事前予測は主張しない。作成assetのmint/burnはE62、transfer/split/mergeはE75で確認。
+    新familyの残る鍵復旧/交換・
     最終source完全gate/CI/Native releaseと全M2は未完了。
   - [x] [mint/burnの任意application asset pin](docs/architecture/decisions/0258-mint-burn-application-asset-pin.md):
     E62でgenesis feeと独立local application pinを分け、作成assetの実mint/burnを確認。
@@ -611,7 +696,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     同じtrusted OSのown-created profileで、現在性やassetとinstanceの起源をfetch証明しない。
     9de6の13-target Native A/Bと実RELEASE CLIはE64で成功。
     同profileの停止後鍵復旧はE67で確認。
-    作成assetのtransfer/split/merge、他profileの鍵復旧・所有権移行を含む鍵交換、automatic protocol signingと
+    作成assetのtransfer/split/mergeはE74/E75で追加検証。他profileの鍵復旧・所有権移行を含む鍵交換、automatic protocol signingと
     最終source完全required/CI・原12 RELEASE runtime・全M2は未完了。
   - [x] [own-created mint/burnの停止後鍵復旧と5 profilesの鍵交換時拒否](docs/architecture/publication-custody-lifecycle.md#asset-family-fixture-coverage):
     E67で元鍵のsignerを停止してから復旧し、同じ新規承認frameでのreference署名一致、
@@ -619,6 +704,24 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     新publisherで旧Coin/Cap/fee/creatorを拒否し、出力が作られないことも確認。
     元5 families/6 lifecycleと全件数を維持。正の所有権移行、他profileのlive鍵復旧/交換、
     automatic protocol signingと全M2・最終source全体gateは未完了。
+  - [x] [own-created application Coinのtransfer/split/merge custody](docs/architecture/standard-asset-application-coin-custody.md):
+    E74/E75で独立application pinとgenesis feeを分け、実別UID/PTYの6操作と正確な
+    type/owner/version/amount/receipt/nonce・全保存済み再送・取消/restartを検証。
+    自己宛whole transferの拒否は保持し、最後の送金先は別のdisposable recipient。
+    内容承認・署名・実CLIで同じframeを使う。全M2と最終source全体gateは未完了。
+  - [x] [original ordered protocolの別process/UID worker](docs/architecture/local-protocol-custody.md):
+    元のverified startup・ordered router・confirmed retentionをworkerだけが所有し、
+    frontendは鍵/DB/fenceを持たない。E82のfunctional controlsと独立source reviewは成功。
+    別UID・TLS・停止/restart/replay fixtureを実装。E84で5 ELFのbuild/strict Clippyと
+    全入力inventoryは成功したが、初回runtimeは準備時のEPERMで失敗。所有権移譲前に
+    権限を設定し、E87の次attemptで準備probeは成功したが実authorのEACCESで失敗。
+    public routing ancestorsだけを0755へ合わせ、private leaves/拒否controlsは保持。
+    E89の次attemptはログ配分超過で失敗し、完全inner rawがないためproduct成功0。
+    E90で上限・oracle・拒否controlsを維持した完全ログtransportを実装し、
+    実Node24の16 codec controlsを確認。E91で修正後の実4-worker/4-frontend TLS owningが
+    actual0/両EOF/wait。全76 role childrenを回収し、署名・不正UID拒否・停止中503・
+    再起動fence3/保存済み再送・QC・新規height2を検証。完全rawと専有資源の不在を照合。
+    後継epoch・FastVote/readiness・他signing family・全M2へ転用しない。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
@@ -639,6 +742,32 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
   - [x] 正常停止・TLS trust交代後の新規business: E30の実CLI/4 replicasで確認。
     保存済み再送に加え、新規nonce/返金Coinを使った取引の確定と新旧receipt保存を検証。
     同sourceの完全gate/CIはE45/E39で成功。残るM3条件は未完了として保持する。
+  - [x] [全connection喪失後の正規local writer交代](docs/architecture/decisions/0260-complete-owner-loss-local-writer-failover.md):
+    retained-handleの元SIGKILL controlを保持し、全4 sole-ownerをSIGKILL/reapしてから
+    次generationを起動する別controlを追加。全12 SQL tables・2 blob tablesと4 portable
+    collections/参照bodyの保存済み再送不変、新規有料取引/両quorum/nonce/receiptを検証する。
+    E74の実compiled TLSで成功。独立anchorを使用する追加variantも成功。
+    このsourceの最終完全gate/CIは未完了。
+    host/power/media/fsync・別host/実topology failoverの証拠へ読み替えない。
+  - [x] [ordinary SQLiteの仮想power/block-I/O fault component](docs/architecture/native-sqlite-virtual-fault-profile.md):
+    E77の失敗を保持し、E79で実guest電源断2種・write-only EIO・flush-only EIOと
+    全cold復旧を検証。既存schema/v6・user_version5の通常profileだけを対象とする。
+    独立anchor付きprofile、物理hardwareや最終headの全体qualificationへ借用しない。
+  - [ ] [独立anchor付きprofileの実guest fault boundaries](docs/architecture/decisions/0266-independent-anchor-virtual-fault-profile.md):
+    ACK後・Pending後/source COMMIT前・source COMMIT後/finalize前のguest電源断と、
+    source/prepare/finalize各COMMITの実write/flush EIOの計9境界を実装し、source review済み。
+    Pendingと旧sourceの不一致は既存契約どおり安全停止し、完全new sourceとPendingが
+    一致する場合だけ既存factoryで照合・確定してfresh fence/new workへ進む。
+    通常profileのE79を流用せず、全12+2+authority tablesとpositive bodiesを検証する。
+    E86でSQLite library全120件・strict Clippyは成功したが、実guestは初期化時に失敗し、
+    product control成功0。boot修正taskもprovider safetyで停止したため再試行・迂回しない。
+    source/raw/imagesを保持し、9 boundariesの実guest owningは未達として残す。
+  - [ ] selected virtual deviceのpartial persistent write:
+    元のgeneric torn-write条件を保持。実WAL extent・対象sector・混在した保存bytesと
+    cold receipt-first none/allを対応付ける。単なるEIOやtransfer上限だけで完了にしない。
+    追加source assessmentは2026-10-17にprovider safetyで停止。再試行・迂回せず、
+    supporting mechanism2の準備sourceも未実行で保持する。
+    最終sourceのENOSPC・conformance・TLS・完全required/CIも未完了。
   - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。
     trait reply-loss、process SIGKILL、power/host/media/fsync faultは別証拠。
     全12 SQL tables・4 portable collections・positive blob/oracleを省略しない。
@@ -649,9 +778,11 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
 - [ ] **M4: checkpoint・暗号化バックアップ・復元コードを検証する**
   - 対象: 実装 + 検証。checkpoint/state-root・immutable body manifests、
     完全history/receipt/blob restore、fresh fencing、migration/upgrade・safe rollback/stop。
-  - 状態: E1の35-role source-free restoreは合格。新しいcomplete requiredの状態はE14。
-    checkpoint/state-root・closure-level immutable manifest・upgrade/rollback/stopの
-    未達技術条件を残し、全M4/releaseは未完了。
+  - 状態: E1の35-role source-free restoreに加え、E83でcomplete storeの暗号化復元と
+    実prior releaseからのupgrade/旧版停止・再開が成功。最終統合sourceの完全required/CI・
+    13-target Native A/BとM4対象の実RELEASE runtime、残る原条件の照合を残し、全M4/releaseは未完了。
+    原12 RELEASE runtimeの総合qualificationはM7の別gate。元8リンク/e8 withdrawals/
+    35 rolesの暗号化relocationは完全required/CIから除かず、短いTLS/upgradeで代替しない。
   - [x] [独立に保持したordered history floor component](docs/architecture/decisions/0248-import-ordered-history-freshness-floor.md):
     実import create/resumeへの追加拒否を実装。parse/comparison 12件・元9件を保持したcompiled import全10件・Clippy・
     独立component reviewは成功。E29で同sourceのRELEASE child import全10件も成功。
@@ -667,6 +798,25 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     同sourceのCIとローカル完全requiredはE53/E63で成功し、原12 Native runtimeはE57の失敗として保持する。
   - 後継epochのhistory floorはE37で実genuine successor importの既存loopへ追加し、
     元long caseを変えずにE53のactual CI終端成功を確認した。
+  - [x] [trusted local OSの独立checkpoint anchor component](docs/architecture/local-checkpoint-anchor.md):
+    E76で独立authorityのPending/acknowledged根と閉じたimmutable body manifest、
+    stale rollback拒否・lease・current clone交代を検証。E74ではcompiled hostで明示的に
+    inspect/enroll/checkpointし、4-host TLSの全owner喪失後にも有料取引を継続した。
+    旧保存済み再送ではauthority不変、新規取引ではACK更新を確認。
+    complete encrypted backup/restoreと実prior release upgrade/safe stopはE83で検証。
+    最終統合sourceの全体qualificationは親M4に残す。
+  - [x] [独立current anchorと照合する暗号化full-store continuation](docs/architecture/local-checkpoint-backup.md):
+    v1のproof archiveを保持したままlocal v2形式を実装し、独立source reviewを完了。
+    初回owningはE78の2 failures。readonly snapshot副作用とfixture ownerを修正し、
+    E80のNative119/age5は成功。E81のfixture検査順を修正し、E83の実4 pack/open・
+    旧source不在・4-host fresh fence/新規有料businessと再送まで成功。
+    protocol-version activation/migrationと実off-host運用の合格には転用しない。
+  - [x] [実prior RELEASEから独立anchor profileへのsoftware/storage upgrade](docs/architecture/decisions/0265-stopped-native-storage-profile-upgrade.md):
+    既存15 TLS selectorsを保持し、明示的な9de6 RELEASE ELFを要求するignored16件目を追加。
+    実旧4-host paid/quorum/historyとpositive blobを基準に、停止・root-pinned enrollment、
+    schema identityだけの変更とuser_version5維持、旧binaryのschema拒否・全停止bytes不変、
+    現行fence3・保存済み再送・新しい有料取引とtail stopをE83で検証。
+    旧manifestの`fixturePassed=false`は旧ELFのprovenanceだけに使用し、この実行とは分ける。
   - 次: source/artifact対応、M7、残るmanifest/upgrade/fencing範囲を照合する。
     別namespaceを区別するnonceだけではbyte cloneやepoch内の古いowned状態を検出できない。
     その不足を残したprotocol拡張だけでM4を閉じず、独立した最新性anchorと照合する。

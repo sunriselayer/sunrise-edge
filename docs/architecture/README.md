@@ -25,6 +25,18 @@ roadmap describes a later target state.
 - [Native SQLite connection and attachment ownership](decisions/0210-native-sqlite-connection-ownership.md):
   one native settings owner, lock-safe identity checks and explicit operator
   commit ambiguity; shared SQL decisions and live protocol authority stay separate.
+- [Complete-owner-loss local SQLite writer failover control](decisions/0260-complete-owner-loss-local-writer-failover.md):
+  separate actual sole-writer SIGKILL/reap and fresh generation business, with
+  complete SQL/portable/blob reconciliation; host/power/media/fsync faults
+  retain separate owning boundaries.
+- [Native SQLite virtual power and block-error profile](native-sqlite-virtual-fault-profile.md)
+  ([DR-0262](decisions/0262-native-sqlite-virtual-power-and-block-errors.md)):
+  actual guest kernel/cache loss and typed block EIO under source COMMIT,
+  independent cold full-image reconciliation and fresh fenced work.
+- [Independent-anchor virtual fault profile](decisions/0266-independent-anchor-virtual-fault-profile.md):
+  separate guest source/authority devices, real Pending/source/finalize cuts,
+  phase-specific write/flush errors, closed authority manifests and supported
+  exact-new reconciliation or unchanged Pending-old safe stop.
 - [Owned local TLS stop and explicit rotation](decisions/0216-local-tls-stop-restart-rotation.md):
   retained listener and trust boundaries, actual served-leaf observation and
   orderly compiled-host restart; separate from production PKI and custody.
@@ -61,6 +73,15 @@ roadmap describes a later target state.
   retained exact cut/package/plan digest pins refuse a differing independently
   reverified closure before opening or creating destination databases; no
   checkpoint/state-root or activation authority.
+- [Encrypted local checkpoint continuation](local-checkpoint-backup.md)
+  ([DR-0263](decisions/0263-encrypted-local-checkpoint-continuation.md)):
+  complete same-layout SQLite snapshots, existing independent currentness,
+  maintained age transport and fresh-fence continuation; v1 proof archives
+  and activated protocol migration retain their original owners.
+- [Stopped Native storage-profile software upgrade](decisions/0265-stopped-native-storage-profile-upgrade.md):
+  pinned prior RELEASE hosts, explicit one-way independent-anchor enrollment,
+  incompatible old-writer refusal, historical receipt/body preservation and
+  fresh fenced paid business; structural version5 and protocol remain fixed.
 - [Immutable operation signing preparation](signing-preparation.md): one
   mechanical frame/identity owner, operation-specific immutable trust inputs,
   actual SDK/CLI consumers and the separate custody/content-review boundary.
@@ -76,6 +97,10 @@ roadmap describes a later target state.
   ([DR-0238](decisions/0238-publication-only-local-os-custody.md)):
   separate UID/key permissions, independently pinned preimages, exact approval,
   authenticated local IPC and refusal/restart controls.
+- [Original ordered protocol custody](local-protocol-custody.md)
+  ([DR-0264](decisions/0264-original-ordered-protocol-custody-worker.md)):
+  distinct-UID authority-owning worker and ordered-only HTTP frontend; existing
+  protocol owners/bytes retained, with no per-request raw signature endpoint.
 - [Publication custody lifecycle](publication-custody-lifecycle.md)
   ([DR-0244](decisions/0244-publication-approval-revocation-and-key-lifecycle.md)):
   durable request cancellation and stopped disposable-key recovery/rotation.
@@ -104,9 +129,13 @@ roadmap describes a later target state.
   (DR-0258; see also
   [mint/burn custody](standard-asset-mint-burn-custody.md#optional-application-asset-pin-dr-0258)):
   one small, independently local, all-or-none non-genesis asset/instance pin
-  for mint/burn only, so it can target a `create-asset`-created asset; no
-  new wire kind/version, no change to genesis fee authority or to any other
-  family.
+  introduced for mint/burn to target a `create-asset`-created asset; no
+  new wire kind/version or change to genesis fee authority. DR-0261 below
+  extends that same pin to transfer/split/merge.
+- [Own-created Standard Asset Coin custody](standard-asset-application-coin-custody.md)
+  ([DR-0261](decisions/0261-created-standard-asset-coin-custody.md)):
+  extends the same immutable local pin to transfer and split/merge, keeping
+  genesis fee typing, whole-frame approval and no-pin bytes unchanged.
 - [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
   an explicitly configured closed HTTPS transport, separate from default
   event-only relays, embedded DO policy and core authority.
@@ -288,3 +317,5 @@ separate operational references:
 Current work queues, gate summaries, and roadmap sequencing belong only in
 [`TODO.md`](../../TODO.md). Architecture documents may describe implemented
 behavior and preserve historical evidence inside accepted decision records.
+
+- [Independent local checkpoint anchor](local-checkpoint-anchor.md): opt-in local storage acknowledgement, complete typed state/body roots, crash reconciliation and clone exclusion; [DR-0259](decisions/0259-independent-local-checkpoint-anchor.md).

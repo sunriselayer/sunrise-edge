@@ -138,6 +138,13 @@
 - [DR-0244: publication approval revocation and stopped key lifecycle](0244-publication-approval-revocation-and-key-lifecycle.md)
 - [DR-0245: saved successor fee-claim review and development signing](0245-saved-successor-fee-claim-review.md)
 
+- [DR-0263: encrypted local checkpoint continuation](0263-encrypted-local-checkpoint-continuation.md)
+
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong
 in [`TODO.md`](../../../TODO.md).
+
+- [DR-0260: Complete-owner-loss local SQLite writer failover control](0260-complete-owner-loss-local-writer-failover.md)
+- [DR-0262: Native SQLite virtual power and typed block errors](0262-native-sqlite-virtual-power-and-block-errors.md)
+- [DR-0264: original ordered protocol custody worker](0264-original-ordered-protocol-custody-worker.md)
+- [DR-0265: stopped Native storage-profile software upgrade](0265-stopped-native-storage-profile-upgrade.md)

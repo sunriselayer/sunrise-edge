@@ -7,6 +7,7 @@
 
 use super::{
     approvals::{self, ApprovalRecord},
+    asset_application_pin::application_pin_selection,
     asset_mint_burn::{
         AssetBurnRequest, AssetMintBurnRequest, AssetMintBurnTrust, AssetMintRequest,
     },
@@ -59,30 +60,6 @@ fn trust_specs() -> Vec<crate::args::FlagSpec> {
         scalar(ASSET),
         scalar(INSTANCE_REF),
     ]
-}
-
-/// Reads the optional, independently local DR-0258 application asset pin:
-/// `--asset` (a 32-byte object id) and `--instance-ref` (a bounded canonical
-/// `InstanceRecord` private file), all-or-none. Neither value ever comes
-/// from the peer wire request; both are read directly from local operator
-/// input, exactly like `--genesis-manifest-file`.
-fn application_pin_selection(parsed: &ParsedArgs) -> Result<Option<(ObjectId, Vec<u8>)>, CliError> {
-    match (parsed.get(ASSET), parsed.get(INSTANCE_REF)) {
-        (None, None) => Ok(None),
-        (Some(asset), Some(path)) => {
-            let asset: ObjectId = ObjectId::new(decode_hex_32(ASSET, asset)?);
-            let bytes: Vec<u8> = read_private_file(
-                Path::new(path),
-                0o600,
-                0o700,
-                super::asset_application_pin::MAX_APPLICATION_INSTANCE_RECORD_BYTES,
-            )?;
-            Ok(Some((asset, bytes)))
-        }
-        _ => Err(invalid(
-            "--asset and --instance-ref must be provided together",
-        )),
-    }
 }
 
 fn load_trust(parsed: &ParsedArgs, config: &CustodyConfig) -> Result<AssetMintBurnTrust, CliError> {

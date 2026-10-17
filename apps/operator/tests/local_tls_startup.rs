@@ -10,6 +10,9 @@
 //! DR-0219 separately runs the same complete business oracles against direct
 //! production-host termination and its actual 2 -> 3 -> 4 stopped fences.
 
+#[cfg(target_os = "linux")]
+#[path = "support/checkpoint_recovery.rs"]
+mod checkpoint_recovery;
 #[path = "support/compiled_cli_process.rs"]
 mod compiled_cli_process;
 #[path = "support/compiled_source_host_process.rs"]
@@ -18,6 +21,12 @@ mod compiled_source_host_process;
 mod https_relay;
 #[path = "support/offline_genesis_fixture.rs"]
 mod offline_genesis_fixture;
+#[cfg(target_os = "linux")]
+#[path = "support/sqlite_durable_image.rs"]
+mod sqlite_durable_image;
+#[cfg(target_os = "linux")]
+#[path = "support/storage_upgrade.rs"]
+mod storage_upgrade;
 
 use compiled_cli_process::edge_cli_command;
 #[cfg(target_os = "linux")]
@@ -114,15 +123,48 @@ struct Network {
     owner_seed: PathBuf,
     tls_dir: PathBuf,
     artifacts_dir: PathBuf,
+    #[cfg(target_os = "linux")]
+    independent_anchors: Option<IndependentAnchors>,
+    #[cfg(target_os = "linux")]
+    restored_checkpoint: Option<checkpoint_recovery::RestoredCheckpoint>,
 }
 
 impl Network {
     fn state_db(&self, index: usize) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        if let Some(restored) = &self.restored_checkpoint {
+            return restored.state(index);
+        }
         self.fixture.directory.join(format!("state-{index}.sqlite"))
     }
 
     fn blob_db(&self, index: usize) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        if let Some(restored) = &self.restored_checkpoint {
+            return restored.blobs(index);
+        }
         self.fixture.directory.join(format!("blob-{index}.sqlite"))
+    }
+
+    fn host_root_pins(&self, index: usize) -> Vec<OsString> {
+        let pins: Vec<OsString> =
+            self.fixture
+                .root_pins(&self.genesis, self.digest, index, self.domain);
+        #[cfg(target_os = "linux")]
+        let pins: Vec<OsString> = if self.restored_checkpoint.is_some() {
+            let mut pins: Vec<OsString> = pins;
+            for (flag, path) in [
+                ("--state-db", self.state_db(index)),
+                ("--blob-db", self.blob_db(index)),
+            ] {
+                let at: usize = pins.iter().position(|value| value == flag).unwrap();
+                pins[at + 1] = path.into_os_string();
+            }
+            pins
+        } else {
+            pins
+        };
+        pins
     }
 
     fn namespace(&self, index: usize) -> SqliteNamespace {
@@ -162,6 +204,273 @@ impl Network {
             .map(|entry| entry.object.clone())
             .expect("authored fixture object")
     }
+}
+
+/// Task-owned authority directories are siblings of the complete source tree;
+/// a source/blob backup never contains the independent authority or lease.
+#[cfg(target_os = "linux")]
+struct IndependentAnchors {
+    directory: PathBuf,
+    paths: Vec<PathBuf>,
+    enrolled: Vec<AnchorObservation>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AnchorObservation {
+    sequence: u64,
+    state_root: [u8; 32],
+    body_manifest_root: [u8; 32],
+}
+
+#[cfg(target_os = "linux")]
+impl AnchorObservation {
+    fn parse(line: &str, meaning: &str) -> Self {
+        assert_eq!(field(line, "meaning="), meaning);
+        let state_root: [u8; 32] =
+            parse_hex_32(field(line, "state_root="), "local state root").unwrap();
+        let body_manifest_root: [u8; 32] =
+            parse_hex_32(field(line, "body_manifest_root="), "local body root").unwrap();
+        Self {
+            sequence: field(line, "sequence=").parse().unwrap(),
+            state_root,
+            body_manifest_root,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn anchor_namespace_args(network: &Network, index: usize) -> Vec<OsString> {
+    vec![
+        "--chain-id".into(),
+        network.fixture.context.chain_id().as_str().into(),
+        "--validator-id".into(),
+        hex(&network.fixture.validators[index]).into(),
+        "--domain".into(),
+        hex(network.domain.as_bytes()).into(),
+        "--state-db".into(),
+        network.state_db(index).into_os_string(),
+        "--blob-db".into(),
+        network.blob_db(index).into_os_string(),
+    ]
+}
+
+#[cfg(target_os = "linux")]
+impl IndependentAnchors {
+    fn enroll(network: &Network) -> Self {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let source_name: &str = network
+            .fixture
+            .directory
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let directory: PathBuf = network
+            .fixture
+            .directory
+            .with_file_name(format!("{source_name}-independent-anchors"));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        let mut anchors: Self = Self {
+            directory,
+            paths: Vec::with_capacity(VALIDATORS),
+            enrolled: Vec::with_capacity(VALIDATORS),
+        };
+        assert!(!anchors.directory.starts_with(&network.fixture.directory));
+        assert!(!network.fixture.directory.starts_with(&anchors.directory));
+        assert_eq!(
+            fs::metadata(&anchors.directory)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        for index in 0..VALIDATORS {
+            let parent: PathBuf = anchors.directory.join(format!("validator-{index}"));
+            fs::DirBuilder::new().mode(0o700).create(&parent).unwrap();
+            assert_eq!(
+                fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            let path: PathBuf = parent.join("anchor.sqlite");
+            assert_absent(&path, "fresh independent authority");
+            anchors.paths.push(path);
+            let mut inspect: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+            inspect
+                .arg("anchor-inspect")
+                .args(anchor_namespace_args(network, index));
+            let observed: AnchorObservation = AnchorObservation::parse(
+                &success(spawn_bounded_output(inspect, PROCESS_DEADLINE)),
+                "initial-input-observation-not-currentness",
+            );
+            assert_eq!(observed.sequence, 0);
+            let mut enroll: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+            enroll
+                .arg("anchor-enroll")
+                .args(anchor_namespace_args(network, index))
+                .arg("--independent-anchor-db")
+                .arg(&anchors.paths[index])
+                .arg("--expected-initial-state-root")
+                .arg(hex(&observed.state_root))
+                .arg("--expected-initial-body-manifest-root")
+                .arg(hex(&observed.body_manifest_root))
+                .arg("--confirm-writers-and-signers-stopped");
+            let enrolled: AnchorObservation = AnchorObservation::parse(
+                &success(spawn_bounded_output(enroll, PROCESS_DEADLINE)),
+                "stopped-owner-enrollment",
+            );
+            assert_eq!(enrolled.sequence, 1);
+            assert_ne!(
+                enrolled.state_root, observed.state_root,
+                "explicit one-way local profile enrollment"
+            );
+            assert_eq!(enrolled.body_manifest_root, observed.body_manifest_root);
+            assert_eq!(anchors.checkpoint(network, index), enrolled);
+            anchors.enrolled.push(enrolled);
+        }
+        assert_eq!(anchors.paths.len(), VALIDATORS);
+        assert_eq!(anchors.enrolled.len(), VALIDATORS);
+        anchors
+    }
+
+    fn checkpoint(&self, network: &Network, index: usize) -> AnchorObservation {
+        let mut command: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+        command
+            .arg("anchor-checkpoint")
+            .args(anchor_namespace_args(network, index))
+            .arg("--independent-anchor-db")
+            .arg(&self.paths[index]);
+        AnchorObservation::parse(
+            &success(spawn_bounded_output(command, PROCESS_DEADLINE)),
+            "independent-local-acknowledgement-not-quorum-state-root",
+        )
+    }
+
+    fn images(&self) -> Vec<sqlite_durable_image::AnchorImage> {
+        self.paths
+            .iter()
+            .map(|path: &PathBuf| sqlite_durable_image::capture_anchor(path))
+            .collect()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for IndependentAnchors {
+    fn drop(&mut self) {
+        // Exactly the exclusively created sibling tree; source-state cleanup
+        // remains the existing Fixture owner. No broad temporary-directory scan.
+        fs::remove_dir_all(&self.directory).unwrap();
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stopped_anchored_file_bytes(network: &Network) -> Vec<(PathBuf, Vec<u8>)> {
+    let anchors: &IndependentAnchors = network.independent_anchors.as_ref().unwrap();
+    let mut files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let mut total: u64 = 0;
+    for index in 0..VALIDATORS {
+        // SQLite owns WAL/SHM housekeeping. These exact main-file comparisons
+        // apply only before first serving, with all owners already closed.
+        for path in [
+            network.state_db(index),
+            network.blob_db(index),
+            anchors.paths[index].clone(),
+        ] {
+            let metadata: fs::Metadata = fs::symlink_metadata(&path).unwrap();
+            assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+            total = total.checked_add(metadata.len()).unwrap();
+            assert!(
+                total <= 16 * 1024 * 1024,
+                "stopped fixture image admitted before copying"
+            );
+            let bytes: Vec<u8> = fs::read(&path).unwrap();
+            assert_eq!(bytes.len() as u64, metadata.len());
+            files.push((path, bytes));
+        }
+        let mut lease_name: OsString = anchors.paths[index].as_os_str().to_owned();
+        lease_name.push(".lease");
+        let lease: PathBuf = PathBuf::from(lease_name);
+        let metadata: fs::Metadata = fs::symlink_metadata(&lease).unwrap();
+        assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+        assert_eq!(metadata.len(), 0, "lease size admitted before copying");
+        let bytes: Vec<u8> = fs::read(&lease).unwrap();
+        assert!(
+            bytes.is_empty(),
+            "separate lease carries no checkpoint bytes"
+        );
+        files.push((lease, bytes));
+    }
+    files
+}
+
+#[cfg(target_os = "linux")]
+fn assert_missing_independent_anchor_refuses_without_changes(network: &Network) {
+    // Every compiled enrollment child has exited and no serving host exists.
+    // Plain-file reads are restricted to this stopped interval; no independent
+    // File descriptor is opened on an inode carrying live SQLite locks.
+    assert_no_parent_sqlite_handles(network);
+    let before: Vec<(PathBuf, Vec<u8>)> = stopped_anchored_file_bytes(network);
+    let before_rows: Vec<sqlite_durable_image::Image> = sqlite_durable_images(network);
+    let before_anchors: Vec<sqlite_durable_image::AnchorImage> =
+        network.independent_anchors.as_ref().unwrap().images();
+    for index in 0..VALIDATORS {
+        let reserved: TcpListener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let requested: SocketAddr = reserved.local_addr().unwrap();
+        drop(reserved);
+        let mut command: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+        command
+            .args(network.fixture.root_pins(
+                &network.genesis,
+                network.digest,
+                index,
+                network.domain,
+            ))
+            .arg("--signing-key-file")
+            .arg(&network.signing_keys[index])
+            .args([
+                "--created-checkpoint",
+                "10",
+                "--timeout-seconds",
+                "30",
+                "--max-concurrent",
+                "4",
+                "--confirm-offline-fence-advance",
+                "--listen",
+            ])
+            .arg(requested.to_string());
+        let output: Output = spawn_bounded_output(command, PROCESS_DEADLINE);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "missing anchor is an ordinary refusal"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "missing authority must not advertise serving"
+        );
+        assert_eq!(
+            lossy(&output.stderr),
+            "sqlite-source-host: SQLite structured schema identity is unsupported\n"
+        );
+        let available: TcpListener = TcpListener::bind(requested)
+            .expect("refusal before listener leaves requested endpoint unbound");
+        drop(available);
+    }
+    assert_no_parent_sqlite_handles(network);
+    assert_eq!(
+        stopped_anchored_file_bytes(network),
+        before,
+        "missing anchor preserves exact stopped database and lease bytes"
+    );
+    assert_eq!(sqlite_durable_images(network), before_rows);
+    assert_eq!(
+        network.independent_anchors.as_ref().unwrap().images(),
+        before_anchors
+    );
 }
 
 fn write_private_new(path: &Path, bytes: &[u8]) {
@@ -342,6 +651,10 @@ fn author_inspect_and_prepare() -> Network {
         owner_seed,
         tls_dir,
         artifacts_dir,
+        #[cfg(target_os = "linux")]
+        independent_anchors: None,
+        #[cfg(target_os = "linux")]
+        restored_checkpoint: None,
     }
 }
 
@@ -456,12 +769,7 @@ fn start_direct_hosts_with_local_observations(
             let requested: SocketAddr = peer.address;
             let mut command: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
             command
-                .args(network.fixture.root_pins(
-                    &network.genesis,
-                    network.digest,
-                    index,
-                    network.domain,
-                ))
+                .args(network.host_root_pins(index))
                 .arg("--signing-key-file")
                 .arg(&network.signing_keys[index])
                 .args([
@@ -480,6 +788,12 @@ fn start_direct_hosts_with_local_observations(
                 .arg("--tls-key-pkcs8-der-file")
                 .arg(&peer.key_file)
                 .stderr(Stdio::piped());
+            #[cfg(target_os = "linux")]
+            if let Some(anchors) = &network.independent_anchors {
+                command
+                    .arg("--independent-anchor-db")
+                    .arg(&anchors.paths[index]);
+            }
             #[cfg(target_os = "linux")]
             if let (0, Some(socket)) = (index, local_observations_socket) {
                 command.arg("--local-observations-socket").arg(socket);
@@ -950,6 +1264,14 @@ fn operation(fence: WriterFenceGeneration, tag: u8) -> DurableOperationContext {
 }
 
 fn open_store(network: &Network, index: usize) -> SqliteDurableStore {
+    #[cfg(target_os = "linux")]
+    if network.independent_anchors.is_some() {
+        return SqliteDurableStore::open_historical(
+            network.state_db(index),
+            network.namespace(index),
+        )
+        .unwrap();
+    }
     SqliteDurableStore::open_existing(network.state_db(index), network.namespace(index)).unwrap()
 }
 
@@ -975,6 +1297,56 @@ fn snapshots(network: &Network) -> Vec<SourceBusinessSnapshot> {
     (0..VALIDATORS)
         .map(|index: usize| snapshot(network, index))
         .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn sqlite_durable_images(network: &Network) -> Vec<sqlite_durable_image::Image> {
+    (0..VALIDATORS)
+        .map(|index: usize| {
+            sqlite_durable_image::capture(&network.state_db(index), &network.blob_db(index))
+        })
+        .collect()
+}
+
+/// Observe descriptor symlink targets without opening any locked SQLite inode.
+/// Current-case main/WAL/SHM descriptors must not survive in the parent; other
+/// concurrently running fixture cases have distinct private directories.
+#[cfg(target_os = "linux")]
+fn assert_no_parent_sqlite_handles(network: &Network) {
+    let mut forbidden: BTreeSet<PathBuf> = BTreeSet::new();
+    for index in 0..VALIDATORS {
+        let mut mains: Vec<PathBuf> = vec![network.state_db(index), network.blob_db(index)];
+        if let Some(restored) = &network.restored_checkpoint {
+            mains.extend(restored.former_and_forensic_paths(index));
+        }
+        if let Some(anchors) = &network.independent_anchors {
+            mains.push(anchors.paths[index].clone());
+            let mut lease: OsString = anchors.paths[index].as_os_str().to_owned();
+            lease.push(".lease");
+            forbidden.insert(PathBuf::from(lease));
+        }
+        for main in mains {
+            for suffix in ["", "-wal", "-shm"] {
+                let mut name: OsString = main.as_os_str().to_os_string();
+                name.push(suffix);
+                forbidden.insert(PathBuf::from(&name));
+                name.push(" (deleted)");
+                forbidden.insert(PathBuf::from(name));
+            }
+        }
+    }
+    for entry in fs::read_dir("/proc/self/fd").unwrap() {
+        let entry: fs::DirEntry = entry.unwrap();
+        match fs::read_link(entry.path()) {
+            Ok(target) => assert!(
+                !forbidden.contains(&target),
+                "parent still holds a current-case SQLite descriptor: {}",
+                target.display()
+            ),
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => panic!("parent descriptor inspection failed: {error}"),
+        }
+    }
 }
 
 fn assert_unchanged(
@@ -2927,11 +3299,64 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
         assert_eq!(fs::read(&path).unwrap(), bytes, "{}", path.display());
     }
 
-    // Only after every original replay/refusal/conflict/input-preservation
-    // control above: one genuinely new paid transfer through the final
-    // generation-4 authenticated TLS peers, using the first settlement's own
-    // refund Coin as input and the still-live FEE_COIN as a distinct
-    // fee source after its first reservation, with a fresh request ID and nonce+1.
+    // All original stopped-rotation and refusal assertions precede this
+    // unchanged independent fresh-transfer business oracle.
+    assert_fresh_paid_transfer_after_recovery(
+        RecoveryTransfer {
+            network: &network,
+            peers: &peers,
+            config: &new_config,
+            first: &first,
+            saved: &saved,
+            committed: &committed,
+            committed_view: &committed_view,
+            nonce,
+        },
+        [0x0c; 32],
+        "direct-stopped-rotation-fresh",
+        false,
+    );
+
+    for host in hosts {
+        let stderr: Vec<u8> = host.guard.stop_orderly_interrupt_observed(PROCESS_DEADLINE);
+        assert_native_termination_summary(&stderr, "sigint");
+    }
+}
+
+/// The original stopped-rotation business oracle also qualifies a replacement
+/// writer after complete local connection loss. Each caller supplies its own
+/// fresh request/output destinations; signatures and both quorums remain real.
+struct RecoveryTransfer<'a> {
+    network: &'a Network,
+    peers: &'a [DirectPeer],
+    config: &'a Path,
+    first: &'a Outputs,
+    saved: &'a Saved,
+    committed: &'a Committed,
+    committed_view: &'a Observation,
+    nonce: u64,
+}
+
+fn assert_fresh_paid_transfer_after_recovery(
+    inputs: RecoveryTransfer<'_>,
+    fresh_request_bytes: [u8; 32],
+    output_tag: &str,
+    complete_sql_replay: bool,
+) {
+    let RecoveryTransfer {
+        network,
+        peers,
+        config,
+        first,
+        saved,
+        committed,
+        committed_view,
+        nonce,
+    } = inputs;
+    #[cfg(not(target_os = "linux"))]
+    assert!(!complete_sql_replay);
+    let sender: Address = Address::new(network.fixture.owner);
+    let request: RequestId = RequestId::new(TRANSFER_REQUEST).unwrap();
     let refund = committed.result.charged.as_ref().unwrap();
     let refund_ref: &objects::ObjectRef = refund.refund_output.as_ref().unwrap();
     assert!(refund.refund.get() > 0);
@@ -2939,7 +3364,6 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
         created(&committed.result, refund_ref.id).owner,
         Owner::Address(sender)
     );
-    let fresh_request_bytes: [u8; 32] = [0x0c; 32];
     let fresh_request: RequestId = RequestId::new(fresh_request_bytes).unwrap();
     let fresh_nonce: u64 = peers[0]
         .client()
@@ -2947,10 +3371,10 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
         .unwrap()
         .next_nonce();
     assert_eq!(fresh_nonce, nonce.checked_add(1).unwrap());
-    let fresh: Outputs = Outputs::new(&network.artifacts_dir, "direct-stopped-rotation-fresh");
+    let fresh: Outputs = Outputs::new(&network.artifacts_dir, output_tag);
     let mut fresh_args: Vec<OsString> = transfer_args(
-        &network,
-        &new_config,
+        network,
+        config,
         peers[0].address,
         &network.owner_seed,
         fresh_request_bytes,
@@ -2965,7 +3389,7 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
     let fresh_output: Output = run_cli(fresh_args);
     assert!(
         fresh_output.status.success(),
-        "fresh post-stopped-rotation transfer: stdout={} stderr={}",
+        "fresh post-recovery transfer: stdout={} stderr={}",
         lossy(&fresh_output.stdout),
         lossy(&fresh_output.stderr)
     );
@@ -2977,7 +3401,7 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
     );
     let fresh_saved: Saved = Saved::read(&fresh);
     let fresh_committed: Committed =
-        verify_saved_request_artifacts(&network, &fresh_saved, fresh_nonce, fresh_request_bytes);
+        verify_saved_request_artifacts(network, &fresh_saved, fresh_nonce, fresh_request_bytes);
     let fresh_signed: &SignedPaidIntent = &fresh_committed.signed;
     let fresh_result: &PaidExecutionResult = &fresh_committed.result;
     let execution::paid_execution::PaidApplication::Call(fresh_call) =
@@ -3005,7 +3429,7 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
     fresh_ids.push(refund_ref.id);
     fresh_ids.sort_unstable();
     fresh_ids.dedup();
-    let fresh_view: Observation = observe(&peers, &fresh_ids, fresh_request, sender);
+    let fresh_view: Observation = observe(peers, &fresh_ids, fresh_request, sender);
     let (fresh_version, _fresh_digest, fresh_canonical): (u64, Digest32, Vec<u8>) =
         current_inline(fresh_view.objects.get(&refund_ref.id).unwrap());
     let transferred: Object = objects::decode_object(&fresh_canonical).unwrap();
@@ -3053,7 +3477,7 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
         }
         other => panic!("fresh receipt missing: {other:?}"),
     }
-    for peer in &peers {
+    for peer in peers {
         assert_eq!(
             peer.client()
                 .query_receipt(request)
@@ -3064,7 +3488,15 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
             "first settlement receipt survives fresh business"
         );
     }
-    let fresh_snapshot: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    let fresh_snapshot: Vec<SourceBusinessSnapshot> = snapshots(network);
+    #[cfg(target_os = "linux")]
+    let raw_before_replay: Option<Vec<sqlite_durable_image::Image>> =
+        complete_sql_replay.then(|| sqlite_durable_images(network));
+    #[cfg(target_os = "linux")]
+    let anchors_before_replay: Option<Vec<sqlite_durable_image::AnchorImage>> = network
+        .independent_anchors
+        .as_ref()
+        .map(IndependentAnchors::images);
     for (index, peer) in peers.iter().enumerate() {
         assert_eq!(
             peer.client().query_next_nonce(sender).unwrap().next_nonce(),
@@ -3087,23 +3519,34 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
     }
     assert_unchanged(
         &fresh_snapshot,
-        &snapshots(&network),
-        "fresh post-stopped-rotation receipt replay",
+        &snapshots(network),
+        "fresh post-recovery receipt replay",
     );
     assert_eq!(
-        observe(&peers, &fresh_ids, fresh_request, sender),
+        observe(peers, &fresh_ids, fresh_request, sender),
         fresh_view
     );
+    #[cfg(target_os = "linux")]
+    if let Some(before) = raw_before_replay {
+        assert_eq!(
+            sqlite_durable_images(network),
+            before,
+            "fresh receipt replay changes no SQL/blob row"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(before) = anchors_before_replay {
+        assert_eq!(
+            network.independent_anchors.as_ref().unwrap().images(),
+            before,
+            "fresh receipt replay changes no independent authority row"
+        );
+    }
     assert_eq!(
-        Saved::read(&first),
+        &Saved::read(first),
         saved,
         "original transfer artifacts retained after fresh commit"
     );
-
-    for host in hosts {
-        let stderr: Vec<u8> = host.guard.stop_orderly_interrupt_observed(PROCESS_DEADLINE);
-        assert_native_termination_summary(&stderr, "sigint");
-    }
 }
 
 #[test]
@@ -3457,9 +3900,50 @@ fn compiled_host_startup_line_limits_cover_literal_maximum_producer_formats() {
 #[cfg(target_os = "linux")]
 #[test]
 fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
+    exercise_direct_tls_owned_sigkill(false, false, false);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_direct_tls_complete_owner_loss_authorizes_fresh_writer_and_paid_business() {
+    exercise_direct_tls_owned_sigkill(true, false, false);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_direct_tls_independent_anchors_preserve_paid_recovery_after_complete_owner_loss() {
+    exercise_direct_tls_owned_sigkill(true, true, false);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_direct_tls_encrypted_checkpoints_restore_paid_state_without_original_source_paths() {
+    exercise_direct_tls_owned_sigkill(true, true, true);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires explicitly pinned prior 9de6 RELEASE sqlite_source_host"]
+fn actual_previous_release_hosts_upgrade_to_independent_anchors_without_losing_paid_state() {
+    storage_upgrade::exercise();
+}
+
+#[cfg(target_os = "linux")]
+fn exercise_direct_tls_owned_sigkill(
+    total_connection_loss: bool,
+    independent_anchor: bool,
+    encrypted_restore: bool,
+) {
     use std::os::unix::process::ExitStatusExt;
 
-    let network: Network = author_inspect_and_prepare();
+    assert!(!independent_anchor || total_connection_loss);
+    assert!(!encrypted_restore || (independent_anchor && total_connection_loss));
+    let mut network: Network = author_inspect_and_prepare();
+    if independent_anchor {
+        let anchors: IndependentAnchors = IndependentAnchors::enroll(&network);
+        network.independent_anchors = Some(anchors);
+        assert_missing_independent_anchor_refuses_without_changes(&network);
+    }
     let mut peers: Vec<DirectPeer> = direct_peers(&network);
     let mut hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 2);
     assert_eq!(hosts.len(), VALIDATORS);
@@ -3539,17 +4023,30 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
     let committed_view: Observation = observe(&peers, &ids, request, sender);
     verify_committed_state(&network, &committed, &saved, &committed_view);
 
-    // Parent-side real SQLite handles stay open across all host reaps and the
-    // restart. This is post-acknowledged-commit host failure, not loss of every
-    // connection, WAL loss, an interrupted commit or a power/fsync fault.
-    let stale: Vec<StaleCapability> = (0..VALIDATORS)
-        .map(|index: usize| StaleCapability::hold(&network, index))
-        .collect();
-    assert_eq!(stale.len(), VALIDATORS);
+    // The original case retains real parent-side capabilities. The complete
+    // owner-loss case retains values only: every inspection connection is
+    // dropped before the four sole serving owners are killed and reaped.
+    // Neither case represents guest/host power loss or a media/fsync fault.
+    let stale: Vec<StaleCapability> = if total_connection_loss {
+        Vec::new()
+    } else {
+        (0..VALIDATORS)
+            .map(|index: usize| StaleCapability::hold(&network, index))
+            .collect()
+    };
+    assert_eq!(
+        stale.len(),
+        if total_connection_loss { 0 } else { VALIDATORS }
+    );
+    let raw_before: Option<Vec<sqlite_durable_image::Image>> =
+        total_connection_loss.then(|| sqlite_durable_images(&network));
     // Guarded complete enumeration of the four business collections and their
     // referenced blobs requires an empty outbox, not nonempty-outbox replay or
     // equality of physical SQLite pages.
     let before: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    if total_connection_loss {
+        assert_no_parent_sqlite_handles(&network);
+    }
     let owned_pids: Vec<u32> = hosts
         .iter_mut()
         .enumerate()
@@ -3599,8 +4096,19 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
         .collect();
     assert_eq!(crash_receipts.len(), VALIDATORS);
 
-    // Every serving host is confirmed reaped before any reopen. The held
-    // parent-side stores remain open; no HTTP query is sent to a stopped host.
+    // Every serving host is confirmed reaped before any reopen. The complete
+    // owner-loss case has no parent store/blob/statement/transaction holders.
+    // No HTTP query is sent to a stopped host.
+    if total_connection_loss {
+        assert_no_parent_sqlite_handles(&network);
+    }
+    if let Some(before) = &raw_before {
+        assert_eq!(
+            &sqlite_durable_images(&network),
+            before,
+            "all twelve structured and both blob tables survive total owner loss"
+        );
+    }
     let stopped: Vec<SourceBusinessSnapshot> = snapshots(&network);
     assert_unchanged(&before, &stopped, "owned SIGKILL stopped-host state");
     assert_eq!(
@@ -3613,6 +4121,37 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
         assert_eq!(&actual, bytes, "SIGKILL preserves input {}", path.display());
     }
 
+    if let Some(anchors) = &network.independent_anchors {
+        for index in 0..VALIDATORS {
+            let current: AnchorObservation = anchors.checkpoint(&network, index);
+            assert!(
+                current.sequence > 1,
+                "paid startup/operation must advance local acknowledgement"
+            );
+            assert_ne!(current.state_root, anchors.enrolled[index].state_root);
+        }
+    }
+    if encrypted_restore {
+        assert_no_parent_sqlite_handles(&network);
+        let restored = checkpoint_recovery::pack_and_restore(&network);
+        network.restored_checkpoint = Some(restored);
+        network
+            .restored_checkpoint
+            .as_ref()
+            .unwrap()
+            .assert_originals_unavailable();
+        assert_eq!(
+            &sqlite_durable_images(&network),
+            raw_before.as_ref().unwrap(),
+            "actual decrypted snapshots preserve every original SQL/blob row before new fence"
+        );
+        assert_unchanged(
+            &stopped,
+            &snapshots(&network),
+            "source-free encrypted current-store restoration",
+        );
+        assert_no_parent_sqlite_handles(&network);
+    }
     let mut restarted_hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 3);
     assert_eq!(restarted_hosts.len(), VALIDATORS);
     for (index, host) in restarted_hosts.iter().enumerate() {
@@ -3638,8 +4177,27 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
         // nonempty CAS/Put and read must refuse specifically as WriterFenced.
         capability.assert_fenced(network.domain, 3);
     }
+    if total_connection_loss {
+        let replacement_pids: BTreeSet<u32> = restarted_hosts
+            .iter_mut()
+            .map(|host: &mut Host| {
+                assert!(host.guard.try_wait().unwrap().is_none());
+                host.guard.child_mut().id()
+            })
+            .collect();
+        assert_eq!(replacement_pids.len(), VALIDATORS);
+        assert!(replacement_pids.is_disjoint(&distinct_pids));
+    }
     let reopened: Vec<SourceBusinessSnapshot> = snapshots(&network);
     assert_reopened(&before, &reopened, 2, 3);
+    if let Some(before) = &raw_before {
+        sqlite_durable_image::assert_only_fence_changed(
+            before,
+            &sqlite_durable_images(&network),
+            2,
+            3,
+        );
+    }
     assert_original_intact(
         &network,
         &peers,
@@ -3653,6 +4211,10 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
         let actual: Vec<u8> = fs::read(path).unwrap();
         assert_eq!(&actual, bytes, "restart preserves input {}", path.display());
     }
+    let anchors_before_replay: Option<Vec<sqlite_durable_image::AnchorImage>> = network
+        .independent_anchors
+        .as_ref()
+        .map(IndependentAnchors::images);
     let replay: Outputs = Outputs::new(&network.artifacts_dir, "direct-owned-sigkill-replay");
     let replay_output: Output = run_cli(replay_args(
         &network,
@@ -3667,6 +4229,13 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
         &saved,
         "owned SIGKILL saved replay",
     );
+    if let Some(expected) = &anchors_before_replay {
+        assert_eq!(
+            &network.independent_anchors.as_ref().unwrap().images(),
+            expected,
+            "receipt-first replay changes no independent acknowledgement or manifest row"
+        );
+    }
     // Exact receipt/object/nonce bytes and full token/mutation-sequence equality
     // forbid a second business mutation/receipt commit, not read-only SQL COMMIT.
     assert_original_intact(
@@ -3682,6 +4251,50 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
         let actual: Vec<u8> = fs::read(path).unwrap();
         assert_eq!(&actual, bytes, "replay preserves input {}", path.display());
     }
+    let final_snapshot: Option<Vec<SourceBusinessSnapshot>> = if total_connection_loss {
+        let raw_replayed: Vec<sqlite_durable_image::Image> = sqlite_durable_images(&network);
+        sqlite_durable_image::assert_only_fence_changed(
+            raw_before.as_ref().unwrap(),
+            &raw_replayed,
+            2,
+            3,
+        );
+        assert_fresh_paid_transfer_after_recovery(
+            RecoveryTransfer {
+                network: &network,
+                peers: &peers,
+                config: &config,
+                first: &first,
+                saved: &saved,
+                committed: &committed,
+                committed_view: &committed_view,
+                nonce,
+            },
+            [0x0d; 32],
+            "direct-complete-owner-loss-fresh",
+            true,
+        );
+        if let Some(expected) = &anchors_before_replay {
+            assert_ne!(
+                &network.independent_anchors.as_ref().unwrap().images(),
+                expected,
+                "fresh paid state must advance the independently retained acknowledgement"
+            );
+        }
+        // The helper proves actual new business and receipt-first replay. The
+        // physical snapshot must change for that new commit; old replay above
+        // was proven byte-identical across the entire closed SQL inventory.
+        assert_ne!(sqlite_durable_images(&network), raw_replayed);
+        Some(snapshots(&network))
+    } else {
+        None
+    };
+    let final_raw: Option<Vec<sqlite_durable_image::Image>> =
+        total_connection_loss.then(|| sqlite_durable_images(&network));
+    let final_anchors: Option<Vec<sqlite_durable_image::AnchorImage>> = network
+        .independent_anchors
+        .as_ref()
+        .map(IndependentAnchors::images);
     for host in &mut restarted_hosts {
         assert!(
             host.guard
@@ -3696,8 +4309,30 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
     for host in restarted_hosts {
         host.guard.stop_orderly(PROCESS_DEADLINE);
     }
+    if let Some(restored) = &network.restored_checkpoint {
+        restored.assert_originals_unavailable();
+    }
     let after_stop: Vec<SourceBusinessSnapshot> = snapshots(&network);
-    assert_unchanged(&reopened, &after_stop, "owned SIGKILL ordinary tail stop");
+    assert_unchanged(
+        final_snapshot.as_deref().unwrap_or(&reopened),
+        &after_stop,
+        "owned SIGKILL ordinary tail stop",
+    );
+    if let Some(before) = &final_raw {
+        assert_eq!(&sqlite_durable_images(&network), before);
+    }
+    if let Some(expected) = &final_anchors {
+        let anchors: &IndependentAnchors = network.independent_anchors.as_ref().unwrap();
+        assert_eq!(
+            &anchors.images(),
+            expected,
+            "ordinary tail stop preserves acknowledged anchor/manifest rows"
+        );
+        for index in 0..VALIDATORS {
+            let current: AnchorObservation = anchors.checkpoint(&network, index);
+            assert!(current.sequence > 1);
+        }
+    }
     assert_eq!(
         &Saved::read(&first),
         &saved,

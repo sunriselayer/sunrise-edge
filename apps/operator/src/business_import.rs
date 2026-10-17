@@ -34,6 +34,7 @@ const FLAGS: &[&str] = &[
     "--expected-genesis-digest",
     "--ordered-history-dir",
     "--cut-dir",
+    crate::local_anchor::FLAG,
     "--state-db",
     "--blob-db",
     "--validator-id",
@@ -114,6 +115,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     let mut accepted: Vec<&'static str> = FLAGS.to_vec();
     accepted.extend_from_slice(CHAIN_FLAGS);
     let mut flags: FlagSet = FlagSet::parse(values, &accepted, &[])?;
+    let anchor: Option<PathBuf> = crate::local_anchor::parse(&mut flags)?;
     let chain_inputs: Option<SuccessorChainInputs> =
         SuccessorChainInputs::parse_optional(&mut flags)?;
     let pin_inputs: BusinessPinInputs = BusinessPinInputs::parse(&mut flags)?;
@@ -143,6 +145,11 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     let closure_pins: Option<ClosureIdentityPins> =
         ClosureIdentityPins::parse_optional(&mut flags)?;
     flags.finish()?;
+    if creating && anchor.is_some() {
+        return Err(
+            "enroll an independently verified complete target separately after import".into(),
+        );
+    }
     if state_file == blob_file {
         return Err("state and blob database paths must be distinct".into());
     }
@@ -218,7 +225,13 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         (target, blobs)
     } else {
         (
-            SqliteImportTarget::open_existing(&state_file, namespace, verified.binding())?,
+            crate::local_anchor::open_import(
+                &state_file,
+                &blob_file,
+                anchor.as_deref(),
+                namespace,
+                verified.binding(),
+            )?,
             SqliteBlobStore::open_existing_writable(&blob_file)?,
         )
     };

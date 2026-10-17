@@ -27,6 +27,17 @@ exact object references, fee balance/ceiling/refund, policy prices/caps, context
 genesis/code/instance pins, replay fields and full signed frame. Currentness is
 enforced by execution. A supplied object body alone is not current-state proof.
 
+## Optional own-created application pin
+
+[DR-0261](decisions/0261-created-standard-asset-coin-custody.md) additionally
+accepts a local `--asset`/`--instance-ref` pair for every prepare, approve,
+sign and serve role and the ordinary Standard Asset CLI. Application Coins
+and the Call target use that publisher-created asset's verified local pin;
+fees always use the genesis Coin and policy. Both identities appear in the
+review. Omitting both flags preserves the genesis behavior below. See the
+[application Coin guide](standard-asset-application-coin-custody.md) for the
+pin, compatibility and qualification boundary.
+
 ## Independent preparation and approval
 
 The administrator obtains the genesis and object preimages independently of
@@ -74,7 +85,7 @@ The existing `transfer` CLI accepts the three custody signer flags in place of
 request and gas flags. It obtains canonical object bodies and sends them to
 custody; the protected side verifies its own references and semantics. The
 ordinary paid execution, receipt validation, exact replay and output paths stay
-the same. Other Standard Asset operations retain their custody refusal.
+the same. Split/merge, mint/burn and create-asset use their own closed custody profiles.
 
 `custody sign-transfer` is an offline alternative: it requires operator-owned
 private config/genesis/request copies, the same explicit root pin and three

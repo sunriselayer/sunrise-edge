@@ -67,6 +67,7 @@ const FLAGS: &[&str] = &[
     "--manifest-history-dir",
     "--certificate-dir",
     "--successor-max-links",
+    crate::local_anchor::FLAG,
     "--target-state-db",
     "--target-blob-db",
     "--validator-id",
@@ -193,6 +194,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         return Err(HELP.into());
     }
     let mut flags: FlagSet = FlagSet::parse(values, FLAGS, BOOL_FLAGS)?;
+    let anchor: Option<PathBuf> = crate::local_anchor::parse(&mut flags)?;
     let confirmed: bool = flags.bool("--confirm-offline-fence-advance");
     // Loopback is decided first, before any other flag can cause I/O.
     let listen: SocketAddr = require_loopback_listen(&flags.one("--listen")?)?;
@@ -242,6 +244,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         chain,
         state_path,
         blob_path,
+        anchor,
         validator,
         key_path: absolute(key_path)?,
         created_checkpoint,
@@ -258,6 +261,7 @@ struct SuccessorHostInputs {
     chain: SuccessorChainInputs,
     state_path: PathBuf,
     blob_path: PathBuf,
+    anchor: Option<PathBuf>,
     validator: ValidatorId,
     key_path: PathBuf,
     created_checkpoint: u64,
@@ -285,8 +289,13 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
     let signer_public_key: [u8; 32] = VerificationKey::from(&signing_key).into();
     let namespace: SqliteNamespace =
         SqliteNamespace::new(pins.context.chain_id().clone(), host.validator, pins.domain);
-    let target: SqliteImportTarget =
-        SqliteImportTarget::open_existing(&host.state_path, namespace, verified.import_binding())?;
+    let target: SqliteImportTarget = crate::local_anchor::open_import(
+        &host.state_path,
+        &host.blob_path,
+        host.anchor.as_deref(),
+        namespace,
+        verified.import_binding(),
+    )?;
     let blobs: Arc<SqliteBlobStore> =
         Arc::new(SqliteBlobStore::open_existing_writable(&host.blob_path)?);
     let previous: WriterFenceGeneration = target.writer_fence()?;

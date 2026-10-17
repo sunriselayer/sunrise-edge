@@ -77,6 +77,40 @@ impl SqliteImportTarget {
             },
         })
     }
+    /// Current independently acknowledged local state; no activation authority.
+    pub fn independent_anchor_checkpoint(
+        &self,
+    ) -> Result<crate::AnchorCheckpoint, SqliteDurableStoreError> {
+        self.store.independent_anchor_checkpoint()
+    }
+
+    /// Explicit anchored counterpart of `open_existing`, preserving the exact
+    /// immutable import binding and every lifecycle/serving check.
+    pub fn open_anchored(
+        path: impl AsRef<Path>,
+        blobs: impl AsRef<Path>,
+        anchor: impl AsRef<Path>,
+        namespace: SqliteNamespace,
+        binding: &ImportBinding,
+    ) -> Result<Self, SqliteDurableStoreError> {
+        let owner =
+            crate::anchor::IndependentAnchor::open(anchor.as_ref(), path.as_ref(), blobs.as_ref())
+                .map_err(|_| SqliteDurableStoreError::Unavailable)?;
+        let connection: NativeConnection = open_verified_connection(path)?;
+        let backend: NativeSqlBackend = NativeSqlBackend::anchored(connection, owner);
+        let metadata = read_operator_step(&backend, |session, _| {
+            schema::verify_namespace(session, &namespace)
+        })?;
+        if metadata.lifecycle().binding() != Some(binding) {
+            return Err(SqliteDurableStoreError::ImportBindingMismatch);
+        }
+        Ok(Self {
+            store: SqliteDurableStore {
+                engine: SqlDurableEngine::new(backend, namespace),
+            },
+        })
+    }
+
     #[must_use]
     pub const fn namespace(&self) -> &SqliteNamespace {
         self.store.namespace()

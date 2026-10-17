@@ -125,7 +125,7 @@ impl Fixture {
             self.manifest.context(),
         )
         .unwrap();
-        AssetSplitMergeTrust::new(self.config.clone(), root).unwrap()
+        AssetSplitMergeTrust::new(self.config.clone(), root, None).unwrap()
     }
 }
 
@@ -287,7 +287,7 @@ fn authenticated_outer_genesis_does_not_waive_split_merge_trust_checks() {
         manifest.context(),
     )
     .unwrap();
-    assert!(AssetSplitMergeTrust::new(fixture.config.clone(), root).is_err());
+    assert!(AssetSplitMergeTrust::new(fixture.config.clone(), root, None).is_err());
 }
 
 #[test]

@@ -7,8 +7,9 @@ license.workspace = true
 [dependencies]
 runtime.workspace = true
 runtime-sql-durable.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["backup"] }
 protocol-types.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 hashing.workspace = true

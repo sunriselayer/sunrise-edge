@@ -1,8 +1,9 @@
-//! Opt-in LOCAL encrypted saved closure. This never opens a SQL destination,
-//! network transport, signer or activation owner. Imported proof authority is
-//! still created only by the existing node-core factories (DR-0221).
+//! Opt-in LOCAL encrypted saved closure or complete enrolled-store checkpoint.
+//! No network, signer or activation owner is opened. Saved proof authority stays
+//! with node-core factories (DR-0221); local currentness with DR-0263 authority.
 #![forbid(unsafe_code)]
 
+mod checkpoint;
 mod envelope;
 mod files;
 #[cfg(test)]
@@ -179,7 +180,7 @@ const LIMITS: &[&str] = &[
     "--max-header-bytes",
     "--timeout-seconds",
 ];
-const HELP: &str = "LOCAL encrypted saved business closure only; no SQL installation, signing or activation. Modes: pack-saved | open-saved. Require independently configured --chain-id --protocol-version --epoch --domain --suite --expected-genesis-digest --expected-cut-digest --expected-package-digest --recipient (one public age X25519 recipient) --expected-links 0..16. Pack requires --genesis-manifest --ordered-history-dir --cut-dir --capture-root --ciphertext-out; predecessor roles use the existing complete repeated successor flags and explicit --successor-max-links. Open requires only --ciphertext-file --identity-file --out-dir and public trust pins; nonzero links additionally require --successor-max-links. No key line, SQL path, endpoint, plugins, armor, passphrase or fallback is accepted. Output paths must be absent, private and outside all input roles. Optional downward limits: --max-files --max-observations --max-heights --max-components --max-file-bytes --max-control-bytes --max-plaintext-bytes --max-ciphertext-bytes --max-header-bytes --timeout-seconds (1..300). Failure leaves unqualified owned residue; no automatic retry/adoption/cleanup. Completion diagnostic is never proof authority; create/resume independently reverify.";
+const HELP: &str = "LOCAL encrypted recovery: saved-business v1 or enrolled-store v2; no signing or activation. Modes: pack-saved | open-saved. Local full-store checkpoint modes: pack-checkpoint | open-checkpoint (DR-0263); require --chain-id --validator-id --domain --independent-anchor-db --recipient, pack adds --state-db --blob-db --capture-root --ciphertext-out, open adds --ciphertext-file --identity-file --out-dir. These do not install proof authority or activate a host. Require independently configured --chain-id --protocol-version --epoch --domain --suite --expected-genesis-digest --expected-cut-digest --expected-package-digest --recipient (one public age X25519 recipient) --expected-links 0..16. Pack requires --genesis-manifest --ordered-history-dir --cut-dir --capture-root --ciphertext-out; predecessor roles use the existing complete repeated successor flags and explicit --successor-max-links. Open requires only --ciphertext-file --identity-file --out-dir and public trust pins; nonzero links additionally require --successor-max-links. No key line, SQL path, endpoint, plugins, armor, passphrase or fallback is accepted. Output paths must be absent, private and outside all input roles. Optional downward limits: --max-files --max-observations --max-heights --max-components --max-file-bytes --max-control-bytes --max-plaintext-bytes --max-ciphertext-bytes --max-header-bytes --timeout-seconds (1..300). Failure leaves unqualified owned residue; no automatic retry/adoption/cleanup. Completion diagnostic is never proof authority; create/resume independently reverify.";
 
 struct PublicPins {
     cut: [u8; 32],
@@ -365,6 +366,13 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), RecoveryErr
     if arguments.as_slice() == [OsString::from("--help")] {
         println!("{HELP}");
         return Ok(());
+    }
+    if arguments
+        .first()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| matches!(value, "pack-checkpoint" | "open-checkpoint"))
+    {
+        return checkpoint::run(arguments);
     }
     let request: Request = Request::parse(arguments)?;
     // This precedes EVERY SDK root/leaf constructor, including destination

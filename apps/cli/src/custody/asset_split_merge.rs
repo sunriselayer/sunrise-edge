@@ -14,10 +14,11 @@
 
 use protocol_types::HashPurpose;
 
-use sunrise_edge_client::call::CallIntent;
+use sunrise_edge_client::call::{CallIntent, InstanceTarget};
+use sunrise_edge_client::package_types::ScopedTypeTag;
 use sunrise_edge_client::{
     AccessEntry, AccessManifest, AccessMode, Amount, Digest32, Epoch, FeeSourceConsent, Object,
-    ObjectRef, PaidApplication, PreparedPaidExecution, RequestId, ReservationAccessKind,
+    ObjectId, ObjectRef, PaidApplication, PreparedPaidExecution, RequestId, ReservationAccessKind,
     VerifiedGenesisRoot,
 };
 
@@ -26,6 +27,7 @@ use public_standard_asset::{asset_type_argument, coin_amount, no_arguments, spli
 use crate::error::CliError;
 use crate::hex::encode_hex;
 
+use super::asset_application_pin::ApplicationAssetPin;
 use super::asset_trust::{PinnedAssetTrust, safe_ascii};
 use super::config::CustodyConfig;
 
@@ -105,14 +107,65 @@ pub(super) struct PreparedAssetMerge {
 /// `split`/`merge`-specific `prepare`/review logic.
 pub(super) struct AssetSplitMergeTrust {
     trust: PinnedAssetTrust,
+    application: Option<ApplicationAssetPin>,
 }
 
 impl AssetSplitMergeTrust {
-    /// Binds `config` to `root` via the shared [`PinnedAssetTrust`] pin.
-    pub(super) fn new(config: CustodyConfig, root: VerifiedGenesisRoot) -> Result<Self, CliError> {
-        Ok(Self {
-            trust: PinnedAssetTrust::new(config, root)?,
-        })
+    /// Binds the shared genesis fee trust and optionally one independently
+    /// local application pin. The wire request cannot choose this target.
+    pub(super) fn new(
+        config: CustodyConfig,
+        root: VerifiedGenesisRoot,
+        application: Option<(ObjectId, Vec<u8>)>,
+    ) -> Result<Self, CliError> {
+        let trust: PinnedAssetTrust = PinnedAssetTrust::new(config, root)?;
+        let application: Option<ApplicationAssetPin> = match application {
+            Some((asset, bytes)) => Some(ApplicationAssetPin::new(&trust, asset, &bytes)?),
+            None => None,
+        };
+        Ok(Self { trust, application })
+    }
+
+    fn asset(&self) -> ObjectId {
+        self.application
+            .as_ref()
+            .map(|pin| pin.asset)
+            .unwrap_or(self.trust.asset)
+    }
+
+    fn instance(&self) -> &InstanceTarget {
+        self.application
+            .as_ref()
+            .map(|pin| &pin.instance)
+            .unwrap_or(&self.trust.fee_policy.instance)
+    }
+
+    /// Only application inputs use the selected nominal type. Fee validation
+    /// continues to call the unconditional genesis `validate_owned_coin`.
+    fn validate_application_coin(
+        &self,
+        object: &Object,
+        owner_message: &'static str,
+        schema_message: &'static str,
+        genesis_type_message: &'static str,
+    ) -> Result<(), CliError> {
+        let coin_tag: &ScopedTypeTag = self
+            .application
+            .as_ref()
+            .map(|pin| &pin.coin_tag)
+            .unwrap_or(&self.trust.coin_tag);
+        let type_message: &'static str = if self.application.is_some() {
+            "application coin is not the pinned application Standard Asset Coin type"
+        } else {
+            genesis_type_message
+        };
+        self.trust.validate_owned_object(
+            object,
+            coin_tag,
+            owner_message,
+            schema_message,
+            type_message,
+        )
     }
 
     fn object_digest(&self, bytes: &[u8]) -> Result<Digest32, CliError> {
@@ -154,7 +207,7 @@ impl AssetSplitMergeTrust {
             "fee source preimage exceeds the maximum accepted size",
             "fee source preimage is not the exact canonical object encoding",
         )?;
-        self.trust.validate_owned_coin(
+        self.validate_application_coin(
             &coin_object,
             "split coin is not owned by the pinned custody publisher",
             "split coin schema does not match the genesis Standard Asset schema",
@@ -221,9 +274,9 @@ impl AssetSplitMergeTrust {
             sender: *self.trust.publisher.as_bytes(),
             nonce: request.nonce,
             code: self.trust.fee_policy.code.clone(),
-            instance: self.trust.fee_policy.instance.clone(),
+            instance: self.instance().clone(),
             entrypoint: SPLIT_ENTRYPOINT.to_owned(),
-            type_arguments: vec![asset_type_argument(&self.trust.asset)],
+            type_arguments: vec![asset_type_argument(&self.asset())],
             access,
             arguments: split_arguments(request.amount, &request.recipient).map_err(failure)?,
             gas_limit: request.gas_limit,
@@ -279,13 +332,13 @@ impl AssetSplitMergeTrust {
             "fee source preimage exceeds the maximum accepted size",
             "fee source preimage is not the exact canonical object encoding",
         )?;
-        self.trust.validate_owned_coin(
+        self.validate_application_coin(
             &into_object,
             "merge destination is not owned by the pinned custody publisher",
             "merge destination schema does not match the genesis Standard Asset schema",
             "merge destination is not the genesis Standard Asset Coin type",
         )?;
-        self.trust.validate_owned_coin(
+        self.validate_application_coin(
             &from_object,
             "merge source is not owned by the pinned custody publisher",
             "merge source schema does not match the genesis Standard Asset schema",
@@ -363,9 +416,9 @@ impl AssetSplitMergeTrust {
             sender: *self.trust.publisher.as_bytes(),
             nonce: request.nonce,
             code: self.trust.fee_policy.code.clone(),
-            instance: self.trust.fee_policy.instance.clone(),
+            instance: self.instance().clone(),
             entrypoint: MERGE_ENTRYPOINT.to_owned(),
-            type_arguments: vec![asset_type_argument(&self.trust.asset)],
+            type_arguments: vec![asset_type_argument(&self.asset())],
             access,
             arguments: no_arguments().map_err(failure)?,
             gas_limit: request.gas_limit,
@@ -454,6 +507,9 @@ impl AssetSplitMergeTrust {
             "instance_record_digest={}\n",
             self.trust.fee_policy.instance.record_digest
         ));
+        if let Some(application) = &self.application {
+            application.render_review(out);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

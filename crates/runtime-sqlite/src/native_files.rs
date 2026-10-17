@@ -254,13 +254,28 @@ impl ImportFile {
 }
 
 pub(crate) fn create_new(path: &Path) -> io::Result<ImportFile> {
+    reserve(path, false)
+}
+
+pub(crate) fn create_new_private(path: &Path) -> io::Result<ImportFile> {
+    reserve(path, true)
+}
+
+fn reserve(path: &Path, private: bool) -> io::Result<ImportFile> {
     let pinned_path: PathBuf = absolute(path)?;
     let ancestors: Vec<(PathBuf, File)> = pin_ancestors(&pinned_path)?;
-    let file: File = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(&pinned_path)?;
+    let mut options: OpenOptions = OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    if private {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        #[cfg(not(unix))]
+        return Err(io::Error::from(io::ErrorKind::Unsupported));
+    }
+    let file: File = options.open(&pinned_path)?;
     let main: FileIdentity = regular_identity(&file.metadata()?)?;
     file.sync_all()?;
     // Must close this exclusive reservation BEFORE SQLite opens the inode.

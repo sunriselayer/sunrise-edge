@@ -1387,3 +1387,538 @@ async fn proposal_signature_preauth_still_wins_over_a_pending_build_context_canc
     assert_eq!(fixture.store.writes.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.sign_calls.load(Ordering::SeqCst), 0);
 }
+
+/// Differential transport controls use the same installed signed-genesis router
+/// and counted authority ports as the original history controls above.
+#[cfg(target_os = "linux")]
+mod custody_router_compatibility {
+    use super::*;
+    use crate::ordered_custody::{Frontend, Identity, frontend_router, serve_worker};
+    use node_wire::ordered_economics::*;
+    use std::{
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    use tokio::{
+        net::{UnixListener, UnixStream},
+        time::Instant,
+    };
+
+    struct PanicIfPolled;
+    impl hyper::body::Body for PanicIfPolled {
+        type Data = Bytes;
+        type Error = io::Error;
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<hyper::body::Frame<Bytes>, io::Error>>> {
+            panic!("original ignored GET body must never be polled");
+        }
+    }
+
+    fn frontend(fixture: &Fixture, socket: PathBuf, uid: u32, end: Instant) -> Arc<Frontend> {
+        Arc::new(Frontend::new(
+            socket,
+            uid,
+            CountedSigner::new(fixture.sign_calls.clone()).validator_id(),
+            fixture.policy.clone(),
+            Duration::from_secs(2),
+            end,
+            64,
+            NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(1).unwrap())),
+        ))
+    }
+
+    async fn image(response: Response) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+        let (parts, body) = response.into_parts();
+        (
+            parts.status,
+            parts.headers,
+            to_bytes(body, 1024 * 1024).await.unwrap().to_vec(),
+        )
+    }
+
+    fn duplicate_request(
+        path: &str,
+        media: &str,
+        encodings: [&str; 2],
+        size: usize,
+    ) -> Request<Body> {
+        Request::builder()
+            .method(if path == ORDERED_HISTORY_SUMMARY_PATH {
+                "GET"
+            } else {
+                "POST"
+            })
+            .uri(path)
+            .header(header::CONTENT_TYPE, media)
+            .header(header::CONTENT_ENCODING, encodings[0])
+            .header(header::CONTENT_ENCODING, encodings[1])
+            .body(Body::from(vec![0; size]))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn duplicate_encoding_matches_actual_router_before_ipc_admission_key_or_storage() {
+        let fixture: Fixture = Fixture::new();
+        let original: Router = fixture.app();
+        let path: TestDatabase = TestDatabase::new();
+        let listener: UnixListener = UnixListener::bind(&path.path).unwrap();
+        let (peer, _other): (UnixStream, UnixStream) = UnixStream::pair().unwrap();
+        let frontend: Arc<Frontend> = frontend(
+            &fixture,
+            path.path.clone(),
+            peer.peer_cred().unwrap().uid(),
+            Instant::now().checked_add(Duration::from_secs(20)).unwrap(),
+        );
+        let proxy: Router = frontend_router(frontend.clone());
+        let baseline = fixture.store.snapshot(
+            fixture.policy.domain(),
+            WriterFenceGeneration::new(3).unwrap(),
+        );
+        let admitted: u64 = fixture.executor.observations().snapshot().blocking_admitted;
+        for (route, media, size) in [
+            (
+                ORDERED_ECONOMICS_PROPOSE_PATH,
+                ORDERED_PROPOSE_REQUEST_MEDIA_TYPE,
+                0,
+            ),
+            (ORDERED_ECONOMICS_PROPOSE_PATH, "text/plain", 2),
+            (
+                ORDERED_ECONOMICS_PROPOSE_PATH,
+                ORDERED_PROPOSE_REQUEST_MEDIA_TYPE,
+                MAX_ORDERED_PROPOSE_REQUEST_BYTES + 1,
+            ),
+            (
+                ORDERED_ECONOMICS_PROPOSAL_PATH,
+                ORDERED_PROPOSAL_MEDIA_TYPE,
+                2,
+            ),
+            (
+                ORDERED_ECONOMICS_CERTIFICATE_PATH,
+                ORDERED_CERTIFICATE_MEDIA_TYPE,
+                2,
+            ),
+            (
+                ORDERED_ECONOMICS_OBSERVE_PATH,
+                ORDERED_PROPOSAL_MEDIA_TYPE,
+                2,
+            ),
+            (ORDERED_ECONOMICS_TICK_PATH, "text/plain", 2),
+            (ORDERED_HISTORY_SUMMARY_PATH, "text/plain", 2),
+            (
+                ORDERED_HISTORY_HEIGHT_PATH,
+                NODE_EVENT_MEDIA_TYPE,
+                MAX_ORDERED_HISTORY_HEIGHT_REQUEST_BYTES + 1,
+            ),
+            (
+                ORDERED_HISTORY_COMPONENT_PATH,
+                NODE_EVENT_MEDIA_TYPE,
+                MAX_ORDERED_HISTORY_COMPONENT_REQUEST_BYTES + 1,
+            ),
+            (
+                ORDERED_ECONOMICS_PROPOSE_PATH,
+                ORDERED_PROPOSE_REQUEST_MEDIA_TYPE,
+                MAX_ORDERED_PROPOSAL_BYTES + 1,
+            ),
+        ] {
+            for encodings in [
+                ["identity", "gzip"],
+                ["gzip", "identity"],
+                ["identity", "identity"],
+                ["", "identity"],
+            ] {
+                let expected = image(
+                    original
+                        .clone()
+                        .oneshot(duplicate_request(route, media, encodings, size))
+                        .await
+                        .unwrap(),
+                )
+                .await;
+                let actual = image(
+                    proxy
+                        .clone()
+                        .oneshot(duplicate_request(route, media, encodings, size))
+                        .await
+                        .unwrap(),
+                )
+                .await;
+                assert_eq!(
+                    actual, expected,
+                    "{route} encodings={encodings:?} size={size}"
+                );
+                assert!(matches!(
+                    actual.0,
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE | StatusCode::PAYLOAD_TOO_LARGE
+                ));
+            }
+        }
+        assert_eq!(frontend.remaining_requests(), 64);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), listener.accept())
+                .await
+                .is_err()
+        );
+        fixture.assert_no_access();
+        assert_eq!(fixture.store.control_reads.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            fixture.executor.observations().snapshot().blocking_admitted,
+            admitted
+        );
+        assert_eq!(
+            fixture.store.snapshot(
+                fixture.policy.domain(),
+                WriterFenceGeneration::new(3).unwrap()
+            ),
+            baseline
+        );
+    }
+
+    struct ErrorIfPolled {
+        polls: Arc<AtomicUsize>,
+    }
+    impl hyper::body::Body for ErrorIfPolled {
+        type Data = Bytes;
+        type Error = io::Error;
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<hyper::body::Frame<Bytes>, io::Error>>> {
+            self.polls.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(Some(Err(io::Error::other("fixture body error"))))
+        }
+    }
+
+    fn single_encoding_request(
+        path: &str,
+        media: &str,
+        encoding: Option<&str>,
+        body: Body,
+    ) -> Request<Body> {
+        let mut request = Request::builder()
+            .method(if path.starts_with(ORDERED_HISTORY_SUMMARY_PATH) {
+                "GET"
+            } else {
+                "POST"
+            })
+            .uri(path)
+            .header(header::CONTENT_TYPE, media);
+        if let Some(encoding) = encoding {
+            request = request.header(header::CONTENT_ENCODING, encoding);
+        }
+        request.body(body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn all_body_refusals_match_actual_router_extraction_and_preflight_before_ipc() {
+        let fixture: Fixture = Fixture::new();
+        let original: Router = fixture.app();
+        let path: TestDatabase = TestDatabase::new();
+        let listener: UnixListener = UnixListener::bind(&path.path).unwrap();
+        let (peer, _other): (UnixStream, UnixStream) = UnixStream::pair().unwrap();
+        let frontend: Arc<Frontend> = frontend(
+            &fixture,
+            path.path.clone(),
+            peer.peer_cred().unwrap().uid(),
+            Instant::now().checked_add(Duration::from_secs(20)).unwrap(),
+        );
+        let proxy: Router = frontend_router(frontend.clone());
+        let baseline = fixture.store.snapshot(
+            fixture.policy.domain(),
+            WriterFenceGeneration::new(3).unwrap(),
+        );
+        let admitted: u64 = fixture.executor.observations().snapshot().blocking_admitted;
+        for (route, media, size) in [
+            (ORDERED_ECONOMICS_TICK_PATH, "text/plain", 2),
+            (ORDERED_ECONOMICS_PROPOSE_PATH, "text/plain", 0),
+            (
+                ORDERED_ECONOMICS_PROPOSE_PATH,
+                ORDERED_PROPOSE_REQUEST_MEDIA_TYPE,
+                MAX_ORDERED_PROPOSE_REQUEST_BYTES + 1,
+            ),
+            (
+                ORDERED_ECONOMICS_PROPOSE_PATH,
+                "text/plain",
+                MAX_ORDERED_PROPOSAL_BYTES + 1,
+            ),
+            (
+                ORDERED_ECONOMICS_PROPOSAL_PATH,
+                ORDERED_PROPOSAL_MEDIA_TYPE,
+                MAX_ORDERED_PROPOSAL_BYTES + 1,
+            ),
+            (
+                ORDERED_ECONOMICS_OBSERVE_PATH,
+                ORDERED_PROPOSAL_MEDIA_TYPE,
+                MAX_ORDERED_PROPOSAL_BYTES + 1,
+            ),
+            (
+                ORDERED_ECONOMICS_CERTIFICATE_PATH,
+                ORDERED_CERTIFICATE_MEDIA_TYPE,
+                MAX_ORDERED_CERTIFICATE_BYTES + 1,
+            ),
+            (
+                ORDERED_HISTORY_HEIGHT_PATH,
+                "text/plain",
+                MAX_ORDERED_HISTORY_HEIGHT_REQUEST_BYTES + 1,
+            ),
+            (
+                ORDERED_HISTORY_HEIGHT_PATH,
+                NODE_EVENT_MEDIA_TYPE,
+                MAX_ORDERED_HISTORY_HEIGHT_REQUEST_BYTES + 1,
+            ),
+            (
+                ORDERED_HISTORY_COMPONENT_PATH,
+                NODE_EVENT_MEDIA_TYPE,
+                MAX_ORDERED_HISTORY_COMPONENT_REQUEST_BYTES + 1,
+            ),
+            (ORDERED_HISTORY_SUMMARY_PATH, "text/plain", 1),
+            (ORDERED_HISTORY_SUMMARY_PATH, "text/plain", 2),
+        ] {
+            for encoding in [None, Some("identity"), Some("gzip")] {
+                let route: String = format!("{route}?ignored=1");
+                let expected = image(
+                    original
+                        .clone()
+                        .oneshot(single_encoding_request(
+                            &route,
+                            media,
+                            encoding,
+                            Body::from(vec![0; size]),
+                        ))
+                        .await
+                        .unwrap(),
+                )
+                .await;
+                let actual = image(
+                    proxy
+                        .clone()
+                        .oneshot(single_encoding_request(
+                            &route,
+                            media,
+                            encoding,
+                            Body::from(vec![0; size]),
+                        ))
+                        .await
+                        .unwrap(),
+                )
+                .await;
+                assert_eq!(
+                    actual, expected,
+                    "{route} encoding={encoding:?} size={size}"
+                );
+                assert!(actual.0.is_client_error());
+            }
+        }
+        // A Result<Bytes> history handler inspects media/encoding after the
+        // body has been polled and failed; ordinary Bytes extractors return
+        // that error first. Check both bytes and exact poll counts.
+        for (route, media) in [
+            (ORDERED_ECONOMICS_TICK_PATH, "text/plain"),
+            (
+                ORDERED_ECONOMICS_PROPOSE_PATH,
+                ORDERED_PROPOSE_REQUEST_MEDIA_TYPE,
+            ),
+            (ORDERED_ECONOMICS_PROPOSAL_PATH, ORDERED_PROPOSAL_MEDIA_TYPE),
+            (ORDERED_HISTORY_HEIGHT_PATH, NODE_EVENT_MEDIA_TYPE),
+            (ORDERED_HISTORY_HEIGHT_PATH, "text/plain"),
+            (ORDERED_HISTORY_COMPONENT_PATH, NODE_EVENT_MEDIA_TYPE),
+            (ORDERED_HISTORY_SUMMARY_PATH, "text/plain"),
+        ] {
+            for encoding in [None, Some("identity"), Some("gzip")] {
+                let original_polls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+                let proxy_polls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+                let expected = image(
+                    original
+                        .clone()
+                        .oneshot(single_encoding_request(
+                            route,
+                            media,
+                            encoding,
+                            Body::new(ErrorIfPolled {
+                                polls: original_polls.clone(),
+                            }),
+                        ))
+                        .await
+                        .unwrap(),
+                )
+                .await;
+                let actual = image(
+                    proxy
+                        .clone()
+                        .oneshot(single_encoding_request(
+                            route,
+                            media,
+                            encoding,
+                            Body::new(ErrorIfPolled {
+                                polls: proxy_polls.clone(),
+                            }),
+                        ))
+                        .await
+                        .unwrap(),
+                )
+                .await;
+                assert_eq!(actual, expected, "{route} erroring encoding={encoding:?}");
+                assert_eq!(original_polls.load(Ordering::SeqCst), 1);
+                assert_eq!(proxy_polls.load(Ordering::SeqCst), 1);
+                assert!(actual.0.is_client_error() || actual.0.is_server_error());
+            }
+        }
+        assert_eq!(frontend.remaining_requests(), 64);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), listener.accept())
+                .await
+                .is_err()
+        );
+        fixture.assert_no_access();
+        assert_eq!(fixture.store.control_reads.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            fixture.executor.observations().snapshot().blocking_admitted,
+            admitted
+        );
+        assert_eq!(
+            fixture.store.snapshot(
+                fixture.policy.domain(),
+                WriterFenceGeneration::new(3).unwrap()
+            ),
+            baseline
+        );
+    }
+
+    fn get_request(path: &str, panic_body: bool) -> Request<Body> {
+        Request::builder()
+            .method("GET")
+            .uri(path)
+            .header(header::CONTENT_TYPE, "ignored/type")
+            .header(header::CONTENT_ENCODING, "identity")
+            .header(header::CONTENT_ENCODING, "gzip")
+            .body(if panic_body {
+                Body::new(PanicIfPolled)
+            } else {
+                Body::from(vec![1, 2])
+            })
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn actual_proxy_and_worker_ignore_status_outcome_bodies_and_queries() {
+        let fixture: Fixture = Fixture::new();
+        fixture.complete_empty_history();
+        let original: Router = fixture.app();
+        let path: TestDatabase = TestDatabase::new();
+        let listener: UnixListener = UnixListener::bind(&path.path).unwrap();
+        let (peer, _other): (UnixStream, UnixStream) = UnixStream::pair().unwrap();
+        let uid: u32 = peer.peer_cred().unwrap().uid();
+        let end: Instant = Instant::now().checked_add(Duration::from_secs(20)).unwrap();
+        let frontend: Arc<Frontend> = frontend(&fixture, path.path.clone(), uid, end);
+        let proxy: Router = frontend_router(frontend.clone());
+        let identity: Identity = Identity::new(
+            CountedSigner::new(fixture.sign_calls.clone()).validator_id(),
+            fixture.policy.domain(),
+            fixture.policy.genesis_digest().bytes(),
+        );
+        let stopped: Arc<Notify> = Arc::new(Notify::new());
+        let shutdown = stopped.clone().notified_owned();
+        let worker = serve_worker(
+            listener,
+            original.clone(),
+            identity,
+            uid,
+            64,
+            64,
+            Duration::from_secs(2),
+            end,
+            shutdown,
+        );
+        let cases = async {
+            for route in [
+                ORDERED_ECONOMICS_STATUS_PATH.to_owned(),
+                format!("{ORDERED_ECONOMICS_OUTCOME_PATH_PREFIX}{}", "11".repeat(32)),
+            ] {
+                for query in ["", "?ignored=1"] {
+                    let route: String = format!("{route}{query}");
+                    for panic_body in [false, true] {
+                        let expected = image(
+                            original
+                                .clone()
+                                .oneshot(get_request(&route, panic_body))
+                                .await
+                                .unwrap(),
+                        )
+                        .await;
+                        let actual = image(
+                            proxy
+                                .clone()
+                                .oneshot(get_request(&route, panic_body))
+                                .await
+                                .unwrap(),
+                        )
+                        .await;
+                        assert_eq!(actual, expected, "{route} panic_body={panic_body}");
+                        assert!(matches!(actual.0, StatusCode::OK | StatusCode::NO_CONTENT));
+                    }
+                }
+            }
+            assert_eq!(frontend.remaining_requests(), 56);
+            stopped.notify_one();
+        };
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let (served, ()) = tokio::join!(worker, cases);
+            served.unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn malformed_outcome_selector_matches_original_before_ipc_or_body_polling() {
+        let fixture: Fixture = Fixture::new();
+        let original: Router = fixture.app();
+        let path: TestDatabase = TestDatabase::new();
+        let listener: UnixListener = UnixListener::bind(&path.path).unwrap();
+        let (peer, _other): (UnixStream, UnixStream) = UnixStream::pair().unwrap();
+        let frontend: Arc<Frontend> = frontend(
+            &fixture,
+            path.path.clone(),
+            peer.peer_cred().unwrap().uid(),
+            Instant::now().checked_add(Duration::from_secs(5)).unwrap(),
+        );
+        let proxy: Router = frontend_router(frontend.clone());
+        for selector in [
+            "short".to_owned(),
+            "g".repeat(64),
+            "0".repeat(64),
+            "a".repeat(65),
+        ] {
+            let route: String =
+                format!("{ORDERED_ECONOMICS_OUTCOME_PATH_PREFIX}{selector}?ignored=1");
+            let expected = image(
+                original
+                    .clone()
+                    .oneshot(get_request(&route, true))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            let actual = image(
+                proxy
+                    .clone()
+                    .oneshot(get_request(&route, true))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(actual, expected);
+            assert_eq!(actual.0, StatusCode::BAD_REQUEST);
+        }
+        assert_eq!(frontend.remaining_requests(), 64);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), listener.accept())
+                .await
+                .is_err()
+        );
+        fixture.assert_no_access();
+        assert_eq!(fixture.store.control_reads.load(Ordering::SeqCst), 0);
+    }
+}
