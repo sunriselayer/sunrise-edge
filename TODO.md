@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-10-17 (JST)。これは唯一の現行作業表です。
+更新: 2026-10-18 (JST)。これは唯一の現行作業表です。
 設計は[architecture](docs/architecture/README.md)、実装場所は
 [code map](docs/development/code-map.md)、整理の決定は
 [DR-0236](docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md)に置きます。
@@ -39,7 +39,9 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   (E136-E139)。T/Gの旧e6f1に対する3/4-file bridge付き実行と、C/MBの5f6bに対する
   3/4-file bridge付き同一鍵historical recoveryも確認しました (E140/E141)。
   同一鍵復旧の追加source `ad3ce3a0` / tree`d3fdc54a` は[Draft PR #323](https://github.com/sunriselayer/sunrise-edge/pull/323)。
-  WとMBのliteral npm ciは成功し、両sourceの完全requiredと同5f原12 RELEASE runtimeは実行中です。
+  W5f6bのliteral npm ci +完全requiredは全commands actual0で完走しました (E150)。
+  同5f原12 RELEASE runtimeも全12 cases・98 passed/0 failed/3 ignoredで完走しました (E151)。
+  MBのliteral npm ciは成功し、完全requiredは実行中です。
   [Draft PR #321](https://github.com/sunriselayer/sunrise-edge/pull/321) の全8 CIはE142で成功を照合。
   [Draft PR #322](https://github.com/sunriselayer/sunrise-edge/pull/322) / #323は各6 jobs成功、
   recurring-sqlite継続中・集約check未作成であり、全8成功には数えません。
@@ -49,7 +51,9 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   `f6b5ffab`の新H8・fresh lddの後、実fixture全117 flagsが成功しました (E146/E149)。
   Cloudflare CLIへの5-profile統一は実npm ci・typegen・10拒否controlsに加え、修正後の
   型照合・TS・lint・全4 Vitest計66 testsまで成功しました (E147/E148)。
-  新sourceのliteral npm ciと完全requiredはこれから実行し、祖先の成功から借用しません。
+  新source `e4fb6e55` は[Draft PR #324](https://github.com/sunriselayer/sunrise-edge/pull/324)。
+  literal npm ciは成功し、同headの完全requiredと全8 hosted CIは実行中です。
+  この文書更新は別worktreeで行い、実行中のsource/HEAD/TODOは変更していません。
   E133の自然失敗原因は未確定で、旧失敗と当時source-onlyだったE134/E135を保持します。
   祖先の成功を新source全体の合格へ付け替えず、全M2/M4/M7は未完了です。
 
@@ -375,6 +379,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E147: actual cf migration prefix, prerequisites and SQL startup fix | CF2でliteral offline npm ci、実`cf workers types`全5 profile、positive check、stale/入力/CLI version全10拒否controlsとno-overwrite確認が成功。CF3で通常Rust/WASM+contract fixture producer、TS7/typecheck・lint・ingress/certified Vitestがactual0 | CF1のnpm config double-load失敗とCF2の生成WASM未準備失敗を保持。CF3はSQL self DOが旧published worker名を参照してstartupでactual1、SQL test0・contract未実行。schema必須workerは保持し、SQL/contract Vitestだけlocal class/useSQLite designatorへ上書きする修正を反映。実修正後全4 Vitest・全required/CIは未達。direct Wrangler commands/dependencyは廃止し、plugin内transitive SDKは保持。deployment/公開認定は主張しない |
 | E148: current cf migration all four Vitest groups | `f6b5ffab` / tree`c920900e`でactual CF4の13 operationsが全0、76 raw frames・全26 streamsのhash/実EOF/waitを照合。型照合・TS7・lintに加えingress13/certified28/SQL10/contract15の計66 tests成功。source1215全Ns、元package bodies、生成WASM/fixture5入力不変と既知15 PIDs/cgroup不在を確認。root・独立peer親`cloudflare-cli-migration-validation4-parent-qualified-1017.json` (`0a52e00f`) | E144/E147は当時の未実行/自然失敗履歴として保持。直接Wrangler呼出しを廃止した実cf型生成/Node検証の技術範囲だけ。新source完全required/全8 hosted CI、provider deployment、全M2/M7は未完了 |
 | E149: actual two-owner genesis Coin handoff | `f6b5ffab`の新H8はactual CargoJSONからtest ELF`8eeecd95`を別inodeへ正常保持し、root・独立peerがproducerを照合。親`401d40ca`。fresh 2 lddの後、実fixture runtime3はactual0/両outer実EOF/wait/8.730秒、raw`4c00a43d`の全117 expected flagsが一致。既存の同CoinをA→B version2/nonce1,0/replay1→A version3/nonce1,1/replay2へ実有料移行。親`cloudflare-cli-migration-fixture-runtime3-parent-qualified-1017.json` | root実照合とinert adapter作者の別照合を区別し、外部独立auditとは呼ばない。actual RELEASE CLIはfe54 Native6のままで、28-file差分・cfg(test)除外・804 build inputsの厳密対応を使用。H8/driverだけf6b5。26 normalchildren/2 PTY/30 leaves/6 absent refusals・生成71833B/出力28712Bは元上限内、private key copy追加0。前2失敗は保持。genesis Coinの選択範囲であり、creator/TreasuryCap・他asset/fee/account/governance移行・全M2/M7/公開条件を閉じない |
+| E150: final5f complete required success | `5f6b1819` / tree`468c7be5`、exact checkpoint/SQLite lib/literal npm ci/完全check-allの全4 commandsがactual0・各merged EOF/wait、17,307.340秒。全149 Rust summariesは4,521 passed/0 failed/48 ignored、required部分147は4,397/0/41。元8リンク・e8の2 withdrawals・delay7・35 rolesと全adapterを維持。root・独立peer親`checkpoint-isolation-required-final-parent-qualified-1017.json` (`d3bd1bef`) | E133の自然失敗を保持。source1207・49tools・5proofs・7dir tuplesを照合。detached ownerのouter物理EOFは主張せず、自然終了/owner・全既知PID/cgroup不在後に所有unitだけを整理。M4はPR #322全8 CIの終端照合待ち。別source/PG/公開認定へ借用しない |
+| E151: final5f original12 RELEASE runtime | 同`5f6b1819`の原10 whole +2 exact ignored selectors全12 casesがactual0/実pipe EOF/wait。24 events/12 full summariesは98 passed/0 failed/3 ignored、outer両実EOF/wait/reap0、12,920.211秒。全49 ELF・20tools/aliases・10producer refs・source1207と各caseの13 RELEASE read-only bindingsを照合。root・独立peer親`integration-native-promoted5-runtime-parent-qualified-1017.json` (`528d4842`) | 原7 epochs/e8 unlock・freeze-drain・2 withdrawals・35 rolesのsaved closureを維持。観測430 live kernel rowsで元16GiB/swap0/CPU4/tasks512/18600秒/stop45秒、既知550 PID・cgroup・2TMP不在を照合。launcherのfile redirection EOF flagと実12 pipe/outer2 EOFを区別。別source/全M7/公開認定へ借用しない |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -975,7 +981,9 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     E93/E94/E95で7658の13-target A/B・M4対象RELEASE TLS/upgrade・既存CLI fixtureを確認。
     同headの完全required/全8 hosted CI・原12 runtimeはE131/E132で終端成功を確認。
     後続e6f1のauthority再open test失敗と新sourceのtest-only隔離はE133/E134へ残し、
-    新sourceの全体qualificationと原条件の最終対応が終わるまで全M4を完了にしない。
+    最終5fの13-target A/B・M4 RELEASE TLS/upgrade・CLIはE136-E139、
+    元8リンク/e8 withdrawals/35 rolesを保持した完全requiredはE150で成功。
+    原条件のsource対応を確認済みで、残るPR #322の全8 hosted CI終端・照合までM4は未完了。
     原12 RELEASE runtimeの総合qualificationはM7の別gate。元8リンク/e8 withdrawals/
     35 rolesの暗号化relocationは完全required/CIから除かず、短いTLS/upgradeで代替しない。
   - [x] [独立に保持したordered history floor component](docs/architecture/decisions/0248-import-ordered-history-freshness-floor.md):
@@ -1081,7 +1089,8 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     ローカル完全gateもE63で成功したが、原12 Native runtimeのE57失敗を保持する。
     10a4/E61・f973/E65の原12 runtime失敗も保持する。9de6はE64の13-target A/B・
     E71の完全required/CIに加え、E92で原12 RELEASE runtimeの全actual0/実EOF/waitを完了した。
-    この9de6専用資格を7658以降の完全gate/CI/Nativeへ借用しない。残る独立監査・
+    後続5f6bのfresh13-target A/BはE137、原12 RELEASE runtime全12 casesはE151で成功。
+    9de6/5f6bの資格を別sourceの完全gate/CI/Nativeへ借用しない。残る独立監査・
     upgrade/restore・実provider基準により全M7は未完了。
   - 次: E18/E19のsource/tool/profile pinをR4/Gから共用し、新sourceのrelease claimには
     そのsourceの13-target A/B・実RELEASE bindingを用意する。未達qualificationを進める。
