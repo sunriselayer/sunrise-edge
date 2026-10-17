@@ -205,20 +205,29 @@ fn refusal(output: Output, message: &str) {
     assert_eq!(lossy(&output.stderr), format!("{message}\n"));
 }
 fn complete(root: &Path) {
-    for name in [
+    let expected: [&str; 4] = [
         "state.sqlite",
         "blobs.sqlite",
         "checkpoint-manifest-v2.bin",
         "checkpoint-complete-v2.bin",
-    ] {
+    ];
+    for name in expected {
         let metadata: fs::Metadata = fs::symlink_metadata(root.join(name)).unwrap();
         assert!(metadata.is_file() && !metadata.file_type().is_symlink());
         assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
     }
+    let mut actual: Vec<OsString> = fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    let mut expected: Vec<OsString> = expected.into_iter().map(OsString::from).collect();
+    actual.sort();
+    expected.sort();
     assert_eq!(
-        fs::read_dir(root).unwrap().count(),
-        4,
-        "closed complete local-v2 inventory"
+        actual,
+        expected,
+        "closed complete local-v2 inventory at {}",
+        root.display()
     );
     assert_eq!(
         fs::metadata(root).unwrap().permissions().mode() & 0o777,
@@ -449,6 +458,19 @@ pub(super) fn pack_and_restore(network: &Network) -> RestoredCheckpoint {
             "business_recovery=checkpoint-opened files=2 meaning=current-local-store-next-fence-and-serving-pins-still-required\n"
         );
         complete(&parent.join("restored"));
+        if index == 0 {
+            refusal(
+                run(
+                    open_command(network, index, &recipients[index], &parent, "restored"),
+                    end,
+                ),
+                "recovery publication refused",
+            );
+            complete(&parent.join("restored"));
+        }
+        // Validate the closed archive and existing-output refusal before the
+        // first ordinary SQLite owner. A normal read-only WAL inspection may
+        // create sidecars; it does not retain the closed archival inventory.
         assert_eq!(
             current_restored(
                 network,
@@ -460,16 +482,6 @@ pub(super) fn pack_and_restore(network: &Network) -> RestoredCheckpoint {
             published[index],
             "actual compiled checkpoint reinspection matches independently held publication"
         );
-        if index == 0 {
-            refusal(
-                run(
-                    open_command(network, index, &recipients[index], &parent, "restored"),
-                    end,
-                ),
-                "recovery publication refused",
-            );
-            complete(&parent.join("restored"));
-        }
         owner.assert_originals_unavailable();
         assert_eq!(
             anchors.images(),
