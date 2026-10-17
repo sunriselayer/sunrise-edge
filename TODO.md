@@ -287,6 +287,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E88: read-only anchor inspection and actual five ENOSPC controls | `4db1229f` / tree`c09cd519`。自動修正の後にも残ったwritable historical preflightを除き、同じreadonly snapshotで既存header/WAL/shared namespace検証とroot走査を実行。writer保持中・12拒否入力・authority非更新の3新規controlsを含むSQLite全123 passed/7 ignoredとstrict Clippy/fmt/diffが全actual0/両EOF/wait、64.387秒。元5 ENOSPC selectorsもactual0、26.992秒 | 全1180 tracked inputs・実CargoJSON/保持ELF・全framed rawを親で照合。ENOSPCの全86 clientsと専有5 container/volumeの解放・不在を再確認。既存historical/writable factoryと全5 fault controlsを保持。普通のcorrectness reviewは最終security監査ではなく、VM・全M3・最終完全gateの成功にも数えない |
 | E89: original ordered fixture bounded output failure | `4db1229f`で4 bins + fixture harness、構文、strict Clippyの全6 commandsがactual0/両EOF/wait、195.059秒。通常0755の5 ELFとread-only inventoryも再照合。実UID attemptは64KiB内の出力配分を超え、actual1/両EOF/wait、13.937秒 | inner start clientはSIGKILL、観測stdout58102 bytesの完全rawを保持できなかったためproduct成功0として扱う。outer Node rawは完全。全15 clientsのwait/EOF/PID不在と専有container/volume解放・不在を確認。上限・oracle・拒否controlsを維持して完全ログのtransportを修正し、別attemptで検証する |
 | E90: lossless complete-output transport source | `1973380a`で全child stdout/stderrを含む既存JSONをzlib/base64で転送し、正確なwireと復号resultを両方保持する。Node24の実16 controlsでPython相互運用、decoded512KiB境界、破損/末尾/連結stream・length/hash/base64/UTF8/JSON拒否が成功 | 64KiB wire/metadata・16KiB cleanup reserve、inner256KiB/stream64KiB、既存期限/caps/oracle/拒否controlsは維持。decoded allocation512KiBを明示し、outer最大serialization1,442,020 bytesが既存4MiB未満であることを確認。親が全既存Python owner/control AST・raw codec結果を照合。synthetic codec成功であり、修正後の実UID owningは未実行 |
+| E91: original ordered actual multi-UID custody | `226c861a` / tree`f4513fbd`。全6 build/構文/strict Clippy commandsとread-only inventoryがactual0。実4-worker/4-frontend TLS fixtureもactual0/両EOF/wait、13.728秒。全76 role childrenと17 Docker clientsを回収し、署名・保存済み再送・停止中503・再起動fence3・QC・新規height2・不正UID/authority/入力の拒否が成功 | 親が1180 source/21 inputs・通常0755の5 ELF/4 librariesを再照合。完全child raw45653 bytes、wire7442 bytesと復号JSON58103 bytesの正確な対応を独立確認。専有container/volume解放・不在を確認し、全旧失敗を保持。original orderedのlocal OS custody componentのみで、後継epoch・他family・全M2・最終完全gate/CI/Native・独立監査/公開認定ではない |
 
 
 
@@ -353,6 +354,12 @@ E89は `m2-ordered-fixture-build4-final-parent-qualified-1017.json` /
 E90は `m2-original-ordered-fixture-complete-output-transport-source-1017.json` /
 `m2-ordered-output-transport-1017-pure-check.json` /
 `m2-ordered-output-transport-parent-source-review-1017.json`。
+E91は `m2-ordered-fixture-build5-parent-qualified-1017.json` /
+`m2-ordered-fixture-inventory5-parent-qualified-1017.json` /
+`m2-ordered-fixture-runtime5-parent-qualified-1017.json` と
+`m2-ordered-fixture-runtime5-1017-terminal.json` / `-complete.json`。
+完全runtime JSONのSHA-256は
+`256294416e9bb1ad48a194f56c8dcc36123c6005e9f884f19c09a181e7b25f79`。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -702,7 +709,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     type/owner/version/amount/receipt/nonce・全保存済み再送・取消/restartを検証。
     自己宛whole transferの拒否は保持し、最後の送金先は別のdisposable recipient。
     内容承認・署名・実CLIで同じframeを使う。全M2と最終source全体gateは未完了。
-  - [ ] [original ordered protocolの別process/UID worker](docs/architecture/local-protocol-custody.md):
+  - [x] [original ordered protocolの別process/UID worker](docs/architecture/local-protocol-custody.md):
     元のverified startup・ordered router・confirmed retentionをworkerだけが所有し、
     frontendは鍵/DB/fenceを持たない。E82のfunctional controlsと独立source reviewは成功。
     別UID・TLS・停止/restart/replay fixtureを実装。E84で5 ELFのbuild/strict Clippyと
@@ -711,7 +718,9 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     public routing ancestorsだけを0755へ合わせ、private leaves/拒否controlsは保持。
     E89の次attemptはログ配分超過で失敗し、完全inner rawがないためproduct成功0。
     E90で上限・oracle・拒否controlsを維持した完全ログtransportを実装し、
-    実Node24の16 codec controlsを確認。修正後の実owningは未実行。
+    実Node24の16 codec controlsを確認。E91で修正後の実4-worker/4-frontend TLS owningが
+    actual0/両EOF/wait。全76 role childrenを回収し、署名・不正UID拒否・停止中503・
+    再起動fence3/保存済み再送・QC・新規height2を検証。完全rawと専有資源の不在を照合。
     後継epoch・FastVote/readiness・他signing family・全M2へ転用しない。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
