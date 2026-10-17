@@ -34,11 +34,24 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   7658の完全required・全8 CI・原12 RELEASE runtimeはE131/E132で終端成功を確認。
   その後の `e6f1dfe3` は13-target A/Bと23バイナリのbuildが成功しましたが、完全requiredは
   checkpoint authority再openの1件で失敗しました (E133)。この失敗を成功へ上書きしません。
-  [Draft PR #321](https://github.com/sunriselayer/sunrise-edge/pull/321) はe6f1で固定し、
-  そのCIは継続中です。次の `codex/checkpoint-test-isolation-1017` では、既存assertionを
-  専用子プロセスで実行するtest-only隔離と、転送・分割/結合の鍵復旧fixtureを準備中です
-  (E134/E135)。元の失敗原因は未確定で、この新sourceの実行・全体qualificationは未完了。
-  7658やe6f1の結果を新sourceの合格へ付け替えません。
+  後続`5f6b1819`はcheckpoint test-only隔離の対象prefix、13-target A/B・23 driver/H6 producer、
+  scoped TLS15 +実old upgrade1・同source RELEASE CLIまでactual qualificationを完了しました
+  (E136-E139)。T/Gの旧e6f1に対する3/4-file bridge付き実行と、C/MBの5f6bに対する
+  3/4-file bridge付き同一鍵historical recoveryも確認しました (E140/E141)。
+  同一鍵復旧の追加source `ad3ce3a0` / tree`d3fdc54a` は[Draft PR #323](https://github.com/sunriselayer/sunrise-edge/pull/323)。
+  WとMBのliteral npm ciは成功し、両sourceの完全requiredと同5f原12 RELEASE runtimeは実行中です。
+  [Draft PR #321](https://github.com/sunriselayer/sunrise-edge/pull/321) の全8 CIはE142で成功を照合。
+  [Draft PR #322](https://github.com/sunriselayer/sunrise-edge/pull/322) / #323は各6 jobs成功、
+  recurring-sqlite継続中・集約check未作成であり、全8成功には数えません。
+  正のgenesis Coin A→B→A移行は `fe542b82` に追加し、strictと新H7 producerは成功。
+  新13-target A/Bは両laneの全13 ELFのbyte一致・source/provenance照合まで完了しました (E145)。
+  追加fixtureの2回の実失敗を保持し、private exportのumaskとtransient予約のAbsent oracleを修正。
+  `f6b5ffab`の新H8・fresh lddの後、実fixture全117 flagsが成功しました (E146/E149)。
+  Cloudflare CLIへの5-profile統一は実npm ci・typegen・10拒否controlsに加え、修正後の
+  型照合・TS・lint・全4 Vitest計66 testsまで成功しました (E147/E148)。
+  新sourceのliteral npm ciと完全requiredはこれから実行し、祖先の成功から借用しません。
+  E133の自然失敗原因は未確定で、旧失敗と当時source-onlyだったE134/E135を保持します。
+  祖先の成功を新source全体の合格へ付け替えず、全M2/M4/M7は未完了です。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -123,7 +136,8 @@ M2/M3/M4/M7全体・独立監査・公開条件は未完了です。
 9de6の原12 RELEASE runtimeはE92で全actual0/実EOF/waitを確認しました。
 7658の別の原12 RELEASE runtimeと完全required/CIはE131/E132で終端成功を確認しました。
 元12ケース・共有18,000秒・CPU4/16GiB/swap0を維持しています。
-後続e6f1の完全requiredはE133で失敗し、新sourceのqualificationは未完了です。
+後続e6f1の完全required失敗E133は保持します。5f6bの対象prefix/Native build/TLS/CLIはE136-E139、
+追加recoveryの範囲はE140/E141。最終MB完全required/CI・原12の選択source終端照合は未完了です。
 初回DockerのSQLite祖先directory読取EACCES、manual fixtureのsetup counter誤り、
 import testのsource retirement不足と各修正前失敗も保持します。
 50a4 / tree eff704ddのE14-E16と旧作業コピーは過去の対象として保持します。
@@ -345,6 +359,29 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E133: e6f1 integration full-required failure and Native build | `e6f1dfe3` / tree`71a2a77e`。literal npm ciは0、check-allはactual101、2443.274秒。runtime-sqliteの`checkpoint_snapshot_restores_source_free_complete_rows_bodies_fence_and_receipt_replay`でConfiguredCheckpointAuthority再openがIndependentAnchorError。全体停止時点で2800 passed/1 failed/14 ignored | 元raw/ELF/target/private cacheと失敗receipt`ebc86b9b`を保存。別のfresh13 A/Bは全byte/mode/owner一致、親`385602e3`・独立`8abe9fcc`で照合済み。23 debug/driver buildは2 commandsがactual0、outer954.573秒/両実EOF/wait。実runtime/CLI・新source全体の合格には数えない。e6f1 hosted CIは継続中 |
 | E134: ordinary checkpoint diagnosis and test-only isolation | 旧診断1はsubordinate終了の判定誤りで失敗、親`120c766b`。修正診断2は1回だけ22 passed/0 failed/0 ignoredで対象testも正常、2回目はGDBのsubordinate待機中に240秒上限へ達して失敗。独立receipt`2aa57eb4` | 全raw、旧57 files/14 dirs、新OUT/TMPを保持。診断2の4 pidfd cleanup entries/100既知PIDs・LWPs消失を照合。元の自然失敗原因は未確定。対象1件を同名exact childで実行し全assertionを保持する19行のtest-only隔離を準備、実行は未完了。production lease・global parallelism・元selectorは変更しない |
 | E135: transfer and genesis Split/Merge recovered-key fixture source | 転送`fb00a82a`とその子`285df467`の分割/結合を別作業コピーに保存。実署名前後の同一request byte比較、元と新しい取消・再起動拒否を追加。285dは1207 source/Git・既存45 defs・元phaseの保持を親`6f619c2c`/独立`a629c416`で確認 | source-only。実CLI/Docker/鍵操作・本体再compile・各fixtureの実行成功はまだない。新署名は提出せず、元preimageを使う独立signing-only要求であり新business chain/currentness/nonceを主張しない。resource capsを維持し、fb00実行成功後に285dを別に実行する。全M2や新source gateは未完了 |
+| E136: W checkpoint isolation targeted prefix | `5f6b1819` / tree`468c7be5`。同名exact checkpoint testは1 passed/0 failed/0 ignored、続くall-feature ordinary runtime-sqlite libは123 passed/0 failed/7 ignored。両command actual0/結合stream実EOF/wait、親`checkpoint-isolation-required-final-targeted-prefix-parent-qualified-1017.json` (`7c7b8f1e`) | E134の19行test-only隔離を実行した後続証拠。元assertion・production lease・global parallelism・全selectorを保持。自然失敗の原因を確定した証拠ではなく、E133のactual101とE134の診断失敗を保持。対象prefixだけで完全required成功・owner全体cleanupを主張しない |
+| E137: final5f Native13 fresh A/B | `5f6b1819` / tree`468c7be5`の13-targetを2回fresh buildし、13組全byte/mode/owner一致、26 ELFとsource1207を照合。actual0/outer両実EOF/wait/reap、887.840秒。親`integration-native-promoted5-ab-parent-qualified-1017.json` (`7ba6f2a8`) | 311 locked archivesと231展開treeの実入力も独立照合。Node24/Rust1.97.1、元7200秒/16GiB/swap0/CPU4と13 targetsを維持。build/provenanceだけでruntime・MB source全体・全M7の合格へ転用しない |
+| E138: final5f driver23 and H6 harness producer | 同5fの13 host-debug +10 driverを2 commandsでactual compile、23 CargoJSON/全49 ELFを照合、outer0/両実EOF/wait、1016.340秒。別の同source H6 CLI lib harness producerもactual0/両実EOF/wait、307.592秒。親driver`217420da` / H6`bbfcd03a` | `integration-native-promoted5-drivers-parent-qualified-1017.json` / `integration-native-cli-harness6-parent-qualified-1017.json`。H6は実CargoJSON・normal0755/単一link/別inode保持を確認し、旧H5と同byteでも資格を借用しない。compile-onlyでありtest実行・原12 runtime・全M4/M7ではない |
+| E139: final5f scoped TLS and actual RELEASE CLI | 同5fのdefault local TLSは15 passed/0 failed/1 ignored、明示した実old9de6 hostからのupgrade exact1は1 passed/0 failed/0 ignored。actual0/outer両実EOF/wait、45.587秒、親`integration-native-later5-tls-upgrade-parent-qualified-1017.json` (`057917f8`)。同source RELEASE CLI +実H6では元5 families/6 publication lifecycles/E67/Coin6操作/T/Gと85 flagsがactual0、outer7.133秒、親`checkpoint-isolation-release-cli-final1-parent-qualified-1017.json` (`02c69559`) | W CLIのtest/docs bridgeは空。1207 source/49 ELF/20 tools/10 provenanceと専有資源回収を照合。内側merged EOFと外側2 physical EOFを区別。原12 RELEASE・完全required/CI・全M4/M7の終端成功はまだ加算しない |
+| E140: actual transfer and genesis Split/Merge stopped-key recovery | T`fb00a82a`はactual0/outer両実EOF/wait、7.339秒、親`transfer-recovery-fixture-runtime5-parent-qualified-1017.json` (`41eefae9`)。G`285df467`もactual0/両実EOF/wait、7.203秒、親`genesis-split-merge-recovery-fixture-runtime1-parent-qualified-1017.json` (`50a1fe33`)。同じ新frameの元鍵referenceと復旧署名全byte一致、旧/新取消・restart拒否・socket不在を検証 | 実ELFは旧e6f1。T/Gへはtest/docsだけの厳密3/4-file bridge、他1204/1203 blobs不変。E135はsource-onlyだった保存時点の履歴として保持し、今回の実行と分ける。Tはreference1/1/1/0・復旧3/3/1/2・restart2/2/0/2、Gは2/2/2/0・6/6/2/4・4/4/0/4。新business提出/currentness/nonce進行/所有権移行は含めない |
+| E141: actual create and genesis mint/burn stopped-key recovery | C`d4413457`のfresh9dはactual0/outer両実EOF/wait、7.750秒、親`create-recovery-fixture-runtime1-parent-qualified-1017.json` (`35d7410c`)。MB`ad3ce3a0`のfresh9e/9fもactual0/両実EOF/wait、8.209秒、親`genesis-mint-burn-recovery-fixture-runtime1-parent-qualified-1017.json` (`808eaea3`)。同frame元鍵reference→停止/wait/PID/socket不在→同じ鍵のUID private-copy→署名一致・旧新取消/restart拒否を検証し、元C/T/G/E67/Coinを保持 | 実ELFは5f6b AB5/H6。C/MBはtest/docs厳密3/4-file bridge、他1204/1203 blobs不変。Cは15 normalchildren/8 files/4 absent refusals、MBは25/14/8と32KiB生成/48KiB出力/4KiB summary subcap内。全体の時間/資源/UID/出力上限は維持。元preimageを使うhistorical sign-onlyで、新9d Instantiateや9e/9f mint/burnのbusiness提出・live currentness・ownership migration・全M2は主張しない |
+
+
+| E142: e6f1 hosted CI all8 terminal success | [run39017280255](https://github.com/sunriselayer/sunrise-edge/actions/runs/39017280255) はattempt1・全7 ownersと集約checkが成功。8 raw logsを再hashし、全checkout `f4348a03` / tree`71a2a77e`、parents `7658629a` / `e6f1dfe3`を実commit API・local Gitと照合。親`ci-run-39017280255-qualified-1016.json`、root照合`4a9554fe` | e6f1 hosted CIだけの成功。E133のlocal完全required失敗を保持し、後続5f/MB/J sourceや全M2/M4/M7の合格へ転用しない |
+| E143: same-source genesis Coin identity handoff preparation | `fe542b82` / tree`da56660e`。既存A/Bの同じgenesis Coinをv1/A→v2/B→v3/Aへ有料移行するfixtureを追加。strict3 commandsがactual0、親`eafaa585`。新H7のactual CargoJSONから別inodeに保持したCLI lib ELFは`e329a804`、親`55846272`。private cacheで全311 archive/manifest/markerのfresh censusを照合し、新13 A/Bを実行中 | Bは別prefunded fee Coinを使用し、新しい鍵・key copyは追加しない。現時点で追加fixture117 flagsの実runtime成功はない。compiler/provenanceを所有権移行の実行成功や全M2完了に数えず、A/B後に新ldd inventoryと実Dockerを実行する |
+| E144: Cloudflare CLI five-profile migration source | `codex/cloudflare-cli-migration-1017` のfe54上に5つのplain-object config leaves、共有profiles、既存Env名を維持するtype renderer、VitestのnewConfigとexact外部`cf@1.0.0-beta.13`を反映。Node24 syntax/git diff checkは成功。直接のWrangler commandsとdirect dependencyを除去 | 実cf typegen/positive・stale fingerprint no-overwrite/TypeScript/lint/4 Vitest/npm ci・完全requiredは未実行。既存plugin内部のtransitive Wrangler SDKは保持。source反映をprovider deploymentや実migration・公開認定に数えない |
+| E145: fresh fe54 Native13 A/B and H7 qualification | J`fe542b82`の新13-target A/Bはactual0、両lane全13 ELFをbyte照合し、root/独立peerがsource1207・tool21・CargoJSON・311 archive/metadataと選択231 expanded bodiesを照合。親`genesis-coin-identity-handoff-native6-private1-1017-ab-parent-qualified.json` (`ab142f8d`)。H7は新test ELF`e329a804`を別inodeへ保持、親`55846272`。新2-ldd inventoryも親`e4b77cec`で照合 | compiler/lddだけの成功。追加fixture runtime・117 flags・所有権移行・全M2/M7の成功へ転用しない。新H8は修正済みRust oracleを含む別sourceから作る |
+| E146: actual handoff failures and two test fixes | runtime1はactual1、raw`a59296f1`・terminal`e08a23fa`。fixtureのumask0でCLI exportがprivate0600 guardに拒否され、実CLI呼出中だけumask077へ限定。runtime2はactual1、raw`cd5b36d6`・terminal`51c35903`。同transaction内生成・消費のfee予約はrunnerが永続effectへ出さずqueryはAbsentのため、effect_ids不在とexact Absentを要求するoracleへ修正。両修正をCF branchに反映、Node syntax/rustfmt/diff check0 | productionのexport policy・runner・queryを変更せず、既存CoinのTombstoned検証とgas/fee/refund/receipt/replay checksは保持。runtime2は旧H7での自然失敗。修正を含む新H8と実全117 flagsは未実行で、失敗を成功へ書き換えない |
+| E147: actual cf migration prefix, prerequisites and SQL startup fix | CF2でliteral offline npm ci、実`cf workers types`全5 profile、positive check、stale/入力/CLI version全10拒否controlsとno-overwrite確認が成功。CF3で通常Rust/WASM+contract fixture producer、TS7/typecheck・lint・ingress/certified Vitestがactual0 | CF1のnpm config double-load失敗とCF2の生成WASM未準備失敗を保持。CF3はSQL self DOが旧published worker名を参照してstartupでactual1、SQL test0・contract未実行。schema必須workerは保持し、SQL/contract Vitestだけlocal class/useSQLite designatorへ上書きする修正を反映。実修正後全4 Vitest・全required/CIは未達。direct Wrangler commands/dependencyは廃止し、plugin内transitive SDKは保持。deployment/公開認定は主張しない |
+| E148: current cf migration all four Vitest groups | `f6b5ffab` / tree`c920900e`でactual CF4の13 operationsが全0、76 raw frames・全26 streamsのhash/実EOF/waitを照合。型照合・TS7・lintに加えingress13/certified28/SQL10/contract15の計66 tests成功。source1215全Ns、元package bodies、生成WASM/fixture5入力不変と既知15 PIDs/cgroup不在を確認。root・独立peer親`cloudflare-cli-migration-validation4-parent-qualified-1017.json` (`0a52e00f`) | E144/E147は当時の未実行/自然失敗履歴として保持。直接Wrangler呼出しを廃止した実cf型生成/Node検証の技術範囲だけ。新source完全required/全8 hosted CI、provider deployment、全M2/M7は未完了 |
+| E149: actual two-owner genesis Coin handoff | `f6b5ffab`の新H8はactual CargoJSONからtest ELF`8eeecd95`を別inodeへ正常保持し、root・独立peerがproducerを照合。親`401d40ca`。fresh 2 lddの後、実fixture runtime3はactual0/両outer実EOF/wait/8.730秒、raw`4c00a43d`の全117 expected flagsが一致。既存の同CoinをA→B version2/nonce1,0/replay1→A version3/nonce1,1/replay2へ実有料移行。親`cloudflare-cli-migration-fixture-runtime3-parent-qualified-1017.json` | root実照合とinert adapter作者の別照合を区別し、外部独立auditとは呼ばない。actual RELEASE CLIはfe54 Native6のままで、28-file差分・cfg(test)除外・804 build inputsの厳密対応を使用。H8/driverだけf6b5。26 normalchildren/2 PTY/30 leaves/6 absent refusals・生成71833B/出力28712Bは元上限内、private key copy追加0。前2失敗は保持。genesis Coinの選択範囲であり、creator/TreasuryCap・他asset/fee/account/governance移行・全M2/M7/公開条件を閉じない |
+
+E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
+E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
+全体rawへ結び付きます。削除済み個別seed/approval/signatureや未保存の各child/PTY/client streamを
+再open・独立再構成したとは扱いません。親receipt・raw・厳密source bridgeのfull hashは
+validationの`todo-post-e135-through-e141-mb-ad3c-proposal-1017.json`に固定します。
+
 
 
 
@@ -822,6 +859,25 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     新publisherで旧Coin/Cap/fee/creatorを拒否し、出力が作られないことも確認。
     元5 families/6 lifecycleと全件数を維持。正の所有権移行、他profileのlive鍵復旧/交換、
     automatic protocol signingと全M2・最終source全体gateは未完了。
+  - [x] [genesis transferの停止後同一鍵historical復旧](docs/architecture/publication-custody-lifecycle.md#asset-family-fixture-coverage):
+    E140のT実行でfresh77の元鍵referenceと復旧署名一致、旧75/新77取消・restart拒否を確認。
+    E139の同source W RELEASE CLIでも保持した。追加のtransfer提出/currentnessは主張しない。
+  - [x] [genesis split/mergeの停止後同一鍵historical復旧](docs/architecture/publication-custody-lifecycle.md#asset-family-fixture-coverage):
+    E140のG実行とE139でfresh9b/9cのsame-frame署名一致・旧91/92と新要求の取消/restart拒否を確認。
+    merge preimageは元91後の保持物。新9b/9cのbusiness提出・live所有権移行は含めない。
+  - [x] [create-assetの停止後同一鍵historical復旧](docs/architecture/standard-asset-create-asset-custody.md):
+    E141でfresh9dの元鍵referenceを実停止/wait/PID/socket不在にしてから既存UID-copyで復旧。
+    同frame署名一致と旧95/新9d取消・restart拒否、元T/G/E67/Coinを保持。新Instantiateは提出しない。
+  - [x] [genesis mint/burnの停止後同一鍵historical復旧](docs/architecture/standard-asset-mint-burn-custody.md):
+    E141でfresh9e/9fのsame-frame元鍵/復旧署名と旧93/94・新9e/9f取消/restart拒否を確認。
+    burn入力は元93後の保持preimage。25 normalchildren/14 files/8 absent refusalsを元cap内で照合。
+    E41/E49等の未達記述は当時の履歴であり、今回閉じた範囲は同一鍵historical signing-onlyだけ。
+    鍵交換時の正の所有権移行、live currentness、automatic signing、実鍵ceremony・全M2は未完了。
+  - [x] [genesis Coinの別identity間live所有権移行](docs/architecture/standard-asset-transfer-custody.md#two-owner-genesis-coin-identity-handoff-control):
+    E149で同じlive SQLite/WASM store上の同Coinを既存A→B→Aへ実CLIで移行。
+    fee Coinは別prefunded入力、version2/3・nonce1,0→1,1・paid effects/receiptと全保存済み再送を確認。
+    両UID/PTY承認、Bの所有前/Aの譲渡後拒否、A停止/wait後のB開始、両取消/restart拒否も成功。
+    新key/copyは追加せず、application creatorは不変。他familyや全M2は未完了。
   - [x] [own-created application Coinのtransfer/split/merge custody](docs/architecture/standard-asset-application-coin-custody.md):
     E74/E75で独立application pinとgenesis feeを分け、実別UID/PTYの6操作と正確な
     type/owner/version/amount/receipt/nonce・全保存済み再送・取消/restartを検証。

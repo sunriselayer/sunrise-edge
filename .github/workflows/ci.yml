@@ -79,6 +79,9 @@ jobs:
           cache: npm
           cache-dependency-path: adapters/cloudflare-workers/package-lock.json
 
+      - name: Install pinned Cloudflare CLI
+        run: npm install --global cf@1.0.0-beta.13
+
       - name: Install Cloudflare adapter dependencies
         run: npm ci --prefix adapters/cloudflare-workers
 
