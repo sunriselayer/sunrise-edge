@@ -30,6 +30,7 @@ mod hex;
 mod net;
 mod output;
 mod parse;
+pub mod positive_fee_claim_split;
 mod seed;
 mod signer;
 #[cfg(test)]

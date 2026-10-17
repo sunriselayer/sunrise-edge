@@ -1248,6 +1248,20 @@ fn imported_escrow_fee_claim(
         },
     )
     .unwrap();
+    if matches!(
+        &prepared.operation,
+        node_core::fee_claims::codec::FeeClaimOperation::Split { .. }
+    ) {
+        positive_split_meaning_policy_parity(
+            workflow,
+            view,
+            &request_frame,
+            &prepared,
+            &frame,
+            &original_signature,
+            &original_claim,
+        );
+    }
     let retained =
         sunrise_edge_client::PreparedFeeClaim::prepare(workflow, &request_frame, prepared.clone())
             .unwrap();
@@ -1611,6 +1625,159 @@ fn imported_escrow_fee_claim(
     ]);
     cli(&["economics", "network-submit"], submit);
     request
+}
+
+/// The original positive claim supplies genuine independently verified successor
+/// and historical committee authority. This adds no host, shortened recurrence,
+/// custody key or signing backend; both existing signatures remain the oracle.
+fn positive_split_meaning_policy_parity(
+    workflow: &SuccessorWorkflowAuthority,
+    view: &node_core::fee_claims::FeeClaimInspection,
+    request: &node_wire::FeeClaimPrepareRequest,
+    intent: &node_core::fee_claims::codec::FeeClaimIntent,
+    original_frame: &[u8],
+    original_signature: &[u8; 64],
+    original_claim: &[u8],
+) {
+    use sunrise_edge_cli::positive_fee_claim_split::{
+        HistoricalClaimantPin, PositiveSplitTerms, PreparedPositiveSplitClaim,
+        PreparedPositiveSplitLeg, RetainedFeeObject, SignedPositiveSplitLeg,
+        StandardAssetPositiveSplitPolicy,
+    };
+    let bytes: &[u8] = request.signed_leg.as_deref().unwrap();
+    let signed: execution::local_execution::SignedLocalExecutionIntent =
+        execution::local_execution::decode_signed_local_execution(bytes).unwrap();
+    let pin: HistoricalClaimantPin = HistoricalClaimantPin {
+        certificate_epoch: intent.certificate_epoch,
+        validator: request.validator_id,
+        public_key: objects::Address::new(request.claimant_public_key),
+    };
+    let policy: StandardAssetPositiveSplitPolicy<'_> =
+        StandardAssetPositiveSplitPolicy::new(workflow, pin).unwrap();
+    let terms: PositiveSplitTerms = PositiveSplitTerms {
+        escrow_request_id: request.escrow_request_id,
+        request_id: request.request_id,
+        amount: intent.share_amount,
+        recipient: request.recipient,
+        nonce: signed.intent.call.nonce,
+        gas_limit: signed.intent.call.gas_limit,
+    };
+    let object: RetainedFeeObject = RetainedFeeObject {
+        canonical_bytes: objects::encode_object(&view.execution.as_ref().unwrap().fee_output)
+            .unwrap(),
+        reference: intent.expected_fee_output.clone(),
+        hash_epoch: workflow.expected_context().epoch(),
+    };
+    let leg_frame: Vec<u8> = execution::local_execution::local_execution_signing_frame(
+        workflow.expected_context(),
+        &signed.intent,
+    )
+    .unwrap();
+    let prepared_leg: PreparedPositiveSplitLeg<'_> =
+        policy.prepare_leg(terms.clone(), object.clone()).unwrap();
+    assert_eq!(prepared_leg.signable_frame(), leg_frame);
+    assert_eq!(prepared_leg.review().amount(), intent.share_amount);
+    let reviewed_leg: SignedPositiveSplitLeg<'_> =
+        prepared_leg.finalize(signed.signature.to_vec()).unwrap();
+    assert_eq!(reviewed_leg.canonical_signed_leg(), bytes);
+    assert_eq!(reviewed_leg.request(), *request);
+    let request_bytes: Vec<u8> = request.encode().unwrap();
+    let intent_bytes: Vec<u8> =
+        node_core::fee_claims::codec::encode_fee_claim_intent(intent).unwrap();
+    let prepared_claim: PreparedPositiveSplitClaim<'_> = reviewed_leg
+        .prepare_claim(&request_bytes, &intent_bytes)
+        .unwrap();
+    assert_eq!(prepared_claim.signable_frame(), original_frame);
+    assert!(
+        prepared_claim
+            .review_text()
+            .contains("claim_entitlement=not_proven")
+    );
+    assert!(
+        prepared_claim
+            .review_text()
+            .contains("proposed_row_digests_and_generation=not_independently_certified")
+    );
+    assert!(
+        prepared_claim
+            .review_text()
+            .contains("review_kind=non_authorizing_content_inspection")
+    );
+    assert_eq!(
+        prepared_claim
+            .finalize(original_signature.to_vec())
+            .unwrap(),
+        original_claim
+    );
+
+    let mut wrong_pin: HistoricalClaimantPin = pin;
+    wrong_pin.certificate_epoch = workflow.expected_context().epoch();
+    assert!(StandardAssetPositiveSplitPolicy::new(workflow, wrong_pin).is_err());
+    wrong_pin = pin;
+    wrong_pin.public_key = objects::Address::new([0; 32]);
+    assert!(StandardAssetPositiveSplitPolicy::new(workflow, wrong_pin).is_err());
+    let mut changed_request: node_wire::FeeClaimPrepareRequest = request.clone();
+    changed_request.request_id = [0xf2; 32];
+    let mut changes: Vec<node_core::fee_claims::codec::FeeClaimIntent> = Vec::new();
+    let mut changed: node_core::fee_claims::codec::FeeClaimIntent = intent.clone();
+    changed.share_amount += 1;
+    changes.push(changed);
+    changed = intent.clone();
+    changed.expected_fee_output.version += 1;
+    changes.push(changed);
+    changed = intent.clone();
+    changed.recipient = sunrise_edge_client::LocalSigner::from_seed([0xf3; 32]).address();
+    changes.push(changed);
+    changed = intent.clone();
+    let node_core::fee_claims::codec::FeeClaimOperation::Split {
+        expected_payout, ..
+    } = &mut changed.operation
+    else {
+        panic!("positive Split oracle")
+    };
+    *expected_payout = None;
+    changes.push(changed);
+    changed = intent.clone();
+    let node_core::fee_claims::codec::FeeClaimOperation::Split {
+        expected_payout: Some(payout),
+        ..
+    } = &mut changed.operation
+    else {
+        panic!("positive Split v2 payout oracle")
+    };
+    payout.version += 1;
+    changes.push(changed);
+    for changed in changes {
+        let leg: SignedPositiveSplitLeg<'_> = policy
+            .prepare_leg(terms.clone(), object.clone())
+            .unwrap()
+            .finalize(signed.signature.to_vec())
+            .unwrap();
+        assert!(
+            leg.prepare_claim(
+                &request_bytes,
+                &node_core::fee_claims::codec::encode_fee_claim_intent(&changed).unwrap()
+            )
+            .is_err()
+        );
+    }
+    let leg: SignedPositiveSplitLeg<'_> = policy
+        .prepare_leg(terms.clone(), object.clone())
+        .unwrap()
+        .finalize(signed.signature.to_vec())
+        .unwrap();
+    assert!(
+        leg.prepare_claim(&changed_request.encode().unwrap(), &intent_bytes)
+            .is_err()
+    );
+    let mut trailing: Vec<u8> = intent_bytes.clone();
+    trailing.push(0);
+    let leg: SignedPositiveSplitLeg<'_> = policy
+        .prepare_leg(terms, object)
+        .unwrap()
+        .finalize(signed.signature.to_vec())
+        .unwrap();
+    assert!(leg.prepare_claim(&request_bytes, &trailing).is_err());
 }
 
 fn receipts(

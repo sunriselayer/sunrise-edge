@@ -85,6 +85,10 @@ roadmap describes a later target state.
 - [Immutable operation signing preparation](signing-preparation.md): one
   mechanical frame/identity owner, operation-specific immutable trust inputs,
   actual SDK/CLI consumers and the separate custody/content-review boundary.
+- [Positive Standard Asset fee-claim Split proposal policy](positive-fee-claim-split-policy.md)
+  ([DR-0267](decisions/0267-positive-standard-asset-fee-claim-policy.md)):
+  two immutable recognized leg/claim owners, verified historical identity and
+  explicit retained-input/currentness limits; protected backend remains separate.
 - [Bounded publication metadata review](publication-review.md)
   ([DR-0237](decisions/0237-bounded-publication-review-presentation.md)):
   exact immutable artifact/frame correspondence, bounded terminal-safe output

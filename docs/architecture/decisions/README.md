@@ -148,3 +148,4 @@ in [`TODO.md`](../../../TODO.md).
 - [DR-0262: Native SQLite virtual power and typed block errors](0262-native-sqlite-virtual-power-and-block-errors.md)
 - [DR-0264: original ordered protocol custody worker](0264-original-ordered-protocol-custody-worker.md)
 - [DR-0265: stopped Native storage-profile software upgrade](0265-stopped-native-storage-profile-upgrade.md)
+- [DR-0267: positive Standard Asset fee-claim Split proposal policy](0267-positive-standard-asset-fee-claim-policy.md)
