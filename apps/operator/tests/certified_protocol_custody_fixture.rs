@@ -349,14 +349,16 @@ fn trusted() -> TrustedFastVoteGenesis {
     trusted
 }
 fn expected() -> ExpectedProtocolContext {
+    let profile: protocol_config::TransactionAuthProfile =
+        protocol_config::TransactionAuthProfile::ed25519_canonical_prime_order_address_is_public_key();
     ExpectedProtocolContext::new(
         context().chain_id().clone(),
         ProtocolVersion::new(7),
         Epoch::new(0),
         HashSuiteId::new(1),
-        1,
-        1,
-        1,
+        profile.profile_id(),
+        profile.signature_scheme_id().as_u16(),
+        profile.address_binding().as_u16(),
         domain(),
     )
     .unwrap()
