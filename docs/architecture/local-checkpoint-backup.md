@@ -33,6 +33,11 @@ surviving old state/blob paths. A running owner, missing authority or Pending
 refuses. It authenticates the whole age stream and its physical EOF before
 opening candidate SQLite files, then requires exact current authority, complete
 known schema, namespace/source identity and both full logical inventories.
+Closed snapshot verification uses SQLite read-only immutable URI mode only for
+private, effective-UID-owned single-link files with unchanged full stamps and
+no sidecars. Paths are percent-encoded; mutable live source/blob owners retain
+their original locking mode. Snapshot WAL header bytes remain unchanged, and
+no WAL/SHM residue or separate serving promotion is accepted.
 Matching raw file hashes cannot substitute for these checks: any public
 recipient can encrypt a substituted SQLite schema. Completion is written only
 after semantic verification and original attachment rechecks.

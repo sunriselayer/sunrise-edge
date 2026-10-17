@@ -238,8 +238,14 @@ fn verify_pair(
         bounded_file(path, limits)?;
         native_files::require_no_sidecars(path)?;
     }
-    let mut state: NativeConnection = NativeConnection::open_existing(state, false)?;
-    let mut blobs: NativeConnection = NativeConnection::open_existing(blobs, false)?;
+    let state_path: &Path = state;
+    let blobs_path: &Path = blobs;
+    let state_stamp: crate::native_connection::ClosedSnapshotStamp =
+        NativeConnection::closed_snapshot_stamp(state_path)?;
+    let blobs_stamp: crate::native_connection::ClosedSnapshotStamp =
+        NativeConnection::closed_snapshot_stamp(blobs_path)?;
+    let mut state: NativeConnection = NativeConnection::open_closed_snapshot(state_path)?;
+    let mut blobs: NativeConnection = NativeConnection::open_closed_snapshot(blobs_path)?;
     let state_tx = state
         .sqlite
         .transaction_with_behavior(TransactionBehavior::Deferred)?;
@@ -274,6 +280,15 @@ fn verify_pair(
     state_tx.rollback()?;
     state.identity.check()?;
     blobs.identity.check()?;
+    drop(state);
+    drop(blobs);
+    native_files::require_no_sidecars(state_path)?;
+    native_files::require_no_sidecars(blobs_path)?;
+    if NativeConnection::closed_snapshot_stamp(state_path)? != state_stamp
+        || NativeConnection::closed_snapshot_stamp(blobs_path)? != blobs_stamp
+    {
+        return Err(IndependentAnchorError);
+    }
     Ok(())
 }
 
@@ -352,7 +367,7 @@ impl AnchorGuard<'_> {
             source.sqlite.execute_batch("ROLLBACK")?;
             return Err(error.into());
         }
-        let result = (|| {
+        let result: Result<LocalStoreCheckpoint, IndependentAnchorError> = (|| {
             self.check(&source.sqlite)?;
             require_acknowledged(&self.owner.sqlite)?;
             geometry(&source.sqlite, limits)?;

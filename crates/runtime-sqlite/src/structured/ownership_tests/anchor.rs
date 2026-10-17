@@ -425,7 +425,8 @@ fn checkpoint_snapshot_restores_source_free_complete_rows_bodies_fence_and_recei
         DurableCommitOutcome::Committed
     );
     let before: AnchorCheckpoint = store.independent_anchor_checkpoint().unwrap();
-    let blobs: crate::SqliteBlobStore = crate::SqliteBlobStore::open_existing(&f.blobs).unwrap();
+    let blobs: crate::SqliteBlobStore =
+        crate::SqliteBlobStore::open_existing_writable(&f.blobs).unwrap();
     blobs.put_blob(digest(91), vec![92; 1000]).unwrap();
     drop(blobs);
     let (state, blobs) = snapshot_paths(&f, "complete");
@@ -503,6 +504,9 @@ fn checkpoint_snapshot_rejects_schema_objects_body_changes_namespace_and_source_
         .create_independent_checkpoint_snapshot(&state, &blobs, snapshot_limits(), || Ok(()))
         .unwrap();
     drop(store);
+    for path in [&state, &blobs] {
+        crate::native_files::require_no_sidecars(path).unwrap();
+    }
     let authority = crate::ConfiguredCheckpointAuthority::open(&f.anchor, namespace()).unwrap();
     for (index,(body,sql)) in [
         (false,"CREATE TABLE surplus(x BLOB)"),
@@ -629,4 +633,63 @@ fn checkpoint_snapshot_failed_second_begin_rolls_back_retained_source_owner() {
         )
         .unwrap();
     assert!(source.sqlite.is_autocommit());
+}
+
+#[test]
+fn checkpoint_snapshot_closed_uri_encodes_filename_and_preserves_bytes_without_sidecars() {
+    let f: Fixture = Fixture::new();
+    f.enroll();
+    let store: SqliteDurableStore = f.open().unwrap();
+    let directory: PathBuf = f.directory.0.join("uri snapshot%?#日本");
+    fs::create_dir(&directory).unwrap();
+    let state: PathBuf = directory.join("state%?#&mode=rw.sqlite");
+    let blobs: PathBuf = directory.join("blobs space日本.sqlite");
+    let point = store
+        .create_independent_checkpoint_snapshot(&state, &blobs, snapshot_limits(), || Ok(()))
+        .unwrap();
+    drop(store);
+    for path in [&state, &blobs] {
+        crate::native_files::require_no_sidecars(path).unwrap();
+    }
+    let original: (Vec<u8>, Vec<u8>) = (fs::read(&state).unwrap(), fs::read(&blobs).unwrap());
+    let authority = crate::ConfiguredCheckpointAuthority::open(&f.anchor, namespace()).unwrap();
+    for _ in 0..3 {
+        authority
+            .verify_snapshot(&state, &blobs, &point, snapshot_limits(), || Ok(()))
+            .unwrap();
+        for path in [&state, &blobs] {
+            crate::native_files::require_no_sidecars(path).unwrap();
+        }
+        assert_eq!(fs::read(&state).unwrap(), original.0);
+        assert_eq!(fs::read(&blobs).unwrap(), original.1);
+    }
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(
+        authority
+            .verify_snapshot(&state, &blobs, &point, snapshot_limits(), || Ok(()))
+            .is_err()
+    );
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o600)).unwrap();
+    let alias: PathBuf = directory.join("aliased-state.sqlite");
+    fs::hard_link(&state, &alias).unwrap();
+    assert!(
+        authority
+            .verify_snapshot(&state, &blobs, &point, snapshot_limits(), || Ok(()))
+            .is_err()
+    );
+    fs::remove_file(alias).unwrap();
+    authority
+        .verify_snapshot(&state, &blobs, &point, snapshot_limits(), || Ok(()))
+        .unwrap();
+    let mut sidecar_name = state.as_os_str().to_owned();
+    sidecar_name.push("-wal");
+    let sidecar: PathBuf = sidecar_name.into();
+    fs::write(&sidecar, b"unqualified sidecar").unwrap();
+    assert!(
+        authority
+            .verify_snapshot(&state, &blobs, &point, snapshot_limits(), || Ok(()))
+            .is_err()
+    );
+    assert_eq!(fs::read(&sidecar).unwrap(), b"unqualified sidecar");
 }

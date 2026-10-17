@@ -29,6 +29,15 @@ Backup API into fresh private SQLite-owned outputs. Enable only its existing
 `backup` feature. Bound pages, copied database sizes, steps and the original
 cooperative invocation deadline; never copy live main/WAL/SHM through ordinary
 file descriptors. Close snapshot SQLite owners before hashing/encrypting files.
+Only closed private snapshot files use SQLite's read-only `immutable=1` URI
+mode during verification. Require effective-UID ownership,0600/0400 permission,
+single link, attached ancestors and exact full file stamps, with absent sidecars
+before and after. Percent-encode every path byte that could alter URI parsing.
+Never use this mode on a live source or mutable blob store: it skips SQLite
+locking/change detection. Keeping snapshot WAL headers unchanged preserves raw
+archive hashes and ordinary serving factories; read-only WAL verification must
+not create residual WAL/SHM, and recovery adds no promotion format.
+
 Recheck full logical rows, namespace/source identity and body inventory before
 publishing its local checkpoint. Any newly retained staged bodies enter the
 independent acknowledged manifest atomically; no source transaction is repaired.
