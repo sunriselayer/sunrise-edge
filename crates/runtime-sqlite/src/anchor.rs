@@ -804,19 +804,23 @@ pub fn inspect_independent_anchor_inputs(
     domain: AtomicityDomainId,
 ) -> Result<AnchorCheckpoint, IndependentAnchorError> {
     let namespace = crate::SqliteNamespace::new(chain.clone(), validator, domain);
-    drop(
-        crate::SqliteDurableStore::open_historical(state, namespace)
-            .map_err(|_| IndependentAnchorError)?,
-    );
     drop(crate::SqliteBlobStore::open_existing(blobs).map_err(|_| IndependentAnchorError)?);
-    // The observation uses read-only connections and one deferred read
-    // snapshot. It never takes the write lock, so a live writer is neither
-    // blocked nor excluded for the bounded scan.
+    // Validation and the complete state root share one read-only deferred
+    // snapshot. No discarded writable historical preflight may reserve the
+    // writer lock before this observation; enrollment remains a separate owner.
     let mut source: NativeConnection = NativeConnection::open_existing(state, false)?;
     let body_owner: NativeConnection = NativeConnection::open_existing(blobs, false)?;
     let transaction = source
         .sqlite
         .transaction_with_behavior(TransactionBehavior::Deferred)?;
+    crate::structured::verify_structured_file_header(&transaction)
+        .map_err(|_| IndependentAnchorError)?;
+    let journal: String = transaction.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    if !journal.eq_ignore_ascii_case("wal") {
+        return Err(IndependentAnchorError);
+    }
+    crate::rusqlite_backend::inspect_historical_namespace(&transaction, &namespace)
+        .map_err(|_| IndependentAnchorError)?;
     let mut budget: Budget = Budget::new(None);
     let state_root: [u8; 32] = state_root(&transaction, &mut budget)?;
     let bodies: Vec<Body> = all_bodies(&body_owner.sqlite, &mut budget)?;

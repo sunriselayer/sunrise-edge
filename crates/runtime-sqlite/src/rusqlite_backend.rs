@@ -71,6 +71,35 @@ pub(crate) struct RusqliteSession<'a> {
     schema_identity: &'static [u8],
 }
 
+/// Reuses historical schema validation inside an already owned read snapshot.
+/// It creates no backend, writer transaction, authority lease or commit path.
+pub(crate) fn inspect_historical_namespace(
+    transaction: &Transaction<'_>,
+    namespace: &runtime_sql_durable::SqlDurableNamespace,
+) -> Result<(), runtime_sql_durable::schema::SchemaError> {
+    let anchored: bool = transaction
+        .query_row(
+            "SELECT schema_identity FROM durable_metadata WHERE id=1",
+            [],
+            |row| {
+                Ok(row.get_ref(0)?.as_blob()?
+                    == runtime_sql_durable::schema::SQL_ANCHORED_SCHEMA_IDENTITY)
+            },
+        )
+        .map_err(rejected)?;
+    let schema_identity: &'static [u8] = if anchored {
+        runtime_sql_durable::schema::SQL_ANCHORED_SCHEMA_IDENTITY
+    } else {
+        runtime_sql_durable::schema::SQL_DURABLE_SCHEMA_IDENTITY
+    };
+    let mut session: RusqliteSession<'_> = RusqliteSession {
+        transaction,
+        schema_identity,
+    };
+    runtime_sql_durable::schema::open_namespace_historical(&mut session, namespace)?;
+    Ok(())
+}
+
 impl SqlSession for RusqliteSession<'_> {
     fn namespace_schema_identity(&self) -> &'static [u8] {
         self.schema_identity

@@ -123,6 +123,15 @@ open enrolled state. Read-only historical material retains historical decoding
 and does not grant activation/signing permission. Existing command pins and
 lifecycle checks remain in their original owners.
 
+`anchor-inspect` opens the source read-only and validates its native WAL header,
+shared historical namespace and complete state root in one deferred read
+snapshot. It reserves no writer lock and opens no anchor lease. Its body
+inspection is also read-only, on a separate database snapshot; these two
+observations grant no cross-database atomicity or currentness. Enrollment still
+rechecks the retained pins under its stopped-writer requirement. Existing
+historical store handles and ordinary writable transactions keep their own
+opening and lock behavior.
+
 This local acknowledgement is not a new quorum publication. The separate
 [local v2 encrypted continuation](local-checkpoint-backup.md) captures complete
 selected-store snapshots and verifies exact current authority without resetting

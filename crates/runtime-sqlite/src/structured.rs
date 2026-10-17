@@ -335,20 +335,24 @@ fn open_verified_connection(
     path: impl AsRef<Path>,
 ) -> Result<NativeConnection, SqliteDurableStoreError> {
     let mut owned: NativeConnection = NativeConnection::open_existing(path.as_ref(), true)?;
-    owned.inspect(|connection| {
-        let application_id: i64 =
-            connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
-        if application_id != STRUCTURED_APPLICATION_ID {
-            return Err(SqliteDurableStoreError::ApplicationId(application_id));
-        }
-        let schema_version: i64 =
-            connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if schema_version != STRUCTURED_SCHEMA_VERSION {
-            return Err(SqliteDurableStoreError::SchemaVersion(schema_version));
-        }
-        Ok::<(), SqliteDurableStoreError>(())
-    })?;
+    owned.inspect(verify_structured_file_header)?;
     Ok(owned)
+}
+
+/// The same claimed native header check for writable owners and read snapshots.
+pub(crate) fn verify_structured_file_header(
+    connection: &rusqlite::Connection,
+) -> Result<(), SqliteDurableStoreError> {
+    let application_id: i64 =
+        connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
+    if application_id != STRUCTURED_APPLICATION_ID {
+        return Err(SqliteDurableStoreError::ApplicationId(application_id));
+    }
+    let schema_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if schema_version != STRUCTURED_SCHEMA_VERSION {
+        return Err(SqliteDurableStoreError::SchemaVersion(schema_version));
+    }
+    Ok(())
 }
 
 impl SqliteDurableStore {

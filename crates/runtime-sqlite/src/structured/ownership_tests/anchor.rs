@@ -71,6 +71,116 @@ impl Fixture {
 }
 
 #[test]
+fn anchor_inspection_reads_committed_snapshot_while_another_connection_holds_writer() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let f: Fixture = Fixture::new();
+    let expected: AnchorCheckpoint = f.inspect();
+    let original: fs::Metadata = fs::metadata(&f.state).unwrap();
+    let mut writer: Connection = Connection::open(&f.state).unwrap();
+    writer.busy_timeout(Duration::from_millis(50)).unwrap();
+    let transaction: rusqlite::Transaction<'_> = writer
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    assert_eq!(
+        transaction
+            .execute(
+                "UPDATE durable_metadata SET writer_fence=?1 WHERE id=1",
+                [2_u64.to_be_bytes().as_slice()],
+            )
+            .unwrap(),
+        1
+    );
+    // The inspection must neither wait for/exclude this writer nor observe its
+    // uncommitted fence. Its own native busy wait is bounded at five seconds.
+    assert_eq!(f.inspect(), expected);
+    assert!(!transaction.is_autocommit());
+    let pending_fence: Vec<u8> = transaction
+        .query_row(
+            "SELECT writer_fence FROM durable_metadata WHERE id=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending_fence.as_slice(), 2_u64.to_be_bytes().as_slice());
+
+    // A second observation also needs only read permission on the source main
+    // file; the existing WAL writer retains its own connection and transaction.
+    fs::set_permissions(&f.state, fs::Permissions::from_mode(0o400)).unwrap();
+    assert_eq!(f.inspect(), expected);
+    let inspected: fs::Metadata = fs::metadata(&f.state).unwrap();
+    assert_eq!(inspected.mode() & 0o7777, 0o400);
+    assert_eq!(
+        (inspected.dev(), inspected.ino()),
+        (original.dev(), original.ino())
+    );
+    assert!(!f.anchor.exists());
+    assert!(!f.anchor.with_file_name("anchor.db.lease").exists());
+    fs::set_permissions(&f.state, fs::Permissions::from_mode(0o600)).unwrap();
+    transaction.commit().unwrap();
+    let committed: AnchorCheckpoint = f.inspect();
+    assert_eq!(committed.sequence, 0);
+    assert_ne!(committed.state_root, expected.state_root);
+    assert_eq!(committed.body_manifest_root, expected.body_manifest_root);
+}
+
+#[test]
+fn anchor_inspection_preserves_native_header_schema_and_namespace_refusals() {
+    let refusals: [(bool, &str); 12] = [
+        (false, "PRAGMA application_id=0"),
+        (false, "PRAGMA user_version=6"),
+        (false, "PRAGMA journal_mode=DELETE"),
+        (false, "UPDATE durable_metadata SET schema_identity=x'ff'"),
+        (false, "UPDATE durable_metadata SET chain_id='foreign'"),
+        (
+            false,
+            "UPDATE durable_metadata SET validator_id=zeroblob(32)",
+        ),
+        (false, "UPDATE durable_metadata SET domain=zeroblob(32)"),
+        (
+            false,
+            "UPDATE durable_metadata SET writer_fence=zeroblob(8)",
+        ),
+        (false, "DROP TABLE durable_conditional_readiness"),
+        (true, "PRAGMA application_id=0"),
+        (true, "PRAGMA user_version=2"),
+        (true, "UPDATE blob_metadata SET schema_identity=x'ff'"),
+    ];
+    for (body, sql) in refusals {
+        let f: Fixture = Fixture::new();
+        let changed: Connection = Connection::open(if body { &f.blobs } else { &f.state }).unwrap();
+        changed.execute_batch(sql).unwrap();
+        drop(changed);
+        assert!(
+            inspect_independent_anchor_inputs(
+                &f.state,
+                &f.blobs,
+                namespace().chain_id(),
+                namespace().validator_id(),
+                namespace().domain(),
+            )
+            .is_err(),
+            "{sql}"
+        );
+        assert!(!f.anchor.exists());
+        assert!(!f.anchor.with_file_name("anchor.db.lease").exists());
+    }
+}
+
+#[test]
+fn anchor_inspection_of_enrolled_state_does_not_lease_or_advance_authority() {
+    let f: Fixture = Fixture::new();
+    f.enroll();
+    let owner: SqliteDurableStore = f.open().unwrap();
+    let before: AnchorCheckpoint = owner.independent_anchor_checkpoint().unwrap();
+    let observed: AnchorCheckpoint = f.inspect();
+    assert_eq!(observed.sequence, 0);
+    assert_eq!(observed.state_root, before.state_root);
+    assert_eq!(observed.body_manifest_root, before.body_manifest_root);
+    assert_eq!(owner.independent_anchor_checkpoint().unwrap(), before);
+}
+
+#[test]
 fn anchor_enrollment_requires_pins_stopped_owner_and_existing_separate_authority() {
     let f: Fixture = Fixture::new();
     let expected: AnchorCheckpoint = f.inspect();
