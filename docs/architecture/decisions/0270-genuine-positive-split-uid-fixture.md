@@ -61,6 +61,19 @@ headers/padding fit the existing1MiB mounted-copy allowance, which remains an
 actual complete-archive runtime check. Docker memory/swap/volume/inodes/CPU/PIDs,
 all deadlines, operation counts, authority checks and assertions stay unchanged.
 
+2026-10-17 metadata amendment: preserve the failed256KiB metadata/1MiB archive
+profile and all its evidence. Exact fixed inputs plus the full97-operation,
+eight-approval and nine-socket schema require at least320,224 metadata bytes;
+the conservative normal-completion bound is323,624 bytes. Raise only complete
+metadata to512KiB and the mounted binary archive to1280KiB. Keep every field and
+record without compression or truncation. Raw640KiB + metadata512KiB +
+candidate64KiB total1216KiB; the remaining64KiB is a finite tar-overhead allowance,
+with actual complete archive admission still mandatory. Only the exact retained
+binary copies `uid-evidence/inside.tar` and `uid-evidence/host-11.stdout` may exceed
+the existing1MiB per-file limit, up to1280KiB. Count both copies and their retained
+duplicates in the unchanged24MiB retention/10GiB growth budgets. No other resource,
+time, process, role, authority,97-child or22-host bound changes.
+
 Require the actual protected original candidate to equal the independent
 original bytes before using its file in the existing ordered submission. Full
 original receipts/restart and selector completion remain mandatory. Neither

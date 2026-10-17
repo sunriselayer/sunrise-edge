@@ -702,7 +702,7 @@ finally:
     try:
         metadata={'ok':failure is None,'error':failure,'operations':operations,'services':services,'peerControls':peer_controls,'signalControls':signal_controls,'socketControls':socket_controls,'approvals':approval_evidence,'rawBytes':raw_used,'uncapturedObservedBytes':uncaptured_observed,'rawFailed':raw_failed}
         encoded=json.dumps(metadata,sort_keys=True).encode()
-        if len(encoded)>262144:raise RuntimeError('complete evidence metadata exceeds256KiB')
+        if len(encoded)>524288:raise RuntimeError('complete evidence metadata exceeds512KiB')
         put(ROOT+'/evidence/meta.json',encoded,0);metadata_ready=True
     except BaseException as error:failure=(failure or '')+'; evidence metadata '+repr(error)
 
@@ -939,7 +939,7 @@ async function hostCommand(executable, args, cap, maximumMs = 20_000) {
   });
 }
 function extractEvidence(tar) {
-  if (tar.length > 1048576 || tar.length % 512 !== 0) throw new Error('binary evidence exceeds1MiB or lacks complete blocks');
+  if (tar.length > 1310720 || tar.length % 512 !== 0) throw new Error('binary evidence exceeds1280KiB or lacks complete blocks');
   let offset = 0, ended = false; const files = new Map();
   while (offset + 512 <= tar.length) {
     const block = tar.subarray(offset, offset + 512); offset += 512;
@@ -981,7 +981,7 @@ const handoff = { ready: null, copiedWhileRunning: false, frozenHashVerified: fa
 async function captureMountedEvidence(expectedHash) {
   if (mountedCaptureAttempted) throw new Error('mounted evidence copy already attempted');
   mountedCaptureAttempted = true;
-  const captured = await hostCommand('/usr/local/bin/docker', ['--host', endpoint, 'cp', containerId + ':/work/evidence/.', '-'], 1048576, 8000);
+  const captured = await hostCommand('/usr/local/bin/docker', ['--host', endpoint, 'cp', containerId + ':/work/evidence/.', '-'], 1310720, 8000);
   writeFileSync(join(evidenceRoot, 'inside.tar'), captured.stdout, { flag: 'wx', mode: 0o600 });
   const files = extractEvidence(captured.stdout);
   const metadataBytes = files.get('meta.json');
