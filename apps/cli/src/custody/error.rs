@@ -69,6 +69,8 @@ pub enum CustodyError {
 
     /// An approval record was structurally malformed.
     ApprovalMalformed,
+    /// The closed positive Split content or genuine historical scope refused.
+    PositiveSplitRejected,
     /// The request ID has a durable administrator-owned revocation record.
     ApprovalRevoked,
     /// A revocation record is not its exact supported version/request ID.
@@ -207,6 +209,7 @@ impl fmt::Display for CustodyError {
             }
             Self::Wire(error) => write!(f, "custody wire codec rejected a frame: {error}"),
             Self::ApprovalMalformed => f.write_str("custody approval record is malformed"),
+            Self::PositiveSplitRejected => f.write_str("custody positive Split content or historical scope refused"),
             Self::ApprovalRevoked => f.write_str("custody approval request ID is revoked"),
             Self::RevocationMalformed => f.write_str("custody revocation record is malformed"),
             Self::ApprovalUnsupportedVersion(version) => {

@@ -149,3 +149,4 @@ in [`TODO.md`](../../../TODO.md).
 - [DR-0264: original ordered protocol custody worker](0264-original-ordered-protocol-custody-worker.md)
 - [DR-0265: stopped Native storage-profile software upgrade](0265-stopped-native-storage-profile-upgrade.md)
 - [DR-0267: positive Standard Asset fee-claim Split proposal policy](0267-positive-standard-asset-fee-claim-policy.md)
+- [DR-0269: protected positive Standard Asset fee-claim Split](0269-positive-standard-asset-fee-claim-custody.md)

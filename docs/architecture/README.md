@@ -89,6 +89,10 @@ roadmap describes a later target state.
   ([DR-0267](decisions/0267-positive-standard-asset-fee-claim-policy.md)):
   two immutable recognized leg/claim owners, verified historical identity and
   explicit retained-input/currentness limits; protected backend remains separate.
+- [Positive Standard Asset fee-claim Split custody](positive-standard-asset-fee-claim-custody.md)
+  ([DR-0269](decisions/0269-positive-standard-asset-fee-claim-custody.md)):
+  closed historical-key Leg/Claim backend, complete phase approvals and one
+  permanent cancellation, with genuine workflow and actual UID qualification distinct.
 - [Bounded publication metadata review](publication-review.md)
   ([DR-0237](decisions/0237-bounded-publication-review-presentation.md)):
   exact immutable artifact/frame correspondence, bounded terminal-safe output

@@ -222,6 +222,21 @@ pub(super) async fn request_signature_async(
     }
 }
 
+/// A closed positive-Split request. This endpoint never implements ExternalSigner.
+pub(super) fn request_positive_fee_split_signature(
+    target: &CustodyTarget,
+    request: &super::positive_fee_split_wire::Request,
+) -> Result<[u8; wire::CUSTODY_SIGNATURE_BYTES], CustodyError> {
+    let frame: Vec<u8> =
+        super::positive_fee_split_wire::encode(request).map_err(CustodyError::Wire)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(CustodyError::Runtime)?;
+    runtime.block_on(request_signature_async(target, &frame))
+}
+
 async fn connect_and_check_peer(
     socket: &Path,
     expected_uid: u32,

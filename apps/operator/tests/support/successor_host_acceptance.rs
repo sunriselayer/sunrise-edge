@@ -1508,6 +1508,22 @@ fn imported_escrow_fee_claim(
     assert!(refuse_cli("fee-claim-prepare", seed_free).contains("already exists"));
     let saved_request: Vec<u8> = std::fs::read(&request_path).unwrap();
     let saved_intent: Vec<u8> = std::fs::read(&intent_path).unwrap();
+    #[cfg(unix)]
+    if matches!(
+        &prepared.operation,
+        node_core::fee_claims::codec::FeeClaimOperation::Split { .. }
+    ) {
+        positive_split_custody_prepare_consumer(
+            fixture,
+            workflow,
+            view,
+            &request_frame,
+            &prepared,
+            &flags,
+            &saved_request,
+            &saved_intent,
+        );
+    }
     assert_eq!(saved_request, request_frame.encode().unwrap());
     assert_eq!(
         saved_intent,
@@ -1779,6 +1795,184 @@ fn positive_split_meaning_policy_parity(
         .unwrap();
     assert!(leg.prepare_claim(&request_bytes, &trailing).is_err());
     println!("positive_split_meaning_policy_parity=passed");
+}
+
+/// Production CLI preparation consumes independently verified genuine successor
+/// artifacts. This adds no key, approval, signature or UID-protection claim.
+/// Existing independent signatures remain the byte oracle in the adjacent helper.
+#[allow(clippy::too_many_arguments)]
+#[cfg(unix)]
+fn positive_split_custody_prepare_consumer(
+    fixture: &Fixture,
+    workflow: &SuccessorWorkflowAuthority,
+    view: &node_core::fee_claims::FeeClaimInspection,
+    request: &node_wire::FeeClaimPrepareRequest,
+    intent: &node_core::fee_claims::codec::FeeClaimIntent,
+    flags: &[String],
+    saved_request: &[u8],
+    saved_intent: &[u8],
+) {
+    use std::os::unix::fs::PermissionsExt;
+    let directory: PathBuf = fixture
+        .directory
+        .0
+        .join(format!("positive-custody-{}", hex(&request.request_id)));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let put = |name: &str, bytes: &[u8]| -> String {
+        let path: PathBuf = directory.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        path.to_str().unwrap().into()
+    };
+    let context: &execution::publication::PublicationContext = workflow.expected_context();
+    let config: String = format!(
+        "chain_id={}\nprotocol_version={}\nepoch={}\nhash_suite_id={}\ndomain={}\npublisher_public_key={}\noperator_uid=0\n",
+        context.chain_id(),
+        context.protocol_version().get(),
+        context.epoch().get(),
+        workflow
+            .ordered_policy()
+            .resolver()
+            .suite_for_epoch(context.epoch())
+            .unwrap()
+            .id
+            .get(),
+        hex(fixture.network.domain.as_bytes()),
+        hex(&request.claimant_public_key)
+    );
+    let config_path: String = put("config", config.as_bytes());
+    let mut trust: Vec<String> = vec![
+        "--config".into(),
+        config_path.clone(),
+        "--genesis-manifest-file".into(),
+        fixture
+            .directory
+            .0
+            .join("genesis.bin")
+            .to_str()
+            .unwrap()
+            .into(),
+        "--genesis-digest".into(),
+        hex(&fixture.network.manifest_digest),
+        "--certificate-epoch".into(),
+        intent.certificate_epoch.get().to_string(),
+        "--validator-id".into(),
+        request.validator_id.to_string(),
+    ];
+    for pair in flags.chunks_exact(2) {
+        if pair[0].starts_with("--successor-") || pair[0] == "--suite" {
+            trust.extend_from_slice(pair);
+        }
+    }
+    let signed: execution::local_execution::SignedLocalExecutionIntent =
+        execution::local_execution::decode_signed_local_execution(
+            request.signed_leg.as_deref().unwrap(),
+        )
+        .unwrap();
+    let object: String = put(
+        "fee-object",
+        &objects::encode_object(&view.execution.as_ref().unwrap().fee_output).unwrap(),
+    );
+    let reference: String = put(
+        "fee-ref",
+        &objects::encode_object_ref(&intent.expected_fee_output).unwrap(),
+    );
+    let leg_out: String = directory.join("leg-request").to_str().unwrap().into();
+    let mut leg: Vec<String> = trust.clone();
+    leg.extend([
+        "--fee-object".into(),
+        object,
+        "--fee-ref".into(),
+        reference,
+        "--fee-object-hash-epoch".into(),
+        context.epoch().get().to_string(),
+        "--escrow-request-id".into(),
+        hex(&request.escrow_request_id),
+        "--request-id".into(),
+        hex(&request.request_id),
+        "--amount".into(),
+        intent.share_amount.to_string(),
+        "--recipient".into(),
+        request.recipient.to_string(),
+        "--nonce".into(),
+        signed.intent.call.nonce.to_string(),
+        "--gas-limit".into(),
+        signed.intent.call.gas_limit.to_string(),
+        "--out".into(),
+        leg_out.clone(),
+    ]);
+    cli(&["custody", "prepare-fee-split-leg"], leg.clone());
+    let leg_bytes: Vec<u8> = std::fs::read(&leg_out).unwrap();
+    assert_eq!(&leg_bytes[..3], &[1, 6, 1]);
+    let second: String = directory.join("leg-request-again").to_str().unwrap().into();
+    *leg.last_mut().unwrap() = second.clone();
+    cli(&["custody", "prepare-fee-split-leg"], leg);
+    assert_eq!(leg_bytes, std::fs::read(second).unwrap());
+    let signed_path: String = put("signed-leg", request.signed_leg.as_deref().unwrap());
+    let host_request: String = put("host-request", saved_request);
+    let host_intent: String = put("host-intent", saved_intent);
+    let claim_out: String = directory.join("claim-request").to_str().unwrap().into();
+    let mut claim: Vec<String> = trust;
+    claim.extend([
+        "--request".into(),
+        leg_out.clone(),
+        "--signed-leg".into(),
+        signed_path,
+        "--host-request".into(),
+        host_request,
+        "--host-intent".into(),
+        host_intent.clone(),
+        "--out".into(),
+        claim_out.clone(),
+    ]);
+    cli(&["custody", "prepare-fee-split-claim"], claim.clone());
+    let claim_bytes: Vec<u8> = std::fs::read(&claim_out).unwrap();
+    assert_eq!(&claim_bytes[..3], &[1, 6, 2]);
+    assert_eq!(&claim_bytes[3..leg_bytes.len()], &leg_bytes[3..]);
+    let mut wrong_signature: execution::local_execution::SignedLocalExecutionIntent =
+        signed.clone();
+    wrong_signature.signature[0] ^= 1;
+    let wrong_signature_path: String = put(
+        "wrong-leg-signature",
+        &execution::local_execution::encode_signed_local_execution(&wrong_signature).unwrap(),
+    );
+    let signature_refused: PathBuf = directory.join("refused-leg-signature");
+    let mut wrong_signature_claim: Vec<String> = claim.clone();
+    for pair in wrong_signature_claim.chunks_exact_mut(2) {
+        if pair[0] == "--signed-leg" {
+            pair[1] = wrong_signature_path.clone();
+        }
+        if pair[0] == "--out" {
+            pair[1] = signature_refused.to_str().unwrap().into();
+        }
+    }
+    let mut arguments: Vec<OsString> = vec!["custody".into(), "prepare-fee-split-claim".into()];
+    arguments.extend(wrong_signature_claim.into_iter().map(OsString::from));
+    assert!(tokio::task::block_in_place(|| sunrise_edge_cli::run(arguments)).is_err());
+    assert!(!signature_refused.exists());
+    let mut altered: node_core::fee_claims::codec::FeeClaimIntent = intent.clone();
+    altered.share_amount += 1;
+    let altered_path: String = put(
+        "altered-intent",
+        &node_core::fee_claims::codec::encode_fee_claim_intent(&altered).unwrap(),
+    );
+    let refused: PathBuf = directory.join("refused-claim");
+    for pair in claim.chunks_exact_mut(2) {
+        if pair[0] == "--host-intent" {
+            pair[1] = altered_path.clone();
+        }
+        if pair[0] == "--out" {
+            pair[1] = refused.to_str().unwrap().into();
+        }
+    }
+    let mut arguments: Vec<OsString> = vec!["custody".into(), "prepare-fee-split-claim".into()];
+    arguments.extend(claim.into_iter().map(OsString::from));
+    assert!(tokio::task::block_in_place(|| sunrise_edge_cli::run(arguments)).is_err());
+    assert!(!refused.exists());
+    assert_eq!(saved_intent, std::fs::read(host_intent).unwrap());
+    assert_eq!(leg_bytes, std::fs::read(leg_out).unwrap());
+    assert_eq!(config.as_bytes(), std::fs::read(config_path).unwrap());
 }
 
 fn receipts(
