@@ -145,6 +145,51 @@ fn guest_command_line_accepts_owner_frames_and_refuses_extra_or_duplicate_fields
     }
 }
 
+fn accepted_commit_error(case: &str, code: i32) -> bool {
+    // Ext4 may buffer a virtual block WRITE error until SQLite's WAL fsync.
+    // The separately armed flush-only case still requires the exact fsync code.
+    matches!(
+        (case, code),
+        (
+            "write",
+            rusqlite::ffi::SQLITE_IOERR_WRITE | rusqlite::ffi::SQLITE_IOERR_FSYNC
+        ) | ("flush", rusqlite::ffi::SQLITE_IOERR_FSYNC)
+    )
+}
+
+#[test]
+fn real_commit_error_classification_keeps_writeback_and_flush_boundaries_distinct() {
+    assert!(accepted_commit_error(
+        "write",
+        rusqlite::ffi::SQLITE_IOERR_WRITE
+    ));
+    assert!(accepted_commit_error(
+        "write",
+        rusqlite::ffi::SQLITE_IOERR_FSYNC
+    ));
+    assert!(accepted_commit_error(
+        "flush",
+        rusqlite::ffi::SQLITE_IOERR_FSYNC
+    ));
+    assert!(!accepted_commit_error(
+        "flush",
+        rusqlite::ffi::SQLITE_IOERR_WRITE
+    ));
+    for code in [
+        0,
+        rusqlite::ffi::SQLITE_IOERR,
+        rusqlite::ffi::SQLITE_FULL,
+        9999,
+    ] {
+        assert!(!accepted_commit_error("write", code));
+        assert!(!accepted_commit_error("flush", code));
+    }
+    assert!(!accepted_commit_error(
+        "ack",
+        rusqlite::ffi::SQLITE_IOERR_FSYNC
+    ));
+}
+
 fn frame(proof: &Proof, event: &str, detail: &str) {
     println!(
         "\nSUNRISE-GUEST v1 nonce={} case={} mode={} event={event} {detail}",
@@ -608,13 +653,10 @@ fn fault(proof: &Proof, state_path: &Path, blob_path: &Path) {
         assert!(matches!(outcome, DurableCommitOutcome::Indeterminate(_)));
         let code: i32 = store.engine.backend().observed_commit_error().unwrap();
         frame(proof, "commit-error", &format!("extended={code}"));
-        assert_eq!(
-            code,
-            if proof.case == "flush" {
-                rusqlite::ffi::SQLITE_IOERR_FSYNC
-            } else {
-                rusqlite::ffi::SQLITE_IOERR_WRITE
-            }
+        assert!(
+            accepted_commit_error(&proof.case, code),
+            "unexpected real COMMIT extended error {code} for {}",
+            proof.case
         );
     }
     // Owners stay live. Only the outer owner's actual QEMU kill may end this.

@@ -679,7 +679,10 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     独立したguest kernel/cacheを失うACK後・COMMIT成功/ACK前の2境界と、実source COMMITの
     write/flush EIOの2境界を追加する。全12+2 tables、4 portable collections、2 positive bodies、
     receipt-first cold none/all reconciliation、fresh fenceでの新規state/receipt/outboxとexact replay。
-    source/controller実装のみ。独立source review・owning build/run・完全gate/CIは未完了。
+    source/controllerをreview後、6c4eaでfmt・parser・SQLite lib112 passed/6 ignored・Clippyを
+    actual0/EOF/waitで確認。最初のVM runはACK後とCOMMIT成功/ACK前のcold復旧が成功し、
+    write EIOの実COMMIT error1034を778限定で拒否して停止。失敗raw/imageを保存し、
+    ext4 writebackの実error分類を修正。4境界のowning完走・最終完全gate/CIは未完了。
     fsyncの合格には実SQLite extended COMMIT error `SQLITE_IOERR_FSYNC`が必要。
     guest virtual profileの証拠であり、bare-host/hardware/torn-sector/media全体の認定ではない。
   - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。

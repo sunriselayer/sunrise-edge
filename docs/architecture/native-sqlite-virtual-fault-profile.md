@@ -20,7 +20,7 @@ their inspected dynamic libraries. No guest OS image or package is downloaded.
 | --- | --- | --- |
 | `ack` | Guest virtual power loss after successful caller COMMIT acknowledgment | `Committed`, complete SQL/public image, then nonce-bearing acknowledged frame while owners remain live |
 | `preack` | Guest virtual power loss after SQLite COMMIT succeeds and before the caller receives the result | Existing `AfterCommit` hook emits its nonce-bearing frame and blocks without checkpointing or closing owners |
-| `write` | Source COMMIT encounters an actual virtual-block write EIO | Existing `BeforeDispatch` hook blocks after source mutations; owner verifies the armed graph and releases it; actual SQLite extended COMMIT error must be `SQLITE_IOERR_WRITE` (778) |
+| `write` | Source COMMIT encounters an actual virtual-block write EIO | Existing `BeforeDispatch` hook blocks after source mutations; owner verifies the write-only armed graph and releases it; actual SQLite extended COMMIT error must be `SQLITE_IOERR_WRITE` (778) or `SQLITE_IOERR_FSYNC` (1034), recorded verbatim |
 | `flush` | Source COMMIT encounters an actual virtual-block flush EIO | Same boundary with a flush-only rule; actual SQLite extended COMMIT error must be `SQLITE_IOERR_FSYNC` (1034) |
 
 For each error case the owner first observes `data -> disk-file`, adds one new
@@ -31,6 +31,12 @@ no fault evidence. An actual `BLOCK_IO_ERROR` for the selected data node and the
 actual extended error from SQLite's real `transaction.commit()` are both required.
 The backend's extra observation field and driver are `cfg(test)` only. Production
 commit decisions, error mapping, persisted schema and protocol bytes are unchanged.
+
+The virtual device operation and SQLite error stage are separate observations.
+Ext4 can buffer a failed block write until SQLite's WAL fsync reports EIO, giving
+code 1034 under the write-only device rule. This remains the block-write case;
+it does not replace the separate flush-only rule/graph/error case. Unknown SQLite
+codes fail qualification rather than being accepted as generic I/O failures.
 
 `SQLITE_IOERR_FSYNC` is the exact fsync error gate. An unexpected extended code
 fails this case and preserves the attempt; it cannot be renamed as fsync success.
