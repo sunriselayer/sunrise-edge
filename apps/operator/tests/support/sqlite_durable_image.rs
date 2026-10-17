@@ -279,6 +279,10 @@ pub fn assert_only_fence_changed(before: &[Image], after: &[Image], from: u64, t
 /// A stopped-owner profile enrollment changes only its closed schema identity.
 /// Structural user_version is checked separately; every SQL/blob cell here is
 /// compared, including mutation sequence, source identity, fences and receipts.
+#[allow(
+    dead_code,
+    reason = "Shared test image module: enrollment comparison is only used by the upgrade fixture."
+)]
 pub fn assert_only_anchor_identity_changed(before: &[Image], after: &[Image]) {
     assert_eq!(before.len(), 4);
     assert_eq!(after.len(), 4);
