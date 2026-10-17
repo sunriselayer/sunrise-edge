@@ -122,6 +122,8 @@ pub(crate) struct NativeSqlBackend {
     historical_only: bool,
     #[cfg(test)]
     commit_hook: Mutex<Option<TestCommitHook>>,
+    #[cfg(test)]
+    commit_error: Mutex<Option<i32>>,
 }
 
 #[cfg(test)]
@@ -146,6 +148,8 @@ impl NativeSqlBackend {
             historical_only: false,
             #[cfg(test)]
             commit_hook: Mutex::new(None),
+            #[cfg(test)]
+            commit_error: Mutex::new(None),
         }
     }
 
@@ -216,6 +220,12 @@ impl NativeSqlBackend {
             boundary,
             action: Box::new(action),
         });
+    }
+
+    /// Observation of SQLite's real COMMIT failure, never an injected outcome.
+    #[cfg(test)]
+    pub(crate) fn observed_commit_error(&self) -> Option<i32> {
+        *self.commit_error.lock().unwrap()
     }
 
     #[cfg(test)]
@@ -333,12 +343,19 @@ impl SqlBackend for NativeSqlBackend {
                     return Err(SqlBackendError::Unavailable);
                 }
                 #[cfg(test)]
-                self.test_boundary(CommitBoundary::BeforeDispatch)?;
+                {
+                    *self.commit_error.lock().unwrap() = None;
+                    self.test_boundary(CommitBoundary::BeforeDispatch)?;
+                }
                 if identity.check().is_err() {
                     let _ = transaction.rollback();
                     return Err(SqlBackendError::Unavailable);
                 }
-                if transaction.commit().is_err() {
+                if let Err(_error) = transaction.commit() {
+                    #[cfg(test)]
+                    if let rusqlite::Error::SqliteFailure(failure, _) = _error {
+                        *self.commit_error.lock().unwrap() = Some(failure.extended_code);
+                    }
                     return Err(SqlBackendError::CommitIndeterminate);
                 }
                 #[cfg(test)]

@@ -29,6 +29,10 @@ roadmap describes a later target state.
   separate actual sole-writer SIGKILL/reap and fresh generation business, with
   complete SQL/portable/blob reconciliation; host/power/media/fsync faults
   retain separate owning boundaries.
+- [Native SQLite virtual power and block-error profile](native-sqlite-virtual-fault-profile.md)
+  ([DR-0262](decisions/0262-native-sqlite-virtual-power-and-block-errors.md)):
+  actual guest kernel/cache loss and typed block EIO under source COMMIT,
+  independent cold full-image reconciliation and fresh fenced work.
 - [Owned local TLS stop and explicit rotation](decisions/0216-local-tls-stop-restart-rotation.md):
   retained listener and trust boundaries, actual served-leaf observation and
   orderly compiled-host restart; separate from production PKI and custody.

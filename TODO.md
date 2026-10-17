@@ -667,6 +667,13 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     E74の実compiled TLSで成功。独立anchorを使用する追加variantも成功。
     このsourceの最終完全gate/CIは未完了。
     host/power/media/fsync・別host/実topology failoverの証拠へ読み替えない。
+  - [ ] [Native SQLite guest power/block faults](docs/architecture/native-sqlite-virtual-fault-profile.md):
+    独立したguest kernel/cacheを失うACK後・COMMIT成功/ACK前の2境界と、実source COMMITの
+    write/flush EIOの2境界を追加する。全12+2 tables、4 portable collections、2 positive bodies、
+    receipt-first cold none/all reconciliation、fresh fenceでの新規state/receipt/outboxとexact replay。
+    source/controller実装のみ。独立source review・owning build/run・完全gate/CIは未完了。
+    fsyncの合格には実SQLite extended COMMIT error `SQLITE_IOERR_FSYNC`が必要。
+    guest virtual profileの証拠であり、bare-host/hardware/torn-sector/media全体の認定ではない。
   - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。
     trait reply-loss、process SIGKILL、power/host/media/fsync faultは別証拠。
     全12 SQL tables・4 portable collections・positive blob/oracleを省略しない。
