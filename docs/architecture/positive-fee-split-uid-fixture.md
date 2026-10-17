@@ -144,7 +144,8 @@ shared Python cleanup5s, mounted handoff20s and Node cleanup reserve25s remain
 finite. The handoff ends no later than Python's initial work deadline plus25s.
 Final volume accounting includes the frozen metadata and release file without
 mutating exported bytes. The local export is at most16MiB/256 files/1MiB per file;
-Python raw at most256KiB, one PTY16KiB, Docker control output64KiB including16KiB
+Python framed raw at most640KiB, one pipe stream64KiB, one PTY16KiB,
+metadata256KiB, candidate64KiB, Docker control output64KiB including16KiB
 cleanup allowance, and binary evidence1MiB. There are at most128 inside children,
 eight concurrent children,16 PTYs and32 host/Docker operations. The fixed normal
 path expects97 inside children:84 pipe children,10 PTYs and3 no-pipe UID signal
@@ -153,6 +154,19 @@ running-state check, mounted binary copy and public release copy. Failure-only
 signal owners remain subject to the original128-child admission bound.
 These are static expectations until actual raw evidence is qualified. Exceeding
 a bound fails visibly; complete genuine inputs or reviews are never shortened.
+
+The 2026-10-17 transport amendment preserves the original256KiB profile and its
+failed evidence. Read-only accounting of the captured normal prefix and all97
+fixed operations proves a322,101-byte lower bound before future output and the
+remaining result fields. The640KiB framed-raw allowance is a finite acceptance
+envelope, not a guarantee for arbitrary one-byte read fragmentation. Every
+command, result, pipe byte and PTY review must still be captured completely.
+Raw640KiB + metadata256KiB + candidate64KiB total960KiB; fixed three-file tar
+headers/padding fit the unchanged1MiB mounted-copy allowance. The actual complete
+tar, accepted metadata, all stream hashes/EOF/waits and cleanup remain runtime
+checks. Extra framing or tar metadata that exceeds an allowance refuses; there
+is no truncation, omitted output or reinterpretation of the raw count. All
+resource, time, per-stream, operation and authority bounds remain unchanged.
 
 The selected owner returns the actual protected A candidate. The original
 harness compares it byte-for-byte with its independent original candidate, then

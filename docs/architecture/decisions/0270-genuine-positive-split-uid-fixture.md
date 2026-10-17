@@ -49,6 +49,18 @@ PID absence, then close both handles. Unknown, replaced or active state refuses.
 Normal stop still requires prior socket removal; file-only accounting stays
 strict. Socket cleanup must not add a child, host operation or capability.
 
+2026-10-17 validation-transport amendment: retain the original256KiB profile and
+all failed evidence, and allow at most640KiB of complete framed raw capture.
+Captured-prefix and fixed97-operation accounting proves at least322,101 bytes
+before future output and remaining result fields, so256KiB cannot complete the
+unchanged workflow. The new finite acceptance envelope does not guarantee
+arbitrary one-byte read fragmentation. Preserve full command/result records,
+pipe bytes and PTY reviews, with no truncation or omitted operation. Keep each
+pipe stream64KiB, metadata256KiB and candidate64KiB; their maxima plus fixed tar
+headers/padding fit the existing1MiB mounted-copy allowance, which remains an
+actual complete-archive runtime check. Docker memory/swap/volume/inodes/CPU/PIDs,
+all deadlines, operation counts, authority checks and assertions stay unchanged.
+
 Require the actual protected original candidate to equal the independent
 original bytes before using its file in the existing ordered submission. Full
 original receipts/restart and selector completion remain mandatory. Neither
