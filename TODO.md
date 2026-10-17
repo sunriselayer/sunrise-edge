@@ -26,6 +26,8 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 - D05/M5の選択済みNative/closed relayの技術範囲はE71/E73で完了。
   残るコード・検証の親項目はD02/M1/M2/M3/M4/M7の6件です。
   元M5の実PKI・capacity・alerts・運用の公開条件はD04/D07/M8に残ります。
+  継続中の統合変更は[Draft PR #320](https://github.com/sunriselayer/sunrise-edge/pull/320)。
+  このDraftの存在を完全required/CI・Nativeまたは親項目の完了には数えません。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -278,6 +280,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E81: checkpoint compiled inventory failure | `98e45e05` / tree`76ad2e8b`の新15thはactual101/EOF/wait、owning全体23.192秒。復元後の通常SQLite検査の後、closed inventoryが期待4 leafに対して6 leafとなり失敗 | rawには余分なleaf名がない。sourceの呼出順から通常readonly WAL検査の副作用と診断し、archiveの厳格な一覧検査を最初の通常open前へ移した。元raw/終端は保持。4台continuation・fresh business・後続Clippyの成功とは数えない |
 | E82: original ordered custody functional component | `976deed4` / tree`5f81352e`で全7 commandsがactual0/EOF/wait、696.548秒。新IPC/署名応答9、元routerとの応答比較4、role/private config3、既存DR-0215 local-signature16 controlsが全成功。fmtと全target全feature strict Clippyも成功 | 独立source reviewの3指摘を修正し、統合code/testは承認candidateとbyte一致。親が1172 tracked inputs・Node24・wrapper/controller/raw・clean sourceを再照合。別UIDの実4-worker/frontend・完全required/CI・Native・全M2・security監査は未完了 |
 | E83: compiled complete checkpoint and prior-release upgrade | `07ebbc5a` / tree`c66689d9`のdefault TLS15 passed/1 ignoredがactual0/EOF、42.422秒。4台の実pack/open・旧source不在・独立authority一致・fresh fence/有料取引が成功。明示的な旧9de6 RELEASEを使う追加upgradeもactual0/EOF、5.490秒で全旧4台の取引→停止→schema identityだけの移行→旧版拒否/停止bytes不変→新fence3/新規取引/再送に成功 | owning全体はClippyのテスト内空文字比較1箇所でactual1/EOF、238.042秒の失敗として保持し、成功prefixを別途資格照合。等価な`is_empty`への変更だけの`fee693ff` / tree`4ac28a26`でfmt/全target全feature strict Clippy/diffはactual0/EOF、5.580秒。1174 tracked inputs・実driver/旧ELF/rawを親で再hash。全体required/CI・Native・全M4は未完了 |
+| E84: original ordered multi-UID build/inventory and first setup failure | `44077af2` / tree`7e67ceeb`で4 bins + ignored fixture harnessの実CargoJSON build、fmt、Node/Python構文、strict Clippyの全6 commandsがactual0/両EOF/wait、owning15.83秒。5 ELFは通常0755のまま別inodeへ保持。read-only inventoryもactual0、0.59秒で12 source/5 ELF/4 loader-librariesを照合 | 最初のbuildのunused shared test helper失敗を保存し、単一関数だけに理由付きlint属性を追加。実UID fixture初回はdirectory chmodのEPERMでactual1/両EOF/wait、1.17秒、role child開始0。専有container/volume解放と不在を再確認。権限設定を所有権移譲前へ移す限定修正を統合し、修正後の実UID owningは未実行。build成功をM2/runtime成功に数えない |
+| E85: partial-write mechanism refusal and stopped assessment | 別の小さいQEMU mechanismは実`max-transfer512`の制約拒否でactual1、0.285秒。子processのEOF/wait/reap/socket不在、実disk全old bytesと失敗rawを保存 | mixed bytes・SQLite/WAL・M3成功には数えない。続く実WAL source assessmentはprovider safetyで停止し、再試行・別agentへの迂回を行わない。supporting mechanism2の準備sourceも未実行で保全。独立anchorの9 casesと、この停止taskは別に扱う |
 
 
 
@@ -675,7 +679,9 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
   - [ ] [original ordered protocolの別process/UID worker](docs/architecture/local-protocol-custody.md):
     元のverified startup・ordered router・confirmed retentionをworkerだけが所有し、
     frontendは鍵/DB/fenceを持たない。E82のfunctional controlsと独立source reviewは成功。
-    実4-worker/4-frontendの別UID・TLS・停止/restart/replay fixtureは実装中で未実行。
+    別UID・TLS・停止/restart/replay fixtureを実装。E84で5 ELFのbuild/strict Clippyと
+    全入力inventoryは成功したが、初回runtimeは準備時のEPERMで失敗。所有権移譲前に
+    権限を設定する修正を統合し、修正後の実4-worker/4-frontend owningは未実行。
     後継epoch・FastVote/readiness・他signing family・全M2へ転用しない。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
