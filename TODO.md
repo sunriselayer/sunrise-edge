@@ -273,6 +273,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E76: independent local checkpoint anchor | `7d5d91dd` / tree`64a3079a`でruntime-sqlite111 passed/5 original ignored、新anchor13 controls、strict全target全feature Clippyがactual0/EOF/wait。別`.lease` inodeでの排他、12 SQL tablesと閉じたbody manifest、COMMIT前Pending/後の照合、stale clone拒否と現行cloneのfresh fencingを検証 | 初回compile失敗とClippy失敗を保存。24入力を親で再hashし、統合d4ddとの差分は設計index/ADRの2文書だけ。実compiled anchor inspect/enroll/checkpointと4-host TLS復旧はE74で追加実行。local ACKの独立anchorでありquorum checkpoint・完全暗号化backup・upgrade・全M4ではない |
 | E77: ordinary-v5 actual guest faults, first failed attempt | `6c4ea77b`のfmt・pure parser・SQLite lib112 passed/6 ignored・strict Clippy・Cargo JSONが全actual0/EOF/wait、94.423秒。保持ELFで実VMを起動し、caller ACK後とSQLite COMMIT後/caller ACK前の2電源断・cold復旧は全12+2 tables/4 collections/2 bodies/fresh fence/new work/replayを完了。続くwrite-only仮想block EIOは実COMMITから1034 (FSYNC) として返り、778だけを期待したfixtureがactual1/EOF、6.394秒で失敗 | 失敗原本`qg1017a`の全images/rawとouter wait1を保持。kernel WRITE EIO・実QMP device eventを照合。writeのcold復旧とflush-only caseは未実行。全child wait/EOF/reap・socket消滅を確認。writeback時の分類を修正して別sourceで再検証する。ordinary v5のみであり、anchor v6・物理hardware・全M3の資格にはしない |
 | E78: encrypted checkpoint first owning failure | 統合`c68e34ed` / tree`34c0b1d4`。fmtはactual0、SQLite libはactual101/EOF/wait、115 passed/2 failed/6 ignored、全体55.014秒。positive fixtureがreadonly blob ownerへputした誤りと、閉じたWAL snapshotのreadonly照合後にsidecarsが残る問題を検出 | operator age controls・Clippy等の後続3 commandsは未実行。raw/終端/sourceを失敗のまま保持。strict sidecar refusalを維持して修正中であり、完全backup/restore・このsourceの全体gate成功とは数えない |
+| E79: ordinary SQLite actual virtual faults | `62432e47` / tree`1d823321`の保持ELFで全4 cases・8 bootsがactual0/EOF、10.477秒。ACK後/COMMIT後ACK前はcold full write setがall、write-only/flush-only EIOはnone。全caseで12+2 tables/4 portable collections/2 positive bodies・receipt先行照合・fresh fence・新規state/receipt/outbox・exact replayが成功。両EIOの実COMMIT codeは1034、独立flush-only caseが正確なFSYNC条件を満たした | `ordinary`は既存schema/v6・PRAGMA user_version5で、独立anchorは使わない。各実rule/QMP graph/device event/kernel EIOと全15 child wait/EOF/reap・socket/cgroup消滅、全入力/失敗原本hashを親で照合。build2のcontroller1は生成dirのuntracked判定失敗として保持し、5 commandsの実0と別inode ELFを別途資格照合した。物理hardware・anchor付きprofile・最終source全体gate・全M3ではない |
+| E80: checkpoint corrected native/age and first compiled fixture failure | `22250784` / tree`4ba328e4`のowningはactual101/EOF/wait、383.828秒。修正後SQLite lib119 passed/6 ignored、実ageの5 controlsと元14 compiled TLSは全成功。新15thはcompiled packがexit0の後、fixtureが別command用の`complete=true`表示を要求して失敗 | raw/終端と全sourceを保存し、厳格な実診断照合を持つfixtureへ修正する。新15th・後続Clippy/全体gateの成功とは数えない。既存Native/age結果とcompiled pack/open全体資格を区別する |
 
 
 
@@ -299,6 +301,13 @@ VM raw SHA-256は `29e90314983a21418f6b80047d0434d635e7345eb29c77477f3c975391c08
 E78は `checkpoint-v2-owning-1017-terminal.json` / `.log` と
 `checkpoint-v2-owning-failure-qualified-1017.json`、raw SHA-256は
 `98b3f98cf32b54a8307799f831edc188d33b1ea1f1b89d03110ce7de2b758164`。
+E79は `m3-qemu-product-build2-parent-qualified-1017.json` /
+`m3-qemu-product-vm-attempt2-qualified-1017.json` /
+`m3-qemu-product-vm2-parent-qualified-1017.json` と `qg1017b/terminal.json`。
+VM raw SHA-256は `cb32205d920fa6d727740bc2862857f31950a2b1b5ada6d7899626d772b08c68`。
+E80は `checkpoint-v2-owning2-1017-terminal.json` / `.log` と
+`checkpoint-v2-owning2-failure-qualified-1017.json`、raw SHA-256は
+`e9cbf7fbfaa6f440214a81295543654a5589a0e7a3ed79b6ceb93d71ec36a5bb`。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -675,6 +684,10 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     E74の実compiled TLSで成功。独立anchorを使用する追加variantも成功。
     このsourceの最終完全gate/CIは未完了。
     host/power/media/fsync・別host/実topology failoverの証拠へ読み替えない。
+  - [x] [ordinary SQLiteの仮想power/block-I/O fault component](docs/architecture/native-sqlite-virtual-fault-profile.md):
+    E77の失敗を保持し、E79で実guest電源断2種・write-only EIO・flush-only EIOと
+    全cold復旧を検証。既存schema/v6・user_version5の通常profileだけを対象とする。
+    独立anchor付きprofile、物理hardwareや最終headの全体qualificationへ借用しない。
   - [ ] [Native SQLite guest power/block faults](docs/architecture/native-sqlite-virtual-fault-profile.md):
     独立したguest kernel/cacheを失うACK後・COMMIT成功/ACK前の2境界と、実source COMMITの
     write/flush EIOの2境界を追加する。全12+2 tables、4 portable collections、2 positive bodies、
@@ -722,7 +735,8 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
   - [ ] [独立current anchorと照合する暗号化full-store continuation](docs/architecture/local-checkpoint-backup.md):
     v1のproof archiveを保持したままlocal v2形式を実装し、独立source reviewを完了。
     初回owningはE78の2 failures。readonly snapshot副作用とfixture ownerを修正し、
-    実compiled pack/open・旧source不在・4-host fresh fence/有料businessまで検証する。
+    E80のNative119/age5は成功。新compiled fixtureの表示照合を修正し、
+    実pack/open・旧source不在・4-host fresh fence/有料businessまで検証する。
     protocol-version activation/migrationと実off-host運用の合格には転用しない。
   - 次: source/artifact対応、M7、残るmanifest/upgrade/fencing範囲を照合する。
     別namespaceを区別するnonceだけではbyte cloneやepoch内の古いowned状態を検出できない。
