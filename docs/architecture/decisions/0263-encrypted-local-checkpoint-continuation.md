@@ -107,8 +107,8 @@ after all four sole hosts are SIGKILLed and reaped, create disposable age
 identities and private sibling capture/cipher/restored trees outside source and
 authority trees. Use one original300-second group deadline, downward per-child
 remaining deadlines, the existing strict child EOF/reap/output owner and finite
-32MiB file/68MiB plaintext/72MiB ciphertext/control/header caps. No protocol keys
-or identities enter argv or the archive.
+32MiB file/68MiB plaintext/72MiB ciphertext/control/header caps. No signing-key
+or recovery-identity contents enter argv or the archive.
 
 Publish all four snapshots, retain any intentional body-only acknowledgement
 advance while requiring unchanged complete state roots, then move all original
