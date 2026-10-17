@@ -275,7 +275,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E78: encrypted checkpoint first owning failure | 統合`c68e34ed` / tree`34c0b1d4`。fmtはactual0、SQLite libはactual101/EOF/wait、115 passed/2 failed/6 ignored、全体55.014秒。positive fixtureがreadonly blob ownerへputした誤りと、閉じたWAL snapshotのreadonly照合後にsidecarsが残る問題を検出 | operator age controls・Clippy等の後続3 commandsは未実行。raw/終端/sourceを失敗のまま保持。strict sidecar refusalを維持して修正中であり、完全backup/restore・このsourceの全体gate成功とは数えない |
 | E79: ordinary SQLite actual virtual faults | `62432e47` / tree`1d823321`の保持ELFで全4 cases・8 bootsがactual0/EOF、10.477秒。ACK後/COMMIT後ACK前はcold full write setがall、write-only/flush-only EIOはnone。全caseで12+2 tables/4 portable collections/2 positive bodies・receipt先行照合・fresh fence・新規state/receipt/outbox・exact replayが成功。両EIOの実COMMIT codeは1034、独立flush-only caseが正確なFSYNC条件を満たした | `ordinary`は既存schema/v6・PRAGMA user_version5で、独立anchorは使わない。各実rule/QMP graph/device event/kernel EIOと全15 child wait/EOF/reap・socket/cgroup消滅、全入力/失敗原本hashを親で照合。build2のcontroller1は生成dirのuntracked判定失敗として保持し、5 commandsの実0と別inode ELFを別途資格照合した。物理hardware・anchor付きprofile・最終source全体gate・全M3ではない |
 | E80: checkpoint corrected native/age and first compiled fixture failure | `22250784` / tree`4ba328e4`のowningはactual101/EOF/wait、383.828秒。修正後SQLite lib119 passed/6 ignored、実ageの5 controlsと元14 compiled TLSは全成功。新15thはcompiled packがexit0の後、fixtureが別command用の`complete=true`表示を要求して失敗 | raw/終端と全sourceを保存し、厳格な実診断照合を持つfixtureへ修正する。新15th・後続Clippy/全体gateの成功とは数えない。既存Native/age結果とcompiled pack/open全体資格を区別する |
-| E81: checkpoint compiled inventory failure | `98e45e05` / tree`76ad2e8b`の新15thはactual101/EOF/wait、owning全体23.192秒。packの実exit0と正しい診断を確認後、closed inventoryが期待4 leafに対して6 leafとなり失敗 | raw/終端・親の失敗照合を保存。余分な生成物のownerを調べ、検査を緩めず修正する。4台のpack/open・旧source不在・fresh businessや後続Clippyの成功とは数えない |
+| E81: checkpoint compiled inventory failure | `98e45e05` / tree`76ad2e8b`の新15thはactual101/EOF/wait、owning全体23.192秒。復元後の通常SQLite検査の後、closed inventoryが期待4 leafに対して6 leafとなり失敗 | rawには余分なleaf名がない。sourceの呼出順から通常readonly WAL検査の副作用と診断し、archiveの厳格な一覧検査を最初の通常open前へ移した。元raw/終端は保持。4台continuation・fresh business・後続Clippyの成功とは数えない |
+| E82: original ordered custody functional component | `976deed4` / tree`5f81352e`で全7 commandsがactual0/EOF/wait、696.548秒。新IPC/署名応答9、元routerとの応答比較4、role/private config3、既存DR-0215 local-signature16 controlsが全成功。fmtと全target全feature strict Clippyも成功 | 独立source reviewの3指摘を修正し、統合code/testは承認candidateとbyte一致。親が1172 tracked inputs・Node24・wrapper/controller/raw・clean sourceを再照合。別UIDの実4-worker/frontend・完全required/CI・Native・全M2・security監査は未完了 |
 
 
 
@@ -312,6 +313,9 @@ E80は `checkpoint-v2-owning2-1017-terminal.json` / `.log` と
 E81は `checkpoint-v2-owning3-1017-terminal.json` / `.log` と
 `checkpoint-v2-owning3-failure-qualified-1017.json`、raw SHA-256は
 `5ff30e574b182b15b072131dfaf694df3cacbbac46b711273f6dca8998eecf71`。
+E82は `ordered-worker-component-owning1-1017-terminal.json` / `.log` と
+`ordered-worker-component-owning1-parent-qualified-1017.json`、raw SHA-256は
+`f9f3ac5fb51d29491de2589eb9b44a0142cc19c17751745e0861c30b7233ef45`。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -661,6 +665,11 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     type/owner/version/amount/receipt/nonce・全保存済み再送・取消/restartを検証。
     自己宛whole transferの拒否は保持し、最後の送金先は別のdisposable recipient。
     内容承認・署名・実CLIで同じframeを使う。全M2と最終source全体gateは未完了。
+  - [ ] [original ordered protocolの別process/UID worker](docs/architecture/local-protocol-custody.md):
+    元のverified startup・ordered router・confirmed retentionをworkerだけが所有し、
+    frontendは鍵/DB/fenceを持たない。E82のfunctional controlsと独立source reviewは成功。
+    実4-worker/4-frontendの別UID・TLS・停止/restart/replay fixtureは実装中で未実行。
+    後継epoch・FastVote/readiness・他signing family・全M2へ転用しない。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
@@ -692,16 +701,16 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     E77の失敗を保持し、E79で実guest電源断2種・write-only EIO・flush-only EIOと
     全cold復旧を検証。既存schema/v6・user_version5の通常profileだけを対象とする。
     独立anchor付きprofile、物理hardwareや最終headの全体qualificationへ借用しない。
-  - [ ] [Native SQLite guest power/block faults](docs/architecture/native-sqlite-virtual-fault-profile.md):
-    独立したguest kernel/cacheを失うACK後・COMMIT成功/ACK前の2境界と、実source COMMITの
-    write/flush EIOの2境界を追加する。全12+2 tables、4 portable collections、2 positive bodies、
-    receipt-first cold none/all reconciliation、fresh fenceでの新規state/receipt/outboxとexact replay。
-    source/controllerをreview後、6c4eaでfmt・parser・SQLite lib112 passed/6 ignored・Clippyを
-    actual0/EOF/waitで確認。最初のVM runはACK後とCOMMIT成功/ACK前のcold復旧が成功し、
-    write EIOの実COMMIT error1034を778限定で拒否して停止。失敗raw/imageを保存し、
-    ext4 writebackの実error分類を修正。4境界のowning完走・最終完全gate/CIは未完了。
-    fsyncの合格には実SQLite extended COMMIT error `SQLITE_IOERR_FSYNC`が必要。
-    guest virtual profileの証拠であり、bare-host/hardware/torn-sector/media全体の認定ではない。
+  - [ ] 独立anchor付きprofileの実guest fault boundaries:
+    Pending準備・source COMMIT・anchor確定の各境界を区別し、実write/flush EIOも検証する。
+    Pendingと旧sourceの不一致は既存契約どおり安全停止し、完全new sourceとPendingが
+    一致する場合だけ既存factoryで照合・確定してfresh fence/new workへ進む。
+    通常profileのE79を流用せず、全12+2+authority tablesとpositive bodiesを検証する。
+    source/controllerの具体化中で、build/実VMは未実行。
+  - [ ] selected virtual deviceのpartial persistent write:
+    元のgeneric torn-write条件を保持。実WAL extent・対象sector・混在した保存bytesと
+    cold receipt-first none/allを対応付ける。単なるEIOやtransfer上限だけで完了にしない。
+    最終sourceのENOSPC・conformance・TLS・完全required/CIも未完了。
   - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。
     trait reply-loss、process SIGKILL、power/host/media/fsync faultは別証拠。
     全12 SQL tables・4 portable collections・positive blob/oracleを省略しない。
