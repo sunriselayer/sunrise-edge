@@ -47,7 +47,8 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   [Draft PR #321](https://github.com/sunriselayer/sunrise-edge/pull/321) の全8 CIはE142で成功を照合。
   [Draft PR #322](https://github.com/sunriselayer/sunrise-edge/pull/322) は全8 CI成功を実ログ/checkoutで照合 (E152)。
   #323は全8 CI成功をraw/checkoutまで照合しました (E160)。旧local中断E157は保持。
-  #324 / #325は各6 jobs成功、recurring-sqlite継続中・集約check未作成です。
+  #324も全8 CI成功をraw/checkoutまで照合しました (E161)。
+  #325は6 jobs成功、recurring-sqlite継続中・集約check未作成です。
   正のgenesis Coin A→B→A移行は `fe542b82` に追加し、strictと新H7 producerは成功。
   新13-target A/Bは両laneの全13 ELFのbyte一致・source/provenance照合まで完了しました (E145)。
   追加fixtureの2回の実失敗を保持し、private exportのumaskとtransient予約のAbsent oracleを修正。
@@ -55,7 +56,7 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   Cloudflare CLIへの5-profile統一は実npm ci・typegen・10拒否controlsに加え、修正後の
   型照合・TS・lint・全4 Vitest計66 testsまで成功しました (E147/E148)。
   新source `e4fb6e55` は[Draft PR #324](https://github.com/sunriselayer/sunrise-edge/pull/324)。
-  literal npm ciは成功し、同headの完全requiredと全8 hosted CIは実行中です。
+  literal npm ciと全8 hosted CIは成功しました (E161)。同headのlocal完全requiredは実行中です。
   この文書更新は別worktreeで行い、実行中のsource/HEAD/TODOは変更していません。
   E133の自然失敗原因は未確定で、旧失敗と当時source-onlyだったE134/E135を保持します。
   祖先の成功を新source全体の合格へ付け替えず、全M2/M7は未完了です。
@@ -399,6 +400,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E158: current fresh23/full49 and RELEASE TLS/prior upgrade | 同`50fbf22d`の原2 compile-only commandsがactual0/両outer実EOF/wait、1,148.580秒。全13 debug bins/10 driversはfresh CargoJSON・package/source/profile/featuresを照合し、26 RELEASEと合わせ49個の異なるELF inode/706,709,848 bytesを照合。source1215・Rustls0.23.46を確認し、root・独立peer・author親`rustls-native7-1017-driver-parent-qualified-1018.json` (`b7e96dfd`)。同helperのdefault TLS15/0/1と実old9de6 hostのexact upgrade1/0/0はactual0/両outer実EOF/wait、50.466秒。親`rustls-native7-1017-tls-upgrade-parent-qualified-1018.json` (`a4f62568`) | compile-onlyをtest passへ加算しない。元debug13のnlink2/test10のnlink1・0755を正規化せず保持。driver保存78 samples/77 liveは16GiB/swap0/CPU4/tasks512/7200秒/stop5/OOM0。TLSはfull49 guardと36 actual runtime mappingsを保持し、6GiB/swap0/CPU1/tasks128・旧host20,055,432 bytes不変・既知PID/cgroup/TLS専用TMP不在を照合。原12全体/完全required/全8 ordinary CI・全M2/M7/公開認定は未完了 |
 | E159: current original12 actual dispatch | 同`50fbf22d`でcheck0/1.706秒、probe0/1.673秒の実EOF/wait後、原10 whole+2 exactを新sourceの実13 RELEASE read-only bindingsで開始。admission`rustls-native7-1017-original12-dispatch-admission-1018.json` (`08186b68`)。unit/invocation`531edd83`、元16GiB/swap0/CPU4/tasks512・work18000/unit18600秒/stop45/8MiB rawを実観測。Native agentの保存prefixでは11 casesが終了し、最後のrecurringを実行中 | actual dispatchだけで全12成功/98 passedを主張しない。元8links/e8の2 ACK withdrawals/35roles/delay7・全selectorを保持。31 file-module closureに直接Wrangler/npm/npxはなく、legacy adapter phaseは実行しない。private Cargo cacheは閉鎖済み。終端/reap/全24 events/各case body・source/artifact/TMP回収の照合は未完了 |
 | E160: historical MB/ad3 complete hosted CI | `ad3ce3a0`の[run39031278823](https://github.com/sunriselayer/sunrise-edge/actions/runs/39031278823) attempt1は元7 ownersとsuccess-only check全8がSUCCESS。8 raw 1,558,299 bytesとactual merge`44453eb8` / tree`d3fdc54a` / parents`[5f6b,ad3c]`をroot・独立peerが照合。147 Rust summariesは4,397 passed/0 failed/41 ignored。元7 epoch spans・epoch8 freeze-drain/unlock・saved closure、2 unique 1,832-byte withdrawal候補と各rounds3 ACK manifest stemの一致を実rawで確認。親`ci-run-39031278823-parent-qualified-1018.json` (`7d3c974f`) | 5fからの差分はfixture MJSと設計3 filesだけで、元selectors/8links/delay7/35rolesのsource contractは不変。collectorはactual0/両実EOF/wait/reap。旧ad3 hosted CIの資格だけで、直接Wranglerを含む旧sourceのcf-only適合や中断済みlocal完全required E157の成功にはしない。e4fb/50fbの完全source資格・Native・独立security監査・全M2/M7/公開認定へ転用しない |
+
+| E161: current Cloudflare CLI migration hosted all8 | `e4fb6e55`の[run39044872288](https://github.com/sunriselayer/sunrise-edge/actions/runs/39044872288) attempt1は元7 ownersとsuccess-only check全8がSUCCESS。8 raw 1,557,386 bytesとactual merge`18c6f005` / tree`bb7cad0c` / parents`[ad3c,e4fb]`をroot・独立peerが照合。147 Rust summariesは4,397 passed/0 failed/42 ignored。実cf `1.0.0-beta.13`の型照合・TS7とVitest全4 groups計66 testsも成功。親`ci-run-39044872288-parent-qualified-1018.json` (`9b49ccb8`) | 元7 epoch spans・epoch8 freeze-drain/unlock・saved closure、2 unique 1,832-byte候補と各rounds3 ACK manifest stemを実rawで照合。元selectors/8links/delay7/35rolesのsource contractを保持。collectorはactual0/両実EOF/wait/reap。直接CLIはcfへ統一し、SDK内部のtransitive Wranglerと区別する。local完全requiredは実行中で、50fb・全M2/M7・独立security監査・provider deployment/公開認定へ転用しない |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
