@@ -79,16 +79,46 @@ binary Docker copy exports only `raw.bin`, `meta.json` and `main.candidate` with
 fixed normal-file names; link/path aliases refuse. Failure leaves explicit
 partial/incomplete evidence and does not become a successful summary.
 
+PID1 holds the sole tmpfs mount after all role children have terminated. It
+closes/fsyncs raw capture, creates immutable public metadata and announces its
+SHA256 in one exact ready line. The Node owner verifies the exact container is
+running, copies the complete binary evidence within8 seconds and checks that
+metadata hash, then copies one fixed public release byte to a separate control
+directory within5 seconds. Only then does PID1 emit its final summary and exit.
+The attached Docker client must reach actual wait and both physical EOFs, and
+the stopped container must have PID0 before removal. There is no evidence copy
+after container exit; the last tmpfs unmount may discard its contents. A partial
+failure snapshot without the frozen ready hash remains explicitly incomplete.
+
+UID0 has no `CAP_KILL`. Cleanup records each child PID and role UID at launch,
+then forks a narrow no-pipe signal owner that drops to that saved UID using the
+existing `SETUID`/`SETGID` capabilities and sends only TERM or KILL to the saved
+unreaped child. Each signal owner has its own actual wait/PID-absence record;
+no stdout/stderr EOF is invented for it. Three fixed-role regression children
+must be killed and reaped under UID12001/12002/12003. All failure cleanup shares
+one5-second deadline. Signal, drain, reap, accounting or fsync failures cannot
+skip the separate bounded metadata-finalization attempt. Failure drains retain
+only bounded stream prefixes and record observed byte counts and incomplete
+capture; they cannot become a successful complete transcript.
+
 The original inline owner uses the existing8GiB/swap0/CPU2/tasks512/2500s envelope.
 The separately bounded Docker payload uses512MiB/no extra swap/CPU1/pids64,
 network none, read-only root and one64MiB/16384-inode noswap tmpfs volume. These
 are separate resource domains. There is no standalone1GiB runtime-unit claim
-without an actual independently observed unit. Node280s/Python230s and cleanup
-reserves remain finite. The local export is at most16MiB/256 files/1MiB per file;
+without an actual independently observed unit. Node280s/Python230s work,
+shared Python cleanup5s, mounted handoff20s and Node cleanup reserve25s remain
+finite. The handoff ends no later than Python's initial work deadline plus25s.
+Final volume accounting includes the frozen metadata and release file without
+mutating exported bytes. The local export is at most16MiB/256 files/1MiB per file;
 Python raw at most256KiB, one PTY16KiB, Docker control output64KiB including16KiB
 cleanup allowance, and binary evidence1MiB. There are at most128 inside children,
-eight concurrent children,16 PTYs and32 host/Docker operations. Exceeding a bound
-fails visibly; complete genuine inputs or reviews are never shortened to fit.
+eight concurrent children,16 PTYs and32 host/Docker operations. The fixed normal
+path expects97 inside children:84 pipe children,10 PTYs and3 no-pipe UID signal
+owners. It expects22 host/Docker operations, including the two library queries,
+running-state check, mounted binary copy and public release copy. Failure-only
+signal owners remain subject to the original128-child admission bound.
+These are static expectations until actual raw evidence is qualified. Exceeding
+a bound fails visibly; complete genuine inputs or reviews are never shortened.
 
 The selected owner returns the actual protected A candidate. The original
 harness compares it byte-for-byte with its independent original candidate, then

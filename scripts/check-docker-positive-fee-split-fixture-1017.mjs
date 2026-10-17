@@ -64,7 +64,8 @@ INTRUDER_UID,INTRUDER_GID=12003,12003
 LD='/mnt/libs/ld.so'; LIB='/mnt/libs'; CLI='/mnt/bin/cli'; HARNESS='/mnt/bin/harness'
 END=time.monotonic()+230
 RAW_CAP=262144
-children=[]; operations=[]; services=[]; peer_controls=[]; approval_evidence=[]; raw_used=0; uncaptured_observed=0
+children=[]; operations=[]; services=[]; peer_controls=[]; approval_evidence=[]; raw_used=0; uncaptured_observed=0; raw_failed=False
+owned={};reaped=set();captures={};signal_controls=[]
 raw_fd=None
 
 def left():
@@ -73,11 +74,13 @@ def left():
     return value
 
 def frame(meta,data=b''):
-    global raw_used,uncaptured_observed
+    global raw_used,uncaptured_observed,raw_failed
     header=json.dumps(meta,sort_keys=True,separators=(',',':')).encode()
     packet=struct.pack('>I',len(header))+header+struct.pack('>I',len(data))+data
+    if raw_failed:
+        uncaptured_observed+=len(packet);return
     if raw_used+len(packet)>RAW_CAP:
-        uncaptured_observed+=len(packet);raise RuntimeError('complete positive child/PTY raw cap exceeded; capture incomplete')
+        raw_failed=True;uncaptured_observed+=len(packet);raise RuntimeError('complete positive child/PTY raw cap exceeded; capture incomplete')
     view=memoryview(packet)
     while view:
         n=os.write(raw_fd,view)
@@ -103,27 +106,74 @@ def launch(argv,uid,groups,env=None):
     p=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                        preexec_fn=demote(uid,groups),env=env or {},cwd='/')
     children.append(p);item['pid']=p.pid
+    owned[p.pid]=(uid,item['index']);captures[p.pid]={'stdout':bytearray(),'stderr':bytearray()}
+    item.update(stdoutObservedBytes=0,stderrObservedBytes=0)
     return p,item
 
-def finish(p,item,timeout=20):
-    deadline=time.monotonic()+min(timeout,left())
-    pipes={p.stdout.fileno():('stdout',bytearray()),p.stderr.fileno():('stderr',bytearray())}
-    buffers={name:buf for name,buf in pipes.values()}
-    for fd in pipes:os.set_blocking(fd,False)
+def signal_owned(pid,sig,deadline):
+    if time.monotonic()>=deadline:raise RuntimeError('UID signal cleanup budget expired before fork')
+    # The parent never signals a different UID directly. The only target comes
+    # from immutable PID/UID attribution saved before work and remains unreaped.
+    if pid in reaped:return True
+    if pid not in owned:raise RuntimeError('signal target is not an owned child')
+    uid,target_index=owned[pid]
+    if uid not in (CUSTODY_UID,OPERATOR_UID,INTRUDER_UID):raise RuntimeError('signal UID is not a fixed role')
+    if sig not in (signal.SIGKILL,signal.SIGTERM):raise RuntimeError('signal kind outside cleanup profile')
+    if sum(p.poll() is None for p in children)+len(pty_pids)>=8:raise RuntimeError('signal-owner concurrent child cap')
+    item=before([],uid,[uid],'signal-owner')
+    item.update(noPipes=True,forkAction='signal-saved-owned-child',targetPid=pid,targetOperation=target_index,signal=int(sig))
+    helper=os.fork()
+    if helper==0:
+        try:
+            if raw_fd is not None:os.close(raw_fd)
+            demote(uid,[uid])()
+            try:os.kill(pid,sig)
+            except ProcessLookupError:os._exit(3)
+            except PermissionError:os._exit(4)
+            os._exit(0)
+        except BaseException:os._exit(5)
+    item['pid']=helper;status=None
+    end=min(deadline,time.monotonic()+1)
+    while status is None and time.monotonic()<end:
+        got,value=os.waitpid(helper,os.WNOHANG)
+        if got:status=value
+        else:time.sleep(.005)
+    item.update(waitCompleted=status is not None,pidAbsent=not os.path.exists('/proc/'+str(helper)),exit=os.waitstatus_to_exitcode(status) if status is not None else None)
+    frame({'operation':item['index'],'stream':'result'},json.dumps(item,sort_keys=True).encode())
+    if status is None or not item['pidAbsent']:raise RuntimeError('UID signal owner wait unresolved')
+    if item['exit'] not in (0,3):raise RuntimeError('UID signal owner could not signal its saved child')
+    return True
+
+def finish(p,item,timeout=20,cleanup_deadline=None):
+    if item.get('waitCompleted') and item.get('captureComplete'):
+        buffers=captures[p.pid];return p.returncode,bytes(buffers['stdout']),bytes(buffers['stderr'])
+    deadline=(time.monotonic()+min(timeout,left())) if cleanup_deadline is None else cleanup_deadline
+    buffers=captures[p.pid]
+    pipes={}
+    for name,handle in [('stdout',p.stdout),('stderr',p.stderr)]:
+        if not item[name+'Eof']:
+            pipes[handle.fileno()]=(name,buffers[name]);os.set_blocking(handle.fileno(),False)
     failure=None;kill_end=None
     while pipes or p.poll() is None:
         if failure is None and time.monotonic()>=deadline:
-            failure='owned child deadline';p.kill();kill_end=time.monotonic()+5
-        if kill_end is not None and time.monotonic()>=kill_end:raise RuntimeError('owned child reap/EOF unresolved')
+            failure='owned child deadline';kill_end=time.monotonic()+5 if cleanup_deadline is None else cleanup_deadline
+            try:signal_owned(p.pid,signal.SIGKILL,kill_end)
+            except BaseException as error:failure+='; '+repr(error)
+        if kill_end is not None and time.monotonic()>=kill_end:raise RuntimeError('owned child reap/EOF unresolved: '+failure)
         for fd in select.select(list(pipes),[],[],0.02)[0]:
             name,buf=pipes[fd];data=os.read(fd,4096)
             if data:
-                frame({'operation':item['index'],'stream':name},data);buf.extend(data)
-            else:
-                item[name+'Eof']=True;del pipes[fd]
-    p.wait(timeout=1);item['waitCompleted']=True;item['exit']=p.returncode
-    item['pidAbsent']=not os.path.exists('/proc/'+str(p.pid))
+                item[name+'ObservedBytes']+=len(data)
+                # A failed raw capture still drains/reaps under the same deadline,
+                # but cannot grow an unbounded in-memory failure transcript.
+                remaining=RAW_CAP-len(buf)
+                if remaining>0:buf.extend(data[:remaining])
+                frame({'operation':item['index'],'stream':name},data)
+            else:item[name+'Eof']=True;del pipes[fd]
+    p.wait(timeout=max(.001,min(1,deadline-time.monotonic())));reaped.add(p.pid)
+    item.update(waitCompleted=True,exit=p.returncode,pidAbsent=not os.path.exists('/proc/'+str(p.pid)))
     for name,buf in buffers.items():item[name+'Bytes']=len(buf);item[name+'Sha256']=hashlib.sha256(buf).hexdigest()
+    item['captureComplete']=item['stdoutEof'] and item['stderrEof'] and not raw_failed and all(item[name+'ObservedBytes']==len(buffers[name]) for name in ('stdout','stderr'))
     p.stdout.close();p.stderr.close()
     frame({'operation':item['index'],'stream':'result'},json.dumps(item,sort_keys=True).encode())
     if failure:raise RuntimeError(failure)
@@ -223,7 +273,7 @@ def approve(case,phase,ttl=600,success=True):
     if pid==0:
         try:demote(CUSTODY_UID,[CUSTODY_GID])();os.execve(argv[0],argv,{})
         finally:os._exit(127)
-    item['pid']=pid;pty_pids.add(pid);os.set_blocking(fd,False)
+    item['pid']=pid;owned[pid]=(CUSTODY_UID,item['index']);pty_pids.add(pid);os.set_blocking(fd,False)
     data=bytearray();sent=False;eof=False;status=None;error=None;end=time.monotonic()+min(20,left())
     try:
         while not eof or status is None:
@@ -250,13 +300,15 @@ def approve(case,phase,ttl=600,success=True):
         error=e
     finally:
         if status is None:
-            os.kill(pid,signal.SIGKILL);cleanup_end=time.monotonic()+5
+            cleanup_end=time.monotonic()+5
+            try:signal_owned(pid,signal.SIGKILL,cleanup_end)
+            except BaseException as caught:error=error or caught
             while status is None and time.monotonic()<cleanup_end:
                 got,value=os.waitpid(pid,os.WNOHANG)
                 if got:status=value
                 else:time.sleep(.01)
         os.close(fd)
-        if status is not None:pty_pids.discard(pid)
+        if status is not None:pty_pids.discard(pid);reaped.add(pid)
         item.update(ptyEof=eof,waitCompleted=status is not None,pidAbsent=not os.path.exists('/proc/'+str(pid)),
                     ptyBytes=len(data),ptySha256=hashlib.sha256(data).hexdigest(),exit=os.waitstatus_to_exitcode(status) if status is not None else None)
         frame({'operation':item['index'],'stream':'result'},json.dumps(item,sort_keys=True).encode())
@@ -318,6 +370,20 @@ def verify(case):
     out,err=run(argv,OPERATOR_UID,[OPERATOR_GID],env)
     if b'1 passed; 0 failed; 0 ignored' not in out:raise RuntimeError('positive ignored verifier did not run')
 
+def volume_accounting():
+    generated=0;entries=0
+    for directory,dirs,files in os.walk(ROOT,followlinks=False):
+        entries+=len(dirs)+len(files)
+        if entries>16384:raise RuntimeError('owned volume entry cap')
+        for name in dirs:
+            if not stat.S_ISDIR(os.lstat(directory+'/'+name).st_mode):raise RuntimeError('owned volume non-directory')
+        for name in files:
+            observed=os.lstat(directory+'/'+name)
+            if not stat.S_ISREG(observed.st_mode):raise RuntimeError('owned volume unexpected file type')
+            generated+=observed.st_size
+            if generated>67108864:raise RuntimeError('owned volume byte cap')
+    return generated,entries
+
 def main():
     global raw_fd,CROOT,OROOT,CARGS,OARGS,KEY,SOCKET,pins,params
     for path,value in [('/sys/fs/cgroup/memory.max','536870912'),('/sys/fs/cgroup/memory.swap.max','0'),('/sys/fs/cgroup/pids.max','64'),('/sys/fs/cgroup/cpu.max','100000 100000')]:
@@ -331,7 +397,6 @@ def main():
     if row[sep+1]!='tmpfs' or not {'rw','noswap','nosuid','nodev','noexec'}.issubset(options):raise RuntimeError('effective volume mount options differ')
     allocation=os.statvfs(ROOT)
     if allocation.f_frsize*allocation.f_blocks!=67108864:raise RuntimeError('actual volume size differs')
-    mkdir(ROOT+'/evidence',0);raw_fd=os.open(ROOT+'/evidence/raw.bin',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
     inventory=bounded('/mnt/public/files.tsv',262144).decode('ascii').splitlines()
     if not 1<=len(inventory)<=256:raise RuntimeError('public inventory count')
     records=[];total=0;names=set()
@@ -396,6 +461,12 @@ def main():
     if os.path.lexists(bad) or b'UID' not in err:raise RuntimeError('client impostor UID refusal did not occur')
     rc,_out,_err=finish(listener_process,listener_item,5)
     if rc:raise RuntimeError('impostor received request bytes or failed')
+    for uid in [CUSTODY_UID,OPERATOR_UID,INTRUDER_UID]:
+        control,control_item=launch(['/usr/local/bin/python3','-I','-B','-c','import time; time.sleep(20)'],uid,[uid])
+        signal_owned(control.pid,signal.SIGKILL,time.monotonic()+5)
+        rc,_out,_err=finish(control,control_item,5)
+        if rc!=-signal.SIGKILL:raise RuntimeError('UID signal regression did not reap the actual killed child')
+        signal_controls.append({'uid':uid,'operation':control_item['index'],'signal':int(signal.SIGKILL),'waitCompleted':True})
     # Only these child argv/env fields cross to the operator. No key path or seed.
     for case in ['A','B']:
         phase='leg' if case=='A' else 'claim'
@@ -464,71 +535,87 @@ def main():
             if bounded(root+'/'+name)!=data:raise RuntimeError('retained public role input changed')
     expected=[[4,4,2,2],[2,2,2,0],[3,3,1,2],[2,2,0,2],[2,2,2,0],[6,6,2,4],[4,4,0,4],[2,2,0,2]]
     if services!=expected:raise RuntimeError('complete service matrix differs')
-    generated=0;entries=0
-    for directory,dirs,files in os.walk(ROOT,followlinks=False):
-        entries+=len(dirs)+len(files)
-        if entries>16384:raise RuntimeError('owned volume entry count exceeded')
-        for name in dirs:
-            if not stat.S_ISDIR(os.lstat(directory+'/'+name).st_mode):raise RuntimeError('generated unexpected directory type')
-        for name in files:
-            s=os.lstat(directory+'/'+name)
-            if not stat.S_ISREG(s.st_mode):raise RuntimeError('generated unexpected file type')
-            generated+=s.st_size
-    if generated>67108864 or entries>16384:raise RuntimeError('owned volume aggregate bounds')
+    generated,entries=volume_accounting()
     put(ROOT+'/evidence/main.candidate',bounded(OROOT+'/cases/A/protected.candidate',65536),0)
     return {'ok':True,'scope':'positive_split_uid_lifecycle_1017','services':services,'generatedBytes':generated,'entries':entries,'operationCount':len(operations),'peerControls':peer_controls,'approvalCount':len(approval_evidence)}
 
-pty_pids=set();result=None;failure=None
+pty_pids=set();result=None;failure=None;metadata_ready=False
 try:
+    mkdir(ROOT+'/evidence',0);mkdir(ROOT+'/control',0)
+    raw_fd=os.open(ROOT+'/evidence/raw.bin',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
     result=main()
 except BaseException as error:
     failure=repr(error)
 finally:
     cleanup_end=time.monotonic()+5
+    # A kill, reap or drain error must never skip later children or metadata.
     for process in children:
-        if process.poll() is None:process.kill()
-        try:process.wait(timeout=max(.001,cleanup_end-time.monotonic()))
+        try:
+            if process.poll() is None:signal_owned(process.pid,signal.SIGKILL,cleanup_end)
+            item=operations[owned[process.pid][1]]
+            if not item.get('waitCompleted') or not item.get('captureComplete'):
+                finish(process,item,cleanup_deadline=cleanup_end)
+            else:process.wait(timeout=max(.001,cleanup_end-time.monotonic()))
         except BaseException as error:failure=(failure or '')+'; child cleanup unresolved '+repr(error)
     for pid in list(pty_pids):
         try:
-            os.kill(pid,signal.SIGKILL)
+            signal_owned(pid,signal.SIGKILL,cleanup_end);status=None
             while time.monotonic()<cleanup_end:
-                got,_status=os.waitpid(pid,os.WNOHANG)
-                if got:break
-                time.sleep(.01)
-        except OSError:pass
-        failure=(failure or '')+'; PTY cleanup required'
-    if raw_fd is not None:
-        os.fsync(raw_fd);os.close(raw_fd)
-        metadata={'ok':failure is None,'error':failure,'operations':operations,'services':services,'peerControls':peer_controls,'approvals':approval_evidence,'rawBytes':raw_used,'uncapturedObservedBytes':uncaptured_observed}
-        try:
-            encoded=json.dumps(metadata,sort_keys=True).encode()
-            if len(encoded)>262144:raise RuntimeError('complete evidence metadata exceeds256KiB')
-            put(ROOT+'/evidence/meta.json',encoded,0)
-        except BaseException as error:failure=(failure or '')+'; evidence metadata '+repr(error)
-if not failure:
+                got,value=os.waitpid(pid,os.WNOHANG)
+                if got:status=value;reaped.add(pid);pty_pids.discard(pid);break
+                time.sleep(.005)
+            if status is None:raise RuntimeError('PTY reap unresolved')
+        except BaseException as error:failure=(failure or '')+'; PTY cleanup unresolved '+repr(error)
     try:
-        generated=0;entries=0
-        for directory,dirs,files in os.walk(ROOT,followlinks=False):
-            entries+=len(dirs)+len(files)
-            if entries>16384:raise RuntimeError('final volume entry cap')
-            for name in dirs:
-                if not stat.S_ISDIR(os.lstat(directory+'/'+name).st_mode):raise RuntimeError('final non-directory')
-            for name in files:
-                metadata=os.lstat(directory+'/'+name)
-                if not stat.S_ISREG(metadata.st_mode):raise RuntimeError('final unexpected file type')
-                generated+=metadata.st_size
-                if generated>67108864:raise RuntimeError('final volume byte cap')
+        if raw_fd is not None:os.fsync(raw_fd)
+    except BaseException as error:failure=(failure or '')+'; raw fsync '+repr(error)
+    finally:
+        try:
+            if raw_fd is not None:os.close(raw_fd)
+        except BaseException as error:failure=(failure or '')+'; raw close '+repr(error)
+        raw_fd=None
+    try:
+        generated,entries=volume_accounting()
         live=[p for p in os.listdir('/proc') if p.isdigit() and int(p)!=os.getpid()]
         if live:raise RuntimeError('unexpected surviving container processes')
-        result.update(generatedBytes=generated,entries=entries,allChildrenAbsent=True)
-        for path,key in [('memory.peak','memoryPeak'),('memory.swap.current','swapCurrent'),('memory.events','memoryEvents')]:
-            with open('/sys/fs/cgroup/'+path) as source:result[key]=source.read(4096).strip()
-        if result['swapCurrent']!='0' or any(int(line.split()[1]) for line in result['memoryEvents'].splitlines()):raise RuntimeError('swap or memory-limit event observed')
-    except BaseException as error:failure=repr(error)
+        if result is not None:
+            result.update(generatedBytes=generated,entries=entries,allChildrenAbsent=True,signalControls=signal_controls,operationCount=len(operations))
+            for path,key in [('memory.peak','memoryPeak'),('memory.swap.current','swapCurrent'),('memory.events','memoryEvents')]:
+                with open('/sys/fs/cgroup/'+path) as source:result[key]=source.read(4096).strip()
+            if result['swapCurrent']!='0' or any(int(line.split()[1]) for line in result['memoryEvents'].splitlines()):raise RuntimeError('swap or memory-limit event observed')
+    except BaseException as error:failure=(failure or '')+'; final accounting '+repr(error)
+    # This separate attempt runs even if every earlier cleanup step failed.
+    try:
+        metadata={'ok':failure is None,'error':failure,'operations':operations,'services':services,'peerControls':peer_controls,'signalControls':signal_controls,'approvals':approval_evidence,'rawBytes':raw_used,'uncapturedObservedBytes':uncaptured_observed,'rawFailed':raw_failed}
+        encoded=json.dumps(metadata,sort_keys=True).encode()
+        if len(encoded)>262144:raise RuntimeError('complete evidence metadata exceeds256KiB')
+        put(ROOT+'/evidence/meta.json',encoded,0);metadata_ready=True
+    except BaseException as error:failure=(failure or '')+'; evidence metadata '+repr(error)
+
+# Retain the sole mounted tmpfs until its exact frozen binary evidence has
+# crossed to the owner. No signature or success result depends on PID lifetime.
+if metadata_ready:
+    print('positive_split_evidence_ready='+hashlib.sha256(encoded).hexdigest(),flush=True)
+    handoff_end=min(END+25,time.monotonic()+20)
+    released=False
+    try:
+        while time.monotonic()<handoff_end:
+            if os.path.lexists(ROOT+'/control/release'):
+                if bounded(ROOT+'/control/release',1)!=b'\x01':raise RuntimeError('invalid public evidence release')
+                released=True;break
+            time.sleep(.02)
+        if not released:raise RuntimeError('mounted evidence release deadline')
+    except BaseException as error:failure=(failure or '')+'; handoff '+repr(error)
+# Include the frozen metadata and the release file without changing any exported
+# bytes after readiness. This final summary is emitted only after release.
+try:
+    generated,entries=volume_accounting()
+    if result is not None:result.update(generatedBytes=generated,entries=entries)
+except BaseException as error:failure=(failure or '')+'; post-release volume accounting '+repr(error)
 if failure:
     print(json.dumps({'ok':False,'error':failure}),flush=True);raise SystemExit(1)
 print(json.dumps(result,sort_keys=True),flush=True)
+
 `;
 function probeCommand() {
   const source = Buffer.from(probe, 'utf8');
@@ -549,7 +636,7 @@ function probeCommand() {
   return command;
 }
 
-async function docker(args, cleanup = false) {
+async function docker(args, cleanup = false, observeStdout = undefined) {
   if (++operationCount > 32) throw new Error('fixed Docker/host operation count exceeded');
   const operationId = operationCount, operationStart = performance.now();
   const allowance = Math.floor(deadline - performance.now() - (cleanup ? 0 : 25_000));
@@ -599,6 +686,9 @@ async function docker(args, cleanup = false) {
       }
       outputBytes += chunk.length;
       target.push(chunk);
+      if (target === stdout && observeStdout) {
+        try { observeStdout(chunk); } catch (error) { abort(error); }
+      }
     }
     child.stdout.on('data', (chunk) => collect(stdout, chunk));
     child.stderr.on('data', (chunk) => collect(stderr, chunk));
@@ -704,7 +794,7 @@ function mergeClosures(a, b) {
   for (const [name_, path] of b.libs) { if (libs.has(name_) && libs.get(name_) !== path) throw new Error('different actual library'); libs.set(name_, path); }
   return { interpreter: a.interpreter, libs };
 }
-async function hostCommand(executable, args, cap) {
+async function hostCommand(executable, args, cap, maximumMs = 20_000) {
   if (++operationCount > 32) throw new Error('host operation count exceeded');
   const operationId = operationCount, start = performance.now();
   return await new Promise((resolve_, reject) => {
@@ -716,7 +806,7 @@ async function hostCommand(executable, args, cap) {
       failed ??= error; child.kill('SIGKILL');
       if (!reapTimer) reapTimer = setTimeout(() => { child.unref(); child.stdout.destroy(); child.stderr.destroy(); rejectOnce(new Error(`${failed.message}; physical EOF/wait unresolved`)); }, Math.max(1, Math.min(1000, deadline - performance.now())));
     };
-    const timer = setTimeout(() => abort(new Error('bounded host child deadline')), Math.max(1, Math.min(20_000, deadline - performance.now())));
+    const timer = setTimeout(() => abort(new Error('bounded host child deadline')), Math.max(1, Math.min(maximumMs, deadline - performance.now())));
     const collect = (items, bytes) => { size += bytes.length; if (size > cap) abort(new Error('complete host binary output cap exceeded')); else items.push(bytes); };
     child.stdout.on('data', (bytes) => collect(out, bytes)); child.stderr.on('data', (bytes) => collect(err, bytes));
     child.stdout.on('end', () => { stdoutEof = true; }); child.stderr.on('end', () => { stderrEof = true; });
@@ -771,7 +861,31 @@ function extractEvidence(tar) {
   return files;
 }
 
-let protectedCandidate;
+let protectedCandidate, attachment, readyHash;
+let mountedCaptureAttempted = false, releaseSent = false;
+const handoff = { ready: null, copiedWhileRunning: false, frozenHashVerified: false, released: false, terminalAfterRelease: false };
+async function captureMountedEvidence(expectedHash) {
+  if (mountedCaptureAttempted) throw new Error('mounted evidence copy already attempted');
+  mountedCaptureAttempted = true;
+  const captured = await hostCommand('/usr/local/bin/docker', ['--host', endpoint, 'cp', containerId + ':/work/evidence/.', '-'], 1048576, 8000);
+  writeFileSync(join(evidenceRoot, 'inside.tar'), captured.stdout, { flag: 'wx', mode: 0o600 });
+  const files = extractEvidence(captured.stdout);
+  const metadataBytes = files.get('meta.json');
+  if (expectedHash !== undefined && hash(metadataBytes) !== expectedHash) throw new Error('frozen ready metadata hash differs');
+  handoff.frozenHashVerified = expectedHash !== undefined;
+  const metadata = JSON.parse(metadataBytes.toString('utf8'));
+  if (files.get('raw.bin').length !== metadata.rawBytes) throw new Error('actual inside raw length differs');
+  handoff.copiedWhileRunning = true;
+  protectedCandidate = files.get('main.candidate');
+  return metadata;
+}
+async function releaseMountedEvidence() {
+  if (releaseSent) return;
+  const releasePath = join(evidenceRoot, 'release-byte');
+  writeFileSync(releasePath, Buffer.from([1]), { flag: 'wx', mode: 0o600 });
+  await docker(['cp', releasePath, containerId + ':/work/control/release'], true);
+  releaseSent = true; handoff.released = true;
+}
 const closure = mergeClosures(await lddClosure(cliBinary), await lddClosure(testBinary));
 const libraryPins = new Map(provenance.libraries.map((entry) => [entry.path, entry.sha256]));
 for (const path of [closure.interpreter, ...closure.libs.values()]) if (libraryPins.get(path) !== hash(readFileSync(path))) throw new Error('actual linker/library closure provenance differs');
@@ -841,17 +955,40 @@ try {
     })}`);
   }
 
-  const completed = await docker(['start', '--attach', containerId]);
+  let resolveReady, rejectReady, readyBuffer = '';
+  const ready = new Promise((resolve_, reject) => { resolveReady = resolve_; rejectReady = reject; });
+  const observeReady = (chunk) => {
+    if (readyHash !== undefined) return;
+    readyBuffer += chunk.toString('utf8');
+    if (Buffer.byteLength(readyBuffer, 'utf8') > 4096) throw new Error('mounted ready message exceeds bound');
+    const newline = readyBuffer.indexOf('\n');
+    if (newline >= 0) {
+      const line = readyBuffer.slice(0, newline);
+      const match = /^positive_split_evidence_ready=([0-9a-f]{64})$/.exec(line);
+      if (!match) throw new Error('exact mounted evidence ready message missing');
+      readyHash = match[1]; handoff.ready = readyHash; resolveReady(readyHash);
+    }
+  };
+  // Do not await container exit here: its sole tmpfs must stay mounted.
+  attachment = docker(['start', '--attach', containerId], false, observeReady);
+  attachment.then(() => { if (readyHash === undefined) rejectReady(new Error('container exited before evidence readiness')); }, rejectReady);
+  await ready;
+  const mounted = await inspect(containerId, true);
+  if (!mounted.State.Running || mounted.State.Pid === 0 || mounted.State.OOMKilled) throw new Error('evidence source is not the exact running allocation');
+  let metadata;
+  try { metadata = await captureMountedEvidence(readyHash); }
+  finally { await releaseMountedEvidence(); }
+  const completed = await attachment;
   const terminal = await inspect(containerId);
-  if (terminal.State.Running || terminal.State.OOMKilled || terminal.State.Dead || terminal.State.Pid !== 0) {
-    throw new Error('the fixture container lacks a clean terminal state');
-  }
-
+  if (terminal.State.Running || terminal.State.OOMKilled || terminal.State.Dead || terminal.State.Pid !== 0) throw new Error('container lacks actual post-release terminal state');
+  handoff.terminalAfterRelease = true;
+  if (!metadata.ok || metadata.rawFailed || metadata.uncapturedObservedBytes !== 0 || metadata.approvals.length !== 8 || !protectedCandidate) throw new Error('mounted lifecycle evidence is incomplete');
+  if (JSON.stringify(metadata.peerControls) !== '[[1,0,0,0]]' || metadata.signalControls.length !== 3 || metadata.operations.some((op) => !op.waitCompleted || !op.pidAbsent || (op.kind === 'pty' ? !op.ptyEof : op.kind === 'signal-owner' ? op.noPipes !== true || ![0,3].includes(op.exit) : !op.stdoutEof || !op.stderrEof))) throw new Error('physical child/UID-owner evidence incomplete');
   const lines = completed.stdout.trim().split('\n').filter((line) => line.length > 0);
-  if (lines.length !== 1) throw new Error('selected fixture must emit one complete public summary');
-  result = JSON.parse(lines[0]);
+  if (lines.length !== 2 || lines[0] !== 'positive_split_evidence_ready=' + readyHash) throw new Error('ready/final summary protocol differs');
+  result = JSON.parse(lines[1]);
   const expected = [[4,4,2,2],[2,2,2,0],[3,3,1,2],[2,2,0,2],[2,2,2,0],[6,6,2,4],[4,4,0,4],[2,2,0,2]];
-  if (!result.ok || result.scope !== 'positive_split_uid_lifecycle_1017' || JSON.stringify(result.services) !== JSON.stringify(expected) || result.generatedBytes > 67108864 || result.entries > 16384 || result.operationCount > 128 || result.allChildrenAbsent !== true || result.swapCurrent !== '0' || result.approvalCount !== 8 || JSON.stringify(result.peerControls) !== '[[1,0,0,0]]') throw new Error('selected positive lifecycle counts/volume evidence differ');
+  if (!result.ok || result.scope !== 'positive_split_uid_lifecycle_1017' || JSON.stringify(result.services) !== JSON.stringify(expected) || result.generatedBytes > 67108864 || result.entries > 16384 || result.operationCount > 128 || result.allChildrenAbsent !== true || result.swapCurrent !== '0' || result.approvalCount !== 8 || JSON.stringify(result.signalControls?.map((item) => item.uid)) !== '[12001,12002,12003]' || JSON.stringify(result.peerControls) !== '[[1,0,0,0]]') throw new Error('selected positive lifecycle counts/volume evidence differ');
 } catch (error) {
   primaryError = error;
 } finally {
@@ -865,20 +1002,22 @@ try {
       if (found) owned = await inspect(found, true);
     }
     if (owned) {
-      if (owned.State.Running) await docker(['kill', owned.Id], true);
+      if (owned.State.Running && !mountedCaptureAttempted) {
+        try { await captureMountedEvidence(readyHash); }
+        catch (error) { primaryError = new Error(`${primaryError?.message ?? 'fixture'}; mounted partial evidence unresolved: ${error.message}`); }
+        finally {
+          if (readyHash !== undefined) {
+            try { await releaseMountedEvidence(); } catch (error) { primaryError = new Error(`${primaryError?.message ?? 'fixture'}; release unresolved: ${error.message}`); }
+          }
+        }
+      }
+      const beforeStop = await inspect(owned.Id, true);
+      if (beforeStop.State.Running) await docker(['kill', owned.Id], true);
+      if (attachment) {
+        try { await attachment; } catch (error) { primaryError ??= error; }
+      }
       const stopped = await inspect(owned.Id, true);
       if (stopped.State.Running || stopped.State.Pid !== 0) throw new Error('owned fixture container did not stop');
-      // Capture full inside raw before exact owned removal, also on failure.
-      try {
-        const captured = await hostCommand('/usr/local/bin/docker', ['--host', endpoint, 'cp', owned.Id + ':/work/evidence/.', '-'], 1048576);
-        writeFileSync(join(evidenceRoot, 'inside.tar'), captured.stdout, { flag: 'wx', mode: 0o600 });
-        const files = extractEvidence(captured.stdout);
-        const metadata = JSON.parse(files.get('meta.json').toString('utf8'));
-        if (files.get('raw.bin').length !== metadata.rawBytes) throw new Error('actual inside raw length differs');
-        if (!primaryError && (metadata.approvals.length !== 8 || JSON.stringify(metadata.peerControls) !== '[[1,0,0,0]]' || metadata.operations.some((op) => !op.waitCompleted || !op.pidAbsent || (op.kind === 'pty' ? !op.ptyEof : !op.stdoutEof || !op.stderrEof)))) throw new Error('inside physical EOF/wait/phase reviews incomplete');
-        if (!primaryError && (!metadata.ok || metadata.uncapturedObservedBytes !== 0 || !files.has('main.candidate'))) throw new Error('inside lifecycle not complete');
-        protectedCandidate = files.get('main.candidate');
-      } catch (error) { primaryError = new Error(`${primaryError?.message ?? 'fixture'}; complete inside evidence unresolved: ${error.message}`); }
       await docker(['rm', owned.Id], true);
     }
     const remaining = await docker(['container', 'ls', '-aq', '--no-trunc', '--filter', `label=${label}=${owner}`], true);
@@ -895,6 +1034,6 @@ try {
 }
 
 if (pendingClients.size !== 0 || performance.now() > deadline) primaryError = new Error(`${primaryError?.message ?? 'fixture'}; owned clients/deadline unresolved`);
-writeFileSync(join(evidenceRoot, 'host-operations.json'), JSON.stringify({ operations: hostOperations, controlOutputBytes: outputBytes, error: primaryError?.message ?? null }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+writeFileSync(join(evidenceRoot, 'host-operations.json'), JSON.stringify({ operations: hostOperations, handoff, controlOutputBytes: outputBytes, error: primaryError?.message ?? null }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
 if (primaryError) { console.error(primaryError.message); process.exitCode = 1; }
 else { console.log(JSON.stringify({ ...result, image, container_removed: true, volume_removed: true, evidenceRoot })); console.log('positive_fee_split_uid_lifecycle=passed'); console.log('positive_fee_split_candidate=' + protectedCandidate.toString('hex')); }
