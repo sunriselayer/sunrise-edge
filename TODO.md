@@ -30,8 +30,15 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   このDraftの存在を完全required/CI・Nativeまたは親項目の完了には数えません。
   positive Splitとcertified FastVoteの追加実装は、別の統合branch
   `codex/positive-certified-integration-1017` の `3b4aa7ff` に通常mergeしました。
-  追加UID fixtureはE128/E129で選択範囲の実行・照合が完了し、このbranchの結合後全体検証を進めます。7658で実施した
-  完全required/CI・原12 RELEASE runtimeの結果を、この新sourceへ付け替えません。
+  追加UID fixtureはE128/E129で選択範囲の実行・照合が完了しました。
+  7658の完全required・全8 CI・原12 RELEASE runtimeはE131/E132で終端成功を確認。
+  その後の `e6f1dfe3` は13-target A/Bと23バイナリのbuildが成功しましたが、完全requiredは
+  checkpoint authority再openの1件で失敗しました (E133)。この失敗を成功へ上書きしません。
+  [Draft PR #321](https://github.com/sunriselayer/sunrise-edge/pull/321) はe6f1で固定し、
+  そのCIは継続中です。次の `codex/checkpoint-test-isolation-1017` では、既存assertionを
+  専用子プロセスで実行するtest-only隔離と、転送・分割/結合の鍵復旧fixtureを準備中です
+  (E134/E135)。元の失敗原因は未確定で、この新sourceの実行・全体qualificationは未完了。
+  7658やe6f1の結果を新sourceの合格へ付け替えません。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -114,8 +121,9 @@ E28/E29のsourceに後続差分を含めたことにはしません。
 E68-E71、b4のtest-only CIはE72、D05/M5の技術最終照合はE73へ記録しました。
 M2/M3/M4/M7全体・独立監査・公開条件は未完了です。
 9de6の原12 RELEASE runtimeはE92で全actual0/実EOF/waitを確認しました。
-7658の別の原12 RELEASE runtimeと完全required/CIは継続中です。元12ケース・
-共有18,000秒・CPU4/16GiB/swap0を維持し、終端成功前に合格へ数えません。
+7658の別の原12 RELEASE runtimeと完全required/CIはE131/E132で終端成功を確認しました。
+元12ケース・共有18,000秒・CPU4/16GiB/swap0を維持しています。
+後続e6f1の完全requiredはE133で失敗し、新sourceのqualificationは未完了です。
 初回DockerのSQLite祖先directory読取EACCES、manual fixtureのsetup counter誤り、
 import testのsource retirement不足と各修正前失敗も保持します。
 50a4 / tree eff704ddのE14-E16と旧作業コピーは過去の対象として保持します。
@@ -332,6 +340,11 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E128: genuine positive Split actual distinct-UID protected submission | `207ea842`で元first-successor selectorが1 passed/0 failed/0 ignored、actual0/両実EOF/wait、inner49.791秒/outer49.870秒。別UIDのLeg/Claim承認・署名・取消・鍵復旧・再起動・expiryと実protected Aの元ordered提出が成功 | 完全outer152 frames/13 operations、inner351 frames/97 operations、22 host operations、8 successful PTY/2拒否、8canonical approvalsと9exact normal socket wait/不在/FD閉鎖を照合。raw456372/meta320761/tar783360 bytesを全量保持。1195 source/Git・全tools/runtime bindings、旧1581 failure files/270 dirs/保持4個と309保持files/64 dirs、全37 saved host PIDs/cgroup/TMP回収を確認。既知fixture鍵の選択範囲であり、本番鍵秘匿・全M2/M7・統合head全体の資格ではない |
 | E129: certified FastVote actual distinct-UID/TLS lifecycle | `5d8d7f46`の実4-worker/4-keyless-TLS fixtureがactual0/両実EOF/wait、outer30.526秒。全39 required controls・147 roles・27 probes・32 read-only SQL oracle exchangesが成功。4つの明示startup拒否だけexit1 | 完全wire10430 bytes/復号84355 bytesを厳密照合し、全childにU+FFFDなし・再構成UTF8 59099 bytes一致。全17 Docker clientsが0で終了し、専有資源は明確に削除。全1190 source/Git・5 ELF/4 libraries・toolsと旧失敗を保存。3署名family、A/B実apply/保存済み再送、C pre-import409/no-DrainSet409・nonce2/C未適用、元ordered Freeze、frontier/union3とfence6再開後の全source/body/anchor imageを検証。親の追加2不在queriesも0/空。全M2/M7・統合head全体の資格にはしない |
 | E130: final7658 literal complete required | `7658629a` / tree`7ab61388`でliteral npm ci --prefix adapters/cloudflare-workers と ./scripts/check-all.sh がともにactual0/merged pipe実EOF/wait。inner合計15878.474秒、完全log706439 bytes。Rust145 summariesの合計4366 passed/0 failed/39 ignored、元3 extended lanesと各provider checksが成功 | 1180 source/Git・50 tools/aliases・311 locked archive checksumsと元8links/e8terminal withdrawals/35roles/delay7 assertionsを照合。unit invocation一致/最終journal/owner MainPID0/ExecMain0、cgroupと既知owner/Cargo/fixture PIDs不在を確認。detached dispatchのためlong outer capture/両外部EOF/reapを主張しない。既存TMP/cacheは保持。7658の選択required資格であり、新統合head・原12 RELEASE runtime・hosted CI・全M7/監査/公開の資格ではない |
+| E131: 7658 original12 RELEASE runtime terminal | `7658629a` / tree`7ab61388`の元10 whole + 2 exact ignoredが全actual0、94 passed/0 failed/3 ignored。actual outer0/両実EOF/wait、12,119.104秒。親receipt`r4-runtime-promoted-parent-qualified-1017.json` (`87873e92`) と独立照合が完了 | strict24 events/12完全本文・49 ELF・1180 source/Git・tools/13 byte pairsを照合。既知535 PIDs・4 TMP・cgroup・leaseの消失を確認。e6f1や後続source、全M2/M3/M4/M7の成功へ転用しない |
+| E132: 7658 full required and exact-tree all8 hosted CI | 同じ7658のliteral npm ci/check-allはactual0、15,878.474秒。run`39000226577`の全8 jobsがsuccess、全8 checkoutのtree`7ab61388`とparents befca7e9/7658629aを照合。親required receipt`d1d2e963` / CI receipt`cba68bb3` | 完全required/CI rawと独立照合を保存。145 Rust summaries/4366 passed/0 failed/39 ignored。localはdetached ownerでありouter両EOFを新たに主張しない。原条件対応と後続sourceの失敗は別に保持 |
+| E133: e6f1 integration full-required failure and Native build | `e6f1dfe3` / tree`71a2a77e`。literal npm ciは0、check-allはactual101、2443.274秒。runtime-sqliteの`checkpoint_snapshot_restores_source_free_complete_rows_bodies_fence_and_receipt_replay`でConfiguredCheckpointAuthority再openがIndependentAnchorError。全体停止時点で2800 passed/1 failed/14 ignored | 元raw/ELF/target/private cacheと失敗receipt`ebc86b9b`を保存。別のfresh13 A/Bは全byte/mode/owner一致、親`385602e3`・独立`8abe9fcc`で照合済み。23 debug/driver buildは2 commandsがactual0、outer954.573秒/両実EOF/wait。実runtime/CLI・新source全体の合格には数えない。e6f1 hosted CIは継続中 |
+| E134: ordinary checkpoint diagnosis and test-only isolation | 旧診断1はsubordinate終了の判定誤りで失敗、親`120c766b`。修正診断2は1回だけ22 passed/0 failed/0 ignoredで対象testも正常、2回目はGDBのsubordinate待機中に240秒上限へ達して失敗。独立receipt`2aa57eb4` | 全raw、旧57 files/14 dirs、新OUT/TMPを保持。診断2の4 pidfd cleanup entries/100既知PIDs・LWPs消失を照合。元の自然失敗原因は未確定。対象1件を同名exact childで実行し全assertionを保持する19行のtest-only隔離を準備、実行は未完了。production lease・global parallelism・元selectorは変更しない |
+| E135: transfer and genesis Split/Merge recovered-key fixture source | 転送`fb00a82a`とその子`285df467`の分割/結合を別作業コピーに保存。実署名前後の同一request byte比較、元と新しい取消・再起動拒否を追加。285dは1207 source/Git・既存45 defs・元phaseの保持を親`6f619c2c`/独立`a629c416`で確認 | source-only。実CLI/Docker/鍵操作・本体再compile・各fixtureの実行成功はまだない。新署名は提出せず、元preimageを使う独立signing-only要求であり新business chain/currentness/nonceを主張しない。resource capsを維持し、fb00実行成功後に285dを別に実行する。全M2や新source gateは未完了 |
 
 
 
@@ -904,7 +917,9 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     実prior releaseからのupgrade/旧版停止・再開が成功。最終統合sourceの完全required/CI・
     13-target Native A/BとM4対象の実RELEASE runtime、残る原条件の照合を残し、全M4/releaseは未完了。
     E93/E94/E95で7658の13-target A/B・M4対象RELEASE TLS/upgrade・既存CLI fixtureを確認。
-    同headの完全required/hosted CIは実行中で、全M4の完了には数えない。
+    同headの完全required/全8 hosted CI・原12 runtimeはE131/E132で終端成功を確認。
+    後続e6f1のauthority再open test失敗と新sourceのtest-only隔離はE133/E134へ残し、
+    新sourceの全体qualificationと原条件の最終対応が終わるまで全M4を完了にしない。
     原12 RELEASE runtimeの総合qualificationはM7の別gate。元8リンク/e8 withdrawals/
     35 rolesの暗号化relocationは完全required/CIから除かず、短いTLS/upgradeで代替しない。
   - [x] [独立に保持したordered history floor component](docs/architecture/decisions/0248-import-ordered-history-freshness-floor.md):
