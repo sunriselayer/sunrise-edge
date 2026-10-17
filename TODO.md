@@ -324,7 +324,11 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E120: positive Split complete-metadata budget failure | `a4f6c1a8`の実CLI producer/lddは0、元selectorはfirst-successorで101。outer43.489秒/両実EOF/wait。mounted readyが出ず、実103-byte errorはcomplete evidence metadata exceeds256KiB | 完全outer raw142 frames/9 operations・18 host operations、1195 source/Git・19 own/17 component tools・21 ELF/11 bindings/4 libraries、旧973 files/141 dirs/保持3個、全29 saved PIDs/cgroup・専有資源解放を独立照合。公開233 leaves+index、291 source/292保持filesを保存。inner raw/meta/tar/candidateが保存されなかったため、97操作/PTY/署名/socket/serviceの成功には数えない |
 | E121: certified all-staged-proof strict producer | 別branch `812458ba`。全6 commandsがactual0/両実EOF/wait、inner22.747秒/outer22.852秒。完全raw903023 bytes/704 frames/21 operations、新harnessを含む5実CargoJSON保持ELFを固定 | 親と独立reviewが1190 source/Git blobs・17 tools・9入力、旧4 compiler bins/旧5保持ELFの不変、全PID/cgroup・TMP7回収を確認。component gatesのみで、修正後の実UID drain/union/最終lifecycleは未検証 |
 | E122: positive Split complete-metadata finite envelope | 元97操作/8approval/9socket schemaのmetadata下限320224 bytes・保守上限323624 bytesを照合。`207ea842`でmetadata524288 bytesとmounted tar1310720 bytesへ限定変更し、全フィールドとraw655360/candidate65536 bytesを保持 | payload合計1245184 bytesと通常tar overheadは新有限上限以内。任意PAX/framingの成功保証ではなく実全量captureが必要。今後のownerで例外にする保持fileは正確なinside.tar/host-11.stdoutの2個のみで、他は1MiB・総量24MiB/counts・10GiB growth・元97/22操作・全権限/拒否/時間/資源条件を維持。旧失敗profileは保持し、新component/runtimeは未実行 |
-| E123: bounded canonical frame mutation campaign source | 統合branchの`0b26e721`に非ignored testと手順書を追加。依存/manifest/production/既存recipesを変えず、4固定seeds、独立wire256 frames・4096 mutations・12固定拒否controlsを1024-byte/8-field内で検証するソースを普通review | 独立format oracleの受理/type/version/全fieldsとproduction再encodeのbyte一致、過大field countの明示拒否を確認する。コンパイル/実行は未達で、exhaustive/coverage-guided fuzz・独立security監査・全M7の成功には数えない |
+| E123: bounded canonical frame mutation campaign source | 統合branchの`0b26e721`に非ignored testと手順書を追加。依存/manifest/production/既存recipesを変えず、4固定seeds、独立wire256 frames・4096 mutations・12固定拒否controlsを1024-byte/8-field内で検証するソースを普通review | 独立format oracleの受理/type/version/全fieldsとproduction再encodeのbyte一致、過大field countの明示拒否を確認する。このsource行の時点ではコンパイル/実行は未達。実結果はE126へ追記し、exhaustive/coverage-guided fuzz・独立security監査・全M7の成功には数えない |
+| E124: certified post-Freeze exact refusal boundary | `812458ba`の実UID attemptはdrain proof import・union・DrainSet未確定時の実行拒否まで成功後、新prepareの期待400/実500でactual1。outer29.383秒/両実EOF/wait | 全127 roles・完全復号74020 bytes、再構成UTF8 54657 bytes/U+FFFDなし、15 clientsの終了と専有資源不在を照合。既存PersistenceInvariantの500 invalid-node-outputを保存し、`5d8d7f46`でfresh intentの事前認証とexact status/bodyだけを合わせた。ACK byte再送と完全image不変を保持し、任意500を合格にしない。旧失敗を保存し、修正後runtimeは未検証 |
+| E125: positive Split metadata-profile strict component | `207ea842`の全7 commandsがactual0/両実EOF/wait、inner9.788秒/outer9.872秒。CLI406 passed/0 failed/7 ignored・元9 policy/custody controls・exporter4 passed/0 failed/0 ignored、strict Clippy/fmt/diffが成功 | 完全raw741 frames/754255 bytes/17 operations、1195 source/Git・17 tools・311 archives・20 target ELF/新保持CLI lib、旧1581 failure files/270 directories/保持4個と全PID/cgroup/TMP7回収を照合。component成功を後続genuineまたは統合head全体の資格にはしない |
+| E126: bounded canonical mutation actual campaign | 統合head `ab8ff2da` / tree`2b3c93f2`で4固定seeds・256 originals/4096 mutations/12固定controlsの4364 decoder inputsを検査する非ignored testが1 passed/0 failed/0 ignored。crate全target/all-feature strict Clippyと追加test rustfmtもactual0 | 完全raw33 frames/11 operations、1207 source/Git・15 tools・311 checksum-pinned archives、実Cargo Running由来ELFと全PID/cgroup/TMPを親と独立reviewで照合。inner2.763秒/outer2.830秒。有限の固定入力campaignで、unique inputs/各case transcript・coverage-guided/exhaustive fuzz・security監査・全M7の成功とは呼ばない |
+| E127: certified exact-refusal strict producer | `5d8d7f46`の全6 commandsがactual0/両実EOF/wait、inner21.244秒/outer21.334秒。完全raw725 frames/904514 bytes/21 operations、新harnessを含む5実CargoJSON保持ELFを固定 | 1190 source/Git・17 tools・9入力、旧4 compiler bins/旧5保持ELF不変と全PID/cgroup/TMP8回収を親と独立reviewで照合。component成功のみで、修正後の実別UID/TLS後段lifecycleは別attemptで検証する |
 
 
 
@@ -451,6 +455,10 @@ E120は `positive-fee-split-uid-genuine4-independent-failure-qualified-1017.json
 E121は `m2-certified-fastvote-fixture-build7-parent-qualified-1017.json` とactual raw/terminal。
 E122は `positive-fee-split-fixed97-metadata-budget-1017.json` とADR-0270/207e source。
 E123は `m7-canonical-frame-mutation-0b26-source-candidate-1017.json` と追加test/手順書。
+E124は `m2-certified-fastvote-fixture-runtime6-independent-qualified-failure-1017.json` と追加不在確認/ADR-0271。
+E125は `positive-fee-split-uid-build7-parent-qualified-1017.json` とactual raw/terminal。
+E126は `m7-canonical-mutation-build1-parent-qualified-1017.json` / independent qualificationとactual raw/ELF/terminal。
+E127は `m2-certified-fastvote-fixture-build8-parent-qualified-1017.json` とactual raw/receipt/terminal。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -827,7 +835,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
   - [ ] [certified FastVoteの実別UID・TLS lifecycle](docs/architecture/local-certified-protocol-custody-fixture.md):
     修正後の5 ELF producerは成功。実署名・保存済み再送・停止中拒否・fence/restart・
     frontier/progress/readinessと独立read-only SQL oracleの実行を検証中。
-    初回E108のmarker形式を修正後、E111でfixtureの期待認証profile不一致を検出。固定genesisの既存canonical profileへ期待IDを合わせ、全元context検証を維持して再検証する。
+    E108/E111/E115/E119/E124の各失敗を保持。既存canonical profile・page契約・全entryのdrain proof import・exact closed refusalへfixtureを合わせ、全署名/context/oracleを維持。E127のstrict producer後、修正後runtimeを検証する。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
