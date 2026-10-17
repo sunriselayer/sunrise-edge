@@ -239,6 +239,28 @@ impl NativeSqlBackend {
         });
     }
 
+    #[cfg(test)]
+    pub(crate) fn on_anchor_commit(
+        &self,
+        phase: crate::anchor::AnchorCommitPhase,
+        action: impl FnOnce() + Send + 'static,
+    ) {
+        self.anchor
+            .as_ref()
+            .expect("anchored test backend")
+            .on_commit(phase, action);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observed_anchor_commit_error(
+        &self,
+    ) -> Option<(crate::anchor::AnchorCommitPhase, i32)> {
+        self.anchor
+            .as_ref()
+            .expect("anchored test backend")
+            .observed_commit_error()
+    }
+
     /// Observation of SQLite's real COMMIT failure, never an injected outcome.
     #[cfg(test)]
     pub(crate) fn observed_commit_error(&self) -> Option<i32> {

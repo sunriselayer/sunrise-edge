@@ -1,6 +1,8 @@
 //! Ignored driver for the explicit Linux/QEMU/ext4 virtual fault profile.
 //! The owner supplies real guest loss and block faults; this module injects none.
 
+mod anchored;
+
 use super::*;
 
 const PROFILE: &str = "native-sqlite-qemu-v1";

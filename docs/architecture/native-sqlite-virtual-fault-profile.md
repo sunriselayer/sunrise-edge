@@ -114,3 +114,19 @@ ENOSPC and actual TLS/business controls keep their separate selectors and
 assertions. Passing this profile cannot silently close every M3 requirement.
 
 See [DR-0262](decisions/0262-native-sqlite-virtual-power-and-block-errors.md).
+
+
+## Independent authority variant
+
+[DR-0266](decisions/0266-independent-anchor-virtual-fault-profile.md) defines a
+separate `native-sqlite-qemu-anchored-v1` ignored child driver. It preserves every
+ordinary case and literal source/body oracle, and adds an independently targeted
+second ext4/virtio authority device, closed two-table acknowledgement/Pending
+manifest and actual authority prepare/finalize COMMIT observation. Three power
+cuts and write/flush EIO at each source/prepare/finalize COMMIT supply nine
+separate boundaries. Pending-old requires unchanged safe stop; exact-new requires
+normal real reconciliation before fresh fencing/replay/new work. A forensic
+image copy is never adopted as current authority. Its finite owner budgets and
+same-original-authority identity differ explicitly from the ordinary profile.
+Execution/completion is recorded in TODO, never inferred from source or QMP
+configuration. Neither variant alone demonstrates torn persistent WAL writes.

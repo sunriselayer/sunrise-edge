@@ -390,6 +390,56 @@ impl AnchorLease {
     }
 }
 
+/// Test-only rendezvous at actual authority COMMIT, never an error injection.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AnchorCommitPhase {
+    Prepare,
+    Finalize,
+}
+
+#[cfg(test)]
+struct AnchorCommitHook {
+    phase: AnchorCommitPhase,
+    action: Box<dyn FnOnce() + Send>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct AnchorTestControl {
+    hook: Mutex<Option<AnchorCommitHook>>,
+    error: Mutex<Option<(AnchorCommitPhase, i32)>>,
+}
+#[cfg(test)]
+impl fmt::Debug for AnchorTestControl {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AnchorTestControl")
+            .finish_non_exhaustive()
+    }
+}
+#[cfg(test)]
+impl AnchorTestControl {
+    fn boundary(&self, phase: AnchorCommitPhase) {
+        let mut slot = self.hook.lock().unwrap();
+        let hook: Option<AnchorCommitHook> =
+            if slot.as_ref().is_some_and(|hook| hook.phase == phase) {
+                slot.take()
+            } else {
+                None
+            };
+        drop(slot);
+        if let Some(hook) = hook {
+            (hook.action)();
+        }
+    }
+    fn observe(&self, phase: AnchorCommitPhase, result: &rusqlite::Result<()>) {
+        if let Err(rusqlite::Error::SqliteFailure(failure, _)) = result {
+            *self.error.lock().unwrap() = Some((phase, failure.extended_code));
+        }
+    }
+}
+
 /// One lifetime OS lock and independently held database. Lock order is anchor
 /// mutex, then state connection; the body inspection connection is read-only.
 /// Blob puts never acquire either of these locks and cannot replace content.
@@ -398,6 +448,8 @@ pub(crate) struct IndependentAnchor {
     owner: Mutex<NativeConnection>,
     lease: AnchorLease,
     blob_path: Option<PathBuf>,
+    #[cfg(test)]
+    test: AnchorTestControl,
 }
 
 pub(crate) struct AnchorGuard<'a> {
@@ -405,6 +457,8 @@ pub(crate) struct AnchorGuard<'a> {
     lease: &'a AnchorLease,
     blobs: NativeConnection,
     budget: Budget,
+    #[cfg(test)]
+    test: &'a AnchorTestControl,
 }
 
 fn require_separate(
@@ -482,7 +536,27 @@ impl IndependentAnchor {
             owner: Mutex::new(owner),
             lease,
             blob_path,
+            #[cfg(test)]
+            test: AnchorTestControl::default(),
         }))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn on_commit(
+        &self,
+        phase: AnchorCommitPhase,
+        action: impl FnOnce() + Send + 'static,
+    ) {
+        *self.test.error.lock().unwrap() = None;
+        *self.test.hook.lock().unwrap() = Some(AnchorCommitHook {
+            phase,
+            action: Box::new(action),
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observed_commit_error(&self) -> Option<(AnchorCommitPhase, i32)> {
+        *self.test.error.lock().unwrap()
     }
 
     #[cfg(test)]
@@ -515,6 +589,8 @@ impl IndependentAnchor {
             lease: &self.lease,
             blobs,
             budget: Budget::new(deadline),
+            #[cfg(test)]
+            test: &self.test,
         })
     }
 }
@@ -581,7 +657,12 @@ impl AnchorGuard<'_> {
             return Err(IndependentAnchorError);
         }
         replace_bodies(&tx, true, &bodies)?;
-        tx.commit()?;
+        #[cfg(test)]
+        self.test.boundary(AnchorCommitPhase::Prepare);
+        let result: rusqlite::Result<()> = tx.commit();
+        #[cfg(test)]
+        self.test.observe(AnchorCommitPhase::Prepare, &result);
+        result?;
         self.lease.check()?;
         self.owner.identity.check()?;
         Ok(())
@@ -600,7 +681,12 @@ impl AnchorGuard<'_> {
         }
         tx.execute("DELETE FROM anchor_bodies WHERE pending=0", [])?;
         tx.execute("UPDATE anchor_bodies SET pending=0 WHERE pending=1", [])?;
-        tx.commit()?;
+        #[cfg(test)]
+        self.test.boundary(AnchorCommitPhase::Finalize);
+        let result: rusqlite::Result<()> = tx.commit();
+        #[cfg(test)]
+        self.test.observe(AnchorCommitPhase::Finalize, &result);
+        result?;
         self.lease.check()?;
         self.owner.identity.check()?;
         Ok(())
@@ -700,6 +786,8 @@ pub fn enroll_independent_anchor(
         owner: Mutex::new(owner),
         lease,
         blob_path: Some(blobs.to_path_buf()),
+        #[cfg(test)]
+        test: AnchorTestControl::default(),
     };
     let mut guard = anchor_owner.lock(None)?;
     guard.check(&source.sqlite)?;

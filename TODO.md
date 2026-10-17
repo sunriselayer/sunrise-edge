@@ -708,15 +708,18 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     E77の失敗を保持し、E79で実guest電源断2種・write-only EIO・flush-only EIOと
     全cold復旧を検証。既存schema/v6・user_version5の通常profileだけを対象とする。
     独立anchor付きprofile、物理hardwareや最終headの全体qualificationへ借用しない。
-  - [ ] 独立anchor付きprofileの実guest fault boundaries:
-    Pending準備・source COMMIT・anchor確定の各境界を区別し、実write/flush EIOも検証する。
+  - [ ] [独立anchor付きprofileの実guest fault boundaries](docs/architecture/decisions/0266-independent-anchor-virtual-fault-profile.md):
+    ACK後・Pending後/source COMMIT前・source COMMIT後/finalize前のguest電源断と、
+    source/prepare/finalize各COMMITの実write/flush EIOの計9境界を実装し、source review済み。
     Pendingと旧sourceの不一致は既存契約どおり安全停止し、完全new sourceとPendingが
     一致する場合だけ既存factoryで照合・確定してfresh fence/new workへ進む。
     通常profileのE79を流用せず、全12+2+authority tablesとpositive bodiesを検証する。
-    source/controllerの具体化中で、build/実VMは未実行。
+    source/controllerの実build・guest owningは未実行。
   - [ ] selected virtual deviceのpartial persistent write:
     元のgeneric torn-write条件を保持。実WAL extent・対象sector・混在した保存bytesと
     cold receipt-first none/allを対応付ける。単なるEIOやtransfer上限だけで完了にしない。
+    追加source assessmentは2026-10-17にprovider safetyで停止。再試行・迂回せず、
+    supporting mechanism2の準備sourceも未実行で保持する。
     最終sourceのENOSPC・conformance・TLS・完全required/CIも未完了。
   - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。
     trait reply-loss、process SIGKILL、power/host/media/fsync faultは別証拠。

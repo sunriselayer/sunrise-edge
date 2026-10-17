@@ -33,6 +33,10 @@ roadmap describes a later target state.
   ([DR-0262](decisions/0262-native-sqlite-virtual-power-and-block-errors.md)):
   actual guest kernel/cache loss and typed block EIO under source COMMIT,
   independent cold full-image reconciliation and fresh fenced work.
+- [Independent-anchor virtual fault profile](decisions/0266-independent-anchor-virtual-fault-profile.md):
+  separate guest source/authority devices, real Pending/source/finalize cuts,
+  phase-specific write/flush errors, closed authority manifests and supported
+  exact-new reconciliation or unchanged Pending-old safe stop.
 - [Owned local TLS stop and explicit rotation](decisions/0216-local-tls-stop-restart-rotation.md):
   retained listener and trust boundaries, actual served-leaf observation and
   orderly compiled-host restart; separate from production PKI and custody.
