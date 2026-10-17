@@ -24,6 +24,7 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   旧local完全gateの終端未確認E20は保持し、新しいM2 sourceの完全gateはE22で成功。
   M2/M3/M7・公開条件は未完了のまま保持します。M4の選択済み技術範囲はE152で完了。
 - D05/M5の選択済みNative/closed relayの技術範囲はE71/E73で完了。
+  選択した8件 (D02/D05/M1/M2/M3/M4/M5/M7) は3件完了・5件未完了です。
   残るコード・検証の親項目はD02/M1/M2/M3/M7の5件です。
   M4はexact `5f6b1819` の選択済みNative+SQLite/trusted-local-OS範囲をE152で完了しました。
   元M5の実PKI・capacity・alerts・運用の公開条件はD04/D07/M8に残ります。
@@ -48,7 +49,7 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   [Draft PR #322](https://github.com/sunriselayer/sunrise-edge/pull/322) は全8 CI成功を実ログ/checkoutで照合 (E152)。
   #323は全8 CI成功をraw/checkoutまで照合しました (E160)。旧local中断E157は保持。
   #324も全8 CI成功をraw/checkoutまで照合しました (E161)。
-  #325は6 jobs成功、recurring-sqlite継続中・集約check未作成です。
+  #325も全8 CI成功をraw/checkoutまで照合しました (E168)。
   正のgenesis Coin A→B→A移行は `fe542b82` に追加し、strictと新H7 producerは成功。
   新13-target A/Bは両laneの全13 ELFのbyte一致・source/provenance照合まで完了しました (E145)。
   追加fixtureの2回の実失敗を保持し、private exportのumaskとtransient予約のAbsent oracleを修正。
@@ -63,11 +64,11 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   追加の公開advisory照会でRustls 0.23.45に4件を検出し、別branchで0.23.46へ更新しました (E153)。
   更新後311 locked versionsのOSV応答は該当0件。修正版の[Draft PR #325](https://github.com/sunriselayer/sunrise-edge/pull/325)
   exact `50fbf22d` は完全5-group PG/集約check・fresh13-target A/B・current CLI全117・
-  fresh23/full49 compile-only・TLS/実prior upgradeをE154-E158で完了しました。
+  fresh23/full49 compile-only・TLS/実prior upgradeをE154-E156/E158で完了しました。
   原12 RELEASE runtimeも全12 cases・98 passed/0 failed/3 ignoredで終端成功を照合しました (E164)。
   追加2 harnessの7 compile/syntax/lint gatesはE163、ordered/certified別UID・TLSはE166で成功。
-  同sourceのliteral npm ci +完全requiredもE167で終端成功を照合し、残る全8 ordinary CIを
-  引き続き照合中です。旧sourceの合格を借用しません。
+  同sourceのliteral npm ci +完全requiredはE167、全8 ordinary CIはE168で実終端まで
+  照合し、Rustls更新のsource qualificationを完了しました。旧sourceの合格を借用しません。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -410,6 +411,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E165: ordered current50fb runtime1 prelaunch path refusal | 新runtime1 ownerはproof SHAを新しいruntime1証拠へ固定したが、rootのpromotionがCOMPOSITION_PROOFの旧unversioned pathnameを残したため、最初のordered起動はFileNotFoundErrorで拒否。actual outer1/両EOF/wait/reap、0.210秒。Node argv/PID設定前で、inner stream filesは未作成。certified1は未実行。保存`rustls-uid-ordered-current50fb-runtime1-actual-failure-qualified-1018.json` (`018fe3d9`) | product成功/失敗のテスト結果ではなく起動前のmetadata誤り。既知owner/external PID・CG不在を確認。最初のreadonly checkerによる未作成stream仮定の失敗も保持。rootの旧READY判定`47100a1d`とpeerの実行可能性判定`d519b784`はscope correctionで撤回し、元artifact/出力を上書きしない。runtime2では新grant/proof/出力名を使い、全16 configured Path+SHAと親の一致をroot・別peerが実ファイルで照合。aliasやproduct oracle/capの変更は行わない |
 | E166: current ordered/certified separate-UID TLS components | exact `50fbf22d`の新2 harnessと既存同source Native4 RELEASE rolesを実使用。各fresh5 ELF/4 loader-libs計4,825,056 bytesのinventoryは両actual0で照合。runtime2はordered→clean回収後certifiedの順で各1回、actual0/両outer・Node EOF/wait/reap、13.907/30.553秒。orderedは18 controls/76 roles・fence3/new height2、certifiedは39 controls/147 roles/27 probes/32 oracle exchanges・fence6/two paid/nonce2/frontier・union3を確認。親`rustls-uid-current50fb-runtimes2-parent-qualified-1018.json` (`00ada6e7`) | author・root・独立peerが元UID/TLS/署名/拒否/保存済み再送/停止・restart/SQL oracleを現在入力へ対応付ける。strict base64/zlib EOF・trailingなし・decoded SHA/JSON一致と全recorded stdout/stderrのUTF8 byte和45,653/59,099・置換文字なしを照合。各17 Docker clientsと全role waits、exact ownerのcontainer/volume回収statement・既知host PID/CG不在を確認。個別Docker raw/ldd ledger・fresh Docker query/未保存OOMは主張しない。certifiedのpositive drain member application=falseは元の範囲。E165とreader regex仮定失敗を保持し、ZeroShare・全M2/M7・独立source/security監査・公開認定へ転用しない |
 | E167: current Rustls complete local required and predicate correspondence | exact `50fbf22d` / tree`ccae85a6`のliteral npm ci +完全check-allが各actual0/merged実EOF/waitで自然終了、17,674.091秒。147 Rust summariesは4,397 passed/0 failed/42 ignored、cf全4 Vitest計66 tests。root・独立peerが全747,165-byte raw、source1215全Ns/Git・360 tool hash refs/alias metadata・5 seed proof JSON・7 directory tuplesを照合。親`rustls-advisory-required-final-parent-qualified-1018.json` (`d17f344a`) | 実7 epoch spans/e8 freeze-drain・unlock・pack-saved timingと2 unique1,832-byte候補/同じ2rounds3 ACK stemsを照合。保存6 cycles293 observations/292 direct kernel rowsは16GiB/swap0/CPU4/tasks512。既知MainPID/CG不在と同invocationの自然終了後、rootは当該unitだけを停止し、cache/target/TMP/logを保持。cold-open/8links/delay7/35rolesは成功source predicateに対応し、未保存OOM/全child census/detached outer EOFは主張しない。7つの元nonignored vector/finite-frame-campaign testsの各1回success実行、21 vectors/Native-WASM parityの元recipeとsource対応をordinary peerが照合 (`c2620ac0` / `2d97366a`)。全8 ordinary CI・全M2/M7・独立source/security監査・公開認定は未完了 |
+| E168: current Rustls all8 CI and source qualification | exact `50fbf22d`の[PR #325全8 CI](https://github.com/sunriselayer/sunrise-edge/actions/runs/39047302352)がactual success。tested merge`f47bc421` / tree`ccae85a6` / parents e4fb+50fb / attempt1。root・独立peerが全8 raw計1,557,534 bytesとcheckoutを照合し、147 Rust summariesは4,397 passed/0 failed/42 ignored、cf全66 tests、実Node24.19.0の5 lanesを確認。CI親`ci-run-39047302352-parent-qualified-1018.json` (`08b77327`) | 元7 epoch spans/e8 freeze・unlock/saved closure、2 unique1,832-byte candidatesと同じ2 rounds3 committed ACK stems、実finite-frame-campaign名の各1回successを確認。E153-E156/E158/E163/E164/E166/E167と当該CIを同sourceへ対応し、17 closed refsの親`rustls-02346-current-source-qualification-parent-1018.json` (`b25d7188`)でRustls更新のsource/component資格を完了。collectorはactual0/両実EOF/wait/reap。親の旧schema参照失敗を保持し、実field名だけに直したreaderで照合した。全M2/M3/M7・独立source/security/release監査・issue disposition・公開認定は完了扱いにしない |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -1129,19 +1131,26 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     10a4/E61・f973/E65の原12 runtime失敗も保持する。9de6はE64の13-target A/B・
     E71の完全required/CIに加え、E92で原12 RELEASE runtimeの全actual0/実EOF/waitを完了した。
     後続5f6bのfresh13-target A/BはE137、原12 RELEASE runtime全12 casesはE151で成功。
-    9de6/5f6bの資格を別sourceの完全gate/CI/Nativeへ借用しない。残る独立監査・
-    upgrade/restore・実provider基準により全M7は未完了。
-  - [ ] Rustls 0.23.46更新のsource qualification: E153の4 advisoriesを修正した
-    新sourceでactual build/TLS・literal npm ci +完全required・全8 CI、依存変更に対応した
-    元5-group完全PG/集約check、13-target Native provenanceを確認する。
-    exact `50fbf22d` の完全PG/集約checkはE154、fresh13-target A/BはE155で成功。
-    current RELEASE CLI全117はE156、fresh23/full49とTLS/実旧版upgradeはE158で成功。
-    原12 runtimeはE164、literal npm ci +完全requiredはE167で終端成功を確認。
-    残る全8 ordinary CIの終端を引き続き照合する。
-  - 次: E18/E19のsource/tool/profile pinをR4/Gから共用し、新sourceのrelease claimには
-    そのsourceの13-target A/B・実RELEASE bindingを用意する。未達qualificationを進める。
-    過去の11/12-target成功やcheap fixtureを13-target成功にはしない。
-    広告する他providerにはPhase 16/17の実provider基準を残す。ローカルadapterの合格で閉じない。
+    9de6/5f6bの資格を別sourceへ借用しない。現行`50fbf22d`のE154-E156/E158・E164・
+    E166-E168は同source/treeへ対応付けた。実旧9de6 upgradeと元12 casesのcold-open/
+    source-free restore、元vectors・Native/WASM/workerd parity、既存の有限frame campaignは
+    各成功predicateの範囲で確認済み。元の独立した最終source/security/release reviewと
+    issue dispositionは未完了で、全M7は未完了。
+  - [x] Rustls 0.23.46更新のsource qualification: E153の公開advisory metadataと
+    exact dependency更新に対し、同`50fbf22d`の元5-group完全PG/集約checkはE154、
+    fresh13-target A/BはE155、同source RELEASE CLI117はE156、fresh23/full49と
+    default TLS15/実旧9de6 upgrade1はE158で成功。元12 runtimeはE164、既存ordered/
+    certified別UID/TLS componentsはE166、literal npm ci +完全requiredはE167、
+    全8 ordinary CIはE168で実終端まで照合した。当該更新のsource/component資格であり、
+    独立最終source/security/release review・全M2/M3/M7・provider deployment・公開認定を
+    完了したとは扱わない。
+  - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
+    上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
+    公開準備行の責務は未達のまま保持する。現行50fbのbuild/upgrade/restore/parity/
+    元selectorの成功を、別の未指定campaign待ちとはしない。新sourceにはそのsourceの
+    13-target A/B・実RELEASE bindingsを使い、ancestor結果を借用しない。
+    広告する他providerに限り元のPhase16/17実provider基準を適用する。
+    ローカルworkerd/adapter合格は実provider認定ではない。
 
 ## 公開準備: 6件
 
