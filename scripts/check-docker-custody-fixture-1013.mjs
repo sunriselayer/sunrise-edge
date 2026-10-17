@@ -1284,7 +1284,11 @@ def phase_genesis_coin_identity_handoff(public_key):
             rc, _out, err = execute(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
             if rc == 0 or b"custody approve requires an interactive terminal" not in err:
                 raise FixtureFailure("handoff approval accepted pipe or wrong refusal")
-            phase_approve_via_pty(None, None, 0, ids[index], 3600, command=approve); pty_count += 1
+            pty_bytes = phase_approve_via_pty(None, None, 0, ids[index], 3600, command=approve)
+            charge_output(pty_bytes)
+            pty_count += 1
+            if _output_used - output_before > 49152:
+                raise FixtureFailure("handoff PTY capture exceeds48KiB phase allocation")
             generated_paths.append(f"{approvals}/{ids[index]}")
             def serving(count):
                 return cli_argv("custody", "serve-transfer", *trust(index, custody_dir), "--key-file", keys[index],
