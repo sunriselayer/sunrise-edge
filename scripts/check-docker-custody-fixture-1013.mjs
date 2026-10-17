@@ -1305,7 +1305,12 @@ def phase_genesis_coin_identity_handoff(public_key):
                 "--coin", generated["coin"], "--fee-source", generated[f"fee_{tag}"], "--recipient", owners[1-index],
                 "--nonce", "0", "--request-id", ids[index], "--max-fee", "1000000", "--gas-limit", "200000",
                 "--submission-out", f"{operator_dir}/{tag}-submission.bin", "--result-out", f"{operator_dir}/{tag}-result.bin")
-            passed(actual, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID], marker=b"paid_status=Success")
+            # Saved CLI outputs inherit this phase's private-file creation policy.
+            handoff_umask = os.umask(0o077)
+            try:
+                passed(actual, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID], marker=b"paid_status=Success")
+            finally:
+                os.umask(handoff_umask)
             generated_paths.extend([f"{operator_dir}/{tag}-submission.bin", f"{operator_dir}/{tag}-result.bin"])
             if bounded(f"{operator_dir}/{tag}-offline.bin", OPERATOR_UID) != bounded(f"{operator_dir}/{tag}-submission.bin", OPERATOR_UID):
                 raise FixtureFailure("handoff offline/actual CLI bytes differ")

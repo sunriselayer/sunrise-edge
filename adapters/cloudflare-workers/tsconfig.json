@@ -10,7 +10,10 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "skipLibCheck": true,
-    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"]
+    "types": [
+      "@cloudflare/workers-types",
+      "@cloudflare/vitest-plugin/types"
+    ]
   },
   "include": [
     "worker-configuration.d.ts",
@@ -23,7 +26,10 @@
     "vitest.sql.config.ts",
     "vitest.contract.config.ts",
     "vitest.certified.config.ts",
-    "eslint.config.js"
+    "eslint.config.js",
+    "profiles/*/cloudflare.config.ts"
   ],
-  "exclude": ["src/validator/generated"]
+  "exclude": [
+    "src/validator/generated"
+  ]
 }

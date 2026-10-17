@@ -8,12 +8,13 @@ custody real assets. Outstanding implementation and release criteria are in
 
 ## Build and validate
 
-Use the repository's Rust toolchain and Node.js 22. Install the matching build
+Use the repository's Rust toolchain and Node.js 24. Install the matching build
 tool explicitly; generated JavaScript/WASM is ignored and must be rebuilt:
 
 ```bash
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.127 --locked
+npm install --global cf@1.0.0-beta.13
 npm ci --prefix adapters/cloudflare-workers
 bash scripts/build-cloudflare-validator.sh
 npm --prefix adapters/cloudflare-workers run check
@@ -50,9 +51,9 @@ peer range. Do not force dependency installation to bypass that range.
 The relay retains its private `NODE_CORE` Service Binding. It does not execute
 or store contracts; its Service Binding tests are not validator evidence.
 Its target must remain private; do not replace the binding with a public URL.
-To check the relay bundle without deploying, run
-`npm exec -- wrangler deploy --dry-run --config wrangler.jsonc` from
-`adapters/cloudflare-workers` after dependency installation.
+The relay uses `profiles/ingress/cloudflare.config.ts`. Run the adapter check
+above for configuration/type and local-runtime validation. Provider deployment
+requires its own explicit scope.
 
 The validator imports the compiled Rust core, including the same Wasmi guest
 interpreter and metering used by native hosts. Guest contracts are not compiled

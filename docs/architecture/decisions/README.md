@@ -153,3 +153,4 @@ in [`TODO.md`](../../../TODO.md).
 - [DR-0269: protected positive Standard Asset fee-claim Split](0269-positive-standard-asset-fee-claim-custody.md)
 - [DR-0270: genuine positive Split UID fixture](0270-genuine-positive-split-uid-fixture.md)
 - [DR-0271: current certified FastVote multi-UID component fixture](0271-certified-fastvote-multiuid-fixture.md)
+- [DR-0272: Cloudflare CLI configuration and five-profile type checks](0272-cloudflare-cli-five-profile-types.md)

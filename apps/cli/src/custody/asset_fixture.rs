@@ -799,10 +799,17 @@ fn distinct_uid_genesis_coin_identity_handoff_probe() {
                         assert_eq!(amount, 0);
                     }
                 }
-                assert!(matches!(
-                    client.query_object(charged.reservation).unwrap(),
-                    HttpObjectQueryResult::Tombstoned { .. }
-                ));
+                // Reserve and settle create and consume this object in one invocation,
+                // so it has neither a durable object effect nor a durable object head.
+                assert!(!effect_ids.contains(&charged.reservation));
+                let reservation_query: HttpObjectQueryResult =
+                    client.query_object(charged.reservation).unwrap();
+                assert_eq!(
+                    reservation_query,
+                    HttpObjectQueryResult::Absent {
+                        object_id: charged.reservation,
+                    }
+                );
                 for effect in &result.effects.object_effects {
                     observed.insert(match effect {
                         ObjectEffect::Created(object) => object.id,
