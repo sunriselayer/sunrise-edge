@@ -58,6 +58,24 @@ The existing typed confirmation, whole-frame approval, expiry and durable
 revocation rules remain. An approval for another instance is refused even
 when the Coin's nominal asset type is identical.
 
+## Contained application sequence
+
+The existing Docker fixture keeps its original families and entire stopped
+same-key recovery sequence, then runs a separate follow-on against that same
+own-created asset. Protected mint, split-to-self, merge and whole burn return
+its supply to zero. A second protected mint and whole transfer go to the
+fixture's existing distinct disposable recipient: the final supply is 5M,
+TreasuryCap version six and next nonce nine. Transfer to the sender remains
+refused; the fixture does not widen policy to use a no-op self transfer.
+
+The independent Rust probe checks each signed frame, actual result, object
+identity/type/amount/version/owner, supply, nonce and bound receipt. Saved
+request replay compares all observed effect objects and receipt bytes without
+advancing nonce; the final stage replays all six new requests. Separate pinned
+kind-2/3/4 processes compare offline and actual CLI signatures, then refuse
+revoked requests before and after restart without creating output. This adds
+no key recovery or generation step and keeps the original resource limits.
+
 ## Qualification boundary
 
 Pure source controls use synthetic canonical application preimages and the

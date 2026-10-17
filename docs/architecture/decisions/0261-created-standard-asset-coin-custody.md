@@ -84,6 +84,35 @@ pin reader. Existing mint/burn parser controls remain attached to that shared
 reader. Public CLI tests cover all five Call verbs accepting a pair, partial
 pair refusal before endpoint access, and the existing sender-refund rule.
 
+The separate Docker fixture adds a follow-on after the complete original
+own-created mint/burn and stopped same-key E67 lifecycle. It reuses that same
+local instance and backend, with new request IDs a0 through a5 and fresh
+preimage/output paths. Starting at supply zero, cap version three and next
+nonce three, it drives protected mint 5M, split 2M to the same owner, merge,
+and burn the whole 5M, explicitly proving supply zero at cap version five
+and nonce seven. A second protected mint and a whole transfer to the existing
+distinct disposable recipient end at supply 5M, cap version six and nonce
+nine. The intentional transfer-to-self refusal remains for every profile.
+
+The exact ignored `asset_application_coin_fixture` probe authenticates and
+canonically decodes each actual signed intent/result, independently derives
+application object identities and nominal types, checks exact preimage-bound
+references, access modes, values, versions, ownership, cap supply and fresh
+nonce, and binds each actual receipt through its canonical dedup record.
+Each prefix replays every saved request through the real backend and compares
+the complete observed effect-object footprint, every new receipt, nonce and
+retained InstanceRecord. The final prefix replays all six requests. This is
+a finite footprint oracle, not a full SQL or cross-file atomicity claim.
+
+Every operation compares protected offline and actual CLI signed bytes,
+requires terminal approval, and tests revocation plus a new bounded server's
+restart refusal without signed output. The split/merge group retains exact
+6/6/4/2 counters, then 2/2/0/2 after restart; each single-operation group uses
+3/3/2/1, then 1/1/0/1. The original five families and E67 sequence/counters
+remain unchanged. Source/program/bootstrap, output, lifetime, container/UID,
+capability and cleanup bounds are not increased. Fixture source declarations
+remain distinct from actual observed execution qualification in TODO.md.
+
 Formatting/source inspection, owning compilation/tests, actual bounded CLI
 and distinct-UID execution, complete required/hosted gates and release
 qualification are distinct. No source-only check is an execution pass.

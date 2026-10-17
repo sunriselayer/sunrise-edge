@@ -80,16 +80,16 @@ const OWN_BURN_REQUEST_ID: [u8; 32] = [0x97; 32];
 /// (which only ever targets the pinned genesis `TreasuryCap`).
 const OWN_ASSET_MINT_AMOUNT: u64 = 5_000_000;
 
-fn required(name: &str) -> String {
+pub(super) fn required(name: &str) -> String {
     std::env::var(name).expect("create-asset fixture missing explicit prerequisite")
 }
 
-fn required_hex32(name: &'static str) -> [u8; 32] {
+pub(super) fn required_hex32(name: &'static str) -> [u8; 32] {
     crate::hex::decode_hex_32(name, &required(name))
         .unwrap_or_else(|error| panic!("create-asset fixture: {name} is invalid: {error}"))
 }
 
-fn connect(endpoint: &str) -> Client<LoopbackHttpTransport> {
+pub(super) fn connect(endpoint: &str) -> Client<LoopbackHttpTransport> {
     let address = endpoint
         .parse()
         .unwrap_or_else(|error| panic!("create-asset fixture: invalid endpoint: {error}"));
@@ -105,7 +105,7 @@ fn connect(endpoint: &str) -> Client<LoopbackHttpTransport> {
     Client::new(transport)
 }
 
-fn read_bounded(path: &Path) -> Vec<u8> {
+pub(super) fn read_bounded(path: &Path) -> Vec<u8> {
     const CAP: u64 = 1_048_576;
     let mut bytes: Vec<u8> = Vec::new();
     std::fs::File::open(path)
@@ -120,7 +120,7 @@ fn read_bounded(path: &Path) -> Vec<u8> {
     bytes
 }
 
-fn current_inline(result: HttpObjectQueryResult, label: &'static str) -> (Vec<u8>, u64) {
+pub(super) fn current_inline(result: HttpObjectQueryResult, label: &'static str) -> (Vec<u8>, u64) {
     let HttpObjectQueryResult::CurrentInline {
         canonical_object_bytes,
         object_version,
@@ -139,7 +139,7 @@ fn current_inline(result: HttpObjectQueryResult, label: &'static str) -> (Vec<u8
 /// shape, or any embedded amount). Returns both object IDs plus the two
 /// derived type hashes, so callers can repeat the same type check against a
 /// later live query instead of only this one decoded result.
-fn new_definition_and_cap(
+pub(super) fn new_definition_and_cap(
     result: &PaidExecutionResult,
     resolver: &sunrise_edge_client::HashSuiteResolver,
     epoch: Epoch,
@@ -215,7 +215,7 @@ fn new_definition_and_cap(
     (definition.id, cap.id, definition_type, cap_type)
 }
 
-fn require_receipt(
+pub(super) fn require_receipt(
     client: &Client<LoopbackHttpTransport>,
     request_bytes: [u8; 32],
     digest: sunrise_edge_client::Digest32,
@@ -257,7 +257,7 @@ fn require_receipt(
 /// `asset_mint_burn_fixture::new_created_object_id` for the application
 /// asset this fixture run just created, never the pinned genesis
 /// `TreasuryCap`.
-fn new_minted_coin_id(result: &PaidExecutionResult) -> ObjectId {
+pub(super) fn new_minted_coin_id(result: &PaidExecutionResult) -> ObjectId {
     let charged = result
         .charged
         .as_ref()

@@ -42,6 +42,8 @@
 mod approvals;
 mod approve;
 #[cfg(test)]
+mod asset_application_coin_fixture;
+#[cfg(test)]
 mod asset_application_coin_tests;
 mod asset_application_pin;
 mod asset_commands;

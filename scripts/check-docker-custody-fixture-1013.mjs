@@ -2162,6 +2162,193 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     }
 
 
+def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, address, generated, definition_hex, cap_hex):
+    # Separate follow-on only after the entire original E67 sequence returned.
+    # No original files, IDs, counters or stopped key-recovery ordering change.
+    # Start cap3/supply0/nonce3; finish cap6/supply5M/nonce9. Self-transfer
+    # remains refused: the last whole Coin goes to the existing distinct
+    # disposable recipient already used by the original transfer fixture.
+    approvals = f"{ROOT}/custody-approvals"
+    probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
+        "custody::asset_application_coin_fixture::distinct_uid_application_coin_probe",
+        "--exact", "--ignored", "--nocapture", "--format", "terse"]
+    probe_environment = {
+        "CUSTODY_CREATE_DIR": operator_dir,
+        "CUSTODY_CREATE_PUBLIC_KEY": public_key,
+        "CUSTODY_CREATE_ENDPOINT": address,
+    }
+    def probe(mode, count):
+        rc, out, err = run_exec(probe_argv, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID],
+            env={**probe_environment, "CUSTODY_CREATE_MODE": mode})
+        observed = last_json_line(out)
+        expected_supply = [0, 5000000, 5000000, 5000000, 0, 5000000, 5000000][count]
+        expected_cap = [3, 4, 4, 4, 5, 6, 6][count]
+        if (rc != 0 or observed.get("mode") != mode or observed.get("verified") is not True
+                or observed.get("stage_count") != count or observed.get("next_nonce") != 3 + count
+                or observed.get("supply") != expected_supply or observed.get("cap_version") != expected_cap
+                or observed.get("asset_hex") != definition_hex or observed.get("treasury_cap_hex") != cap_hex
+                or observed.get("recipient_hex") != generated["recipient"]
+                or observed.get("replay_count") != count or observed.get("replay_equal") is not True):
+            raise FixtureFailure(f"application Coin independent stage {mode} failed: {err!r}")
+        return observed
+
+    def application_flags(directory):
+        return ["--config", f"{directory}/config", "--genesis-manifest-file", f"{directory}/genesis.bin",
+            "--genesis-digest", generated["digest"], "--asset", definition_hex,
+            "--instance-ref", f"{directory}/create-instance.bin"]
+
+    def copy_object_preimage(source_name, target_directory, uid, gid):
+        source_path = f"{operator_dir}/{source_name}"
+        with open(source_path, "rb") as source:
+            content = source.read(1048577)
+        if len(content) > 1048576:
+            raise FixtureFailure("application Coin preimage exceeds original fixture bound")
+        with open(f"{target_directory}/{source_name}", "xb") as target:
+            target.write(content)
+        os.chmod(f"{target_directory}/{source_name}", 0o600)
+        os.chown(f"{target_directory}/{source_name}", uid, gid)
+
+    def copy_request(name):
+        with open(f"{custody_dir}/{name}", "rb") as source:
+            content = source.read(1048577)
+        if len(content) > 1048576:
+            raise FixtureFailure("application Coin request exceeds original fixture bound")
+        with open(f"{operator_dir}/{name}", "xb") as target:
+            target.write(content)
+        os.chmod(f"{operator_dir}/{name}", 0o600)
+        os.chown(f"{operator_dir}/{name}", OPERATOR_UID, OPERATOR_GID)
+
+    state = probe("coin-initial", 0)
+    stages = []
+    groups = []
+    definitions = [
+        ("mint-one", "mint", "a0" * 32, "coin-after-mint-one"),
+        ("split", "split", "a1" * 32, "coin-after-split"),
+        ("merge", "merge", "a2" * 32, "coin-after-merge"),
+        ("burn", "burn", "a3" * 32, "coin-after-burn"),
+        ("mint-two", "mint", "a4" * 32, "coin-after-mint-two"),
+        ("transfer", "transfer", "a5" * 32, "coin-verify-transfer"),
+    ]
+    # Each group stays within the original largest 6-request/30-second
+    # application-family invocation. No server lifetime or host bound grows.
+    for family, selected in [("mint-burn", [0]), ("split-merge", [1, 2]),
+                             ("mint-burn", [3]), ("mint-burn", [4]), ("transfer", [5])]:
+        socket_path = f"{ROOT}/run/app-coins-{definitions[selected[0]][0]}.sock"
+        signer = ["--custody-socket", socket_path, "--custody-uid", str(CUSTODY_UID), "--custody-expected-public-key", public_key]
+        def serve_command(count):
+            return cli_argv("custody", f"serve-{family}", *application_flags(custody_dir),
+                "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
+                "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
+        signs = []
+        serve = None
+        try:
+            for index in selected:
+                tag, action, request_id, mode = definitions[index]
+                nonce = 3 + index
+                if state["next_nonce"] != nonce:
+                    raise FixtureFailure("application Coin nonce/preimage sequence mismatch")
+                inputs_dir = f"{custody_dir}/app-coins-inputs-{nonce}"
+                os.mkdir(inputs_dir, 0o700)
+                os.chown(inputs_dir, CUSTODY_UID, CUSTODY_GID)
+                roles = ["cap"] if action == "mint" else (["cap", "first"] if action == "burn" else
+                    (["first", "split"] if action == "merge" else (["second"] if action == "transfer" else ["first"])))
+                for role in [*roles, "fee"]:
+                    copy_object_preimage(f"app-coins-{role}-{nonce}.bin", inputs_dir, CUSTODY_UID, CUSTODY_GID)
+                preimage = lambda role: f"{inputs_dir}/app-coins-{role}-{nonce}.bin"
+                if action == "mint":
+                    prepare_inputs = ["--cap-file", preimage("cap"), "--amount", "5000000", "--recipient", public_key]
+                    business = ["--treasury-cap", cap_hex, "--amount", "5000000", "--recipient", public_key]
+                elif action == "split":
+                    prepare_inputs = ["--coin-file", preimage("first"), "--amount", "2000000", "--recipient", public_key]
+                    business = ["--coin", state["first_coin_hex"], "--amount", "2000000", "--recipient", public_key]
+                elif action == "merge":
+                    prepare_inputs = ["--into-file", preimage("first"), "--from-file", preimage("split")]
+                    business = ["--into", state["first_coin_hex"], "--from", state["split_coin_hex"]]
+                elif action == "burn":
+                    prepare_inputs = ["--cap-file", preimage("cap"), "--coin-file", preimage("first")]
+                    business = ["--treasury-cap", cap_hex, "--coin", state["first_coin_hex"]]
+                else:
+                    prepare_inputs = ["--coin-file", preimage("second"), "--recipient", generated["recipient"]]
+                    business = ["--coin", state["second_coin_hex"], "--recipient", generated["recipient"]]
+                request_name = f"app-coins-{tag}-request.bin"
+                replay_fields = ["--nonce", str(nonce), "--request-id", request_id, "--max-fee", "1000000", "--gas-limit", "200000"]
+                prepare = cli_argv("custody", f"prepare-{action}", *application_flags(custody_dir),
+                    *prepare_inputs, "--fee-source-file", preimage("fee"), *replay_fields, "--out", f"{custody_dir}/{request_name}")
+                rc, out, err = run_exec(prepare, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+                if rc != 0 or f"{action}_request_exported=true".encode("ascii") not in out:
+                    raise FixtureFailure(f"application Coin {tag} prepare failed: {err!r}")
+                copy_request(request_name)
+                approve = cli_argv("custody", f"approve-{action}", *application_flags(custody_dir),
+                    "--request-file", f"{custody_dir}/{request_name}", "--approvals-dir", approvals, "--expires-in-seconds", "3600")
+                rc, _out, refusal = run_exec(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+                if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
+                    raise FixtureFailure(f"application Coin {tag} approval accepted a pipe")
+                phase_approve_via_pty(None, None, nonce, request_id, 3600, command=approve)
+                if serve is None:
+                    count = 3 * len(selected)
+                    serve = start_serve(socket_path, 30, count, count, command=serve_command(count))
+                sign = cli_argv("custody", f"sign-{action}", *application_flags(operator_dir), "--request-file", f"{operator_dir}/{request_name}", *signer)
+                rc, _out, err = run_exec([*sign, "--out", f"{operator_dir}/app-coins-{tag}-offline.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+                if rc != 0:
+                    raise FixtureFailure(f"application Coin {tag} offline signing failed: {err!r}")
+                command = cli_argv(action, "--endpoint", address, *signer,
+                    "--expected-chain-id", "custody-whole-coin-test", "--expected-protocol-version", "7",
+                    "--expected-epoch", "0", "--expected-hash-suite-id", "1", "--expected-domain", DOMAIN_HEX,
+                    "--asset", definition_hex, "--instance-ref", f"{operator_dir}/create-instance.bin", *business,
+                    "--fee-source", generated["fee"], *replay_fields,
+                    "--submission-out", f"{operator_dir}/app-coins-{tag}-submission.bin", "--result-out", f"{operator_dir}/app-coins-{tag}-result.bin")
+                rc, out, err = run_exec(command, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+                if rc != 0 or b"paid_status=Success" not in out:
+                    raise FixtureFailure(f"actual application Coin {tag} CLI failed: {out!r} {err!r}")
+                with open(f"{operator_dir}/app-coins-{tag}-offline.bin", "rb") as source:
+                    offline = source.read(1048577)
+                with open(f"{operator_dir}/app-coins-{tag}-submission.bin", "rb") as source:
+                    if source.read(1048577) != offline:
+                        raise FixtureFailure(f"application Coin {tag} offline and actual CLI signed bytes differ")
+                state = probe(mode, index + 1)
+                stages.append(state)
+                signs.append((tag, request_id, sign))
+            for tag, request_id, sign in signs:
+                rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", request_id), CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+                if rc != 0:
+                    raise FixtureFailure(f"application Coin {tag} revocation failed: {err!r}")
+                refused_path = f"{operator_dir}/app-coins-{tag}-revoked.bin"
+                rc, _out, refusal = run_exec([*sign, "--out", refused_path], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+                if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(refused_path):
+                    raise FixtureFailure(f"application Coin {tag} revoked request produced output")
+            n = len(selected)
+            summary = wait_serve(serve, extra_seconds=10)
+            check_summary("application Coin " + family, summary, {
+                "connections_accepted": str(3*n), "requests_handled": str(3*n), "requests_signed": str(2*n), "requests_refused": str(n)})
+        finally:
+            if serve is not None and serve.poll() is None:
+                stop_owned_process(serve, CUSTODY_UID, CUSTODY_GID)
+        if os.path.lexists(socket_path):
+            raise FixtureFailure("application Coin signer left its bound socket")
+        n = len(selected)
+        restarted = start_serve(socket_path, 30, n, n, command=serve_command(n))
+        try:
+            for tag, _request_id, sign in signs:
+                refused_path = f"{operator_dir}/app-coins-{tag}-revoked-restart.bin"
+                rc, _out, refusal = run_exec([*sign, "--out", refused_path], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+                if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(refused_path):
+                    raise FixtureFailure(f"application Coin {tag} revoked request produced output after restart")
+            restart_summary = wait_serve(restarted, extra_seconds=8)
+            check_summary("application Coin revoked restart " + family, restart_summary, {
+                "connections_accepted": str(n), "requests_handled": str(n), "requests_signed": "0", "requests_refused": str(n)})
+        finally:
+            if restarted.poll() is None:
+                stop_owned_process(restarted, CUSTODY_UID, CUSTODY_GID)
+        if os.path.lexists(socket_path):
+            raise FixtureFailure("application Coin restarted signer left its bound socket")
+        groups.append({"family": family, "tags": [definitions[index][0] for index in selected],
+            "serve_summary": summary.strip().splitlines(), "restart_summary": restart_summary.strip().splitlines()})
+    return {"actual_cli": True, "offline_bytes_equal": True, "all_saved_replays": True,
+        "revoked": True, "revoked_after_restart": True, "intermediate_supply_zero": stages[3]["supply"] == 0,
+        "final_supply": state["supply"], "final_cap_version": state["cap_version"], "final_next_nonce": state["next_nonce"],
+        "asset_hex": definition_hex, "stages": stages, "groups": groups}
+
+
 def phase_create_asset(public_key):
     # Fresh phase directories only: this reuses the exact same one-owner,
     # one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
@@ -2358,6 +2545,13 @@ def phase_create_asset(public_key):
             after_create["definition_hex"], after_create["treasury_cap_hex"],
         )
 
+        # The complete original own-asset/E67 lifecycle is finished before
+        # this independent follow-on uses new request IDs and output paths.
+        own_coin_summary = phase_own_asset_coin_operations(
+            custody_dir, operator_dir, public_key, address, generated,
+            after_create["definition_hex"], after_create["treasury_cap_hex"],
+        )
+
         with open(f"{operator_dir}/stop-native", "xb") as completed:
             completed.write(b"complete\n")
         os.chmod(f"{operator_dir}/stop-native", 0o600)
@@ -2393,7 +2587,7 @@ def phase_create_asset(public_key):
         "revoked": True, "revoked_after_restart": True, "rotation_refused": True,
         "serve_summary": summary.strip().splitlines(),
         "restart_summary": restarted_summary.strip().splitlines(),
-    }, own_mint_burn_summary
+    }, own_mint_burn_summary, own_coin_summary
 
 
 def main():
@@ -2505,7 +2699,7 @@ def main():
     transfer_summary = phase_transfer(public_key)
     split_merge_summary = phase_split_merge(public_key)
     mint_burn_summary = phase_mint_burn(public_key)
-    create_asset_summary, created_asset_mint_burn_summary = phase_create_asset(public_key)
+    create_asset_summary, created_asset_mint_burn_summary, created_asset_coin_summary = phase_create_asset(public_key)
 
     total_bytes = 0
     for dirpath, _dirnames, filenames in os.walk(ROOT):
@@ -2532,6 +2726,7 @@ def main():
         "mint_burn": mint_burn_summary,
         "create_asset": create_asset_summary,
         "created_asset_mint_burn": created_asset_mint_burn_summary,
+        "created_asset_coin_operations": created_asset_coin_summary,
         "lifecycle_summaries": [live_summary.strip().splitlines(), third_summary.strip().splitlines(), *recovery_summaries,
                                 restored_approval_summary, new_identity_summary],
     }, sort_keys=True))
@@ -2876,6 +3071,35 @@ try {
   for (const [key, counts] of [['recovered_key_serve_summary', [3, 3, 1, 2]], ['recovered_key_restart_summary', [2, 2, 0, 2]]]) {
     if (JSON.stringify(result.created_asset_mint_burn[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
       throw new Error('the recovered-key own-asset mint/burn serve counters are incomplete or differ');
+    }
+  }
+  const coinFlow = result.created_asset_coin_operations;
+  if (!coinFlow || ['actual_cli', 'offline_bytes_equal', 'all_saved_replays', 'revoked', 'revoked_after_restart', 'intermediate_supply_zero']
+    .some((key) => coinFlow[key] !== true) || coinFlow.final_supply !== 5_000_000 || coinFlow.final_cap_version !== 6 ||
+    coinFlow.final_next_nonce !== 9 || coinFlow.asset_hex !== result.create_asset.definition_hex ||
+    !Array.isArray(coinFlow.stages) || coinFlow.stages.length !== 6 || !Array.isArray(coinFlow.groups) || coinFlow.groups.length !== 5) {
+    throw new Error('the own-created application Coin flow evidence is incomplete');
+  }
+  const coinModes = ['coin-after-mint-one', 'coin-after-split', 'coin-after-merge', 'coin-after-burn', 'coin-after-mint-two', 'coin-verify-transfer'];
+  const coinCaps = [4, 4, 4, 5, 6, 6];
+  const coinSupplies = [5_000_000, 5_000_000, 5_000_000, 0, 5_000_000, 5_000_000];
+  for (const [index, stage] of coinFlow.stages.entries()) {
+    if (stage.verified !== true || stage.mode !== coinModes[index] || stage.stage_count !== index + 1 ||
+        stage.replay_count !== index + 1 || stage.replay_equal !== true || stage.next_nonce !== index + 4 ||
+        stage.cap_version !== coinCaps[index] || stage.supply !== coinSupplies[index] || stage.asset_hex !== coinFlow.asset_hex ||
+        stage.treasury_cap_hex !== result.create_asset.treasury_cap_hex) {
+      throw new Error('an independent application Coin stage or saved replay is missing');
+    }
+  }
+  const coinGroups = [['mint-burn', ['mint-one']], ['split-merge', ['split', 'merge']],
+    ['mint-burn', ['burn']], ['mint-burn', ['mint-two']], ['transfer', ['transfer']]];
+  for (const [index, [family, tags]] of coinGroups.entries()) {
+    const group = coinFlow.groups[index];
+    const n = tags.length;
+    if (group.family !== family || JSON.stringify(group.tags) !== JSON.stringify(tags) ||
+        JSON.stringify(group.serve_summary) !== JSON.stringify(countKeys.map((key, column) => `${key}=${[3 * n, 3 * n, 2 * n, n][column]}`)) ||
+        JSON.stringify(group.restart_summary) !== JSON.stringify(countKeys.map((key, column) => `${key}=${[n, n, 0, n][column]}`))) {
+      throw new Error('the application Coin protected signer or restarted-refusal counters differ');
     }
   }
   if (!Array.isArray(result.lifecycle_summaries) || result.lifecycle_summaries.length !== expectedLifecycle.length ||
