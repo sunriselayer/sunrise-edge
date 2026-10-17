@@ -122,6 +122,19 @@ non-reaping `waitid` with `WNOWAIT`. An exited child's PID remains held until it
 recorded final wait; every actual wait updates the reaped registry before a
 later signal can be considered. No `Popen.poll()` may release that ownership.
 
+Missing, revoked or expired phase approval controls require the exact existing
+public `no_approval` stderr, nonzero exit and absent destination. They do not
+match the internal Rust enum spelling. Each service retains two close-on-exec
+handles: its original run directory and an `O_PATH` handle for its socket.
+At most one service is active and nine bounded socket records are retained.
+Normal stop must observe the socket already absent. On failure, only after
+the saved service has actually been waited and its PID is absent may cleanup
+unlink its exact previously observed path/device/inode/UID/mode socket through
+the held directory. Unknown, replaced, aliased or active socket state refuses.
+Both handles close on every cleanup outcome, and signal owners close inherited
+copies before changing UID. File-only volume accounting remains strict. These
+fixture records add no child, host operation, capability or resource allowance.
+
 The original inline owner uses the existing8GiB/swap0/CPU2/tasks512/2500s envelope.
 The separately bounded Docker payload uses512MiB/no extra swap/CPU1/pids64,
 network none, read-only root and one64MiB/16384-inode noswap tmpfs volume. These

@@ -67,6 +67,7 @@ RAW_CAP=262144
 PIPE_CAP=65536
 children=[]; operations=[]; services=[]; peer_controls=[]; approval_evidence=[]; raw_used=0; uncaptured_observed=0; raw_failed=False
 owned={};reaped=set();captures={};signal_controls=[];signal_pids={}
+service_sockets={};socket_controls=[];run_directory_pin=None
 raw_fd=None;failure_cleanup_end=None
 
 def left():
@@ -143,6 +144,8 @@ def signal_owned(pid,sig,deadline):
     if helper==0:
         try:
             if raw_fd is not None:os.close(raw_fd)
+            for held in service_sockets.values():
+                if close_socket_handles([held['socketFd'],held['directoryFd']]):raise RuntimeError('signal owner could not close inherited socket handles')
             demote(uid,[uid])()
             try:os.kill(pid,sig)
             except ProcessLookupError:os._exit(3)
@@ -350,8 +353,55 @@ def approve(case,phase,ttl=600,success=True):
     approval_evidence.append({'case':case,'phase':phase,'expires':expiry,'bytes':len(record),'sha256':hashlib.sha256(record).hexdigest(),'canonicalHex':record.hex()})
     return expiry
 
+def socket_stamp(metadata):
+    return [metadata.st_dev,metadata.st_ino,metadata.st_uid,stat.S_IMODE(metadata.st_mode),stat.S_IFMT(metadata.st_mode)]
+
+def close_socket_handles(descriptors):
+    errors=[]
+    for fd in descriptors:
+        if fd is None:continue
+        try:os.close(fd)
+        except BaseException as caught:errors.append(repr(caught))
+    return errors
+
+def release_service_socket(pid,cleanup,deadline):
+    held=service_sockets[pid];control=held['control'];error=None
+    try:
+        item=operations[owned[pid][1]]
+        if pid not in reaped or not item.get('waitCompleted') or not item.get('pidAbsent') or os.path.exists('/proc/'+str(pid)):
+            raise RuntimeError('service socket owner has not actually terminated')
+        if time.monotonic()>=deadline:raise RuntimeError('service socket cleanup deadline')
+        if control['path']!=SOCKET or SOCKET!=ROOT+'/run/positive.sock':raise RuntimeError('service socket path differs')
+        if socket_stamp(os.fstat(held['directoryFd']))!=control['directory'] or socket_stamp(os.lstat(ROOT+'/run'))!=control['directory']:
+            raise RuntimeError('service socket directory detached or replaced')
+        if socket_stamp(os.fstat(held['socketFd']))!=control['socket']:raise RuntimeError('held service socket identity differs')
+        try:current=os.stat('positive.sock',dir_fd=held['directoryFd'],follow_symlinks=False)
+        except FileNotFoundError:current=None
+        if current is not None:
+            if not cleanup:raise RuntimeError('stopped custody socket remains')
+            if socket_stamp(current)!=control['socket'] or not stat.S_ISSOCK(current.st_mode) or current.st_nlink!=1:
+                raise RuntimeError('service socket is unknown, replaced or aliased')
+            if time.monotonic()>=deadline:raise RuntimeError('service socket unlink deadline')
+            os.unlink('positive.sock',dir_fd=held['directoryFd'])
+            try:os.stat('positive.sock',dir_fd=held['directoryFd'],follow_symlinks=False)
+            except FileNotFoundError:pass
+            else:raise RuntimeError('owned service socket remains after unlink')
+            control['action']='failure-unlinked-after-wait'
+        else:control['action']='already-absent-after-wait'
+        if socket_stamp(os.lstat(ROOT+'/run'))!=control['directory']:raise RuntimeError('service socket directory changed during cleanup')
+    except BaseException as caught:error=repr(caught)
+    finally:
+        # Both bounded handles close even when ownership or unlink validation fails.
+        close_errors=close_socket_handles([held['socketFd'],held['directoryFd']])
+        if close_errors:error=(error or '')+'; close '+repr(close_errors)
+        del service_sockets[pid]
+        control.update(waitCompleted=operations[owned[pid][1]].get('waitCompleted',False),
+                       pidAbsent=not os.path.exists('/proc/'+str(pid)),handlesClosed=not close_errors,error=error)
+    if error is not None:raise RuntimeError('owned service socket cleanup failed: '+error)
+
 def start(count,key=None):
-    if os.path.lexists(SOCKET):raise RuntimeError('old custody socket remains')
+    if service_sockets or os.path.lexists(SOCKET):raise RuntimeError('old custody socket remains')
+    if len(socket_controls)>=9:raise RuntimeError('selected service socket count exceeded')
     argv=cli('custody','serve-fee-split',*CARGS,'--key-file',key or KEY,'--socket',SOCKET,'--approvals-dir',CROOT+'/approvals',
              '--max-connections',str(count),'--max-requests',str(count),'--total-deadline-secs','30')
     p,item=launch(argv,CUSTODY_UID,[CUSTODY_GID]);end=time.monotonic()+min(5,left())
@@ -360,6 +410,20 @@ def start(count,key=None):
         time.sleep(.02)
     s=os.lstat(SOCKET)
     if not stat.S_ISSOCK(s.st_mode) or stat.S_IMODE(s.st_mode)!=0o660 or s.st_uid!=CUSTODY_UID:raise RuntimeError('socket identity/mode')
+    directory_fd=None;socket_fd=None
+    try:
+        directory_fd=os.open(ROOT+'/run',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        directory=socket_stamp(os.fstat(directory_fd))
+        if directory!=run_directory_pin or socket_stamp(os.lstat(ROOT+'/run'))!=directory:raise RuntimeError('service directory changed while opening')
+        socket_fd=os.open('positive.sock',os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=directory_fd)
+        if socket_stamp(os.fstat(socket_fd))!=socket_stamp(s) or socket_stamp(os.stat('positive.sock',dir_fd=directory_fd,follow_symlinks=False))!=socket_stamp(s):
+            raise RuntimeError('service socket changed while opening')
+        control={'operation':item['index'],'pid':p.pid,'path':SOCKET,'socket':socket_stamp(s),'directory':directory,'action':None}
+        socket_controls.append(control);service_sockets[p.pid]={'socketFd':socket_fd,'directoryFd':directory_fd,'control':control}
+    except BaseException as caught:
+        close_errors=close_socket_handles([socket_fd,directory_fd])
+        if close_errors:raise RuntimeError('service socket opening/close failed: '+repr(caught)+'; '+repr(close_errors)) from caught
+        raise
     return p,item
 
 def stop(service,expected,control=False):
@@ -368,6 +432,7 @@ def stop(service,expected,control=False):
     counts=[int(line.split('=',1)[1]) for line in out.decode().splitlines()]
     if counts!=expected:raise RuntimeError('positive exact service counts differ')
     if os.path.lexists(SOCKET):raise RuntimeError('stopped custody socket remains')
+    release_service_socket(p.pid,False,END)
     (peer_controls if control else services).append(counts)
 
 def sign(case,phase,label,success=True):
@@ -381,7 +446,7 @@ def sign(case,phase,label,success=True):
         expected=OROOT+'/cases/'+case+('/signed-leg.bin' if phase=='leg' else '/candidate.bin')
         if bounded(path)!=bounded(expected):raise RuntimeError('protected signature/candidate differs from original oracle')
     else:
-        if os.path.lexists(path) or b'NoApproval' not in err:raise RuntimeError('sign refusal missing expected status/absent output')
+        if os.path.lexists(path) or err!=b'error=custody refused the request: no_approval\n':raise RuntimeError('sign refusal missing expected status/absent output')
     return path
 
 def revoke(case):
@@ -411,7 +476,7 @@ def volume_accounting():
     return generated,entries
 
 def main():
-    global raw_fd,CROOT,OROOT,CARGS,OARGS,KEY,SOCKET,pins,params
+    global raw_fd,CROOT,OROOT,CARGS,OARGS,KEY,SOCKET,pins,params,run_directory_pin
     for path,value in [('/sys/fs/cgroup/memory.max','536870912'),('/sys/fs/cgroup/memory.swap.max','0'),('/sys/fs/cgroup/pids.max','64'),('/sys/fs/cgroup/cpu.max','100000 100000')]:
         with open(path) as source:
             if source.read(128).strip()!=value:raise RuntimeError('actual container cgroup bound differs')
@@ -474,7 +539,7 @@ def main():
         for suffix in ['leg.request','claim.request','leg.frame','claim.frame','leg.meaning','claim.meaning']:
             if bounded(CROOT+'/cases/'+case+'/'+suffix)!=bounded(OROOT+'/cases/'+case+'/'+suffix):raise RuntimeError('independent role complete bytes differ')
     mkdir(CROOT+'/keys',CUSTODY_UID);mkdir(CROOT+'/approvals',CUSTODY_UID);mkdir(CROOT+'/backups',CUSTODY_UID)
-    mkdir(ROOT+'/run',CUSTODY_UID,0o750);KEY=CROOT+'/keys/historical.seed';SOCKET=ROOT+'/run/positive.sock';CARGS=args_for(CROOT,pins);OARGS=args_for(OROOT,pins)
+    mkdir(ROOT+'/run',CUSTODY_UID,0o750);run_directory_pin=socket_stamp(os.lstat(ROOT+'/run'));KEY=CROOT+'/keys/historical.seed';SOCKET=ROOT+'/run/positive.sock';CARGS=args_for(CROOT,pins);OARGS=args_for(OROOT,pins)
     argv,env=probe('provision',CROOT,POSITIVE_SPLIT_KEY_DESTINATION=KEY);out,err=run(argv,CUSTODY_UID,[CUSTODY_GID],env)
     if b'1 passed; 0 failed; 0 ignored' not in out:raise RuntimeError('custody provision probe did not execute')
     # Exact UID gate closes before body; the intruder has socket group access.
@@ -612,6 +677,9 @@ finally:
             frame({'operation':index,'stream':'result'},json.dumps(item,sort_keys=True).encode())
             if status is None:raise RuntimeError('UID signal owner final reap unresolved')
         except BaseException as error:failure=(failure or '')+'; UID signal owner cleanup '+repr(error)
+    for pid in list(service_sockets):
+        try:release_service_socket(pid,failure is not None,cleanup_end)
+        except BaseException as error:failure=(failure or '')+'; service socket cleanup '+repr(error)
     try:
         if raw_fd is not None:os.fsync(raw_fd)
     except BaseException as error:failure=(failure or '')+'; raw fsync '+repr(error)
@@ -632,7 +700,7 @@ finally:
     except BaseException as error:failure=(failure or '')+'; final accounting '+repr(error)
     # This separate attempt runs even if every earlier cleanup step failed.
     try:
-        metadata={'ok':failure is None,'error':failure,'operations':operations,'services':services,'peerControls':peer_controls,'signalControls':signal_controls,'approvals':approval_evidence,'rawBytes':raw_used,'uncapturedObservedBytes':uncaptured_observed,'rawFailed':raw_failed}
+        metadata={'ok':failure is None,'error':failure,'operations':operations,'services':services,'peerControls':peer_controls,'signalControls':signal_controls,'socketControls':socket_controls,'approvals':approval_evidence,'rawBytes':raw_used,'uncapturedObservedBytes':uncaptured_observed,'rawFailed':raw_failed}
         encoded=json.dumps(metadata,sort_keys=True).encode()
         if len(encoded)>262144:raise RuntimeError('complete evidence metadata exceeds256KiB')
         put(ROOT+'/evidence/meta.json',encoded,0);metadata_ready=True
