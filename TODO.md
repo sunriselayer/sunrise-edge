@@ -45,11 +45,11 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   recurring-sqlite継続中・集約check未作成であり、全8成功には数えません。
   正のgenesis Coin A→B→A移行は `fe542b82` に追加し、strictと新H7 producerは成功。
   新13-target A/Bは両laneの全13 ELFのbyte一致・source/provenance照合まで完了しました (E145)。
-  追加fixtureは2回の実行で検証側の不具合を検出しました。private exportのumaskと
-  transient予約のAbsent oracleを修正し、新H8での再検証を待ちます。117 flags成功は未達です (E146)。
-  Cloudflare CLIへの5-profile統一は実npm ci・typegen・10拒否controls・TS・lint・
-  ingress/certifiedの2 Vitestが成功。SQL起動設定で失敗し、SQL/contract用のlocal runner
-  overrideを修正しました。修正後の全4 Vitest・現source完全requiredは未完了です (E147)。
+  追加fixtureの2回の実失敗を保持し、private exportのumaskとtransient予約のAbsent oracleを修正。
+  `f6b5ffab`の新H8・fresh lddの後、実fixture全117 flagsが成功しました (E146/E149)。
+  Cloudflare CLIへの5-profile統一は実npm ci・typegen・10拒否controlsに加え、修正後の
+  型照合・TS・lint・全4 Vitest計66 testsまで成功しました (E147/E148)。
+  新sourceのliteral npm ciと完全requiredはこれから実行し、祖先の成功から借用しません。
   E133の自然失敗原因は未確定で、旧失敗と当時source-onlyだったE134/E135を保持します。
   祖先の成功を新source全体の合格へ付け替えず、全M2/M4/M7は未完了です。
 
@@ -373,6 +373,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E145: fresh fe54 Native13 A/B and H7 qualification | J`fe542b82`の新13-target A/Bはactual0、両lane全13 ELFをbyte照合し、root/独立peerがsource1207・tool21・CargoJSON・311 archive/metadataと選択231 expanded bodiesを照合。親`genesis-coin-identity-handoff-native6-private1-1017-ab-parent-qualified.json` (`ab142f8d`)。H7は新test ELF`e329a804`を別inodeへ保持、親`55846272`。新2-ldd inventoryも親`e4b77cec`で照合 | compiler/lddだけの成功。追加fixture runtime・117 flags・所有権移行・全M2/M7の成功へ転用しない。新H8は修正済みRust oracleを含む別sourceから作る |
 | E146: actual handoff failures and two test fixes | runtime1はactual1、raw`a59296f1`・terminal`e08a23fa`。fixtureのumask0でCLI exportがprivate0600 guardに拒否され、実CLI呼出中だけumask077へ限定。runtime2はactual1、raw`cd5b36d6`・terminal`51c35903`。同transaction内生成・消費のfee予約はrunnerが永続effectへ出さずqueryはAbsentのため、effect_ids不在とexact Absentを要求するoracleへ修正。両修正をCF branchに反映、Node syntax/rustfmt/diff check0 | productionのexport policy・runner・queryを変更せず、既存CoinのTombstoned検証とgas/fee/refund/receipt/replay checksは保持。runtime2は旧H7での自然失敗。修正を含む新H8と実全117 flagsは未実行で、失敗を成功へ書き換えない |
 | E147: actual cf migration prefix, prerequisites and SQL startup fix | CF2でliteral offline npm ci、実`cf workers types`全5 profile、positive check、stale/入力/CLI version全10拒否controlsとno-overwrite確認が成功。CF3で通常Rust/WASM+contract fixture producer、TS7/typecheck・lint・ingress/certified Vitestがactual0 | CF1のnpm config double-load失敗とCF2の生成WASM未準備失敗を保持。CF3はSQL self DOが旧published worker名を参照してstartupでactual1、SQL test0・contract未実行。schema必須workerは保持し、SQL/contract Vitestだけlocal class/useSQLite designatorへ上書きする修正を反映。実修正後全4 Vitest・全required/CIは未達。direct Wrangler commands/dependencyは廃止し、plugin内transitive SDKは保持。deployment/公開認定は主張しない |
+| E148: current cf migration all four Vitest groups | `f6b5ffab` / tree`c920900e`でactual CF4の13 operationsが全0、76 raw frames・全26 streamsのhash/実EOF/waitを照合。型照合・TS7・lintに加えingress13/certified28/SQL10/contract15の計66 tests成功。source1215全Ns、元package bodies、生成WASM/fixture5入力不変と既知15 PIDs/cgroup不在を確認。root・独立peer親`cloudflare-cli-migration-validation4-parent-qualified-1017.json` (`0a52e00f`) | E144/E147は当時の未実行/自然失敗履歴として保持。直接Wrangler呼出しを廃止した実cf型生成/Node検証の技術範囲だけ。新source完全required/全8 hosted CI、provider deployment、全M2/M7は未完了 |
+| E149: actual two-owner genesis Coin handoff | `f6b5ffab`の新H8はactual CargoJSONからtest ELF`8eeecd95`を別inodeへ正常保持し、root・独立peerがproducerを照合。親`401d40ca`。fresh 2 lddの後、実fixture runtime3はactual0/両outer実EOF/wait/8.730秒、raw`4c00a43d`の全117 expected flagsが一致。既存の同CoinをA→B version2/nonce1,0/replay1→A version3/nonce1,1/replay2へ実有料移行。親`cloudflare-cli-migration-fixture-runtime3-parent-qualified-1017.json` | root実照合とinert adapter作者の別照合を区別し、外部独立auditとは呼ばない。actual RELEASE CLIはfe54 Native6のままで、28-file差分・cfg(test)除外・804 build inputsの厳密対応を使用。H8/driverだけf6b5。26 normalchildren/2 PTY/30 leaves/6 absent refusals・生成71833B/出力28712Bは元上限内、private key copy追加0。前2失敗は保持。genesis Coinの選択範囲であり、creator/TreasuryCap・他asset/fee/account/governance移行・全M2/M7/公開条件を閉じない |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -871,6 +873,11 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     burn入力は元93後の保持preimage。25 normalchildren/14 files/8 absent refusalsを元cap内で照合。
     E41/E49等の未達記述は当時の履歴であり、今回閉じた範囲は同一鍵historical signing-onlyだけ。
     鍵交換時の正の所有権移行、live currentness、automatic signing、実鍵ceremony・全M2は未完了。
+  - [x] [genesis Coinの別identity間live所有権移行](docs/architecture/standard-asset-transfer-custody.md#two-owner-genesis-coin-identity-handoff-control):
+    E149で同じlive SQLite/WASM store上の同Coinを既存A→B→Aへ実CLIで移行。
+    fee Coinは別prefunded入力、version2/3・nonce1,0→1,1・paid effects/receiptと全保存済み再送を確認。
+    両UID/PTY承認、Bの所有前/Aの譲渡後拒否、A停止/wait後のB開始、両取消/restart拒否も成功。
+    新key/copyは追加せず、application creatorは不変。他familyや全M2は未完了。
   - [x] [own-created application Coinのtransfer/split/merge custody](docs/architecture/standard-asset-application-coin-custody.md):
     E74/E75で独立application pinとgenesis feeを分け、実別UID/PTYの6操作と正確な
     type/owner/version/amount/receipt/nonce・全保存済み再送・取消/restartを検証。
