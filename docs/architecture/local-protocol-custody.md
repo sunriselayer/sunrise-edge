@@ -80,3 +80,6 @@ the next fence; stale workers cannot commit. Preserve source and independent
 authority together for same-host recovery. Neither OS permissions nor this
 profile prove encryption, compromised-worker/root resistance, off-host restore,
 power-fault durability or all-M2 completion. Runtime results belong in TODO.
+
+The selected actual component fixture is specified in
+[the multi-UID acceptance profile](local-protocol-custody-fixture.md).

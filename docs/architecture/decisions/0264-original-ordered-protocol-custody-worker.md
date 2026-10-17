@@ -60,3 +60,7 @@ The independent source anchor is not a new protocol authority or quorum root.
 See [the deployment contract](../local-protocol-custody.md) for configuration,
 bounded transport and owning controls. No actual keys, host users/services,
 public deployment, stopped audit or stopped fee fixture are authorized here.
+
+The [selected actual multi-UID fixture](../local-protocol-custody-fixture.md)
+adds component runtime controls without broadening the selected signing families
+or changing original validation owners. Execution qualification remains in TODO.
