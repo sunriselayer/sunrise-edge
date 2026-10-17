@@ -507,6 +507,7 @@ def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, exp
     record_stat = os.stat(record_path)
     if stat.S_IMODE(record_stat.st_mode) != 0o600 or record_stat.st_uid != CUSTODY_UID:
         raise FixtureFailure("the written approval record's metadata is not exactly owner=custody, mode 0600")
+    return len(captured)
 
 
 def phase_approve_without_terminal(config_path, artifact_path):
@@ -1044,6 +1045,126 @@ def expect_prepare_rotation_refusal(label, command, expected_substring, out_path
         raise FixtureFailure(f"{label}: a refused prepare still wrote its --out path")
 
 
+def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags, recipient, previous_request_id):
+    # The original transfer signer and its revoked restart have already
+    # exited. This is signing-only: the retained preimages are not submitted
+    # again, and the original business nonce/receipt assertions do not change.
+    output_before = _output_used
+    request_id = "77" * 32
+    request_name = "recovery-request.bin"
+    request_path = f"{custody_dir}/{request_name}"
+    operator_request = f"{operator_dir}/{request_name}"
+    command = cli_argv("custody", "prepare-transfer", *trust_flags(custody_dir),
+        "--coin-file", f"{custody_dir}/coin.bin", "--fee-source-file", f"{custody_dir}/fee.bin",
+        "--recipient", recipient, "--nonce", "0", "--request-id", request_id,
+        "--max-fee", "1000000", "--gas-limit", "200000", "--out", request_path)
+    rc, out, err = run_exec(command, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    if rc != 0 or b"transfer_request_exported=true" not in out:
+        raise FixtureFailure(f"recovery transfer prepare failed: {err!r}")
+    with open(operator_request, "xb") as target:
+        target.write(read_file_bytes_as_root(request_path))
+    os.chmod(operator_request, 0o600)
+    os.chown(operator_request, OPERATOR_UID, OPERATOR_GID)
+    approve = cli_argv("custody", "approve-transfer", *trust_flags(custody_dir),
+        "--request-file", request_path, "--approvals-dir", approvals, "--expires-in-seconds", "3600")
+    rc, _out, refusal = run_exec(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
+        raise FixtureFailure("recovery transfer approval unexpectedly accepted a pipe")
+    pty_output_bytes = phase_approve_via_pty(None, None, 0, request_id, 3600, command=approve)
+    charge_output(pty_output_bytes)
+
+    reference_socket = f"{ROOT}/run/transfer-reference.sock"
+    recovered_socket = f"{ROOT}/run/transfer-recovered.sock"
+    def serve(key_file, socket_path, count):
+        return cli_argv("custody", "serve-transfer", *trust_flags(custody_dir),
+            "--key-file", key_file, "--socket", socket_path, "--approvals-dir", approvals,
+            "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "15")
+    def sign(socket_path, request_file):
+        return cli_argv("custody", "sign-transfer", *trust_flags(operator_dir),
+            "--request-file", request_file, "--custody-socket", socket_path,
+            "--custody-uid", str(CUSTODY_UID), "--custody-expected-public-key", public_key)
+    reference_path = f"{operator_dir}/recovery-reference.bin"
+    reference = start_serve(reference_socket, 15, 1, 1,
+        command=serve(f"{ROOT}/custody-keys/custody.seed", reference_socket, 1))
+    try:
+        rc, _out, err = run_exec([*sign(reference_socket, operator_request), "--out", reference_path],
+            OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"reference recovery transfer sign failed: {err!r}")
+        reference_summary = wait_serve(reference, extra_seconds=8)
+        check_summary("transfer recovery reference", reference_summary,
+            {"connections_accepted":"1", "requests_handled":"1", "requests_signed":"1", "requests_refused":"0"})
+    finally:
+        if reference.poll() is None:
+            stop_owned_process(reference, CUSTODY_UID, CUSTODY_GID)
+    if os.path.lexists(reference_socket):
+        raise FixtureFailure("reference transfer signer left its socket behind")
+
+    # No signer using the original key remains alive before the private copy.
+    backup_path = f"{custody_dir}/recovered.seed.backup"
+    restored_path = f"{custody_dir}/recovered.seed.restored"
+    key_file = phase_recover_private_key(f"{ROOT}/custody-keys/custody.seed", backup_path, restored_path)
+    signed_path = f"{operator_dir}/recovery-signed.bin"
+    fresh_sign = sign(recovered_socket, operator_request)
+    old_sign = sign(recovered_socket, f"{operator_dir}/request.bin")
+    refusal_paths = []
+    def refused(label, argv):
+        output = f"{operator_dir}/{label}.bin"
+        if os.path.lexists(output):
+            raise FixtureFailure("transfer recovery refusal path already exists")
+        rc, _out, error = run_exec([*argv, "--out", output],
+            OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in error or os.path.lexists(output):
+            raise FixtureFailure(f"{label}: revoked transfer produced output or a different refusal")
+        refusal_paths.append(output)
+    recovered = start_serve(recovered_socket, 15, 3, 3, command=serve(key_file, recovered_socket, 3))
+    try:
+        rc, _out, err = run_exec([*fresh_sign, "--out", signed_path],
+            OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"recovered-key transfer sign failed: {err!r}")
+        reference_bytes = read_file_bytes_as_root(reference_path)
+        if not reference_bytes or read_file_bytes_as_root(signed_path) != reference_bytes:
+            raise FixtureFailure("recovered transfer bytes differ for the identical approved request")
+        refused("recovery-old-revoked", old_sign)
+        rc, _out, err = run_exec(revoke_argv(approvals, request_id), CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"recovery transfer revoke failed: {err!r}")
+        refused("recovery-new-revoked", fresh_sign)
+        recovered_summary = wait_serve(recovered, extra_seconds=8)
+        check_summary("transfer recovered-key", recovered_summary,
+            {"connections_accepted":"3", "requests_handled":"3", "requests_signed":"1", "requests_refused":"2"})
+    finally:
+        if recovered.poll() is None:
+            stop_owned_process(recovered, CUSTODY_UID, CUSTODY_GID)
+    if os.path.lexists(recovered_socket):
+        raise FixtureFailure("recovered transfer signer left its socket behind")
+    restarted = start_serve(recovered_socket, 15, 2, 2, command=serve(key_file, recovered_socket, 2))
+    try:
+        refused("recovery-old-revoked-restart", old_sign)
+        refused("recovery-new-revoked-restart", fresh_sign)
+        restart_summary = wait_serve(restarted, extra_seconds=8)
+        check_summary("transfer recovered-key restart", restart_summary,
+            {"connections_accepted":"2", "requests_handled":"2", "requests_signed":"0", "requests_refused":"2"})
+    finally:
+        if restarted.poll() is None:
+            stop_owned_process(restarted, CUSTODY_UID, CUSTODY_GID)
+    if os.path.lexists(recovered_socket):
+        raise FixtureFailure("recovered transfer restart left its socket behind")
+    files = [request_path, operator_request, reference_path, signed_path, backup_path, restored_path,
+             f"{approvals}/{request_id}", f"{approvals}/{request_id}.revoked"]
+    generated_bytes = sum(os.stat(path).st_size for path in files)
+    captured_output_bytes = _output_used - output_before
+    if generated_bytes > 16384 or captured_output_bytes > 16384 or len(refusal_paths) != 4:
+        raise FixtureFailure("transfer recovery exceeds its existing allocation headroom")
+    return {"sign_only":True, "same_frame_bytes":True, "old_revocation_retained":True,
+        "new_revocation_enforced":True, "revoked_after_restart":True, "all_sockets_absent":True,
+        "request_id":request_id, "previous_request_id":previous_request_id,
+        "generated_files":len(files), "generated_bytes":generated_bytes, "captured_output_bytes":captured_output_bytes,
+        "reference_summary":reference_summary.strip().splitlines(),
+        "serve_summary":recovered_summary.strip().splitlines(), "restart_summary":restart_summary.strip().splitlines()}
+
+
 def phase_transfer(public_key):
     custody_dir, operator_dir = f"{ROOT}/custody-transfer", f"{ROOT}/operator/transfer"
     for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
@@ -1196,7 +1317,10 @@ def phase_transfer(public_key):
     finally:
         if restarted.poll() is None:
             restarted.kill(); restarted.wait(timeout=5)
-    return {"actual_cli":True, "whole_coin":True, "offline_bytes_equal":True, "replay_equal":True, "revoked":True, "revoked_after_restart":True, "rotation_refused":True}
+    if os.path.lexists(socket_path):
+        raise FixtureFailure("original transfer revoked restart left its socket behind")
+    recovery = phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags, generated["recipient"], request_id)
+    return {"actual_cli":True, "whole_coin":True, "offline_bytes_equal":True, "replay_equal":True, "revoked":True, "revoked_after_restart":True, "rotation_refused":True, "recovery":recovery}
 
 
 def phase_split_merge(public_key):
@@ -2984,6 +3108,22 @@ try {
     throw new Error('the distinct-UID protected split/merge evidence is incomplete');
   }
   const countKeys = ['connections_accepted', 'requests_handled', 'requests_signed', 'requests_refused'];
+  const transferRecovery = result.transfer.recovery;
+  if (!transferRecovery || ['sign_only', 'same_frame_bytes', 'old_revocation_retained',
+      'new_revocation_enforced', 'revoked_after_restart', 'all_sockets_absent']
+    .some((key) => transferRecovery[key] !== true) || transferRecovery.request_id !== '77'.repeat(32) ||
+    transferRecovery.previous_request_id !== '75'.repeat(32) || transferRecovery.generated_files !== 8 ||
+    !Number.isSafeInteger(transferRecovery.generated_bytes) || transferRecovery.generated_bytes <= 0 ||
+    transferRecovery.generated_bytes > 16_384 || !Number.isSafeInteger(transferRecovery.captured_output_bytes) ||
+    transferRecovery.captured_output_bytes <= 0 || transferRecovery.captured_output_bytes > 16_384) {
+    throw new Error('the transfer recovered-key consumer evidence is incomplete');
+  }
+  for (const [key, counts] of [['reference_summary', [1, 1, 1, 0]],
+      ['serve_summary', [3, 3, 1, 2]], ['restart_summary', [2, 2, 0, 2]]]) {
+    if (JSON.stringify(transferRecovery[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
+      throw new Error('the transfer recovered-key consumer counters differ');
+    }
+  }
   for (const [key, counts] of [['serve_summary', [6, 6, 4, 2]], ['restart_summary', [2, 2, 0, 2]]]) {
     if (JSON.stringify(result.split_merge[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
       throw new Error('the split/merge serve counters are incomplete or differ');
