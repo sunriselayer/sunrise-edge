@@ -1778,6 +1778,7 @@ fn positive_split_meaning_policy_parity(
         .finalize(signed.signature.to_vec())
         .unwrap();
     assert!(leg.prepare_claim(&request_bytes, &trailing).is_err());
+    println!("positive_split_meaning_policy_parity=passed");
 }
 
 fn receipts(
