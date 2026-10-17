@@ -141,3 +141,53 @@ retained preimages are deliberately never submitted again: the control checks
 same-frame key recovery, not current ownership, a second business mutation or
 positive new-identity rotation. Source implementation is not runtime acceptance;
 actual qualification remains in TODO.
+
+
+### Two-owner genesis Coin identity handoff control
+
+The separate ignored `distinct_uid_genesis_coin_identity_handoff_probe` and
+`phase_genesis_coin_identity_handoff` use one fresh two-owner genesis and one
+live SQLite/WASM store. A is the existing disposable custody publisher; B is
+its already provisioned independent `custody2.seed` identity. Both receive
+separate genesis fee Coins. This explicit development funding does not move
+A's fee balance, account or wallet to B.
+
+Before any transfer, B's own `prepare-transfer` must refuse the A-owned target
+Coin with no output. A independently prepares and approves fresh `b1`, signs
+both offline and through the actual protected `transfer` consumer, and moves
+the whole same Coin to B. The independent probe checks the actual version-2
+Coin's ID, type, schema, unchanged value/body and owner B; A nonce becomes 1
+while B remains 0. It authenticates the saved intent and canonical paid result,
+recomputes reserve/settle pricing, checks current fee/effects/receipt state and
+replays the same request without another mutation.
+
+A's approval is cancelled and must refuse in that process and a restarted
+A signer, with separate absent output paths. Both A processes are actually
+waited with their PIDs and sockets absent before B's operation-specific
+approval or serving authority is used. A's preparation against the actual
+exported CURRENT B-owned version-2 preimage must now refuse ownership.
+B's independently prepared/attended `b2` uses B's own config/key, separate
+prefunded fee Coin and nonce 0 to transfer the SAME target back to A. The
+same live store must expose version 3/owner A and per-owner nonces A=1/B=1.
+Offline/CLI bytes agree for each exact frame. The independent probe verifies
+both saved paid results, receipts and replays, preserving current object and
+fee state. B's matching cancellation and restarted refusal are also required.
+
+Each live signer handles exactly 3/3/2/1 connections/handled/signed/refused;
+each restarted signer handles 1/1/0/1. The normal incremental workload is
+16 CLI commands, three finite oracle invocations, two attended PTYs, four
+signer servers and one live oracle host: 26 children, no key-copy children.
+Thirty explicitly inventoried private evidence/preimage leaves have a 2 MiB
+combined allowance; the owning SQLite files remain inside the original
+64 MiB global generated-volume bound. Complete new child output has a
+48 KiB suballocation and the final result summary 4 KiB. At most five
+failure-only same-UID signal children can stop this phase's exact retained
+owned processes under the existing SETUID/SETGID capabilities; no CAP_KILL
+or new privilege is added. Every original family, lifecycle, counter and
+selector remains unchanged, as do the global deadlines and output caps.
+
+This is a fixture source contract, with actual execution qualification kept
+in TODO. It proves no own-created application or TreasuryCap migration:
+`ApplicationAssetPin` still requires the immutable instance creator to match
+its custody publisher. It does not claim full account/key rotation, fee
+balance migration, public ceremony, any additional asset operation or all M2.
