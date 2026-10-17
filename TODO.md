@@ -315,6 +315,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E111: certified FastVote actual context mismatch | `5be398ec`の修正後実UID attemptはactual1/両実EOF/wait、outer11.098秒。4 worker/4 frontendと準備・権限/UID/期限/profile/TLS拒否controlsの後、a-prepareのSDK照合が認証profile expected1/actual2を拒否。Aの有料prepareと後段成功は0 | 独立に1190 source/Git・22 fixture sources・全5 ELF/4 libraries、全15 Docker clients/55 role childrenのwait/EOF、wire6898 bytes→完全復号50420 bytesを照合。全childにU+FFFDなし、再構成UTF8の41901 bytesがcounterと一致。専有資源解放を確認し、親の追加2 read-only queriesも0/空。oracleのEOF assertionは失敗abort後の二次的観測として保持。`d58c874a`で既存canonical認証profileから3つの期待IDを取得し、exact context verification/全39 guardsを維持。修正後producerはE113で成功、runtimeは未実行 |
 | E112: positive Split wrapper temporary-pin failure | `fff121c2`の次attemptはactual1/両実EOF/wait、outer0.847秒。mandatory CLI producerの前段guardが、新TMP pathに残った旧TMP_INODEを拒否。全6 operations/12 raw framesを保持 | Node24 --versionは0だが、CargoJSON/CLI producer合格・ldd・元genuine selector・selected Node/UID/Dockerは全て未到達。独立に1195 source/Git・19 own/17 component tools・現21 ELF・10 bindings/旧CLI・失敗319 files/10 dirs/旧保持2件の不変と全8 saved PIDs/cgroup不在を確認。TMP2は空のまま保存。wrapperのTMP_DEVICE/TMP_INODE、owner tuple、実filesystem identityを明示的に一致させる新attemptを準備し、失敗を上書きしない |
 | E113: certified exact-auth-profile strict producer | 別branch `d58c874a` / tree`d311bad0`。全6 commandsがactual0/両実EOF/wait、inner21.742秒/outer21.823秒。既存canonical profile2/scheme1/address binding2からexpected contextを構築する修正を含む全5 source/保持ELFを固定 | 親と独立reviewが1190 source/Git blobs・17 tools・9入力、完全raw623 frames/21 operations、旧4 compiler binsと旧5保持ELFの不変、全PID/cgroup・TMP5回収を確認。コンパイルとstrict gatesのみで、修正後の実UID/TLS lifecycle・全M2/M7と統合source全体の合格は未達 |
+| E114: positive Split actual no-approval boundary and failure cleanup | `fff121c2`の次attemptは実CLI producer/lddが0、元genuine selectorがfirst-successorでactual101。outeractual1/両実EOF/wait、33.370秒。公開archive234 filesの生成後、別UIDの承認なしLeg署名は正しくexit1/出力なし/public no_approvalを返したが、fixtureがRust enum表記NoApprovalを期待して拒否 | 完全outer raw142 frames/9 operations、inner135 frames/36 operations、21 host operationsと全32 saved host PIDs/cgroup・専有container/volume不在を照合。公開archiveとNode試験資料を保持し、1195 source/Git・全入力/345過去失敗files等の不変を確認。強制停止後socketを通常fileとみなしたvolume accountingも二次的に失敗。PTY承認/署名/元protected submit成功は0。実public statusのexact照合と、serviceの実wait/PID不在後に記録済みexact socketだけを処理する修正を進め、strict file-only accounting/元97 operations・各capsを維持する |
 
 
 
@@ -429,6 +430,7 @@ E111は `m2-certified-fastvote-fixture-runtime3-independent-qualified-failure-10
 追加不在確認は `m2-certified-fastvote-fixture-runtime3-root-owned-absence-1017.json`。
 E112は `positive-fee-split-uid-genuine2-independent-failure-qualified-1017.json` とactual raw/terminal。
 E113は `m2-certified-fastvote-fixture-build5-parent-qualified-1017.json` とactual raw/terminal。
+E114は `positive-fee-split-uid-genuine3-independent-failure-qualified-1017.json` とactual raw/terminal/retained public evidence。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
