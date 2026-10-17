@@ -70,6 +70,12 @@ synthetic committed Freeze, substitutes quorum authority or seeds a frontier.
    votes. C remains unapplied: a real member apply without a committed DrainSet
    returns409 `drain-member-not-ready`. There is no positive DrainSet or member
    application extension.
+   Authenticate a freshly re-signed intent with a new request ID locally before
+   submitting its prepare after Freeze. Require the existing handler's exact
+   500 `invalid-node-output` opaque refusal, then replay each historical A ACK
+   byte-for-byte and compare full source/body/anchor images for equality. The
+   legacy `PersistenceInvariant` mapping is preserved rather than translated
+   to caller400; arbitrary500 responses do not satisfy this control.
 7. Stop/reap workers, checkpoint released leases, verify downtime, restart at
    fence6 and replay saved frontier/progress/union and historical A receipt
    results. The final nonce stays2 and C's original receipt stays absent.

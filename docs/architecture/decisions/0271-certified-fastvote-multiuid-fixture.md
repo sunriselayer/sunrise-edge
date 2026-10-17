@@ -25,6 +25,14 @@ A/B/C entry through the actual SDK/core owner before confirming it; retain the
 explicit C pre-import `drain-proof-not-retained` refusal. Existing exact
 signature, identity, union and row-oracle checks and all finite caps remain.
 
+2026-10-17 refusal clarification: authenticate the freshly re-signed new intent
+before its post-Freeze prepare request, then pin the existing handler's exact
+500 `invalid-node-output` response. The committed Freeze admission fence uses
+`PersistenceInvariant`, whose legacy HTTP owner deliberately returns this
+opaque refusal; the fixture does not translate it to caller400. Historical ACK
+bytes must still replay exactly, and the following complete source/body/anchor
+image comparison must remain unchanged. This adds no HTTP request or authority.
+
 Use a separate read-only worker-UID oracle with complete closed source/body and
 anchor schema images plus exact canonical saved-record comparisons. Test actual
 filesystem and peer-UID refusal, malformed/profile/endpoint outputs, TLS pins,
