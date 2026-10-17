@@ -819,7 +819,12 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
   - 対象: 実装 + 検証。protected key backend、operator/authority分離、
     exact operation-specific content、refusal/failure、recovery/rotation/revocation。
     automatic protocol signingと人のasset/governance approvalは区別する。
-  - 状態: publication-only Linux試作の回収可否が不明。E4はSDK部分だけの成功。
+  - 現状: publicationとStandard Asset各family、positive Split、original ordered、
+    certified FastVoteの選択済みcomponentは下記の個別証拠へ対応する。current
+    `50fbf22d` のStandard Asset/publication fixture全117はE156で成功。
+    ZeroShare専用WIPは未統合・未検証で、各familyの残るlifecycleと最終source資格を
+    そろえるまでM2全体は未完了。実鍵ceremonyの公開条件と区別する。
+  - 初期履歴: publication-only Linux試作の回収可否が不明。E4はSDK部分だけの成功。
     新しい[publication metadata preview](docs/architecture/publication-review.md) と
     CLI `contract preview` は実装し、独立指摘を処理してsource approval済み。
     SDKの8 owning controls、compiled CLIの7 controlsが成功。診断hashとartifact
@@ -936,8 +941,10 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     frontier/progress/union3と全source/body/anchor imageのread-only SQL oracleが成功。
     全39 controls・147 roles・27 probes・32 oracle exchangesと完全証拠/回収を照合。
     E108/E111/E115/E119/E124の失敗は保持し、最終統合head全体gate・全M2とは分ける。
-  - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
-    接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
+  - 次: 各familyの残るlifecycleとaccepted signing family全体の対応を埋める。
+    既存のpositive Split/original ordered/certified FastVote componentと未統合ZeroShareを
+    区別し、provider-stoppedのWIPを再試行・迂回しない。automatic protocol signingは
+    固有のauthority条件を保持する。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
     実鍵・実administrator/recovery役割とceremonyはD04/D06/D07へ残す。Ledgerは別途deferred。
 
