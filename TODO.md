@@ -268,6 +268,9 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E71: 9de6 complete required and hosted CI | `9de634a7` / tree`229b397f`。literal npm-ci +完全check-allがactual0/EOF、17,587.750秒。Rust success summaries144・報告pass合計4,304・ignored34・failed0。[run `38922549356`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38922549356) attempt1の全7 owners + checkもSUCCESS。前後source/tree/clean・Node24本体・全wrapper/raw・全8 CI raw/checkout/tree/parentsを親で再照合 | own-created Asset mint/burn custody sourceのexact storage-neutral qualification。原12 RELEASE runtime・後続source資格・全M2/M7・PG・独立監査/公開認定とは分ける |
 | E72: b4 test-only hosted CI | `b4d20a4a` / tree`1e934d3a`。[run `38930807287`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38930807287) attempt1の全7 owners + checkがSUCCESS。全8 raw checkout`b2dd371d`のtree一致・merge parents・clean local sourceと全raw hashを親で再照合 | E67の鍵復旧test-only headのexact CI。literal local完全required/このheadの13-targetは未実行。E71のsourceとして付け替えない |
 | E73: D05/M5 technical final coverage | E71の完全required/全8 CI成功と独立functional reviewで下の共通case表を最終照合。c04e→b4のoperator/native-http/shared relay・gate dispatcher/workflowはbyte同一。9de6→b4の差分はTODO/guideと別実行のDocker custody fixtureのみで、通常required/CIの入力は不変。E67/E72は別sourceの限定資格として保持 | 選択済みloopback Native + closed certified relayの技術範囲を完了。元M5総合readiness・原12 RELEASE runtime/M7・独立security監査・実provider/公開認定ではない。実PKI/capacity/alerts/spend/topology/rehearsalはD04/D07/M8 |
+| E74: combined application Coin / complete-owner-loss / anchored TLS | `d4dd0109` / tree`aaff6747`。全9 owning commandsがactual0/EOF/wait、675.094秒。custody174 passed/6 ignored、Standard Asset19 passed、実compiled local TLS全14 passed。全4 sole-owner SIGKILL/reap後のwriter交代と、新しい独立anchor付きの同復旧controlも成功。fmt/Node syntax・全target全feature strict Clippyも成功 | 親が1157 tracked files・固定Node24/全wrapper/raw hash・前後clean sourceを照合。component gateでありliteral完全required/CI・13-target Native・全M2/M3/M4/M7ではない。旧retained-handle controlと元13 TLS selectorsは保持 |
+| E75: own-created application Coin actual custody | 同じ`d4dd0109`の実CLI/新ignored oracleを通常dev/test opt2で生成し、実mode0755を保持した別inodeへ保存。Docker/別UID/PTYがactual0/EOF/wait、6.564秒。mint→split→merge→whole burn→mint→他者へのwhole transfer、全6段階の保存済み再送と供給量5M→0→5M、最終nonce9/cap6を検証 | 元5 families/6 lifecycleとE67を保持。新5 groupsの取消/restart・正確な件数・offline byte一致を確認。親が全source/両ELF/raw hashと専有container/volume消滅を照合。RELEASE・全storeの等値性・他profileの鍵復旧/交換・automatic signing・全M2は主張しない |
+| E76: independent local checkpoint anchor | `7d5d91dd` / tree`64a3079a`でruntime-sqlite111 passed/5 original ignored、新anchor13 controls、strict全target全feature Clippyがactual0/EOF/wait。別`.lease` inodeでの排他、12 SQL tablesと閉じたbody manifest、COMMIT前Pending/後の照合、stale clone拒否と現行cloneのfresh fencingを検証 | 初回compile失敗とClippy失敗を保存。24入力を親で再hashし、統合d4ddとの差分は設計index/ADRの2文書だけ。実compiled anchor inspect/enroll/checkpointと4-host TLS復旧はE74で追加実行。local ACKの独立anchorでありquorum checkpoint・完全暗号化backup・upgrade・全M4ではない |
 
 
 
@@ -278,6 +281,18 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 
 
 新しいrawの保存先は `/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013`。
+E74は `technical-six-owning-1017-terminal.json` / `.log` と親の
+`technical-six-owning-parent-qualified-1017.json`。raw SHA-256は
+`498730b69ea721f978e8597fb8f14b90675a6451505db4b2b8b15d7560f29be5`。
+E75は `d4dd-coin-custody-fixture-1017-terminal.json` / `.log` と
+`d4dd-coin-custody-fixture-parent-qualified-1017.json`、raw SHA-256は
+`cff27046aa8aac4798ba7c0eea5b1813179d81adb23cb05557452db6dc8ef849`。
+E76は `checkpoint-anchor-component-qualified-1017.json` /
+`checkpoint-anchor-parent-qualified-1017.json` と
+`checkpoint-anchor-d4dd-code-correspondence-1017.json`、成功raw SHA-256は
+`d66d292bc7ad6a745f945cf63ab2750b63cd93cab862bfd5b37c93d5a953cd86`。
+これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
+
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
 `required-current3.log` / `required-14fb-receipt.json` と
 `required-current5.log` / `required-5672-receipt.json`、
@@ -600,7 +615,8 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     E49で別UIDの操作内容承認・署名・実CLI送信とnew instance、独立型IDのDefinition/TreasuryCap・
     供給量0・非空receipt/再送・取消/restart拒否を確認。承認後のseed/nonce/max_fee変更を拒否する。
     feeはgenesis context、applicationは独立導出したnew instanceであり、seedの事前freshnessや
-    作成IDの事前予測は主張しない。作成assetのmint/burnはE62で確認し、transfer/split/merge・新familyの鍵復旧/交換・
+    作成IDの事前予測は主張しない。作成assetのmint/burnはE62、transfer/split/mergeはE75で確認。
+    新familyの残る鍵復旧/交換・
     最終source完全gate/CI/Native releaseと全M2は未完了。
   - [x] [mint/burnの任意application asset pin](docs/architecture/decisions/0258-mint-burn-application-asset-pin.md):
     E62でgenesis feeと独立local application pinを分け、作成assetの実mint/burnを確認。
@@ -611,7 +627,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     同じtrusted OSのown-created profileで、現在性やassetとinstanceの起源をfetch証明しない。
     9de6の13-target Native A/Bと実RELEASE CLIはE64で成功。
     同profileの停止後鍵復旧はE67で確認。
-    作成assetのtransfer/split/merge、他profileの鍵復旧・所有権移行を含む鍵交換、automatic protocol signingと
+    作成assetのtransfer/split/mergeはE74/E75で追加検証。他profileの鍵復旧・所有権移行を含む鍵交換、automatic protocol signingと
     最終source完全required/CI・原12 RELEASE runtime・全M2は未完了。
   - [x] [own-created mint/burnの停止後鍵復旧と5 profilesの鍵交換時拒否](docs/architecture/publication-custody-lifecycle.md#asset-family-fixture-coverage):
     E67で元鍵のsignerを停止してから復旧し、同じ新規承認frameでのreference署名一致、
@@ -619,6 +635,11 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     新publisherで旧Coin/Cap/fee/creatorを拒否し、出力が作られないことも確認。
     元5 families/6 lifecycleと全件数を維持。正の所有権移行、他profileのlive鍵復旧/交換、
     automatic protocol signingと全M2・最終source全体gateは未完了。
+  - [x] [own-created application Coinのtransfer/split/merge custody](docs/architecture/standard-asset-application-coin-custody.md):
+    E74/E75で独立application pinとgenesis feeを分け、実別UID/PTYの6操作と正確な
+    type/owner/version/amount/receipt/nonce・全保存済み再送・取消/restartを検証。
+    自己宛whole transferの拒否は保持し、最後の送金先は別のdisposable recipient。
+    内容承認・署名・実CLIで同じframeを使う。全M2と最終source全体gateは未完了。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
@@ -639,11 +660,12 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
   - [x] 正常停止・TLS trust交代後の新規business: E30の実CLI/4 replicasで確認。
     保存済み再送に加え、新規nonce/返金Coinを使った取引の確定と新旧receipt保存を検証。
     同sourceの完全gate/CIはE45/E39で成功。残るM3条件は未完了として保持する。
-  - [ ] [全connection喪失後の正規local writer交代](docs/architecture/decisions/0260-complete-owner-loss-local-writer-failover.md):
+  - [x] [全connection喪失後の正規local writer交代](docs/architecture/decisions/0260-complete-owner-loss-local-writer-failover.md):
     retained-handleの元SIGKILL controlを保持し、全4 sole-ownerをSIGKILL/reapしてから
     次generationを起動する別controlを追加。全12 SQL tables・2 blob tablesと4 portable
     collections/参照bodyの保存済み再送不変、新規有料取引/両quorum/nonce/receiptを検証する。
-    source実装のみ。owning compile/run・最終gate/CIは未完了。
+    E74の実compiled TLSで成功。独立anchorを使用する追加variantも成功。
+    このsourceの最終完全gate/CIは未完了。
     host/power/media/fsync・別host/実topology failoverの証拠へ読み替えない。
   - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。
     trait reply-loss、process SIGKILL、power/host/media/fsync faultは別証拠。
@@ -673,6 +695,12 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     同sourceのCIとローカル完全requiredはE53/E63で成功し、原12 Native runtimeはE57の失敗として保持する。
   - 後継epochのhistory floorはE37で実genuine successor importの既存loopへ追加し、
     元long caseを変えずにE53のactual CI終端成功を確認した。
+  - [x] [trusted local OSの独立checkpoint anchor component](docs/architecture/local-checkpoint-anchor.md):
+    E76で独立authorityのPending/acknowledged根と閉じたimmutable body manifest、
+    stale rollback拒否・lease・current clone交代を検証。E74ではcompiled hostで明示的に
+    inspect/enroll/checkpointし、4-host TLSの全owner喪失後にも有料取引を継続した。
+    旧保存済み再送ではauthority不変、新規取引ではACK更新を確認。
+    complete encrypted backup/restoreとupgrade/rollbackの原条件は未完了。
   - 次: source/artifact対応、M7、残るmanifest/upgrade/fencing範囲を照合する。
     別namespaceを区別するnonceだけではbyte cloneやepoch内の古いowned状態を検出できない。
     その不足を残したprotocol拡張だけでM4を閉じず、独立した最新性anchorと照合する。
