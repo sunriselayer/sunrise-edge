@@ -64,8 +64,9 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   更新後311 locked versionsのOSV応答は該当0件。修正版の[Draft PR #325](https://github.com/sunriselayer/sunrise-edge/pull/325)
   exact `50fbf22d` は完全5-group PG/集約check・fresh13-target A/B・current CLI全117・
   fresh23/full49 compile-only・TLS/実prior upgradeをE154-E158で完了しました。
-  literal npm ciも成功し、同source完全required・全8 ordinary CI・原12 RELEASE runtimeの
-  終端を引き続き照合中です (E159)。旧sourceの合格を修正版へ借用しません。
+  原12 RELEASE runtimeも全12 cases・98 passed/0 failed/3 ignoredで終端成功を照合しました (E164)。
+  追加2 harnessの7 compile/syntax/lint gatesはE163で成功。literal npm ciも成功し、
+  同source完全required・全8 ordinary CIの終端を引き続き照合中です。旧sourceの合格を借用しません。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -403,6 +404,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 
 | E161: current Cloudflare CLI migration hosted all8 | `e4fb6e55`の[run39044872288](https://github.com/sunriselayer/sunrise-edge/actions/runs/39044872288) attempt1は元7 ownersとsuccess-only check全8がSUCCESS。8 raw 1,557,386 bytesとactual merge`18c6f005` / tree`bb7cad0c` / parents`[ad3c,e4fb]`をroot・独立peerが照合。147 Rust summariesは4,397 passed/0 failed/42 ignored。実cf `1.0.0-beta.13`の型照合・TS7とVitest全4 groups計66 testsも成功。親`ci-run-39044872288-parent-qualified-1018.json` (`9b49ccb8`) | 元7 epoch spans・epoch8 freeze-drain/unlock・saved closure、2 unique 1,832-byte候補と各rounds3 ACK manifest stemを実rawで照合。元selectors/8links/delay7/35rolesのsource contractを保持。collectorはactual0/両実EOF/wait/reap。直接CLIはcfへ統一し、SDK内部のtransitive Wranglerと区別する。local完全requiredは実行中で、50fb・全M2/M7・独立security監査・provider deployment/公開認定へ転用しない |
 | E162: current Cloudflare CLI migration local complete required | exact `e4fb6e55` / tree`bb7cad0c`のliteral npm ci +完全check-allが両actual0・各merged実EOF/waitで自然終了、17,653.508秒。147 Rust summariesは4,397 passed/0 failed/42 ignored、cf全4 Vitest計66 tests。rootと独立peerが全747,390-byte raw、1215 source Ns/Git・360 tools・3 seed proofs・7 directory tuplesを照合。親`cloudflare-cli-migration-required-final-parent-qualified-1018.json` (`a78654d3`) | 実rawで7 epoch spans/e8 freeze-drain・unlockと2 unique 1,832-byte候補/各rounds3 ACK manifest stemを照合。cold-open・8links/delay7/35rolesは元の成功source predicateへ対応し、削除artifactを再構成しない。全8 hosted CIのE161と合わせ、このCLI移行確認だけ完了。保存293 observationsのkernel limitsと同invocation自然終了/MainPID・CG不在を確認。未保存のOOM counters/全child census/detached outer EOFは主張しない。最初のreader marker仮定失敗・旧E157中断を保持し、50fb・全M2/M7・独立source/security監査・provider/deployment/公開認定へ転用しない |
+| E163: current ordered/certified fresh two-harness compile qualification | exact `50fbf22d`で2つの元libtest harnessをfresh CargoJSONから保持し、元のcompile-only2件・fmt・Node syntax2件・Python AST-only・strict3-crate Clippyの7 gatesが全actual0。19 operations/1,278 frames/1,038,961-byte rawと各EOF/wait、691.391秒。author・root・独立peer親`rustls-native7-ordered-certified-harnesses1-parent-qualified-1018.json` (`e606e367`) | source1215・17 tools/19 aliases、normal0755/単一link/別inodeの2 ELF、既存Native actual51-argument commandと4 RELEASE rolesを照合。既存Native1+新7の構成であり、新しい4-bin buildとは呼ばない。現在lockの311 archives/43,045,697 bytesを照合。private namespaceは312で、未使用旧Rustls0.23.45は元copy metadataとの対応だけ。最初のreader namespace仮定失敗を両方保持し、productは再実行しない。6GiB/swap0/CPU1/tasks512・保存final OOM0/既知PID/CG/TMP不在。compile-onlyであり別UID/TLS fixture・全M2/M7の成功にはしない |
+| E164: current original12 actual RELEASE runtime | exact `50fbf22d` / tree`ccae85a6`の元10 whole+2 exact casesが全actual0/EOF/wait、98 passed/0 failed/3 ignored。actual outer0/両physical EOF/wait/reap、12,785.019秒。全24 events/12完全body・265,690-byte rawと各caseの13 RELEASE read-only bindingsをauthor・root・独立peerが照合。親`rustls-native7-1017-original12-parent-qualified-1018.json` (`d5c59b01`) | 元7 epoch spans/e8 freeze-drain・unlock・saved closureと2 unique 1,832-byte候補/同じ2 rounds3 committed-ACK manifest stemを実rawで照合。source1215全Ns/Git、49 ELF/20 tools/10 provenance、保存427 rows中426 liveの16GiB/swap0/CPU4/tasks512、保存既知565 PID numbers・CG・2 TMP不在を確認。8links/delay7/35roles・cold-open/source-free restoreは元の成功source predicateへ対応し、削除artifactを再構成しない。launcherのfile-redirection EOF flagとactual outer物理EOFを区別する。同source完全required/全8 ordinary CI・全M2/M7・独立source/security監査・公開認定は未完了 |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -1128,7 +1131,8 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     元5-group完全PG/集約check、13-target Native provenanceを確認する。
     exact `50fbf22d` の完全PG/集約checkはE154、fresh13-target A/BはE155で成功。
     current RELEASE CLI全117はE156、fresh23/full49とTLS/実旧版upgradeはE158で成功。
-    新source完全required・全8 ordinary CI・原12 runtime (E159) の終端を引き続き照合する。
+    原12 runtimeはE164で全12 casesの実RELEASE終端成功を確認。新source完全required・
+    全8 ordinary CIの終端を引き続き照合する。
   - 次: E18/E19のsource/tool/profile pinをR4/Gから共用し、新sourceのrelease claimには
     そのsourceの13-target A/B・実RELEASE bindingを用意する。未達qualificationを進める。
     過去の11/12-target成功やcheap fixtureを13-target成功にはしない。
