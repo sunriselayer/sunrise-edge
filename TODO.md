@@ -277,6 +277,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E80: checkpoint corrected native/age and first compiled fixture failure | `22250784` / tree`4ba328e4`のowningはactual101/EOF/wait、383.828秒。修正後SQLite lib119 passed/6 ignored、実ageの5 controlsと元14 compiled TLSは全成功。新15thはcompiled packがexit0の後、fixtureが別command用の`complete=true`表示を要求して失敗 | raw/終端と全sourceを保存し、厳格な実診断照合を持つfixtureへ修正する。新15th・後続Clippy/全体gateの成功とは数えない。既存Native/age結果とcompiled pack/open全体資格を区別する |
 | E81: checkpoint compiled inventory failure | `98e45e05` / tree`76ad2e8b`の新15thはactual101/EOF/wait、owning全体23.192秒。復元後の通常SQLite検査の後、closed inventoryが期待4 leafに対して6 leafとなり失敗 | rawには余分なleaf名がない。sourceの呼出順から通常readonly WAL検査の副作用と診断し、archiveの厳格な一覧検査を最初の通常open前へ移した。元raw/終端は保持。4台continuation・fresh business・後続Clippyの成功とは数えない |
 | E82: original ordered custody functional component | `976deed4` / tree`5f81352e`で全7 commandsがactual0/EOF/wait、696.548秒。新IPC/署名応答9、元routerとの応答比較4、role/private config3、既存DR-0215 local-signature16 controlsが全成功。fmtと全target全feature strict Clippyも成功 | 独立source reviewの3指摘を修正し、統合code/testは承認candidateとbyte一致。親が1172 tracked inputs・Node24・wrapper/controller/raw・clean sourceを再照合。別UIDの実4-worker/frontend・完全required/CI・Native・全M2・security監査は未完了 |
+| E83: compiled complete checkpoint and prior-release upgrade | `07ebbc5a` / tree`c66689d9`のdefault TLS15 passed/1 ignoredがactual0/EOF、42.422秒。4台の実pack/open・旧source不在・独立authority一致・fresh fence/有料取引が成功。明示的な旧9de6 RELEASEを使う追加upgradeもactual0/EOF、5.490秒で全旧4台の取引→停止→schema identityだけの移行→旧版拒否/停止bytes不変→新fence3/新規取引/再送に成功 | owning全体はClippyのテスト内空文字比較1箇所でactual1/EOF、238.042秒の失敗として保持し、成功prefixを別途資格照合。等価な`is_empty`への変更だけの`fee693ff` / tree`4ac28a26`でfmt/全target全feature strict Clippy/diffはactual0/EOF、5.580秒。1174 tracked inputs・実driver/旧ELF/rawを親で再hash。全体required/CI・Native・全M4は未完了 |
 
 
 
@@ -316,6 +317,12 @@ E81は `checkpoint-v2-owning3-1017-terminal.json` / `.log` と
 E82は `ordered-worker-component-owning1-1017-terminal.json` / `.log` と
 `ordered-worker-component-owning1-parent-qualified-1017.json`、raw SHA-256は
 `f9f3ac5fb51d29491de2589eb9b44a0142cc19c17751745e0861c30b7233ef45`。
+E83は `checkpoint-upgrade-owning4-1017-terminal.json` / `.log` と
+`checkpoint-upgrade-owning4-parent-prefix-qualified-1017.json`、raw SHA-256は
+`8c6239d44ab9223dae29338dab0629e062c4baff96c23224cd70c0560a2546b8`。
+Clippy修正後は `checkpoint-upgrade-lint5-parent-qualified-1017.json` と
+`checkpoint-upgrade-lint5-1017-terminal.json` / `.log`、raw SHA-256は
+`2ff7660d6181f881204905cc2e30da0703f09052962b74c38e62ce6a99f28a26`。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -721,9 +728,9 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
 - [ ] **M4: checkpoint・暗号化バックアップ・復元コードを検証する**
   - 対象: 実装 + 検証。checkpoint/state-root・immutable body manifests、
     完全history/receipt/blob restore、fresh fencing、migration/upgrade・safe rollback/stop。
-  - 状態: E1の35-role source-free restoreは合格。新しいcomplete requiredの状態はE14。
-    checkpoint/state-root・closure-level immutable manifest・upgrade/rollback/stopの
-    未達技術条件を残し、全M4/releaseは未完了。
+  - 状態: E1の35-role source-free restoreに加え、E83でcomplete storeの暗号化復元と
+    実prior releaseからのupgrade/旧版停止・再開が成功。最終統合sourceの完全required/CI・
+    Native/M7と残る原条件の照合を残し、全M4/releaseは未完了。
   - [x] [独立に保持したordered history floor component](docs/architecture/decisions/0248-import-ordered-history-freshness-floor.md):
     実import create/resumeへの追加拒否を実装。parse/comparison 12件・元9件を保持したcompiled import全10件・Clippy・
     独立component reviewは成功。E29で同sourceのRELEASE child import全10件も成功。
@@ -745,17 +752,18 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     inspect/enroll/checkpointし、4-host TLSの全owner喪失後にも有料取引を継続した。
     旧保存済み再送ではauthority不変、新規取引ではACK更新を確認。
     complete encrypted backup/restoreとupgrade/rollbackの原条件は未完了。
-  - [ ] [独立current anchorと照合する暗号化full-store continuation](docs/architecture/local-checkpoint-backup.md):
+  - [x] [独立current anchorと照合する暗号化full-store continuation](docs/architecture/local-checkpoint-backup.md):
     v1のproof archiveを保持したままlocal v2形式を実装し、独立source reviewを完了。
     初回owningはE78の2 failures。readonly snapshot副作用とfixture ownerを修正し、
-    E80のNative119/age5は成功。新compiled fixtureの表示照合を修正し、
-    実pack/open・旧source不在・4-host fresh fence/有料businessまで検証する。
+    E80のNative119/age5は成功。E81のfixture検査順を修正し、E83の実4 pack/open・
+    旧source不在・4-host fresh fence/新規有料businessと再送まで成功。
     protocol-version activation/migrationと実off-host運用の合格には転用しない。
-  - [ ] [実prior RELEASEから独立anchor profileへのsoftware/storage upgrade](docs/architecture/decisions/0265-stopped-native-storage-profile-upgrade.md):
+  - [x] [実prior RELEASEから独立anchor profileへのsoftware/storage upgrade](docs/architecture/decisions/0265-stopped-native-storage-profile-upgrade.md):
     既存15 TLS selectorsを保持し、明示的な9de6 RELEASE ELFを要求するignored16件目を追加。
     実旧4-host paid/quorum/historyとpositive blobを基準に、停止・root-pinned enrollment、
     schema identityだけの変更とuser_version5維持、旧binaryのschema拒否・全停止bytes不変、
-    現行fence3・保存済み再送・新しい有料取引まで検証する。source実装のみで、実行は未確認。
+    現行fence3・保存済み再送・新しい有料取引とtail stopをE83で検証。
+    旧manifestの`fixturePassed=false`は旧ELFのprovenanceだけに使用し、この実行とは分ける。
   - 次: source/artifact対応、M7、残るmanifest/upgrade/fencing範囲を照合する。
     別namespaceを区別するnonceだけではbyte cloneやepoch内の古いowned状態を検出できない。
     その不足を残したprotocol拡張だけでM4を閉じず、独立した最新性anchorと照合する。
