@@ -1231,7 +1231,7 @@ fn drain(replay: bool) {
                 &FrozenFrontierPageRequest {
                     epoch: Epoch::new(0),
                     after_request_id: None,
-                    limit: 3,
+                    limit: 4,
                 },
                 &certifier,
                 endpoints[0].validator_id,
