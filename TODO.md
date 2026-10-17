@@ -284,6 +284,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E85: partial-write mechanism refusal and stopped assessment | 別の小さいQEMU mechanismは実`max-transfer512`の制約拒否でactual1、0.285秒。子processのEOF/wait/reap/socket不在、実disk全old bytesと失敗rawを保存 | mixed bytes・SQLite/WAL・M3成功には数えない。続く実WAL source assessmentはprovider safetyで停止し、再試行・別agentへの迂回を行わない。supporting mechanism2の準備sourceも未実行で保全。独立anchorの9 casesと、この停止taskは別に扱う |
 | E86: anchored SQLite library and failed first guest boot | `80c028a9` / tree`11e9044c`でSQLite lib全120 passed/7 ignored、3 packagesの全target全feature strict Clippy、fmt/diffの全5 commandsがactual0/両EOF/wait、19.84秒。前のbuild ownerは実CargoJSON package IDの照合誤りで失敗したまま保持し、正しいIDだけで別attemptを実行 | 1180 tracked inputs・18 VM inputs・通常0755の保持ELFを親で再hash。初回guestはinit exit76でactual1、2.07秒、product control成功0。全6 childrenのEOF/wait/reap・socket不在・raw/imagesを保持。続くboot修正taskもprovider safetyで停止したため、再試行・迂回せず未達を保持。library成功を9 boundariesの実guest成功へ読み替えない |
 | E87: original ordered multi-UID second setup failure | `80c028a9`の新build/inventoryはactual0。実UID owningは準備probe成功後、実authorの親directory読み取りでEACCESとなりactual1/両EOF/wait、1.54秒。全15 Docker clientsのwait/EOF/PID不在と専有container/volume解放・不在を親で再確認 | `6e84e3a1`でroot-owned public routing ancestorsだけを0755へ合わせた。private leaves0700・private files0600・caps・拒否controlsを維持。修正後の実4-worker/4-frontend owningは未実行で、M2/runtime成功には数えない |
+| E88: read-only anchor inspection and actual five ENOSPC controls | `4db1229f` / tree`c09cd519`。自動修正の後にも残ったwritable historical preflightを除き、同じreadonly snapshotで既存header/WAL/shared namespace検証とroot走査を実行。writer保持中・12拒否入力・authority非更新の3新規controlsを含むSQLite全123 passed/7 ignoredとstrict Clippy/fmt/diffが全actual0/両EOF/wait、64.387秒。元5 ENOSPC selectorsもactual0、26.992秒 | 全1180 tracked inputs・実CargoJSON/保持ELF・全framed rawを親で照合。ENOSPCの全86 clientsと専有5 container/volumeの解放・不在を再確認。既存historical/writable factoryと全5 fault controlsを保持。普通のcorrectness reviewは最終security監査ではなく、VM・全M3・最終完全gateの成功にも数えない |
+| E89: original ordered fixture bounded output failure | `4db1229f`で4 bins + fixture harness、構文、strict Clippyの全6 commandsがactual0/両EOF/wait、195.059秒。通常0755の5 ELFとread-only inventoryも再照合。実UID attemptは64KiB内の出力配分を超え、actual1/両EOF/wait、13.937秒 | inner start clientはSIGKILL、観測stdout58102 bytesの完全rawを保持できなかったためproduct成功0として扱う。outer Node rawは完全。全15 clientsのwait/EOF/PID不在と専有container/volume解放・不在を確認。上限・oracle・拒否controlsを維持して完全ログのtransportを修正し、別attemptで検証する |
 
 
 
@@ -338,6 +340,15 @@ E87は `m2-ordered-fixture-build3-parent-qualified-1017.json` /
 `m2-ordered-fixture-inventory3-parent-qualified-1017.json` /
 `m2-ordered-fixture-runtime3-parent-qualified-failure-1017.json` と
 `m2-ordered-fixture-runtime3-1017-terminal.json` / `-complete.json`。
+E88は `sqlite-library-inspection-build4-parent-qualified-1017.json` /
+`sqlite-final-five-inspection4-parent-qualified-1017.json` と
+`sqlite-library-inspection-build4-1017-terminal.json` / `.raw`、
+`enospc-final-inspection4/terminal.json` / `raw.log`。
+library raw SHA-256は `891ad3015b03388da289df829520c1e710c27f1558f92e7cd7c74bf421f9839b`、
+ENOSPC raw SHA-256は `1a161db14ebac9262cb9778dc8f55b58439099f9ba664eec61e8e7e730c40d4b`。
+E89は `m2-ordered-fixture-build4-final-parent-qualified-1017.json` /
+`m2-ordered-fixture-inventory4-final-parent-qualified-1017.json` /
+`m2-ordered-fixture-runtime4-final-parent-qualified-failure-1017.json`。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -694,7 +705,8 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     全入力inventoryは成功したが、初回runtimeは準備時のEPERMで失敗。所有権移譲前に
     権限を設定し、E87の次attemptで準備probeは成功したが実authorのEACCESで失敗。
     public routing ancestorsだけを0755へ合わせ、private leaves/拒否controlsは保持。
-    この修正後の実4-worker/4-frontend owningは未実行。
+    E89の次attemptはログ配分超過で失敗し、完全inner rawがないためproduct成功0。
+    上限・oracle・拒否controlsを維持した完全ログtransportと実owningを残す。
     後継epoch・FastVote/readiness・他signing family・全M2へ転用しない。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
@@ -775,7 +787,8 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     stale rollback拒否・lease・current clone交代を検証。E74ではcompiled hostで明示的に
     inspect/enroll/checkpointし、4-host TLSの全owner喪失後にも有料取引を継続した。
     旧保存済み再送ではauthority不変、新規取引ではACK更新を確認。
-    complete encrypted backup/restoreとupgrade/rollbackの原条件は未完了。
+    complete encrypted backup/restoreと実prior release upgrade/safe stopはE83で検証。
+    最終統合sourceの全体qualificationは親M4に残す。
   - [x] [独立current anchorと照合する暗号化full-store continuation](docs/architecture/local-checkpoint-backup.md):
     v1のproof archiveを保持したままlocal v2形式を実装し、独立source reviewを完了。
     初回owningはE78の2 failures。readonly snapshot副作用とfixture ownerを修正し、
