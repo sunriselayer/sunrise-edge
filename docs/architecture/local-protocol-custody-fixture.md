@@ -39,7 +39,9 @@ The parent reviews that actual inventory before the separate execution call.
 
 Select existing nvm Node24.19.0. No default, executable discovery, build, package
 installation or download happens in this controller. Every compiled input must
-already be a resolved regular0755 ELF; never normalize its permissions to pass.
+already be a resolved regular0755 ELF owned by the controller's current effective
+UID with exactly one link; record/recheck its link count and never normalize its
+permissions or ownership to pass.
 The harness is a Cargo test target, not a fourteenth release executable.
 
 | Input role | Package/target | Recorded profile |
@@ -56,7 +58,8 @@ Use an actual compiled build receipt with schema1, exact `sourceHead`,
 source inventory. Each command records its actual `argv`, `exit: 0`,
 `stdoutEof: true`, `stderrEof: true`, absolute `logPath` and `logSha256`.
 Each of the five input roles records absolute `path`, `sha256`, `length`,
-`mode: 493`, `package`, `target`, actual `profile` and `commandIndex` linking it
+`mode: 493`, actual `uid`, `nlink: 1`, `package`, `target`, actual `profile` and
+`commandIndex` linking it
 to that complete build command. The caller independently qualifies those raw
 compiler logs; a declared receipt is not a cryptographic build attestation.
 
@@ -91,7 +94,8 @@ Inspect actual cgroup512MiB/swap0/1CPU/pids64 and actual tmpfs protections befor
 any role launches. Readonly-bind exactly the five ELFs and their bounded merged
 `ldd` closure under `/mnt/bin` and `/mnt/libs`; use the explicit loader without
 replacing image Python libraries. Record and recheck source/ELF/library hashes,
-lengths, UID/GID, mode and device/inode/time metadata on success and failure.
+lengths, UID/GID, mode, link count and device/inode/time metadata on success and
+failure.
 Readonly ELF input bounds are512MiB each/2GiB aggregate, with at most64 libraries
 and256MiB total library bytes. Generated tmpfs data remains bounded by64MiB.
 
@@ -100,7 +104,9 @@ tail/error cleanup. Individual commands, streams, EOF drains and waits use the
 remaining shared allowance. Each product invocation has total200s, timeout2s,
 concurrency2, requests128 and worker connections160. A read-only oracle has210s
 absolute life and at most64 closed phase commands; its idle-read cap30s allows
-bounded operation phases, while control replies have2s deadlines. It retains
+bounded operation phases, while each control send/reply shares ONE absolute2s
+phase deadline, rechecked before every receive and at completion. Cached startup
+lines also require observation before their original deadline. It retains
 only owned row images and closes every SQLite connection/transaction before
 acknowledging a phase. It checks no source/anchor FD remains between commands.
 
@@ -135,6 +141,27 @@ saved wire bytes. It does not manufacture protocol keys, state or authority.
 Private artifact destinations use create-new and strict count/length/total
 bounds; only selected public canonical wire bytes are copied for the separate
 worker-UID oracle. Keys/configs are never copied into that public artifact tree.
+
+The Docker owner uses one `start --attach` operation so capture is established
+before container execution, including early failures with logging disabled.
+This supported start command uses its default signal proxy; the owner forwards
+no signals and timeout abort uses uncatchable SIGKILL on the Docker client only.
+Exact owned-container cleanup remains a separate qualified operation.
+
+Every Docker client has a bounded receipt containing operation, PID, actual
+exit/signal/wait and close, per-stream physical EOF, bytes and SHA256, and capture
+completeness. At most96 such records reserve512 bytes EACH inside the existing
+64KiB host capture budget, including its16KiB cleanup reserve. No argv,
+`Config.Env` or credential values enter these records. Missing wait/EOF fails.
+
+Creation attempts become ambiguous BEFORE either create call. Only an actual
+successful response plus qualified identity/profile inspection clears the
+corresponding flag. A timeout or unqualified response remains ambiguous even
+if an early exact-name lookup is empty; cleanup cannot claim removed/complete
+from that observation. Every receipt includes endpoint, owner label/UUID,
+container name/observed ID, volume name/observed attachment, attempted/ambiguous
+flags and manual-reconciliation status. Preserve the failed attempt, reconcile
+those exact names later and never automatically retry an uncertain create.
 
 All child output is captured under a cumulative256KiB inner limit; retained
 stdout/stderr, actual exit/wait and EOF metadata cross in the bounded receipt.

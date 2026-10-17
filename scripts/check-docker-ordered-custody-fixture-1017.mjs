@@ -22,12 +22,19 @@ const deadline = performance.now() + 280_000;
 const outputLimit = 65_536;
 const cleanupReserve = 16_384;
 const pendingClients = new Set();
+const clientRecords = [];
+const clientMetadataBytesPerRecord = 512;
+let clientMetadataBytes = 0;
 const dockerEnvironment = { ...process.env };
 for (const key of ['DOCKER_CONTEXT', 'DOCKER_HOST', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']) delete dockerEnvironment[key];
 let outputBytes = 0;
 let containerId;
 let volumeExpected = false;
 let volumeMountpoint;
+let volumeCreateAttempted = false;
+let containerCreateAttempted = false;
+let volumeCreateAmbiguous = false;
+let containerCreateAmbiguous = false;
 let primaryError;
 let result;
 let cleanupVerified = false;
@@ -53,7 +60,8 @@ async function inventory(path, executable = false) {
   const info = lstatSync(path, { bigint: true });
   require_(info.isFile() && info.size <= 512n * 1024n * 1024n, 'regular immutable input exceeds512MiB');
   const mode = Number(info.mode & 0o7777n);
-  if (executable) require_(mode === 0o755, 'retained compiled ELF must keep normal0755 mode');
+  if (executable) require_(mode === 0o755 && info.uid === BigInt(process.geteuid()) && info.nlink === 1n,
+    'retained compiled ELF must keep normal0755/current effective UID/single-link ownership');
   else require_((mode & 0o444) !== 0, 'library input is not readable');
   const hash = createHash('sha256');
   let bytes = 0;
@@ -64,7 +72,7 @@ async function inventory(path, executable = false) {
     hash.update(chunk);
   }
   require_(BigInt(bytes) === info.size, 'input size changed while hashing');
-  return { path, sha256: hash.digest('hex'), length: bytes, mode, uid: Number(info.uid), gid: Number(info.gid),
+  return { path, sha256: hash.digest('hex'), length: bytes, mode, uid: Number(info.uid), gid: Number(info.gid), nlink: Number(info.nlink),
     device: info.dev.toString(), inode: info.ino.toString(), mtimeNs: info.mtimeNs.toString(), ctimeNs: info.ctimeNs.toString() };
 }
 function local(command, argv, workdir) {
@@ -124,77 +132,80 @@ async function docker(args, cleanup = false) {
   if (remaining <= 0) throw new Error('fixture deadline expired');
   const commandEnd = performance.now() + remaining;
   const activeLimit = cleanup ? outputLimit : outputLimit - cleanupReserve;
+  require_(clientRecords.length < 96 && outputBytes + clientMetadataBytes + clientMetadataBytesPerRecord <= activeLimit,
+    'Docker completion metadata exceeds existing evidence cap');
+  clientMetadataBytes += clientMetadataBytesPerRecord;
+  const operation = ['container', 'volume', 'image'].includes(args[0]) ? `${args[0]} ${args[1]}` : args[0];
+  const emptySha = createHash('sha256').digest('hex');
+  const record = { operation, cleanup, pid: null, exit: null, signal: null, waitCompleted: false, closeObserved: false,
+    stdoutEof: false, stderrEof: false, stdoutBytes: 0, stderrBytes: 0, stdoutSha256: emptySha, stderrSha256: emptySha, captureComplete: false };
+  clientRecords.push(record);
   return new Promise((resolve, reject) => {
     const child = spawn('/usr/local/bin/docker', ['--host', endpoint, ...args], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: dockerEnvironment,
+      stdio: ['ignore', 'pipe', 'pipe'], env: dockerEnvironment,
     });
+    record.pid = child.pid ?? null;
     pendingClients.add(child);
-    const stdout = [];
-    const stderr = [];
-    let stdoutEof = false;
-    let stderrEof = false;
-    let failure;
-    let settled = false;
-    let reapTimer;
+    const stdout = []; const stderr = [];
+    const hashes = { stdout: createHash('sha256'), stderr: createHash('sha256') };
+    let capturedBytes = 0;
+    let failure; let settled = false; let reapTimer;
+    function snapshotRecord() {
+      record.stdoutSha256 = hashes.stdout.copy().digest('hex');
+      record.stderrSha256 = hashes.stderr.copy().digest('hex');
+      record.captureComplete = record.stdoutEof && record.stderrEof && capturedBytes === record.stdoutBytes + record.stderrBytes;
+      require_(Buffer.byteLength(JSON.stringify(record)) <= clientMetadataBytesPerRecord, 'Docker record metadata reservation exceeded');
+    }
     function rejectOnce(error) {
       if (settled) return;
       settled = true;
-      error.capture ??= { stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), stdoutEof, stderrEof };
+      snapshotRecord();
+      error.capture ??= { stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'),
+        stdoutEof: record.stdoutEof, stderrEof: record.stderrEof };
       reject(error);
     }
     function abort(error) {
       failure ??= error;
+      // SIGKILL is uncatchable by the client, so it is not proxied to the
+      // container. Only exact owned-container cleanup below targets that role.
       child.kill('SIGKILL');
       if (reapTimer) return;
       reapTimer = setTimeout(() => {
-        child.unref();
-        child.stdout.destroy();
-        child.stderr.destroy();
+        child.unref(); child.stdout.destroy(); child.stderr.destroy();
         rejectOnce(new Error(`${failure.message}; Docker client reap/EOF unresolved, pid=${child.pid ?? 'unknown'}`));
       }, Math.max(1, Math.min(1_000, Math.floor(deadline - performance.now()))));
     }
-    const timer = setTimeout(() => {
-      abort(new Error('Docker operation exceeded its deadline'));
-    }, remaining);
-    function collect(target, chunk) {
+    const timer = setTimeout(() => { abort(new Error('Docker operation exceeded its deadline')); }, remaining);
+    function collect(name, target, chunk) {
+      record[`${name}Bytes`] += chunk.length; hashes[name].update(chunk);
       if (failure) return;
-      if (chunk.length > activeLimit - outputBytes) {
-        abort(new Error('complete output exceeds capability evidence allocation'));
-        return;
+      if (chunk.length > activeLimit - outputBytes - clientMetadataBytes) {
+        abort(new Error('complete output exceeds capability evidence allocation')); return;
       }
-      outputBytes += chunk.length;
-      target.push(chunk);
+      outputBytes += chunk.length; capturedBytes += chunk.length; target.push(chunk);
     }
-    child.stdout.on('data', (chunk) => collect(stdout, chunk));
-    child.stderr.on('data', (chunk) => collect(stderr, chunk));
-    child.stdout.on('end', () => { stdoutEof = true; });
-    child.stderr.on('end', () => { stderrEof = true; });
-    child.stdout.on('error', abort);
-    child.stderr.on('error', abort);
-    child.on('error', abort);
+    child.stdout.on('data', (chunk) => collect('stdout', stdout, chunk));
+    child.stderr.on('data', (chunk) => collect('stderr', stderr, chunk));
+    child.stdout.on('end', () => { record.stdoutEof = true; });
+    child.stderr.on('end', () => { record.stderrEof = true; });
+    child.stdout.on('error', abort); child.stderr.on('error', abort); child.on('error', abort);
+    child.on('exit', (code, signal) => { record.exit = code; record.signal = signal; record.waitCompleted = true; });
     child.on('close', (code, signal) => {
-      pendingClients.delete(child);
-      clearTimeout(timer);
-      if (reapTimer) clearTimeout(reapTimer);
+      pendingClients.delete(child); clearTimeout(timer); if (reapTimer) clearTimeout(reapTimer);
+      record.closeObserved = true; snapshotRecord();
       if (settled) return;
       if (performance.now() > commandEnd) failure ??= new Error('Docker completion was observed after its deadline');
       if (failure) return rejectOnce(failure);
-      if (!stdoutEof || !stderrEof) return rejectOnce(new Error('Docker output lacks both physical EOFs'));
-      const answer = {
-        code, signal,
-        stdout: Buffer.concat(stdout).toString('utf8'),
-        stderr: Buffer.concat(stderr).toString('utf8'),
-      };
+      if (!record.waitCompleted || !record.stdoutEof || !record.stderrEof || !record.captureComplete)
+        return rejectOnce(new Error('Docker output lacks physical wait/close/EOF completion'));
+      const answer = { code, signal, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') };
       if (code !== 0 || signal !== null) {
         const diagnostic = answer.stderr.trim() || answer.stdout.trim();
-        const error = new Error(`Docker refused ${args[0]}: ${diagnostic}`);
-        error.command = args[0];
-        error.capture = { ...answer, stdoutEof, stderrEof };
+        const error = new Error(`Docker refused ${operation}: ${diagnostic}`);
+        error.command = args[0]; error.capture = { ...answer, stdoutEof: record.stdoutEof, stderrEof: record.stderrEof };
         return rejectOnce(error);
       }
-      settled = true;
-      resolve(answer);
+      settled = true; resolve(answer);
     });
   });
 }
@@ -293,7 +304,7 @@ try {
   for (const [role, flag, target] of targets) {
     const actual = await inventory(input[flag], true);
     const prior = receipt.inputs[role];
-    require_(prior && prior.path === actual.path && prior.sha256 === actual.sha256 && prior.length === actual.length && prior.mode === 0o755 &&
+    require_(prior && prior.path === actual.path && prior.sha256 === actual.sha256 && prior.length === actual.length && prior.mode === 0o755 && prior.uid === actual.uid && prior.nlink === actual.nlink &&
       prior.package === 'sunrise-edge-operator' && prior.target === target && Number.isInteger(prior.commandIndex) &&
       prior.commandIndex >= 0 && prior.commandIndex < receipt.commands.length &&
       (role === 'harness' ? prior.profile === 'test' : ['dev', 'release'].includes(prior.profile)), 'ELF target/provenance receipt differs');
@@ -326,10 +337,13 @@ try {
   require_(localImage.stdout.trim() === imageId, 'pinned existing local image differs');
   require_(!(await findVolume()), 'fresh owned allocation already exists');
   volumeExpected = true;
+  volumeCreateAttempted = true; volumeCreateAmbiguous = true;
   const createdVolume = await docker(['volume', 'create', '--driver', 'local', '--name', volumeName, '--label', `${label}=${owner}`,
     '--opt', 'type=tmpfs', '--opt', 'device=tmpfs', '--opt', `o=${volumeOptions}`]);
   require_(createdVolume.stdout.trim() === volumeName, 'owned allocation creation differs');
   await inspectVolume();
+  volumeCreateAmbiguous = false;
+  containerCreateAttempted = true; containerCreateAmbiguous = true;
   const created = await docker(['create', '--pull=never', '--name', name, '--label', `${label}=${owner}`,
     '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--cap-add', 'DAC_OVERRIDE',
     '--cap-add', 'SETUID', '--cap-add', 'SETGID', '--security-opt', 'no-new-privileges', '--user', '0:0',
@@ -356,8 +370,11 @@ try {
     (config.SecurityOpt ?? []).some((value) => value === 'no-new-privileges' || value === 'no-new-privileges:true') &&
     Object.keys(config.Tmpfs ?? {}).length === 0 && (config.Binds ?? []).length === 0 && initial.Config.User === '0:0' &&
     JSON.stringify(initial.Config.Entrypoint) === '["/usr/local/bin/python3"]', 'effective Docker profile differs');
-  await docker(['start', containerId]);
-  const attached = await docker(['attach', '--sig-proxy=false', containerId]);
+  containerCreateAmbiguous = false;
+  // One supported start --attach call establishes output capture before any
+  // container execution. Use start's default signal proxy; this owner forwards
+  // no signals and only uses uncatchable client SIGKILL for timeout abort.
+  const attached = await docker(['start', '--attach', containerId]);
   require_(attached.stderr === '', 'controller stderr was not empty');
   result = JSON.parse(attached.stdout.trim());
   const waited = await docker(['wait', containerId]); require_(waited.stdout.trim() === '0', 'actual container wait did not exit0');
@@ -398,7 +415,8 @@ try {
     if (volumeExpected && await findVolume(true)) { await inspectVolume(true); await docker(['volume', 'rm', volumeName], true); }
     const volumes = await docker(['volume', 'ls', '-q', '--filter', `label=${label}=${owner}`], true);
     require_(volumes.stdout.trim() === '', 'owned allocation residue remains');
-    cleanupVerified = true;
+    cleanupVerified = !containerCreateAmbiguous && !volumeCreateAmbiguous;
+    require_(cleanupVerified, `creation outcome remains ambiguous; manual reconciliation required for container=${name} volume=${volumeName} owner=${owner}`);
     }
   } catch (error) {
     primaryError = new Error(`${primaryError?.message ?? 'fixture'}; cleanup unresolved: ${error.message}; owned name=${name}`);
@@ -420,6 +438,11 @@ try {
 }
 if (pendingClients.size !== 0 || performance.now() > deadline) primaryError = new Error(`${primaryError?.message ?? 'fixture'}; end/owned Docker client unresolved`);
 const evidence = { mode: inventoryOnly ? 'inventory-only' : 'actual-component-execution', passed: !primaryError, error: primaryError?.message ?? null, capture: primaryError?.capture ?? failureCapture, result,
+  resources: { endpoint, owner, label, containerName: name, containerId: containerId ?? null, volumeName, volumeMountpoint: volumeMountpoint ?? null,
+    containerCreateAttempted, volumeCreateAttempted, containerCreateAmbiguous, volumeCreateAmbiguous,
+    manualReconciliationRequired: containerCreateAmbiguous || volumeCreateAmbiguous || (!inventoryOnly && !cleanupVerified),
+    startAttachSignalPolicy: 'supported start --attach default proxy; owner forwards no signals; client-only SIGKILL abort' },
+  clientRecords, client_metadata_reserved_bytes: clientMetadataBytes,
   image, container_removed: inventoryOnly ? null : cleanupVerified, volume_removed: inventoryOnly ? null : cleanupVerified, sourcePin, sourceInventory, elfInventory, libraryInventory, buildReceiptPin, evidence_bytes: outputBytes };
 console.log(JSON.stringify(evidence));
 if (primaryError) process.exitCode = 1;

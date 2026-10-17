@@ -120,6 +120,7 @@ class Child:
 
     def line(self, end):
         while True:
+            remaining(end)
             data = self.data['stdout']
             index = data.find(b'\n', self.offset)
             if index >= 0:
@@ -320,16 +321,21 @@ class Oracle:
     def phase(self, value, end=WORK_END):
         if value not in ['baseline', 'unchanged', 'fence-2', 'fence-3', 'retained-1', 'retained-2', 'finish'] or self.count >= 64:
             raise RuntimeError('closed oracle phase')
-        self.count += 1; self.stream.settimeout(min(2, remaining(end)))
+        self.count += 1
+        phase_end = min(end, time.monotonic() + 2.0)
+        self.stream.settimeout(remaining(phase_end))
         self.stream.sendall((value + '\n').encode('ascii'))
+        remaining(phase_end)
         data = bytearray()
         while not data.endswith(b'\n'):
+            self.stream.settimeout(remaining(phase_end))
             if len(data) >= 64:
                 raise RuntimeError('oracle acknowledgement cap')
             chunk = self.stream.recv(64 - len(data))
             if not chunk:
                 raise RuntimeError('oracle EOF before acknowledgement')
             data.extend(chunk)
+        remaining(phase_end)
         if data != ('ok ' + value + '\n').encode('ascii'):
             raise RuntimeError('oracle acknowledgement differs')
         phases.append('oracle-' + value)
