@@ -85,11 +85,17 @@ no-new-privileges remain explicit. Only the disposable root controller receives
 CHOWN/DAC_OVERRIDE/SETUID/SETGID; every actual role checks effective UID/group and
 CapEff0 before execution. The child roles use worker12001, frontend12002 and
 intruder12003. Frontend/intruder supplementary12001 permits socket traversal,
-while0700 custody parents and0600 files keep authority files unreadable.
+while0700 private custody leaves and0600 files keep authority files unreadable.
 
-One UUID-owned64MiB noswap tmpfs volume has16384 inodes, mode0711 and
+One UUID-owned64MiB noswap tmpfs volume has16384 inodes, mode0755 and
 nosuid/nodev/noexec. Source/body and independent anchor are separate sibling
 private trees; this does not claim independent physical failure devices.
+The tmpfs root and routing directories `source`, `authority`, `worker`, `run`
+and `front` are root-owned0755, permitting the native checked-file APIs to open
+every ancestor read-only. Other UIDs cannot write these routing directories.
+Validator `vN` leaves, `worker/setup`, `oracle` and `artifacts` stay0700 under
+their assigned UIDs; `run/vN` and `run/competing` remain0750. Private payloads
+remain0600, and the existing actual filesystem-refusal controls still apply.
 Inspect actual cgroup512MiB/swap0/1CPU/pids64 and actual tmpfs protections before
 any role launches. Readonly-bind exactly the five ELFs and their bounded merged
 `ldd` closure under `/mnt/bin` and `/mnt/libs`; use the explicit loader without

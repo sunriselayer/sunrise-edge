@@ -17,7 +17,7 @@ const owner = randomUUID();
 const name = `sunrise-edge-ordered-custody-1017-${owner}`;
 const label = 'sunrise-edge.ordered-custody-1017-owner';
 const volumeName = `${name}-memory`;
-const volumeOptions = 'rw,nosuid,nodev,noexec,size=64m,nr_inodes=16384,mode=0711,uid=0,gid=0,noswap';
+const volumeOptions = 'rw,nosuid,nodev,noexec,size=64m,nr_inodes=16384,mode=0755,uid=0,gid=0,noswap';
 const deadline = performance.now() + 280_000;
 const outputLimit = 65_536;
 const cleanupReserve = 16_384;

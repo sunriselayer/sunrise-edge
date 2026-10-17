@@ -448,7 +448,7 @@ def verify_environment():
     info = os.statvfs('/work')
     if info.f_frsize * info.f_blocks != 67108864 or info.f_files != 16384:
         raise RuntimeError('actual tmpfs byte/inode bounds differ')
-    if stat.S_IMODE(os.stat('/work').st_mode) != 0o711:
+    if stat.S_IMODE(os.stat('/work').st_mode) != 0o755:
         raise RuntimeError('actual tmpfs root permissions differ')
     return expected
 
@@ -456,7 +456,7 @@ def verify_environment():
 def main():
     limits = verify_environment()
     for tree in ['source', 'authority', 'worker', 'run', 'front']:
-        make_directory('/work/' + tree, 0o711)
+        make_directory('/work/' + tree, 0o755)
     make_directory('/work/worker/setup', 0o700, UID_WORKER, UID_WORKER)
     make_directory('/work/public', 0o755, UID_WORKER, UID_WORKER)
     make_directory('/work/public/wire', 0o755, UID_FRONT, UID_FRONT)
