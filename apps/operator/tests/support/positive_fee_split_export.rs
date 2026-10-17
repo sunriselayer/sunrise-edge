@@ -11,7 +11,10 @@ use std::{
     process::{Command, Output},
     time::Duration,
 };
-use sunrise_edge_client::immutable_archive::ImmutableArchiveReader;
+use sunrise_edge_client::immutable_archive::{
+    ArchiveReadBudget, ArchiveReadLimits, ImmutableArchiveReader,
+};
+use sunrise_edge_client::ordered_history_archive::{generated_directory, relative_file_limit};
 use sunrise_edge_client::{
     FeeClaimIntent, FeeClaimPrepareRequest, HashSuiteResolver, PublicationContext,
     SuccessorArtifactDirectories, SuccessorChainBudget, SuccessorWorkflowAuthority,
@@ -21,6 +24,17 @@ use sunrise_edge_client::{
 const FILE_BYTES: usize = 1024 * 1024;
 const TOTAL_BYTES: usize = 16 * 1024 * 1024;
 const FILE_COUNT: usize = 256;
+
+fn history_budget() -> ArchiveReadBudget {
+    ArchiveReadBudget::new(ArchiveReadLimits {
+        observations: 65_536,
+        heights: 0,
+        components: 0,
+        file_bytes: u64::try_from(FILE_BYTES).unwrap(),
+        deadline: Duration::from_secs(300),
+    })
+    .unwrap()
+}
 
 pub(super) struct PublicCase {
     pub label: &'static str,
@@ -169,16 +183,48 @@ impl Export {
         self.records
             .insert(relative.into(), (bytes.len(), digest(bytes)));
     }
-    fn archive(&mut self, role: &str, original: &Path) {
-        let reader: ImmutableArchiveReader = ImmutableArchiveReader::open(original).unwrap();
+    fn archive(&mut self, role: &str, original: &Path, budget: &ArchiveReadBudget) {
+        let history: bool = matches!(role, "plan-history" | "manifest-history");
+        assert!(history || matches!(role, "cut" | "certificate"));
+        let reader: ImmutableArchiveReader = if history {
+            ImmutableArchiveReader::open_bounded(original, budget).unwrap()
+        } else {
+            ImmutableArchiveReader::open(original).unwrap()
+        };
         if let Some(staging) = reader.staging() {
             assert!(
                 fs::read_dir(staging.path()).unwrap().next().is_none(),
                 "export refuses pending/orphan staging"
             );
         }
-        let names: BTreeSet<String> = reader.names().unwrap();
+        let names: BTreeSet<String> = if history {
+            reader.names_recursive().unwrap()
+        } else {
+            reader.names().unwrap()
+        };
+        if history {
+            let mut directories: BTreeSet<String> = BTreeSet::new();
+            let mut required_directories: BTreeSet<String> = BTreeSet::new();
+            for name in &names {
+                if name.ends_with('/') {
+                    assert!(generated_directory(name), "unknown history directory");
+                    directories.insert(name.clone());
+                } else {
+                    assert!(relative_file_limit(name).is_some(), "unknown history file");
+                    for (offset, _) in name.match_indices('/') {
+                        let directory: String = name[..=offset].into();
+                        required_directories.insert(directory);
+                    }
+                }
+            }
+            // Every directory is reconstructed by a copied leaf. Empty or
+            // surplus directories refuse instead of disappearing from export.
+            assert_eq!(directories, required_directories);
+        }
         for name in &names {
+            if history && name.ends_with('/') {
+                continue;
+            }
             assert!(
                 ![".key", ".seed", ".db"]
                     .iter()
@@ -186,10 +232,21 @@ impl Export {
                     && name != "private.key",
                 "private/database files cannot be exported"
             );
-            let bytes: Vec<u8> = reader.read(name, FILE_BYTES).unwrap();
+            let bytes: Vec<u8> = if history {
+                reader
+                    .read_relative(name, FILE_BYTES.min(relative_file_limit(name).unwrap()))
+                    .unwrap()
+            } else {
+                reader.read(name, FILE_BYTES).unwrap()
+            };
             self.put(&format!("{role}/{name}"), &bytes);
         }
-        assert_eq!(reader.names().unwrap(), names);
+        let after: BTreeSet<String> = if history {
+            reader.names_recursive().unwrap()
+        } else {
+            reader.names().unwrap()
+        };
+        assert_eq!(after, names);
         reader.ensure_attached().unwrap();
     }
 }
@@ -247,8 +304,9 @@ pub(super) fn run(
         }
     }
     assert_eq!(directories.len(), 4);
+    let budget: ArchiveReadBudget = history_budget();
     for (role, original) in &directories {
-        out.archive(role, Path::new(original));
+        out.archive(role, Path::new(original), &budget);
     }
     let current: &PublicationContext = workflow.expected_context();
     let mut pins: String = format!(
@@ -400,4 +458,152 @@ pub(super) fn run(
         assert_eq!(digest(&bytes), *hash);
     }
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixture::Directory;
+    use std::{os::unix::fs::symlink, panic::AssertUnwindSafe};
+
+    fn history(root: &Path) -> BTreeMap<&'static str, &'static [u8]> {
+        let files: BTreeMap<&'static str, &'static [u8]> = BTreeMap::from([
+            ("identity.bin", b"identity".as_slice()),
+            ("chunk-size.bin", b"size".as_slice()),
+            ("complete", b"identity".as_slice()),
+            (
+                "height-00000000000000000001/descriptor.bin",
+                b"descriptor".as_slice(),
+            ),
+            (
+                "height-00000000000000000001/component-01/chunk-00000000000000000000.bin",
+                b"retained component".as_slice(),
+            ),
+        ]);
+        fs::create_dir(root).unwrap();
+        for (name, bytes) in &files {
+            fs::create_dir_all(root.join(name).parent().unwrap()).unwrap();
+            fs::write(root.join(name), bytes).unwrap();
+        }
+        files
+    }
+
+    fn output(root: &Path) -> Export {
+        fs::create_dir(root).unwrap();
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
+        Export {
+            root: root.to_path_buf(),
+            records: BTreeMap::new(),
+            bytes: 0,
+        }
+    }
+
+    #[test]
+    fn nested_history_export_preserves_complete_inventory_and_bytes() {
+        // These are transport bytes, not synthesized successor authority.
+        // The genuine selector separately reloads/verifies its complete chain.
+        let directory: Directory = Directory::new("positive-nested-history-export");
+        let source: PathBuf = directory.0.join("history");
+        let files: BTreeMap<&str, &[u8]> = history(&source);
+        fs::create_dir(source.join(".cut-staging-v1")).unwrap();
+        let mut out: Export = output(&directory.0.join("export"));
+        let budget: ArchiveReadBudget = history_budget();
+        for role in ["plan-history", "manifest-history"] {
+            out.archive(role, &source, &budget);
+            for (name, bytes) in &files {
+                let relative: String = format!("{role}/{name}");
+                assert_eq!(read(&out.root.join(&relative), FILE_BYTES), *bytes);
+                assert_eq!(out.records[&relative], (bytes.len(), digest(bytes)));
+                assert_eq!(fs::read(source.join(name)).unwrap(), *bytes);
+            }
+            assert!(!out.root.join(role).join(".cut-staging-v1").exists());
+        }
+        assert_eq!(out.records.len(), files.len() * 2);
+        assert_eq!(
+            out.bytes,
+            files
+                .values()
+                .map(|bytes: &&[u8]| bytes.len())
+                .sum::<usize>()
+                * 2
+        );
+    }
+
+    #[test]
+    fn nested_history_export_refuses_unknown_or_empty_attachments() {
+        for variant in ["unknown-file", "unknown-directory", "empty-component"] {
+            let directory: Directory = Directory::new(variant);
+            let source: PathBuf = directory.0.join("history");
+            let _files: BTreeMap<&str, &[u8]> = history(&source);
+            match variant {
+                "unknown-file" => fs::write(source.join("foreign.bin"), b"refuse").unwrap(),
+                "unknown-directory" => fs::create_dir(source.join("height-1")).unwrap(),
+                "empty-component" => {
+                    fs::create_dir(source.join("height-00000000000000000001/component-02")).unwrap()
+                }
+                _ => unreachable!(),
+            }
+            let mut out: Export = output(&directory.0.join("export"));
+            let budget: ArchiveReadBudget = history_budget();
+            assert!(
+                std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    out.archive("manifest-history", &source, &budget);
+                }))
+                .is_err()
+            );
+            assert!(out.records.is_empty(), "layout admission precedes copying");
+        }
+    }
+
+    #[test]
+    fn nested_history_export_refuses_symlinks_and_pending_staging() {
+        for variant in ["file-symlink", "directory-symlink", "pending-staging"] {
+            let directory: Directory = Directory::new(variant);
+            let source: PathBuf = directory.0.join("history");
+            let _files: BTreeMap<&str, &[u8]> = history(&source);
+            match variant {
+                "file-symlink" => {
+                    symlink(source.join("identity.bin"), source.join("alias.bin")).unwrap();
+                }
+                "directory-symlink" => {
+                    symlink(
+                        source.join("height-00000000000000000001"),
+                        source.join("height-00000000000000000002"),
+                    )
+                    .unwrap();
+                }
+                "pending-staging" => {
+                    let staging: PathBuf = source.join(".cut-staging-v1");
+                    fs::create_dir(&staging).unwrap();
+                    fs::write(staging.join(".cut-1-0.tmp"), b"unadopted").unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let mut out: Export = output(&directory.0.join("export"));
+            let budget: ArchiveReadBudget = history_budget();
+            assert!(
+                std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    out.archive("plan-history", &source, &budget);
+                }))
+                .is_err()
+            );
+            assert!(out.records.is_empty());
+        }
+    }
+
+    #[test]
+    fn flat_cut_export_still_refuses_nested_directories() {
+        let directory: Directory = Directory::new("positive-flat-cut-refusal");
+        let source: PathBuf = directory.0.join("cut");
+        let _files: BTreeMap<&str, &[u8]> = history(&source);
+        let mut out: Export = output(&directory.0.join("export"));
+        let budget: ArchiveReadBudget = history_budget();
+        assert!(
+            std::panic::catch_unwind(AssertUnwindSafe(|| {
+                out.archive("cut", &source, &budget);
+            }))
+            .is_err()
+        );
+        assert!(out.records.is_empty());
+    }
 }

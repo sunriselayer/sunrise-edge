@@ -25,6 +25,19 @@ refuse. SHA256 file inventories are provenance, while SDK verification against
 the original pinned root supplies authority. The copied archive is independently
 reloaded and checked before the index is published last.
 
+Plan-history and manifest-history use the existing held nested archive reader.
+Every directory must satisfy the defining ordered-history generated-directory
+contract, every file must have its defining relative-file bound, and directory
+markers must equal all copied leaf ancestors. Empty/surplus directories,
+unknown names, symlinks and nonregular leaves refuse. Both history roles share
+one local read budget of 65,536 observations, 1 MiB per file and 300 seconds, with no
+height/component decoding by the copier. The original 16 MiB / 256-file export
+limits remain in force. The complete before/after nested inventories must agree.
+Cut and certificate retain their flat inventory policy. The selected Python
+transport admits canonical history fixed/height/descriptor/component/chunk path
+shapes; Rust owns semantic file/offset bounds and each role still independently
+verifies its complete SDK chain. No generic recursive archive policy is added.
+
 The selected Node owner requires that exact public index and a separately pinned
 provenance JSON. That JSON binds `sourceHead`, `sourceTree`, `cliBinary`,
 `cliSha256`, `testBinary`, `testSha256`, `nodeSha256`, `scriptSha256` and exact
