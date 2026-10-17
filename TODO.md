@@ -307,6 +307,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E103: certified FastVote UID fixture version-binding compile failure | 別branch `b8edcabb`。four-bin compileはactual0、追加harnessはobject.versionのu64をrusqliteへ直接渡す型誤りE0277でactual101。outeractual1/両実EOF/wait、1.933秒 | 全1190 source・17 tools・完全raw389 frames/7 operationsと既存四つの実bin不変を独立照合。追加harness/保持5ELF receipt・後続gates・inventory/runtimeは未生成または未実行。`71d79292`で実ownerの8-byte big-endian BLOB表現へ検証queryだけを合わせ、元canonical bytes assertionを維持。修正後producerは未実行。旧失敗とTMP/targetを保持し、成功へ置換しない |
 | E104: positive Split UID component strict gates | 別branch `a41bd6c5` / tree`656f11f9`。同じ全6 commandsがactual0/両実EOF/wait、inner81.108秒/outer81.181秒。CLI全406 passed/0 failed/7 ignored、新4 policy/5 custody controls、genuine helper compile・strict3crate Clippy・fmt/diffが成功 | 親が1195 source/Git blobs・17 tools、完全raw878 frames/16 operations/548 CargoJSONと現19 target ELF+新保持CLI libを再照合。旧target18 identitiesは不変、CLI libだけ正当なactual再compileとして明示し、旧保持物と全失敗証拠を保存。全PID/cgroup・TMP回収。追加UID probeはcompileのみで、実genuine/UID/PTY/全M2/M7は未達 |
 | E105: certified FastVote actual five-ELF producer | 別branch `71d79292` / tree`6fe0772b`。全6 build/構文/fmt/strict Clippy commandsがactual0/両実EOF/wait、inner218.836秒/outer218.924秒。実CargoJSONから4 binsと追加harnessを通常0755・single link・別inodeの5保持ELFへ固定 | 親が1190 source/Git blobs・17 tools、完全raw770 frames/21 operations/728 CargoJSON、全5 source/保持物・既存4 binsの全前後identityを再照合。target1の明示reuseでfresh buildとは呼ばない。全PID/cgroup・TMP3回収、過去2失敗は保持。追加harnessは未実行で、inventory・実別UID/TLS/全M2/M7の成功には数えない |
+| E106: certified FastVote read-only inventory | `71d79292`の固定5保持ELF、22 fixture sourcesと4実loader/librariesをNode24で照合。actual0/両実EOF/wait、inner0.694秒/outer0.770秒。完全stdout JSONが保存inventoryと一致し、Docker clients0・資源作成0を確認 | 親が1190 source/Git blobs・tools・全5 ELF/4 librariesのmetadata/hashと完全rawを再照合。外部samplerより先に完了したためexternal InvocationIDは未観測のまま保持し、innerの実cgroup limitsを照合。inventoryの未使用UUIDを後続runtimeのowner pinへ転用しない。実UID/TLSは別attempt |
+| E107: positive Split genuine public-export failure | `a41bd6c5`で実CLI producerはactual0、続く元first-successor selectorはmanifest-historyのnested directoryを平坦archive APIで読むためactual101。outeractual1/両実EOF/wait、64.096秒 | 独立に1195 source/Git blobs・19 own/17 component tools、全11 runtime bindingsと4 libraries、完全raw141 frames/9 operations・全PID/cgroup回収を確認。完全な公開資料は未生成で、144 source filesの部分copyとindexを含む145 filesだけを保持。元fixtureはunwind時にRAII削除されており、元history treeを保持したとは呼ばない。Node/UID phases成功0。既存nested-history owner契約へexporterと読み手を合わせ、元拒否条件・完全authority検証を維持して再検証する |
 
 
 
@@ -411,6 +413,8 @@ E102は `positive-fee-split-uid-build2-independent-failure-qualified-1017.json` 
 E103は `m2-certified-fastvote-fixture-build2-independent-qualified-failure-1017.json` とactual raw/terminal。
 E104は `positive-fee-split-uid-build3-parent-qualified-1017.json` とactual raw/terminal。
 E105は `m2-certified-fastvote-fixture-build3-parent-qualified-1017.json` とactual raw/terminal。
+E106は `m2-certified-fastvote-fixture-inventory2-parent-qualified-1017.json` とactual complete inventory/terminal。
+E107は `positive-fee-split-uid-genuine1-independent-failure-qualified-1017.json` とactual raw/terminal/partial public evidence。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -782,10 +786,11 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     frontendはclosed contractと既存coreのauthority/confirmed retentionを保持する。
   - [ ] [genuine positive Splitの別UID・PTY lifecycle](docs/architecture/positive-fee-split-uid-fixture.md):
     component build成功後、Leg/Claim両phaseの承認・署名・取消・鍵復旧・再起動と、
-    元genuine selector内で実protected candidateを提出する追加fixtureの実行を準備中。
+    元genuine selector内で実protected candidateを提出する追加fixtureを検証中。
+    初回はE107のnested-history exportで停止し、Node/UIDには未到達。修正後の再実行を準備する。
   - [ ] [certified FastVoteの実別UID・TLS lifecycle](docs/architecture/local-certified-protocol-custody-fixture.md):
     修正後の5 ELF producerは成功。実署名・保存済み再送・停止中拒否・fence/restart・
-    frontier/progress/readinessと独立read-only SQL oracleの実行は未完了。
+    frontier/progress/readinessと独立read-only SQL oracleの実行を開始。終端成功前に完了へ数えない。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
