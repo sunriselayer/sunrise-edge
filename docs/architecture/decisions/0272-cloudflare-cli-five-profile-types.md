@@ -1,7 +1,7 @@
 # DR-0272: Cloudflare CLI configuration and five-profile type checks
 
 - Date: 2026-10-17
-- Status: proposed implementation; source review and validation pending
+- Status: implemented local tooling contract; qualification is tracked in TODO.md
 
 ## Decision
 
@@ -32,19 +32,18 @@ as history; no remote migration replay, reset or deployed-state claim follows.
 The type renderer disables CLI telemetry with `CF_SEND_TELEMETRY=false`, which
 replaces the certified legacy CLI's `send_metrics:false` intent.
 
-Vitest 1.4.0 loads `experimental.newConfig.configPath` with remote bindings
-disabled. All four groups, Miniflare mocks, request interception and timeouts
+The Workers Vitest test plugin 1.4.0 loads
+`experimental.newConfig.configPath` with remote bindings disabled. All four groups, Miniflare mocks, request interception and timeouts
 stay. The plugin still imports the transitive Wrangler SDK for Miniflare;
 removing direct CLI commands does not remove this internal SDK dependency.
 
-## Validation status
+## Declaration checks
 
-This source-only draft has not installed tools, run CF type generation,
-compiled TypeScript, run Vitest, deployed or contacted a provider account.
-Proposed declaration bytes are authored from the renderer contract and require
-actual generation comparison. Run the existing complete adapter check and all
-four groups. Verify stale config/renderer/binding refusal and that `--check`
-leaves committed declarations untouched; no new release gate is introduced.
+Compare the committed declarations with actual generation through the existing
+adapter check and all four Worker groups. Stale config, renderer, binding or CLI
+version inputs must fail, and `--check` must leave committed declarations
+untouched. These checks use the repository's existing acceptance gate. Current
+execution results and remaining qualification belong only in `TODO.md`.
 
 ## Sources
 
@@ -56,4 +55,5 @@ leaves committed declarations untouched; no new release gate is introduced.
 Installed CF1.0.0-beta.13/config0.24.0 and test plugin1.4.0 source was read for
 plain-object loading, schema, generator and experimental config support. Public
 docs currently recommend builder imports and illustrate the older Vitest
-option; this dependency-free draft uses the installed loader's actual API.
+option; this dependency-free implementation uses the installed loader's actual
+API.

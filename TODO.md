@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-10-17 (JST)。これは唯一の現行作業表です。
+更新: 2026-10-18 (JST)。これは唯一の現行作業表です。
 設計は[architecture](docs/architecture/README.md)、実装場所は
 [code map](docs/development/code-map.md)、整理の決定は
 [DR-0236](docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md)に置きます。
@@ -13,7 +13,7 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 
 - コード・検証対象: **14件** (R1-R4、D01-D03・D05、M1-M5・M7)。
 - 公開準備対象: **6件** (D04・D06-D08、M6・M8)。実装キューとは別です。
-- 再開後: **旧20件のうち8件完了、12件未完了、既存の完了履歴は9件**。
+- 再開後: **旧20件のうち9件完了、11件未完了、既存の完了履歴は9件**。
   再分類・延期・重複する検証の共用を、機能の完了件数には数えません。
 - R1・R2・R3・D01は、保存ソース・欠落資料・実際のCI tested treeと
   完了したrecipeの最終照合および独立source reviewを終えました。
@@ -22,9 +22,10 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   main統合・独立security監査・公開認定は区別します。
 - R4は `537c8777` のE17/E18/E19で13-targetの技術handoffを完了しました。
   旧local完全gateの終端未確認E20は保持し、新しいM2 sourceの完全gateはE22で成功。
-  M2/M3/M4/M7・公開条件は未完了のまま保持します。
+  M2/M3/M7・公開条件は未完了のまま保持します。M4の選択済み技術範囲はE152で完了。
 - D05/M5の選択済みNative/closed relayの技術範囲はE71/E73で完了。
-  残るコード・検証の親項目はD02/M1/M2/M3/M4/M7の6件です。
+  残るコード・検証の親項目はD02/M1/M2/M3/M7の5件です。
+  M4はexact `5f6b1819` の選択済みNative+SQLite/trusted-local-OS範囲をE152で完了しました。
   元M5の実PKI・capacity・alerts・運用の公開条件はD04/D07/M8に残ります。
   継続中の統合変更は[Draft PR #320](https://github.com/sunriselayer/sunrise-edge/pull/320)。
   このDraftの存在を完全required/CI・Nativeまたは親項目の完了には数えません。
@@ -39,19 +40,26 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   (E136-E139)。T/Gの旧e6f1に対する3/4-file bridge付き実行と、C/MBの5f6bに対する
   3/4-file bridge付き同一鍵historical recoveryも確認しました (E140/E141)。
   同一鍵復旧の追加source `ad3ce3a0` / tree`d3fdc54a` は[Draft PR #323](https://github.com/sunriselayer/sunrise-edge/pull/323)。
-  WとMBのliteral npm ciは成功し、両sourceの完全requiredと同5f原12 RELEASE runtimeは実行中です。
+  W5f6bのliteral npm ci +完全requiredは全commands actual0で完走しました (E150)。
+  同5f原12 RELEASE runtimeも全12 cases・98 passed/0 failed/3 ignoredで完走しました (E151)。
+  MBのliteral npm ciは成功し、完全requiredは実行中です。
   [Draft PR #321](https://github.com/sunriselayer/sunrise-edge/pull/321) の全8 CIはE142で成功を照合。
-  [Draft PR #322](https://github.com/sunriselayer/sunrise-edge/pull/322) / #323は各6 jobs成功、
-  recurring-sqlite継続中・集約check未作成であり、全8成功には数えません。
+  [Draft PR #322](https://github.com/sunriselayer/sunrise-edge/pull/322) は全8 CI成功を実ログ/checkoutで照合 (E152)。
+  #323 / #324は各6 jobs成功、recurring-sqlite継続中・集約check未作成です。
   正のgenesis Coin A→B→A移行は `fe542b82` に追加し、strictと新H7 producerは成功。
   新13-target A/Bは両laneの全13 ELFのbyte一致・source/provenance照合まで完了しました (E145)。
   追加fixtureの2回の実失敗を保持し、private exportのumaskとtransient予約のAbsent oracleを修正。
   `f6b5ffab`の新H8・fresh lddの後、実fixture全117 flagsが成功しました (E146/E149)。
   Cloudflare CLIへの5-profile統一は実npm ci・typegen・10拒否controlsに加え、修正後の
   型照合・TS・lint・全4 Vitest計66 testsまで成功しました (E147/E148)。
-  新sourceのliteral npm ciと完全requiredはこれから実行し、祖先の成功から借用しません。
+  新source `e4fb6e55` は[Draft PR #324](https://github.com/sunriselayer/sunrise-edge/pull/324)。
+  literal npm ciは成功し、同headの完全requiredと全8 hosted CIは実行中です。
+  この文書更新は別worktreeで行い、実行中のsource/HEAD/TODOは変更していません。
   E133の自然失敗原因は未確定で、旧失敗と当時source-onlyだったE134/E135を保持します。
-  祖先の成功を新source全体の合格へ付け替えず、全M2/M4/M7は未完了です。
+  祖先の成功を新source全体の合格へ付け替えず、全M2/M7は未完了です。
+  追加の公開advisory照会でRustls 0.23.45に4件を検出し、別branchで0.23.46へ更新しました (E153)。
+  更新後311 locked versionsのOSV応答は該当0件ですが、新sourceのbuild/TLS・完全required/CIと
+  PG依存変更に必要な完全5-group PG検証は未実行です。旧sourceの合格を修正版へ借用しません。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -132,7 +140,7 @@ E28/E29のsourceに後続差分を含めたことにはしません。
 当時未終端だった後継floorのlong case/CIはE53、277fの完全requiredはE63で成功。
 原12 Native runtimeはE57の失敗として保持します。後続4 sourcesの完全required/CIは
 E68-E71、b4のtest-only CIはE72、D05/M5の技術最終照合はE73へ記録しました。
-M2/M3/M4/M7全体・独立監査・公開条件は未完了です。
+M2/M3/M7全体・独立監査・公開条件は未完了です。M4の選択済み技術範囲はE152を参照します。
 9de6の原12 RELEASE runtimeはE92で全actual0/実EOF/waitを確認しました。
 7658の別の原12 RELEASE runtimeと完全required/CIはE131/E132で終端成功を確認しました。
 元12ケース・共有18,000秒・CPU4/16GiB/swap0を維持しています。
@@ -375,6 +383,10 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E147: actual cf migration prefix, prerequisites and SQL startup fix | CF2でliteral offline npm ci、実`cf workers types`全5 profile、positive check、stale/入力/CLI version全10拒否controlsとno-overwrite確認が成功。CF3で通常Rust/WASM+contract fixture producer、TS7/typecheck・lint・ingress/certified Vitestがactual0 | CF1のnpm config double-load失敗とCF2の生成WASM未準備失敗を保持。CF3はSQL self DOが旧published worker名を参照してstartupでactual1、SQL test0・contract未実行。schema必須workerは保持し、SQL/contract Vitestだけlocal class/useSQLite designatorへ上書きする修正を反映。実修正後全4 Vitest・全required/CIは未達。direct Wrangler commands/dependencyは廃止し、plugin内transitive SDKは保持。deployment/公開認定は主張しない |
 | E148: current cf migration all four Vitest groups | `f6b5ffab` / tree`c920900e`でactual CF4の13 operationsが全0、76 raw frames・全26 streamsのhash/実EOF/waitを照合。型照合・TS7・lintに加えingress13/certified28/SQL10/contract15の計66 tests成功。source1215全Ns、元package bodies、生成WASM/fixture5入力不変と既知15 PIDs/cgroup不在を確認。root・独立peer親`cloudflare-cli-migration-validation4-parent-qualified-1017.json` (`0a52e00f`) | E144/E147は当時の未実行/自然失敗履歴として保持。直接Wrangler呼出しを廃止した実cf型生成/Node検証の技術範囲だけ。新source完全required/全8 hosted CI、provider deployment、全M2/M7は未完了 |
 | E149: actual two-owner genesis Coin handoff | `f6b5ffab`の新H8はactual CargoJSONからtest ELF`8eeecd95`を別inodeへ正常保持し、root・独立peerがproducerを照合。親`401d40ca`。fresh 2 lddの後、実fixture runtime3はactual0/両outer実EOF/wait/8.730秒、raw`4c00a43d`の全117 expected flagsが一致。既存の同CoinをA→B version2/nonce1,0/replay1→A version3/nonce1,1/replay2へ実有料移行。親`cloudflare-cli-migration-fixture-runtime3-parent-qualified-1017.json` | root実照合とinert adapter作者の別照合を区別し、外部独立auditとは呼ばない。actual RELEASE CLIはfe54 Native6のままで、28-file差分・cfg(test)除外・804 build inputsの厳密対応を使用。H8/driverだけf6b5。26 normalchildren/2 PTY/30 leaves/6 absent refusals・生成71833B/出力28712Bは元上限内、private key copy追加0。前2失敗は保持。genesis Coinの選択範囲であり、creator/TreasuryCap・他asset/fee/account/governance移行・全M2/M7/公開条件を閉じない |
+| E150: final5f complete required success | `5f6b1819` / tree`468c7be5`、exact checkpoint/SQLite lib/literal npm ci/完全check-allの全4 commandsがactual0・各merged EOF/wait、17,307.340秒。全149 Rust summariesは4,521 passed/0 failed/48 ignored、required部分147は4,397/0/41。元8リンク・e8の2 withdrawals・delay7・35 rolesと全adapterを維持。root・独立peer親`checkpoint-isolation-required-final-parent-qualified-1017.json` (`d3bd1bef`) | E133の自然失敗を保持。source1207・49tools・5proofs・7dir tuplesを照合。detached ownerのouter物理EOFは主張せず、自然終了/owner・全既知PID/cgroup不在後に所有unitだけを整理。M4はPR #322全8 CIの終端照合待ち。別source/PG/公開認定へ借用しない |
+| E151: final5f original12 RELEASE runtime | 同`5f6b1819`の原10 whole +2 exact ignored selectors全12 casesがactual0/実pipe EOF/wait。24 events/12 full summariesは98 passed/0 failed/3 ignored、outer両実EOF/wait/reap0、12,920.211秒。全49 ELF・20tools/aliases・10producer refs・source1207と各caseの13 RELEASE read-only bindingsを照合。root・独立peer親`integration-native-promoted5-runtime-parent-qualified-1017.json` (`528d4842`) | 原7 epochs/e8 unlock・freeze-drain・2 withdrawals・35 rolesのsaved closureを維持。観測430 live kernel rowsで元16GiB/swap0/CPU4/tasks512/18600秒/stop45秒、既知550 PID・cgroup・2TMP不在を照合。launcherのfile redirection EOF flagと実12 pipe/outer2 EOFを区別。別source/全M7/公開認定へ借用しない |
+| E152: final5f hosted all8 and M4 technical completion | [run39024805837](https://github.com/sunriselayer/sunrise-edge/actions/runs/39024805837) attempt1の7 owners +集約checkが全SUCCESS。全8 raw logs計1,558,963 bytesを再hashし、actual checkout`a7f33f4d` / tree`468c7be5`・parents`e6f1dfe3`,`5f6b1819`と全7 needs successを照合。147 Rust summariesは4,397 passed/0 failed/41 ignored、元8リンク/e8の2 withdrawals/delay7/35 rolesを保持。root`7d6f3901`・独立`97b2ba53` | E137/E139/E150と69-path原条件対応/独立ordinary reviewを合わせ、選択済みNative+SQLite/trusted-local-OSのM4 CODE/VERIFYを完了。receipt`888abf02`。E133の自然失敗を保持。別source・独立security監査・実オフホスト運用・全M7/公開認定は未完了 |
+| E153: new public Rustls advisories and exact dependency update | e4fbの311 locked registry versionsに対するfresh OSVでRustls 0.23.45のRUSTSEC-2026-0346/0347/0348/0349を検出。公式4詳細と[0.23.46 release](https://github.com/rustls/rustls/releases/tag/v/0.23.46)を確認し、別branch`codex/rustls-advisory-update-1017`でCargo.toml/lockをexact0.23.46へ変更。公式archive checksum`48e13bd8`一致、normalized manifest全体はversion以外同一、他310 locked packages/全dependency edges/features/MSRV不変。更新後exact311 OSVは該当0件、root親`rustls-02346-source-and-public-metadata-root-qualified-1017.json` (`5ad360f7`) | point-in-time公開metadataとsource/integrity確認。npm registry bulkはraw該当0件で、npm audit CLI/metavulnerability判定とは呼ばない。API到達性/独立security監査・実build/TLS/完全required/CI/新Nativeは未認定。runtime-postgresの依存でもあるため、新sourceの元5-group完全PGと集約checkが必要。旧sourceの成功を修正版へ転用しない |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -687,9 +699,10 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
   npm-ci +完全check-allのactual exit 0/EOF・全steps完了・前後cleanを所有controllerが
   保存した (E22)。最後の無出力stepを含む全commandの終端が対象。
   E20の旧実行はouter143/terminal nullのまま保持し、成功へ書き換えない。
-- [ ] **Cloudflare CLIへの残る移行を確認する**: 今後の操作は`cf` / `cloudflare`へ統一。
-  既存の型生成・テスト内に残るWrangler依存は未移行として扱い、互換性と元の型/契約
-  checksを確認して置換する。新たな直接Wrangler呼び出しは行わない。
+- [ ] **Cloudflare CLIへの残る移行を確認する**: 直接の操作・型生成を`cf` / `cloudflare`へ統一。
+  5 profilesの実typegen・10拒否controlsと全4 Vitest計66 testsはE147/E148で成功。
+  既存Vitest plugin内部のtransitive Wrangler SDKは保持する。残るe4fb完全required/全8 CIを
+  照合し、後続Rustls更新sourceのqualificationとは区別して完了を記録する。
 
 ## コード・検証: 14件
 
@@ -728,7 +741,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     旧Btrfs失敗raw/rootを保持し、DR-0242のfresh-open修正と同一case/拒否/回帰を検証した。
     E20のlocal終端未確認は残し、R4の根拠へlocal exit 0を捏造しない。
   - 限界: same-host local/dev-signerの技術handoff。実配置・public/production PKI・
-    全M2/M3/M4/M7・独立監査・公開判断は対応する未完了行に保持する。
+    全M2/M3/M7・独立監査・公開判断は対応する未完了行に保持する。M4はE152の範囲で完了。
   - 次: D04/D07/D08の実際の配置・操作・公開判断へ、この固定artifact/手順を引き継ぐ。
 
 - [x] **D01: Native起動・操作の技術統合を確定する**
@@ -966,18 +979,21 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     real writer failover、TLS failure/rotationは、このCODE/VERIFY行の完了条件に残す。
     D07の実topology運用rehearsalは代替・延期理由にならない。一つの合格で全M3を閉じない。
 
-- [ ] **M4: checkpoint・暗号化バックアップ・復元コードを検証する**
+- [x] **M4: checkpoint・暗号化バックアップ・復元コードを検証する**
   - 対象: 実装 + 検証。checkpoint/state-root・immutable body manifests、
     完全history/receipt/blob restore、fresh fencing、migration/upgrade・safe rollback/stop。
-  - 状態: E1の35-role source-free restoreに加え、E83でcomplete storeの暗号化復元と
-    実prior releaseからのupgrade/旧版停止・再開が成功。最終統合sourceの完全required/CI・
-    13-target Native A/BとM4対象の実RELEASE runtime、残る原条件の照合を残し、全M4/releaseは未完了。
-    E93/E94/E95で7658の13-target A/B・M4対象RELEASE TLS/upgrade・既存CLI fixtureを確認。
-    同headの完全required/全8 hosted CI・原12 runtimeはE131/E132で終端成功を確認。
-    後続e6f1のauthority再open test失敗と新sourceのtest-only隔離はE133/E134へ残し、
-    新sourceの全体qualificationと原条件の最終対応が終わるまで全M4を完了にしない。
-    原12 RELEASE runtimeの総合qualificationはM7の別gate。元8リンク/e8 withdrawals/
-    35 rolesの暗号化relocationは完全required/CIから除かず、短いTLS/upgradeで代替しない。
+  - 状態: `5f6b1819` / tree`468c7be5` の選択済みNative+SQLite/trusted-local-OS
+    コード・検証範囲を完了。独立current anchorと暗号化complete-store continuation、
+    history/receipt/blob・fresh fence・実prior release upgrade/旧版停止/新規有料取引を確認。
+    最終sourceのfresh13-target A/BはE137、M4対象RELEASE TLS/upgradeとCLIはE139、
+    literal npm ci +完全requiredはE150、同treeの全8 hosted CIはE152で成功した。
+    原条件の69-path source対応と通常の独立correctness reviewを照合し、
+    完了receipt`m4-final-5f6b-selected-code-verify-completion-1017.json` (`888abf02`)に記録。
+    E133の自然失敗・原因未確定と当時source-onlyのE134/E135は履歴として保持する。
+    元8リンク/e8の2 withdrawals/delay7/35 rolesは完全required/CIの両方で維持した。
+    原12 RELEASE runtimeの総合qualificationはM7の別gateで、E151にも成功を記録。
+    後続Rustls更新の新source完全gate/PG・全M7・独立security監査・実オフホスト運用と
+    実鍵retention/DR・公開判断をこのチェックで完了にはしない。
   - [x] [独立に保持したordered history floor component](docs/architecture/decisions/0248-import-ordered-history-freshness-floor.md):
     実import create/resumeへの追加拒否を実装。parse/comparison 12件・元9件を保持したcompiled import全10件・Clippy・
     独立component reviewは成功。E29で同sourceのRELEASE child import全10件も成功。
@@ -999,7 +1015,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     inspect/enroll/checkpointし、4-host TLSの全owner喪失後にも有料取引を継続した。
     旧保存済み再送ではauthority不変、新規取引ではACK更新を確認。
     complete encrypted backup/restoreと実prior release upgrade/safe stopはE83で検証。
-    最終統合sourceの全体qualificationは親M4に残す。
+    最終5f sourceの全体qualificationは親M4のE137/E139/E150/E152を参照する。
   - [x] [独立current anchorと照合する暗号化full-store continuation](docs/architecture/local-checkpoint-backup.md):
     v1のproof archiveを保持したままlocal v2形式を実装し、独立source reviewを完了。
     初回owningはE78の2 failures。readonly snapshot副作用とfixture ownerを修正し、
@@ -1012,9 +1028,9 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     schema identityだけの変更とuser_version5維持、旧binaryのschema拒否・全停止bytes不変、
     現行fence3・保存済み再送・新しい有料取引とtail stopをE83で検証。
     旧manifestの`fixturePassed=false`は旧ELFのprovenanceだけに使用し、この実行とは分ける。
-  - 次: source/artifact対応、M7、残るmanifest/upgrade/fencing範囲を照合する。
+  - 維持する境界: source/artifact対応と独立current anchorに照合する復元・upgradeを保持する。
     別namespaceを区別するnonceだけではbyte cloneやepoch内の古いowned状態を検出できない。
-    その不足を残したprotocol拡張だけでM4を閉じず、独立した最新性anchorと照合する。
+    このため独立した最新性anchorを使用する。M7の残るrelease qualificationは別行で継続する。
     元の8リンク・e8 withdrawals・35 rolesと全拒否controlsを維持する。
     age等のshared PG feature edgeはE10の14fb全5グループで再検証済み。
     実オフホスト保管・実鍵retention・DR運用はD04/D06/D07へ残す。
@@ -1081,8 +1097,12 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     ローカル完全gateもE63で成功したが、原12 Native runtimeのE57失敗を保持する。
     10a4/E61・f973/E65の原12 runtime失敗も保持する。9de6はE64の13-target A/B・
     E71の完全required/CIに加え、E92で原12 RELEASE runtimeの全actual0/実EOF/waitを完了した。
-    この9de6専用資格を7658以降の完全gate/CI/Nativeへ借用しない。残る独立監査・
+    後続5f6bのfresh13-target A/BはE137、原12 RELEASE runtime全12 casesはE151で成功。
+    9de6/5f6bの資格を別sourceの完全gate/CI/Nativeへ借用しない。残る独立監査・
     upgrade/restore・実provider基準により全M7は未完了。
+  - [ ] Rustls 0.23.46更新のsource qualification: E153の4 advisoriesを修正した
+    新sourceでactual build/TLS・literal npm ci +完全required・全8 CI、依存変更に対応した
+    元5-group完全PG/集約check、13-target Native provenanceを確認する。
   - 次: E18/E19のsource/tool/profile pinをR4/Gから共用し、新sourceのrelease claimには
     そのsourceの13-target A/B・実RELEASE bindingを用意する。未達qualificationを進める。
     過去の11/12-target成功やcheap fixtureを13-target成功にはしない。
