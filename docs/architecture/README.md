@@ -74,6 +74,10 @@ roadmap describes a later target state.
   complete same-layout SQLite snapshots, existing independent currentness,
   maintained age transport and fresh-fence continuation; v1 proof archives
   and activated protocol migration retain their original owners.
+- [Stopped Native storage-profile software upgrade](decisions/0265-stopped-native-storage-profile-upgrade.md):
+  pinned prior RELEASE hosts, explicit one-way independent-anchor enrollment,
+  incompatible old-writer refusal, historical receipt/body preservation and
+  fresh fenced paid business; structural version5 and protocol remain fixed.
 - [Immutable operation signing preparation](signing-preparation.md): one
   mechanical frame/identity owner, operation-specific immutable trust inputs,
   actual SDK/CLI consumers and the separate custody/content-review boundary.

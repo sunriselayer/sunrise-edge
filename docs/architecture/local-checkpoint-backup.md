@@ -62,9 +62,16 @@ remain required. Fresh private partial output is unqualified residue, with no
 cross-file atomicity, power-loss or automatic rollback promise.
 
 Preserved history/receipt/blob bytes and same-layout continuation do not activate
-a protocol upgrade. Current immutable execution refuses cross-version execution
+a protocol upgrade. The supported software/storage migration is explicit
+stopped-owner enrollment from the ordinary schema identity into the independent
+anchor profile, while structural SQLite version5 and every other source/body
+row remain fixed. Incompatible prior writers refuse before fence advancement
+or serving; rollback policy is safe stop followed by current-profile
+continuation, without metadata downgrade or authority reset. See
+[DR-0265](decisions/0265-stopped-native-storage-profile-upgrade.md). Current
+immutable execution continues to refuse unsupported cross-version execution
 until an explicit migration exists; historical records and exact receipts retain
-their established readers. Activated migration/upgrade qualification remains an
-original M4 technical gap. Real off-host retention, recovery-key custody and
-operator deployment approval stay with D04/D06/D07/D08. A quorum checkpoint is
-not introduced as a prerequisite for this selected local authority.
+their established readers. Actual qualification status belongs in TODO. Real
+off-host retention, recovery-key custody and operator deployment approval stay
+with D04/D06/D07/D08. A quorum checkpoint is not introduced as a prerequisite
+for this selected local authority.

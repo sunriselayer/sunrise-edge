@@ -742,6 +742,11 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     E80のNative119/age5は成功。新compiled fixtureの表示照合を修正し、
     実pack/open・旧source不在・4-host fresh fence/有料businessまで検証する。
     protocol-version activation/migrationと実off-host運用の合格には転用しない。
+  - [ ] [実prior RELEASEから独立anchor profileへのsoftware/storage upgrade](docs/architecture/decisions/0265-stopped-native-storage-profile-upgrade.md):
+    既存15 TLS selectorsを保持し、明示的な9de6 RELEASE ELFを要求するignored16件目を追加。
+    実旧4-host paid/quorum/historyとpositive blobを基準に、停止・root-pinned enrollment、
+    schema identityだけの変更とuser_version5維持、旧binaryのschema拒否・全停止bytes不変、
+    現行fence3・保存済み再送・新しい有料取引まで検証する。source実装のみで、実行は未確認。
   - 次: source/artifact対応、M7、残るmanifest/upgrade/fencing範囲を照合する。
     別namespaceを区別するnonceだけではbyte cloneやepoch内の古いowned状態を検出できない。
     その不足を残したprotocol拡張だけでM4を閉じず、独立した最新性anchorと照合する。

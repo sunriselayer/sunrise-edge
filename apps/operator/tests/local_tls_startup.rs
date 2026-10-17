@@ -24,6 +24,9 @@ mod offline_genesis_fixture;
 #[cfg(target_os = "linux")]
 #[path = "support/sqlite_durable_image.rs"]
 mod sqlite_durable_image;
+#[cfg(target_os = "linux")]
+#[path = "support/storage_upgrade.rs"]
+mod storage_upgrade;
 
 use compiled_cli_process::edge_cli_command;
 #[cfg(target_os = "linux")]
@@ -3916,6 +3919,13 @@ fn actual_direct_tls_independent_anchors_preserve_paid_recovery_after_complete_o
 #[test]
 fn actual_direct_tls_encrypted_checkpoints_restore_paid_state_without_original_source_paths() {
     exercise_direct_tls_owned_sigkill(true, true, true);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires explicitly pinned prior 9de6 RELEASE sqlite_source_host"]
+fn actual_previous_release_hosts_upgrade_to_independent_anchors_without_losing_paid_state() {
+    storage_upgrade::exercise();
 }
 
 #[cfg(target_os = "linux")]

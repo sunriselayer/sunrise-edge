@@ -275,3 +275,27 @@ pub fn assert_only_fence_changed(before: &[Image], after: &[Image], from: u64, t
         );
     }
 }
+
+/// A stopped-owner profile enrollment changes only its closed schema identity.
+/// Structural user_version is checked separately; every SQL/blob cell here is
+/// compared, including mutation sequence, source identity, fences and receipts.
+pub fn assert_only_anchor_identity_changed(before: &[Image], after: &[Image]) {
+    assert_eq!(before.len(), 4);
+    assert_eq!(after.len(), 4);
+    for (old, actual) in before.iter().zip(after) {
+        let mut expected: Image = old.clone();
+        let metadata: &mut Vec<Row> = expected.state.get_mut("durable_metadata").unwrap();
+        assert_eq!(metadata.len(), 1);
+        assert_eq!(metadata[0].len(), 10);
+        assert_eq!(
+            metadata[0][1],
+            Value::Text("sunrise-edge/sqlite/structured/schema/v6".into())
+        );
+        metadata[0][1] =
+            Value::Text("sunrise-edge/sqlite/structured/schema/v6/independent-anchor/v1".into());
+        assert_eq!(
+            &expected, actual,
+            "only explicit independent-anchor profile identity changes"
+        );
+    }
+}
