@@ -117,6 +117,8 @@ struct Network {
     owner_seed: PathBuf,
     tls_dir: PathBuf,
     artifacts_dir: PathBuf,
+    #[cfg(target_os = "linux")]
+    independent_anchors: Option<IndependentAnchors>,
 }
 
 impl Network {
@@ -165,6 +167,273 @@ impl Network {
             .map(|entry| entry.object.clone())
             .expect("authored fixture object")
     }
+}
+
+/// Task-owned authority directories are siblings of the complete source tree;
+/// a source/blob backup never contains the independent authority or lease.
+#[cfg(target_os = "linux")]
+struct IndependentAnchors {
+    directory: PathBuf,
+    paths: Vec<PathBuf>,
+    enrolled: Vec<AnchorObservation>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AnchorObservation {
+    sequence: u64,
+    state_root: [u8; 32],
+    body_manifest_root: [u8; 32],
+}
+
+#[cfg(target_os = "linux")]
+impl AnchorObservation {
+    fn parse(line: &str, meaning: &str) -> Self {
+        assert_eq!(field(line, "meaning="), meaning);
+        let state_root: [u8; 32] =
+            parse_hex_32(field(line, "state_root="), "local state root").unwrap();
+        let body_manifest_root: [u8; 32] =
+            parse_hex_32(field(line, "body_manifest_root="), "local body root").unwrap();
+        Self {
+            sequence: field(line, "sequence=").parse().unwrap(),
+            state_root,
+            body_manifest_root,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn anchor_namespace_args(network: &Network, index: usize) -> Vec<OsString> {
+    vec![
+        "--chain-id".into(),
+        network.fixture.context.chain_id().as_str().into(),
+        "--validator-id".into(),
+        hex(&network.fixture.validators[index]).into(),
+        "--domain".into(),
+        hex(network.domain.as_bytes()).into(),
+        "--state-db".into(),
+        network.state_db(index).into_os_string(),
+        "--blob-db".into(),
+        network.blob_db(index).into_os_string(),
+    ]
+}
+
+#[cfg(target_os = "linux")]
+impl IndependentAnchors {
+    fn enroll(network: &Network) -> Self {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let source_name: &str = network
+            .fixture
+            .directory
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let directory: PathBuf = network
+            .fixture
+            .directory
+            .with_file_name(format!("{source_name}-independent-anchors"));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        let mut anchors: Self = Self {
+            directory,
+            paths: Vec::with_capacity(VALIDATORS),
+            enrolled: Vec::with_capacity(VALIDATORS),
+        };
+        assert!(!anchors.directory.starts_with(&network.fixture.directory));
+        assert!(!network.fixture.directory.starts_with(&anchors.directory));
+        assert_eq!(
+            fs::metadata(&anchors.directory)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        for index in 0..VALIDATORS {
+            let parent: PathBuf = anchors.directory.join(format!("validator-{index}"));
+            fs::DirBuilder::new().mode(0o700).create(&parent).unwrap();
+            assert_eq!(
+                fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            let path: PathBuf = parent.join("anchor.sqlite");
+            assert_absent(&path, "fresh independent authority");
+            anchors.paths.push(path);
+            let mut inspect: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+            inspect
+                .arg("anchor-inspect")
+                .args(anchor_namespace_args(network, index));
+            let observed: AnchorObservation = AnchorObservation::parse(
+                &success(spawn_bounded_output(inspect, PROCESS_DEADLINE)),
+                "initial-input-observation-not-currentness",
+            );
+            assert_eq!(observed.sequence, 0);
+            let mut enroll: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+            enroll
+                .arg("anchor-enroll")
+                .args(anchor_namespace_args(network, index))
+                .arg("--independent-anchor-db")
+                .arg(&anchors.paths[index])
+                .arg("--expected-initial-state-root")
+                .arg(hex(&observed.state_root))
+                .arg("--expected-initial-body-manifest-root")
+                .arg(hex(&observed.body_manifest_root))
+                .arg("--confirm-writers-and-signers-stopped");
+            let enrolled: AnchorObservation = AnchorObservation::parse(
+                &success(spawn_bounded_output(enroll, PROCESS_DEADLINE)),
+                "stopped-owner-enrollment",
+            );
+            assert_eq!(enrolled.sequence, 1);
+            assert_ne!(
+                enrolled.state_root, observed.state_root,
+                "explicit one-way local profile enrollment"
+            );
+            assert_eq!(enrolled.body_manifest_root, observed.body_manifest_root);
+            assert_eq!(anchors.checkpoint(network, index), enrolled);
+            anchors.enrolled.push(enrolled);
+        }
+        assert_eq!(anchors.paths.len(), VALIDATORS);
+        assert_eq!(anchors.enrolled.len(), VALIDATORS);
+        anchors
+    }
+
+    fn checkpoint(&self, network: &Network, index: usize) -> AnchorObservation {
+        let mut command: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+        command
+            .arg("anchor-checkpoint")
+            .args(anchor_namespace_args(network, index))
+            .arg("--independent-anchor-db")
+            .arg(&self.paths[index]);
+        AnchorObservation::parse(
+            &success(spawn_bounded_output(command, PROCESS_DEADLINE)),
+            "independent-local-acknowledgement-not-quorum-state-root",
+        )
+    }
+
+    fn images(&self) -> Vec<sqlite_durable_image::AnchorImage> {
+        self.paths
+            .iter()
+            .map(|path: &PathBuf| sqlite_durable_image::capture_anchor(path))
+            .collect()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for IndependentAnchors {
+    fn drop(&mut self) {
+        // Exactly the exclusively created sibling tree; source-state cleanup
+        // remains the existing Fixture owner. No broad temporary-directory scan.
+        fs::remove_dir_all(&self.directory).unwrap();
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stopped_anchored_file_bytes(network: &Network) -> Vec<(PathBuf, Vec<u8>)> {
+    let anchors: &IndependentAnchors = network.independent_anchors.as_ref().unwrap();
+    let mut files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let mut total: u64 = 0;
+    for index in 0..VALIDATORS {
+        // SQLite owns WAL/SHM housekeeping. These exact main-file comparisons
+        // apply only before first serving, with all owners already closed.
+        for path in [
+            network.state_db(index),
+            network.blob_db(index),
+            anchors.paths[index].clone(),
+        ] {
+            let metadata: fs::Metadata = fs::symlink_metadata(&path).unwrap();
+            assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+            total = total.checked_add(metadata.len()).unwrap();
+            assert!(
+                total <= 16 * 1024 * 1024,
+                "stopped fixture image admitted before copying"
+            );
+            let bytes: Vec<u8> = fs::read(&path).unwrap();
+            assert_eq!(bytes.len() as u64, metadata.len());
+            files.push((path, bytes));
+        }
+        let mut lease_name: OsString = anchors.paths[index].as_os_str().to_owned();
+        lease_name.push(".lease");
+        let lease: PathBuf = PathBuf::from(lease_name);
+        let metadata: fs::Metadata = fs::symlink_metadata(&lease).unwrap();
+        assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+        assert_eq!(metadata.len(), 0, "lease size admitted before copying");
+        let bytes: Vec<u8> = fs::read(&lease).unwrap();
+        assert!(
+            bytes.is_empty(),
+            "separate lease carries no checkpoint bytes"
+        );
+        files.push((lease, bytes));
+    }
+    files
+}
+
+#[cfg(target_os = "linux")]
+fn assert_missing_independent_anchor_refuses_without_changes(network: &Network) {
+    // Every compiled enrollment child has exited and no serving host exists.
+    // Plain-file reads are restricted to this stopped interval; no independent
+    // File descriptor is opened on an inode carrying live SQLite locks.
+    assert_no_parent_sqlite_handles(network);
+    let before: Vec<(PathBuf, Vec<u8>)> = stopped_anchored_file_bytes(network);
+    let before_rows: Vec<sqlite_durable_image::Image> = sqlite_durable_images(network);
+    let before_anchors: Vec<sqlite_durable_image::AnchorImage> =
+        network.independent_anchors.as_ref().unwrap().images();
+    for index in 0..VALIDATORS {
+        let reserved: TcpListener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let requested: SocketAddr = reserved.local_addr().unwrap();
+        drop(reserved);
+        let mut command: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+        command
+            .args(network.fixture.root_pins(
+                &network.genesis,
+                network.digest,
+                index,
+                network.domain,
+            ))
+            .arg("--signing-key-file")
+            .arg(&network.signing_keys[index])
+            .args([
+                "--created-checkpoint",
+                "10",
+                "--timeout-seconds",
+                "30",
+                "--max-concurrent",
+                "4",
+                "--confirm-offline-fence-advance",
+                "--listen",
+            ])
+            .arg(requested.to_string());
+        let output: Output = spawn_bounded_output(command, PROCESS_DEADLINE);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "missing anchor is an ordinary refusal"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "missing authority must not advertise serving"
+        );
+        assert_eq!(
+            lossy(&output.stderr),
+            "sqlite-source-host: SQLite structured schema identity is unsupported\n"
+        );
+        let available: TcpListener = TcpListener::bind(requested)
+            .expect("refusal before listener leaves requested endpoint unbound");
+        drop(available);
+    }
+    assert_no_parent_sqlite_handles(network);
+    assert_eq!(
+        stopped_anchored_file_bytes(network),
+        before,
+        "missing anchor preserves exact stopped database and lease bytes"
+    );
+    assert_eq!(sqlite_durable_images(network), before_rows);
+    assert_eq!(
+        network.independent_anchors.as_ref().unwrap().images(),
+        before_anchors
+    );
 }
 
 fn write_private_new(path: &Path, bytes: &[u8]) {
@@ -345,6 +614,8 @@ fn author_inspect_and_prepare() -> Network {
         owner_seed,
         tls_dir,
         artifacts_dir,
+        #[cfg(target_os = "linux")]
+        independent_anchors: None,
     }
 }
 
@@ -483,6 +754,12 @@ fn start_direct_hosts_with_local_observations(
                 .arg("--tls-key-pkcs8-der-file")
                 .arg(&peer.key_file)
                 .stderr(Stdio::piped());
+            #[cfg(target_os = "linux")]
+            if let Some(anchors) = &network.independent_anchors {
+                command
+                    .arg("--independent-anchor-db")
+                    .arg(&anchors.paths[index]);
+            }
             #[cfg(target_os = "linux")]
             if let (0, Some(socket)) = (index, local_observations_socket) {
                 command.arg("--local-observations-socket").arg(socket);
@@ -953,6 +1230,14 @@ fn operation(fence: WriterFenceGeneration, tag: u8) -> DurableOperationContext {
 }
 
 fn open_store(network: &Network, index: usize) -> SqliteDurableStore {
+    #[cfg(target_os = "linux")]
+    if network.independent_anchors.is_some() {
+        return SqliteDurableStore::open_historical(
+            network.state_db(index),
+            network.namespace(index),
+        )
+        .unwrap();
+    }
     SqliteDurableStore::open_existing(network.state_db(index), network.namespace(index)).unwrap()
 }
 
@@ -996,7 +1281,14 @@ fn sqlite_durable_images(network: &Network) -> Vec<sqlite_durable_image::Image> 
 fn assert_no_parent_sqlite_handles(network: &Network) {
     let mut forbidden: BTreeSet<PathBuf> = BTreeSet::new();
     for index in 0..VALIDATORS {
-        for main in [network.state_db(index), network.blob_db(index)] {
+        let mut mains: Vec<PathBuf> = vec![network.state_db(index), network.blob_db(index)];
+        if let Some(anchors) = &network.independent_anchors {
+            mains.push(anchors.paths[index].clone());
+            let mut lease: OsString = anchors.paths[index].as_os_str().to_owned();
+            lease.push(".lease");
+            forbidden.insert(PathBuf::from(lease));
+        }
+        for main in mains {
             for suffix in ["", "-wal", "-shm"] {
                 let mut name: OsString = main.as_os_str().to_os_string();
                 name.push(suffix);
@@ -3163,6 +3455,11 @@ fn assert_fresh_paid_transfer_after_recovery(
     #[cfg(target_os = "linux")]
     let raw_before_replay: Option<Vec<sqlite_durable_image::Image>> =
         complete_sql_replay.then(|| sqlite_durable_images(network));
+    #[cfg(target_os = "linux")]
+    let anchors_before_replay: Option<Vec<sqlite_durable_image::AnchorImage>> = network
+        .independent_anchors
+        .as_ref()
+        .map(IndependentAnchors::images);
     for (index, peer) in peers.iter().enumerate() {
         assert_eq!(
             peer.client().query_next_nonce(sender).unwrap().next_nonce(),
@@ -3198,6 +3495,14 @@ fn assert_fresh_paid_transfer_after_recovery(
             sqlite_durable_images(network),
             before,
             "fresh receipt replay changes no SQL/blob row"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(before) = anchors_before_replay {
+        assert_eq!(
+            network.independent_anchors.as_ref().unwrap().images(),
+            before,
+            "fresh receipt replay changes no independent authority row"
         );
     }
     assert_eq!(
@@ -3558,20 +3863,32 @@ fn compiled_host_startup_line_limits_cover_literal_maximum_producer_formats() {
 #[cfg(target_os = "linux")]
 #[test]
 fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
-    exercise_direct_tls_owned_sigkill(false);
+    exercise_direct_tls_owned_sigkill(false, false);
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn actual_direct_tls_complete_owner_loss_authorizes_fresh_writer_and_paid_business() {
-    exercise_direct_tls_owned_sigkill(true);
+    exercise_direct_tls_owned_sigkill(true, false);
 }
 
 #[cfg(target_os = "linux")]
-fn exercise_direct_tls_owned_sigkill(total_connection_loss: bool) {
+#[test]
+fn actual_direct_tls_independent_anchors_preserve_paid_recovery_after_complete_owner_loss() {
+    exercise_direct_tls_owned_sigkill(true, true);
+}
+
+#[cfg(target_os = "linux")]
+fn exercise_direct_tls_owned_sigkill(total_connection_loss: bool, independent_anchor: bool) {
     use std::os::unix::process::ExitStatusExt;
 
-    let network: Network = author_inspect_and_prepare();
+    assert!(!independent_anchor || total_connection_loss);
+    let mut network: Network = author_inspect_and_prepare();
+    if independent_anchor {
+        let anchors: IndependentAnchors = IndependentAnchors::enroll(&network);
+        network.independent_anchors = Some(anchors);
+        assert_missing_independent_anchor_refuses_without_changes(&network);
+    }
     let mut peers: Vec<DirectPeer> = direct_peers(&network);
     let mut hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 2);
     assert_eq!(hosts.len(), VALIDATORS);
@@ -3749,6 +4066,16 @@ fn exercise_direct_tls_owned_sigkill(total_connection_loss: bool) {
         assert_eq!(&actual, bytes, "SIGKILL preserves input {}", path.display());
     }
 
+    if let Some(anchors) = &network.independent_anchors {
+        for index in 0..VALIDATORS {
+            let current: AnchorObservation = anchors.checkpoint(&network, index);
+            assert!(
+                current.sequence > 1,
+                "paid startup/operation must advance local acknowledgement"
+            );
+            assert_ne!(current.state_root, anchors.enrolled[index].state_root);
+        }
+    }
     let mut restarted_hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 3);
     assert_eq!(restarted_hosts.len(), VALIDATORS);
     for (index, host) in restarted_hosts.iter().enumerate() {
@@ -3808,6 +4135,10 @@ fn exercise_direct_tls_owned_sigkill(total_connection_loss: bool) {
         let actual: Vec<u8> = fs::read(path).unwrap();
         assert_eq!(&actual, bytes, "restart preserves input {}", path.display());
     }
+    let anchors_before_replay: Option<Vec<sqlite_durable_image::AnchorImage>> = network
+        .independent_anchors
+        .as_ref()
+        .map(IndependentAnchors::images);
     let replay: Outputs = Outputs::new(&network.artifacts_dir, "direct-owned-sigkill-replay");
     let replay_output: Output = run_cli(replay_args(
         &network,
@@ -3822,6 +4153,13 @@ fn exercise_direct_tls_owned_sigkill(total_connection_loss: bool) {
         &saved,
         "owned SIGKILL saved replay",
     );
+    if let Some(expected) = &anchors_before_replay {
+        assert_eq!(
+            &network.independent_anchors.as_ref().unwrap().images(),
+            expected,
+            "receipt-first replay changes no independent acknowledgement or manifest row"
+        );
+    }
     // Exact receipt/object/nonce bytes and full token/mutation-sequence equality
     // forbid a second business mutation/receipt commit, not read-only SQL COMMIT.
     assert_original_intact(
@@ -3860,6 +4198,13 @@ fn exercise_direct_tls_owned_sigkill(total_connection_loss: bool) {
             "direct-complete-owner-loss-fresh",
             true,
         );
+        if let Some(expected) = &anchors_before_replay {
+            assert_ne!(
+                &network.independent_anchors.as_ref().unwrap().images(),
+                expected,
+                "fresh paid state must advance the independently retained acknowledgement"
+            );
+        }
         // The helper proves actual new business and receipt-first replay. The
         // physical snapshot must change for that new commit; old replay above
         // was proven byte-identical across the entire closed SQL inventory.
@@ -3870,6 +4215,10 @@ fn exercise_direct_tls_owned_sigkill(total_connection_loss: bool) {
     };
     let final_raw: Option<Vec<sqlite_durable_image::Image>> =
         total_connection_loss.then(|| sqlite_durable_images(&network));
+    let final_anchors: Option<Vec<sqlite_durable_image::AnchorImage>> = network
+        .independent_anchors
+        .as_ref()
+        .map(IndependentAnchors::images);
     for host in &mut restarted_hosts {
         assert!(
             host.guard
@@ -3892,6 +4241,18 @@ fn exercise_direct_tls_owned_sigkill(total_connection_loss: bool) {
     );
     if let Some(before) = &final_raw {
         assert_eq!(&sqlite_durable_images(&network), before);
+    }
+    if let Some(expected) = &final_anchors {
+        let anchors: &IndependentAnchors = network.independent_anchors.as_ref().unwrap();
+        assert_eq!(
+            &anchors.images(),
+            expected,
+            "ordinary tail stop preserves acknowledged anchor/manifest rows"
+        );
+        for index in 0..VALIDATORS {
+            let current: AnchorObservation = anchors.checkpoint(&network, index);
+            assert!(current.sequence > 1);
+        }
     }
     assert_eq!(
         &Saved::read(&first),

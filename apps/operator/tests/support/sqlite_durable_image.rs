@@ -86,6 +86,19 @@ const BLOB_TABLES: [(&str, &str, usize); 2] = [
         3,
     ),
 ];
+const ANCHOR_TABLES: [(&str, &str, usize); 2] = [
+    (
+        "anchor_head",
+        "SELECT id, device, inode, lease_device, lease_inode, sequence, state_root, body_root, pending_state_root, pending_body_root, pending_sequence FROM anchor_head ORDER BY id",
+        11,
+    ),
+    (
+        "anchor_bodies",
+        "SELECT pending, algorithm, digest, length, content_hash FROM anchor_bodies ORDER BY pending, algorithm, digest",
+        5,
+    ),
+];
+
 type Row = Vec<Value>;
 type Tables = BTreeMap<&'static str, Vec<Row>>;
 
@@ -213,6 +226,28 @@ fn tables(
     assert!(connection.is_autocommit());
     connection.close().unwrap();
     image
+}
+
+/// Complete independent local authority rows, read through SQLite-owned
+/// connections only. This observation grants no authority or lease ownership.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnchorImage {
+    tables: Tables,
+}
+
+pub fn capture_anchor(path: &Path) -> AnchorImage {
+    let mut bytes: usize = 0;
+    let image: Tables = tables(path, &ANCHOR_TABLES, &mut bytes);
+    assert_eq!(image.len(), 2);
+    let head: &Vec<Row> = image.get("anchor_head").unwrap();
+    assert_eq!(head.len(), 1);
+    assert!(
+        head[0][8..11]
+            .iter()
+            .all(|value: &Value| *value == Value::Null),
+        "acknowledged quiescent authority has no Pending"
+    );
+    AnchorImage { tables: image }
 }
 
 pub fn capture(state_path: &Path, blob_path: &Path) -> Image {
