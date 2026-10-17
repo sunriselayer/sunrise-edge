@@ -321,6 +321,10 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E117: certified drain-boundary strict producer | 別branch `94eee3b3` / tree`b6aecc27`。要求page limitだけを4へ直した全6 commandsがactual0/両実EOF/wait、inner20.611秒/outer20.680秒。実CargoJSONから新harnessを含む5保持ELFを固定 | 親と独立reviewが1190 source/Git blobs・17 tools・9入力、完全raw744 frames/21 operations、旧4 compiler bins・旧5保持ELFの不変、全PID/cgroup・TMP6回収を確認。component buildのみで、修正後の実UID/TLS後段drain/union/最終lifecycle・全M2/M7の合格は未達 |
 | E118: positive Split 640KiB-profile component gates | 別branch `a4f6c1a8` / tree`65090b4b`。同じ全7 commandsがactual0/両実EOF/wait、inner9.875秒/outer9.961秒。CLI全406 passed/0 failed/7 ignoredと元9 policy/custody controls、追加exporter4 passed/0 failed/0 ignored、strict3crate Clippy・fmt/diffが成功 | 親と独立reviewが1195 source/Git blobs・17 tools・311 archives、完全raw807 frames/17 operationsと実CargoJSON/profile、20 target ELF・新保持CLI lib、旧保持物3個と973 failure files/141 directoriesの保持、全PID/cgroup・TMP6回収を確認。元targetを明示reuseし再compileなし。modified Node/Python fixtureはこのcomponentで未実行で、実97操作のUID/PTY/genuine submission・全M2/M7の成功には数えない |
 | E119: certified drain member possession boundary | `94eee3b3`の実UID attemptはterminal page取得とstagingまで成功後、最初のA member confirmで409 drain-proof-not-retainedとなりactual1。inner24.414秒/outer24.474秒、両実EOF/wait | 完全復号73220 bytes、全125 role recordsのwait/EOF・U+FFFDなし/再構成UTF8 54187 bytes一致、15 Docker clientsの終了と専有資源解放・1190 source/全入力を独立照合。通常publication/ACKと別のdrain proof保持が必要と確認し、`812458ba`で全3 staged entriesのgenuine proofを既存ownerでimportしてからconfirmするfixtureへ修正。Cの事前409・全署名/identity/union/oracleと上限を維持し、追加HTTP4回・child追加なし。修正後のC import/union/pre-DrainSet/最終lifecycleは未検証。oracle EOFはabort時の二次観測であり、全元assertionと失敗資料を保持。Docker client全streamの別raw保存はなく、metadata照合とstart wireの完全照合を区別する |
+| E120: positive Split complete-metadata budget failure | `a4f6c1a8`の実CLI producer/lddは0、元selectorはfirst-successorで101。outer43.489秒/両実EOF/wait。mounted readyが出ず、実103-byte errorはcomplete evidence metadata exceeds256KiB | 完全outer raw142 frames/9 operations・18 host operations、1195 source/Git・19 own/17 component tools・21 ELF/11 bindings/4 libraries、旧973 files/141 dirs/保持3個、全29 saved PIDs/cgroup・専有資源解放を独立照合。公開233 leaves+index、291 source/292保持filesを保存。inner raw/meta/tar/candidateが保存されなかったため、97操作/PTY/署名/socket/serviceの成功には数えない |
+| E121: certified all-staged-proof strict producer | 別branch `812458ba`。全6 commandsがactual0/両実EOF/wait、inner22.747秒/outer22.852秒。完全raw903023 bytes/704 frames/21 operations、新harnessを含む5実CargoJSON保持ELFを固定 | 親と独立reviewが1190 source/Git blobs・17 tools・9入力、旧4 compiler bins/旧5保持ELFの不変、全PID/cgroup・TMP7回収を確認。component gatesのみで、修正後の実UID drain/union/最終lifecycleは未検証 |
+| E122: positive Split complete-metadata finite envelope | 元97操作/8approval/9socket schemaのmetadata下限320224 bytes・保守上限323624 bytesを照合。`207ea842`でmetadata524288 bytesとmounted tar1310720 bytesへ限定変更し、全フィールドとraw655360/candidate65536 bytesを保持 | payload合計1245184 bytesと通常tar overheadは新有限上限以内。任意PAX/framingの成功保証ではなく実全量captureが必要。今後のownerで例外にする保持fileは正確なinside.tar/host-11.stdoutの2個のみで、他は1MiB・総量24MiB/counts・10GiB growth・元97/22操作・全権限/拒否/時間/資源条件を維持。旧失敗profileは保持し、新component/runtimeは未実行 |
+| E123: bounded canonical frame mutation campaign source | 統合branchの`0b26e721`に非ignored testと手順書を追加。依存/manifest/production/既存recipesを変えず、4固定seeds、独立wire256 frames・4096 mutations・12固定拒否controlsを1024-byte/8-field内で検証するソースを普通review | 独立format oracleの受理/type/version/全fieldsとproduction再encodeのbyte一致、過大field countの明示拒否を確認する。コンパイル/実行は未達で、exhaustive/coverage-guided fuzz・独立security監査・全M7の成功には数えない |
 
 
 
@@ -443,6 +447,10 @@ E116は `positive-fee-split-fixed97-raw-budget-1017.json` / append-only addendum
 E117は `m2-certified-fastvote-fixture-build6-parent-qualified-1017.json` とactual raw/terminal。
 E118は `positive-fee-split-uid-build6-parent-qualified-1017.json` とactual raw/terminal。
 E119は `m2-certified-fastvote-fixture-runtime5-independent-qualified-failure-1017.json` とactual complete/raw/terminal。
+E120は `positive-fee-split-uid-genuine4-independent-failure-qualified-1017.json` とactual raw/terminal/retained public evidence。
+E121は `m2-certified-fastvote-fixture-build7-parent-qualified-1017.json` とactual raw/terminal。
+E122は `positive-fee-split-fixed97-metadata-budget-1017.json` とADR-0270/207e source。
+E123は `m7-canonical-frame-mutation-0b26-source-candidate-1017.json` と追加test/手順書。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は

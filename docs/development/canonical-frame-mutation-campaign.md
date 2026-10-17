@@ -6,8 +6,8 @@ Run the ordinary, nonignored integration test with:
 cargo test --locked --offline -p canonical-encoding --test bounded_seeded_mutations -- --test-threads=1
 ```
 
-The existing whole-workspace test owners discover this test without new flags,
-dependencies, targets or an external fuzz runtime. A test pass qualifies this
+The existing whole-workspace test owners discover this test without new workflow flags,
+dependencies or an external fuzz runtime. A test pass qualifies this
 fixed campaign only; it does not establish exhaustive or coverage-guided fuzz
 coverage, an independent security audit or whole M7 completion.
 
