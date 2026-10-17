@@ -342,3 +342,16 @@ pub(super) fn serve<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), Cli
     );
     Ok(())
 }
+
+/// The selected ignored probe reuses exactly the production local pin loader.
+#[cfg(test)]
+pub(super) fn fixture_trust(args: Vec<OsString>, expected_config: &Path) -> PositiveFeeSplitTrust {
+    let (parsed, schedules): (ParsedArgs, Vec<HashSuiteSchedule>) =
+        parse(args, &trust_flags()).unwrap();
+    assert_eq!(
+        Path::new(parsed.require("--config").unwrap()),
+        expected_config
+    );
+    let config: CustodyConfig = CustodyConfig::load(expected_config).unwrap();
+    load_trust(&parsed, schedules, &config).unwrap()
+}

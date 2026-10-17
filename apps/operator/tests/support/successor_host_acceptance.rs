@@ -55,6 +55,10 @@ mod tls_fixture;
 #[path = "compiled_cli_process.rs"]
 mod compiled_cli_process;
 
+#[cfg(unix)]
+#[path = "positive_fee_split_export.rs"]
+mod positive_fee_split_export;
+
 struct NativeTlsFiles {
     ca: tls_fixture::FixtureCa,
     leaf: tls_fixture::FixtureLeaf,
@@ -1623,10 +1627,36 @@ fn imported_escrow_fee_claim(
     );
     assert_eq!(saved_request, std::fs::read(&request_path).unwrap());
     assert_eq!(saved_intent, std::fs::read(&intent_path).unwrap());
+    #[cfg(unix)]
+    let protected_candidate: Option<PathBuf> = if matches!(
+        &prepared.operation,
+        node_core::fee_claims::codec::FeeClaimOperation::Split { .. }
+    ) {
+        positive_split_uid_inline(
+            fixture,
+            hosts,
+            workflow,
+            view,
+            &request_frame,
+            &prepared,
+            &original_claim,
+            &std::fs::read(&candidate).unwrap(),
+            &flags,
+        )
+    } else {
+        assert!(
+            positive_fee_split_export::selection().is_none(),
+            "positive-only fixture selected for another fee claim family"
+        );
+        None
+    };
+    #[cfg(not(unix))]
+    let protected_candidate: Option<PathBuf> = None;
+    let submission_candidate: &Path = protected_candidate.as_deref().unwrap_or(&candidate);
     let mut submit: Vec<String> = flags;
     submit.extend([
         "--candidate".to_string(),
-        candidate.to_str().unwrap().into(),
+        submission_candidate.to_str().unwrap().into(),
         "--out".into(),
         fixture
             .directory
@@ -1640,7 +1670,137 @@ fn imported_escrow_fee_claim(
             .into(),
     ]);
     cli(&["economics", "network-submit"], submit);
+    if protected_candidate.is_some() {
+        println!("positive_fee_split_protected_candidate_submitted=passed");
+    }
     request
+}
+
+/// Only selected after all original byte-oracle assertions have completed.
+/// Auxiliary cases are real host preparations, never additional submissions.
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+fn positive_split_uid_inline(
+    fixture: &Fixture,
+    hosts: &[HostProcess],
+    workflow: &SuccessorWorkflowAuthority,
+    view: &node_core::fee_claims::FeeClaimInspection,
+    original_request: &node_wire::FeeClaimPrepareRequest,
+    original_intent: &node_core::fee_claims::codec::FeeClaimIntent,
+    original_outer: &[u8],
+    original_candidate: &[u8],
+    flags: &[String],
+) -> Option<PathBuf> {
+    let selected: positive_fee_split_export::Selection = positive_fee_split_export::selection()?;
+    let before: OrderedStatus = status(hosts[0].address);
+    let nonce_before: u64 = Client::new(transport(hosts[0].address))
+        .query_next_nonce(objects::Address::new(original_request.claimant_public_key))
+        .unwrap()
+        .next_nonce();
+    let claimant_index: usize = original_member_index(fixture, [0xa2; 32]);
+    let claimant: &super::genesis_fixture::FastVoteValidator =
+        &fixture.network.validators[claimant_index];
+    let mut cases: Vec<positive_fee_split_export::PublicCase> =
+        vec![positive_fee_split_export::PublicCase {
+            label: "A",
+            request: original_request.clone(),
+            intent: original_intent.clone(),
+            signed_outer: original_outer.to_vec(),
+            candidate: original_candidate.to_vec(),
+        }];
+    for (label, tag) in [("B", 0xA7_u8), ("C", 0xA8), ("D", 0xA9)] {
+        let mut leg: execution::local_execution::SignedLocalExecutionIntent =
+            execution::local_execution::decode_signed_local_execution(
+                original_request.signed_leg.as_deref().unwrap(),
+            )
+            .unwrap();
+        let id: [u8; 32] = epoch_request_id(workflow.expected_context().epoch().get(), tag);
+        leg.intent.call.request_id = id;
+        let frame: Vec<u8> = execution::local_execution::local_execution_signing_frame(
+            workflow.expected_context(),
+            &leg.intent,
+        )
+        .unwrap();
+        leg.signature = claimant.signing_key.sign(&frame).into();
+        let mut request: node_wire::FeeClaimPrepareRequest = original_request.clone();
+        request.request_id = id;
+        request.signed_leg =
+            Some(execution::local_execution::encode_signed_local_execution(&leg).unwrap());
+        let intent: node_core::fee_claims::codec::FeeClaimIntent =
+            Client::new(transport(hosts[0].address))
+                .prepare_successor_fee_claim(workflow, &request, None)
+                .unwrap();
+        sunrise_edge_client::verify_prepared_fee_claim(workflow, &request, &intent).unwrap();
+        let digest: protocol_types::Digest32 = node_core::fee_claims::fee_claim_intent_digest(
+            workflow.ordered_policy().resolver(),
+            &intent,
+        )
+        .unwrap();
+        let frame: Vec<u8> =
+            node_core::fee_claims::fee_claim_signing_frame(&intent.context, digest).unwrap();
+        let signed_outer: Vec<u8> = node_core::fee_claims::codec::encode_signed_fee_claim_intent(
+            &node_core::fee_claims::codec::SignedFeeClaimIntent {
+                intent: intent.clone(),
+                signature: claimant.signing_key.sign(&frame).into(),
+            },
+        )
+        .unwrap();
+        let candidate: Vec<u8> = sunrise_edge_client::fee_claim_candidate(
+            workflow,
+            id,
+            signed_outer.clone(),
+            HOST_CHECKPOINT,
+        )
+        .unwrap();
+        cases.push(positive_fee_split_export::PublicCase {
+            label,
+            request,
+            intent,
+            signed_outer,
+            candidate,
+        });
+    }
+    assert_eq!(
+        status(hosts[0].address),
+        before,
+        "public auxiliary preparations mutate no ordered state"
+    );
+    assert_eq!(
+        Client::new(transport(hosts[0].address))
+            .query_next_nonce(objects::Address::new(original_request.claimant_public_key))
+            .unwrap()
+            .next_nonce(),
+        nonce_before,
+        "auxiliary host preparations leave the observed nonce unchanged"
+    );
+    let fee_object: Vec<u8> =
+        objects::encode_object(&view.execution.as_ref().unwrap().fee_output).unwrap();
+    let candidate: Vec<u8> = positive_fee_split_export::run(
+        selected,
+        workflow,
+        &fixture.network.resolver,
+        &fixture.network.manifest_bytes,
+        fixture.network.manifest_digest,
+        flags,
+        &fee_object,
+        &cases,
+    );
+    assert_eq!(candidate, original_candidate);
+    let path: PathBuf = fixture
+        .directory
+        .0
+        .join("positive-protected-original.candidate");
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file: std::fs::File = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .unwrap();
+    file.write_all(&candidate).unwrap();
+    file.sync_all().unwrap();
+    Some(path)
 }
 
 /// The original positive claim supplies genuine independently verified successor

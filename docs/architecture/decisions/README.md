@@ -150,3 +150,4 @@ in [`TODO.md`](../../../TODO.md).
 - [DR-0265: stopped Native storage-profile software upgrade](0265-stopped-native-storage-profile-upgrade.md)
 - [DR-0267: positive Standard Asset fee-claim Split proposal policy](0267-positive-standard-asset-fee-claim-policy.md)
 - [DR-0269: protected positive Standard Asset fee-claim Split](0269-positive-standard-asset-fee-claim-custody.md)
+- [DR-0270: genuine positive Split UID fixture](0270-genuine-positive-split-uid-fixture.md)

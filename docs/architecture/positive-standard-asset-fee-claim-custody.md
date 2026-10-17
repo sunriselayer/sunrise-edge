@@ -79,3 +79,8 @@ process, volume/inode and full raw-output caps before this selected profile runs
 It must retain both phase reviews/frames, byte-parity outputs, refusal/lifecycle
 records and actual wait/EOF/cleanup for every child. This pending profile grants
 no source-only or ordinary test UID-protection credit.
+
+The explicit opt-in [genuine UID fixture](positive-fee-split-uid-fixture.md)
+implements this export/lifecycle boundary and hands its protected original
+candidate back to the complete original selector. Actual owning qualification
+remains separate from the implementation contract.

@@ -87,6 +87,8 @@ mod keygen;
 mod positive_fee_split;
 mod positive_fee_split_approvals;
 mod positive_fee_split_commands;
+#[cfg(test)]
+mod positive_fee_split_fixture;
 mod positive_fee_split_wire;
 mod revoke;
 mod selfuid;
