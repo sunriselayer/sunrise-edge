@@ -1,6 +1,9 @@
 //! Independent local-OS rollback anchor. This is deployment metadata, never a
 //! protocol checkpoint, signature, quorum certificate, or portable import token.
 
+mod snapshot;
+pub use snapshot::{ConfiguredCheckpointAuthority, LocalSnapshotLimits, LocalStoreCheckpoint};
+
 use crate::{native_connection::NativeConnection, native_files};
 use protocol_types::{AtomicityDomainId, ChainId, ValidatorId};
 use runtime_sql_durable::schema::{SQL_ANCHORED_SCHEMA_IDENTITY, SQL_DURABLE_SCHEMA_IDENTITY};
@@ -394,7 +397,7 @@ impl AnchorLease {
 pub(crate) struct IndependentAnchor {
     owner: Mutex<NativeConnection>,
     lease: AnchorLease,
-    blob_path: PathBuf,
+    blob_path: Option<PathBuf>,
 }
 
 pub(crate) struct AnchorGuard<'a> {
@@ -428,6 +431,13 @@ impl IndependentAnchor {
     ) -> Result<Arc<Self>, IndependentAnchorError> {
         require_separate(anchor, state, blob_path)?;
         drop(crate::SqliteBlobStore::open_existing(blob_path).map_err(|_| IndependentAnchorError)?);
+        Self::open_configured(anchor, Some(blob_path.to_path_buf()))
+    }
+
+    fn open_configured(
+        anchor: &Path,
+        blob_path: Option<PathBuf>,
+    ) -> Result<Arc<Self>, IndependentAnchorError> {
         let lease: AnchorLease = AnchorLease::open(anchor, false)?;
         let mut owner: NativeConnection = NativeConnection::open_existing(anchor, true)?;
         owner.identity.check()?;
@@ -471,7 +481,7 @@ impl IndependentAnchor {
         Ok(Arc::new(Self {
             owner: Mutex::new(owner),
             lease,
-            blob_path: blob_path.to_path_buf(),
+            blob_path,
         }))
     }
 
@@ -496,7 +506,10 @@ impl IndependentAnchor {
         let mut owner: MutexGuard<'_, NativeConnection> =
             self.owner.lock().map_err(|_| IndependentAnchorError)?;
         owner.identity.check()?;
-        let blobs: NativeConnection = NativeConnection::open_existing(&self.blob_path, false)?;
+        let blobs: NativeConnection = NativeConnection::open_existing(
+            self.blob_path.as_deref().ok_or(IndependentAnchorError)?,
+            false,
+        )?;
         Ok(AnchorGuard {
             owner,
             lease: &self.lease,
@@ -686,7 +699,7 @@ pub fn enroll_independent_anchor(
     let anchor_owner: IndependentAnchor = IndependentAnchor {
         owner: Mutex::new(owner),
         lease,
-        blob_path: blobs.to_path_buf(),
+        blob_path: Some(blobs.to_path_buf()),
     };
     let mut guard = anchor_owner.lock(None)?;
     guard.check(&source.sqlite)?;

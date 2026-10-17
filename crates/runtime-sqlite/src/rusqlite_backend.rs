@@ -182,6 +182,23 @@ impl NativeSqlBackend {
         Ok(checkpoint)
     }
 
+    pub(crate) fn checkpoint_snapshot(
+        &self,
+        namespace: &crate::SqliteNamespace,
+        state: &std::path::Path,
+        blobs: &std::path::Path,
+        limits: crate::LocalSnapshotLimits,
+        check_budget: impl FnMut() -> Result<(), crate::IndependentAnchorError>,
+    ) -> Result<crate::LocalStoreCheckpoint, crate::IndependentAnchorError> {
+        let anchor = self.anchor.as_ref().ok_or(crate::IndependentAnchorError)?;
+        let mut guard = anchor.lock(limits.deadline_unix_millis)?;
+        let mut owned = self
+            .connection
+            .lock()
+            .map_err(|_| crate::IndependentAnchorError)?;
+        guard.snapshot(&mut owned, namespace, state, blobs, limits, check_budget)
+    }
+
     pub(crate) fn anchored(connection: NativeConnection, anchor: Arc<IndependentAnchor>) -> Self {
         let mut backend: Self = Self::from_owned(connection);
         backend.anchor = Some(anchor);

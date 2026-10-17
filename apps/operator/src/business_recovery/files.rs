@@ -481,6 +481,115 @@ impl PrivateStage {
             .insert(relative.clone(), leaf.stamp().clone());
         self.sync(relative.parent().ok_or(RecoveryError::Inventory)?)
     }
+    // Closed v2 names only. These helpers reuse the same original stage,
+    // held directory identities, private leaf stamps and irreversible budget.
+    fn checkpoint_relative(name: &str) -> Result<PathBuf, RecoveryError> {
+        if !matches!(
+            name,
+            "state.sqlite"
+                | "blobs.sqlite"
+                | "checkpoint-manifest-v2.bin"
+                | "checkpoint-complete-v2.bin"
+        ) {
+            return Err(RecoveryError::Inventory);
+        }
+        Ok(PathBuf::from(name))
+    }
+    pub(super) fn checkpoint_path(&self, name: &str) -> Result<PathBuf, RecoveryError> {
+        self.check_directory(Path::new(""))?;
+        Ok(self.root.root().join(Self::checkpoint_relative(name)?))
+    }
+    /// Called only after every native SQLite owner has closed the new output.
+    pub(super) fn checkpoint_adopt(
+        &mut self,
+        name: &str,
+        maximum: u64,
+    ) -> Result<(u64, [u8; 32]), RecoveryError> {
+        let relative: PathBuf = Self::checkpoint_relative(name)?;
+        let path: PathBuf = self.checkpoint_path(name)?;
+        let mut leaf: AttachedRegularFile = AttachedRegularFile::open(
+            &path,
+            maximum,
+            &self.budget,
+            AttachedFilePolicy::private_identity(self.uid),
+        )
+        .map_err(|_| RecoveryError::Attachment)?;
+        let length: u64 = leaf.stamp().length;
+        if length == 0 {
+            return Err(RecoveryError::Inventory);
+        }
+        let hash: [u8; 32] = copy_body(&mut leaf, &mut std::io::sink(), length, &self.budget)?;
+        leaf.ensure_attached()
+            .map_err(|_| RecoveryError::Attachment)?;
+        self.snapshots.insert(relative, leaf.stamp().clone());
+        self.sync(Path::new(""))?;
+        Ok((length, hash))
+    }
+    pub(super) fn checkpoint_receive<R: Read>(
+        &mut self,
+        name: &str,
+        reader: &mut R,
+        length: u64,
+        hash: [u8; 32],
+    ) -> Result<(), RecoveryError> {
+        let relative: PathBuf = Self::checkpoint_relative(name)?;
+        let mut output: File = self.new_file(&relative)?;
+        if copy_exact_body(reader, &mut output, length, &self.budget)? != hash {
+            return Err(RecoveryError::Inventory);
+        }
+        self.finish_file(relative, output, length)
+    }
+    pub(super) fn checkpoint_write<W: Write>(
+        &self,
+        name: &str,
+        output: &mut W,
+        length: u64,
+        hash: [u8; 32],
+    ) -> Result<(), RecoveryError> {
+        let relative: PathBuf = Self::checkpoint_relative(name)?;
+        let mut file: AttachedRegularFile = self.open_snapshot(&relative, length)?;
+        if copy_body(&mut file, output, length, &self.budget)? != hash {
+            return Err(RecoveryError::Inventory);
+        }
+        file.ensure_attached()
+            .map_err(|_| RecoveryError::Attachment)
+    }
+    pub(super) fn checkpoint_control(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<(), RecoveryError> {
+        let relative: PathBuf = Self::checkpoint_relative(name)?;
+        let mut output: File = self.new_file(&relative)?;
+        output
+            .write_all(bytes)
+            .map_err(|_| RecoveryError::Publication)?;
+        self.finish_file(relative, output, bytes.len() as u64)
+    }
+    pub(super) fn checkpoint_check(
+        &self,
+        bodies: &[(u64, [u8; 32]); 2],
+        controls: usize,
+    ) -> Result<(), RecoveryError> {
+        self.check_inventory()?;
+        if self.snapshots.len() != 2 + controls {
+            return Err(RecoveryError::Inventory);
+        }
+        for (name, (length, hash)) in ["state.sqlite", "blobs.sqlite"].into_iter().zip(bodies) {
+            self.checkpoint_write(name, &mut std::io::sink(), *length, *hash)?;
+        }
+        for name in ["checkpoint-manifest-v2.bin", "checkpoint-complete-v2.bin"]
+            .into_iter()
+            .take(controls)
+        {
+            let file: AttachedRegularFile =
+                self.open_snapshot(&Self::checkpoint_relative(name)?, 362)?;
+            file.ensure_attached()
+                .map_err(|_| RecoveryError::Attachment)?;
+        }
+        self.budget.check().map_err(|_| RecoveryError::Quota)
+    }
+
     pub(super) fn capture(
         &mut self,
         sources: &[SourceRole],

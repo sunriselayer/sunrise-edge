@@ -22,8 +22,8 @@ mod rusqlite_backend;
 mod structured;
 
 pub use anchor::{
-    AnchorCheckpoint, IndependentAnchorError, enroll_independent_anchor,
-    inspect_independent_anchor_inputs,
+    AnchorCheckpoint, ConfiguredCheckpointAuthority, IndependentAnchorError, LocalSnapshotLimits,
+    LocalStoreCheckpoint, enroll_independent_anchor, inspect_independent_anchor_inputs,
 };
 pub use blob::{SQLITE_BLOB_SCHEMA_IDENTITY, SqliteBlobStore, SqliteBlobStoreError};
 pub use structured::{

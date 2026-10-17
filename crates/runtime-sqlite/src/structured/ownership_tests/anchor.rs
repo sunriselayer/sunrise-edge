@@ -402,3 +402,231 @@ fn anchor_logical_noop_commit_does_not_manufacture_indistinguishable_pending() {
     let current: SqliteDurableStore = f.open().unwrap();
     assert_eq!(current.independent_anchor_checkpoint().unwrap(), initial);
 }
+
+fn snapshot_limits() -> crate::LocalSnapshotLimits {
+    crate::LocalSnapshotLimits {
+        max_database_bytes: 32 * 1024 * 1024,
+        deadline_unix_millis: None,
+    }
+}
+fn snapshot_paths(f: &Fixture, name: &str) -> (PathBuf, PathBuf) {
+    let path: PathBuf = f.directory.0.join(name);
+    fs::create_dir(&path).unwrap();
+    (path.join("state.sqlite"), path.join("blobs.sqlite"))
+}
+
+#[test]
+fn checkpoint_snapshot_restores_source_free_complete_rows_bodies_fence_and_receipt_replay() {
+    let f: Fixture = Fixture::new();
+    f.enroll();
+    let store: SqliteDurableStore = f.open().unwrap();
+    assert_eq!(
+        store.commit_invocation(&context(1), invocation()),
+        DurableCommitOutcome::Committed
+    );
+    let before: AnchorCheckpoint = store.independent_anchor_checkpoint().unwrap();
+    let blobs: crate::SqliteBlobStore = crate::SqliteBlobStore::open_existing(&f.blobs).unwrap();
+    blobs.put_blob(digest(91), vec![92; 1000]).unwrap();
+    drop(blobs);
+    let (state, blobs) = snapshot_paths(&f, "complete");
+    let point: crate::LocalStoreCheckpoint = store
+        .create_independent_checkpoint_snapshot(&state, &blobs, snapshot_limits(), || Ok(()))
+        .unwrap();
+    assert_eq!(point.checkpoint.state_root, before.state_root);
+    assert_eq!(point.checkpoint.sequence, before.sequence + 1);
+    assert_ne!(
+        point.checkpoint.body_manifest_root,
+        before.body_manifest_root
+    );
+    assert_eq!(
+        point.checkpoint,
+        store.independent_anchor_checkpoint().unwrap()
+    );
+    assert!(crate::ConfiguredCheckpointAuthority::open(&f.anchor, namespace()).is_err());
+    drop(store);
+    fs::rename(&f.state, f.state.with_extension("lost")).unwrap();
+    fs::rename(&f.blobs, f.blobs.with_extension("lost")).unwrap();
+    let authority: crate::ConfiguredCheckpointAuthority =
+        crate::ConfiguredCheckpointAuthority::open(&f.anchor, namespace()).unwrap();
+    authority
+        .verify_snapshot(&state, &blobs, &point, snapshot_limits(), || Ok(()))
+        .unwrap();
+    assert!(SqliteDurableStore::open_anchored(&state, &blobs, &f.anchor, namespace()).is_err());
+    drop(authority);
+    let restored: SqliteDurableStore =
+        SqliteDurableStore::open_anchored(&state, &blobs, &f.anchor, namespace()).unwrap();
+    restored.advance_writer_fence(fence(1), fence(2)).unwrap();
+    assert_eq!(
+        restored.commit_invocation(&context(2), invocation()),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::RequestAlreadyCommitted)
+    );
+    assert_eq!(
+        restored
+            .get_versioned_durable(&context(2), namespace().domain(), &nonce_key())
+            .unwrap()
+            .value(),
+        Some(nonce_record_bytes().as_slice())
+    );
+    assert!(matches!(
+        restored.commit_invocation(&context(1), invocation()),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::WriterFenced { .. })
+    ));
+    let body_owner: crate::SqliteBlobStore = crate::SqliteBlobStore::open_existing(&blobs).unwrap();
+    assert_eq!(
+        body_owner.get_blob(&digest(91)).unwrap(),
+        Some(vec![92; 1000])
+    );
+    drop(body_owner);
+    let snapshot = restored
+        .begin_portable_snapshot(&context(2), namespace().domain())
+        .unwrap();
+    let replay = restored.commit_invocation(&context(2), invocation());
+    assert_eq!(
+        replay,
+        DurableCommitOutcome::Rejected(DurableCommitRejection::RequestAlreadyCommitted)
+    );
+    assert_eq!(
+        restored
+            .begin_portable_snapshot(&context(2), namespace().domain())
+            .unwrap(),
+        snapshot
+    );
+}
+
+#[test]
+fn checkpoint_snapshot_rejects_schema_objects_body_changes_namespace_and_source_substitution() {
+    let f: Fixture = Fixture::new();
+    f.enroll();
+    let store: SqliteDurableStore = f.open().unwrap();
+    let (state, blobs) = snapshot_paths(&f, "pristine");
+    let point = store
+        .create_independent_checkpoint_snapshot(&state, &blobs, snapshot_limits(), || Ok(()))
+        .unwrap();
+    drop(store);
+    let authority = crate::ConfiguredCheckpointAuthority::open(&f.anchor, namespace()).unwrap();
+    for (index,(body,sql)) in [
+        (false,"CREATE TABLE surplus(x BLOB)"),
+        (false,"CREATE VIEW surplus AS SELECT * FROM durable_state"),
+        (false,"CREATE TRIGGER surplus AFTER INSERT ON durable_state BEGIN DELETE FROM durable_state; END"),
+        (false,"CREATE INDEX surplus ON durable_state(revision)"),
+        (false,"PRAGMA user_version=6"),
+        (false,"UPDATE durable_metadata SET source_instance_id=zeroblob(16)"),
+        (false,"UPDATE durable_metadata SET chain_id='foreign'"),
+        (true,"UPDATE blobs SET content=x'ff'"),
+        (true,"INSERT INTO blobs VALUES(1,zeroblob(32),x'ff')"),
+        (true,"UPDATE blob_metadata SET schema_identity=x'ff'"),
+    ].into_iter().enumerate() {
+        let (changed_state,changed_blobs)=snapshot_paths(&f,&format!("changed-{index}"));
+        fs::copy(&state,&changed_state).unwrap();fs::copy(&blobs,&changed_blobs).unwrap();
+        let connection:Connection=Connection::open(if body {&changed_blobs} else {&changed_state}).unwrap();connection.execute_batch(sql).unwrap();drop(connection);
+        assert!(authority.verify_snapshot(&changed_state,&changed_blobs,&point,snapshot_limits(),||Ok(())).is_err(),"{sql}");
+    }
+    authority
+        .verify_snapshot(&state, &blobs, &point, snapshot_limits(), || Ok(()))
+        .unwrap();
+}
+
+#[test]
+fn checkpoint_snapshot_rejects_stale_currentness_pending_and_missing_authority_without_adoption() {
+    let f: Fixture = Fixture::new();
+    f.enroll();
+    let store: SqliteDurableStore = f.open().unwrap();
+    let (state, blobs) = snapshot_paths(&f, "old-point");
+    let point = store
+        .create_independent_checkpoint_snapshot(&state, &blobs, snapshot_limits(), || Ok(()))
+        .unwrap();
+    store.advance_writer_fence(fence(1), fence(2)).unwrap();
+    drop(store);
+    let authority = crate::ConfiguredCheckpointAuthority::open(&f.anchor, namespace()).unwrap();
+    assert!(
+        authority
+            .verify_snapshot(&state, &blobs, &point, snapshot_limits(), || Ok(()))
+            .is_err()
+    );
+    drop(authority);
+    let connection: Connection = Connection::open(&f.anchor).unwrap();
+    connection.execute("UPDATE anchor_head SET pending_state_root=state_root,pending_body_root=body_root,pending_sequence=sequence",[]).unwrap();
+    drop(connection);
+    assert!(crate::ConfiguredCheckpointAuthority::open(&f.anchor, namespace()).is_err());
+    let missing: PathBuf = f.anchor.with_file_name("missing.db");
+    assert!(crate::ConfiguredCheckpointAuthority::open(&missing, namespace()).is_err());
+    assert!(!missing.exists());
+    assert!(!missing.with_file_name("missing.db.lease").exists());
+}
+
+#[test]
+fn checkpoint_snapshot_finite_caps_cancel_and_existing_output_preserve_authority() {
+    let f: Fixture = Fixture::new();
+    f.enroll();
+    let store: SqliteDurableStore = f.open().unwrap();
+    let before = store.independent_anchor_checkpoint().unwrap();
+    for (index, max) in [1, 4096, 32 * 1024 * 1024 + 1].into_iter().enumerate() {
+        let (state, blobs) = snapshot_paths(&f, &format!("small-{index}"));
+        let limits = crate::LocalSnapshotLimits {
+            max_database_bytes: max,
+            deadline_unix_millis: None,
+        };
+        assert!(
+            store
+                .create_independent_checkpoint_snapshot(&state, &blobs, limits, || Ok(()))
+                .is_err()
+        );
+        assert_eq!(store.independent_anchor_checkpoint().unwrap(), before);
+    }
+    let (state, blobs) = snapshot_paths(&f, "cancelled");
+    assert!(
+        store
+            .create_independent_checkpoint_snapshot(&state, &blobs, snapshot_limits(), || Err(
+                crate::IndependentAnchorError
+            ))
+            .is_err()
+    );
+    assert_eq!(store.independent_anchor_checkpoint().unwrap(), before);
+    fs::write(&state, b"existing").unwrap();
+    assert!(
+        store
+            .create_independent_checkpoint_snapshot(&state, &blobs, snapshot_limits(), || Ok(()))
+            .is_err()
+    );
+    assert_eq!(fs::read(&state).unwrap(), b"existing");
+    assert_eq!(store.independent_anchor_checkpoint().unwrap(), before);
+}
+
+#[test]
+fn checkpoint_snapshot_failed_second_begin_rolls_back_retained_source_owner() {
+    let f: Fixture = Fixture::new();
+    f.enroll();
+    let owner = crate::anchor::IndependentAnchor::open(&f.anchor, &f.state, &f.blobs).unwrap();
+    let mut guard = owner.lock(None).unwrap();
+    let mut source: NativeConnection = open_verified_connection(&f.state).unwrap();
+    let (state, blobs) = snapshot_paths(&f, "second-begin");
+    guard.test_with_body_read(|guard| {
+        assert!(
+            guard
+                .snapshot(
+                    &mut source,
+                    &namespace(),
+                    &state,
+                    &blobs,
+                    snapshot_limits(),
+                    || Ok(())
+                )
+                .is_err()
+        );
+        assert!(
+            source.sqlite.is_autocommit(),
+            "failed body BEGIN must release source read transaction"
+        );
+    });
+    guard
+        .snapshot(
+            &mut source,
+            &namespace(),
+            &state,
+            &blobs,
+            snapshot_limits(),
+            || Ok(()),
+        )
+        .unwrap();
+    assert!(source.sqlite.is_autocommit());
+}

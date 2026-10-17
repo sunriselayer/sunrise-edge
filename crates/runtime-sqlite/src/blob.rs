@@ -460,7 +460,7 @@ impl PortableBlobRepository for SqliteBlobStore {
     }
 }
 
-fn blob_schema_ddl() -> String {
+pub(crate) fn blob_schema_ddl() -> String {
     format!(
         "CREATE TABLE blob_metadata (
              id INTEGER PRIMARY KEY CHECK (id = 1),

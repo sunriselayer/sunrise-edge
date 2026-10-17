@@ -138,6 +138,8 @@
 - [DR-0244: publication approval revocation and stopped key lifecycle](0244-publication-approval-revocation-and-key-lifecycle.md)
 - [DR-0245: saved successor fee-claim review and development signing](0245-saved-successor-fee-claim-review.md)
 
+- [DR-0263: encrypted local checkpoint continuation](0263-encrypted-local-checkpoint-continuation.md)
+
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong
 in [`TODO.md`](../../../TODO.md).

@@ -363,6 +363,26 @@ impl SqliteDurableStore {
             .map_err(operator_backend_error)
     }
 
+    /// Copies the complete selected store through SQLite's bounded Backup API
+    /// and publishes its complete body manifest to this independent authority.
+    /// Fresh private outputs remain unqualified until the caller encrypts and
+    /// publishes them. This neither activates a writer nor creates proof trust.
+    pub fn create_independent_checkpoint_snapshot(
+        &self,
+        state: &Path,
+        blobs: &Path,
+        limits: crate::LocalSnapshotLimits,
+        check_budget: impl FnMut() -> Result<(), crate::IndependentAnchorError>,
+    ) -> Result<crate::LocalStoreCheckpoint, crate::IndependentAnchorError> {
+        self.engine.backend().checkpoint_snapshot(
+            self.namespace(),
+            state,
+            blobs,
+            limits,
+            check_budget,
+        )
+    }
+
     /// Opens an explicitly enrolled local namespace. Missing, copied, pending
     /// or rolled-back authority refuses; this never enrolls or recreates it.
     pub fn open_anchored(

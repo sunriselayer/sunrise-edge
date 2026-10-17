@@ -123,9 +123,11 @@ open enrolled state. Read-only historical material retains historical decoding
 and does not grant activation/signing permission. Existing command pins and
 lifecycle checks remain in their original owners.
 
-This local acknowledgement is not a new quorum publication. Published protocol
-checkpoint authority, encrypted complete crash-state/off-host recovery, upgrade
-activation/rollback across protocol versions, recovery-key custody and actual
-power/storage fault qualification remain separate requirements. Exact-current
+This local acknowledgement is not a new quorum publication. The separate
+[local v2 encrypted continuation](local-checkpoint-backup.md) captures complete
+selected-store snapshots and verifies exact current authority without resetting
+it. Published protocol checkpoint authority, off-host retention, activated
+migration/upgrade qualification, recovery-key custody and actual power/storage
+fault qualification retain their separate owners and requirements. Exact-current
 local recovery and refusal controls must be executed before claiming this slice;
 full required validation and final-source hosted CI remain required as usual.

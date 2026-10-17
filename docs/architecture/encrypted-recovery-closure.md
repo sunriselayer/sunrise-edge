@@ -8,6 +8,10 @@ implementation and qualification status belongs in [TODO](../../TODO.md).
 Design acceptance is not source approval, executed recovery, an audit,
 dependency clearance or completion of M4.
 
+This document describes the v1 saved-business envelope. The separate
+[local v2 checkpoint owner](local-checkpoint-backup.md) reuses the transport
+without extending v1 roles or changing their bytes.
+
 ## Scope and unchanged authority
 
 The only selected prospective profile is disposable, local,

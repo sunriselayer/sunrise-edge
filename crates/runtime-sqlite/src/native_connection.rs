@@ -131,6 +131,29 @@ impl NativeConnection {
         Ok(Self { sqlite, identity })
     }
 
+    /// A fresh private snapshot chooses the source page size BEFORE WAL. No
+    /// independent main-file descriptor remains open while SQLite owns it.
+    pub(crate) fn snapshot_destination(path: &Path, page_size: i64) -> Result<Self, NativeError> {
+        if !(512..=65536).contains(&page_size) || !(page_size as u64).is_power_of_two() {
+            return Err(rusqlite::Error::InvalidQuery.into());
+        }
+        let mut identity: ImportFile = native_files::create_new_private(path)?;
+        identity.check()?;
+        let sqlite: Connection = Connection::open_with_flags(
+            identity.path(),
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        identity.check()?;
+        sqlite.pragma_update(None, "page_size", page_size)?;
+        configure_writable(&sqlite)?;
+        let journal: String = sqlite.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
+        if journal != "wal" {
+            return Err(NativeError::JournalMode(journal));
+        }
+        identity.check()?;
+        Ok(Self { sqlite, identity })
+    }
+
     /// Scoped reads/maintenance stay inside the caller's mutex and check before
     /// releasing their output. This cannot eliminate hostile path-swap races.
     pub(crate) fn inspect<T, E: From<NativeError>>(

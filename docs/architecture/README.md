@@ -69,6 +69,11 @@ roadmap describes a later target state.
   retained exact cut/package/plan digest pins refuse a differing independently
   reverified closure before opening or creating destination databases; no
   checkpoint/state-root or activation authority.
+- [Encrypted local checkpoint continuation](local-checkpoint-backup.md)
+  ([DR-0263](decisions/0263-encrypted-local-checkpoint-continuation.md)):
+  complete same-layout SQLite snapshots, existing independent currentness,
+  maintained age transport and fresh-fence continuation; v1 proof archives
+  and activated protocol migration retain their original owners.
 - [Immutable operation signing preparation](signing-preparation.md): one
   mechanical frame/identity owner, operation-specific immutable trust inputs,
   actual SDK/CLI consumers and the separate custody/content-review boundary.
