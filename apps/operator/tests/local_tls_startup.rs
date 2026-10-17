@@ -10,6 +10,9 @@
 //! DR-0219 separately runs the same complete business oracles against direct
 //! production-host termination and its actual 2 -> 3 -> 4 stopped fences.
 
+#[cfg(target_os = "linux")]
+#[path = "support/checkpoint_recovery.rs"]
+mod checkpoint_recovery;
 #[path = "support/compiled_cli_process.rs"]
 mod compiled_cli_process;
 #[path = "support/compiled_source_host_process.rs"]
@@ -119,15 +122,46 @@ struct Network {
     artifacts_dir: PathBuf,
     #[cfg(target_os = "linux")]
     independent_anchors: Option<IndependentAnchors>,
+    #[cfg(target_os = "linux")]
+    restored_checkpoint: Option<checkpoint_recovery::RestoredCheckpoint>,
 }
 
 impl Network {
     fn state_db(&self, index: usize) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        if let Some(restored) = &self.restored_checkpoint {
+            return restored.state(index);
+        }
         self.fixture.directory.join(format!("state-{index}.sqlite"))
     }
 
     fn blob_db(&self, index: usize) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        if let Some(restored) = &self.restored_checkpoint {
+            return restored.blobs(index);
+        }
         self.fixture.directory.join(format!("blob-{index}.sqlite"))
+    }
+
+    fn host_root_pins(&self, index: usize) -> Vec<OsString> {
+        let pins: Vec<OsString> =
+            self.fixture
+                .root_pins(&self.genesis, self.digest, index, self.domain);
+        #[cfg(target_os = "linux")]
+        let pins: Vec<OsString> = if self.restored_checkpoint.is_some() {
+            let mut pins: Vec<OsString> = pins;
+            for (flag, path) in [
+                ("--state-db", self.state_db(index)),
+                ("--blob-db", self.blob_db(index)),
+            ] {
+                let at: usize = pins.iter().position(|value| value == flag).unwrap();
+                pins[at + 1] = path.into_os_string();
+            }
+            pins
+        } else {
+            pins
+        };
+        pins
     }
 
     fn namespace(&self, index: usize) -> SqliteNamespace {
@@ -616,6 +650,8 @@ fn author_inspect_and_prepare() -> Network {
         artifacts_dir,
         #[cfg(target_os = "linux")]
         independent_anchors: None,
+        #[cfg(target_os = "linux")]
+        restored_checkpoint: None,
     }
 }
 
@@ -730,12 +766,7 @@ fn start_direct_hosts_with_local_observations(
             let requested: SocketAddr = peer.address;
             let mut command: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
             command
-                .args(network.fixture.root_pins(
-                    &network.genesis,
-                    network.digest,
-                    index,
-                    network.domain,
-                ))
+                .args(network.host_root_pins(index))
                 .arg("--signing-key-file")
                 .arg(&network.signing_keys[index])
                 .args([
@@ -1282,6 +1313,9 @@ fn assert_no_parent_sqlite_handles(network: &Network) {
     let mut forbidden: BTreeSet<PathBuf> = BTreeSet::new();
     for index in 0..VALIDATORS {
         let mut mains: Vec<PathBuf> = vec![network.state_db(index), network.blob_db(index)];
+        if let Some(restored) = &network.restored_checkpoint {
+            mains.extend(restored.former_and_forensic_paths(index));
+        }
         if let Some(anchors) = &network.independent_anchors {
             mains.push(anchors.paths[index].clone());
             let mut lease: OsString = anchors.paths[index].as_os_str().to_owned();
@@ -3863,26 +3897,37 @@ fn compiled_host_startup_line_limits_cover_literal_maximum_producer_formats() {
 #[cfg(target_os = "linux")]
 #[test]
 fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
-    exercise_direct_tls_owned_sigkill(false, false);
+    exercise_direct_tls_owned_sigkill(false, false, false);
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn actual_direct_tls_complete_owner_loss_authorizes_fresh_writer_and_paid_business() {
-    exercise_direct_tls_owned_sigkill(true, false);
+    exercise_direct_tls_owned_sigkill(true, false, false);
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn actual_direct_tls_independent_anchors_preserve_paid_recovery_after_complete_owner_loss() {
-    exercise_direct_tls_owned_sigkill(true, true);
+    exercise_direct_tls_owned_sigkill(true, true, false);
 }
 
 #[cfg(target_os = "linux")]
-fn exercise_direct_tls_owned_sigkill(total_connection_loss: bool, independent_anchor: bool) {
+#[test]
+fn actual_direct_tls_encrypted_checkpoints_restore_paid_state_without_original_source_paths() {
+    exercise_direct_tls_owned_sigkill(true, true, true);
+}
+
+#[cfg(target_os = "linux")]
+fn exercise_direct_tls_owned_sigkill(
+    total_connection_loss: bool,
+    independent_anchor: bool,
+    encrypted_restore: bool,
+) {
     use std::os::unix::process::ExitStatusExt;
 
     assert!(!independent_anchor || total_connection_loss);
+    assert!(!encrypted_restore || (independent_anchor && total_connection_loss));
     let mut network: Network = author_inspect_and_prepare();
     if independent_anchor {
         let anchors: IndependentAnchors = IndependentAnchors::enroll(&network);
@@ -4076,6 +4121,27 @@ fn exercise_direct_tls_owned_sigkill(total_connection_loss: bool, independent_an
             assert_ne!(current.state_root, anchors.enrolled[index].state_root);
         }
     }
+    if encrypted_restore {
+        assert_no_parent_sqlite_handles(&network);
+        let restored = checkpoint_recovery::pack_and_restore(&network);
+        network.restored_checkpoint = Some(restored);
+        network
+            .restored_checkpoint
+            .as_ref()
+            .unwrap()
+            .assert_originals_unavailable();
+        assert_eq!(
+            &sqlite_durable_images(&network),
+            raw_before.as_ref().unwrap(),
+            "actual decrypted snapshots preserve every original SQL/blob row before new fence"
+        );
+        assert_unchanged(
+            &stopped,
+            &snapshots(&network),
+            "source-free encrypted current-store restoration",
+        );
+        assert_no_parent_sqlite_handles(&network);
+    }
     let mut restarted_hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 3);
     assert_eq!(restarted_hosts.len(), VALIDATORS);
     for (index, host) in restarted_hosts.iter().enumerate() {
@@ -4232,6 +4298,9 @@ fn exercise_direct_tls_owned_sigkill(total_connection_loss: bool, independent_an
     // the abrupt-fault oracle and carries only the existing lifecycle limits.
     for host in restarted_hosts {
         host.guard.stop_orderly(PROCESS_DEADLINE);
+    }
+    if let Some(restored) = &network.restored_checkpoint {
+        restored.assert_originals_unavailable();
     }
     let after_stop: Vec<SourceBusinessSnapshot> = snapshots(&network);
     assert_unchanged(

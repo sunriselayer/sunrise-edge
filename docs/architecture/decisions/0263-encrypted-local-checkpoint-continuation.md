@@ -96,3 +96,36 @@ owner and serving configuration; this store envelope does not silently replace
 them. Same-layout local continuation is not a protocol upgrade policy, off-host
 retention qualification, power/media/fsync evidence, independent security audit
 or all-M4 completion. All original M4 gates remain binding.
+
+## Compiled selected-host restoration contract
+
+Keep all fourteen existing local-TLS selectors and their original assertions.
+A separate fifteenth Linux selector inserts the actual compiled
+`business_recovery pack-checkpoint`/`open-checkpoint` flow into the existing
+four-host anchored paid-business, complete-owner-loss, fresh-fence owner. Only
+after all four sole hosts are SIGKILLed and reaped, create disposable age
+identities and private sibling capture/cipher/restored trees outside source and
+authority trees. Use one original300-second group deadline, downward per-child
+remaining deadlines, the existing strict child EOF/reap/output owner and finite
+32MiB file/68MiB plaintext/72MiB ciphertext/control/header caps. No protocol keys
+or identities enter argv or the archive.
+
+Publish all four snapshots, retain any intentional body-only acknowledgement
+advance while requiring unchanged complete state roots, then move all original
+state/body files and sidecars into private forensic directories. All eight old
+main paths remain unavailable through decrypt, new serving and tail stop.
+Original forensic12+2 table images remain fixed. Independently configured
+anchors and leases stay in their original sibling directories. Each compiled
+open must preserve their post-publication acknowledged rows and its completed
+candidate must pass the actual compiled current-checkpoint inspection.
+
+Fresh restored pairs then enter the original actual host argv, with unchanged
+TLS/namespace/genesis/signing pins, exact endpoints and writer fence2→3.
+Preserve complete raw12+2 table equality before restart, the existing exact
+fence-only image delta, all four portable collections/referenced blobs, old
+receipt replay, fresh paid CLI/quorum business and fresh receipt replay, and
+ordinary tail-stop equality. Add only actual CLI mode-irrelevant input,
+wrong-namespace, missing-authority and existing-output refusals; a failure never
+becomes qualified completion. This integration is ordinary same-protocol local
+continuation. It does not activate a protocol migration, qualify off-host
+retention or mark all M4 complete. Execution status belongs in TODO.
