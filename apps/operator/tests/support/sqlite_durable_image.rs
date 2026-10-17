@@ -289,10 +289,10 @@ pub fn assert_only_anchor_identity_changed(before: &[Image], after: &[Image]) {
         assert_eq!(metadata[0].len(), 10);
         assert_eq!(
             metadata[0][1],
-            Value::Text("sunrise-edge/sqlite/structured/schema/v6".into())
+            Value::Blob(b"sunrise-edge/sqlite/structured/schema/v6".to_vec())
         );
         metadata[0][1] =
-            Value::Text("sunrise-edge/sqlite/structured/schema/v6/independent-anchor/v1".into());
+            Value::Blob(b"sunrise-edge/sqlite/structured/schema/v6/independent-anchor/v1".to_vec());
         assert_eq!(
             &expected, actual,
             "only explicit independent-anchor profile identity changes"
