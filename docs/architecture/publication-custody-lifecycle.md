@@ -197,6 +197,39 @@ inside the unchanged fixture totals. All original families, six publication
 lifecycle summaries and E67 assertions remain. This describes the new source
 control; TODO owns its separately required actual qualification.
 
+### 2026-10-17 create-asset recovery consumer extension
+
+The contained create-asset recovery control follows the same stop-first
+mechanism as transfer and genesis split/merge. It runs after the original
+create signer, its revoked restart, native host and all own-created
+mint/burn/E67/Coin follow-ons have finished. A fresh `9d` request keeps the
+original public instance seed, genesis/config, canonical fee preimage and
+nonce and receives its own attended `APPROVE-CREATE` confirmation.
+
+An original-key reference signs `9d` and is actually waited, with its PID and
+socket absent, before custody-UID private backup/restore. The recovered key
+then uses the same publisher/config/genesis pins through `serve-create` and
+the real `sign-create` command. Its complete signed bytes must match the SAME
+`9d` reference. Old revoked `95` refuses, cancelling `9d` refuses it in that
+process, and both refuse after recovered-key restart. Each refusal checks its
+own absent output. Reference/recovery/restart counters are 1/1/1/0, 3/3/1/2 and
+2/2/0/2. Original trust/preimage/old approval and revocation attachments, fresh
+reviewed request attachments and reference bytes remain unchanged.
+
+This control does not submit a second create-asset: the reused seed already
+names an instantiated target and the retained fee/nonce need not be current.
+It proves only the source control's same-key signing and refusal contract,
+with actual qualification recorded separately in `TODO.md`. It introduces
+no key backend, new identity, ownership migration or general signing route.
+
+The normal addition is nine direct `run_exec` CLI children, one PTY, three
+bounded signer processes and two existing custody-UID private-copy children
+(15 total). Bounded direct reads compare nonsecret evidence without reader
+children. Eight generated files have a combined 16 KiB allowance; captured
+output has 32 KiB and the result summary 2 KiB. These are suballocations of
+the unchanged global limits. All original/T/G assertions, six publication
+lifecycle summaries and E67/Coin operations remain unchanged.
+
 **Still open, not covered by these additions:** a true rotated-identity
 *positive* business acceptance (minting/transferring against an object the
 rotated identity actually owns) still requires first moving ownership
