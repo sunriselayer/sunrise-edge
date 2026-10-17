@@ -170,11 +170,38 @@ new field above to be present and `true` and every new serve/restart counter
 to match exactly, the same way it already required the pre-existing
 `serve_summary`/`restart_summary` fields.
 
-**Still open, not covered by this addition:** a true rotated-identity
+### 2026-10-17 transfer recovery consumer extension
+
+The separate transfer control uses the same recovery mechanism without changing
+any backend, approval format or authority policy. It starts after the original
+`phase_transfer` and revoked restart have both finished. A fresh request ID
+(`77` repeated 32 times, distinct from the original `75` request) retains the
+original context, coin, fee, recipient and nonce preimages and receives its own
+attended `approve-transfer` confirmation. A reference `serve-transfer` using the
+original key signs this exact fresh frame and is reaped before the custody-owned
+backup/restore helper runs. No signer using the original key remains alive.
+
+The recovered key uses the same public-key/config/genesis pins. The real
+`sign-transfer` command must independently finalize the signature and export the
+same complete bytes as the reference. The pre-existing `75` revocation remains
+effective. A new cancellation of `77` then refuses signing in that process; both
+IDs refuse again after recovered-key restart. Exact reference/recovery/restart
+counters are 1/1/1/0, 3/3/1/2 and 2/2/0/2, respectively. Normal exit must already
+have removed each socket; same-UID cleanup is a failure-path fallback only.
+
+This is offline signing over retained preimages, with no endpoint submission or
+business nonce/receipt change. It does not reapprove a revoked ID, compare
+signatures across request IDs, move ownership or generate a new identity.
+Additional output and eight generated files each have a 16 KiB local allowance
+inside the unchanged fixture totals. All original families, six publication
+lifecycle summaries and E67 assertions remain. This describes the new source
+control; TODO owns its separately required actual qualification.
+
+**Still open, not covered by these additions:** a true rotated-identity
 *positive* business acceptance (minting/transferring against an object the
 rotated identity actually owns) still requires first moving ownership
 on-chain, which remains a separate protocol action and is not implied by
-any refusal check above. Automatic/unattended signing, full key rotation of
-the other four families' own live `serve` processes (only the own-created
-profile gets the recovered-key serve round trip above), and any other
-not-yet-listed M2 lifecycle work remain open per `TODO.md`.
+any refusal check above. Other asset profiles' live recovery and full key
+rotation, other automatic signing families/epochs, and any other not-yet-listed
+M2 lifecycle work remain open per `TODO.md`. The original own-created mint/burn
+recovery result and this new transfer source control remain separate evidence.

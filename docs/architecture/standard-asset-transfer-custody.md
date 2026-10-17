@@ -113,3 +113,31 @@ operator key-read/approval-edit refusals are repeated under that parent mode.
 Native SQLite deployment paths similarly require readable ancestor directories;
 this does not require exposing the contents of private key or database directories.
 The fixture is not a real key ceremony, public operation or all-family M2 proof.
+
+### Recovered-key transfer consumer control
+
+The 2026-10-17 fixture extension follows the existing
+[stop-first recovery contract](publication-custody-lifecycle.md). After the
+original transfer signer and its revoked restart have exited, it prepares and
+independently approves a new signing-only request over retained object preimages.
+The original key signs that exact request on a separate reference socket. Only
+after actual wait and socket disappearance does the custody UID copy the same
+disposable key to new private backup/restored paths.
+
+The real `sign-transfer` consumer then produces identical signed bytes through
+the recovered-key `serve-transfer`. The original revoked request remains refused;
+revoking the fresh request also refuses signing in that process and after a
+separate restart. The reference, recovered and restarted signers have exact
+connection/handled/signed/refused counts of 1/1/1/0, 3/3/1/2 and 2/2/0/2. Each
+socket must be absent after normal exit. The original transfer and publication
+counters and business assertions remain unchanged.
+
+This control adds 13 CLI children, two custody-owned copy children, one attended
+PTY approval, six signing requests and eight retained files. Its own additional
+captured child output and generated files must each fit 16 KiB within the
+existing aggregate allowances. Container, UID, capability, memory, process,
+network, volume, total deadline and full-output bounds are unchanged. The
+retained preimages are deliberately never submitted again: the control checks
+same-frame key recovery, not current ownership, a second business mutation or
+positive new-identity rotation. Source implementation is not runtime acceptance;
+actual qualification remains in TODO.
