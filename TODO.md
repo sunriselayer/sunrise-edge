@@ -42,7 +42,8 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   同一鍵復旧の追加source `ad3ce3a0` / tree`d3fdc54a` は[Draft PR #323](https://github.com/sunriselayer/sunrise-edge/pull/323)。
   W5f6bのliteral npm ci +完全requiredは全commands actual0で完走しました (E150)。
   同5f原12 RELEASE runtimeも全12 cases・98 passed/0 failed/3 ignoredで完走しました (E151)。
-  MBのliteral npm ciは成功し、完全requiredは実行中です。
+  MBのliteral npm ciは成功。旧ad3の完全requiredは、後段の直接Wrangler呼出しを避けるため中断しました (E157)。
+  移行済みe4fb/50fbのcf版完全requiredを継続し、旧ad3の途中結果は全体成功へ加算しません。
   [Draft PR #321](https://github.com/sunriselayer/sunrise-edge/pull/321) の全8 CIはE142で成功を照合。
   [Draft PR #322](https://github.com/sunriselayer/sunrise-edge/pull/322) は全8 CI成功を実ログ/checkoutで照合 (E152)。
   #323 / #324は各6 jobs成功、recurring-sqlite継続中・集約check未作成です。
@@ -145,7 +146,7 @@ M2/M3/M7全体・独立監査・公開条件は未完了です。M4の選択済�
 7658の別の原12 RELEASE runtimeと完全required/CIはE131/E132で終端成功を確認しました。
 元12ケース・共有18,000秒・CPU4/16GiB/swap0を維持しています。
 後続e6f1の完全required失敗E133は保持します。5f6bの対象prefix/Native build/TLS/CLIはE136-E139、
-追加recoveryの範囲はE140/E141。最終MB完全required/CI・原12の選択source終端照合は未完了です。
+追加recoveryの範囲はE140/E141。旧MB完全requiredはE157のpolicy中断として保持。旧MB CIと移行済み最終source完全required/原12の終端照合は未完了です。
 初回DockerのSQLite祖先directory読取EACCES、manual fixtureのsetup counter誤り、
 import testのsource retirement不足と各修正前失敗も保持します。
 50a4 / tree eff704ddのE14-E16と旧作業コピーは過去の対象として保持します。
@@ -390,6 +391,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E154: Rustls 0.23.46 complete hosted PostgreSQL qualification | `50fbf22d` / tree`ccae85a6`の[run39047321893](https://github.com/sunriselayer/sunrise-edge/actions/runs/39047321893) attempt1は元5 ownersとsuccess-only集約が全SUCCESS。全6 actual checkoutが同head/tree/parent`58a552e7`で一致し、全raw 765,484 bytesをroot・独立peerが照合。83 Rust summariesは1,482 passed/0 failed/20 ignored。14 protocol selectorsと4 auxiliaryの計18 exact実行が全1/0/0、元6 storage fault testsは各REQUIRED=1と固定PG/PgBouncer imageで成功。親`pg-run-39047321893-parent-qualified-1017.json` (`972ade9b`) | quiet実行のselectorは同checkoutのclosed registry・exact discovery/execution契約へ対応し、全nameがrawに表示されたとは扱わない。20 ignoredはwhole storage laneの値であり、別ownerが18 exact runsを実行。依存変更に必要な完全PGの資格だけ。新source完全required/全8 ordinary CI/Native/TLS/独立security監査・全M7/公開認定は未完了 |
 | E155: Rustls 0.23.46 fresh Native13 A/B | `50fbf22d` / tree`ccae85a6`の13 targetsを2回fresh buildし、全13組のbyte/mode/ownerが一致。actual0/outer両実EOF/wait/reap、1,024.127秒。保存26 ELFは元の0755・単一link・別inodeのまま照合。source1215全Ns/Git・311 locked archive/metadataと選択231 expanded packagesの10,017 files/122,049,003 bytesを照合。親`rustls-native7-1017-ab-parent-precision2-qualified.json` (`25fc610b`、観測数補正`102a7fb3`) | authorの終端照合後、rootが同じreview済み有限readonly verifierを別実行し、全source/artifact/closure/reference観測を再照合。独立source/security auditとは呼ばない。保存70 samples中の69 live kernel rowsは元16GiB/swap0/CPU4/tasks512とOOM0、既知PID/cgroup・4 compiler/TMP・source lease不在を確認。rootのcache読取leaseも明示解放済み。current TLS/CLI/原12 runtime・完全required/全8 ordinary CI・全M7/公開認定は未完了 |
 | E156: current Rustls RELEASE CLI and fresh H9 whole117 | 同`50fbf22d`の新H9はactual CargoJSONからCLI libtest ELF`52eb6386`を正常0755/単一link/別inodeへ保持し、compile+cpはactual0/両outer実EOF/wait、391.000秒。親`307f175b`。fresh 2 ldd後、新Native7 RELEASE CLI`f2cf9e8d`とのwhole fixtureはactual0/両outer実EOF/wait、9.336秒。raw18,288 bytesの全117 flagsが一致。元5 families/6 publication lifecycles/E67/Coin6/T/G/C/MBと実有料A→B version2/nonce1,0/replay1→A version3/nonce1,1/replay2・取消/restart拒否を確認。root・独立peer・author親`rustls-native7-fixture-runtime1-parent-qualified-1018.json` (`8a4f6ea1`) | CLI/H9/driverは全て同50fb/tree・source1215の厳密一致で、旧artifactやsource bridgeを使わない。117の旧rawはpath集合の比較だけで、旧成功値/object IDを借用しない。19exec/2PTY/4serve/1host・30files/出力28,712 bytesは元上限内。1GiB/swap0/CPU1/tasks128の保存kernel・既知owner/external PID/cgroup不在を照合。破棄済み個別stream/鍵/DBの再構成は主張せず、businessはcompiled oracleと完全aggregate rawへ対応。current TLS/原12 runtime・完全required/全8 ordinary CI・全M2/M7/公開認定は未完了 |
+| E157: historical MB gate interrupted for Cloudflare CLI policy | 旧`ad3ce3a0`の保存済みpackage typecheckに直接`wrangler types`が残り、完全requiredの後段で実行されるため、root所有のunit/invocation`1e4129c4`・MainPID2223187を照合して停止。停止commandはactual0/両EOF/wait、owner PID/cgroup不在。結果`genesis-mint-burn-required-cf-policy-stop-result-1018.json` (`06c72cd1`)。literal npm ci成功とepoch8 freeze-drain endまでの部分ログ・source/cache/target/TMPを保持 | userの今後cf/cloudflareへ統一する指示に対応する制御中断。complete check-allの終端は未取得でnullのまま保持し、product failureや全体passへ変更しない。旧owner/sourceを改変・再起動せず、現行e4fb/50fbのcf版完全requiredを継続。ad3 hosted CI終端・現行source資格と分け、全M2/M7の完了へ加算しない |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
