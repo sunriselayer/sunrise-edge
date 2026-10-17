@@ -8,7 +8,7 @@ import { createReadStream, lstatSync, readFileSync, realpathSync } from 'node:fs
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
-import { deflateSync } from 'node:zlib';
+import { deflateSync, inflateSync } from 'node:zlib';
 
 const image = 'python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea';
 const imageId = 'sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea';
@@ -41,6 +41,7 @@ let cleanupVerified = false;
 let sourcePin;
 let failureCapture;
 let inventoryOnly = false;
+let resultTransport;
 
 function require_(condition, message) { if (!condition) throw new Error(message); }
 function mountSafe(path) {
@@ -124,6 +125,36 @@ function probeCommand(source) {
   ].join('\n');
   require_(Buffer.byteLength(command) <= 64 * 1024, 'fixture bootstrap exceeds64KiB');
   return command;
+}
+
+// Complete-output transport only: no controller dispatch or role work here.
+function decodeEvidence(wire) {
+  const decodedCap = 512 * 1024;
+  const wireBytes = Buffer.byteLength(wire);
+  require_(wireBytes <= outputLimit && wire.endsWith('\n'), 'complete evidence wire bound/framing differs');
+  const envelope = JSON.parse(wire);
+  require_(envelope && !Array.isArray(envelope) && typeof envelope === 'object' &&
+    JSON.stringify(Object.keys(envelope).sort()) === '["decoded_bytes","decoded_sha256","encoding","payload"]' &&
+    envelope.encoding === 'zlib-base64-json-v1' && Number.isInteger(envelope.decoded_bytes) &&
+    envelope.decoded_bytes > 0 && envelope.decoded_bytes <= decodedCap &&
+    typeof envelope.decoded_sha256 === 'string' && /^[0-9a-f]{64}$/u.test(envelope.decoded_sha256) &&
+    typeof envelope.payload === 'string' && envelope.payload.length > 0 && envelope.payload.length % 4 === 0 &&
+    /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(envelope.payload),
+  'complete evidence transport envelope differs');
+  const packed = Buffer.from(envelope.payload, 'base64');
+  require_(packed.toString('base64') === envelope.payload, 'complete evidence base64 is not canonical');
+  // Node24 inflateSync uses complete-stream Z_FINISH by default. info exposes
+  // actual consumed input: equality also refuses trailing/concatenated streams.
+  const inflated = inflateSync(packed, { maxOutputLength: decodedCap, info: true });
+  const decoded = inflated.buffer;
+  require_(inflated.engine.bytesWritten === packed.length && decoded.length === envelope.decoded_bytes &&
+    createHash('sha256').update(decoded).digest('hex') === envelope.decoded_sha256,
+  'complete evidence zlib EOF/length/hash differs');
+  const text = decoded.toString('utf8');
+  require_(Buffer.from(text, 'utf8').equals(decoded), 'complete evidence JSON is not lossless UTF8');
+  return { result: JSON.parse(text), transport: { encoding: envelope.encoding, wire, wire_bytes: wireBytes,
+    wire_sha256: createHash('sha256').update(wire).digest('hex'), compressed_bytes: packed.length,
+    decoded_bytes: decoded.length, decoded_sha256: envelope.decoded_sha256, decoded_cap: decodedCap } };
 }
 
 async function docker(args, cleanup = false) {
@@ -375,8 +406,12 @@ try {
   // container execution. Use start's default signal proxy; this owner forwards
   // no signals and only uses uncatchable client SIGKILL for timeout abort.
   const attached = await docker(['start', '--attach', containerId]);
+  // Retain the exact wire even when decoding refuses malformed evidence.
+  resultTransport = { wire: attached.stdout, stderr: attached.stderr,
+    wire_bytes: Buffer.byteLength(attached.stdout), wire_sha256: createHash('sha256').update(attached.stdout).digest('hex') };
   require_(attached.stderr === '', 'controller stderr was not empty');
-  result = JSON.parse(attached.stdout.trim());
+  const decoded = decodeEvidence(attached.stdout);
+  result = decoded.result; resultTransport = decoded.transport;
   const waited = await docker(['wait', containerId]); require_(waited.stdout.trim() === '0', 'actual container wait did not exit0');
   const terminal = await inspect(containerId);
   require_(terminal.State.Running === false && terminal.State.Pid === 0 && terminal.State.ExitCode === 0 && terminal.State.OOMKilled === false &&
@@ -438,6 +473,7 @@ try {
 }
 if (pendingClients.size !== 0 || performance.now() > deadline) primaryError = new Error(`${primaryError?.message ?? 'fixture'}; end/owned Docker client unresolved`);
 const evidence = { mode: inventoryOnly ? 'inventory-only' : 'actual-component-execution', passed: !primaryError, error: primaryError?.message ?? null, capture: primaryError?.capture ?? failureCapture, result,
+  resultTransport,
   resources: { endpoint, owner, label, containerName: name, containerId: containerId ?? null, volumeName, volumeMountpoint: volumeMountpoint ?? null,
     containerCreateAttempted, volumeCreateAttempted, containerCreateAmbiguous, volumeCreateAmbiguous,
     manualReconciliationRequired: containerCreateAmbiguous || volumeCreateAmbiguous || (!inventoryOnly && !cleanupVerified),

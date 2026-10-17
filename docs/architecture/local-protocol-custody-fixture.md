@@ -169,9 +169,24 @@ container name/observed ID, volume name/observed attachment, attempted/ambiguous
 flags and manual-reconciliation status. Preserve the failed attempt, reconcile
 those exact names later and never automatically retry an uncertain create.
 
-All child output is captured under a cumulative256KiB inner limit; retained
-stdout/stderr, actual exit/wait and EOF metadata cross in the bounded receipt.
-The host Docker owner retains64KiB output with16KiB cleanup reserve. A cap breach
+All child output is captured under a cumulative256KiB inner limit and64KiB per
+stream. The complete existing JSON, including retained child stdout/stderr,
+actual exit/wait and EOF metadata, crosses as one `zlib-base64-json-v1` envelope.
+Decoded JSON has a separate512KiB allocation bound inside the unchanged512MiB
+controller memory limit. Serialization above that bound fails; the256KiB raw
+capture ceiling is not a promise that every possible escaping/metadata expansion
+can be transported. No child output or control is shortened to make it fit.
+The Node24 decoder requires canonical base64, complete zlib EOF, exact consumed
+compressed length, no trailing or concatenated stream, exact decoded length and
+SHA256, lossless UTF8 and valid JSON. It retains the exact compressed wire and
+the complete decoded result in the outer evidence, permitting independent
+decoding and rehashing. The existing4MiB outer capture bound also remains fixed.
+
+The host Docker owner still retains64KiB wire output plus reserved client
+metadata, with16KiB cleanup reserve inside that SAME bound. Compression does
+not guarantee that arbitrary bounded output fits the remaining wire allowance;
+incompressible or oversized evidence fails. The Python envelope itself refuses
+wire output above64KiB before writing. A cap breach
 or unresolved drain/wait fails, preserving the captured prefix and incomplete
 status. Cleanup never converts an earlier failure into success. Root lacks
 CAP_KILL: same-UID helpers signal still-owned unreaped positive PIDs; SIGKILL is

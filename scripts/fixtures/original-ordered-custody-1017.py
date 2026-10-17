@@ -1,6 +1,7 @@
 """Disposable controller source, transported by its SHA-pinned Node owner.
 Never execute directly on a host. Every writable path is beneath verified /work.
 """
+import base64
 import errno
 import hashlib
 import json
@@ -13,6 +14,7 @@ import struct
 import subprocess
 import sys
 import time
+import zlib
 
 START = time.monotonic()
 END = START + 230.0
@@ -31,6 +33,23 @@ def remaining(end=END):
     if value <= 0:
         raise RuntimeError('fixed fixture deadline exceeded')
     return value
+
+
+def encode_evidence(final):
+    # Preserve the complete existing JSON and unchanged child stdout/stderr
+    # fields. Compression changes only its transport to the Node owner.
+    remaining(END)
+    decoded = json.dumps(final, separators=(',', ':')).encode('ascii')
+    if len(decoded) > 524288:
+        raise RuntimeError('complete decoded evidence exceeds512KiB; no execution acceptance')
+    packed = zlib.compress(decoded)
+    wire = json.dumps({'encoding': 'zlib-base64-json-v1', 'decoded_bytes': len(decoded),
+                       'decoded_sha256': hashlib.sha256(decoded).hexdigest(),
+                       'payload': base64.b64encode(packed).decode('ascii')}, separators=(',', ':')) + '\n'
+    if len(wire.encode('ascii')) > 65536:
+        raise RuntimeError('complete evidence wire exceeds existing64KiB; no execution acceptance')
+    remaining(END)
+    return wire
 
 
 def bounded_read(path, cap):
@@ -555,6 +574,6 @@ finally:
                 'stderr': bytes(child.data['stderr']).decode('utf-8', 'replace')} for child in children]
     final = dict(result or {}, passed=failure is None and result is not None, error=failure,
                  child_records=records, captured_output_bytes=output_bytes, elapsed=time.monotonic() - START)
-    print(json.dumps(final, separators=(',', ':')), flush=True)
+    print(encode_evidence(final), end='', flush=True)
     if failure:
         sys.exit(1)
