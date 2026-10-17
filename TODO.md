@@ -271,6 +271,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E74: combined application Coin / complete-owner-loss / anchored TLS | `d4dd0109` / tree`aaff6747`。全9 owning commandsがactual0/EOF/wait、675.094秒。custody174 passed/6 ignored、Standard Asset19 passed、実compiled local TLS全14 passed。全4 sole-owner SIGKILL/reap後のwriter交代と、新しい独立anchor付きの同復旧controlも成功。fmt/Node syntax・全target全feature strict Clippyも成功 | 親が1157 tracked files・固定Node24/全wrapper/raw hash・前後clean sourceを照合。component gateでありliteral完全required/CI・13-target Native・全M2/M3/M4/M7ではない。旧retained-handle controlと元13 TLS selectorsは保持 |
 | E75: own-created application Coin actual custody | 同じ`d4dd0109`の実CLI/新ignored oracleを通常dev/test opt2で生成し、実mode0755を保持した別inodeへ保存。Docker/別UID/PTYがactual0/EOF/wait、6.564秒。mint→split→merge→whole burn→mint→他者へのwhole transfer、全6段階の保存済み再送と供給量5M→0→5M、最終nonce9/cap6を検証 | 元5 families/6 lifecycleとE67を保持。新5 groupsの取消/restart・正確な件数・offline byte一致を確認。親が全source/両ELF/raw hashと専有container/volume消滅を照合。RELEASE・全storeの等値性・他profileの鍵復旧/交換・automatic signing・全M2は主張しない |
 | E76: independent local checkpoint anchor | `7d5d91dd` / tree`64a3079a`でruntime-sqlite111 passed/5 original ignored、新anchor13 controls、strict全target全feature Clippyがactual0/EOF/wait。別`.lease` inodeでの排他、12 SQL tablesと閉じたbody manifest、COMMIT前Pending/後の照合、stale clone拒否と現行cloneのfresh fencingを検証 | 初回compile失敗とClippy失敗を保存。24入力を親で再hashし、統合d4ddとの差分は設計index/ADRの2文書だけ。実compiled anchor inspect/enroll/checkpointと4-host TLS復旧はE74で追加実行。local ACKの独立anchorでありquorum checkpoint・完全暗号化backup・upgrade・全M4ではない |
+| E77: ordinary-v5 actual guest faults, first failed attempt | `6c4ea77b`のfmt・pure parser・SQLite lib112 passed/6 ignored・strict Clippy・Cargo JSONが全actual0/EOF/wait、94.423秒。保持ELFで実VMを起動し、caller ACK後とSQLite COMMIT後/caller ACK前の2電源断・cold復旧は全12+2 tables/4 collections/2 bodies/fresh fence/new work/replayを完了。続くwrite-only仮想block EIOは実COMMITから1034 (FSYNC) として返り、778だけを期待したfixtureがactual1/EOF、6.394秒で失敗 | 失敗原本`qg1017a`の全images/rawとouter wait1を保持。kernel WRITE EIO・実QMP device eventを照合。writeのcold復旧とflush-only caseは未実行。全child wait/EOF/reap・socket消滅を確認。writeback時の分類を修正して別sourceで再検証する。ordinary v5のみであり、anchor v6・物理hardware・全M3の資格にはしない |
+| E78: encrypted checkpoint first owning failure | 統合`c68e34ed` / tree`34c0b1d4`。fmtはactual0、SQLite libはactual101/EOF/wait、115 passed/2 failed/6 ignored、全体55.014秒。positive fixtureがreadonly blob ownerへputした誤りと、閉じたWAL snapshotのreadonly照合後にsidecarsが残る問題を検出 | operator age controls・Clippy等の後続3 commandsは未実行。raw/終端/sourceを失敗のまま保持。strict sidecar refusalを維持して修正中であり、完全backup/restore・このsourceの全体gate成功とは数えない |
 
 
 
@@ -291,6 +293,12 @@ E76は `checkpoint-anchor-component-qualified-1017.json` /
 `checkpoint-anchor-parent-qualified-1017.json` と
 `checkpoint-anchor-d4dd-code-correspondence-1017.json`、成功raw SHA-256は
 `d66d292bc7ad6a745f945cf63ab2750b63cd93cab862bfd5b37c93d5a953cd86`。
+E77は `m3-qemu-product-build-1017-terminal.json` / `.raw` と
+`m3-qemu-product-vm-attempt1-qualified-failure-1017.json` / `qg1017a/terminal.json`。
+VM raw SHA-256は `29e90314983a21418f6b80047d0434d635e7345eb29c77477f3c975391c08157`。
+E78は `checkpoint-v2-owning-1017-terminal.json` / `.log` と
+`checkpoint-v2-owning-failure-qualified-1017.json`、raw SHA-256は
+`98b3f98cf32b54a8307799f831edc188d33b1ea1f1b89d03110ce7de2b758164`。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -708,6 +716,11 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     inspect/enroll/checkpointし、4-host TLSの全owner喪失後にも有料取引を継続した。
     旧保存済み再送ではauthority不変、新規取引ではACK更新を確認。
     complete encrypted backup/restoreとupgrade/rollbackの原条件は未完了。
+  - [ ] [独立current anchorと照合する暗号化full-store continuation](docs/architecture/local-checkpoint-backup.md):
+    v1のproof archiveを保持したままlocal v2形式を実装し、独立source reviewを完了。
+    初回owningはE78の2 failures。readonly snapshot副作用とfixture ownerを修正し、
+    実compiled pack/open・旧source不在・4-host fresh fence/有料businessまで検証する。
+    protocol-version activation/migrationと実off-host運用の合格には転用しない。
   - 次: source/artifact対応、M7、残るmanifest/upgrade/fencing範囲を照合する。
     別namespaceを区別するnonceだけではbyte cloneやepoch内の古いowned状態を検出できない。
     その不足を残したprotocol拡張だけでM4を閉じず、独立した最新性anchorと照合する。
