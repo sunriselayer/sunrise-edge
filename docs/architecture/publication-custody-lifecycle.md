@@ -230,6 +230,37 @@ output has 32 KiB and the result summary 2 KiB. These are suballocations of
 the unchanged global limits. All original/T/G assertions, six publication
 lifecycle summaries and E67/Coin operations remain unchanged.
 
+### 2026-10-17 genesis mint/burn recovery consumer extension
+
+The separate genesis kind-4 recovery control uses fresh `9e` mint and `9f`
+burn requests after the original mint/burn execution, receipt replay, signer
+and revoked restart have finished. Mint retains the original genesis cap and
+fee with nonce 0 and amount 5,000,000 to the same publisher. Burn retains the
+cap, Coin and fee exported after the ORIGINAL `93` mint with nonce 1; it never
+uses an output of `9e`. The original `94` burn and nonce-2 ledger assertions
+remain unchanged. Neither fresh request is submitted or treated as current.
+
+Both requests receive their own attended operation-specific PTY confirmation.
+An original-key reference signer signs both SAME fresh frames, then is
+actually waited with its PID and socket absent before the existing
+custody-UID private copies recover the key. Complete recovered-key signatures
+must match each reference independently. Pre-existing `93`/`94` revocations,
+new `9e`/`9f` cancellations and all four restarted refusals are checked with
+eight separate absent output paths. Exact reference/recovery/restart counts
+are 2/2/2/0, 6/6/2/4 and 4/4/0/4; no original counters are changed.
+
+The normal addition is 18 direct CLI children, two PTYs, three bounded
+signers and two custody-UID private-copy children (25 total). Fourteen new
+private files have a combined 32 KiB allowance, complete captured output has
+48 KiB and the result summary 4 KiB, inside the unchanged global bounds.
+Seventeen original trust/preimage/request/approval/revocation attachments,
+six fresh reviewed attachments and both references remain byte- and
+attachment-identical. Readers never inspect private seeds. Existing original,
+C/T/G, E67, six publication lifecycles and application Coin assertions remain.
+This is same-key historical signing and refusal source coverage, with actual
+qualification recorded separately in `TODO.md`; it adds no identity,
+ownership migration, backend or live business-currentness claim.
+
 **Still open, not covered by these additions:** a true rotated-identity
 *positive* business acceptance (minting/transferring against an object the
 rotated identity actually owns) still requires first moving ownership

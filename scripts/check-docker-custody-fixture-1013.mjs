@@ -1786,6 +1786,204 @@ def phase_split_merge(public_key):
     }
 
 
+def phase_genesis_mint_burn_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags):
+    # Both requests are signing-only over retained ORIGINAL preimages. Burn
+    # inputs came from original93's actual mint, never fresh9e output. The
+    # original ledger already burned that Coin; no new request is submitted.
+    output_before = _output_used
+    request_ids = ("9e" * 32, "9f" * 32)
+    old_ids = (MINT_REQUEST_ID, BURN_REQUEST_ID)
+    request_paths = [f"{custody_dir}/recovery-{kind}-request.bin" for kind in ("mint", "burn")]
+    operator_requests = [f"{operator_dir}/recovery-{kind}-request.bin" for kind in ("mint", "burn")]
+    references = [f"{operator_dir}/recovery-{kind}-reference.bin" for kind in ("mint", "burn")]
+    signed_paths = [f"{operator_dir}/recovery-{kind}-signed.bin" for kind in ("mint", "burn")]
+    backup_path, restored_path = f"{custody_dir}/recovered.seed.backup", f"{custody_dir}/recovered.seed.restored"
+    files = [request_paths[0], operator_requests[0], request_paths[1], operator_requests[1],
+             *references, *signed_paths, backup_path, restored_path,
+             *(f"{approvals}/{request_id}" for request_id in request_ids),
+             *(f"{approvals}/{request_id}.revoked" for request_id in request_ids)]
+    refusal_paths = [f"{operator_dir}/recovery-{label}.bin" for label in (
+        "old-mint-revoked", "old-burn-revoked", "new-mint-revoked", "new-burn-revoked",
+        "old-mint-revoked-restart", "old-burn-revoked-restart",
+        "new-mint-revoked-restart", "new-burn-revoked-restart")]
+    if any(os.path.lexists(path) for path in [*files, *refusal_paths]):
+        raise FixtureFailure("genesis mint/burn recovery requires absent fresh output paths")
+    run_calls = 0
+    def allocation():
+        generated_bytes = 0
+        for path in files:
+            if not os.path.lexists(path):
+                continue
+            meta = os.lstat(path)
+            owner = OPERATOR_UID if path.startswith(operator_dir + "/") else CUSTODY_UID
+            if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != owner
+                    or stat.S_IMODE(meta.st_mode) != 0o600 or meta.st_nlink != 1):
+                raise FixtureFailure("genesis mint/burn recovery generated file ownership/type differs")
+            generated_bytes += meta.st_size
+        captured = _output_used - output_before
+        if generated_bytes > 32768 or captured > 49152:
+            raise FixtureFailure("genesis mint/burn recovery finite suballocation exceeded")
+        return generated_bytes, captured
+    def invoke(argv, uid, gid, groups):
+        nonlocal run_calls
+        result = run_exec(argv, uid, gid, groups)
+        run_calls += 1
+        allocation()
+        return result
+    def evidence(path, owner):
+        # Only bounded NONSECRET canonical preimages/requests/signatures.
+        def stamp(meta):
+            return (meta.st_dev, meta.st_ino, meta.st_uid, meta.st_gid, meta.st_mode,
+                    meta.st_nlink, meta.st_size, meta.st_mtime_ns, meta.st_ctime_ns)
+        before = os.lstat(path)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != owner
+                or stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1
+                or not 0 < before.st_size <= 65536):
+            raise FixtureFailure("genesis mint/burn recovery evidence attachment/size differs")
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            if stamp(os.fstat(fd)) != stamp(before):
+                raise FixtureFailure("genesis mint/burn recovery evidence changed at open")
+            chunks = bytearray()
+            while len(chunks) <= 65536:
+                chunk = os.read(fd, 65537 - len(chunks))
+                if not chunk:
+                    break
+                chunks.extend(chunk)
+            if len(chunks) != before.st_size or stamp(os.fstat(fd)) != stamp(before):
+                raise FixtureFailure("genesis mint/burn recovery evidence changed during read")
+        finally:
+            os.close(fd)
+        if stamp(os.lstat(path)) != stamp(before):
+            raise FixtureFailure("genesis mint/burn recovery evidence attachment changed")
+        return stamp(before), bytes(chunks)
+    fixed_paths = [(f"{custody_dir}/{name}", CUSTODY_UID) for name in (
+        "config", "genesis.bin", "cap.bin", "fee.bin", "burn-inputs/cap.bin",
+        "burn-inputs/coin.bin", "burn-inputs/fee.bin", "mint-request.bin", "burn-request.bin")]
+    fixed_paths += [(f"{operator_dir}/{name}", OPERATOR_UID) for name in (
+        "config", "genesis.bin", "mint-request.bin", "burn-request.bin")]
+    fixed_paths += [(f"{approvals}/{request_id}{suffix}", CUSTODY_UID)
+                    for request_id in old_ids for suffix in ("", ".revoked")]
+    fixed_before = {path: evidence(path, owner) for path, owner in fixed_paths}
+    burn_inputs = f"{custody_dir}/burn-inputs"
+    for index, kind in enumerate(("mint", "burn")):
+        inputs = (["--cap-file", f"{custody_dir}/cap.bin", "--fee-source-file", f"{custody_dir}/fee.bin",
+                   "--amount", str(MINT_AMOUNT), "--recipient", public_key] if kind == "mint" else
+                  ["--cap-file", f"{burn_inputs}/cap.bin", "--coin-file", f"{burn_inputs}/coin.bin",
+                   "--fee-source-file", f"{burn_inputs}/fee.bin"])
+        prepare = cli_argv("custody", "prepare-" + kind, *trust_flags(custody_dir), *inputs,
+            "--nonce", str(index), "--request-id", request_ids[index],
+            "--max-fee", "1000000", "--gas-limit", "200000", "--out", request_paths[index])
+        rc, out, err = invoke(prepare, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0 or (kind + "_request_exported=true").encode() not in out:
+            raise FixtureFailure(f"recovery {kind} preparation failed: {err!r}")
+        request_bytes = evidence(request_paths[index], CUSTODY_UID)[1]
+        with open(operator_requests[index], "xb") as target:
+            target.write(request_bytes)
+        os.chmod(operator_requests[index], 0o600)
+        os.chown(operator_requests[index], OPERATOR_UID, OPERATOR_GID)
+        if evidence(operator_requests[index], OPERATOR_UID)[1] != request_bytes:
+            raise FixtureFailure("genesis mint/burn recovery request copy differs")
+        approve = cli_argv("custody", "approve-" + kind, *trust_flags(custody_dir),
+            "--request-file", request_paths[index], "--approvals-dir", approvals, "--expires-in-seconds", "3600")
+        rc, _out, refusal = invoke(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
+            raise FixtureFailure("genesis mint/burn recovery approval accepted a pipe")
+        charge_output(phase_approve_via_pty(None, None, index, request_ids[index], 3600, command=approve))
+        allocation()
+    reviewed_paths = [*((path, CUSTODY_UID) for path in request_paths),
+                      *((path, OPERATOR_UID) for path in operator_requests),
+                      *((f"{approvals}/{request_id}", CUSTODY_UID) for request_id in request_ids)]
+    reviewed_before = {path: evidence(path, owner) for path, owner in reviewed_paths}
+    reference_socket, recovered_socket = f"{ROOT}/run/mint-burn-reference.sock", f"{ROOT}/run/mint-burn-recovered.sock"
+    if any(os.path.lexists(path) for path in (reference_socket, recovered_socket)):
+        raise FixtureFailure("genesis mint/burn recovery socket path is occupied")
+    def serve(key_file, socket_path, count):
+        return cli_argv("custody", "serve-mint-burn", *trust_flags(custody_dir),
+            "--key-file", key_file, "--socket", socket_path, "--approvals-dir", approvals,
+            "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "15")
+    def sign(kind, socket_path, request_path):
+        return cli_argv("custody", "sign-" + kind, *trust_flags(operator_dir),
+            "--request-file", request_path, "--custody-socket", socket_path,
+            "--custody-uid", str(CUSTODY_UID), "--custody-expected-public-key", public_key)
+    def finish(process, socket_path, counts, label):
+        summary = wait_serve(process, extra_seconds=8)
+        check_summary(label, summary, dict(zip(
+            ("connections_accepted", "requests_handled", "requests_signed", "requests_refused"), map(str, counts))))
+        if os.path.exists(f"/proc/{process.pid}") or os.path.lexists(socket_path):
+            raise FixtureFailure("genesis mint/burn recovery signer PID/socket remained after actual wait")
+        allocation()
+        return summary.strip().splitlines()
+    reference = start_serve(reference_socket, 15, 2, 2,
+        command=serve(f"{ROOT}/custody-keys/custody.seed", reference_socket, 2))
+    try:
+        for index, kind in enumerate(("mint", "burn")):
+            rc, _out, err = invoke([*sign(kind, reference_socket, operator_requests[index]), "--out", references[index]],
+                OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+            if rc != 0:
+                raise FixtureFailure(f"original-key recovery {kind} reference failed: {err!r}")
+        reference_summary = finish(reference, reference_socket, (2, 2, 2, 0), "genesis mint/burn recovery reference")
+    finally:
+        if reference.poll() is None:
+            stop_owned_process(reference, CUSTODY_UID, CUSTODY_GID)
+    reference_before = {path: evidence(path, OPERATOR_UID) for path in references}
+    # Every original/reference signer was waited before these two private
+    # custody-UID copies. Never copy the approval/revocation store or key bytes to root.
+    key_file = phase_recover_private_key(f"{ROOT}/custody-keys/custody.seed", backup_path, restored_path)
+    allocation()
+    old_requests = [f"{operator_dir}/mint-request.bin", f"{operator_dir}/burn-request.bin"]
+    def refused(index, socket_path, kind, request_path):
+        rc, _out, err = invoke([*sign(kind, socket_path, request_path), "--out", refusal_paths[index]],
+            OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in err or os.path.lexists(refusal_paths[index]):
+            raise FixtureFailure("genesis mint/burn recovered-key revocation refusal/output differs")
+    recovered = start_serve(recovered_socket, 15, 6, 6, command=serve(key_file, recovered_socket, 6))
+    try:
+        for index, kind in enumerate(("mint", "burn")):
+            rc, _out, err = invoke([*sign(kind, recovered_socket, operator_requests[index]), "--out", signed_paths[index]],
+                OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+            if rc != 0 or evidence(signed_paths[index], OPERATOR_UID)[1] != reference_before[references[index]][1]:
+                raise FixtureFailure(f"same-request recovered-key {kind} signature bytes differ: {err!r}")
+            refused(index, recovered_socket, kind, old_requests[index])
+        for index, kind in enumerate(("mint", "burn")):
+            rc, _out, err = invoke(revoke_argv(approvals, request_ids[index]), CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+            if rc != 0:
+                raise FixtureFailure(f"genesis mint/burn recovery revoke failed: {err!r}")
+            refused(index + 2, recovered_socket, kind, operator_requests[index])
+        recovered_summary = finish(recovered, recovered_socket, (6, 6, 2, 4), "genesis mint/burn recovered-key")
+    finally:
+        if recovered.poll() is None:
+            stop_owned_process(recovered, CUSTODY_UID, CUSTODY_GID)
+    restarted = start_serve(recovered_socket, 15, 4, 4, command=serve(key_file, recovered_socket, 4))
+    try:
+        for index, kind in enumerate(("mint", "burn")):
+            refused(index + 4, recovered_socket, kind, old_requests[index])
+            refused(index + 6, recovered_socket, kind, operator_requests[index])
+        restart_summary = finish(restarted, recovered_socket, (4, 4, 0, 4), "genesis mint/burn recovery revoked restart")
+    finally:
+        if restarted.poll() is None:
+            stop_owned_process(restarted, CUSTODY_UID, CUSTODY_GID)
+    if any(fixed_before[path] != evidence(path, owner) for path, owner in fixed_paths):
+        raise FixtureFailure("genesis mint/burn recovery changed retained trust/preimages/old revocations")
+    if any(reviewed_before[path] != evidence(path, owner) for path, owner in reviewed_paths):
+        raise FixtureFailure("genesis mint/burn recovery changed reviewed request/approval attachments")
+    if any(reference_before[path] != evidence(path, OPERATOR_UID) for path in references):
+        raise FixtureFailure("genesis mint/burn recovery changed same-frame reference attachments")
+    if run_calls != 18 or any(not os.path.exists(path) for path in files) or any(os.path.lexists(path) for path in refusal_paths):
+        raise FixtureFailure("genesis mint/burn recovery fixed operation/file counts differ")
+    generated_bytes, captured_output_bytes = allocation()
+    result = {"sign_only":True, "same_frame_bytes":True, "retained_preimages_unchanged":True,
+        "old_revocation_retained":True, "new_revocation_enforced":True, "revoked_after_restart":True,
+        "all_sockets_absent":True, "request_ids":list(request_ids), "previous_request_ids":list(old_ids),
+        "generated_files":len(files), "generated_paths":files, "refusal_paths":refusal_paths,
+        "generated_bytes":generated_bytes, "captured_output_bytes":captured_output_bytes,
+        "run_exec_children":run_calls, "pty_children":2, "private_copy_children":2, "serve_children":3,
+        "reference_summary":reference_summary, "serve_summary":recovered_summary, "restart_summary":restart_summary}
+    if len(json.dumps(result, sort_keys=True).encode("utf8")) > 4096:
+        raise FixtureFailure("genesis mint/burn recovery final evidence exceeds4KiB")
+    return result
+
+
 def phase_mint_burn(public_key):
     # Fresh phase directories only: this reuses the exact same one-owner,
     # one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
@@ -2054,7 +2252,15 @@ def phase_mint_burn(public_key):
         if restarted.poll() is None:
             restarted.kill(); restarted.wait(timeout=5)
 
+    # Keep the original mint/burn execution, replay and signer counters.
+    # No original native host or signer may remain before this new control.
+    if any(process is None or process.poll() is None or os.path.exists(f"/proc/{process.pid}")
+           for process in (serve, restarted, native)) or os.path.lexists(socket_path):
+        raise FixtureFailure("original genesis mint/burn roles remain before key recovery")
+    recovery = phase_genesis_mint_burn_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags)
+
     return {
+        "recovery": recovery,
         "actual_cli": True, "mint_self": True, "after_mint_verified": True,
         "burn_verified": verify_burn.get("verified") is True,
         "offline_bytes_equal": True, "replay_equal": verify_burn.get("replay_equal") is True,
@@ -3567,6 +3773,45 @@ try {
   for (const [key, counts] of [['serve_summary', [6, 6, 4, 2]], ['restart_summary', [2, 2, 0, 2]]]) {
     if (JSON.stringify(result.mint_burn[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
       throw new Error('the mint/burn serve counters are incomplete or differ');
+    }
+  }
+  const mintBurnRecovery = result.mint_burn.recovery;
+  const mintBurnRecoveryKinds = ['mint', 'burn'];
+  const mintBurnRecoveryIds = ['9e'.repeat(32), '9f'.repeat(32)];
+  const mintBurnRecoveryOldIds = ['93'.repeat(32), '94'.repeat(32)];
+  const mintBurnRecoveryCustody = '/work/custody-mint-burn';
+  const mintBurnRecoveryOperator = '/work/operator/mint-burn';
+  const mintBurnRecoveryPaths = [
+    `${mintBurnRecoveryCustody}/recovery-mint-request.bin`, `${mintBurnRecoveryOperator}/recovery-mint-request.bin`,
+    `${mintBurnRecoveryCustody}/recovery-burn-request.bin`, `${mintBurnRecoveryOperator}/recovery-burn-request.bin`,
+    ...mintBurnRecoveryKinds.map((kind) => `${mintBurnRecoveryOperator}/recovery-${kind}-reference.bin`),
+    ...mintBurnRecoveryKinds.map((kind) => `${mintBurnRecoveryOperator}/recovery-${kind}-signed.bin`),
+    `${mintBurnRecoveryCustody}/recovered.seed.backup`, `${mintBurnRecoveryCustody}/recovered.seed.restored`,
+    ...mintBurnRecoveryIds.map((id) => `/work/custody-approvals/${id}`),
+    ...mintBurnRecoveryIds.map((id) => `/work/custody-approvals/${id}.revoked`),
+  ];
+  const mintBurnRecoveryRefusals = ['old-mint-revoked', 'old-burn-revoked', 'new-mint-revoked', 'new-burn-revoked',
+    'old-mint-revoked-restart', 'old-burn-revoked-restart', 'new-mint-revoked-restart', 'new-burn-revoked-restart']
+    .map((label) => `${mintBurnRecoveryOperator}/recovery-${label}.bin`);
+  if (!mintBurnRecovery || ['sign_only', 'same_frame_bytes', 'retained_preimages_unchanged',
+      'old_revocation_retained', 'new_revocation_enforced', 'revoked_after_restart', 'all_sockets_absent']
+    .some((key) => mintBurnRecovery[key] !== true) ||
+    JSON.stringify(mintBurnRecovery.request_ids) !== JSON.stringify(mintBurnRecoveryIds) ||
+    JSON.stringify(mintBurnRecovery.previous_request_ids) !== JSON.stringify(mintBurnRecoveryOldIds) ||
+    JSON.stringify(mintBurnRecovery.generated_paths) !== JSON.stringify(mintBurnRecoveryPaths) ||
+    JSON.stringify(mintBurnRecovery.refusal_paths) !== JSON.stringify(mintBurnRecoveryRefusals) ||
+    mintBurnRecovery.generated_files !== 14 || mintBurnRecovery.run_exec_children !== 18 ||
+    mintBurnRecovery.pty_children !== 2 || mintBurnRecovery.private_copy_children !== 2 ||
+    mintBurnRecovery.serve_children !== 3 || !Number.isSafeInteger(mintBurnRecovery.generated_bytes) ||
+    mintBurnRecovery.generated_bytes <= 0 || mintBurnRecovery.generated_bytes > 32_768 ||
+    !Number.isSafeInteger(mintBurnRecovery.captured_output_bytes) || mintBurnRecovery.captured_output_bytes <= 0 ||
+    mintBurnRecovery.captured_output_bytes > 49_152 || Buffer.byteLength(JSON.stringify(mintBurnRecovery)) > 4096) {
+    throw new Error('the genesis mint/burn recovered-key signing-only evidence is incomplete');
+  }
+  for (const [key, counts] of [['reference_summary', [2, 2, 2, 0]],
+      ['serve_summary', [6, 6, 2, 4]], ['restart_summary', [4, 4, 0, 4]]]) {
+    if (JSON.stringify(mintBurnRecovery[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
+      throw new Error('the genesis mint/burn recovered-key counters differ');
     }
   }
   // `phase_create_asset`'s own `check_summary` calls already enforce the

@@ -144,9 +144,42 @@ own UID for error cleanup signals.
 `custody revoke` reuses the existing durable store exactly as DR-0246/
 DR-0249 describe, and this family's own revocation, expiry, and tampered-
 or restored-record refusals are directly tested
-(`asset_mint_burn_tests.rs`). Key recovery and rotation share the same code
-paths as every other family and are not expected to differ, but — unlike
-revocation — neither is exercised by a mint/burn-specific test; this is not
-new-family acceptance evidence for recovery or rotation. Actual source and
-execution qualification, including any Docker fixture extension, belong in
+(`asset_mint_burn_tests.rs`). The contained fixture also has the genesis
+same-key recovery consumer described below. The earlier E67 consumer covers
+the separate own-created application profile; neither consumer proves full
+key rotation or ownership migration. Actual source and execution
+qualification, including any Docker fixture extension, belong in
+[TODO.md](../../TODO.md).
+
+### 2026-10-17 genesis same-key recovery consumer
+
+After the original genesis mint/burn native host, signer and revoked restart
+have been waited, with their PIDs and socket absent, the fixture prepares two
+fresh historical signing-only requests. Mint `9e` uses the original genesis
+TreasuryCap and fee preimages, amount 5,000,000, the same recipient and nonce 0.
+Burn `9f` uses the retained `burn-inputs` cap, Coin and fee exported after the
+ORIGINAL `93` mint, with nonce 1. No `9e` execution creates those burn inputs:
+the original `94` burn has already tombstoned that Coin and advanced the
+ledger to nonce 2. The new signatures are never submitted or claimed current.
+
+Each fresh request receives its own full `APPROVE-MINT` or `APPROVE-BURN` PTY
+review, while pipe approval refuses. An original-key reference signer signs
+both exact new frames and is actually waited, with PID and socket absent,
+before the existing two custody-UID private backup/restore children run.
+Recovered-key `sign-mint` and `sign-burn` must independently finalize and
+export identical complete signed bytes for each SAME reference frame. Old
+revoked `93`/`94` refuse; cancelling `9e`/`9f` refuses them in the same recovered
+process; a recovered-key restart refuses all four IDs again. Each of the
+eight refusal paths must remain absent. Reference/recovery/restart counts
+are exactly 2/2/2/0, 6/6/2/4 and 4/4/0/4.
+
+Seventeen original trust, preimage, request, approval and revocation
+attachments, six fresh reviewed request/approval attachments and both
+reference attachments remain unchanged. Direct bounded readers inspect only
+nonsecret evidence; key bytes stay inside the existing custody-UID copies.
+The normal addition is 18 CLI children, two PTYs, three signers and two
+private-copy children (25 total), with fourteen private mode-0600 files and
+32 KiB generated-file, 48 KiB captured-output and 4 KiB summary suballocations.
+All global limits and original/C/T/G controls and business assertions remain.
+This describes source coverage; actual qualification remains separate in
 [TODO.md](../../TODO.md).
