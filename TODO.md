@@ -59,8 +59,11 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   E133の自然失敗原因は未確定で、旧失敗と当時source-onlyだったE134/E135を保持します。
   祖先の成功を新source全体の合格へ付け替えず、全M2/M7は未完了です。
   追加の公開advisory照会でRustls 0.23.45に4件を検出し、別branchで0.23.46へ更新しました (E153)。
-  更新後311 locked versionsのOSV応答は該当0件ですが、新sourceのbuild/TLS・完全required/CIと
-  PG依存変更に必要な完全5-group PG検証は未実行です。旧sourceの合格を修正版へ借用しません。
+  更新後311 locked versionsのOSV応答は該当0件。修正版の[Draft PR #325](https://github.com/sunriselayer/sunrise-edge/pull/325)
+  exact `50fbf22d` は完全5-group PG/集約check・fresh13-target A/B・current CLI全117・
+  fresh23/full49 compile-only・TLS/実prior upgradeをE154-E158で完了しました。
+  literal npm ciも成功し、同source完全required・全8 ordinary CI・原12 RELEASE runtimeの
+  終端を引き続き照合中です (E159)。旧sourceの合格を修正版へ借用しません。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
