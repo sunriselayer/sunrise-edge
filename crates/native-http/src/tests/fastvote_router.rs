@@ -151,7 +151,7 @@ fn test_signer() -> TestSigner {
     }
 }
 
-fn certified_router() -> Router {
+pub(super) fn certified_router() -> Router {
     let store: Arc<MemoryDurableStateStore> = Arc::new(MemoryDurableStateStore::new(
         WriterFenceGeneration::new(3).unwrap(),
     ));

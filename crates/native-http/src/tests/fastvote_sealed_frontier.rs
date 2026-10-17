@@ -149,7 +149,7 @@ fn full_snapshot(
     rows
 }
 
-fn signed_genesis_manifest(key: &SigningKey) -> GenesisManifest {
+fn signed_genesis_manifest(key: &SigningKey, profile: CommitmentProfile) -> GenesisManifest {
     let sender: [u8; 32] = VerificationKey::from(key).into();
     let publication_context: PublicationContext = PublicationContext::new(
         config().chain_id().clone(),
@@ -402,7 +402,7 @@ fn signed_genesis_manifest(key: &SigningKey) -> GenesisManifest {
         economics_policy,
         objects,
         validator_set,
-        commitment_profile: CommitmentProfile::LogicalGenerationV2,
+        commitment_profile: profile,
         minimum_freeze_block_height: 1,
         signature: [0; 64],
     };
@@ -485,9 +485,20 @@ fn drive_round(
 
 #[tokio::test]
 async fn cached_frontier_and_drain_progress_are_genuine_before_sealing_and_blocked_after() {
+    genuine_cached_frontier_workflow(CommitmentProfile::LogicalGenerationV2).await;
+}
+
+#[tokio::test]
+async fn causal_cached_frontier_and_drain_progress_round_trip_through_certified_custody() {
+    genuine_cached_frontier_workflow(CommitmentProfile::CausalAdmission).await;
+}
+
+// Both signed profiles run the entire original three-chain Freeze, cached
+// frontier/progress, signer-count, snapshot and Sealed-refusal workflow.
+async fn genuine_cached_frontier_workflow(profile: CommitmentProfile) {
     let fence: WriterFenceGeneration = WriterFenceGeneration::new(3).unwrap();
     let key: SigningKey = SigningKey::from([0x31; 32]);
-    let manifest: GenesisManifest = signed_genesis_manifest(&key);
+    let manifest: GenesisManifest = signed_genesis_manifest(&key, profile);
     let context: PublicationContext = manifest.context().clone();
     let store: MemoryDurableStateStore = MemoryDurableStateStore::new_bound(domain(), fence);
     let operation: DurableOperationContext = live_operation_context(fence, 0xB7);
@@ -828,6 +839,43 @@ async fn cached_frontier_and_drain_progress_are_genuine_before_sealing_and_block
         0,
         "reading an already-retained cached vote must never sign"
     );
+    #[cfg(target_os = "linux")]
+    if profile == CommitmentProfile::CausalAdmission {
+        // The new profile returns the very same genuinely committed cached votes
+        // through authenticated IPC and independent frontend certifiers. Preserve
+        // every original direct/core and subsequent sealed-refusal assertion.
+        crate::certified_custody::assert_confirmed_round_trip(
+            router.clone(),
+            &root,
+            signer_id,
+            domain(),
+            resolver(),
+            active_protocol_config(domain()),
+            vec![
+                (
+                    node_wire::FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
+                    frontier_request.clone(),
+                    frontier_bytes.clone(),
+                ),
+                (
+                    node_wire::FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,
+                    drain_request.clone(),
+                    drain_bytes.clone(),
+                ),
+                (
+                    node_wire::FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
+                    Vec::new(),
+                    consensus::encode_frozen_frontier_vote(&finalized_vote).unwrap(),
+                ),
+            ],
+        )
+        .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "cached worker results must not sign again"
+        );
+    }
     let token: PortableSnapshotToken = store.begin_portable_snapshot(&operation, domain()).unwrap();
     let mut seal_request: [u8; 32] = [0xB9; 32];
     seal_request[0] |= 0x80;

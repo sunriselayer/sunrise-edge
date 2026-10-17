@@ -17,5 +17,21 @@ pub(crate) fn run(
     }
 }
 
+/// Separate complete certified FastVote deployment profile; no ordered IPC change.
+pub(crate) fn run_certified(
+    worker: bool,
+    tokens: Vec<std::ffi::OsString>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::run_certified(worker, tokens)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (worker, tokens);
+        Err("certified FastVote custody requires Linux".into())
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) use linux::Worker;
