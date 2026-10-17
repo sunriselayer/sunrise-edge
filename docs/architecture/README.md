@@ -85,6 +85,18 @@ roadmap describes a later target state.
 - [Immutable operation signing preparation](signing-preparation.md): one
   mechanical frame/identity owner, operation-specific immutable trust inputs,
   actual SDK/CLI consumers and the separate custody/content-review boundary.
+- [Positive Standard Asset fee-claim Split proposal policy](positive-fee-claim-split-policy.md)
+  ([DR-0267](decisions/0267-positive-standard-asset-fee-claim-policy.md)):
+  two immutable recognized leg/claim owners, verified historical identity and
+  explicit retained-input/currentness limits; protected backend remains separate.
+- [Positive Standard Asset fee-claim Split custody](positive-standard-asset-fee-claim-custody.md)
+  ([DR-0269](decisions/0269-positive-standard-asset-fee-claim-custody.md)):
+  closed historical-key Leg/Claim backend, complete phase approvals and one
+  permanent cancellation, with genuine workflow and actual UID qualification distinct.
+- [Genuine positive Split UID fixture](positive-fee-split-uid-fixture.md)
+  ([DR-0270](decisions/0270-genuine-positive-split-uid-fixture.md)):
+  complete first-successor public export, two-phase UID lifecycle and inline
+  protected candidate parity into the original ordered submission.
 - [Bounded publication metadata review](publication-review.md)
   ([DR-0237](decisions/0237-bounded-publication-review-presentation.md)):
   exact immutable artifact/frame correspondence, bounded terminal-safe output
@@ -101,6 +113,12 @@ roadmap describes a later target state.
   ([DR-0264](decisions/0264-original-ordered-protocol-custody-worker.md)):
   distinct-UID authority-owning worker and ordered-only HTTP frontend; existing
   protocol owners/bytes retained, with no per-request raw signature endpoint.
+- [Certified FastVote protocol custody](certified-fastvote-protocol-custody.md)
+  ([DR-0268](decisions/0268-certified-fastvote-protocol-custody-worker.md)):
+  separate local-OS worker profile for the complete existing certified router,
+  with authority/key/confirmed retention together and a keyless HTTP/TLS frontend.
+  The [selected multi-UID fixture](local-certified-protocol-custody-fixture.md)
+  specifies actual paid/quorum/retention, TLS, restart and pre-DrainSet controls.
 - [Publication custody lifecycle](publication-custody-lifecycle.md)
   ([DR-0244](decisions/0244-publication-approval-revocation-and-key-lifecycle.md)):
   durable request cancellation and stopped disposable-key recovery/rotation.

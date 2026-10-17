@@ -28,6 +28,10 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   元M5の実PKI・capacity・alerts・運用の公開条件はD04/D07/M8に残ります。
   継続中の統合変更は[Draft PR #320](https://github.com/sunriselayer/sunrise-edge/pull/320)。
   このDraftの存在を完全required/CI・Nativeまたは親項目の完了には数えません。
+  positive Splitとcertified FastVoteの追加実装は、別の統合branch
+  `codex/positive-certified-integration-1017` の `3b4aa7ff` に通常mergeしました。
+  追加UID fixtureはE128/E129で選択範囲の実行・照合が完了し、このbranchの結合後全体検証を進めます。7658で実施した
+  完全required/CI・原12 RELEASE runtimeの結果を、この新sourceへ付け替えません。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -109,8 +113,9 @@ E28/E29のsourceに後続差分を含めたことにはしません。
 原12 Native runtimeはE57の失敗として保持します。後続4 sourcesの完全required/CIは
 E68-E71、b4のtest-only CIはE72、D05/M5の技術最終照合はE73へ記録しました。
 M2/M3/M4/M7全体・独立監査・公開条件は未完了です。
-9de6の原12 RELEASE runtimeは2026-10-17に実開始しました。元12ケース・共有18,000秒・
-CPU4/16GiB/swap0を維持し、終端成功前に合格へ数えません。
+9de6の原12 RELEASE runtimeはE92で全actual0/実EOF/waitを確認しました。
+7658の別の原12 RELEASE runtimeと完全required/CIは継続中です。元12ケース・
+共有18,000秒・CPU4/16GiB/swap0を維持し、終端成功前に合格へ数えません。
 初回DockerのSQLite祖先directory読取EACCES、manual fixtureのsetup counter誤り、
 import testのsource retirement不足と各修正前失敗も保持します。
 50a4 / tree eff704ddのE14-E16と旧作業コピーは過去の対象として保持します。
@@ -288,6 +293,45 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E89: original ordered fixture bounded output failure | `4db1229f`で4 bins + fixture harness、構文、strict Clippyの全6 commandsがactual0/両EOF/wait、195.059秒。通常0755の5 ELFとread-only inventoryも再照合。実UID attemptは64KiB内の出力配分を超え、actual1/両EOF/wait、13.937秒 | inner start clientはSIGKILL、観測stdout58102 bytesの完全rawを保持できなかったためproduct成功0として扱う。outer Node rawは完全。全15 clientsのwait/EOF/PID不在と専有container/volume解放・不在を確認。上限・oracle・拒否controlsを維持して完全ログのtransportを修正し、別attemptで検証する |
 | E90: lossless complete-output transport source | `1973380a`で全child stdout/stderrを含む既存JSONをzlib/base64で転送し、正確なwireと復号resultを両方保持する。Node24の実16 controlsでPython相互運用、decoded512KiB境界、破損/末尾/連結stream・length/hash/base64/UTF8/JSON拒否が成功 | 64KiB wire/metadata・16KiB cleanup reserve、inner256KiB/stream64KiB、既存期限/caps/oracle/拒否controlsは維持。decoded allocation512KiBを明示し、outer最大serialization1,442,020 bytesが既存4MiB未満であることを確認。親が全既存Python owner/control AST・raw codec結果を照合。synthetic codec成功であり、修正後の実UID owningは未実行 |
 | E91: original ordered actual multi-UID custody | `226c861a` / tree`f4513fbd`。全6 build/構文/strict Clippy commandsとread-only inventoryがactual0。実4-worker/4-frontend TLS fixtureもactual0/両EOF/wait、13.728秒。全76 role childrenと17 Docker clientsを回収し、署名・保存済み再送・停止中503・再起動fence3・QC・新規height2・不正UID/authority/入力の拒否が成功 | 親が1180 source/21 inputs・通常0755の5 ELF/4 librariesを再照合。完全child raw45653 bytes、wire7442 bytesと復号JSON58103 bytesの正確な対応を独立確認。専有container/volume解放・不在を確認し、全旧失敗を保持。original orderedのlocal OS custody componentのみで、後継epoch・他family・全M2・最終完全gate/CI/Native・独立監査/公開認定ではない |
+| E92: 9de6 original R4 RELEASE runtime | `9de634a7` / tree`229b397f`。元10 wholeの89 passedと元2 exact ignoredの各1 passed、計12 commandsが全actual0/結合stream実EOF/wait、11,358.636秒。元8-link/e8 withdrawals/35 roles・7-epoch delay・全restart/refusalを保持し、最後のrecurringも11,292.938秒で成功。outer実exit0/waitとunit terminal successを確認 | 1146 source・Node24/両controller・15 provenance/raw・49保持ELF/13 byte pairsを独立に再hashし、親も再照合。private TMP/lease・全記録PID・cgroup不在、peak1,316,077,568 bytes/swapPeak0。RELEASEは13 child bindings、driver/oracleはdev/test2。outer EOF flagはwait由来で、歴史的driver timestamp/OOM counters等の未保存限界をreceiptへ保持。旧7c57/277f/10a4/f973失敗は変更しない。9de6限定であり7658以降・全M7・独立監査/実provider/公開認定へ転用しない |
+| E93: final7658 Native release A/B | `7658629a` / tree`7ab61388`。固定Node24.19.0/Rust1.97.1の13-target fresh A/Bがactual0/結合stream実EOF/wait、884.992秒。全13組のbyte/mode/owner一致、通常0755の26 ELFを別inode・single linkで保持し、4専有directoryとsource leaseを解放 | 独立照合に加え親が1180 sourceのmetadata/hash/Git blobs、全26 ELF/13全byte pairs、311 locked archives、10 tools/10 controllers/9 raw・metadataを再照合。host UID0と隔離view UID65534の違いを記録。同一host/trusted OSの再現性であり、driver compile・実RELEASE runtime・最終完全required/CI・cross-machine/hermetic・全M4/M7・独立監査/公開認定ではない |
+| E94: final7658 Native drivers and scoped M4 RELEASE | `7658629a` / tree`7ab61388`。13 debug binsと10元driversの実2 commandsがactual0、外部の両実EOF/wait、1,051.550秒。default TLSは15 passed/1 ignored、明示的な旧9de6 RELEASEからのupgradeは1 passed/0 failed、計47.911秒でactual0/実EOF/wait | 23実Cargo attribution/profile・1180 sourceと全49保持ELFを独立照合し、親も再hash。旧ELFのidentity、13 RELEASEのread-only置換、全PID/private TMP回収を確認。driver/oracleはdev/test2で、13 subprocessesがRELEASE。M4普通source reviewに新しい具体的指摘なし。最終完全required/同head CIと全M4・原12総合M7は未完了 |
+| E95: final7658 complete RELEASE CLI and original ordered custody | `7658629a`で新しく実compile/normal reflink保持したCLI lib harnessと13AのRELEASE CLIを明示。元5 families・publication6 lifecycles・E67停止後復旧・作成application Coin6操作がactual0/結合stream実EOF/wait、6.500秒。outerはactual0/両実EOF/wait、6.901秒 | 全1180 sourceと両ELF不変、全positive flags・28 service summariesと独立nonce9/cap6/supply5Mを親で再照合。完全final fixture JSONを保持し、専有container解放とNode finallyを確認。各child/signatureの独立ledgerとは呼ばない。別のoriginal ordered RELEASE4-worker/4-frontend TLSもactual0/両実EOF/wait、inner14.049秒/outer14.118秒。全76 role children/17 Docker clients、完全raw45653 bytesとwire7438/decoded58103 bytes、fence3/QC3/新規height2と専有資源不在を親で照合。最終完全required/CI、原12総合・新しいpositive fee-claim backend・全M2/M7は未完了 |
+| E96: genuine positive Split immutable policy | 別branch `348b5c6c` / tree`c2f52685`。全6 component commandsがactual0/両実EOF/wait、923.669秒。全CLI401 passed/0 failed/6 ignoredと新4 policy controls、元genuine helper compile・strict3crate Clippy/fmt/diffが成功。明示的なCLI追加producerと元のfirst-successor ignored selectorもactual0、1 passed/0 failed/0 ignored・policy marker1、計75.461秒 | 全1184 source・17 tools・10実ELFと完全raw162 frames/11 operationsを親で再照合。実genuine authorityと既存signature/candidate byte一致の限定資格。現在の7658 branchへ未統合で、新Q custody backend・別UID/PTY lifecycle・nonce/escrow現在性・元long recurrence・最終完全gate/CI/全M2は未完了 |
+| E97: certified FastVote candidate failures retained | 別branchのcandidate1は7 compile errorsで失敗。source修正 `9ae82497` のattempt2では実native lib compileはactual0だが、検証controllerのCargo package ID誤認で失敗。型・manifest/source/profileの条件を保持して修正したattempt3はwhole native243 passed/1 failed/0 ignored | 新13 controls・旧9 IPC/4 HTTP controlsは実成功したが、元LGv2 genuine fixtureをcausal専用frontendへ接続する追加assertionが拒否され、後続gatesは未実行。全raw/EOF/wait/source/ELF/cleanupと旧失敗を保存。production profile guardを弱めず、元LGv2全assertionsを保持したcausal siblingを `5dc53a5c` に追加。attempt4ではnative whole245 passed/0 failed/0 ignoredと元LGv2/causalの両genuineが成功したが、operator起動callのerror型変換漏れE0277でcompile失敗。後続gatesは未実行。全失敗を保持し1行修正48dbを固定、修正後owningはE100で成功。実別UID・現在branchへの統合・完全gate/CI・全M2は未完了 |
+| E98: positive Split protected-backend ordinary component | 別branch `c7e617e3` / tree`31352862`。全6 commands/16 operationsがactual0/両実EOF/wait、918.721秒。whole CLI406 passed/0 failed/6 ignored、新4 policy/5 closed phase codec・approval controls、元genuine consumer helper compile、strict3crate Clippy/fmt/diffが成功 | 親が全raw1569 frames/548 CargoJSON、20実ELF、1190 source・17 toolsを再照合。peak1,758,355,456 bytes/swap0/OOM0、全記録PID/cgroup・専有short TMPの回収を確認。現在の7658 branchへ未統合。production CLI binはまだ未linkで、genuine first-successorの実CLI prepareと実別UID/PTYのLeg/Claim署名・取消/復旧/再起動、最終完全gate/CI/全M2は未完了 |
+| E99: genuine positive Split production preparation consumers | 別branch `c7e617e3` / tree`31352862`。E98の全6 commands/406 passedを保持し、実際の不足CLI binを追加compileしてから元のfirst-successor ignored selectorを実行。全2 commands/11 operationsがactual0/両実EOF/wait、70.589秒。元selectorは1 passed/0 failed/0 ignored、policy marker1と無条件のproduction CLI prepare assertionsが成功 | 親が完全raw109 framesとE98の1569 frames、1190 source・17 tools・10実ELF、outer70.682秒/両実EOF/waitとshort TMP回収を再照合。実genuine後継authority・保存host request/intent・両phase prepare bytes/破損拒否の資格。追加prepare entrypointsは同一process内であり、protected key/service・別UID/PTY・全M2/M7の資格ではない。7658へ未統合。追加UID fixture3b8eは証跡copy順と異常終了時signalの2件を普通reviewで指摘し、未実行のまま修正中 |
+| E100: certified FastVote protected backend ordinary component | 別branch `48db5e86` / tree`0b2945db`。全7 commands/18 operationsがactual0/両実EOF/wait、210.375秒。全native245 passed/0 failed/0 ignoredと元LGv2/causalの両genuine、全operator159 passed/0 failed/0 ignored、strict native/operator/client Clippy・fmt/diffが成功 | 親が完全raw1085 frames、1185 source・17 tools・実CargoJSON/profileと5異なるELF identitiesを再照合。qualified target4の明示reuseでありfresh buildとは呼ばず、旧native原本/保持物は不変。peak884,031,488 bytes/swap0/全memory events0、全記録PIDとshort TMP回収。旧4失敗を保持。現在の7658 branchへ未統合。追加F7797の実別UID/TLS/保存済み再送・最終完全required/CI/Native・全M2/M7は未完了 |
+| E101: certified FastVote UID fixture compile failure | 別branch `77978850` / tree`391d0362`。four-bin compileはactual0/429.609秒。続く追加ignored harness compileはactual101で停止し、outeractual1/両実EOF/wait、463.679秒。後続syntax/fmt/strict Clippy、inventory・Docker/runtimeは未実行 | 独立に1190 source・17 tools・完全raw838 frames/7 operationsと四つの実CargoJSON bin identities、失敗TMP/target、全PID/cgroupとouter終端を照合。保持ELF directory・build receipt・harness ELFは未生成。ObjectEffectのimport先とDrainSignerProgressRequest.signer参照の2件だけを `b8edcabb` で修正し、全assertions/oraclesを維持。修正後producer2・実別UID/TLS・統合/全体qualificationは未完了。旧失敗rawを成功へ置換しない |
+| E102: positive Split UID component strict-lint failure | 別branch `1ed3e8f`。CLI全406 passed/0 failed/7 ignoredと追加genuine/exporter helper compileはactual0。続くstrict Clippyは未使用ExternalSigner importのためactual101。outeractual1/両実EOF/wait、943.091秒 | 全1195 source・17 tools・20実ELF、完全raw1561 frames/10 operations、全PID/cgroup回収を独立照合。failed TMP/targetと旧rawを保持。fmt/diff・実別UID/PTY・genuine inline submissionは未実行。`a41bd6c5`でimportのみ修正し、同じ全gatesの再検証を準備。全M2/M7の成功には数えない |
+| E103: certified FastVote UID fixture version-binding compile failure | 別branch `b8edcabb`。four-bin compileはactual0、追加harnessはobject.versionのu64をrusqliteへ直接渡す型誤りE0277でactual101。outeractual1/両実EOF/wait、1.933秒 | 全1190 source・17 tools・完全raw389 frames/7 operationsと既存四つの実bin不変を独立照合。追加harness/保持5ELF receipt・後続gates・inventory/runtimeは未生成または未実行。`71d79292`で実ownerの8-byte big-endian BLOB表現へ検証queryだけを合わせ、元canonical bytes assertionを維持。修正後producerは未実行。旧失敗とTMP/targetを保持し、成功へ置換しない |
+| E104: positive Split UID component strict gates | 別branch `a41bd6c5` / tree`656f11f9`。同じ全6 commandsがactual0/両実EOF/wait、inner81.108秒/outer81.181秒。CLI全406 passed/0 failed/7 ignored、新4 policy/5 custody controls、genuine helper compile・strict3crate Clippy・fmt/diffが成功 | 親が1195 source/Git blobs・17 tools、完全raw878 frames/16 operations/548 CargoJSONと現19 target ELF+新保持CLI libを再照合。旧target18 identitiesは不変、CLI libだけ正当なactual再compileとして明示し、旧保持物と全失敗証拠を保存。全PID/cgroup・TMP回収。追加UID probeはcompileのみで、実genuine/UID/PTY/全M2/M7は未達 |
+| E105: certified FastVote actual five-ELF producer | 別branch `71d79292` / tree`6fe0772b`。全6 build/構文/fmt/strict Clippy commandsがactual0/両実EOF/wait、inner218.836秒/outer218.924秒。実CargoJSONから4 binsと追加harnessを通常0755・single link・別inodeの5保持ELFへ固定 | 親が1190 source/Git blobs・17 tools、完全raw770 frames/21 operations/728 CargoJSON、全5 source/保持物・既存4 binsの全前後identityを再照合。target1の明示reuseでfresh buildとは呼ばない。全PID/cgroup・TMP3回収、過去2失敗は保持。追加harnessは未実行で、inventory・実別UID/TLS/全M2/M7の成功には数えない |
+| E106: certified FastVote read-only inventory | `71d79292`の固定5保持ELF、22 fixture sourcesと4実loader/librariesをNode24で照合。actual0/両実EOF/wait、inner0.694秒/outer0.770秒。完全stdout JSONが保存inventoryと一致し、Docker clients0・資源作成0を確認 | 親が1190 source/Git blobs・tools・全5 ELF/4 librariesのmetadata/hashと完全rawを再照合。外部samplerより先に完了したためexternal InvocationIDは未観測のまま保持し、innerの実cgroup limitsを照合。inventoryの未使用UUIDを後続runtimeのowner pinへ転用しない。実UID/TLSは別attempt |
+| E107: positive Split genuine public-export failure | `a41bd6c5`で実CLI producerはactual0、続く元first-successor selectorはmanifest-historyのnested directoryを平坦archive APIで読むためactual101。outeractual1/両実EOF/wait、64.096秒 | 独立に1195 source/Git blobs・19 own/17 component tools、全11 runtime bindingsと4 libraries、完全raw141 frames/9 operations・全PID/cgroup回収を確認。完全な公開資料は未生成で、144 source filesの部分copyとindexを含む145 filesだけを保持。元fixtureはunwind時にRAII削除されており、元history treeを保持したとは呼ばない。Node/UID phases成功0。既存nested-history owner契約へexporterと読み手を合わせ、元拒否条件・完全authority検証を維持して再検証する |
+| E108: certified FastVote strict phase-marker failure | `71d79292`の初回実UID attemptはactual1/両実EOF/wait、inner1.264秒/outer1.329秒。UID12001/gid12001/caps0のprepare-inputs probe自体は1 passed/0 failed/0 ignored・endpoint counts全0で成功したが、libtestの行prefixにより厳密な行頭marker検査が拒否 | 全1190 source/Git blobs・22 fixture sources・5 ELF/4 libraries、完全Node JSON・636-byte wire/583-byte復号とsole child全264 UTF8 bytes、全15 fixture clientsの終端・専有資源解放を独立照合。親の追加2 read-only queriesでも対象container/volume不在を確認。worker/署名段階は未到達。`5be398ec`でRust markerの先頭改行だけを修正し、strict parser/全件数・拒否条件は維持。修正後producerはE109で成功、runtimeは未実行 |
+| E109: certified FastVote marker correction strict producer | 別branch `5be398ec` / tree`b6aad460`。全6 commandsがactual0/両実EOF/wait、inner23.459秒/outer23.543秒。新markerを含む追加harnessと4 binsの通常0755・single link・別inodeの5保持ELFを固定 | 親と独立reviewが1190 source/Git blobs・17 tools、完全raw694 frames/21 operations、全5 source/保持ELFと旧4 compiler bins・旧5保持ELFの不変、全PID/cgroup・TMP4回収を確認。strict parserと全元assertionを維持。component buildのみで、修正後の実別UID/TLS runtime・全M2/M7は未完了 |
+| E110: positive Split nested-history correction and four regressions | 別branch `fff121c2` / tree`a9c1aca8`。全7 commandsがactual0/両実EOF/wait、inner109.913秒/outer110.001秒。全CLI406 passed/0 failed/7 ignored、history exportの4 named regressionsは4 passed/0 failed/0 ignored、strict Clippy/fmt/diffも成功 | 親が1195 source/Git blobs・17 tools、完全raw842 frames/17 operationsと現20 target+新保持ELFを再照合。flat cut契約を維持し、履歴だけ既存bounded recursive APIへ接続。structural transport closureであり、descriptor由来のsemantic exact inventoryとは呼ばない。旧保持2件・失敗319 files/10 dirsは保存、全PID/cgroup/TMP回収。修正後genuine/UID/PTYは未実行 |
+| E111: certified FastVote actual context mismatch | `5be398ec`の修正後実UID attemptはactual1/両実EOF/wait、outer11.098秒。4 worker/4 frontendと準備・権限/UID/期限/profile/TLS拒否controlsの後、a-prepareのSDK照合が認証profile expected1/actual2を拒否。Aの有料prepareと後段成功は0 | 独立に1190 source/Git・22 fixture sources・全5 ELF/4 libraries、全15 Docker clients/55 role childrenのwait/EOF、wire6898 bytes→完全復号50420 bytesを照合。全childにU+FFFDなし、再構成UTF8の41901 bytesがcounterと一致。専有資源解放を確認し、親の追加2 read-only queriesも0/空。oracleのEOF assertionは失敗abort後の二次的観測として保持。`d58c874a`で既存canonical認証profileから3つの期待IDを取得し、exact context verification/全39 guardsを維持。修正後producerはE113で成功、runtimeは未実行 |
+| E112: positive Split wrapper temporary-pin failure | `fff121c2`の次attemptはactual1/両実EOF/wait、outer0.847秒。mandatory CLI producerの前段guardが、新TMP pathに残った旧TMP_INODEを拒否。全6 operations/12 raw framesを保持 | Node24 --versionは0だが、CargoJSON/CLI producer合格・ldd・元genuine selector・selected Node/UID/Dockerは全て未到達。独立に1195 source/Git・19 own/17 component tools・現21 ELF・10 bindings/旧CLI・失敗319 files/10 dirs/旧保持2件の不変と全8 saved PIDs/cgroup不在を確認。TMP2は空のまま保存。wrapperのTMP_DEVICE/TMP_INODE、owner tuple、実filesystem identityを明示的に一致させる新attemptを準備し、失敗を上書きしない |
+| E113: certified exact-auth-profile strict producer | 別branch `d58c874a` / tree`d311bad0`。全6 commandsがactual0/両実EOF/wait、inner21.742秒/outer21.823秒。既存canonical profile2/scheme1/address binding2からexpected contextを構築する修正を含む全5 source/保持ELFを固定 | 親と独立reviewが1190 source/Git blobs・17 tools・9入力、完全raw623 frames/21 operations、旧4 compiler binsと旧5保持ELFの不変、全PID/cgroup・TMP5回収を確認。コンパイルとstrict gatesのみで、修正後の実UID/TLS lifecycle・全M2/M7と統合source全体の合格は未達 |
+| E114: positive Split actual no-approval boundary and failure cleanup | `fff121c2`の次attemptは実CLI producer/lddが0、元genuine selectorがfirst-successorでactual101。outeractual1/両実EOF/wait、33.370秒。公開archive234 filesの生成後、別UIDの承認なしLeg署名は正しくexit1/出力なし/public no_approvalを返したが、fixtureがRust enum表記NoApprovalを期待して拒否 | 完全outer raw142 frames/9 operations、inner135 frames/36 operations、21 host operationsと全32 saved host PIDs/cgroup・専有container/volume不在を照合。公開archiveとNode試験資料を保持し、1195 source/Git・全入力/345過去失敗files等の不変を確認。強制停止後に残るsocketによりstrict file-only volume accountingも二次的に失敗。PTY承認/署名/元protected submit成功は0。実public statusのexact照合と、serviceの実wait/PID不在後に記録済みexact socketだけを処理する修正を進め、strict file-only accounting/元97 operations・各capsを維持する |
+| E115: certified FastVote drain page boundary | `d58c874a`の実UID attemptはAのprepare/retention/replay・有料apply/replay、B新規apply、C保存、元ordered Freeze、frontier初回/再送を通過後、drain-firstでpage.terminalのfixture assertionが失敗。actual1/両実EOF/wait、outer24.301秒 | 完全復号73138 bytes、全125 role recordsのwait/EOF・U+FFFDなし/再構成UTF8 54106 bytes一致、全15 Docker clientsと専有資源解放・1190 source/全入力を照合。親の追加2 read-only不在queriesも0/空。満杯ページはnonterminalとする既存仕様に対し、3 entriesの要求limit3をterminalと誤認。`94eee3b3`で要求limitだけ4へ変更し、実entry数3/terminal/全署名・stage/import/confirm検証と既存limit1の全stream検証を維持。後段drain/union/最終lifecycle合格は未達で、oracle EOFはabort時の二次観測として保存 |
+| E116: positive Split complete-evidence budget amendment | 元97 operationsの実normal prefixと残り固定command/resultだけでframed rawの下限322101 bytesとなり、旧262144-byte上限で完了不能と確認。`f14473ed`のexact no_approval/socket後処理に続き、`a4f6c1a8`でraw allowanceだけ655360 bytesへ変更し、ADR-0270へ2026-10-17の修正理由と有限capture条件を記録 | 全97操作・完全pipe/PTY/command/result bytesを維持。per-stream64KiB/meta256KiB/candidate64KiB・mounted-copy1MiB、512MiB/no swap/64MiB volume・各時間/UID/authority/拒否条件は保持。raw640KiB+meta256KiB+candidate64KiBと通常tar overheadは既存1MiB以内。任意fragmentationの完了保証ではなく、実captureが全量収まった場合だけ成功。旧profile/全失敗証拠/inert component5は保存。新component6/runtimeは未実行 |
+| E117: certified drain-boundary strict producer | 別branch `94eee3b3` / tree`b6aecc27`。要求page limitだけを4へ直した全6 commandsがactual0/両実EOF/wait、inner20.611秒/outer20.680秒。実CargoJSONから新harnessを含む5保持ELFを固定 | 親と独立reviewが1190 source/Git blobs・17 tools・9入力、完全raw744 frames/21 operations、旧4 compiler bins・旧5保持ELFの不変、全PID/cgroup・TMP6回収を確認。component buildのみで、修正後の実UID/TLS後段drain/union/最終lifecycle・全M2/M7の合格は未達 |
+| E118: positive Split 640KiB-profile component gates | 別branch `a4f6c1a8` / tree`65090b4b`。同じ全7 commandsがactual0/両実EOF/wait、inner9.875秒/outer9.961秒。CLI全406 passed/0 failed/7 ignoredと元9 policy/custody controls、追加exporter4 passed/0 failed/0 ignored、strict3crate Clippy・fmt/diffが成功 | 親と独立reviewが1195 source/Git blobs・17 tools・311 archives、完全raw807 frames/17 operationsと実CargoJSON/profile、20 target ELF・新保持CLI lib、旧保持物3個と973 failure files/141 directoriesの保持、全PID/cgroup・TMP6回収を確認。元targetを明示reuseし再compileなし。modified Node/Python fixtureはこのcomponentで未実行で、実97操作のUID/PTY/genuine submission・全M2/M7の成功には数えない |
+| E119: certified drain member possession boundary | `94eee3b3`の実UID attemptはterminal page取得とstagingまで成功後、最初のA member confirmで409 drain-proof-not-retainedとなりactual1。inner24.414秒/outer24.474秒、両実EOF/wait | 完全復号73220 bytes、全125 role recordsのwait/EOF・U+FFFDなし/再構成UTF8 54187 bytes一致、15 Docker clientsの終了と専有資源解放・1190 source/全入力を独立照合。通常publication/ACKと別のdrain proof保持が必要と確認し、`812458ba`で全3 staged entriesのgenuine proofを既存ownerでimportしてからconfirmするfixtureへ修正。Cの事前409・全署名/identity/union/oracleと上限を維持し、追加HTTP4回・child追加なし。修正後のC import/union/pre-DrainSet/最終lifecycleは未検証。oracle EOFはabort時の二次観測であり、全元assertionと失敗資料を保持。Docker client全streamの別raw保存はなく、metadata照合とstart wireの完全照合を区別する |
+| E120: positive Split complete-metadata budget failure | `a4f6c1a8`の実CLI producer/lddは0、元selectorはfirst-successorで101。outer43.489秒/両実EOF/wait。mounted readyが出ず、実103-byte errorはcomplete evidence metadata exceeds256KiB | 完全outer raw142 frames/9 operations・18 host operations、1195 source/Git・19 own/17 component tools・21 ELF/11 bindings/4 libraries、旧973 files/141 dirs/保持3個、全29 saved PIDs/cgroup・専有資源解放を独立照合。公開233 leaves+index、291 source/292保持filesを保存。inner raw/meta/tar/candidateが保存されなかったため、97操作/PTY/署名/socket/serviceの成功には数えない |
+| E121: certified all-staged-proof strict producer | 別branch `812458ba`。全6 commandsがactual0/両実EOF/wait、inner22.747秒/outer22.852秒。完全raw903023 bytes/704 frames/21 operations、新harnessを含む5実CargoJSON保持ELFを固定 | 親と独立reviewが1190 source/Git blobs・17 tools・9入力、旧4 compiler bins/旧5保持ELFの不変、全PID/cgroup・TMP7回収を確認。component gatesのみで、修正後の実UID drain/union/最終lifecycleは未検証 |
+| E122: positive Split complete-metadata finite envelope | 元97操作/8approval/9socket schemaのmetadata下限320224 bytes・保守上限323624 bytesを照合。`207ea842`でmetadata524288 bytesとmounted tar1310720 bytesへ限定変更し、全フィールドとraw655360/candidate65536 bytesを保持 | payload合計1245184 bytesと通常tar overheadは新有限上限以内。任意PAX/framingの成功保証ではなく実全量captureが必要。今後のownerで例外にする保持fileは正確なinside.tar/host-11.stdoutの2個のみで、他は1MiB・総量24MiB/counts・10GiB growth・元97/22操作・全権限/拒否/時間/資源条件を維持。旧失敗profileは保持し、新component/runtimeは未実行 |
+| E123: bounded canonical frame mutation campaign source | 統合branchの`0b26e721`に非ignored testと手順書を追加。依存/manifest/production/既存recipesを変えず、4固定seeds、独立wire256 frames・4096 mutations・12固定拒否controlsを1024-byte/8-field内で検証するソースを普通review | 独立format oracleの受理/type/version/全fieldsとproduction再encodeのbyte一致、過大field countの明示拒否を確認する。このsource行の時点ではコンパイル/実行は未達。実結果はE126へ追記し、exhaustive/coverage-guided fuzz・独立security監査・全M7の成功には数えない |
+| E124: certified post-Freeze exact refusal boundary | `812458ba`の実UID attemptはdrain proof import・union・DrainSet未確定時の実行拒否まで成功後、新prepareの期待400/実500でactual1。outer29.383秒/両実EOF/wait | 全127 roles・完全復号74020 bytes、再構成UTF8 54657 bytes/U+FFFDなし、15 clientsの終了と専有資源不在を照合。既存PersistenceInvariantの500 invalid-node-outputを保存し、`5d8d7f46`でfresh intentの事前認証とexact status/bodyだけを合わせた。ACK byte再送と完全image不変を保持し、任意500を合格にしない。旧失敗を保存し、修正後runtimeは未検証 |
+| E125: positive Split metadata-profile strict component | `207ea842`の全7 commandsがactual0/両実EOF/wait、inner9.794秒/outer9.872秒。CLI406 passed/0 failed/7 ignored・元9 policy/custody controls・exporter4 passed/0 failed/0 ignored、strict Clippy/fmt/diffが成功 | 完全raw741 frames/754255 bytes/17 operations、1195 source/Git・17 tools・311 archives・20 target ELF/新保持CLI lib、旧1581 failure files/270 directories/保持4個と全PID/cgroup/TMP7回収を照合。component成功を後続genuineまたは統合head全体の資格にはしない |
+| E126: bounded canonical mutation actual campaign | 統合head `ab8ff2da` / tree`2b3c93f2`で4固定seeds・256 originals/4096 mutations/12固定controlsの4364 decoder inputsを検査する非ignored testが1 passed/0 failed/0 ignored。crate全target/all-feature strict Clippyと追加test rustfmtもactual0 | 完全raw33 frames/11 operations、1207 source/Git・15 tools・311 checksum-pinned archives、実Cargo Running由来ELFと全PID/cgroup/TMPを親と独立reviewで照合。inner2.763秒/outer2.830秒。有限の固定入力campaignで、unique inputs/各case transcript・coverage-guided/exhaustive fuzz・security監査・全M7の成功とは呼ばない |
+| E127: certified exact-refusal strict producer | `5d8d7f46`の全6 commandsがactual0/両実EOF/wait、inner21.244秒/outer21.334秒。完全raw725 frames/904514 bytes/21 operations、新harnessを含む5実CargoJSON保持ELFを固定 | 1190 source/Git・17 tools・9入力、旧4 compiler bins/旧5保持ELF不変と全PID/cgroup/TMP8回収を親と独立reviewで照合。component成功のみで、修正後の実別UID/TLS後段lifecycleは別attemptで検証する |
+| E128: genuine positive Split actual distinct-UID protected submission | `207ea842`で元first-successor selectorが1 passed/0 failed/0 ignored、actual0/両実EOF/wait、inner49.791秒/outer49.870秒。別UIDのLeg/Claim承認・署名・取消・鍵復旧・再起動・expiryと実protected Aの元ordered提出が成功 | 完全outer152 frames/13 operations、inner351 frames/97 operations、22 host operations、8 successful PTY/2拒否、8canonical approvalsと9exact normal socket wait/不在/FD閉鎖を照合。raw456372/meta320761/tar783360 bytesを全量保持。1195 source/Git・全tools/runtime bindings、旧1581 failure files/270 dirs/保持4個と309保持files/64 dirs、全37 saved host PIDs/cgroup/TMP回収を確認。既知fixture鍵の選択範囲であり、本番鍵秘匿・全M2/M7・統合head全体の資格ではない |
+| E129: certified FastVote actual distinct-UID/TLS lifecycle | `5d8d7f46`の実4-worker/4-keyless-TLS fixtureがactual0/両実EOF/wait、outer30.526秒。全39 required controls・147 roles・27 probes・32 read-only SQL oracle exchangesが成功。4つの明示startup拒否だけexit1 | 完全wire10430 bytes/復号84355 bytesを厳密照合し、全childにU+FFFDなし・再構成UTF8 59099 bytes一致。全17 Docker clientsが0で終了し、専有資源は明確に削除。全1190 source/Git・5 ELF/4 libraries・toolsと旧失敗を保存。3署名family、A/B実apply/保存済み再送、C pre-import409/no-DrainSet409・nonce2/C未適用、元ordered Freeze、frontier/union3とfence6再開後の全source/body/anchor imageを検証。親の追加2不在queriesも0/空。全M2/M7・統合head全体の資格にはしない |
+| E130: final7658 literal complete required | `7658629a` / tree`7ab61388`でliteral npm ci --prefix adapters/cloudflare-workers と ./scripts/check-all.sh がともにactual0/merged pipe実EOF/wait。inner合計15878.474秒、完全log706439 bytes。Rust145 summariesの合計4366 passed/0 failed/39 ignored、元3 extended lanesと各provider checksが成功 | 1180 source/Git・50 tools/aliases・311 locked archive checksumsと元8links/e8terminal withdrawals/35roles/delay7 assertionsを照合。unit invocation一致/最終journal/owner MainPID0/ExecMain0、cgroupと既知owner/Cargo/fixture PIDs不在を確認。detached dispatchのためlong outer capture/両外部EOF/reapを主張しない。既存TMP/cacheは保持。7658の選択required資格であり、新統合head・原12 RELEASE runtime・hosted CI・全M7/監査/公開の資格ではない |
 
 
 
@@ -360,6 +404,67 @@ E91は `m2-ordered-fixture-build5-parent-qualified-1017.json` /
 `m2-ordered-fixture-runtime5-1017-terminal.json` / `-complete.json`。
 完全runtime JSONのSHA-256は
 `256294416e9bb1ad48a194f56c8dcc36123c6005e9f884f19c09a181e7b25f79`。
+E92は `r4-runtime-9de6-1016-terminal.json` / `-receipt.json` と
+`r4-runtime-9de6-independent-qualified-1017.json` /
+`r4-runtime-9de6-parent-qualified-1017.json`。実rawは
+`r4-runtime-9de6-1016.log`、SHA-256は
+`6e9b3ed1b9367c9f1586fc61a484e880c494329956b021e61983dcaed9c4dae4`。
+E93は `final-native-promoted-1017-terminal.json` とactual Native manifest、
+`native-final-7658-ab-independent-qualified-1017.json` /
+`native-final-7658-ab-parent-qualified-1017.json`。manifest SHA-256は
+`acde37f611642b76001e5342c6fb28e11edad9fdb73189c4ab2c8b198c0bae57`。
+E94は `native-final-7658-drivers-parent-qualified-1017.json` と
+`m4-release-promoted-parent-qualified-1017.json`、普通source reviewは
+`m4-final-7658-ordinary-source-evidence-review-1017.json`。
+E95は `native-final-7658-cli-harness-parent-qualified-1017.json` と
+`native-final-7658-release-cli-runtime-parent-qualified-1017.json`。
+E96は `positive-fee-claim-policy-build2-parent-qualified-1017.json` と
+`positive-fee-claim-policy-genuine1-parent-qualified-1017.json`。
+E97の失敗は `certified-fastvote-component1-independent-qualified-failure-1017.json`、
+`certified-fastvote-component2-independent-qualified-failure-1017.json`、
+`certified-fastvote-component3-independent-qualified-failure-1017.json` と各actual raw/terminal。
+E95のoriginal ordered RELEASEは `m2-ordered-release-7658-runtime-parent-qualified-1017.json`。
+E98は `positive-fee-claim-custody-build1-independent-qualified-1017.json` /
+`positive-fee-claim-custody-build1-parent-qualified-1017.json` とactual raw/terminal。
+E99は `positive-fee-claim-custody-genuine1-parent-qualified-1017.json` とactual raw/terminal。
+E97 attempt4は `certified-fastvote-component4-independent-qualified-failure-1017.json`。
+追加UID sourceの指摘は `positive-fee-split-uid-3b8e-ordinary-review2-1017.json` /
+`positive-fee-split-uid-3b8e-parent-partial-source-review-1017.json` に保存。
+E100は `certified-fastvote-component5-parent-qualified-1017.json` とactual raw/terminal。
+E101は `m2-certified-fastvote-fixture-build1-independent-qualified-failure-1017.json` とactual raw/terminal。
+E102は `positive-fee-split-uid-build2-independent-failure-qualified-1017.json` とactual raw/terminal。
+E103は `m2-certified-fastvote-fixture-build2-independent-qualified-failure-1017.json` とactual raw/terminal。
+E104は `positive-fee-split-uid-build3-parent-qualified-1017.json` とactual raw/terminal。
+E105は `m2-certified-fastvote-fixture-build3-parent-qualified-1017.json` とactual raw/terminal。
+E106は `m2-certified-fastvote-fixture-inventory2-parent-qualified-1017.json` とactual complete inventory/terminal。
+E107は `positive-fee-split-uid-genuine1-independent-failure-qualified-1017.json` とactual raw/terminal/partial public evidence。
+E108は `m2-certified-fastvote-fixture-runtime2-independent-qualified-failure-1017.json` とactual complete/raw/terminal、
+追加不在確認は `m2-certified-fastvote-fixture-runtime2-root-owned-absence-1017.json`。
+E109は `m2-certified-fastvote-fixture-build4-parent-qualified-1017.json` とactual raw/terminal。
+E110は `positive-fee-split-uid-build4-parent-qualified-1017.json` とactual raw/terminal。
+E111は `m2-certified-fastvote-fixture-runtime3-independent-qualified-failure-1017.json` とactual complete/raw/terminal、
+追加不在確認は `m2-certified-fastvote-fixture-runtime3-root-owned-absence-1017.json`。
+E112は `positive-fee-split-uid-genuine2-independent-failure-qualified-1017.json` とactual raw/terminal。
+E113は `m2-certified-fastvote-fixture-build5-parent-qualified-1017.json` とactual raw/terminal。
+E114は `positive-fee-split-uid-genuine3-independent-failure-qualified-1017.json` とactual raw/terminal/retained public evidence。
+E115は `m2-certified-fastvote-fixture-runtime4-independent-qualified-failure-1017.json` とactual complete/raw/terminal、
+追加不在確認は `m2-certified-fastvote-fixture-runtime4-root-owned-absence-1017.json`。
+E116は `positive-fee-split-fixed97-raw-budget-1017.json` / append-only addendum、
+`positive-fee-split-uid-a4f6-source-inputs-1017.json` とADR-0270。
+E117は `m2-certified-fastvote-fixture-build6-parent-qualified-1017.json` とactual raw/terminal。
+E118は `positive-fee-split-uid-build6-parent-qualified-1017.json` とactual raw/terminal。
+E119は `m2-certified-fastvote-fixture-runtime5-independent-qualified-failure-1017.json` とactual complete/raw/terminal。
+E120は `positive-fee-split-uid-genuine4-independent-failure-qualified-1017.json` とactual raw/terminal/retained public evidence。
+E121は `m2-certified-fastvote-fixture-build7-parent-qualified-1017.json` とactual raw/terminal。
+E122は `positive-fee-split-fixed97-metadata-budget-1017.json` とADR-0270/207e source。
+E123は `m7-canonical-frame-mutation-0b26-source-candidate-1017.json` と追加test/手順書。
+E124は `m2-certified-fastvote-fixture-runtime6-independent-qualified-failure-1017.json` と追加不在確認/ADR-0271。
+E125は `positive-fee-split-uid-build7-parent-qualified-1017.json` とactual raw/terminal。
+E126は `m7-canonical-mutation-build1-parent-qualified-1017.json` / independent qualificationとactual raw/ELF/terminal。
+E127は `m2-certified-fastvote-fixture-build8-parent-qualified-1017.json` とactual raw/receipt/terminal。
+E128は `positive-fee-split-uid-genuine5-parent-qualified-1017.json` / actual-runtime qualificationとcomplete retained public evidence。
+E129は `m2-certified-fastvote-fixture-runtime7-parent-qualified-1017.json` / independent qualificationとactual complete/raw/decoded success。
+E130は `technical-six-required-final-parent-qualified-1017.json` / independent qualificationとactual merged log/terminal/journal。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -722,6 +827,23 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     actual0/両EOF/wait。全76 role childrenを回収し、署名・不正UID拒否・停止中503・
     再起動fence3/保存済み再送・QC・新規height2を検証。完全rawと専有資源の不在を照合。
     後継epoch・FastVote/readiness・他signing family・全M2へ転用しない。
+  - [x] [positive Standard Asset fee-claim Splitの操作内容policyとprepare consumers](docs/architecture/positive-fee-claim-split-policy.md):
+    E96/E99で実genuine後継authority・保存host request/intentと、元oracleとの署名対象byte一致を確認。
+    E104で追加UID fixtureを含む現componentのCLI406件とstrict gatesが成功。
+    immutableな意味の確認であり、現在のescrow残高・nonce・entitlementの保証にはしない。
+  - [x] [certified FastVote protected workerの通常component](docs/architecture/certified-fastvote-protocol-custody.md):
+    E100のnative245件/operator159件とstrict gatesを確認。鍵・DB・独立anchor/fenceはworkerだけが持ち、
+    frontendはclosed contractと既存coreのauthority/confirmed retentionを保持する。
+  - [x] [genuine positive Splitの別UID・PTY lifecycle](docs/architecture/positive-fee-split-uid-fixture.md):
+    E125の全CLI406件・export回帰4件/strict gatesの後、E128で元genuine selector内の
+    Leg/Claim両phase承認・署名・取消・鍵復旧・再起動・expiryと実protected candidate提出が成功。
+    全97/22操作・9socket controls・完全証拠と回収を照合。既知fixture鍵の選択範囲であり、
+    本番鍵秘匿・最終統合head全体gate・全M2の完了にはしない。旧4失敗は保持する。
+  - [x] [certified FastVoteの実別UID・TLS lifecycle](docs/architecture/local-certified-protocol-custody-fixture.md):
+    E127のstrict producer後、E129で実署名・保存済み再送・停止中拒否・fence6 restart・
+    frontier/progress/union3と全source/body/anchor imageのread-only SQL oracleが成功。
+    全39 controls・147 roles・27 probes・32 oracle exchangesと完全証拠/回収を照合。
+    E108/E111/E115/E119/E124の失敗は保持し、最終統合head全体gate・全M2とは分ける。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
@@ -781,6 +903,8 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
   - 状態: E1の35-role source-free restoreに加え、E83でcomplete storeの暗号化復元と
     実prior releaseからのupgrade/旧版停止・再開が成功。最終統合sourceの完全required/CI・
     13-target Native A/BとM4対象の実RELEASE runtime、残る原条件の照合を残し、全M4/releaseは未完了。
+    E93/E94/E95で7658の13-target A/B・M4対象RELEASE TLS/upgrade・既存CLI fixtureを確認。
+    同headの完全required/hosted CIは実行中で、全M4の完了には数えない。
     原12 RELEASE runtimeの総合qualificationはM7の別gate。元8リンク/e8 withdrawals/
     35 rolesの暗号化relocationは完全required/CIから除かず、短いTLS/upgradeで代替しない。
   - [x] [独立に保持したordered history floor component](docs/architecture/decisions/0248-import-ordered-history-freshness-floor.md):
@@ -883,7 +1007,10 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     原12 driversの全RELEASE runtimeと完全source qualificationは未完了。
     統合7c57の13-target A/Bと実RELEASE CLIはE34/E35で成功し、元12ケースのruntimeはE47の時間上限失敗として保持。
     復元の後続source 277fはE53のCIを完了したが、原12 Native runtimeはE57で失敗。
-    ローカル完全gateもE63で成功したが、原12 Native runtimeのE57失敗を保持する。後続sourceへ資格を借用しない。残る独立監査・
+    ローカル完全gateもE63で成功したが、原12 Native runtimeのE57失敗を保持する。
+    10a4/E61・f973/E65の原12 runtime失敗も保持する。9de6はE64の13-target A/B・
+    E71の完全required/CIに加え、E92で原12 RELEASE runtimeの全actual0/実EOF/waitを完了した。
+    この9de6専用資格を7658以降の完全gate/CI/Nativeへ借用しない。残る独立監査・
     upgrade/restore・実provider基準により全M7は未完了。
   - 次: E18/E19のsource/tool/profile pinをR4/Gから共用し、新sourceのrelease claimには
     そのsourceの13-target A/B・実RELEASE bindingを用意する。未達qualificationを進める。

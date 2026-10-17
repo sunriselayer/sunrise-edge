@@ -30,6 +30,9 @@
 //!   mint/burn policy, under one closed kind-4 decoder.
 //! - `custody serve-create` uses the same owner with the DR-0255
 //!   create-asset policy, under one closed kind-5 decoder.
+//! - `custody serve-fee-split` uses DR-0269's closed kind-6 Leg/Claim
+//!   owner, genuine successor workflow and original historical key. Its two
+//!   complete phase approvals share the existing permanent request tombstone.
 //! - `custody prepare-transfer`/`prepare-split`/`prepare-merge`/
 //!   `prepare-mint`/`prepare-burn`/`prepare-create` export preimages without
 //!   approval; `sign-transfer`/`sign-split`/`sign-merge`/`sign-mint`/
@@ -81,6 +84,12 @@ pub(crate) mod error;
 mod fsperm;
 mod keyfile;
 mod keygen;
+mod positive_fee_split;
+mod positive_fee_split_approvals;
+mod positive_fee_split_commands;
+#[cfg(test)]
+mod positive_fee_split_fixture;
+mod positive_fee_split_wire;
 mod revoke;
 mod selfuid;
 mod server;
@@ -170,6 +179,21 @@ where
         "approve-create" => asset_create_commands::approve_create(args),
         "sign-create" => asset_create_commands::sign_create(args),
         "serve-create" => asset_create_commands::serve(args),
+        "prepare-fee-split-leg" => positive_fee_split_commands::prepare_leg(args),
+        "prepare-fee-split-claim" => positive_fee_split_commands::prepare_claim(args),
+        "approve-fee-split-leg" => {
+            positive_fee_split_commands::approve(args, positive_fee_split_wire::Phase::Leg)
+        }
+        "approve-fee-split-claim" => {
+            positive_fee_split_commands::approve(args, positive_fee_split_wire::Phase::Claim)
+        }
+        "sign-fee-split-leg" => {
+            positive_fee_split_commands::sign(args, positive_fee_split_wire::Phase::Leg)
+        }
+        "sign-fee-split-claim" => {
+            positive_fee_split_commands::sign(args, positive_fee_split_wire::Phase::Claim)
+        }
+        "serve-fee-split" => positive_fee_split_commands::serve(args),
         other => Err(CliError::UnknownCustodyAction(other.to_string())),
     }
 }

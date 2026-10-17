@@ -116,6 +116,9 @@ struct Config {
 }
 impl Config {
     fn parse(input: &str, worker: bool) -> io::Result<Self> {
+        Self::parse_profile(input, worker, false)
+    }
+    fn parse_profile(input: &str, worker: bool, certified: bool) -> io::Result<Self> {
         let common: &[&str] = &[
             "chain-id",
             "validator-id",
@@ -155,7 +158,9 @@ impl Config {
                 continue;
             }
             let (key, value): (&str, &str) = line.split_once('=').ok_or_else(refused)?;
-            if !(common.contains(&key) || extra.contains(&key))
+            if !(common.contains(&key)
+                || extra.contains(&key)
+                || certified && worker && key == "created-checkpoint")
                 || value.is_empty()
                 || value.trim() != value
                 || value.len() > 4096
@@ -198,6 +203,7 @@ impl Config {
 }
 
 pub(crate) struct Worker {
+    certified: bool,
     socket: PathBuf,
     frontend_uid: u32,
     max_connections: u64,
@@ -206,7 +212,7 @@ pub(crate) struct Worker {
     total: Duration,
 }
 impl Worker {
-    fn from_config(config: &mut Config) -> Result<Self> {
+    fn from_config(config: &mut Config, certified: bool) -> Result<Self> {
         let socket: PathBuf = config.take("socket")?.into();
         absolute(&socket)?;
         if socket.as_os_str().len() > 100 {
@@ -251,7 +257,18 @@ impl Worker {
         if config.take("confirm-offline-fence-advance")? != "true" {
             return Err(refused().into());
         }
+        if certified {
+            // Explicit trusted local checkpoint, including zero. Parse now;
+            // leave the value for the single original startup owner to consume.
+            let checkpoint: &str = config
+                .values
+                .get("created-checkpoint")
+                .and_then(|values: &Vec<String>| values.first())
+                .ok_or_else(refused)?;
+            let _: u64 = checkpoint.parse()?;
+        }
         Ok(Self {
+            certified,
             socket,
             frontend_uid,
             max_connections,
@@ -260,11 +277,30 @@ impl Worker {
             total,
         })
     }
+    pub(crate) fn is_certified(&self) -> bool {
+        self.certified
+    }
     pub(crate) fn serve(
         self,
         app: Application,
         executor: NativeBlockingExecutor,
         identity: Identity,
+    ) -> Result<()> {
+        self.serve_inner(app, executor, OwnerIdentity::Ordered(identity))
+    }
+    pub(crate) fn serve_certified(
+        self,
+        app: Application,
+        executor: NativeBlockingExecutor,
+        identity: native_http::certified_custody::Identity,
+    ) -> Result<()> {
+        self.serve_inner(app, executor, OwnerIdentity::Certified(identity))
+    }
+    fn serve_inner(
+        self,
+        app: Application,
+        executor: NativeBlockingExecutor,
+        identity: OwnerIdentity,
     ) -> Result<()> {
         let runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -281,25 +317,22 @@ impl Worker {
             let (owner, listener): (SocketOwner, UnixListener) = SocketOwner::bind(&self.socket)?;
             let end: Instant = Instant::now().checked_add(self.total).ok_or_else(refused)?;
             if !stop.stop_before_readiness() {
-                println!(
-                    "complete=true mode=protocol-worker transport=unix authority=original-ordered"
-                );
+                if self.certified {
+                    println!("complete=true mode=certified-worker transport=unix authority=original-certified-fastvote");
+                } else {
+                    println!("complete=true mode=protocol-worker transport=unix authority=original-ordered");
+                }
                 io::stdout().flush()?;
                 stop.readiness_announced();
             }
             let served: io::Result<()> =
                 bounded_lifecycle(executor, stop, end, move |shutdown, _observations| {
-                    serve_worker(
-                        listener,
-                        app,
-                        identity,
-                        self.frontend_uid,
-                        self.max_connections,
-                        self.max_requests,
-                        self.timeout,
-                        end,
-                        shutdown,
-                    )
+                    async move {
+                        match identity {
+                            OwnerIdentity::Ordered(identity) => serve_worker(listener, app, identity, self.frontend_uid, self.max_connections, self.max_requests, self.timeout, end, shutdown).await,
+                            OwnerIdentity::Certified(identity) => native_http::certified_custody::serve_worker(listener, app, identity, self.frontend_uid, self.max_connections, self.max_requests, self.timeout, end, shutdown).await,
+                        }
+                    }
                 })
                 .await;
             let removed: io::Result<()> = owner.close();
@@ -308,6 +341,11 @@ impl Worker {
         })?;
         Ok(())
     }
+}
+
+enum OwnerIdentity {
+    Ordered(Identity),
+    Certified(native_http::certified_custody::Identity),
 }
 
 struct SocketOwner {
@@ -390,21 +428,32 @@ where
 }
 
 pub(super) fn run(worker: bool, tokens: Vec<OsString>) -> Result<()> {
+    run_profile(worker, tokens, false)
+}
+pub(super) fn run_certified(worker: bool, tokens: Vec<OsString>) -> Result<()> {
+    run_profile(worker, tokens, true)
+}
+fn run_profile(worker: bool, tokens: Vec<OsString>, certified: bool) -> Result<()> {
     let mut flags: FlagSet = FlagSet::parse(tokens, &["--config"], &[])?;
     let path: PathBuf = flags.one("--config")?.into();
     flags.finish()?;
-    let mut config: Config = Config::parse(&config_file(&path)?, worker)?;
+    let input: String = config_file(&path)?;
+    let mut config: Config = if certified {
+        Config::parse_profile(&input, worker, true)?
+    } else {
+        Config::parse(&input, worker)?
+    };
     if worker {
-        let launch: Worker = Worker::from_config(&mut config)?;
+        let launch: Worker = Worker::from_config(&mut config, certified)?;
         let mut args: Vec<OsString> = config.args();
         args.push("--confirm-offline-fence-advance".into());
         crate::sqlite_source_host::run_worker(args, launch)
     } else {
-        frontend(config)
+        frontend(config, certified)
     }
 }
 
-fn frontend(mut config: Config) -> Result<()> {
+fn frontend(mut config: Config, certified: bool) -> Result<()> {
     let socket: PathBuf = config.take("socket")?.into();
     absolute(&socket)?;
     let worker_uid: u32 = config.take("worker-uid")?.parse()?;
@@ -474,22 +523,24 @@ fn frontend(mut config: Config) -> Result<()> {
         let mut stop: StopOwner =
             StopOwner::install(PreparedLocalObservations::connect(None).map_err(|_| refused())?)?;
         let end: Instant = Instant::now().checked_add(total).ok_or_else(refused)?;
-        let target: Arc<Frontend> = Arc::new(Frontend::new(
-            socket,
-            worker_uid,
-            validator,
-            policy,
-            timeout,
-            end,
-            max_requests,
-            executor.clone(),
-        ));
-        target.preflight().await?;
-        let app: Application = frontend_router(target);
+        let app: Application = if certified {
+            let query_config: protocol_config::ProtocolConfig = crate::host_protocol_context::host_query_protocol_config(&resolver, domain, epoch).map_err(|_| refused())?;
+            let target: Arc<native_http::certified_custody::Frontend> = Arc::new(native_http::certified_custody::Frontend::new(socket, worker_uid, validator, domain, &root, resolver, query_config, timeout, end, max_requests, executor.clone())?);
+            target.preflight().await?;
+            native_http::certified_custody::frontend_router(target)
+        } else {
+            let target: Arc<Frontend> = Arc::new(Frontend::new(socket, worker_uid, validator, policy, timeout, end, max_requests, executor.clone()));
+            target.preflight().await?;
+            frontend_router(target)
+        };
         let listener: tokio::net::TcpListener = tokio::net::TcpListener::bind(listen).await?;
         let address: SocketAddr = listener.local_addr()?;
         if !stop.stop_before_readiness() {
-            println!("complete=true mode=protocol-frontend transport=http authority=none listen={address}");
+            if certified {
+                println!("complete=true mode=certified-frontend transport=http authority=none listen={address}");
+            } else {
+                println!("complete=true mode=protocol-frontend transport=http authority=none listen={address}");
+            }
             io::stdout().flush()?;
             stop.readiness_announced();
         }
@@ -555,6 +606,21 @@ mod tests {
         }
         assert!(Config::parse("worker-uid=1\n", true).is_err());
         assert!(Config::parse("frontend-uid=1\n", false).is_err());
+    }
+    #[test]
+    fn certified_checkpoint_is_only_an_explicit_new_worker_input() {
+        assert!(Config::parse("created-checkpoint=0\n", true).is_err());
+        assert!(Config::parse_profile("created-checkpoint=0\n", false, true).is_err());
+        assert!(Config::parse_profile("created-checkpoint=0\n", true, true).is_ok());
+        assert!(
+            Config::parse_profile("created-checkpoint=1\ncreated-checkpoint=2\n", true, true)
+                .is_err()
+        );
+        for key in ["trusted", "factory", "sign-frame", "protocol-profile"] {
+            assert!(Config::parse_profile(&format!("{key}=yes\n"), true, true).is_err());
+        }
+        assert!(Config::parse_profile("signing-key-file=/tmp/key\n", false, true).is_err());
+        assert!(Config::parse_profile("worker-uid=1\n", true, true).is_err());
     }
     #[test]
     fn paths_are_local_absolute_without_parent_traversal() {
