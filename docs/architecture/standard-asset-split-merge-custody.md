@@ -114,3 +114,38 @@ bytes, authenticated requests and result/query correspondence, funded amounts,
 consumed input, nonce, nonempty matching receipts and exact replay observations,
 then durable revocation in the same process and after restart. Actual source
 and execution qualification belong in [TODO.md](../../TODO.md).
+
+### Stopped disposable-key Split/Merge recovery consumer
+
+Added 2026-10-17 under the existing DR-0244 and DR-0249 contract. The fixture
+appends a signing-only recovery consumer after the original native host,
+signer and revoked restart have exited and their socket is absent. Fresh
+request IDs `9b` and `9c` repeated 32 times receive independent complete-frame
+approvals over real PTYs; approval through a pipe must still refuse. These
+requests use the retained original split preimages and the merge snapshots
+captured after the actual original `91` split. The fresh `9b` signature is
+never submitted, so the merge snapshots are not outputs of a new split.
+No new application chain, current-state freshness or nonce advance is claimed.
+
+The original disposable seed signs both new requests through a separate
+bounded reference server. After its actual wait, PID and socket disappearance,
+two custody-UID private-copy children back up and restore only that seed.
+The current config, preimages and approval/revocation store are preserved.
+A recovered server signs the same two request files and must return identical
+nonempty signed bytes to their respective new-request reference files.
+Original revoked `91`/`92` requests remain refused; after cancellation, new
+`9b`/`9c` requests also refuse. All four refuse again after a recovered-key
+server restart, with every refusal output absent. The three exact summaries
+are `2/2/2/0`, `6/6/2/4` and `4/4/0/4` for connections, handled, signed and
+refused. Original business, transfer and all family controls remain unchanged.
+
+This addition allocates 18 CLI children, two real PTY children, three bounded
+serve children and two private-copy children. Its 14 exact new regular files
+share a 32 KiB allowance; captured command/PTY output shares 48 KiB, and final
+JSON evidence is at most 4 KiB. Every nonsecret comparison is bounded to
+64 KiB; key bytes stay inside the existing custody-UID copy primitive with
+its 256-byte limit. These are suballocations within the unchanged global
+230-second Python/280-second Node, 256 KiB inner output, 64 MiB volume and
+512 MiB container limits. No resource or capability is increased. Source
+preparation and these finite checks do not establish actual whole-fixture
+headroom; owning execution and qualification remain tracked in TODO.md.

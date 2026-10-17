@@ -1323,6 +1323,197 @@ def phase_transfer(public_key):
     return {"actual_cli":True, "whole_coin":True, "offline_bytes_equal":True, "replay_equal":True, "revoked":True, "revoked_after_restart":True, "rotation_refused":True, "recovery":recovery}
 
 
+def phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags):
+    # Both requests are signing-only over retained ORIGINAL preimages. The
+    # merge inputs came from original91's actual split, never fresh9b output.
+    output_before = _output_used
+    request_ids = ("9b" * 32, "9c" * 32)
+    old_ids = (SPLIT_REQUEST_ID, MERGE_REQUEST_ID)
+    request_paths = [f"{custody_dir}/recovery-{kind}-request.bin" for kind in ("split", "merge")]
+    operator_requests = [f"{operator_dir}/recovery-{kind}-request.bin" for kind in ("split", "merge")]
+    references = [f"{operator_dir}/recovery-{kind}-reference.bin" for kind in ("split", "merge")]
+    signed_paths = [f"{operator_dir}/recovery-{kind}-signed.bin" for kind in ("split", "merge")]
+    backup_path, restored_path = f"{custody_dir}/recovered.seed.backup", f"{custody_dir}/recovered.seed.restored"
+    files = [request_paths[0], operator_requests[0], request_paths[1], operator_requests[1],
+             *references, *signed_paths, backup_path, restored_path,
+             *(f"{approvals}/{request_id}" for request_id in request_ids),
+             *(f"{approvals}/{request_id}.revoked" for request_id in request_ids)]
+    refusal_paths = [f"{operator_dir}/recovery-{label}.bin" for label in (
+        "old-split-revoked", "old-merge-revoked", "new-split-revoked", "new-merge-revoked",
+        "old-split-revoked-restart", "old-merge-revoked-restart",
+        "new-split-revoked-restart", "new-merge-revoked-restart")]
+    if any(os.path.lexists(path) for path in [*files, *refusal_paths]):
+        raise FixtureFailure("split/merge recovery requires absent fresh output paths")
+    run_calls = 0
+    def allocation():
+        generated_bytes = 0
+        for path in files:
+            if not os.path.lexists(path):
+                continue
+            meta = os.lstat(path)
+            owner = OPERATOR_UID if path.startswith(operator_dir + "/") else CUSTODY_UID
+            if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != owner
+                    or stat.S_IMODE(meta.st_mode) != 0o600 or meta.st_nlink != 1):
+                raise FixtureFailure("split/merge recovery generated file ownership/type differs")
+            generated_bytes += meta.st_size
+        captured = _output_used - output_before
+        if generated_bytes > 32768 or captured > 49152:
+            raise FixtureFailure("split/merge recovery finite suballocation exceeded")
+        return generated_bytes, captured
+    def invoke(argv, uid, gid, groups):
+        nonlocal run_calls
+        result = run_exec(argv, uid, gid, groups)
+        run_calls += 1
+        allocation()
+        return result
+    def evidence(path, owner):
+        # Only bounded NONSECRET canonical preimages/requests/signatures.
+        def stamp(meta):
+            return (meta.st_dev, meta.st_ino, meta.st_uid, meta.st_gid, meta.st_mode,
+                    meta.st_nlink, meta.st_size, meta.st_mtime_ns, meta.st_ctime_ns)
+        before = os.lstat(path)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != owner
+                or stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1
+                or not 0 < before.st_size <= 65536):
+            raise FixtureFailure("split/merge recovery evidence attachment/size differs")
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            if stamp(os.fstat(fd)) != stamp(before):
+                raise FixtureFailure("split/merge recovery evidence changed at open")
+            chunks = bytearray()
+            while len(chunks) <= 65536:
+                chunk = os.read(fd, 65537 - len(chunks))
+                if not chunk:
+                    break
+                chunks.extend(chunk)
+            if len(chunks) != before.st_size or stamp(os.fstat(fd)) != stamp(before):
+                raise FixtureFailure("split/merge recovery evidence changed during read")
+        finally:
+            os.close(fd)
+        if stamp(os.lstat(path)) != stamp(before):
+            raise FixtureFailure("split/merge recovery evidence attachment changed")
+        return stamp(before), bytes(chunks)
+    fixed_paths = [(f"{custody_dir}/{name}", CUSTODY_UID) for name in (
+        "config", "genesis.bin", "coin.bin", "fee.bin", "merge-inputs/into.bin",
+        "merge-inputs/from.bin", "merge-inputs/fee.bin")]
+    fixed_paths += [(f"{operator_dir}/{name}", OPERATOR_UID) for name in ("config", "genesis.bin")]
+    fixed_paths += [(f"{approvals}/{request_id}.revoked", CUSTODY_UID) for request_id in old_ids]
+    fixed_before = {path: evidence(path, owner) for path, owner in fixed_paths}
+    merge_inputs = f"{custody_dir}/merge-inputs"
+    for index, kind in enumerate(("split", "merge")):
+        inputs = (["--coin-file", f"{custody_dir}/coin.bin", "--fee-source-file", f"{custody_dir}/fee.bin",
+                   "--amount", str(SPLIT_AMOUNT), "--recipient", public_key] if kind == "split" else
+                  ["--into-file", f"{merge_inputs}/into.bin", "--from-file", f"{merge_inputs}/from.bin",
+                   "--fee-source-file", f"{merge_inputs}/fee.bin"])
+        prepare = cli_argv("custody", "prepare-" + kind, *trust_flags(custody_dir), *inputs,
+            "--nonce", str(index), "--request-id", request_ids[index],
+            "--max-fee", "1000000", "--gas-limit", "200000", "--out", request_paths[index])
+        rc, out, err = invoke(prepare, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0 or (kind + "_request_exported=true").encode() not in out:
+            raise FixtureFailure(f"recovery {kind} preparation failed: {err!r}")
+        request_bytes = evidence(request_paths[index], CUSTODY_UID)[1]
+        with open(operator_requests[index], "xb") as target:
+            target.write(request_bytes)
+        os.chmod(operator_requests[index], 0o600)
+        os.chown(operator_requests[index], OPERATOR_UID, OPERATOR_GID)
+        if evidence(operator_requests[index], OPERATOR_UID)[1] != request_bytes:
+            raise FixtureFailure("split/merge recovery request copy differs")
+        approve = cli_argv("custody", "approve-" + kind, *trust_flags(custody_dir),
+            "--request-file", request_paths[index], "--approvals-dir", approvals, "--expires-in-seconds", "3600")
+        rc, _out, refusal = invoke(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
+            raise FixtureFailure("split/merge recovery approval accepted a pipe")
+        charge_output(phase_approve_via_pty(None, None, index, request_ids[index], 3600, command=approve))
+        allocation()
+    request_before = {path: evidence(path, owner) for path, owner in
+        [*((path, CUSTODY_UID) for path in request_paths), *((path, OPERATOR_UID) for path in operator_requests)]}
+    reference_socket, recovered_socket = f"{ROOT}/run/split-merge-reference.sock", f"{ROOT}/run/split-merge-recovered.sock"
+    if any(os.path.lexists(path) for path in (reference_socket, recovered_socket)):
+        raise FixtureFailure("split/merge recovery socket path is occupied")
+    def serve(key_file, socket_path, count):
+        return cli_argv("custody", "serve-split-merge", *trust_flags(custody_dir),
+            "--key-file", key_file, "--socket", socket_path, "--approvals-dir", approvals,
+            "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "15")
+    def sign(kind, socket_path, request_path):
+        return cli_argv("custody", "sign-" + kind, *trust_flags(operator_dir),
+            "--request-file", request_path, "--custody-socket", socket_path,
+            "--custody-uid", str(CUSTODY_UID), "--custody-expected-public-key", public_key)
+    def finish(process, socket_path, counts, label):
+        summary = wait_serve(process, extra_seconds=8)
+        check_summary(label, summary, dict(zip(
+            ("connections_accepted", "requests_handled", "requests_signed", "requests_refused"), map(str, counts))))
+        if os.path.exists(f"/proc/{process.pid}") or os.path.lexists(socket_path):
+            raise FixtureFailure("split/merge recovery signer PID/socket remained after actual wait")
+        allocation()
+        return summary.strip().splitlines()
+    reference = start_serve(reference_socket, 15, 2, 2,
+        command=serve(f"{ROOT}/custody-keys/custody.seed", reference_socket, 2))
+    try:
+        for index, kind in enumerate(("split", "merge")):
+            rc, _out, err = invoke([*sign(kind, reference_socket, operator_requests[index]), "--out", references[index]],
+                OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+            if rc != 0:
+                raise FixtureFailure(f"original-key recovery {kind} reference failed: {err!r}")
+        reference_summary = finish(reference, reference_socket, (2, 2, 2, 0), "split/merge recovery reference")
+    finally:
+        if reference.poll() is None:
+            stop_owned_process(reference, CUSTODY_UID, CUSTODY_GID)
+    # Every original/reference signer was waited before these two private
+    # custody-UID copies. Never copy the approval/revocation store or key bytes to root.
+    key_file = phase_recover_private_key(f"{ROOT}/custody-keys/custody.seed", backup_path, restored_path)
+    allocation()
+    old_requests = [f"{operator_dir}/split-request.bin", f"{operator_dir}/merge-request.bin"]
+    def refused(index, socket_path, kind, request_path):
+        rc, _out, err = invoke([*sign(kind, socket_path, request_path), "--out", refusal_paths[index]],
+            OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in err or os.path.lexists(refusal_paths[index]):
+            raise FixtureFailure("split/merge recovered-key revocation refusal/output differs")
+    recovered = start_serve(recovered_socket, 15, 6, 6, command=serve(key_file, recovered_socket, 6))
+    try:
+        for index, kind in enumerate(("split", "merge")):
+            rc, _out, err = invoke([*sign(kind, recovered_socket, operator_requests[index]), "--out", signed_paths[index]],
+                OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+            if rc != 0 or evidence(signed_paths[index], OPERATOR_UID)[1] != evidence(references[index], OPERATOR_UID)[1]:
+                raise FixtureFailure(f"same-request recovered-key {kind} signature bytes differ: {err!r}")
+            refused(index, recovered_socket, kind, old_requests[index])
+        for index, kind in enumerate(("split", "merge")):
+            rc, _out, err = invoke(revoke_argv(approvals, request_ids[index]), CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+            if rc != 0:
+                raise FixtureFailure(f"split/merge recovery revoke failed: {err!r}")
+            refused(index + 2, recovered_socket, kind, operator_requests[index])
+        recovered_summary = finish(recovered, recovered_socket, (6, 6, 2, 4), "split/merge recovered-key")
+    finally:
+        if recovered.poll() is None:
+            stop_owned_process(recovered, CUSTODY_UID, CUSTODY_GID)
+    restarted = start_serve(recovered_socket, 15, 4, 4, command=serve(key_file, recovered_socket, 4))
+    try:
+        for index, kind in enumerate(("split", "merge")):
+            refused(index + 4, recovered_socket, kind, old_requests[index])
+            refused(index + 6, recovered_socket, kind, operator_requests[index])
+        restart_summary = finish(restarted, recovered_socket, (4, 4, 0, 4), "split/merge recovery revoked restart")
+    finally:
+        if restarted.poll() is None:
+            stop_owned_process(restarted, CUSTODY_UID, CUSTODY_GID)
+    if any(fixed_before[path] != evidence(path, owner) for path, owner in fixed_paths):
+        raise FixtureFailure("split/merge recovery changed retained trust/preimages/old revocations")
+    if any(request_before[path] != evidence(path, CUSTODY_UID if path in request_paths else OPERATOR_UID)
+           for path in request_before):
+        raise FixtureFailure("split/merge recovery changed identical request bytes/attachments")
+    if run_calls != 18 or any(not os.path.exists(path) for path in files) or any(os.path.lexists(path) for path in refusal_paths):
+        raise FixtureFailure("split/merge recovery fixed operation/file counts differ")
+    generated_bytes, captured_output_bytes = allocation()
+    result = {"sign_only":True, "same_frame_bytes":True, "retained_preimages_unchanged":True,
+        "old_revocation_retained":True, "new_revocation_enforced":True, "revoked_after_restart":True,
+        "all_sockets_absent":True, "request_ids":list(request_ids), "previous_request_ids":list(old_ids),
+        "generated_files":len(files), "generated_paths":files, "refusal_paths":refusal_paths,
+        "generated_bytes":generated_bytes, "captured_output_bytes":captured_output_bytes,
+        "run_exec_children":run_calls, "pty_children":2, "private_copy_children":2, "serve_children":3,
+        "reference_summary":reference_summary, "serve_summary":recovered_summary, "restart_summary":restart_summary}
+    if len(json.dumps(result, sort_keys=True).encode("utf8")) > 4096:
+        raise FixtureFailure("split/merge recovery final evidence exceeds4KiB")
+    return result
+
+
 def phase_split_merge(public_key):
     # Fresh phase directories only: this reuses the exact same one-owner,
     # one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
@@ -1580,7 +1771,12 @@ def phase_split_merge(public_key):
         if restarted.poll() is None:
             restarted.kill(); restarted.wait(timeout=5)
 
+    # Original business roles and original revoked restart must be fully stopped.
+    if any(os.path.exists(f"/proc/{process.pid}") for process in (native, serve, restarted)) or os.path.lexists(socket_path):
+        raise FixtureFailure("original split/merge roles were not stopped before recovery")
+    recovery = phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags)
     return {
+        "recovery": recovery,
         "actual_cli": True, "split_self": True, "after_split_verified": True,
         "merge_verified": verify_merge.get("verified") is True,
         "offline_bytes_equal": True, "replay_equal": verify_merge.get("replay_equal") is True,
@@ -3127,6 +3323,45 @@ try {
   for (const [key, counts] of [['serve_summary', [6, 6, 4, 2]], ['restart_summary', [2, 2, 0, 2]]]) {
     if (JSON.stringify(result.split_merge[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
       throw new Error('the split/merge serve counters are incomplete or differ');
+    }
+  }
+  const splitMergeRecovery = result.split_merge.recovery;
+  const recoveryKinds = ['split', 'merge'];
+  const recoveryRequestIds = ['9b'.repeat(32), '9c'.repeat(32)];
+  const oldSplitMergeIds = ['91'.repeat(32), '92'.repeat(32)];
+  const recoveryCustody = '/work/custody-split-merge';
+  const recoveryOperator = '/work/operator/split-merge';
+  const recoveryPaths = [
+    `${recoveryCustody}/recovery-split-request.bin`, `${recoveryOperator}/recovery-split-request.bin`,
+    `${recoveryCustody}/recovery-merge-request.bin`, `${recoveryOperator}/recovery-merge-request.bin`,
+    ...recoveryKinds.map((kind) => `${recoveryOperator}/recovery-${kind}-reference.bin`),
+    ...recoveryKinds.map((kind) => `${recoveryOperator}/recovery-${kind}-signed.bin`),
+    `${recoveryCustody}/recovered.seed.backup`, `${recoveryCustody}/recovered.seed.restored`,
+    ...recoveryRequestIds.map((id) => `/work/custody-approvals/${id}`),
+    ...recoveryRequestIds.map((id) => `/work/custody-approvals/${id}.revoked`),
+  ];
+  const recoveryRefusals = ['old-split-revoked', 'old-merge-revoked', 'new-split-revoked', 'new-merge-revoked',
+    'old-split-revoked-restart', 'old-merge-revoked-restart', 'new-split-revoked-restart', 'new-merge-revoked-restart']
+    .map((label) => `${recoveryOperator}/recovery-${label}.bin`);
+  if (!splitMergeRecovery || ['sign_only', 'same_frame_bytes', 'retained_preimages_unchanged',
+      'old_revocation_retained', 'new_revocation_enforced', 'revoked_after_restart', 'all_sockets_absent']
+    .some((key) => splitMergeRecovery[key] !== true) ||
+    JSON.stringify(splitMergeRecovery.request_ids) !== JSON.stringify(recoveryRequestIds) ||
+    JSON.stringify(splitMergeRecovery.previous_request_ids) !== JSON.stringify(oldSplitMergeIds) ||
+    JSON.stringify(splitMergeRecovery.generated_paths) !== JSON.stringify(recoveryPaths) ||
+    JSON.stringify(splitMergeRecovery.refusal_paths) !== JSON.stringify(recoveryRefusals) ||
+    splitMergeRecovery.generated_files !== 14 || splitMergeRecovery.run_exec_children !== 18 ||
+    splitMergeRecovery.pty_children !== 2 || splitMergeRecovery.private_copy_children !== 2 ||
+    splitMergeRecovery.serve_children !== 3 || !Number.isSafeInteger(splitMergeRecovery.generated_bytes) ||
+    splitMergeRecovery.generated_bytes <= 0 || splitMergeRecovery.generated_bytes > 32_768 ||
+    !Number.isSafeInteger(splitMergeRecovery.captured_output_bytes) || splitMergeRecovery.captured_output_bytes <= 0 ||
+    splitMergeRecovery.captured_output_bytes > 49_152 || Buffer.byteLength(JSON.stringify(splitMergeRecovery)) > 4096) {
+    throw new Error('the genesis split/merge recovered-key signing-only evidence is incomplete');
+  }
+  for (const [key, counts] of [['reference_summary', [2, 2, 2, 0]],
+      ['serve_summary', [6, 6, 2, 4]], ['restart_summary', [4, 4, 0, 4]]]) {
+    if (JSON.stringify(splitMergeRecovery[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
+      throw new Error('the genesis split/merge recovered-key counters differ');
     }
   }
   // `phase_mint_burn`'s own `check_summary` calls already enforce the exact
