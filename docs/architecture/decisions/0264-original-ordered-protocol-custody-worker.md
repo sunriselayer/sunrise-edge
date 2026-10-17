@@ -37,8 +37,9 @@ result. Lost post-commit output reconciles through the original exact-request
 path, without transport retries or a second signing backend.
 
 Private IPC version 2 preserves bounded header multiplicity and refuses older
-private framing explicitly. Duplicate encoding refusals reuse original
-preflight/extractor precedence before IPC. Status/outcome bodies remain ignored
+private framing explicitly. Every body-using route reuses original cheap HTTP
+preflight/extractor precedence before IPC, including duplicate encoding,
+oversized and failed bodies. Status/outcome bodies remain ignored
 without polling; queries remain ignored. The documented closed frontend profile
 requires raw ASCII outcome selectors and does not synthesize HEAD/OPTIONS.
 These are deployment transport controls, not changes to canonical protocol

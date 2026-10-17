@@ -671,28 +671,23 @@ async fn proxy(State(frontend): State<Arc<Frontend>>, request: Request<Body>) ->
         )
         .await;
     }
-    // The original handlers collect their bounded body before inspecting
-    // duplicate encoding. Reuse their preflight and extraction order locally:
-    // refused requests must never connect to the worker or consume its budget.
-    let duplicates: bool = request
-        .headers()
-        .get_all(header::CONTENT_ENCODING)
-        .iter()
-        .nth(1)
-        .is_some();
-    if duplicates {
-        let mut request: Request<Body> = request;
-        let limit: usize = match route {
-            Route::Summary | Route::Height | Route::Component => route.limit(),
-            _ => MAX_ORDERED_PROPOSAL_BYTES,
+    // Collect with exactly the original route extractor cap, then run its
+    // shared cheap HTTP preflight before any worker connection or budget use.
+    let mut request: Request<Body> = request;
+    let limit: usize = match route {
+        Route::Summary | Route::Height | Route::Component => route.limit(),
+        _ => MAX_ORDERED_PROPOSAL_BYTES,
+    };
+    DefaultBodyLimit::max(limit).apply(&mut request);
+    let headers: HeaderMap = request.headers().clone();
+    let path: String = request.uri().path().into();
+    let extracted: Result<Bytes, axum::extract::rejection::BytesRejection> =
+        Bytes::from_request(request, &()).await;
+    let body: Bytes =
+        match crate::ordered_economics::custody_request_body(&headers, extracted, &path) {
+            Ok(body) => body,
+            Err(response) => return response,
         };
-        DefaultBodyLimit::max(limit).apply(&mut request);
-        let headers: HeaderMap = request.headers().clone();
-        let path: String = request.uri().path().into();
-        let body = Bytes::from_request(request, &()).await;
-        return crate::ordered_economics::duplicate_encoding_refusal(&headers, body, &path);
-    }
-    let headers: &HeaderMap = request.headers();
     let field = |name: axum::http::header::HeaderName| -> io::Result<Vec<Vec<u8>>> {
         let mut values: Vec<Vec<u8>> = Vec::new();
         for value in headers.get_all(name).iter() {
@@ -707,10 +702,6 @@ async fn proxy(State(frontend): State<Arc<Frontend>>, request: Request<Body>) ->
         (field(header::CONTENT_TYPE), field(header::CONTENT_ENCODING))
     else {
         return StatusCode::BAD_REQUEST.into_response();
-    };
-    let body: Bytes = match to_bytes(request.into_body(), route.limit()).await {
-        Ok(body) => body,
-        Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
     };
     forward(
         frontend,

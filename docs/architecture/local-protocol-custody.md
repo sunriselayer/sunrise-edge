@@ -43,12 +43,14 @@ proposal size plus 34,306 bytes; output retains the existing event-output cap
 plus 1,024 bytes. Unknown operations, extra/trailing bytes and invalid lengths
 refuse. Protocol frames, domains and signed bytes are unchanged.
 
-Duplicate `Content-Encoding` on an operation whose original handler inspects
-encoding is refused locally before any IPC connection or request-budget use.
-The frontend reuses the original preflight response and original bounded body
-extraction order: ordinary ordered handlers let extractor failure win;
-history handlers inspect encoding even if their body extraction failed. The
-original media-type error still wins over encoding on ordinary POST handlers.
+Every body-using operation runs its original cheap HTTP preflight locally
+before any IPC connection or request-budget use. The frontend reuses the
+original preflight response and original bounded body extraction order:
+ordinary ordered handlers let extractor failure win; history handlers inspect
+media/encoding even if their body extraction failed. The original media-type
+error still wins over encoding on ordinary POST handlers. Duplicate encoding
+therefore cannot reach worker admission, signing or storage. Tick retains its
+empty-body 400 rather than imposing a new one-byte extractor refusal.
 Status and outcome reads ignore their request bodies and unused headers without
 polling, as the original handlers do. Query fields are ignored by the original
 handlers and by this frontend. A bodyless 204 retains absent content type.
@@ -59,8 +61,8 @@ and paths return 404. In particular it does not add automatic HEAD/OPTIONS
 behavior. Outcome selectors must be raw ASCII hex with 64 characters and a
 nonzero decoded request ID. A malformed nonempty single segment returns the
 original 400 before IPC; percent-encoded aliases are not accepted by this
-profile. Other collected bodies retain their operation-specific input bound;
-requests outside that bound can refuse before worker dispatch. No raw
+profile. Other collected bodies retain the original extractor and preflight
+bounds; rejected requests do not dispatch to the worker. No raw
 signature, frame, currentness claim or portable warrant is accepted. Only
 worker-confirmed whole operation responses are returned.
 

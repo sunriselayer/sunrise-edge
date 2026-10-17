@@ -266,37 +266,46 @@ pub(crate) fn reject_unsupported_request(
     None
 }
 
-/// Reuse the original rejection order for a frontend's duplicate-encoding
-/// refusal. The caller has collected with this route's original extractor cap;
-/// no admission, protocol identity, key or store is needed to reject it.
+/// The deployment frontend uses these same cheap HTTP guards before IPC.
+/// Protocol admission, signature checks, identity, clock and storage still
+/// belong exclusively to the existing worker router handlers.
 #[cfg(target_os = "linux")]
-pub(crate) fn duplicate_encoding_refusal(
+#[allow(clippy::result_large_err)]
+pub(crate) fn custody_request_body(
     headers: &HeaderMap,
     body: Result<Bytes, axum::extract::rejection::BytesRejection>,
     path: &str,
-) -> Response {
+) -> Result<Bytes, Response> {
     use node_wire::ordered_history::{
+        MAX_ORDERED_HISTORY_COMPONENT_REQUEST_BYTES, MAX_ORDERED_HISTORY_HEIGHT_REQUEST_BYTES,
         ORDERED_HISTORY_COMPONENT_PATH, ORDERED_HISTORY_HEIGHT_PATH, ORDERED_HISTORY_SUMMARY_PATH,
     };
-    if matches!(
-        path,
-        ORDERED_HISTORY_COMPONENT_PATH | ORDERED_HISTORY_HEIGHT_PATH | ORDERED_HISTORY_SUMMARY_PATH
-    ) {
-        // History handlers intentionally inspect encoding even when their
-        // Result<Bytes> extractor failed. They all use this same response.
-        return ordered_history::unsupported_content_response();
+    match path {
+        ORDERED_HISTORY_HEIGHT_PATH => {
+            return ordered_history::post_body(
+                headers,
+                body,
+                MAX_ORDERED_HISTORY_HEIGHT_REQUEST_BYTES,
+            );
+        }
+        ORDERED_HISTORY_COMPONENT_PATH => {
+            return ordered_history::post_body(
+                headers,
+                body,
+                MAX_ORDERED_HISTORY_COMPONENT_REQUEST_BYTES,
+            );
+        }
+        ORDERED_HISTORY_SUMMARY_PATH => return ordered_history::summary_body(headers, body),
+        _ => {}
     }
-    let body: Bytes = match body {
-        Ok(body) => body,
-        Err(error) => return error.into_response(),
-    };
+    // Ordinary handlers use Bytes rather than Result<Bytes>: their extractor
+    // failure precedes all media/encoding/body checks.
+    let body: Bytes = body.map_err(IntoResponse::into_response)?;
     if path == ORDERED_ECONOMICS_TICK_PATH {
-        return reject_unsupported_tick(headers, &body).unwrap_or_else(|| {
-            error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "ordered-custody-refusal-invariant",
-            )
-        });
+        return match reject_unsupported_tick(headers, &body) {
+            Some(response) => Err(response),
+            None => Ok(body),
+        };
     }
     let (media, max): (&str, usize) = match path {
         ORDERED_ECONOMICS_PROPOSE_PATH => (
@@ -311,18 +320,16 @@ pub(crate) fn duplicate_encoding_refusal(
             MAX_ORDERED_CERTIFICATE_BYTES,
         ),
         _ => {
-            return error_response(
+            return Err(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "ordered-custody-refusal-invariant",
-            );
+            ));
         }
     };
-    reject_unsupported_request(headers, &body, media, max).unwrap_or_else(|| {
-        error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "ordered-custody-refusal-invariant",
-        )
-    })
+    match reject_unsupported_request(headers, &body, media, max) {
+        Some(response) => Err(response),
+        None => Ok(body),
+    }
 }
 
 fn reject_unsupported_tick(headers: &HeaderMap, body: &Bytes) -> Option<Response> {

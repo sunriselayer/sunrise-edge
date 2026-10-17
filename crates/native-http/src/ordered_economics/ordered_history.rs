@@ -109,7 +109,7 @@ fn require_pinned_identity<S, C, I, Sig>(
 }
 
 #[allow(clippy::result_large_err)]
-fn post_body(
+pub(super) fn post_body(
     headers: &HeaderMap,
     body: Result<Bytes, BytesRejection>,
     max_bytes: usize,
@@ -129,6 +129,24 @@ fn post_body(
     Ok(body)
 }
 
+#[allow(clippy::result_large_err)]
+pub(super) fn summary_body(
+    headers: &HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Bytes, Response> {
+    if crate::has_unsupported_content_encoding(headers) {
+        return Err(unsupported_content_response());
+    }
+    let body: Bytes = body.map_err(|error| error_response(error.status(), "body-rejected"))?;
+    if !body.is_empty() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "ordered-history-summary-body-not-empty",
+        ));
+    }
+    Ok(body)
+}
+
 async fn summary<S, C, I, Sig>(
     State(state): State<SharedOrderedEconomicsState<S, C, I, Sig>>,
     headers: HeaderMap,
@@ -140,18 +158,8 @@ where
     I: IndexedOutboxIdentitySource + Send + Sync + 'static,
     Sig: ConsensusSigner + Send + Sync + 'static,
 {
-    if crate::has_unsupported_content_encoding(&headers) {
-        return unsupported_content_response();
-    }
-    let body: Bytes = match body {
-        Ok(value) => value,
-        Err(error) => return error_response(error.status(), "body-rejected"),
-    };
-    if !body.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "ordered-history-summary-body-not-empty",
-        );
+    if let Err(response) = summary_body(&headers, body) {
+        return response;
     }
     publication::admitted(
         state.is_cancelled(),
