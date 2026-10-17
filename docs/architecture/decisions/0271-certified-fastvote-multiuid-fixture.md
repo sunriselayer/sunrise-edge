@@ -18,6 +18,13 @@ local readiness, prove actual missing-proof refusal then import the genuine
 retained bundle. Without a committed DrainSet require member-apply refusal;
 this finite profile does not add positive DrainSet or member application.
 
+2026-10-17 clarification: ordinary pre-Freeze `publication/` and ACK retention
+are distinct from post-Freeze `drain-publication/`, its complete
+`drain-publication-artifact/` closure and `drain-possession/`. Import every staged
+A/B/C entry through the actual SDK/core owner before confirming it; retain the
+explicit C pre-import `drain-proof-not-retained` refusal. Existing exact
+signature, identity, union and row-oracle checks and all finite caps remain.
+
 Use a separate read-only worker-UID oracle with complete closed source/body and
 anchor schema images plus exact canonical saved-record comparisons. Test actual
 filesystem and peer-UID refusal, malformed/profile/endpoint outputs, TLS pins,

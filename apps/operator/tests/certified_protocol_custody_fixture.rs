@@ -1224,7 +1224,7 @@ fn drain(replay: bool) {
     let selected: Vec<FrozenFrontierVote> = selected_frontier_votes();
     let client = &endpoints[1].client;
     if !replay {
-        // Explicitly stage worker0's C-containing frontier and import real missing proof on worker1.
+        // Stage worker0's frontier and import each full drain proof on worker1.
         let (_, page) = endpoints[0]
             .client
             .fetch_signed_frozen_frontier_page(
@@ -1261,28 +1261,28 @@ fn drain(replay: bool) {
                 assert!(
                     matches!(missing, Err(sunrise_edge_client::error::ClientError::UnexpectedStatus { status: 409, ref body }) if body == "drain-proof-not-retained")
                 );
-                let bundle: PublicationBundle = endpoints[0]
-                    .client
-                    .source_retained_fastvote_publication(
-                        trusted.certifier(),
-                        &resolver(),
-                        &[],
-                        entry,
-                        Some(Instant::now() + Duration::from_secs(2)),
-                    )
-                    .unwrap();
-                client
-                    .import_staged_drain_publication(
-                        endpoints[0].validator_id,
-                        &bundle,
-                        entry,
-                        trusted.certifier(),
-                        &resolver(),
-                        &[],
-                        Some(Instant::now() + Duration::from_secs(2)),
-                    )
-                    .unwrap();
             }
+            let bundle: PublicationBundle = endpoints[0]
+                .client
+                .source_retained_fastvote_publication(
+                    trusted.certifier(),
+                    &resolver(),
+                    &[],
+                    entry,
+                    Some(Instant::now() + Duration::from_secs(2)),
+                )
+                .unwrap();
+            client
+                .import_staged_drain_publication(
+                    endpoints[0].validator_id,
+                    &bundle,
+                    entry,
+                    trusted.certifier(),
+                    &resolver(),
+                    &[],
+                    Some(Instant::now() + Duration::from_secs(2)),
+                )
+                .unwrap();
             client
                 .confirm_drain_member(
                     Epoch::new(0),

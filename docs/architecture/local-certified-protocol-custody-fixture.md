@@ -57,11 +57,16 @@ synthetic committed Freeze, substitutes quorum authority or seeds a frontier.
    at fence5. Obtain actual final frontier signatures, verify their full page
    streams with `FrozenFrontierPageVerifier` and compare saved replays. Worker0
    has A/B/C; the other frontiers have A/B.
-6. On worker1 stage worker0's real frontier. C confirmation first refuses with
-   `drain-proof-not-retained`. Source C's actual retained bundle, import it,
-   confirm real signer entries and drive the existing SDK to local three-member
-   union readiness. The oracle compares exact stored signer progress, confirmed
-   entries, union progress/ready identity, selection digest and saved signed
+6. On worker1 stage worker0's real frontier. Pre-Freeze `publication/` records
+   and ACKs do not supply post-Freeze drain possession. Source and import the
+   genuine full A and B bundles before their confirmations. C confirmation first
+   refuses with `drain-proof-not-retained`; source and import its actual retained
+   bundle, then confirm it. These operations populate the distinct
+   `drain-publication/`, `drain-publication-artifact/` and `drain-possession/`
+   records through their existing owners. Drive the existing SDK to local
+   three-member union readiness. The oracle compares exact stored signer
+   progress, confirmed entries, union progress/ready identity, selection digest
+   and saved signed
    votes. C remains unapplied: a real member apply without a committed DrainSet
    returns409 `drain-member-not-ready`. There is no positive DrainSet or member
    application extension.
@@ -145,6 +150,9 @@ Actual runtime enforces at most160 children,32 probe records,64 oracle exchanges
 96 requests per endpoint per probe and112 accounted requests per generation,
 leaving16 below the configured128. Readiness consumes one worker/frontend
 request; stalled and wrong-profile IPC requests are separately counted.
+Explicit A/B drain imports add four HTTP calls in the existing probe: two
+bundle-source calls on worker0 and two import calls on worker1. They add no
+child, probe or oracle exchange and retain every existing request/deadline cap.
 The original bounded child capture, actual waits, physical stdout/stderr EOF,
 same-UID signals, exact socket removal and failure cleanup remain mandatory.
 
