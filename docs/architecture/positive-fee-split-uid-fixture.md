@@ -145,8 +145,8 @@ finite. The handoff ends no later than Python's initial work deadline plus25s.
 Final volume accounting includes the frozen metadata and release file without
 mutating exported bytes. The local export is at most16MiB/256 files/1MiB per file;
 Python framed raw at most640KiB, one pipe stream64KiB, one PTY16KiB,
-metadata256KiB, candidate64KiB, Docker control output64KiB including16KiB
-cleanup allowance, and binary evidence1MiB. There are at most128 inside children,
+metadata512KiB, candidate64KiB, Docker control output64KiB including16KiB
+cleanup allowance, and binary evidence1280KiB. There are at most128 inside children,
 eight concurrent children,16 PTYs and32 host/Docker operations. The fixed normal
 path expects97 inside children:84 pipe children,10 PTYs and3 no-pipe UID signal
 owners. It expects22 host/Docker operations, including the two library queries,
@@ -161,12 +161,26 @@ fixed operations proves a322,101-byte lower bound before future output and the
 remaining result fields. The640KiB framed-raw allowance is a finite acceptance
 envelope, not a guarantee for arbitrary one-byte read fragmentation. Every
 command, result, pipe byte and PTY review must still be captured completely.
-Raw640KiB + metadata256KiB + candidate64KiB total960KiB; fixed three-file tar
-headers/padding fit the unchanged1MiB mounted-copy allowance. The actual complete
+At that revision, raw640KiB + metadata256KiB + candidate64KiB total960KiB and fixed
+three-file tar headers/padding fit the original1MiB mounted-copy allowance. The actual complete
 tar, accepted metadata, all stream hashes/EOF/waits and cleanup remain runtime
 checks. Extra framing or tar metadata that exceeds an allowance refuses; there
 is no truncation, omitted output or reinterpretation of the raw count. All
 resource, time, per-stream, operation and authority bounds remain unchanged.
+
+A second 2026-10-17 evidence amendment preserves that failed profile and raises
+only metadata to512KiB and the mounted binary archive to1280KiB. Exact fixed
+inputs and the existing full97-operation/approval/socket schema give a320,224-byte
+metadata lower bound and a323,624-byte conservative normal-completion bound.
+Eight complete approval records alone contribute194,840 canonical hex characters.
+Keep every field and record; use no compression, truncation or omitted view.
+Raw640KiB + metadata512KiB + candidate64KiB total1216KiB, leaving64KiB for the
+bounded actual tar within1280KiB. Extra timestamp/PAX framing can still cause
+visible refusal: successful complete capture is mandatory, not guaranteed.
+Only retained `uid-evidence/inside.tar` and `uid-evidence/host-11.stdout` may use
+the1280KiB binary-copy allowance. Other retained files stay at1MiB, with the
+same24MiB total,512 source-file count and existing final census. Count both
+binary copies and both source/retained trees in the unchanged growth budget.
 
 The selected owner returns the actual protected A candidate. The original
 harness compares it byte-for-byte with its independent original candidate, then
