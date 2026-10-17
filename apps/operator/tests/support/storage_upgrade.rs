@@ -446,7 +446,7 @@ fn stopped_files(network: &Network) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
                         assert_eq!(bytes.len() as u64, metadata.len());
                         Some(bytes)
                     }
-                    Err(error) if error.kind() == ErrorKind::NotFound && suffix != "" => None,
+                    Err(error) if error.kind() == ErrorKind::NotFound && !suffix.is_empty() => None,
                     Err(error) => panic!("stopped inventory {}: {error}", path.display()),
                 };
                 assert!(result.insert(path, bytes).is_none());
