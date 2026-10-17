@@ -721,11 +721,14 @@ pub fn inspect_independent_anchor_inputs(
             .map_err(|_| IndependentAnchorError)?,
     );
     drop(crate::SqliteBlobStore::open_existing(blobs).map_err(|_| IndependentAnchorError)?);
-    let mut source: NativeConnection = NativeConnection::open_existing(state, true)?;
+    // The observation uses read-only connections and one deferred read
+    // snapshot. It never takes the write lock, so a live writer is neither
+    // blocked nor excluded for the bounded scan.
+    let mut source: NativeConnection = NativeConnection::open_existing(state, false)?;
     let body_owner: NativeConnection = NativeConnection::open_existing(blobs, false)?;
     let transaction = source
         .sqlite
-        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        .transaction_with_behavior(TransactionBehavior::Deferred)?;
     let mut budget: Budget = Budget::new(None);
     let state_root: [u8; 32] = state_root(&transaction, &mut budget)?;
     let bodies: Vec<Body> = all_bodies(&body_owner.sqlite, &mut budget)?;
