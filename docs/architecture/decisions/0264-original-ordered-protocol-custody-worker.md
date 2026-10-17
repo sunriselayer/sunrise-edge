@@ -36,6 +36,14 @@ results cross IPC. Rejected or uncertain commits expose no successful signed
 result. Lost post-commit output reconciles through the original exact-request
 path, without transport retries or a second signing backend.
 
+Private IPC version 2 preserves bounded header multiplicity and refuses older
+private framing explicitly. Duplicate encoding refusals reuse original
+preflight/extractor precedence before IPC. Status/outcome bodies remain ignored
+without polling; queries remain ignored. The documented closed frontend profile
+requires raw ASCII outcome selectors and does not synthesize HEAD/OPTIONS.
+These are deployment transport controls, not changes to canonical protocol
+formats or consensus checks.
+
 Both roles have finite request/connection admission and absolute deadlines.
 Both authenticate exact peer UIDs before IPC bytes; the worker authenticates
 before operation dispatch/key use. Disconnect and deadline do not imply a

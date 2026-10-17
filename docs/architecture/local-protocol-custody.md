@@ -34,11 +34,35 @@ least two to leave capacity for business. The frontend's concurrent accepted
 HTTP connection limit is its configured `max-concurrent`. Its original
 Native HTTP read/write deadlines remain independently enforced.
 
-Transport carries one closed ordered/history operation, original media/encoding
-headers and canonical body per connection. Input/output bounds come from the
-existing operation codecs. Unknown operations, extra/trailing bytes and invalid
-lengths refuse. No raw signature, frame, currentness claim or portable warrant
-is accepted. Only worker-confirmed whole operation responses are returned.
+Transport carries one closed ordered/history operation, media/encoding header
+occurrences in their original order and canonical body per connection. The
+private deployment frame is version 2; version 1 peers refuse rather than
+collapse repeated headers. Each of the two transported header names has at
+most 64 values of 256 bytes each. The total input cap is the original maximum
+proposal size plus 34,306 bytes; output retains the existing event-output cap
+plus 1,024 bytes. Unknown operations, extra/trailing bytes and invalid lengths
+refuse. Protocol frames, domains and signed bytes are unchanged.
+
+Duplicate `Content-Encoding` on an operation whose original handler inspects
+encoding is refused locally before any IPC connection or request-budget use.
+The frontend reuses the original preflight response and original bounded body
+extraction order: ordinary ordered handlers let extractor failure win;
+history handlers inspect encoding even if their body extraction failed. The
+original media-type error still wins over encoding on ordinary POST handlers.
+Status and outcome reads ignore their request bodies and unused headers without
+polling, as the original handlers do. Query fields are ignored by the original
+handlers and by this frontend. A bodyless 204 retains absent content type.
+
+This opt-in frontend is a bounded closed HTTP profile, not a general HTTP
+proxy. It accepts the explicitly listed methods and paths; unsupported methods
+and paths return 404. In particular it does not add automatic HEAD/OPTIONS
+behavior. Outcome selectors must be raw ASCII hex with 64 characters and a
+nonzero decoded request ID. A malformed nonempty single segment returns the
+original 400 before IPC; percent-encoded aliases are not accepted by this
+profile. Other collected bodies retain their operation-specific input bound;
+requests outside that bound can refuse before worker dispatch. No raw
+signature, frame, currentness claim or portable warrant is accepted. Only
+worker-confirmed whole operation responses are returned.
 
 The existing ordered router supplies authentication order, fresh invocation
 context, ordinary live gates, candidate reservations, consensus lock safety,

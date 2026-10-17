@@ -3,7 +3,7 @@
 use axum::{
     Router,
     body::{Body, Bytes, to_bytes},
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, FromRequest, State},
     http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -57,10 +57,13 @@ impl Identity {
         bytes
     }
 }
-const VERSION: u8 = 1;
+// Private deployment framing only: version 2 retains all header occurrences.
+const VERSION: u8 = 2;
 const MAX_HEADER: usize = 256;
 const MAX_PARAMETER: usize = 64;
-const MAX_REQUEST: usize = MAX_ORDERED_PROPOSAL_BYTES + 1024;
+const MAX_HEADER_VALUES: usize = 64;
+const MAX_REQUEST: usize =
+    MAX_ORDERED_PROPOSAL_BYTES + 2 * (1 + MAX_HEADER_VALUES * (4 + MAX_HEADER)) + 1024;
 const MAX_RESPONSE: usize = MAX_ORDERED_EVENT_OUTPUT_BYTES + 1024;
 
 fn invalid() -> io::Error {
@@ -175,8 +178,8 @@ impl Route {
 struct Input {
     route: Route,
     parameter: String,
-    content_type: Option<Vec<u8>>,
-    encoding: Option<Vec<u8>>,
+    content_type: Vec<Vec<u8>>,
+    encoding: Vec<Vec<u8>>,
     body: Vec<u8>,
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -195,17 +198,15 @@ fn put(out: &mut Vec<u8>, bytes: &[u8], cap: usize) -> io::Result<()> {
     out.extend_from_slice(bytes);
     Ok(())
 }
-fn put_optional(out: &mut Vec<u8>, bytes: &Option<Vec<u8>>) -> io::Result<()> {
-    match bytes {
-        Some(bytes) => {
-            out.push(1);
-            put(out, bytes, MAX_HEADER)
-        }
-        None => {
-            out.push(0);
-            Ok(())
-        }
+fn put_headers(out: &mut Vec<u8>, values: &[Vec<u8>]) -> io::Result<()> {
+    if values.len() > MAX_HEADER_VALUES {
+        return Err(invalid());
     }
+    out.push(u8::try_from(values.len()).map_err(|_| invalid())?);
+    for bytes in values {
+        put(out, bytes, MAX_HEADER)?;
+    }
+    Ok(())
 }
 struct Cursor<'a> {
     bytes: &'a [u8],
@@ -236,12 +237,16 @@ impl<'a> Cursor<'a> {
             Err(invalid())
         }
     }
-    fn optional(&mut self) -> io::Result<Option<Vec<u8>>> {
-        match self.byte()? {
-            0 => Ok(None),
-            1 => Ok(Some(self.field(MAX_HEADER)?.to_vec())),
-            _ => Err(invalid()),
+    fn headers(&mut self) -> io::Result<Vec<Vec<u8>>> {
+        let count: usize = usize::from(self.byte()?);
+        if count > MAX_HEADER_VALUES {
+            return Err(invalid());
         }
+        let mut values: Vec<Vec<u8>> = Vec::with_capacity(count);
+        for _ in 0..count {
+            values.push(self.field(MAX_HEADER)?.to_vec());
+        }
+        Ok(values)
     }
 }
 impl Input {
@@ -249,8 +254,8 @@ impl Input {
         self.route.path(&self.parameter)?;
         let mut bytes: Vec<u8> = vec![VERSION, self.route.code()];
         put(&mut bytes, self.parameter.as_bytes(), MAX_PARAMETER)?;
-        put_optional(&mut bytes, &self.content_type)?;
-        put_optional(&mut bytes, &self.encoding)?;
+        put_headers(&mut bytes, &self.content_type)?;
+        put_headers(&mut bytes, &self.encoding)?;
         put(&mut bytes, &self.body, self.route.limit())?;
         if bytes.len() > MAX_REQUEST {
             return Err(invalid());
@@ -270,8 +275,8 @@ impl Input {
             .map_err(|_| invalid())?
             .into();
         route.path(&parameter)?;
-        let content_type: Option<Vec<u8>> = input.optional()?;
-        let encoding: Option<Vec<u8>> = input.optional()?;
+        let content_type: Vec<Vec<u8>> = input.headers()?;
+        let encoding: Vec<Vec<u8>> = input.headers()?;
         let body: Vec<u8> = input.field(route.limit())?.to_vec();
         input.finish()?;
         Ok(Self {
@@ -312,11 +317,8 @@ impl Output {
         })
     }
     fn response(self) -> io::Result<Response> {
-        let mut response: Response = (
-            StatusCode::from_u16(self.status).map_err(|_| invalid())?,
-            self.body,
-        )
-            .into_response();
+        let mut response: Response = Response::new(Body::from(self.body));
+        *response.status_mut() = StatusCode::from_u16(self.status).map_err(|_| invalid())?;
         response
             .headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -368,9 +370,9 @@ async fn execute(app: Application, input: Input) -> io::Result<Output> {
         (header::CONTENT_TYPE, input.content_type),
         (header::CONTENT_ENCODING, input.encoding),
     ] {
-        if let Some(bytes) = bytes {
-            request.headers_mut().insert(
-                name,
+        for bytes in bytes {
+            request.headers_mut().append(
+                name.clone(),
                 HeaderValue::from_bytes(&bytes).map_err(|_| invalid())?,
             );
         }
@@ -487,6 +489,10 @@ impl Frontend {
             executor,
             identity,
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn remaining_requests(&self) -> u64 {
+        self.remaining.load(Ordering::Relaxed)
     }
     async fn exchange(&self, input: Input) -> io::Result<Output> {
         if self.executor.stop_cancellation().is_cancelled() || Instant::now() >= self.end {
@@ -605,8 +611,8 @@ impl Frontend {
             .exchange(Input {
                 route: Route::Status,
                 parameter: String::new(),
-                content_type: None,
-                encoding: None,
+                content_type: Vec::new(),
+                encoding: Vec::new(),
                 body: Vec::new(),
             })
             .await?;
@@ -631,26 +637,71 @@ impl Frontend {
 }
 
 async fn proxy(State(frontend): State<Arc<Frontend>>, request: Request<Body>) -> Response {
-    let selected: io::Result<(Route, String)> = if request.uri().query().is_none() {
-        Route::select(request.method(), request.uri().path())
-    } else {
-        Err(invalid())
-    };
+    // Existing handlers ignore query fields. The closed route, not a query,
+    // determines which original operation the worker receives.
+    if request.method() == Method::GET
+        && let Some(selector) = request
+            .uri()
+            .path()
+            .strip_prefix(ORDERED_ECONOMICS_OUTCOME_PATH_PREFIX)
+        && !selector.is_empty()
+        && !selector.contains('/')
+        && let Err(response) = crate::ordered_economics::decode_ordered_outcome_selector(selector)
+    {
+        return response;
+    }
+    let selected: io::Result<(Route, String)> =
+        Route::select(request.method(), request.uri().path());
     let Ok((route, parameter)) = selected else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    if matches!(route, Route::Status | Route::Outcome) {
+        // State-only and State+Path original handlers never poll the request
+        // body or inspect these headers. Drop them without touching either.
+        drop(request);
+        return forward(
+            frontend,
+            Input {
+                route,
+                parameter,
+                content_type: Vec::new(),
+                encoding: Vec::new(),
+                body: Vec::new(),
+            },
+        )
+        .await;
+    }
+    // The original handlers collect their bounded body before inspecting
+    // duplicate encoding. Reuse their preflight and extraction order locally:
+    // refused requests must never connect to the worker or consume its budget.
+    let duplicates: bool = request
+        .headers()
+        .get_all(header::CONTENT_ENCODING)
+        .iter()
+        .nth(1)
+        .is_some();
+    if duplicates {
+        let mut request: Request<Body> = request;
+        let limit: usize = match route {
+            Route::Summary | Route::Height | Route::Component => route.limit(),
+            _ => MAX_ORDERED_PROPOSAL_BYTES,
+        };
+        DefaultBodyLimit::max(limit).apply(&mut request);
+        let headers: HeaderMap = request.headers().clone();
+        let path: String = request.uri().path().into();
+        let body = Bytes::from_request(request, &()).await;
+        return crate::ordered_economics::duplicate_encoding_refusal(&headers, body, &path);
+    }
     let headers: &HeaderMap = request.headers();
-    let field = |name: axum::http::header::HeaderName| -> io::Result<Option<Vec<u8>>> {
-        let bytes: Option<Vec<u8>> = headers
-            .get(name)
-            .map(|value: &HeaderValue| value.as_bytes().to_vec());
-        if bytes
-            .as_ref()
-            .is_some_and(|bytes: &Vec<u8>| bytes.len() > MAX_HEADER)
-        {
-            return Err(invalid());
+    let field = |name: axum::http::header::HeaderName| -> io::Result<Vec<Vec<u8>>> {
+        let mut values: Vec<Vec<u8>> = Vec::new();
+        for value in headers.get_all(name).iter() {
+            if values.len() >= MAX_HEADER_VALUES || value.as_bytes().len() > MAX_HEADER {
+                return Err(invalid());
+            }
+            values.push(value.as_bytes().to_vec());
         }
-        Ok(bytes)
+        Ok(values)
     };
     let (Ok(content_type), Ok(encoding)) =
         (field(header::CONTENT_TYPE), field(header::CONTENT_ENCODING))
@@ -661,15 +712,22 @@ async fn proxy(State(frontend): State<Arc<Frontend>>, request: Request<Body>) ->
         Ok(body) => body,
         Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
     };
-    let exchange: io::Result<Output> = frontend
-        .exchange(Input {
+    forward(
+        frontend,
+        Input {
             route,
             parameter,
             content_type,
             encoding,
             body: body.to_vec(),
-        })
-        .await;
+        },
+    )
+    .await
+}
+
+async fn forward(frontend: Arc<Frontend>, input: Input) -> Response {
+    let route: Route = input.route;
+    let exchange: io::Result<Output> = frontend.exchange(input).await;
     let failure = || {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -868,8 +926,8 @@ mod tests {
         let input: Input = Input {
             route: Route::Propose,
             parameter: String::new(),
-            content_type: Some(ORDERED_PROPOSE_REQUEST_MEDIA_TYPE.as_bytes().to_vec()),
-            encoding: Some(Vec::new()),
+            content_type: vec![ORDERED_PROPOSE_REQUEST_MEDIA_TYPE.as_bytes().to_vec()],
+            encoding: vec![Vec::new()],
             body: b"unchanged-request".to_vec(),
         };
         let bytes: Vec<u8> = input.encode().unwrap();
@@ -877,17 +935,85 @@ mod tests {
         assert_eq!(output.status, 503);
         assert_eq!(output.body, b"ordered-economics-unavailable");
     }
+    #[tokio::test]
+    async fn dispatch_preserves_all_header_occurrences_in_order() {
+        use axum::routing::post;
+        let app: Application = Router::new().route(
+            ORDERED_ECONOMICS_PROPOSE_PATH,
+            post(|headers: HeaderMap| async move {
+                let encoding: Vec<&[u8]> = headers
+                    .get_all(header::CONTENT_ENCODING)
+                    .iter()
+                    .map(HeaderValue::as_bytes)
+                    .collect();
+                assert_eq!(
+                    encoding,
+                    vec![b"identity".as_slice(), b"gzip".as_slice(), b"".as_slice()]
+                );
+                let media: Vec<&[u8]> = headers
+                    .get_all(header::CONTENT_TYPE)
+                    .iter()
+                    .map(HeaderValue::as_bytes)
+                    .collect();
+                assert_eq!(
+                    media,
+                    vec![
+                        b"application/first".as_slice(),
+                        b"application/second".as_slice()
+                    ]
+                );
+                StatusCode::UNSUPPORTED_MEDIA_TYPE
+            }),
+        );
+        let input: Input = Input {
+            route: Route::Propose,
+            parameter: String::new(),
+            content_type: vec![
+                b"application/first".to_vec(),
+                b"application/second".to_vec(),
+            ],
+            encoding: vec![b"identity".to_vec(), b"gzip".to_vec(), Vec::new()],
+            body: Vec::new(),
+        };
+        let bytes: Vec<u8> = input.encode().unwrap();
+        assert_eq!(
+            execute(app, Input::decode(&bytes).unwrap())
+                .await
+                .unwrap()
+                .status,
+            415
+        );
+    }
+
     #[test]
     fn closed_ipc_roundtrip_rejects_wrong_version_kind_trailing_and_declared_lengths() {
         let input: Input = Input {
             route: Route::Propose,
             parameter: String::new(),
-            content_type: Some(ORDERED_PROPOSE_REQUEST_MEDIA_TYPE.as_bytes().to_vec()),
-            encoding: None,
+            content_type: vec![ORDERED_PROPOSE_REQUEST_MEDIA_TYPE.as_bytes().to_vec()],
+            encoding: Vec::new(),
             body: vec![1, 2, 3],
         };
         let bytes: Vec<u8> = input.encode().unwrap();
         assert_eq!(Input::decode(&bytes).unwrap(), input);
+        let mut repeated: Input = input.clone();
+        repeated.content_type.push(b"application/second".to_vec());
+        repeated.encoding = vec![b"identity".to_vec(), b"gzip".to_vec(), Vec::new()];
+        assert_eq!(
+            Input::decode(&repeated.encode().unwrap()).unwrap(),
+            repeated
+        );
+        let mut old_version: Vec<u8> = bytes.clone();
+        old_version[0] = 1;
+        assert!(Input::decode(&old_version).is_err());
+        repeated.encoding = vec![Vec::new(); MAX_HEADER_VALUES + 1];
+        assert!(repeated.encode().is_err());
+        repeated.encoding = vec![vec![0; MAX_HEADER + 1]];
+        assert!(repeated.encode().is_err());
+        let mut too_many: Vec<u8> = bytes.clone();
+        // Empty parameter ends at offset 6; this is the first header count.
+        too_many[6] = u8::try_from(MAX_HEADER_VALUES + 1).unwrap();
+        assert!(Input::decode(&too_many).is_err());
         for offset in [0, 1] {
             let mut changed: Vec<u8> = bytes.clone();
             changed[offset] = 255;
@@ -919,8 +1045,8 @@ mod tests {
         let input: Input = Input {
             route: Route::Status,
             parameter: String::new(),
-            content_type: None,
-            encoding: None,
+            content_type: Vec::new(),
+            encoding: Vec::new(),
             body: vec![0; 2],
         };
         assert!(input.encode().is_err());
