@@ -46,17 +46,7 @@ fn hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-fn guest_proof() -> Option<Proof> {
-    // Ordinary --ignored invocations are inert. Only the dedicated init and an
-    // exact matching kernel command line can enter any writable test path.
-    if std::env::var("SUNRISE_SQLITE_GUEST_PROFILE")
-        .ok()
-        .as_deref()
-        != Some(PROFILE)
-    {
-        return None;
-    }
-    let command: String = String::from_utf8(bounded_file("/proc/cmdline", 4096)).unwrap();
+fn command_proof(command: &str) -> Proof {
     let mut fields: BTreeMap<&str, &str> = BTreeMap::new();
     for word in command.split_ascii_whitespace() {
         if let Some((name, value)) = word.split_once('=')
@@ -77,7 +67,27 @@ fn guest_proof() -> Option<Proof> {
     assert!(["fault", "recover"].contains(&mode.as_str()));
     let source: Option<[u8; 16]> = fields.get("sunrise_source").map(|text| unhex(text));
     assert_eq!(source.is_some(), mode == "recover");
-    assert_eq!(fields.len(), if source.is_some() { 6 } else { 5 });
+    assert_eq!(fields.len(), if source.is_some() { 5 } else { 4 });
+    Proof {
+        nonce,
+        case,
+        mode,
+        source,
+    }
+}
+
+fn guest_proof() -> Option<Proof> {
+    // Ordinary --ignored invocations are inert. Only the dedicated init and an
+    // exact matching kernel command line can enter any writable test path.
+    if std::env::var("SUNRISE_SQLITE_GUEST_PROFILE")
+        .ok()
+        .as_deref()
+        != Some(PROFILE)
+    {
+        return None;
+    }
+    let command: String = String::from_utf8(bounded_file("/proc/cmdline", 4096)).unwrap();
+    let proof: Proof = command_proof(&command);
     assert_eq!(
         String::from_utf8(bounded_file("/proc/sys/kernel/osrelease", 128))
             .unwrap()
@@ -88,7 +98,7 @@ fn guest_proof() -> Option<Proof> {
         String::from_utf8(bounded_file("/sys/block/vda/serial", 128))
             .unwrap()
             .trim(),
-        format!("se-{}", &nonce[..16])
+        format!("se-{}", &proof.nonce[..16])
     );
     let mounts: String =
         String::from_utf8(bounded_file("/proc/self/mountinfo", 16 * 1024)).unwrap();
@@ -106,12 +116,33 @@ fn guest_proof() -> Option<Proof> {
     assert_eq!(&right[..2], ["ext4", "/dev/vda1"]);
     assert!(left[5].split(',').any(|flag: &str| flag == "rw"));
     assert_eq!(fs::symlink_metadata(ROOT).unwrap().uid(), 0);
-    Some(Proof {
-        nonce,
-        case,
-        mode,
-        source,
-    })
+    Some(proof)
+}
+
+#[test]
+fn guest_command_line_accepts_owner_frames_and_refuses_extra_or_duplicate_fields() {
+    // Actual owner launch shape: four sunrise fields in the fault boot and
+    // one additional source pin in the cold recovery boot. Other kernel args
+    // are intentionally retained rather than represented as guest fields.
+    const FAULT: &str = "console=ttyS0 rdinit=/init panic=-1 loglevel=4 sunrise_profile=native-sqlite-qemu-v1 sunrise_nonce=0123456789abcdef0123456789abcdef sunrise_case=flush sunrise_mode=fault";
+    let fault: Proof = command_proof(FAULT);
+    assert_eq!(fault.nonce, "0123456789abcdef0123456789abcdef");
+    assert_eq!(fault.case, "flush");
+    assert_eq!(fault.mode, "fault");
+    assert_eq!(fault.source, None);
+    let recovery: String = FAULT.replace("sunrise_mode=fault", "sunrise_mode=recover")
+        + " sunrise_source=10101010101010101010101010101010";
+    let recovery: Proof = command_proof(&recovery);
+    assert_eq!(recovery.mode, "recover");
+    assert_eq!(recovery.source, Some([0x10; 16]));
+    for invalid in [
+        format!("{FAULT} sunrise_nonce=0123456789abcdef0123456789abcdef"),
+        format!("{FAULT} sunrise_unknown=refuse"),
+        format!("{FAULT} sunrise_source=10101010101010101010101010101010"),
+        FAULT.replace("sunrise_mode=fault", "sunrise_mode=recover"),
+    ] {
+        assert!(std::panic::catch_unwind(|| command_proof(&invalid)).is_err());
+    }
 }
 
 fn frame(proof: &Proof, event: &str, detail: &str) {
