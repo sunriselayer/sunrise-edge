@@ -42,6 +42,13 @@ existing capability set, only a saved-UID no-pipe signal owner may signal its
 owned role child. Guard cleanup so every failure still attempts bounded public
 metadata finalization; add no `CAP_KILL` or capability/resource allowance.
 
+Use the existing public `no_approval` label for exact refusal controls. Preserve
+nonzero exit and absent output. Retain bounded directory/socket handles per
+service; on failure remove only its pinned socket after actual service wait and
+PID absence, then close both handles. Unknown, replaced or active state refuses.
+Normal stop still requires prior socket removal; file-only accounting stays
+strict. Socket cleanup must not add a child, host operation or capability.
+
 Require the actual protected original candidate to equal the independent
 original bytes before using its file in the existing ordered submission. Full
 original receipts/restart and selector completion remain mandatory. Neither
