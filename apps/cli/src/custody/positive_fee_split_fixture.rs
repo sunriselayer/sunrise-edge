@@ -7,7 +7,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
 };
-use sunrise_edge_client::{ExternalSigner, LocalSigner};
+use sunrise_edge_client::LocalSigner;
 
 const MAXIMUM: usize = 1024 * 1024;
 const SELECTED_UID: u32 = 12001;
