@@ -141,3 +141,5 @@
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong
 in [`TODO.md`](../../../TODO.md).
+
+- [DR-0260: Complete-owner-loss local SQLite writer failover control](0260-complete-owner-loss-local-writer-failover.md)

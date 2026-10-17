@@ -639,6 +639,12 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
   - [x] 正常停止・TLS trust交代後の新規business: E30の実CLI/4 replicasで確認。
     保存済み再送に加え、新規nonce/返金Coinを使った取引の確定と新旧receipt保存を検証。
     同sourceの完全gate/CIはE45/E39で成功。残るM3条件は未完了として保持する。
+  - [ ] [全connection喪失後の正規local writer交代](docs/architecture/decisions/0260-complete-owner-loss-local-writer-failover.md):
+    retained-handleの元SIGKILL controlを保持し、全4 sole-ownerをSIGKILL/reapしてから
+    次generationを起動する別controlを追加。全12 SQL tables・2 blob tablesと4 portable
+    collections/参照bodyの保存済み再送不変、新規有料取引/両quorum/nonce/receiptを検証する。
+    source実装のみ。owning compile/run・最終gate/CIは未完了。
+    host/power/media/fsync・別host/実topology failoverの証拠へ読み替えない。
   - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。
     trait reply-loss、process SIGKILL、power/host/media/fsync faultは別証拠。
     全12 SQL tables・4 portable collections・positive blob/oracleを省略しない。
