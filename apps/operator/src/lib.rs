@@ -19,6 +19,7 @@ mod native_operations;
 mod native_tls;
 pub mod ordered_seal;
 mod original_genesis_install;
+mod protocol_custody;
 pub mod source_sqlite;
 pub mod sqlite_genesis;
 mod sqlite_genesis_checks;

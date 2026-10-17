@@ -83,6 +83,13 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     let mut tokens: Vec<OsString> = tokens.into_iter().collect();
     if tokens
         .first()
+        .is_some_and(|value| value == "protocol-worker" || value == "protocol-frontend")
+    {
+        let worker: bool = tokens.remove(0) == "protocol-worker";
+        return crate::protocol_custody::run(worker, tokens);
+    }
+    if tokens
+        .first()
         .is_some_and(|value| value == "anchor-checkpoint")
     {
         tokens.remove(0);
@@ -95,8 +102,32 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         let inspect: bool = tokens.remove(0) == "anchor-inspect";
         return crate::local_anchor::enroll(inspect, tokens);
     }
+    run_original(tokens, None)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn run_worker(
+    tokens: Vec<OsString>,
+    worker: crate::protocol_custody::Worker,
+) -> Result<(), Box<dyn Error>> {
+    run_original(tokens, Some(worker))
+}
+
+#[cfg(not(target_os = "linux"))]
+type WorkerMode = ();
+#[cfg(target_os = "linux")]
+type WorkerMode = crate::protocol_custody::Worker;
+
+// One original startup/authority owner, reused without copying its decisions.
+// The new worker mode is reachable only from a private custody-owned config.
+fn run_original(tokens: Vec<OsString>, worker: Option<WorkerMode>) -> Result<(), Box<dyn Error>> {
     let mut flags: FlagSet = FlagSet::parse(tokens, VALUE_FLAGS, BOOL_FLAGS)?;
     let anchor: Option<PathBuf> = crate::local_anchor::parse(&mut flags)?;
+    if worker.is_some() && anchor.is_none() {
+        return Err(
+            "original ordered custody requires the explicit enrolled independent anchor".into(),
+        );
+    }
     let confirmed: bool = flags.bool("--confirm-offline-fence-advance");
     let chain: ChainId =
         ChainId::new(flags.one("--chain-id")?).map_err(|_| "invalid --chain-id")?;
@@ -137,11 +168,18 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     let signing_key_path: PathBuf = PathBuf::from(flags.one("--signing-key-file")?);
     let state_db: PathBuf = PathBuf::from(flags.one("--state-db")?);
     let blob_db: PathBuf = PathBuf::from(flags.one("--blob-db")?);
-    let listen: String = flags.one("--listen")?;
-    let created_checkpoint: u64 = flags
-        .one("--created-checkpoint")?
-        .parse()
-        .map_err(|_| "invalid --created-checkpoint")?;
+    let listen: String = if worker.is_some() {
+        "127.0.0.1:0".into()
+    } else {
+        flags.one("--listen")?
+    };
+    let created_checkpoint: u64 = if worker.is_some() {
+        "0".into()
+    } else {
+        flags.one("--created-checkpoint")?
+    }
+    .parse()
+    .map_err(|_| "invalid --created-checkpoint")?;
     let timeout_seconds: u64 = flags
         .one("--timeout-seconds")?
         .parse()
@@ -342,6 +380,15 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         cancellation: Some(blocking_executor.stop_cancellation()),
     };
     let ordered_router = certified_ordered_economics_router(ordered_state);
+
+    #[cfg(target_os = "linux")]
+    if let Some(worker) = worker {
+        return worker.serve(
+            ordered_router,
+            blocking_executor,
+            native_http::ordered_custody::Identity::new(validator, domain, root.digest().bytes()),
+        );
+    }
 
     let router = certified_fastvote_router_with_executor(
         components,

@@ -89,6 +89,10 @@ roadmap describes a later target state.
   ([DR-0238](decisions/0238-publication-only-local-os-custody.md)):
   separate UID/key permissions, independently pinned preimages, exact approval,
   authenticated local IPC and refusal/restart controls.
+- [Original ordered protocol custody](local-protocol-custody.md)
+  ([DR-0264](decisions/0264-original-ordered-protocol-custody-worker.md)):
+  distinct-UID authority-owning worker and ordered-only HTTP frontend; existing
+  protocol owners/bytes retained, with no per-request raw signature endpoint.
 - [Publication custody lifecycle](publication-custody-lifecycle.md)
   ([DR-0244](decisions/0244-publication-approval-revocation-and-key-lifecycle.md)):
   durable request cancellation and stopped disposable-key recovery/rotation.

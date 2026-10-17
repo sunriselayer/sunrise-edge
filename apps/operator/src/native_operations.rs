@@ -106,7 +106,10 @@ impl StopOwner {
         self.live_ready = true;
     }
 
-    async fn wait(mut self, observations: NativeHttpObservations) -> io::Result<NativeStopReason> {
+    pub(crate) async fn wait(
+        mut self,
+        observations: NativeHttpObservations,
+    ) -> io::Result<NativeStopReason> {
         if let Some(result) = self.buffered.take() {
             return result;
         }

@@ -19,6 +19,8 @@ mod fastvote;
 mod lifecycle;
 mod local_execution;
 mod observations;
+#[cfg(target_os = "linux")]
+pub mod ordered_custody;
 pub mod ordered_economics;
 mod paid_execution;
 mod publication;
