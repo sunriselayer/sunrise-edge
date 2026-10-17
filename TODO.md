@@ -286,6 +286,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E87: original ordered multi-UID second setup failure | `80c028a9`の新build/inventoryはactual0。実UID owningは準備probe成功後、実authorの親directory読み取りでEACCESとなりactual1/両EOF/wait、1.54秒。全15 Docker clientsのwait/EOF/PID不在と専有container/volume解放・不在を親で再確認 | `6e84e3a1`でroot-owned public routing ancestorsだけを0755へ合わせた。private leaves0700・private files0600・caps・拒否controlsを維持。修正後の実4-worker/4-frontend owningは未実行で、M2/runtime成功には数えない |
 | E88: read-only anchor inspection and actual five ENOSPC controls | `4db1229f` / tree`c09cd519`。自動修正の後にも残ったwritable historical preflightを除き、同じreadonly snapshotで既存header/WAL/shared namespace検証とroot走査を実行。writer保持中・12拒否入力・authority非更新の3新規controlsを含むSQLite全123 passed/7 ignoredとstrict Clippy/fmt/diffが全actual0/両EOF/wait、64.387秒。元5 ENOSPC selectorsもactual0、26.992秒 | 全1180 tracked inputs・実CargoJSON/保持ELF・全framed rawを親で照合。ENOSPCの全86 clientsと専有5 container/volumeの解放・不在を再確認。既存historical/writable factoryと全5 fault controlsを保持。普通のcorrectness reviewは最終security監査ではなく、VM・全M3・最終完全gateの成功にも数えない |
 | E89: original ordered fixture bounded output failure | `4db1229f`で4 bins + fixture harness、構文、strict Clippyの全6 commandsがactual0/両EOF/wait、195.059秒。通常0755の5 ELFとread-only inventoryも再照合。実UID attemptは64KiB内の出力配分を超え、actual1/両EOF/wait、13.937秒 | inner start clientはSIGKILL、観測stdout58102 bytesの完全rawを保持できなかったためproduct成功0として扱う。outer Node rawは完全。全15 clientsのwait/EOF/PID不在と専有container/volume解放・不在を確認。上限・oracle・拒否controlsを維持して完全ログのtransportを修正し、別attemptで検証する |
+| E90: lossless complete-output transport source | `1973380a`で全child stdout/stderrを含む既存JSONをzlib/base64で転送し、正確なwireと復号resultを両方保持する。Node24の実16 controlsでPython相互運用、decoded512KiB境界、破損/末尾/連結stream・length/hash/base64/UTF8/JSON拒否が成功 | 64KiB wire/metadata・16KiB cleanup reserve、inner256KiB/stream64KiB、既存期限/caps/oracle/拒否controlsは維持。decoded allocation512KiBを明示し、outer最大serialization1,442,020 bytesが既存4MiB未満であることを確認。親が全既存Python owner/control AST・raw codec結果を照合。synthetic codec成功であり、修正後の実UID owningは未実行 |
 
 
 
@@ -349,6 +350,9 @@ ENOSPC raw SHA-256は `1a161db14ebac9262cb9778dc8f55b58439099f9ba664eec61e8e7e73
 E89は `m2-ordered-fixture-build4-final-parent-qualified-1017.json` /
 `m2-ordered-fixture-inventory4-final-parent-qualified-1017.json` /
 `m2-ordered-fixture-runtime4-final-parent-qualified-failure-1017.json`。
+E90は `m2-original-ordered-fixture-complete-output-transport-source-1017.json` /
+`m2-ordered-output-transport-1017-pure-check.json` /
+`m2-ordered-output-transport-parent-source-review-1017.json`。
 これらは各componentの資格であり、この後の統合headの完全gateへ付け替えません。
 
 E10は `pg-profile2.log` / `pg-profile2-receipt.json`、E11は
@@ -706,7 +710,8 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     権限を設定し、E87の次attemptで準備probeは成功したが実authorのEACCESで失敗。
     public routing ancestorsだけを0755へ合わせ、private leaves/拒否controlsは保持。
     E89の次attemptはログ配分超過で失敗し、完全inner rawがないためproduct成功0。
-    上限・oracle・拒否controlsを維持した完全ログtransportと実owningを残す。
+    E90で上限・oracle・拒否controlsを維持した完全ログtransportを実装し、
+    実Node24の16 codec controlsを確認。修正後の実owningは未実行。
     後継epoch・FastVote/readiness・他signing family・全M2へ転用しない。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
@@ -766,7 +771,9 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     完全history/receipt/blob restore、fresh fencing、migration/upgrade・safe rollback/stop。
   - 状態: E1の35-role source-free restoreに加え、E83でcomplete storeの暗号化復元と
     実prior releaseからのupgrade/旧版停止・再開が成功。最終統合sourceの完全required/CI・
-    Native/M7と残る原条件の照合を残し、全M4/releaseは未完了。
+    13-target Native A/BとM4対象の実RELEASE runtime、残る原条件の照合を残し、全M4/releaseは未完了。
+    原12 RELEASE runtimeの総合qualificationはM7の別gate。元8リンク/e8 withdrawals/
+    35 rolesの暗号化relocationは完全required/CIから除かず、短いTLS/upgradeで代替しない。
   - [x] [独立に保持したordered history floor component](docs/architecture/decisions/0248-import-ordered-history-freshness-floor.md):
     実import create/resumeへの追加拒否を実装。parse/comparison 12件・元9件を保持したcompiled import全10件・Clippy・
     独立component reviewは成功。E29で同sourceのRELEASE child import全10件も成功。
