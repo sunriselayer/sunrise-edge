@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-10-16 (JST)。これは唯一の現行作業表です。
+更新: 2026-10-17 (JST)。これは唯一の現行作業表です。
 設計は[architecture](docs/architecture/README.md)、実装場所は
 [code map](docs/development/code-map.md)、整理の決定は
 [DR-0236](docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md)に置きます。
@@ -13,7 +13,7 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 
 - コード・検証対象: **14件** (R1-R4、D01-D03・D05、M1-M5・M7)。
 - 公開準備対象: **6件** (D04・D06-D08、M6・M8)。実装キューとは別です。
-- 再開後: **旧20件のうち6件完了、14件未完了、既存の完了履歴は9件**。
+- 再開後: **旧20件のうち8件完了、12件未完了、既存の完了履歴は9件**。
   再分類・延期・重複する検証の共用を、機能の完了件数には数えません。
 - R1・R2・R3・D01は、保存ソース・欠落資料・実際のCI tested treeと
   完了したrecipeの最終照合および独立source reviewを終えました。
@@ -23,6 +23,9 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 - R4は `537c8777` のE17/E18/E19で13-targetの技術handoffを完了しました。
   旧local完全gateの終端未確認E20は保持し、新しいM2 sourceの完全gateはE22で成功。
   M2/M3/M4/M7・公開条件は未完了のまま保持します。
+- D05/M5の選択済みNative/closed relayの技術範囲はE71/E73で完了。
+  残るコード・検証の親項目はD02/M1/M2/M3/M4/M7の6件です。
+  元M5の実PKI・capacity・alerts・運用の公開条件はD04/D07/M8に残ります。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -100,8 +103,12 @@ E31 / `e60337b3` とE32 / `92fd5c93` に固定し、それぞれDraft PR #309-#3
 E28/E29のsourceに後続差分を含めたことにはしません。
 復元の追加拒否と後継floorの統合code sourceは `53e324c1` / tree `499ef2e8`、
 `codex/successor-floor-1016`。E37の対象検証は成功し、後継floorのlong case・
-最終sourceの完全required/CIとNative releaseは未完了です。
-各完全gate・全M2-M5/M7の最終照合は未完了として保持します。
+当時未終端だった後継floorのlong case/CIはE53、277fの完全requiredはE63で成功。
+原12 Native runtimeはE57の失敗として保持します。後続4 sourcesの完全required/CIは
+E68-E71、b4のtest-only CIはE72、D05/M5の技術最終照合はE73へ記録しました。
+M2/M3/M4/M7全体・独立監査・公開条件は未完了です。
+9de6の原12 RELEASE runtimeは2026-10-17に実開始しました。元12ケース・共有18,000秒・
+CPU4/16GiB/swap0を維持し、終端成功前に合格へ数えません。
 初回DockerのSQLite祖先directory読取EACCES、manual fixtureのsetup counter誤り、
 import testのsource retirement不足と各修正前失敗も保持します。
 50a4 / tree eff704ddのE14-E16と旧作業コピーは過去の対象として保持します。
@@ -251,6 +258,16 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E61: 10a4 original R4 runtime timeout | 原12ケース中11ケースはactual0/EOF。最後の元recurring successor selectorが共有18,000秒の上限で停止し、controller actual1/EOF、18,002.073秒。親がhelper・終端/inner receipt・両raw hashとunit停止を照合 | 最後のattemptはEOF/wait未完、killとterminationを確認。専有TMPをforensicsとして残し、再実行・上限変更なし。E60のCI成功と分け、原12 runtime・全M7の合格に数えない |
 | E62: own-created application mint/burn custody | `4d2c97e0` / tree`59019e02`。custody163 passed/5 ignored、Standard Asset19 passed、fmt/Node/CLI build/全target全feature Clippy/Cargo JSONの全7 commandsがactual0/EOF、9.986秒。実Docker/別UID/PTYの通常実行はactual0/EOF、5.369秒。作成assetで供給量0→5M→0、cap version1→2→3、新Coin1→tombstone、nonce1→2→3、非空Accepted/full result、offline/実CLIの全署名byte一致を確認 | 元5 families/6 lifecycle・取消/restartを保持。新profileの6/6/4/2、restart2/2/0/2、exact replayのDefinition/genesis spend/fee・全effect IDs・nonce3/2 receipts/InstanceRecord不変を確認。全store/all tables/cross-file snapshotとは呼ばない。source/raw/両ELFを親で照合し、container/volume残存なし。cap追加なし、60/230/280/30秒を維持。pure/fixture指摘修正を独立承認。最終source完全required/CI/新Native release、他creator・全M2/M7・独立監査/公開認定は未完了 |
 | E63: 277f complete required and hosted CI | `277fd2c5` / tree`39d05ad1`。literal npm-ci +完全check-allがactual0/EOF、26,575.667秒。Rust success summaries144・報告pass合計4,236・ignored32・failed0。E53全8 CI raw、前後source/tree/clean・Node24・全wrapper/rawを親で再照合 | closure pins/history floor sourceのstorage-neutral qualification。E57の原12 RELEASE runtime失敗は保持し、published checkpoint/state-root・latest owned rollback・PG・全M4/M7・独立監査/公開認定や後続sourceへ転用しない |
+| E64: 9de6 actual Native A/B and RELEASE CLI | `9de634a7` / tree`229b397f`。13-targetの2 fresh buildsがactual0/EOF、1,399.459秒、全13組のbyte/mode/owner一致。別targetの13 debug +10 driver compileもactual0/EOF、1,562.884秒。26+23 ELF・Cargo JSON/source/profile/raw・4専有dir/lease解放を独立照合。実RELEASE CLIの元5 families/6 publication lifecycleとown-created Asset mint/burnもactual0/EOF、5.620秒 | Node24/Rust1.97.1・same-host trusted OS。oracleはcode `4d2c97e0` の保持済みdev/test2 CLI harnessで、全code/Node入力同一・3 doc/TODOだけの差分を確認。全tracked files/両ELF/rawとcontainer/volume解放を再照合。原12 runtimeはcheck/private13ROmapping probe成功まで、実12ケース未実行。重い並行検証の終端後に進める。完全required/CI・新しい鍵復旧テスト・全M2/M7・独立監査/公開認定は含めない |
+| E65: f973 original R4 runtime timeout | 原12ケース中11ケースはactual0/EOF。最後の元recurring successor selectorが共有18,000秒の上限で停止し、controller actual1/EOF、18,002.004秒。helper・終端/inner receipt・両raw hash・clean sourceとunit停止を親で照合 | 最後のattemptはEOF/wait未完、killとterminationを確認。専有TMPをforensicsとして保持し、再実行・上限変更なし。E59のCI成功と分け、原12 Native runtime・全D05/M5/M7の合格に数えない。新source 9de6の実runtimeは、現在実行中の完全required controllersの終端後に進める |
+| E66: 10a4 complete required and hosted CI | `10a47db1` / tree`ede55f33`。literal npm-ci +完全check-allがactual0/EOF、26,021.786秒。Rust success summaries144・報告pass合計4,266・ignored33・failed0。E60全8 CI raw、前後source/tree/clean・Node24・全wrapper/rawを親で再照合 | genesis mint/burn sourceのstorage-neutral qualification。E61の原12 RELEASE runtime失敗を保持し、後続application-pin/鍵復旧source・PG・全M2/M7・独立監査/公開認定へ借用しない |
+| E67: stopped asset key recovery and rotation refusal | test source `be3b4896` / tree`e8878c44`、A/B生成`9de634a7`実RELEASE CLI + compiled inputs同一の`4d2c97e0`保持oracleでactual0/EOF、5.558秒。元5 families/6 publication lifecycleを保持し、own-created mint/burnの全signer停止→同じ新規requestの元鍵reference→鍵復旧→完全署名byte一致を確認。復旧前からの取消と新規取消を保持し、restart後も両方拒否。reference1/1/1/0、復旧3/3/1/2、restart2/2/0/2を内外で検証。5 profilesのnew publisherで旧owner/creatorを拒否、出力なしも確認 | source/両ELFのhash/mode/owner/identity不変、container/volume解放、生成880,006 bytes。initial argv E2BIG失敗を保持し、同一136,386-byte programを31,025-byte bootstrapへ圧縮、長さ/digest検証後に実行。復元一致・digest/trailing-data拒否と独立reviewを確認。元のresource/deadline/UID/capability/全assertionは維持。新test-only sourceの13-target/完全required/CI、正の所有権移行・他profileの鍵復旧・automatic signing・全M2/M7・独立監査/公開認定は含めない |
+| E68: f973 complete required and hosted CI | `f973c02d` / tree`63877d27`。literal npm-ci +完全check-allがactual0/EOF、24,322.791秒。Rust success summaries144・報告pass合計4,267・ignored33・failed0。[run `38886425920`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38886425920) attempt1の全7 owners + checkもSUCCESS。前後source/tree/clean・Node24本体・全wrapper/raw・全8 CI raw/checkout/tree/parentsを親で再照合 | ordered SIGTERM sourceのexact storage-neutral qualification。原12 RELEASE runtime・後続source資格・全M2/M7・PG・独立監査/公開認定とは分ける |
+| E69: 5c4d complete required and hosted CI | `5c4d0cc5` / tree`c32ed10e`。literal npm-ci +完全check-allがactual0/EOF、22,952.088秒。Rust success summaries144・報告pass合計4,284・ignored34・failed0。[run `38893147242`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38893147242) attempt1の全7 owners + checkもSUCCESS。前後source/tree/clean・Node24本体・全wrapper/raw・全8 CI raw/checkout/tree/parentsを親で再照合 | create-asset custody sourceのexact storage-neutral qualification。原12 RELEASE runtime・後続source資格・全M2/M7・PG・独立監査/公開認定とは分ける |
+| E70: c04e complete required and hosted CI | `c04e5a38` / tree`ea3cf658`。literal npm-ci +完全check-allがactual0/EOF、20,908.092秒。Rust success summaries144・報告pass合計4,285・ignored34・failed0。[run `38901912984`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38901912984) attempt1の全7 owners + checkもSUCCESS。前後source/tree/clean・Node24本体・全wrapper/raw・全8 CI raw/checkout/tree/parentsを親で再照合 | frontier SIGTERM sourceのexact storage-neutral qualification。原12 RELEASE runtime・後続source資格・全M2/M7・PG・独立監査/公開認定とは分ける |
+| E71: 9de6 complete required and hosted CI | `9de634a7` / tree`229b397f`。literal npm-ci +完全check-allがactual0/EOF、17,587.750秒。Rust success summaries144・報告pass合計4,304・ignored34・failed0。[run `38922549356`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38922549356) attempt1の全7 owners + checkもSUCCESS。前後source/tree/clean・Node24本体・全wrapper/raw・全8 CI raw/checkout/tree/parentsを親で再照合 | own-created Asset mint/burn custody sourceのexact storage-neutral qualification。原12 RELEASE runtime・後続source資格・全M2/M7・PG・独立監査/公開認定とは分ける |
+| E72: b4 test-only hosted CI | `b4d20a4a` / tree`1e934d3a`。[run `38930807287`](https://github.com/sunriselayer/sunrise-edge/actions/runs/38930807287) attempt1の全7 owners + checkがSUCCESS。全8 raw checkout`b2dd371d`のtree一致・merge parents・clean local sourceと全raw hashを親で再照合 | E67の鍵復旧test-only headのexact CI。literal local完全required/このheadの13-targetは未実行。E71のsourceとして付け替えない |
+| E73: D05/M5 technical final coverage | E71の完全required/全8 CI成功と独立functional reviewで下の共通case表を最終照合。c04e→b4のoperator/native-http/shared relay・gate dispatcher/workflowはbyte同一。9de6→b4の差分はTODO/guideと別実行のDocker custody fixtureのみで、通常required/CIの入力は不変。E67/E72は別sourceの限定資格として保持 | 選択済みloopback Native + closed certified relayの技術範囲を完了。元M5総合readiness・原12 RELEASE runtime/M7・独立security監査・実provider/公開認定ではない。実PKI/capacity/alerts/spend/topology/rehearsalはD04/D07/M8 |
 
 
 
@@ -520,11 +537,14 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
   - 範囲: 今回のlocked入力と照会時点のadvisory review。独立security監査はD02/M1、
     公開前の実露出/選択profileと新しいadvisoryの確認はD04/M8に残る。
 
-- [ ] **D05: exposed ingress/operationsのコードを検証する**
+- [x] **D05: exposed ingress/operationsのコードを検証する**
   - 対象: 実装 + 検証。全accepted familyのauth/TLS・rotation、request/retry/work bounds、
     liveness、secret-free logs/alerts・spend controlsを確認し、未対応familyは閉じる。
-  - 状態: ローカルTLS/stop/observationsの証拠はある。全体qualificationは未完了。
-  - 次: M5と同じ検証を共用する。本番PKI・SLO・topologyの適用はD04/D07で扱う。
+  - 状態: E71/E73で選択済みloopback Native + closed certified relayの技術範囲を完了。
+    accepted familyと閉じるfamily、auth/TLS・rotation、bounds/liveness/observations/spendの
+    共通case表をM5下へ対応付け、実装・実fixture・完全required/CIを照合した。
+  - 範囲: 受入pinは `9de634a7`。b4まで対象コード/gate入力は不変。E72はb4のCIであり、
+    b4のlocal完全requiredへ付け替えない。本番PKI・SLO・topologyの適用はD04/D07に残る。
 
 - [ ] **M1: 固定したreleaseの独立security/release reviewを終える**
   - 対象: 検証。code/deployment仕様、contracts、economics、handoff/activation、
@@ -589,8 +609,16 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     公開instance参照のprivate設定への移行はfile ownerが行い、後処理のsignalも同じUIDで送る。
     Node/Rust sourceと入力ELF不変・専有container/volume解放を親で再照合した。
     同じtrusted OSのown-created profileで、現在性やassetとinstanceの起源をfetch証明しない。
-    作成assetのtransfer/split/merge、新familyの鍵復旧/交換、automatic protocol signingと
-    最終source完全required/CI/新Native release・全M2は未完了。
+    9de6の13-target Native A/Bと実RELEASE CLIはE64で成功。
+    同profileの停止後鍵復旧はE67で確認。
+    作成assetのtransfer/split/merge、他profileの鍵復旧・所有権移行を含む鍵交換、automatic protocol signingと
+    最終source完全required/CI・原12 RELEASE runtime・全M2は未完了。
+  - [x] [own-created mint/burnの停止後鍵復旧と5 profilesの鍵交換時拒否](docs/architecture/publication-custody-lifecycle.md#asset-family-fixture-coverage):
+    E67で元鍵のsignerを停止してから復旧し、同じ新規承認frameでのreference署名一致、
+    復旧前の取消・新規取消・restart後の両拒否を実CLI/別UID/PTYで検証。
+    新publisherで旧Coin/Cap/fee/creatorを拒否し、出力が作られないことも確認。
+    元5 families/6 lifecycleと全件数を維持。正の所有権移行、他profileのlive鍵復旧/交換、
+    automatic protocol signingと全M2・最終source全体gateは未完了。
   - 次: 既存fee-claim CLIなど他familyのactual consumerへ操作内容レビューとprotected backendを
     接続し、各lifecycleを検証する。automatic protocol signingは固有のauthority条件を保持。
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
@@ -647,13 +675,14 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     実オフホスト保管・実鍵retention・DR運用はD04/D06/D07へ残す。
     exact restoreをblanket raw-state equalityやcross-file atomicityとは呼ばない。
 
-- [ ] **M5: Native ingress/operationsの未達コード・検証を埋める**
+- [x] **M5: Native ingress/operationsの未達コード・検証を埋める**
   - 対象: 実装 + 検証。D05に加え、backpressure/request/work/capacity policy、
     monitoring/incident/validator運用を再現可能なコード・手順へ結び付ける。
-  - 状態: local TLS/stop/collectorは実装・部分検証済み。public operationsは未認定。
+  - 状態: E71/E73で選択済みlocal Native/closed relayの実装・検証を完了。
+    元M5の実運用readinessはD04/D07/M8の公開条件が残る。
     追加のstop cancellationは共有admitted/structured-event/query dispatcherのjob開始前とSQLite hostの既存
     pre-storage checksを接続。待機中workの拒否・既実行workの完走・drain/拒否優先順位を
-    component検証済み。live hostでこの配線だけを分離するoracleと完全gateは未完了。
+    component検証とE44/E50の実factory/SIGTERM oracle、E71の完全gateを対応付けた。
     admitted counterには待機後の取消も含み、業務実行件数とは解釈しない。
   - [x] [scheduler recoveryとordered contextの停止確認 component](docs/architecture/decisions/0247-native-stop-before-storage-continuation.md):
     既存型のAdmissionClosedとstorage直前のcooperative checkを追加。actual recovery APIの欠落guard
@@ -662,7 +691,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     このfixtureを本番host constructor/signalの配線証明に数えない。
   - [x] [後継hostの権限解決直前の停止確認](docs/architecture/decisions/0250-successor-operation-context-stop-check.md):
     E31で既存executorから直接再確認し、read/mutation・旧error優先順位・欠落guardの負対照を検証。
-    初期admission確認だけでは観測できない遅いstopを拒否。全D05/M5と完全gate/CIは保持する。
+    初期admission確認だけでは観測できない遅いstopを拒否。全体qualificationはE71/E73で別に照合した。
   - [x] [signerless履歴hostのpolicy解決前の停止確認](docs/architecture/decisions/0251-successor-historical-read-stop-check.md):
     E32で別compositionのread ownerも検証。停止hookはadmission後に入り、未開始policyを0回、
     open対照では1回呼ぶことと、error優先順位・欠落guardの負対照を確認した。
@@ -675,8 +704,23 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     pre-close/別composition取消参照の負対照・exact復元後の正常成功を確認。
     同一executorのstop stateへの別参照を検証し、paid prepare/apply・実binary late window・
     全D05/M5や最終source全体gate/CI/RELEASEへ拡張しない。
-  - 次: D05と一本のcase/coverage表を使う。実workload/SLOに対するcapacity、
-    actual production PKI、alerts/response・spend適用はD04/D07で決め、適用後に検証する。
+  - 範囲: 下の共通case表と `9de634a7` の完全required/全8 CIを受入対象とする。
+    実workload/SLOに対するcapacity、actual production PKI、alerts/response・spend適用は
+    D04/D07/M8で決め、適用後に検証する。原12 RELEASE runtimeはM7の別gate。
+
+### D05/M5の共通case表
+
+| 技術条件 | 実装と実行されたcontrol | 資格・残る境界 |
+| --- | --- | --- |
+| 全accepted familyの列挙・authorization | shared `certified-route-contract.tsv` とNative contract oracle、signed intent/certificate/policy、successor live warrant。historyはsignerlessの3 read routes | E71/E73。closed relayはNodeEvent/ordered/Seal/fee-claim/historyとunknown method/selector/queryを拒否。query/livenessに新JWT要件は加えない |
+| TLS/拒否・停止後trust rotation | `local_tls_startup` の実4 host・SDK/CLI・bad pin・stop/rotation後の新規paid transferとreplay。successor/historyは既存recurring support | E30/E71。disposable local trustであり本番PKI/compromise revocationではない |
+| request/retry/work/backpressure | Native policyのzero/oversized/incoherent拒否、slow header/body/handshake/output/peer切断、structured work overload、collector/output上限 | E71。1つのconnection/work owner、relay自動retryなし。transport lossはoutcome-unknownでreceipt照合。fixture値をproduction capacityにしない |
+| stop/queue取消・started work drain・本番factory配線 | queued/in-flight executor、ordered/successor/historyのlate component controls、compiled ordered/frontierの実SIGTERMとpositive writes・欠落guard負対照 | E31/E32/E44/E50/E71。共通executorを所有する別参照を照合。binaryのlate window自体はcomponentで分担し、forced killをclean drainとしない |
+| liveness・secret-free observations/collector | protocol stateを触らないliveness、固定15 numeric counters、bounded schema、actual foreground collector/SIGUSR1・実host継続 | E71。caller IDs/raw errors/秘密labelsを記録しない。実alert thresholds/routing/on-callはD04/D07 |
+| spend・再現可能な操作/incident手順 | signed max_fee/gas、max_fee不足拒否、bounded host work、既存Native/fastvote/ordered/business-cut/release guidesのstop/restart/refusal/reconciliation | E71/E73。実billing cap・abuse/SLO設定・mainnet代表負荷/soak・topology/rehearsalはD04/D07/M8 |
+
+M5の元のproduction条件は保存した原文と公開準備の対応表へ残す。この表の技術完了を
+実運用・独立security監査・他provider・全M7完了へ拡張しない。
 
 - [ ] **M7: 再現可能なsupported-runtime releaseを作る**
   - 対象: 実装 + 検証。source/compiler/deps/build provenance、2回のfresh 13-target
@@ -816,7 +860,7 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
 4. R4とNode24 profileはE17/E18/E19で技術範囲を完了。E20の旧local終端未確認と
    未達qualificationを保持。後続M2 sourceの所有controllerによる完全gate成功はE22/E24へ記録済み。
    D02/M1のprovider-stopped taskは再試行・迂回せず、未達として保持する。
-   D05/M5は同一の実case表で進める。
+   D05/M5はE71/E73と同一case表で選択済み技術範囲を完了。公開運用はD04/D07/M8に残す。
 5. コード・検証が揃ってから人の公開準備へ引き渡す。新たな許可/実値が必要な
    公開側の仕事を勝手に実行せず、具体的な不足を説明する。
 

@@ -65,3 +65,116 @@ retract signatures already produced or preempt a request past its last check.
 Changing a file or pin cannot revoke signatures already emitted. There is no
 automatic rollback to an old key. If identity, revocation freshness or nonce
 reconciliation is uncertain, keep signing stopped and reconcile first.
+
+## Asset-family fixture coverage
+
+`scripts/check-docker-custody-fixture-1013.mjs` previously proved recovery,
+rotation and the key/config startup mismatch only through the publication-only
+synthetic wire probe. The dispatcher-level `KeyFileAddressMismatch` check
+(`run_with_policy` in the CLI) is shared by every family, so that part is
+already covered once and is intentionally not duplicated per asset family.
+The added controls passed on 2026-10-17: actual exit 0/EOF in 5.558s on
+test source `be3b4896`, using the A/B-produced `9de634a7` RELEASE CLI and
+the retained `4d2c97e0` dev/test-opt2 oracle. All compiled Rust/Cargo inputs
+are identical. Original controls, source/binary hashes and metadata, and
+owned container/volume cleanup were independently checked. `TODO.md` E67
+owns this result and its limits; the test-only source has no new whole-M7
+or complete-required/CI qualification.
+
+The first attempt hit Linux's single-argument size limit before container
+creation. The fixture now sends a bounded compressed bootstrap, verifies
+the decoded length and SHA-256 before execution, and runs the identical
+136,386-byte Python program. Its bootstrap argument is 31,025 bytes.
+Digest mismatch and trailing compressed data are rejected before execution.
+Container and fixture resource/deadline limits are unchanged.
+
+- **Recovered-key control against the own-created mint/burn profile**
+  (`phase_own_asset_mint_burn`), following the stop-all-signers-first ordering
+  in `Recover the same disposable key` above: the original key's own `serve`
+  first finishes its full 6/4/2 lifecycle (including revoking
+  `OWN_MINT_REQUEST_ID`/`OWN_BURN_REQUEST_ID` and refusing both on that same
+  still-running process), then its own revoked-restart (2/0/2) also finishes
+  and the socket is confirmed gone after each. No custody signer using the
+  original key file remains running. Only then is a new recovery request
+  prepared and independently approved (through the real attended PTY
+  `approve-burn` review) over the SAME already-captured own-burn cap/coin/
+  fee preimages and the same 3600-second expiry window, under a new dedicated
+  request ID. A revoked ID is not reapproved or signed.
+
+  `request_id` is itself part of the signed `CallIntent`
+  (`asset_mint_burn.rs`'s own
+  `request_id: *request.request_id.as_bytes()`), so a byte-for-byte
+  signature comparison is only meaningful over the identical frame, never
+  across two different request IDs. For this comparison,
+  **before the seed is copied anywhere**, the ORIGINAL key file signs this
+  exact SAME newly approved frame once, through its own dedicated bounded
+  `serve-mint-burn` on a distinct socket (1 connection/1 signed/0 refused),
+  producing the expected reference signature. That reference serve is then
+  waited on, reaped and its socket confirmed gone — exactly like the
+  original `serve`/`restarted` above — before the disposable seed is ever
+  recovered (via the existing `phase_recover_private_key` backup/restore
+  helper, to a profile-local path distinct from the publication family's
+  own recovery paths).
+
+  A second, independent `serve-mint-burn` is then started with the
+  recovered key path, bound to the SAME `--asset`/`--instance-ref` pins,
+  and this fixture demonstrates, against it: (1) the SAME unchanged
+  recovery request signs successfully through the real `sign-burn` CLI
+  (never a synthetic wire probe), and its signature bytes are asserted
+  equal to the reference signature captured above — offline signing only,
+  so no fresh ledger execution and no nonce/supply change, keeping the
+  original supply/nonce/replay/receipt assertions above meaningful and
+  unmodified; (2) the pre-existing revocation of `OWN_BURN_REQUEST_ID` —
+  issued before the key was ever recovered — still refuses under the
+  recovered key; (3) revoking the new recovery request's own ID and showing
+  the same recovered-key instance also refuses it. A fresh restart of the
+  recovered-key serve then refuses both the pre-existing and the newly
+  issued revocation again. The reference serve, the recovered-key serve and
+  its restart each have their own exact counters (1/1/0, then 3/1/2, then
+  2/0/2), separate from the original key's own 6/4/2 and 2/0/2. Cleanup uses
+  the existing same-UID `stop_owned_process` signal helper only (no
+  `CAP_KILL`/`FOWNER`), and every socket path is asserted gone after each
+  stop, the same pattern `main()` and `phase_new_identity` already use.
+- **Rotation refusal with a new publisher configuration**
+  (`family_rotation_config` + `expect_prepare_rotation_refusal`, one per
+  family). A freshly generated keypair and a config identical to each
+  phase's own (same chain/protocol/epoch/domain/operator pin, only the
+  publisher differs) is used to re-run that family's own already-exported
+  owned-object preimage through its `prepare-*` command, purely locally (no
+  serve, no native host, no chain mutation):
+  - transfer: `transfer coin is not owned by the pinned custody publisher`
+  - split/merge: `split coin is not owned by the pinned custody publisher`
+  - mint/burn: `mint cap is not owned by the pinned custody publisher`
+  - create-asset (fee-only, no owned Coin/Cap input):
+    `fee source is not owned by the pinned custody publisher`
+  - own-created mint/burn: reusing the SAME `--asset`/`--instance-ref` pins
+    under the rotated config hits `AssetMintBurnTrust::new`'s
+    `ApplicationAssetPin::new` creator check first (before any cap/fee
+    ownership check runs), so the asserted message is instead
+    `application instance record does not match the pinned custody context,
+    code, revision, initializer or creator`. This is asserted explicitly,
+    matching the real validation order in `asset_mint_burn_commands.rs`
+    (`load_trust` runs before `prepare_mint`/`prepare_burn`).
+
+  Each family's own `--out` path is asserted absent both before the refusal
+  is attempted and after it, so a refused `prepare-*` is also checked to
+  have written nothing, using its own distinct, never-otherwise-occupied
+  path per family.
+
+Both additions preserve every original fixture family/control, resource/
+deadline/log/generated-byte/process/network/UID/capability bound, and the
+existing `serve`/`restarted` summaries' exact expected counters; they add
+their own dedicated sockets, keys, configs and counters rather than
+perturbing any existing one. The host-side Node result check requires every
+new field above to be present and `true` and every new serve/restart counter
+to match exactly, the same way it already required the pre-existing
+`serve_summary`/`restart_summary` fields.
+
+**Still open, not covered by this addition:** a true rotated-identity
+*positive* business acceptance (minting/transferring against an object the
+rotated identity actually owns) still requires first moving ownership
+on-chain, which remains a separate protocol action and is not implied by
+any refusal check above. Automatic/unattended signing, full key rotation of
+the other four families' own live `serve` processes (only the own-created
+profile gets the recovered-key serve round trip above), and any other
+not-yet-listed M2 lifecycle work remain open per `TODO.md`.

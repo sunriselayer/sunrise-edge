@@ -47,7 +47,8 @@
 //     --cli-binary /abs/path/to/target/.../sunrise-edge-cli \
 //     --test-binary /abs/path/to/target/.../deps/sunrise_edge_cli-<hash>
 import { spawn, execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
 import { performance } from 'node:perf_hooks';
 import { existsSync, statSync } from 'node:fs';
 import { basename } from 'node:path';
@@ -689,9 +690,11 @@ def custody_private_copy(source_path, dest_path, max_bytes=256, replace=False):
     return os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
 
 
-def phase_recover_private_key(source_key_path):
-    backup_path = f"{ROOT}/custody-keys/custody.seed.backup"
-    restored_path = f"{ROOT}/custody-keys/custody.seed.restored"
+def phase_recover_private_key(
+    source_key_path,
+    backup_path=f"{ROOT}/custody-keys/custody.seed.backup",
+    restored_path=f"{ROOT}/custody-keys/custody.seed.restored",
+):
     if not custody_private_copy(source_key_path, backup_path):
         raise FixtureFailure("custody-owned private backup of the disposable seed failed")
     if not custody_private_copy(backup_path, restored_path):
@@ -999,6 +1002,48 @@ def phase_new_identity(socket_path, old_public_key):
     return summary.strip().splitlines()
 
 
+def family_rotation_config(custody_dir, name="rotation"):
+    # A throwaway, genuinely different disposable identity/config (DR-0244
+    # rotation steps 2-3): same chain_id/protocol_version/epoch/hash_suite/
+    # domain/operator_uid pin every whole-coin-test family phase already
+    # writes for itself, only the publisher key differs, so a rotation
+    # refusal lands on the intended owner-mismatch check instead of an
+    # unrelated context/genesis mismatch. 'name' keeps multiple rotation
+    # configs inside one shared custody_dir (phase_create_asset and
+    # phase_own_asset_mint_burn) from colliding on the same path.
+    new_public_key = phase_keygen(f"{custody_dir}/{name}.seed")
+    config_path = f"{custody_dir}/{name}.config"
+    text = (
+        "chain_id=custody-whole-coin-test\nprotocol_version=7\nepoch=0\nhash_suite_id=1\n"
+        f"domain={DOMAIN_HEX}\npublisher_public_key={new_public_key}\noperator_uid={OPERATOR_UID}\n"
+    )
+    fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        os.write(fd, text.encode("ascii"))
+    finally:
+        os.close(fd)
+    os.chown(config_path, CUSTODY_UID, CUSTODY_GID)
+    return config_path
+
+
+def expect_prepare_rotation_refusal(label, command, expected_substring, out_path):
+    # Cheap and purely local: 'prepare-*' only decodes/validates, it never
+    # touches a running serve, the native backend, or chain state, so this
+    # never needs a fresh ledger execution or a new owned object. out_path
+    # must be a distinct, not-yet-occupied path (each call site uses its
+    # own), so a leftover file from an unrelated earlier step can never be
+    # mistaken for evidence that this one refusal still wrote nothing.
+    if os.path.lexists(out_path):
+        raise FixtureFailure(f"{label}: its own --out path is already occupied before the refusal is even attempted")
+    rc, _out, err = run_exec(command, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], timeout=10)
+    if rc == 0:
+        raise FixtureFailure(f"{label}: prepare unexpectedly accepted an old-publisher-owned preimage under a rotated config")
+    if expected_substring.encode("ascii") not in err:
+        raise FixtureFailure(f"{label}: did not report the expected exact rotation refusal; stderr={err.decode('utf8', 'replace')!r}")
+    if os.path.lexists(out_path):
+        raise FixtureFailure(f"{label}: a refused prepare still wrote its --out path")
+
+
 def phase_transfer(public_key):
     custody_dir, operator_dir = f"{ROOT}/custody-transfer", f"{ROOT}/operator/transfer"
     for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
@@ -1112,6 +1157,22 @@ def phase_transfer(public_key):
             raise FixtureFailure("revoked transfer produced signed output")
         summary = wait_serve(serve, extra_seconds=8)
         check_summary("transfer", summary, {"connections_accepted":"3", "requests_handled":"3", "requests_signed":"2", "requests_refused":"1"})
+
+        # Rotation refusal (DR-0244 step 4/5, cheap and local): the exact
+        # already-exported owned coin preimage still fails prepare-transfer
+        # under a genuinely different, freshly generated publisher/config.
+        rotation_config = family_rotation_config(custody_dir)
+        rotation_prepare = cli_argv("custody", "prepare-transfer",
+            "--config", rotation_config, "--genesis-manifest-file", f"{custody_dir}/genesis.bin",
+            "--genesis-digest", generated["digest"],
+            "--coin-file", f"{custody_dir}/coin.bin", "--fee-source-file", f"{custody_dir}/fee.bin",
+            "--recipient", generated["recipient"], "--nonce", "0", "--request-id", "76" * 32,
+            "--max-fee", "1000000", "--gas-limit", "200000", "--out", f"{custody_dir}/rotation-request.bin")
+        expect_prepare_rotation_refusal(
+            "transfer rotation (old-publisher coin)", rotation_prepare,
+            "transfer coin is not owned by the pinned custody publisher",
+            f"{custody_dir}/rotation-request.bin",
+        )
         with open(f"{operator_dir}/stop-native", "xb") as completed:
             completed.write(b"complete\n")
         os.chmod(f"{operator_dir}/stop-native", 0o600)
@@ -1135,7 +1196,7 @@ def phase_transfer(public_key):
     finally:
         if restarted.poll() is None:
             restarted.kill(); restarted.wait(timeout=5)
-    return {"actual_cli":True, "whole_coin":True, "offline_bytes_equal":True, "replay_equal":True, "revoked":True, "revoked_after_restart":True}
+    return {"actual_cli":True, "whole_coin":True, "offline_bytes_equal":True, "replay_equal":True, "revoked":True, "revoked_after_restart":True, "rotation_refused":True}
 
 
 def phase_split_merge(public_key):
@@ -1350,6 +1411,22 @@ def phase_split_merge(public_key):
             "requests_signed": "4", "requests_refused": "2",
         })
 
+        # Rotation refusal (DR-0244 step 4/5, cheap and local): the exact
+        # already-exported owned coin preimage still fails prepare-split
+        # under a genuinely different, freshly generated publisher/config.
+        rotation_config = family_rotation_config(custody_dir)
+        rotation_prepare = cli_argv("custody", "prepare-split",
+            "--config", rotation_config, "--genesis-manifest-file", f"{custody_dir}/genesis.bin",
+            "--genesis-digest", generated["digest"],
+            "--coin-file", f"{custody_dir}/coin.bin", "--fee-source-file", f"{custody_dir}/fee.bin",
+            "--amount", str(SPLIT_AMOUNT), "--recipient", public_key, "--nonce", "0", "--request-id", "77" * 32,
+            "--max-fee", "1000000", "--gas-limit", "200000", "--out", f"{custody_dir}/rotation-split-request.bin")
+        expect_prepare_rotation_refusal(
+            "split_merge rotation (old-publisher coin)", rotation_prepare,
+            "split coin is not owned by the pinned custody publisher",
+            f"{custody_dir}/rotation-split-request.bin",
+        )
+
         with open(f"{operator_dir}/stop-native", "xb") as completed:
             completed.write(b"complete\n")
         os.chmod(f"{operator_dir}/stop-native", 0o600)
@@ -1383,7 +1460,7 @@ def phase_split_merge(public_key):
         "actual_cli": True, "split_self": True, "after_split_verified": True,
         "merge_verified": verify_merge.get("verified") is True,
         "offline_bytes_equal": True, "replay_equal": verify_merge.get("replay_equal") is True,
-        "revoked": True, "revoked_after_restart": True,
+        "revoked": True, "revoked_after_restart": True, "rotation_refused": True,
         "serve_summary": summary.strip().splitlines(),
         "restart_summary": restarted_summary.strip().splitlines(),
     }
@@ -1612,6 +1689,22 @@ def phase_mint_burn(public_key):
             "requests_signed": "4", "requests_refused": "2",
         })
 
+        # Rotation refusal (DR-0244 step 4/5, cheap and local): the exact
+        # already-exported owned cap preimage still fails prepare-mint
+        # under a genuinely different, freshly generated publisher/config.
+        rotation_config = family_rotation_config(custody_dir)
+        rotation_prepare = cli_argv("custody", "prepare-mint",
+            "--config", rotation_config, "--genesis-manifest-file", f"{custody_dir}/genesis.bin",
+            "--genesis-digest", generated["digest"],
+            "--cap-file", f"{custody_dir}/cap.bin", "--fee-source-file", f"{custody_dir}/fee.bin",
+            "--amount", str(MINT_AMOUNT), "--recipient", public_key, "--nonce", "0", "--request-id", "78" * 32,
+            "--max-fee", "1000000", "--gas-limit", "200000", "--out", f"{custody_dir}/rotation-mint-request.bin")
+        expect_prepare_rotation_refusal(
+            "mint_burn rotation (old-publisher cap)", rotation_prepare,
+            "mint cap is not owned by the pinned custody publisher",
+            f"{custody_dir}/rotation-mint-request.bin",
+        )
+
         with open(f"{operator_dir}/stop-native", "xb") as completed:
             completed.write(b"complete\n")
         os.chmod(f"{operator_dir}/stop-native", 0o600)
@@ -1645,7 +1738,7 @@ def phase_mint_burn(public_key):
         "actual_cli": True, "mint_self": True, "after_mint_verified": True,
         "burn_verified": verify_burn.get("verified") is True,
         "offline_bytes_equal": True, "replay_equal": verify_burn.get("replay_equal") is True,
-        "revoked": True, "revoked_after_restart": True,
+        "revoked": True, "revoked_after_restart": True, "rotation_refused": True,
         "serve_summary": summary.strip().splitlines(),
         "restart_summary": restarted_summary.strip().splitlines(),
     }
@@ -1850,9 +1943,29 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
             "connections_accepted": "6", "requests_handled": "6",
             "requests_signed": "4", "requests_refused": "2",
         })
+
+        # Rotation refusal (DR-0244 step 4/5, cheap and local): the
+        # application-pinned own-created profile's own InstanceRecord
+        # creator check fires on this family specifically, strictly before
+        # the cap/fee ownership checks every other family relies on.
+        rotation_config = family_rotation_config(custody_dir, name="own-rotation")
+        rotation_prepare = cli_argv("custody", "prepare-mint",
+            "--config", rotation_config, "--genesis-manifest-file", f"{custody_dir}/genesis.bin",
+            "--genesis-digest", generated["digest"], "--asset", definition_hex,
+            "--instance-ref", f"{custody_dir}/create-instance.bin",
+            "--cap-file", f"{custody_dir}/own-cap.bin", "--fee-source-file", f"{custody_dir}/own-fee.bin",
+            "--amount", str(OWN_ASSET_MINT_AMOUNT), "--recipient", public_key, "--nonce", "1", "--request-id", "98" * 32,
+            "--max-fee", "1000000", "--gas-limit", "200000", "--out", f"{custody_dir}/rotation-own-mint-request.bin")
+        expect_prepare_rotation_refusal(
+            "own_mint_burn rotation (old creator)", rotation_prepare,
+            "application instance record does not match the pinned custody context, code, revision, initializer or creator",
+            f"{custody_dir}/rotation-own-mint-request.bin",
+        )
     finally:
         if serve is not None and serve.poll() is None:
             stop_owned_process(serve, CUSTODY_UID, CUSTODY_GID)
+    if os.path.lexists(socket_path):
+        raise FixtureFailure("own-asset mint/burn serve left its bound socket behind")
 
     restarted = start_serve(socket_path, 30, 2, 2, command=serve_command(2))
     try:
@@ -1868,16 +1981,184 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     finally:
         if restarted.poll() is None:
             stop_owned_process(restarted, CUSTODY_UID, CUSTODY_GID)
+    if os.path.lexists(socket_path):
+        raise FixtureFailure("own-asset mint/burn restarted serve left its bound socket behind")
+
+    # ---- recovered-key control (DR-0244 recovery), only now that the
+    # original key's own serve and restarted-serve have both fully stopped
+    # (reaped) and their shared socket path is confirmed gone.
+    #
+    # A genuinely new, never-before-approved request over the SAME
+    # already-captured own-burn inputs/expiry (same cap/coin/fee preimages,
+    # same 3600s window), rather than ever reapproving or resigning a
+    # revoked ID. request_id is itself part of the signed CallIntent
+    # (asset_mint_burn.rs's "request_id: *request.request_id.as_bytes()"),
+    # so this fresh ID's own signature is NOT the same bytes as
+    # OWN_BURN_REQUEST_ID's original signature, and no step below ever
+    # compares against that original signature; see this fixture's own
+    # docs note on that point.
+    recovery_request_id = "9a" * 32
+    prepare_recovery_burn = cli_argv("custody", "prepare-burn", *application_flags(custody_dir),
+        "--cap-file", f"{burn_inputs_dir}/own-burn-cap.bin", "--coin-file", f"{burn_inputs_dir}/own-coin.bin",
+        "--fee-source-file", f"{burn_inputs_dir}/own-burn-fee.bin", "--nonce", "2", "--request-id", recovery_request_id,
+        "--max-fee", "1000000", "--gas-limit", "200000", "--out", f"{custody_dir}/own-recovery-burn-request.bin")
+    rc, out, err = run_exec(prepare_recovery_burn, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    if rc != 0 or b"burn_request_exported=true" not in out:
+        raise FixtureFailure(f"own-asset recovery burn prepare failed: {err!r}")
+    copy_private(custody_dir, operator_dir, "own-recovery-burn-request.bin", OPERATOR_UID, OPERATOR_GID)
+
+    approve_recovery_burn = cli_argv("custody", "approve-burn", *application_flags(custody_dir),
+        "--request-file", f"{custody_dir}/own-recovery-burn-request.bin", "--approvals-dir", approvals, "--expires-in-seconds", "3600")
+    rc, _out, refusal = run_exec(approve_recovery_burn, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
+        raise FixtureFailure("own-asset recovery burn approval unexpectedly accepted a pipe")
+    phase_approve_via_pty(None, None, 2, recovery_request_id, 3600, command=approve_recovery_burn)
+
+    # ---- reference signature: the ORIGINAL key file, still not copied
+    # anywhere, signs this exact SAME newly approved frame once, through its
+    # own dedicated bounded serve-mint-burn on a distinct socket. This is
+    # the expected signature the recovered key must reproduce below, over
+    # the identical unchanged request, never a different request ID.
+    reference_socket_path = f"{ROOT}/run/create-mint-burn-reference.sock"
+    reference_signer = ["--custody-socket", reference_socket_path, "--custody-uid", str(CUSTODY_UID),
+                         "--custody-expected-public-key", public_key]
+    reference_serve_command = cli_argv("custody", "serve-mint-burn", *application_flags(custody_dir),
+        "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", reference_socket_path,
+        "--approvals-dir", approvals, "--max-connections", "1", "--max-requests", "1",
+        "--total-deadline-secs", "15")
+    sign_recovery_burn_reference = cli_argv("custody", "sign-burn", *application_flags(operator_dir),
+        "--request-file", f"{operator_dir}/own-recovery-burn-request.bin", *reference_signer)
+
+    reference_serve = start_serve(reference_socket_path, 15, 1, 1, command=reference_serve_command)
+    try:
+        rc, _out, err = run_exec([*sign_recovery_burn_reference, "--out", f"{operator_dir}/own-recovery-reference-signature.bin"],
+            OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"reference own-asset recovery burn sign failed: {err!r}")
+        reference_summary = wait_serve(reference_serve, extra_seconds=8)
+        check_summary("own_mint_burn recovery reference", reference_summary, {
+            "connections_accepted": "1", "requests_handled": "1",
+            "requests_signed": "1", "requests_refused": "0",
+        })
+    finally:
+        if reference_serve.poll() is None:
+            stop_owned_process(reference_serve, CUSTODY_UID, CUSTODY_GID)
+    if os.path.lexists(reference_socket_path):
+        raise FixtureFailure("reference own-asset mint/burn serve left its bound socket behind")
+
+    # Only now, with the reference serve (and every earlier serve using the
+    # original key file) fully stopped and reaped, recover the SAME
+    # disposable seed into a new owner-private path.
+    recovered_key_path = phase_recover_private_key(
+        f"{ROOT}/custody-keys/custody.seed",
+        backup_path=f"{custody_dir}/own-recovered.seed.backup",
+        restored_path=f"{custody_dir}/own-recovered.seed.restored",
+    )
+
+    recovered_socket_path = f"{ROOT}/run/create-mint-burn-recovered.sock"
+    recovered_signer = ["--custody-socket", recovered_socket_path, "--custody-uid", str(CUSTODY_UID),
+                         "--custody-expected-public-key", public_key]
+    def recovered_serve_command(count):
+        return cli_argv("custody", "serve-mint-burn", *application_flags(custody_dir),
+            "--key-file", recovered_key_path, "--socket", recovered_socket_path,
+            "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count),
+            "--total-deadline-secs", "15")
+    sign_recovery_burn = cli_argv("custody", "sign-burn", *application_flags(operator_dir),
+        "--request-file", f"{operator_dir}/own-recovery-burn-request.bin", *recovered_signer)
+    sign_original_burn_recovered = cli_argv("custody", "sign-burn", *application_flags(operator_dir),
+        "--request-file", f"{operator_dir}/own-burn-request.bin", *recovered_signer)
+
+    recovered_serve = start_serve(recovered_socket_path, 15, 3, 3, command=recovered_serve_command(3))
+    try:
+        # 1) the new, still-unrevoked recovery approval signs under the
+        # recovered key: this is offline signing only, never executed on
+        # the native ledger, so the original supply/nonce/receipts above
+        # stay exactly as already asserted. The recovered key must
+        # reproduce, byte for byte, the reference signature the ORIGINAL
+        # key already produced over this identical unchanged frame above,
+        # before it was ever copied anywhere; this never compares across
+        # two different request IDs.
+        rc, _out, err = run_exec([*sign_recovery_burn, "--out", f"{operator_dir}/own-recovery-burn-signed.bin"],
+            OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"recovered-key own-asset recovery burn sign failed: {err!r}")
+        with open(f"{operator_dir}/own-recovery-reference-signature.bin", "rb") as source:
+            reference_signature_bytes = source.read(1048577)
+        with open(f"{operator_dir}/own-recovery-burn-signed.bin", "rb") as source:
+            recovered_signature_bytes = source.read(1048577)
+        if recovered_signature_bytes != reference_signature_bytes:
+            raise FixtureFailure(
+                "the recovered key's signature over the identical new frame differs from the original key's reference signature"
+            )
+
+        # 2) a revocation that predates the recovery (OWN_BURN_REQUEST_ID,
+        # revoked above while the original key's serve was still the only
+        # live signer) still refuses under the recovered key.
+        rc, _out, refusal = run_exec([*sign_original_burn_recovered, "--out", f"{operator_dir}/own-revoked-burn-recovered.bin"],
+            OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/own-revoked-burn-recovered.bin"):
+            raise FixtureFailure("a pre-existing revocation did not survive key recovery")
+
+        # 3) revoking the new recovery ID itself, then showing the SAME
+        # recovered-key instance also enforces that new revocation.
+        rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", recovery_request_id),
+            CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        if rc != 0:
+            raise FixtureFailure(f"own-asset recovery burn revoke failed: {err!r}")
+        rc, _out, refusal = run_exec([*sign_recovery_burn, "--out", f"{operator_dir}/own-recovery-burn-revoked.bin"],
+            OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/own-recovery-burn-revoked.bin"):
+            raise FixtureFailure("revoking the new recovery-id request did not refuse it under the recovered key")
+
+        recovered_summary = wait_serve(recovered_serve, extra_seconds=8)
+        check_summary("own_mint_burn recovered-key", recovered_summary, {
+            "connections_accepted": "3", "requests_handled": "3",
+            "requests_signed": "1", "requests_refused": "2",
+        })
+    finally:
+        if recovered_serve.poll() is None:
+            stop_owned_process(recovered_serve, CUSTODY_UID, CUSTODY_GID)
+    if os.path.lexists(recovered_socket_path):
+        raise FixtureFailure("recovered-key own-asset serve left its bound socket behind")
+
+    # The recovered-key profile also retains BOTH the pre-existing and the
+    # newly issued revocation across its own independent restart.
+    recovered_restarted = start_serve(recovered_socket_path, 15, 2, 2, command=recovered_serve_command(2))
+    try:
+        rc, _out, refusal = run_exec([*sign_original_burn_recovered, "--out", f"{operator_dir}/own-revoked-burn-recovered-restart.bin"],
+            OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/own-revoked-burn-recovered-restart.bin"):
+            raise FixtureFailure("a pre-existing revocation did not survive the recovered-key serve restart")
+        rc, _out, refusal = run_exec([*sign_recovery_burn, "--out", f"{operator_dir}/own-recovery-burn-revoked-restart.bin"],
+            OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+        if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/own-recovery-burn-revoked-restart.bin"):
+            raise FixtureFailure("the new recovery-id revocation did not survive the recovered-key serve restart")
+        recovered_restart_summary = wait_serve(recovered_restarted, extra_seconds=8)
+        check_summary("own_mint_burn recovered-key revoked restart", recovered_restart_summary,
+            {"connections_accepted": "2", "requests_handled": "2", "requests_signed": "0", "requests_refused": "2"})
+    finally:
+        if recovered_restarted.poll() is None:
+            stop_owned_process(recovered_restarted, CUSTODY_UID, CUSTODY_GID)
+    if os.path.lexists(recovered_socket_path):
+        raise FixtureFailure("recovered-key own-asset restarted serve left its bound socket behind")
 
     return {
         "actual_cli": True, "own_mint_self": True, "after_own_mint_verified": True,
         "own_burn_verified": verify_own_burn.get("verified") is True,
         "offline_bytes_equal": True, "replay_equal": verify_own_burn.get("replay_equal") is True,
-        "revoked": True, "revoked_after_restart": True,
+        "revoked": True, "revoked_after_restart": True, "rotation_refused": True,
         "asset_hex": after_own_mint.get("asset_hex"),
         "new_coin_hex": new_coin_hex,
         "serve_summary": summary.strip().splitlines(),
         "restart_summary": restarted_summary.strip().splitlines(),
+        "recovered_key_positive_sign": True,
+        "recovered_key_signature_match": True,
+        "recovered_key_preexisting_revocation_retained": True,
+        "recovered_key_new_revocation_enforced": True,
+        "recovered_key_revoked_after_restart": True,
+        "reference_summary": reference_summary.strip().splitlines(),
+        "recovered_key_serve_summary": recovered_summary.strip().splitlines(),
+        "recovered_key_restart_summary": recovered_restart_summary.strip().splitlines(),
     }
 
 
@@ -2050,6 +2331,24 @@ def phase_create_asset(public_key):
             "requests_signed": "2", "requests_refused": "1",
         })
 
+        # Rotation refusal (DR-0244 step 4/5, cheap and local): create-asset
+        # carries no pre-existing owned Coin/TreasuryCap input, only a fee
+        # source, so its own rotation-bound check is the fee owner binding:
+        # the exact already-exported fee preimage still fails prepare-create
+        # under a genuinely different, freshly generated publisher/config.
+        rotation_config = family_rotation_config(custody_dir)
+        rotation_prepare = cli_argv("custody", "prepare-create",
+            "--config", rotation_config, "--genesis-manifest-file", f"{custody_dir}/genesis.bin",
+            "--genesis-digest", generated["digest"],
+            "--seed", CREATE_INSTANCE_SEED_HEX, "--fee-source-file", f"{custody_dir}/fee.bin",
+            "--nonce", "0", "--request-id", "79" * 32,
+            "--max-fee", "1000000", "--gas-limit", "200000", "--out", f"{custody_dir}/rotation-create-request.bin")
+        expect_prepare_rotation_refusal(
+            "create rotation (old-publisher fee)", rotation_prepare,
+            "fee source is not owned by the pinned custody publisher",
+            f"{custody_dir}/rotation-create-request.bin",
+        )
+
         # DR-0258: before this phase's own native backend is ever stopped,
         # independently exercise an application-pinned mint-then-burn round
         # trip against the asset it just created, through a separate
@@ -2091,7 +2390,7 @@ def phase_create_asset(public_key):
         "definition_hex": after_create.get("definition_hex"),
         "treasury_cap_hex": after_create.get("treasury_cap_hex"),
         "offline_bytes_equal": True,
-        "revoked": True, "revoked_after_restart": True,
+        "revoked": True, "revoked_after_restart": True, "rotation_refused": True,
         "serve_summary": summary.strip().splitlines(),
         "restart_summary": restarted_summary.strip().splitlines(),
     }, own_mint_burn_summary
@@ -2253,6 +2552,25 @@ except Exception as error:  # last resort: never a silent success on an unexpect
 // scripts/check-docker-fault-environment.mjs's own wrapper exactly, since
 // that is this repository's accepted pattern for Docker-only evidence.
 
+function probeCommand() {
+  const source = Buffer.from(probe, 'utf8');
+  if (source.length > 256 * 1024) throw new Error('fixture program exceeds its transport bound');
+  const packed = deflateSync(source).toString('base64');
+  const digest = createHash('sha256').update(source).digest('hex');
+  // Keep one argv below Linux's per-argument limit without changing the
+  // program, mounts, standard input, privileges or fixture resource bounds.
+  const command = [
+    'import base64,hashlib,zlib',
+    '__custody_decoder=zlib.decompressobj()',
+    `__custody_probe=__custody_decoder.decompress(base64.b64decode(${JSON.stringify(packed)},validate=True),${source.length + 1})`,
+    `if len(__custody_probe)!=${source.length} or not __custody_decoder.eof or __custody_decoder.unused_data or __custody_decoder.unconsumed_tail: raise RuntimeError('fixture program transport length differs')`,
+    `if hashlib.sha256(__custody_probe).hexdigest()!=${JSON.stringify(digest)}: raise RuntimeError('fixture program transport digest differs')`,
+    "exec(compile(__custody_probe,'<custody-fixture>','exec'))",
+  ].join('\n');
+  if (Buffer.byteLength(command, 'utf8') > 64 * 1024) throw new Error('fixture bootstrap exceeds its argument bound');
+  return command;
+}
+
 async function docker(args, cleanup = false) {
   const allowance = Math.floor(deadline - performance.now() - (cleanup ? 0 : 25_000));
   const remaining = cleanup ? Math.min(5_000, allowance) : allowance;
@@ -2398,7 +2716,7 @@ try {
     '--pids-limit', '64', '--log-driver', 'none',
     '--mount', `type=volume,source=${volumeName},target=/work,volume-nocopy`,
     ...binds.flatMap((bind) => ['--mount', bind]),
-    '--entrypoint', '/usr/local/bin/python3', image, '-I', '-B', '-c', probe,
+    '--entrypoint', '/usr/local/bin/python3', image, '-I', '-B', '-c', probeCommand(),
   ]);
   containerId = created.stdout.trim();
   if (!/^[0-9a-f]{64}$/.test(containerId)) throw new Error('invalid exact container identity');
@@ -2455,7 +2773,7 @@ try {
     throw new Error('the fixture evidence line is incomplete');
   }
   const expectedLifecycle = [[2, 2, 1, 1], [1, 1, 0, 1], [1, 1, 1, 0], [1, 1, 1, 0], [1, 1, 0, 1], [3, 3, 1, 2]];
-  if (!result.transfer || ['actual_cli', 'whole_coin', 'offline_bytes_equal', 'replay_equal', 'revoked', 'revoked_after_restart']
+  if (!result.transfer || ['actual_cli', 'whole_coin', 'offline_bytes_equal', 'replay_equal', 'revoked', 'revoked_after_restart', 'rotation_refused']
     .some((key) => result.transfer[key] !== true)) {
     throw new Error('the distinct-UID protected transfer evidence is incomplete');
   }
@@ -2466,7 +2784,7 @@ try {
   // requires every one of its own completion flags, the same shape as the
   // `result.transfer` check immediately above.
   if (!result.split_merge || ['actual_cli', 'split_self', 'after_split_verified', 'merge_verified',
-      'offline_bytes_equal', 'replay_equal', 'revoked', 'revoked_after_restart']
+      'offline_bytes_equal', 'replay_equal', 'revoked', 'revoked_after_restart', 'rotation_refused']
     .some((key) => result.split_merge[key] !== true)) {
     throw new Error('the distinct-UID protected split/merge evidence is incomplete');
   }
@@ -2483,7 +2801,7 @@ try {
   // only requires every one of its own completion flags, the same shape as
   // the `result.split_merge` check immediately above.
   if (!result.mint_burn || ['actual_cli', 'mint_self', 'after_mint_verified', 'burn_verified',
-      'offline_bytes_equal', 'replay_equal', 'revoked', 'revoked_after_restart']
+      'offline_bytes_equal', 'replay_equal', 'revoked', 'revoked_after_restart', 'rotation_refused']
     .some((key) => result.mint_burn[key] !== true)) {
     throw new Error('the distinct-UID protected mint/burn evidence is incomplete');
   }
@@ -2502,7 +2820,7 @@ try {
   // `asset_create_fixture`'s own `after-create` mode (created Definition/
   // TreasuryCap, durable instance query, dedup receipt, exact-replay).
   if (!result.create_asset || ['actual_cli', 'create_self', 'after_create_verified', 'replay_equal',
-      'offline_bytes_equal', 'revoked', 'revoked_after_restart']
+      'offline_bytes_equal', 'revoked', 'revoked_after_restart', 'rotation_refused']
     .some((key) => result.create_asset[key] !== true) ||
     typeof result.create_asset.definition_hex !== 'string' || typeof result.create_asset.treasury_cap_hex !== 'string' ||
     result.create_asset.definition_hex === result.create_asset.treasury_cap_hex) {
@@ -2526,7 +2844,9 @@ try {
   // tombstoned, the exact same genesis fee Coin reused, and idempotent
   // replay of both requests).
   if (!result.created_asset_mint_burn || ['actual_cli', 'own_mint_self', 'after_own_mint_verified', 'own_burn_verified',
-      'offline_bytes_equal', 'replay_equal', 'revoked', 'revoked_after_restart']
+      'offline_bytes_equal', 'replay_equal', 'revoked', 'revoked_after_restart', 'rotation_refused',
+      'recovered_key_positive_sign', 'recovered_key_signature_match', 'recovered_key_preexisting_revocation_retained',
+      'recovered_key_new_revocation_enforced', 'recovered_key_revoked_after_restart']
     .some((key) => result.created_asset_mint_burn[key] !== true) ||
     typeof result.created_asset_mint_burn.asset_hex !== 'string' || typeof result.created_asset_mint_burn.new_coin_hex !== 'string' ||
     result.created_asset_mint_burn.asset_hex !== result.create_asset.definition_hex ||
@@ -2536,6 +2856,26 @@ try {
   for (const [key, counts] of [['serve_summary', [6, 6, 4, 2]], ['restart_summary', [2, 2, 0, 2]]]) {
     if (JSON.stringify(result.created_asset_mint_burn[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
       throw new Error('the own-asset mint/burn serve counters are incomplete or differ');
+    }
+  }
+  // The reference serve signs the exact SAME newly approved frame with the
+  // ORIGINAL key file, before it is ever recovered, on its own distinct
+  // socket: exactly 1 connection/1 handled/1 signed/0 refused.
+  if (JSON.stringify(result.created_asset_mint_burn.reference_summary) !==
+      JSON.stringify(countKeys.map((name, index) => `${name}=${[1, 1, 1, 0][index]}`))) {
+    throw new Error('the own-asset mint/burn reference serve counters are incomplete or differ');
+  }
+  // The recovered-key profile's own serve only starts after the original
+  // key's serve, restarted-serve and reference serve above have all
+  // already stopped (see `phase_own_asset_mint_burn`'s own socket-gone
+  // checks), so its counters are independent of, and checked separately
+  // from, those above: 1 positive sign (the new recovery-id request, whose
+  // signature bytes must equal the reference's) plus 2 refusals (the
+  // pre-existing OWN_BURN_REQUEST_ID revocation, then the new recovery-id's
+  // own revocation), then a fresh restart refusing both again.
+  for (const [key, counts] of [['recovered_key_serve_summary', [3, 3, 1, 2]], ['recovered_key_restart_summary', [2, 2, 0, 2]]]) {
+    if (JSON.stringify(result.created_asset_mint_burn[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
+      throw new Error('the recovered-key own-asset mint/burn serve counters are incomplete or differ');
     }
   }
   if (!Array.isArray(result.lifecycle_summaries) || result.lifecycle_summaries.length !== expectedLifecycle.length ||
