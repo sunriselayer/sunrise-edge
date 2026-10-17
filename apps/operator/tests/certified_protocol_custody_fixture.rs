@@ -1970,7 +1970,8 @@ fn applied_row(connection: &Connection, tag: &str) {
             new_object: object, ..
         } = effect
         {
-            let bytes: Vec<u8> = connection.query_row("SELECT inline_canonical_bytes FROM durable_object_versions WHERE object_id=?1 AND object_version=?2", (object.id.as_bytes().as_slice(), object.version), |row| sql_blob(row, 0)).unwrap();
+            let version: [u8; 8] = object.version.to_be_bytes();
+            let bytes: Vec<u8> = connection.query_row("SELECT inline_canonical_bytes FROM durable_object_versions WHERE object_id=?1 AND object_version=?2", (object.id.as_bytes().as_slice(), version.as_slice()), |row| sql_blob(row, 0)).unwrap();
             assert_eq!(bytes, objects::encode_object(object).unwrap());
         }
     }
