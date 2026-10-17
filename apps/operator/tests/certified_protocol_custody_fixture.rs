@@ -2383,7 +2383,7 @@ fn fixture_certified_fastvote_role_probe() {
         _ => panic!("closed certified fixture phase"),
     }
     println!(
-        "certified_phase={} endpoint_requests={:?}",
+        "\ncertified_phase={} endpoint_requests={:?}",
         phase,
         *CALLS.lock().unwrap()
     );
