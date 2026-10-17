@@ -56,7 +56,7 @@ const hostOperations = [];
 
 const probe = String.raw`
 # Embedded only by the selected Node owner (DR-0270).
-import errno, hashlib, json, os, pty, select, signal, socket, stat, struct, subprocess, time
+import errno, hashlib, json, os, pty, re, select, signal, socket, stat, struct, subprocess, time
 ROOT='/work'
 CUSTODY_UID,CUSTODY_GID=12001,12001
 OPERATOR_UID,OPERATOR_GID=12002,12002
@@ -423,6 +423,14 @@ def main():
     if row[sep+1]!='tmpfs' or not {'rw','noswap','nosuid','nodev','noexec'}.issubset(options):raise RuntimeError('effective volume mount options differ')
     allocation=os.statvfs(ROOT)
     if allocation.f_frsize*allocation.f_blocks!=67108864:raise RuntimeError('actual volume size differs')
+    def history_file(parts):
+        # Transport shape only. The exporter uses the defining Rust generated
+        # directory/file contract; each role independently verifies the SDK chain.
+        if len(parts)==2:return parts[1] in ('identity.bin','chunk-size.bin','complete')
+        if len(parts) not in (3,4) or re.fullmatch(r'height-[0-9]{20}',parts[1]) is None:return False
+        if not 0<int(parts[1][7:])<=18446744073709551615:return False
+        if len(parts)==3:return parts[2]=='descriptor.bin'
+        return parts[2] in ('component-01','component-02','component-03','component-04','component-05','component-06') and re.fullmatch(r'chunk-[0-9]{20}\.bin',parts[3]) is not None and int(parts[3][6:-4])<=18446744073709551615
     inventory=bounded('/mnt/public/files.tsv',262144).decode('ascii').splitlines()
     if not 1<=len(inventory)<=256:raise RuntimeError('public inventory count')
     records=[];total=0;names=set()
@@ -431,7 +439,7 @@ def main():
         if name in names or len(name)>251 or any(x in ('','..','.') for x in name.split('/')):raise RuntimeError('public archive path')
         if name.startswith('/') or '\\' in name or length>1048576 or length<0:raise RuntimeError('public archive bounds')
         parts=name.split('/')
-        if not (name in ('manifest.bin','pins.txt') or (len(parts)==2 and parts[0] in ('plan-history','cut','manifest-history','certificate')) or (len(parts)==3 and parts[0]=='cases' and parts[1] in ('A','B','C','D') and parts[2] in ('params.txt','fee-object.bin','fee-ref.bin','signed-leg.bin','host-request.bin','host-intent.bin','signed-outer.bin','candidate.bin'))):raise RuntimeError('unknown public role/path')
+        if not (name in ('manifest.bin','pins.txt') or (len(parts)==2 and parts[0] in ('cut','certificate')) or (parts[0] in ('plan-history','manifest-history') and history_file(parts)) or (len(parts)==3 and parts[0]=='cases' and parts[1] in ('A','B','C','D') and parts[2] in ('params.txt','fee-object.bin','fee-ref.bin','signed-leg.bin','host-request.bin','host-intent.bin','signed-outer.bin','candidate.bin'))):raise RuntimeError('unknown public role/path')
         if name.endswith(('.key','.seed','.db')):raise RuntimeError('private/database archive entry refused')
         names.add(name);total+=length
         if total>16777216:raise RuntimeError('public aggregate cap')
