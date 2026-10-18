@@ -442,7 +442,7 @@ def phase_generate_artifact(public_key, request_id_hex, nonce, out_path, wasm_fi
         raise FixtureFailure("the independently approved preimage is not custody-owned mode 0600")
 
 
-def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, expires_in_seconds, command=None):
+def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, expires_in_seconds, command=None, expected_review_lines=(), expected_confirmation_prefix=None):
     argv = command or cli_argv(
         "custody", "approve",
         "--config", config_path,
@@ -466,6 +466,7 @@ def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, exp
     cap = 16_384
     marker = "Type exactly to approve:\n"
     confirmation_line = None
+    expectation_error = None
     pty_deadline = time.monotonic() + min(20, remaining())
     try:
         while True:
@@ -492,6 +493,17 @@ def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, exp
                     after = text.split(marker, 1)[1]
                     if "\n" in after:
                         confirmation_line = after.split("\n", 1)[0].strip()
+                        if expected_review_lines:
+                            review_lines = tuple(text.split(marker, 1)[0].splitlines())
+                            if "\ufffd" in text or review_lines != tuple(expected_review_lines):
+                                expectation_error = "custody PTY complete review differs before confirmation"
+                                break
+                        if expected_confirmation_prefix is not None:
+                            suffix = confirmation_line.removeprefix(expected_confirmation_prefix)
+                            if (not confirmation_line.startswith(expected_confirmation_prefix) or not suffix.isascii()
+                                    or not suffix.isdecimal() or len(suffix) > 20 or int(suffix) <= 0 or str(int(suffix)) != suffix):
+                                expectation_error = "custody PTY exact operation confirmation differs before input"
+                                break
                         os.write(master_fd, (confirmation_line + "\n").encode("ascii"))
     finally:
         try:
@@ -499,6 +511,8 @@ def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, exp
         except OSError:
             pass
     _pid, status = os.waitpid(pid, 0)
+    if expectation_error is not None:
+        raise FixtureFailure(expectation_error)
     if confirmation_line is None:
         raise FixtureFailure("custody approve never printed the expected typed-confirmation prompt")
     if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
@@ -3525,6 +3539,275 @@ def phase_create_asset(public_key):
     }, own_mint_burn_summary, own_coin_summary
 
 
+def phase_genesis_split_identity_handoff(public_key):
+    # Independent genuine TWO-OWNER genesis/store; B already exists, no seed
+    # read/copy/keygen and no migration of A's fee balance or app creator.
+    output_before = _output_used
+    custody_dir, operator_dir = f"{ROOT}/custody-split-handoff", f"{ROOT}/operator/split-handoff"
+    for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
+        os.mkdir(path, 0o700); os.chown(path, uid, gid)
+    generated_paths, processes, run_count, pty_count = [], [], 0, 0
+    def bounded(path, uid, cap=1048576):
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_uid != uid or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600 or before.st_size > cap:
+                raise FixtureFailure("split handoff requires a bounded private regular input")
+            data = os.read(fd, cap + 1)
+            after = os.fstat(fd)
+            if len(data) != before.st_size or any(getattr(before, field) != getattr(after, field) for field in ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")):
+                raise FixtureFailure("split handoff private input changed or exceeded its bound")
+            return data
+        finally:
+            os.close(fd)
+    def exported(path, data, uid, gid):
+        if os.path.lexists(path) or len(data) > 1048576:
+            raise FixtureFailure("split handoff export must be fresh and bounded")
+        with open(path, "xb") as out:
+            out.write(data)
+        os.chmod(path, 0o600); os.chown(path, uid, gid)
+        generated_paths.append(path)
+    def copied(source, uid, destination, target_uid, target_gid):
+        exported(destination, bounded(source, uid), target_uid, target_gid)
+    def execute(argv, uid, gid, groups, env=None):
+        nonlocal run_count
+        run_count += 1
+        result = run_exec(argv, uid, gid, groups, env=env)
+        if _output_used - output_before > 49152:
+            raise FixtureFailure("split handoff captured output exceeds48KiB")
+        return result
+    def passed(argv, uid, gid, groups, env=None, marker=None):
+        rc, out, err = execute(argv, uid, gid, groups, env)
+        if rc != 0 or (marker is not None and marker not in out):
+            raise FixtureFailure(f"split handoff command failed: {out!r} {err!r}")
+        return out
+    b_config = bounded(f"{ROOT}/custody-keys/custody2.config", CUSTODY_UID, 4096).decode("ascii")
+    fields = dict(line.split("=", 1) for line in b_config.splitlines())
+    second = fields["publisher_public_key"]
+    if len(second) != 64 or any(c not in "0123456789abcdef" for c in second) or second == public_key:
+        raise FixtureFailure("split handoff requires the existing independent B publisher")
+    owners = (public_key, second)
+    ids = ("c1" * 32, "c2" * 32)
+    keys = (f"{ROOT}/custody-keys/custody.seed", f"{ROOT}/custody-keys/custody2.seed")
+    sockets = (f"{ROOT}/run/split-handoff-a.sock", f"{ROOT}/run/split-handoff-b.sock")
+    approvals = f"{ROOT}/custody-approvals"
+    probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
+        "custody::asset_fixture::distinct_uid_genesis_split_identity_handoff_probe", "--exact", "--ignored", "--nocapture", "--format", "terse"]
+    def probe_env(mode, directory, endpoint=None):
+        env = {"CUSTODY_SPLIT_HANDOFF_MODE":mode, "CUSTODY_SPLIT_HANDOFF_DIR":directory,
+            "CUSTODY_SPLIT_HANDOFF_A":public_key, "CUSTODY_SPLIT_HANDOFF_B":second}
+        if endpoint is not None: env["CUSTODY_SPLIT_HANDOFF_ENDPOINT"] = endpoint
+        return env
+    generated = last_json_line(passed(probe_argv, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], probe_env("generate", custody_dir)))
+    if generated.get("owner_a") != public_key or generated.get("owner_b") != second or generated["fee_a"] == generated["fee_b"] or generated["coin"] in [generated["fee_a"], generated["fee_b"]]:
+        raise FixtureFailure("split handoff genesis identities/independent fees differ")
+    generated_paths.extend(f"{custody_dir}/{name}" for name in ["genesis.bin", "source-v1.bin", "fee-a.bin", "fee-b.bin"])
+    copied(f"{custody_dir}/genesis.bin", CUSTODY_UID, f"{operator_dir}/genesis.bin", OPERATOR_UID, OPERATOR_GID)
+    for index, tag in enumerate(("a", "b")):
+        config = ("chain_id=custody-whole-coin-test\nprotocol_version=7\nepoch=0\nhash_suite_id=1\n"
+            f"domain={DOMAIN_HEX}\npublisher_public_key={owners[index]}\noperator_uid={OPERATOR_UID}\n").encode("ascii")
+        exported(f"{custody_dir}/{tag}.config", config, CUSTODY_UID, CUSTODY_GID)
+        copied(f"{custody_dir}/{tag}.config", CUSTODY_UID, f"{operator_dir}/{tag}.config", OPERATOR_UID, OPERATOR_GID)
+    def trust(index, directory):
+        tag = "a" if index == 0 else "b"
+        return ["--config", f"{directory}/{tag}.config", "--genesis-manifest-file", f"{directory}/genesis.bin", "--genesis-digest", generated["digest"]]
+    def prepare(index, coin, output, request_id, split, nonce=0, current_fee=False):
+        tag = "a" if index == 0 else "b"
+        fee = f"{custody_dir}/a-fee-current.bin" if current_fee else f"{custody_dir}/fee-{tag}.bin"
+        return cli_argv("custody", "prepare-split" if split else "prepare-transfer", *trust(index, custody_dir), "--coin-file", coin,
+            "--fee-source-file", fee, "--recipient", owners[1-index], "--nonce", str(nonce),
+            "--request-id", request_id, "--max-fee", "1000000", "--gas-limit", "200000", "--out", output,
+            *(["--amount", str(SPLIT_AMOUNT)] if split else []))
+    owner_refusals = [f"{custody_dir}/b-before-ownership.bin", f"{custody_dir}/a-after-handoff.bin"]
+    def owner_refusal(index, coin, path, request_id, split, nonce=0, current_fee=False):
+        if os.path.lexists(path): raise FixtureFailure("split handoff refusal output already exists")
+        rc, _out, err = execute(prepare(index, coin, path, request_id, split, nonce, current_fee), CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        expected = b"split coin is not owned by the pinned custody publisher" if split else b"transfer coin is not owned by the pinned custody publisher"
+        if rc == 0 or expected not in err or os.path.lexists(path):
+            raise FixtureFailure("split handoff wrong CURRENT owner prepare was not refused")
+    owner_refusal(1, f"{custody_dir}/source-v1.bin", owner_refusals[0], "c3" * 32, True)
+    def operator_identity():
+        os.setgroups([OPERATOR_GID]); os.setgid(OPERATOR_GID); os.setuid(OPERATOR_UID)
+    summaries, restarts, stages, refusal_paths = [], [], [], list(owner_refusals)
+    os.chmod(ROOT, 0o755)
+    native = subprocess.Popen(probe_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        preexec_fn=operator_identity, env=probe_env("serve", operator_dir), cwd="/")
+    processes.append((native, OPERATOR_UID, OPERATOR_GID))
+    try:
+        startup = bytearray(); address = None; startup_end = time.monotonic() + min(10, remaining())
+        while address is None:
+            if time.monotonic() >= startup_end: raise FixtureFailure("split handoff host startup deadline")
+            ready, _, _ = select.select([native.stdout], [], [], min(1, remaining()))
+            if ready:
+                line = native.stdout.readline(16385); charge_output(len(line)); startup.extend(line)
+                if not line or len(startup) > 16384: raise FixtureFailure("split handoff host startup incomplete/oversize")
+                if line.startswith(b'{"address":'): address = json.loads(line)["address"]
+        for index, tag in enumerate(("a", "b")):
+            # All A signers/restarts below are actually waited and absent
+            # before this loop ever prepares, approves or serves as B.
+            if index == 1:
+                if any(proc.returncode is None or os.path.exists(f"/proc/{proc.pid}") for proc, _u, _g in processes[1:]):
+                    raise FixtureFailure("old A authority is still live at B handoff")
+                copied(f"{operator_dir}/coin-v1.bin", OPERATOR_UID, f"{custody_dir}/coin-v1.bin", CUSTODY_UID, CUSTODY_GID)
+                copied(f"{operator_dir}/a-fee-after.bin", OPERATOR_UID, f"{custody_dir}/a-fee-current.bin", CUSTODY_UID, CUSTODY_GID)
+                owner_refusal(0, f"{custody_dir}/coin-v1.bin", owner_refusals[1], "c4" * 32, False, 1, True)
+            coin = f"{custody_dir}/source-v1.bin" if index == 0 else f"{custody_dir}/coin-v1.bin"
+            request = f"{custody_dir}/{tag}-request.bin"
+            prepared_out = passed(prepare(index, coin, request, ids[index], index == 0), CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID],
+                marker=b"split_request_exported=true" if index == 0 else b"transfer_request_exported=true")
+            export_marker = "split_request_exported=true" if index == 0 else "transfer_request_exported=true"
+            prepared_lines = prepared_out.decode("ascii").splitlines()
+            if not prepared_lines or prepared_lines[-1] != export_marker:
+                raise FixtureFailure("split handoff preparation review has no exact export boundary")
+            review_lines = tuple(prepared_lines[:-1])
+            review_fields = dict(line.split("=", 1) for line in review_lines)
+            if len(review_fields) != len(review_lines) or any(not value for value in review_fields.values()):
+                raise FixtureFailure("split handoff review has duplicate or empty fields")
+            expected_lines = ["chain_id=custody-whole-coin-test", "protocol_version=7", "epoch=0", f"sender={owners[index]}",
+                "entrypoint=split" if index == 0 else "entrypoint=transfer", f"recipient={owners[1-index]}",
+                "fee_balance=10000000", "max_fee=1000000", "minimum_fee_source_balance=9000000",
+                f"refund_recipient={owners[index]}", "gas_limit=200000", "nonce=0", f"request_id={ids[index]}",
+                "freshness=enforced-at-execution-not-preparation"]
+            expected_lines += ["held=10000000", "split_amount=5000000", "remainder=5000000", "recipient_is_self=false"] if index == 0 else ["amount=5000000", "transfer=whole-coin-unchanged"]
+            required_fields = ("domain", "genesis_digest", "code_origin_publisher", "code_origin_seed", "code_revision",
+                "code_artifact_digest", "asset", "schema", "instance_creator", "instance_seed", "instance_revision",
+                "instance_record_digest", "coin_id", "fee_source_id", "reserve_entrypoint", "settle_entrypoint",
+                "fee_recipient", "base_policy_digest", "conversion_divisor", "reserve_allowance", "settle_allowance",
+                "gas_schedule", "policy_calls", "policy_handles", "policy_creations", "policy_events", "policy_memory_bytes",
+                "policy_output_bytes", "policy_publish_artifact_byte_price", "policy_publish_closure_node_price", "signing_frame")
+            if any(line not in review_lines for line in expected_lines) or any(field not in review_fields for field in required_fields):
+                raise FixtureFailure("split handoff exact operation/context/policy/frame review is incomplete")
+            expected_coin = generated["coin"] if index == 0 else stages[0]["received_coin"]
+            coin_prefix = f"coin_id={expected_coin} coin_version=1 coin_digest="
+            fee_prefix = f"fee_source_id={generated[f'fee_{tag}']} fee_source_version=1 fee_source_digest="
+            coin_line = next(line for line in review_lines if line.startswith("coin_id="))
+            fee_line = next(line for line in review_lines if line.startswith("fee_source_id="))
+            if (not coin_line.startswith(coin_prefix) or len(coin_line) <= len(coin_prefix)
+                    or (index == 0 and not coin_line.endswith(" coin_mode=write"))
+                    or not fee_line.startswith(fee_prefix) or len(fee_line) <= len(fee_prefix)):
+                raise FixtureFailure("split handoff exact Coin/fee input review differs")
+            frame = review_fields["signing_frame"]
+            if not frame or bytes.fromhex(frame).hex() != frame:
+                raise FixtureFailure("split handoff complete signing frame is not canonical nonempty hex")
+            confirmation_prefix = (f"APPROVE-SPLIT sender={owners[0]} held=10000000 amount=5000000 recipient={owners[1]} recipient_is_self=false "
+                if index == 0 else f"APPROVE-TRANSFER sender={owners[1]} amount=5000000 recipient={owners[0]} ")
+            confirmation_prefix += f"fee_balance=10000000 max_fee=1000000 nonce=0 request_id={ids[index]} not_after="
+            generated_paths.append(request)
+            copied(request, CUSTODY_UID, f"{operator_dir}/{tag}-request.bin", OPERATOR_UID, OPERATOR_GID)
+            approve = cli_argv("custody", "approve-split" if index == 0 else "approve-transfer", *trust(index, custody_dir), "--request-file", request,
+                "--approvals-dir", approvals, "--expires-in-seconds", "3600")
+            rc, _out, err = execute(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+            if rc == 0 or b"custody approve requires an interactive terminal" not in err:
+                raise FixtureFailure("split handoff approval accepted pipe or wrong refusal")
+            pty_bytes = phase_approve_via_pty(None, None, 0, ids[index], 3600, command=approve,
+                expected_review_lines=review_lines, expected_confirmation_prefix=confirmation_prefix)
+            charge_output(pty_bytes)
+            pty_count += 1
+            if _output_used - output_before > 49152:
+                raise FixtureFailure("split handoff PTY capture exceeds48KiB phase allocation")
+            generated_paths.append(f"{approvals}/{ids[index]}")
+            def serving(count):
+                return cli_argv("custody", "serve-split-merge" if index == 0 else "serve-transfer", *trust(index, custody_dir), "--key-file", keys[index],
+                    "--socket", sockets[index], "--approvals-dir", approvals, "--max-connections", str(count),
+                    "--max-requests", str(count), "--total-deadline-secs", "30")
+            signer = ["--custody-socket", sockets[index], "--custody-uid", str(CUSTODY_UID), "--custody-expected-public-key", owners[index]]
+            sign = cli_argv("custody", "sign-split" if index == 0 else "sign-transfer", *trust(index, operator_dir), "--request-file", f"{operator_dir}/{tag}-request.bin", *signer)
+            serve = start_serve(sockets[index], 30, 3, 3, command=serving(3)); processes.append((serve, CUSTODY_UID, CUSTODY_GID))
+            passed([*sign, "--out", f"{operator_dir}/{tag}-offline.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+            generated_paths.append(f"{operator_dir}/{tag}-offline.bin")
+            actual = cli_argv("split" if index == 0 else "transfer", "--endpoint", address, *signer,
+                "--expected-chain-id", "custody-whole-coin-test", "--expected-protocol-version", "7", "--expected-epoch", "0",
+                "--expected-hash-suite-id", "1", "--expected-domain", DOMAIN_HEX,
+                "--coin", generated["coin"] if index == 0 else stages[0]["received_coin"], "--fee-source", generated[f"fee_{tag}"], "--recipient", owners[1-index],
+                "--nonce", "0", "--request-id", ids[index], "--max-fee", "1000000", "--gas-limit", "200000",
+                "--submission-out", f"{operator_dir}/{tag}-submission.bin", "--result-out", f"{operator_dir}/{tag}-result.bin",
+                *(["--amount", str(SPLIT_AMOUNT)] if index == 0 else []))
+            # Saved CLI outputs inherit this phase's private-file creation policy.
+            handoff_umask = os.umask(0o077)
+            try:
+                passed(actual, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID], marker=b"paid_status=Success")
+            finally:
+                os.umask(handoff_umask)
+            generated_paths.extend([f"{operator_dir}/{tag}-submission.bin", f"{operator_dir}/{tag}-result.bin"])
+            if bounded(f"{operator_dir}/{tag}-offline.bin", OPERATOR_UID) != bounded(f"{operator_dir}/{tag}-submission.bin", OPERATOR_UID):
+                raise FixtureFailure("split handoff offline/actual CLI bytes differ")
+            mode = "after-split" if index == 0 else "after-return"
+            verified = last_json_line(passed(probe_argv, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID], probe_env(mode, operator_dir, address)))
+            received = verified.get("received_coin")
+            if not isinstance(received, str) or len(received) != 64 or any(c not in "0123456789abcdef" for c in received) or received in [generated["coin"], generated["fee_a"], generated["fee_b"]]:
+                raise FixtureFailure("split handoff split-created identity is invalid or aliases an input")
+            if index == 1 and received != stages[0]["received_coin"]:
+                raise FixtureFailure("split handoff return changed split-created Coin identity")
+            if verified != {"mode":mode, "verified":True, "version":index+1, "owner":owners[1-index], "received_coin":received,
+                    "source_version":2, "source_amount":SPLIT_AMOUNT, "received_amount":SPLIT_AMOUNT,
+                    "nonce_a":1, "nonce_b":index, "replay_count":index+1, "paid_effects":True, "separate_fee":True}:
+                raise FixtureFailure("split handoff independent live/paid/replay oracle differs")
+            stages.append(verified)
+            generated_paths.extend([f"{operator_dir}/coin-v{index+1}.bin", f"{operator_dir}/{tag}-receipt.bin"])
+            if index == 0: generated_paths.extend([f"{operator_dir}/a-fee-after.bin", f"{operator_dir}/source-v2.bin"])
+            passed(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", ids[index]), CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+            generated_paths.append(f"{approvals}/{ids[index]}.revoked")
+            for restarting in (False, True):
+                if restarting:
+                    summary = wait_serve(serve, extra_seconds=8)
+                    check_summary("split handoff live", summary, {"connections_accepted":"3", "requests_handled":"3", "requests_signed":"2", "requests_refused":"1"})
+                    summaries.append(summary.strip().splitlines())
+                    if serve.returncode != 0 or os.path.exists(f"/proc/{serve.pid}") or os.path.lexists(sockets[index]):
+                        raise FixtureFailure("split handoff live authority failed actual wait/PID/socket stop")
+                    serve = start_serve(sockets[index], 30, 1, 1, command=serving(1)); processes.append((serve, CUSTODY_UID, CUSTODY_GID))
+                path = f"{operator_dir}/{tag}-revoked{'-restart' if restarting else ''}.bin"
+                if os.path.lexists(path): raise FixtureFailure("split handoff refusal path occupied")
+                rc, _out, err = execute([*sign, "--out", path], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
+                if rc == 0 or b"custody refused the request: no_approval" not in err or os.path.lexists(path):
+                    raise FixtureFailure("split handoff identity-matched revocation signed/wrote output")
+                refusal_paths.append(path)
+            summary = wait_serve(serve, extra_seconds=8)
+            check_summary("split handoff restart", summary, {"connections_accepted":"1", "requests_handled":"1", "requests_signed":"0", "requests_refused":"1"})
+            restarts.append(summary.strip().splitlines())
+            if serve.returncode != 0 or os.path.exists(f"/proc/{serve.pid}") or os.path.lexists(sockets[index]):
+                raise FixtureFailure("split handoff restart failed actual wait/PID/socket stop")
+        exported(f"{operator_dir}/stop-native", b"complete\n", OPERATOR_UID, OPERATOR_GID)
+        out, err = native.communicate(timeout=min(25, remaining())); charge_output(len(out) + len(err))
+        if native.returncode != 0 or b"1 passed; 0 failed; 0 ignored" not in out or os.path.exists(f"/proc/{native.pid}"):
+            raise FixtureFailure("split handoff single live host failed wait/PID closure")
+    finally:
+        # Failure-only same-UID signal children use existing SETUID/SETGID,
+        # never CAP_KILL. An unreaped Popen retains its numeric PID ownership.
+        for proc, uid, gid in processes:
+            if proc.poll() is None:
+                pid = os.fork()
+                if pid == 0:
+                    try:
+                        os.setgroups([gid]); os.setgid(gid); os.setuid(uid)
+                        try: os.kill(proc.pid, 9)
+                        except ProcessLookupError: pass
+                        os._exit(0)
+                    except BaseException: os._exit(1)
+                child, status = os.waitpid(pid, 0)
+                if child != pid or status != 0: raise FixtureFailure("split handoff owned UID signal failed")
+                proc.communicate(timeout=5)
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None: stream.close()
+        os.chmod(ROOT, 0o711)
+    if len(set(generated_paths)) != len(generated_paths): raise FixtureFailure("split handoff duplicate generated file")
+    generated_bytes = 0
+    for path in generated_paths:
+        uid = OPERATOR_UID if path.startswith(operator_dir + "/") else CUSTODY_UID
+        generated_bytes += len(bounded(path, uid))
+    captured = _output_used - output_before
+    if len(generated_paths) != 32 or generated_bytes > 2*1024*1024 or captured > 49152 or run_count != 19 or pty_count != 2 or len(processes) != 5 or len(refusal_paths) != 6 or any(os.path.lexists(path) for path in refusal_paths) or any(os.path.lexists(path) for path in sockets):
+        raise FixtureFailure("split handoff fixed file/output/child/refusal allocation differs")
+    summary = {"actual_cli":True, "same_live_store":True, "foreign_split":True, "received_coin_returned":True, "source_remainder_unchanged":True, "review_content_checked":True, "offline_bytes_equal":True,
+        "paid_effects":True, "all_saved_replays":True, "b_before_ownership_refused":True,
+        "a_after_current_handoff_refused":True, "old_a_stopped_before_b":True, "revoked":True,
+        "revoked_after_restart":True, "all_sockets_absent":True, "coin":generated["coin"], "received_coin":stages[0]["received_coin"], "owners":list(owners),
+        "request_ids":list(ids), "stages":stages, "serve_summaries":summaries, "restart_summaries":restarts,
+        "run_exec_children":run_count, "pty_children":pty_count, "serve_children":4, "native_host_children":1,
+        "private_copy_children":0, "generated_files":len(generated_paths), "generated_bytes":generated_bytes,
+        "captured_output_bytes":captured, "refusal_paths":refusal_paths}
+    if len(json.dumps(summary, sort_keys=True).encode()) > 4096: raise FixtureFailure("split handoff summary exceeds4KiB")
+    return summary
+
 def main():
     phase_setup()
     phase_missing_prerequisite_fails()
@@ -3637,6 +3920,7 @@ def main():
     create_asset_summary, created_asset_mint_burn_summary, created_asset_coin_summary = phase_create_asset(public_key)
 
     coin_identity_handoff_summary = phase_genesis_coin_identity_handoff(public_key)
+    split_identity_handoff_summary = phase_genesis_split_identity_handoff(public_key)
 
     total_bytes = 0
     for dirpath, _dirnames, filenames in os.walk(ROOT):
@@ -3665,6 +3949,7 @@ def main():
         "created_asset_mint_burn": created_asset_mint_burn_summary,
         "created_asset_coin_operations": created_asset_coin_summary,
         "genesis_coin_identity_handoff": coin_identity_handoff_summary,
+        "genesis_split_identity_handoff": split_identity_handoff_summary,
         "lifecycle_summaries": [live_summary.strip().splitlines(), third_summary.strip().splitlines(), *recovery_summaries,
                                 restored_approval_summary, new_identity_summary],
     }, sort_keys=True))
@@ -4071,6 +4356,46 @@ try {
     if (!Array.isArray(handoff[key]) || handoff[key].length !== 2 || handoff[key].some((summary) =>
         JSON.stringify(summary) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`)))) {
       throw new Error('the identity-matched handoff signer lifecycle counters differ');
+    }
+  }
+  const splitHandoff = result.genesis_split_identity_handoff;
+  if (!splitHandoff || ['actual_cli', 'same_live_store', 'foreign_split', 'received_coin_returned', 'source_remainder_unchanged', 'review_content_checked', 'offline_bytes_equal', 'paid_effects',
+      'all_saved_replays', 'b_before_ownership_refused', 'a_after_current_handoff_refused',
+      'old_a_stopped_before_b', 'revoked', 'revoked_after_restart', 'all_sockets_absent']
+    .some((key) => splitHandoff[key] !== true) ||
+    splitHandoff.run_exec_children !== 19 || splitHandoff.pty_children !== 2 || splitHandoff.serve_children !== 4 ||
+    splitHandoff.native_host_children !== 1 || splitHandoff.private_copy_children !== 0 || splitHandoff.generated_files !== 32 ||
+    !Number.isSafeInteger(splitHandoff.generated_bytes) || splitHandoff.generated_bytes <= 0 || splitHandoff.generated_bytes > 2_097_152 ||
+    !Number.isSafeInteger(splitHandoff.captured_output_bytes) || splitHandoff.captured_output_bytes <= 0 || splitHandoff.captured_output_bytes > 49_152 ||
+    Buffer.byteLength(JSON.stringify(splitHandoff)) > 4096 ||
+    JSON.stringify(splitHandoff.request_ids) !== JSON.stringify(['c1'.repeat(32), 'c2'.repeat(32)]) ||
+    !Array.isArray(splitHandoff.owners) || splitHandoff.owners.length !== 2 || splitHandoff.owners[0] === splitHandoff.owners[1] ||
+    splitHandoff.owners.some((key) => !/^[0-9a-f]{64}$/.test(key)) || !/^[0-9a-f]{64}$/.test(splitHandoff.coin)) {
+    throw new Error('the genuine genesis Coin identity split handoff evidence is incomplete');
+  }
+  if (!/^[0-9a-f]{64}$/.test(splitHandoff.received_coin) || splitHandoff.received_coin === splitHandoff.coin) {
+    throw new Error('the split-created returned Coin identity is invalid');
+  }
+  const splitHandoffRefusals = ['/work/custody-split-handoff/b-before-ownership.bin', '/work/custody-split-handoff/a-after-handoff.bin',
+    '/work/operator/split-handoff/a-revoked.bin', '/work/operator/split-handoff/a-revoked-restart.bin',
+    '/work/operator/split-handoff/b-revoked.bin', '/work/operator/split-handoff/b-revoked-restart.bin'];
+  if (JSON.stringify(splitHandoff.refusal_paths) !== JSON.stringify(splitHandoffRefusals) ||
+      !Array.isArray(splitHandoff.stages) || splitHandoff.stages.length !== 2) {
+    throw new Error('the split handoff exact refusal/stage inventory differs');
+  }
+  for (const [index, stage] of splitHandoff.stages.entries()) {
+    if (stage.mode !== ['after-split', 'after-return'][index] || stage.verified !== true || stage.version !== index + 1 ||
+        stage.owner !== splitHandoff.owners[1-index] || stage.nonce_a !== 1 || stage.nonce_b !== index ||
+        stage.received_coin !== splitHandoff.received_coin || stage.source_version !== 2 ||
+        stage.source_amount !== 5_000_000 || stage.received_amount !== 5_000_000 ||
+        stage.replay_count !== index + 1 || stage.paid_effects !== true || stage.separate_fee !== true) {
+      throw new Error('the independent split handoff live object/paid replay stage differs');
+    }
+  }
+  for (const [key, counts] of [['serve_summaries', [3, 3, 2, 1]], ['restart_summaries', [1, 1, 0, 1]]]) {
+    if (!Array.isArray(splitHandoff[key]) || splitHandoff[key].length !== 2 || splitHandoff[key].some((summary) =>
+        JSON.stringify(summary) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`)))) {
+      throw new Error('the identity-matched split handoff signer lifecycle counters differ');
     }
   }
   // `phase_create_asset`'s own `check_summary` calls already enforce the

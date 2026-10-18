@@ -149,3 +149,65 @@ its 256-byte limit. These are suballocations within the unchanged global
 512 MiB container limits. No resource or capability is increased. Source
 preparation and these finite checks do not establish actual whole-fixture
 headroom; owning execution and qualification remain tracked in TODO.md.
+
+
+### 2026-10-18 foreign split and received-Coin return control
+
+This separate fixture control exercises the already-accepted foreign recipient
+of `split`. It uses one fresh two-owner development genesis and live store,
+with the existing disposable A and B keys and separate prefunded fee Coins.
+A's protected kind-3 `split` sends 5,000,000 of its 10,000,000 Coin to B.
+The original source stays with A at version 2/value 5,000,000; precisely one
+new Coin is version 1/owner B/value 5,000,000. After A's original signer and
+revoked restart have both actually exited, been waited, and lost their socket,
+B's protected kind-2 whole transfer returns that SAME new Coin to A at version
+2/value 5,000,000. A's remaining source bytes stay unchanged. A and B each
+advance only their own nonce from 0 to 1 and each pay from their own fee Coin.
+No new key, fee funding migration, merge, mint or application authority change
+is part of this control.
+
+Before the split, B's preparation against A's source must refuse ownership.
+Afterward A's preparation against the CURRENT B-owned new Coin must refuse,
+using A's current fee preimage and nonce. Each actual operation has its own
+complete operation-specific PTY approval, offline/actual CLI signed-byte
+comparison, matching-identity cancellation, same-process refusal and restarted
+refusal. Before sending any confirmation input, the new control requires the
+complete real PTY review to match every line of the bounded prepared review,
+including the full signing frame, source/fee references, context and fee policy.
+It separately requires exact sender/recipient/request/operation and amount
+lines, the foreign split's `recipient_is_self=false`/remainder, and the exact
+`APPROVE-SPLIT` or `APPROVE-TRANSFER` confirmation prefix. The common PTY
+helper's new optional expectations default to empty for every old call. All six refusal output paths remain absent. Fresh requests are `c1`
+(split) and `c2` (return), repeated 32 times; `c3`/`c4` are the two preparation
+refusals. No old request, counter or assertion is reused or relaxed.
+
+The NEW ignored `distinct_uid_genesis_split_identity_handoff_probe` has
+`generate`, `serve`, `after-split` and `after-return` modes. Its independently
+queried canonical objects must match the exact source/received identity, nominal
+type, schema, amount, owner and version. It authenticates both saved complete
+frames and checks exact arguments, object/fee references, paid results and
+application effect sets, quoted fee settlement and output ownership, nonempty
+matching receipts and every saved request replay against the same live store.
+The transient reservation remains absent, with no durable effect. Replaying the
+split and return must preserve complete results, receipts, all observed object
+query bytes and both nonces. Existing self-split/merge and whole-Coin handoff
+probes keep their own original predicates unchanged.
+
+The normal addition is 19 `run_exec` children, two real PTYs, four bounded
+signer children and one native store host (26 total), with no private-key-copy
+child. Its 32 private regular evidence leaves share 2 MiB, all command and PTY
+capture shares 48 KiB, and final JSON evidence has 4 KiB. The two additional
+leaves relative to the whole-Coin control retain A's exact remainder and its
+current fee preimage. Readers retain owned 0600/single-link/no-follow checks.
+All original 117 completion flags and original fixture flows remain; the new
+controls have their own separate result object and host assertions.
+
+These are suballocations inside the unchanged 280-second Node/230-second
+Python, 256 KiB embedded program/captured-child output, 64 KiB bootstrap and
+Docker wire, 64 MiB/16,384-inode volume, 512 MiB/no additional swap, CPU1/PID64
+container bounds. Complete transport admission and actual whole-fixture
+headroom still require owning validation recorded in `TODO.md`; static source
+checks do not establish runtime success. The new probe is test-only and needs
+a freshly attributed harness. It does not relax `ApplicationAssetPin`'s
+creator==publisher rule, establish an application-wallet handoff, key recovery,
+full key/account rotation, public ceremony or all-M2 completion.
