@@ -70,10 +70,10 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   同sourceのliteral npm ci +完全requiredはE167、全8 ordinary CIはE168で実終端まで
   照合し、Rustls更新のsource qualificationを完了しました。旧sourceの合格を借用しません。
   `50fbf22d` の既存ENOSPC全5 casesも新しい所有実行で成功しました (E169)。
-  他者へのgenesis部分分割と返送を検証する追加source `8a90ea52` はレビュー済みで、
-  fresh H10 compileはE171で成功。全138 owningは出力上限で実失敗し (E172)、
-  限定diagnosticsのE173で正常prepare-transferの累積出力による上限超過を確認しました。
-  元117と追加21を同じ上限の別profileへ分離中です。完全requiredは未起動、CIは当該8a90で進行中です。
+  他者へのgenesis部分分割と受取Coin返送のsource `c6807388` は、元117と追加21を
+  同じ上限の独立profileへ分離し、両方の実owningに成功しました (E174)。
+  fresh H10の実build元は8a90のまま、MJS/guideの2-file bridgeで対応付けています。
+  旧combined失敗E172/E173は保持。同headのliteral npm ciは成功し、完全requiredとCIは実行中です。
   [Draft PR #326](https://github.com/sunriselayer/sunrise-edge/pull/326)。全M2/M3/M7の完了には数えません。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
@@ -423,6 +423,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E171: fresh current8a90 H10 compile and normal retention | exact `8a90ea52` / tree`79834fbf`のCLI lib all-feature no-runとactual CargoJSON由来の保持copyが両actual0/merged EOF/wait。outer actual0/両physical EOF/wait/reap、296.910秒。171 CargoJSON recordsと唯一のfresh=false/opt2/assertions+overflow enabled libtest、30,252,104-byte ELFの0755/UID1000/nlink1・全byte hash一致/別inodeをrootと独立peerが照合。親`genesis-split-handoff-h10-parent-qualified-1018.json` (`5d17bc33`) | source1215全Ns/hash/Git・17 alias-aware tools、保存21 samples/20 live kernel rowsの6GiB/swap0/CPU2/tasks512、既知47 PID・特定CG不在とhost recipe TMP空を照合。root E170とpeer readerの最初のsymlink仮定失敗を保持。旧H9/Native cacheのleaseや結果を移さず、新しいpublic seed/専用cache/targetからbuild。test/全138 owning・完全required/CI・production CLI新build・全M2/M7の合格は主張しない |
 | E172: current8a90 whole138 fixture actual failure | actual H10とfresh2-ELF lddを固定して全138用driverを1回実行したが、Node actual1/merged EOF/wait、outer actual1/両physical EOF/wait/reap、7.899秒。保存117-byte rawは`captured command/PTY output exceeds the fixture's bounded allocation`。root/peer failure receipts`genesis-split-handoff-fixture-runtime1-root-actual-failure-qualified-1018.json` (`10a15c97`) / `genesis-split-handoff-fixture-runtime1-independent-failure-and-diagnostic-review-1018.json` (`4d62bff8`) | source1215・2ELF/4libs/driver/aliasesの保存前後一致と既知owner/external PID・saved CG不在を照合。run_execはrc判定より先に累積262144-byte capを検査するため、元command・通常の累積量か大きなpanic出力かは元rawから確定できない。phase48KiB/全体262144やselectors/timeoutsを増減せず、失敗時だけpublic新probeのbounded diagnosticsを追加する。旧117・新21の部分成功や全M2の合格へ加算せず、当該完全requiredも未起動で保持する |
 | E173: current8258 bounded diagnostic actual failure and cause | `8258619c` / tree`8ed58c89`の限定diagnosticsを1回実行し、Node/outerはactual1・実EOF/wait/reap。297-byte rawは正常終了rc0の`prepare-transfer`出力5,752B/stderr0で累積257,798→263,550B、元262,144Bを1,406B超えたことを示した。author/root receipts`genesis-split-handoff-fixture-runtime2-author-actual-failure-qualified-1018.json` (`58271e77`) / `genesis-split-handoff-fixture-runtime2-root-actual-failure-qualified-1018.json` (`5669b47d`) | source1215・2ELF/4libs/driver/aliasesの保存前後一致、両outer streamsと既知PID/CG解放を照合。phaseは記録されておらず推測しない。残り出力があるため1,406B削減で足りるとは主張せず、全138/元117/追加21の成功も加算しない。capを上げたり途中resetせず、元117と新21を独立profileへ分離する通常のtest-layout修正を進める。E172の失敗を保持し、全M2/M7は未完了 |
+| E174: currentc680 separate default117 and foreign-split21 actual success | exact `c6807388` / tree`a6239a24`。fresh2-ELF lddの後、元default117はactual0/両outer実EOF/wait/reap・7.591秒、独立`--profile genesis-split-handoff`の21 feature flagsもactual0/同closure・1.807秒。source・全判定の別review`a8f8a4bd`、executor aggregate`genesis-split-handoff-profiles1-executor-aggregate-qualified-1018.json` (`8db7135a`) とroot実照合`genesis-split-handoff-profiles1-root-actual-qualified-1018.json` (`b350a125`) | 元117 flow/host判定は50fbとbyte一致、新21 phase/判定は8258から保持。Aの10MをA残5M/S v2とB受取5M/C v1へ分割し、同CをA/C v2へ返送。別fee・nonce1,0→1,1・全保存再送・実PTY内容一致・誤owner拒否・A停止後B開始・取消/restart拒否を確認。新phaseは73,078B/32 leaves、出力29,412/49,152B・26 children、setup6 children。両1215 source/body/Ns・2ELF/4libs/aliases保存前後、host PID/CGとcontainer/volume cleanup判定を照合。H10実build元8a90とはMJS/guide2-file、production CLI実50fbとは3-file bridge。138は別実行の判定和で、single whole138合格ではない。全M2/M7・実鍵/公開・未実施の個別Docker raw ledgerの証明に拡張しない。完全required/CIは当該c680で実行中 |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -934,6 +935,12 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     fee Coinは別prefunded入力、version2/3・nonce1,0→1,1・paid effects/receiptと全保存済み再送を確認。
     両UID/PTY承認、Bの所有前/Aの譲渡後拒否、A停止/wait後のB開始、両取消/restart拒否も成功。
     新key/copyは追加せず、application creatorは不変。他familyや全M2は未完了。
+  - [x] [genesis Coinの他者宛て部分分割と受取Coin返送 component](docs/architecture/standard-asset-split-merge-custody.md):
+    E174でAの10MをA残5MとB受取5Mへ分割し、同じ受取CoinをBからAへ返送。
+    別UID/PTYの完全内容承認・exact frame・paid effects/nonce/receipt・全保存再送、誤owner拒否、
+    A停止後B開始・両取消/restart拒否を確認。元117と新21は同じ制限の別実行で成功した。
+    全M2、application creator/TreasuryCap・account/fee所有権の移行、実鍵ceremonyは含めない。
+    同c680の完全required/CIは実行中で、先のcombined上限失敗E172/E173は保持する。
   - [x] [own-created application Coinのtransfer/split/merge custody](docs/architecture/standard-asset-application-coin-custody.md):
     E74/E75で独立application pinとgenesis feeを分け、実別UID/PTYの6操作と正確な
     type/owner/version/amount/receipt/nonce・全保存済み再送・取消/restartを検証。
