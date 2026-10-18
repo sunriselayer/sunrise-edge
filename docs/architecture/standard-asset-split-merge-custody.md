@@ -163,7 +163,7 @@ revoked restart have both actually exited, been waited, and lost their socket,
 B's protected kind-2 whole transfer returns that SAME new Coin to A at version
 2/value 5,000,000. A's remaining source bytes stay unchanged. A and B each
 advance only their own nonce from 0 to 1 and each pay from their own fee Coin.
-No new key, fee funding migration, merge, mint or application authority change
+No third identity, fee funding migration, merge, mint or application authority change
 is part of this control.
 
 Before the split, B's preparation against A's source must refuse ownership.
@@ -199,15 +199,45 @@ child. Its 32 private regular evidence leaves share 2 MiB, all command and PTY
 capture shares 48 KiB, and final JSON evidence has 4 KiB. The two additional
 leaves relative to the whole-Coin control retain A's exact remainder and its
 current fee preimage. Readers retain owned 0600/single-link/no-follow checks.
-All original 117 completion flags and original fixture flows remain; the new
-controls have their own separate result object and host assertions.
+All original 117 completion flags and original fixture flows remain in the
+default profile. The 21 foreign-split controls run independently with fresh
+disposable A/B keys, setup, volume, process accounting and output accounting:
+
+```sh
+node scripts/check-docker-custody-fixture-1013.mjs \
+  --cli-binary /absolute/path/to/sunrise-edge-cli \
+  --test-binary /absolute/path/to/sunrise_edge_cli-HASH
+node scripts/check-docker-custody-fixture-1013.mjs \
+  --cli-binary /absolute/path/to/sunrise-edge-cli \
+  --test-binary /absolute/path/to/sunrise_edge_cli-HASH \
+  --profile genesis-split-handoff
+```
+
+Omitting `--profile` preserves the original default invocation; explicit
+`--profile default` selects that same flow. Unknown profile names refuse.
+The independent profile calls the existing setup, keygen and config helpers,
+then only the foreign-split phase. It additionally uses the existing waited
+operator-UID permission probes for each custody key and its matching retained
+approval. Its setup has two keygen children and four waited permission-check
+children, in addition to the phase's unchanged 26 children. The phase's 32
+regular evidence leaves and four setup key/config leaves use the same volume.
+No seed bytes are read, exported, or included in result JSON by these checks.
+
+The original 117 predicates and new 21 predicates are qualified by separate
+owning runs. Their union is 138 existing predicates; a single whole138 pass is
+not claimed. Each process starts its ordinary accounting once. No accounting
+is reset or discarded within either invocation. The failed combined attempts
+remain evidence of the previous cumulative-output allocation failure.
 
 These are suballocations inside the unchanged 280-second Node/230-second
 Python, 256 KiB embedded program/captured-child output, 64 KiB bootstrap and
 Docker wire, 64 MiB/16,384-inode volume, 512 MiB/no additional swap, CPU1/PID64
-container bounds. Complete transport admission and actual whole-fixture
-headroom still require owning validation recorded in `TODO.md`; static source
-checks do not establish runtime success. The new probe is test-only and needs
-a freshly attributed harness. It does not relax `ApplicationAssetPin`'s
+container bounds, separately for each selected profile. Each retains the
+256 KiB captured-command/PTY cap, and the foreign-split phase retains its
+48 KiB suballocation. Complete transport admission and actual profile results
+still require owning validation recorded in `TODO.md`; static source checks
+do not establish runtime success. The new probe is test-only and requires an
+attributed harness containing its exact selector; a later MJS-only profile
+layout change does not relabel that compiled harness's source. It does not relax `ApplicationAssetPin`'s
 creator==publisher rule, establish an application-wallet handoff, key recovery,
 full key/account rotation, public ceremony or all-M2 completion.

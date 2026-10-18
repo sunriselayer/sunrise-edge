@@ -46,6 +46,9 @@
 //   node scripts/check-docker-custody-fixture-1013.mjs \
 //     --cli-binary /abs/path/to/target/.../sunrise-edge-cli \
 //     --test-binary /abs/path/to/target/.../deps/sunrise_edge_cli-<hash>
+// The default runs the original 117 checks. The independent foreign-split
+// control uses the same inputs plus --profile genesis-split-handoff; each
+// invocation has its own unchanged resource and captured-output bounds.
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
@@ -79,13 +82,17 @@ let volumeMountpoint;
 // ---- argument parsing: explicit, absolute, pre-validated host paths only ----
 
 function parseArgs(argv) {
-  const out = {};
+  const out = { profile: 'default' };
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
     const value = argv[index + 1];
     if (flag === '--cli-binary') out.cliBinary = value;
     else if (flag === '--test-binary') out.testBinary = value;
+    else if (flag === '--profile') out.profile = value;
     else throw new Error(`unknown or incomplete argument: ${flag ?? '(missing)'}`);
+  }
+  if (!['default', 'genesis-split-handoff'].includes(out.profile)) {
+    throw new Error('unknown or incomplete --profile; expected default or genesis-split-handoff');
   }
   if (!out.cliBinary || !out.testBinary) {
     throw new Error('both --cli-binary and --test-binary are required, with no default or discovery');
@@ -111,7 +118,7 @@ function assertMountSafePath(label_, path) {
   }
 }
 
-const { cliBinary, testBinary } = parseArgs(process.argv.slice(2));
+const { cliBinary, testBinary, profile } = parseArgs(process.argv.slice(2));
 
 // ---- resolving the exact dynamic-linker/shared-library closure via `ldd` ----
 //
@@ -579,7 +586,7 @@ def phase_approve_without_terminal(config_path, artifact_path):
         raise FixtureFailure("non-terminal approval failed for a different reason")
 
 
-def phase_operator_cannot_read_or_edit(request_id_hex):
+def phase_operator_cannot_read_or_edit(request_id_hex, key_path=f"{ROOT}/custody-keys/custody.seed"):
     def attempt(path, flags):
         pid = os.fork()
         if pid == 0:
@@ -600,7 +607,7 @@ def phase_operator_cannot_read_or_edit(request_id_hex):
         _pid, status = os.waitpid(pid, 0)
         return os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
 
-    seed_blocked = attempt(f"{ROOT}/custody-keys/custody.seed", os.O_RDONLY)
+    seed_blocked = attempt(key_path, os.O_RDONLY)
     approval_blocked = attempt(f"{ROOT}/custody-approvals/{request_id_hex}", os.O_WRONLY | os.O_TRUNC)
     if not seed_blocked:
         raise FixtureFailure("the operator UID could read custody's seed file")
@@ -3958,7 +3965,6 @@ def main():
     create_asset_summary, created_asset_mint_burn_summary, created_asset_coin_summary = phase_create_asset(public_key)
 
     coin_identity_handoff_summary = phase_genesis_coin_identity_handoff(public_key)
-    split_identity_handoff_summary = phase_genesis_split_identity_handoff(public_key)
 
     total_bytes = 0
     for dirpath, _dirnames, filenames in os.walk(ROOT):
@@ -3987,14 +3993,58 @@ def main():
         "created_asset_mint_burn": created_asset_mint_burn_summary,
         "created_asset_coin_operations": created_asset_coin_summary,
         "genesis_coin_identity_handoff": coin_identity_handoff_summary,
-        "genesis_split_identity_handoff": split_identity_handoff_summary,
         "lifecycle_summaries": [live_summary.strip().splitlines(), third_summary.strip().splitlines(), *recovery_summaries,
                                 restored_approval_summary, new_identity_summary],
     }, sort_keys=True))
 
 
+def genesis_split_handoff_main():
+    # This independent invocation starts with fresh accounting and a fresh
+    # container allocation. Never reset or discard accounting within a run.
+    phase_setup()
+    public_key = phase_keygen()
+    phase_write_config(public_key)
+    second_key_path = f"{ROOT}/custody-keys/custody2.seed"
+    second_public_key = phase_keygen(second_key_path)
+    phase_write_config(second_public_key, f"{ROOT}/custody-keys/custody2.config")
+    if public_key == second_public_key:
+        raise FixtureFailure("split profile requires two independent disposable publishers")
+    split_summary = phase_genesis_split_identity_handoff(public_key)
+    # The common real-UID probes actually wait for both permission checks:
+    # neither seed can be opened and neither retained approval can be edited.
+    phase_operator_cannot_read_or_edit("c1" * 32)
+    phase_operator_cannot_read_or_edit("c2" * 32, second_key_path)
+    total_bytes = 0
+    for dirpath, _dirnames, filenames in os.walk(ROOT):
+        for filename in filenames:
+            try:
+                total_bytes += os.stat(os.path.join(dirpath, filename)).st_size
+            except FileNotFoundError:
+                continue
+    if total_bytes > 64 * 1024 * 1024:
+        raise FixtureFailure("generated fixture files exceed the 64MiB bound")
+    print(json.dumps({
+        "ok": True,
+        "scope": "custody_fixture_1013_genesis_split_handoff_docker_linux_uid_pty",
+        "profile": "genesis-split-handoff",
+        "generated_bytes_total": total_bytes,
+        "key_isolation": {"custody_uid": CUSTODY_UID, "operator_uid": OPERATOR_UID,
+            "intruder_uid": INTRUDER_UID, "publishers": [public_key, second_public_key],
+            "setup_exec_children": 2, "read_refusals": 2,
+            "approval_write_refusals": 2, "isolation_children_waited": 4},
+        "genesis_split_identity_handoff": split_summary,
+    }, sort_keys=True))
+
+
 try:
-    main()
+    if len(sys.argv) != 2:
+        raise FixtureFailure("fixture requires one explicit profile selector")
+    if sys.argv[1] == "default":
+        main()
+    elif sys.argv[1] == "genesis-split-handoff":
+        genesis_split_handoff_main()
+    else:
+        raise FixtureFailure("unknown fixture profile selector")
 except FixtureFailure as failure:
     print(json.dumps({"ok": False, "error": str(failure)}, sort_keys=True))
     sys.exit(1)
@@ -4151,76 +4201,7 @@ async function inspectVolume(cleanup = false) {
   return volume;
 }
 
-try {
-  const localImage = await docker(['image', 'inspect', '--format', '{{.Id}}', image]);
-  if (localImage.stdout.trim() !== imageId) throw new Error('pinned local image attachment differs');
-  if (await findVolume()) throw new Error('fresh custody volume already exists');
-  volumeExpected = true;
-  const createdVolume = await docker([
-    'volume', 'create', '--driver', 'local', '--name', volumeName,
-    '--label', `${label}=${owner}`, '--opt', 'type=tmpfs', '--opt', 'device=tmpfs',
-    '--opt', `o=${volumeOptions}`,
-  ]);
-  if (createdVolume.stdout.trim() !== volumeName) throw new Error('volume creation identity differs');
-  await inspectVolume();
-  const created = await docker([
-    'create', '--pull=never', '--name', name, '--label', `${label}=${owner}`,
-    '--network', 'none', '--read-only', '--cap-drop', 'ALL',
-    '--cap-add', 'CHOWN', '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SETUID', '--cap-add', 'SETGID',
-    '--security-opt', 'no-new-privileges', '--user', '0:0',
-    '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
-    '--pids-limit', '64', '--log-driver', 'none',
-    '--mount', `type=volume,source=${volumeName},target=/work,volume-nocopy`,
-    ...binds.flatMap((bind) => ['--mount', bind]),
-    '--entrypoint', '/usr/local/bin/python3', image, '-I', '-B', '-c', probeCommand(),
-  ]);
-  containerId = created.stdout.trim();
-  if (!/^[0-9a-f]{64}$/.test(containerId)) throw new Error('invalid exact container identity');
-
-  const initial = await inspect(containerId, false, true);
-  const config = initial.HostConfig;
-  const mounts = initial.Mounts;
-  const allocations = mounts.filter((mount) => mount.Type === 'volume');
-  if (allocations.length !== 1 || allocations[0].Name !== volumeName ||
-      allocations[0].Destination !== '/work' || allocations[0].RW !== true ||
-      allocations[0].Source !== volumeMountpoint) throw new Error('owned allocation attachment differs');
-  const readonlyMounts = mounts.filter((mount) => mount.Type === 'bind');
-  const expectedMountCount = 3 + closure.libs.size; // cli + harness + ld.so + each shared library
-  if (!Array.isArray(mounts) || mounts.length !== expectedMountCount + 1 ||
-      readonlyMounts.length !== expectedMountCount || !readonlyMounts.every((mount) => mount.RW === false)) {
-    throw new Error('bind mounts are not exactly the owned read-only custody/library closure');
-  }
-  if (config.Memory !== 512 * 1024 * 1024 || config.MemorySwap !== 512 * 1024 * 1024 ||
-      config.PidsLimit !== 64 || config.NanoCpus !== 1_000_000_000 ||
-      config.NetworkMode !== 'none' || config.ReadonlyRootfs !== true ||
-      config.LogConfig.Type !== 'none' || initial.Config.User !== '0:0' ||
-      JSON.stringify(config.CapDrop) !== '["ALL"]' ||
-      JSON.stringify([...config.CapAdd].sort()) !== JSON.stringify(['CAP_CHOWN', 'CAP_DAC_OVERRIDE', 'CAP_SETGID', 'CAP_SETUID']) ||
-      !config.SecurityOpt.includes('no-new-privileges') ||
-      JSON.stringify(initial.Config.Entrypoint) !== '["/usr/local/bin/python3"]' ||
-      Object.keys(config.Tmpfs ?? {}).length !== 0 ||
-      (config.Binds ?? []).length !== 0) {
-    throw new Error(`effective Docker configuration differs: ${JSON.stringify({
-      memory: config.Memory, swap: config.MemorySwap, pids: config.PidsLimit,
-      cpu: config.NanoCpus, network: config.NetworkMode, readonly: config.ReadonlyRootfs,
-      log: config.LogConfig.Type, user: initial.Config.User, capAdd: config.CapAdd,
-      capDrop: config.CapDrop, security: config.SecurityOpt, entrypoint: initial.Config.Entrypoint,
-      tmpfs: config.Tmpfs, binds: config.Binds,
-    })}`);
-  }
-
-  const completed = await docker(['start', '--attach', containerId]);
-  const terminal = await inspect(containerId);
-  if (terminal.State.Running || terminal.State.OOMKilled || terminal.State.Dead || terminal.State.Pid !== 0) {
-    throw new Error('the fixture container lacks a clean terminal state');
-  }
-
-  const lines = completed.stdout.trim().split('\n').filter((line) => line.length > 0);
-  if (lines.length === 0) throw new Error('the fixture produced no evidence line');
-  result = JSON.parse(lines[lines.length - 1]);
-  if (completed.code !== 0 || result.ok !== true) {
-    throw new Error(`fixture reported failure: ${result?.error ?? completed.stderr.trim() ?? 'unknown'}`);
-  }
+function validateDefaultResult(result) {
   if (result.scope !== 'custody_fixture_1013_docker_linux_uid_pty' || result.restart_signature_match !== true ||
       !Number.isSafeInteger(result.generated_bytes_total) || result.generated_bytes_total <= 0 ||
       result.generated_bytes_total > 64 * 1024 * 1024 ||
@@ -4396,46 +4377,6 @@ try {
       throw new Error('the identity-matched handoff signer lifecycle counters differ');
     }
   }
-  const splitHandoff = result.genesis_split_identity_handoff;
-  if (!splitHandoff || ['actual_cli', 'same_live_store', 'foreign_split', 'received_coin_returned', 'source_remainder_unchanged', 'review_content_checked', 'offline_bytes_equal', 'paid_effects',
-      'all_saved_replays', 'b_before_ownership_refused', 'a_after_current_handoff_refused',
-      'old_a_stopped_before_b', 'revoked', 'revoked_after_restart', 'all_sockets_absent']
-    .some((key) => splitHandoff[key] !== true) ||
-    splitHandoff.run_exec_children !== 19 || splitHandoff.pty_children !== 2 || splitHandoff.serve_children !== 4 ||
-    splitHandoff.native_host_children !== 1 || splitHandoff.private_copy_children !== 0 || splitHandoff.generated_files !== 32 ||
-    !Number.isSafeInteger(splitHandoff.generated_bytes) || splitHandoff.generated_bytes <= 0 || splitHandoff.generated_bytes > 2_097_152 ||
-    !Number.isSafeInteger(splitHandoff.captured_output_bytes) || splitHandoff.captured_output_bytes <= 0 || splitHandoff.captured_output_bytes > 49_152 ||
-    Buffer.byteLength(JSON.stringify(splitHandoff)) > 4096 ||
-    JSON.stringify(splitHandoff.request_ids) !== JSON.stringify(['c1'.repeat(32), 'c2'.repeat(32)]) ||
-    !Array.isArray(splitHandoff.owners) || splitHandoff.owners.length !== 2 || splitHandoff.owners[0] === splitHandoff.owners[1] ||
-    splitHandoff.owners.some((key) => !/^[0-9a-f]{64}$/.test(key)) || !/^[0-9a-f]{64}$/.test(splitHandoff.coin)) {
-    throw new Error('the genuine genesis Coin identity split handoff evidence is incomplete');
-  }
-  if (!/^[0-9a-f]{64}$/.test(splitHandoff.received_coin) || splitHandoff.received_coin === splitHandoff.coin) {
-    throw new Error('the split-created returned Coin identity is invalid');
-  }
-  const splitHandoffRefusals = ['/work/custody-split-handoff/b-before-ownership.bin', '/work/custody-split-handoff/a-after-handoff.bin',
-    '/work/operator/split-handoff/a-revoked.bin', '/work/operator/split-handoff/a-revoked-restart.bin',
-    '/work/operator/split-handoff/b-revoked.bin', '/work/operator/split-handoff/b-revoked-restart.bin'];
-  if (JSON.stringify(splitHandoff.refusal_paths) !== JSON.stringify(splitHandoffRefusals) ||
-      !Array.isArray(splitHandoff.stages) || splitHandoff.stages.length !== 2) {
-    throw new Error('the split handoff exact refusal/stage inventory differs');
-  }
-  for (const [index, stage] of splitHandoff.stages.entries()) {
-    if (stage.mode !== ['after-split', 'after-return'][index] || stage.verified !== true || stage.version !== index + 1 ||
-        stage.owner !== splitHandoff.owners[1-index] || stage.nonce_a !== 1 || stage.nonce_b !== index ||
-        stage.received_coin !== splitHandoff.received_coin || stage.source_version !== 2 ||
-        stage.source_amount !== 5_000_000 || stage.received_amount !== 5_000_000 ||
-        stage.replay_count !== index + 1 || stage.paid_effects !== true || stage.separate_fee !== true) {
-      throw new Error('the independent split handoff live object/paid replay stage differs');
-    }
-  }
-  for (const [key, counts] of [['serve_summaries', [3, 3, 2, 1]], ['restart_summaries', [1, 1, 0, 1]]]) {
-    if (!Array.isArray(splitHandoff[key]) || splitHandoff[key].length !== 2 || splitHandoff[key].some((summary) =>
-        JSON.stringify(summary) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`)))) {
-      throw new Error('the identity-matched split handoff signer lifecycle counters differ');
-    }
-  }
   // `phase_create_asset`'s own `check_summary` calls already enforce the
   // exact kind-5 serve counts (3/3/2/1, then 1/1/0/1 after revocation and
   // restart) by raising inside the container on any mismatch, exactly like
@@ -4570,6 +4511,138 @@ try {
         JSON.stringify(summary) !== JSON.stringify(countKeys.map((key, column) => `${key}=${expectedLifecycle[index][column]}`)))) {
     throw new Error('the lifecycle serve summaries are incomplete or differ');
   }
+}
+
+function validateGenesisSplitHandoffResult(result) {
+  const isolation = result.key_isolation;
+  if (result.scope !== 'custody_fixture_1013_genesis_split_handoff_docker_linux_uid_pty' ||
+      result.profile !== 'genesis-split-handoff' || !Number.isSafeInteger(result.generated_bytes_total) ||
+      result.generated_bytes_total <= 0 || result.generated_bytes_total > 64 * 1024 * 1024 ||
+      !isolation || isolation.custody_uid !== 12001 || isolation.operator_uid !== 12002 ||
+      isolation.intruder_uid !== 12003 || isolation.setup_exec_children !== 2 ||
+      isolation.read_refusals !== 2 || isolation.approval_write_refusals !== 2 || isolation.isolation_children_waited !== 4 ||
+      !Array.isArray(isolation.publishers) || isolation.publishers.length !== 2 ||
+      isolation.publishers[0] === isolation.publishers[1] || isolation.publishers.some((key) => !/^[0-9a-f]{64}$/.test(key))) {
+    throw new Error('the independent split profile setup or common real-UID key isolation is incomplete');
+  }
+  const countKeys = ['connections_accepted', 'requests_handled', 'requests_signed', 'requests_refused'];
+  const splitHandoff = result.genesis_split_identity_handoff;
+  if (!splitHandoff || ['actual_cli', 'same_live_store', 'foreign_split', 'received_coin_returned', 'source_remainder_unchanged', 'review_content_checked', 'offline_bytes_equal', 'paid_effects',
+      'all_saved_replays', 'b_before_ownership_refused', 'a_after_current_handoff_refused',
+      'old_a_stopped_before_b', 'revoked', 'revoked_after_restart', 'all_sockets_absent']
+    .some((key) => splitHandoff[key] !== true) ||
+    splitHandoff.run_exec_children !== 19 || splitHandoff.pty_children !== 2 || splitHandoff.serve_children !== 4 ||
+    splitHandoff.native_host_children !== 1 || splitHandoff.private_copy_children !== 0 || splitHandoff.generated_files !== 32 ||
+    !Number.isSafeInteger(splitHandoff.generated_bytes) || splitHandoff.generated_bytes <= 0 || splitHandoff.generated_bytes > 2_097_152 ||
+    !Number.isSafeInteger(splitHandoff.captured_output_bytes) || splitHandoff.captured_output_bytes <= 0 || splitHandoff.captured_output_bytes > 49_152 ||
+    Buffer.byteLength(JSON.stringify(splitHandoff)) > 4096 ||
+    JSON.stringify(splitHandoff.request_ids) !== JSON.stringify(['c1'.repeat(32), 'c2'.repeat(32)]) ||
+    !Array.isArray(splitHandoff.owners) || splitHandoff.owners.length !== 2 || splitHandoff.owners[0] === splitHandoff.owners[1] ||
+    splitHandoff.owners.some((key) => !/^[0-9a-f]{64}$/.test(key)) || !/^[0-9a-f]{64}$/.test(splitHandoff.coin)) {
+    throw new Error('the genuine genesis Coin identity split handoff evidence is incomplete');
+  }
+  if (!/^[0-9a-f]{64}$/.test(splitHandoff.received_coin) || splitHandoff.received_coin === splitHandoff.coin) {
+    throw new Error('the split-created returned Coin identity is invalid');
+  }
+  const splitHandoffRefusals = ['/work/custody-split-handoff/b-before-ownership.bin', '/work/custody-split-handoff/a-after-handoff.bin',
+    '/work/operator/split-handoff/a-revoked.bin', '/work/operator/split-handoff/a-revoked-restart.bin',
+    '/work/operator/split-handoff/b-revoked.bin', '/work/operator/split-handoff/b-revoked-restart.bin'];
+  if (JSON.stringify(splitHandoff.refusal_paths) !== JSON.stringify(splitHandoffRefusals) ||
+      !Array.isArray(splitHandoff.stages) || splitHandoff.stages.length !== 2) {
+    throw new Error('the split handoff exact refusal/stage inventory differs');
+  }
+  for (const [index, stage] of splitHandoff.stages.entries()) {
+    if (stage.mode !== ['after-split', 'after-return'][index] || stage.verified !== true || stage.version !== index + 1 ||
+        stage.owner !== splitHandoff.owners[1-index] || stage.nonce_a !== 1 || stage.nonce_b !== index ||
+        stage.received_coin !== splitHandoff.received_coin || stage.source_version !== 2 ||
+        stage.source_amount !== 5_000_000 || stage.received_amount !== 5_000_000 ||
+        stage.replay_count !== index + 1 || stage.paid_effects !== true || stage.separate_fee !== true) {
+      throw new Error('the independent split handoff live object/paid replay stage differs');
+    }
+  }
+  for (const [key, counts] of [['serve_summaries', [3, 3, 2, 1]], ['restart_summaries', [1, 1, 0, 1]]]) {
+    if (!Array.isArray(splitHandoff[key]) || splitHandoff[key].length !== 2 || splitHandoff[key].some((summary) =>
+        JSON.stringify(summary) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`)))) {
+      throw new Error('the identity-matched split handoff signer lifecycle counters differ');
+    }
+  }
+  if (JSON.stringify(isolation.publishers) !== JSON.stringify(splitHandoff.owners)) {
+    throw new Error('the split profile setup identities differ from the actual protected operation owners');
+  }
+}
+
+try {
+  const localImage = await docker(['image', 'inspect', '--format', '{{.Id}}', image]);
+  if (localImage.stdout.trim() !== imageId) throw new Error('pinned local image attachment differs');
+  if (await findVolume()) throw new Error('fresh custody volume already exists');
+  volumeExpected = true;
+  const createdVolume = await docker([
+    'volume', 'create', '--driver', 'local', '--name', volumeName,
+    '--label', `${label}=${owner}`, '--opt', 'type=tmpfs', '--opt', 'device=tmpfs',
+    '--opt', `o=${volumeOptions}`,
+  ]);
+  if (createdVolume.stdout.trim() !== volumeName) throw new Error('volume creation identity differs');
+  await inspectVolume();
+  const created = await docker([
+    'create', '--pull=never', '--name', name, '--label', `${label}=${owner}`,
+    '--network', 'none', '--read-only', '--cap-drop', 'ALL',
+    '--cap-add', 'CHOWN', '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SETUID', '--cap-add', 'SETGID',
+    '--security-opt', 'no-new-privileges', '--user', '0:0',
+    '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
+    '--pids-limit', '64', '--log-driver', 'none',
+    '--mount', `type=volume,source=${volumeName},target=/work,volume-nocopy`,
+    ...binds.flatMap((bind) => ['--mount', bind]),
+    '--entrypoint', '/usr/local/bin/python3', image, '-I', '-B', '-c', probeCommand(), profile,
+  ]);
+  containerId = created.stdout.trim();
+  if (!/^[0-9a-f]{64}$/.test(containerId)) throw new Error('invalid exact container identity');
+
+  const initial = await inspect(containerId, false, true);
+  const config = initial.HostConfig;
+  const mounts = initial.Mounts;
+  const allocations = mounts.filter((mount) => mount.Type === 'volume');
+  if (allocations.length !== 1 || allocations[0].Name !== volumeName ||
+      allocations[0].Destination !== '/work' || allocations[0].RW !== true ||
+      allocations[0].Source !== volumeMountpoint) throw new Error('owned allocation attachment differs');
+  const readonlyMounts = mounts.filter((mount) => mount.Type === 'bind');
+  const expectedMountCount = 3 + closure.libs.size; // cli + harness + ld.so + each shared library
+  if (!Array.isArray(mounts) || mounts.length !== expectedMountCount + 1 ||
+      readonlyMounts.length !== expectedMountCount || !readonlyMounts.every((mount) => mount.RW === false)) {
+    throw new Error('bind mounts are not exactly the owned read-only custody/library closure');
+  }
+  if (config.Memory !== 512 * 1024 * 1024 || config.MemorySwap !== 512 * 1024 * 1024 ||
+      config.PidsLimit !== 64 || config.NanoCpus !== 1_000_000_000 ||
+      config.NetworkMode !== 'none' || config.ReadonlyRootfs !== true ||
+      config.LogConfig.Type !== 'none' || initial.Config.User !== '0:0' ||
+      JSON.stringify(config.CapDrop) !== '["ALL"]' ||
+      JSON.stringify([...config.CapAdd].sort()) !== JSON.stringify(['CAP_CHOWN', 'CAP_DAC_OVERRIDE', 'CAP_SETGID', 'CAP_SETUID']) ||
+      !config.SecurityOpt.includes('no-new-privileges') ||
+      JSON.stringify(initial.Config.Entrypoint) !== '["/usr/local/bin/python3"]' ||
+      Object.keys(config.Tmpfs ?? {}).length !== 0 ||
+      (config.Binds ?? []).length !== 0) {
+    throw new Error(`effective Docker configuration differs: ${JSON.stringify({
+      memory: config.Memory, swap: config.MemorySwap, pids: config.PidsLimit,
+      cpu: config.NanoCpus, network: config.NetworkMode, readonly: config.ReadonlyRootfs,
+      log: config.LogConfig.Type, user: initial.Config.User, capAdd: config.CapAdd,
+      capDrop: config.CapDrop, security: config.SecurityOpt, entrypoint: initial.Config.Entrypoint,
+      tmpfs: config.Tmpfs, binds: config.Binds,
+    })}`);
+  }
+
+  const completed = await docker(['start', '--attach', containerId]);
+  const terminal = await inspect(containerId);
+  if (terminal.State.Running || terminal.State.OOMKilled || terminal.State.Dead || terminal.State.Pid !== 0) {
+    throw new Error('the fixture container lacks a clean terminal state');
+  }
+
+  const lines = completed.stdout.trim().split('\n').filter((line) => line.length > 0);
+  if (lines.length === 0) throw new Error('the fixture produced no evidence line');
+  result = JSON.parse(lines[lines.length - 1]);
+  if (completed.code !== 0 || result.ok !== true) {
+    throw new Error(`fixture reported failure: ${result?.error ?? completed.stderr.trim() ?? 'unknown'}`);
+  }
+  if (profile === 'default') validateDefaultResult(result);
+  else validateGenesisSplitHandoffResult(result);
 } catch (error) {
   primaryError = error;
 } finally {
