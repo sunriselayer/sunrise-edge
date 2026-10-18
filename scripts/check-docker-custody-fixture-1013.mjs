@@ -558,6 +558,8 @@ def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, exp
         except OSError:
             pass
     _pid, status = os.waitpid(pid, 0)
+    # One charge owner for every completed approval PTY; callers keep the length only.
+    charge_output(len(captured))
     if expectation_error is not None:
         raise FixtureFailure(expectation_error)
     if confirmation_line is None:
@@ -1196,7 +1198,6 @@ def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, tr
         raise FixtureFailure("recovery transfer approval unexpectedly accepted a pipe")
     pty_output_bytes = phase_approve_via_pty(None, None, nonce, request_id, 3600, command=approve,
         expected_review_lines=review_lines, expected_confirmation_prefix=confirmation_prefix)
-    charge_output(pty_output_bytes)
     if app and _output_used - output_before > 16384:
         raise FixtureFailure("application transfer recovery captured PTY exceeds16KiB")
 
@@ -1437,7 +1438,6 @@ def phase_genesis_coin_identity_handoff(public_key):
             if rc == 0 or b"custody approve requires an interactive terminal" not in err:
                 raise FixtureFailure("handoff approval accepted pipe or wrong refusal")
             pty_bytes = phase_approve_via_pty(None, None, 0, ids[index], 3600, command=approve)
-            charge_output(pty_bytes)
             pty_count += 1
             if _output_used - output_before > 49152:
                 raise FixtureFailure("handoff PTY capture exceeds48KiB phase allocation")
@@ -1795,7 +1795,7 @@ def phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals,
         rc, _out, refusal = invoke(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
         if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
             raise FixtureFailure("split/merge recovery approval accepted a pipe")
-        charge_output(phase_approve_via_pty(None, None, index, request_ids[index], 3600, command=approve))
+        phase_approve_via_pty(None, None, index, request_ids[index], 3600, command=approve)
         allocation()
     request_before = {path: evidence(path, owner) for path, owner in
         [*((path, CUSTODY_UID) for path in request_paths), *((path, OPERATOR_UID) for path in operator_requests)]}
@@ -2261,7 +2261,7 @@ def phase_genesis_mint_burn_recovery(public_key, custody_dir, operator_dir, appr
         rc, _out, refusal = invoke(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
         if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
             raise FixtureFailure("genesis mint/burn recovery approval accepted a pipe")
-        charge_output(phase_approve_via_pty(None, None, index, request_ids[index], 3600, command=approve))
+        phase_approve_via_pty(None, None, index, request_ids[index], 3600, command=approve)
         allocation()
     reviewed_paths = [*((path, CUSTODY_UID) for path in request_paths),
                       *((path, OPERATOR_UID) for path in operator_requests),
@@ -2719,8 +2719,6 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
         raise FixtureFailure("own-asset mint approval unexpectedly accepted a pipe")
     pty_bytes = phase_approve_via_pty(None, None, 1, OWN_MINT_REQUEST_ID, 3600, command=approve_mint)
-    if strict_pty_accounting:
-        charge_output(pty_bytes)
 
     create_probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
         "custody::asset_create_fixture::distinct_uid_create_asset_probe", "--exact", "--ignored", "--nocapture", "--format", "terse"]
@@ -2791,8 +2789,6 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
         if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
             raise FixtureFailure("own-asset burn approval unexpectedly accepted a pipe")
         pty_bytes = phase_approve_via_pty(None, None, 2, OWN_BURN_REQUEST_ID, 3600, command=approve_burn)
-        if strict_pty_accounting:
-            charge_output(pty_bytes)
 
         sign_burn = cli_argv("custody", "sign-burn", *application_flags(operator_dir),
             "--request-file", f"{operator_dir}/own-burn-request.bin", *signer)
@@ -2915,8 +2911,6 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
         raise FixtureFailure("own-asset recovery burn approval unexpectedly accepted a pipe")
     pty_bytes = phase_approve_via_pty(None, None, 2, recovery_request_id, 3600, command=approve_recovery_burn)
-    if strict_pty_accounting:
-        charge_output(pty_bytes)
 
     # ---- reference signature: the ORIGINAL key file, still not copied
     # anywhere, signs this exact SAME newly approved frame once, through its
@@ -3191,8 +3185,6 @@ def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, addre
                 if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
                     raise FixtureFailure(f"application Coin {tag} approval accepted a pipe")
                 pty_bytes = phase_approve_via_pty(None, None, nonce, request_id, 3600, command=approve)
-                if strict_pty_accounting:
-                    charge_output(pty_bytes)
                 if serve is None:
                     count = 3 * len(selected)
                     serve = start_serve(socket_path, 30, count, count, command=serve_command(count))
@@ -3353,7 +3345,7 @@ def phase_create_recovery(public_key, custody_dir, operator_dir, approvals, trus
     rc, _out, refusal = invoke(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
     if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
         raise FixtureFailure("create recovery approval accepted a pipe")
-    charge_output(phase_approve_via_pty(None, None, 0, request_id, 3600, command=approve))
+    phase_approve_via_pty(None, None, 0, request_id, 3600, command=approve)
     allocation()
     reviewed_paths = [(request_path, CUSTODY_UID), (operator_request, OPERATOR_UID),
                       (f"{approvals}/{request_id}", CUSTODY_UID)]
@@ -3525,8 +3517,6 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
     # shape, distinct from every other family's confirmation text) and
     # echoes it back verbatim; it never hardcodes the text itself.
     pty_bytes = phase_approve_via_pty(None, None, 0, CREATE_REQUEST_ID, 3600, command=approve_create)
-    if strict_pty_accounting:
-        charge_output(pty_bytes)
 
     serve = None
     native = None
@@ -3862,7 +3852,6 @@ def phase_genesis_split_identity_handoff(public_key):
                 raise FixtureFailure("split handoff approval accepted pipe or wrong refusal")
             pty_bytes = phase_approve_via_pty(None, None, 0, ids[index], 3600, command=approve,
                 expected_review_lines=review_lines, expected_confirmation_prefix=confirmation_prefix)
-            charge_output(pty_bytes)
             pty_count += 1
             if _output_used - output_before > 49152:
                 raise FixtureFailure("split handoff PTY capture exceeds48KiB phase allocation")

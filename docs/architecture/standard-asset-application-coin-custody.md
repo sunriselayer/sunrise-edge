@@ -110,12 +110,15 @@ the original seed, and the new isolation probe checks the actual restored path;
 both also refuse operator edits to their corresponding approval. Public preimages, trust files
 and requests must retain their bytes and attachment metadata.
 
-The new profile opts into strict PTY accounting for its entire reused create,
-own mint/burn and six-operation application Coin setup. Each captured PTY is
-charged once, including the setup calls whose original default path only had
-the local 16KiB PTY limit. That inherited default accounting behavior is
-preserved here; this new profile's later success cannot establish complete
-cumulative PTY accounting for the older default invocation. The new recovery
+The shared approval helper charges each completed PTY capture exactly once,
+after waiting for its child and before checking the review, exit status or
+approval record. Callers retain the returned byte length without charging it
+again. This includes the default invocation and every separate profile;
+phase-local totals still measure the same cumulative counter without resets.
+The strict application setup option retains its additional child-closure
+checks; accounting no longer depends on that option. Each PTY retains its
+16KiB local limit, and actual invocation headroom remains an owning-run result.
+The new recovery
 adds exactly nine CLI children, one PTY, two custody-private copy children and
 three bounded signers, with eight generated private leaves, four absent
 refusal outputs, at most 16KiB generated content and 16KiB captured output.
