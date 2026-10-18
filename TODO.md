@@ -73,8 +73,8 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   他者へのgenesis部分分割と受取Coin返送のsource `c6807388` は、元117と追加21を
   同じ上限の独立profileへ分離し、両方の実owningに成功しました (E174)。
   fresh H10の実build元は8a90のまま、MJS/guideの2-file bridgeで対応付けています。
-  旧combined失敗E172/E173は保持。同headのliteral npm ci +完全requiredはE183で成功し、
-  CI資格の照合は未完了です。
+  旧combined失敗E172/E173は保持。同headのliteral npm ci +完全requiredはE183、
+  全8 hosted CIの実ログ・checkout tree/parents照合はE184で成功しました。
   [Draft PR #326](https://github.com/sunriselayer/sunrise-edge/pull/326)。全M2/M3/M7の完了には数えません。
   application Coin kind2の同一鍵historical recoveryは `7663e0ab` で実owning成功 (E177)。
   [Draft PR #327](https://github.com/sunriselayer/sunrise-edge/pull/327)。初回の表示照合失敗E176は保持し、
@@ -444,6 +444,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E181: exact f51 fresh13-target A/B actual success | exact `f51bee72` / tree`925361b2`。新Native8の両laneは各13 fresh CargoJSON bins・release opt3/debug0、全26 retained ELFの13組完全byte一致。777.183秒でactual0/実両EOF/wait/reap、unit/既知PID/CG・source lease・4 compiler/temp treesを回収。author`4784ecfc`、root全26ELF/全build raw`24ce242d`、root sampled caps`d3283f49`、統合`custody-f51-native8-1018-ab-parent-qualified.json` (`881da71e`) | rootは336,973,280Bの全retained bytes・0755/UID1000/singlelink/別inode・source1215 manifest map・CargoJSON profileを独立照合。authorは現source1215/Git・22 tools・311 archives/metadata・選択231 packages/10,017 files/122,049,003Bを照合。53保存sample中52 live、peak1,737,285,632B、8GiB/swap0/CPU4/Tasks512とmax/oom/kill0を確認。reader初回のTAR集計不一致を保持し、99 GNU-L headers/10,525Bを厳密計上するreaderだけ修正、product再実行なし。`fixturePassed=false`、custody runtime/D完全required/CI・原12 RELEASE runtime・全M7や独立security/release監査は未完了。ancestor成功の借用なし |
 | E182: current f51 Native8 RELEASE CLI custody actual success | E181のactual `f51bee72` Native8 CLIを直接使用。fresh2-ELF ldd inventoryは0.561秒、独立core70/split21/kind2 recovery57/kind3 recovery57は5.814/1.643/3.254/3.245秒で全5 owning actual0/実両EOF/wait/reap、既知host PID/CG不在。author aggregate`9f2030f0`、root inventory`cdd7f452`、root全raw/actual`custody-f51-native8-profiles1-root-actual-qualified-1018.json` (`89a57aa2`)、統合parent`1c09b2b2` | 全rawから70/23/59/59 recursive trueと各selected70/21/57/57、元core70+各application47の完全117 path/value map、split全mapを再抽出。kind3は完全review/同frame署名・旧新取消/restart、14files/13,717B・phase28,710B・18exec+2PTY+2copy+3serveとreference/recovered/restart countersを保持。source1215/2ELF/libs/aliases/driver保存前後一致、current CLIの全1215 compiled sourceは同f51で例外なし。H10だけは実8a90と4-file nonRust bridge。core/T/Gの全加算190,217/181,755/196,483 < 元262,144B。splitの保存値はphase29,412Bだけでglobal合計値は作らず、元のglobal/phase capを実source内で保持。container_removedはNode cleanupの実判定で、未保存の個別Docker-role PID/rawを追加主張しない。同一鍵historical signingのみ、再提出/currentness/正の権限移行・D完全required/CI・原12 RELEASE runtime・全M2/M3/M7は未完了。旧失敗とreader-only split形式訂正を保持、product再試行なし |
 | E183: exact c680 local complete required actual success | exact `c6807388` / tree`a6239a24`。literal npm ci + `./scripts/check-all.sh`の2 commandsが全actual0/merged EOF/wait、outer13,712.935秒で実両EOF/wait/reap。Rust147 summaries・4,397 passed/0 failed/43 ignored、CF13+28+10+15=66。author`47fb44ce`、実tool reap`d24610db`/chunk`3d9617`、root全raw/inputs`w-c-required-W-root-postclosed-qualified-1018.json` (`23fa1ff7`)、統合`c1276ddb` | rootは全746,949B rawを再parseし、元7 epochsとepoch8 freeze/unlock・実1832-byte候補2件/対応3-round committed ACK、current1215 source/Git/Ns・360 tools・317 CF aliases・5 wrappers・実2 seedproof JSON・7 directory tuplesを独立照合。実oneshot有限TimeoutStart20,000sでありRuntimeMax infinityを時間上限と呼ばない。両outer physical streamsとmerged inner pipeを区別し、既知Main3214325/external3214323・保存した非空CG不在まで確認。current ignored43を旧50fbの42から借用せず、原8links/7delays/35roles等はexact成功recipeのsource-owned oraclesへ帰属。privatecache/target bodyは読まず変更・削除なし。c680の既存PTY集計漏れ、後続f51のD全体gate/CI、CI326の別資格照合、原12 RELEASE runtime・独立監査・全M2/M3/M7は未達のまま保持 |
+| E184: exact c680 all8 hosted CI actual success | [run `39109200775`](https://github.com/sunriselayer/sunrise-edge/actions/runs/39109200775) attempt1の元7 owners + check全8がterminal SUCCESS。全8 rawの実checkout `a9f59728` はtree`a6239a24`でexact head`c6807388`と一致、parentsは`50fbf22d`/`c6807388`。全1,558,242B raw・8 job IDs・run/commit JSONをrootで照合し、Rust147 summaries・4,397 passed/0 failed/43 ignored、CF13+28+10+15=66を再抽出。author`b290ace7`、root`hosted-ci-pr326-current-c680-root-actual-qualified-1018.json` (`5533ea7e`)、E183 localとの統合`1ae1646d` | 既存collectorだけを1回実行しactual0・実両EOF/wait/reap・既知PID不在を確認。Actionsのsynthetic PR mergeは観測したCI checkoutであり、本作業でmainをmergeしたものではない。初回readerのliteral ANSI形式照合失敗を保持し、parse用copyだけ正規化、raw変更・collector/product再実行なし。c680の既存PTY集計漏れと旧combined失敗、後続f51のD全体gate/CI・原12新source RELEASE runtime・独立security/release監査・全M2/M3/M7は未完了のまま保持 |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -960,7 +961,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     別UID/PTYの完全内容承認・exact frame・paid effects/nonce/receipt・全保存再送、誤owner拒否、
     A停止後B開始・両取消/restart拒否を確認。元117と新21は同じ制限の別実行で成功した。
     全M2、application creator/TreasuryCap・account/fee所有権の移行、実鍵ceremonyは含めない。
-    同c680の完全requiredはE183で成功。CI資格の照合は未完了で、先のcombined上限失敗E172/E173は保持する。
+    同c680の完全requiredはE183、全8 hosted CIの実ログ・checkout照合はE184で成功。先のcombined上限失敗E172/E173と既存PTY集計漏れは保持する。
   - [x] [own-created application Coinのtransfer/split/merge custody](docs/architecture/standard-asset-application-coin-custody.md):
     E74/E75で独立application pinとgenesis feeを分け、実別UID/PTYの6操作と正確な
     type/owner/version/amount/receipt/nonce・全保存済み再送・取消/restartを検証。
