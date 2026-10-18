@@ -77,7 +77,9 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   [Draft PR #326](https://github.com/sunriselayer/sunrise-edge/pull/326)。全M2/M3/M7の完了には数えません。
   application Coin kind2の同一鍵historical recoveryは `7663e0ab` で実owning成功 (E177)。
   [Draft PR #327](https://github.com/sunriselayer/sunrise-edge/pull/327)。初回の表示照合失敗E176は保持し、
-  新sourceの全体検証とCI、kind3/default集計の残件は未完了です。
+  同sourceの全体検証とCIは継続中です。別source `d0128975` は、全完了PTYの集計と
+  明示core/application分離で元117の全判定を別実行のまま保持して実owning成功 (E179)。
+  branch `codex/custody-output-accounting-1018` に保全し、D全体gate/CIとkind3は未完了です。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -431,6 +433,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E176: application kind2 recovery first actual review refusal | `c91b7a49` / tree`75e8ea3b`のfresh inventory、元default117、split21は別々にactual0/実EOF/wait/reap。新`application-transfer-recovery`はactual1・3.289秒・両outer EOF/wait/reapで新復旧の署名前に拒否。全116B rawと失敗をauthor `application-coin-recovery-transfer-runtime1-executor-actual-failure-qualified-1018.json` (`57afe8e3`) / root `application-coin-recovery-transfer-runtime1-root-actual-failure-qualified-1018.json` (`30516ec4`) に固定 | 1215 sourceとELF/libs/driver/aliasesの保存前後一致、既知PID/CG不在、C target未生成を照合。期待genesis digestはraw hex、実rendererは`sha2-256:<hex>`で、型の表示形式との不一致をsourceから確認。完全digest比較を保持したまま期待形式を修正する。新PTY・参照signer・鍵copy・復旧署名の成功や38判定の完了へ加算せず、旧2profile成功も新復旧の成功へ転用しない。完全requiredは未起動、全M2/M7未完了 |
 | E177: corrected application kind2 historical recovery actual success | exact `7663e0ab` / tree`9d3e849a`。canonical digest表示の1-line修正後、fresh inventoryと元default117・split21・新application-transfer-recovery38 selectedは4つの別owningでactual0/実EOF/wait/reap。新復旧は3.291秒・完全raw10,979B。root source `41ae63c8`、root inventory `6aebd888`、root actual `application-coin-recovery-profiles2-root-actual-qualified-1018.json` (`c84b32e8`)、controller authorの別data照合 `c2be1e1c` | 同一publisherが作成したapplication Coinのretained nonce8/a5取消状態から、新a6の完全review・PTY内容一致・同frame署名一致、original reference停止/wait後の2UID key copy、旧/新取消とrestart拒否を確認。署名のみで再提出・live currentness/鍵交換ではない。reference1/1/1/0→復旧3/3/1/2→restart2/2/0/2、追加9exec+1PTY+2copy+3serve、8files/6,443B・phase13,982/16,384B。strict setupを含む全出力181,755/262,144B、isolation2read/2write拒否・4wait。1215 source/2ELF/4libs/aliases前後一致、既知PID/CGとcleanup判定を照合。実H10元8a90とはMJS/2guideの3-file、実production CLI元50fbとは4-file bridge。117/21/38は別実行で、単一176合格ではない。E176失敗を保持し、kind3・default既存PTY集計・全M2/M3/M7と新source完全required/CIは未完了 |
 | E178: exact-once PTY accounting exposes strict default cap failure | 別Dのlocal `264d3135` / tree`bd77e3c8`で共通helperへ完了PTYの加算を集約し、11 caller accounting sitesを除去。20 call-siteの引数/順序・全操作・phase-local checksとhost Node bytesを保持し、rootが1215 body/Ns・限定正規化後の全embedded AST一致を確認 (`67ba0860`)。fresh2-ELF inventoryはactual0、strict defaultは1回だけactual1/両outer実EOF/wait/reap・6.904秒。author/root failure `9588e08d` / `custody-output-accounting-default117-runtime1-root-actual-failure-qualified-1018.json` (`0c182b73`) | 完全227B rawは実累積267,120 > 元262,144Bを示す。保存されたcleanup commandはrc0・追加stdout/stderr0でbefore=after267,120のため、最初に超過したphase/PTY量は確定しない。過去の破棄された端末出力も再構成せず、117成功・他2profile成功へ加算しない。保存source/ELF/libs/aliases前後一致、既知PID/CG不在・D target未生成を照合して全owningを閉じ、split/applicationは未起動。E175のapplication10に加え、他9成功PTY返却も旧defaultで未加算だった。cap増加/reset/項目削除をせず、core70と元application47を別allocationへ分け、既存application profileで元47の詳細host検証も共用する修正へ進む。no-arg shape変更はcoreと明示し、旧default117とは呼ばない。D完全gateは未起動、全M2/M7未完了 |
+| E179: metered original117 coverage across explicit separate profiles | exact `d0128975` / tree`854fecbd`。fresh2-ELF inventoryと明示`publication-genesis`、`genesis-split-handoff`、`application-transfer-recovery`は全4 owningがactual0/両outer実EOF/wait/reap。core70は5.980秒・加算190,217/262,144B、split21は1.883秒・23 recursive true、application57は3.528秒・加算181,755/262,144Bと59 recursive true。author aggregate`176129e1`、root source`35686649`、root inventory`4234d859`、root fullraw/actual`custody-output-accounting-profiles2-root-actual-qualified-1018.json` (`48bf44a3`) | rootが全rawから抽出したcore70とapplication setup47の重複なしpath/value mapは、旧c680元117と完全一致。元47の9,798-byte詳細host検証を共用し、全6段階/5group/counters/recovery attachmentsを保持。appは元47+newT9+strict1=57 selected、common2込み59。共通helperが完了PTYを1回加算しcaller重複を除去。各allocationの上限を保持し、単一117実行・過去の破棄出力再構成とは呼ばない。旧default/no-argはcoreと明示してalias化、3manual guidesも必須pairとsplit別実行へ移行。1215 source/ELF/libs/aliases保存前後一致・既知PID/CG不在とcleanup判定、復旧署名/取消/restartを照合。実H10元8a90とは4-file、実production CLI元50fbとは5-file bridge。E178失敗を保持、controller ancillary38→57 prose訂正は別`b4990a5c`で保存。d012はbranchへ保全し、D完全required/CI・最終source release・全M2/M7は未完了 |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -958,6 +961,11 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     完全PTY review・retained preimages不変・新復元鍵のoperator読取拒否を実証。strict setupの
     10 PTYと既存create復旧/新transferの端末表示を二重計上せず全出力上限へ加算した。
     kind3のsplit/merge復旧、defaultの既存集計漏れ、currentness・鍵交換・全M2は含めない。
+  - [x] [完了PTY出力の一元集計と独立profile component](docs/architecture/standard-asset-application-coin-custody.md):
+    E179のd012で共有helperの加算を1回に統一し、明示core70/application setup47の別実行で
+    旧117の全path/value mapを保持。split21も別実行で成功し、各出力capを満たした。
+    旧一括の実上限失敗E178を保存し、manual/no-arg shapeをcoreへ明示的に移行した。
+    完全required/CI・最終source・全M2/M7の完了や旧discarded bytes再構成には拡張しない。
   - [x] [original ordered protocolの別process/UID worker](docs/architecture/local-protocol-custody.md):
     元のverified startup・ordered router・confirmed retentionをworkerだけが所有し、
     frontendは鍵/DB/fenceを持たない。E82のfunctional controlsと独立source reviewは成功。
@@ -988,12 +996,11 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     frontier/progress/union3と全source/body/anchor imageのread-only SQL oracleが成功。
     全39 controls・147 roles・27 probes・32 oracle exchangesと完全証拠/回収を照合。
     E108/E111/E115/E119/E124の失敗は保持し、最終統合head全体gate・全M2とは分ける。
-  - 検証の残件: E175の旧default application-flow 10 PTYと、E178で列挙した他9成功PTY返却は
-    global counterへ未加算。個々の16KiB capと元117判定の成功をglobal集計の完全性へ
-    拡張しない。共通加算のlocal264dはstrict defaultの実累積上限超過で失敗し、core70と
-    元application47を別allocationに分ける修正中。未成功のlayoutを完了へ数えない。
-    追加application Coin kind2独立profileは再利用表示も集計してE177で実証。
-    kind3のsplit/merge復旧と新default/core layoutの実証・最終source全体gateは未完了。
+  - 検証の残件: E175/E178の旧default集計漏れは、d012の完了PTY共有加算と
+    明示core/application別allocationで修正し、E179で元117の全path/value mapと上限を実証。
+    旧一括267,120Bの失敗を保持し、未保存の過去出力や単一117成功へは拡張しない。
+    kind2同一鍵復旧はE177/E179で実証済み。kind3のsplit/merge復旧を別profileとして
+    実装中で、最終sourceの完全required/CI・releaseと全M2は未完了。
   - 次: 各familyの残るlifecycleとaccepted signing family全体の対応を埋める。
     既存のpositive Split/original ordered/certified FastVote componentと未統合ZeroShareを
     区別し、provider-stoppedのWIPを再試行・迂回しない。automatic protocol signingは
