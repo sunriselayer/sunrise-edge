@@ -69,6 +69,9 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   追加2 harnessの7 compile/syntax/lint gatesはE163、ordered/certified別UID・TLSはE166で成功。
   同sourceのliteral npm ci +完全requiredはE167、全8 ordinary CIはE168で実終端まで
   照合し、Rustls更新のsource qualificationを完了しました。旧sourceの合格を借用しません。
+  `50fbf22d` の既存ENOSPC全5 casesも新しい所有実行で成功しました (E169)。
+  他者へのgenesis部分分割と返送を検証する追加source `8a90ea52` はレビュー済みで、
+  新しいcompile/owning/完全required/CIを準備中です。全M2/M3/M7の完了には数えません。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -412,6 +415,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E166: current ordered/certified separate-UID TLS components | exact `50fbf22d`の新2 harnessと既存同source Native4 RELEASE rolesを実使用。各fresh5 ELF/4 loader-libs計4,825,056 bytesのinventoryは両actual0で照合。runtime2はordered→clean回収後certifiedの順で各1回、actual0/両outer・Node EOF/wait/reap、13.907/30.553秒。orderedは18 controls/76 roles・fence3/new height2、certifiedは39 controls/147 roles/27 probes/32 oracle exchanges・fence6/two paid/nonce2/frontier・union3を確認。親`rustls-uid-current50fb-runtimes2-parent-qualified-1018.json` (`00ada6e7`) | author・root・独立peerが元UID/TLS/署名/拒否/保存済み再送/停止・restart/SQL oracleを現在入力へ対応付ける。strict base64/zlib EOF・trailingなし・decoded SHA/JSON一致と全recorded stdout/stderrのUTF8 byte和45,653/59,099・置換文字なしを照合。各17 Docker clientsと全role waits、exact ownerのcontainer/volume回収statement・既知host PID/CG不在を確認。個別Docker raw/ldd ledger・fresh Docker query/未保存OOMは主張しない。certifiedのpositive drain member application=falseは元の範囲。E165とreader regex仮定失敗を保持し、ZeroShare・全M2/M7・独立source/security監査・公開認定へ転用しない |
 | E167: current Rustls complete local required and predicate correspondence | exact `50fbf22d` / tree`ccae85a6`のliteral npm ci +完全check-allが各actual0/merged実EOF/waitで自然終了、17,674.091秒。147 Rust summariesは4,397 passed/0 failed/42 ignored、cf全4 Vitest計66 tests。root・独立peerが全747,165-byte raw、source1215全Ns/Git・360 tool hash refs/alias metadata・5 seed proof JSON・7 directory tuplesを照合。親`rustls-advisory-required-final-parent-qualified-1018.json` (`d17f344a`) | 実7 epoch spans/e8 freeze-drain・unlock・pack-saved timingと2 unique1,832-byte候補/同じ2rounds3 ACK stemsを照合。保存6 cycles293 observations/292 direct kernel rowsは16GiB/swap0/CPU4/tasks512。既知MainPID/CG不在と同invocationの自然終了後、rootは当該unitだけを停止し、cache/target/TMP/logを保持。cold-open/8links/delay7/35rolesは成功source predicateに対応し、未保存OOM/全child census/detached outer EOFは主張しない。7つの元nonignored vector/finite-frame-campaign testsの各1回success実行、21 vectors/Native-WASM parityの元recipeとsource対応をordinary peerが照合 (`c2620ac0` / `2d97366a`)。全8 ordinary CI・全M2/M7・独立source/security監査・公開認定は未完了 |
 | E168: current Rustls all8 CI and source qualification | exact `50fbf22d`の[PR #325全8 CI](https://github.com/sunriselayer/sunrise-edge/actions/runs/39047302352)がactual success。tested merge`f47bc421` / tree`ccae85a6` / parents e4fb+50fb / attempt1。root・独立peerが全8 raw計1,557,534 bytesとcheckoutを照合し、147 Rust summariesは4,397 passed/0 failed/42 ignored、cf全66 tests、実Node24.19.0の5 lanesを確認。CI親`ci-run-39047302352-parent-qualified-1018.json` (`08b77327`) | 元7 epoch spans/e8 freeze・unlock/saved closure、2 unique1,832-byte candidatesと同じ2 rounds3 committed ACK stems、実finite-frame-campaign名の各1回successを確認。E153-E156/E158/E163/E164/E166/E167と当該CIを同sourceへ対応し、17 closed refsの親`rustls-02346-current-source-qualification-parent-1018.json` (`b25d7188`)でRustls更新のsource/component資格を完了。collectorはactual0/両実EOF/wait/reap。親の旧schema参照失敗を保持し、実field名だけに直したreaderで照合した。全M2/M3/M7・独立source/security/release監査・issue disposition・公開認定は完了扱いにしない |
+| E169: current50fb existing ENOSPC five cases | exact `50fbf22d` / tree`ccae85a6`の既存5 selectorsを各1回、固定image・各512MiB/swap0/CPU1/pids64で実行し、全5 passed/0 failed/0 ignored。outer actual0/両実EOF/wait/reap、23.110秒。rootは全57,487-byte framed raw、86 commands/172 streamsのlength/hash、5 test summaries・actual container stateと所有cleanup statementsを照合。root receipt`sqlite-current50fb-enospc5-root-actual-qualified-1018.json` (`7d001b71`) | 50fbの完全requiredで実使用したELFを、終了後の限定grantで新規retained pathへ保存した。今回観測したSHA/metadataを固定し、過去のper-ELF digest/CargoJSON・fresh buildを主張しない。1215 source body hashes、実tool/loader/libs/ELFと前後alias、既知86 client PID・owner CG不在を照合。元のreal SQLITE_FULL・predispatch/literal COMMIT ambiguity・全12 SQL/4 portable/positive blob・receipt-first/retry/replay条件を維持。E85/E86の停止済みtask、torn-write/独立anchor guest・全M3・全releaseの合格へ転用しない |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -698,6 +702,7 @@ E33は `coin-ops-core-targeted4-1016-terminal.json` / `.log`、raw SHA-256
 preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・失敗は保持し、修正後の
 実行だけを成功に数えます。outer280秒/inner230秒・出力・コンテナ上限は維持しました。
 
+
 ## 作業終了時の環境整理
 
 これは製品の旧20項目とは別の作業TODOです。
@@ -976,6 +981,9 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     新規送金・両quorum・全business snapshot不変を確認。offline確認flagを意図的に
     重ねる拒否境界の検証で、正規live handoff手順・別host復元・物理faultの合格にはしない。
     現sourceの完全gate/CIと最終照合は未完了。
+  - [x] exact50fbの既存ENOSPC 5 cases: E169で新規所有実行・全5 actual successを確認。
+    元の12 SQL/4 portable/positive blob・receipt-first/不確定COMMITを省略していない。
+    他selected-profile faultや後続sourceの全体資格はこのチェックへ含めない。
   - [x] 正常停止・TLS trust交代後の新規business: E30の実CLI/4 replicasで確認。
     保存済み再送に加え、新規nonce/返金Coinを使った取引の確定と新旧receipt保存を検証。
     同sourceの完全gate/CIはE45/E39で成功。残るM3条件は未完了として保持する。
@@ -1004,7 +1012,8 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     cold receipt-first none/allを対応付ける。単なるEIOやtransfer上限だけで完了にしない。
     追加source assessmentは2026-10-17にprovider safetyで停止。再試行・迂回せず、
     supporting mechanism2の準備sourceも未実行で保持する。
-    最終sourceのENOSPC・conformance・TLS・完全required/CIも未完了。
+    exact50fbのENOSPCはE169、通常conformance/TLS/完全required/CIはE156/E164/E167/E168で
+    照合済み。停止済みの当該partial persistent write条件と全M3は未完了。
   - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。
     trait reply-loss、process SIGKILL、power/host/media/fsync faultは別証拠。
     全12 SQL tables・4 portable collections・positive blob/oracleを省略しない。
