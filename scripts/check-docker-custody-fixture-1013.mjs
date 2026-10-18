@@ -49,6 +49,8 @@
 // The default runs the original 117 checks. The independent foreign-split
 // control uses the same inputs plus --profile genesis-split-handoff; each
 // invocation has its own unchanged resource and captured-output bounds.
+// Historical application transfer recovery is a third separate profile,
+// --profile application-transfer-recovery, with all captured setup PTYs charged.
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
@@ -91,8 +93,8 @@ function parseArgs(argv) {
     else if (flag === '--profile') out.profile = value;
     else throw new Error(`unknown or incomplete argument: ${flag ?? '(missing)'}`);
   }
-  if (!['default', 'genesis-split-handoff'].includes(out.profile)) {
-    throw new Error('unknown or incomplete --profile; expected default or genesis-split-handoff');
+  if (!['default', 'genesis-split-handoff', 'application-transfer-recovery'].includes(out.profile)) {
+    throw new Error('unknown or incomplete --profile; expected default, genesis-split-handoff or application-transfer-recovery');
   }
   if (!out.cliBinary || !out.testBinary) {
     throw new Error('both --cli-binary and --test-binary are required, with no default or discovery');
@@ -1104,36 +1106,102 @@ def expect_prepare_rotation_refusal(label, command, expected_substring, out_path
         raise FixtureFailure(f"{label}: a refused prepare still wrote its --out path")
 
 
-def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags, recipient, previous_request_id):
+def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags, recipient, previous_request_id, application_asset=None):
     # The original transfer signer and its revoked restart have already
     # exited. This is signing-only: the retained preimages are not submitted
     # again, and the original business nonce/receipt assertions do not change.
     output_before = _output_used
-    request_id = "77" * 32
-    request_name = "recovery-request.bin"
+    run_calls = 0
+    def invoke(*args, **kwargs):
+        nonlocal run_calls
+        result = run_exec(*args, **kwargs)
+        run_calls += 1
+        if application_asset is not None and _output_used - output_before > 16384:
+            raise FixtureFailure("application transfer recovery captured output exceeds16KiB")
+        return result
+    app = application_asset is not None
+    nonce = 8 if app else 0
+    request_id = "a6" * 32 if app else "77" * 32
+    prefix = "app-transfer-recovery" if app else "recovery"
+    request_name = f"{prefix}-request.bin" if app else "recovery-request.bin"
+    coin_path = f"{custody_dir}/app-coins-inputs-8/app-coins-second-8.bin" if app else f"{custody_dir}/coin.bin"
+    fee_path = f"{custody_dir}/app-coins-inputs-8/app-coins-fee-8.bin" if app else f"{custody_dir}/fee.bin"
+    old_request = f"{operator_dir}/app-coins-transfer-request.bin" if app else f"{operator_dir}/request.bin"
+    def evidence(path, uid):
+        # Public canonical preimages only; seed contents stay inside UID copy children.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_uid != uid or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600 or not 0 < before.st_size <= 65536:
+                raise FixtureFailure("application recovery public attachment differs")
+            data = os.read(fd, 65537); after = os.fstat(fd)
+            fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+            if len(data) != before.st_size or any(getattr(before,k) != getattr(after,k) for k in fields):
+                raise FixtureFailure("application recovery public attachment changed")
+            return (tuple(getattr(before,k) for k in fields), data)
+        finally:
+            os.close(fd)
+    fixed = ([ (f"{directory}/{name}", uid) for directory,uid in ((custody_dir,CUSTODY_UID),(operator_dir,OPERATOR_UID))
+        for name in ("config", "genesis.bin", "create-instance.bin") ] +
+        [(coin_path,CUSTODY_UID),(fee_path,CUSTODY_UID),(old_request,OPERATOR_UID),
+         (f"{approvals}/{previous_request_id}.revoked",CUSTODY_UID)]) if app else []
+    fixed_before = [evidence(path,uid) for path,uid in fixed]
     request_path = f"{custody_dir}/{request_name}"
     operator_request = f"{operator_dir}/{request_name}"
     command = cli_argv("custody", "prepare-transfer", *trust_flags(custody_dir),
-        "--coin-file", f"{custody_dir}/coin.bin", "--fee-source-file", f"{custody_dir}/fee.bin",
-        "--recipient", recipient, "--nonce", "0", "--request-id", request_id,
+        "--coin-file", coin_path, "--fee-source-file", fee_path,
+        "--recipient", recipient, "--nonce", str(nonce), "--request-id", request_id,
         "--max-fee", "1000000", "--gas-limit", "200000", "--out", request_path)
-    rc, out, err = run_exec(command, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    rc, out, err = invoke(command, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
     if rc != 0 or b"transfer_request_exported=true" not in out:
         raise FixtureFailure(f"recovery transfer prepare failed: {err!r}")
+    review_lines, confirmation_prefix = (), None
+    if app:
+        prepared_lines = out.decode("ascii").splitlines()
+        if not prepared_lines or prepared_lines[-1] != "transfer_request_exported=true":
+            raise FixtureFailure("application recovery review export boundary differs")
+        review_lines = tuple(prepared_lines[:-1])
+        fields = dict(line.split("=",1) for line in review_lines)
+        pins = trust_flags(custody_dir)
+        expected = ["chain_id=custody-whole-coin-test", "protocol_version=7", "epoch=0", f"domain={DOMAIN_HEX}",
+            f"genesis_digest={pins[pins.index('--genesis-digest')+1]}", f"sender={public_key}",
+            "entrypoint=transfer", "application_pinned=true", f"application_asset={application_asset}",
+            f"application_instance_creator={public_key}", f"application_instance_seed={CREATE_INSTANCE_SEED_HEX}",
+            "application_instance_revision=1", "amount=5000000",
+            "transfer=whole-coin-unchanged", f"recipient={recipient}", "max_fee=1000000", f"refund_recipient={public_key}",
+            "gas_limit=200000", "nonce=8", f"request_id={request_id}", "freshness=enforced-at-execution-not-preparation"]
+        required = ("domain", "genesis_digest", "code_origin_publisher", "code_origin_seed", "code_revision", "code_artifact_digest",
+            "asset", "schema", "instance_creator", "instance_seed", "instance_revision", "instance_record_digest",
+            "application_instance_seed", "application_instance_record_digest", "coin_id", "fee_source_id", "reserve_entrypoint",
+            "settle_entrypoint", "fee_recipient", "base_policy_digest", "conversion_divisor", "reserve_allowance", "settle_allowance",
+            "gas_schedule", "policy_calls", "policy_handles", "policy_creations", "policy_events", "policy_memory_bytes",
+            "policy_output_bytes", "policy_publish_artifact_byte_price", "policy_publish_closure_node_price", "signing_frame", "fee_balance")
+        if len(fields) != len(review_lines) or any(not value for value in fields.values()) or any(line not in review_lines for line in expected) or any(key not in fields for key in required):
+            raise FixtureFailure("application recovery full operation/pin/policy/frame review differs")
+        balance = fields["fee_balance"]
+        if not balance.isascii() or not balance.isdecimal() or str(int(balance)) != balance or int(balance) <= 1000000 or f"minimum_fee_source_balance={int(balance)-1000000}" not in review_lines:
+            raise FixtureFailure("application recovery genesis fee review differs")
+        frame = fields["signing_frame"]
+        if not frame or bytes.fromhex(frame).hex() != frame:
+            raise FixtureFailure("application recovery frame is not complete canonical hex")
+        confirmation_prefix = f"APPROVE-TRANSFER sender={public_key} amount=5000000 recipient={recipient} fee_balance={balance} max_fee=1000000 nonce=8 request_id={request_id} not_after="
     with open(operator_request, "xb") as target:
         target.write(read_file_bytes_as_root(request_path))
     os.chmod(operator_request, 0o600)
     os.chown(operator_request, OPERATOR_UID, OPERATOR_GID)
     approve = cli_argv("custody", "approve-transfer", *trust_flags(custody_dir),
         "--request-file", request_path, "--approvals-dir", approvals, "--expires-in-seconds", "3600")
-    rc, _out, refusal = run_exec(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+    rc, _out, refusal = invoke(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
     if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
         raise FixtureFailure("recovery transfer approval unexpectedly accepted a pipe")
-    pty_output_bytes = phase_approve_via_pty(None, None, 0, request_id, 3600, command=approve)
+    pty_output_bytes = phase_approve_via_pty(None, None, nonce, request_id, 3600, command=approve,
+        expected_review_lines=review_lines, expected_confirmation_prefix=confirmation_prefix)
     charge_output(pty_output_bytes)
+    if app and _output_used - output_before > 16384:
+        raise FixtureFailure("application transfer recovery captured PTY exceeds16KiB")
 
-    reference_socket = f"{ROOT}/run/transfer-reference.sock"
-    recovered_socket = f"{ROOT}/run/transfer-recovered.sock"
+    reference_socket = f"{ROOT}/run/app-transfer-reference.sock" if app else f"{ROOT}/run/transfer-reference.sock"
+    recovered_socket = f"{ROOT}/run/app-transfer-recovered.sock" if app else f"{ROOT}/run/transfer-recovered.sock"
     def serve(key_file, socket_path, count):
         return cli_argv("custody", "serve-transfer", *trust_flags(custody_dir),
             "--key-file", key_file, "--socket", socket_path, "--approvals-dir", approvals,
@@ -1142,11 +1210,11 @@ def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, tr
         return cli_argv("custody", "sign-transfer", *trust_flags(operator_dir),
             "--request-file", request_file, "--custody-socket", socket_path,
             "--custody-uid", str(CUSTODY_UID), "--custody-expected-public-key", public_key)
-    reference_path = f"{operator_dir}/recovery-reference.bin"
+    reference_path = f"{operator_dir}/{prefix}-reference.bin"
     reference = start_serve(reference_socket, 15, 1, 1,
         command=serve(f"{ROOT}/custody-keys/custody.seed", reference_socket, 1))
     try:
-        rc, _out, err = run_exec([*sign(reference_socket, operator_request), "--out", reference_path],
+        rc, _out, err = invoke([*sign(reference_socket, operator_request), "--out", reference_path],
             OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
         if rc != 0:
             raise FixtureFailure(f"reference recovery transfer sign failed: {err!r}")
@@ -1159,26 +1227,29 @@ def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, tr
     if os.path.lexists(reference_socket):
         raise FixtureFailure("reference transfer signer left its socket behind")
 
+    if app and (reference.returncode != 0 or os.path.exists(f"/proc/{reference.pid}")):
+        raise FixtureFailure("application reference signer remains before private copy")
+    request_before = [evidence(path,uid) for path,uid in ((request_path,CUSTODY_UID),(operator_request,OPERATOR_UID))] if app else []
     # No signer using the original key remains alive before the private copy.
-    backup_path = f"{custody_dir}/recovered.seed.backup"
-    restored_path = f"{custody_dir}/recovered.seed.restored"
+    backup_path = f"{custody_dir}/app-transfer-recovered.seed.backup" if app else f"{custody_dir}/recovered.seed.backup"
+    restored_path = f"{custody_dir}/app-transfer-recovered.seed.restored" if app else f"{custody_dir}/recovered.seed.restored"
     key_file = phase_recover_private_key(f"{ROOT}/custody-keys/custody.seed", backup_path, restored_path)
-    signed_path = f"{operator_dir}/recovery-signed.bin"
+    signed_path = f"{operator_dir}/{prefix}-signed.bin"
     fresh_sign = sign(recovered_socket, operator_request)
-    old_sign = sign(recovered_socket, f"{operator_dir}/request.bin")
+    old_sign = sign(recovered_socket, old_request)
     refusal_paths = []
     def refused(label, argv):
-        output = f"{operator_dir}/{label}.bin"
+        output = f"{operator_dir}/app-transfer-{label}.bin" if app else f"{operator_dir}/{label}.bin"
         if os.path.lexists(output):
             raise FixtureFailure("transfer recovery refusal path already exists")
-        rc, _out, error = run_exec([*argv, "--out", output],
+        rc, _out, error = invoke([*argv, "--out", output],
             OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
         if rc == 0 or b"custody refused the request: no_approval" not in error or os.path.lexists(output):
             raise FixtureFailure(f"{label}: revoked transfer produced output or a different refusal")
         refusal_paths.append(output)
     recovered = start_serve(recovered_socket, 15, 3, 3, command=serve(key_file, recovered_socket, 3))
     try:
-        rc, _out, err = run_exec([*fresh_sign, "--out", signed_path],
+        rc, _out, err = invoke([*fresh_sign, "--out", signed_path],
             OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
         if rc != 0:
             raise FixtureFailure(f"recovered-key transfer sign failed: {err!r}")
@@ -1186,7 +1257,7 @@ def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, tr
         if not reference_bytes or read_file_bytes_as_root(signed_path) != reference_bytes:
             raise FixtureFailure("recovered transfer bytes differ for the identical approved request")
         refused("recovery-old-revoked", old_sign)
-        rc, _out, err = run_exec(revoke_argv(approvals, request_id), CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
+        rc, _out, err = invoke(revoke_argv(approvals, request_id), CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
         if rc != 0:
             raise FixtureFailure(f"recovery transfer revoke failed: {err!r}")
         refused("recovery-new-revoked", fresh_sign)
@@ -1210,18 +1281,40 @@ def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, tr
             stop_owned_process(restarted, CUSTODY_UID, CUSTODY_GID)
     if os.path.lexists(recovered_socket):
         raise FixtureFailure("recovered transfer restart left its socket behind")
+    if app:
+        if any(process.returncode != 0 or os.path.exists(f"/proc/{process.pid}") for process in (reference,recovered,restarted)):
+            raise FixtureFailure("application recovered signer remains after actual wait")
+        if fixed_before != [evidence(path,uid) for path,uid in fixed] or request_before != [evidence(path,uid) for path,uid in ((request_path,CUSTODY_UID),(operator_request,OPERATOR_UID))]:
+            raise FixtureFailure("application recovery retained public preimages changed")
     files = [request_path, operator_request, reference_path, signed_path, backup_path, restored_path,
              f"{approvals}/{request_id}", f"{approvals}/{request_id}.revoked"]
+    if app:
+        for path in files:
+            meta = os.lstat(path)
+            uid = OPERATOR_UID if path.startswith(operator_dir + "/") else CUSTODY_UID
+            if not stat.S_ISREG(meta.st_mode) or meta.st_uid != uid or meta.st_nlink != 1 or stat.S_IMODE(meta.st_mode) != 0o600:
+                raise FixtureFailure("application recovery generated private file differs")
     generated_bytes = sum(os.stat(path).st_size for path in files)
     captured_output_bytes = _output_used - output_before
     if generated_bytes > 16384 or captured_output_bytes > 16384 or len(refusal_paths) != 4:
         raise FixtureFailure("transfer recovery exceeds its existing allocation headroom")
-    return {"sign_only":True, "same_frame_bytes":True, "old_revocation_retained":True,
+    result = {"sign_only":True, "same_frame_bytes":True, "old_revocation_retained":True,
         "new_revocation_enforced":True, "revoked_after_restart":True, "all_sockets_absent":True,
         "request_id":request_id, "previous_request_id":previous_request_id,
         "generated_files":len(files), "generated_bytes":generated_bytes, "captured_output_bytes":captured_output_bytes,
         "reference_summary":reference_summary.strip().splitlines(),
         "serve_summary":recovered_summary.strip().splitlines(), "restart_summary":restart_summary.strip().splitlines()}
+
+    if app:
+        if run_calls != 9 or any(os.path.lexists(path) for path in refusal_paths):
+            raise FixtureFailure("application recovery fixed child/refusal inventory differs")
+        result.update({"historical_nonce":8, "application_asset":application_asset, "review_content_checked":True,
+            "retained_preimages_unchanged":True, "original_reference_stopped_before_copy":True,
+            "generated_paths":files, "refusal_paths":refusal_paths,
+            "run_exec_children":run_calls, "pty_children":1, "private_copy_children":2, "serve_children":3})
+        if len(json.dumps(result,sort_keys=True).encode("utf8")) > 4096:
+            raise FixtureFailure("application transfer recovery evidence exceeds4KiB")
+    return result
 
 
 
@@ -2566,7 +2659,7 @@ def stop_owned_process(process, uid, gid):
     process.wait(timeout=left)
 
 
-def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, generated, definition_hex, cap_hex):
+def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, generated, definition_hex, cap_hex, strict_pty_accounting=False):
     # DR-0258: runs while phase_create_asset's own native backend (address)
     # is still alive, reusing its custody/operator directories and the exact
     # genesis fee trust those already set up. serve-create's own socket is
@@ -2625,7 +2718,9 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     rc, _out, refusal = run_exec(approve_mint, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
     if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
         raise FixtureFailure("own-asset mint approval unexpectedly accepted a pipe")
-    phase_approve_via_pty(None, None, 1, OWN_MINT_REQUEST_ID, 3600, command=approve_mint)
+    pty_bytes = phase_approve_via_pty(None, None, 1, OWN_MINT_REQUEST_ID, 3600, command=approve_mint)
+    if strict_pty_accounting:
+        charge_output(pty_bytes)
 
     create_probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
         "custody::asset_create_fixture::distinct_uid_create_asset_probe", "--exact", "--ignored", "--nocapture", "--format", "terse"]
@@ -2695,7 +2790,9 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
         rc, _out, refusal = run_exec(approve_burn, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
         if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
             raise FixtureFailure("own-asset burn approval unexpectedly accepted a pipe")
-        phase_approve_via_pty(None, None, 2, OWN_BURN_REQUEST_ID, 3600, command=approve_burn)
+        pty_bytes = phase_approve_via_pty(None, None, 2, OWN_BURN_REQUEST_ID, 3600, command=approve_burn)
+        if strict_pty_accounting:
+            charge_output(pty_bytes)
 
         sign_burn = cli_argv("custody", "sign-burn", *application_flags(operator_dir),
             "--request-file", f"{operator_dir}/own-burn-request.bin", *signer)
@@ -2817,7 +2914,9 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     rc, _out, refusal = run_exec(approve_recovery_burn, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
     if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
         raise FixtureFailure("own-asset recovery burn approval unexpectedly accepted a pipe")
-    phase_approve_via_pty(None, None, 2, recovery_request_id, 3600, command=approve_recovery_burn)
+    pty_bytes = phase_approve_via_pty(None, None, 2, recovery_request_id, 3600, command=approve_recovery_burn)
+    if strict_pty_accounting:
+        charge_output(pty_bytes)
 
     # ---- reference signature: the ORIGINAL key file, still not copied
     # anywhere, signs this exact SAME newly approved frame once, through its
@@ -2947,6 +3046,9 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     if os.path.lexists(recovered_socket_path):
         raise FixtureFailure("recovered-key own-asset restarted serve left its bound socket behind")
 
+    if strict_pty_accounting and any(process.returncode != 0 or os.path.exists(f"/proc/{process.pid}")
+            for process in (serve, restarted, reference_serve, recovered_serve, recovered_restarted)):
+        raise FixtureFailure("strict application setup mint/burn children remain after actual wait")
     return {
         "actual_cli": True, "own_mint_self": True, "after_own_mint_verified": True,
         "own_burn_verified": verify_own_burn.get("verified") is True,
@@ -2967,7 +3069,7 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     }
 
 
-def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, address, generated, definition_hex, cap_hex):
+def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, address, generated, definition_hex, cap_hex, strict_pty_accounting=False):
     # Separate follow-on only after the entire original E67 sequence returned.
     # No original files, IDs, counters or stopped key-recovery ordering change.
     # Start cap3/supply0/nonce3; finish cap6/supply5M/nonce9. Self-transfer
@@ -3088,7 +3190,9 @@ def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, addre
                 rc, _out, refusal = run_exec(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
                 if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
                     raise FixtureFailure(f"application Coin {tag} approval accepted a pipe")
-                phase_approve_via_pty(None, None, nonce, request_id, 3600, command=approve)
+                pty_bytes = phase_approve_via_pty(None, None, nonce, request_id, 3600, command=approve)
+                if strict_pty_accounting:
+                    charge_output(pty_bytes)
                 if serve is None:
                     count = 3 * len(selected)
                     serve = start_serve(socket_path, 30, count, count, command=serve_command(count))
@@ -3146,6 +3250,9 @@ def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, addre
                 stop_owned_process(restarted, CUSTODY_UID, CUSTODY_GID)
         if os.path.lexists(socket_path):
             raise FixtureFailure("application Coin restarted signer left its bound socket")
+        if strict_pty_accounting and any(process.returncode != 0 or os.path.exists(f"/proc/{process.pid}")
+                for process in (serve, restarted)):
+            raise FixtureFailure("strict application setup Coin children remain after actual wait")
         groups.append({"family": family, "tags": [definitions[index][0] for index in selected],
             "serve_summary": summary.strip().splitlines(), "restart_summary": restart_summary.strip().splitlines()})
     return {"actual_cli": True, "offline_bytes_equal": True, "all_saved_replays": True,
@@ -3336,7 +3443,7 @@ def phase_create_recovery(public_key, custody_dir, operator_dir, approvals, trus
     return result
 
 
-def phase_create_asset(public_key):
+def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context=None):
     # Fresh phase directories only: this reuses the exact same one-owner,
     # one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
     # already builds (via its own unmodified "generate"/"serve" modes), with
@@ -3417,7 +3524,9 @@ def phase_create_asset(public_key):
     # fee_balance=... max_fee=... nonce=... request_id=... not_after=..."
     # shape, distinct from every other family's confirmation text) and
     # echoes it back verbatim; it never hardcodes the text itself.
-    phase_approve_via_pty(None, None, 0, CREATE_REQUEST_ID, 3600, command=approve_create)
+    pty_bytes = phase_approve_via_pty(None, None, 0, CREATE_REQUEST_ID, 3600, command=approve_create)
+    if strict_pty_accounting:
+        charge_output(pty_bytes)
 
     serve = None
     native = None
@@ -3530,6 +3639,7 @@ def phase_create_asset(public_key):
         own_mint_burn_summary = phase_own_asset_mint_burn(
             custody_dir, operator_dir, public_key, address, generated,
             after_create["definition_hex"], after_create["treasury_cap_hex"],
+            strict_pty_accounting=strict_pty_accounting,
         )
 
         # The complete original own-asset/E67 lifecycle is finished before
@@ -3537,6 +3647,7 @@ def phase_create_asset(public_key):
         own_coin_summary = phase_own_asset_coin_operations(
             custody_dir, operator_dir, public_key, address, generated,
             after_create["definition_hex"], after_create["treasury_cap_hex"],
+            strict_pty_accounting=strict_pty_accounting,
         )
 
         with open(f"{operator_dir}/stop-native", "xb") as completed:
@@ -3571,6 +3682,11 @@ def phase_create_asset(public_key):
            for process in (serve, restarted, native)) or os.path.lexists(socket_path):
         raise FixtureFailure("original create processes/socket remain before key recovery")
     recovery = phase_create_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags)
+    if recovery_context is not None:
+        if not strict_pty_accounting or recovery_context:
+            raise FixtureFailure("application recovery context requires fresh strict accounting")
+        recovery_context.update({"digest":generated["digest"], "recipient":generated["recipient"],
+            "asset":after_create["definition_hex"]})
 
     return {
         "actual_cli": True, "create_self": True, "after_create_verified": True,
@@ -4036,6 +4152,34 @@ def genesis_split_handoff_main():
     }, sort_keys=True))
 
 
+def application_transfer_recovery_main():
+    phase_setup()
+    public_key = phase_keygen()
+    phase_write_config(public_key)
+    context = {}
+    create, mint_burn, coins = phase_create_asset(public_key, strict_pty_accounting=True, recovery_context=context)
+    custody_dir, operator_dir = f"{ROOT}/custody-create", f"{ROOT}/operator/create"
+    def trust(directory):
+        return ["--config", f"{directory}/config", "--genesis-manifest-file", f"{directory}/genesis.bin",
+            "--genesis-digest", context["digest"], "--asset", context["asset"], "--instance-ref", f"{directory}/create-instance.bin"]
+    recovery = phase_transfer_recovery(public_key,custody_dir,operator_dir,f"{ROOT}/custody-approvals",trust,
+        context["recipient"],"a5"*32,application_asset=context["asset"])
+    phase_operator_cannot_read_or_edit("a6"*32, f"{custody_dir}/app-transfer-recovered.seed.restored")
+    total_bytes = 0
+    for dirpath, _dirs, names in os.walk(ROOT):
+        for name in names:
+            try: total_bytes += os.stat(os.path.join(dirpath,name)).st_size
+            except FileNotFoundError: continue
+    if total_bytes > 64*1024*1024:
+        raise FixtureFailure("generated fixture files exceed the64MiB bound")
+    print(json.dumps({"ok":True,"scope":"custody_fixture_1013_application_transfer_recovery_docker_linux_uid_pty",
+        "profile":"application-transfer-recovery","strict_pty_accounting":True,"captured_output_bytes":_output_used,
+        "generated_bytes_total":total_bytes,"key_isolation":{"custody_uid":CUSTODY_UID,"operator_uid":OPERATOR_UID,
+            "intruder_uid":INTRUDER_UID,"read_refusals":2,"approval_write_refusals":2,"isolation_children_waited":4},
+        "create_asset":create,"created_asset_mint_burn":mint_burn,"created_asset_coin_operations":coins,
+        "application_transfer_recovery":recovery},sort_keys=True))
+
+
 try:
     if len(sys.argv) != 2:
         raise FixtureFailure("fixture requires one explicit profile selector")
@@ -4043,6 +4187,8 @@ try:
         main()
     elif sys.argv[1] == "genesis-split-handoff":
         genesis_split_handoff_main()
+    elif sys.argv[1] == "application-transfer-recovery":
+        application_transfer_recovery_main()
     else:
         raise FixtureFailure("unknown fixture profile selector")
 except FixtureFailure as failure:
@@ -4571,6 +4717,47 @@ function validateGenesisSplitHandoffResult(result) {
   }
 }
 
+function validateApplicationTransferRecoveryResult(result) {
+  const isolation = result.key_isolation;
+  const recovery = result.application_transfer_recovery;
+  const created = result.create_asset;
+  const own = result.created_asset_mint_burn;
+  const coins = result.created_asset_coin_operations;
+  if (result.scope !== 'custody_fixture_1013_application_transfer_recovery_docker_linux_uid_pty' ||
+      result.profile !== 'application-transfer-recovery' || result.strict_pty_accounting !== true ||
+      !Number.isSafeInteger(result.captured_output_bytes) || result.captured_output_bytes <= 0 || result.captured_output_bytes > 262_144 ||
+      !Number.isSafeInteger(result.generated_bytes_total) || result.generated_bytes_total <= 0 || result.generated_bytes_total > 64*1024*1024 ||
+      !isolation || isolation.custody_uid !== 12001 || isolation.operator_uid !== 12002 || isolation.intruder_uid !== 12003 ||
+      isolation.read_refusals !== 2 || isolation.approval_write_refusals !== 2 || isolation.isolation_children_waited !== 4 ||
+      !created || !own || !coins || !recovery) throw new Error('application recovery setup evidence is incomplete');
+  for (const [value, keys] of [[created, ['actual_cli','create_self','after_create_verified','replay_equal','offline_bytes_equal','revoked','revoked_after_restart','rotation_refused']],
+      [own, ['actual_cli','own_mint_self','after_own_mint_verified','own_burn_verified','offline_bytes_equal','replay_equal','revoked','revoked_after_restart','rotation_refused','recovered_key_positive_sign','recovered_key_signature_match','recovered_key_preexisting_revocation_retained','recovered_key_new_revocation_enforced','recovered_key_revoked_after_restart']],
+      [coins, ['actual_cli','offline_bytes_equal','all_saved_replays','revoked','revoked_after_restart','intermediate_supply_zero']],
+      [recovery, ['sign_only','same_frame_bytes','old_revocation_retained','new_revocation_enforced','revoked_after_restart','all_sockets_absent','review_content_checked','retained_preimages_unchanged','original_reference_stopped_before_copy']]]) {
+    if (keys.some((key) => value[key] !== true)) throw new Error('application recovery predicate is incomplete');
+  }
+  if (!/^[0-9a-f]{64}$/.test(created.definition_hex) || own.asset_hex !== created.definition_hex || coins.asset_hex !== created.definition_hex ||
+      recovery.application_asset !== created.definition_hex || coins.final_supply !== 5_000_000 || coins.final_cap_version !== 6 || coins.final_next_nonce !== 9 ||
+      recovery.request_id !== 'a6'.repeat(32) || recovery.previous_request_id !== 'a5'.repeat(32) || recovery.historical_nonce !== 8 ||
+      recovery.generated_files !== 8 || recovery.run_exec_children !== 9 || recovery.pty_children !== 1 || recovery.private_copy_children !== 2 || recovery.serve_children !== 3 ||
+      !Number.isSafeInteger(recovery.generated_bytes) || recovery.generated_bytes <= 0 || recovery.generated_bytes > 16_384 ||
+      !Number.isSafeInteger(recovery.captured_output_bytes) || recovery.captured_output_bytes <= 0 || recovery.captured_output_bytes > 16_384 ||
+      Buffer.byteLength(JSON.stringify(recovery)) > 4096) throw new Error('application recovery identity or finite allocation differs');
+  const custody = '/work/custody-create', operator = '/work/operator/create', id = 'a6'.repeat(32);
+  const paths = [`${custody}/app-transfer-recovery-request.bin`,`${operator}/app-transfer-recovery-request.bin`,
+    `${operator}/app-transfer-recovery-reference.bin`,`${operator}/app-transfer-recovery-signed.bin`,
+    `${custody}/app-transfer-recovered.seed.backup`,`${custody}/app-transfer-recovered.seed.restored`,
+    `/work/custody-approvals/${id}`,`/work/custody-approvals/${id}.revoked`];
+  const refusals = ['old-revoked','new-revoked','old-revoked-restart','new-revoked-restart'].map((label) => `${operator}/app-transfer-recovery-${label}.bin`);
+  if (JSON.stringify(recovery.generated_paths) !== JSON.stringify(paths) || JSON.stringify(recovery.refusal_paths) !== JSON.stringify(refusals))
+    throw new Error('application recovery exact file/refusal inventory differs');
+  const countKeys = ['connections_accepted','requests_handled','requests_signed','requests_refused'];
+  for (const [key, counts] of [['reference_summary',[1,1,1,0]],['serve_summary',[3,3,1,2]],['restart_summary',[2,2,0,2]]]) {
+    if (JSON.stringify(recovery[key]) !== JSON.stringify(countKeys.map((name,index) => `${name}=${counts[index]}`)))
+      throw new Error('application recovery actual signer counters differ');
+  }
+}
+
 try {
   const localImage = await docker(['image', 'inspect', '--format', '{{.Id}}', image]);
   if (localImage.stdout.trim() !== imageId) throw new Error('pinned local image attachment differs');
@@ -4642,7 +4829,8 @@ try {
     throw new Error(`fixture reported failure: ${result?.error ?? completed.stderr.trim() ?? 'unknown'}`);
   }
   if (profile === 'default') validateDefaultResult(result);
-  else validateGenesisSplitHandoffResult(result);
+  else if (profile === 'genesis-split-handoff') validateGenesisSplitHandoffResult(result);
+  else validateApplicationTransferRecoveryResult(result);
 } catch (error) {
   primaryError = error;
 } finally {
