@@ -1164,7 +1164,7 @@ def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, tr
         fields = dict(line.split("=",1) for line in review_lines)
         pins = trust_flags(custody_dir)
         expected = ["chain_id=custody-whole-coin-test", "protocol_version=7", "epoch=0", f"domain={DOMAIN_HEX}",
-            f"genesis_digest={pins[pins.index('--genesis-digest')+1]}", f"sender={public_key}",
+            f"genesis_digest=sha2-256:{pins[pins.index('--genesis-digest')+1]}", f"sender={public_key}",
             "entrypoint=transfer", "application_pinned=true", f"application_asset={application_asset}",
             f"application_instance_creator={public_key}", f"application_instance_seed={CREATE_INSTANCE_SEED_HEX}",
             "application_instance_revision=1", "amount=5000000",
