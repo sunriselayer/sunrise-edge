@@ -250,9 +250,18 @@ def remaining():
 
 def charge_output(count):
     global _output_used
+    before = _output_used
     _output_used += count
     if _output_used > OUTPUT_CAP:
-        raise FixtureFailure("captured command/PTY output exceeds the fixture's bounded allocation")
+        caller = sys._getframe(1)
+        diagnostic = {"error":"captured output allocation exceeded", "added":count,
+            "before":before, "after":_output_used, "cap":OUTPUT_CAP,
+            "caller":caller.f_code.co_name[:80], "line":caller.f_lineno}
+        del caller
+        message = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
+        if len(message.encode("ascii")) > 1024:
+            raise FixtureFailure("failed charge diagnostic exceeds1KiB")
+        raise FixtureFailure(message)
 
 
 def run_exec(argv, uid, gid, groups, env=None, timeout=20, input_bytes=None):
@@ -276,7 +285,36 @@ def run_exec(argv, uid, gid, groups, env=None, timeout=20, input_bytes=None):
         proc.kill()
         proc.wait(timeout=5)
         raise FixtureFailure(f"command timed out: {argv!r}")
-    charge_output(len(out) + len(err))
+    output_before = _output_used
+    try:
+        charge_output(len(out) + len(err))
+    except FixtureFailure as error:
+        # Failed-output accounting must retain its refusal and expose only
+        # bounded public diagnostics, never arbitrary argv/environment data.
+        diagnostic = {"error":"captured output allocation exceeded", "command":"other",
+            "before":output_before, "stdout_bytes":len(out), "stderr_bytes":len(err),
+            "after":_output_used, "cap":OUTPUT_CAP, "returncode":proc.returncode}
+        if argv[:4] == [LD_SO, "--library-path", LIB_DIR, CLI]:
+            diagnostic["command"] = "cli"
+            if len(argv) > 4 and argv[4] in ("custody", "transfer", "split", "merge", "mint", "burn", "create-asset"):
+                diagnostic["operation"] = argv[4]
+            if len(argv) > 5 and argv[4] == "custody" and argv[5] in (
+                    "prepare-split", "prepare-transfer", "sign-split", "sign-transfer", "revoke"):
+                diagnostic["custody_operation"] = argv[5]
+        elif argv[:4] == [LD_SO, "--library-path", LIB_DIR, HARNESS]:
+            diagnostic["command"] = "fixture-harness"
+        public_probe = [LD_SO, "--library-path", LIB_DIR, HARNESS,
+            "custody::asset_fixture::distinct_uid_genesis_split_identity_handoff_probe",
+            "--exact", "--ignored", "--nocapture", "--format", "terse"]
+        public_mode = (env or {}).get("CUSTODY_SPLIT_HANDOFF_MODE")
+        if argv == public_probe and public_mode in ("generate", "after-split", "after-return"):
+            diagnostic.update({"selector":"genesis-split-identity-handoff", "mode":public_mode,
+                "stderr_excerpt_encoding":"hex", "stderr_head_hex":err[:512].hex(),
+                "stderr_tail_hex":err[-512:].hex(), "stderr_excerpt_bytes_each_max":512})
+        message = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
+        if len(message.encode("ascii")) > 4096:
+            raise FixtureFailure("failed capture diagnostic exceeds4KiB") from error
+        raise FixtureFailure(message) from error
     return proc.returncode, out, err
 
 
