@@ -82,7 +82,7 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   明示core/application分離で元117の全判定を別実行のまま保持して実owning成功 (E179)。
   後続 `f51bee72` はapplication kind3のsplit/merge同一鍵historical復旧も追加し、
   fresh inventory・core70・split21・application kind2/3各57を別実行で成功しました (E180)。
-  branch `codex/custody-output-accounting-1018` に保全し、D全体gate/CIは未完了です。
+  [Draft PR #328](https://github.com/sunriselayer/sunrise-edge/pull/328) に保全し、D全体gate/CIは未完了です。
   同f51の新fresh13-target A/Bは、全26 ELFの13組完全byte一致・実producer/source/tool/
   dependency照合と終了回収まで成功しました (E181)。今回生成した同source CLIでもfresh inventory・
   core70・split21・application kind2/3各57の実owningと全raw/終了回収を照合しました (E182)。
@@ -1438,7 +1438,7 @@ providerがpossible cybersecurity riskとして拒否したため停止したま
 
 - 最終f51 sourceの未実行だったliteral npm ci +完全requiredを新しい専有cache/targetで準備する。
 - 元12 RELEASE runtimeは同f51の別source workspace/driver targetで準備し、E181の実13 RELEASE artifactsを使う。既に成功したA/B・custody4 profilesは重複実行しない。
-- 既存f51差分のdraft PRと全8 CIを準備する。先のc680/7663完全gate成功はf51へ借用しない。
+- 既存f51差分の[Draft PR #328](https://github.com/sunriselayer/sunrise-edge/pull/328)を作成し、[CI run39138896024](https://github.com/sunriselayer/sunrise-edge/actions/runs/39138896024) attempt1を開始した。exactf51/base7663の元7 owners + checkを照合する。先のc680/7663完全gate成功はf51へ借用しない。
 - 3担当はいずれもCodexサブエージェント。rootだけがTODOを更新し、完了数は77 checkboxes/旧9完了11未完了/選択3完了5未完了のまま開始する。
 
 保存記録から、ZeroShareの停止はClaude Sonnetのreal-time cyber safeguards、
