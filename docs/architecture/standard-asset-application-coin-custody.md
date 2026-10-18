@@ -136,6 +136,48 @@ Actual output headroom is an owning-run result, not a source-only guarantee.
 The fresh recovery request is signed only and is never submitted. It makes no
 claim about the historical nonce or fee being usable again, another business
 execution, a new owner, creator migration, key rotation or live currentness.
-Application split/merge recovery remains separate pending work. Static source
-checks do not establish distinct-UID execution; TODO.md owns actual owning,
-full-required and hosted validation for the selected source.
+Static source checks do not establish distinct-UID execution; TODO.md owns
+actual owning, full-required and hosted validation for the selected source.
+
+## Historical split/merge recovery profile (2026-10-18)
+
+The separate `--profile application-split-merge-recovery` invocation repeats
+the strict create, mint/burn, six-stage Coin and create-recovery setup, including
+the exact same 47 application setup validations. It then signs two independent
+historical kind-3 requests: fresh `a7` uses the retained nonce-four first Coin
+and genesis fee preimages, and fresh `a8` uses the retained nonce-five first
+Coin, split Coin and fee preimages. The merge preimages are outputs of the
+original `a1` split, not outputs of `a7`, which is never submitted.
+
+Every role retains the complete application definition/InstanceRecord and
+separate genesis fee pins. Before either terminal confirmation is echoed,
+the fixture checks the complete prepare review and exact typed confirmation
+prefix. The split review must show the original first Coin at version one,
+5M held, 2M split to self and 3M remainder. The merge review must show that
+first Coin at version two with 3M, the distinct split Coin at version one with
+2M and consume mode, and a checked 5M total. Both reviews include their exact
+historical genesis fee identity/version, policy fields and complete frame.
+
+The original key signs those same two frames as references. Its process must
+exit, be waited and leave neither PID nor socket before the two custody-UID
+backup/restored-key copy children run. Restored-key signatures must match the
+reference bytes. Old `a1`/`a2` requests and newly revoked `a7`/`a8` requests
+must refuse without outputs, both before and after a signer restart. All
+public attachments remain byte- and metadata-identical. Operator probes use
+the actual restored-key path and each new approval; together with the setup
+probe they record three read refusals, three edit refusals and six waited
+children.
+
+The recovery adds exactly 18 CLI children, two PTYs, two private-copy children
+and three signers. Its fixed allocation has 14 generated private leaves,
+eight absent refusal paths, at most 32KiB generated content, 48KiB captured
+output and a 4KiB recovery summary. All successful PTY captures are charged
+once. The invocation retains the same 256KiB global capture limit, 16KiB
+per-PTY limit, deadlines, Docker limits and wire/transport bounds. Core70,
+genesis split-handoff21 and application transfer recovery remain independent
+profiles with their existing checks. Actual headroom requires an owning run.
+
+These are historical signing-only requests, not a new split-to-merge execution
+chain. They establish no reusable nonce/fee freshness, current state, owner
+change, creator migration, key rotation or new policy. Qualification remains
+source-specific in TODO.md.
