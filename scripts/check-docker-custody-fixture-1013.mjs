@@ -46,11 +46,12 @@
 //   node scripts/check-docker-custody-fixture-1013.mjs \
 //     --cli-binary /abs/path/to/target/.../sunrise-edge-cli \
 //     --test-binary /abs/path/to/target/.../deps/sunrise_edge_cli-<hash>
-// The default runs the original 117 checks. The independent foreign-split
-// control uses the same inputs plus --profile genesis-split-handoff; each
-// invocation has its own unchanged resource and captured-output bounds.
-// Historical application transfer recovery is a third separate profile,
-// --profile application-transfer-recovery, with all captured setup PTYs charged.
+// --profile publication-genesis (also the omitted/default alias) runs the
+// publication/genesis core. Pair it with --profile application-transfer-recovery
+// to retain every original 117 predicate: core70 plus application setup47,
+// counting the common success/cleanup predicates once. Each is a separate
+// allocation and invocation with unchanged bounds. --profile genesis-split-handoff
+// retains its separate 21 controls. No profile resets its captured-output counter.
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
@@ -84,7 +85,7 @@ let volumeMountpoint;
 // ---- argument parsing: explicit, absolute, pre-validated host paths only ----
 
 function parseArgs(argv) {
-  const out = { profile: 'default' };
+  const out = { profile: 'publication-genesis' };
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
     const value = argv[index + 1];
@@ -93,8 +94,9 @@ function parseArgs(argv) {
     else if (flag === '--profile') out.profile = value;
     else throw new Error(`unknown or incomplete argument: ${flag ?? '(missing)'}`);
   }
-  if (!['default', 'genesis-split-handoff', 'application-transfer-recovery'].includes(out.profile)) {
-    throw new Error('unknown or incomplete --profile; expected default, genesis-split-handoff or application-transfer-recovery');
+  if (out.profile === 'default') out.profile = 'publication-genesis';
+  if (!['publication-genesis', 'genesis-split-handoff', 'application-transfer-recovery'].includes(out.profile)) {
+    throw new Error('unknown or incomplete --profile; expected publication-genesis (default alias), genesis-split-handoff or application-transfer-recovery');
   }
   if (!out.cliBinary || !out.testBinary) {
     throw new Error('both --cli-binary and --test-binary are required, with no default or discovery');
@@ -4067,7 +4069,6 @@ def main():
     transfer_summary = phase_transfer(public_key)
     split_merge_summary = phase_split_merge(public_key)
     mint_burn_summary = phase_mint_burn(public_key)
-    create_asset_summary, created_asset_mint_burn_summary, created_asset_coin_summary = phase_create_asset(public_key)
 
     coin_identity_handoff_summary = phase_genesis_coin_identity_handoff(public_key)
 
@@ -4083,7 +4084,9 @@ def main():
 
     print(json.dumps({
         "ok": True,
-        "scope": "custody_fixture_1013_docker_linux_uid_pty",
+        "scope": "custody_fixture_1013_publication_genesis_docker_linux_uid_pty",
+        "profile": "publication-genesis",
+        "captured_output_bytes": _output_used,
         "serve_summary": serve_summary.strip().splitlines(),
         "restart_signature_match": True,
         "generated_bytes_total": total_bytes,
@@ -4094,9 +4097,6 @@ def main():
         "transfer": transfer_summary,
         "split_merge": split_merge_summary,
         "mint_burn": mint_burn_summary,
-        "create_asset": create_asset_summary,
-        "created_asset_mint_burn": created_asset_mint_burn_summary,
-        "created_asset_coin_operations": created_asset_coin_summary,
         "genesis_coin_identity_handoff": coin_identity_handoff_summary,
         "lifecycle_summaries": [live_summary.strip().splitlines(), third_summary.strip().splitlines(), *recovery_summaries,
                                 restored_approval_summary, new_identity_summary],
@@ -4172,7 +4172,7 @@ def application_transfer_recovery_main():
 try:
     if len(sys.argv) != 2:
         raise FixtureFailure("fixture requires one explicit profile selector")
-    if sys.argv[1] == "default":
+    if sys.argv[1] == "publication-genesis":
         main()
     elif sys.argv[1] == "genesis-split-handoff":
         genesis_split_handoff_main()
@@ -4336,8 +4336,10 @@ async function inspectVolume(cleanup = false) {
   return volume;
 }
 
-function validateDefaultResult(result) {
-  if (result.scope !== 'custody_fixture_1013_docker_linux_uid_pty' || result.restart_signature_match !== true ||
+function validatePublicationGenesisResult(result) {
+  if (result.scope !== 'custody_fixture_1013_publication_genesis_docker_linux_uid_pty' ||
+      result.profile !== 'publication-genesis' || !Number.isSafeInteger(result.captured_output_bytes) ||
+      result.captured_output_bytes <= 0 || result.captured_output_bytes > 262_144 || result.restart_signature_match !== true ||
       !Number.isSafeInteger(result.generated_bytes_total) || result.generated_bytes_total <= 0 ||
       result.generated_bytes_total > 64 * 1024 * 1024 ||
       result.revocation_enforced !== true || result.recovery_signature_match !== true ||
@@ -4512,6 +4514,15 @@ function validateDefaultResult(result) {
       throw new Error('the identity-matched handoff signer lifecycle counters differ');
     }
   }
+  if (!Array.isArray(result.lifecycle_summaries) || result.lifecycle_summaries.length !== expectedLifecycle.length ||
+      result.lifecycle_summaries.some((summary, index) =>
+        JSON.stringify(summary) !== JSON.stringify(countKeys.map((key, column) => `${key}=${expectedLifecycle[index][column]}`)))) {
+    throw new Error('the lifecycle serve summaries are incomplete or differ');
+  }
+}
+
+function validateApplicationSetupResult(result) {
+  const countKeys = ['connections_accepted', 'requests_handled', 'requests_signed', 'requests_refused'];
   // `phase_create_asset`'s own `check_summary` calls already enforce the
   // exact kind-5 serve counts (3/3/2/1, then 1/1/0/1 after revocation and
   // restart) by raising inside the container on any mismatch, exactly like
@@ -4641,11 +4652,6 @@ function validateDefaultResult(result) {
       throw new Error('the application Coin protected signer or restarted-refusal counters differ');
     }
   }
-  if (!Array.isArray(result.lifecycle_summaries) || result.lifecycle_summaries.length !== expectedLifecycle.length ||
-      result.lifecycle_summaries.some((summary, index) =>
-        JSON.stringify(summary) !== JSON.stringify(countKeys.map((key, column) => `${key}=${expectedLifecycle[index][column]}`)))) {
-    throw new Error('the lifecycle serve summaries are incomplete or differ');
-  }
 }
 
 function validateGenesisSplitHandoffResult(result) {
@@ -4707,6 +4713,7 @@ function validateGenesisSplitHandoffResult(result) {
 }
 
 function validateApplicationTransferRecoveryResult(result) {
+  validateApplicationSetupResult(result);
   const isolation = result.key_isolation;
   const recovery = result.application_transfer_recovery;
   const created = result.create_asset;
@@ -4817,7 +4824,7 @@ try {
   if (completed.code !== 0 || result.ok !== true) {
     throw new Error(`fixture reported failure: ${result?.error ?? completed.stderr.trim() ?? 'unknown'}`);
   }
-  if (profile === 'default') validateDefaultResult(result);
+  if (profile === 'publication-genesis') validatePublicationGenesisResult(result);
   else if (profile === 'genesis-split-handoff') validateGenesisSplitHandoffResult(result);
   else validateApplicationTransferRecoveryResult(result);
 } catch (error) {

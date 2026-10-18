@@ -90,9 +90,16 @@ public deployment or independent security clearance follows from this slice.
 The separate `--profile application-transfer-recovery` invocation runs fresh
 contained application setup and then exercises kind-2 same-key recovery. Use
 it with the same explicit `--cli-binary` and `--test-binary` inputs as the
-existing Docker fixture. The omitted/default profile retains its original
-117 checks; `--profile genesis-split-handoff` retains its separate 21. This
-profile does not append work to either invocation or reset its accounting.
+existing Docker fixture. `--profile publication-genesis` and its omitted or
+`--profile default` aliases select the publication/genesis core. Its 70
+completion predicates and this profile's 47 original application setup
+predicates retain the original 117-predicate coverage across two invocations,
+with common success/cleanup counted once. The complete original create,
+recovered-key mint/burn, six-stage Coin and signer-group host checks also run
+for this profile; its additional historical transfer recovery stays here.
+`--profile genesis-split-handoff` retains its separate 21. Each invocation has
+its own allocation and accounting; no counter is reset within an allocation.
+The old single-result 117-field shape is not the core result schema.
 
 It retains the application Coin and separate genesis fee preimages from
 historical nonce eight, after all original business signers and the native
