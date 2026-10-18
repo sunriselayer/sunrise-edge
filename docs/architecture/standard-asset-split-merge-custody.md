@@ -199,22 +199,32 @@ child. Its 32 private regular evidence leaves share 2 MiB, all command and PTY
 capture shares 48 KiB, and final JSON evidence has 4 KiB. The two additional
 leaves relative to the whole-Coin control retain A's exact remainder and its
 current fee preimage. Readers retain owned 0600/single-link/no-follow checks.
-All original 117 completion flags and original fixture flows remain in the
-default profile. The 21 foreign-split controls run independently with fresh
-disposable A/B keys, setup, volume, process accounting and output accounting:
+All original 117 completion flags remain covered by the publication/genesis
+core (70) and the application profile's original setup (47), with common
+success/cleanup counted once. The complete setup host validator is shared with
+the application profile, including every stage, group, path and counter check.
+The 21 foreign-split controls run independently with fresh disposable A/B keys,
+setup, volume, process accounting and output accounting:
 
 ```sh
 node scripts/check-docker-custody-fixture-1013.mjs \
   --cli-binary /absolute/path/to/sunrise-edge-cli \
-  --test-binary /absolute/path/to/sunrise_edge_cli-HASH
+  --test-binary /absolute/path/to/sunrise_edge_cli-HASH \
+  --profile publication-genesis
+node scripts/check-docker-custody-fixture-1013.mjs \
+  --cli-binary /absolute/path/to/sunrise-edge-cli \
+  --test-binary /absolute/path/to/sunrise_edge_cli-HASH \
+  --profile application-transfer-recovery
 node scripts/check-docker-custody-fixture-1013.mjs \
   --cli-binary /absolute/path/to/sunrise-edge-cli \
   --test-binary /absolute/path/to/sunrise_edge_cli-HASH \
   --profile genesis-split-handoff
 ```
 
-Omitting `--profile` preserves the original default invocation; explicit
-`--profile default` selects that same flow. Unknown profile names refuse.
+Omitting `--profile` or explicitly selecting `default` aliases only the
+clearly identified `publication-genesis` core. Its JSON does not claim the
+old single-invocation 117 shape. The application command above is mandatory
+for that original coverage; unknown profile names refuse.
 The independent profile calls the existing setup, keygen and config helpers,
 then only the foreign-split phase. It additionally uses the existing waited
 operator-UID permission probes for each custody key and its matching retained
@@ -223,9 +233,10 @@ children, in addition to the phase's unchanged 26 children. The phase's 32
 regular evidence leaves and four setup key/config leaves use the same volume.
 No seed bytes are read, exported, or included in result JSON by these checks.
 
-The original 117 predicates and new 21 predicates are qualified by separate
-owning runs. Their union is 138 existing predicates; a single whole138 pass is
-not claimed. Each process starts its ordinary accounting once. No accounting
+The original 117 predicates now map to two separate owning runs; the 21
+foreign-split predicates remain a third run. Their union retains 138 existing
+semantic predicates, not one whole138 invocation or a sum of every recursive
+Boolean leaf from the three JSON records. Each process starts its ordinary accounting once. No accounting
 is reset or discarded within either invocation. The failed combined attempts
 remain evidence of the previous cumulative-output allocation failure.
 

@@ -106,7 +106,7 @@ cargo run -q -p sunrise-edge-cli -- contract publish \
 ## Selected Docker fixture
 
 [`check-docker-custody-fixture-1013.mjs`](../../scripts/check-docker-custody-fixture-1013.mjs)
-executes the compiled CLI and one exact ignored test-harness probe under three
+executes the compiled CLI and its declared ignored test-harness probes under three
 numeric UIDs inside a pinned, network-free container. Its owned managed volume
 is 64MiB noswap; effective kernel limits and exact resource cleanup are checked.
 It creates no host users or services. The selected fixture:
@@ -139,8 +139,23 @@ locked inputs, then supply their actual absolute executable paths:
 ```bash
 node scripts/check-docker-custody-fixture-1013.mjs \
   --cli-binary /absolute/target/debug/sunrise-edge-cli \
-  --test-binary /absolute/target/debug/deps/sunrise_edge_cli-EXACT_HASH
+  --test-binary /absolute/target/debug/deps/sunrise_edge_cli-EXACT_HASH \
+  --profile publication-genesis
+node scripts/check-docker-custody-fixture-1013.mjs \
+  --cli-binary /absolute/target/debug/sunrise-edge-cli \
+  --test-binary /absolute/target/debug/deps/sunrise_edge_cli-EXACT_HASH \
+  --profile application-transfer-recovery
 ```
+
+Both invocations are required to retain the original fixture coverage: the
+publication/genesis core has 70 predicates, and the application profile keeps
+its original 47 setup predicates in one allocation with the existing historical
+transfer recovery. Common success/cleanup predicates count once in the original
+117-predicate map. Omitting `--profile` or selecting `default` aliases only the
+clearly labelled publication/genesis core, not a single 117-result schema.
+Consumers expecting the old application fields must use the application result;
+a core result cannot satisfy that old schema. Each invocation keeps its own
+unchanged resource, capture and cleanup bounds.
 
 Missing probe inputs fail. A zero-match selector cannot satisfy the JSON and
 test-count oracles. The fixture checks exact serve counters, signature equality
