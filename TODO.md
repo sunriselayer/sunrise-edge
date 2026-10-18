@@ -82,7 +82,7 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   明示core/application分離で元117の全判定を別実行のまま保持して実owning成功 (E179)。
   後続 `f51bee72` はapplication kind3のsplit/merge同一鍵historical復旧も追加し、
   fresh inventory・core70・split21・application kind2/3各57を別実行で成功しました (E180)。
-  [Draft PR #328](https://github.com/sunriselayer/sunrise-edge/pull/328) に保全。D全体gateはE188で失敗し、CIは実行中です。
+  [Draft PR #328](https://github.com/sunriselayer/sunrise-edge/pull/328) に保全。D全体gateはE188で失敗、全8 hosted CIはE189で成功しました。
   同f51の新fresh13-target A/Bは、全26 ELFの13組完全byte一致・実producer/source/tool/
   dependency照合と終了回収まで成功しました (E181)。今回生成した同source CLIでもfresh inventory・
   core70・split21・application kind2/3各57の実owningと全raw/終了回収を照合しました (E182)。
@@ -451,6 +451,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E186: exact7663 all8 hosted CI actual success | [run `39112865778`](https://github.com/sunriselayer/sunrise-edge/actions/runs/39112865778) attempt1の元7 owners + check全8がterminal SUCCESS。全8 rawの実checkout `e4d02ccc` はtree`9d3e849a`でexact head`7663e0ab`と一致、parentsは`c6807388`/`7663e0ab`。rootが全1,558,233B raw・8 job IDs・run/commit metadataを照合し、Rust147 summaries・4,397 passed/0 failed/43 ignored、CF13+28+10+15=66を再抽出。author`305b8eab`、root`hosted-ci-pr327-current-7663-root-actual-qualified-1018.json` (`cba6b9c2`)、E185 localとの統合`f15ae563` | 既存hash固定collectorを1回だけ実行、session4813/chunk`950553` actual0/reapをauthorの後日転記と区別して帰属。14:02:50の全8終端status queryは実両EOF/wait・既知PID不在。全CIは自然終了しcancel/retryなし、全local owning/read phaseも終了。Actions synthetic checkoutは観測したCI証拠でmain mergeではない。readerのschema/ANSI拒否を保持しraw変更・provider/collector/product再実行なし。既存default PTY集計漏れと旧失敗、後続f51のD全体gate/CI・原12 RELEASE runtime・独立監査・全M2/M3/M7は未完了 |
 | E187: finalf51 fresh23/current49 + original12 RELEASE runtime | exact`f51bee72`/tree`925361b2`。元2 compiler commandsでfresh13debug+10testdrivers、既存E181のreadonly13RELEASE A/Bと合わせ49ELFを保持。元10whole+2exactの全12 actual0/実EOF/wait、98 passed/0 failed/3 ignored、outer9,509.763秒。rootが全24events/12summaries・270,697B raw(`94b7da97`)・全13 RELEASE ro-bind・元7epochs/e8 freeze+unlock・異なる1832B候補2件と同じ2件のrounds3 committedACK・saved closureを照合。current1215 source/Git・49ELF/13A/B・20tool aliases・10proofsの953,075,614Bを実照合。author`5bb6ae7d`、root`156a37ad`、統合`todo-e187-native8-original12-current-f51-parent-qualified-1018.json` (`bad7fb79`) | 元selector/18,000秒work/18,600秒unit/6GiB/swap0/CPU4/512PIDsを維持。driver55samples/54live、runtime318/317live、保存済み538PIDと2owned cgroup不在・runtime/probe TMP削除を確認。owning4902/chunk`5c9da4` actual0/reap、root reader66423/chunk`2918b7` actual0/reap/1.383秒/実両EOF/wait。root reader2のsnapshot分類失敗を保存しreader3だけ修正、product/source/raw再実行・変更なし。private311archive検証はauthor帰属でroot読取なし。削除済みrole個別記録は再構成せず、8links/7delays/35rolesは成功した元source assertionsへ帰属。source/cache/target/ELFを保全して全read phase終了。D完全required/全8CI・全M2/M3/M7・独立最終review/公開認定は未完了 |
 | E188: finalf51 local complete-required actual failure | exact`f51bee72`/tree`925361b2`。literal npm ciはactual0/merged EOF/wait、完全check-allはactual1/merged EOF/waitで停止。outer13,046.442秒、owning48530/chunk`99a997` actual1/reap、実外側両EOF/wait、captureerror null。rootが全721,674B raw(`0e4633d6`)・inner/outer/full streamsを照合。成功prefixは147 Rust summaries/4,397 passed/0 failed/43 ignored、元7epochs/e8 freeze+unlock・2件1832Bと同じ2件の3round committedACK、adapter WASM release buildまで。CF型生成の前提`cf --version`がexternal317 integrity guardで拒否され、TypeScript/lint/Vitest未到達。author`301a32ee`、実reap witness`17bc2b94`、root`todo-e188-f51-full-required-root-actual-failure-qualified-1018.json` (`b74c6b32`) | 保存prelaunch317とpostclosed snapshot`0237063e`の77 rolesはctimeNsのみ変更、全317 body SHA・他metadata・alias先は一致。変更時刻16:26:54-16:40:40 UTC、原因/実行主体は不明で推測しない。source1215/tool360/4copyproof/7directory tuplesの現在照合はauthor帰属、rootは保存raw/records/317deltaと既知3564438/3564435・savedCG不在を独立確認。12GiB/0swap/CPU4/512PIDs/oneshot finite26,000秒を維持、privatecache/target body不変や未保存最終OOM値は主張しない。source/cache/target/失敗を保全して全read phase終了。PASS専用readersは実行せずguard緩和/環境変更/再実行なし。残り枠に元の完全上限と回収余裕が収まらず新規full runを開始しない。完全required・全M2/M3/M7未完了、CIは別の実終端待ち |
+| E189: finalf51 all8 hosted CI actual success | [run `39138896024`](https://github.com/sunriselayer/sunrise-edge/actions/runs/39138896024) attempt1の元7 owners + check全8が自然終了SUCCESS。全8 rawのactual checkout`ef504719ee3dee239a635260a383ba9ec51de7cf`、tree`925361b2`はexactf51と一致、parentsは`7663e0ab`/`f51bee72`。rootが全1,557,774B raw/hashes・8 job IDs・actual checkout/Gitdata・aggregate7needsを独立照合。Rust147 summaries/4,397 passed/0 failed/43 ignored、CF13+28+10+15=66、元7epoch ends/e8 freeze+unlock・2件1832Bと同じ2件の3round committedACKを再抽出。author`4d0d41f1`、root`a6649f65`、統合`todo-e189-ci328-current-f51-parent-qualified-1018.json` (`dc619470`) | hash固定collector`99b21e94`を1回のみ実行、owning79379/chunk`13d1ed` actual0/reap。root saved-data readerはchunk`99f02d` actual0/0.058秒/実両EOF/wait・既知PID不在。全CI自然終了しcancel/retryなし、author/root read phases終了。rawは変更せずANSI除去はparse copyだけ。collectorの未保存PID/個別physical pipe ledgerや削除済みrole記録を再構成しない。synthetic checkoutはCI証拠でmain mergeではない。E188のlocal完全required失敗は保持し、hosted成功をlocal合格や全M2/M3/M7・独立最終review/公開認定へ転用しない |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -1222,8 +1223,9 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     actual source/tool/dependency・終了回収を照合。これは今回のNative buildだけの資格で、
     新CLI custodyの4独立runtimeはE182、元12 RELEASE runtimeはE187で成功。E187は
     fresh23/current49・全24events/98-0-3・元7epochs/e8の2件1832Bと同じ2件のACK・
-    実EOF/wait/reap/資源解放までrootで照合した。D完全required/CIと独立最終review・
-    全M7は未完了。D完全requiredはE188のcf317 ctime差分guard拒否でactual1となり、
+    実EOF/wait/reap/資源解放までrootで照合した。全8 hosted CIはE189で成功。
+    D完全requiredと独立最終reviewが残り、全M7は未完了。
+    D完全requiredはE188のcf317 ctime差分guard拒否でactual1となり、
     CF検証未到達。成功したRust prefixやE187を全体合格へ転用せず、先の失敗も保持する。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
@@ -1443,9 +1445,9 @@ providerがpossible cybersecurity riskとして拒否したため停止したま
 第2枠は2026-10-18 14:58:06 UTCから22:58:06 UTCまでに限定する。
 シンガポール時間では10月18日22:58:06から10月19日06:58:06まで。自動延長しない。
 
-- 最終f51 sourceのliteral npm ci +完全requiredはE188の失敗として終了記録済み。npm ci actual0、check-all actual1/実EOF/wait/reap、outer13,046.442秒。cf317の77 ctimeNs差分をguardが拒否し、全body SHAは一致したがCF typegen/lint/Vitestは未到達。guard緩和・環境変更・再実行はせず、source/cache/target/失敗を保全した。元のfull上限が残り時間に収まらないため、この枠で新規full runは開始しない。CIは実行中で別途終端まで照合する。
+- 最終f51 sourceのliteral npm ci +完全requiredはE188の失敗として終了記録済み。npm ci actual0、check-all actual1/実EOF/wait/reap、outer13,046.442秒。cf317の77 ctimeNs差分をguardが拒否し、全body SHAは一致したがCF typegen/lint/Vitestは未到達。guard緩和・環境変更・再実行はせず、source/cache/target/失敗を保全した。元のfull上限が残り時間に収まらないため、この枠で新規full runは開始しない。別実行の全8 hosted CIはE189で成功し、local失敗と分けて保持する。
 - 元12 RELEASE runtimeはE187で終了照合済み。fresh23 driver buildはactual0/実両EOF/wait/reap、809.210秒、元12実行は15:35:55 UTC開始から9,509.763秒でactual0/98 passed/0 failed/3 ignored。rootがcurrent49/source/tool/CargoJSON・全raw/元recurrence・実EOF/wait/reapと資源解放まで照合した。E181の実13 RELEASE artifactsを使い、成功済みA/B・custody4 profilesを重複実行していない。source/cache/target/ELFは保全し、この実行と読取phaseは終了。
-- 既存f51差分の[Draft PR #328](https://github.com/sunriselayer/sunrise-edge/pull/328)を作成し、[CI run39138896024](https://github.com/sunriselayer/sunrise-edge/actions/runs/39138896024) attempt1を開始した。exactf51/base7663の元7 owners + checkを照合する。先のc680/7663完全gate成功はf51へ借用しない。
+- 既存f51差分の[Draft PR #328](https://github.com/sunriselayer/sunrise-edge/pull/328)を保全し、[CI run39138896024](https://github.com/sunriselayer/sunrise-edge/actions/runs/39138896024) attempt1の全8自然終了SUCCESSと全raw/actualcheckout/tree/parentsをE189でroot照合した。先のc680/7663やhosted成功をlocal完全gateへ借用しない。
 - 3担当はいずれもCodexサブエージェント。rootだけがTODOを更新し、完了数は77 checkboxes/旧9完了11未完了/選択3完了5未完了のまま開始する。
 
 保存記録から、ZeroShareの停止はClaude Sonnetのreal-time cyber safeguards、
@@ -1453,3 +1455,24 @@ M3 anchor firstbootの停止はCodex担当へのpossible cybersecurity risk判�
 単なるClaude起動障害ではないため、既存4系統の拒否対象はモデル変更・言い換え・
 別担当への付け替えで再試行しない。許可された別の未実行検証を進める。
 実行予定・所有権・証跡はvalidationの`eight-hour-window-1018-second-plan.json`へ保存する。
+
+## 第2枠の終了記録
+
+E187の最終f51元12 RELEASE runtimeとE189の全8 hosted CIは、実終端・全rawと
+対象sourceの照合まで完了した。E188のlocal完全required失敗は失敗のまま保持する。
+全自己所有local実行・CI・collectorは自然終了して回収済みで、author/root read phaseも
+終了した。source/cache/target/ELF・過去失敗・証跡を保全し、main merge・deployはしていない。
+
+残る親5項目は未完了のまま。新しい完了条件を作らず、既存の不足を記録する。
+
+- D02: 最終機能・権限範囲の独立監査が未完了。既存provider-stopped scopeを再試行しない。
+- M1: 最終release全体の独立security/release reviewとissue dispositionが未完了。
+- M2: ZeroShare未統合・未検証と残るsigning family/lifecycle・全体対応、local完全requiredが未達。
+- M3: selected SQLiteの残るfault boundariesと独立anchor firstbootの検証が未完了。
+- M7: build/元12 RELEASE/全8CIは成功したが、local完全requiredと独立最終source/release reviewが未達。
+
+元のfull実行上限と回収余裕は残り時間に収まらず、新規実行は開始しない。停止済みの
+監査・ZeroShare・torn-WAL/mechanism2・anchor VM bootを付け替えで再開せず、guard緩和・
+環境変更・新trust契約の選択も行わない。これ以上実行できる許可済み作業がなくなったため、
+未完了理由と実績を保存して同じheartbeatを停止する。期限22:58:06 UTCの延長や次枠作成はしない。
+77 checkboxes、旧20項目は9完了/11未完了、選択8件は3完了/5未完了を維持する。
