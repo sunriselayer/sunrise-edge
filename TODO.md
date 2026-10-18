@@ -1429,3 +1429,20 @@ providerがpossible cybersecurity riskとして拒否したため停止したま
 付け替え・言い換え・再試行はしていない。残る新規long runは元の有限上限では期限内に
 収まらず開始しない。新たなtrust契約も選択しない。これ以上実行できる許可済み作業が
 ないため、証跡・失敗・source/cache/targetを保持して同じheartbeatを停止する。
+
+## 2026-10-18の第2の8時間枠
+
+人が新たにCodexサブエージェントでの8時間の作業を指示した。前の終了記録を保持し、
+第2枠は2026-10-18 14:58:06 UTCから22:58:06 UTCまでに限定する。
+シンガポール時間では10月18日22:58:06から10月19日06:58:06まで。自動延長しない。
+
+- 最終f51 sourceの未実行だったliteral npm ci +完全requiredを新しい専有cache/targetで準備する。
+- 元12 RELEASE runtimeは同f51の別source workspace/driver targetで準備し、E181の実13 RELEASE artifactsを使う。既に成功したA/B・custody4 profilesは重複実行しない。
+- 既存f51差分のdraft PRと全8 CIを準備する。先のc680/7663完全gate成功はf51へ借用しない。
+- 3担当はいずれもCodexサブエージェント。rootだけがTODOを更新し、完了数は77 checkboxes/旧9完了11未完了/選択3完了5未完了のまま開始する。
+
+保存記録から、ZeroShareの停止はClaude Sonnetのreal-time cyber safeguards、
+M3 anchor firstbootの停止はCodex担当へのpossible cybersecurity risk判定と確認した。
+単なるClaude起動障害ではないため、既存4系統の拒否対象はモデル変更・言い換え・
+別担当への付け替えで再試行しない。許可された別の未実行検証を進める。
+実行予定・所有権・証跡はvalidationの`eight-hour-window-1018-second-plan.json`へ保存する。
