@@ -166,7 +166,9 @@ must refuse without outputs, both before and after a signer restart. All
 public attachments remain byte- and metadata-identical. Operator probes use
 the actual restored-key path and each new approval; together with the setup
 probe they record three read refusals, three edit refusals and six waited
-children.
+children. The two new read probes repeat the same restored-key path; these
+counts do not represent three unique keys. They are separate from the
+recovery's 25 children.
 
 The recovery adds exactly 18 CLI children, two PTYs, two private-copy children
 and three signers. Its fixed allocation has 14 generated private leaves,
