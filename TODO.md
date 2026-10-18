@@ -83,7 +83,8 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   fresh inventory・core70・split21・application kind2/3各57を別実行で成功しました (E180)。
   branch `codex/custody-output-accounting-1018` に保全し、D全体gate/CIは未完了です。
   同f51の新fresh13-target A/Bは、全26 ELFの13組完全byte一致・実producer/source/tool/
-  dependency照合と終了回収まで成功しました (E181)。今回生成したCLIでのcustody再検証は次工程です。
+  dependency照合と終了回収まで成功しました (E181)。今回生成した同source CLIでもfresh inventory・
+  core70・split21・application kind2/3各57の実owningと全raw/終了回収を照合しました (E182)。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -440,6 +441,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E179: metered original117 coverage across explicit separate profiles | exact `d0128975` / tree`854fecbd`。fresh2-ELF inventoryと明示`publication-genesis`、`genesis-split-handoff`、`application-transfer-recovery`は全4 owningがactual0/両outer実EOF/wait/reap。core70は5.980秒・加算190,217/262,144B、split21は1.883秒・23 recursive true、application57は3.528秒・加算181,755/262,144Bと59 recursive true。author aggregate`176129e1`、root source`35686649`、root inventory`4234d859`、root fullraw/actual`custody-output-accounting-profiles2-root-actual-qualified-1018.json` (`48bf44a3`) | rootが全rawから抽出したcore70とapplication setup47の重複なしpath/value mapは、旧c680元117と完全一致。元47の9,798-byte詳細host検証を共用し、全6段階/5group/counters/recovery attachmentsを保持。appは元47+newT9+strict1=57 selected、common2込み59。共通helperが完了PTYを1回加算しcaller重複を除去。各allocationの上限を保持し、単一117実行・過去の破棄出力再構成とは呼ばない。旧default/no-argはcoreと明示してalias化、3manual guidesも必須pairとsplit別実行へ移行。1215 source/ELF/libs/aliases保存前後一致・既知PID/CG不在とcleanup判定、復旧署名/取消/restartを照合。実H10元8a90とは4-file、実production CLI元50fbとは5-file bridge。E178失敗を保持、controller ancillary38→57 prose訂正は別`b4990a5c`で保存。d012はbranchへ保全し、D完全required/CI・最終source release・全M2/M7は未完了 |
 | E180: application kind3 split/merge historical recovery actual success | exact `f51bee72` / tree`925361b2`。fresh2-ELF inventoryとcore70・split21・application kind2/3各57 selectedの全5 owningがactual0/実EOF/wait/reap。新kind3は3.830秒・完全raw11,756B、57 selected/59 recursive true。author aggregate`909c3be1`、root source`2b7b8532`、root inventory`5f90a5ba`、root fullraw/actual`custody-output-accounting-profiles3-root-actual-qualified-1018.json` (`7758b266`) | retained nonce4/5・旧a1/a2から新a7/a8の完全prepare/PTY review・同frame署名一致を確認。original reference停止/wait/socket不在の後だけ別UIDで同じ鍵を保管/復元し、旧/新取消とrestart拒否、preimages不変を実証。reference2/2/2/0→復旧6/6/2/4→restart4/4/0/4、phase18exec+2PTY+2copy+3serve、14files/13,717B・8 absent outputs・phase28,710/49,152B、全加算196,483/262,144B。setup isolationは3read/3write拒否・6waitだが、同じ復元鍵pathを2承認で検査したもので3種類の鍵ではない。rootは全rawと保存source1215/ELFs/libs/aliases/driver前後・両outer streams・既知PID/CG不在を照合。core70とkind2/3それぞれの元application47は旧117全mapに一致し、split21も保持。実H10元8a90/CLI元50fbとは4/5-file bridgeでありf51新ELF buildではない。historical署名のみで再提出・currentness・正の権限移行ではない。旧E176/E178失敗、全M2/M3/M7とD完全required/CI未完了を保持 |
 | E181: exact f51 fresh13-target A/B actual success | exact `f51bee72` / tree`925361b2`。新Native8の両laneは各13 fresh CargoJSON bins・release opt3/debug0、全26 retained ELFの13組完全byte一致。777.183秒でactual0/実両EOF/wait/reap、unit/既知PID/CG・source lease・4 compiler/temp treesを回収。author`4784ecfc`、root全26ELF/全build raw`24ce242d`、root sampled caps`d3283f49`、統合`custody-f51-native8-1018-ab-parent-qualified.json` (`881da71e`) | rootは336,973,280Bの全retained bytes・0755/UID1000/singlelink/別inode・source1215 manifest map・CargoJSON profileを独立照合。authorは現source1215/Git・22 tools・311 archives/metadata・選択231 packages/10,017 files/122,049,003Bを照合。53保存sample中52 live、peak1,737,285,632B、8GiB/swap0/CPU4/Tasks512とmax/oom/kill0を確認。reader初回のTAR集計不一致を保持し、99 GNU-L headers/10,525Bを厳密計上するreaderだけ修正、product再実行なし。`fixturePassed=false`、custody runtime/D完全required/CI・原12 RELEASE runtime・全M7や独立security/release監査は未完了。ancestor成功の借用なし |
+| E182: current f51 Native8 RELEASE CLI custody actual success | E181のactual `f51bee72` Native8 CLIを直接使用。fresh2-ELF ldd inventoryは0.561秒、独立core70/split21/kind2 recovery57/kind3 recovery57は5.814/1.643/3.254/3.245秒で全5 owning actual0/実両EOF/wait/reap、既知host PID/CG不在。author aggregate`9f2030f0`、root inventory`cdd7f452`、root全raw/actual`custody-f51-native8-profiles1-root-actual-qualified-1018.json` (`89a57aa2`)、統合parent`1c09b2b2` | 全rawから70/23/59/59 recursive trueと各selected70/21/57/57、元core70+各application47の完全117 path/value map、split全mapを再抽出。kind3は完全review/同frame署名・旧新取消/restart、14files/13,717B・phase28,710B・18exec+2PTY+2copy+3serveとreference/recovered/restart countersを保持。source1215/2ELF/libs/aliases/driver保存前後一致、current CLIの全1215 compiled sourceは同f51で例外なし。H10だけは実8a90と4-file nonRust bridge。core/T/Gの全加算190,217/181,755/196,483 < 元262,144B。splitの保存値はphase29,412Bだけでglobal合計値は作らず、元のglobal/phase capを実source内で保持。container_removedはNode cleanupの実判定で、未保存の個別Docker-role PID/rawを追加主張しない。同一鍵historical signingのみ、再提出/currentness/正の権限移行・D完全required/CI・原12 RELEASE runtime・全M2/M3/M7は未完了。旧失敗とreader-only split形式訂正を保持、product再試行なし |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -1011,6 +1013,8 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     明示core/application別allocationで修正し、E179で元117の全path/value mapと上限を実証。
     旧一括267,120Bの失敗を保持し、未保存の過去出力や単一117成功へは拡張しない。
     kind2同一鍵復旧はE177/E179、kind3のsplit/merge復旧はE180で実証済み。
+    E182では同f51の新Native8 RELEASE CLIを使い、fresh inventoryと4独立profileを再確認。
+    production CLIの旧50fb source例外は使わず、H10の4-file nonRust bridgeだけを保持した。
     異なる受取人のapplication往復は現契約のcreator==publisher制約を変える別設計となる。
     最終sourceの完全required/CI・releaseと全M2は未完了。
   - 次: 各familyの残るlifecycleとaccepted signing family全体の対応を埋める。
@@ -1206,7 +1210,8 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     完了したとは扱わない。
   - 新f51の13-target build component: E181でfresh A/B全13組の完全byte一致と
     actual source/tool/dependency・終了回収を照合。これは今回のNative buildだけの資格で、
-    新CLI custody runtime・D完全required/CI・原12 RELEASE runtime・全M7は含めない。
+    新CLI custodyの4独立runtimeはE182で成功。D完全required/CI・原12 RELEASE runtime・
+    全M7の完了は含めない。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。現行50fbのbuild/upgrade/restore/parity/
