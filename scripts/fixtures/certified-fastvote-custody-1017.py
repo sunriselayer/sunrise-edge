@@ -30,6 +30,8 @@ phases = []
 phase_requests = []
 worker_requests = [0] * 4
 front_requests = [0] * 4
+key_recovery = None
+worker_key_generations = []
 
 
 
@@ -298,12 +300,21 @@ def start_workers(mode='certified'):
     result = []
     command_mode = 'certified-worker' if mode == 'certified' else 'protocol-worker'
     suffix = 'config' if mode == 'certified' else 'ordered.config'
+    config_paths, key_paths = [], []
     for index in range(4):
-        child = Child(f'{command_mode}-{index}', elf('host', [command_mode, '--config', f'/work/worker/v{index}/{suffix}']), UID_WORKER, UID_WORKER)
+        if key_recovery is not None:
+            verify_recovered_inputs(index)
+            suffix = 'recovered.config' if mode == 'certified' else 'recovered.ordered.config'
+        config_path = f'/work/worker/v{index}/{suffix}'
+        key_path = f'/work/worker/v{index}/key-recovery/validator.restored.key' if key_recovery is not None else f'/work/worker/v{index}/validator.key'
+        child = Child(f'{command_mode}-{index}', elf('host', [command_mode, '--config', config_path]), UID_WORKER, UID_WORKER)
         fields = parse_fields(child.line(min(WORK_END, time.monotonic() + 5)))
         if fields.get('complete') != 'true' or fields.get('mode') != command_mode:
             raise RuntimeError('actual worker profile readiness differs')
         result.append(child)
+        config_paths.append(config_path); key_paths.append(key_path)
+    worker_key_generations.append({'mode': mode, 'config_paths': config_paths, 'key_paths': key_paths,
+                                   'worker_pids': [child.proc.pid for child in result]})
     return result
 
 
@@ -488,6 +499,132 @@ def stopped_checkpoint(end=WORK_END):
         anchor(index, 'anchor-checkpoint', end=end)
 
 
+def private_metadata(path, directory=False):
+    info = os.lstat(path)
+    if (not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)) or
+            info.st_uid != UID_WORKER or info.st_gid != UID_WORKER or
+            stat.S_IMODE(info.st_mode) != (0o700 if directory else 0o600) or
+            (not directory and info.st_nlink != 1)):
+        raise RuntimeError('recovered private inode/owner/mode differs')
+    return info
+
+
+def verify_recovered_inputs(index):
+    # Metadata/config bytes only: the controller never opens a validator seed.
+    root = f'/work/worker/v{index}'
+    if os.path.lexists(root + '/validator.key'):
+        raise RuntimeError('original validator key path became available')
+    private_metadata(root + '/key-recovery', directory=True)
+    for name in ['validator.backup.key', 'validator.restored.key']:
+        if private_metadata(root + '/key-recovery/' + name).st_size != 32:
+            raise RuntimeError('recovered seed length differs')
+    for original, recovered in [('config', 'recovered.config'), ('ordered.config', 'recovered.ordered.config')]:
+        private_metadata(root + '/' + recovered)
+        before = bounded_read(root + '/' + original, 16384)
+        after = bounded_read(root + '/' + recovered, 16384)
+        old_line = f'signing-key-file={root}/validator.key\n'.encode('ascii')
+        new_line = f'signing-key-file={root}/key-recovery/validator.restored.key\n'.encode('ascii')
+        if before.count(old_line) != 1 or after != before.replace(old_line, new_line, 1):
+            raise RuntimeError('recovered config changed more than signing-key-file')
+
+
+def recover_stopped_worker_keys(workers):
+    global key_recovery
+    if key_recovery is not None or len(workers) != 4:
+        raise RuntimeError('closed stopped key recovery lifecycle differs')
+    stopped_pids = []
+    for index, child in enumerate(workers):
+        if (child.label != f'certified-worker-{index}' or child.uid != UID_WORKER or
+                not child.waited or child.code != 0 or len(child.eof) != 2 or
+                os.path.exists(f'/proc/{child.proc.pid}') or os.path.lexists(f'/work/run/v{index}/worker.sock')):
+            raise RuntimeError('old worker PID/socket was not absent before key recovery')
+        stopped_pids.append(child.proc.pid)
+    public_pins = pins()
+    # Only this capability-free worker-UID child reads/copies the disposable
+    # seeds. Verify all four old owners are gone before opening any seed.
+    source = r"""import json,os,stat,sys
+assert os.geteuid()==12001 and os.getegid()==12001 and os.getgroups()==[]
+assert '\nCapEff:\t0000000000000000\n' in open('/proc/self/status').read()
+pids=json.loads(sys.argv[1]);assert len(pids)==4 and len(set(pids))==4
+for index,pid in enumerate(pids):
+ assert isinstance(pid,int) and 1<=pid<=2147483647
+ assert not os.path.exists('/proc/'+str(pid))
+ assert not os.path.lexists('/work/run/v'+str(index)+'/worker.sock')
+def private_read(path,cap):
+ fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+ try:
+  info=os.fstat(fd)
+  assert stat.S_ISREG(info.st_mode) and info.st_uid==12001 and info.st_gid==12001
+  assert stat.S_IMODE(info.st_mode)==0o600 and info.st_nlink==1 and 0<info.st_size<=cap
+  data=os.read(fd,cap+1);assert len(data)==info.st_size
+  return data
+ finally:os.close(fd)
+def write_new(path,data):
+ fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+ try:
+  offset=0
+  while offset<len(data):
+   written=os.write(fd,data[offset:]);assert written>0;offset+=written
+  os.fsync(fd)
+ finally:os.close(fd)
+ assert private_read(path,len(data))==data
+pins={}
+for line in open('/work/public/pins').read().splitlines():
+ key,value=line.split('=',1);assert key not in pins;pins[key]=value
+for index in range(4):
+ root='/work/worker/v'+str(index);recovery=root+'/key-recovery'
+ parent=os.lstat(root)
+ assert stat.S_ISDIR(parent.st_mode) and parent.st_uid==12001 and parent.st_gid==12001 and stat.S_IMODE(parent.st_mode)==0o700
+ os.mkdir(recovery,0o700)
+ directory=os.lstat(recovery)
+ assert stat.S_ISDIR(directory.st_mode) and directory.st_uid==12001 and directory.st_gid==12001 and stat.S_IMODE(directory.st_mode)==0o700
+ old=root+'/validator.key';backup=recovery+'/validator.backup.key';restored=recovery+'/validator.restored.key'
+ seed=private_read(old,32);assert len(seed)==32
+ write_new(backup,seed);write_new(restored,private_read(backup,32))
+ assert private_read(restored,32)==seed
+ for original,recovered in [('config','recovered.config'),('ordered.config','recovered.ordered.config')]:
+  data=private_read(root+'/'+original,16384)
+  fields={}
+  for line in data.decode('ascii').splitlines():
+   key,value=line.split('=',1);assert key not in fields;fields[key]=value
+  assert fields['validator-id']==pins['validator-'+str(index)]
+  for key,value in [('state-db','/work/source/v'+str(index)+'/state.sqlite'),('blob-db','/work/source/v'+str(index)+'/body.sqlite'),('independent-anchor-db','/work/authority/v'+str(index)+'/anchor.sqlite')]:
+   assert fields[key]==value
+  old_line=('signing-key-file='+old+'\n').encode('ascii');new_line=('signing-key-file='+restored+'\n').encode('ascii')
+  assert data.count(old_line)==1
+  write_new(root+'/'+recovered,data.replace(old_line,new_line,1))
+ os.unlink(old);assert not os.path.lexists(old)
+ del seed
+print('stopped_key_recovery complete=true workers=4 configs=8 old_paths_absent=true',flush=True)
+"""
+    output, helper = command('stopped-key-recovery', ['/usr/local/bin/python3', '-I', '-B', '-c', source, json.dumps(stopped_pids)])
+    if output != (b'stopped_key_recovery complete=true workers=4 configs=8 old_paths_absent=true\n', b'') or pins() != public_pins:
+        raise RuntimeError('closed worker-owned key recovery completion differs')
+    for index in range(4):
+        verify_recovered_inputs(index)
+    source = r"""import errno,os
+for index in range(4):
+ for name in ['validator.backup.key','validator.restored.key']:
+  path='/work/worker/v'+str(index)+'/key-recovery/'+name
+  try:fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+  except OSError as error:assert error.errno==errno.EACCES
+  else:os.close(fd);raise RuntimeError('operator could read recovered seed')
+print('restored_key_filesystem_refusals complete=true operator_uid=12002 seeds=8',flush=True)
+"""
+    output, refusal = command('restored-key-filesystem-refusals', ['/usr/local/bin/python3', '-I', '-B', '-c', source], UID_FRONT, UID_FRONT, (GROUP,))
+    if output != (b'restored_key_filesystem_refusals complete=true operator_uid=12002 seeds=8\n', b''):
+        raise RuntimeError('operator recovered-seed refusal completion differs')
+    key_recovery = {'worker_count': 4, 'stopped_worker_pids': stopped_pids,
+                    'helper_pid': helper.proc.pid, 'helper_uid': UID_WORKER,
+                    'operator_refusal_pid': refusal.proc.pid, 'operator_uid': UID_FRONT,
+                    'old_pid_socket_absent_before_copy': True, 'old_key_paths_absent': True,
+                    'private_directory_mode': 0o700, 'private_file_mode': 0o600,
+                    'only_signing_key_config_changed': True, 'public_identities_unchanged': True,
+                    'operator_cannot_read_restored_seeds': True}
+    phases.extend(['stopped-key-recovery', 'restored-key-filesystem-refusals'])
+    allocation()
+
+
 def wrong_profile():
     source = """import socket,struct
 for i in range(4):
@@ -647,7 +784,9 @@ def main():
     wrong_outputs(); oracle.phase('unchanged')
     stop_roles(workers)
     stopped_checkpoint()
-    oracle.phase('unchanged'); probe('worker-down'); oracle.phase('unchanged')
+    oracle.phase('unchanged'); probe('worker-down')
+    recover_stopped_worker_keys(workers)
+    oracle.phase('unchanged')
     workers = start_workers(); oracle.phase('fence-3')
     probe('a-repeat'); oracle.phase('unchanged')
     probe('a-apply'); oracle.phase('a-applied')
@@ -675,12 +814,15 @@ def main():
     oracle_output, _ = oracle.child.finish(min(END, time.monotonic() + 5))
     if b'test result: ok. 1 passed; 0 failed;' not in oracle_output:
         raise RuntimeError('actual selected oracle test did not complete')
+    for index in range(4):
+        verify_recovered_inputs(index)
     if any(not child.waited for child in children): raise RuntimeError('owned child wait unresolved')
     return {'passed': True, 'limits': limits, 'phases': phases, 'allocation': allocation(),
             'fixed_deadlines': [280, 230, 175], 'final_fence': 6, 'freeze_height': 1,
             'paid_applied': 2, 'final_nonce': 2, 'retained_only_c_unapplied': True,
             'actual_fastvotes_per_operation': 4, 'actual_acks_a_b': 4, 'actual_frontiers': 4,
             'local_union_members': 3, 'positive_drain_member_application': False,
+            'stopped_key_recovery': key_recovery, 'worker_key_generations': worker_key_generations,
             'phase_requests': phase_requests, 'request_budget_verified': True, 'oracle_phase_count': oracle.count,
             'all_children_waited': True, 'no_validator_key_in_frontend': True}
 

@@ -109,6 +109,15 @@ roadmap describes a later target state.
   ([DR-0238](decisions/0238-publication-only-local-os-custody.md)):
   separate UID/key permissions, independently pinned preimages, exact approval,
   authenticated local IPC and refusal/restart controls.
+- [Stopped original ordered key recovery](decisions/0273-original-ordered-stopped-key-recovery.md):
+  same-identity disposable-key recovery to new worker-only paths, preserving
+  source/body/anchor stores and existing ordered replay/progress owners.
+- [Stopped certified worker key recovery](decisions/0274-certified-stopped-key-recovery.md):
+  recovered key paths shared by the existing certified and later ordered modes,
+  with unchanged identity, retention and local-OS authority boundaries.
+- [Local TLS acknowledgement loss](decisions/0275-local-tls-durable-ack-loss.md):
+  one real successful published-apply response per peer withheld before TLS
+  application forwarding, receipt-first reconciliation and exact paid replay.
 - [Original ordered protocol custody](local-protocol-custody.md)
   ([DR-0264](decisions/0264-original-ordered-protocol-custody-worker.md)):
   distinct-UID authority-owning worker and ordered-only HTTP frontend; existing

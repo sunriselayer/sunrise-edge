@@ -93,3 +93,29 @@ checks over the authenticated local peer; this is not an inclusion proof,
 independent freshness proof or independent execution of effects/fees. Live state, quorum, locks, fee state, execution,
 confirmed commit, uncertain-commit refusal and exact saved replay stay inside the
 existing real router/core. Original ordered modes and DR-0215 controls remain.
+
+## Selected stopped same-identity key recovery
+
+[DR-0274](decisions/0274-certified-stopped-key-recovery.md) extends the selected
+disposable multi-UID fixture. Before its fence3 restart, all four original
+workers must drain, exit0, reach physical stdout/stderr EOF and be waited; their
+PIDs and sockets must be absent. Only a capability-free worker-UID helper then
+copies each original32-byte seed to a private backup and a different restored
+path, compares the bytes internally and removes the original key path. The
+controller receives completion and metadata, never seed bytes. The operator UID
+must receive EACCES when opening every restored seed and backup.
+
+New worker-owned0600 certified and original ordered configuration files replace
+only `signing-key-file`. Their public validator identities, genesis pins and
+exact retained source/body/independent-anchor paths remain unchanged. Every
+later certified or ordered generation selects and verifies those restored
+paths. The original A vote/ACK equality, fresh paid B, original ordered Freeze,
+new frozen-frontier signatures and fence6 retained replay retain their actual
+core/SDK assertions. The existing read-only oracle compares unchanged complete
+source/body/anchor images across downtime and key recovery.
+
+This is same-identity recovery of known disposable fixture keys in the trusted
+local OS profile. It introduces no production recovery command, key or membership
+rotation, new identity, database/anchor restore, off-host backup or independent
+device. Owning runtime qualification remains distinct from source implementation
+and the final repository gates.

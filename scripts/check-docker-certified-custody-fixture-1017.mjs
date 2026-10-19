@@ -423,12 +423,50 @@ try {
       Array.isArray(phase.counts) && phase.counts.length === 4 && phase.counts.every((count) => Number.isSafeInteger(count) && count >= 0 && count <= 96)) &&
     result.request_budget_verified === true && result.oracle_phase_count <= 64,
   'actual certified role/component evidence is incomplete');
+  const recovery = result.stopped_key_recovery;
+  require_(recovery?.worker_count === 4 && recovery.helper_uid === 12001 && recovery.operator_uid === 12002 &&
+    recovery.old_pid_socket_absent_before_copy === true && recovery.old_key_paths_absent === true &&
+    recovery.private_directory_mode === 0o700 && recovery.private_file_mode === 0o600 &&
+    recovery.only_signing_key_config_changed === true && recovery.public_identities_unchanged === true &&
+    recovery.operator_cannot_read_restored_seeds === true && Array.isArray(recovery.stopped_worker_pids) &&
+    recovery.stopped_worker_pids.length === 4 && recovery.stopped_worker_pids.every((pid) => Number.isSafeInteger(pid) && pid > 0) &&
+    new Set(recovery.stopped_worker_pids).size === 4, 'actual stopped same-identity key recovery evidence is incomplete');
+  for (const [pid, uid, label, marker] of [
+    [recovery.helper_pid, 12001, 'stopped-key-recovery', 'stopped_key_recovery complete=true workers=4 configs=8 old_paths_absent=true'],
+    [recovery.operator_refusal_pid, 12002, 'restored-key-filesystem-refusals', 'restored_key_filesystem_refusals complete=true operator_uid=12002 seeds=8'],
+  ]) {
+    const records = result.child_records.filter((row) => row.pid === pid);
+    require_(records.length === 1 && records[0].label === label && records[0].uid === uid && records[0].gid === uid &&
+      records[0].exit === 0 && records[0].stderr === '' &&
+      records[0].stdout === `role_checked uid=${uid} gid=${uid} caps=0\n${marker}\n`,
+    'actual capability-free recovery/refusal child receipt differs');
+  }
+  const generationModes = ['certified', 'certified', 'ordered', 'certified', 'certified'];
+  require_(Array.isArray(result.worker_key_generations) && result.worker_key_generations.length === generationModes.length,
+    'actual worker key generations are incomplete');
+  for (const [generationIndex, generation] of result.worker_key_generations.entries()) {
+    const mode = generationModes[generationIndex];
+    require_(generation.mode === mode && ['config_paths', 'key_paths', 'worker_pids'].every((field) =>
+      Array.isArray(generation[field]) && generation[field].length === 4), 'actual worker key generation shape differs');
+    for (let index = 0; index < 4; index += 1) {
+      const root = `/work/worker/v${index}`;
+      const suffix = generationIndex === 0 ? 'config' : mode === 'ordered' ? 'recovered.ordered.config' : 'recovered.config';
+      const key = generationIndex === 0 ? `${root}/validator.key` : `${root}/key-recovery/validator.restored.key`;
+      const records = result.child_records.filter((row) => row.pid === generation.worker_pids[index]);
+      require_(generation.config_paths[index] === `${root}/${suffix}` && generation.key_paths[index] === key &&
+        records.length === 1 && records[0].uid === 12001 &&
+        records[0].label === `${mode === 'ordered' ? 'protocol' : 'certified'}-worker-${index}` &&
+        (generationIndex !== 0 || recovery.stopped_worker_pids[index] === generation.worker_pids[index]),
+      'actual certified/ordered restart did not select the exact restored key/config');
+    }
+  }
   for (const phase of ['filesystem-refusals', 'intruder-before-body', 'authenticated-stalled-body-deadline', 'frontend-refuses-impostor-before-body',
     'missing-anchor-checkpoint-and-competing-lease', 'wrong-profile-before-dispatch', 'wrong-output-refusals', 'tls-refusals',
     'a-prepare', 'a-retain', 'a-repeat', 'bad-input', 'a-apply', 'a-apply-replay', 'b-fresh', 'c-retained', 'worker-down',
     'freeze', 'frontier-first', 'frontier-replay', 'drain-first', 'drain-replay', 'no-drain-set', 'closed-after-freeze', 'queries',
     'oracle-fence-2', 'oracle-fence-3', 'oracle-fence-4', 'oracle-fence-5', 'oracle-fence-6',
-    'oracle-a-prepared', 'oracle-a-retained', 'oracle-a-applied', 'oracle-b-applied', 'oracle-c-retained', 'oracle-frozen', 'oracle-frontier', 'oracle-drained', 'oracle-finish']) {
+    'oracle-a-prepared', 'oracle-a-retained', 'oracle-a-applied', 'oracle-b-applied', 'oracle-c-retained', 'oracle-frozen', 'oracle-frontier', 'oracle-drained', 'oracle-finish',
+    'stopped-key-recovery', 'restored-key-filesystem-refusals']) {
     require_(result.phases.includes(phase), 'actual certified phase receipt missing');
   }
   }

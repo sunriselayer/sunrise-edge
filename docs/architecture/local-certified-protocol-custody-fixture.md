@@ -4,9 +4,12 @@ Date: 2026-10-17, Asia/Singapore.
 
 [DR-0271](decisions/0271-certified-fastvote-multiuid-fixture.md) selects a
 component fixture for the complete current [certified custody
-profile](certified-fastvote-protocol-custody.md). Execution and completion
-status belong in TODO. Source review, compilation and a passing component are
-separate evidence; this document specifies the fixture rather than a result.
+profile](certified-fastvote-protocol-custody.md).
+[DR-0274](decisions/0274-certified-stopped-key-recovery.md) adds stopped
+same-identity key recovery before the existing fence3 restart. Execution and
+completion status belong in TODO. Source review, compilation and a passing
+component are separate evidence; this document specifies the fixture rather
+than a result.
 
 The fixture adds a separate ignored operator test target and owning Node/Python
 controllers. Original ordered fixture files, its selector and protocol IPCv2
@@ -44,19 +47,30 @@ synthetic committed Freeze, substitutes quorum authority or seeds a frontier.
    wrong profile, malformed output and wrong identity with503. This peer earns
    no signing, quorum or retention credit.
 4. Stop and reap workers, require socket absence, checkpoint released leases and
-   obtain503 with no fallback while frontend liveness stays204. Restart at
-   fence3 and repeat saved A votes/ACKs. Apply A and fresh B using genuine paid
-   and availability quorums; independently decode effects, fees, object IDs,
+   obtain503 with no fallback while frontend liveness stays204. Require all four
+   original worker PIDs to be absent after exit0, wait and both physical EOFs.
+   A capability-free worker-UID helper backs up each original32-byte seed and
+   restores it to a new path in its own0700 `key-recovery` directory, with0600
+   single-link files. It compares all copied bytes internally, removes each
+   original `validator.key` path and creates new0600 certified and ordered
+   configs changing only `signing-key-file`. Validator IDs, genesis and exact
+   retained source/body/anchor paths remain unchanged. The frontend/operator UID
+   with its original supplementary socket group must receive EACCES opening all
+   four backups and all four restored seeds. The existing whole-image oracle
+   comparison covers downtime and recovery together. Restart using the restored
+   paths at fence3 and repeat saved A votes/ACKs. Apply A and fresh B using genuine
+   paid and availability quorums; independently decode effects, fees, object IDs,
    versions/types/amounts, exact receipts and nonce progression. A and B use
    separate application and fee references. Prepare C on all four workers and
    retain its complete bundle only on worker0, leaving C unapplied and nonce2.
 5. Stop/reap both roles and checkpoint them. Start the original ordered owners
-   at fence4 on the same stores. The existing SDK commits Freeze through all
-   four replicas and its real three-chain rounds, with outcome at height1.
+   at fence4 on the same stores and restored key paths. The existing SDK commits
+   Freeze through all four replicas and its real three-chain rounds, with outcome
+   at height1.
    Stop/reap both roles and checkpoint them before starting certified owners
-   at fence5. Obtain actual final frontier signatures, verify their full page
-   streams with `FrozenFrontierPageVerifier` and compare saved replays. Worker0
-   has A/B/C; the other frontiers have A/B.
+   at fence5 using the restored paths. Obtain actual final frontier signatures,
+   verify their full page streams with `FrozenFrontierPageVerifier` and compare
+   saved replays. Worker0 has A/B/C; the other frontiers have A/B.
 6. On worker1 stage worker0's real frontier. Pre-Freeze `publication/` records
    and ACKs do not supply post-Freeze drain possession. Source and import the
    genuine full A and B bundles before their confirmations. C confirmation first
@@ -77,10 +91,19 @@ synthetic committed Freeze, substitutes quorum authority or seeds a frontier.
    legacy `PersistenceInvariant` mapping is preserved rather than translated
    to caller400; arbitrary500 responses do not satisfy this control.
 7. Stop/reap workers, checkpoint released leases, verify downtime, restart at
-   fence6 and replay saved frontier/progress/union and historical A receipt
-   results. The final nonce stays2 and C's original receipt stays absent.
+   fence6 using the restored paths and replay saved frontier/progress/union and
+   historical A receipt results. The final nonce stays2 and C's original receipt
+   stays absent.
    Stop/reap all roles, require exact drain summaries, checkpoint and compare
    full final row images before exact owned container/volume removal.
+
+The controller verifies original key-path absence, restored key/backup metadata
+and the exact one-field config substitution before every restored-key generation
+and after final shutdown. Its evidence records all five generations and their
+actual worker PIDs/config/key paths; the Node owner requires the original paths
+only for fence2 and the restored paths for fences3..6, including original ordered
+mode. Recovery helpers use the existing child capture, wait, EOF and failure
+cleanup machinery and do not open, copy or restore source/body/anchor data.
 
 The real SDK and original router owners authenticate signatures, quorums,
 execution, retained witness closure, Freeze and drain transitions. The separate
@@ -110,7 +133,8 @@ These are all21 certified contract entries plus liveness. Unsigned query and
 progress transport checks do not become independent inclusion, freshness or
 whole-state proofs. Local readiness is not a committed DrainSet. The fixture
 makes no zero-hidden-key-call, uncertain-SQL-commit injection, compromised-root
-or worker, independent-device, restore, public-service or all-M2 claim.
+or worker, independent-device, database/anchor or off-host disaster restore,
+key/membership rotation, new-identity, public-service or all-M2 claim.
 
 ## Exact inputs and bounds
 
@@ -150,8 +174,11 @@ are0755 for checked read-only native path traversal. A single private UUID-owned
 separate sibling trees, not distinct physical devices.
 
 Retain outer280s, inner230s, work175s/tail55s, role lifetime200s, operation2s,
-concurrency2, requests128 and worker connections160. The successful closed
-sequence has147 children,27 selected probe phases and32 oracle exchanges.
+concurrency2, requests128 and worker connections160. The original closed sequence
+has147 children,27 selected probe phases and32 oracle exchanges. The two closed
+recovery/refusal helpers bring the selected sequence to149 children and add two
+controls to the original39; all27 probes,32 oracle exchanges and original
+requests remain unchanged.
 Actual runtime enforces at most160 children,32 probe records,64 oracle exchanges,
 96 requests per endpoint per probe and112 accounted requests per generation,
 leaving16 below the configured128. Readiness consumes one worker/frontend
