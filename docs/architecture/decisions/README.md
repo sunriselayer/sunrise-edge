@@ -154,3 +154,6 @@ in [`TODO.md`](../../../TODO.md).
 - [DR-0270: genuine positive Split UID fixture](0270-genuine-positive-split-uid-fixture.md)
 - [DR-0271: current certified FastVote multi-UID component fixture](0271-certified-fastvote-multiuid-fixture.md)
 - [DR-0272: Cloudflare CLI configuration and five-profile type checks](0272-cloudflare-cli-five-profile-types.md)
+- [DR-0273: original ordered stopped same-identity key recovery](0273-original-ordered-stopped-key-recovery.md)
+- [DR-0274: certified stopped same-identity key recovery](0274-certified-stopped-key-recovery.md)
+- [DR-0275: local TLS acknowledgement loss after durable apply](0275-local-tls-durable-ack-loss.md)
