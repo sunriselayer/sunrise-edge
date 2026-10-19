@@ -459,6 +459,14 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E189: finalf51 all8 hosted CI actual success | [run `39138896024`](https://github.com/sunriselayer/sunrise-edge/actions/runs/39138896024) attempt1の元7 owners + check全8が自然終了SUCCESS。全8 rawのactual checkout`ef504719ee3dee239a635260a383ba9ec51de7cf`、tree`925361b2`はexactf51と一致、parentsは`7663e0ab`/`f51bee72`。rootが全1,557,774B raw/hashes・8 job IDs・actual checkout/Gitdata・aggregate7needsを独立照合。Rust147 summaries/4,397 passed/0 failed/43 ignored、CF13+28+10+15=66、元7epoch ends/e8 freeze+unlock・2件1832Bと同じ2件の3round committedACKを再抽出。author`4d0d41f1`、root`a6649f65`、統合`todo-e189-ci328-current-f51-parent-qualified-1018.json` (`dc619470`) | hash固定collector`99b21e94`を1回のみ実行、owning79379/chunk`13d1ed` actual0/reap。root saved-data readerはchunk`99f02d` actual0/0.058秒/実両EOF/wait・既知PID不在。全CI自然終了しcancel/retryなし、author/root read phases終了。rawは変更せずANSI除去はparse copyだけ。collectorの未保存PID/個別physical pipe ledgerや削除済みrole記録を再構成しない。synthetic checkoutはCI証拠でmain mergeではない。E188のlocal完全required失敗は保持し、hosted成功をlocal合格や全M2/M3/M7・独立最終review/公開認定へ転用しない |
 | E190: finalf51 isolated CLI environment and original five-profile types | exact`f51bee72`/tree`925361b2`の新しい専用worktree。元317 roleのbody SHAを保持し、34 packages/2,335 files/486,818,934Bを別inodeへコピー、全2725 layoutと2347 tool rolesの厳密なmetadata/body guardを維持した。元の`node scripts/cloudflare-types.mjs --check`が5 profilesを全て通り、actual0/7.467秒/両EOF/wait/reap、owning29056/chunk`6f7e41`。root統合`todo-e190-manual-isolated-cf-types-root-qualified-1019.json` (`282f0048`) | プロセス内で共有pnpmを隠し、private CLIと依存先を実行。Node24.19.0、元selector/timeout/assertionは維持。公開依存1216件の別inodeコピーも元body SHA一致。旧metadata差分によるコピー失敗とE188を保全し、新しい実行開始時のmetadataを記録後は変更を許容しない。これは環境と型生成だけの資格。別の完全required初回は記録プロセス143を受け自己所有runを停止しpartialとして保全。型生成資格は維持し、全M2/M3/M7・独立監査の完了にはしない |
 | E191: finalf51 isolated local complete-required actual success | exact`f51bee72`/tree`925361b2`のfresh source/cache/targetで元literal npm ci +完全check-allが両actual0/各merged EOF/wait。outer12,954.791秒、実両EOF/wait/reap。rootが全747,003B raw(`c9b66202`)を再parseし、Rust147 summaries/4,397 passed/0 failed/43 ignored、CF13+28+10+15=66、元7epochs/e8 freeze+unlock・2件1832Bと同じ2件のround3 committedACKを照合。root reader16802/chunk`2f3e3e` actual0、proof`43ea7a36`、統合`todo-e191-manual-full-required-f51-parent-qualified-1019.json` (`6d6ae001`) | current1215 source全Ns/SHA/Git、2390 runtime body hashes、CF2725 layout/2347 full roles、5 seedproof JSON/7 directory tuplesを照合。guard・元selector/timeout/12GiB/swap0/CPU4/512PIDsを維持し、Node24.19.0とprivate cfを使用。記録serviceは同Invocationの自然終了Code1=CLD_EXITED/Status0を実確認し、その後rootが自己所有の残存unitだけ停止。既知3PID・両CG不在。root組立ての参照ミス1件を保存しJSON記録だけ修正、product/test再実行なし。E188と初回manual recorder143 partialは保全。private cache/target body読取・未保存最終OOM値・削除済みchild ledgerを主張しない。author/observer/root read phaseは終了。local gateだけの完了で、親5項目・独立監査・公開認定は未達 |
+| E192: M2/M3 current-source public dependency preparation | 新規c1検証用にCargo599件/64,562,928Bとnpm617件/252,200,540Bを別inodeの専用v2 cacheへコピー。元body SHAを保持し、actual0/実両EOF/wait/reap・既知PID/PG/cgroup不在を確認。copy閉鎖proof `m2-m3-independent-public-seeds-v2-1019-closed-proof.json` (`2b4ce1d5`) | 初回は祖先FDの同時保持でmetadata段階の上限に達し、選択本文0件のまま失敗した記録を保全。既存上限を変えず、単一fileずつ祖先FDを閉じる処理へ修正した別実行。依存準備だけでcomponent・親項目の完了ではない |
+| E193: currentc1 targeted controls and actual TLS ACK loss | exact `c1d22757`/tree `6328224f`。fmt・strict operator/CLI全target/all-feature Clippy・実bins/選択3test no-run・M2両inventory/Docker・新旧TLSの10 commandsが全actual0/実両EOF/wait/reap。新TLS4.975秒、元TLS19.454秒。rootが全raw・current1218 source/70 tools/保存7 ELFを独立hashし、knownPID/cgroupと両container/volume不在、同unit自然Code1/Status0を確認後に空unitを停止。root proof `m2-m3-independent-component-1019-parent-closed-proof.json` (`a465a55c`) | M2の両runtime自体はoriginal ordered79 roles・certified149 rolesで成功したが、4 operator ELFのreceiptが実際の最後のproducer1を0と記載したため、strict M2資格は未達。元receipt/rawを保全し、別の正しいreceiptによる再検証はE194で成功。M3はactual harness1/test・CLI0/devを照合。参照blob closureは空/positive_blob_fault=false。初回launcher observer timeoutとrootのsymlink照合ミスも保全し、後者は検証記録だけ修正。完全required/同sourceCI・全M2/M3は未達 |
+| E194: currentc1 corrected-producer M2 recovery components | 元receipt/rawを変更せず、4 operator rolesの実際の最後のproducerをcommand1/devへ訂正した別receiptで、元Node controllersを再実行。ordered inventory/Dockerとcertified inventory/Docker全4 actual0/実両EOF/wait/reap。ordered79/certified149 role children、全17+17 Docker client EOF/wait/closeを保持。rootがcurrent1218 source/70tools・全raw・両receiptの差分とactual CargoJSON/current emitted ELF/保存5role bytesを照合。`m2-m3-independent-receipt-corrected-1019-parent-qualified.json` (`b51012ae`) | 訂正は実際の生成記録への対応付けだけで、source/test/ELF/cache/target変更や再buildなし。元の誤帰属E193を保全。実unit自然Code1/Status0・knownPID/cgroupと2container/2volume不在をroot確認後、自己所有の空unitだけ停止。orderedはfresh empty height2、certifiedはfresh paid B/fence6まで。全M2・正の鍵交換/off-host/公開、c1の完全required/CIは含めない |
+| E195: currentc1 full-runner preflight actual failure | literal npm ci/check-all開始前に、検証ownerが新producerのmetadata-array+SHAを旧flat形式と直接比較して拒否し、steps=[]/両command未実行のまま自然exit1。first-fileのSHA/all9 fullNsは一致。rootは全1218 sourceのSHA/all9 fullNs不変・全raw・自然Code1/Status1・既知PID/start cgroup不在を再確認し、同じ自己所有の空failedunitだけ停止/reset。`m2-m3-independent-full-required-1019-parent-failure-closed.json` (`d47152d2`) | product/test失敗や内容変更とは区別し、この実行を完全required成功へ数えない。元index/ソース/失敗を保全。通常のread-only helper形式確認ではsource比較と終端ControlGroup空文字の2点だけを検出、runtime70/archive311/CF2347/layout2725の形式は一致。全10 source値と既存guardを保持する別v2 helperへ訂正し、再baseline/guard緩和は行わない。この実行では全体gateと同sourceCIの終端は未完了 |
+| E196: currentc1 complete-required actual SUN_LEN failure | 別v2はstrict source1218/runtime/CF2347/layout2725/archive311照合とliteral npm ci actual0を通過。完全check-allはactual101/1,748.277秒・実両EOF/wait/reapで自然失敗。全workspace test compileは25m10s、partial35 summaries/1,087 passed/11 failed/0 ignored。native-httpの11件が全て`path must be shorter than SUN_LEN`。rootが全raw/前後snapshot、source/tool/archive verifierをread-only再実行し、自然Code1/Status1・knownPID/startCG不在を照合後、同じ空failedunitだけ停止/reset。`m2-m3-independent-full-required-v2-1019-parent-failure-closed.json` (`3f665226`) | 元の成功済みE191 Cargo wrapperとの差分はchild TMPDIRに90Bの長いpathを追加した1行。新v3 helperではその追加だけを除き、元のprivate /tmp tmpfsと明示environmentを復元して対象native-http全libから確認する。source/test/selector/timeout/期待hash/metadataは変更しない。全v2失敗・未到達の元recurring/e8/provider群とrootの記録組立てミスを保全。完全requiredと親項目は未完了 |
+| E197: currentc1 private-temp native-http whole-library probe | Cargo childの追加TMPDIRだけを除いた別v3 helperで、元のprivate /tmp tmpfsを使う全lib `cargo test -p native-http --all-features --lib` がactual0/245 passed/0 failed/0 ignored。実両EOF/wait/reap・元source/tool/archive/wrapper postguard不変、knownPID/startCG不在。rootは公開raw/snapshot hash・同Invocationの自然Code1/Status0を独立確認後、自己所有の空probe unitだけ停止。`m2-m3-independent-full-required-v3-1019-probe-parent-published-qualified.json` (`626bef5a`) | 元E196の11 SUN_LEN failuresを含む全245件を保持。限定probeであり完全required成功ではない。rootは次のfull owner専有中にsource/cache/target/ELF/tool/privateCFを読んでいない。probe実終端後、別unitで元2 commandsだけの完全requiredを開始し、strict preflightとliteral npm ci actual0の後にcheck-allを開始した。後続の完全終端はE199で成功。過去失敗と完了条件を保持 |
+| E198: currentc1 PR329 all8 hosted CI | run `39211600220` attempt1の元7 owners+aggregate全8が自然SUCCESS。rootが全8 raw/1,559,211B・actual checkout `3b971e65`・tree `6328224f`・ordered parents[f51,c1]とaggregate needsを照合。Rust147 summaries/4,398 passed/0 failed/43 ignored、新M3 nonignored selector actual ok、CF13/28/10/15=66、元7 epoch END/e8 freeze/unlock/実1832B候補2件と同ID round3 committed ACKをcurrent rawから再導出。`ci329-current-c1-1019-root-qualified.json` (`2469d499`) | collectorは1回actual0/7.429秒・別々の実pipe EOF/明示wait/reap・全FD/file閉鎖・PID/PG不在。normal GH認証のみ。全CI owner/query/read phaseは終了し、旧raw/count/candidate IDを借用しない。CI成功をlocal完全requiredの代わりやrelease/独立監査・全M2/M3/M7へ転用しない |
+| E199: currentc1 literal npm ci and complete required | 同c1/tree6328で元の `npm ci --prefix adapters/cloudflare-workers` と `./scripts/check-all.sh` がactual0/実両EOF/wait/reap、10,533.522秒。Rust147 summaries/4,398 passed/0 failed/43 ignored・CF13/28/10/15=66、新M3 actual ok、元7 epoch END/e8 freeze/unlockとcurrent1832B候補2件/同ID round3 ACKをrootがrawから再導出。source1218全SHA/all9 fullNs・tracked集合/HEAD/tree/clean、runtime70/CF2347/layout2725/archive311/wrappersとcurrent全331 executableELF/全cache-target snapshotを閉鎖後read-only再照合。`m2-m3-independent-full-required-v3-1019-parent-qualified.json` (`fe7a44a1`) | known owner/command/fixture PIDsとcapturedCG不在、同Invocation自然Code1/Status0を独立確認後、自己所有の空successunitだけ停止。元のcurrent target/newv2 cacheのreuseでありfreshとは呼ばない。probe E197と失敗E195/E196は別記録のまま保全。Node24.19.0/cf/cloudflare、全元条件を維持。ここで3子タスクの実装・個別runtime・完全required・同sourceCIがそろう。親M2/M3/M7・独立監査/release全体の合格へ拡張しない |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -1029,6 +1037,16 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     frontier/progress/union3と全source/body/anchor imageのread-only SQL oracleが成功。
     全39 controls・147 roles・27 probes・32 oracle exchangesと完全証拠/回収を照合。
     E108/E111/E115/E119/E124の失敗は保持し、最終統合head全体gate・全M2とは分ける。
+  - [x] original ordered workerの停止後同一identity鍵復旧:
+    既存M2のrecovery条件を細分化する。全4 worker停止/wait後にworker UIDだけで
+    別のprivate pathへ既知fixture鍵を復旧し、元pathを使えない状態にする。
+    source/body/独立anchorを保持し、保存vote一致と元のfresh empty height2 roundを確認する。
+    正の鍵交換・有料business・off-host復元・全M2の証拠にはしない。実runtimeはE194で成功。
+    同sourceCIはE198、c1の完全requiredはE199で成功。全M2は未完了。
+  - [x] certified FastVote workerの停止後同一identity鍵復旧:
+    同じ既存recovery条件。復旧pathをcertified/後段ordered両worker configへ接続し、
+    元のvote/ACK再送、fresh paid B、frontier署名、fence6 retentionを維持する。
+    operatorからの新key読取拒否と旧path不使用もE194で成功。同sourceCIはE198、c1の完全requiredはE199で成功。全M2は未完了。
   - 検証の残件: E175/E178の旧default集計漏れは、d012の完了PTY共有加算と
     明示core/application別allocationで修正し、E179で元117の全path/value mapと上限を実証。
     旧一括267,120Bの失敗を保持し、未保存の過去出力や単一117成功へは拡張しない。
@@ -1063,6 +1081,13 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
   - [x] 正常停止・TLS trust交代後の新規business: E30の実CLI/4 replicasで確認。
     保存済み再送に加え、新規nonce/返金Coinを使った取引の確定と新旧receipt保存を検証。
     同sourceの完全gate/CIはE45/E39で成功。残るM3条件は未完了として保持する。
+  - [x] 実TLSのdurable apply後ACK喪失と同一要求の再送:
+    元M3のTLS failure条件を細分化する。全4実Native hostの正常な保存/応答を受けた後、
+    TLS clientへ応答bodyを渡す前にtest-private relayだけで切断する。
+    実CLIの未確認失敗、全replicaの対象receipt、保存intent/certificatesを確認し、
+    同じ要求の再送で12 SQL/2 blob tables・4 portable collections・nonce/paid effectsが
+    二重更新されないことをE193で検証した。同sourceCIはE198、c1の完全requiredはE199で成功。
+    参照blob closureは空でpositive_blob_fault=false。VM/partial WAL障害・全M3の証拠へ拡張しない。
   - [x] [全connection喪失後の正規local writer交代](docs/architecture/decisions/0260-complete-owner-loss-local-writer-failover.md):
     retained-handleの元SIGKILL controlを保持し、全4 sole-ownerをSIGKILL/reapしてから
     次generationを起動する別controlを追加。全12 SQL tables・2 blob tablesと4 portable
@@ -1516,3 +1541,28 @@ E187の最終f51元12 RELEASE runtimeとE189の全8 hosted CIは、実終端・�
 停止済みの独立監査・ZeroShare fixture・torn-WAL・anchor VM修正は再開しない。
 削除済みの`sunrise-edge-5-8`は再作成せず、以前の時間枠も閉じたまま保持する。
 親D02/M1/M2/M3/M7は未完了。上記の限定実績を親全体へ転用しない。
+
+
+## 2026-10-19の独立したM2/M3残件の細分化
+
+既存のM2 recovery/M3 TLS failure条件から、停止対象と独立した上記3子タスクを完了した。
+original ordered鍵復旧、certified鍵復旧、durable apply後のTLS ACK喪失を別worktreeの
+Codexサブエージェントへ分担し、rootが統合・実行所有・結果照合・TODO更新を行った。
+通常の変更箇所の確認後、`c1d2275752266cb3eb44cbe271529deca0bd22ea`
+(tree `6328224f0e5167c248dea6181289ba78258108a0`) に統合した。
+[Draft PR #329](https://github.com/sunriselayer/sunrise-edge/pull/329) に保全している。
+
+- E193/E194: 実targeted runtime。ordered79/certified149 role children、新旧TLSのactual成功、元receiptの誤帰属と訂正後の実再検証、完全raw/EOF/wait/reap/自己所有資源の回収を照合。
+- E195/E196/E197: runner形式不一致と長いchild TMPDIRによるSUN_LEN失敗を保全。元の比較属性・期待hash・guardを保持し、元のprivate /tmp設定へ戻した全245 native-http probeが成功。
+- E198: [同sourceCI](https://github.com/sunriselayer/sunrise-edge/actions/runs/39211600220) 全8の自然SUCCESS、全raw/actual checkout/tree/parents・collector実EOF/wait/reap/資源解放をroot照合。
+- E199: literal npm ci +完全requiredがactual0。Rust4,398 passed/0 failed/43 ignored・CF66、元7epochs/e8の1832B候補2件と同ID round3 ACK、source/tool/全331 currentELF・cache/target snapshotをroot照合し、同じ自己所有の空unitだけ停止。
+
+全owner/query/read phaseは終了し、source/cache/target/ELF・元の失敗と証跡を保持する。
+元の制約や完了条件は減らさない。チェックは既存77から80へ細分化し、今回の3子タスクは完了。
+親20件の9完了/11未完了、選択8件の3完了/5未完了は不変。限定した実績を親全体へ転用しない。
+
+残るM2はZeroShareと未達signing family/lifecycle全体、M3はselected SQLiteの未達physical fault/
+partial persistent write/独立anchor guest。残件表の通常の対応付けでも、今回の3件以外に
+新しいauthority/profile判断なしで着手できる別の具体的な小タスクは確認できなかった。
+停止済みの独立監査・ZeroShare・torn-WAL/mechanism2・anchor VM修正は再試行していない。
+main merge/deploy・実鍵/host user/security policy変更は行わず、削除済み定期タスクも再作成しない。
