@@ -132,8 +132,12 @@ inspect/prepare/preflight/anchor-inspect/enroll/checkpoint commands. It then:
    or storage dispatch. Complete source/body/anchor rows remain unchanged for
    these refusals.
 4. Stops/reaps all four signing workers with frontends alive, requires unavailable
-   responses without fallback, checkpoints released leases, restarts at exact
-   fence3 and replays saved proposal/votes before applying their saved QC.
+   responses without fallback and checkpoints released leases. After every
+   original worker has exit 0, wait/reap, both pipe EOFs, exact drain completion
+   and no socket, one capability-free worker-UID helper backs up/restores all
+   four exact 32-byte seeds into new private paths and removes the originals.
+   It resumes workers at exact fence 3 using only the restored key paths and
+   replays saved proposal/votes before applying their saved QC.
 5. Applies QC1, drives one real fresh empty round through the existing SDK, and
    signerlessly replays the fully applied two-round prefix. Full12+2 source/body
    and2 anchor row images prove the appropriate quiescent equalities. Genuine
@@ -147,6 +151,41 @@ saved wire bytes. It does not manufacture protocol keys, state or authority.
 Private artifact destinations use create-new and strict count/length/total
 bounds; only selected public canonical wire bytes are copied for the separate
 worker-UID oracle. Keys/configs are never copied into that public artifact tree.
+
+[DR-0273](decisions/0273-original-ordered-stopped-key-recovery.md) fixes the
+recovery procedure. Each worker's backup is
+`worker/vN/key-backup/validator.seed`; its restored signing input is
+`worker/vN/key-recovery/validator.key`. Both directories are worker-owned 0700
+and files 0600, created new without symlinks or hardlink aliases. Only the
+worker-UID helper handles seed bytes and verifies byte equality from original
+to backup to restored file; no seed bytes or hashes enter the evidence. It
+removes the original `worker/vN/validator.key` before creating the restored
+input and confirms ENOENT as that UID. The root controller verifies the same
+path remains absent through final cleanup. The helper emits only its bounded
+nonsecret completion receipt and uses the existing role capability check,
+fixed positive-work deadline and 5s command cap.
+
+Original worker configs, frontend configs, genesis manifests, public validator
+and genesis pins remain unchanged. A new 0600 `worker/vN/recovery.config` must
+equal its original config byte-for-byte except the one `signing-key-file`
+value. Source/body and independent anchor paths are therefore retained, and
+the existing read-only SQL oracle requires complete row equality across the
+key-file procedure before the next authorized fence change. No store is
+copied, rolled back or enrolled. All four restored workers must pass their
+original startup/key checks and later exit/drain/wait/EOF controls. The saved
+votes remain byte-identical under the pinned public identities, and the
+existing fresh empty ordered round at height 2 requires new protocol signing.
+It does not submit a paid business transaction or change validator identity.
+
+Frontend 12002 and the selected unprivileged operator/intruder 12003 each
+attempt reads of all restored keyfiles, backups, recovered configs and the
+existing private stores; every open must fail with EACCES. Trusted root and
+worker compromise remain outside this boundary. The recovery adds one worker
+helper and two refusal helpers to the existing child inventory, retaining
+the 160-record, pids 64, allocation, cumulative output, frame and cleanup bounds.
+The original compiler receipt still requires the exact selected source
+HEAD/tree and complete source-file hashes, including both modified controllers.
+An ancestor build is not admitted by this fixture change.
 
 The Docker owner uses one `start --attach` operation so capture is established
 before container execution, including early failures with logging disabled.

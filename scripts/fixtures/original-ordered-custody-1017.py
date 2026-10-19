@@ -269,10 +269,12 @@ def configurations():
             new_file(f'/work/{role}/v{index}/config', data, uid, uid)
 
 
-def start_workers():
+def start_workers(recovered=False):
     result = []
     for index in range(4):
-        child = Child(f'worker-{index}', elf('host', ['protocol-worker', '--config', f'/work/worker/v{index}/config']), UID_WORKER, UID_WORKER)
+        config = 'recovery.config' if recovered else 'config'
+        label = 'recovered-worker' if recovered else 'worker'
+        child = Child(f'{label}-{index}', elf('host', ['protocol-worker', '--config', f'/work/worker/v{index}/{config}']), UID_WORKER, UID_WORKER)
         line = child.line(min(WORK_END, time.monotonic() + 5))
         fields = parse_fields(line)
         if fields.get('complete') != 'true' or fields.get('mode') != 'protocol-worker':
@@ -360,12 +362,17 @@ class Oracle:
         phases.append('oracle-' + value)
 
 
-def filesystem_refusals():
+def filesystem_refusals(recovered=False):
     names = []
     for index in range(4):
         names += [f'/work/source/v{index}/state.sqlite', f'/work/source/v{index}/body.sqlite',
-                  f'/work/worker/v{index}/validator.key', f'/work/worker/v{index}/config',
+                  f'/work/worker/v{index}/config',
                   f'/work/authority/v{index}/anchor.sqlite', f'/work/authority/v{index}/anchor.sqlite.lease']
+        if recovered:
+            names += [f'/work/worker/v{index}/key-backup/validator.seed',
+                      f'/work/worker/v{index}/key-recovery/validator.key', f'/work/worker/v{index}/recovery.config']
+        else:
+            names.append(f'/work/worker/v{index}/validator.key')
     for name in names:
         info = os.lstat(name)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != UID_WORKER or stat.S_IMODE(info.st_mode) != 0o600:
@@ -377,8 +384,108 @@ for path in json.loads(sys.argv[1]):
  else: os.close(f);raise RuntimeError('private authority became readable')
 """
     for uid in [UID_FRONT, UID_INTRUDER]:
-        command('filesystem-refusal', ['/usr/local/bin/python3', '-I', '-B', '-c', source, json.dumps(names)], uid, uid, (GROUP,))
-    phases.append('filesystem-refusals')
+        label = f'recovery-filesystem-refusal-{uid}' if recovered else 'filesystem-refusal'
+        command(label, ['/usr/local/bin/python3', '-I', '-B', '-c', source, json.dumps(names)], uid, uid, (GROUP,))
+    phases.append('recovery-filesystem-refusals' if recovered else 'filesystem-refusals')
+
+
+def recover_stopped_keys(workers):
+    if len(workers) != 4 or any(child.label != f'worker-{index}' or child.uid != UID_WORKER or
+            not child.waited or child.code != 0 or len(child.eof) != 2 for index, child in enumerate(workers)):
+        raise RuntimeError('all original workers must be stopped, drained, waited and at both EOFs before key recovery')
+    public = pins()
+    digest = bounded_read('/work/public/digest', 64)
+    snapshots = []
+    records = []
+    for index in range(4):
+        if os.path.lexists(f'/work/run/v{index}/worker.sock'):
+            raise RuntimeError('original worker socket remains before key recovery')
+        base = f'/work/worker/v{index}'
+        old = base + '/validator.key'; backup = base + '/key-backup/validator.seed'; restored = base + '/key-recovery/validator.key'
+        config = bounded_read(base + '/config', 16384)
+        original_line = ('signing-key-file=' + old + '\n').encode('ascii')
+        if config.count(original_line) != 1 or ('validator-id=' + public[f'validator-{index}'] + '\n').encode('ascii') not in config:
+            raise RuntimeError('original worker configuration identity/key pin differs')
+        snapshots.append((config, config.replace(original_line, ('signing-key-file=' + restored + '\n').encode('ascii')),
+                          bounded_read(f'/work/front/v{index}/config', 16384), bounded_read(base + '/genesis.bin', 1048576)))
+        records.append({'index': index, 'validator': public[f'validator-{index}'], 'original_key': old,
+                        'backup_key': backup, 'restored_key': restored})
+    # Only this capability-free worker-UID child handles seed bytes. It neither
+    # opens nor copies source/body/anchor stores and emits no seed/hash material.
+    source = """import errno,json,os,stat
+uid=12001
+def private(path, directory=False):
+ info=os.lstat(path)
+ if info.st_uid!=uid or info.st_gid!=uid or stat.S_IMODE(info.st_mode)!=(0o700 if directory else 0o600):
+  raise RuntimeError('recovery private owner/mode differs')
+ if not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode) and info.st_nlink==1):
+  raise RuntimeError('recovery inode kind/link count differs')
+ return info
+def read(path, cap):
+ info=private(path);fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+ try:
+  opened=os.fstat(fd)
+  if (info.st_dev,info.st_ino)!=(opened.st_dev,opened.st_ino): raise RuntimeError('recovery input changed')
+  data=os.read(fd,cap+1)
+  if len(data)>cap or len(data)!=opened.st_size: raise RuntimeError('recovery input length differs')
+  return data
+ finally: os.close(fd)
+def write(path, data):
+ fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+ try:
+  offset=0
+  while offset<len(data):
+   written=os.write(fd,data[offset:])
+   if written<=0: raise RuntimeError('recovery write incomplete')
+   offset+=written
+  os.fsync(fd);os.fchmod(fd,0o600)
+ finally: os.close(fd)
+ private(path)
+for i in range(4):
+ base='/work/worker/v'+str(i);private(base,True)
+ old=base+'/validator.key';backup=base+'/key-backup/validator.seed';restored=base+'/key-recovery/validator.key'
+ for leaf in ['key-backup','key-recovery']:
+  os.mkdir(base+'/'+leaf,0o700);private(base+'/'+leaf,True)
+ seed=read(old,32)
+ if len(seed)!=32: raise RuntimeError('fixture recovery requires exact32-byte seed')
+ write(backup,seed)
+ if read(backup,32)!=seed: raise RuntimeError('backup seed differs')
+ os.unlink(old)
+ try: fd=os.open(old,os.O_RDONLY|os.O_NOFOLLOW)
+ except OSError as error:
+  if error.errno!=errno.ENOENT: raise
+ else: os.close(fd);raise RuntimeError('original seed path remains available')
+ write(restored,read(backup,32))
+ if read(restored,32)!=seed: raise RuntimeError('restored seed differs')
+ a=private(backup);b=private(restored)
+ if (a.st_dev,a.st_ino)==(b.st_dev,b.st_ino): raise RuntimeError('backup and restored seed alias')
+ config=read(base+'/config',16384);line=('signing-key-file='+old+'\\n').encode('ascii')
+ if config.count(line)!=1: raise RuntimeError('recovery config key pin differs')
+ write(base+'/recovery.config',config.replace(line,('signing-key-file='+restored+'\\n').encode('ascii')))
+print(json.dumps({'workers':4,'seed_bytes':32,'same_seed':True,'original_keys_unavailable':True},separators=(',',':')),flush=True)
+"""
+    output, child = command('stopped-key-recovery', ['/usr/local/bin/python3', '-I', '-B', '-c', source], cap=5)
+    expected = {'workers': 4, 'seed_bytes': 32, 'same_seed': True, 'original_keys_unavailable': True}
+    if output[1] or json.loads(output[0].decode('ascii')) != expected or child.code != 0:
+        raise RuntimeError('worker-UID key recovery receipt differs')
+    if pins() != public or bounded_read('/work/public/digest', 64) != digest:
+        raise RuntimeError('public authority pins changed during key recovery')
+    for index, (config, recovered, frontend, genesis) in enumerate(snapshots):
+        base = f'/work/worker/v{index}'
+        if os.path.lexists(base + '/validator.key') or bounded_read(base + '/config', 16384) != config or \
+                bounded_read(base + '/recovery.config', 16384) != recovered or \
+                bounded_read(f'/work/front/v{index}/config', 16384) != frontend or bounded_read(base + '/genesis.bin', 1048576) != genesis:
+            raise RuntimeError('key recovery changed original paths/config/genesis or failed exact signing-key-file substitution')
+        for leaf in ['key-backup', 'key-recovery']:
+            info = os.lstat(base + '/' + leaf)
+            if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (UID_WORKER, UID_WORKER, 0o700):
+                raise RuntimeError('recovery directory owner/mode differs')
+    filesystem_refusals(recovered=True)
+    phases.append('stopped-same-identity-key-recovery')
+    allocation()
+    return dict(expected, helper_uid=UID_WORKER, helper_caps=0, all_original_workers_waited=True,
+                only_signing_key_file_changed=True, authority_pins_unchanged=True,
+                original_worker_pids=[child.proc.pid for child in workers], read_refusal_uids=[UID_FRONT, UID_INTRUDER], keys=records)
 
 
 def intruder_socket():
@@ -530,7 +637,8 @@ def main():
             raise RuntimeError('stopped worker socket remains')
         anchor(index, 'anchor-checkpoint')
     oracle.phase('unchanged'); probe('worker-down'); oracle.phase('unchanged')
-    workers = start_workers(); oracle.phase('fence-3')
+    recovery = recover_stopped_keys(workers); oracle.phase('unchanged')
+    workers = start_workers(recovered=True); oracle.phase('fence-3')
     probe('votes-repeat'); oracle.phase('unchanged'); probe('certificate'); probe('fresh'); oracle.phase('retained-2')
     probe('replay'); oracle.phase('unchanged')
     remaining(WORK_END)
@@ -543,10 +651,13 @@ def main():
     for index in range(4):
         if os.path.lexists(f'/work/run/v{index}/worker.sock'):
             raise RuntimeError('tail socket remains')
+        if os.path.lexists(f'/work/worker/v{index}/validator.key'):
+            raise RuntimeError('original key path became available after recovered signing')
         anchor(index, 'anchor-checkpoint', end=END)
     return {'passed': True, 'limits': limits, 'phases': phases, 'allocation': allocation(),
             'fixed_deadlines': [280, 230, 175], 'final_fence': 3, 'fresh_height': 2,
-            'qc_votes': 3, 'actual_votes': 4, 'actual_peer_responses': 4, 'all_children_waited': True, 'no_validator_key_in_frontend': True}
+            'qc_votes': 3, 'actual_votes': 4, 'actual_peer_responses': 4, 'all_children_waited': True,
+            'no_validator_key_in_frontend': True, 'recovery': recovery}
 
 
 result = None

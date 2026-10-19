@@ -83,3 +83,14 @@ power-fault durability or all-M2 completion. Runtime results belong in TODO.
 
 The selected actual component fixture is specified in
 [the multi-UID acceptance profile](local-protocol-custody-fixture.md).
+Its [stopped same-identity key-recovery extension](decisions/0273-original-ordered-stopped-key-recovery.md)
+backs up and restores all four disposable validator seeds under the worker UID
+only after the original workers have drained and been waited/reaped. Each
+restored key has a new 0600 path beneath a new 0700 directory; the original key
+path is removed before another worker starts. Source/body/anchor stores and
+public identities remain fixed. The recovered worker configuration differs
+only in `signing-key-file`. Saved-vote equality, confirmed row images and a
+fresh empty ordered round at height 2 exercise those restored paths. The
+frontend and unprivileged operator UIDs must still fail to read the restored
+keyfiles. This is a disposable same-host fixture procedure; real keys,
+new-identity rotation and off-host recovery require separate owning controls.
