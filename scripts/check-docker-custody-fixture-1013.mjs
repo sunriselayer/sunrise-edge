@@ -195,6 +195,48 @@ const binds = [
 // invokes by its exact name, and docs/architecture/local-publication-custody.md
 // for the recipe this follows.
 
+// Explanatory probe notes stay outside its fixed 256 KiB raw transport budget.
+// The embedded program is sent as written; no runtime comment stripping is used.
+//
+// CREATE_INSTANCE_SEED_HEX:
+// The new application instance's own creator-scoped logical seed (DR-0255):
+// public, caller-supplied, never a private key. Custody independently
+// rederives the exact InstanceTarget from this seed plus its own pinned
+// sender/context/code; it is never trusted as signing authority by itself.
+//
+// phase_own_asset_mint_burn:
+// DR-0258: runs while phase_create_asset's own native backend (address)
+// is still alive, reusing its custody/operator directories and the exact
+// genesis fee trust those already set up. serve-create's own socket is
+// already dead by this point (it exits once its own fixed request
+// budget is spent), so this opens its own separate kind-4
+// serve-mint-burn process on a fresh socket, pinned via --asset/
+// --instance-ref to the asset phase_create_asset's own earlier steps
+// just created, never the pinned genesis TreasuryCap. Shape mirrors
+// phase_mint_burn's own two-operation (mint then burn) lifecycle exactly,
+// but never starts a second native backend.
+//
+// phase_create_asset:
+// Fresh phase directories only: this reuses the exact same one-owner,
+// one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
+// already builds (via its own unmodified "generate"/"serve" modes), with
+// the SAME custody-held publisher used by transfer/split-merge/mint-burn
+// (dev_owners[0]/mint authority, distinct from the genesis signer/fee
+// recipient), booted into a brand-new store here. It never touches any
+// other phase's own genesis, coins, custody-approvals entries, or
+// assertions.
+//
+// DR-0255/M2: a fifth closed wire kind (5), under custody's own
+// prepare-create/approve-create/sign-create/serve-create commands. The
+// only family whose Instantiate targets a FRESH derived instance rather
+// than the pinned genesis one, and whose own custody request carries no
+// pre-existing owned Coin/TreasuryCap input, only a fee source. Shape
+// mirrors phase_transfer's single-operation lifecycle (one signed
+// request, not two like split/merge or mint/burn): offline sign-create
+// plus the actual CLI's own custody-mediated signing both succeed against
+// the live approval, then revocation leaves both the same server and a
+// fresh restart refusing further signatures.
+
 const probe = String.raw`
 import errno, json, os, pty, select, socket, stat, subprocess, sys, time
 
@@ -229,10 +271,6 @@ CREATE_REQUEST_ID = "95" * 32
 # (93/94) below, which only ever target the pinned genesis TreasuryCap.
 OWN_MINT_REQUEST_ID = "96" * 32
 OWN_BURN_REQUEST_ID = "97" * 32
-# The new application instance's own creator-scoped logical seed (DR-0255):
-# public, caller-supplied, never a private key. Custody independently
-# rederives the exact InstanceTarget from this seed plus its own pinned
-# sender/context/code; it is never trusted as signing authority by itself.
 CREATE_INSTANCE_SEED_HEX = "5f" * 32
 # Half of apps/devnet's DEVNET_PAID_SPEND_COIN_BALANCE (10_000_000); the
 # split amount must stay strictly between zero and the held balance.
@@ -248,6 +286,9 @@ OWN_ASSET_MINT_AMOUNT = 5_000_000
 INTERNAL_DEADLINE = time.monotonic() + 230.0
 OUTPUT_CAP = 262_144
 _output_used = 0
+# Only the existing finite signer launches enter this ledger. Completion is
+# recorded by their owning communicate calls, never inferred from a receipt.
+_custody_signer_runs = {}
 
 
 class FixtureFailure(RuntimeError):
@@ -774,6 +815,21 @@ def phase_recover_private_key(
     return restored_path
 
 
+def retain_custody_signer(proc, socket_path):
+    argv = proc.args
+    if argv.count("--key-file") != 1 or argv.index("--key-file") + 1 >= len(argv):
+        raise FixtureFailure("owned custody signer has no single explicit key path")
+    _custody_signer_runs[proc] = {"key_file":argv[argv.index("--key-file") + 1],
+        "socket":socket_path, "communicated":False}
+
+
+def require_custody_signers_stopped():
+    if not _custody_signer_runs or any(not run["communicated"] or proc.returncode is None
+            or os.path.exists(f"/proc/{proc.pid}") or os.path.lexists(run["socket"])
+            for proc, run in _custody_signer_runs.items()):
+        raise FixtureFailure("prior owned custody signer has not completed communicate/reap/socket removal")
+
+
 def start_serve(
     socket_path, total_deadline_secs, max_connections, max_requests,
     key_file=f"{ROOT}/custody-keys/custody.seed", config_path=f"{ROOT}/custody-keys/custody.config",
@@ -796,6 +852,7 @@ def start_serve(
         os.setuid(CUSTODY_UID)
 
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=preexec, env={}, cwd="/")
+    retain_custody_signer(proc, socket_path)
     bind_deadline = time.monotonic() + 10
     while not os.path.exists(socket_path) or stat.S_IMODE(os.stat(socket_path).st_mode) != 0o660:
         if time.monotonic() > bind_deadline:
@@ -831,8 +888,10 @@ def expect_serve_startup_failure(label, key_file, config_path, socket_path, expe
         os.setuid(CUSTODY_UID)
 
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=preexec, env={}, cwd="/")
+    retain_custody_signer(proc, socket_path)
     try:
         out, err = proc.communicate(timeout=min(10, remaining()))
+        _custody_signer_runs[proc]["communicated"] = True
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait(timeout=5)
@@ -851,6 +910,7 @@ def expect_serve_startup_failure(label, key_file, config_path, socket_path, expe
 def wait_serve(proc, extra_seconds):
     try:
         out, err = proc.communicate(timeout=min(extra_seconds, remaining()))
+        _custody_signer_runs[proc]["communicated"] = True
     except subprocess.TimeoutExpired:
         proc.kill()
         raise FixtureFailure("custody serve did not self-terminate within its own bounded lifetime")
@@ -1334,9 +1394,18 @@ def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, tr
 
 
 
-def phase_genesis_coin_identity_handoff(public_key):
-    # Independent genuine TWO-OWNER genesis/store; B already exists, no seed
-    # read/copy/keygen and no migration of A's fee balance or app creator.
+def phase_genesis_coin_identity_handoff(public_key, restored_key_path):
+    # Independent genuine TWO-OWNER genesis/store; reuse A's already recovered
+    # same-identity path and existing B. No seed read/copy/keygen or migration.
+    require_custody_signers_stopped()
+    original_key_path = f"{ROOT}/custody-keys/custody.seed"
+    if restored_key_path != f"{ROOT}/custody-keys/custody.seed.restored" or restored_key_path == original_key_path:
+        raise FixtureFailure("live handoff must use the existing recovered A key path")
+    original_key_stat, restored_key_stat = os.lstat(original_key_path), os.lstat(restored_key_path)
+    if (not stat.S_ISREG(restored_key_stat.st_mode) or restored_key_stat.st_uid != CUSTODY_UID
+            or stat.S_IMODE(restored_key_stat.st_mode) != 0o600
+            or (original_key_stat.st_dev, original_key_stat.st_ino) == (restored_key_stat.st_dev, restored_key_stat.st_ino)):
+        raise FixtureFailure("live handoff recovered A key is not a distinct private regular file")
     output_before = _output_used
     custody_dir, operator_dir = f"{ROOT}/custody-coin-handoff", f"{ROOT}/operator/coin-handoff"
     for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
@@ -1383,7 +1452,7 @@ def phase_genesis_coin_identity_handoff(public_key):
         raise FixtureFailure("handoff requires the existing independent B publisher")
     owners = (public_key, second)
     ids = ("b1" * 32, "b2" * 32)
-    keys = (f"{ROOT}/custody-keys/custody.seed", f"{ROOT}/custody-keys/custody2.seed")
+    keys = (restored_key_path, f"{ROOT}/custody-keys/custody2.seed")
     sockets = (f"{ROOT}/run/coin-handoff-a.sock", f"{ROOT}/run/coin-handoff-b.sock")
     approvals = f"{ROOT}/custody-approvals"
     probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
@@ -1421,6 +1490,7 @@ def phase_genesis_coin_identity_handoff(public_key):
     def operator_identity():
         os.setgroups([OPERATOR_GID]); os.setgid(OPERATOR_GID); os.setuid(OPERATOR_UID)
     summaries, restarts, stages, refusal_paths = [], [], [], list(owner_refusals)
+    live_key_paths, restart_key_paths = [], []
     os.chmod(ROOT, 0o755)
     native = subprocess.Popen(probe_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         preexec_fn=operator_identity, env=probe_env("serve", operator_dir), cwd="/")
@@ -1440,6 +1510,7 @@ def phase_genesis_coin_identity_handoff(public_key):
             if index == 1:
                 if any(proc.returncode is None or os.path.exists(f"/proc/{proc.pid}") for proc, _u, _g in processes[1:]):
                     raise FixtureFailure("old A authority is still live at B handoff")
+                require_custody_signers_stopped()
                 copied(f"{operator_dir}/coin-v2.bin", OPERATOR_UID, f"{custody_dir}/coin-v2.bin", CUSTODY_UID, CUSTODY_GID)
                 owner_refusal(0, f"{custody_dir}/coin-v2.bin", owner_refusals[1], "b4" * 32)
             coin = f"{custody_dir}/coin-v{index+1}.bin"
@@ -1464,6 +1535,7 @@ def phase_genesis_coin_identity_handoff(public_key):
             signer = ["--custody-socket", sockets[index], "--custody-uid", str(CUSTODY_UID), "--custody-expected-public-key", owners[index]]
             sign = cli_argv("custody", "sign-transfer", *trust(index, operator_dir), "--request-file", f"{operator_dir}/{tag}-request.bin", *signer)
             serve = start_serve(sockets[index], 30, 3, 3, command=serving(3)); processes.append((serve, CUSTODY_UID, CUSTODY_GID))
+            live_key_paths.append(_custody_signer_runs[serve]["key_file"])
             passed([*sign, "--out", f"{operator_dir}/{tag}-offline.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
             generated_paths.append(f"{operator_dir}/{tag}-offline.bin")
             actual = cli_argv("transfer", "--endpoint", address, *signer,
@@ -1499,6 +1571,7 @@ def phase_genesis_coin_identity_handoff(public_key):
                     if serve.returncode != 0 or os.path.exists(f"/proc/{serve.pid}") or os.path.lexists(sockets[index]):
                         raise FixtureFailure("handoff live authority failed actual wait/PID/socket stop")
                     serve = start_serve(sockets[index], 30, 1, 1, command=serving(1)); processes.append((serve, CUSTODY_UID, CUSTODY_GID))
+                    restart_key_paths.append(_custody_signer_runs[serve]["key_file"])
                 path = f"{operator_dir}/{tag}-revoked{'-restart' if restarting else ''}.bin"
                 if os.path.lexists(path): raise FixtureFailure("handoff refusal path occupied")
                 rc, _out, err = execute([*sign, "--out", path], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
@@ -1541,7 +1614,12 @@ def phase_genesis_coin_identity_handoff(public_key):
     captured = _output_used - output_before
     if len(generated_paths) != 30 or generated_bytes > 2*1024*1024 or captured > 49152 or run_count != 19 or pty_count != 2 or len(processes) != 5 or len(refusal_paths) != 6 or any(os.path.lexists(path) for path in refusal_paths) or any(os.path.lexists(path) for path in sockets):
         raise FixtureFailure("handoff fixed file/output/child/refusal allocation differs")
+    if live_key_paths != list(keys) or restart_key_paths != list(keys):
+        raise FixtureFailure("live handoff signer/restart actual key paths differ")
     summary = {"actual_cli":True, "same_live_store":True, "whole_coin":True, "offline_bytes_equal":True,
+        "prior_signers_stopped_before_a":True, "recovered_a_file_distinct":True,
+        "original_a_key_path":original_key_path, "recovered_a_key_path":restored_key_path,
+        "live_key_paths":live_key_paths, "restart_key_paths":restart_key_paths,
         "paid_effects":True, "all_saved_replays":True, "b_before_ownership_refused":True,
         "a_after_current_handoff_refused":True, "old_a_stopped_before_b":True, "revoked":True,
         "revoked_after_restart":True, "all_sockets_absent":True, "coin":generated["coin"], "owners":list(owners),
@@ -2711,16 +2789,6 @@ def stop_owned_process(process, uid, gid):
 
 
 def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, generated, definition_hex, cap_hex, strict_pty_accounting=False):
-    # DR-0258: runs while phase_create_asset's own native backend (address)
-    # is still alive, reusing its custody/operator directories and the exact
-    # genesis fee trust those already set up. serve-create's own socket is
-    # already dead by this point (it exits once its own fixed request
-    # budget is spent), so this opens its own separate kind-4
-    # serve-mint-burn process on a fresh socket, pinned via --asset/
-    # --instance-ref to the asset phase_create_asset's own earlier steps
-    # just created, never the pinned genesis TreasuryCap. Shape mirrors
-    # phase_mint_burn's own two-operation (mint then burn) lifecycle exactly,
-    # but never starts a second native backend.
     def trust_flags(directory):
         return ["--config", f"{directory}/config", "--genesis-manifest-file", f"{directory}/genesis.bin", "--genesis-digest", generated["digest"]]
     def application_flags(directory):
@@ -3487,25 +3555,6 @@ def phase_create_recovery(public_key, custody_dir, operator_dir, approvals, trus
 
 
 def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context=None):
-    # Fresh phase directories only: this reuses the exact same one-owner,
-    # one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
-    # already builds (via its own unmodified "generate"/"serve" modes), with
-    # the SAME custody-held publisher used by transfer/split-merge/mint-burn
-    # (dev_owners[0]/mint authority, distinct from the genesis signer/fee
-    # recipient), booted into a brand-new store here. It never touches any
-    # other phase's own genesis, coins, custody-approvals entries, or
-    # assertions.
-    #
-    # DR-0255/M2: a fifth closed wire kind (5), under custody's own
-    # prepare-create/approve-create/sign-create/serve-create commands. The
-    # only family whose Instantiate targets a FRESH derived instance rather
-    # than the pinned genesis one, and whose own custody request carries no
-    # pre-existing owned Coin/TreasuryCap input, only a fee source. Shape
-    # mirrors phase_transfer's single-operation lifecycle (one signed
-    # request, not two like split/merge or mint/burn): offline sign-create
-    # plus the actual CLI's own custody-mediated signing both succeed against
-    # the live approval, then revocation leaves both the same server and a
-    # fresh restart refusing further signatures.
     custody_dir, operator_dir = f"{ROOT}/custody-create", f"{ROOT}/operator/create"
     for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
         os.mkdir(path, 0o700)
@@ -4093,6 +4142,7 @@ def main():
 
     # ---- Custody-owned private recovery of the same disposable seed ----
     main_key_path = f"{ROOT}/custody-keys/custody.seed"
+    require_custody_signers_stopped()
     restored_key_path = phase_recover_private_key(main_key_path)
     recovery_summaries = phase_recovery_verification(
         public_key, config_path, main_key_path, restored_key_path, socket_path,
@@ -4119,7 +4169,7 @@ def main():
     split_merge_summary = phase_split_merge(public_key)
     mint_burn_summary = phase_mint_burn(public_key)
 
-    coin_identity_handoff_summary = phase_genesis_coin_identity_handoff(public_key)
+    coin_identity_handoff_summary = phase_genesis_coin_identity_handoff(public_key, restored_key_path)
 
     total_bytes = 0
     for dirpath, _dirnames, filenames in os.walk(ROOT):
@@ -4541,7 +4591,8 @@ function validatePublicationGenesisResult(result) {
   const handoff = result.genesis_coin_identity_handoff;
   if (!handoff || ['actual_cli', 'same_live_store', 'whole_coin', 'offline_bytes_equal', 'paid_effects',
       'all_saved_replays', 'b_before_ownership_refused', 'a_after_current_handoff_refused',
-      'old_a_stopped_before_b', 'revoked', 'revoked_after_restart', 'all_sockets_absent']
+      'old_a_stopped_before_b', 'revoked', 'revoked_after_restart', 'all_sockets_absent',
+      'prior_signers_stopped_before_a', 'recovered_a_file_distinct']
     .some((key) => handoff[key] !== true) ||
     handoff.run_exec_children !== 19 || handoff.pty_children !== 2 || handoff.serve_children !== 4 ||
     handoff.native_host_children !== 1 || handoff.private_copy_children !== 0 || handoff.generated_files !== 30 ||
@@ -4552,6 +4603,15 @@ function validatePublicationGenesisResult(result) {
     !Array.isArray(handoff.owners) || handoff.owners.length !== 2 || handoff.owners[0] === handoff.owners[1] ||
     handoff.owners.some((key) => !/^[0-9a-f]{64}$/.test(key)) || !/^[0-9a-f]{64}$/.test(handoff.coin)) {
     throw new Error('the genuine genesis Coin identity handoff evidence is incomplete');
+  }
+  const handoffOriginalKey = '/work/custody-keys/custody.seed';
+  const handoffRecoveredKey = '/work/custody-keys/custody.seed.restored';
+  const handoffKeyPaths = [handoffRecoveredKey, '/work/custody-keys/custody2.seed'];
+  if (handoff.original_a_key_path !== handoffOriginalKey || handoff.recovered_a_key_path !== handoffRecoveredKey ||
+      handoff.original_a_key_path === handoff.recovered_a_key_path ||
+      JSON.stringify(handoff.live_key_paths) !== JSON.stringify(handoffKeyPaths) ||
+      JSON.stringify(handoff.restart_key_paths) !== JSON.stringify(handoffKeyPaths)) {
+    throw new Error('the live genesis handoff must attribute both A signers to the recovered key path');
   }
   const handoffRefusals = ['/work/custody-coin-handoff/b-before-ownership.bin', '/work/custody-coin-handoff/a-after-handoff.bin',
     '/work/operator/coin-handoff/a-revoked.bin', '/work/operator/coin-handoff/a-revoked-restart.bin',

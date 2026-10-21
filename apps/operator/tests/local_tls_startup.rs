@@ -9,6 +9,8 @@
 //! an actual host. All keys and CAs are disposable fixture material.
 //! DR-0275 explicitly withholds genuine durable apply acknowledgements once,
 //! then checks receipt-first exact replay with complete unchanged state images.
+//! DR-0277 separately preserves one independently fixed historical referenced
+//! body through the same loss/replay boundary, without claiming blob-write faults.
 //! DR-0219 separately runs the same complete business oracles against direct
 //! production-host termination and its actual 2 -> 3 -> 4 stopped fences.
 
@@ -19,6 +21,9 @@ mod checkpoint_recovery;
 mod compiled_cli_process;
 #[path = "support/compiled_source_host_process.rs"]
 mod compiled_source_host_process;
+#[cfg(target_os = "linux")]
+#[path = "support/historical_referenced_body.rs"]
+mod historical_referenced_body;
 #[path = "support/https_relay.rs"]
 mod https_relay;
 #[path = "support/offline_genesis_fixture.rs"]
@@ -2732,7 +2737,36 @@ fn actual_local_tls_startup_certifies_a_cli_transfer_refuses_bad_pins_and_replay
 #[cfg(target_os = "linux")]
 #[test]
 fn actual_local_tls_lost_apply_acknowledgements_replay_exact_paid_state_once() {
+    exercise_local_tls_lost_apply_acknowledgements(AckLossBodyFixture::Empty);
+}
+
+/// DR-0277: retain a positive historical body closure while the paid transfer's
+/// own effects remain the original inline Standard Asset effects.
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_local_tls_lost_apply_acknowledgements_preserve_historical_referenced_body() {
+    exercise_local_tls_lost_apply_acknowledgements(AckLossBodyFixture::Historical);
+}
+
+#[cfg(target_os = "linux")]
+enum AckLossBodyFixture {
+    Empty,
+    Historical,
+}
+
+#[cfg(target_os = "linux")]
+fn exercise_local_tls_lost_apply_acknowledgements(body_fixture: AckLossBodyFixture) {
     let network: Network = author_inspect_and_prepare();
+    let historical_body: Option<historical_referenced_body::HistoricalReferencedBody> =
+        match body_fixture {
+            AckLossBodyFixture::Empty => None,
+            AckLossBodyFixture::Historical => {
+                let body: historical_referenced_body::HistoricalReferencedBody =
+                    historical_referenced_body::HistoricalReferencedBody::install(&network);
+                assert_no_parent_sqlite_handles(&network);
+                Some(body)
+            }
+        };
     let hosts: Vec<Host> = start_hosts(&network, 2);
     let mut tls: Tls = start_tls(&hosts, &network.tls_dir);
     let config: PathBuf = write_config(
@@ -2757,6 +2791,9 @@ fn actual_local_tls_lost_apply_acknowledgements_replay_exact_paid_state_once() {
     let genesis_ids: [ObjectId; 2] = [ObjectId::new(APP_COIN), ObjectId::new(FEE_COIN)];
     let initial: Observation = observe(&tls.relays, &genesis_ids, request, sender);
     let nonce: u64 = verify_initial(&network, &initial, sender);
+    if let Some(body) = &historical_body {
+        body.verify(&network, &tls.relays);
+    }
 
     // Explicitly arm one loss on every same CA/DNS/listener/backend. Ordinary
     // bind/start remain transparent; no host restart or writer advance occurs.
@@ -2923,18 +2960,33 @@ fn actual_local_tls_lost_apply_acknowledgements_replay_exact_paid_state_once() {
         assert_eq!(receipt, &committed_view.receipt);
     }
     verify_committed_state(&network, &committed, &saved, &committed_view);
+    if let Some(body) = &historical_body {
+        body.verify(&network, &tls.relays);
+    }
 
     // Existing complete owners cover all 12 SQL + 2 blob tables and all four
     // portable collections, referenced bodies and the exact mutation sequence.
     let before_rows: Vec<sqlite_durable_image::Image> = sqlite_durable_images(&network);
     let before_replay: Vec<SourceBusinessSnapshot> = snapshots(&network);
-    for captured in &before_replay {
-        assert!(
-            captured.referenced_blobs.is_empty(),
-            "this inline transfer fixture has an empty referenced-blob closure"
-        );
+    match &historical_body {
+        None => {
+            for captured in &before_replay {
+                assert!(
+                    captured.referenced_blobs.is_empty(),
+                    "this inline transfer fixture has an empty referenced-blob closure"
+                );
+            }
+            eprintln!("ack_loss_replay referenced_blob_closure=empty positive_blob_fault=false");
+        }
+        Some(body) => {
+            for captured in &before_replay {
+                body.assert_snapshot(&network, captured);
+            }
+            eprintln!(
+                "ack_loss_replay referenced_blob_closure=historical_nonempty positive_blob_fault=false paid_produced_blob_publication=false"
+            );
+        }
     }
-    eprintln!("ack_loss_replay referenced_blob_closure=empty positive_blob_fault=false");
     let posts: Vec<usize> = forwarded_posts(&tls.relays);
     let replay: Outputs = Outputs::new(&network.artifacts_dir, "lost-ack-replay");
     let output: Output = run_cli(replay_args(
@@ -2966,6 +3018,9 @@ fn actual_local_tls_lost_apply_acknowledgements_replay_exact_paid_state_once() {
     let replayed: Observation = observe(&tls.relays, &ids, request, sender);
     assert_eq!(replayed, committed_view);
     verify_committed_state(&network, &committed, &saved, &replayed);
+    if let Some(body) = &historical_body {
+        body.verify(&network, &tls.relays);
+    }
     for (index, relay) in tls.relays.iter().enumerate() {
         assert_eq!(
             relay.lost_apply_acknowledgement().as_ref(),

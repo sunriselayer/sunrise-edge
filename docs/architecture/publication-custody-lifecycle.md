@@ -287,6 +287,18 @@ offline/CLI byte equality, same-process cancellation and restarted refusal,
 with old A signers actually stopped before B authority. Independent paid
 result/effect/receipt and saved-replay checks run against the SAME live store.
 
+The [2026-10-21 recovered-key extension](decisions/0276-live-recovered-genesis-transfer.md)
+connects the already restored same-A `custody.seed.restored` path to both A
+signers in this existing handoff. Its actual key arguments must differ from
+the original A path; B retains its existing key. Before the original recovery
+copy and before this fresh handoff, the fixture checks all prior owned signer
+`Popen` instances against their completed `communicate()` calls, reaped status
+and absent sockets, retaining expected nonzero startup-refusal exits. No seed
+read, copy child, new approval authority or additional submission is introduced.
+Historical transfer recovery above remains signing-only; this separate live
+path keeps the two current-object transitions and independent execution oracle.
+Actual source-bound qualification is still required and is recorded in TODO.
+
 The original/C/MB/T/G/E67/publication-six/application-Coin-six flows retain
 their exact definitions, request IDs, counters and assertions. The extension
 adds only two actual transfer submissions, not split/merge/mint/cap actions.

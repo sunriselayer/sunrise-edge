@@ -157,3 +157,5 @@ in [`TODO.md`](../../../TODO.md).
 - [DR-0273: original ordered stopped same-identity key recovery](0273-original-ordered-stopped-key-recovery.md)
 - [DR-0274: certified stopped same-identity key recovery](0274-certified-stopped-key-recovery.md)
 - [DR-0275: local TLS acknowledgement loss after durable apply](0275-local-tls-durable-ack-loss.md)
+- [DR-0276: live genesis transfer with the recovered same-identity key](0276-live-recovered-genesis-transfer.md)
+- [DR-0277: historical referenced-body preservation through TLS acknowledgement loss](0277-historical-blob-ack-loss.md)

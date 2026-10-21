@@ -104,3 +104,9 @@ economic, storage or production retry behavior and does not qualify direct
 production TLS termination, physical media/fsync/power faults, whole selected
 profiles, all M3, independent security review or release readiness. All listeners,
 keys, certificates and stores remain disposable private local fixtures.
+
+[DR-0277](0277-historical-blob-ack-loss.md) adds a separate historical-body
+preservation selector using the same complete ACK-loss exercise. The original
+selector keeps its empty closure. The new selector adds one independently fixed
+typed historical reference before hosts start and retains
+`positive_blob_fault=false`; paid-produced blob publication is unclaimed.
