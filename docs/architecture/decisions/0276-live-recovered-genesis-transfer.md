@@ -39,6 +39,12 @@ equality, both real submissions, current versions/owners, separate fees/nonces,
 canonical results/receipts and all saved replays. No child, generated file,
 request, key copy, selector, profile, deadline or output allowance is added.
 
+Explanatory Python comments for the logical instance seed, application mint/burn
+and create-asset phases live outside the embedded program in JavaScript comments.
+This keeps the raw program within its unchanged 262144-byte transport limit;
+the Python AST, protocol frames, assertions, selectors and all runtime budgets
+remain unchanged. Source checks alone do not qualify an actual fixture run.
+
 ## Compatibility and limits
 
 This remains the accepted trusted-local-OS, separate-process/UID development

@@ -195,6 +195,48 @@ const binds = [
 // invokes by its exact name, and docs/architecture/local-publication-custody.md
 // for the recipe this follows.
 
+// Explanatory probe notes stay outside its fixed 256 KiB raw transport budget.
+// The embedded program is sent as written; no runtime comment stripping is used.
+//
+// CREATE_INSTANCE_SEED_HEX:
+// The new application instance's own creator-scoped logical seed (DR-0255):
+// public, caller-supplied, never a private key. Custody independently
+// rederives the exact InstanceTarget from this seed plus its own pinned
+// sender/context/code; it is never trusted as signing authority by itself.
+//
+// phase_own_asset_mint_burn:
+// DR-0258: runs while phase_create_asset's own native backend (address)
+// is still alive, reusing its custody/operator directories and the exact
+// genesis fee trust those already set up. serve-create's own socket is
+// already dead by this point (it exits once its own fixed request
+// budget is spent), so this opens its own separate kind-4
+// serve-mint-burn process on a fresh socket, pinned via --asset/
+// --instance-ref to the asset phase_create_asset's own earlier steps
+// just created, never the pinned genesis TreasuryCap. Shape mirrors
+// phase_mint_burn's own two-operation (mint then burn) lifecycle exactly,
+// but never starts a second native backend.
+//
+// phase_create_asset:
+// Fresh phase directories only: this reuses the exact same one-owner,
+// one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
+// already builds (via its own unmodified "generate"/"serve" modes), with
+// the SAME custody-held publisher used by transfer/split-merge/mint-burn
+// (dev_owners[0]/mint authority, distinct from the genesis signer/fee
+// recipient), booted into a brand-new store here. It never touches any
+// other phase's own genesis, coins, custody-approvals entries, or
+// assertions.
+//
+// DR-0255/M2: a fifth closed wire kind (5), under custody's own
+// prepare-create/approve-create/sign-create/serve-create commands. The
+// only family whose Instantiate targets a FRESH derived instance rather
+// than the pinned genesis one, and whose own custody request carries no
+// pre-existing owned Coin/TreasuryCap input, only a fee source. Shape
+// mirrors phase_transfer's single-operation lifecycle (one signed
+// request, not two like split/merge or mint/burn): offline sign-create
+// plus the actual CLI's own custody-mediated signing both succeed against
+// the live approval, then revocation leaves both the same server and a
+// fresh restart refusing further signatures.
+
 const probe = String.raw`
 import errno, json, os, pty, select, socket, stat, subprocess, sys, time
 
@@ -229,10 +271,6 @@ CREATE_REQUEST_ID = "95" * 32
 # (93/94) below, which only ever target the pinned genesis TreasuryCap.
 OWN_MINT_REQUEST_ID = "96" * 32
 OWN_BURN_REQUEST_ID = "97" * 32
-# The new application instance's own creator-scoped logical seed (DR-0255):
-# public, caller-supplied, never a private key. Custody independently
-# rederives the exact InstanceTarget from this seed plus its own pinned
-# sender/context/code; it is never trusted as signing authority by itself.
 CREATE_INSTANCE_SEED_HEX = "5f" * 32
 # Half of apps/devnet's DEVNET_PAID_SPEND_COIN_BALANCE (10_000_000); the
 # split amount must stay strictly between zero and the held balance.
@@ -2751,16 +2789,6 @@ def stop_owned_process(process, uid, gid):
 
 
 def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, generated, definition_hex, cap_hex, strict_pty_accounting=False):
-    # DR-0258: runs while phase_create_asset's own native backend (address)
-    # is still alive, reusing its custody/operator directories and the exact
-    # genesis fee trust those already set up. serve-create's own socket is
-    # already dead by this point (it exits once its own fixed request
-    # budget is spent), so this opens its own separate kind-4
-    # serve-mint-burn process on a fresh socket, pinned via --asset/
-    # --instance-ref to the asset phase_create_asset's own earlier steps
-    # just created, never the pinned genesis TreasuryCap. Shape mirrors
-    # phase_mint_burn's own two-operation (mint then burn) lifecycle exactly,
-    # but never starts a second native backend.
     def trust_flags(directory):
         return ["--config", f"{directory}/config", "--genesis-manifest-file", f"{directory}/genesis.bin", "--genesis-digest", generated["digest"]]
     def application_flags(directory):
@@ -3527,25 +3555,6 @@ def phase_create_recovery(public_key, custody_dir, operator_dir, approvals, trus
 
 
 def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context=None):
-    # Fresh phase directories only: this reuses the exact same one-owner,
-    # one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
-    # already builds (via its own unmodified "generate"/"serve" modes), with
-    # the SAME custody-held publisher used by transfer/split-merge/mint-burn
-    # (dev_owners[0]/mint authority, distinct from the genesis signer/fee
-    # recipient), booted into a brand-new store here. It never touches any
-    # other phase's own genesis, coins, custody-approvals entries, or
-    # assertions.
-    #
-    # DR-0255/M2: a fifth closed wire kind (5), under custody's own
-    # prepare-create/approve-create/sign-create/serve-create commands. The
-    # only family whose Instantiate targets a FRESH derived instance rather
-    # than the pinned genesis one, and whose own custody request carries no
-    # pre-existing owned Coin/TreasuryCap input, only a fee source. Shape
-    # mirrors phase_transfer's single-operation lifecycle (one signed
-    # request, not two like split/merge or mint/burn): offline sign-create
-    # plus the actual CLI's own custody-mediated signing both succeed against
-    # the live approval, then revocation leaves both the same server and a
-    # fresh restart refusing further signatures.
     custody_dir, operator_dir = f"{ROOT}/custody-create", f"{ROOT}/operator/create"
     for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
         os.mkdir(path, 0o700)
