@@ -152,6 +152,24 @@ its already provisioned independent `custody2.seed` identity. Both receive
 separate genesis fee Coins. This explicit development funding does not move
 A's fee balance, account or wallet to B.
 
+Under [DR-0276](decisions/0276-live-recovered-genesis-transfer.md), A's live
+signer and restarted refusal both use `main()`'s already recovered
+`custody.seed.restored`, rather than its original `custody.seed` path. The
+controller requires that exact distinct path and a separate custody-owned
+mode-0600 regular file without reading the seed. The existing key/config
+check and both independent signature finalizations keep the same A identity.
+The completed publication recovery controls still compare historical frames;
+this handoff separately exercises fresh live business using that recovered key.
+
+A finite launcher ledger retains the actual owned custody signer processes,
+their key-file argv and sockets. Existing `communicate()` completions mark
+successful serves and expected failed startups alike; expected refusal exits
+remain nonzero. All prior signers must have completed those calls, been reaped
+and left no socket before the original recovery copy and before this handoff.
+The receipt records actual A/B live and restart key paths, and the owning Node
+validator requires the restored A path and unchanged B path. It does not infer
+process completion from the receipt or introduce a new termination mechanism.
+
 Before any transfer, B's own `prepare-transfer` must refuse the A-owned target
 Coin with no output. A independently prepares and approves fresh `b1`, signs
 both offline and through the actual protected `transfer` consumer, and moves
@@ -187,7 +205,10 @@ or new privilege is added. Every original family, lifecycle, counter and
 selector remains unchanged, as do the global deadlines and output caps.
 
 This is a fixture source contract, with actual execution qualification kept
-in TODO. It proves no own-created application or TreasuryCap migration:
+in TODO. Only actual source-bound execution establishes the selected live
+same-key recovery result. The original path remains under the trusted
+administrator; this is no guarantee against later deliberate old-key reuse.
+It proves no own-created application or TreasuryCap migration:
 `ApplicationAssetPin` still requires the immutable instance creator to match
 its custody publisher. It does not claim full account/key rotation, fee
 balance migration, public ceremony, any additional asset operation or all M2.
