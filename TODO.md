@@ -1652,3 +1652,9 @@ remote SHAを照合した。保存用WIPを実装の統合/検証成功として
 [run 39710233943](https://github.com/sunriselayer/sunrise-edge/actions/runs/39710233943) が検証中。
 local旧runnerの設定不足による実テスト前停止と、V2のfmt/clippy成功・CLI build中断も
 別証跡へ保全した。中断や部分成功を新sourceの完了へ転用せず、既存target/cacheを保持する。
+
+local V3は同ef92のfmt/clippyと全5 buildがactual 0、EOF/wait/reapを確認した。
+続くpublication-genesisは圧縮bootstrapの64KiB引数上限でactual 1となり、runtime成功へは
+数えない。decompressed Pythonは261654Bで元262144B以内だったが、別の圧縮transport上限に
+達した。失敗rawとPID/cgroup解放を保全し、実行内容/判定/両上限を保ったコメント配置修正を行う。
+CIのrust-tests成功は確認したが、追加2件の最終source全体資格は引き続き未完了。
