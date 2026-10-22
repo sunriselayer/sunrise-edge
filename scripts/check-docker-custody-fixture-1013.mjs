@@ -8,6 +8,17 @@
 // timeout issues in the candidate are tracked and fixed separately, and this
 // fixture is deliberately not weakened to paper over them.
 //
+// Beyond the original keygen/approve/serve/restart round trip, this fixture
+// also exercises the custody revocation lifecycle (`custody revoke
+// --approvals-dir --request-id`: an immutable `<id>.revoked` marker,
+// idempotent on an exact repeat, refusing reapproval before any terminal is
+// ever touched, and leaving every later signature attempt for that id with
+// the ordinary `NoApproval` refusal), a custody-owned private recovery of
+// the same disposable seed through a backup/restored path pair, and a
+// second, independently keyed custody identity. None of this ever prints or
+// argv-passes key material; every copy of key bytes happens inside a
+// custody-UID child process and travels only through its own exit code.
+//
 // This script never executes anything itself at import time beyond Docker
 // CLI subprocesses and `ldd` on two already-compiled host paths it is given;
 // it builds, launches, and tears down exactly one container.
@@ -183,6 +194,9 @@ DOMAIN_HEX = "44" * 32
 MAIN_REQUEST_ID = "5a" * 32
 UNAPPROVED_REQUEST_ID = "11" * 32
 EXPIRING_REQUEST_ID = "22" * 32
+RECOVERY_REQUEST_ID = "33" * 32
+NEW_IDENTITY_REQUEST_ID = "44" * 32
+WRONG_PUBLIC_KEY_HEX = "99" * 32
 
 INTERNAL_DEADLINE = time.monotonic() + 230.0
 OUTPUT_CAP = 262_144
@@ -329,9 +343,9 @@ def phase_missing_prerequisite_fails():
         raise FixtureFailure("the fixture probe did not fail with its documented missing-prerequisite message")
 
 
-def phase_keygen():
+def phase_keygen(key_path=f"{ROOT}/custody-keys/custody.seed"):
     rc, out, err = run_exec(
-        cli_argv("custody", "keygen", "--key-file", f"{ROOT}/custody-keys/custody.seed"),
+        cli_argv("custody", "keygen", "--key-file", key_path),
         CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], timeout=20,
     )
     if rc != 0:
@@ -343,7 +357,7 @@ def phase_keygen():
     if not public_key or len(public_key) != 64:
         raise FixtureFailure("custody keygen did not print a 64-hex public_key")
     # Metadata only: the seed's own bytes are never read, printed, or compared.
-    key_stat = os.stat(f"{ROOT}/custody-keys/custody.seed")
+    key_stat = os.stat(key_path)
     if stat.S_IMODE(key_stat.st_mode) != 0o600 or key_stat.st_uid != CUSTODY_UID:
         raise FixtureFailure("custody key file metadata is not exactly owner=custody, mode 0600")
     dir_stat = os.stat(f"{ROOT}/custody-keys")
@@ -352,8 +366,7 @@ def phase_keygen():
     return public_key
 
 
-def phase_write_config(public_key):
-    config_path = f"{ROOT}/custody-keys/custody.config"
+def phase_write_config(public_key, config_path=f"{ROOT}/custody-keys/custody.config"):
     text = (
         f"chain_id={CHAIN_ID}\n"
         f"protocol_version={PROTOCOL_VERSION}\n"
@@ -508,11 +521,163 @@ def phase_operator_cannot_read_or_edit(request_id_hex):
         raise FixtureFailure("the operator UID could edit an existing approval record")
 
 
-def start_serve(socket_path, total_deadline_secs, max_connections, max_requests):
+def revoke_argv(approvals_dir, request_id_hex):
+    return cli_argv("custody", "revoke", "--approvals-dir", approvals_dir, "--request-id", request_id_hex)
+
+
+def phase_operator_cannot_revoke(approvals_dir, request_id_hex):
+    marker_path = f"{approvals_dir}/{request_id_hex}.revoked"
+    rc, _out, _err = run_exec(
+        revoke_argv(approvals_dir, request_id_hex),
+        OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID], timeout=10,
+    )
+    if rc == 0:
+        raise FixtureFailure("the operator UID was able to run custody revoke")
+    if os.path.lexists(marker_path):
+        raise FixtureFailure("the operator UID's refused revoke attempt still left a revocation marker")
+
+
+def phase_revoke(approvals_dir, request_id_hex):
+    rc, _out, err = run_exec(
+        revoke_argv(approvals_dir, request_id_hex),
+        CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], timeout=10,
+    )
+    if rc != 0:
+        raise FixtureFailure(f"custody revoke failed: {err.decode('utf8', 'replace')}")
+    marker_path = f"{approvals_dir}/{request_id_hex}.revoked"
+    marker_stat = os.stat(marker_path)
+    if marker_stat.st_uid != CUSTODY_UID or stat.S_IMODE(marker_stat.st_mode) != 0o600:
+        raise FixtureFailure("the custody revocation marker's metadata is not exactly owner=custody, mode 0600")
+
+
+def read_file_bytes_as_root(path, max_bytes=65536):
+    # Root reads only non-secret evidence here (an approval record, never a
+    # key): bounded, and only ever used for byte-for-byte comparison.
+    with open(path, "rb") as source:
+        data = source.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise FixtureFailure(f"file at {path} exceeds the bounded comparison read")
+    return data
+
+
+def phase_revoke_is_idempotent_and_preserves_approval(approvals_dir, request_id_hex):
+    approval_path = f"{approvals_dir}/{request_id_hex}"
+    before = read_file_bytes_as_root(approval_path)
+    phase_revoke(approvals_dir, request_id_hex)
+    after_first = read_file_bytes_as_root(approval_path)
+    phase_revoke(approvals_dir, request_id_hex)  # exact repeat must also succeed
+    after_second = read_file_bytes_as_root(approval_path)
+    if before != after_first or before != after_second:
+        raise FixtureFailure("revoking a request changed its own already-written approval record bytes")
+
+
+def phase_reject_reapproval_of_revoked(config_path, artifact_path, nonce, request_id_hex):
+    argv = cli_argv(
+        "custody", "approve",
+        "--config", config_path,
+        "--approvals-dir", f"{ROOT}/custody-approvals",
+        "--approved-artifact", artifact_path,
+        "--nonce", str(nonce),
+        "--request-id", request_id_hex,
+        "--expires-in-seconds", "3600",
+    )
+    # No PTY here at all (unlike phase_approve_via_pty): this both keeps the
+    # negative case simple and proves the revoked refusal is reported before
+    # any terminal is ever required, since a terminal-requirement refusal
+    # would otherwise mask it.
+    rc, _out, err = run_exec(argv, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], timeout=10)
+    if rc == 0:
+        raise FixtureFailure("reapproving a revoked request id unexpectedly succeeded")
+    if b"custody approval request ID is revoked" not in err:
+        raise FixtureFailure(f"reapproving a revoked request id did not report the expected revoked refusal: {err!r}")
+
+
+def custody_private_copy(source_path, dest_path, max_bytes=256):
+    pid = os.fork()
+    if pid == 0:
+        try:
+            os.setgroups([CUSTODY_GID])
+            os.setgid(CUSTODY_GID)
+            os.setuid(CUSTODY_UID)
+            try:
+                src_fd = os.open(source_path, os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    data = os.read(src_fd, max_bytes)
+                finally:
+                    os.close(src_fd)
+                if not data:
+                    os._exit(5)
+                dst_fd = os.open(dest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                try:
+                    if os.write(dst_fd, data) != len(data):
+                        os._exit(6)
+                finally:
+                    os.close(dst_fd)
+                os._exit(0)
+            except OSError:
+                os._exit(2)
+        finally:
+            os._exit(127)
+    _pid, status = os.waitpid(pid, 0)
+    return os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+
+
+def custody_private_replace(dest_path, backup_path, max_bytes=256):
+    pid = os.fork()
+    if pid == 0:
+        try:
+            os.setgroups([CUSTODY_GID])
+            os.setgid(CUSTODY_GID)
+            os.setuid(CUSTODY_UID)
+            try:
+                src_fd = os.open(backup_path, os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    data = os.read(src_fd, max_bytes)
+                finally:
+                    os.close(src_fd)
+                if not data:
+                    os._exit(5)
+                try:
+                    os.unlink(dest_path)
+                except FileNotFoundError:
+                    pass
+                dst_fd = os.open(dest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                try:
+                    if os.write(dst_fd, data) != len(data):
+                        os._exit(6)
+                finally:
+                    os.close(dst_fd)
+                os._exit(0)
+            except OSError:
+                os._exit(2)
+        finally:
+            os._exit(127)
+    _pid, status = os.waitpid(pid, 0)
+    return os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+
+
+def phase_recover_private_key(source_key_path):
+    backup_path = f"{ROOT}/custody-keys/custody.seed.backup"
+    restored_path = f"{ROOT}/custody-keys/custody.seed.restored"
+    if not custody_private_copy(source_key_path, backup_path):
+        raise FixtureFailure("custody-owned private backup of the disposable seed failed")
+    if not custody_private_copy(backup_path, restored_path):
+        raise FixtureFailure("custody-owned private restore of the backed-up seed failed")
+    for path in (backup_path, restored_path):
+        key_stat = os.stat(path)
+        if key_stat.st_uid != CUSTODY_UID or stat.S_IMODE(key_stat.st_mode) != 0o600:
+            raise FixtureFailure(f"recovered key path {path} metadata is not exactly owner=custody, mode 0600")
+    return restored_path
+
+
+def start_serve(
+    socket_path, total_deadline_secs, max_connections, max_requests,
+    key_file=f"{ROOT}/custody-keys/custody.seed", config_path=f"{ROOT}/custody-keys/custody.config",
+):
     argv = cli_argv(
         "custody", "serve",
-        "--config", f"{ROOT}/custody-keys/custody.config",
-        "--key-file", f"{ROOT}/custody-keys/custody.seed",
+        "--config", config_path,
+        "--key-file", key_file,
         "--socket", socket_path,
         "--approvals-dir", f"{ROOT}/custody-approvals",
         "--max-connections", str(max_connections),
@@ -541,6 +706,41 @@ def start_serve(socket_path, total_deadline_secs, max_connections, max_requests)
         proc.kill()
         raise FixtureFailure("the custody run directory mode is not exactly 0750")
     return proc
+
+
+def expect_serve_startup_failure(label, key_file, config_path, socket_path, expected_substring):
+    argv = cli_argv(
+        "custody", "serve",
+        "--config", config_path,
+        "--key-file", key_file,
+        "--socket", socket_path,
+        "--approvals-dir", f"{ROOT}/custody-approvals",
+        "--max-connections", "1",
+        "--max-requests", "1",
+        "--total-deadline-secs", "5",
+    )
+
+    def preexec():
+        os.setgroups([CUSTODY_GID])
+        os.setgid(CUSTODY_GID)
+        os.setuid(CUSTODY_UID)
+
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=preexec, env={}, cwd="/")
+    try:
+        out, err = proc.communicate(timeout=min(10, remaining()))
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+        raise FixtureFailure(f"{label}: custody serve startup failure did not exit in time")
+    charge_output(len(out) + len(err))
+    if proc.returncode == 0:
+        raise FixtureFailure(f"{label}: custody serve unexpectedly started successfully")
+    if expected_substring.encode("utf8") not in err:
+        raise FixtureFailure(
+            f"{label}: did not report the expected exact startup failure; stderr={err.decode('utf8', 'replace')!r}"
+        )
+    if os.path.lexists(socket_path):
+        raise FixtureFailure(f"{label}: a socket was created despite the startup failure")
 
 
 def wait_serve(proc, extra_seconds):
@@ -630,7 +830,7 @@ def phase_impostor_peer_uid_refusal(public_key, impostor_path):
         raise FixtureFailure("the Rust custody client did not report the expected UnexpectedPeerUid refusal")
 
 
-def expect_sign_failure(label, public_key, socket_path, request_id_hex, nonce, wasm_first_byte="0"):
+def expect_sign_failure(label, public_key, socket_path, request_id_hex, nonce, wasm_first_byte="0", expected="NoApproval"):
     env = harness_env(
         "sign-and-verify",
         CUSTODY_FIXTURE_PUBLISHER_HEX=public_key,
@@ -643,8 +843,8 @@ def expect_sign_failure(label, public_key, socket_path, request_id_hex, nonce, w
     rc, _out, err = run_exec(harness_argv(), OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID], env=env, timeout=15)
     if rc == 0:
         raise FixtureFailure(f"{label}: signing unexpectedly succeeded")
-    if b"Refused(NoApproval)" not in err:
-        raise FixtureFailure(f"{label}: did not report the expected closed refusal")
+    if f"Refused({expected})".encode("ascii") not in err:
+        raise FixtureFailure(f"{label}: did not report the expected closed refusal Refused({expected})")
 
 
 def expect_sign_success(public_key, socket_path, request_id_hex, nonce):
@@ -663,6 +863,106 @@ def expect_sign_success(public_key, socket_path, request_id_hex, nonce):
     if evidence.get("mode") != "sign-and-verify" or evidence.get("verified") is not True:
         raise FixtureFailure("sign-and-verify did not report independent finalize/verification")
     return evidence
+
+
+def check_summary(label, summary_text, expected):
+    if dict(line.split("=", 1) for line in summary_text.splitlines()) != expected:
+        raise FixtureFailure(f"{label}: serve counts do not match the expected exact summary {expected}")
+
+
+def phase_recovery_verification(public_key, config_path, original_key_path, restored_key_path, socket_path):
+    recovery_artifact = f"{ROOT}/custody-artifacts/recovery.bin"
+    phase_generate_artifact(public_key, RECOVERY_REQUEST_ID, 1, recovery_artifact)
+    phase_approve_via_pty(config_path, recovery_artifact, 1, RECOVERY_REQUEST_ID, 3600)
+
+    before_proc = start_serve(
+        socket_path, total_deadline_secs=10, max_connections=1, max_requests=1,
+        key_file=original_key_path, config_path=config_path,
+    )
+    before = expect_sign_success(public_key, socket_path, RECOVERY_REQUEST_ID, 1)
+    before_summary = wait_serve(before_proc, extra_seconds=8)
+    check_summary("pre-recovery sign", before_summary, {
+        "connections_accepted": "1", "requests_handled": "1",
+        "requests_signed": "1", "requests_refused": "0",
+    })
+
+    after_proc = start_serve(
+        socket_path, total_deadline_secs=10, max_connections=1, max_requests=1,
+        key_file=restored_key_path, config_path=config_path,
+    )
+    after = expect_sign_success(public_key, socket_path, RECOVERY_REQUEST_ID, 1)
+    after_summary = wait_serve(after_proc, extra_seconds=8)
+    check_summary("post-recovery sign", after_summary, {
+        "connections_accepted": "1", "requests_handled": "1",
+        "requests_signed": "1", "requests_refused": "0",
+    })
+
+    if before["signature_hex"] != after["signature_hex"]:
+        raise FixtureFailure("the recovered key produced a different signature for the identical approved request")
+    return True
+
+
+def phase_retain_revocation_through_recovery(approvals_dir, request_id_hex, public_key, key_file, config_path, socket_path):
+    approval_path = f"{approvals_dir}/{request_id_hex}"
+    marker_path = f"{approval_path}.revoked"
+    backup_path = f"{ROOT}/custody-artifacts/main-approval.backup"
+    if not custody_private_copy(approval_path, backup_path, max_bytes=65536):
+        raise FixtureFailure("backing up the revoked request's own approval record failed")
+    original_bytes = read_file_bytes_as_root(approval_path)
+    if not custody_private_replace(approval_path, backup_path, max_bytes=65536):
+        raise FixtureFailure("restoring the revoked request's own approval record from its backup failed")
+    if read_file_bytes_as_root(approval_path) != original_bytes:
+        raise FixtureFailure("restoring the approval record from its own backup changed its bytes")
+    if not os.path.lexists(marker_path):
+        raise FixtureFailure("the revocation marker did not survive restoring the approval record")
+
+    proc = start_serve(
+        socket_path, total_deadline_secs=10, max_connections=1, max_requests=1,
+        key_file=key_file, config_path=config_path,
+    )
+    expect_sign_failure("revoked-after-approval-restore", public_key, socket_path, request_id_hex, 1)
+    summary = wait_serve(proc, extra_seconds=8)
+    check_summary("revocation-retained-through-recovery", summary, {
+        "connections_accepted": "1", "requests_handled": "1",
+        "requests_signed": "0", "requests_refused": "1",
+    })
+    return True
+
+
+def phase_new_identity(socket_path, old_public_key):
+    new_key_path = f"{ROOT}/custody-keys/custody2.seed"
+    new_public_key = phase_keygen(new_key_path)
+    new_config_path = phase_write_config(new_public_key, f"{ROOT}/custody-keys/custody2.config")
+
+    new_identity_artifact = f"{ROOT}/custody-artifacts/new-identity.bin"
+    phase_generate_artifact(new_public_key, NEW_IDENTITY_REQUEST_ID, 1, new_identity_artifact)
+    phase_approve_via_pty(new_config_path, new_identity_artifact, 1, NEW_IDENTITY_REQUEST_ID, 3600)
+
+    main_key_path = f"{ROOT}/custody-keys/custody.seed"
+    main_config_path = f"{ROOT}/custody-keys/custody.config"
+    mismatch_message = "custody key file's derived public key does not match the configured publisher"
+
+    expect_serve_startup_failure("old-key-new-config", main_key_path, new_config_path, socket_path, mismatch_message)
+    expect_serve_startup_failure("new-key-old-config", new_key_path, main_config_path, socket_path, mismatch_message)
+
+    proc = start_serve(
+        socket_path, total_deadline_secs=15, max_connections=3, max_requests=3,
+        key_file=new_key_path, config_path=new_config_path,
+    )
+    expect_sign_failure(
+        "old-publisher-artifact", old_public_key, socket_path, NEW_IDENTITY_REQUEST_ID, 1,
+        expected="PublisherMismatch",
+    )
+    expect_sign_failure("new-publisher-unapproved", new_public_key, socket_path, UNAPPROVED_REQUEST_ID, 1)
+    expect_sign_success(new_public_key, socket_path, NEW_IDENTITY_REQUEST_ID, 1)
+    summary = wait_serve(proc, extra_seconds=12)
+    check_summary("new-identity", summary, {
+        "connections_accepted": "3", "requests_handled": "3",
+        "requests_signed": "1", "requests_refused": "2",
+    })
+    if os.path.lexists(socket_path):
+        raise FixtureFailure("new-identity serve left its bound socket behind")
+    return True
 
 
 def main():
@@ -721,6 +1021,46 @@ def main():
     if first["signature_hex"] != second["signature_hex"]:
         raise FixtureFailure("the restarted serve process did not reproduce the identical persisted signature")
 
+    # ---- Custody revocation lifecycle (parent-added `custody revoke`) ----
+    approvals_dir = f"{ROOT}/custody-approvals"
+    phase_operator_cannot_revoke(approvals_dir, MAIN_REQUEST_ID)
+    phase_revoke_is_idempotent_and_preserves_approval(approvals_dir, MAIN_REQUEST_ID)
+    phase_reject_reapproval_of_revoked(config_path, main_artifact, 1, MAIN_REQUEST_ID)
+
+    third_proc = start_serve(socket_path, total_deadline_secs=10, max_connections=1, max_requests=1)
+    expect_sign_failure("revoked-main", public_key, socket_path, MAIN_REQUEST_ID, 1)
+    third_summary = wait_serve(third_proc, extra_seconds=8)
+    check_summary("post-revocation restart", third_summary, {
+        "connections_accepted": "1", "requests_handled": "1",
+        "requests_signed": "0", "requests_refused": "1",
+    })
+    if os.path.lexists(socket_path):
+        raise FixtureFailure("post-revocation restarted custody left its bound socket behind")
+
+    # ---- Custody-owned private recovery of the same disposable seed ----
+    main_key_path = f"{ROOT}/custody-keys/custody.seed"
+    restored_key_path = phase_recover_private_key(main_key_path)
+    recovery_signature_match = phase_recovery_verification(
+        public_key, config_path, main_key_path, restored_key_path, socket_path,
+    )
+    revocation_retained_through_recovery = phase_retain_revocation_through_recovery(
+        approvals_dir, MAIN_REQUEST_ID, public_key, restored_key_path, config_path, socket_path,
+    )
+
+    missing_recovered_key_path = f"{ROOT}/custody-keys/custody.seed.missing"
+    expect_serve_startup_failure(
+        "missing-recovered-key", missing_recovered_key_path, config_path, socket_path,
+        f'custody I/O failed for "{missing_recovered_key_path}": No such file or directory (os error 2)',
+    )
+    mismatched_config_path = phase_write_config(WRONG_PUBLIC_KEY_HEX, f"{ROOT}/custody-keys/mismatched.config")
+    expect_serve_startup_failure(
+        "recovered-key-wrong-config", restored_key_path, mismatched_config_path, socket_path,
+        "custody key file's derived public key does not match the configured publisher",
+    )
+
+    # ---- A second, independently keyed custody identity ----
+    new_identity_verified = phase_new_identity(socket_path, public_key)
+
     total_bytes = 0
     for dirpath, _dirnames, filenames in os.walk(ROOT):
         for filename in filenames:
@@ -737,6 +1077,10 @@ def main():
         "serve_summary": serve_summary.strip().splitlines(),
         "restart_signature_match": True,
         "generated_bytes_total": total_bytes,
+        "revocation_enforced": True,
+        "recovery_signature_match": recovery_signature_match,
+        "revocation_retained_through_recovery": revocation_retained_through_recovery,
+        "new_identity_verified": new_identity_verified,
     }, sort_keys=True))
 
 
@@ -951,7 +1295,9 @@ try {
   }
   if (result.scope !== 'custody_fixture_1013_docker_linux_uid_pty' || result.restart_signature_match !== true ||
       !Number.isSafeInteger(result.generated_bytes_total) || result.generated_bytes_total <= 0 ||
-      result.generated_bytes_total > 64 * 1024 * 1024) {
+      result.generated_bytes_total > 64 * 1024 * 1024 ||
+      result.revocation_enforced !== true || result.recovery_signature_match !== true ||
+      result.revocation_retained_through_recovery !== true || result.new_identity_verified !== true) {
     throw new Error('the fixture evidence line is incomplete');
   }
 } catch (error) {
