@@ -1631,3 +1631,10 @@ source変更は各段階でcommitし、review後にpushする。実装/実runtim
 古いworktree98個は復元用ref/ローカル状態archiveを保存して削除済み。
 そこに残っていた11件のsource変更も `codex/archive-1022/*` へcommit/pushし、
 remote SHAを照合した。保存用WIPを実装の統合/検証成功として扱わない。
+
+新2件の実装は `8aacb46d` / `194c7854`、設計書indexは `4d05afd1` にcommitし、
+`codex/m2-m3-next-1022` のremote HEAD一致を照合した。
+[Draft PR #331](https://github.com/sunriselayer/sunrise-edge/pull/331) はPR330上へ積み、
+通常の差分review・Node24構文・rustfmt・diff checkは成功した。
+[CI run 39706512959](https://github.com/sunriselayer/sunrise-edge/actions/runs/39706512959)
+と同sourceの実runtime/完全requiredは検証中であり、新2件はまだ完了にしない。
