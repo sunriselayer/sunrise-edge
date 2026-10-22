@@ -145,11 +145,12 @@ own UID for error cleanup signals.
 DR-0249 describe, and this family's own revocation, expiry, and tampered-
 or restored-record refusals are directly tested
 (`asset_mint_burn_tests.rs`). The contained fixture also has the genesis
-same-key recovery consumer described below. The earlier E67 consumer covers
-the separate own-created application profile; neither consumer proves full
-key rotation or ownership migration. Actual source and execution
-qualification, including any Docker fixture extension, belong in
-[TODO.md](../../TODO.md).
+same-key recovery consumer described below. Its ordinary live mint/burn
+operations and revoked restart also use the already stopped, distinct recovered
+genesis key path, following [DR-0280](decisions/0280-live-recovered-genesis-mint-burn.md).
+The earlier E67 consumer covers the separate own-created application profile;
+neither consumer proves full key rotation or ownership migration. Actual source
+and execution qualification belong in [TODO.md](../../TODO.md).
 
 ### 2026-10-17 genesis same-key recovery consumer
 

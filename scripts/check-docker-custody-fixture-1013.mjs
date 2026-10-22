@@ -2728,6 +2728,15 @@ def phase_mint_burn(public_key):
 
 
     custody_dir, operator_dir = f"{ROOT}/custody-mint-burn", f"{ROOT}/operator/mint-burn"
+    require_custody_signers_stopped()
+    recovered_key = f"{ROOT}/custody-keys/custody.seed.restored"
+    original_key = f"{ROOT}/custody-keys/custody.seed"
+    recovered_stat = os.lstat(recovered_key)
+    original_stat = os.lstat(original_key)
+    if (not stat.S_ISREG(recovered_stat.st_mode) or recovered_stat.st_uid != CUSTODY_UID
+            or stat.S_IMODE(recovered_stat.st_mode) != 0o600
+            or (recovered_stat.st_dev, recovered_stat.st_ino) == (original_stat.st_dev, original_stat.st_ino)):
+        raise FixtureFailure("mint/burn live consumer requires the stopped, distinct recovered genesis key")
     for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
         os.mkdir(path, 0o700)
         os.chown(path, uid, gid)
@@ -2780,8 +2789,12 @@ def phase_mint_burn(public_key):
 
     def serve_command(count):
         return cli_argv("custody", "serve-mint-burn", *trust_flags(custody_dir),
-            "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
+            "--key-file", recovered_key, "--socket", socket_path,
             "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
+
+    def require_recovered_signer(process):
+        if _custody_signer_runs.get(process, {}).get("key_file") != recovered_key:
+            raise FixtureFailure("mint/burn live signer did not load the recovered genesis key path")
 
 
     prepare_mint = cli_argv("custody", "prepare-mint", *trust_flags(custody_dir),
@@ -2805,6 +2818,7 @@ def phase_mint_burn(public_key):
     native = None
     try:
         serve = start_serve(socket_path, 30, 6, 6, command=serve_command(6))
+        require_recovered_signer(serve)
         sign_mint = cli_argv("custody", "sign-mint", *trust_flags(operator_dir),
             "--request-file", f"{operator_dir}/mint-request.bin", *signer)
         rc, _out, err = run_exec([*sign_mint, "--out", f"{operator_dir}/offline-mint.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
@@ -2972,6 +2986,7 @@ def phase_mint_burn(public_key):
         os.chmod(ROOT, 0o711)
 
     restarted = start_serve(socket_path, 30, 2, 2, command=serve_command(2))
+    require_recovered_signer(restarted)
     try:
         rc, _out, refusal = run_exec([*sign_mint, "--out", f"{operator_dir}/revoked-mint-restart.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
         if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-mint-restart.bin"):
@@ -2995,6 +3010,10 @@ def phase_mint_burn(public_key):
 
     return {
         "recovery": recovery,
+        "original_key_path": original_key,
+        "live_key_path": recovered_key,
+        "restart_key_path": recovered_key,
+        "recovered_key_live": True,
         "actual_cli": True, "mint_self": True, "after_mint_verified": True,
         "burn_verified": verify_burn.get("verified") is True,
         "offline_bytes_equal": True, "replay_equal": verify_burn.get("replay_equal") is True,
@@ -4772,9 +4791,15 @@ function validatePublicationGenesisResult(result) {
   // only requires every one of its own completion flags, the same shape as
   // the `result.split_merge` check immediately above.
   if (!result.mint_burn || ['actual_cli', 'mint_self', 'after_mint_verified', 'burn_verified',
+      'recovered_key_live',
       'offline_bytes_equal', 'replay_equal', 'revoked', 'revoked_after_restart', 'rotation_refused']
     .some((key) => result.mint_burn[key] !== true)) {
-    throw new Error('the distinct-UID protected mint/burn evidence is incomplete');
+    throw new Error('the recovered-key distinct-UID protected mint/burn evidence is incomplete');
+  }
+  if (result.mint_burn.original_key_path !== '/work/custody-keys/custody.seed' ||
+      result.mint_burn.live_key_path !== '/work/custody-keys/custody.seed.restored' ||
+      result.mint_burn.restart_key_path !== result.mint_burn.live_key_path) {
+    throw new Error('the live mint/burn and revoked restart must use the stopped, recovered same-identity key');
   }
   for (const [key, counts] of [['serve_summary', [6, 6, 4, 2]], ['restart_summary', [2, 2, 0, 2]]]) {
     if (JSON.stringify(result.mint_burn[key]) !== JSON.stringify(countKeys.map((name, index) => `${name}=${counts[index]}`))) {
