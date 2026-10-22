@@ -32,6 +32,8 @@ body closure, then replay the unchanged request. Replay must leave the
 generation-3 SQL images and complete business snapshots unchanged. Newly
 started relays begin without inherited ACK-loss captures or counters; old
 captures are checked before stopping their owners.
+Check that the new ordinary relays have no ACK-loss mode armed. Keep the
+existing capture accessor's explicit-arming requirement for the old relays.
 
 Keep the existing empty-closure selector and same-generation historical-body
 selector unchanged. This selector retains `positive_blob_fault=false` and

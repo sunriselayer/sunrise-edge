@@ -3038,7 +3038,7 @@ fn exercise_local_tls_lost_apply_acknowledgements(body_fixture: AckLossBodyFixtu
         for relay in &tls.relays {
             assert_eq!(relay.counters.posts.load(Ordering::SeqCst), 0);
             assert_eq!(relay.counters.requests.load(Ordering::SeqCst), 0);
-            assert!(relay.lost_apply_acknowledgement().is_none());
+            assert!(!relay.apply_ack_loss_is_armed());
         }
         assert_eq!(tls_lines(&network, &tls), original_lines);
         assert_eq!(served_leaves(&tls), initial_leaves);
@@ -3120,7 +3120,7 @@ fn exercise_local_tls_lost_apply_acknowledgements(body_fixture: AckLossBodyFixtu
     }
     for (index, relay) in tls.relays.iter().enumerate() {
         if restart_after_ack_loss {
-            assert!(relay.lost_apply_acknowledgement().is_none());
+            assert!(!relay.apply_ack_loss_is_armed());
         } else {
             assert_eq!(
                 relay.lost_apply_acknowledgement().as_ref(),
