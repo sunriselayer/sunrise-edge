@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-10-19 (JST)。これは唯一の現行作業表です。
+更新: 2026-10-22 (JST)。これは唯一の現行作業表です。
 設計は[architecture](docs/architecture/README.md)、実装場所は
 [code map](docs/development/code-map.md)、整理の決定は
 [DR-0236](docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md)に置きます。
@@ -93,6 +93,11 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   Rust4,397 passed/0 failed/43 ignored・CF66件と元7epochs/e8をrootで照合しました (E191)。
   local完全required・全8CI・元12RELEASE・13-target A/Bが同じf51でそろいました。
   残る独立監査・signing family/lifecycle・SQLite faultの未達を解消したとは扱いません。
+
+2026-10-22追記: 復旧済み同一鍵のgenesis split/mergeと、参照body付きACK喪失後の
+正常再起動・同一要求再送の2子条件を、同じb389 sourceのE206/E208/E209で完了しました。
+現行チェックボックスは **84個中70個完了・14個未完了**。残る14個はコード・検証の親5件、
+安全判定で停止中の子3件、公開準備の親6件です。旧20親項目の9完了/11未完了は変わりません。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -480,7 +485,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 
 | E206: b389の復旧鍵split/merge・参照body付きACK喪失後の正常再起動 | b389/tree dfdc63d5の元publication-genesisと4 TLS selector・remote TLS全15がactual0。元split/mergeの復旧済みA鍵pathとlive/revoked restart実argv検査、歴史preimage復旧、全判定を保持。新M3はhistorical_nonempty/2→3 orderly restartを実stderr、1 passedを実stdoutで照合。rootが全13 commands/26 streamsのSHA・実EOF/wait/reap・既知PID/CG不在、source1223 full9/SHAとcurrent Cargo JSON/raw/原本・別copy全8役を再照合。`m2-m3-next-component-v4-1022-root-qualified.json` (`155bc428`) | current invocationのCargo fresh:trueをそのまま保持し、新規compileとは呼ばない。元raw 262144B/bootstrap 65536Bを維持し、コメント移動だけで両上限内。旧V1-V3/CI失敗は保存。元empty/same-generation/original TLS controlsも成功。positive_blob_fault/paid-produced blob publicationはfalse。完全required/全8 CIと親M2/M3は未完了 |
 | E207: b389の完全required本体成功・環境固定postcheck失敗 | literal npm ci と ./scripts/check-all.sh はともにactual0/実両EOF/wait/reap。check-all 12,539.812秒、Rust147 summaries/4,400 passed/0 failed/43 ignored・CF13/28/10/15=66、新M3 selectorもok。source1223の全SHA/metadata・clean/HEAD/treeと全9 raw hashを閉鎖後に照合。read-only raw/source evidence `04c18cf7`、terminal `39bcc74d`、root tool-drift diagnosis `5c176e28` | ownerは終了時の固定tool照合でFileNotFoundErrorとなり、whole gateはFAILEDのまま保全。開始時Deno2.9.5/Python3.14.7のCellar実体が消失し、終了後aliasはDeno2.9.8/Python3.15.0へ変更。変更原因や実行中の全tool identity不変は未証明。固定guardを免除せず、ツールの復元・置換・再導入は行わない。close proofはCLOSED_FAILED、全既知PID/capturedCG不在・source/resource phase解放済み。全8 CIと新2子条件の最終資格は未完了 |
-| E208: final b389 PR331 all8 hosted CI | [run39712537120](https://github.com/sunriselayer/sunrise-edge/actions/runs/39712537120) attempt1の全7 owners+aggregateが自然SUCCESS。actual checkout ec5ed35e/tree dfdc63d5/ordered parents[c535,b389]、全8 raw 1,564,511B/SHA、Rust147 summaries/4,400 passed/0 failed/43 ignored、CF13/28/10/15=66、新M3 selector okと元7epoch END/e8の1832B候補2件・同ID round3 committed ACKをroot照合。`ci331-final-v4-1022-root-qualified.json` (`e6300a0b`) | 元collectorを単発・独立有限scopeで実行し、actual0/実両EOF/wait/reap・collector/owner PID/capturedCG不在を確認。8link history testもactual ok。35role formulaのsource保持確認はlocal ownerのsource phase解放後に別途行い、stdoutのpath数から推定しない。旧observer143と2回の旧閉鎖記録は保持。CIだけで新2子条件や親M2/M3を閉じず、新固定profileのlocal完全requiredは実行中 |
+| E208: final b389 PR331 all8 hosted CI | [run39712537120](https://github.com/sunriselayer/sunrise-edge/actions/runs/39712537120) attempt1の全7 owners+aggregateが自然SUCCESS。actual checkout ec5ed35e/tree dfdc63d5/ordered parents[c535,b389]、全8 raw 1,564,511B/SHA、Rust147 summaries/4,400 passed/0 failed/43 ignored、CF13/28/10/15=66、新M3 selector okと元7epoch END/e8の1832B候補2件・同ID round3 committed ACKをroot照合。`ci331-final-v4-1022-root-qualified.json` (`e6300a0b`) | 元collectorを単発・独立有限scopeで実行し、actual0/実両EOF/wait/reap・collector/owner PID/capturedCG不在を確認。8link history testもactual ok。source phase解放後に元12 sourceのc535→b389不変・8links/35role assertionsを補足照合 (`c04ddbe3`)。stdoutのpath数から推定しない。旧observer143と2回の旧閉鎖記録は保持。新2子条件はE206/E208/E209の同source照合で完了し、親M2/M3は未完了 |
+| E209: final b389の新固定profileでのliteral npm ci + complete required | Deno2.9.4の公式SHA固定task-local binaryと既存system Python3.14.8へ4 tool rolesを一対一bindingし、元guardを維持。両commands actual0/実両EOF/wait/reap、npm ci 1.698秒・check-all 10,227.685秒。Rust147 summaries/4,400 passed/0 failed/43 ignored・CF13/28/10/15=66。終了後にsource1223全full9/SHA・HEAD/tree/clean/set、2396 tool/seed hashes・67 strict/3 aliases・CF2347/layout2725、311 archives・5 wrappers・7 directoriesとcache/target/312実ELFをroot再照合。`m2-m3-stable-full-required-1022-root-qualified.json` (`7964867a`) | 元7 epoch END/e8の1832B候補2件・同ID round3 committed ACKと、元8links/35role assertionsをlocal/CIで照合 (`m2-m3-next-1022-original-required-protocol-qualified.json`, `c04ddbe3`)。自然同Invocation Status0・全既知PID/capturedCG不在・source/resource phase解放を確認。target/cacheは明示reuseでfreshとは呼ばない。E207の旧whole FAILEDと準備V1/readerの書式誤仮定は保存し、product再実行や元判定の変更へ混同しない。E206/E208と合わせ今回の2子条件だけを完了。親M2/M3・release/独立監査・公開判断は未完了 |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -1066,11 +1072,12 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     取消後restartへ渡し、完全review/frame・実送信・各時点のowner/fee/nonce/receiptを確認する。
     旧historical signing-only controlと全既存上限/判定を保持し、鍵交換や全M2へ拡張しない。
     E203でc535の実runtime成功。最終local完全requiredはE204、同sourceCIはE205で終端照合済み。
-  - [ ] 復旧した同一鍵によるgenesis split/mergeのlive操作:
+  - [x] 復旧した同一鍵によるgenesis split/mergeのlive操作:
     元M2のrecovery条件の続き。既存の同一A鍵を別pathへ復旧してから、既存self split/mergeと
     取消後restartに接続する。歴史preimageのsigning-only復旧と元の全操作/判定/上限を保持する。
     新identity・authority・profileを追加せず、実runtimeと最終source完全required/CIで確認する。
-    E206の実runtimeとE208の全8 CIは成功。E207の固定tool postcheck失敗を保全し、新固定profileのlocal完全required終端までは最終資格を保留。
+    E206の実runtime、E208の全8 CI、E209の新固定profileでのlocal完全requiredを同b389で照合済み。
+    E207の固定tool postcheck失敗は保全。元の全条件を維持し、この子条件だけを完了する。
   - 検証の残件: E175/E178の旧default集計漏れは、d012の完了PTY共有加算と
     明示core/application別allocationで修正し、E179で元117の全path/value mapと上限を実証。
     旧一括267,120Bの失敗を保持し、未保存の過去出力や単一117成功へは拡張しない。
@@ -1117,12 +1124,13 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     objectをtyped Create/receiptと共に準備し、4 replicasの完全SQL/portable/bodyと実TLS queryを確認する。
     空closureの元caseを保持。paid-produced blob publicationやpositive_blob_faultの合格にはしない。
     E203でc535の新旧実runtime成功。最終local完全requiredはE204、同sourceCIはE205で終端照合済み。
-  - [ ] 参照body付きACK喪失後の正常再起動と同一要求の再送:
+  - [x] 参照body付きACK喪失後の正常再起動と同一要求の再送:
     元M3のreopen・ambiguity reconciliation条件の続き。全4 replicaのdurable receipt確認後に
     hostを正常停止/waitし、同じstore・既存の次generation・同じTLS入力で再起動する。
     保存artifact/receipt・historical70KiB bodyと完全business oracleを再送前後で確認し、
     既存の空closure/同generation caseを保持する。physical/partial-write faultには数えない。
-    E206の実runtimeとE208の全8 CIは成功。E207の固定tool postcheck失敗を保全し、新固定profileのlocal完全required終端までは最終資格を保留。
+    E206の実runtime、E208の全8 CI、E209の新固定profileでのlocal完全requiredを同b389で照合済み。
+    E207の固定tool postcheck失敗は保全。元の全条件を維持し、この子条件だけを完了する。
   - [x] [全connection喪失後の正規local writer交代](docs/architecture/decisions/0260-complete-owner-loss-local-writer-failover.md):
     retained-handleの元SIGKILL controlを保持し、全4 sole-ownerをSIGKILL/reapしてから
     次generationを起動する別controlを追加。全12 SQL tables・2 blob tablesと4 portable
@@ -1706,4 +1714,13 @@ source1223のfull9/SHAと元2 commands/全selector/資源上限を維持する�
 同b389のCIは2026-10-22 07:46:43 UTCに全8自然SUCCESSで完了し、E208でrootが
 全raw/実checkout/tree/parentsと元protocol markersを照合した。collectorとmetadata確認の
 自己所有PID/cgroupは閉鎖済み。CIの再実行・cancelは行っていない。新固定profileのlocal
-全必須チェックだけが残っており、source/cache/target/toolsの専有と元の検証条件を維持する。
+全必須チェックだけが残っていたため、source/cache/target/toolsの専有と元の検証条件を維持した。
+
+新固定profileは2026-10-22 10:14:43 UTCに自然Status0で終了した。両commandの実EOF/wait/reap、
+終了時の全source/tool/archive/wrapper identity、全既知PID/capturedCG不在をE209で照合した。
+rootの元protocol補足はlocal/CIの7epochs/e8候補2件/1832B/同ID round3 ACKと、変更されていない
+元12 sourceの8links/35role assertionsを照合。最初のreaderはquiet出力をnamed-resultと誤仮定して
+停止したため、その失敗を保存し、元のquiet owning summaryに対応したreaderだけを修正した。
+製品source/selector/上限や検証結果は変更せず、製品の再実行も行っていない。
+E206/E208/E209が同b389でそろったため、今回のM2/M3各1子条件を完了とする。
+残件は14チェック (コード・検証の親D02/M1/M2/M3/M7、停止中の子3件、公開準備の親6件)。
