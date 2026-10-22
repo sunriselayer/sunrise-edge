@@ -156,6 +156,9 @@ roadmap describes a later target state.
   pin, adds a separate kind-4 mint/burn signer with an independently
   rebuilt checked-supply review, and connects the ordinary paid
   `mint`/`burn` CLI consumer.
+  [DR-0280](decisions/0280-live-recovered-genesis-mint-burn.md) selects the
+  already recovered same-identity key for those existing live operations and
+  the revoked restart.
 - [Standard Asset create-asset custody](standard-asset-create-asset-custody.md)
   ([DR-0255](decisions/0255-standard-asset-create-asset-custody.md)): shares
   the same `PinnedAssetTrust` genesis/code/policy pin via a new
