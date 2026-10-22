@@ -30,6 +30,10 @@ use node_core::genesis::{
 };
 use node_core::logical_generation::CommitmentProfile;
 use node_core::ordered_economics::*;
+use node_wire::ordered_economics::{
+    ORDERED_ECONOMICS_PROPOSAL_PATH, ORDERED_ECONOMICS_STATUS_PATH, ORDERED_PROPOSAL_MEDIA_TYPE,
+    ORDERED_STATUS_MEDIA_TYPE,
+};
 use node_wire::ordered_history::*;
 use objects::{ProtocolCustodyPurpose, ProtocolCustodyScope};
 use std::collections::BTreeSet;
@@ -1211,5 +1215,129 @@ async fn changed_descriptor_absent_component_bad_offset_and_corrupt_archive_refu
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
     assert_eq!(fixture.store.writes.load(Ordering::SeqCst), writes);
+    assert_eq!(fixture.sign_calls.load(Ordering::SeqCst), 0);
+}
+
+/// D05/M5: a cancellation that only becomes true after `build_context` has
+/// already consumed one identity and one clock read must still stop the
+/// shared ordered-economics `status`/`outcome`/`propose`/`proposal`/
+/// `certificate`/`observe`/`tick` family before its first storage call, the
+/// same way the sibling `ordered_history.rs` routes already do. A `false`
+/// counterpart on the same fixture must reach the original successful
+/// result, proving this is a narrow recheck and not a new failure mode.
+#[tokio::test]
+async fn status_cancellation_during_build_context_stops_before_storage_after_identity_and_clock() {
+    let fixture: Fixture = Fixture::new();
+    fixture.complete_empty_history();
+
+    let cancellation: Arc<dyn InvocationCancellation> = Arc::new(StepCancellation {
+        cancel_at_call: 2,
+        calls: AtomicUsize::new(0),
+    });
+    let app: Router = certified_ordered_economics_router(
+        fixture.state(WriterFenceGeneration::new(3).unwrap(), Some(cancellation)),
+    );
+    let response: Response = dispatch(
+        &app,
+        "GET",
+        ORDERED_ECONOMICS_STATUS_PATH,
+        Vec::new(),
+        None,
+        ORDERED_STATUS_MEDIA_TYPE,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        to_bytes(response.into_body(), 128).await.unwrap(),
+        "invocation-cancelled-before-storage"
+    );
+    // Identity and clock preparation already ran exactly once each: the
+    // cancellation point proven here is strictly after that preparation and
+    // strictly before any store access, never before it and never deferred
+    // past it.
+    assert_eq!(fixture.identities.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.clock.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.store.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.store.writes.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.sign_calls.load(Ordering::SeqCst), 0);
+
+    // False counterpart on the same installed state reaches the original,
+    // pre-existing success.
+    let app: Router = fixture.app();
+    let response: Response = dispatch(
+        &app,
+        "GET",
+        ORDERED_ECONOMICS_STATUS_PATH,
+        Vec::new(),
+        None,
+        ORDERED_STATUS_MEDIA_TYPE,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        ORDERED_STATUS_MEDIA_TYPE
+    );
+}
+
+/// Pure proposal-signature authentication must still run, and still win,
+/// entirely before `build_context` -- and therefore before the recheck this
+/// change adds -- even when the host also carries a cancellation that would
+/// trip on `build_context`'s first opportunity to observe it.
+#[tokio::test]
+async fn proposal_signature_preauth_still_wins_over_a_pending_build_context_cancellation() {
+    let fixture: Fixture = Fixture::new();
+    fixture.complete_empty_history();
+    let state = fixture.state(WriterFenceGeneration::new(3).unwrap(), None);
+    let context: DurableOperationContext = live_operation_context(state.writer_fence, 0xe4);
+    let env: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
+        policy: &state.policy,
+        history: &state.history,
+        leg_policy: &state.leg_policy,
+        engine: state.engine.as_ref(),
+        blobs: state.blobs.as_ref(),
+        seal: None,
+    };
+    let mut proposal: OrderedProposal =
+        propose(fixture.store.as_ref(), &context, &env, None, &state.signer).unwrap();
+    proposal.proposal.signature[0] ^= 0xff;
+    let body: Vec<u8> = encode_ordered_proposal(&proposal).unwrap();
+    fixture.store.reset_reads();
+    fixture.store.writes.store(0, Ordering::SeqCst);
+    fixture.sign_calls.store(0, Ordering::SeqCst);
+
+    // Not yet cancelled on the handler's one pre-admission check, so the
+    // blocking closure -- and the signature verification inside it -- does
+    // run; only a later `build_context` call would observe the trip.
+    let cancellation: Arc<dyn InvocationCancellation> = Arc::new(StepCancellation {
+        cancel_at_call: 2,
+        calls: AtomicUsize::new(0),
+    });
+    let app: Router = certified_ordered_economics_router(
+        fixture.state(WriterFenceGeneration::new(3).unwrap(), Some(cancellation)),
+    );
+    let response: Response = dispatch(
+        &app,
+        "POST",
+        ORDERED_ECONOMICS_PROPOSAL_PATH,
+        body,
+        None,
+        ORDERED_PROPOSAL_MEDIA_TYPE,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        to_bytes(response.into_body(), 128).await.unwrap(),
+        "invalid-ordered-proposal-signature"
+    );
+    // The signature check refused before `build_context` ever ran, so
+    // neither identity nor clock preparation, nor any store access, ever
+    // happened -- confirming preauth priority is unaffected by this change.
+    assert_eq!(fixture.identities.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.clock.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.store.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.store.writes.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.sign_calls.load(Ordering::SeqCst), 0);
 }
