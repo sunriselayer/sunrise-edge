@@ -110,3 +110,8 @@ preservation selector using the same complete ACK-loss exercise. The original
 selector keeps its empty closure. The new selector adds one independently fixed
 typed historical reference before hosts start and retains
 `positive_blob_fault=false`; paid-produced blob publication is unclaimed.
+
+[DR-0279](0279-orderly-restart-after-historical-ack-loss.md) adds another
+separate selector that combines DR-0277's historical body with an orderly
+all-owner restart after the original lost-ACK captures and durable receipts
+have been reconciled.
