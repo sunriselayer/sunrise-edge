@@ -2023,6 +2023,15 @@ def phase_split_merge(public_key):
     # own custody-transfer/operator/transfer directories, genesis, coins or
     # assertions.
     custody_dir, operator_dir = f"{ROOT}/custody-split-merge", f"{ROOT}/operator/split-merge"
+    require_custody_signers_stopped()
+    recovered_key = f"{ROOT}/custody-keys/custody.seed.restored"
+    original_key = f"{ROOT}/custody-keys/custody.seed"
+    recovered_stat = os.lstat(recovered_key)
+    original_stat = os.lstat(original_key)
+    if (not stat.S_ISREG(recovered_stat.st_mode) or recovered_stat.st_uid != CUSTODY_UID
+            or stat.S_IMODE(recovered_stat.st_mode) != 0o600
+            or (recovered_stat.st_dev, recovered_stat.st_ino) == (original_stat.st_dev, original_stat.st_ino)):
+        raise FixtureFailure("split/merge live consumer requires the stopped, distinct recovered genesis key")
     for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
         os.mkdir(path, 0o700)
         os.chown(path, uid, gid)
@@ -2056,8 +2065,12 @@ def phase_split_merge(public_key):
 
     def serve_command(count):
         return cli_argv("custody", "serve-split-merge", *trust_flags(custody_dir),
-            "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
+            "--key-file", recovered_key, "--socket", socket_path,
             "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
+
+    def require_recovered_signer(process):
+        if _custody_signer_runs.get(process, {}).get("key_file") != recovered_key:
+            raise FixtureFailure("split/merge live signer did not load the recovered genesis key path")
 
     # ---- split: prepare / approve / offline sign / actual CLI split ----
     prepare_split = cli_argv("custody", "prepare-split", *trust_flags(custody_dir),
@@ -2081,6 +2094,7 @@ def phase_split_merge(public_key):
     native = None
     try:
         serve = start_serve(socket_path, 30, 6, 6, command=serve_command(6))
+        require_recovered_signer(serve)
         sign_split = cli_argv("custody", "sign-split", *trust_flags(operator_dir),
             "--request-file", f"{operator_dir}/split-request.bin", *signer)
         rc, _out, err = run_exec([*sign_split, "--out", f"{operator_dir}/offline-split.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
@@ -2258,6 +2272,7 @@ def phase_split_merge(public_key):
         os.chmod(ROOT, 0o711)
 
     restarted = start_serve(socket_path, 30, 2, 2, command=serve_command(2))
+    require_recovered_signer(restarted)
     try:
         rc, _out, refusal = run_exec([*sign_split, "--out", f"{operator_dir}/revoked-split-restart.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
         if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-split-restart.bin"):
