@@ -1698,3 +1698,6 @@ source1223のfull9/SHAと元2 commands/全selector/資源上限を維持する�
 失敗として保全し、固有aliasを用いた準備V2は成功した。ツール取得/入力bindingの手順は
 [作業専用runtimeの手順](docs/development/validation/2026-10-22-runtime-repair/README.md)へ保存。
 全体gateは別の単一ownerで再実行し、前回FAILEDを成功へ変更しない。
+新profile `m2-m3-stable-full-required-1022` は2026-10-22 07:24:02 UTCに開始。
+同b389 source/既存target-cacheを単一ownerで使用し、26000秒work +300秒cleanup、
+12GiB/swap0/CPU4の元上限を維持する。終了後に固定入力を再照合するまで新2件は保留。
