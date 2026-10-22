@@ -479,6 +479,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E205: final c535 PR330 all8 hosted CI | [run39553580566](https://github.com/sunriselayer/sunrise-edge/actions/runs/39553580566) attempt1の元7 owners+aggregate全8が自然SUCCESS。actual checkout a84db307/treec439/ordered parents[c1,c535]、全8 raw 1,539,887B/SHA、Rust147 summaries/4,399 passed/0 failed/43 ignored、CF66、新旧TLS selector成功と元7epochs/e8候補2件/round3 ACKをroot照合。`ci330-final-1021-root-qualified.json` (`c712f86e`) | 旧2ff cancelledとcapacity停止、09:36のwatch終了code2/回収期限超過を保持。CIは11:17:56 UTCに自然完了し、再開後にread-onlyで初回raw回収。collector actual0/実EOF/wait/reapだがrecorderは同unit残存PID検出でStatus1。このwhole failureを成功扱いせず保存し、同Invocationの終了・当該PID/CG不在を別途照合した完了CI/rawの証拠。自己所有の空failedunitだけ停止。parserの診断stream/role集合の誤仮定も保存し、source/元assertion変更や再実行なし |
 
 | E206: b389の復旧鍵split/merge・参照body付きACK喪失後の正常再起動 | b389/tree dfdc63d5の元publication-genesisと4 TLS selector・remote TLS全15がactual0。元split/mergeの復旧済みA鍵pathとlive/revoked restart実argv検査、歴史preimage復旧、全判定を保持。新M3はhistorical_nonempty/2→3 orderly restartを実stderr、1 passedを実stdoutで照合。rootが全13 commands/26 streamsのSHA・実EOF/wait/reap・既知PID/CG不在、source1223 full9/SHAとcurrent Cargo JSON/raw/原本・別copy全8役を再照合。`m2-m3-next-component-v4-1022-root-qualified.json` (`155bc428`) | current invocationのCargo fresh:trueをそのまま保持し、新規compileとは呼ばない。元raw 262144B/bootstrap 65536Bを維持し、コメント移動だけで両上限内。旧V1-V3/CI失敗は保存。元empty/same-generation/original TLS controlsも成功。positive_blob_fault/paid-produced blob publicationはfalse。完全required/全8 CIと親M2/M3は未完了 |
+| E207: b389の完全required本体成功・環境固定postcheck失敗 | literal npm ci と ./scripts/check-all.sh はともにactual0/実両EOF/wait/reap。check-all 12,539.812秒、Rust147 summaries/4,400 passed/0 failed/43 ignored・CF13/28/10/15=66、新M3 selectorもok。source1223の全SHA/metadata・clean/HEAD/treeと全9 raw hashを閉鎖後に照合。read-only raw/source evidence `04c18cf7`、terminal `39bcc74d`、root tool-drift diagnosis `5c176e28` | ownerは終了時の固定tool照合でFileNotFoundErrorとなり、whole gateはFAILEDのまま保全。開始時Deno2.9.5/Python3.14.7のCellar実体が消失し、終了後aliasはDeno2.9.8/Python3.15.0へ変更。変更原因や実行中の全tool identity不変は未証明。固定guardを免除せず、ツールの復元・置換・再導入は行わない。close proofはCLOSED_FAILED、全既知PID/capturedCG不在・source/resource phase解放済み。全8 CIと新2子条件の最終資格は未完了 |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -1068,6 +1069,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     元M2のrecovery条件の続き。既存の同一A鍵を別pathへ復旧してから、既存self split/mergeと
     取消後restartに接続する。歴史preimageのsigning-only復旧と元の全操作/判定/上限を保持する。
     新identity・authority・profileを追加せず、実runtimeと最終source完全required/CIで確認する。
+    E206の実runtimeは成功。E207のrequired本体は成功したが固定tool postcheck失敗を保全し、最終資格は保留。
   - 検証の残件: E175/E178の旧default集計漏れは、d012の完了PTY共有加算と
     明示core/application別allocationで修正し、E179で元117の全path/value mapと上限を実証。
     旧一括267,120Bの失敗を保持し、未保存の過去出力や単一117成功へは拡張しない。
@@ -1119,6 +1121,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     hostを正常停止/waitし、同じstore・既存の次generation・同じTLS入力で再起動する。
     保存artifact/receipt・historical70KiB bodyと完全business oracleを再送前後で確認し、
     既存の空closure/同generation caseを保持する。physical/partial-write faultには数えない。
+    E206の実runtimeとE207のrequired本体は成功。固定tool postcheck失敗・全8 CI未終端のため最終資格は保留。
   - [x] [全connection喪失後の正規local writer交代](docs/architecture/decisions/0260-complete-owner-loss-local-writer-failover.md):
     retained-handleの元SIGKILL controlを保持し、全4 sole-ownerをSIGKILL/reapしてから
     次generationを起動する別controlを追加。全12 SQL tables・2 blob tablesと4 portable
@@ -1674,3 +1677,14 @@ rootがsource/生成物/実rawとPID/cgroup解放を照合した。元の判定/
 26000秒work +300秒cleanupの有限枠で管理する。最終sourceの
 [run39712537120](https://github.com/sunriselayer/sunrise-edge/actions/runs/39712537120)
 も進行中。両gateの終端前は新2子条件を完了にしない。
+
+02:53:41 UTC開始のlocal完全requiredは、両command本体がactual0/実両EOF/wait/reapで終了した。
+Rust4,400件・CF66件が成功した一方、終了時の環境固定照合はDeno/Pythonの旧実体不在で
+失敗した。現在のaliasは開始時と異なり、この作業によるtool変更や再導入は行っていない。
+E207に本体成功とowner全体失敗を分けて保存し、元guardを免除せず新2件は未完了に保つ。
+全既知local producer PID/cgroupは閉鎖済み。CI run39712537120の残るrecurring-sqliteと
+aggregateの終端は未確認であり、6 job成功を全8成功へ読み替えない。
+CIの最終metadata確認は2026-10-22 06:36:51 UTC。上記6件成功・recurring-sqlite実行中で、
+read-only確認担当は両GH commandのactual0/EOF/wait/reap・PID不在を保存して終了した。
+local常駐observerは残さず、既存CIの360分timeoutや元の09:30 UTC上限は延長しない。
+CIのcancel/rerunや新automationは行っていない。
