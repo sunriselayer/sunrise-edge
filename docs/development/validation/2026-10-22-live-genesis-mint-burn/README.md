@@ -100,7 +100,7 @@ configured metadata/link target/resolved path/実体metadata/hashを照合して
 | `mint-burn-native13-ab-1022-lean-c-v1-ab-parent-qualified.json` | `9da5ae4d696f8ed39ccc38e65600689e3adf9eb3e55ccc0255037228ec262e14` |
 | `mint-burn-native13-ab-1022-lean-c-v1-ab-parent-consumer-view-qualified.json` | `f13edfd88520628db5cf433981fefdd7e3b113d62c3b6a311a37f266d8cfe691` |
 
-対応するCLI fixtureは後述のE219で成功。元12 RELEASE runtimeは未実行。
+対応するCLI fixtureは後述のE219で成功。元12 RELEASE runtimeはE221のcheck/probe後に実行中。
 元のclean source/no-target/no-extra guardを守り、既存のS target/node_modulesを移動しないため、
 完全gate終了後に同8daの専用checkout Cを1個作成した。
 追跡sourceのlogical bytesは26,617,053で、cache/target/node_modulesをコピーしていない。
@@ -204,3 +204,21 @@ local完全required/全8 CIのrawは元7epochs/e8の1832B withdrawal2件、全ep
 `4a3ddf6b10626dde55e1e017fa6d17d4c61cb01e06f52c6747f2d9ba787adec9`。
 最初の補足readerのstate label schema相違は保持し、固定済み実FULL proofの_8DA1へ修正した。
 製品runは再実行していない。元12 RELEASE runtimeが残るため、mint/burn子条件はまだ閉じない。
+
+## 元12 RELEASE runtimeの実行状況
+
+check1.425秒/probe1.310秒はactual0・実両EOF/wait/reapで終了した。rootは閉じたraw/hashと
+13 RELEASE replacements・13 debug/10 drivers、probe内のPID/net namespace分離とloopbackを
+照合し、各preflightのknownPID/capturedCG不在も確認した。proof
+`mint-burn-original12-1022-lean-c-v2-runtime-attempt3-preflights-root-qualified.json` は
+SHA-256 `c5b6d2c67d81565a044696c4e1301b2431d1eb035f91a1e000206bc8668555a2`。
+
+開始前のbinderはcount用assertionの選択がkey-set assertionにも一致して停止した。
+失敗を保持してsum assertionだけを選択するよう修正した。生成captureの重複unit名も
+実行前に検出し、1 literalだけを修正した別captureと両inverse ledgersをrootで照合した。
+runtime-attempt3はこのcontrol revision名であり、製品テストを3回走らせたという意味ではない。
+
+本体は17:40:29 UTCに開始し、Invocation `dea2f2e0729b40eb911caee3e4d7f4e5`、
+owner1676545/owning capture1676533/root wrapper1676418で実行中。元6GiB/swap0/CPU4/tasks512、
+18,000秒work・18,600秒unit・45秒stop・8MiB shared logと全selectorsを保持している。
+実行中の部分rawを受け入れ証拠にせず、終了と全既知PID/cgroup解放後に最終照合する。
