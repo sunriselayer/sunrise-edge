@@ -132,6 +132,21 @@ launcher exit0とは別に、実mainはSIGTERM15、最初のCargo commandのexit
 終了記録 `mint-burn-original12-1022-lean-c-v2-driver-attempt1-root-closed-failed.json` の
 SHA-256は `f0291de81dcdca07431e39897ecd26210789de9e5036845ae5d9ae7d2c01389b`。
 
+監視pathを修正したattempt2は別unit・別target・別rawで実行し、798.119秒で自然終了した。
+元の2 Cargo commandsはmerged stdout/stderrの実EOF/waitを伴ってactual0。
+外側captureもactual0/実両EOF/wait/reap。Invocation
+`733a0d87f16b458680abd8bfd4d65f3e`、owner1648518/launcher1648516と既知PID、
+captured cgroupの不在を確認した。
+rootは13 debug binaries・10 integration driversの実体hash/metadataと今回のCargo JSON、
+genuine Cのpackage/manifest/srcPath、元dev/test opt2・assertions/overflow profile、
+C全1224 source inputs、23 configured/resolved toolsと4 own wrapper hashesを照合した。
+これはコンパイル結果だけであり、テスト一覧の観測・元12ケースの実runtimeは別に残る。
+
+| 証跡 | SHA-256 |
+| --- | --- |
+| `mint-burn-original12-1022-lean-c-v2-driver-attempt2-closed-proof.json` | `1d8f5d21899d6253aae350d86632a94fdb0f52dcccf0b75ff567bd7074263ce7` |
+| `mint-burn-original12-1022-lean-c-v2-driver-attempt2-postclose-qualified-v4.json` | `8a429482e37a911feea28907291fd13c7d710d9ed066a7ae080cdce901dffdc8` |
+
 新しいcompiler/driver outputsは元の専有external directoriesに生成し、source checkoutは
 全runtime・終了後照合・PID/cgroup/lease解放の後にcleanを確認して削除する。
 限定componentと完全gateだけで新mint/burn子条件・親M2/M3/M7を完了にしない。
