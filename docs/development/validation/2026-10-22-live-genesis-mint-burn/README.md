@@ -147,6 +147,17 @@ C全1224 source inputs、23 configured/resolved toolsと4 own wrapper hashesを�
 | `mint-burn-original12-1022-lean-c-v2-driver-attempt2-closed-proof.json` | `1d8f5d21899d6253aae350d86632a94fdb0f52dcccf0b75ff567bd7074263ce7` |
 | `mint-burn-original12-1022-lean-c-v2-driver-attempt2-postclose-qualified-v4.json` | `8a429482e37a911feea28907291fd13c7d710d9ed066a7ae080cdce901dffdc8` |
 
+元10 driversの一覧は通常/ignored各1回、全20 commandsがactual0・実両EOF/wait/reapで終了した。
+rootは全40 raw hash・元argv・名前を照合し、通常99件とignored3件を確認した。
+元のexact ignored2 selectorsはconditional_readiness_sqliteにあり、通常99+指定2=101となる。
+local_tls_startupは18/1。一覧はテスト本体を実行せず、成功件数には加算しない。
+10 ELFの現在hash/full9がbefore/afterと一致し、owner1663357/launcher1663355と
+全20 child PID・captured cgroupの不在まで確認した。初回root readerのmode比較は、
+raw st_modeと保存されたpermission bitsを混同して停止した。元reader/失敗記録を保持し、
+permission bitsへ修正して照合した。list commandの再実行は0。
+root proof `mint-burn-original12-1022-driver-count-inventory-v1-root-qualified.json` の
+SHA-256は `21fa93bbc0e48f4e2dfb6cc48a7a00094c9518892e919d53f0066b857f24e4b3`。
+
 新しいcompiler/driver outputsは元の専有external directoriesに生成し、source checkoutは
 全runtime・終了後照合・PID/cgroup/lease解放の後にcleanを確認して削除する。
 限定componentと完全gateだけで新mint/burn子条件・親M2/M3/M7を完了にしない。
