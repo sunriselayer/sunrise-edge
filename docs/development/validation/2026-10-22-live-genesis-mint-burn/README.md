@@ -69,7 +69,8 @@ rootは空の完了unitだけを停止した。
 [CI run 39775926228](https://github.com/sunriselayer/sunrise-edge/actions/runs/39775926228) は終端待ち。
 元7epochs/e8・8links/35roleのsource補足も、同CI終端後の別照合として残す。
 
-fresh 13-target RELEASE A/B、対応するCLI fixtureと元12 RELEASE runtimeは未実行。
+fresh 13-target RELEASE A/Bは16:19:17 UTCに開始した。対応するCLI fixtureと
+元12 RELEASE runtimeは未実行。A/Bは実終了・生成物照合待ちであり、成功には数えない。
 元のclean source/no-target/no-extra guardを守り、既存のS target/node_modulesを移動しないため、
 完全gate終了後に同8daの専用checkout Cを1個作成した。
 追跡sourceのlogical bytesは26,617,053で、cache/target/node_modulesをコピーしていない。
@@ -81,7 +82,28 @@ helper PID1554858はwait/reap後に不在、両stream実EOF。失敗のterminal
 `mint-burn-native13-ab-1022-root-stage-v1-census-external-terminal.json`
 SHA-256は`6b0b2b8d41a0f6f0a8ef37da9bd10475c5f3b9c1f8d08f4a56826f327fa73095`。
 この準備失敗は保持し、完全gateの製品結果やRELEASE成功へ付け替えない。
-配置の確認中であり、失敗した同じ実行の上書き・自動再試行は行っていない。
+不足は26依存の未展開sourceだった。既存の固定済みarchiveだけを使い、ネットワークを
+無効にした元の `cargo fetch --locked --offline` を1回実行し、actual0で終了した。
+26 source directoriesの展開と元285 directoriesのidentity不変、全311 archivesの固定hash、
+実両EOF/wait/reap・既知PID/cgroup解放をrootで照合した。
+archiveの取得・コピーは0。展開されたregular filesのlogical bytesは114,639,116で、
+sampling上のgrowth0を展開量0とは解釈しない。展開した全code bytesの検証完了も主張しない。
+
+その終了後、元helper・同じplan-root・同じ上限で、別raw名のcensus attempt2を1回実行した。
+actual0/実両EOF/wait/reap、PID1605983不在を確認した。rootが全311 archivesと
+Cargo.toml/marker/source directory metadata、23 tool roles、Cの全1224 files/Git blobs/full9を
+再照合した。初回actual1の失敗とrawは保持する。これはRELEASE入力準備の回復であり、
+A/B生成物やRELEASE runtimeの成功ではない。
+
+| 証跡 | SHA-256 |
+| --- | --- |
+| `mint-burn-native13-ab-1022-offline-readiness-attempt2-root-qualified.json` | `6ce16d1ec8ee3b1174201b5b61a8dd224a1fa9c095da615706aa8228c49a5418` |
+| `mint-burn-native13-ab-1022-root-stage-v1-census-attempt2-external-terminal.json` | `8664a39b01d90a7f777902234a73577fbc755f4f69c28db0eb69e9dcfc181864` |
+| `mint-burn-native13-ab-1022-root-stage-v1-root-input-review.json` | `2c56d2ff6c02462b488eceeceb84c0c214dcfa7a570aae8a9cae06296120bf04` |
+
+A/Bは元8GiB/swap0/CPU4/tasks512・7200秒の上限、13 targets・2 fresh compiler lanesを維持する。
+Invocationは `1d02e0c3983e4c51b79f01e0a43b84d2`、開始時owner PID1607616。
+このproducerがC/cache/tools/targetを専有し、終了・PID/cgroup解放まで他writerやbody readerを作らない。
 
 新しいcompiler/driver outputsは元の専有external directoriesに生成し、source checkoutは
 全runtime・終了後照合・PID/cgroup/lease解放の後にcleanを確認して削除する。
