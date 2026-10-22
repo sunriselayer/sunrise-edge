@@ -1688,3 +1688,13 @@ CIの最終metadata確認は2026-10-22 06:36:51 UTC。上記6件成功・recurri
 read-only確認担当は両GH commandのactual0/EOF/wait/reap・PID不在を保存して終了した。
 local常駐observerは残さず、既存CIの360分timeoutや元の09:30 UTC上限は延長しない。
 CIのcancel/rerunや新automationは行っていない。
+
+環境固定の修正は製品source b389を変えず、別のlocal検証profileとして準備する。
+README/CIと同じ公式Deno2.9.4をSHA固定で専用pathへ展開し、Homebrew依存のないsystem
+library closureを確認。Pythonは既存system3.14.8へ明示bindingする。旧4tool rolesだけを
+一対一で置換し、元2390 tools/67 strict/3 aliases・CF2347/layout2725・311 archives・
+source1223のfull9/SHAと元2 commands/全selector/資源上限を維持する。
+新profileのpreflightはactual0。既存Python pathのrole重複を拒否した準備V1は実製品実行前の
+失敗として保全し、固有aliasを用いた準備V2は成功した。ツール取得/入力bindingの手順は
+[作業専用runtimeの手順](docs/development/validation/2026-10-22-runtime-repair/README.md)へ保存。
+全体gateは別の単一ownerで再実行し、前回FAILEDを成功へ変更しない。
