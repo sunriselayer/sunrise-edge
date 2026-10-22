@@ -3035,6 +3035,11 @@ fn exercise_local_tls_lost_apply_acknowledgements(body_fixture: AckLossBodyFixtu
             )
             .collect();
         assert_eq!(relay_count, VALIDATORS);
+        for relay in &tls.relays {
+            assert_eq!(relay.counters.posts.load(Ordering::SeqCst), 0);
+            assert_eq!(relay.counters.requests.load(Ordering::SeqCst), 0);
+            assert!(relay.lost_apply_acknowledgement().is_none());
+        }
         assert_eq!(tls_lines(&network, &tls), original_lines);
         assert_eq!(served_leaves(&tls), initial_leaves);
         assert_eq!(contexts(&tls), initial_contexts);
@@ -3054,9 +3059,6 @@ fn exercise_local_tls_lost_apply_acknowledgements(body_fixture: AckLossBodyFixtu
             assert_eq!(fs::read(path).unwrap(), *bytes);
         }
         for (index, relay) in tls.relays.iter().enumerate() {
-            assert_eq!(relay.counters.posts.load(Ordering::SeqCst), 0);
-            assert_eq!(relay.counters.requests.load(Ordering::SeqCst), 0);
-            assert!(relay.lost_apply_acknowledgement().is_none());
             let receipt: HttpReceiptQueryResult =
                 relay_client(relay).query_receipt(request).unwrap();
             assert_eq!(receipt.encode().unwrap(), receipt_bytes[index]);
