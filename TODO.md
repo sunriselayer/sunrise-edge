@@ -480,6 +480,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 
 | E206: b389の復旧鍵split/merge・参照body付きACK喪失後の正常再起動 | b389/tree dfdc63d5の元publication-genesisと4 TLS selector・remote TLS全15がactual0。元split/mergeの復旧済みA鍵pathとlive/revoked restart実argv検査、歴史preimage復旧、全判定を保持。新M3はhistorical_nonempty/2→3 orderly restartを実stderr、1 passedを実stdoutで照合。rootが全13 commands/26 streamsのSHA・実EOF/wait/reap・既知PID/CG不在、source1223 full9/SHAとcurrent Cargo JSON/raw/原本・別copy全8役を再照合。`m2-m3-next-component-v4-1022-root-qualified.json` (`155bc428`) | current invocationのCargo fresh:trueをそのまま保持し、新規compileとは呼ばない。元raw 262144B/bootstrap 65536Bを維持し、コメント移動だけで両上限内。旧V1-V3/CI失敗は保存。元empty/same-generation/original TLS controlsも成功。positive_blob_fault/paid-produced blob publicationはfalse。完全required/全8 CIと親M2/M3は未完了 |
 | E207: b389の完全required本体成功・環境固定postcheck失敗 | literal npm ci と ./scripts/check-all.sh はともにactual0/実両EOF/wait/reap。check-all 12,539.812秒、Rust147 summaries/4,400 passed/0 failed/43 ignored・CF13/28/10/15=66、新M3 selectorもok。source1223の全SHA/metadata・clean/HEAD/treeと全9 raw hashを閉鎖後に照合。read-only raw/source evidence `04c18cf7`、terminal `39bcc74d`、root tool-drift diagnosis `5c176e28` | ownerは終了時の固定tool照合でFileNotFoundErrorとなり、whole gateはFAILEDのまま保全。開始時Deno2.9.5/Python3.14.7のCellar実体が消失し、終了後aliasはDeno2.9.8/Python3.15.0へ変更。変更原因や実行中の全tool identity不変は未証明。固定guardを免除せず、ツールの復元・置換・再導入は行わない。close proofはCLOSED_FAILED、全既知PID/capturedCG不在・source/resource phase解放済み。全8 CIと新2子条件の最終資格は未完了 |
+| E208: final b389 PR331 all8 hosted CI | [run39712537120](https://github.com/sunriselayer/sunrise-edge/actions/runs/39712537120) attempt1の全7 owners+aggregateが自然SUCCESS。actual checkout ec5ed35e/tree dfdc63d5/ordered parents[c535,b389]、全8 raw 1,564,511B/SHA、Rust147 summaries/4,400 passed/0 failed/43 ignored、CF13/28/10/15=66、新M3 selector okと元7epoch END/e8の1832B候補2件・同ID round3 committed ACKをroot照合。`ci331-final-v4-1022-root-qualified.json` (`e6300a0b`) | 元collectorを単発・独立有限scopeで実行し、actual0/実両EOF/wait/reap・collector/owner PID/capturedCG不在を確認。8link history testもactual ok。35role formulaのsource保持確認はlocal ownerのsource phase解放後に別途行い、stdoutのpath数から推定しない。旧observer143と2回の旧閉鎖記録は保持。CIだけで新2子条件や親M2/M3を閉じず、新固定profileのlocal完全requiredは実行中 |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -1069,7 +1070,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     元M2のrecovery条件の続き。既存の同一A鍵を別pathへ復旧してから、既存self split/mergeと
     取消後restartに接続する。歴史preimageのsigning-only復旧と元の全操作/判定/上限を保持する。
     新identity・authority・profileを追加せず、実runtimeと最終source完全required/CIで確認する。
-    E206の実runtimeは成功。E207のrequired本体は成功したが固定tool postcheck失敗を保全し、最終資格は保留。
+    E206の実runtimeとE208の全8 CIは成功。E207の固定tool postcheck失敗を保全し、新固定profileのlocal完全required終端までは最終資格を保留。
   - 検証の残件: E175/E178の旧default集計漏れは、d012の完了PTY共有加算と
     明示core/application別allocationで修正し、E179で元117の全path/value mapと上限を実証。
     旧一括267,120Bの失敗を保持し、未保存の過去出力や単一117成功へは拡張しない。
@@ -1121,7 +1122,7 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     hostを正常停止/waitし、同じstore・既存の次generation・同じTLS入力で再起動する。
     保存artifact/receipt・historical70KiB bodyと完全business oracleを再送前後で確認し、
     既存の空closure/同generation caseを保持する。physical/partial-write faultには数えない。
-    E206の実runtimeとE207のrequired本体は成功。固定tool postcheck失敗・全8 CI未終端のため最終資格は保留。
+    E206の実runtimeとE208の全8 CIは成功。E207の固定tool postcheck失敗を保全し、新固定profileのlocal完全required終端までは最終資格を保留。
   - [x] [全connection喪失後の正規local writer交代](docs/architecture/decisions/0260-complete-owner-loss-local-writer-failover.md):
     retained-handleの元SIGKILL controlを保持し、全4 sole-ownerをSIGKILL/reapしてから
     次generationを起動する別controlを追加。全12 SQL tables・2 blob tablesと4 portable
@@ -1701,3 +1702,8 @@ source1223のfull9/SHAと元2 commands/全selector/資源上限を維持する�
 新profile `m2-m3-stable-full-required-1022` は2026-10-22 07:24:02 UTCに開始。
 同b389 source/既存target-cacheを単一ownerで使用し、26000秒work +300秒cleanup、
 12GiB/swap0/CPU4の元上限を維持する。終了後に固定入力を再照合するまで新2件は保留。
+
+同b389のCIは2026-10-22 07:46:43 UTCに全8自然SUCCESSで完了し、E208でrootが
+全raw/実checkout/tree/parentsと元protocol markersを照合した。collectorとmetadata確認の
+自己所有PID/cgroupは閉鎖済み。CIの再実行・cancelは行っていない。新固定profileのlocal
+全必須チェックだけが残っており、source/cache/target/toolsの専有と元の検証条件を維持する。
