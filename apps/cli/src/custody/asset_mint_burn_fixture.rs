@@ -130,6 +130,7 @@ fn require_receipt(
     client: &Client<LoopbackHttpTransport>,
     request_bytes: [u8; 32],
     digest: sunrise_edge_client::Digest32,
+    expected_result_bytes: &[u8],
 ) -> Vec<u8> {
     let request: sunrise_edge_client::RequestId =
         sunrise_edge_client::RequestId::new(request_bytes).unwrap();
@@ -138,6 +139,7 @@ fn require_receipt(
     let sunrise_edge_client::HttpReceiptQueryResult::Present {
         request_id,
         event_digest,
+        dedup_record_bytes,
         ..
     } = &receipt
     else {
@@ -145,6 +147,19 @@ fn require_receipt(
     };
     assert_eq!(*request_id, request);
     assert_eq!(*event_digest, digest);
+    // Never trust the outer query fields alone: bind the nested canonical
+    // dedup record to this exact request id and event digest, and require
+    // its own exact canonical re-encoding, before trusting anything inside
+    // it.
+    let record: node_core::NodeDedupRecord =
+        node_core::NodeDedupRecord::decode_bound(dedup_record_bytes, request, digest)
+            .unwrap_or_else(|error| panic!("dedup record binding failed: {error}"));
+    let [response] = record.responses() else {
+        panic!("a successful paid execution must replay exactly one response");
+    };
+    assert_eq!(response.request_id(), request);
+    assert_eq!(response.status(), node_core::NodeResponseStatus::Accepted);
+    assert_eq!(response.payload(), Some(expected_result_bytes));
     receipt.encode().unwrap()
 }
 
@@ -512,10 +527,18 @@ fn distinct_uid_mint_burn_probe() {
                 .iter()
                 .map(|id| (*id, client.query_object(*id).unwrap().encode().unwrap()))
                 .collect();
-            let mint_receipt: Vec<u8> =
-                require_receipt(&client, [0x93; 32], mint_result.effects.tx_hash);
-            let burn_receipt: Vec<u8> =
-                require_receipt(&client, [0x94; 32], burn_result.effects.tx_hash);
+            let mint_receipt: Vec<u8> = require_receipt(
+                &client,
+                [0x93; 32],
+                mint_result.effects.tx_hash,
+                &mint_result_bytes,
+            );
+            let burn_receipt: Vec<u8> = require_receipt(
+                &client,
+                [0x94; 32],
+                burn_result.effects.tx_hash,
+                &burn_result_bytes,
+            );
             let mint_replay: PaidExecutionResult = client
                 .submit_paid_execution(&mint_decoded, protocol.resolver())
                 .unwrap();
