@@ -171,7 +171,7 @@ root proof `mint-burn-original12-1022-driver-count-inventory-v1-root-qualified.j
 SHA-256は `21fa93bbc0e48f4e2dfb6cc48a7a00094c9518892e919d53f0066b857f24e4b3`。
 
 新しいcompiler/driver outputsは元の専有external directoriesに生成し、source checkoutは
-全runtime・終了後照合・PID/cgroup/lease解放の後にcleanを確認して削除する。
+全runtime・終了後照合・PID/cgroup/lease解放の後にcleanを確認して削除した。
 限定componentと完全gateだけで新mint/burn子条件・親M2/M3/M7を完了にしない。
 停止済み監査・ZeroShare WIP・partial persistent-write/anchor guest対象は再実行していない。
 
@@ -271,3 +271,17 @@ D02/M1/M2/M3/M7親条件と停止対象の監査/ZeroShare/partial-write/anchor 
 | `mint-burn-original12-1022-lean-c-v2-runtime-attempt3-postclose-reader-v4-facts.actual.json` | `abc723e6fbbab2e1fd3285c29e3442702c28366e07bc0e955963ee1fececbf19` |
 | `mint-burn-original12-1022-controller-drain-v1-root-closure.json` | `f2123219388ed976829c46f932f74b4d16deb3335295679621824024a800f166` |
 | `mint-burn-original12-1022-root-watch-v1-monitor-close-precision.json` | `f2e72e1aa891f27bb06bfc1ebf691315ccfce7ce1d714885df2d25abad84d69e` |
+
+
+## 後処理
+
+専用clean checkout `sunrise-edge-native-release-1022` は全owner/readers終了後、
+他processのcwdがないことを確認して通常のgit worktree removeで削除した。
+既存source・cache・生成ELF・失敗raw・全証跡は保持した。削除記録
+`mint-burn-native-release-1022-clean-c-removal.json` のSHA-256は
+`612e3c18fe0d11e03c80cc9f49b4961a9cc19d737c2d158ccdeaeabb76b01998`。
+
+sourceとTODO/本報告はcommit/push済み。PR #332本文の最終更新は、通常CLIのHTTP401と
+GitHub連携のHTTP403で未反映。更新本文は証跡rootの
+`live-genesis-mint-burn-1022-pr-body-final.md` に保存した。
+新規organization PR作成専用PATを、read/editの回避には使っていない。
