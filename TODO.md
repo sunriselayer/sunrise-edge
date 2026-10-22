@@ -1645,3 +1645,10 @@ remote SHAを照合した。保存用WIPを実装の統合/検証成功として
 をcommit/pushし、remote HEAD一致を照合した。
 修正sourceの[run 39707845153](https://github.com/sunriselayer/sunrise-edge/actions/runs/39707845153)
 が自動開始した。検証中のため新2件は引き続き未完了。
+
+2度目のCIは、通常の再起動relayへACK喪失専用getterを呼んだ箇所で失敗した。
+旧getterの明示arming条件は保ち、test-onlyのarming状態照会を使う `ef92e9df`
+/ tree `a17889f7` をcommit/pushした。旧runはcancelledを保全し、
+[run 39710233943](https://github.com/sunriselayer/sunrise-edge/actions/runs/39710233943) が検証中。
+local旧runnerの設定不足による実テスト前停止と、V2のfmt/clippy成功・CLI build中断も
+別証跡へ保全した。中断や部分成功を新sourceの完了へ転用せず、既存target/cacheを保持する。
