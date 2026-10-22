@@ -3526,3 +3526,265 @@ fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
         );
     }
 }
+
+// M3 live process-writer failover: a fresh compiled host claims the next
+// writer fence against the exact same per-validator state/blob files while
+// every original owned host process is still alive and unreaped (`try_wait`
+// observes `None` at the takeover instant, not after a stop/reap). This is
+// the genuine gap the owned SIGKILL and stopped-rotation controls above do
+// not cover: both of those always fully reap the old generation before a
+// new one opens the same files. Native SQLite here has no OS-level mutual
+// exclusion between live writer processes (DR-0208/DR-0210): opening a
+// second writable connection against the same file while the first is idle
+// is not refused by SQLite itself, so the only protection is the persisted
+// writer-fence CAS the new host's startup performs
+// (`SqliteDurableStore::advance_writer_fence` in
+// `apps/operator/src/sqlite_source_host.rs`) and the per-request
+// `WriterFenced` check every durable read/commit performs against the
+// request's captured startup generation. This test exercises that exact
+// seam with real processes and real sockets, not an assumption.
+//
+// It proves: the new host's startup line reports the next generation while
+// every old PID is still alive; every old, still-running host's live HTTP
+// object/receipt/next-nonce queries now fail closed as `503
+// query-unavailable` (`DurableReadError::WriterFenced` mapped by
+// `query_node_error_response_parts`), never stale success; a pre-held
+// stale capability refuses the same way at the store level; the new host
+// serves the exact preserved committed business view and replays the one
+// saved certified result exactly once with no second business mutation;
+// and the old processes remain alive and are only stopped afterward with
+// the existing orderly-stop helper, never a foreign-process kill.
+//
+// This is single-host same-file failover proof, not cross-host network
+// failover, copy/restore activation, or power/media qualification: the new
+// host binds fresh loopback ports and fresh fixture TLS material because
+// the old ports are still bound by the live old processes, exactly as a
+// real operator restart elsewhere would need a distinct listen address
+// while the old one drains. It does not attempt a second fresh paid
+// mutation after the takeover: this fixture's genesis grants the APP_COIN
+// and FEE_COIN only to `OWNER`, and the committed transfer above already
+// moves APP_COIN to `RECIPIENT`, so a second genuine transfer would need
+// new fixture economics (a second funded sender/fee source) rather than
+// reusing the existing one-shot transfer helpers; inventing that risked an
+// unverified, economically-wrong assertion, so this control instead proves
+// mutation safety through the saved-certificate replay path, which is
+// already the workspace's established no-second-mutation oracle.
+#[test]
+fn actual_direct_tls_new_host_claims_next_fence_while_owned_old_hosts_stay_alive_and_fenced() {
+    let network: Network = author_inspect_and_prepare();
+    let mut old_peers: Vec<DirectPeer> = direct_peers(&network);
+    let mut old_hosts: Vec<Host> = start_direct_hosts(&network, &mut old_peers, 2);
+    assert_eq!(old_hosts.len(), VALIDATORS);
+    let old_lines: Vec<String> = direct_lines(&network, &old_peers);
+    let old_config: PathBuf = write_config(
+        &network.tls_dir.join("live-failover-old-network.conf"),
+        &old_lines,
+    );
+
+    let sender: Address = Address::new(network.fixture.owner);
+    let request: RequestId = RequestId::new(TRANSFER_REQUEST).unwrap();
+    let initial: Observation = observe(
+        &old_peers,
+        &[ObjectId::new(APP_COIN), ObjectId::new(FEE_COIN)],
+        request,
+        sender,
+    );
+    let nonce: u64 = verify_initial(&network, &initial, sender);
+
+    let first: Outputs = Outputs::new(&network.artifacts_dir, "live-failover-transfer");
+    let output: Output = run_cli(transfer_args(
+        &network,
+        &old_config,
+        old_peers[0].address,
+        &network.owner_seed,
+        TRANSFER_REQUEST,
+        nonce,
+        &first,
+    ));
+    let stdout: String = lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout={stdout} stderr={}",
+        lossy(&output.stderr)
+    );
+    assert_ordered(
+        &stdout,
+        &[
+            "fastvote_signed_intent_out=",
+            "fastvote_certificate_formed=true",
+            "fastvote_certificate_out=",
+            "fastvote_publication_source=",
+            "fastvote_availability_certificate_out=",
+            "apply validator=",
+        ],
+    );
+    assert_eq!(
+        stdout
+            .matches("status=received paid_status=Success")
+            .count(),
+        VALIDATORS
+    );
+    let saved: Saved = Saved::read(&first);
+    let committed: Committed = verify_saved_artifacts(&network, &saved, nonce);
+    let ids: Vec<ObjectId> = observed_ids(&committed.result);
+    let committed_view: Observation = observe(&old_peers, &ids, request, sender);
+    verify_committed_state(&network, &committed, &saved, &committed_view);
+
+    // A real store handle/CAS/read captured at the pre-takeover fence, held
+    // open exactly like the owned-SIGKILL and stopped-rotation controls.
+    let stale: Vec<StaleCapability> = (0..VALIDATORS)
+        .map(|index: usize| StaleCapability::hold(&network, index))
+        .collect();
+
+    // Every original owned host process is confirmed alive before takeover.
+    let old_pids: Vec<u32> = old_hosts
+        .iter_mut()
+        .enumerate()
+        .map(|(index, host): (usize, &mut Host)| {
+            assert_eq!(host.address, old_peers[index].address);
+            assert!(
+                host.guard
+                    .try_wait()
+                    .expect("poll owned old host before live takeover")
+                    .is_none(),
+                "old host {index} exited before the live takeover"
+            );
+            let pid: u32 = host.guard.child_mut().id();
+            assert!(pid > 0 && pid <= i32::MAX as u32, "positive old host PID");
+            pid
+        })
+        .collect();
+    assert_eq!(
+        old_pids.iter().copied().collect::<BTreeSet<u32>>().len(),
+        VALIDATORS
+    );
+    let before_takeover: Vec<SourceBusinessSnapshot> = snapshots(&network);
+
+    // Live takeover: a second, independently TLS-fixtured host generation
+    // opens the exact same four state/blob files and claims the next fence
+    // while every old host above remains unreaped and unstopped.
+    let mut new_peers: Vec<DirectPeer> = direct_peers(&network);
+    let new_hosts: Vec<Host> = start_direct_hosts(&network, &mut new_peers, 3);
+    assert_eq!(new_hosts.len(), VALIDATORS);
+
+    // The takeover observation: every old PID is still exactly the same
+    // live, unreaped process immediately after the new fence claim.
+    for (index, host) in old_hosts.iter_mut().enumerate() {
+        assert!(
+            host.guard
+                .try_wait()
+                .expect("poll owned old host at live takeover observation")
+                .is_none(),
+            "old host {index} must still be alive at the takeover observation"
+        );
+        assert_eq!(host.guard.child_mut().id(), old_pids[index]);
+    }
+
+    let after_takeover: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    assert_reopened(&before_takeover, &after_takeover, 2, 3);
+    for capability in &stale {
+        capability.assert_fenced(network.domain, 3);
+    }
+
+    // Every still-alive old host now fails closed on every live query as
+    // WriterFenced, never stale success, and the process stays alive.
+    for (index, peer) in old_peers.iter().enumerate() {
+        let client: Client<RemoteTlsHttpTransport> = peer.client();
+        match client.query_object(ObjectId::new(APP_COIN)) {
+            Err(ClientError::UnexpectedStatus { status, body }) => {
+                assert_eq!(status, 503, "old peer {index} object query");
+                assert_eq!(body, "query-unavailable", "old peer {index} object query");
+            }
+            other => panic!("old peer {index} object query must refuse fenced: {other:?}"),
+        }
+        match client.query_receipt(request) {
+            Err(ClientError::UnexpectedStatus { status, body }) => {
+                assert_eq!(status, 503, "old peer {index} receipt query");
+                assert_eq!(body, "query-unavailable", "old peer {index} receipt query");
+            }
+            other => panic!("old peer {index} receipt query must refuse fenced: {other:?}"),
+        }
+        match client.query_next_nonce(sender) {
+            Err(ClientError::UnexpectedStatus { status, body }) => {
+                assert_eq!(status, 503, "old peer {index} next-nonce query");
+                assert_eq!(
+                    body, "query-unavailable",
+                    "old peer {index} next-nonce query"
+                );
+            }
+            other => panic!("old peer {index} next-nonce query must refuse fenced: {other:?}"),
+        }
+        assert!(
+            old_hosts[index]
+                .guard
+                .try_wait()
+                .expect("poll owned old host after fenced queries")
+                .is_none(),
+            "old host {index} must remain alive after serving fenced refusals"
+        );
+    }
+
+    // The new live host generation serves exactly the preserved business
+    // view the old generation committed, with no divergence across peers.
+    assert_eq!(observe(&new_peers, &ids, request, sender), committed_view);
+
+    // The new generation replays the one saved certified result exactly
+    // once; this is the workspace's established no-second-mutation oracle.
+    let new_lines: Vec<String> = direct_lines(&network, &new_peers);
+    let new_config: PathBuf = write_config(
+        &network.tls_dir.join("live-failover-new-network.conf"),
+        &new_lines,
+    );
+    let replay: Outputs = Outputs::new(&network.artifacts_dir, "live-failover-replay");
+    let replay_output: Output = run_cli(replay_args(
+        &network,
+        &new_config,
+        &first.intent,
+        Some(&first),
+        &replay,
+    ));
+    assert_exact_replay(
+        &replay_output,
+        &replay,
+        &saved,
+        "live-takeover new-host replay",
+    );
+    assert_original_intact(
+        &network,
+        &new_peers,
+        &first,
+        &saved,
+        &after_takeover,
+        &committed_view,
+        "live-takeover new-host replay",
+    );
+
+    // The old generation is unaffected by the new generation's replay: still
+    // alive, still fenced, never a second view of the committed business.
+    for (index, host) in old_hosts.iter_mut().enumerate() {
+        assert!(
+            host.guard
+                .try_wait()
+                .expect("poll owned old host after new-host replay")
+                .is_none(),
+            "old host {index} must remain alive through the new host's replay"
+        );
+    }
+    match old_peers[0].client().query_object(ObjectId::new(APP_COIN)) {
+        Err(ClientError::UnexpectedStatus { status, body }) => {
+            assert_eq!(status, 503);
+            assert_eq!(body, "query-unavailable");
+        }
+        other => panic!("old peer 0 must still refuse fenced after replay: {other:?}"),
+    }
+
+    // Only now: orderly stop/reap every still-owned process with the
+    // existing helper. No foreign-process kill; new generation first, then
+    // the still-alive old generation this test has held open throughout.
+    for host in new_hosts {
+        host.guard.stop_orderly(PROCESS_DEADLINE);
+    }
+    for host in old_hosts {
+        host.guard.stop_orderly(PROCESS_DEADLINE);
+    }
+}
