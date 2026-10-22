@@ -500,7 +500,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E218: mint/burn同sourceの全8 CI | run39775926228 attempt1が自然全8 success。checkout58f7cef8/treeb60b28e8/parents[b389,8da]と8 raw logs計1,564,992Bをroot照合。Rust147 summaries=4,400/0/43、CF13/28/10/15=66。元7epochs/e8・同IDの1832B候補2件/round3 committed ACKと8link test成功も照合。proof `7a0ec175` | ログ回収のscope/wait不整合とPATH不足の2失敗を保持。3回目collectionはactual0・実両EOF/wait/reap、全既知PID/capturedCG不在。CI job再実行0。35roleのsource補足とRELEASE runtime/CLI fixtureは別に残り、子条件・親5件へ加算しない |
 | E219: current RELEASE CLIのpublication-genesis | 新しい8daのNative13 RELEASE CLIと同source/S由来のretained harnessを使用。fresh2 ELF/library inventoryはactual0・root `d9dfe9e6`。元profileを1回実行しactual0/外側実両EOF/wait/reap、5.632秒。73 recursiveTrue pathsが元sourceの全期待pathと一致し、復旧key live/restart・6/6/4/2と2/2/0/2・9e/9f signing-only controlsを保持。executor proof `bde4f5cb` | Invocation `af003ec8`、保存live ExecStartは実v3 ownerと一致。owner1669845/launcher1669843・capturedCG不在、Node所有container_removed=true。C/S1224 files/Git/full9のempty-diff bridgeとgenuine S Cargo provenanceを保持。元12 runtimeと親M2/M7は別条件 |
 | E220: local/CIの元protocol assertions | E213のlocal完全requiredとE218の全8 CIの実rawを照合し、元7epochs/e8の1832B候補2件・同ID/round3 committed ACKを確認。元12 product filesはc535から8daまで不変で、成功した8link driverのsourceが3+4*8=35rolesをassertすることを確認。root `4a3ddf6b` | stdoutのpath数からrole数を推測しない。旧readerのFULL state label schema相違を保持し、固定済み実proofの_8DA1へ修正。製品run再実行0。物理fault・独立監査・RELEASE全体・親5件の完了を主張しない |
-| E221: 元12 RELEASEのcheck/probe | 同8da/current49 ELF・C1224 source・23 toolsの固定snapshotを使い、check1.425秒/probe1.310秒がactual0・実両EOF/wait/reap。rootが閉じたraw/hashと13 RELEASE replacements・13 debug/10 drivers、probe内のPID/net namespace分離とloopbackを照合。proof `c5b6d2c6` | 各preflightのknownPID/capturedCG不在。元selector/timeout/capsは維持。開始前のbinder count-assertion選択とunit名重複の不具合は保存し、controlsだけ修正。runtime-attempt3はcontrol revision名で、製品runの3回目ではない。元12本体は17:40:29 UTCから実行中、未完了。CI/Native成功を本体成功へ転用しない |
+| E221: 元12 RELEASEのcheck/probe | 同8da/current49 ELF・C1224 source・23 toolsの固定snapshotを使い、check1.425秒/probe1.310秒がactual0・実両EOF/wait/reap。rootが閉じたraw/hashと13 RELEASE replacements・13 debug/10 drivers、probe内のPID/net namespace分離とloopbackを照合。proof `c5b6d2c6` | 各preflightのknownPID/capturedCG不在。元selector/timeout/capsは維持。開始前のbinder count-assertion選択とunit名重複の不具合は保存し、controlsだけ修正。runtime-attempt3はcontrol revision名で、製品runの3回目ではない。元12本体は当時17:40:29 UTCから実行中だった。後続E222で本体を別途照合。CI/Native成功を本体成功へ転用しない |
+| E222: current8daの元12 RELEASE runtime | 17:40:29→20:17:38 UTCに本体が自然終了。元10 whole/2 exactの全12 commandがactual0/merged EOF/wait、通常99+元exact2=101 passed/0 failed、whole側ignored3。実13 RELEASE replacements・13 debug/10 driversを保持。全7epochs/e8・同IDの1832B候補2件/round3 committed ACK、元8link/35role source assertionsを照合。root終了後reader actual0/proof `4169685e` | 外側session51431の143、wrapper個別exit/owning terminal未観測、attachment前の外側stream欠落、captureのCOUNT順序/type誤りを保全。元helperの順序/tupleをread-only reader内だけで復元し、元全predicateを再照合。product再実行0。全C1224/Git/full9・49ELF・23tools、全既知PID/capturedCG・drain・privateTMPの解放まで確認。このmint/burn子条件だけを完了し、親5件へ転用しない |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -928,8 +929,10 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     certified FastVoteの選択済みcomponentは下記の個別証拠へ対応する。
     `50fbf22d` のStandard Asset/publication fixture全117はE156で成功。
     同sourceのoriginal ordered/certified別UID・TLS fixtureもE166で成功。
-    現行f51はE182の4 RELEASE CLI profiles、E187の元12 runtime、E189の全8CI、
-    E191のlocal完全requiredまで成功。ZeroShare専用WIPは未統合・未検証で、
+    f51はE182の4 RELEASE CLI profiles、E187の元12 runtime、E189の全8CI、
+    E191のlocal完全requiredまで成功。現行8daはE213の完全required・E218の全8CI、
+    E215のNative13 A/B・E219のpublication-genesis RELEASE・E222の元12 runtimeで照合した。
+    ZeroShare専用WIPは未統合・未検証で、
     各familyの残るlifecycle/全体対応をそろえるまでM2全体は未完了。
     実鍵ceremonyの公開条件と区別する。
   - 初期履歴: publication-only Linux試作の回収可否が不明。E4はSDK部分だけの成功。
@@ -1092,14 +1095,15 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     新identity・authority・profileを追加せず、実runtimeと最終source完全required/CIで確認する。
     E206の実runtime、E208の全8 CI、E209の新固定profileでのlocal完全requiredを同b389で照合済み。
     E207の固定tool postcheck失敗は保全。元の全条件を維持し、この子条件だけを完了する。
-  - [ ] 復旧した同一鍵によるgenesis mint/burnのlive操作:
+  - [x] 復旧した同一鍵によるgenesis mint/burnのlive操作:
     元M2のfamily別recovery条件の続き。既存publication recoveryで停止後に復旧した同一A鍵を、
     既存のlive mint・whole-Coin burnと取消後restartへ接続する。9e/9fのhistorical signing-only
     controlsと元の全操作/判定/上限を保持し、新operation・identity・authority・profileを追加しない。
     source `8da1d620` / tree `b60b28e8` をcommit/push済み。E211のsyntax/AST/transport照合は成功、
     実UID/PTY fixtureはE212、同source完全requiredはE213、全8 CIはE218でroot照合済み。
     E215のNative13 A/B、E219のRELEASE publication fixture、E220の元protocol補足も成功。
-    元12 RELEASE runtimeはE221のcheck/probe後に実行中のため、子条件・親M2は開いたまま。
+    元12 RELEASE runtimeはE221のcheck/probe後、E222で全12ケース・101 passed/0 failedを照合した。
+    記録側の143と集計順序誤り・未観測区間を保存し、この子条件だけを閉じる。親M2は未完了。
   - 検証の残件: E175/E178の旧default集計漏れは、d012の完了PTY共有加算と
     明示core/application別allocationで修正し、E179で元117の全path/value mapと上限を実証。
     旧一括267,120Bの失敗を保持し、未保存の過去出力や単一117成功へは拡張しない。
@@ -1341,9 +1345,15 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     Rust147 summaries/4,397 passed/0 failed/43 ignored・CF66、元7epochs/e8条件を保持。
     記録serviceの同Invocation自然終了と自己所有unit停止後のPID/cgroup不在も確認し、
     local完全gateは完了。E188/初回143の失敗・partialと未保存証拠の限界は保持する。
+  - 現行8daの資格: E213のliteral npm ci +完全required、E218の全8 CI、E215のfresh
+    Native13 A/B全byte/mode/owner一致、E216/E217のfresh23/current49と元一覧、
+    E219のRELEASE publication-genesis 73 predicates、E222の元12 runtime101/0/3を
+    同じsource/treeでroot照合した。外側143・集計失敗と未観測区間は保全し、
+    製品本体の自然0/全raw/EOF/wait・inputs・全既知PID/cgroup解放を別途確認した。
+    独立最終source/security/release reviewとissue dispositionは残り、全M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
-    公開準備行の責務は未達のまま保持する。現行50fbのbuild/upgrade/restore/parity/
+    公開準備行の責務は未達のまま保持する。現行8daのbuild/upgrade/restore/parity/
     元selectorの成功を、別の未指定campaign待ちとはしない。新sourceにはそのsourceの
     13-target A/B・実RELEASE bindingsを使い、ancestor結果を借用しない。
     広告する他providerに限り元のPhase16/17実provider基準を適用する。

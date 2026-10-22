@@ -64,14 +64,14 @@ rootは空の完了unitだけを停止した。
 | `genesis-mint-burn-full-required-1022-supervisor-termination-proof.json` | `0dcaa7b1e2430886290506093e95bdc86fccea43ca83d9e5f97bfa87756079dc` |
 | `genesis-mint-burn-full-required-1022-root-empty-unit-stop.json` | `1d069f30f5d717074ff37c2ba3a83cce2a595c9639e1729e7afaa860aa51f551` |
 
-## 同sourceの残るgate
+## 同sourceのCIとRELEASE gate
 
 [CI run 39775926228](https://github.com/sunriselayer/sunrise-edge/actions/runs/39775926228) は
 17:14:36 UTCにattempt1の全8 jobsが自然successとなった。rootが8 raw logs計1,564,992Bと
 各実checkout58f7cef8/treeb60b28e8/parents[b389,8da]を照合した。
 Rust147 summariesは4,400/0/43、CF13/28/10/15=66。元7epochs/e8、同IDの1832B候補2件と
 round3 committed ACK、8link history testの実成功を確認した。
-35roleのsource補足は別照合として残す。root proof
+35roleのsource補足はE220で別途照合した。root proof
 `ci332-mint-burn-1022-root-qualified.json` のSHA-256は
 `7a0ec1755309011558a39abba89d6bc9783ee25508eaff506b9b57fc0ce4ee14`。
 
@@ -100,7 +100,8 @@ configured metadata/link target/resolved path/実体metadata/hashを照合して
 | `mint-burn-native13-ab-1022-lean-c-v1-ab-parent-qualified.json` | `9da5ae4d696f8ed39ccc38e65600689e3adf9eb3e55ccc0255037228ec262e14` |
 | `mint-burn-native13-ab-1022-lean-c-v1-ab-parent-consumer-view-qualified.json` | `f13edfd88520628db5cf433981fefdd7e3b113d62c3b6a311a37f266d8cfe691` |
 
-対応するCLI fixtureは後述のE219で成功。元12 RELEASE runtimeはE221のcheck/probe後に実行中。
+対応するCLI fixtureは後述のE219で成功。元12 RELEASE runtimeはE221のcheck/probe後、
+E222で実本体と終了後の元全predicateを照合した。
 元のclean source/no-target/no-extra guardを守り、既存のS target/node_modulesを移動しないため、
 完全gate終了後に同8daの専用checkout Cを1個作成した。
 追跡sourceのlogical bytesは26,617,053で、cache/target/node_modulesをコピーしていない。
@@ -203,9 +204,10 @@ local完全required/全8 CIのrawは元7epochs/e8の1832B withdrawal2件、全ep
 補足proof `genesis-mint-burn-1022-original-required-protocol-qualified.json` のSHA-256は
 `4a3ddf6b10626dde55e1e017fa6d17d4c61cb01e06f52c6747f2d9ba787adec9`。
 最初の補足readerのstate label schema相違は保持し、固定済み実FULL proofの_8DA1へ修正した。
-製品runは再実行していない。元12 RELEASE runtimeが残るため、mint/burn子条件はまだ閉じない。
+製品runは再実行していない。その後E222の元12 RELEASE runtimeを別途照合し、
+mint/burnの同一鍵復旧子条件だけを完了した。親M2/M3/M7は未完了。
 
-## 元12 RELEASE runtimeの実行状況
+## 元12 RELEASE runtimeの実結果と記録の限界
 
 check1.425秒/probe1.310秒はactual0・実両EOF/wait/reapで終了した。rootは閉じたraw/hashと
 13 RELEASE replacements・13 debug/10 drivers、probe内のPID/net namespace分離とloopbackを
@@ -219,10 +221,10 @@ SHA-256 `c5b6d2c67d81565a044696c4e1301b2431d1eb035f91a1e000206bc8668555a2`。
 runtime-attempt3はこのcontrol revision名であり、製品テストを3回走らせたという意味ではない。
 
 本体は17:40:29 UTCに開始し、Invocation `dea2f2e0729b40eb911caee3e4d7f4e5`、
-owner1676545/owning capture1676533で継続している。元6GiB/swap0/CPU4/tasks512、
+owner1676545/owning capture1676533で継続した。元6GiB/swap0/CPU4/tasks512、
 18,000秒work・18,600秒unit・45秒stop・8MiB shared logと全selectorsを保持している。
 19:12:15 UTC時点でrecurringの7epochs中6epochsが完了し、epoch7を実行中。
-実行中の部分rawを受け入れ証拠にせず、終了と全既知PID/cgroup解放後に最終照合する。
+実行中の部分rawを受け入れ証拠にせず、以下は終了と全既知PID/cgroup解放後に照合した。
 
 19:10 UTCに最外側のtool session51431が143で終了し、root wrapper1676418は不在となった。
 wrapper個別exitと完全なowning terminalは未観測であり、再構成しない。元のcapture1676533は
@@ -232,7 +234,40 @@ user-systemd1815へreparentされ、同じproduct invocationの処理を継続�
 attachmentまでの外側stream区間は未観測とする。productを再実行していない。
 
 実行中にcapture側の集計順序誤りも検出した。helperの元10 driver順とtuple countsは正しいが、
-captureへ固定したCOUNTSはsorted/listへ変換されており、run終了後の集計が失敗する見込み。
+captureへ固定したCOUNTSはsorted/listへ変換されており、run終了後の集計は実際に `RuntimeError('whole census changed')` で失敗した。
 稼働中のcontrolsと元判定を変更せず、元の失敗を保存する。終了後readerだけで元helperの順序・
 型を復元し、実12ケースの全raw/EOF/wait・現在inputs・process/cgroup終了を別途照合する。
-最外側の失敗や未観測区間を成功へ読み替えず、製品結果を確認するまで子条件を閉じない。
+最外側の失敗や未観測区間を成功へ読み替えず、製品結果を以下で別途確認した。
+
+
+本体は20:17:38 UTCまでに自然終了し、実workは9,376.746秒だった。
+元10 whole +元2 exactの全12 commandsはactual0・merged EOF/waitで、
+通常99+exact2=101 passed/0 failed、whole側ignored3。全shared rawは278,603Bで元8MiB内。
+元7epochs/e8の1832B候補2件、全epoch同IDとround3 committed ACKを確認した。
+元8link/35roleは同sourceの元assertionsと成功したdriverへ対応付け、stdout path数を使わない。
+
+launcherの実exit/terminalExitは0、実EOF/wait完了、元unitも自然Result=success。
+captureのsystemd-run childはactual0・実両EOF/wait・uncapturedBytes0で、記録側の集計だけが失敗した。
+read-only readerは固定したhelperの元順序とtupleをCOUNT環境内だけへ復元し、
+元verify_resultの全predicateを変更せず実行した。readerはactual0・実両EOF/waitで終了した。
+root wrapper1676418の個別exitとowning terminalは未観測のまま保持し、capture1676533の
+直接exit codeも測定していない。capture側のcodeから1が推測されることをactual1とはしない。
+
+有限drainの実terminalは0、attachment後のremaining両EOFとcapture PID1676533の
+pidfd終了・proc不在を確認した。captureのwaitpidは実施しておらず、user-systemd1815側の
+reapをproc不在として観測したもの。root wrapperのwaitpid/完全outer streamとは区別する。
+reader結果内のcontrollerという語はcapture1676533を指し、root wrapper1676418を指さない。
+watcherも終了し、全既知PID・保存したcheck/probe/run/drain cgroupsは不在。
+privateTMPは元helperでremoved=true、retainedOwnedResources=false。
+
+終了後のroot照合ではC全1224 sourceのGit/blob/full9、全49ELF、23 configured/resolved tools、
+Cargo/Native provenanceとbefore/after固定inputsが一致した。製品テストの再実行は0。
+この結果とE212/E213/E215/E218/E219/E220を合わせ、復旧同一鍵のgenesis mint/burn子条件を閉じる。
+D02/M1/M2/M3/M7親条件と停止対象の監査/ZeroShare/partial-write/anchor guestを完了にしない。
+
+| 終了後証跡 | SHA-256 |
+| --- | --- |
+| `mint-burn-original12-1022-lean-c-v2-runtime-attempt3-postclose-reader-v4-qualified.json` | `4169685e89330231d811cc689b3a49fac340998dce4fee677fa6fdfda2f8ccee` |
+| `mint-burn-original12-1022-lean-c-v2-runtime-attempt3-postclose-reader-v4-facts.actual.json` | `abc723e6fbbab2e1fd3285c29e3442702c28366e07bc0e955963ee1fececbf19` |
+| `mint-burn-original12-1022-controller-drain-v1-root-closure.json` | `f2123219388ed976829c46f932f74b4d16deb3335295679621824024a800f166` |
+| `mint-burn-original12-1022-root-watch-v1-monitor-close-precision.json` | `f2e72e1aa891f27bb06bfc1ebf691315ccfce7ce1d714885df2d25abad84d69e` |
