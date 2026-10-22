@@ -491,6 +491,7 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E209: final b389の新固定profileでのliteral npm ci + complete required | Deno2.9.4の公式SHA固定task-local binaryと既存system Python3.14.8へ4 tool rolesを一対一bindingし、元guardを維持。両commands actual0/実両EOF/wait/reap、npm ci 1.698秒・check-all 10,227.685秒。Rust147 summaries/4,400 passed/0 failed/43 ignored・CF13/28/10/15=66。終了後にsource1223全full9/SHA・HEAD/tree/clean/set、2396 tool/seed hashes・67 strict/3 aliases・CF2347/layout2725、311 archives・5 wrappers・7 directoriesとcache/target/312実ELFをroot再照合。`m2-m3-stable-full-required-1022-root-qualified.json` (`7964867a`) | 元7 epoch END/e8の1832B候補2件・同ID round3 committed ACKと、元8links/35role assertionsをlocal/CIで照合 (`m2-m3-next-1022-original-required-protocol-qualified.json`, `c04ddbe3`)。自然同Invocation Status0・全既知PID/capturedCG不在・source/resource phase解放を確認。target/cacheは明示reuseでfreshとは呼ばない。E207の旧whole FAILEDと準備V1/readerの書式誤仮定は保存し、product再実行や元判定の変更へ混同しない。E206/E208と合わせ今回の2子条件だけを完了。親M2/M3・release/独立監査・公開判断は未完了 |
 | E210: ordinary M3 coverageのsource/既存結果対応 | b389の全12 SQL tables・2 blob tables・4 portable kinds・70KiB historical body・reopen/fencing/ACK loss/replayを[固定記録](docs/development/validation/2026-10-22-m3-ordinary-coverage/README.md)へ対応付けた。rootが5 product file blobsと8daでの同一bytes、12 table名とE209実stdoutの5 named SQLite controlsのactual okを再照合。`m3-ordinary-coverage-map-1022-root-qualified.json` (`85574b21`) | 新しいruntime実行0。全table非空やphysical fault、positive_blob_fault/paid-produced publication、全M3の証明ではない。停止中のpartial write/anchor guest等は除外・未達のまま。追加の通常assertion不足は特定せず、対応表のみを理由とする再実行はしない |
 | E211: live recovered-key genesis mint/burn source | `8da1d620` / tree `b60b28e8` の4 modified/1 added files。既存restored same-A keyを元live mint/burn・revoked restartへ接続し、path attributionを追加。Node24.19.0 parser/embedded Python AST/diff-check成功、raw247194/262144B・bootstrap55325/65536B、transport関数はb389とbyte同一。通常の狭いcorrectness checkも具体的regressionなし。DR-0280へ元契約の細分化を記録 | source-only。元6/6/4/2とrestart2/2/0/2・historical9e/9f・selectors・上限・authority/profileを保持。実UID/PTY・同source完全required/CI/releaseは未完了で、b389のE206/E208/E209を新source成功へ借用しない |
+| E212: restored-key live mint/burnの実component | 同8daで元13 commands全actual0。実Docker Linux UID/PTYのlive/restart両signerがrestored pathを使用し、mint/burn6/6/4/2・取消restart2/2/0/2とhistorical9e/9fを保持。全26 streams/実EOF/wait/reap、今回のCargo JSONに結合した8 ELF roles、全1224 source inputs、終了後67 strict roles/3 aliases/311 archivesをrootで照合。自己所有PID/capturedCG解放と自然Status0を確認。[固定記録](docs/development/validation/2026-10-22-live-genesis-mint-burn/README.md)、root proof `c8ac8317` / input recheck `6331b2b3` | 限定実runtimeのみ。同8daのliteral npm-ci +完全requiredは12:38:31 UTC開始・終端待ち、CI全8・RELEASEも未完了。子1件・親5件は未完了のまま。旧source gate/停止対象へ拡張しない |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -1087,7 +1088,8 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     既存のlive mint・whole-Coin burnと取消後restartへ接続する。9e/9fのhistorical signing-only
     controlsと元の全操作/判定/上限を保持し、新operation・identity・authority・profileを追加しない。
     source `8da1d620` / tree `b60b28e8` をcommit/push済み。E211のsyntax/AST/transport照合は成功、
-    実UID/PTY fixture・同source完全required/CIとrelease qualificationは未完了。親M2は開いたまま。
+    実UID/PTY fixtureはE212でroot照合済み。同source完全requiredは実行中、CIとrelease
+    qualificationも未完了。子条件・親M2は開いたまま。
   - 検証の残件: E175/E178の旧default集計漏れは、d012の完了PTY共有加算と
     明示core/application別allocationで修正し、E179で元117の全path/value mapと上限を実証。
     旧一括267,120Bの失敗を保持し、未保存の過去出力や単一117成功へは拡張しない。
@@ -1742,6 +1744,12 @@ E206/E208/E209が同b389でそろったため、今回のM2/M3各1子条件を�
 2026-10-22の次作業: Cloudflareのsecurity-audit skillをuser領域へ導入し、upstream
 `c1c8a8c1471069fb0e188eeaff69b8e8db6564a8` の全20 files/Git blobs一致を確認した。
 これはtool導入であり監査結果ではない。D02/M1の停止済み独立監査を別skill/modelへ
-付け替えて再試行せず、他の停止対象も保持する。新automationや作業worktree/cacheコピーは作らない。
+付け替えて再試行せず、他の停止対象も保持する。新automationやcacheコピーは作らない。
+作業worktreeを増やさない当初の方針は、RELEASEのclean source guardと既存target保全のため、
+同8daの追跡source 26,617,053 logical bytesだけの専用checkout 1個に限り変更する。
+既存source/cache/target/node_modulesのコピーは行わず、全検証終了・終了後照合と資源解放の後、
+clean状態で当該checkoutだけを削除する。
 M2は8daの実fixture/完全required/CI、M3はE210のcoverage対応、M7はM2変更確定後の
 同source 13-target A/B・元12 RELEASE runtime admissionを進める。rootだけがこの表を更新する。
+E212で限定runtimeは成功。完全requiredは12:38:31 UTCに開始し、同source CIと共に終端待ち。
+85チェック中70完了/15未完了、選択した親5件は未完了のまま保持する。
