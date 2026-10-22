@@ -41,20 +41,49 @@ rootは終了証跡を保存した後、空であることを確認したこのu
 | `genesis-mint-burn-component-1022-root-input-recheck.json` | `6331b2b319a4895a56c5fb23235201f5f18ce288448193414ce13d223ed6cfd9` |
 | `genesis-mint-burn-component-1022-closed-proof.json` | `3c175a4788d12a4f00c5eff6c6514a59600c0bc866d30e536a9c5c6988deeeb1` |
 
+## 同sourceの完全required
+
+12:38:31 UTC開始、15:28:00 UTC自然終了。literal
+`npm ci --prefix adapters/cloudflare-workers` と `./scripts/check-all.sh` は
+それぞれactual exit 0/実両EOF/wait/reapで、1.685秒・10,157.567秒だった。
+Rust147 success summariesは4,400 passed/0 failed/43 ignored、CFは13/28/10/15の66件。
+
+rootは全9 raw streams、全1224 sourceのfull9/SHA/HEAD/tree/clean/set、2396 tool/seed
+hashes、67 strict roles/3 aliases、CF2347 roles/layout2725、311 archives、5 wrappers、
+7 directories、保存したbefore/afterと現在のcache/target inventoriesを照合した。
+target/cacheはreuseであり、freshと呼ばない。
+自然Invocation `877f292d833045e4869b11d55b310819` のStatus0、owner1360561と
+check-all1360606・npm1360586の不在、captured cgroupの消失を確認した。
+MemoryPeakは3,844,284,416 bytes、MemorySwapPeakは0。終了証跡を保存した後、
+rootは空の完了unitだけを停止した。
+
+| 証跡 | SHA-256 |
+| --- | --- |
+| `genesis-mint-burn-full-required-1022-root-qualified.json` | `c578c9e265c5e380b2d2b08a505322f8749378dfd6f9c3cebe923c7c66d9bc6b` |
+| `genesis-mint-burn-full-required-1022-closed-proof.json` | `963f6e55dfd6fd43d81251789a4435b18a2c8850897d9139006490d4ddee5df6` |
+| `genesis-mint-burn-full-required-1022-supervisor-termination-proof.json` | `0dcaa7b1e2430886290506093e95bdc86fccea43ca83d9e5f97bfa87756079dc` |
+| `genesis-mint-burn-full-required-1022-root-empty-unit-stop.json` | `1d069f30f5d717074ff37c2ba3a83cce2a595c9639e1729e7afaa860aa51f551` |
+
 ## 同sourceの残るgate
 
-`genesis-mint-burn-full-required-1022` は12:38:31 UTC開始。
-literal `npm ci --prefix adapters/cloudflare-workers` と `./scripts/check-all.sh` を、
-元の26000秒work +300秒cleanup・12GiB/swap0/CPU4/PIDs512で単独実行する。
-現時点ではnpm ci成功、check-allは実行中であり、完全gateの合格は未確定。
-[CI run 39775926228](https://github.com/sunriselayer/sunrise-edge/actions/runs/39775926228) も終端待ち。
+[CI run 39775926228](https://github.com/sunriselayer/sunrise-edge/actions/runs/39775926228) は終端待ち。
+元7epochs/e8・8links/35roleのsource補足も、同CI終端後の別照合として残す。
 
-fresh 13-target RELEASE A/B、対応するCLI fixtureと元12 RELEASE runtimeも未実行。
+fresh 13-target RELEASE A/B、対応するCLI fixtureと元12 RELEASE runtimeは未実行。
 元のclean source/no-target/no-extra guardを守り、既存のS target/node_modulesを移動しないため、
-完全gate終了後に同じcommitの小さな専用checkoutを1個だけ作成する。
-追跡sourceのlogical bytesは26,617,053であり、cache/target/node_modulesはコピーしない。
+完全gate終了後に同8daの専用checkout Cを1個作成した。
+追跡sourceのlogical bytesは26,617,053で、cache/target/node_modulesをコピーしていない。
+Cの全1224 files/Git blobs/full9を新規観測した。
+
+その後の入力censusは、固定済みarchiveに対応する
+`fiat-crypto-0.2.9` のprivate expanded source pointerがないためactual1で停止した。
+helper PID1554858はwait/reap後に不在、両stream実EOF。失敗のterminal
+`mint-burn-native13-ab-1022-root-stage-v1-census-external-terminal.json`
+SHA-256は`6b0b2b8d41a0f6f0a8ef37da9bd10475c5f3b9c1f8d08f4a56826f327fa73095`。
+この準備失敗は保持し、完全gateの製品結果やRELEASE成功へ付け替えない。
+配置の確認中であり、失敗した同じ実行の上書き・自動再試行は行っていない。
+
 新しいcompiler/driver outputsは元の専有external directoriesに生成し、source checkoutは
 全runtime・終了後照合・PID/cgroup/lease解放の後にcleanを確認して削除する。
-
-限定componentの成功だけで新mint/burn子条件・親M2/M3/M7を完了にしない。
+限定componentと完全gateだけで新mint/burn子条件・親M2/M3/M7を完了にしない。
 停止済み監査・ZeroShare WIP・partial persistent-write/anchor guest対象は再実行していない。
