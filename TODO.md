@@ -475,6 +475,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E202: 1021 fixtureの元transport上限拒否 | v2のCLI/operator/client全3 no-runはactual0。8役は実際の最終fresh:false producerへ結び付き、source/tool/全役の実SHA/full9不変を確認。M2 controllerはembedded program263,004Bが元上限262,144Bを超えているためactual1。tmpfs volumeだけ作成後にfinally cleanupし、コンテナとruntimeは未実行。`m2-m3-followup-component-v2-1021-root-failure-closed.json` (`21f7fda9`) | 実両EOF/wait/reap・同Invocation自然Status1・PID/CG不在をroot照合し、自己所有の空failedunitだけ停止。V1/V2の失敗と実生成物は保全。上限を増やさず、Python ASTを変えないcomment整理だけでサイズを直してから別の実行で検証する。後続TLS/完全requiredや親全体へ転用しない |
 
 | E203: c535の復旧鍵送金・historical body ACK喪失の実runtime | 同c535/treec439で元publication-genesis actual0、復旧済みA鍵のlive/restart実argv・A→B→A送信/各fee/nonce/owner/receipt/replayが成功。historical/empty/original TLSは各1 passed、remote TLS全15 passed。rootが全10実rawのSHA・EOF/wait/reap、source1221 full9/SHA・strict70/archive311/実生成物と別copy全8役・元producer/rawを再照合。同Invocation自然Status0・PID/CG不在後に自己所有の空unitだけ停止。`m2-m3-followup-component-v3-1021-root-qualified.json` (`6c347a5a`) | 元262144Bを上げず、Python AST同一のcomment移動でprogramを260747Bへ修正。Rust等1219 filesは同一で、6 actual0 compile commandの2ff生成履歴を保持する限定input bridge。5 runtimeはc535で新たに実行し、V1/V2 whole failureは保全。historical markerは保存済みstderrから照合し、rootの初回stdout-only判定ミスも保存。完全required/同sourceCIと親M2/M3は未完了 |
+| E204: final c535 literal npm ci + complete required | c535/treec439で元2 commandsがactual0/実両EOF/wait/reap。check-all 12,228.090秒、Rust147 summaries/4,399 passed/0 failed/43 ignored、CF13/28/10/15=66。rootがsource1221全full9/SHA・HEAD/tree/clean/set、strict70/CF2347/layout2725/archive311/wrappersとcurrent330 executable ELF・cache/target全snapshotを再照合。`m2-m3-followup-final-full-required-1021-root-qualified.json` (`fe1db840`) と同root-raw-qualified (`848d42cf`) | 原7 epoch END・e8 freeze/unlock・実1832B候補2件/同ID round3 ACK・8links、元35-role assertionを保つ。実timingはstderr、候補/ACKはstdoutから再導出。natural同Invocation Code1/Status0と全既知PID/capturedCG不在後、自己所有の空unitだけ停止。current target/cache再利用でありfreshとは呼ばない。限定2子条件のsource gate。親M2/M3・release/独立監査は未完了 |
+| E205: final c535 PR330 all8 hosted CI | [run39553580566](https://github.com/sunriselayer/sunrise-edge/actions/runs/39553580566) attempt1の元7 owners+aggregate全8が自然SUCCESS。actual checkout a84db307/treec439/ordered parents[c1,c535]、全8 raw 1,539,887B/SHA、Rust147 summaries/4,399 passed/0 failed/43 ignored、CF66、新旧TLS selector成功と元7epochs/e8候補2件/round3 ACKをroot照合。`ci330-final-1021-root-qualified.json` (`c712f86e`) | 旧2ff cancelledとcapacity停止、09:36のwatch終了code2/回収期限超過を保持。CIは11:17:56 UTCに自然完了し、再開後にread-onlyで初回raw回収。collector actual0/実EOF/wait/reapだがrecorderは同unit残存PID検出でStatus1。このwhole failureを成功扱いせず保存し、同Invocationの終了・当該PID/CG不在を別途照合した完了CI/rawの証拠。自己所有の空failedunitだけ停止。parserの診断stream/role集合の誤仮定も保存し、source/元assertion変更や再実行なし |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -1055,11 +1057,11 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     同じ既存recovery条件。復旧pathをcertified/後段ordered両worker configへ接続し、
     元のvote/ACK再送、fresh paid B、frontier署名、fence6 retentionを維持する。
     operatorからの新key読取拒否と旧path不使用もE194で成功。同sourceCIはE198、c1の完全requiredはE199で成功。全M2は未完了。
-  - [ ] 復旧した同一鍵によるgenesis Coinのlive送金:
+  - [x] 復旧した同一鍵によるgenesis Coinのlive送金:
     元M2のrecovery条件を細分化。既存の停止後復旧pathをgenesis A→B→AのA signerと
     取消後restartへ渡し、完全review/frame・実送信・各時点のowner/fee/nonce/receiptを確認する。
     旧historical signing-only controlと全既存上限/判定を保持し、鍵交換や全M2へ拡張しない。
-    E203でc535の実runtime成功。最終local完全required/同sourceCIの終端確認待ち。
+    E203でc535の実runtime成功。最終local完全requiredはE204、同sourceCIはE205で終端照合済み。
   - 検証の残件: E175/E178の旧default集計漏れは、d012の完了PTY共有加算と
     明示core/application別allocationで修正し、E179で元117の全path/value mapと上限を実証。
     旧一括267,120Bの失敗を保持し、未保存の過去出力や単一117成功へは拡張しない。
@@ -1101,11 +1103,11 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     同じ要求の再送で12 SQL/2 blob tables・4 portable collections・nonce/paid effectsが
     二重更新されないことをE193で検証した。同sourceCIはE198、c1の完全requiredはE199で成功。
     参照blob closureは空でpositive_blob_fault=false。VM/partial WAL障害・全M3の証拠へ拡張しない。
-  - [ ] 参照付きhistorical bodyを含むTLS ACK喪失と同一再送:
+  - [x] 参照付きhistorical bodyを含むTLS ACK喪失と同一再送:
     元M3のpositive blob/oracle条件を細分化。既存DR-0265の独立に固定した70KiB historical
     objectをtyped Create/receiptと共に準備し、4 replicasの完全SQL/portable/bodyと実TLS queryを確認する。
     空closureの元caseを保持。paid-produced blob publicationやpositive_blob_faultの合格にはしない。
-    E203でc535の新旧実runtime成功。最終local完全required/同sourceCIの終端確認待ち。
+    E203でc535の新旧実runtime成功。最終local完全requiredはE204、同sourceCIはE205で終端照合済み。
   - [x] [全connection喪失後の正規local writer交代](docs/architecture/decisions/0260-complete-owner-loss-local-writer-failover.md):
     retained-handleの元SIGKILL controlを保持し、全4 sole-ownerをSIGKILL/reapしてから
     次generationを起動する別controlを追加。全12 SQL tables・2 blob tablesと4 portable
@@ -1599,7 +1601,11 @@ Node24.19.0/cfを使用し、各実行は有限時間・単一ownerで管理す�
 
 最終source `c535c78f` / tree `c43985ca` の5 runtimeはE203で全成功。
 [Draft PR #330](https://github.com/sunriselayer/sunrise-edge/pull/330) に統合し、
-2026-10-21 06:33:52 UTCからliteral npm ci +完全requiredを単一ownerで実行中。
-元のcase/待機/上限を保持し、current target/cache再利用を明示して26300秒以内で管理する。
-同source CI [run 39553580566](https://github.com/sunriselayer/sunrise-edge/actions/runs/39553580566) も実行中。
-子2件は両gateの終端照合まで未完了、親M2/M3も未完了に保つ。
+2026-10-21 06:33:52 UTC開始のliteral npm ci +完全requiredはE204で終端成功。
+元のcase/待機/上限を保持し、current target/cache再利用を明示した。
+同source CI [run 39553580566](https://github.com/sunriselayer/sunrise-edge/actions/runs/39553580566) はE205で全8自然SUCCESSを照合した。
+今回の子2件は実装・実runtime・最終source完全required/CIがそろったため完了。
+全82 checkboxesは68完了/14未完了、旧20親は9完了/11未完了、選択8親は3完了/5未完了。
+M2の未達signing family/lifecycleとZeroShare、M3の未達physical/partial-write/独立anchor条件は残す。
+親M2/M3と他の親5項目を完了へ付け替えず、停止対象は再開しなかった。
+全既知自己所有プロセス/PID/cgroupは閉鎖済み。定期タスク・新たな8時間枠は作成していない。
