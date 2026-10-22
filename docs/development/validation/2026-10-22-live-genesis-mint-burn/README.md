@@ -66,8 +66,19 @@ rootは空の完了unitだけを停止した。
 
 ## 同sourceの残るgate
 
-[CI run 39775926228](https://github.com/sunriselayer/sunrise-edge/actions/runs/39775926228) は終端待ち。
-元7epochs/e8・8links/35roleのsource補足も、同CI終端後の別照合として残す。
+[CI run 39775926228](https://github.com/sunriselayer/sunrise-edge/actions/runs/39775926228) は
+17:14:36 UTCにattempt1の全8 jobsが自然successとなった。rootが8 raw logs計1,564,992Bと
+各実checkout58f7cef8/treeb60b28e8/parents[b389,8da]を照合した。
+Rust147 summariesは4,400/0/43、CF13/28/10/15=66。元7epochs/e8、同IDの1832B候補2件と
+round3 committed ACK、8link history testの実成功を確認した。
+35roleのsource補足は別照合として残す。root proof
+`ci332-mint-burn-1022-root-qualified.json` のSHA-256は
+`7a0ec1755309011558a39abba89d6bc9783ee25508eaff506b9b57fc0ce4ee14`。
+
+ログ回収の初回はsystemd scope/wait flagsの不整合、2回目はservice PATHのgh不足で停止した。
+両失敗は元pathに保持し、未知のcgroupを消失確認済みとは扱わない。修正した3回目の
+collectionはactual0・実両EOF/wait/reap。既知PID1666753/1666754/1666756/1666757/1666758と
+観測したservice cgroupの不在を確認した。元CI jobsの再実行は0。
 
 fresh 13-target RELEASE A/Bは16:19:17 UTCに開始し、726.639秒で自然終了した。
 rootが13組の全byte/mode/owner一致、保存26 ELFのfull9/hash・別inode・nlink1・0755/UID1000、
