@@ -4,7 +4,9 @@
 
 use crate::{
     business_cut::read_business_cut_archive,
-    business_pins::{BusinessPinInputs, BusinessPins, bounded, hex, operation, private_operation},
+    business_pins::{
+        BusinessPinInputs, BusinessPins, HistoryFloor, bounded, hex, operation, private_operation,
+    },
     common::{FlagSet, parse_hex_32},
     immutable_archive::ImmutableArchive,
     successor_artifacts::{CHAIN_FLAGS, SuccessorChainArtifactFiles, SuccessorChainInputs},
@@ -37,8 +39,11 @@ const FLAGS: &[&str] = &[
     "--validator-id",
     "--timeout-seconds",
     "--max-new-batches",
+    "--history-floor-epoch",
+    "--history-floor-height",
+    "--history-floor-digest",
 ];
-const HELP: &str = "Verified business installation only; leaves a CompleteInactive import and never performs readiness, Seal, activation or signing.\nModes: create-sqlite | resume-sqlite.\nRequire local pins: --chain-id --protocol-version --epoch --domain --suite epoch:id:tx:object:effects:code:config:certificate --genesis-manifest --expected-genesis-digest --ordered-history-dir.\nRequire: --cut-dir (complete saved cut), --state-db, --blob-db, --validator-id (destination-local namespace, not membership authority).\nOptional: --timeout-seconds 1..3600 (300), --max-new-batches 1..4096 (4096), and a successor chain (all five or none): --successor-max-links once plus one or more equal-count repeated --successor-plan-history-dir --successor-cut-dir --successor-manifest-history-dir --successor-certificate-dir links, up to that budget, pinning the saved cut's successor authority; no signer key is accepted here.\nCreation requires two fresh database paths outside the pinned cut and ordered-history archives; resumption opens existing verified import-origin state and writable blob schemas only. No normal bootstrap, source writer copying, repair, reset, private key or network endpoint. Every invocation independently reexecutes saved proofs and verifies the complete destination before CompleteInactive. Missing, corrupt, foreign or ordinary targets refuse.";
+const HELP: &str = "Verified business installation only; leaves a CompleteInactive import and never performs readiness, Seal, activation or signing.\nModes: create-sqlite | resume-sqlite.\nRequire local pins: --chain-id --protocol-version --epoch --domain --suite epoch:id:tx:object:effects:code:config:certificate --genesis-manifest --expected-genesis-digest --ordered-history-dir.\nRequire: --cut-dir (complete saved cut), --state-db, --blob-db, --validator-id (destination-local namespace, not membership authority).\nOptional: --timeout-seconds 1..3600 (300), --max-new-batches 1..4096 (4096), and a successor chain (all five or none): --successor-max-links once plus one or more equal-count repeated --successor-plan-history-dir --successor-cut-dir --successor-manifest-history-dir --successor-certificate-dir links, up to that budget, pinning the saved cut's successor authority; no signer key is accepted here.\nOptional, all three or none: --history-floor-epoch --history-floor-height --history-floor-digest, an operator-retained ordered-history position from an earlier independent verification. Refuses unless the verified current epoch matches exactly and the authenticated ordered history at that height has exactly that block digest; refusal-only, never checkpoint, state-root, latest-state, readiness or activation authority, and never read from the cut, history archive or successor artifacts being restored.\nCreation requires two fresh database paths outside the pinned cut and ordered-history archives; resumption opens existing verified import-origin state and writable blob schemas only. No normal bootstrap, source writer copying, repair, reset, private key or network endpoint. Every invocation independently reexecutes saved proofs and verifies the complete destination before CompleteInactive. Missing, corrupt, foreign or ordinary targets refuse.";
 
 /// Runs the same strictly pinned composition as the `business_import` binary.
 /// Destination file I/O starts only after independent raw-plan verification.
@@ -84,6 +89,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         4096,
     )?)?)
     .ok_or("zero new-batch limit")?;
+    let history_floor: Option<HistoryFloor> = HistoryFloor::parse_optional(&mut flags)?;
     flags.finish()?;
     if state_file == blob_file {
         return Err("state and blob database paths must be distinct".into());
@@ -111,6 +117,11 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         (None, None) => pin_inputs.load()?,
         _ => return Err("successor predecessor artifacts are incomplete".into()),
     };
+    // Compares only the history this load already authenticated; no
+    // destination path has been touched yet.
+    if let Some(floor) = &history_floor {
+        pins.require_history_floor(floor)?;
+    }
     let private: BusinessReconstructionPlan<'_> = pins.plan(private_operation()?);
     let saved: SavedBusinessCut = read_business_cut_archive(&private, &archive)?;
     let verified: VerifiedImportPlan = match pins.successor_authority() {

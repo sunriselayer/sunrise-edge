@@ -205,6 +205,17 @@ fn success(output: Output) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+fn floor_arguments(epoch: u64, height: u64, digest: &str) -> Vec<OsString> {
+    vec![
+        OsString::from("--history-floor-epoch"),
+        OsString::from(epoch.to_string()),
+        OsString::from("--history-floor-height"),
+        OsString::from(height.to_string()),
+        OsString::from("--history-floor-digest"),
+        OsString::from(digest),
+    ]
+}
+
 fn identity_fields(text: &str) -> Vec<&str> {
     text.split_whitespace()
         .filter(|word| {
@@ -591,4 +602,177 @@ fn compiled_verified_import_creates_reopens_and_reverifies_without_ordinary_serv
     )
     .unwrap();
     assert_eq!(after, before, "import never writes or fences its source");
+}
+
+#[test]
+fn compiled_import_history_floor_refuses_before_destination_and_accepts_authenticated_ancestor() {
+    let fixture: Fixture = Fixture::new();
+    fixture.freeze_and_complete();
+    std::fs::write(
+        fixture.directory.0.join("genesis.bin"),
+        &fixture.network.manifest_bytes,
+    )
+    .unwrap();
+    let (identity, ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
+        fixture.history();
+    assert!(
+        identity.through_height >= 1,
+        "fixture must produce at least one authenticated height"
+    );
+    let history: Directory = Directory::new("floor-history-parent");
+    let history_root: PathBuf = history.0.join("history");
+    fixture.write_history(&history_root, &identity, &ordered);
+    let pins: Vec<OsString> = pinned_arguments(&fixture, &identity, &history_root);
+    let source_state: PathBuf = fixture.directory.0.join("state-0.sqlite");
+    let source_blobs: PathBuf = fixture.directory.0.join("blobs.sqlite");
+    let cut: Directory = Directory::new("floor-saved-cut");
+    let mut export: Command = cut_command(&pins, &cut.0, "export-sqlite");
+    export.args([
+        "--state-db",
+        source_state.to_str().unwrap(),
+        "--blob-db",
+        source_blobs.to_str().unwrap(),
+        "--validator-id",
+        &hex(fixture.network.validators[0].validator_id.as_bytes()),
+        "--page-size",
+        "128",
+        "--chunk-size",
+        "1048576",
+        "--max-new-work",
+        "4096",
+        "--timeout-seconds",
+        "300",
+    ]);
+    assert!(
+        success(export.output().unwrap()).contains("business_cut=complete"),
+        "the actual compiled exporter must produce the saved cut",
+    );
+    let original_files: BTreeMap<String, Vec<u8>> = files(&cut.0);
+    let original_history_files: BTreeMap<PathBuf, Option<Vec<u8>>> = history_files(&history_root);
+    let incoming: ValidatorId = ValidatorId::new([0xF1; 32]);
+    let source_paths: [&Path; 2] = [source_state.as_path(), source_blobs.as_path()];
+    let destination: Directory = Directory::new("floor-import-destination");
+    let state_file: PathBuf = destination.0.join("state.sqlite");
+    let blob_file: PathBuf = destination.0.join("blobs.sqlite");
+    let epoch: u64 = fixture.network.epoch.get();
+    let tip_digest: String = hex(&identity.through_digest.bytes());
+    let interior_digest: String = hex(&ordered[0].descriptor.block_digest.bytes());
+    let zero_digest: String = hex(&[0u8; 32]);
+    let mut flipped: [u8; 32] = identity.through_digest.bytes();
+    flipped[31] ^= 1;
+    let fork_digest: String = hex(&flipped);
+    let negative_cases: [(u64, u64, &str, &str); 3] = [
+        (
+            epoch,
+            identity.through_height + 1,
+            zero_digest.as_str(),
+            "below the independent history floor",
+        ),
+        (
+            epoch,
+            identity.through_height,
+            fork_digest.as_str(),
+            "does not extend the independent history floor block",
+        ),
+        (
+            epoch + 1,
+            1,
+            interior_digest.as_str(),
+            "history floor epoch differs from the verified current epoch",
+        ),
+    ];
+    for (case_epoch, case_height, case_digest, expected_message) in negative_cases {
+        let mut attempt: Command = command(
+            &pins,
+            &cut.0,
+            &state_file,
+            &blob_file,
+            "create-sqlite",
+            incoming,
+            "4096",
+        );
+        attempt.args(floor_arguments(case_epoch, case_height, case_digest));
+        let output: Output = offline_output(attempt, source_paths);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected_message),
+            "unexpected stderr: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert!(!state_file.exists());
+        assert!(!blob_file.exists());
+        assert_eq!(files(&cut.0), original_files);
+        assert!(history_files(&history_root) == original_history_files);
+    }
+    // A partial flag set refuses before any file access, same as a foreign epoch.
+    let mut partial: Command = command(
+        &pins,
+        &cut.0,
+        &state_file,
+        &blob_file,
+        "create-sqlite",
+        incoming,
+        "4096",
+    );
+    partial.args([
+        OsString::from("--history-floor-epoch"),
+        OsString::from(epoch.to_string()),
+    ]);
+    let partial_output: Output = offline_output(partial, source_paths);
+    assert!(!partial_output.status.success());
+    assert!(
+        String::from_utf8_lossy(&partial_output.stderr)
+            .contains("must be supplied together or not at all")
+    );
+    assert!(!state_file.exists());
+    assert!(!blob_file.exists());
+    // The exact authenticated tip is accepted.
+    let mut accept_tip: Command = command(
+        &pins,
+        &cut.0,
+        &state_file,
+        &blob_file,
+        "create-sqlite",
+        incoming,
+        "4096",
+    );
+    accept_tip.args(floor_arguments(epoch, identity.through_height, &tip_digest));
+    let accepted: String = success(offline_output(accept_tip, source_paths));
+    assert!(accepted.contains("business_import=complete-inactive"));
+    // An interior authenticated ancestor is also accepted, on the completed destination.
+    let mut accept_interior: Command = command(
+        &pins,
+        &cut.0,
+        &state_file,
+        &blob_file,
+        "resume-sqlite",
+        incoming,
+        "4096",
+    );
+    accept_interior.args(floor_arguments(epoch, 1, &interior_digest));
+    let resumed: String = success(offline_output(accept_interior, source_paths));
+    assert!(resumed.contains("business_import=complete-inactive"));
+    let state_before: Vec<u8> = std::fs::read(&state_file).unwrap();
+    let blobs_before: Vec<u8> = std::fs::read(&blob_file).unwrap();
+    // A mismatched floor on resume refuses and leaves the destination unchanged.
+    let mut mismatched_resume: Command = command(
+        &pins,
+        &cut.0,
+        &state_file,
+        &blob_file,
+        "resume-sqlite",
+        incoming,
+        "4096",
+    );
+    mismatched_resume.args(floor_arguments(epoch, identity.through_height, &zero_digest));
+    let mismatched: Output = offline_output(mismatched_resume, source_paths);
+    assert!(!mismatched.status.success());
+    assert!(
+        String::from_utf8_lossy(&mismatched.stderr)
+            .contains("does not extend the independent history floor block")
+    );
+    assert_eq!(std::fs::read(&state_file).unwrap(), state_before);
+    assert_eq!(std::fs::read(&blob_file).unwrap(), blobs_before);
+    assert_eq!(files(&cut.0), original_files);
+    assert!(history_files(&history_root) == original_history_files);
 }
