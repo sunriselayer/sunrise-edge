@@ -753,6 +753,15 @@ impl NativeBlockingExecutor {
         self.observations.clone()
     }
 
+    /// Returns a trusted cancellation signal backed by this executor's own
+    /// stop state (DR-0222). `is_cancelled()` becomes true from the moment
+    /// `close` is called on this executor or any of its clones, independent
+    /// of permit admission; it never reflects a merely saturated pool.
+    #[must_use]
+    pub fn stop_cancellation(&self) -> Arc<dyn InvocationCancellation> {
+        Arc::new(StopCancellation(Arc::clone(&self.lifecycle)))
+    }
+
     fn try_acquire(&self) -> Result<lifecycle::BlockingPermit, TryAcquireError> {
         let result: Result<lifecycle::BlockingPermit, TryAcquireError> =
             self.lifecycle.acquire(&self.permits, &self.observations);
@@ -762,6 +771,17 @@ impl NativeBlockingExecutor {
             Err(TryAcquireError::Closed) => self.observations.0.blocking_closed.increment(),
         }
         result
+    }
+}
+
+/// Private [`InvocationCancellation`] backed by an executor's own stop
+/// state. Constructed only through [`NativeBlockingExecutor::stop_cancellation`].
+#[derive(Debug)]
+struct StopCancellation(Arc<lifecycle::BlockingLifecycle>);
+
+impl InvocationCancellation for StopCancellation {
+    fn is_cancelled(&self) -> bool {
+        self.0.is_closed()
     }
 }
 

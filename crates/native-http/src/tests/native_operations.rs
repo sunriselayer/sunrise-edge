@@ -226,3 +226,123 @@ async fn closed_admission_retains_shape_error_priority() {
     assert_eq!(health.status(), StatusCode::NO_CONTENT);
     executor.wait_drained().await;
 }
+
+#[test]
+fn stop_cancellation_reflects_close_and_is_shared_across_clones() {
+    let executor: NativeBlockingExecutor =
+        NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(1).unwrap()));
+    let cancellation = executor.stop_cancellation();
+    let cloned_cancellation = executor.clone().stop_cancellation();
+    assert!(!cancellation.is_cancelled());
+    assert!(!cloned_cancellation.is_cancelled());
+    executor.close();
+    assert!(cancellation.is_cancelled());
+    assert!(cloned_cancellation.is_cancelled());
+}
+
+#[tokio::test]
+async fn admitted_still_refuses_dispatch_before_acquire_when_already_closed() {
+    let executor: NativeBlockingExecutor =
+        NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(1).unwrap()));
+    executor.close();
+    let calls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let calls_signal: Arc<AtomicUsize> = Arc::clone(&calls);
+    let response: Response = publication::admitted(false, executor.clone(), move || {
+        calls_signal.fetch_add(1, Ordering::SeqCst);
+        StatusCode::OK.into_response()
+    })
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        to_bytes(response.into_body(), 128).await.unwrap(),
+        "blocking-admission-closed"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    executor.wait_drained().await;
+}
+
+/// DR-0222: a job already admitted (holds a permit) but still queued
+/// behind a saturated blocking thread pool must refuse before calling
+/// `work()` once `close` lands, releasing its permit without ever
+/// reaching storage; a job already inside `work()` still completes.
+/// `publication::admitted` is the sole dispatch point every successor,
+/// history and publication route shares, so this exercises every caller
+/// without needing a route-specific fixture.
+#[test]
+fn queued_admitted_work_refuses_after_stop_and_in_flight_work_completes() {
+    let runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let executor: NativeBlockingExecutor =
+            NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(2).unwrap()));
+        let observations: NativeHttpObservations = executor.observations();
+
+        let first_entered: Arc<Notify> = Arc::new(Notify::new());
+        let first_entered_signal: Arc<Notify> = Arc::clone(&first_entered);
+        let release: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        let first_release: Arc<(Mutex<bool>, Condvar)> = Arc::clone(&release);
+        let first = tokio::spawn(publication::admitted(false, executor.clone(), move || {
+            first_entered_signal.notify_one();
+            let (ready, wake): &(Mutex<bool>, Condvar) = &first_release;
+            let mut ready = ready.lock().unwrap();
+            while !*ready {
+                ready = wake.wait(ready).unwrap();
+            }
+            StatusCode::OK.into_response()
+        }));
+        first_entered.notified().await;
+
+        let second_calls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+        let second_calls_signal: Arc<AtomicUsize> = Arc::clone(&second_calls);
+        let second = tokio::spawn(publication::admitted(false, executor.clone(), move || {
+            second_calls_signal.fetch_add(1, Ordering::SeqCst);
+            StatusCode::OK.into_response()
+        }));
+        // Wait for the second job's own `try_acquire` (synchronous, inside
+        // its async wrapper) before closing, so this exercises an
+        // already-admitted job queued behind the one saturated blocking
+        // thread, not the separate dispatch-closed admission refusal.
+        timeout(Duration::from_secs(2), async {
+            while observations.snapshot().blocking_admitted < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        executor.close();
+        {
+            let (ready, wake): &(Mutex<bool>, Condvar) = release.as_ref();
+            *ready.lock().unwrap() = true;
+            wake.notify_all();
+        }
+
+        let second_response: Response = timeout(Duration::from_secs(2), second)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            to_bytes(second_response.into_body(), 128).await.unwrap(),
+            "invocation-cancelled-before-storage"
+        );
+        assert_eq!(second_calls.load(Ordering::SeqCst), 0);
+
+        let first_response: Response = timeout(Duration::from_secs(2), first)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first_response.status(), StatusCode::OK);
+
+        timeout(Duration::from_secs(2), executor.wait_drained())
+            .await
+            .unwrap();
+        let snapshot = observations.snapshot();
+        assert_eq!(snapshot.blocking_admitted, 2);
+        assert_eq!(snapshot.blocking_closed, 0);
+    });
+}
