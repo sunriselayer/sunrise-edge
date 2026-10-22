@@ -1638,3 +1638,10 @@ remote SHAを照合した。保存用WIPを実装の統合/検証成功として
 通常の差分review・Node24構文・rustfmt・diff checkは成功した。
 [CI run 39706512959](https://github.com/sunriselayer/sunrise-edge/actions/runs/39706512959)
 と同sourceの実runtime/完全requiredは検証中であり、新2件はまだ完了にしない。
+
+追加確認で、新M3 selectorがcontext照会後にrequests=0を要求する検査順序の誤りを発見した。
+旧CIのrust-tests rawも該当箇所の2対0だけの失敗を示した。失敗rawと旧run全体cancelledを
+保全し、成功へ転用しない。照会前へ元の3検査を移した `503ca159` / tree `1fd4ec81`
+をcommit/pushし、remote HEAD一致を照合した。
+修正sourceの[run 39707845153](https://github.com/sunriselayer/sunrise-edge/actions/runs/39707845153)
+が自動開始した。検証中のため新2件は引き続き未完了。
