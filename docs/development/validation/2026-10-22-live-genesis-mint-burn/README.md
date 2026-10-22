@@ -219,6 +219,20 @@ SHA-256 `c5b6d2c67d81565a044696c4e1301b2431d1eb035f91a1e000206bc8668555a2`。
 runtime-attempt3はこのcontrol revision名であり、製品テストを3回走らせたという意味ではない。
 
 本体は17:40:29 UTCに開始し、Invocation `dea2f2e0729b40eb911caee3e4d7f4e5`、
-owner1676545/owning capture1676533/root wrapper1676418で実行中。元6GiB/swap0/CPU4/tasks512、
+owner1676545/owning capture1676533で継続している。元6GiB/swap0/CPU4/tasks512、
 18,000秒work・18,600秒unit・45秒stop・8MiB shared logと全selectorsを保持している。
+19:12:15 UTC時点でrecurringの7epochs中6epochsが完了し、epoch7を実行中。
 実行中の部分rawを受け入れ証拠にせず、終了と全既知PID/cgroup解放後に最終照合する。
+
+19:10 UTCに最外側のtool session51431が143で終了し、root wrapper1676418は不在となった。
+wrapper個別exitと完全なowning terminalは未観測であり、再構成しない。元のcapture1676533は
+user-systemd1815へreparentされ、同じproduct invocationの処理を継続した。
+19:13:21 UTCから、同じcaptureの所有pipeをread-onlyで読む有限drain serviceへ監視を移した。
+このdrainはattachment以降のremaining EOF/pidfd/proc不在だけを記録し、wrapper終了後から
+attachmentまでの外側stream区間は未観測とする。productを再実行していない。
+
+実行中にcapture側の集計順序誤りも検出した。helperの元10 driver順とtuple countsは正しいが、
+captureへ固定したCOUNTSはsorted/listへ変換されており、run終了後の集計が失敗する見込み。
+稼働中のcontrolsと元判定を変更せず、元の失敗を保存する。終了後readerだけで元helperの順序・
+型を復元し、実12ケースの全raw/EOF/wait・現在inputs・process/cgroup終了を別途照合する。
+最外側の失敗や未観測区間を成功へ読み替えず、製品結果を確認するまで子条件を閉じない。
