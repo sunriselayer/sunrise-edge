@@ -498,6 +498,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E216: current Cの元12ケース用driver compile | 初回自己停止を保持した別attempt2が自然actual0/外側実両EOF/wait/reap、798.119秒。元2 Cargo commandsもmerged stdout/stderrの実EOF/wait・actual0。13 debug bins/10 integration driversを今回のCargo JSON/genuine C package/manifest/srcPath/元dev-test opt2 profileへ対応付け、実体hash/metadata、C1224 source inputs、23 configured/resolved toolsと4 own wrapper hashesをrootで照合。proof `8a429482` | Invocation `733a0d87`、owner1648518/launcher1648516と既知PID/capturedCG不在、終了proof `1d8f5d21`。元のselector・上限は維持。テスト本体実行0、一覧観測と元12 runtime/CLI fixtureは後続。最初の失敗・部分target・binding/reader準備の失敗記録を保持し、子条件・親5件へ加算しない |
 | E217: current driverの実テスト一覧 | 元10 driversの通常/ignored一覧20 commandsが全actual0・実両EOF/wait/reap。rootで全40 raw hash/argv/nameを照合し、通常99・ignored3、元のexact ignored2件はconditional_readiness_sqliteに存在すると確認。local_tlsは18/1。通常99+指定2=101。proof `21fa93bb` | 10 ELFの現在hash/full9がbefore/afterと一致。owner1663357/launcher1663355と全20 child PID/capturedCG不在。一覧だけでテスト本体成功には数えない。初回root readerのmode schema比較ミスを保持し、permission bitsへ修正して照合。list再実行0 |
 | E218: mint/burn同sourceの全8 CI | run39775926228 attempt1が自然全8 success。checkout58f7cef8/treeb60b28e8/parents[b389,8da]と8 raw logs計1,564,992Bをroot照合。Rust147 summaries=4,400/0/43、CF13/28/10/15=66。元7epochs/e8・同IDの1832B候補2件/round3 committed ACKと8link test成功も照合。proof `7a0ec175` | ログ回収のscope/wait不整合とPATH不足の2失敗を保持。3回目collectionはactual0・実両EOF/wait/reap、全既知PID/capturedCG不在。CI job再実行0。35roleのsource補足とRELEASE runtime/CLI fixtureは別に残り、子条件・親5件へ加算しない |
+| E219: current RELEASE CLIのpublication-genesis | 新しい8daのNative13 RELEASE CLIと同source/S由来のretained harnessを使用。fresh2 ELF/library inventoryはactual0・root `d9dfe9e6`。元profileを1回実行しactual0/外側実両EOF/wait/reap、5.632秒。73 recursiveTrue pathsが元sourceの全期待pathと一致し、復旧key live/restart・6/6/4/2と2/2/0/2・9e/9f signing-only controlsを保持。executor proof `bde4f5cb` | Invocation `af003ec8`、保存live ExecStartは実v3 ownerと一致。owner1669845/launcher1669843・capturedCG不在、Node所有container_removed=true。C/S1224 files/Git/full9のempty-diff bridgeとgenuine S Cargo provenanceを保持。元12 runtimeと親M2/M7は別条件 |
+| E220: local/CIの元protocol assertions | E213のlocal完全requiredとE218の全8 CIの実rawを照合し、元7epochs/e8の1832B候補2件・同ID/round3 committed ACKを確認。元12 product filesはc535から8daまで不変で、成功した8link driverのsourceが3+4*8=35rolesをassertすることを確認。root `4a3ddf6b` | stdoutのpath数からrole数を推測しない。旧readerのFULL state label schema相違を保持し、固定済み実proofの_8DA1へ修正。製品run再実行0。物理fault・独立監査・RELEASE全体・親5件の完了を主張しない |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -1094,8 +1096,9 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     既存のlive mint・whole-Coin burnと取消後restartへ接続する。9e/9fのhistorical signing-only
     controlsと元の全操作/判定/上限を保持し、新operation・identity・authority・profileを追加しない。
     source `8da1d620` / tree `b60b28e8` をcommit/push済み。E211のsyntax/AST/transport照合は成功、
-    実UID/PTY fixtureはE212、同source完全requiredはE213でroot照合済み。CIとrelease
-    qualificationも未完了。子条件・親M2は開いたまま。
+    実UID/PTY fixtureはE212、同source完全requiredはE213、全8 CIはE218でroot照合済み。
+    E215のNative13 A/B、E219のRELEASE publication fixture、E220の元protocol補足も成功。
+    元12 RELEASE runtimeは残るため、子条件・親M2は開いたまま。
   - 検証の残件: E175/E178の旧default集計漏れは、d012の完了PTY共有加算と
     明示core/application別allocationで修正し、E179で元117の全path/value mapと上限を実証。
     旧一括267,120Bの失敗を保持し、未保存の過去出力や単一117成功へは拡張しない。

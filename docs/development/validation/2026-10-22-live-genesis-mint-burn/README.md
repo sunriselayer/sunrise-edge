@@ -100,7 +100,7 @@ configured metadata/link target/resolved path/実体metadata/hashを照合して
 | `mint-burn-native13-ab-1022-lean-c-v1-ab-parent-qualified.json` | `9da5ae4d696f8ed39ccc38e65600689e3adf9eb3e55ccc0255037228ec262e14` |
 | `mint-burn-native13-ab-1022-lean-c-v1-ab-parent-consumer-view-qualified.json` | `f13edfd88520628db5cf433981fefdd7e3b113d62c3b6a311a37f266d8cfe691` |
 
-対応するCLI fixtureと元12 RELEASE runtimeは未実行。
+対応するCLI fixtureは後述のE219で成功。元12 RELEASE runtimeは未実行。
 元のclean source/no-target/no-extra guardを守り、既存のS target/node_modulesを移動しないため、
 完全gate終了後に同8daの専用checkout Cを1個作成した。
 追跡sourceのlogical bytesは26,617,053で、cache/target/node_modulesをコピーしていない。
@@ -173,3 +173,34 @@ SHA-256は `21fa93bbc0e48f4e2dfb6cc48a7a00094c9518892e919d53f0066b857f24e4b3`。
 全runtime・終了後照合・PID/cgroup/lease解放の後にcleanを確認して削除する。
 限定componentと完全gateだけで新mint/burn子条件・親M2/M3/M7を完了にしない。
 停止済み監査・ZeroShare WIP・partial persistent-write/anchor guest対象は再実行していない。
+
+## RELEASE publication fixtureと元protocol補足
+
+同8daのNative13 A/B lane A CLIと、genuine Sの同sourceから生成したretained libtest harnessを
+使用した。C/S全1224 Git blobs・body SHA・full9、空のsource差分、実Cargo JSONのS manifest/srcPath、
+retained119efのhash・別inodeを確認した。Sの生成元をCへ読み替えていない。
+
+fresh2 ELF/LDD inventoryは0.601秒でactual0・実両EOF/wait/reap。元1GiB/swap0/CPU1/tasks128の
+owner cgroup limitsと既知PID1668080/1668082/1668095/1668100の不在、capturedCG消失を確認した。
+1秒pollより短く、外側live InvocationID/ExecStartは未観測と明記する。通常の子process argv、
+固定owner、実raw/終端と現在のsource/binaries/libraries/toolsを照合した。
+root inventory proofは `mint-burn-publication-genesis-release-1022-lean-c-v2-inventory-parent-qualified-1022.json`
+SHA-256 `d9dfe9e61acb233c8ccab8da5a1d755727588e2bfd9abf8237de3496dbc1669e`。
+準備時のJSONLを単一JSONとして読む失敗は保持し、明示JSON inputsだけをparseするreaderへ修正した。
+
+元publication-genesis profileの1回実行は5.632秒、actual0・実両EOF/wait/reapで自然終了した。
+73 recursiveTrue pathsは元source期待pathと完全一致。mint_burn.live_key_path/restart_key_pathは
+復旧pathで、live6/6/4/2とrevoked restart2/2/0/2、9e/9f signing-only controlsも維持した。
+出力190,217Bは元262,144B上限内。保存live ExecStartは実v3 ownerとprofileに一致し、
+Invocation `af003ec8d3384c90aefd006b2abcccce`、owner1669845/launcher1669843とcapturedCGの不在を確認した。
+container_removed=trueは元Node fixture所有のcleanup postconditionであり、追加Docker queryの実施とはしない。
+executor proof `mint-burn-publication-genesis-release-1022-lean-c-v2-publication-executor-actual-qualified-1022.json`
+SHA-256 `bde4f5cb5102fa1e4f7a8494aff70bc514c827b4b3b2370f67c0192619c6ce2e`。
+
+local完全required/全8 CIのrawは元7epochs/e8の1832B withdrawal2件、全epoch同IDとround3 committed ACKを
+保持した。元12 product filesはc535から8daまで不変。成功した8link driverの元sourceが
+3+4*8=35rolesをassertすることを照合し、stdout path数からrole数を推測していない。
+補足proof `genesis-mint-burn-1022-original-required-protocol-qualified.json` のSHA-256は
+`4a3ddf6b10626dde55e1e017fa6d17d4c61cb01e06f52c6747f2d9ba787adec9`。
+最初の補足readerのstate label schema相違は保持し、固定済み実FULL proofの_8DA1へ修正した。
+製品runは再実行していない。元12 RELEASE runtimeが残るため、mint/burn子条件はまだ閉じない。
