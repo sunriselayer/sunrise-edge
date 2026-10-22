@@ -11,7 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInflateRaw } from "node:zlib";
 
-export const NODE_VERSION = "v22.20.0";
+export const NODE_VERSION = "v24.19.0";
 export const RUST_VERSION = "1.97.1";
 export const TARGET = "x86_64-unknown-linux-gnu";
 export const NAMES = Object.freeze([
@@ -215,7 +215,7 @@ export function verifyTools(ctx) {
   }
   for (const name of ["cargo", "rustc", "rustdoc", "cc"]) requireThat(!/rustup|ccache|sccache/.test(path.basename(tools[name].resolved)), "Toolchain/compiler/cache wrappers are forbidden");
   tools.node.version = textProbe(ctx, ctx.args.node, ["--version"]);
-  requireThat(tools.node.version === NODE_VERSION, "Node version must be 22.20.0");
+  requireThat(tools.node.version === NODE_VERSION, "Node version must be 24.19.0");
   tools.git.version = textProbe(ctx, ctx.args.git, ["--version"]);
   tools.cargo.version = textProbe(ctx, ctx.args.cargo, ["-vV"]);
   tools.rustc.version = textProbe(ctx, ctx.args.rustc, ["-vV"]);
@@ -1348,7 +1348,7 @@ async function orchestrate(args, { fixture = false, doubles = {}, callerEnv = pr
   return manifest;
 }
 export async function runNativeReleaseEvidence(argv) {
-  requireThat(process.platform === "linux" && process.arch === "x64" && process.version === NODE_VERSION, "Requires Linux x86_64 and installed Node 22.20.0");
+  requireThat(process.platform === "linux" && process.arch === "x64" && process.version === NODE_VERSION, "Requires Linux x86_64 and installed Node 24.19.0");
   requireThat(process.execArgv.length === 0, "Undeclared Node execution flags");
   return orchestrate(parseCli(argv)); // No production CLI bypass or injected doubles.
 }

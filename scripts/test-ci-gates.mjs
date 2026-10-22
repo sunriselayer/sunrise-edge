@@ -236,8 +236,11 @@ function checkWorkflow(text, profile) {
     "CARGO_INCREMENTAL: \"0\"", "CARGO_PROFILE_DEV_DEBUG: \"0\"", "CARGO_PROFILE_TEST_DEBUG: \"0\"",
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
-    "node-version: 22.20.0",
   ]) assert(text.includes(value));
+  // DR-0243: every lane pins Node 24.19.0 except the isolated SDK relay lane,
+  // which retains the unchanged DR-0205/0207 Node 22.20.0 pin.
+  assert.deepEqual([...text.matchAll(/node-version: (\S+)/g)].map((m) => m[1]),
+    pg ? ["24.19.0"] : ["24.19.0", "22.20.0", "24.19.0", "24.19.0", "24.19.0"]);
   if (!pg) for (const value of [
     "denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed", "deno-version: 2.9.4",
     "cargo install wasm-bindgen-cli --version 0.2.127 --locked", "npm ci --prefix adapters/cloudflare-workers",
@@ -280,10 +283,14 @@ for (const [profile, members, path] of profiles) {
     assert.throws(() => checkWorkflow(workflow.replace('SUNRISE_EDGE_TEST_POSTGRES_CRASH_REQUIRED: "1"', 'SUNRISE_EDGE_TEST_POSTGRES_CRASH_REQUIRED: "0"'), profile));
     assert.throws(() => checkWorkflow(workflow.replace("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request:\n"), profile));
     assert.throws(() => checkWorkflow(workflow.replace(" --profile postgres", ""), profile));
+    assert.throws(() => checkWorkflow(workflow.replace("node-version: 24.19.0", "node-version: 22.20.0"), profile));
   } else {
     assert.throws(() => checkWorkflow(workflow.replace(sdkNodeSetup, ""), profile));
     assert.throws(() => checkWorkflow(workflow.replace(sdkNodeSetup,
       sdkNodeSetup.replace("22.20.0", "26.9.0")), profile));
+    // DR-0243: a stray Node 22 pin in a migrated (non-SDK) lane must be refused,
+    // not silently accepted alongside the isolated SDK lane's own 22.20.0 pin.
+    assert.throws(() => checkWorkflow(workflow.replace("          node-version: 24.19.0\n", "          node-version: 22.20.0\n"), profile));
     for (const extra of ["  SUNRISE_EDGE_TEST_POSTGRES_URL: unused\n", "  services:\n    postgres: unused\n"]) {
       assert.throws(() => checkWorkflow(workflow.replace("env:\n", `env:\n${extra}`), profile));
     }
