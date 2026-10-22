@@ -96,8 +96,10 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 
 2026-10-22追記: 復旧済み同一鍵のgenesis split/mergeと、参照body付きACK喪失後の
 正常再起動・同一要求再送の2子条件を、同じb389 sourceのE206/E208/E209で完了しました。
-現行チェックボックスは **84個中70個完了・14個未完了**。残る14個はコード・検証の親5件、
-安全判定で停止中の子3件、公開準備の親6件です。旧20親項目の9完了/11未完了は変わりません。
+同日の次作業として、元M2 recovery条件からgenesis mint/burnのlive復旧鍵consumerを
+1子項目へ細分化しました。現行チェックボックスは **85個中70個完了・15個未完了**。
+残る15個はコード・検証の親5件、停止中の子3件、検証中のmint/burn子1件、公開準備の親6件です。
+旧20親項目の9完了/11未完了は変わりません。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
 単体テストが通ること、公開できることは別です。混在していたM2/M4/M5の
@@ -487,6 +489,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E207: b389の完全required本体成功・環境固定postcheck失敗 | literal npm ci と ./scripts/check-all.sh はともにactual0/実両EOF/wait/reap。check-all 12,539.812秒、Rust147 summaries/4,400 passed/0 failed/43 ignored・CF13/28/10/15=66、新M3 selectorもok。source1223の全SHA/metadata・clean/HEAD/treeと全9 raw hashを閉鎖後に照合。read-only raw/source evidence `04c18cf7`、terminal `39bcc74d`、root tool-drift diagnosis `5c176e28` | ownerは終了時の固定tool照合でFileNotFoundErrorとなり、whole gateはFAILEDのまま保全。開始時Deno2.9.5/Python3.14.7のCellar実体が消失し、終了後aliasはDeno2.9.8/Python3.15.0へ変更。変更原因や実行中の全tool identity不変は未証明。固定guardを免除せず、ツールの復元・置換・再導入は行わない。close proofはCLOSED_FAILED、全既知PID/capturedCG不在・source/resource phase解放済み。全8 CIと新2子条件の最終資格は未完了 |
 | E208: final b389 PR331 all8 hosted CI | [run39712537120](https://github.com/sunriselayer/sunrise-edge/actions/runs/39712537120) attempt1の全7 owners+aggregateが自然SUCCESS。actual checkout ec5ed35e/tree dfdc63d5/ordered parents[c535,b389]、全8 raw 1,564,511B/SHA、Rust147 summaries/4,400 passed/0 failed/43 ignored、CF13/28/10/15=66、新M3 selector okと元7epoch END/e8の1832B候補2件・同ID round3 committed ACKをroot照合。`ci331-final-v4-1022-root-qualified.json` (`e6300a0b`) | 元collectorを単発・独立有限scopeで実行し、actual0/実両EOF/wait/reap・collector/owner PID/capturedCG不在を確認。8link history testもactual ok。source phase解放後に元12 sourceのc535→b389不変・8links/35role assertionsを補足照合 (`c04ddbe3`)。stdoutのpath数から推定しない。旧observer143と2回の旧閉鎖記録は保持。新2子条件はE206/E208/E209の同source照合で完了し、親M2/M3は未完了 |
 | E209: final b389の新固定profileでのliteral npm ci + complete required | Deno2.9.4の公式SHA固定task-local binaryと既存system Python3.14.8へ4 tool rolesを一対一bindingし、元guardを維持。両commands actual0/実両EOF/wait/reap、npm ci 1.698秒・check-all 10,227.685秒。Rust147 summaries/4,400 passed/0 failed/43 ignored・CF13/28/10/15=66。終了後にsource1223全full9/SHA・HEAD/tree/clean/set、2396 tool/seed hashes・67 strict/3 aliases・CF2347/layout2725、311 archives・5 wrappers・7 directoriesとcache/target/312実ELFをroot再照合。`m2-m3-stable-full-required-1022-root-qualified.json` (`7964867a`) | 元7 epoch END/e8の1832B候補2件・同ID round3 committed ACKと、元8links/35role assertionsをlocal/CIで照合 (`m2-m3-next-1022-original-required-protocol-qualified.json`, `c04ddbe3`)。自然同Invocation Status0・全既知PID/capturedCG不在・source/resource phase解放を確認。target/cacheは明示reuseでfreshとは呼ばない。E207の旧whole FAILEDと準備V1/readerの書式誤仮定は保存し、product再実行や元判定の変更へ混同しない。E206/E208と合わせ今回の2子条件だけを完了。親M2/M3・release/独立監査・公開判断は未完了 |
+| E210: ordinary M3 coverageのsource/既存結果対応 | b389の全12 SQL tables・2 blob tables・4 portable kinds・70KiB historical body・reopen/fencing/ACK loss/replayを[固定記録](docs/development/validation/2026-10-22-m3-ordinary-coverage/README.md)へ対応付けた。rootが5 product file blobsと8daでの同一bytes、12 table名とE209実stdoutの5 named SQLite controlsのactual okを再照合。`m3-ordinary-coverage-map-1022-root-qualified.json` (`85574b21`) | 新しいruntime実行0。全table非空やphysical fault、positive_blob_fault/paid-produced publication、全M3の証明ではない。停止中のpartial write/anchor guest等は除外・未達のまま。追加の通常assertion不足は特定せず、対応表のみを理由とする再実行はしない |
+| E211: live recovered-key genesis mint/burn source | `8da1d620` / tree `b60b28e8` の4 modified/1 added files。既存restored same-A keyを元live mint/burn・revoked restartへ接続し、path attributionを追加。Node24.19.0 parser/embedded Python AST/diff-check成功、raw247194/262144B・bootstrap55325/65536B、transport関数はb389とbyte同一。通常の狭いcorrectness checkも具体的regressionなし。DR-0280へ元契約の細分化を記録 | source-only。元6/6/4/2とrestart2/2/0/2・historical9e/9f・selectors・上限・authority/profileを保持。実UID/PTY・同source完全required/CI/releaseは未完了で、b389のE206/E208/E209を新source成功へ借用しない |
 
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
@@ -1078,6 +1082,12 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     新identity・authority・profileを追加せず、実runtimeと最終source完全required/CIで確認する。
     E206の実runtime、E208の全8 CI、E209の新固定profileでのlocal完全requiredを同b389で照合済み。
     E207の固定tool postcheck失敗は保全。元の全条件を維持し、この子条件だけを完了する。
+  - [ ] 復旧した同一鍵によるgenesis mint/burnのlive操作:
+    元M2のfamily別recovery条件の続き。既存publication recoveryで停止後に復旧した同一A鍵を、
+    既存のlive mint・whole-Coin burnと取消後restartへ接続する。9e/9fのhistorical signing-only
+    controlsと元の全操作/判定/上限を保持し、新operation・identity・authority・profileを追加しない。
+    source `8da1d620` / tree `b60b28e8` をcommit/push済み。E211のsyntax/AST/transport照合は成功、
+    実UID/PTY fixture・同source完全required/CIとrelease qualificationは未完了。親M2は開いたまま。
   - 検証の残件: E175/E178の旧default集計漏れは、d012の完了PTY共有加算と
     明示core/application別allocationで修正し、E179で元117の全path/value mapと上限を実証。
     旧一括267,120Bの失敗を保持し、未保存の過去出力や単一117成功へは拡張しない。
@@ -1158,6 +1168,10 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     supporting mechanism2の準備sourceも未実行で保持する。
     exact50fbのENOSPCはE169、通常conformance/TLS/完全required/CIはE156/E164/E167/E168で
     照合済み。停止済みの当該partial persistent write条件と全M3は未完了。
+  - E210の[通常SQLite coverage記録](docs/development/validation/2026-10-22-m3-ordinary-coverage/README.md)で、
+    全12 SQL tables・2 blob tables・4 portable collections・positive historical bodyと通常reopen/fencingを
+    b389のsource/実結果へ対応付けた。表の非空やphysical faultを主張せず、追加の通常assertion不足は
+    特定されていない。この対応表だけを理由とするruntime再実行や親M3の完了は行わない。
   - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。
     trait reply-loss、process SIGKILL、power/host/media/fsync faultは別証拠。
     全12 SQL tables・4 portable collections・positive blob/oracleを省略しない。
@@ -1724,3 +1738,10 @@ rootの元protocol補足はlocal/CIの7epochs/e8候補2件/1832B/同ID round3 AC
 製品source/selector/上限や検証結果は変更せず、製品の再実行も行っていない。
 E206/E208/E209が同b389でそろったため、今回のM2/M3各1子条件を完了とする。
 残件は14チェック (コード・検証の親D02/M1/M2/M3/M7、停止中の子3件、公開準備の親6件)。
+
+2026-10-22の次作業: Cloudflareのsecurity-audit skillをuser領域へ導入し、upstream
+`c1c8a8c1471069fb0e188eeaff69b8e8db6564a8` の全20 files/Git blobs一致を確認した。
+これはtool導入であり監査結果ではない。D02/M1の停止済み独立監査を別skill/modelへ
+付け替えて再試行せず、他の停止対象も保持する。新automationや作業worktree/cacheコピーは作らない。
+M2は8daの実fixture/完全required/CI、M3はE210のcoverage対応、M7はM2変更確定後の
+同source 13-target A/B・元12 RELEASE runtime admissionを進める。rootだけがこの表を更新する。
