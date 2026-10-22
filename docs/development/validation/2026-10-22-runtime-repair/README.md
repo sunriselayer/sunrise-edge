@@ -1,8 +1,8 @@
 # Task-local validation runtimes
 
 The previous full-required attempt completed both product commands, then failed
-its immutable-tool postcheck after Homebrew removed its pinned Deno/Python
-files. Preserve that failed attempt; a new profile must pass its own before/after
+its immutable-tool postcheck after its pinned Homebrew Deno/Python files
+disappeared. Preserve that failed attempt; a new profile must pass its own before/after
 checks.
 
 `prepare-deno.py` downloads the exact
