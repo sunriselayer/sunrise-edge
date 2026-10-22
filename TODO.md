@@ -1658,3 +1658,9 @@ local V3は同ef92のfmt/clippyと全5 buildがactual 0、EOF/wait/reapを確認
 数えない。decompressed Pythonは261654Bで元262144B以内だったが、別の圧縮transport上限に
 達した。失敗rawとPID/cgroup解放を保全し、実行内容/判定/両上限を保ったコメント配置修正を行う。
 CIのrust-tests成功は確認したが、追加2件の最終source全体資格は引き続き未完了。
+
+`b3898434` / tree `dfdc63d5` は説明コメントだけをembedded Pythonの外へ移し、commit/push済み。
+rootがPython AST/token列の一致とbootstrap/driver部分の不変を別途確認した。
+Node24.19.0の実圧縮ではraw 246128/262144B、bootstrap 54837/65536Bで両上限内。
+ef92のCIはhead更新で自動cancelledとなったため、6 job成功を最終source全体へ転用しない。
+新sourceの実runtime/完全required/全8 CIは引き続き検証対象とする。
