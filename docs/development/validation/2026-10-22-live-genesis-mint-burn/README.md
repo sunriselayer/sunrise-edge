@@ -69,8 +69,27 @@ rootは空の完了unitだけを停止した。
 [CI run 39775926228](https://github.com/sunriselayer/sunrise-edge/actions/runs/39775926228) は終端待ち。
 元7epochs/e8・8links/35roleのsource補足も、同CI終端後の別照合として残す。
 
-fresh 13-target RELEASE A/Bは16:19:17 UTCに開始した。対応するCLI fixtureと
-元12 RELEASE runtimeは未実行。A/Bは実終了・生成物照合待ちであり、成功には数えない。
+fresh 13-target RELEASE A/Bは16:19:17 UTCに開始し、726.639秒で自然終了した。
+rootが13組の全byte/mode/owner一致、保存26 ELFのfull9/hash・別inode・nlink1・0755/UID1000、
+実Cargo JSON、C全1224 files/Git blobs、23 tools、311 archive/manifest/marker inputsを照合した。
+Nativeが選択した231依存の10,017 files/122,049,003 bytesは、archive payloadとの一致も確認した。
+この選択範囲を、未選択依存のexpanded code全体へ拡張しない。
+実両EOF/wait/reap、owner1607616/launcher1607614と既知PID不在、captured cgroup消失、
+4 compiler/temp directoriesとsource leaseの解放まで確認した。
+
+最初の終了後readerは、固定済みconfigured tool alias `/usr/bin/cc` を通常証跡用の
+no-follow readerへ渡して停止した。この失敗を保持し、明示されたtool rolesだけについて、
+configured metadata/link target/resolved path/実体metadata/hashを照合して読むよう修正した。
+証跡/sourceのno-follow guardと元の全判定は保持する。修正readerのactual0を確認し、
+ビルドは再実行していない。
+
+| 証跡 | SHA-256 |
+| --- | --- |
+| `mint-burn-native13-ab-1022-root-postclose-v2-qualified-fetch-reader2-qualified.json` | `c27ecbe5c223c3d0a4857b36efbfcd681d87a1369703faca813f7d074fa1ca14` |
+| `mint-burn-native13-ab-1022-lean-c-v1-ab-parent-qualified.json` | `9da5ae4d696f8ed39ccc38e65600689e3adf9eb3e55ccc0255037228ec262e14` |
+| `mint-burn-native13-ab-1022-lean-c-v1-ab-parent-consumer-view-qualified.json` | `f13edfd88520628db5cf433981fefdd7e3b113d62c3b6a311a37f266d8cfe691` |
+
+対応するCLI fixtureと元12 RELEASE runtimeは未実行。
 元のclean source/no-target/no-extra guardを守り、既存のS target/node_modulesを移動しないため、
 完全gate終了後に同8daの専用checkout Cを1個作成した。
 追跡sourceのlogical bytesは26,617,053で、cache/target/node_modulesをコピーしていない。
@@ -101,9 +120,17 @@ A/B生成物やRELEASE runtimeの成功ではない。
 | `mint-burn-native13-ab-1022-root-stage-v1-census-attempt2-external-terminal.json` | `8664a39b01d90a7f777902234a73577fbc755f4f69c28db0eb69e9dcfc181864` |
 | `mint-burn-native13-ab-1022-root-stage-v1-root-input-review.json` | `2c56d2ff6c02462b488eceeceb84c0c214dcfa7a570aae8a9cae06296120bf04` |
 
-A/Bは元8GiB/swap0/CPU4/tasks512・7200秒の上限、13 targets・2 fresh compiler lanesを維持する。
-Invocationは `1d02e0c3983e4c51b79f01e0a43b84d2`、開始時owner PID1607616。
-このproducerがC/cache/tools/targetを専有し、終了・PID/cgroup解放まで他writerやbody readerを作らない。
+A/Bは元8GiB/swap0/CPU4/tasks512・7200秒の上限、13 targets・2 fresh compiler lanesを維持した。
+Invocationは `1d02e0c3983e4c51b79f01e0a43b84d2`。実行中はC/cache/tools/targetを専有し、
+終了・PID/cgroup解放後にrootの終了後照合を行った。
+
+元12ケース用driver準備の初回は、監視captureに旧owner名のexpressionが残っていたため、
+開始直後に当該unitだけを停止した。Invocation `37a9f4c6c5054dacb3b384a1e9f06d1e`、
+owner1643571と既知child/launcherの不在・captured cgroup消失を確認した。
+launcher exit0とは別に、実mainはSIGTERM15、最初のCargo commandのexitはnullであり、
+コンパイル成功に数えない。部分target/raw/元controlsを保存して、別attemptの修正を準備する。
+終了記録 `mint-burn-original12-1022-lean-c-v2-driver-attempt1-root-closed-failed.json` の
+SHA-256は `f0291de81dcdca07431e39897ecd26210789de9e5036845ae5d9ae7d2c01389b`。
 
 新しいcompiler/driver outputsは元の専有external directoriesに生成し、source checkoutは
 全runtime・終了後照合・PID/cgroup/lease解放の後にcleanを確認して削除する。
