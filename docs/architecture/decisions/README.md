@@ -159,3 +159,5 @@ in [`TODO.md`](../../../TODO.md).
 - [DR-0275: local TLS acknowledgement loss after durable apply](0275-local-tls-durable-ack-loss.md)
 - [DR-0276: live genesis transfer with the recovered same-identity key](0276-live-recovered-genesis-transfer.md)
 - [DR-0277: historical referenced-body preservation through TLS acknowledgement loss](0277-historical-blob-ack-loss.md)
+- [DR-0278: live genesis split/merge with the recovered same-identity key](0278-live-recovered-genesis-split-merge.md)
+- [DR-0279: orderly restart after historical-body acknowledgement loss](0279-orderly-restart-after-historical-ack-loss.md)

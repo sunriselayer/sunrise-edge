@@ -103,3 +103,8 @@ TLS startup/restart selector and full `remote_tls_transport` target require
 owning execution against attributed actual current binaries. Formatting, strict
 owning Clippy, literal npm-ci, the unchanged complete required gate and hosted
 owners remain required. Source-only checks do not establish those results.
+
+[DR-0279](0279-orderly-restart-after-historical-ack-loss.md) retains this
+historical-body condition and adds a distinct all-owner orderly-restart and
+post-restart replay selector. The original empty and same-generation historical
+selectors keep their existing behavior.

@@ -193,6 +193,10 @@ impl HttpsRelay {
         )
     }
 
+    pub fn apply_ack_loss_is_armed(&self) -> bool {
+        self.apply_ack_loss.is_some()
+    }
+
     pub fn lost_apply_acknowledgement(&self) -> Option<LostApplyAcknowledgement> {
         self.apply_ack_loss
             .as_ref()
