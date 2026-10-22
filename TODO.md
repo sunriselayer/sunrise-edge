@@ -1062,6 +1062,10 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     取消後restartへ渡し、完全review/frame・実送信・各時点のowner/fee/nonce/receiptを確認する。
     旧historical signing-only controlと全既存上限/判定を保持し、鍵交換や全M2へ拡張しない。
     E203でc535の実runtime成功。最終local完全requiredはE204、同sourceCIはE205で終端照合済み。
+  - [ ] 復旧した同一鍵によるgenesis split/mergeのlive操作:
+    元M2のrecovery条件の続き。既存の同一A鍵を別pathへ復旧してから、既存self split/mergeと
+    取消後restartに接続する。歴史preimageのsigning-only復旧と元の全操作/判定/上限を保持する。
+    新identity・authority・profileを追加せず、実runtimeと最終source完全required/CIで確認する。
   - 検証の残件: E175/E178の旧default集計漏れは、d012の完了PTY共有加算と
     明示core/application別allocationで修正し、E179で元117の全path/value mapと上限を実証。
     旧一括267,120Bの失敗を保持し、未保存の過去出力や単一117成功へは拡張しない。
@@ -1108,6 +1112,11 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     objectをtyped Create/receiptと共に準備し、4 replicasの完全SQL/portable/bodyと実TLS queryを確認する。
     空closureの元caseを保持。paid-produced blob publicationやpositive_blob_faultの合格にはしない。
     E203でc535の新旧実runtime成功。最終local完全requiredはE204、同sourceCIはE205で終端照合済み。
+  - [ ] 参照body付きACK喪失後の正常再起動と同一要求の再送:
+    元M3のreopen・ambiguity reconciliation条件の続き。全4 replicaのdurable receipt確認後に
+    hostを正常停止/waitし、同じstore・既存の次generation・同じTLS入力で再起動する。
+    保存artifact/receipt・historical70KiB bodyと完全business oracleを再送前後で確認し、
+    既存の空closure/同generation caseを保持する。physical/partial-write faultには数えない。
   - [x] [全connection喪失後の正規local writer交代](docs/architecture/decisions/0260-complete-owner-loss-local-writer-failover.md):
     retained-handleの元SIGKILL controlを保持し、全4 sole-ownerをSIGKILL/reapしてから
     次generationを起動する別controlを追加。全12 SQL tables・2 blob tablesと4 portable
@@ -1609,3 +1618,16 @@ Node24.19.0/cfを使用し、各実行は有限時間・単一ownerで管理す�
 M2の未達signing family/lifecycleとZeroShare、M3の未達physical/partial-write/独立anchor条件は残す。
 親M2/M3と他の親5項目を完了へ付け替えず、停止対象は再開しなかった。
 全既知自己所有プロセス/PID/cgroupは閉鎖済み。定期タスク・新たな8時間枠は作成していない。
+
+## 2026-10-22のM2/M3既存条件の続行
+
+最終c535/PR330とE203-E205を保持し、上記の復旧鍵genesis split/mergeと
+参照body付きACK喪失後の正常再起動を次の2子条件として実装する。
+既存checkoutを `codex/m2-m3-next-1022` で使い、worktreeやcacheの複製を増やさない。
+単一source writerが順番に実装し、rootだけがこのTODOを更新する。
+source変更は各段階でcommitし、review後にpushする。実装/実runtime/最終source gateが
+そろうまで新2件は未完了に保ち、停止済み4対象は再開しない。
+
+古いworktree98個は復元用ref/ローカル状態archiveを保存して削除済み。
+そこに残っていた11件のsource変更も `codex/archive-1022/*` へcommit/pushし、
+remote SHAを照合した。保存用WIPを実装の統合/検証成功として扱わない。
