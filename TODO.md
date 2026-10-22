@@ -478,6 +478,8 @@ Btrfsの管理領域逼迫を以前観測しましたが、後の容量状態は
 | E204: final c535 literal npm ci + complete required | c535/treec439で元2 commandsがactual0/実両EOF/wait/reap。check-all 12,228.090秒、Rust147 summaries/4,399 passed/0 failed/43 ignored、CF13/28/10/15=66。rootがsource1221全full9/SHA・HEAD/tree/clean/set、strict70/CF2347/layout2725/archive311/wrappersとcurrent330 executable ELF・cache/target全snapshotを再照合。`m2-m3-followup-final-full-required-1021-root-qualified.json` (`fe1db840`) と同root-raw-qualified (`848d42cf`) | 原7 epoch END・e8 freeze/unlock・実1832B候補2件/同ID round3 ACK・8links、元35-role assertionを保つ。実timingはstderr、候補/ACKはstdoutから再導出。natural同Invocation Code1/Status0と全既知PID/capturedCG不在後、自己所有の空unitだけ停止。current target/cache再利用でありfreshとは呼ばない。限定2子条件のsource gate。親M2/M3・release/独立監査は未完了 |
 | E205: final c535 PR330 all8 hosted CI | [run39553580566](https://github.com/sunriselayer/sunrise-edge/actions/runs/39553580566) attempt1の元7 owners+aggregate全8が自然SUCCESS。actual checkout a84db307/treec439/ordered parents[c1,c535]、全8 raw 1,539,887B/SHA、Rust147 summaries/4,399 passed/0 failed/43 ignored、CF66、新旧TLS selector成功と元7epochs/e8候補2件/round3 ACKをroot照合。`ci330-final-1021-root-qualified.json` (`c712f86e`) | 旧2ff cancelledとcapacity停止、09:36のwatch終了code2/回収期限超過を保持。CIは11:17:56 UTCに自然完了し、再開後にread-onlyで初回raw回収。collector actual0/実EOF/wait/reapだがrecorderは同unit残存PID検出でStatus1。このwhole failureを成功扱いせず保存し、同Invocationの終了・当該PID/CG不在を別途照合した完了CI/rawの証拠。自己所有の空failedunitだけ停止。parserの診断stream/role集合の誤仮定も保存し、source/元assertion変更や再実行なし |
 
+| E206: b389の復旧鍵split/merge・参照body付きACK喪失後の正常再起動 | b389/tree dfdc63d5の元publication-genesisと4 TLS selector・remote TLS全15がactual0。元split/mergeの復旧済みA鍵pathとlive/revoked restart実argv検査、歴史preimage復旧、全判定を保持。新M3はhistorical_nonempty/2→3 orderly restartを実stderr、1 passedを実stdoutで照合。rootが全13 commands/26 streamsのSHA・実EOF/wait/reap・既知PID/CG不在、source1223 full9/SHAとcurrent Cargo JSON/raw/原本・別copy全8役を再照合。`m2-m3-next-component-v4-1022-root-qualified.json` (`155bc428`) | current invocationのCargo fresh:trueをそのまま保持し、新規compileとは呼ばない。元raw 262144B/bootstrap 65536Bを維持し、コメント移動だけで両上限内。旧V1-V3/CI失敗は保存。元empty/same-generation/original TLS controlsも成功。positive_blob_fault/paid-produced blob publicationはfalse。完全required/全8 CIと親M2/M3は未完了 |
+
 E136-E141は後続の限定実行です。E133-E135の保存済み行は当時の失敗/source-only状態のまま残します。
 E140/E141のUID/PTY/同frame署名・保持preimage・refusalは、固定sourceで成功したaggregate JSONと
 全体rawへ結び付きます。削除済み個別seed/approval/signatureや未保存の各child/PTY/client streamを
@@ -1664,3 +1666,11 @@ rootがPython AST/token列の一致とbootstrap/driver部分の不変を別途�
 Node24.19.0の実圧縮ではraw 246128/262144B、bootstrap 54837/65536Bで両上限内。
 ef92のCIはhead更新で自動cancelledとなったため、6 job成功を最終source全体へ転用しない。
 新sourceの実runtime/完全required/全8 CIは引き続き検証対象とする。
+
+b389の新旧runtime全6件とfmt/clippy/5 buildの計13 commandsはE206で実成功し、
+rootがsource/生成物/実rawとPID/cgroup解放を照合した。元の判定/selector/上限は保持する。
+同sourceのliteral `npm ci --prefix adapters/cloudflare-workers` + `./scripts/check-all.sh` は
+2026-10-22 02:53:41 UTCに単一ownerで開始した。既存target/cacheを再利用し、
+26000秒work +300秒cleanupの有限枠で管理する。最終sourceの
+[run39712537120](https://github.com/sunriselayer/sunrise-edge/actions/runs/39712537120)
+も進行中。両gateの終端前は新2子条件を完了にしない。
