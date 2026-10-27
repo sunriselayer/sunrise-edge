@@ -1832,6 +1832,9 @@ attempt1のまま14:37:10 UTCに全job自然success。rootは386 filesと全8 ra
 その時点のreview/commentsとBugbot annotationsは0。CI各jobのannotation計8件は同じrunner image移行noticeで、
 warning/failureは0。今回の通常保守4件は完了。全9 check-runsのsuccessと同一headを再確認し、
 15:29:39 UTCにPR #334をReady for reviewへ切り替えた。
+ユーザー承認により2026-10-28 04:18:25 SGT (2026-10-27 20:18:25 UTC) に
+既存base `codex/live-genesis-mint-burn-1022` へmergeした。merge `3814b3ea` は
+同tree `c28d0437`、parents `[bfbca5fc, e7bdf83f]`。全9チェック成功と同一headを再確認した。
 元の85 checkbox /71完了 /14未完了と親5件は変わらない。
 
 PR #333のsource `a3fa4576` / tree `99fb314d` を実装側とテスト側に分担してread-only確認した。
@@ -1860,3 +1863,46 @@ rootがwriter解放後に適用する。rootだけがTODOを更新する。
 SQLite startupのchild/output collectorにも類似処理があるが、poll間隔、同時drain、
 pipe完了期限が異なるため、単純な置換候補には含めない。今回そこへ実装・実行は行っていない。
 停止済み監査・ZeroShare・torn-WAL/mechanism2・独立anchor guestを再開する提案ではない。
+
+## 2026-10-28の追加共通化候補
+
+PR #334のmerge `3814b3ea` と同tree `c28d0437` のsource `e7bdf83f` を
+2担当へread-only分担し、rootが全候補を実sourceで照合した。以下は未実装の候補で、完了扱いにしない。
+新しいworktree/cacheは作らず、製品コードやテストケースの変更・実行も行っていない。
+
+1. PG接続処理を既存ownerへ寄せる。
+   `apps/operator/src/bin/fee_escrow_inventory_pg.rs:149` / `:161` と
+   `apps/operator/src/common.rs:531` / `:539` は同じTCP/TLS検査と接続pool構築を持つ。
+   inventoryも `common::connect_pool` を使い、pool上限4、10/30/300秒の設定、DSN/certificate診断、
+   既存TLS必須条件とnamespace/blob/fenceの評価順序を保持する。元のinventory controlsは残す。
+2. SDKの表示フィールド検査を共通化する。
+   `clients/rust/src/fee_claim_review.rs:163` と `clients/rust/src/publication_review.rs:204` の
+   `display_safe` はerror型以外同じ。private helperから各既存errorへ写像し、
+   byte長優先、ASCII `0x20..=0x7E`、field名とコピー前の拒否を保持する。
+   両consumerの独立controlsとpublication reviewのintegration controlsは残す。
+3. SDKテストのFIFO transportを共有する。
+   `clients/rust/tests/paid_execution.rs:194` と `clients/rust/tests/publication.rs:271` の
+   request記録付きFakeTransportは同一。test-only supportへ移し、request clone後のFIFO消費、
+   exhaustion時のpanicを保持する。response/context/signing/expected payloadは各test側に残す。
+4. テストのread-only archive snapshotを共有する。
+   `apps/operator/tests/business_import_sqlite.rs:248` と
+   `apps/operator/tests/support/recurring_host_acceptance.rs:2227` は同じ再帰snapshot。
+   relative PathBuf key、directory=None、完全なfile bytes、symlink/nonregular拒否を保持し、
+   before/afterの比較assertionとfloorのcase matrixは各callerに残す。flat inventoryとは統合しない。
+5. 捕捉済みprocess outputの成功検査を共有する。
+   `apps/operator/tests/business_cut_sqlite.rs:77`、`business_import_sqlite.rs:198`、
+   `conditional_readiness_sqlite.rs:63`、`support/successor_host_acceptance.rs:227` は同一。
+   status検査と両diagnostic streamの表示後、stdoutをstrict UTF-8で返す小さなhelperにできる。
+   spawn/wait、pipe収集、deadline、出力固有assertionはこのhelperに移さない。
+6. CI契約テスト内の重複assertion手順を共有する。
+   `scripts/test-ci-gates.mjs:674` と `:685` の2 loopsは同じ検査を繰り返している。
+   discovery/executionの2回、list/exact、package/target、nocaptureの検査を同じtest helperへ寄せられる。
+   PG/recurringの独立したcase inventory、元selector/順序/件数と全assertionは保持する。
+
+小さく始める候補は1/3/5/6。2は公開errorの写像、4は再帰snapshotの観測意味を確認して進める。
+SDK rendererのbyte予算計算にも類似はあるが、16,384/65,536の上限、field数優先の違いと
+hex割当て前検査があるため、renderer全体の機械的な統合は候補に含めない。
+FastVote/ordered-economics deadline計算はclock sampling・cap・overflow errorが異なる。
+独立wire vector、独立expected values、SQLite startup child/output collectorも一括統合しない。
+同じ境界を検証する重複test functionの削除候補は今回確認できていない。
+元の85 checkbox /71完了 /14未完了とD02/M1/M2/M3/M7の親5件は変わらず、停止対象は再開しない。

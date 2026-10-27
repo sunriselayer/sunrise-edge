@@ -7,6 +7,12 @@ Tree: `c28d0437ca545b642b00d20fd137c0c4585cb314`
 Base: `bfbca5fcdf6144241a4e7db8b8095375e1c92f7d`  
 [PR #334](https://github.com/sunriselayer/sunrise-edge/pull/334)
 
+ユーザー承認により2026-10-28 04:18:25 SGT (2026-10-27 20:18:25 UTC) に
+既存base `codex/live-genesis-mint-burn-1022` へmergeした。
+Merge `3814b3ea2654c0361db9dd7292cd0e5b95da8797` のtreeは上記と一致し、
+parentsは `[bfbca5fc, e7bdf83f]`。同一head、全9 check-runsのsuccess、
+レビュー・コメント0件を再確認し、通常認証とexact-head guardでmergeした。
+
 ## 変更
 
 - Genesis inspector/authorのstrict canonical decimal処理をoperator commonへ移し、inventory argvのhex decoderも既存helperを使う。
@@ -72,7 +78,7 @@ Node24.19.0、Rust1.97.1、Deno2.9.4、cf1.0.0-beta.13を使い、直接Wrangler
 
 通常保守4件は実装・互換性controls・同source完全required/PG/全8 CIと終了後照合がそろったため完了。
 実装はcommit/push済み。全9 check-runsのsuccessと同一headを再確認し、
-15:29:39 UTCにPR #334をReady for reviewへ切り替えた。
+2026-10-27 15:29:39 UTCにReady for reviewへ切り替え、翌SGT日に上記baseへmergeした。
 元の85 checkbox中71完了/14未完了とD02/M1/M2/M3/M7の親条件は変更しない。
 停止済み監査、ZeroShare、torn-WAL/mechanism2、独立anchor guestは再開していない。
 新しいNative/M7 RELEASE認定、main merge、deploy、実鍵・host user・security policyの変更は行わない。
@@ -88,3 +94,4 @@ Node24.19.0、Rust1.97.1、Deno2.9.4、cf1.0.0-beta.13を使い、直接Wrangler
 | `maintenance-followup-1027-root-ci-qualified.json` | `2c6d2c7cf4a51d889a6bdc238037dfde8dbcbd8df5ad56b4275621a02d7e8e05` |
 | `maintenance-followup-1027-ci-run-40482348781-20261027T094001Z/file-index.json` | `b203f060f1fd6a30ffcf2f23b1a4a4cb6202718ec16b880c5a713cdd21461adf` |
 | `maintenance-followup-1027-root-annotations-qualified.json` | `c66d0003441abb0b3555a36ff17ee532b38e10da6577e6c1c3e76f3ba08bebb7` |
+| `maintenance-followup-1027-merge-receipt.json` | `81f976202421a6f7301f0ec31bca874e7e192dfc6b29c028e5111af1c4678cc9` |
