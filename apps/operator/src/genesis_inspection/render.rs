@@ -5,6 +5,7 @@
 use std::error::Error;
 use std::fmt::Write as _;
 
+use crate::common::hex_lower as hex;
 use abi::package_types::encode_package_origin;
 use execution::call::encode_instance_target;
 use execution::local_execution::encode_object_authority;
@@ -90,16 +91,6 @@ fn escaped(value: &str) -> String {
                 let _ = write!(out, "\\x{byte:02x}");
             }
         }
-    }
-    out
-}
-
-/// Plain lowercase hex. Every character this produces is already stable
-/// under [`escaped`]'s grammar, so no raw digest/id/key ever needs escaping.
-fn hex(bytes: &[u8]) -> String {
-    let mut out: String = String::with_capacity(bytes.len() * 2);
-    for &byte in bytes {
-        let _ = write!(out, "{byte:02x}");
     }
     out
 }

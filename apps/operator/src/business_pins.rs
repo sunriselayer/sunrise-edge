@@ -2,6 +2,7 @@
 //! Parsing performs no file I/O; callers reject unused flags before loading.
 #![forbid(unsafe_code)]
 
+pub(crate) use crate::common::hex_lower as hex;
 use crate::common::{FlagSet, parse_hash_suite, parse_hex_32};
 use crate::successor_artifacts::SuccessorChainArtifactFiles;
 use execution::{
@@ -43,13 +44,6 @@ pub(crate) fn bounded(value: &str, minimum: u64, maximum: u64) -> Result<u64, Bo
         return Err("integer outside operator bound".into());
     }
     Ok(parsed)
-}
-
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte: &u8| format!("{byte:02x}"))
-        .collect()
 }
 
 pub(crate) struct BusinessPinInputs {

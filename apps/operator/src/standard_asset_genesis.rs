@@ -6,7 +6,7 @@
 mod build;
 mod input;
 
-use crate::common::load_signing_key_file;
+use crate::common::{hex_lower as hex, load_signing_key_file};
 use crate::genesis_output::{FreshGenesisOutput, PublishedGenesis};
 use crate::original_genesis_install::validate_original_genesis_in_memory;
 use ed25519_zebra::{SigningKey, VerificationKey};
@@ -65,11 +65,4 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     );
     std::io::stdout().flush()?;
     Ok(())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte: &u8| format!("{byte:02x}"))
-        .collect::<String>()
 }

@@ -30,6 +30,13 @@ with the owning caller/certifier. Independent
 existing FastVote/availability certifier tests pin this boundary; the Rust SDK
 exports the defining consensus type, not a core adapter.
 
+The operator's [common input/output owner](../../apps/operator/src/common.rs)
+shares FastVote scalar parsing, decimal-wire-ID suite/schedule parsing and
+lowercase hex rendering. The existing literal-ID suite grammar remains
+separate; binaries retain flag collection, error order and dispatch. Literal
+[compatibility controls](../../apps/operator/src/common/tests.rs) cover both
+grammars and display bytes without sharing production expected-value builders.
+
 ## Follow a request
 
 ```text

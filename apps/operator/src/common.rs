@@ -216,6 +216,110 @@ pub fn parse_hex_32(value: &str, field: &str) -> Result<[u8; 32], String> {
     Ok(bytes)
 }
 
+/// Renders ordinary operator output as lowercase hex without a prefix.
+pub fn hex_lower(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte: &u8| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+/// Parses the FastVote operators' explicit `--chain-id` value.
+pub fn parse_chain(value: String) -> Result<protocol_types::ChainId, String> {
+    protocol_types::ChainId::new(value).map_err(|_| "invalid --chain-id".to_string())
+}
+
+/// Parses the FastVote operators' explicit `--validator-id` value.
+pub fn parse_validator(value: &str) -> Result<protocol_types::ValidatorId, String> {
+    Ok(protocol_types::ValidatorId::new(parse_hex_32(
+        value,
+        "--validator-id",
+    )?))
+}
+
+/// Parses the FastVote operators' nonzero `--domain` value.
+pub fn parse_domain(value: &str) -> Result<protocol_types::AtomicityDomainId, String> {
+    protocol_types::AtomicityDomainId::new(parse_hex_32(value, "--domain")?)
+        .map_err(|_| "zero --domain".into())
+}
+
+/// Parses the FastVote operators' positive `--protocol-version` value.
+pub fn parse_protocol_version(value: &str) -> Result<protocol_types::ProtocolVersion, String> {
+    let version: u32 = value.parse().map_err(|_| "invalid --protocol-version")?;
+    if version == 0 {
+        return Err("zero --protocol-version".into());
+    }
+    Ok(protocol_types::ProtocolVersion::new(version))
+}
+
+/// Parses the FastVote operators' explicit `--epoch` value, including zero.
+pub fn parse_epoch(value: &str) -> Result<protocol_types::Epoch, String> {
+    let epoch: u64 = value.parse().map_err(|_| "invalid --epoch")?;
+    Ok(protocol_types::Epoch::new(epoch))
+}
+
+/// Parses a decimal operator scalar with its existing inclusive local bound.
+pub fn parse_u64_bounded(value: &str, field: &str, min: u64, max: u64) -> Result<u64, String> {
+    let parsed: u64 = value.parse().map_err(|_| format!("invalid {field}"))?;
+    if !(min..=max).contains(&parsed) {
+        return Err(format!("{field} must be {min}..={max}"));
+    }
+    Ok(parsed)
+}
+
+/// Parses the PostgreSQL operators' decimal-wire-ID `--suite` grammar.
+/// Unlike [`parse_hash_suite`], algorithm tokens are parsed as `u16` first.
+pub fn parse_decimal_hash_suite(value: &str) -> Result<protocol_types::HashSuiteSchedule, String> {
+    use protocol_types::{Epoch, HashAlgorithmId, HashSuite, HashSuiteId, HashSuiteSchedule};
+    let fields: Vec<&str> = value.split(':').collect();
+    if fields.len() != 8 {
+        return Err("--suite needs epoch:id:transaction:object:effects:code:config:certificate (decimal wire ids)".into());
+    }
+    let epoch: u64 = fields[0].parse().map_err(|_| "invalid suite epoch")?;
+    let id: u16 = fields[1].parse().map_err(|_| "invalid suite id")?;
+    if id == 0 {
+        return Err("zero suite id".into());
+    }
+    let algorithm = |index: usize| -> Result<HashAlgorithmId, String> {
+        let number: u16 = fields[index]
+            .parse()
+            .map_err(|_| "invalid hash algorithm id")?;
+        match HashAlgorithmId::try_from(number) {
+            Ok(HashAlgorithmId::Sha2_256) => Ok(HashAlgorithmId::Sha2_256),
+            Ok(HashAlgorithmId::Sha3_256) => Ok(HashAlgorithmId::Sha3_256),
+            _ => Err("unsupported hash algorithm id".into()),
+        }
+    };
+    Ok(HashSuiteSchedule {
+        activation_epoch: Epoch::new(epoch),
+        suite: HashSuite {
+            id: HashSuiteId::new(id),
+            transaction_hash: algorithm(2)?,
+            object_digest: algorithm(3)?,
+            effects_hash: algorithm(4)?,
+            code_hash: algorithm(5)?,
+            config_hash: algorithm(6)?,
+            certificate_hash: algorithm(7)?,
+        },
+    })
+}
+
+/// Parses 1 through 64 FastVote operator suites in their supplied order.
+pub fn parse_decimal_hash_schedule(
+    values: &[String],
+) -> Result<Vec<protocol_types::HashSuiteSchedule>, String> {
+    if values.is_empty() {
+        return Err("at least one --suite is required".into());
+    }
+    if values.len() > 64 {
+        return Err("too many --suite entries (maximum 64)".into());
+    }
+    values
+        .iter()
+        .map(|value: &String| parse_decimal_hash_suite(value))
+        .collect()
+}
+
 /// Explicit operator hash schedule input; never inferred from a remote peer.
 pub fn parse_hash_suite(value: &str) -> Result<protocol_types::HashSuiteSchedule, String> {
     use protocol_types::{Epoch, HashAlgorithmId, HashSuite, HashSuiteId, HashSuiteSchedule};
@@ -437,3 +541,6 @@ pub fn connect_pool(
     Ok(build_postgres_pool(config, tls, pool_config)
         .map_err(|_| "PostgreSQL TLS connection or pool initialization failed")?)
 }
+
+#[cfg(test)]
+mod tests;
