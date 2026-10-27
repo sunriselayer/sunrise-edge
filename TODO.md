@@ -1800,5 +1800,10 @@ summary合計には別exact/helper実行を含み、元のignoredは実行済み
 [検証記録](docs/development/validation/2026-10-27-operator-helper-ci-dedup/README.md) に
 実行前CF停止と終了後reader停止も保存した。
 [CI run40447306260](https://github.com/sunriselayer/sunrise-edge/actions/runs/40447306260) は
-終端待ちのため、3件の最終完了は引き続き保留する。
+attempt1の全8 jobsが08:59:30 UTCに自然success。rootが全8 raw logs、実checkout
+`f5ac2374`、tree `99fb314d`、parents `[8da1d620, a3fa4576]`、全483証跡filesを照合した。
+CI取得のescape guard停止とPID未記録の初期2 attemptsは保持し、最後の完全取得の
+実両EOF/waitと既知collector/child PID不在を確認した。CI本体の再実行は0。
+今回の通常保守3件は同sourceの実装・完全required/PG/CIがそろったため完了。
+元のチェックボックスは85個中71完了/14未完了で変えず、新しい親完了条件も追加しない。
 残るD02/M1/M2/M3/M7の親5件は引き続き未完了。停止対象の監査等は再開していない。

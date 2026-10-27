@@ -56,7 +56,18 @@ passing contract suite内のworkerd例外診断とmissing live secret warningは
 既存ignored testsも未実行として残す。
 
 [全8 CI](https://github.com/sunriselayer/sunrise-edge/actions/runs/40447306260) は
-終端と実checkout/logの照合待ち。local成功をCI成功へ付け替えない。
+attempt1のまま08:59:30 UTCに全job自然successとなった。
+rootは実8 raw logsの1,235,663 bytesと封印済みindexの全483 filesを再hashし、
+各checkout `f5ac237466f904921a99704c996a91def92b3c9a`、tree `99fb314d`、
+parents `[8da1d620, a3fa4576]` を実logとGitHub commit metadataで照合した。
+CIのRust147 summariesも4,408/0/43、CF全66件成功だった。
+
+初回のlog取得はghのescape-output guardで全8 childがexit1/0 raw bytesとなった。
+失敗を保持し、文書化されたbyte保持用flagでread-only取得を行った。
+取得の最初の2 attemptsはPID未記録のため、そのPID不在は主張しない。
+最後の完全取得は実両EOF/waitとcollector/全8 child PIDの不在を確認した。
+全保存attemptのrawは2,471,326 bytes、封印まで204.021秒で元上限内。
+early observerのinterval guardによるexit75も保存し、製品CIのrerun/cancelは行わなかった。
 
 local実行は既存source、target、cache、node_modulesを再利用し、専用の有限serviceで
 単一ownerが順番に実行する。Node 24.19.0、Rust 1.97.1、Deno 2.9.4、
@@ -86,10 +97,13 @@ deviceが変化した原因はこの照合では確定していない。
 | `maintenance-dedup-1027-root-local-qualified.json` | `a2d32c3dbcd14254932e944aa5831ac7705e8f3cf40a354b41caa3e7bc787df0` |
 | `maintenance-dedup-1027-root-postclose-qualified.json` | `6b87f1f4afe9e714d4bf4d5294b3bf51d74cdef1a0f14919cd1edf7fc7b91d77` |
 | `maintenance-dedup-1027-root-docker-closure.json` | `ecd1fd6c2f189762574cd3896c7a7dcba789edcbbf743b14e06ad05862a773ca` |
+| `maintenance-dedup-1027-root-ci-qualified.json` | `51bfc507d56c8f680323de2b700019f6e8b0abd62b166d950d22eced2658fb7a` |
+| `maintenance-dedup-1027-ci-run-40447306260-20261027T040242Z/file-index.json` | `0095dd7cdff19129cb651896e0f4f2a5b124ab78fe4e94a31c3720255fe1d0b0` |
 
 ## 元のTODOとの関係
 
-今回の3件は通常保守であり、D02/M1/M2/M3/M7の親5件は未完了のまま。
+今回の3件は実装、互換性/契約テスト、同source完全required、完全5-group PG、全8 CIと
+終了後照合がそろったため完了。通常保守であり、D02/M1/M2/M3/M7の親5件は未完了のまま。
 停止済みの独立監査、ZeroShare、M3 torn-WAL/mechanism2、独立anchor VM boot修正は再開していない。
 この保守変更について新しいNative/M7 RELEASE認定は主張しない。
 main merge、deploy、実鍵、host user、security policy変更、定期タスク再作成は行っていない。
