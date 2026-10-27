@@ -1811,11 +1811,16 @@ CI取得のescape guard停止とPID未記録の初期2 attemptsは保持し、�
 元のチェックボックスは85個中71完了/14未完了で変えず、新しい親完了条件も追加しない。
 残るD02/M1/M2/M3/M7の親5件は引き続き未完了。停止対象の監査等は再開していない。
 
-## 2026-10-27の追加通常保守候補 (調査のみ)
+## 2026-10-27の追加通常保守4件
 
 PR #333のsource `a3fa4576` / tree `99fb314d` を実装側とテスト側に分担してread-only確認した。
 rootも下記の候補を実sourceで照合した。merge `bfbca5fc` は同じtreeである。
-以下は未着手の保守候補であり、元の親条件やcheckbox数を増減しない。
+ユーザーの「全部やろ」により、以下4候補すべての実装を開始した。
+既存checkoutを `codex/operator-test-sdk-dedup-1027` / `bfbca5fc` から再利用し、
+source/cache/targetを複製しない。operatorを単一writerへ分担し、SDK変更は別担当のinert patchを
+rootがwriter解放後に適用する。rootだけがTODOを更新する。
+実装、互換性controls、同source完全required・完全5-group PG・全8 CIを実終端まで確認し、
+変更をすべてcommit/pushするまで、4件を完了にしない。元の親条件やcheckbox数を増減しない。
 
 1. CLI helperの残り。`apps/operator/src/genesis_inspection/input.rs:36` と
    `apps/operator/src/standard_asset_genesis/input.rs:105` のcanonical decimal / number / positiveの3関数は同一。
