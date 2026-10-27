@@ -5,7 +5,13 @@ Date: 2026-10-27 (Asia/Singapore)
 Source: `a3fa4576f18f81b6d81e4dd7ebb5dd3f18c3b680`  
 Tree: `99fb314dd9aaac5e38e11802136afbb305dfcc84`  
 Base: `8da1d620cba7428672df086318b2df2d3cec5976`  
-[Draft PR #333](https://github.com/sunriselayer/sunrise-edge/pull/333)
+[PR #333](https://github.com/sunriselayer/sunrise-edge/pull/333)
+
+ユーザーのmerge承認により、2026-10-27 09:12:32 UTCに既存base branch
+`codex/live-genesis-mint-burn-1022` へmergeした。
+Merge commitは `bfbca5fcdf6144241a4e7db8b8095375e1c92f7d`、treeは上記と一致し、
+parentsは `[8da1d620, a3fa4576]`。全8 CIとBugbotのsuccess、レビュー指摘0件、
+exact headを確認し、通常認証でmergeした。mainへの統合やbranch削除は行っていない。
 
 ## 変更範囲
 
@@ -99,6 +105,7 @@ deviceが変化した原因はこの照合では確定していない。
 | `maintenance-dedup-1027-root-docker-closure.json` | `ecd1fd6c2f189762574cd3896c7a7dcba789edcbbf743b14e06ad05862a773ca` |
 | `maintenance-dedup-1027-root-ci-qualified.json` | `51bfc507d56c8f680323de2b700019f6e8b0abd62b166d950d22eced2658fb7a` |
 | `maintenance-dedup-1027-ci-run-40447306260-20261027T040242Z/file-index.json` | `0095dd7cdff19129cb651896e0f4f2a5b124ab78fe4e94a31c3720255fe1d0b0` |
+| `maintenance-dedup-1027-merge-receipt.json` | `5c38e0bba8c457f68d3f84461689b9688ee0bee17128861982df7f63f82b286f` |
 
 ## 元のTODOとの関係
 

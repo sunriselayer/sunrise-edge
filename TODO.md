@@ -1789,7 +1789,10 @@ locked source pointerを検出して停止したため、失敗を保持して�
   standalone/CI両入口から同じhelperを使い、列挙0件/重複/失敗・export失敗時の停止とcleanupを保つ。
 
 実装は `3a2e3aa4` / `a3fa4576` (tree `99fb314d`) にcommit/push済み。
-[Draft PR #333](https://github.com/sunriselayer/sunrise-edge/pull/333) は#332上へ積んだ。
+[PR #333](https://github.com/sunriselayer/sunrise-edge/pull/333) は#332上へ積み、
+ユーザー承認により09:12:32 UTCに既存base `codex/live-genesis-mint-burn-1022` へmergeした。
+Merge `bfbca5fc` のtreeは同 `99fb314d`、parentsは `[8da1d620, a3fa4576]`。
+mainへの統合やbranch削除は行っていない。
 追加Rust互換性8件、Nodeの全CI契約、fmt/bash syntax/diff checkは成功。
 通常の狭いcorrectness reviewで具体的なblocking regressionは見つからなかった。
 同sourceのliteral npm ci・完全required・完全5-group PG profileは07:36:13 UTCに自然成功。
@@ -1807,3 +1810,40 @@ CI取得のescape guard停止とPID未記録の初期2 attemptsは保持し、�
 今回の通常保守3件は同sourceの実装・完全required/PG/CIがそろったため完了。
 元のチェックボックスは85個中71完了/14未完了で変えず、新しい親完了条件も追加しない。
 残るD02/M1/M2/M3/M7の親5件は引き続き未完了。停止対象の監査等は再開していない。
+
+## 2026-10-27の追加通常保守候補 (調査のみ)
+
+PR #333のsource `a3fa4576` / tree `99fb314d` を実装側とテスト側に分担してread-only確認した。
+rootも下記の候補を実sourceで照合した。merge `bfbca5fc` は同じtreeである。
+以下は未着手の保守候補であり、元の親条件やcheckbox数を増減しない。
+
+1. CLI helperの残り。`apps/operator/src/genesis_inspection/input.rs:36` と
+   `apps/operator/src/standard_asset_genesis/input.rs:105` のcanonical decimal / number / positiveの3関数は同一。
+   既存commonへ移し、FastVoteの緩いdecimal grammarとは分けたままにできる。
+   `apps/operator/src/bin/fee_escrow_inventory_pg.rs:62` の32-byte hex decoderも
+   `apps/operator/src/common.rs:207` と引数名以外同一で、既存helperへ置換可能。
+   元の入力表記・error順序/文言とcommand別のcontrolsは保持する。
+2. テストで既存helperを使う。
+   `apps/operator/tests/certified_catch_up_pg_e2e.rs:90` のCLI locatorは
+   `apps/operator/tests/support/compiled_cli_process.rs:7` /
+   `apps/operator/tests/support/cli.rs:562` に既存ownerがある。
+   共有側のEXE_SUFFIX対応と、失敗時diagnosticの違いを確認して移行する。
+   `apps/operator/tests/fee_escrow_inventory_pg_e2e.rs:51` 以降のTempFileGuard、backend解決、proxy DSNも
+   `apps/operator/tests/support/cli.rs` の41/91/103行目を再利用できる。env名を引数で渡し、
+   fixture固有の期待値、pagination、独立したdurable-state検査は残す。
+3. dependency-lightなテスト用TempDir。
+   `apps/operator/tests/successor_artifacts.rs:32` と
+   `apps/operator/tests/successor_host_process_refusals.rs:21` はPID/counter/tag、create、best-effort Dropが同じ。
+   prefixを引数にする小さなstd-only helperへまとめ、元prefixと寿命を保持する。
+   timestamp命名やcleanup成功を要求する別のSQLite fixtureは一緒にしない。
+4. SDKの小さなdeadline guard。
+   `clients/rust/src/fastvote_frontier_client.rs:23` と
+   `clients/rust/src/ordered_history_client.rs:33` は同じ処理。
+   crate-private helperにまとめられるが、send前後の呼出し位置と同じerrorは保持する。
+   pollingの試行上限やtransportの残時間計算とは別にする。
+
+テストのcase削除を正当化する重複は今回確認していない。共通化は準備・後片付けを中心とし、
+各command/transport/storage境界のassertion、独立oracleと元scenario matrixを維持する。
+SQLite startupのchild/output collectorにも類似処理があるが、poll間隔、同時drain、
+pipe完了期限が異なるため、単純な置換候補には含めない。今回そこへ実装・実行は行っていない。
+停止済み監査・ZeroShare・torn-WAL/mechanism2・独立anchor guestを再開する提案ではない。
