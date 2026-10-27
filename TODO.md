@@ -1819,10 +1819,13 @@ canonical/hexの互換性4件とSDK deadline3件を追加し、既存case/assert
 SDKのsend前後10か所の検査位置とTempDirの元counter共有・interleavingを保持した。
 共有CLI locatorへの移行に伴い、missing-CLI diagnosticとEXE_SUFFIXは既存共有ownerの動作へ統一した。
 fmt/diff check、focused15件 (common11・inventory argv1・SDK3) と通常の差分correctness reviewは成功。
-09:44:52 UTCに単一の有限時間ownerを開始し、literal npm ciは実exit0、完全requiredは実行中。
-その後に完全5-group PG profileを逐次実行する。同sourceの全8 CIもrun40482348781で実行中。
-source1,226 filesとruntime/tool inputsを固定し、既存source/cache/targetの専有中は別writerや重複実行を作らない。
-完全required/PG/CIの実終端と終了後の証跡・process/resource解放照合が残るため、4件はまだ未完了。
+09:44:52 UTCに開始した単一ownerは13:10:58 UTCに自然成功。
+literal npm ci・完全required・完全5-group PG profileはすべて実exit0。
+requiredはRust4,415/0/43とCF全66件成功、PGは1,497/0/20で、元ignoredは未実行として残す。
+rootは全86 streams、source1,226 inputs、23 runtime/CF2,347 tool rolesとlayout2,725行を終了後にも照合し、
+既知PID/cgroupと今回PG資源の解放を確認後、空の完了unitだけを停止した。
+[検証記録](docs/development/validation/2026-10-27-operator-test-sdk-dedup/README.md) に実績と証跡を保存した。
+同sourceの全8 CI run40482348781とrawの終了後照合が残るため、4件全体はまだ未完了。
 下記候補の行番号は実装前sourceを指す。元の85 checkbox /71完了 /14未完了と親5件は変わらない。
 
 PR #333のsource `a3fa4576` / tree `99fb314d` を実装側とテスト側に分担してread-only確認した。
