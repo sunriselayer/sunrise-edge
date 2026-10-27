@@ -1813,6 +1813,18 @@ CI取得のescape guard停止とPID未記録の初期2 attemptsは保持し、�
 
 ## 2026-10-27の追加通常保守4件
 
+4件の実装を `e7bdf83f` (tree `c28d0437`) にcommit/pushし、
+[Draft PR #334](https://github.com/sunriselayer/sunrise-edge/pull/334) を作成した。
+canonical/hexの互換性4件とSDK deadline3件を追加し、既存case/assertionは削除していない。
+SDKのsend前後10か所の検査位置とTempDirの元counter共有・interleavingを保持した。
+共有CLI locatorへの移行に伴い、missing-CLI diagnosticとEXE_SUFFIXは既存共有ownerの動作へ統一した。
+fmt/diff check、focused15件 (common11・inventory argv1・SDK3) と通常の差分correctness reviewは成功。
+09:44:52 UTCに単一の有限時間ownerを開始し、literal npm ciは実exit0、完全requiredは実行中。
+その後に完全5-group PG profileを逐次実行する。同sourceの全8 CIもrun40482348781で実行中。
+source1,226 filesとruntime/tool inputsを固定し、既存source/cache/targetの専有中は別writerや重複実行を作らない。
+完全required/PG/CIの実終端と終了後の証跡・process/resource解放照合が残るため、4件はまだ未完了。
+下記候補の行番号は実装前sourceを指す。元の85 checkbox /71完了 /14未完了と親5件は変わらない。
+
 PR #333のsource `a3fa4576` / tree `99fb314d` を実装側とテスト側に分担してread-only確認した。
 rootも下記の候補を実sourceで照合した。merge `bfbca5fc` は同じtreeである。
 ユーザーの「全部やろ」により、以下4候補すべての実装を開始した。
