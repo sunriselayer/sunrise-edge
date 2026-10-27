@@ -46,8 +46,20 @@ ownerと全command PID、監視で観測した169 process identitiesとcaptured 
 無関係なDocker資源は一致条件にせず、削除やpruneも行っていない。
 passing suite内のworkerd診断とmissing live secret warningはrawに保存し、production設定の準備完了は主張しない。
 
-[全8 CI run40482348781](https://github.com/sunriselayer/sunrise-edge/actions/runs/40482348781) は実行中。
-同sourceの全8 CI実終端とrawの終了後照合が残るため、4件全体はまだ完了にしない。
+[全8 CI run40482348781](https://github.com/sunriselayer/sunrise-edge/actions/runs/40482348781) は
+attempt1のまま14:37:10 UTCに全job自然success。
+rootは封印済み386 filesと全8 raw logsの1,237,025 bytesを再hashし、各実checkout
+`70e9807b697a9d59a23d5947740fde57fdb89aef`、tree `c28d0437`、
+parents `[bfbca5fc, e7bdf83f]` を実logと公式GitHub commit metadataで照合した。
+CIもRust147 summariesは4,415/0/43、CF全66件成功。
+rawは最初の1回の取得で完了し、全8 childの実exit0・両EOF・full capture・waitと
+collector/記録済みPIDの不在を照合した。CIの再実行・cancelは0。
+
+全9 check-runsは成功し、Cursor Bugbotもreview完了・issueなしと記録している。
+その時点のreviews /issue comments /inline commentsとBugbot annotationsは0。
+各CI jobにはUbuntu runner image移行のnoticeが1つずつあり、計8 notice /0 warning /0 failureを別途取得して確認した。
+legacy combined-statusはcontexts0のpendingを返すが、9 check-runsの実successとは分けて記録した。
+これは通常の保守差分についての結果で、独立したsecurity/release auditを意味しない。
 
 ローカル証跡root:
 `/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013`
@@ -58,7 +70,8 @@ Node24.19.0、Rust1.97.1、Deno2.9.4、cf1.0.0-beta.13を使い、直接Wrangler
 
 ## 元のTODO
 
-通常保守4件の実装とlocal完全検証は完了。全8 CIとその終了後照合がそろうまで4件全体は未完了。
+通常保守4件は実装・互換性controls・同source完全required/PG/全8 CIと終了後照合がそろったため完了。
+実装はcommit/push済みで、PR #334はreview用のDraftとして保持する。
 元の85 checkbox中71完了/14未完了とD02/M1/M2/M3/M7の親条件は変更しない。
 停止済み監査、ZeroShare、torn-WAL/mechanism2、独立anchor guestは再開していない。
 新しいNative/M7 RELEASE認定、main merge、deploy、実鍵・host user・security policyの変更は行わない。
@@ -71,3 +84,6 @@ Node24.19.0、Rust1.97.1、Deno2.9.4、cf1.0.0-beta.13を使い、直接Wrangler
 | `maintenance-followup-1027-root-local-qualified.json` | `14950e6f90cc6fe61f8b4230618aba8df0d7590278418dbf9616df6439a6495d` |
 | `maintenance-followup-1027-root-postclose-qualified.json` | `acb1b4de4eb7a05d6f06a4060465fba425de40f3a4ed008607645051dbf81979` |
 | `maintenance-followup-1027-supervision-closure.json` | `8ba704d4903c5fcaf0370645813f2fead7f22b95be1c24d401cce0c648b60255` |
+| `maintenance-followup-1027-root-ci-qualified.json` | `2c6d2c7cf4a51d889a6bdc238037dfde8dbcbd8df5ad56b4275621a02d7e8e05` |
+| `maintenance-followup-1027-ci-run-40482348781-20261027T094001Z/file-index.json` | `b203f060f1fd6a30ffcf2f23b1a4a4cb6202718ec16b880c5a713cdd21461adf` |
+| `maintenance-followup-1027-root-annotations-qualified.json` | `c66d0003441abb0b3555a36ff17ee532b38e10da6577e6c1c3e76f3ba08bebb7` |

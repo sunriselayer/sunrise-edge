@@ -1825,42 +1825,34 @@ requiredはRust4,415/0/43とCF全66件成功、PGは1,497/0/20で、元ignored�
 rootは全86 streams、source1,226 inputs、23 runtime/CF2,347 tool rolesとlayout2,725行を終了後にも照合し、
 既知PID/cgroupと今回PG資源の解放を確認後、空の完了unitだけを停止した。
 [検証記録](docs/development/validation/2026-10-27-operator-test-sdk-dedup/README.md) に実績と証跡を保存した。
-同sourceの全8 CI run40482348781とrawの終了後照合が残るため、4件全体はまだ未完了。
-下記候補の行番号は実装前sourceを指す。元の85 checkbox /71完了 /14未完了と親5件は変わらない。
+[全8 CI run40482348781](https://github.com/sunriselayer/sunrise-edge/actions/runs/40482348781) は
+attempt1のまま14:37:10 UTCに全job自然success。rootは386 filesと全8 raw logsを再hashし、
+実checkout `70e9807b`、tree `c28d0437`、parents `[bfbca5fc, e7bdf83f]` を照合した。
+全8 childの実exit0・両EOF・waitとcollector/既知PID不在を確認した。Bugbotを含む全9 check-runsもsuccessで、
+その時点のreview/commentsとBugbot annotationsは0。CI各jobのannotation計8件は同じrunner image移行noticeで、
+warning/failureは0。今回の通常保守4件を完了とし、Draft PR #334を保持する。
+元の85 checkbox /71完了 /14未完了と親5件は変わらない。
 
 PR #333のsource `a3fa4576` / tree `99fb314d` を実装側とテスト側に分担してread-only確認した。
 rootも下記の候補を実sourceで照合した。merge `bfbca5fc` は同じtreeである。
-ユーザーの「全部やろ」により、以下4候補すべての実装を開始した。
+ユーザーの「全部やろ」により、以下4候補すべてを実装・検証して完了した。
 既存checkoutを `codex/operator-test-sdk-dedup-1027` / `bfbca5fc` から再利用し、
 source/cache/targetを複製しない。operatorを単一writerへ分担し、SDK変更は別担当のinert patchを
 rootがwriter解放後に適用する。rootだけがTODOを更新する。
-実装、互換性controls、同source完全required・完全5-group PG・全8 CIを実終端まで確認し、
-変更をすべてcommit/pushするまで、4件を完了にしない。元の親条件やcheckbox数を増減しない。
+実装、互換性controls、同source完全required・完全5-group PG・全8 CIの実終端と証跡照合がそろった。
+元の親条件やcheckbox数は増減しない。
 
-1. CLI helperの残り。`apps/operator/src/genesis_inspection/input.rs:36` と
-   `apps/operator/src/standard_asset_genesis/input.rs:105` のcanonical decimal / number / positiveの3関数は同一。
-   既存commonへ移し、FastVoteの緩いdecimal grammarとは分けたままにできる。
-   `apps/operator/src/bin/fee_escrow_inventory_pg.rs:62` の32-byte hex decoderも
-   `apps/operator/src/common.rs:207` と引数名以外同一で、既存helperへ置換可能。
-   元の入力表記・error順序/文言とcommand別のcontrolsは保持する。
-2. テストで既存helperを使う。
-   `apps/operator/tests/certified_catch_up_pg_e2e.rs:90` のCLI locatorは
-   `apps/operator/tests/support/compiled_cli_process.rs:7` /
-   `apps/operator/tests/support/cli.rs:562` に既存ownerがある。
-   共有側のEXE_SUFFIX対応と、失敗時diagnosticの違いを確認して移行する。
-   `apps/operator/tests/fee_escrow_inventory_pg_e2e.rs:51` 以降のTempFileGuard、backend解決、proxy DSNも
-   `apps/operator/tests/support/cli.rs` の41/91/103行目を再利用できる。env名を引数で渡し、
-   fixture固有の期待値、pagination、独立したdurable-state検査は残す。
-3. dependency-lightなテスト用TempDir。
-   `apps/operator/tests/successor_artifacts.rs:32` と
-   `apps/operator/tests/successor_host_process_refusals.rs:21` はPID/counter/tag、create、best-effort Dropが同じ。
-   prefixを引数にする小さなstd-only helperへまとめ、元prefixと寿命を保持する。
-   timestamp命名やcleanup成功を要求する別のSQLite fixtureは一緒にしない。
-4. SDKの小さなdeadline guard。
-   `clients/rust/src/fastvote_frontier_client.rs:23` と
-   `clients/rust/src/ordered_history_client.rs:33` は同じ処理。
-   crate-private helperにまとめられるが、send前後の呼出し位置と同じerrorは保持する。
-   pollingの試行上限やtransportの残時間計算とは別にする。
+1. CLI helper (完了) 。genesis inspector/authorのcanonical decimal /number /positiveを既存commonへ移し、
+   inventory argvの32-byte hex decoderも既存helperへ統一した。緩いFastVote grammarとは分け、
+   入力表記・error順序/文言・flag消費を互換性controlsで確認した。
+2. PG test supportの再利用 (完了) 。catch-upのcompiled CLI locatorとinventoryのTempFileGuard、
+   backend解決、proxy DSNを既存ownerへ移した。env名とfixture固有の独立assertionsは保持した。
+   missing-CLI diagnosticとEXE_SUFFIX対応は既存共有locatorへ統一した。
+3. std-only TempDir (完了) 。successor artifact/refusalの2 targetsで共通helperを使う。
+   元prefix、tag、PID、各targetのcounterとinterleaving、createとbest-effort Dropを保持した。
+   timestamp命名や厳格cleanupを要求する別fixtureは統合しない。
+4. SDK deadline guard (完了) 。crate-private helperへまとめ、send前後10か所の位置と同じerrorを保持した。
+   pollingと残時間計算を変更せず、None/future/expiredとtransport call数をsleepなしで検証した。
 
 テストのcase削除を正当化する重複は今回確認していない。共通化は準備・後片付けを中心とし、
 各command/transport/storage境界のassertion、独立oracleと元scenario matrixを維持する。
