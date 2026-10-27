@@ -33,7 +33,7 @@ use std::{
     time::Duration,
 };
 
-use sunrise_edge_operator::common::parse_decimal_hash_suite as parse_suite;
+use sunrise_edge_operator::common::{parse_decimal_hash_suite as parse_suite, parse_hex_32};
 
 const POSTGRES_DSN_ENV: &str = "SUNRISE_EDGE_OPERATOR_POSTGRES_DSN";
 
@@ -57,18 +57,6 @@ fn set_once(slot: &mut Option<String>, flag: &str, value: String) -> Result<(), 
         return Err(format!("duplicate {flag}"));
     }
     Ok(())
-}
-
-fn parse_hex_32(value: &str, flag: &str) -> Result<[u8; 32], String> {
-    if value.len() != 64 || !value.bytes().all(|byte: u8| byte.is_ascii_hexdigit()) {
-        return Err(format!("{flag} must be 64 hex digits"));
-    }
-    let mut bytes: [u8; 32] = [0; 32];
-    for (index, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
-            .map_err(|_| format!("{flag} contains invalid hex"))?;
-    }
-    Ok(bytes)
 }
 
 fn parse_args(values: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
@@ -327,6 +315,44 @@ mod tests {
         let page: usize = values.iter().position(|value| value == "1").unwrap();
         values[page] = OsString::from("1025");
         assert!(parse_args(values).is_err());
+    }
+
+    #[test]
+    fn inventory_argv_preserves_hex_forms_and_refusal_order() {
+        let mixed: &str = "aBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaB";
+        let mut values: Vec<OsString> = valid_args();
+        for flag in ["--validator-id", "--domain"] {
+            let index: usize = values
+                .iter()
+                .position(|value: &OsString| value == flag)
+                .unwrap();
+            values[index + 1] = OsString::from(mixed);
+        }
+        let args: Args = parse_args(values).unwrap();
+        assert_eq!(args.validator.as_bytes(), &[0xab; 32]);
+        assert_eq!(args.domain.as_bytes(), &[0xab; 32]);
+
+        let mut values: Vec<OsString> = valid_args();
+        for flag in ["--validator-id", "--domain"] {
+            let index: usize = values
+                .iter()
+                .position(|value: &OsString| value == flag)
+                .unwrap();
+            values[index + 1] = OsString::from("bad");
+        }
+        assert_eq!(
+            parse_args(values).err().unwrap(),
+            "--validator-id must be 64 hex digits"
+        );
+
+        let mut values: Vec<OsString> = valid_args();
+        let index: usize = values
+            .iter()
+            .position(|value: &OsString| value == "--domain")
+            .unwrap();
+        values[index + 1] =
+            OsString::from("0000000000000000000000000000000000000000000000000000000000000000");
+        assert_eq!(parse_args(values).err().unwrap(), "zero atomicity domain");
     }
 
     #[test]

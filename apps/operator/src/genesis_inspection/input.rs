@@ -2,7 +2,10 @@
 //! command. Parsing resolves every flag explicitly; it accepts no secret,
 //! private key, provider, database, listener or environment-supplied trust.
 
-use crate::common::{FlagSet, parse_hash_suite, parse_hex_32};
+use crate::common::{
+    FlagSet, canonical_flag_u64 as number, parse_canonical_u64 as decimal, parse_hash_suite,
+    parse_hex_32, positive_canonical_flag_u64 as positive,
+};
 use crypto::{Ed25519OwnerAddressPolicy, validate_ed25519_owner_address};
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
@@ -31,26 +34,6 @@ pub(super) struct Config {
     pub validation_domain: AtomicityDomainId,
     pub validation_checkpoint: u64,
     pub timeout_millis: u64,
-}
-
-fn decimal(value: &str, field: &str) -> Result<u64, Box<dyn Error>> {
-    let number: u64 = value.parse().map_err(|_| format!("invalid {field}"))?;
-    if number.to_string() != value {
-        return Err(format!("{field} must be canonical unsigned decimal").into());
-    }
-    Ok(number)
-}
-
-fn number(flags: &mut FlagSet, field: &str) -> Result<u64, Box<dyn Error>> {
-    decimal(&flags.one(field)?, field)
-}
-
-fn positive(flags: &mut FlagSet, field: &str) -> Result<u64, Box<dyn Error>> {
-    let value: u64 = number(flags, field)?;
-    if value == 0 {
-        return Err(format!("{field} must be positive").into());
-    }
-    Ok(value)
 }
 
 fn public_key(value: [u8; 32]) -> Result<[u8; 32], Box<dyn Error>> {

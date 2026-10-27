@@ -12,31 +12,18 @@ use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     process::{Command, Output},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::AtomicU64,
     time::Duration,
 };
 #[path = "support/compiled_source_host_process.rs"]
 mod bounded_process;
 
-static NEXT: AtomicU64 = AtomicU64::new(1);
+#[path = "support/temp_dir.rs"]
+mod temp_dir;
+use temp_dir::TempDir;
 
-struct TempDir(PathBuf);
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        let path: PathBuf = std::env::temp_dir().join(format!(
-            "sunrise-successor-host-{tag}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&path).unwrap();
-        Self(path)
-    }
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ignored = std::fs::remove_dir_all(&self.0);
-    }
-}
+const TEMP_PREFIX: &str = "sunrise-successor-host";
+static NEXT: AtomicU64 = AtomicU64::new(1);
 
 fn host(root: &Path, listen: &str, confirm: bool) -> Output {
     host_command(root, listen, confirm, false).output().unwrap()
@@ -90,7 +77,7 @@ fn host_command(root: &Path, listen: &str, confirm: bool, historical: bool) -> C
 fn compiled_live_and_history_tls_options_refuse_before_artifact_or_target_io() {
     use std::{fs, os::unix::fs::PermissionsExt};
     for historical in [false, true] {
-        let root: TempDir = TempDir::new("tls-prefile");
+        let root: TempDir = TempDir::new(TEMP_PREFIX, "tls-prefile", &NEXT);
         let leaf: rcgen::CertifiedKey<rcgen::KeyPair> =
             rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
         let cert: PathBuf = root.0.join("leaf.der");
@@ -165,7 +152,7 @@ fn compiled_host_refuses_every_nonloopback_listen_before_any_io() {
         "[::ffff:127.0.0.1]:0",
         "localhost:0",
     ] {
-        let root: TempDir = TempDir::new("nonloopback");
+        let root: TempDir = TempDir::new(TEMP_PREFIX, "nonloopback", &NEXT);
         let output: Output = host(&root.0, listen, true);
         assert!(!output.status.success(), "{listen}");
         let message: String = stderr(&output);
@@ -181,7 +168,7 @@ fn compiled_host_refuses_every_nonloopback_listen_before_any_io() {
 
 #[test]
 fn compiled_host_requires_fence_confirmation_before_any_io() {
-    let root: TempDir = TempDir::new("confirm");
+    let root: TempDir = TempDir::new(TEMP_PREFIX, "confirm", &NEXT);
     let output: Output = host(&root.0, "127.0.0.1:0", false);
     assert!(!output.status.success());
     assert!(stderr(&output).contains("--confirm-offline-fence-advance"));
@@ -191,7 +178,7 @@ fn compiled_host_requires_fence_confirmation_before_any_io() {
 #[test]
 fn compiled_host_refuses_missing_artifact_transport_before_opening_a_target() {
     for listen in ["127.0.0.1:0", "[::1]:0"] {
-        let root: TempDir = TempDir::new("artifacts");
+        let root: TempDir = TempDir::new(TEMP_PREFIX, "artifacts", &NEXT);
         let output: Output = host(&root.0, listen, true);
         assert!(!output.status.success(), "{listen}");
         assert!(output.stdout.is_empty(), "no listener line is ever printed");
@@ -205,7 +192,7 @@ fn compiled_recurring_consumers_refuse_over_budget_before_genesis_or_target_io()
         (env!("CARGO_BIN_EXE_successor_host"), "serve"),
         (env!("CARGO_BIN_EXE_successor_activation"), "activate"),
     ] {
-        let root: TempDir = TempDir::new("chain-budget");
+        let root: TempDir = TempDir::new(TEMP_PREFIX, "chain-budget", &NEXT);
         let mut command: Command = Command::new(binary);
         command.args([mode, "--successor-max-links", "1"]);
         if mode == "serve" {
@@ -254,7 +241,7 @@ fn compiled_host_help_and_unknown_modes_never_serve() {
 
 #[test]
 fn shipped_cli_successor_actions_refuse_without_ordinary_fallback() {
-    let root: TempDir = TempDir::new("cli");
+    let root: TempDir = TempDir::new(TEMP_PREFIX, "cli", &NEXT);
     let out: PathBuf = root.0.join("candidate.bin");
     let run = |values: &[&str]| -> String {
         let arguments: Vec<OsString> = values.iter().map(OsString::from).collect();

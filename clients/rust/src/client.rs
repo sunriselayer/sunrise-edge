@@ -16,7 +16,7 @@ use protocol_types::{ChainId, Epoch, HashPurpose, ProtocolVersion};
 
 use crate::context::ExpectedProtocolContext;
 use crate::error::ClientError;
-use crate::transport::{Method, Transport, WireRequest};
+use crate::transport::{Method, Transport, TransportError, WireRequest};
 
 /// Explicit inputs for one `SubmitTransaction` event.
 ///
@@ -300,6 +300,14 @@ where
     }
 }
 
+/// Checks the caller's unchanged absolute deadline around one transport send.
+pub(crate) fn require_deadline_live(deadline: Option<Instant>) -> Result<(), ClientError> {
+    if deadline.is_some_and(|value: Instant| Instant::now() >= value) {
+        return Err(TransportError::RequestDeadlineExceeded.into());
+    }
+    Ok(())
+}
+
 pub(crate) fn expect_success(
     response: crate::transport::WireResponse,
     expected_content_type: &'static str,
@@ -342,6 +350,23 @@ mod tests {
     use objects::{Object, ObjectRef, Owner, encode_object};
     use protocol_types::{Digest32, HashAlgorithmId, SignatureSchemeId};
     use std::cell::RefCell;
+
+    #[test]
+    fn deadline_admission_accepts_unbounded_and_future_and_rejects_expired() {
+        let future: Instant = Instant::now()
+            .checked_add(Duration::from_secs(3_600))
+            .unwrap();
+        assert!(require_deadline_live(None).is_ok());
+        assert!(require_deadline_live(Some(future)).is_ok());
+
+        let expired: Instant = Instant::now();
+        assert!(matches!(
+            require_deadline_live(Some(expired)),
+            Err(ClientError::Transport(
+                TransportError::RequestDeadlineExceeded
+            ))
+        ));
+    }
 
     struct FakeTransport {
         responses: RefCell<Vec<Result<WireResponse, TransportError>>>,
