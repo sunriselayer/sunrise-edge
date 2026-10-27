@@ -29,25 +29,12 @@ use sunrise_edge_operator::{
     immutable_archive::ImmutableArchiveReader, successor_artifacts::SuccessorArtifactFiles,
 };
 
-static NEXT: AtomicU64 = AtomicU64::new(1);
+#[path = "support/temp_dir.rs"]
+mod temp_dir;
+use temp_dir::TempDir;
 
-struct TempDir(PathBuf);
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        let path: PathBuf = std::env::temp_dir().join(format!(
-            "sunrise-successor-artifacts-{tag}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&path).unwrap();
-        Self(path)
-    }
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ignored = std::fs::remove_dir_all(&self.0);
-    }
-}
+const TEMP_PREFIX: &str = "sunrise-successor-artifacts";
+static NEXT: AtomicU64 = AtomicU64::new(1);
 
 fn private_operation() -> DurableOperationContext {
     DurableOperationContext::new(
@@ -114,9 +101,9 @@ fn successor_artifact_files_enforces_exact_certificate_length_transport() {
         LocalExecutionPolicy::generic_object_results(fixture.network.context.clone());
     let engine: LocalWasmExecutionEngine = LocalWasmExecutionEngine::new();
 
-    let cut_dir: TempDir = TempDir::new("cut");
-    let history_dir: TempDir = TempDir::new("history");
-    let certificate_dir: TempDir = TempDir::new("certificate");
+    let cut_dir: TempDir = TempDir::new(TEMP_PREFIX, "cut", &NEXT);
+    let history_dir: TempDir = TempDir::new(TEMP_PREFIX, "history", &NEXT);
+    let certificate_dir: TempDir = TempDir::new(TEMP_PREFIX, "certificate", &NEXT);
     let certificate_bytes: [u8; 10] = [0xCC; 10];
     std::fs::write(certificate_dir.0.join("certificate.bin"), certificate_bytes).unwrap();
 
@@ -190,8 +177,8 @@ fn successor_artifact_files_detects_replaced_or_symlinked_history_directory() {
         paid_engine: &engine,
     };
 
-    let cut_dir: TempDir = TempDir::new("cut");
-    let certificate_dir: TempDir = TempDir::new("certificate");
+    let cut_dir: TempDir = TempDir::new(TEMP_PREFIX, "cut", &NEXT);
+    let certificate_dir: TempDir = TempDir::new(TEMP_PREFIX, "certificate", &NEXT);
     let history_path: PathBuf = std::env::temp_dir().join(format!(
         "sunrise-successor-artifacts-history-swap-{}-{}",
         std::process::id(),
@@ -255,7 +242,7 @@ fn successor_artifact_files_detects_replaced_or_symlinked_history_directory() {
     {
         // Replace again with a symlink to an unrelated real directory.
         std::fs::remove_dir_all(&history_path).unwrap();
-        let elsewhere: TempDir = TempDir::new("history-elsewhere");
+        let elsewhere: TempDir = TempDir::new(TEMP_PREFIX, "history-elsewhere", &NEXT);
         std::os::unix::fs::symlink(&elsewhere.0, &history_path).unwrap();
         assert!(artifacts.history_height(&identity, 1).is_err());
         std::fs::remove_file(&history_path).unwrap();

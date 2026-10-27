@@ -15,7 +15,7 @@ use node_wire::{
     OrderedHistoryComponentRequest, OrderedHistoryHeightRequest,
 };
 
-use crate::client::expect_success;
+use crate::client::{expect_success, require_deadline_live};
 use crate::transport::{Method, Transport, WireRequest};
 use crate::{Client, ClientError};
 
@@ -28,13 +28,6 @@ pub struct OrderedHistoryComponentRead {
     pub offset: u64,
     pub limit: u32,
     pub expected_total_length: u64,
-}
-
-fn require_deadline_live(deadline: Option<Instant>) -> Result<(), ClientError> {
-    if deadline.is_some_and(|value| Instant::now() >= value) {
-        return Err(crate::TransportError::RequestDeadlineExceeded.into());
-    }
-    Ok(())
 }
 
 impl<T: Transport> Client<T> {
@@ -152,13 +145,14 @@ mod tests {
 
     struct RecordingTransport {
         calls: Cell<u32>,
+        status: u16,
         body: Vec<u8>,
     }
     impl Transport for RecordingTransport {
         fn send(&self, _request: &WireRequest) -> Result<WireResponse, TransportError> {
             self.calls.set(self.calls.get() + 1);
             Ok(WireResponse {
-                status: 200,
+                status: self.status,
                 content_type: Some(NODE_RESULT_MEDIA_TYPE.to_owned()),
                 body: self.body.clone(),
             })
@@ -186,6 +180,7 @@ mod tests {
     fn invalid_expected_component_ranges_fail_before_transport_io() {
         let transport = RecordingTransport {
             calls: Cell::new(0),
+            status: 200,
             body: Vec::new(),
         };
         let client: Client<RecordingTransport> = Client::new(transport);
@@ -221,6 +216,7 @@ mod tests {
         .unwrap();
         let transport = RecordingTransport {
             calls: Cell::new(0),
+            status: 200,
             body: response,
         };
         let client: Client<RecordingTransport> = Client::new(transport);
@@ -239,5 +235,60 @@ mod tests {
                 .is_err()
         );
         assert_eq!(client.transport().calls.get(), 1);
+    }
+
+    #[test]
+    fn deadline_admission_keeps_history_dispatch_counts() {
+        let pinned: OrderedHistoryIdentity = identity();
+        let read: OrderedHistoryComponentRead = OrderedHistoryComponentRead {
+            identity: pinned.clone(),
+            height: 1,
+            descriptor_digest: protocol_types::Digest32::new(HashAlgorithmId::Sha2_256, [5; 32]),
+            kind: OrderedHistoryComponentKind::Candidate,
+            offset: 0,
+            limit: 1,
+            expected_total_length: 1,
+        };
+        let future: Instant = Instant::now()
+            .checked_add(std::time::Duration::from_secs(3_600))
+            .unwrap();
+        let cases: [(Option<Instant>, bool); 3] = [
+            (None, true),
+            (Some(future), true),
+            (Some(Instant::now()), false),
+        ];
+        for (deadline, live) in cases {
+            let sdk: Client<RecordingTransport> = Client::new(RecordingTransport {
+                calls: Cell::new(0),
+                status: 503,
+                body: Vec::new(),
+            });
+            // A live deadline must reach the transport's deliberate status sentinel.
+            let results: [Result<(), ClientError>; 3] = [
+                sdk.query_ordered_history_summary(deadline)
+                    .map(|_: OrderedHistorySummary| ()),
+                sdk.fetch_ordered_history_height_descriptor(&pinned, 1, deadline)
+                    .map(|_: OrderedHistoryHeightDescriptor| ()),
+                sdk.fetch_ordered_history_component_chunk(&read, deadline)
+                    .map(|_: Vec<u8>| ()),
+            ];
+            for result in results {
+                if live {
+                    assert!(matches!(
+                        result,
+                        Err(ClientError::UnexpectedStatus { status: 503, .. })
+                    ));
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(ClientError::Transport(
+                            TransportError::RequestDeadlineExceeded
+                        ))
+                    ));
+                }
+            }
+            let expected_calls: u32 = if live { 3 } else { 0 };
+            assert_eq!(sdk.transport().calls.get(), expected_calls);
+        }
     }
 }

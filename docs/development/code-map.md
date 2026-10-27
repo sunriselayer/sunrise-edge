@@ -32,10 +32,19 @@ exports the defining consensus type, not a core adapter.
 
 The operator's [common input/output owner](../../apps/operator/src/common.rs)
 shares FastVote scalar parsing, decimal-wire-ID suite/schedule parsing and
-lowercase hex rendering. The existing literal-ID suite grammar remains
+lowercase hex rendering. The genesis author and inspector also share their
+crate-private canonical unsigned-decimal flag helpers, which retain stricter
+spelling rules than FastVote decimal input. The inventory binary reuses the
+same existing 32-byte hex decoder. The literal-ID suite grammar remains
 separate; binaries retain flag collection, error order and dispatch. Literal
-[compatibility controls](../../apps/operator/src/common/tests.rs) cover both
+[compatibility controls](../../apps/operator/src/common/tests.rs) cover these
 grammars and display bytes without sharing production expected-value builders.
+
+The Rust client's [ordinary deadline guard](../../clients/rust/src/client.rs)
+is shared by frozen-frontier and ordered-history transport calls. Each caller
+retains its original pre-send and post-send positions, absolute deadline and
+error. Receipt-poll exhaustion and transport remaining-time calculation remain
+with their existing owners.
 
 ## Follow a request
 
@@ -187,6 +196,15 @@ contracts; they do not define protocol rules.
   [neutral compiled-CLI locator](../../apps/operator/tests/support/compiled_cli_process.rs)
   is also reused by existing optional PostgreSQL tests, without importing their
   fixture/deployment authority into local acceptance.
+  The PostgreSQL inventory test reuses existing file-guard/backend/proxy-DSN
+  plumbing from [CLI test support](../../apps/operator/tests/support/cli.rs),
+  while its fixture expectations and durable-state assertions stay independent.
+  The successor artifact/refusal tests share one std-only
+  [temporary-directory owner](../../apps/operator/tests/support/temp_dir.rs).
+  Callers supply their original prefix, tag and atomic counter so directory
+  naming, counter interleaving, scope lifetime and best-effort cleanup remain
+  unchanged. Other temporary-directory owners retain their distinct timestamp
+  and cleanup requirements.
   The [shared compiled-child capture](../../apps/operator/tests/support/compiled_source_host_process.rs)
   returns full `Output` only after successful pipe reads and reader joins; live
   startup returns one LF-terminated first line without waiting for host-stream EOF.

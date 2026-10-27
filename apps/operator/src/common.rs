@@ -224,6 +224,32 @@ pub fn hex_lower(bytes: &[u8]) -> String {
         .collect::<String>()
 }
 
+/// Parses the genesis tools' canonical unsigned decimal input without trimming.
+pub(crate) fn parse_canonical_u64(value: &str, field: &str) -> Result<u64, Box<dyn Error>> {
+    let number: u64 = value.parse().map_err(|_| format!("invalid {field}"))?;
+    if number.to_string() != value {
+        return Err(format!("{field} must be canonical unsigned decimal").into());
+    }
+    Ok(number)
+}
+
+/// Consumes exactly one genesis-tool flag before checking its decimal grammar.
+pub(crate) fn canonical_flag_u64(flags: &mut FlagSet, field: &str) -> Result<u64, Box<dyn Error>> {
+    parse_canonical_u64(&flags.one(field)?, field)
+}
+
+/// Consumes a canonical genesis-tool scalar and preserves its positive check.
+pub(crate) fn positive_canonical_flag_u64(
+    flags: &mut FlagSet,
+    field: &str,
+) -> Result<u64, Box<dyn Error>> {
+    let value: u64 = canonical_flag_u64(flags, field)?;
+    if value == 0 {
+        return Err(format!("{field} must be positive").into());
+    }
+    Ok(value)
+}
+
 /// Parses the FastVote operators' explicit `--chain-id` value.
 pub fn parse_chain(value: String) -> Result<protocol_types::ChainId, String> {
     protocol_types::ChainId::new(value).map_err(|_| "invalid --chain-id".to_string())

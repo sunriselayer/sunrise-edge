@@ -1,10 +1,107 @@
 //! Literal compatibility controls for ordinary operator input and output.
 
 use super::{
-    hex_lower, parse_chain, parse_decimal_hash_schedule, parse_decimal_hash_suite, parse_domain,
-    parse_epoch, parse_hash_suite, parse_protocol_version, parse_u64_bounded, parse_validator,
+    FlagSet, canonical_flag_u64, hex_lower, parse_canonical_u64, parse_chain,
+    parse_decimal_hash_schedule, parse_decimal_hash_suite, parse_domain, parse_epoch,
+    parse_hash_suite, parse_hex_32, parse_protocol_version, parse_u64_bounded, parse_validator,
+    positive_canonical_flag_u64,
 };
 use protocol_types::{Epoch, HashAlgorithmId, HashSuite, HashSuiteId, HashSuiteSchedule};
+use std::ffi::OsString;
+
+#[test]
+fn canonical_decimal_preserves_values_and_exact_form_errors() {
+    let valid: &[(&str, u64)] = &[("0", 0), ("1", 1), ("18446744073709551615", u64::MAX)];
+    for &(input, expected) in valid {
+        assert_eq!(parse_canonical_u64(input, "--count").unwrap(), expected);
+    }
+    let invalid: &[(&str, &str)] = &[
+        ("", "invalid --count"),
+        ("-1", "invalid --count"),
+        (" 1", "invalid --count"),
+        ("1 ", "invalid --count"),
+        ("18446744073709551616", "invalid --count"),
+        ("01", "--count must be canonical unsigned decimal"),
+        ("+1", "--count must be canonical unsigned decimal"),
+        ("+0", "--count must be canonical unsigned decimal"),
+    ];
+    for &(input, expected) in invalid {
+        assert_eq!(
+            parse_canonical_u64(input, "--count")
+                .unwrap_err()
+                .to_string(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn canonical_flag_helpers_preserve_consumption_and_error_order() {
+    let tokens: Vec<OsString> = ["--count", "0", "--positive", "2"]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+    let mut flags: FlagSet = FlagSet::parse(tokens, &["--count", "--positive"], &[]).unwrap();
+    assert_eq!(canonical_flag_u64(&mut flags, "--count").unwrap(), 0);
+    assert_eq!(
+        positive_canonical_flag_u64(&mut flags, "--positive").unwrap(),
+        2
+    );
+    assert_eq!(
+        canonical_flag_u64(&mut flags, "--count")
+            .unwrap_err()
+            .to_string(),
+        "missing required --count"
+    );
+    flags.finish().unwrap();
+
+    let cases: &[(&[&str], &str)] = &[
+        (&[], "missing required --count"),
+        (
+            &["--count", "bad", "--count", "0"],
+            "--count must be supplied exactly once",
+        ),
+        (&["--count", "bad"], "invalid --count"),
+        (
+            &["--count", "+0"],
+            "--count must be canonical unsigned decimal",
+        ),
+        (&["--count", "0"], "--count must be positive"),
+    ];
+    for &(values, expected) in cases {
+        let tokens: Vec<OsString> = values
+            .iter()
+            .map(|value: &&str| OsString::from(*value))
+            .collect();
+        let mut flags: FlagSet = FlagSet::parse(tokens, &["--count"], &[]).unwrap();
+        assert_eq!(
+            positive_canonical_flag_u64(&mut flags, "--count")
+                .unwrap_err()
+                .to_string(),
+            expected
+        );
+        flags.finish().unwrap();
+    }
+}
+
+#[test]
+fn hex_decoder_preserves_mixed_case_zero_and_exact_input_errors() {
+    let mixed: &str = "aBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaB";
+    assert_eq!(parse_hex_32(mixed, "--value").unwrap(), [0xab; 32]);
+    let zero: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+    assert_eq!(parse_hex_32(zero, "--value").unwrap(), [0; 32]);
+    for value in [
+        "",
+        "00",
+        "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+        " aBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBa",
+    ] {
+        assert_eq!(
+            parse_hex_32(value, "--value").unwrap_err(),
+            "--value must be 64 hex digits"
+        );
+    }
+}
 
 #[test]
 fn scalar_parsers_preserve_values_and_decimal_spellings() {

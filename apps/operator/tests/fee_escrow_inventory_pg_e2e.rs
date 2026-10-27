@@ -18,10 +18,7 @@
 
 mod support;
 
-use postgres::{
-    Config,
-    config::{Host, SslMode},
-};
+use postgres::{Config, config::SslMode};
 use protocol_types::{AtomicityDomainId, ChainId, ValidatorId};
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
 use runtime::{
@@ -34,7 +31,7 @@ use runtime_postgres::{
 };
 use std::{
     env, fs,
-    net::{SocketAddr, ToSocketAddrs},
+    net::SocketAddr,
     num::NonZeroU32,
     path::{Path, PathBuf},
     process::{Command, Output},
@@ -42,19 +39,12 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use support::cli::{TempFileGuard, proxied_dsn, single_tcp_backend_addr};
+
 const CHAIN_ID: &str = "paid-durable";
 const DOMAIN_HEX: &str = "0808080808080808080808080808080808080808080808080808080808080808";
 const PROTOCOL_VERSION: &str = "3";
 const SUITE: &str = "0:1:1:1:1:1:1:1";
-
-/// Deletes its temp file on drop, best-effort, regardless of test outcome.
-struct TempFileGuard(PathBuf);
-
-impl Drop for TempFileGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
-}
 
 fn parse_hex_32(value: &str) -> [u8; 32] {
     assert_eq!(value.len(), 64, "expected 64 hex digits, got {value:?}");
@@ -64,39 +54,6 @@ fn parse_hex_32(value: &str) -> [u8; 32] {
             .unwrap_or_else(|error| panic!("invalid hex in {value:?}: {error}"));
     }
     bytes
-}
-
-fn single_tcp_backend_addr(config: &Config) -> SocketAddr {
-    let [Host::Tcp(host)] = config.get_hosts() else {
-        panic!(
-            "{} must resolve to exactly one TCP host",
-            support::LIVE_POSTGRES_URL_ENV
-        );
-    };
-    let port: u16 = config.get_ports().first().copied().unwrap_or(5432);
-    format!("{host}:{port}")
-        .to_socket_addrs()
-        .unwrap_or_else(|error| panic!("failed to resolve backend host {host}: {error}"))
-        .next()
-        .unwrap_or_else(|| panic!("no resolved address for backend host {host}"))
-}
-
-/// Builds the plain `postgresql://` URL string the operator binary itself
-/// parses via `Config::from_str`, pointed at the TLS proxy's `localhost`
-/// port with the same credentials and database as the real backend. The
-/// binary always forces `sslmode=require` internally, so this string need
-/// not (and, since it must remain a plain unencoded test credential, does
-/// not attempt to) specify TLS options itself.
-fn proxied_dsn(original: &Config, proxy_port: u16) -> String {
-    let user: &str = original.get_user().unwrap_or("postgres");
-    let dbname: &str = original.get_dbname().unwrap_or(user);
-    let password: Option<String> = original
-        .get_password()
-        .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
-    match password {
-        Some(password) => format!("postgresql://{user}:{password}@localhost:{proxy_port}/{dbname}"),
-        None => format!("postgresql://{user}@localhost:{proxy_port}/{dbname}"),
-    }
 }
 
 fn operator_command(ca_path: &Path, validator_id_hex: &str, dsn: &str) -> Command {
@@ -153,7 +110,8 @@ fn fee_escrow_inventory_pg_operator_e2e() {
     let _live_test_lock = support::LiveTestLock::acquire();
 
     let original_config: Config = Config::from_str(&database_url).unwrap();
-    let backend_addr: SocketAddr = single_tcp_backend_addr(&original_config);
+    let backend_addr: SocketAddr =
+        single_tcp_backend_addr(&original_config, support::LIVE_POSTGRES_URL_ENV);
 
     let (proxy, _client_connector, ca_der) =
         support::tls_relay::TlsPassthroughProxy::spawn(backend_addr);

@@ -16,16 +16,9 @@ use node_wire::{
 use protocol_types::ValidatorId;
 
 use crate::Client;
-use crate::client::expect_success;
+use crate::client::{expect_success, require_deadline_live};
 use crate::error::ClientError;
-use crate::transport::{Method, Transport, TransportError, WireRequest};
-
-fn require_deadline_live(deadline: Option<Instant>) -> Result<(), ClientError> {
-    if deadline.is_some_and(|value| Instant::now() >= value) {
-        return Err(TransportError::RequestDeadlineExceeded.into());
-    }
-    Ok(())
-}
+use crate::transport::{Method, Transport, WireRequest};
 
 impl<T: Transport> Client<T> {
     /// Asks one locally configured validator to advance at most one
@@ -403,5 +396,62 @@ mod tests {
                 .fetch_signed_frozen_frontier_page(&request, &certifier, signer.id, None)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn deadline_admission_keeps_frontier_dispatch_counts() {
+        let (_resolver, certifier, signer, _vote): (
+            HashSuiteResolver,
+            FrozenFrontierCertifier,
+            Signer,
+            FrozenFrontierVote,
+        ) = fixture();
+        let request: FrozenFrontierPageRequest = FrozenFrontierPageRequest {
+            epoch: Epoch::new(8),
+            after_request_id: None,
+            limit: 1,
+        };
+        let future: Instant = Instant::now()
+            .checked_add(std::time::Duration::from_secs(3_600))
+            .unwrap();
+        let cases: [(Option<Instant>, bool); 3] = [
+            (None, true),
+            (Some(future), true),
+            (Some(Instant::now()), false),
+        ];
+        for (deadline, live) in cases {
+            let sdk: Client<FixedTransport> = Client::new(FixedTransport {
+                response: crate::transport::WireResponse {
+                    status: 503,
+                    content_type: Some(NODE_RESULT_MEDIA_TYPE.to_owned()),
+                    body: Vec::new(),
+                },
+                calls: Cell::new(0),
+            });
+            // A live deadline must reach the transport's deliberate status sentinel.
+            let results: [Result<(), ClientError>; 2] = [
+                sdk.advance_frozen_frontier(&certifier, signer.id, deadline)
+                    .map(|_: Option<FrozenFrontierVote>| ()),
+                sdk.fetch_signed_frozen_frontier_page(&request, &certifier, signer.id, deadline)
+                    .map(|_: (FrozenFrontierVote, FrozenFrontierPage)| ()),
+            ];
+            for result in results {
+                if live {
+                    assert!(matches!(
+                        result,
+                        Err(ClientError::UnexpectedStatus { status: 503, .. })
+                    ));
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(ClientError::Transport(
+                            crate::TransportError::RequestDeadlineExceeded
+                        ))
+                    ));
+                }
+            }
+            let expected_calls: u32 = if live { 2 } else { 0 };
+            assert_eq!(sdk.transport().calls.get(), expected_calls);
+        }
     }
 }
