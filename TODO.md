@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-10-22 (JST)。これは唯一の現行作業表です。
+更新: 2026-10-27 (Asia/Singapore)。これは唯一の現行作業表です。
 設計は[architecture](docs/architecture/README.md)、実装場所は
 [code map](docs/development/code-map.md)、整理の決定は
 [DR-0236](docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md)に置きます。
@@ -1775,3 +1775,23 @@ E212の限定runtimeに続き、E213で同8daの完全requiredも自然終了・
 同source CIは終端待ち。RELEASE用のlean checkoutは作成済みだが、入力censusは未展開
 locked source pointerを検出して停止したため、失敗を保持して配置だけを確認中。
 85チェック中70完了/15未完了、選択した親5件は未完了のまま保持する。
+
+
+## 2026-10-27の通常保守: CLI helperとCI selector
+
+親5件と別枠の保守改善として、既存source `8da1d620` を起点に以下3件を実装した。
+新しいprotocol・authority・親項目の完了条件は追加しない。
+
+- FastVote PGのscalar/decimal-suite/schedule parserを既存operator commonへ移した。
+  literal-ID grammarは別に保持し、受理する数値表記・error順序/文言・schedule順序を変えない。
+- operatorの小文字hex表示7実装を同commonのhelperへ移し、既存の独立期待値を残した。
+- SQLite inventory自身がexporter selectorとexact discovery/executionを所有する。
+  standalone/CI両入口から同じhelperを使い、列挙0件/重複/失敗・export失敗時の停止とcleanupを保つ。
+
+実装は `3a2e3aa4` / `a3fa4576` (tree `99fb314d`) にcommit/push済み。
+[Draft PR #333](https://github.com/sunriselayer/sunrise-edge/pull/333) は#332上へ積んだ。
+追加Rust互換性8件、Nodeの全CI契約、fmt/bash syntax/diff checkは成功。
+通常の狭いcorrectness reviewで具体的なblocking regressionは見つからなかった。
+同sourceの完全required・既存5-group PG・全8 CIの終端は未照合のため、3件は検証中。
+[CI run40447306260](https://github.com/sunriselayer/sunrise-edge/actions/runs/40447306260) は実行中。
+残るD02/M1/M2/M3/M7の親5件は引き続き未完了。停止対象の監査等は再開していない。
