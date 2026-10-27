@@ -5,7 +5,7 @@ Date: 2026-10-27 (Asia/Singapore)
 Source: `e7bdf83fa184f5eecadcb524dd3d7ba87166986d`  
 Tree: `c28d0437ca545b642b00d20fd137c0c4585cb314`  
 Base: `bfbca5fcdf6144241a4e7db8b8095375e1c92f7d`  
-[Draft PR #334](https://github.com/sunriselayer/sunrise-edge/pull/334)
+[PR #334](https://github.com/sunriselayer/sunrise-edge/pull/334)
 
 ## 変更
 
@@ -71,7 +71,8 @@ Node24.19.0、Rust1.97.1、Deno2.9.4、cf1.0.0-beta.13を使い、直接Wrangler
 ## 元のTODO
 
 通常保守4件は実装・互換性controls・同source完全required/PG/全8 CIと終了後照合がそろったため完了。
-実装はcommit/push済みで、PR #334はreview用のDraftとして保持する。
+実装はcommit/push済み。全9 check-runsのsuccessと同一headを再確認し、
+15:29:39 UTCにPR #334をReady for reviewへ切り替えた。
 元の85 checkbox中71完了/14未完了とD02/M1/M2/M3/M7の親条件は変更しない。
 停止済み監査、ZeroShare、torn-WAL/mechanism2、独立anchor guestは再開していない。
 新しいNative/M7 RELEASE認定、main merge、deploy、実鍵・host user・security policyの変更は行わない。

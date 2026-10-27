@@ -1830,7 +1830,8 @@ attempt1のまま14:37:10 UTCに全job自然success。rootは386 filesと全8 ra
 実checkout `70e9807b`、tree `c28d0437`、parents `[bfbca5fc, e7bdf83f]` を照合した。
 全8 childの実exit0・両EOF・waitとcollector/既知PID不在を確認した。Bugbotを含む全9 check-runsもsuccessで、
 その時点のreview/commentsとBugbot annotationsは0。CI各jobのannotation計8件は同じrunner image移行noticeで、
-warning/failureは0。今回の通常保守4件を完了とし、Draft PR #334を保持する。
+warning/failureは0。今回の通常保守4件は完了。全9 check-runsのsuccessと同一headを再確認し、
+15:29:39 UTCにPR #334をReady for reviewへ切り替えた。
 元の85 checkbox /71完了 /14未完了と親5件は変わらない。
 
 PR #333のsource `a3fa4576` / tree `99fb314d` を実装側とテスト側に分担してread-only確認した。
