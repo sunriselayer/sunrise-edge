@@ -58,9 +58,6 @@ ci_check_rust_style() {
 }
 
 ci_check_sqlite_inventory() {
-  ci_require_exact_ignored_test \
-    fee_claims::tests::certified_multi_escrow_inventory::export_certified_operator_fixture \
-    -p node-core --lib || return "$?"
   bash scripts/check-fee-escrow-inventory.sh
 }
 
