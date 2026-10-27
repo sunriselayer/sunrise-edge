@@ -25,10 +25,38 @@ Base: `8da1d620cba7428672df086318b2df2d3cec5976`
 Node 24.19.0の `scripts/test-ci-gates.mjs` 全体、rustfmt、bash syntax、diff checkは成功。
 通常の限定correctness reviewではblocking regressionを確認しなかった。
 
-同sourceのliteral `npm ci --prefix adapters/cloudflare-workers` はactual exit 0。
-`./scripts/check-all.sh`、既存の完全5-group PostgreSQL `profile`、
+同sourceのlocal実行は04:10:41 UTC開始、07:36:13 UTC自然終了。
+literal `npm ci --prefix adapters/cloudflare-workers`、`./scripts/check-all.sh`、
+既存の完全5-group PostgreSQL `profile` は全てactual exit 0で、
+それぞれ1.887秒、11,272.598秒、1,053.462秒だった。
+
+requiredのRust147 summariesは4,408 passed / 0 failed / 43 ignored、CFは
+13 + 28 + 10 + 15の全66件成功。元7 epochsとepoch8のterminal unlockを保持し、
+長時間host scenarioも9,610.08秒で成功した。
+PGはpg-storage、pg-lifecycle、pg-drain-history、pg-business-audit、
+pg-recovery-economicsの全5 groupsを実行し、Rust83 summariesは
+1,493 passed / 0 failed / 20 ignoredだった。
+crash、disk-full、WAL-full、connection exhaustion、backup/restore、PgBouncerの
+元required flagsを保持し、対応する実targetの成功とskipなしを照合した。
+これらは重複helperや別exact実行を含むsummary合計で、distinct test数ではない。
+
+rootは全43 commandsの86 streams、実両EOF/wait/reap、全1,225 source inputsの
+metadata/SHA/HEAD/tree/clean set、23 runtime tool roles、CFの2,347 tool rolesと
+2,725 layout rowsを終了後にも照合した。ownerと全command PID、captured cgroupの
+不在を確認し、自然終了証跡の保存後に空の完了unitだけを停止した。
+今回のPG owner label付きcontainer/volumeとraw記録のPG名は残っていない。
+
+全体Docker一覧を開始時と完全一致させる最初の終了後readerは停止した。
+別のd6e名container等の増減があるため、差分と失敗を保存し、今回のownerと
+記録したPG名の解放を確認した。rootはDockerの削除やpruneを行っていない。
+
+passing contract suite内のworkerd例外診断とmissing live secret warningはrawに保持する。
+既存test sourceにはplacement不一致や再open拒否の明示的なrejects検査があるが、
+各診断の個別対応付けやproduction設定の準備完了は主張しない。
+既存ignored testsも未実行として残す。
+
 [全8 CI](https://github.com/sunriselayer/sunrise-edge/actions/runs/40447306260) は
-実終端と終了後照合を待つ。部分結果を全体の成功へ加算しない。
+終端と実checkout/logの照合待ち。local成功をCI成功へ付け替えない。
 
 local実行は既存source、target、cache、node_modulesを再利用し、専用の有限serviceで
 単一ownerが順番に実行する。Node 24.19.0、Rust 1.97.1、Deno 2.9.4、
@@ -55,6 +83,9 @@ deviceが変化した原因はこの照合では確定していない。
 | `maintenance-dedup-1027-owner.py` | `d9ed76c9e06f3d6a9fbb71342ae1cbc11bdf451fe348199fe59f22bc00dc6149` |
 | `maintenance-dedup-1027-config.json` | `312e3090e6a778f3a238162c0cf75b103a80fa5114bf7e9e22acd1cc6e66be97` |
 | `maintenance-dedup-1027-cf-closure-device52.json` | `8ceee07cbd07993a808edba96aba91d6974f1f1d8b9e823f27c19c886b86bd6c` |
+| `maintenance-dedup-1027-root-local-qualified.json` | `a2d32c3dbcd14254932e944aa5831ac7705e8f3cf40a354b41caa3e7bc787df0` |
+| `maintenance-dedup-1027-root-postclose-qualified.json` | `6b87f1f4afe9e714d4bf4d5294b3bf51d74cdef1a0f14919cd1edf7fc7b91d77` |
+| `maintenance-dedup-1027-root-docker-closure.json` | `ecd1fd6c2f189762574cd3896c7a7dcba789edcbbf743b14e06ad05862a773ca` |
 
 ## 元のTODOとの関係
 

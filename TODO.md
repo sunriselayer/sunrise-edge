@@ -1792,6 +1792,13 @@ locked source pointerを検出して停止したため、失敗を保持して�
 [Draft PR #333](https://github.com/sunriselayer/sunrise-edge/pull/333) は#332上へ積んだ。
 追加Rust互換性8件、Nodeの全CI契約、fmt/bash syntax/diff checkは成功。
 通常の狭いcorrectness reviewで具体的なblocking regressionは見つからなかった。
-同sourceの完全required・既存5-group PG・全8 CIの終端は未照合のため、3件は検証中。
-[CI run40447306260](https://github.com/sunriselayer/sunrise-edge/actions/runs/40447306260) は実行中。
+同sourceのliteral npm ci・完全required・完全5-group PG profileは07:36:13 UTCに自然成功。
+rootが全86 streams/実EOF/wait/reap、1,225 source inputs、23 runtime/CF2,347 tool rolesと
+layout2,725行、既知PID/cgroupと今回PG資源の解放を終了後に照合した。
+requiredはRust4,408 passed/0 failed/43 ignoredとCF66成功、PGは1,493/0/20。
+summary合計には別exact/helper実行を含み、元のignoredは実行済みにしない。
+[検証記録](docs/development/validation/2026-10-27-operator-helper-ci-dedup/README.md) に
+実行前CF停止と終了後reader停止も保存した。
+[CI run40447306260](https://github.com/sunriselayer/sunrise-edge/actions/runs/40447306260) は
+終端待ちのため、3件の最終完了は引き続き保留する。
 残るD02/M1/M2/M3/M7の親5件は引き続き未完了。停止対象の監査等は再開していない。
