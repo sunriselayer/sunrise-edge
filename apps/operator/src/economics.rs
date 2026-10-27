@@ -5,7 +5,8 @@
 //! signed bytes; applying that artifact never loads a key or replaces a nonce.
 
 use crate::common::{
-    FlagSet, connect_pool, load_signing_key_file, parse_hex_32, require_live_fastvote_pin,
+    FlagSet, connect_pool, hex_lower as hex, load_signing_key_file, parse_hex_32,
+    require_live_fastvote_pin,
 };
 use abi::call_values::{CallValue, ValueLayout, encode_call_value};
 use abi::{AccessEntry, AccessManifest};
@@ -167,14 +168,6 @@ fn decode_hex(value: &str, maximum: usize) -> OperatorResult<Vec<u8>> {
             Ok(u8::from_str_radix(text, 16)?)
         })
         .collect()
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut output: String = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push_str(&format!("{byte:02x}"));
-    }
-    output
 }
 
 fn parse_args(

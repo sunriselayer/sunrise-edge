@@ -9,10 +9,7 @@ use postgres::{
     config::{Host, SslMode},
 };
 use postgres_rustls::{MakeTlsConnector, tokio_rustls::TlsConnector};
-use protocol_types::{
-    AtomicityDomainId, ChainId, Epoch, HashAlgorithmId, HashSuite, HashSuiteId, HashSuiteSchedule,
-    ProtocolVersion, ValidatorId,
-};
+use protocol_types::{AtomicityDomainId, ChainId, HashSuiteSchedule, ProtocolVersion, ValidatorId};
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
 use runtime::{
     Clock, DurableOperationContext, StorageCorrelationId, StorageDeadline, SystemClock,
@@ -35,6 +32,8 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+
+use sunrise_edge_operator::common::parse_decimal_hash_suite as parse_suite;
 
 const POSTGRES_DSN_ENV: &str = "SUNRISE_EDGE_OPERATOR_POSTGRES_DSN";
 
@@ -70,40 +69,6 @@ fn parse_hex_32(value: &str, flag: &str) -> Result<[u8; 32], String> {
             .map_err(|_| format!("{flag} contains invalid hex"))?;
     }
     Ok(bytes)
-}
-
-fn parse_suite(value: &str) -> Result<HashSuiteSchedule, String> {
-    let fields: Vec<&str> = value.split(':').collect();
-    if fields.len() != 8 {
-        return Err("--suite needs epoch:id:transaction:object:effects:code:config:certificate (decimal wire ids)".into());
-    }
-    let epoch: u64 = fields[0].parse().map_err(|_| "invalid suite epoch")?;
-    let id: u16 = fields[1].parse().map_err(|_| "invalid suite id")?;
-    if id == 0 {
-        return Err("zero suite id".into());
-    }
-    let algorithm = |index: usize| -> Result<HashAlgorithmId, String> {
-        let number: u16 = fields[index]
-            .parse()
-            .map_err(|_| "invalid hash algorithm id")?;
-        match HashAlgorithmId::try_from(number) {
-            Ok(HashAlgorithmId::Sha2_256) => Ok(HashAlgorithmId::Sha2_256),
-            Ok(HashAlgorithmId::Sha3_256) => Ok(HashAlgorithmId::Sha3_256),
-            _ => Err("unsupported hash algorithm id".into()),
-        }
-    };
-    Ok(HashSuiteSchedule {
-        activation_epoch: Epoch::new(epoch),
-        suite: HashSuite {
-            id: HashSuiteId::new(id),
-            transaction_hash: algorithm(2)?,
-            object_digest: algorithm(3)?,
-            effects_hash: algorithm(4)?,
-            code_hash: algorithm(5)?,
-            config_hash: algorithm(6)?,
-            certificate_hash: algorithm(7)?,
-        },
-    })
 }
 
 fn parse_args(values: impl IntoIterator<Item = OsString>) -> Result<Args, String> {

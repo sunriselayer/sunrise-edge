@@ -16,6 +16,14 @@ plans and command baselines check the actual dispatch, including failures
 inside a recipe. Workflow jobs and success-only aggregates remain separate
 consumers, not a second definition of gate execution.
 
+The SQLite inventory fixture owns its exact exporter selector and calls the
+same discovery/execution helper as the PostgreSQL inventory fixture. Its
+standalone entrypoint and the `rust-tests` dispatcher therefore run one exact
+discovery followed by one execution; the dispatcher only delegates. Fixture
+environment, inventory CLI assertions and cleanup remain local to the fixture.
+Independent command doubles cover both entrypoints and prevent execution after
+missing, ambiguous or failed discovery, or inventory use after a failed export.
+
 [DR-0193](decisions/0193-required-recurring-acceptance.md) gives three heavy,
 always-ignored cases their own unconditional (never PostgreSQL-gated) lane
 each, rather than letting either share `rust-tests`' budget or drop out of

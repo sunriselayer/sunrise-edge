@@ -40,10 +40,14 @@
 #![forbid(unsafe_code)]
 
 use sunrise_edge_operator::common::{
-    FlagSet, connect_pool, load_signing_key_file, parse_hex_32, read_bounded_file,
+    FlagSet, connect_pool, hex_lower as to_hex, load_signing_key_file, parse_chain,
+    parse_decimal_hash_schedule as parse_schedule, parse_domain, parse_epoch, parse_hex_32,
+    parse_protocol_version, parse_u64_bounded, parse_validator, read_bounded_file,
 };
 #[cfg(test)]
-use sunrise_edge_operator::common::{SigningKeyFileError, require_tls_tcp_host};
+use sunrise_edge_operator::common::{
+    SigningKeyFileError, parse_decimal_hash_suite as parse_suite, require_tls_tcp_host,
+};
 
 use consensus::{
     ConsensusSigner, FastCertificate, FastPathCertifier, FastVote, decode_fast_certificate,
@@ -76,9 +80,11 @@ use postgres::Client;
 use postgres::{Config, config::SslMode};
 use postgres_rustls::MakeTlsConnector;
 use protocol_types::{
-    AtomicityDomainId, ChainId, Epoch, HashAlgorithmId, HashSuite, HashSuiteId, HashSuiteSchedule,
-    ProtocolVersion, SignatureSchemeId, ValidatorId,
+    AtomicityDomainId, ChainId, Epoch, HashSuiteSchedule, ProtocolVersion, SignatureSchemeId,
+    ValidatorId,
 };
+#[cfg(test)]
+use protocol_types::{HashAlgorithmId, HashSuite, HashSuiteId};
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
 use runtime::{
     Clock, DurableDomainStateStore, DurableOperationContext, StorageCorrelationId, StorageDeadline,
@@ -113,95 +119,6 @@ const MAX_VOTE_FILE_BYTES: usize = 4096;
 const MAX_CERTIFICATE_FILE_BYTES: usize = MAX_FASTPATH_ACTIVE_VALIDATORS * MAX_VOTE_FILE_BYTES;
 /// Bound on the number of `--vote` files `assemble-certificate` accepts.
 const MAX_VOTE_INPUTS: usize = MAX_FASTPATH_ACTIVE_VALIDATORS;
-
-// ---------------------------------------------------------------------
-// Shared scalar parsing (mirrors `fee_escrow_inventory_pg`'s conventions).
-// ---------------------------------------------------------------------
-
-fn parse_chain(value: String) -> Result<ChainId, String> {
-    ChainId::new(value).map_err(|_| "invalid --chain-id".to_string())
-}
-
-fn parse_validator(value: &str) -> Result<ValidatorId, String> {
-    Ok(ValidatorId::new(parse_hex_32(value, "--validator-id")?))
-}
-
-fn parse_domain(value: &str) -> Result<AtomicityDomainId, String> {
-    AtomicityDomainId::new(parse_hex_32(value, "--domain")?).map_err(|_| "zero --domain".into())
-}
-
-fn parse_protocol_version(value: &str) -> Result<ProtocolVersion, String> {
-    let version: u32 = value.parse().map_err(|_| "invalid --protocol-version")?;
-    if version == 0 {
-        return Err("zero --protocol-version".into());
-    }
-    Ok(ProtocolVersion::new(version))
-}
-
-fn parse_epoch(value: &str) -> Result<Epoch, String> {
-    let epoch: u64 = value.parse().map_err(|_| "invalid --epoch")?;
-    Ok(Epoch::new(epoch))
-}
-
-fn parse_u64_bounded(value: &str, field: &str, min: u64, max: u64) -> Result<u64, String> {
-    let parsed: u64 = value.parse().map_err(|_| format!("invalid {field}"))?;
-    if !(min..=max).contains(&parsed) {
-        return Err(format!("{field} must be {min}..={max}"));
-    }
-    Ok(parsed)
-}
-
-fn parse_suite(value: &str) -> Result<HashSuiteSchedule, String> {
-    let fields: Vec<&str> = value.split(':').collect();
-    if fields.len() != 8 {
-        return Err("--suite needs epoch:id:transaction:object:effects:code:config:certificate (decimal wire ids)".into());
-    }
-    let epoch: u64 = fields[0].parse().map_err(|_| "invalid suite epoch")?;
-    let id: u16 = fields[1].parse().map_err(|_| "invalid suite id")?;
-    if id == 0 {
-        return Err("zero suite id".into());
-    }
-    let algorithm = |index: usize| -> Result<HashAlgorithmId, String> {
-        let number: u16 = fields[index]
-            .parse()
-            .map_err(|_| "invalid hash algorithm id")?;
-        match HashAlgorithmId::try_from(number) {
-            Ok(HashAlgorithmId::Sha2_256) => Ok(HashAlgorithmId::Sha2_256),
-            Ok(HashAlgorithmId::Sha3_256) => Ok(HashAlgorithmId::Sha3_256),
-            _ => Err("unsupported hash algorithm id".into()),
-        }
-    };
-    Ok(HashSuiteSchedule {
-        activation_epoch: Epoch::new(epoch),
-        suite: HashSuite {
-            id: HashSuiteId::new(id),
-            transaction_hash: algorithm(2)?,
-            object_digest: algorithm(3)?,
-            effects_hash: algorithm(4)?,
-            code_hash: algorithm(5)?,
-            config_hash: algorithm(6)?,
-            certificate_hash: algorithm(7)?,
-        },
-    })
-}
-
-fn parse_schedule(values: &[String]) -> Result<Vec<HashSuiteSchedule>, String> {
-    if values.is_empty() {
-        return Err("at least one --suite is required".into());
-    }
-    if values.len() > 64 {
-        return Err("too many --suite entries (maximum 64)".into());
-    }
-    values.iter().map(|value| parse_suite(value)).collect()
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    let mut text: String = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        text.push_str(&format!("{byte:02x}"));
-    }
-    text
-}
 
 // ---------------------------------------------------------------------
 // Bounded file I/O.

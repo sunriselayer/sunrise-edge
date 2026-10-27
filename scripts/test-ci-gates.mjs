@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -356,11 +356,11 @@ const {appendFileSync,writeFileSync}=require('node:fs');
 const {join}=require('node:path');
 const {spawnSync}=require('node:child_process');
 const tool=${JSON.stringify(tool)},args=process.argv.slice(2);
-appendFileSync(process.env.CI_MOCK_LOG,JSON.stringify({tool,args,cwd:process.cwd()})+'\\n');
+appendFileSync(process.env.CI_MOCK_LOG,JSON.stringify({tool,args,cwd:process.cwd(),fixtureDir:process.env.SUNRISE_EDGE_ESCROW_FIXTURE_DIR})+'\\n');
 if(process.env.CI_MOCK_FAIL_TOOL===tool)process.exit(17);
 if(process.env.CI_MOCK_FAIL_ARG&&args.includes(process.env.CI_MOCK_FAIL_ARG))process.exit(19);
 const script=args[0]?.split('/').at(-1);
-if(tool==='bash'&&(['check-fastvote-pg.sh','check-fee-escrow-inventory-pg.sh'].includes(script)
+if(tool==='bash'&&(['check-fastvote-pg.sh','check-fee-escrow-inventory.sh','check-fee-escrow-inventory-pg.sh'].includes(script)
  ||(script==='check-postgres-soak.sh'&&!(args.length===2&&args[1]==='--self-test-cli'))
  ||(args[0]==='-c'&&args[1]==='run_phases'))){
  const child=spawnSync(${JSON.stringify(realBash)},args,{stdio:'inherit',env:process.env});
@@ -374,12 +374,16 @@ if(tool==='cargo'&&args[0]==='test'&&args.includes('--ignored')&&args.includes('
 if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')&&args.includes(process.env.CI_MOCK_FAIL_TEST))process.exit(18);
 // Only shell-dispatch sentinels, never authentic fixture material/test bodies.
 if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
- if(args.includes('fee_claims::tests::certified_multi_escrow_inventory::export_certified_operator_fixture_postgres')){
+ if(['fee_claims::tests::certified_multi_escrow_inventory::export_certified_operator_fixture',
+     'fee_claims::tests::certified_multi_escrow_inventory::export_certified_operator_fixture_postgres'].some(name=>args.includes(name))){
   writeFileSync(join(process.env.SUNRISE_EDGE_ESCROW_FIXTURE_DIR,'validator_id.hex'),'0'.repeat(64)+'\\n');
  }
  if(args.includes('fast_path::soak_tests::live_postgres_certified_load_exports_recovery_handoff')){
   writeFileSync(join(process.env.SUNRISE_EDGE_SOAK_DIR,'handoff.kv'),'mock dispatch sentinel only\\n');
  }
+}
+if(tool==='cargo'&&JSON.stringify(args.slice(0,7))===JSON.stringify(['run','--quiet','-p','sunrise-edge-devnet','--bin','fee_escrow_inventory','--'])){
+ console.log('complete=true writer_generation=2 pages=2 verified_rows=2 verified_claims=0 verified_payouts=0');
 }
 `;
     writeFileSync(join(directory, tool), body, { flag: "wx", mode: 0o755 });
@@ -447,8 +451,6 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     assert.equal(refused.log.length, 0);
   }
   for (const [prerequisite, fn, args] of [
-    ["ci_require_exact_ignored_test", "ci_check_sqlite_inventory", []],
-    ["ci_require_exact_ignored_test", "ci_run_action", ["sqlite-inventory"]],
     ["ci_require_exact_ignored_test", "ci_run_exact_ignored_test", ["name", "yes", "-p", "node-core", "--lib"]],
     ["ci_require_storage_neutral", "ci_run_gate", ["required"]],
     ["ci_require_postgres", "ci_run_gate", ["full"]],
@@ -462,8 +464,6 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     assert.equal(refused.status, 9, `${fn} must propagate ${prerequisite}'s returned failure`);
     assert.deepEqual(refused.log, [], `${fn} must not run a consumer after a failed prerequisite`);
   }
-  const refusedInventory = runFunction("ci_run_gate", ["rust-tests"], { CI_MOCK_FAIL_PREREQUISITE: "ci_require_exact_ignored_test" });
-  assert.equal(refusedInventory.status, 9);
   const compiledCliBuild = ["build", "-p", "sunrise-edge-cli", "--bin", "sunrise-edge-cli", "--all-features"];
   const compiledCliExtendedGroups = ["readiness-sqlite", "recurring-sqlite"];
   function checkCompiledCliExtendedTrace(log, group) {
@@ -487,10 +487,6 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
       assert.equal(refused.status, 9); assert.deepEqual(refused.log, [], "invalid selection must not build the CLI");
     }
   }
-  assert.deepEqual(refusedInventory.log.map(({ tool, args }) => [tool, args]), [
-    ["cargo", compiledCliBuild],
-    ["cargo", ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"]],
-  ], "failed discovery must stop the nested gate before the inventory consumer");
   for (const action of ["rust-tests-required", "rust-tests-full", "pg-storage-tests"]) {
     const failedBuild = runFunction("ci_run_action", [action], { CI_MOCK_FAIL_ARG: "build" });
     assert.equal(failedBuild.status, 19);
@@ -652,14 +648,14 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     return args.find((arg) => [...expectedCases, ...auxiliary.map((row) => row[2]), ...recurringCases.map((row) => row[3])].includes(arg));
   }
   const expectedPgOrder = [...auxiliary.slice(1, 3).map((row) => row[2]), ...expectedCases, ...auxiliary.slice(3).map((row) => row[2])];
-  const expectedIgnoredOrder = [...recurringCases.map((row) => row[3]), ...expectedPgOrder];
+  const expectedIgnoredOrder = [auxiliary[0][2], ...recurringCases.map((row) => row[3]), ...expectedPgOrder];
   assert.deepEqual(fullIgnored.map(ignoredName), expectedIgnoredOrder);
   assert.deepEqual(ignoredExecutions(union).map(ignoredName).sort(), [...expectedIgnoredOrder].sort());
   for (const log of [full, union]) {
     assert.deepEqual(ignoredExecutions(log).map(ignoredName).filter((name) => expectedCases.includes(name)), expectedCases);
   }
-  assert.equal(ignoredExecutions(required).length, recurringCases.length);
-  assert.deepEqual(ignoredExecutions(required).map(ignoredName).sort(), recurringCases.map((row) => row[3]).sort());
+  assert.equal(ignoredExecutions(required).length, recurringCases.length + 1);
+  assert.deepEqual(ignoredExecutions(required).map(ignoredName).sort(), [auxiliary[0][2], ...recurringCases.map((row) => row[3])].sort());
   assert.deepEqual(required.filter(({ tool, args }) => tool === "bash").map(({ args }) => args), [
     ["scripts/test-postgres-docker-cleanup.sh"],
     ["scripts/check-fee-escrow-inventory.sh"], ["scripts/check-postgres-soak.sh", "--self-test-cli"], ["scripts/build-cloudflare-validator.sh"],
@@ -667,6 +663,7 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   assert.deepEqual(required.filter(({ tool, args }) => tool === "cargo" && args[0] === "test").map(({ args }) => args), [
     ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"],
     ["test", "--quiet", "-p", "node-core", "--lib", auxiliary[0][2], "--", "--ignored", "--exact", "--list"],
+    ["test", "--quiet", "-p", "node-core", "--lib", auxiliary[0][2], "--", "--ignored", "--exact"],
     ["test", "--quiet", "-p", "node-core", "--lib", recurringCases[0][3], "--", "--ignored", "--exact", "--list"],
     ["test", "--quiet", "-p", "node-core", "--lib", recurringCases[0][3], "--", "--ignored", "--exact"],
     ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[1][2], recurringCases[1][3], "--", "--ignored", "--exact", "--list"],
@@ -698,14 +695,24 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   }
   for (const [group, , name] of auxiliary) {
     const checks = lanes.get(group).filter(({ tool, args }) => tool === "cargo" && args.includes(name));
-    assert.equal(checks.length, group === "rust-tests" ? 1 : 2, `${name} must retain its discovery/owning script`);
+    assert.equal(checks.length, 2, `${name} must retain its discovery/owning script`);
     assert(checks[0].args.includes("--list"));
-    if (group !== "rust-tests") assert(checks[1].args.includes("--ignored") && checks[1].args.includes("--exact"));
+    assert(checks[1].args.includes("--ignored") && checks[1].args.includes("--exact"));
+  }
+  function sqliteInventoryArgs(dataDirectory) {
+    return ["run", "--quiet", "-p", "sunrise-edge-devnet", "--bin", "fee_escrow_inventory", "--",
+      "--data-dir", dataDirectory, "--chain-id", "paid-durable", "--validator-id", "0".repeat(64),
+      "--domain", "08".repeat(32), "--protocol-version", "3", "--suite", "0:1:1:1:1:1:1:1",
+      "--page-size", "1", "--timeout-seconds", "60", "--confirm-offline-fence-advance"];
   }
   function gateEvents(log) {
     return log.flatMap(({ tool, args, cwd }) => {
       if (tool === "cargo" && args[0] === "build") return [];
       if (tool === "cargo" && args.includes("--list")) return [];
+      if (tool === "cargo" && args[0] === "run" && args[5] === "fee_escrow_inventory") {
+        assert.deepEqual(args, sqliteInventoryArgs(args[8]));
+        return [JSON.stringify([tool, sqliteInventoryArgs("<fixture-directory>"), ""])];
+      }
       if (tool === "cargo" && args[0] === "test" && !args.includes("--ignored")) {
         if (args.includes("--workspace")) {
           assert.deepEqual(args, ["test", "--workspace", "--all-targets", "--all-features", ...(args.includes("--exclude") ? ["--exclude", "runtime-postgres"] : [])]);
@@ -890,9 +897,42 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     assert.notEqual(failed.status, 0);
     assert(!failed.log.some(({ tool, args }) => tool === forbidden || args.includes(forbidden)));
   }
-  const missingSqlite = run("scripts/check-all.sh", ["--group", "rust-tests"], { CI_MOCK_MISSING_TEST: auxiliary[0][2] });
-  assert.notEqual(missingSqlite.status, 0);
-  assert(!missingSqlite.log.some(({ tool }) => tool === "bash"));
+  // Exercise both actual shell entrypoints: function overrides in the parent
+  // cannot establish discovery/execution behavior in the owning child script.
+  const sqliteSelector = auxiliary[0][2];
+  for (const [script, args] of [
+    ["scripts/check-fee-escrow-inventory.sh", []],
+    ["scripts/check-all.sh", ["--group", "rust-tests"]],
+  ]) {
+    for (const [overrides, status, exporterCalls] of [
+      [{}, 0, 2],
+      [{ CI_MOCK_MISSING_TEST: sqliteSelector }, 1, 1],
+      [{ CI_MOCK_DUPLICATE_TEST: sqliteSelector }, 1, 1],
+      [{ CI_MOCK_FAIL_TEST: sqliteSelector }, 18, 2],
+      [{ CI_MOCK_FAIL_ARG: "--list" }, 19, 1],
+    ]) {
+      const checked = run(script, args, overrides);
+      assert.equal(checked.status, status, checked.stderr);
+      const exporter = checked.log.filter(({ tool, args }) => tool === "cargo" && args.includes(sqliteSelector));
+      assert.equal(exporter.length, exporterCalls);
+      assert.deepEqual(exporter[0].args,
+        ["test", "--quiet", "-p", "node-core", "--lib", sqliteSelector, "--", "--ignored", "--exact", "--list"]);
+      if (exporterCalls === 2) {
+        assert.deepEqual(exporter[1].args,
+          ["test", "--quiet", "-p", "node-core", "--lib", sqliteSelector, "--", "--ignored", "--exact"]);
+        assert(checked.log.indexOf(exporter[0]) < checked.log.indexOf(exporter[1]));
+      }
+      const inventory = checked.log.filter(({ tool, args }) => tool === "cargo" && args[0] === "run");
+      assert.equal(inventory.length, status === 0 ? 1 : 0, "failed discovery/export must prevent the inventory CLI");
+      assert.equal(typeof exporter[0].fixtureDir, "string");
+      assert(exporter.every(({ fixtureDir }) => fixtureDir === exporter[0].fixtureDir));
+      if (status === 0) {
+        assert.deepEqual(inventory[0].args, sqliteInventoryArgs(exporter[0].fixtureDir));
+        assert(checked.log.indexOf(exporter[1]) < checked.log.indexOf(inventory[0]));
+      }
+      assert.equal(existsSync(exporter[0].fixtureDir), false, "the owner must clean its fixture on success and failure");
+    }
+  }
   const selfTest = run("scripts/check-postgres-soak.sh", ["--self-test-cli"]);
   assert.equal(selfTest.status, 0, selfTest.stderr);
   assert(selfTest.stdout.includes("all CLI self-test cases passed"));
