@@ -1867,8 +1867,13 @@ pipe完了期限が異なるため、単純な置換候補には含めない。�
 ## 2026-10-28の追加共通化候補
 
 PR #334のmerge `3814b3ea` と同tree `c28d0437` のsource `e7bdf83f` を
-2担当へread-only分担し、rootが全候補を実sourceで照合した。以下は未実装の候補で、完了扱いにしない。
-新しいworktree/cacheは作らず、製品コードやテストケースの変更・実行も行っていない。
+2担当へread-only分担し、rootが全候補を実sourceで照合した。
+ユーザーの「6件全部、検証・コミット・pushまで」により、全6件の実装と完全検証を開始した。
+既存checkoutを `codex/ordinary-support-dedup-1028` / `3814b3ea` から再利用し、operatorを単一writer、
+SDKとCI契約変更をinert patchとして分担する。writer解放後にrootだけがpatchを適用する。
+同sourceのliteral npm ci・完全required・完全5-group PG・全8 CIの実終端と終了後照合、
+全変更のcommit/pushがそろうまで6件は完了にしない。rootだけがTODOを更新する。
+候補調査では製品コードやテストケースの変更・実行を行わなかった。実装も既存source/target/cacheを再利用する。
 
 1. PG接続処理を既存ownerへ寄せる。
    `apps/operator/src/bin/fee_escrow_inventory_pg.rs:149` / `:161` と
