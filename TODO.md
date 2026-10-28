@@ -1882,9 +1882,13 @@ openしたfd経由でsocketを作成するよう修正した。Unixのbytes/dire
 初回失敗rawと実exit/両EOF/wait/PID解放を保存した。SDK patchの新規file headerを補正した
 適用前check停止も保持し、準備済みbody hashはすべて一致した。
 修正後focused Rust57/0/0、Node24 CI契約スクリプト、fmt/diff check、通常の差分correctness reviewは成功。
-01:28:55 UTC (09:28:55 SGT) に単一の有限ownerで同sourceの完全検証を開始した。
-source1,230 inputsとruntimeを固定し、literal npm ci・完全required・完全5-group PGを逐次実行する。
-全8 hosted CIと実終端raw/終了後照合も残るため、6件全体はまだ未完了。
+01:28:55 UTC (09:28:55 SGT) 開始の単一ownerは04:46:51 UTC (12:46:51 SGT) に自然成功。
+literal npm ci・完全required・完全5-group PGはすべて実exit0。
+requiredはRust4,421/0/43とCF66成功、PGは1,499/0/20。元ignoredは未実行として残す。
+rootは全86 streams/source1,230 inputs/runtime23・CF2,347 roles/layout2,725行を終了後に照合し、
+既知PID/cgroupと今回PG資源の解放を確認した。自然成功証跡の保存後に空の完了unitだけを停止した。
+[検証記録](docs/development/validation/2026-10-28-ordinary-support-dedup/README.md) に実績と初回停止を保存した。
+全8 hosted CI run40615244027とその実終端raw/終了後照合が残るため、6件全体はまだ未完了。
 候補調査では製品コードやテストケースの変更・実行を行わなかった。実装も既存source/target/cacheを再利用する。
 
 1. PG接続処理を既存ownerへ寄せる。
