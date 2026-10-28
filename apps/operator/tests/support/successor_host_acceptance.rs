@@ -13,6 +13,7 @@
 use super::compiled_executable_snapshot::CompiledExecutableSnapshot;
 use super::compiled_source_host_process as process;
 use super::{fixture::Fixture, hex};
+use crate::command_output::success;
 use consensus::{ConsensusSigner, QuorumCertificate, decode_quorum_certificate};
 use execution::LocalWasmExecutionEngine;
 use native_http::ordered_economics::{OrderedEconomicsState, certified_ordered_economics_router};
@@ -222,16 +223,6 @@ pub struct SuccessorProcessInputs {
     pub members: Vec<SuccessorProcessMember>,
     /// The immutable import binding the targets were staged under.
     pub binding: runtime::inactive_import::ImportBinding,
-}
-
-fn success(output: Output) -> String {
-    assert!(
-        output.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
 }
 
 fn pins(command: &mut Command, fixture: &Fixture, inputs: &SuccessorProcessInputs) {

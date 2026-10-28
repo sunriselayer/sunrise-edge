@@ -3,11 +3,14 @@
 
 #[path = "support/causal_genesis_fixture.rs"]
 mod causal_genesis_fixture;
+#[path = "support/command_output.rs"]
+mod command_output;
 #[path = "business_cut/fixture.rs"]
 mod fixture;
 #[path = "support/genesis_fixture.rs"]
 pub mod genesis_fixture;
 
+use command_output::success;
 use fixture::{Directory, Fixture, copy_files, files};
 use node_core::business_reconstruction::{
     SourceBusinessSnapshot,
@@ -16,11 +19,7 @@ use node_core::business_reconstruction::{
 use node_core::ordered_economics::{OrderedHistoryHeightMaterial, OrderedHistoryIdentity};
 use protocol_types::HashPurpose;
 use runtime::WriterFenceGeneration;
-use std::{
-    num::NonZeroUsize,
-    path::Path,
-    process::{Command, Output},
-};
+use std::{num::NonZeroUsize, path::Path, process::Command};
 use sunrise_edge_operator::{
     business_cut::{CutArchiveLimits, export_source_business_cut, verify_business_cut_archive},
     business_snapshot::capture_source_business_snapshot,
@@ -73,15 +72,6 @@ fn hex(bytes: &[u8]) -> String {
         .iter()
         .map(|byte: &u8| format!("{byte:02x}"))
         .collect()
-}
-fn success(output: Output) -> String {
-    assert!(
-        output.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
 }
 
 #[test]
