@@ -1936,8 +1936,11 @@ rootだけがTODOを更新し、全変更をcommit/pushする。
 [PR #336](https://github.com/sunriselayer/sunrise-edge/pull/336) をReady for reviewで作成した。
 既存74 test bodies /436 assertionsを保持し、CLI4 /SDK2の互換性controlsを追加した。
 focused315 passed /0 failed /2 ignoredとfmt/diff check、通常correctness reviewは成功。
-同sourceのliteral npm ci・完全requiredは09:01:16 UTCに開始し、全8 CI run40660945044も実行中。
-実終端と終了後照合が残るため、4件全体はまだ完了にしない。
+同sourceのliteral npm ci・完全requiredは09:01:16 UTCに開始し、12:05:27 UTCに自然成功。
+requiredはRust4,427/0/43、CF全66成功。rootが全84 streams、source1,232 inputs、runtime/CF identityと
+実EOF/wait/PID/cgroup解放を照合した。7epochs/e8 terminal unlockを保持し、空の完了unitだけ停止した。
+初回metadata reader143と未知のPID/start/EOF記録は保持し、同じ本体を短い有限pollで監視した。
+全8 CI run40660945044とその終了後照合が残るため、4件全体はまだ完了にしない。
 [検証記録](docs/development/validation/2026-10-28-cli-test-support-dedup/README.md) に証跡を保存する。
 
 1. CLIの上限付き入力ファイル読込。
