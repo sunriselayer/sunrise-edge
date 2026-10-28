@@ -15,7 +15,7 @@ spawn/pipes/20秒/10ms/final waitは保持した。新しいdependencyやpublic 
 CLI4 /SDK2の互換性controlsを追加した。guard定義と元Drop bodyもbyte-identical。
 
 Focused checksは全6 commandが自然exit0。Rust12 summariesは315 passed /0 failed /2 ignored。
-合計はhelper実行を含み、distinct test数ではない。元のignoredは未実行として残す。
+合計はhelper実行を含むinvocation単位のsummaryで、distinct test数ではない。focusedのignored entriesは成功に数えない。
 rootが全12 raw streamsのbytes/hash、実両EOF/wait、既知command PID/process groups不在と
 source diff/new filesのbefore/after一致を照合した。Rust1.97.1 fmt/diff checkも成功。
 
@@ -34,7 +34,26 @@ CF2,347 roles/layout2,725行を照合し、owner/cgroupと観測103 product iden
 177 metadata polls、157 finite poll childrenの実exit0/両EOF/wait、既知observer491 identities不在を
 rootも照合した。元の143と未知の観測項目は別証跡に保持している。
 
-全8 CI run40660945044とその終了後照合が残るため、4件全体はまだ完了扱いにしない。
+[全8 CI run40660945044](https://github.com/sunriselayer/sunrise-edge/actions/runs/40660945044) は
+attempt1のまま13:43:04 UTC (21:43:04 SGT) に全job自然success。
+rootは全8 raw logsの1,238,364 bytesと、1,047 payload files、index、checksum manifestを照合した。
+checksum対象はindexを含む1,048 files、directory全体はmanifest込み1,049 files。
+224 commandsの実exit0/両EOF/wait/full captureとbytes/hash、既知354 remote PID不在、
+sealerの実exit0/reapを確認した。raw取得は1回で、CIのrerun/cancelは0。
+実checkout `f1e8ed1c61c5a5f714302bb591cdf243baed3d20`、tree `10b53dc5`、
+parents `[55a787d8, 5ac947f3]` を各実logと公式GitHub metadataで照合した。
+CIのRust147 summariesも4,427/0/43、CF全66成功。集計はinvocation単位で、helperや別exact実行を含む。
+ignored entriesを成功に数えず、globally distinctな未実行case数とも解釈しない。
+全9 checksがsuccessで、Bugbotはissueなし。reviews/issue comments/inline commentsは0。
+CI各jobのannotationは同じUbuntu runner image移行noticeの計8件で、warning/failureは0。
+
+rootの終了後readerは、indexがchecksum manifest自体を列挙しない点、ANSI付きのCF summary、
+Bugbotがannotations0のため専用annotation fileを持たない点の初回の仮定で停止した。
+3件の読み手側停止を保持し、既存のcapture schemaに合わせて原bytesを変えずに再照合した。
+製品検証・CIを再実行した結果ではない。
+
+4件すべてを実装・同sourceの完全required/全8 CI・終了後照合がそろったため完了とする。
+実装と検証記録をcommit/pushし、PR #336はReady for review。
 PG実装・依存の変更とPG deploymentの主張は含まず、別PG profileを今回の実行に含めない。
 
 既存checkout/target/cache、Node24.19.0、Rust1.97.1、Deno2.9.4、cfとretained wrappersを再利用した。
@@ -62,3 +81,10 @@ Raw evidence root: `/home/yu/src/github.com/sunriselayer/sunrise-edge-validation
 | `maintenance-four-1028-supervision-closure-v2.json` | `07a84361d57a3df5c47af9d5e2c0c877e44960c251d580486a3eef087cb3abc3` |
 | `maintenance-four-1028-supervision-observers-closed-v2.json` | `e1eaf7c9651cbc0ceae57aaab45eb57b12afd1ca96b2fdc44b1c706502ebbbdd` |
 | `maintenance-four-1028-supervision-reader-v1-interruption.json` | `7b51a4973272ff9dc7e100ff3e82434857cb36936f8f64185610aeed900d084a` |
+| `maintenance-four-1028-root-ci-qualified.json` | `5ef160986e51d1a04c89350e581583590fc42dad583c3667a32630deadc4050b` |
+| `maintenance-four-1028-ci-run-40660945044-20261028T090217Z/file-index.json` | `d09732fed7d24407ae70e6f45bc5306d4709cb2931461ae3e514a49fe9f23bc4` |
+| `maintenance-four-1028-ci-run-40660945044-20261028T090217Z-owner-release.json` | `538e22d24090b071ecb5bf29a83e7fe3f6aa386fa6f150cd13fbeabae4e3bf78` |
+| `maintenance-four-1028-pr-final-update.json` | `f0073fcbdc1a0d67abb90b7a897e5f1dd8779373f8e19c871fad1b85bf13c7ae` |
+| `maintenance-four-1028-root-ci-reader-firstcheck.json` | `bee9c36a7d765ab277550386c291012ae15a1c8ba6cf45d76d187926b52d3bd1` |
+| `maintenance-four-1028-root-ci-reader-secondcheck.json` | `0996704a315ed785c011c0dbcc7e5f73dd7177f8fb697418aa39163ccfde0b95` |
+| `maintenance-four-1028-root-ci-reader-thirdcheck.json` | `c06eac9170b5b8f6e98a49429b1ff4cce0323900aca33f8b4c17f911ec8f5f8c` |
