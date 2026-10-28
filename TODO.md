@@ -1864,15 +1864,15 @@ SQLite startupのchild/output collectorにも類似処理があるが、poll間�
 pipe完了期限が異なるため、単純な置換候補には含めない。今回そこへ実装・実行は行っていない。
 停止済み監査・ZeroShare・torn-WAL/mechanism2・独立anchor guestを再開する提案ではない。
 
-## 2026-10-28の追加共通化候補
+## 2026-10-28の追加共通化6件
 
 PR #334のmerge `3814b3ea` と同tree `c28d0437` のsource `e7bdf83f` を
 2担当へread-only分担し、rootが全候補を実sourceで照合した。
-ユーザーの「6件全部、検証・コミット・pushまで」により、全6件の実装と完全検証を開始した。
+ユーザーの「6件全部、検証・コミット・pushまで」により、全6件を実装・検証して完了した。
 既存checkoutを `codex/ordinary-support-dedup-1028` / `3814b3ea` から再利用し、operatorを単一writer、
-SDKとCI契約変更をinert patchとして分担する。writer解放後にrootだけがpatchを適用する。
-同sourceのliteral npm ci・完全required・完全5-group PG・全8 CIの実終端と終了後照合、
-全変更のcommit/pushがそろうまで6件は完了にしない。rootだけがTODOを更新する。
+SDKとCI契約変更をinert patchとして分担した。writer解放後にrootだけがpatchを適用した。
+同sourceのliteral npm ci・完全required・完全5-group PG・全8 CIの実終端と終了後照合がそろった。
+全変更をcommit/pushし、rootだけがTODOを更新した。
 
 全6件を `b436b931` (tree `b341d6c9`) にcommit/pushし、
 [PR #335](https://github.com/sunriselayer/sunrise-edge/pull/335) を作成した。
@@ -1888,39 +1888,28 @@ requiredはRust4,421/0/43とCF66成功、PGは1,499/0/20。元ignoredは未実�
 rootは全86 streams/source1,230 inputs/runtime23・CF2,347 roles/layout2,725行を終了後に照合し、
 既知PID/cgroupと今回PG資源の解放を確認した。自然成功証跡の保存後に空の完了unitだけを停止した。
 [検証記録](docs/development/validation/2026-10-28-ordinary-support-dedup/README.md) に実績と初回停止を保存した。
-全8 hosted CI run40615244027とその実終端raw/終了後照合が残るため、6件全体はまだ未完了。
-候補調査では製品コードやテストケースの変更・実行を行わなかった。実装も既存source/target/cacheを再利用する。
+全8 hosted CI run40615244027はattempt1のまま06:13:07 UTC (14:13:07 SGT) に全job自然success。
+rootは628 files /全8 raw logsと実checkout `e425d8eb`、tree `b341d6c9`、
+parents `[3814b3ea, b436b931]` を照合し、全8 childの実exit0・両EOF・waitと既知PID不在を確認した。
+初回observer wrapperの143とcapture limitsを保持し、短い有限pollで監視だけ復旧した。実CIのrerun/cancelは0。
+Bugbotを含む全9 checksはsuccessでissue/review/commentsは0。Bugbot annotationsは0、
+CIの8 annotationsは同じrunner image移行noticeでwarning/failureは0。
+6件を完了とし、06:21:14 UTC (14:21:14 SGT) にPR #335をReady for reviewへ切り替えた。
+候補調査では製品コードやテストケースの変更・実行を行わなかった。実装も既存source/target/cacheを再利用した。
 
-1. PG接続処理を既存ownerへ寄せる。
-   `apps/operator/src/bin/fee_escrow_inventory_pg.rs:149` / `:161` と
-   `apps/operator/src/common.rs:531` / `:539` は同じTCP/TLS検査と接続pool構築を持つ。
-   inventoryも `common::connect_pool` を使い、pool上限4、10/30/300秒の設定、DSN/certificate診断、
-   既存TLS必須条件とnamespace/blob/fenceの評価順序を保持する。元のinventory controlsは残す。
-2. SDKの表示フィールド検査を共通化する。
-   `clients/rust/src/fee_claim_review.rs:163` と `clients/rust/src/publication_review.rs:204` の
-   `display_safe` はerror型以外同じ。private helperから各既存errorへ写像し、
-   byte長優先、ASCII `0x20..=0x7E`、field名とコピー前の拒否を保持する。
-   両consumerの独立controlsとpublication reviewのintegration controlsは残す。
-3. SDKテストのFIFO transportを共有する。
-   `clients/rust/tests/paid_execution.rs:194` と `clients/rust/tests/publication.rs:271` の
-   request記録付きFakeTransportは同一。test-only supportへ移し、request clone後のFIFO消費、
-   exhaustion時のpanicを保持する。response/context/signing/expected payloadは各test側に残す。
-4. テストのread-only archive snapshotを共有する。
-   `apps/operator/tests/business_import_sqlite.rs:248` と
-   `apps/operator/tests/support/recurring_host_acceptance.rs:2227` は同じ再帰snapshot。
-   relative PathBuf key、directory=None、完全なfile bytes、symlink/nonregular拒否を保持し、
-   before/afterの比較assertionとfloorのcase matrixは各callerに残す。flat inventoryとは統合しない。
-5. 捕捉済みprocess outputの成功検査を共有する。
-   `apps/operator/tests/business_cut_sqlite.rs:77`、`business_import_sqlite.rs:198`、
-   `conditional_readiness_sqlite.rs:63`、`support/successor_host_acceptance.rs:227` は同一。
-   status検査と両diagnostic streamの表示後、stdoutをstrict UTF-8で返す小さなhelperにできる。
-   spawn/wait、pipe収集、deadline、出力固有assertionはこのhelperに移さない。
-6. CI契約テスト内の重複assertion手順を共有する。
-   `scripts/test-ci-gates.mjs:674` と `:685` の2 loopsは同じ検査を繰り返している。
-   discovery/executionの2回、list/exact、package/target、nocaptureの検査を同じtest helperへ寄せられる。
-   PG/recurringの独立したcase inventory、元selector/順序/件数と全assertionは保持する。
+1. PG接続ownerの再利用 (完了) 。inventoryは既存 `common::connect_pool` を使う。
+   pool上限4、10/30/300秒、DSN/certificate/TLS診断とnamespace/blob/fence順序を保持した。
+2. SDK表示grammar (完了) 。`clients/rust/src/review_presentation.rs` を定義ownerにし、
+   byte長優先、printable ASCII、コピー前の拒否と各consumerのpublic error/field名を保持した。
+3. SDKテストFIFO transport (完了) 。`clients/rust/tests/support/recording_transport.rs` へ移し、
+   request clone→FIFO消費とpanicを保持した。response/context/signing/expected payloadは各test側に残した。
+4. read-only archive snapshot (完了) 。`apps/operator/tests/support/archive_snapshot.rs` へ移し、
+   relative keys、directory markers、完全bytes、symlink/nonregular拒否とcaller比較を保持した。
+5. 捕捉済みprocess output検査 (完了) 。`apps/operator/tests/support/command_output.rs` を4callersで共有し、
+   status優先の両diagnosticsとstrict UTF-8を保持した。spawn/wait/pipe/deadlineは各ownerに残した。
+6. CI契約assertion手順 (完了) 。PG→recurringの2つの同一loopsを同順の1loopへまとめ、
+   独立したinventories、元selectors/順序/件数と全assertionを保持した。
 
-小さく始める候補は1/3/5/6。2は公開errorの写像、4は再帰snapshotの観測意味を確認して進める。
 SDK rendererのbyte予算計算にも類似はあるが、16,384/65,536の上限、field数優先の違いと
 hex割当て前検査があるため、renderer全体の機械的な統合は候補に含めない。
 FastVote/ordered-economics deadline計算はclock sampling・cap・overflow errorが異なる。

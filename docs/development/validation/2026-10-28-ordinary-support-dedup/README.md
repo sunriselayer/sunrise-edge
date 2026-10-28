@@ -47,8 +47,20 @@ ownerと全command PID、監視で観測した207 PID/start identitiesとcapture
 無関係なDocker状態の一致を条件にせず、削除やpruneも行っていない。
 passing suite内のworkerd診断とmissing live secret warningはrawに保存し、production設定の準備完了は主張しない。
 
-[全8 CI run40615244027](https://github.com/sunriselayer/sunrise-edge/actions/runs/40615244027) は実行中。
-同sourceの全8 CI実終端とrawの終了後照合が残るため、6件全体はまだ完了にしない。
+[全8 CI run40615244027](https://github.com/sunriselayer/sunrise-edge/actions/runs/40615244027) は
+attempt1のまま06:13:07 UTC (14:13:07 SGT) に全job自然success。
+rootは封印済み628 filesと全8 raw logsの1,237,081 bytesを再hashし、実checkout
+`e425d8eb416a601a5a59d16f091428a2cd1f1598`、tree `b341d6c9`、
+parents `[3814b3ea, b436b931]` を各実logと公式GitHub commit metadataで照合した。
+CIもRust147 summariesは4,421/0/43、CF全66件成功。
+rawは最初の1回の取得で完了し、全8 childの実exit0・両EOF・wait・full captureと
+collector/全記録済み193 PIDの不在、sealerの実exit0を照合した。
+
+全9 check-runsはsuccessで、Cursor Bugbotもreview完了・issueなし・annotations0。
+その時点のreviews /issue comments /inline commentsは0。
+CI各jobには同じUbuntu runner image移行noticeが1つずつあり、8 notice /0 warning /0 failureを
+実annotation bodyまで取得して確認した。legacy combined-statusのcontexts0/pendingとは分けて記録する。
+source headを再確認し、06:21:14 UTC (14:21:14 SGT) にPR #335をReady for reviewへ切り替えた。
 
 ## 保存した初回停止
 
@@ -61,6 +73,15 @@ bindするよう修正した。snapshot対象は元directoryで、Unix bytes/dir
 元失敗rawと実exit/両EOF/wait/PID解放を保存し、修正後は全focused stepsが成功した。
 共有helperや元のprotocol/workload/selectorを弱めていない。
 
+remote metadata-observerの初回wrapperは終端前にexit143となった。
+元のstart identity/process groupとstream EOF/waitは未記録で、その部分を推測で補わない。
+既知observer PIDと134 metadata-child PIDの不在を確認し、短い有限pollへ切り替えた。
+同じhead/run/attempt1の継続を確認し、実CIのrerun/cancelとrawの重複取得は行っていない。
+終端rawは後続の完全取得で実exit/両EOF/waitを確認した。
+追加metadata readerがshort-poll receiptに冗長な `complete` keyを仮定した停止も保存し、
+実exit/EOF/wait/full_capture/bytes/hashの既存schemaに従って19 terminal queriesを照合した。
+これはreaderの補正で、製品検証を再実行した結果ではない。
+
 ## 証跡と範囲
 
 ローカル証跡root:
@@ -70,7 +91,8 @@ bindするよう修正した。snapshot対象は元directoryで、Unix bytes/dir
 新しいworktree/cache/tool binaryは複製せず、直接Wranglerを呼ばない。
 1,230 tracked inputsとruntime/tool inputsを固定し、同じsource/cache/targetに別ownerを重ねない。
 
-今回の通常保守6件は実装・focused・local完全required/PGまで完了し、全8 CIとその終了後照合が残る。
+今回の通常保守6件は実装・互換性controls・同source完全required/PG/全8 CIと終了後照合がそろったため完了。
+実装はcommit/push済みで、PR #335はReady for review。
 元85 checkbox /71完了 /14未完了とD02/M1/M2/M3/M7の親5件は変更しない。
 停止済み独立監査・ZeroShare WIP・torn-WAL/mechanism2・独立anchor guestを再開しない。
 新しいNative/M7 RELEASE認定やmain merge、deploy、実鍵・host user・security policy変更は含めない。
@@ -85,3 +107,7 @@ bindするよう修正した。snapshot対象は元directoryで、Unix bytes/dir
 | `maintenance-six-1028-root-local-qualified.json` | `55ce335cf9cf2425e0234ec102f7d695a6a8ce54b655686ea1424fffdee0707e` |
 | `maintenance-six-1028-root-postclose-qualified.json` | `968f5e35f9733150405bd6cdce9250b4137843c1505e39d143576ea418a6e2ed` |
 | `maintenance-six-1028-supervision-closure.json` | `e345c1047d0f1f1af14b98d706c43cc6a91f1be7dbe6c9cdc111729138bf5151` |
+| `maintenance-six-1028-root-ci-qualified.json` | `3b794aac37861a459f3bf2bb6a66837e9b11f0a14e6172fbac98be0c2f98b420` |
+| `maintenance-six-1028-ci-run-40615244027-20261028T013045Z/file-index.json` | `6f8c2a2bdcc2abb290f344802a7319f8e41e67117734e5a9e1f8ea93ca045816` |
+| `maintenance-six-1028-ci-run-40615244027-20261028T013045Z-seal-outcome-20261028T061539Z.json` | `f27e93455ed005b690c78dee49227bb0c27bb9f710ae9388712815f132fc7173` |
+| `maintenance-six-1028-pr-ready.json` | `4417dcac9cc621e746b05021afef8171eb648525d51c2f913d03c16ff7e0fa71` |
