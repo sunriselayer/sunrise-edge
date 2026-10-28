@@ -8,6 +8,7 @@ mod fastvote_frontier;
 mod fastvote_network;
 mod fee_claim_review;
 pub(crate) mod hash_suite_pins;
+mod input_file;
 mod local_execution;
 mod network_artifacts;
 pub mod next_nonce;

@@ -35,6 +35,8 @@ mod compiled_source_host_process;
 mod fixture;
 #[path = "support/genesis_fixture.rs"]
 pub mod genesis_fixture;
+#[path = "support/hex.rs"]
+mod hex;
 
 use canonical_encoding::{decode_canonical_frame, decode_digest32};
 use consensus::{
@@ -42,6 +44,7 @@ use consensus::{
     decode_frozen_frontier_identity, decode_proposal,
 };
 use fixture::Fixture;
+use hex::hex;
 use node_core::business_reconstruction::{SourceBusinessSnapshot, SourceSnapshotRecord};
 use node_core::ordered_economics::{
     OrderedEconomicsEnvironment, OrderedProposal, OrderedStatus, decode_ordered_proposal,
@@ -73,13 +76,6 @@ use sunrise_edge_client::{
     Client, LoopbackHttpTransport, Method, Transport, WireRequest, WireResponse,
 };
 use sunrise_edge_operator::business_snapshot::capture_source_business_snapshot;
-
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte: &u8| format!("{byte:02x}"))
-        .collect()
-}
 
 struct HostProcess {
     child: Child,

@@ -344,16 +344,8 @@ impl<T: Transport> Client<T> {
             return Err(ClientError::PublicationTrustMismatch);
         }
         self.query_verified_context(expected)?;
-        let publisher: String = origin
-            .publisher()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        let seed: String = origin
-            .seed()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+        let publisher: String = crate::client::hex64_lower(origin.publisher());
+        let seed: String = crate::client::hex64_lower(origin.seed());
         let request: WireRequest = WireRequest {
             method: Method::Get,
             path: format!("{PUBLICATION_PATH}/{publisher}/{seed}"),

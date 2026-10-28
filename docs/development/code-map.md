@@ -60,6 +60,25 @@ Their integration tests share only a
 [recording FIFO transport](../../clients/rust/tests/support/recording_transport.rs);
 response construction, contexts and independent expected payloads stay local.
 
+The CLI's private [input reader](../../apps/cli/src/commands/input_file.rs)
+shares only one open and bounded byte collection. Local, paid, publication and
+network-artifact wrappers retain their own size refusal and public error
+classification. Output reservation, persistence and decoding stay local.
+
+SDK sender, object, receipt, publication and instance queries share the
+crate-private 32-byte lowercase selector formatter in
+[client](../../clients/rust/src/client.rs). Endpoint templates, context checks,
+selector verification and not-found handling remain with each query owner;
+consumer controls compare independent complete literal paths.
+
+Operator integration targets share a neutral
+[test hex formatter](../../apps/operator/tests/support/hex.rs) for fixture
+arguments. Their selected bytes and expected values remain independent of
+production rendering. Startup-refusal controls reuse the existing
+[child guard](../../apps/operator/tests/support/compiled_source_host_process.rs)
+for unwind cleanup only; their original spawn, pipes, poll interval, absolute
+deadline and final output wait remain in the startup test.
+
 ## Follow a request
 
 ```text

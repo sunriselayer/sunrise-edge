@@ -10,7 +10,7 @@ use crate::{
     seed::load_dev_seed,
     signer::{SignerSelection, parse_signer_selection, signer_flag_specs},
 };
-use std::{error::Error, ffi::OsString, fs::File, io::Read, path::Path};
+use std::{error::Error, ffi::OsString, path::Path};
 use sunrise_edge_client::{
     Address, ArtifactParts, CodeArtifact, Digest32, ExpectedProtocolContext, HashSuiteResolver,
     LocalSigner, PackageOrigin, PreparedPublication, PublicationContext, PublicationReview,
@@ -437,14 +437,57 @@ where
 }
 
 fn read_bounded(path: &str, maximum: usize) -> Result<Vec<u8>, CliError> {
-    let mut bytes: Vec<u8> = Vec::new();
-    File::open(path)
-        .map_err(failure)?
-        .take((maximum + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(failure)?;
+    let bytes: Vec<u8> = super::input_file::read_for_size_check(path, maximum).map_err(failure)?;
     if bytes.len() > maximum {
         return Err(invalid("publication input file exceeds its byte limit"));
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs::File,
+        io::Write,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn bounded_input_errors_keep_publication_classification() {
+        let path: std::path::PathBuf = std::env::temp_dir().join(format!(
+            "sunrise-publication-input-errors-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        let path_text: &str = path.to_str().unwrap();
+        let mut file: File = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"input").unwrap();
+        drop(file);
+        assert_eq!(read_bounded(path_text, 5).unwrap(), b"input");
+        let oversized: CliError = read_bounded(path_text, 4).unwrap_err();
+        assert!(matches!(
+            oversized,
+            CliError::Publication(inner)
+                if inner.downcast_ref::<std::io::Error>().is_some_and(|source| {
+                    source.kind() == std::io::ErrorKind::InvalidInput
+                        && source.to_string() == "publication input file exceeds its byte limit"
+                })
+        ));
+        std::fs::remove_file(&path).unwrap();
+        let missing: CliError = read_bounded(path_text, 4).unwrap_err();
+        assert!(matches!(
+            missing,
+            CliError::Publication(inner)
+                if inner.downcast_ref::<std::io::Error>().is_some_and(|source| {
+                    source.kind() == std::io::ErrorKind::NotFound
+                })
+        ));
+    }
 }

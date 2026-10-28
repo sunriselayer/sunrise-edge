@@ -3,13 +3,19 @@
 
 #[path = "support/causal_genesis_fixture.rs"]
 mod causal_genesis_fixture;
+#[path = "support/compiled_source_host_process.rs"]
+mod compiled_source_host_process;
 #[allow(dead_code)]
 #[path = "business_cut/fixture.rs"]
 mod fixture;
 #[path = "support/genesis_fixture.rs"]
 pub mod genesis_fixture;
+#[path = "support/hex.rs"]
+mod hex;
 
+use compiled_source_host_process::ChildGuard;
 use fixture::Fixture;
+use hex::hex;
 use node_core::business_reconstruction::{SourceBusinessSnapshot, SourceSnapshotRecord};
 use node_core::ordered_economics::{OrderedEconomicsEnvironment, install_ordered_genesis};
 use runtime::portable::DurableRecordKey;
@@ -29,23 +35,6 @@ use std::{
 };
 use sunrise_edge_operator::business_snapshot::capture_source_business_snapshot;
 
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte: &u8| format!("{byte:02x}"))
-        .collect()
-}
-
-struct PendingChild(Option<Child>);
-impl Drop for PendingChild {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.0.take() {
-            let _ignored = child.kill();
-            let _ignored = child.wait();
-        }
-    }
-}
-
 fn refused_process(args: &[OsString]) -> Output {
     let child: Child = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"))
         .args(args)
@@ -53,11 +42,11 @@ fn refused_process(args: &[OsString]) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let mut pending: PendingChild = PendingChild(Some(child));
+    let mut pending: ChildGuard = ChildGuard::new(child);
     let deadline: Instant = Instant::now() + Duration::from_secs(20);
     loop {
-        if pending.0.as_mut().unwrap().try_wait().unwrap().is_some() {
-            return pending.0.take().unwrap().wait_with_output().unwrap();
+        if pending.try_wait().unwrap().is_some() {
+            return pending.into_inner().wait_with_output().unwrap();
         }
         assert!(
             Instant::now() < deadline,
