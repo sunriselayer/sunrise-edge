@@ -61,6 +61,11 @@ collector/全記録済み193 PIDの不在、sealerの実exit0を照合した。
 CI各jobには同じUbuntu runner image移行noticeが1つずつあり、8 notice /0 warning /0 failureを
 実annotation bodyまで取得して確認した。legacy combined-statusのcontexts0/pendingとは分けて記録する。
 source headを再確認し、06:21:14 UTC (14:21:14 SGT) にPR #335をReady for reviewへ切り替えた。
+ユーザー承認により08:28:01 UTC (16:28:01 SGT) にPR #335を既存base
+`codex/live-genesis-mint-burn-1022` へmergeした。merge `55a787d8` は同tree `b341d6c9`、
+parents `[3814b3ea, b436b931]`。直前にも全9 checks成功、review/comments0、headとbaseを確認した。
+GitHub連携のmergeは権限不足403で変更されず、既存の通常認証と同一head指定で完了した。
+マージ後の公式commit metadataとremote baseが同じmergeを指すことも照合した。
 
 ## 保存した初回停止
 
@@ -92,7 +97,7 @@ remote metadata-observerの初回wrapperは終端前にexit143となった。
 1,230 tracked inputsとruntime/tool inputsを固定し、同じsource/cache/targetに別ownerを重ねない。
 
 今回の通常保守6件は実装・互換性controls・同source完全required/PG/全8 CIと終了後照合がそろったため完了。
-実装はcommit/push済みで、PR #335はReady for review。
+実装はcommit/push済みで、PR #335は既存の作業baseへmerge済み。
 元85 checkbox /71完了 /14未完了とD02/M1/M2/M3/M7の親5件は変更しない。
 停止済み独立監査・ZeroShare WIP・torn-WAL/mechanism2・独立anchor guestを再開しない。
 新しいNative/M7 RELEASE認定やmain merge、deploy、実鍵・host user・security policy変更は含めない。
@@ -111,3 +116,4 @@ remote metadata-observerの初回wrapperは終端前にexit143となった。
 | `maintenance-six-1028-ci-run-40615244027-20261028T013045Z/file-index.json` | `6f8c2a2bdcc2abb290f344802a7319f8e41e67117734e5a9e1f8ea93ca045816` |
 | `maintenance-six-1028-ci-run-40615244027-20261028T013045Z-seal-outcome-20261028T061539Z.json` | `f27e93455ed005b690c78dee49227bb0c27bb9f710ae9388712815f132fc7173` |
 | `maintenance-six-1028-pr-ready.json` | `4417dcac9cc621e746b05021afef8171eb648525d51c2f913d03c16ff7e0fa71` |
+| `maintenance-six-1028-merge335-receipt.json` | `9af18fc6f5f971b36771769c52545faf5dd46465dd0bb4bbfedcd16e5023ecea` |

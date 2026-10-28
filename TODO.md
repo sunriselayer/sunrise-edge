@@ -1895,6 +1895,9 @@ parents `[3814b3ea, b436b931]` を照合し、全8 childの実exit0・両EOF・w
 Bugbotを含む全9 checksはsuccessでissue/review/commentsは0。Bugbot annotationsは0、
 CIの8 annotationsは同じrunner image移行noticeでwarning/failureは0。
 6件を完了とし、06:21:14 UTC (14:21:14 SGT) にPR #335をReady for reviewへ切り替えた。
+ユーザー承認により2026-10-28 16:28:01 SGT (08:28:01 UTC) に
+既存base `codex/live-genesis-mint-burn-1022` へmergeした。merge `55a787d8` は
+同tree `b341d6c9`、parents `[3814b3ea, b436b931]`。全9 checksのsuccessと同一headを再確認した。
 候補調査では製品コードやテストケースの変更・実行を行わなかった。実装も既存source/target/cacheを再利用した。
 
 1. PG接続ownerの再利用 (完了) 。inventoryは既存 `common::connect_pool` を使う。
@@ -1916,3 +1919,44 @@ FastVote/ordered-economics deadline計算はclock sampling・cap・overflow erro
 独立wire vector、独立expected values、SQLite startup child/output collectorも一括統合しない。
 同じ境界を検証する重複test functionの削除候補は今回確認できていない。
 元の85 checkbox /71完了 /14未完了とD02/M1/M2/M3/M7の親5件は変わらず、停止対象は再開しない。
+
+
+## 2026-10-28 PR #335 merge後の通常保守候補4件
+
+merge `55a787d8` / tree `b341d6c9` と同じsource `b436b931` を
+実装側とテスト側の2担当でread-only確認し、rootも全候補のbodyとcallerを照合した。
+追加4件は候補として記録する。今回は実装・製品テスト実行を行っていない。
+
+1. CLIの上限付き入力ファイル読込。
+   `apps/cli/src/commands/local_execution.rs:29`、`paid_execution.rs:47`、
+   `publication.rs:439`、`network_artifacts.rs:28` は、1回のopen、`maximum + 1` までのread、
+   実byte数での超過拒否と完全bytesの返却が同じ。privateなstd-only read処理へ寄せられる。
+   publicationの `CliError::Publication`、他3つの `LocalExecution`、caller別の超過文言、
+   元のsymlink入力扱い・上限・cap算術・decode順序を保持する。output予約・永続化は別owner。
+   実装時は既存network-artifacts controls、contract_validateとlocal/paid workflowsを残し、
+   exact-limit/zero/missing-fileとcaller別error写像を検証して完全requiredを実行する。
+2. SDK query URLの32-byte小文字hex表示。
+   `clients/rust/src/client.rs:338` の既存 `hex64_lower` をcrate内で共有し、
+   `publication_client.rs:347` / `:352` と `local_execution_client.rs:496` の同じ表示処理を寄せる。
+   `[u8; 32]` の入力型、64文字・小文字・先頭zeroを保持し、endpoint、context検査、
+   selector照合、404の扱いは各consumerに残す。public SDK APIは増やさない。
+   実装時は既存sender/publication/instance controlsを保持し、mixed bytesの完全なURLを
+   独立literal期待値で検証してSDK testsと完全requiredを実行する。
+3. 起動拒否テストの子process後片付け。
+   `apps/operator/tests/sqlite_source_host_startup.rs:39` の `PendingChild` のDropは、
+   `support/compiled_source_host_process.rs:160` の既存 `ChildGuard` と同じtake/kill/wait。
+   既存guardのnew/try_wait/into_innerだけを使い、元の20秒期限、10ms poll、
+   spawn/両pipe/refusal診断/最後のwait_with_outputは元callerに残す。
+   child/output collector全体の置換には広げない。実装時は元のstartup2 controlsと
+   共有process-helper controlsを実行し、完全requiredも通す。
+4. operatorテストの小文字hex helper5コピー。
+   `apps/operator/tests/business_cut_sqlite.rs:70`、`business_import_sqlite.rs:46`、
+   `conditional_readiness_sqlite.rs:60`、`sqlite_source_host_startup.rs:32`、
+   `sqlite_source_host_process.rs:77` の6行のbodyはbyte-identical。
+   neutralなstd-only test-supportへ寄せ、fixture bytes、argv、期待値と全assertionはcallerに残す。
+   production helperを期待値oracleに使わず、別実装のbyte-table/preallocated hexを機械的に含めない。
+   実装時は対象integration controlsと完全requiredを実行し、ignored recurrence inventoryを保持する。
+
+同じ検証を行うtest functionの削除候補は確認していない。元の85 checkbox /71完了 /14未完了、
+親D02/M1/M2/M3/M7と停止対象は変えない。rawの調査記録は
+`sunrise-edge-validation-1013/maintenance-after335-candidates-1028.json` に保存した。
