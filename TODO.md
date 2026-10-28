@@ -1925,7 +1925,20 @@ FastVote/ordered-economics deadline計算はclock sampling・cap・overflow erro
 
 merge `55a787d8` / tree `b341d6c9` と同じsource `b436b931` を
 実装側とテスト側の2担当でread-only確認し、rootも全候補のbodyとcallerを照合した。
-追加4件は候補として記録する。今回は実装・製品テスト実行を行っていない。
+ユーザーの「それらやってこ」により4件すべての実装・検証を開始した。
+既存checkoutを `codex/cli-test-support-dedup-1028` / `55a787d8` から再利用し、
+operatorは単一writer、CLI/SDKはinert patchへ分担してrootが統合する。
+既存source/target/cache/runtimeを再利用し、同sourceのliteral npm ci・完全required・全8 CIを
+検証してから完了を記録する。今回はPG実装・依存を変更せず、PG deploymentの準備完了も主張しない。
+rootだけがTODOを更新し、全変更をcommit/pushする。
+
+4件の実装は `5ac947f3` / tree `10b53dc5` にcommit/pushし、
+[PR #336](https://github.com/sunriselayer/sunrise-edge/pull/336) をReady for reviewで作成した。
+既存74 test bodies /436 assertionsを保持し、CLI4 /SDK2の互換性controlsを追加した。
+focused315 passed /0 failed /2 ignoredとfmt/diff check、通常correctness reviewは成功。
+同sourceのliteral npm ci・完全requiredは09:01:16 UTCに開始し、全8 CI run40660945044も実行中。
+実終端と終了後照合が残るため、4件全体はまだ完了にしない。
+[検証記録](docs/development/validation/2026-10-28-cli-test-support-dedup/README.md) に証跡を保存する。
 
 1. CLIの上限付き入力ファイル読込。
    `apps/cli/src/commands/local_execution.rs:29`、`paid_execution.rs:47`、
