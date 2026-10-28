@@ -1873,6 +1873,18 @@ PR #334のmerge `3814b3ea` と同tree `c28d0437` のsource `e7bdf83f` を
 SDKとCI契約変更をinert patchとして分担する。writer解放後にrootだけがpatchを適用する。
 同sourceのliteral npm ci・完全required・完全5-group PG・全8 CIの実終端と終了後照合、
 全変更のcommit/pushがそろうまで6件は完了にしない。rootだけがTODOを更新する。
+
+全6件を `b436b931` (tree `b341d6c9`) にcommit/pushし、
+[PR #335](https://github.com/sunriselayer/sunrise-edge/pull/335) を作成した。
+既存49 test-function bodiesと各assertionは保持し、operator2 /SDK4の互換性controlsを追加した。
+新しいsocket controlは長いTMPDIRでSUN_LENに当たり失敗したため、Linuxでは同じfixture directoryを
+openしたfd経由でsocketを作成するよう修正した。Unixのbytes/directory/symlink検査は保持し、
+初回失敗rawと実exit/両EOF/wait/PID解放を保存した。SDK patchの新規file headerを補正した
+適用前check停止も保持し、準備済みbody hashはすべて一致した。
+修正後focused Rust57/0/0、Node24 CI契約スクリプト、fmt/diff check、通常の差分correctness reviewは成功。
+01:28:55 UTC (09:28:55 SGT) に単一の有限ownerで同sourceの完全検証を開始した。
+source1,230 inputsとruntimeを固定し、literal npm ci・完全required・完全5-group PGを逐次実行する。
+全8 hosted CIと実終端raw/終了後照合も残るため、6件全体はまだ未完了。
 候補調査では製品コードやテストケースの変更・実行を行わなかった。実装も既存source/target/cacheを再利用する。
 
 1. PG接続処理を既存ownerへ寄せる。
