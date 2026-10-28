@@ -46,6 +46,7 @@ use node_core::publication::{PublicationAdmissionError, local_publication_profil
 use protocol_types::{Digest32, HashPurpose};
 
 use crate::publication_client::PreparedPublication;
+use crate::review_presentation::{DisplayTextError, display_safe as checked_display_text};
 
 /// Number of dependency sub-fields rendered per dependency (chain id,
 /// publisher, seed, revision, protocol version, epoch, artifact digest).
@@ -206,17 +207,14 @@ fn display_safe(
     value: &str,
     maximum: usize,
 ) -> Result<String, PublicationReviewError> {
-    if value.len() > maximum {
-        return Err(PublicationReviewError::Limit {
+    checked_display_text(value, maximum).map_err(|error: DisplayTextError| match error {
+        DisplayTextError::Limit { actual, maximum } => PublicationReviewError::Limit {
             field,
-            actual: value.len(),
+            actual,
             maximum,
-        });
-    }
-    if value.bytes().any(|byte| !(0x20..=0x7E).contains(&byte)) {
-        return Err(PublicationReviewError::UndisplayableField(field));
-    }
-    Ok(value.to_owned())
+        },
+        DisplayTextError::Undisplayable => PublicationReviewError::UndisplayableField(field),
+    })
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -834,10 +832,28 @@ impl PublicationReview {
 
 #[cfg(test)]
 mod tests {
-    use super::{DependencyReview, PublicationReviewError};
+    use super::{DependencyReview, PublicationReviewError, display_safe};
     use abi::package_types::PackageOrigin;
     use execution::publication::{PublicationContext, UnverifiedDependencyRef};
     use protocol_types::{ChainId, Digest32, Epoch, HashAlgorithmId, ProtocolVersion};
+
+    #[test]
+    fn display_safe_preserves_error_mapping_and_order() {
+        assert!(matches!(
+            display_safe("context.chain_id", "\n", 0),
+            Err(PublicationReviewError::Limit {
+                field: "context.chain_id",
+                actual: 1,
+                maximum: 0,
+            })
+        ));
+        assert!(matches!(
+            display_safe("context.chain_id", "\n", 1),
+            Err(PublicationReviewError::UndisplayableField(
+                "context.chain_id"
+            ))
+        ));
+    }
 
     #[test]
     fn dependency_presentation_refuses_control_bytes_before_copying() {

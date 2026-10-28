@@ -26,6 +26,10 @@ use std::num::NonZeroU32;
 use sunrise_edge_client::load_successor_chain_workflow_from_directories;
 use sunrise_edge_client::successor_artifacts::SuccessorChainArtifactFiles;
 
+#[path = "archive_snapshot.rs"]
+mod archive_snapshot;
+use archive_snapshot::snapshot as successor_floor_snapshot;
+
 #[path = "recurring_lifecycle_acceptance.rs"]
 mod lifecycle;
 
@@ -2220,30 +2224,6 @@ fn install_next(
         );
     }
     (next, cut, certificate)
-}
-
-/// Recursive byte snapshot used only to prove every read-only input archive
-/// is unchanged across the floor controls below; not a production codec.
-fn successor_floor_snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
-    let mut files: BTreeMap<PathBuf, Option<Vec<u8>>> = BTreeMap::new();
-    let mut pending: Vec<PathBuf> = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(&directory).unwrap() {
-            let path: PathBuf = entry.unwrap().path();
-            let metadata: std::fs::Metadata = std::fs::symlink_metadata(&path).unwrap();
-            assert!(!metadata.file_type().is_symlink());
-            let relative: PathBuf = path.strip_prefix(root).unwrap().to_path_buf();
-            let contents: Option<Vec<u8>> = if metadata.is_dir() {
-                pending.push(path);
-                None
-            } else {
-                assert!(metadata.is_file());
-                Some(std::fs::read(&path).unwrap())
-            };
-            assert!(files.insert(relative, contents).is_none());
-        }
-    }
-    files
 }
 
 fn successor_floor_identity_fields(text: &str) -> Vec<&str> {

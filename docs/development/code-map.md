@@ -40,11 +40,25 @@ separate; binaries retain flag collection, error order and dispatch. Literal
 [compatibility controls](../../apps/operator/src/common/tests.rs) cover these
 grammars and display bytes without sharing production expected-value builders.
 
+The PostgreSQL inventory command also uses the existing common TLS connection
+and pool owner. Its four-connection limit, connection policy and caller-owned
+namespace/blob/fence ordering remain local to inventory; the existing common
+owner defines DSN/certificate diagnostics, TCP-host refusal and pool timeouts.
+
 The Rust client's [ordinary deadline guard](../../clients/rust/src/client.rs)
 is shared by frozen-frontier and ordered-history transport calls. Each caller
 retains its original pre-send and post-send positions, absolute deadline and
 error. Receipt-poll exhaustion and transport remaining-time calculation remain
 with their existing owners.
+
+SDK fee-claim and publication review owners share only the private
+[display-text grammar](../../clients/rust/src/review_presentation.rs).
+Length-before-printable-ASCII checks happen before copying; each caller keeps
+its public error type and field names. Review rendering, field/byte budgets,
+hex preallocation checks and business decisions retain their distinct owners.
+Their integration tests share only a
+[recording FIFO transport](../../clients/rust/tests/support/recording_transport.rs);
+response construction, contexts and independent expected payloads stay local.
 
 ## Follow a request
 
@@ -205,6 +219,14 @@ contracts; they do not define protocol rules.
   naming, counter interleaving, scope lifetime and best-effort cleanup remain
   unchanged. Other temporary-directory owners retain their distinct timestamp
   and cleanup requirements.
+  Ordinary import/recurrence tests share a read-only
+  [archive snapshot](../../apps/operator/tests/support/archive_snapshot.rs)
+  that preserves relative path keys, directory markers and exact bytes while
+  refusing symlinks and nonregular entries. Before/after comparisons remain
+  with each consumer. Four process-test callers also share only the
+  [successful captured-output assertion](../../apps/operator/tests/support/command_output.rs),
+  retaining status-first diagnostics and strict UTF-8. It owns no spawn,
+  waiting, pipe collection, deadlines or caller-specific output assertions.
   The [shared compiled-child capture](../../apps/operator/tests/support/compiled_source_host_process.rs)
   returns full `Output` only after successful pipe reads and reader joins; live
   startup returns one LF-terminated first line without waiting for host-stream EOF.

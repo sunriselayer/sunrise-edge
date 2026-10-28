@@ -18,6 +18,10 @@ mod acknowledgement;
 #[path = "support/external_signer.rs"]
 mod external_signer;
 
+#[path = "support/recording_transport.rs"]
+mod recording_transport;
+use recording_transport::FakeTransport;
+
 #[test]
 fn prepared_publication_preserves_independent_bytes_and_owned_artifact() {
     use external_signer::{Behavior, TestSigner};
@@ -266,17 +270,6 @@ fn expected_context() -> PublicationContext {
         expected.epoch(),
     )
     .unwrap()
-}
-
-struct FakeTransport {
-    responses: RefCell<VecDeque<WireResponse>>,
-    requests: RefCell<Vec<WireRequest>>,
-}
-impl Transport for FakeTransport {
-    fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportError> {
-        self.requests.borrow_mut().push(request.clone());
-        Ok(self.responses.borrow_mut().pop_front().unwrap())
-    }
 }
 
 fn expected() -> ExpectedProtocolContext {

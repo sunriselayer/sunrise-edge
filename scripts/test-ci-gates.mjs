@@ -671,18 +671,7 @@ if(tool==='cargo'&&JSON.stringify(args.slice(0,7))===JSON.stringify(['run','--qu
     ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[2][2], recurringCases[2][3], "--", "--ignored", "--exact", "--list"],
     ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[2][2], recurringCases[2][3], "--", "--ignored", "--exact", "--nocapture"],
   ]);
-  for (const [group, pkg, target, name, capture] of cases) {
-    const log = lanes.get(group);
-    const checks = log.filter(({ tool, args }) => tool === "cargo" && args.includes(name));
-    assert.equal(checks.length, 2, `${name} needs discovery and execution`);
-    assert(checks[0].args.includes("--list"));
-    assert(!checks[1].args.includes("--list"));
-    assert(checks[1].args.includes("--exact"));
-    assert.equal(checks[1].args[checks[1].args.indexOf("-p") + 1], pkg);
-    assert.equal(checks[1].args.includes("--nocapture"), capture === "yes");
-    assert(target === "--lib" ? checks[1].args.includes("--lib") : checks[1].args.includes(target));
-  }
-  for (const [group, pkg, target, name, capture] of recurringCases) {
+  for (const [group, pkg, target, name, capture] of [...cases, ...recurringCases]) {
     const log = lanes.get(group);
     const checks = log.filter(({ tool, args }) => tool === "cargo" && args.includes(name));
     assert.equal(checks.length, 2, `${name} needs discovery and execution`);

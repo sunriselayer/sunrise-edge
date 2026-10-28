@@ -4,11 +4,7 @@
 
 use hashing::HashSuiteResolver;
 use node_core::fee_claims::{FeeEscrowInventorySweep, verify_fee_escrow_inventory_all};
-use postgres::{
-    Config,
-    config::{Host, SslMode},
-};
-use postgres_rustls::{MakeTlsConnector, tokio_rustls::TlsConnector};
+use postgres_rustls::MakeTlsConnector;
 use protocol_types::{AtomicityDomainId, ChainId, HashSuiteSchedule, ProtocolVersion, ValidatorId};
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
 use runtime::{
@@ -16,26 +12,21 @@ use runtime::{
     WriterFenceGeneration,
 };
 use runtime_postgres::{
-    PostgresBlobStore, PostgresDurableStore, PostgresNamespace, PostgresPoolConfig,
-    PostgresTransactionPolicy, advance_writer_fence, build_postgres_pool, inspect_namespace,
+    PostgresBlobStore, PostgresDurableStore, PostgresNamespace, PostgresTransactionPolicy,
+    advance_writer_fence, inspect_namespace,
 };
-use rustls::{ClientConfig, RootCertStore, pki_types::CertificateDer};
 use std::{
     env,
     error::Error,
     ffi::OsString,
-    fs,
     num::{NonZeroU32, NonZeroUsize},
     path::PathBuf,
     process::ExitCode,
-    str::FromStr,
-    sync::Arc,
-    time::Duration,
 };
 
-use sunrise_edge_operator::common::{parse_decimal_hash_suite as parse_suite, parse_hex_32};
-
-const POSTGRES_DSN_ENV: &str = "SUNRISE_EDGE_OPERATOR_POSTGRES_DSN";
+use sunrise_edge_operator::common::{
+    connect_pool, parse_decimal_hash_suite as parse_suite, parse_hex_32,
+};
 
 struct Args {
     ca_der: PathBuf,
@@ -146,47 +137,14 @@ fn parse_args(values: impl IntoIterator<Item = OsString>) -> Result<Args, String
     })
 }
 
-fn require_tls_tcp_host(config: &mut Config) -> Result<(), &'static str> {
-    if !matches!(config.get_hosts(), [Host::Tcp(_)]) {
-        return Err("PostgreSQL connection requires exactly one TCP host for TLS identity");
-    }
-    // Never honor libpq's `prefer` fallback or a DSN's `disable`: the Rustls
-    // connector validates the peer certificate and its configured host name.
-    config.ssl_mode(SslMode::Require);
-    Ok(())
-}
-
 fn run() -> Result<(), Box<dyn Error>> {
     let args: Args = parse_args(env::args_os().skip(1))?;
-    let dsn: String = env::var(POSTGRES_DSN_ENV)
-        .map_err(|_| format!("{POSTGRES_DSN_ENV} must be set in the operator environment"))?;
-    let mut config: Config =
-        Config::from_str(&dsn).map_err(|_| "invalid PostgreSQL connection configuration")?;
-    require_tls_tcp_host(&mut config)?;
-
-    let certificate: Vec<u8> = fs::read(&args.ca_der)?;
-    let mut roots: RootCertStore = RootCertStore::empty();
-    roots
-        .add(CertificateDer::from(certificate))
-        .map_err(|_| "invalid DER TLS root certificate")?;
-    let tls_config: ClientConfig =
-        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .map_err(|_| "unsupported TLS protocol versions")?
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-    let tls: MakeTlsConnector = MakeTlsConnector::new(TlsConnector::from(Arc::new(tls_config)));
-    let pool_config: PostgresPoolConfig = PostgresPoolConfig::new(
+    let pool: Pool<PostgresConnectionManager<MakeTlsConnector>> = connect_pool(
+        &args.ca_der,
         // One structured scan and one blob read may overlap; leave room for
         // the final metadata check without waiting on a two-slot pool.
         NonZeroU32::new(4).ok_or("zero pool size")?,
-        Duration::from_secs(10),
-        Duration::from_secs(30),
-        Duration::from_secs(300),
     )?;
-    let pool: Pool<PostgresConnectionManager<MakeTlsConnector>> =
-        build_postgres_pool(config, tls, pool_config)
-            .map_err(|_| "PostgreSQL TLS connection or pool initialization failed")?;
     let resolver: HashSuiteResolver =
         HashSuiteResolver::new(args.chain.clone(), args.protocol_version, args.schedule)?;
     let namespace: PostgresNamespace =
@@ -279,6 +237,9 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postgres::{Config, config::SslMode};
+    use std::str::FromStr;
+    use sunrise_edge_operator::common::require_tls_tcp_host;
 
     fn valid_args() -> Vec<OsString> {
         [

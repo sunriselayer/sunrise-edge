@@ -1,8 +1,12 @@
 //! Actual compiled import command over a genuinely frozen/drained SQLite source.
 //! This is inactive installation evidence, not provider or activation acceptance.
 
+#[path = "support/archive_snapshot.rs"]
+mod archive_snapshot;
 #[path = "support/causal_genesis_fixture.rs"]
 mod causal_genesis_fixture;
+#[path = "support/command_output.rs"]
+mod command_output;
 #[path = "support/compiled_source_host_process.rs"]
 mod compiled_source_host_process;
 #[path = "support/encrypted_recovery_acceptance.rs"]
@@ -12,6 +16,8 @@ mod fixture;
 #[path = "support/genesis_fixture.rs"]
 pub mod genesis_fixture;
 
+use archive_snapshot::snapshot as history_files;
+use command_output::success;
 use fixture::{Directory, Fixture, copy_files, files};
 use node_core::business_reconstruction::cut::{BusinessCutIdentity, decode_business_cut_identity};
 use node_core::business_reconstruction::{BusinessReconstructionPlan, SourceBusinessSnapshot};
@@ -195,16 +201,6 @@ fn inspect_fresh_residue(
     (binding, token)
 }
 
-fn success(output: Output) -> String {
-    assert!(
-        output.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
-}
-
 fn floor_arguments(epoch: u64, height: u64, digest: &str) -> Vec<OsString> {
     vec![
         OsString::from("--history-floor-epoch"),
@@ -245,26 +241,78 @@ fn identity_fields(text: &str) -> Vec<&str> {
         .collect()
 }
 
-fn history_files(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
-    let mut files: BTreeMap<PathBuf, Option<Vec<u8>>> = BTreeMap::new();
-    let mut pending: Vec<PathBuf> = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(&directory).unwrap() {
-            let path: PathBuf = entry.unwrap().path();
-            let metadata: std::fs::Metadata = std::fs::symlink_metadata(&path).unwrap();
-            assert!(!metadata.file_type().is_symlink());
-            let relative: PathBuf = path.strip_prefix(root).unwrap().to_path_buf();
-            let contents: Option<Vec<u8>> = if metadata.is_dir() {
-                pending.push(path);
-                None
-            } else {
-                assert!(metadata.is_file());
-                Some(std::fs::read(&path).unwrap())
-            };
-            assert!(files.insert(relative, contents).is_none());
-        }
+#[cfg(unix)]
+#[test]
+fn ordinary_archive_snapshot_preserves_bytes_and_refuses_nonregular_entries() {
+    use std::os::unix::fs::symlink;
+
+    let directory: Directory = Directory::new("ordinary-archive-snapshot");
+    std::fs::create_dir(directory.0.join("nested")).unwrap();
+    std::fs::create_dir(directory.0.join("nested/empty")).unwrap();
+    std::fs::write(directory.0.join("nested/exact"), [0, 0xff, b'\n']).unwrap();
+    std::fs::write(directory.0.join("empty-file"), []).unwrap();
+    let expected: BTreeMap<PathBuf, Option<Vec<u8>>> = BTreeMap::from([
+        (PathBuf::from("nested"), None),
+        (PathBuf::from("nested/empty"), None),
+        (PathBuf::from("nested/exact"), Some(vec![0, 0xff, b'\n'])),
+        (PathBuf::from("empty-file"), Some(Vec::new())),
+    ]);
+    assert_eq!(history_files(&directory.0), expected);
+
+    let link: PathBuf = directory.0.join("linked");
+    symlink(directory.0.join("nested/exact"), &link).unwrap();
+    assert!(std::panic::catch_unwind(|| history_files(&directory.0)).is_err());
+    std::fs::remove_file(link).unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::{fd::AsRawFd, unix::net::UnixListener};
+
+        // Preserve the configured fixture directory even when TMPDIR is longer
+        // than a Unix socket address: the short fd path creates the same entry.
+        let handle: std::fs::File = std::fs::File::open(&directory.0).unwrap();
+        let socket_path: PathBuf =
+            PathBuf::from(format!("/proc/self/fd/{}/socket", handle.as_raw_fd()));
+        let socket: UnixListener = UnixListener::bind(socket_path).unwrap();
+        assert!(std::panic::catch_unwind(|| history_files(&directory.0)).is_err());
+        drop(socket);
     }
-    files
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_captured_output_preserves_exact_text_and_failure_priority() {
+    use std::{any::Any, os::unix::process::ExitStatusExt, process::ExitStatus};
+
+    let stdout: Vec<u8> = b"first\r\nsecond\0\n".to_vec();
+    assert_eq!(
+        success(Output {
+            status: ExitStatus::from_raw(0),
+            stdout: stdout.clone(),
+            stderr: vec![0xff],
+        })
+        .as_bytes(),
+        stdout
+    );
+    let failed: Box<dyn Any + Send> = std::panic::catch_unwind(|| {
+        success(Output {
+            status: ExitStatus::from_raw(256),
+            stdout: b"out-\xff".to_vec(),
+            stderr: b"err-\xfe".to_vec(),
+        })
+    })
+    .unwrap_err();
+    assert_eq!(
+        failed.downcast_ref::<String>().unwrap(),
+        "stdout=out-\u{fffd} stderr=err-\u{fffd}"
+    );
+    let invalid: Result<String, Box<dyn Any + Send>> = std::panic::catch_unwind(|| {
+        success(Output {
+            status: ExitStatus::from_raw(0),
+            stdout: vec![0xff],
+            stderr: Vec::new(),
+        })
+    });
+    assert!(invalid.is_err());
 }
 
 #[test]

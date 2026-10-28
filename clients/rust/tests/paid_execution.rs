@@ -16,6 +16,10 @@ mod acknowledgement;
 #[path = "support/external_signer.rs"]
 mod external_signer;
 
+#[path = "support/recording_transport.rs"]
+mod recording_transport;
+use recording_transport::FakeTransport;
+
 #[test]
 fn prepared_paid_families_preserve_independent_original_bytes() {
     use crypto::SignatureSigner;
@@ -191,16 +195,6 @@ fn prepared_paid_preserves_presign_refusals_and_postsign_quote_order() {
     }
 }
 
-struct FakeTransport {
-    responses: RefCell<VecDeque<WireResponse>>,
-    requests: RefCell<Vec<WireRequest>>,
-}
-impl Transport for FakeTransport {
-    fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportError> {
-        self.requests.borrow_mut().push(request.clone());
-        Ok(self.responses.borrow_mut().pop_front().unwrap())
-    }
-}
 fn response(media_type: &str, body: Vec<u8>) -> WireResponse {
     WireResponse {
         status: 200,
