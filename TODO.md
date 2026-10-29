@@ -1122,11 +1122,12 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
     実鍵・実administrator/recovery役割とceremonyはD04/D06/D07へ残す。Ledgerは別途deferred。
 
-### M2のfamily別対応と残件 (2026-10-29)
+### M2のfamily別対応と残件 (2026-10-30)
 
 main統合時のsource `34da6a55` / tree `10b53dc5` を、上の実績と各familyの既存契約へ対応付けた。
 このtreeの完全required/全8 CIは `5ac947f3` の記録を参照する。
-後続source `ef0cea4e` のapplication Coin復旧鍵consumerは、下表と2026-10-29の検証記録を参照する。
+後続source `ef0cea4e` のapplication Coin復旧鍵consumerは2026-10-29の検証記録、
+`76345c53` の初回create/mint-burn consumerは2026-10-30の検証記録を参照する。
 以下の「完了」は各行に示す選択済み子条件の範囲であり、親M2の完了や最新sourceのRELEASE認定ではない。
 新しいoperation・identity・authorityやtrust条件を追加する表ではない。
 
@@ -1136,8 +1137,8 @@ main統合時のsource `34da6a55` / tree `10b53dc5` を、上の実績と各fami
 | Genesis whole-Coin transfer / kind2 | E149のA→B→A ownership、E203-E205の復旧同一A鍵によるlive操作と取消後restart | 選択済み子条件は完了。wallet/account/fee全体の正の鍵交換とは別 |
 | Genesis split/merge / kind3 | E174のforeign split/返送、E206/E208/E209の復旧同一A鍵による既存self操作とrestart | 選択済み子条件は完了。foreign ownershipと同一鍵復旧を相互に代用しない |
 | Genesis mint/burn / kind4 | E212/E213/E218/E219/E222の復旧同一A鍵によるlive mint/burn・restartと元runtime | 選択済み子条件は完了。古いE41/E141のlive未接続やgate待ちを現在の残件に戻さない |
-| Create-asset / kind5 | E49の実create/receipt/replay/取消、E141の停止後の同一frame署名復旧 | 復旧は歴史preimageのsigning-only。復旧鍵によるlive createは未対応。既存instance seed/fee/nonceを再送するだけでは達成しない |
-| Own-created application mint/burn | E62の実supply遷移、E67のhistorical burn復旧・取消/restart | 初回live mint/burn後に復旧鍵を作る順序。初回liveへの接続にはsetup順序の整理が必要で、単純なpath置換とは扱わない |
+| Create-asset / kind5 | E49の実create/receipt/replay/取消とE141の歴史frame署名復旧を保持。7634の4完全profiles・完全required・全8 CIで、early同一復旧鍵による初回live createと取消後restartを確認 | 選択済みconsumer接続は完了。新identityへの正のrotation、creator/TreasuryCap移行や実ceremonyは含めない |
+| Own-created application mint/burn | E62の実supply遷移とE67のhistorical burn復旧・取消/restartを保持。7634で初回create前にearly復旧pairを作り、初回live mint/burnと取消後restartを接続し、4完全profiles・完全required・全8 CIで確認 | 選択済みconsumer接続は完了。historical停止後copyと後続6-stage用のlater復旧鍵を維持し、全M2や正のidentity/ownership rotationは含めない |
 | Application Coinの既存6 stages / kinds2/3/4 | E74/E75の有料操作とhistorical復旧を保持。ef0の4完全profiles・local完全required・全8 CIで、既存復旧鍵による6 live操作と5 groupsの取消後restartを確認 | 選択済みconsumer接続は完了。初回create/初回application mint-burn、正のidentity rotationや全M2はこの範囲に含めない |
 | Positive fee-claim strict partial Split | E128の実protected候補送信、Leg/Claim別承認、永久取消、復旧/restart/expiry/rotation mismatch | 選択済みcomponentの範囲。live escrow/nonce/entitlementや新しいhistorical identityへの正のrotationはこの結果へ含めない |
 | ZeroShare / FinalTransfer fee claims | E23/E24のsaved review・開発用署名とFinalTransfer structural表示 | ZeroShare WIPは未統合・未検証・停止中。FinalTransferは既存positive Split serverの対象外で、具体的なprotected backend契約は未確定 |
@@ -1151,7 +1152,11 @@ main統合時のsource `34da6a55` / tree `10b53dc5` を、上の実績と各fami
 nonce/counterと元profile別上限を保持し、追加2 flagsは別に照合した。
 [実検証記録](docs/development/validation/2026-10-29-recovered-application-coins/README.md) の
 4完全profiles・同sourceの完全required・全8 CIでこのconsumerを完了した。
-Create-assetと初回application mint/burnのlive復旧は、復旧鍵が存在する時点の整理が残る。
+[初回consumerの検証記録](docs/development/validation/2026-10-30-initial-recovered-application-key/README.md) では、
+初回create前に既存helperで2files/2copychildrenのearly復旧pairを作り、初回create・mint/burnと
+両取消後restartの4実child argvを同じ復旧pathへ接続した。原47・prior2・historical9を保持し、
+新initial3 predicatesは別に検査した。実4完全profiles・同source完全required・全8 CIが成功したため、
+この初回consumerの接続は完了。残る全accepted family対応・正のidentity/ownership rotationや実ceremonyへは拡張しない。
 
 [prepared signing owners](docs/architecture/signing-preparation.md) のtransaction/local/general/paid/bond等は、
 prepare/finalizeの共通化や開発用LocalSignerだけでprotected backendの受入済みfamilyにはならない。
@@ -2089,6 +2094,43 @@ Bugbotはadvertised0でannotation endpoint未取得を明記し、review/comment
 読取側のfilename globとURL query仮定の失敗を保存し、製品/CIのrerun/cancelは0。
 
 [検証記録](docs/development/validation/2026-10-29-recovered-application-coins/README.md) と
-上のfamily表へ反映し、今回のconsumerだけを完了する。PR #337は未merge。
+上のfamily表へ反映し、今回のconsumerだけを完了する。PR #337は2026-10-30にmerge済み。
 元85 checkbox /71完了 /14未完了と親D02/M1/M2/M3/M7を保持する。
-初回create/application mint-burn、各familyの残るlifecycle/全体対応と停止対象は引き続き残る。
+この時点の初回create/application mint-burn残件は、次の2026-10-30記録で完了した。
+各familyの残るlifecycle/全体対応と停止対象は引き続き残る。
+
+## 2026-10-30 PR #337 mergeと初回create/mint-burn復旧鍵接続
+
+ユーザーの承認により、全9 checksとBugbot no issuesを再確認し、PR #337をmainへ通常mergeした。
+実merge `5626863a` / tree `38621a36`、ordered parents `[27650eea, ef0cea4e]` を照合した。
+既存checkoutを再利用し、初回consumerをsource `76345c53` / tree `12e140c6` にcommit/pushした。
+[PR #338](https://github.com/sunriselayer/sunrise-edge/pull/338) はmain向けReady、未merge。
+
+初回signer前に既存helperで同一application鍵のearly backup/restore pairを作り、
+2files/2copychildren/130 logical bytes・元seedと別inodeのregular/UID/mode0600を確認した。
+初回create・初回mint/burnと各取消後restartの4実child argvが同じ復旧pathを使う。
+原47 setup predicates・prior2・historical9、停止後copyの順序、元nonce/supply/fee/receipt/replayと
+全selector/上限を保持した。後続6-stageは従来のlater復旧pathを維持する。
+
+実4完全Docker profilesとNode/Python syntax・AST、通常correctness reviewは成功。
+rootが67 commands/134 streams、全source/toolと実EOF/wait/reap・既知PID/cgroup解放を照合した。
+同sourceのliteral npm ci+完全requiredは17:59:27-20:41:31 UTCに自然成功。
+Rust147 summariesは4,427/0/43、CF全66成功。invocation合計とignoredを区別した。
+全42 commands/84 streams、source1,244/runtime23/CF2,347 roles・layout2,725行、
+7epochs/e8の元1832-byte候補2件とterminal-unlock end rawをroot照合した。
+成功保存後に空の完了unitを停止し、metadata supervisorの解放も確認した。
+
+[全8 CI run40926698415](https://github.com/sunriselayer/sunrise-edge/actions/runs/40926698415) は
+attempt1で2026-10-29T21:04:21Zまでに自然success、Bugbotもno issuesで全9 checks成功。
+全8実checkout `0f7384f3` はtree `12e140c6` /ordered parents `[5626863a, 76345c53]`。
+rootが8 raw/1,238,644 bytes、497 checksum files、107 commandsと25追加wrappersの
+実exit/両EOF/wait、既知160 PIDs不在を照合した。取得からsealer実終端まで10.189889秒。
+8 runner移行noticesはwarning/failure0、Bugbotのadvertised0とendpoint未取得を区別し、
+完全paginationのreviews/commentsは各0。元sealed rawと読取側のschema/path仮定の記録を保持し、
+product/CIのrerun・cancel・raw再取得は0。
+
+[検証記録](docs/development/validation/2026-10-30-initial-recovered-application-key/README.md) へ
+実装・実測・captureの原証跡を記録し、この初回consumer2件だけを完了する。
+元85 checkbox /71完了 /14未完了と親D02/M1/M2/M3/M7は維持する。
+全accepted signing family、正のidentity/ownership rotation、creator/TreasuryCapや実ceremonyを
+同一鍵復旧の成功から推定せず、停止対象は再開していない。
