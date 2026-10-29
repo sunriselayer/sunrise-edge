@@ -5,25 +5,33 @@
 mod acceptance_timing;
 #[path = "support/causal_genesis_fixture.rs"]
 mod causal_genesis_fixture;
+#[path = "support/command_output.rs"]
+mod command_output;
 #[path = "support/compiled_executable_snapshot.rs"]
 mod compiled_executable_snapshot;
 #[path = "support/compiled_source_host_process.rs"]
 mod compiled_source_host_process;
+#[path = "support/encrypted_recovery_acceptance.rs"]
+mod encrypted_recovery_acceptance;
 #[path = "business_cut/fixture.rs"]
 mod fixture;
 #[path = "support/genesis_fixture.rs"]
 pub mod genesis_fixture;
+#[path = "support/hex.rs"]
+mod hex;
 #[path = "support/ordered_seal_sqlite_acceptance.rs"]
 mod ordered_seal_sqlite_acceptance;
 #[path = "support/successor_host_acceptance.rs"]
 mod successor_host_acceptance;
 
+use command_output::success;
 use compiled_executable_snapshot::CompiledExecutableSnapshot;
 use consensus::readiness::{
     ReadinessCertificate, ReadinessCertifier, ReadinessVote, decode_readiness_certificate,
     decode_readiness_vote,
 };
 use fixture::{Directory, Fixture, copy_files, files};
+use hex::hex;
 use node_core::business_reconstruction::{
     SourceBusinessSnapshot,
     cut::{
@@ -43,7 +51,7 @@ use std::{
     collections::BTreeMap,
     num::NonZeroUsize,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::Command,
 };
 use sunrise_edge_operator::{
     business_cut::{CutArchiveLimits, export_source_business_cut, verify_business_cut_archive},
@@ -51,22 +59,6 @@ use sunrise_edge_operator::{
     immutable_archive::ImmutableArchive,
 };
 use validator_set::{ValidatorInfo, ValidatorSet, encode_validator_set};
-
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte: &u8| format!("{byte:02x}"))
-        .collect()
-}
-fn success(output: Output) -> String {
-    assert!(
-        output.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
-}
 
 /// Assemble public paginated transport from a genuinely verified archive;
 /// private import verification must still reconstruct it independently.
@@ -692,6 +684,7 @@ async fn run_conditional_readiness(recurring: bool) {
         "the competing variant's preparation never changes source state or receipts"
     );
     drop(initial_readiness);
+    drop(archive); // No held original cut/staging directory survives cold recovery.
     ordered_seal_sqlite_acceptance::run_compiled_four_host_seal(
         &executables,
         &fixture,

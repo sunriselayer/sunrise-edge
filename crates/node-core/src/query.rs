@@ -15,6 +15,7 @@ use super::{
     MAX_AUTHENTICATED_OBJECT_BODY_BYTES, NodeCoreError, NodeDedupRecord, RequestId,
     SenderNonceRecord, equivocation, local_instance_state,
 };
+use crate::envelope::DedupRecordBindingError;
 use hashing::{HashSuiteResolver, HashingError};
 use objects::{Object, ObjectId};
 use protocol_types::{ChainId, Digest32, Epoch, HashPurpose, ProtocolVersion};
@@ -402,19 +403,24 @@ where
             "durable receipt lookup returned another request",
         ));
     }
-    let record = NodeDedupRecord::decode(receipt.canonical_bytes())
-        .map_err(|_| NodeCoreError::PersistenceInvariant("invalid durable receipt"))?;
-    if record.request_id() != request_id || record.event_digest() != receipt.event_digest() {
-        return Err(NodeCoreError::PersistenceInvariant(
+    let record: NodeDedupRecord = NodeDedupRecord::decode_bound(
+        receipt.canonical_bytes(),
+        request_id,
+        receipt.event_digest(),
+    )
+    .map_err(|error: DedupRecordBindingError| match error {
+        DedupRecordBindingError::Decode(_) => {
+            NodeCoreError::PersistenceInvariant("invalid durable receipt")
+        }
+        DedupRecordBindingError::RequestIdentityMismatch { .. }
+        | DedupRecordBindingError::EventDigestMismatch => NodeCoreError::PersistenceInvariant(
             "durable receipt projection and canonical record differ",
-        ));
-    }
-    let re_encoded = record.encode()?;
-    if re_encoded != receipt.canonical_bytes() {
-        return Err(NodeCoreError::PersistenceInvariant(
-            "durable receipt does not re-encode canonically",
-        ));
-    }
+        ),
+        DedupRecordBindingError::Encode(error) => NodeCoreError::from(error),
+        DedupRecordBindingError::NonCanonicalReEncoding => {
+            NodeCoreError::PersistenceInvariant("durable receipt does not re-encode canonically")
+        }
+    })?;
     Ok(ReceiptQueryResult::Present {
         request_id,
         event_digest: receipt.event_digest(),

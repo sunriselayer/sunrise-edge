@@ -4,6 +4,12 @@ use std::cell::RefCell;
 
 use sunrise_edge_client::{Transport, TransportError, WireRequest, WireResponse};
 
+/// Minimal structurally admitted WASM for publication-signing controls.
+/// This exercises the real finalizer without weakening its WASM guard.
+pub(crate) fn publication_wasm() -> Vec<u8> {
+    wat::parse_str(r#"(module (memory (export "memory") 1 2) (func (export "run")))"#).unwrap()
+}
+
 /// A deterministic fake transport that returns pre-scripted responses.
 ///
 /// Responses are consumed in the order they are given (first pushed, first

@@ -6337,3 +6337,153 @@ impl StructuredDurableDomainStateStore for IndeterminateCommitStore {
         self.inner.commit_invocation(context, transaction)
     }
 }
+
+fn literal_count_validator_id(ordinal: u32) -> ValidatorId {
+    let mut id_bytes: [u8; 32] = [0; 32];
+    id_bytes[28..].copy_from_slice(&ordinal.to_be_bytes());
+    ValidatorId::new(id_bytes)
+}
+
+// Unique opaque keys exercise record syntax, not committee or custody approval.
+fn literal_count_validator_entry(ordinal: u32) -> FastPathValidatorEntry {
+    FastPathValidatorEntry {
+        id: literal_count_validator_id(ordinal),
+        voting_power: 1,
+        signature_scheme: SignatureSchemeId::Ed25519,
+        public_key: ordinal.to_be_bytes().to_vec(),
+    }
+}
+
+fn literal_count_settlement(count: u32) -> FastPathSettlementRecord {
+    let shares: Vec<FastPathFeeShare> = (1_u32..=count)
+        .map(|ordinal: u32| FastPathFeeShare {
+            validator_id: literal_count_validator_id(ordinal),
+            amount: 1,
+            claimed: false,
+        })
+        .collect();
+    FastPathSettlementRecord {
+        context: vector_context(),
+        request_id: [0x01; 32],
+        generation: 1,
+        resource_id: Some(BondResourceId::new(9, [0x09; 32]).unwrap()),
+        fee_output: Some(vector_object_ref(0x02, 3, 0x04)),
+        fee_output_epoch: Some(Epoch::new(3)),
+        total_amount: Some(u64::from(count)),
+        shares,
+    }
+}
+
+#[test]
+fn fastpath_validator_record_literal_count_boundary() {
+    let validators: Vec<FastPathValidatorEntry> = (1_u32..=10_000_u32)
+        .map(literal_count_validator_entry)
+        .collect();
+    let mut record: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
+        context: vector_context(),
+        validators,
+    };
+    let bytes: Vec<u8> = records::encode_fastpath_validator_set_record(&record).unwrap();
+    assert_eq!(
+        records::decode_fastpath_validator_set_record(&bytes).unwrap(),
+        record
+    );
+    record
+        .validators
+        .push(literal_count_validator_entry(10_001));
+    assert!(matches!(
+        records::encode_fastpath_validator_set_record(&record),
+        Err(NodeCoreError::PersistenceInvariant(
+            "fast-path record list too large"
+        ))
+    ));
+}
+
+#[test]
+fn fastpath_settlement_record_literal_count_boundary() {
+    let record: FastPathSettlementRecord = literal_count_settlement(10_000);
+    let bytes: Vec<u8> = records::encode_fastpath_settlement_record(&record).unwrap();
+    assert_eq!(
+        records::decode_fastpath_settlement_record(&bytes).unwrap(),
+        record
+    );
+    // Strict IDs, positive conserved total, generation one and no claims keep
+    // every preceding settlement invariant valid at the excessive count.
+    let oversized: FastPathSettlementRecord = literal_count_settlement(10_001);
+    assert!(matches!(
+        records::encode_fastpath_settlement_record(&oversized),
+        Err(NodeCoreError::PersistenceInvariant(
+            "fast-path record list too large"
+        ))
+    ));
+}
+
+fn literal_count_only_validator_record(count: u32) -> Vec<u8> {
+    let mut list: CanonicalStruct = CanonicalStruct::new(0x6422, 1);
+    list.field_u32(1, count).unwrap();
+    let mut frame: CanonicalStruct = CanonicalStruct::new(0x641F, 1);
+    frame
+        .field_bytes(1, encode_publication_context(&vector_context()).unwrap())
+        .unwrap();
+    frame.field_bytes(2, list.finish().unwrap()).unwrap();
+    frame.finish().unwrap()
+}
+
+fn literal_count_only_settlement_record(count: u32) -> Vec<u8> {
+    let resource: BondResourceId = BondResourceId::new(9, [0x09; 32]).unwrap();
+    let fee_output: ObjectRef = vector_object_ref(0x02, 3, 0x04);
+    let mut list: CanonicalStruct = CanonicalStruct::new(0x6436, 1);
+    list.field_u32(1, count).unwrap();
+    let mut frame: CanonicalStruct = CanonicalStruct::new(0x641E, 1);
+    frame
+        .field_bytes(1, encode_publication_context(&vector_context()).unwrap())
+        .unwrap();
+    frame.field_bytes(2, [0x01_u8; 32]).unwrap();
+    frame.field_u64(3, 1).unwrap();
+    frame
+        .field_bytes(4, bonds::encode_bond_resource_id(resource).unwrap())
+        .unwrap();
+    frame
+        .field_bytes(5, objects::encode_object_ref(&fee_output).unwrap())
+        .unwrap();
+    frame.field_u64(6, 3).unwrap();
+    frame.field_u64(7, u64::from(count)).unwrap();
+    frame.field_bytes(8, list.finish().unwrap()).unwrap();
+    frame.finish().unwrap()
+}
+
+#[test]
+fn fastpath_validator_decoder_literal_count_precedes_missing_entries() {
+    let excessive: Vec<u8> = literal_count_only_validator_record(10_001);
+    assert!(matches!(
+        records::decode_fastpath_validator_set_record(&excessive),
+        Err(NodeCoreError::PersistenceInvariant(
+            "fast-path record list too large"
+        ))
+    ));
+    let missing_entry: Vec<u8> = literal_count_only_validator_record(1);
+    assert!(matches!(
+        records::decode_fastpath_validator_set_record(&missing_entry),
+        Err(NodeCoreError::CanonicalDecoding(
+            canonical_encoding::CanonicalDecodingError::MissingField(2)
+        ))
+    ));
+}
+
+#[test]
+fn fastpath_settlement_decoder_literal_count_precedes_missing_shares() {
+    let excessive: Vec<u8> = literal_count_only_settlement_record(10_001);
+    assert!(matches!(
+        records::decode_fastpath_settlement_record(&excessive),
+        Err(NodeCoreError::PersistenceInvariant(
+            "fast-path record list too large"
+        ))
+    ));
+    let missing_share: Vec<u8> = literal_count_only_settlement_record(1);
+    assert!(matches!(
+        records::decode_fastpath_settlement_record(&missing_share),
+        Err(NodeCoreError::CanonicalDecoding(
+            canonical_encoding::CanonicalDecodingError::MissingField(2)
+        ))
+    ));
+}

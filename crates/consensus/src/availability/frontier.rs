@@ -33,7 +33,11 @@ const FRONTIER_PAGE_TYPE_ID: u16 = 0xD039;
 const ENCODING_VERSION: u16 = 1;
 const FRONTIER_VOTE_MESSAGE_TYPE: &str = "epoch-frozen-frontier-v1";
 const MAX_FRONTIER_IDENTITY_BYTES: usize = 2 * 1024;
-const MAX_FRONTIER_VOTE_BYTES: usize = 8 * 1024;
+/// Maximum canonical frozen-frontier vote bytes. The encoder checks this cap
+/// after constructing the frame; the strict decoder checks it before
+/// canonical parsing. This byte cap grants no authentication, quorum,
+/// persistence, or custody authority.
+pub const MAX_FRONTIER_VOTE_BYTES: usize = 8 * 1024;
 /// A page is deliberately small enough for bounded event-driven transfer.
 pub const MAX_FROZEN_FRONTIER_PAGE_ENTRIES: usize = 128;
 pub const MAX_FROZEN_FRONTIER_PAGE_BYTES: usize = 512 * 1024;

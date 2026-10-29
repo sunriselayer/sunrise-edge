@@ -17,6 +17,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
 
+#[path = "successor_recurring_delay/withdraw_admission.rs"]
+mod withdraw_admission;
+
 /// The original per-link bytes, exported from that link's actual source.
 /// No manifest, cut, root, activation row or receipt is synthesized here.
 struct LinkArchive {
@@ -2196,6 +2199,11 @@ fn genuine_recurring_sqlite_handoffs_reach_configured_seven_epoch_withdrawal_unl
         let (candidate, exited, released): (OrderedCandidate, FastPathBondRecord, Object) =
             withdraw_candidate(&origin, &archive, &current, owner);
         current.policy.authenticate_candidate(&candidate).unwrap();
+        if owner.signer.id == g.signer.id {
+            withdraw_admission::assert_registered_withdraw_admission(
+                &origin, &archive, &current, owner, &candidate,
+            );
+        }
         let (outcome, _): (OrderedOutcome, consensus::QuorumCertificate) =
             current.commit(&origin, &archive, &current.env(&origin), &candidate);
         assert_eq!(

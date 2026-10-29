@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::envelope::{
-    NestedListDecodeError, decode_response_list, encode_response_list, validate_output_bytes,
+    DedupRecordBindingError, NestedListDecodeError, decode_response_list, encode_response_list,
+    validate_output_bytes,
 };
 
 fn digest() -> Digest32 {
@@ -131,5 +132,74 @@ fn shared_response_encoder_uses_only_the_explicit_owning_budget() {
     assert_eq!(
         encode_response_list(&[response], Some(list.len() - 1)),
         Err(EnvelopeError::StateTooLarge(list.len()))
+    );
+}
+
+#[test]
+fn bound_dedup_record_preserves_responses_and_canonical_bytes() {
+    let id: RequestId = request(0xB1);
+    let event_digest: Digest32 = digest();
+    let response: NodeResponse = NodeResponse::new(
+        id,
+        NodeResponseStatus::Accepted,
+        Some(canonical(TEST_PAYLOAD_TYPE_ID, 7)),
+    )
+    .unwrap();
+    let record: NodeDedupRecord =
+        NodeDedupRecord::new(id, event_digest, vec![response.clone()]).unwrap();
+    let encoded: Vec<u8> = record.encode().unwrap();
+
+    let bound: NodeDedupRecord = NodeDedupRecord::decode_bound(&encoded, id, event_digest).unwrap();
+
+    assert_eq!(bound, record);
+    assert_eq!(bound.responses(), &[response]);
+    assert_eq!(bound.encode().unwrap(), encoded);
+}
+
+#[test]
+fn bound_dedup_record_decodes_before_outer_field_binding() {
+    let count: u32 = u32::try_from(MAX_NODE_OUTPUT_ITEMS + 1).unwrap();
+    let invalid: Vec<u8> = dedup_frame(vec![0xB1; 31], 0xFFFF, count, vec![0xFF]);
+    let expected_id: RequestId = request(0xB2);
+    let expected_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha3_256, [0xB3; 32]);
+
+    assert_eq!(
+        NodeDedupRecord::decode_bound(&invalid, expected_id, expected_digest),
+        Err(DedupRecordBindingError::Decode(
+            EnvelopeError::InvalidRequestIdLength(31)
+        ))
+    );
+}
+
+#[test]
+fn bound_dedup_record_checks_request_before_event_digest() {
+    let actual_id: RequestId = request(0xB4);
+    let expected_id: RequestId = request(0xB5);
+    let actual_digest: Digest32 = digest();
+    let expected_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha3_256, [0xB6; 32]);
+    let record: NodeDedupRecord =
+        NodeDedupRecord::new(actual_id, actual_digest, Vec::new()).unwrap();
+    let encoded: Vec<u8> = record.encode().unwrap();
+
+    assert_eq!(
+        NodeDedupRecord::decode_bound(&encoded, expected_id, expected_digest),
+        Err(DedupRecordBindingError::RequestIdentityMismatch {
+            expected: expected_id,
+            actual: actual_id,
+        })
+    );
+}
+
+#[test]
+fn bound_dedup_record_rejects_digest_with_matching_request() {
+    let id: RequestId = request(0xB7);
+    let actual_digest: Digest32 = digest();
+    let expected_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha3_256, [0xB8; 32]);
+    let record: NodeDedupRecord = NodeDedupRecord::new(id, actual_digest, Vec::new()).unwrap();
+    let encoded: Vec<u8> = record.encode().unwrap();
+
+    assert_eq!(
+        NodeDedupRecord::decode_bound(&encoded, id, expected_digest),
+        Err(DedupRecordBindingError::EventDigestMismatch)
     );
 }

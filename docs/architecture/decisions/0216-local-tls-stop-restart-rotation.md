@@ -116,6 +116,16 @@ query, but actual paid signing follows verified context. Missing artifacts alone
 are not an in-memory signature-count measurement. Keep wrong DNS, genesis,
 domain, mixed cohort and authenticated request-ID reuse controls unchanged.
 
+[DR-0275](0275-local-tls-durable-ack-loss.md) adds a separate explicit one-shot
+relay mode for post-dispatch acknowledgement loss. After a complete authenticated
+handshake and a complete genuine successful published-apply response from each
+actual host, it closes before forwarding any TLS application-response bytes.
+The compiled CLI must fail with zero acknowledged endpoints; all four durable
+target receipts are reconciled before exact saved-artifact replay. Default
+`bind`/`start`, this complete rotation sequence and its refusal controls remain
+byte-transparent. This additional inline-transfer fixture has an empty referenced
+blob closure and makes no positive blob-fault claim.
+
 ## Validation and limits
 
 After source/compiler ownership allocation, build actual operator binaries and

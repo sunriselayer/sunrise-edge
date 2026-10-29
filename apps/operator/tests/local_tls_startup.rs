@@ -5,21 +5,39 @@
 //! own bounded loopback TLS terminator with an independent CA and DNS name ->
 //! one separately compiled CLI certified transfer, exact replay in the same
 //! boot and after reopening every host, and pin/TLS/cohort/request-ID refusals.
-//! The terminator forwards exact HTTP bytes; every protocol result comes from
+//! The default terminator forwards exact HTTP bytes; every protocol result comes from
 //! an actual host. All keys and CAs are disposable fixture material.
+//! DR-0275 explicitly withholds genuine durable apply acknowledgements once,
+//! then checks receipt-first exact replay with complete unchanged state images.
+//! DR-0277 separately preserves one independently fixed historical referenced
+//! body through the same loss/replay boundary, without claiming blob-write faults.
 //! DR-0219 separately runs the same complete business oracles against direct
 //! production-host termination and its actual 2 -> 3 -> 4 stopped fences.
 
+#[cfg(target_os = "linux")]
+#[path = "support/checkpoint_recovery.rs"]
+mod checkpoint_recovery;
 #[path = "support/compiled_cli_process.rs"]
 mod compiled_cli_process;
 #[path = "support/compiled_source_host_process.rs"]
 mod compiled_source_host_process;
+#[cfg(target_os = "linux")]
+#[path = "support/historical_referenced_body.rs"]
+mod historical_referenced_body;
 #[path = "support/https_relay.rs"]
 mod https_relay;
 #[path = "support/offline_genesis_fixture.rs"]
 mod offline_genesis_fixture;
+#[cfg(target_os = "linux")]
+#[path = "support/sqlite_durable_image.rs"]
+mod sqlite_durable_image;
+#[cfg(target_os = "linux")]
+#[path = "support/storage_upgrade.rs"]
+mod storage_upgrade;
 
 use compiled_cli_process::edge_cli_command;
+#[cfg(target_os = "linux")]
+use compiled_source_host_process::local_observation_collector;
 use compiled_source_host_process::{ChildGuard, spawn_bounded_output, spawn_bounded_status_line};
 use consensus::{
     AvailabilityCertificate, AvailabilityCertifier, FastCertificate,
@@ -37,6 +55,8 @@ use execution::paid_execution::{
 };
 use fees::Amount;
 use fees::reservation::{Admission, Settlement};
+#[cfg(target_os = "linux")]
+use https_relay::LostApplyAcknowledgement;
 use https_relay::{
     FixtureCa, FixtureLeaf, HttpsRelay, PeerClose, authenticated_leaf, fixture_server_name,
 };
@@ -112,15 +132,48 @@ struct Network {
     owner_seed: PathBuf,
     tls_dir: PathBuf,
     artifacts_dir: PathBuf,
+    #[cfg(target_os = "linux")]
+    independent_anchors: Option<IndependentAnchors>,
+    #[cfg(target_os = "linux")]
+    restored_checkpoint: Option<checkpoint_recovery::RestoredCheckpoint>,
 }
 
 impl Network {
     fn state_db(&self, index: usize) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        if let Some(restored) = &self.restored_checkpoint {
+            return restored.state(index);
+        }
         self.fixture.directory.join(format!("state-{index}.sqlite"))
     }
 
     fn blob_db(&self, index: usize) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        if let Some(restored) = &self.restored_checkpoint {
+            return restored.blobs(index);
+        }
         self.fixture.directory.join(format!("blob-{index}.sqlite"))
+    }
+
+    fn host_root_pins(&self, index: usize) -> Vec<OsString> {
+        let pins: Vec<OsString> =
+            self.fixture
+                .root_pins(&self.genesis, self.digest, index, self.domain);
+        #[cfg(target_os = "linux")]
+        let pins: Vec<OsString> = if self.restored_checkpoint.is_some() {
+            let mut pins: Vec<OsString> = pins;
+            for (flag, path) in [
+                ("--state-db", self.state_db(index)),
+                ("--blob-db", self.blob_db(index)),
+            ] {
+                let at: usize = pins.iter().position(|value| value == flag).unwrap();
+                pins[at + 1] = path.into_os_string();
+            }
+            pins
+        } else {
+            pins
+        };
+        pins
     }
 
     fn namespace(&self, index: usize) -> SqliteNamespace {
@@ -160,6 +213,273 @@ impl Network {
             .map(|entry| entry.object.clone())
             .expect("authored fixture object")
     }
+}
+
+/// Task-owned authority directories are siblings of the complete source tree;
+/// a source/blob backup never contains the independent authority or lease.
+#[cfg(target_os = "linux")]
+struct IndependentAnchors {
+    directory: PathBuf,
+    paths: Vec<PathBuf>,
+    enrolled: Vec<AnchorObservation>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AnchorObservation {
+    sequence: u64,
+    state_root: [u8; 32],
+    body_manifest_root: [u8; 32],
+}
+
+#[cfg(target_os = "linux")]
+impl AnchorObservation {
+    fn parse(line: &str, meaning: &str) -> Self {
+        assert_eq!(field(line, "meaning="), meaning);
+        let state_root: [u8; 32] =
+            parse_hex_32(field(line, "state_root="), "local state root").unwrap();
+        let body_manifest_root: [u8; 32] =
+            parse_hex_32(field(line, "body_manifest_root="), "local body root").unwrap();
+        Self {
+            sequence: field(line, "sequence=").parse().unwrap(),
+            state_root,
+            body_manifest_root,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn anchor_namespace_args(network: &Network, index: usize) -> Vec<OsString> {
+    vec![
+        "--chain-id".into(),
+        network.fixture.context.chain_id().as_str().into(),
+        "--validator-id".into(),
+        hex(&network.fixture.validators[index]).into(),
+        "--domain".into(),
+        hex(network.domain.as_bytes()).into(),
+        "--state-db".into(),
+        network.state_db(index).into_os_string(),
+        "--blob-db".into(),
+        network.blob_db(index).into_os_string(),
+    ]
+}
+
+#[cfg(target_os = "linux")]
+impl IndependentAnchors {
+    fn enroll(network: &Network) -> Self {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let source_name: &str = network
+            .fixture
+            .directory
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let directory: PathBuf = network
+            .fixture
+            .directory
+            .with_file_name(format!("{source_name}-independent-anchors"));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        let mut anchors: Self = Self {
+            directory,
+            paths: Vec::with_capacity(VALIDATORS),
+            enrolled: Vec::with_capacity(VALIDATORS),
+        };
+        assert!(!anchors.directory.starts_with(&network.fixture.directory));
+        assert!(!network.fixture.directory.starts_with(&anchors.directory));
+        assert_eq!(
+            fs::metadata(&anchors.directory)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        for index in 0..VALIDATORS {
+            let parent: PathBuf = anchors.directory.join(format!("validator-{index}"));
+            fs::DirBuilder::new().mode(0o700).create(&parent).unwrap();
+            assert_eq!(
+                fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            let path: PathBuf = parent.join("anchor.sqlite");
+            assert_absent(&path, "fresh independent authority");
+            anchors.paths.push(path);
+            let mut inspect: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+            inspect
+                .arg("anchor-inspect")
+                .args(anchor_namespace_args(network, index));
+            let observed: AnchorObservation = AnchorObservation::parse(
+                &success(spawn_bounded_output(inspect, PROCESS_DEADLINE)),
+                "initial-input-observation-not-currentness",
+            );
+            assert_eq!(observed.sequence, 0);
+            let mut enroll: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+            enroll
+                .arg("anchor-enroll")
+                .args(anchor_namespace_args(network, index))
+                .arg("--independent-anchor-db")
+                .arg(&anchors.paths[index])
+                .arg("--expected-initial-state-root")
+                .arg(hex(&observed.state_root))
+                .arg("--expected-initial-body-manifest-root")
+                .arg(hex(&observed.body_manifest_root))
+                .arg("--confirm-writers-and-signers-stopped");
+            let enrolled: AnchorObservation = AnchorObservation::parse(
+                &success(spawn_bounded_output(enroll, PROCESS_DEADLINE)),
+                "stopped-owner-enrollment",
+            );
+            assert_eq!(enrolled.sequence, 1);
+            assert_ne!(
+                enrolled.state_root, observed.state_root,
+                "explicit one-way local profile enrollment"
+            );
+            assert_eq!(enrolled.body_manifest_root, observed.body_manifest_root);
+            assert_eq!(anchors.checkpoint(network, index), enrolled);
+            anchors.enrolled.push(enrolled);
+        }
+        assert_eq!(anchors.paths.len(), VALIDATORS);
+        assert_eq!(anchors.enrolled.len(), VALIDATORS);
+        anchors
+    }
+
+    fn checkpoint(&self, network: &Network, index: usize) -> AnchorObservation {
+        let mut command: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+        command
+            .arg("anchor-checkpoint")
+            .args(anchor_namespace_args(network, index))
+            .arg("--independent-anchor-db")
+            .arg(&self.paths[index]);
+        AnchorObservation::parse(
+            &success(spawn_bounded_output(command, PROCESS_DEADLINE)),
+            "independent-local-acknowledgement-not-quorum-state-root",
+        )
+    }
+
+    fn images(&self) -> Vec<sqlite_durable_image::AnchorImage> {
+        self.paths
+            .iter()
+            .map(|path: &PathBuf| sqlite_durable_image::capture_anchor(path))
+            .collect()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for IndependentAnchors {
+    fn drop(&mut self) {
+        // Exactly the exclusively created sibling tree; source-state cleanup
+        // remains the existing Fixture owner. No broad temporary-directory scan.
+        fs::remove_dir_all(&self.directory).unwrap();
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stopped_anchored_file_bytes(network: &Network) -> Vec<(PathBuf, Vec<u8>)> {
+    let anchors: &IndependentAnchors = network.independent_anchors.as_ref().unwrap();
+    let mut files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let mut total: u64 = 0;
+    for index in 0..VALIDATORS {
+        // SQLite owns WAL/SHM housekeeping. These exact main-file comparisons
+        // apply only before first serving, with all owners already closed.
+        for path in [
+            network.state_db(index),
+            network.blob_db(index),
+            anchors.paths[index].clone(),
+        ] {
+            let metadata: fs::Metadata = fs::symlink_metadata(&path).unwrap();
+            assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+            total = total.checked_add(metadata.len()).unwrap();
+            assert!(
+                total <= 16 * 1024 * 1024,
+                "stopped fixture image admitted before copying"
+            );
+            let bytes: Vec<u8> = fs::read(&path).unwrap();
+            assert_eq!(bytes.len() as u64, metadata.len());
+            files.push((path, bytes));
+        }
+        let mut lease_name: OsString = anchors.paths[index].as_os_str().to_owned();
+        lease_name.push(".lease");
+        let lease: PathBuf = PathBuf::from(lease_name);
+        let metadata: fs::Metadata = fs::symlink_metadata(&lease).unwrap();
+        assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+        assert_eq!(metadata.len(), 0, "lease size admitted before copying");
+        let bytes: Vec<u8> = fs::read(&lease).unwrap();
+        assert!(
+            bytes.is_empty(),
+            "separate lease carries no checkpoint bytes"
+        );
+        files.push((lease, bytes));
+    }
+    files
+}
+
+#[cfg(target_os = "linux")]
+fn assert_missing_independent_anchor_refuses_without_changes(network: &Network) {
+    // Every compiled enrollment child has exited and no serving host exists.
+    // Plain-file reads are restricted to this stopped interval; no independent
+    // File descriptor is opened on an inode carrying live SQLite locks.
+    assert_no_parent_sqlite_handles(network);
+    let before: Vec<(PathBuf, Vec<u8>)> = stopped_anchored_file_bytes(network);
+    let before_rows: Vec<sqlite_durable_image::Image> = sqlite_durable_images(network);
+    let before_anchors: Vec<sqlite_durable_image::AnchorImage> =
+        network.independent_anchors.as_ref().unwrap().images();
+    for index in 0..VALIDATORS {
+        let reserved: TcpListener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let requested: SocketAddr = reserved.local_addr().unwrap();
+        drop(reserved);
+        let mut command: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
+        command
+            .args(network.fixture.root_pins(
+                &network.genesis,
+                network.digest,
+                index,
+                network.domain,
+            ))
+            .arg("--signing-key-file")
+            .arg(&network.signing_keys[index])
+            .args([
+                "--created-checkpoint",
+                "10",
+                "--timeout-seconds",
+                "30",
+                "--max-concurrent",
+                "4",
+                "--confirm-offline-fence-advance",
+                "--listen",
+            ])
+            .arg(requested.to_string());
+        let output: Output = spawn_bounded_output(command, PROCESS_DEADLINE);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "missing anchor is an ordinary refusal"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "missing authority must not advertise serving"
+        );
+        assert_eq!(
+            lossy(&output.stderr),
+            "sqlite-source-host: SQLite structured schema identity is unsupported\n"
+        );
+        let available: TcpListener = TcpListener::bind(requested)
+            .expect("refusal before listener leaves requested endpoint unbound");
+        drop(available);
+    }
+    assert_no_parent_sqlite_handles(network);
+    assert_eq!(
+        stopped_anchored_file_bytes(network),
+        before,
+        "missing anchor preserves exact stopped database and lease bytes"
+    );
+    assert_eq!(sqlite_durable_images(network), before_rows);
+    assert_eq!(
+        network.independent_anchors.as_ref().unwrap().images(),
+        before_anchors
+    );
 }
 
 fn write_private_new(path: &Path, bytes: &[u8]) {
@@ -340,6 +660,10 @@ fn author_inspect_and_prepare() -> Network {
         owner_seed,
         tls_dir,
         artifacts_dir,
+        #[cfg(target_os = "linux")]
+        independent_anchors: None,
+        #[cfg(target_os = "linux")]
+        restored_checkpoint: None,
     }
 }
 
@@ -397,14 +721,18 @@ impl DirectPeer {
     }
 }
 fn direct_peers(network: &Network) -> Vec<DirectPeer> {
+    direct_peers_in(&network.tls_dir)
+}
+
+fn direct_peers_in(directory: &Path) -> Vec<DirectPeer> {
     (0..VALIDATORS)
         .map(|index: usize| {
             let name: String = fixture_server_name();
             let ca: FixtureCa = FixtureCa::new(&format!("{name}-direct-issuer-a"));
             let leaf: FixtureLeaf = ca.issue_leaf(&name);
-            let ca_file: PathBuf = network.tls_dir.join(format!("direct-{index}-ca.der"));
-            let cert_file: PathBuf = network.tls_dir.join(format!("direct-{index}-leaf.der"));
-            let key_file: PathBuf = network.tls_dir.join(format!("direct-{index}-key.der"));
+            let ca_file: PathBuf = directory.join(format!("direct-{index}-ca.der"));
+            let cert_file: PathBuf = directory.join(format!("direct-{index}-leaf.der"));
+            let key_file: PathBuf = directory.join(format!("direct-{index}-key.der"));
             write_private_new(&ca_file, &ca.der);
             write_private_new(&cert_file, &leaf.der);
             write_private_new(&key_file, &leaf.key_pkcs8_der);
@@ -420,6 +748,28 @@ fn direct_peers(network: &Network) -> Vec<DirectPeer> {
         .collect()
 }
 fn start_direct_hosts(network: &Network, peers: &mut [DirectPeer], generation: u64) -> Vec<Host> {
+    #[cfg(target_os = "linux")]
+    {
+        start_direct_hosts_with_local_observations(network, peers, generation, None)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        start_direct_hosts_with_local_observations(network, peers, generation)
+    }
+}
+fn start_direct_hosts_with_local_observations(
+    network: &Network,
+    peers: &mut [DirectPeer],
+    generation: u64,
+    #[cfg(target_os = "linux")] local_observations_socket: Option<&Path>,
+) -> Vec<Host> {
+    #[cfg(target_os = "linux")]
+    if local_observations_socket.is_some() {
+        assert_eq!(
+            generation, 2,
+            "observation opt-in belongs only to the first boot"
+        );
+    }
     assert_eq!(peers.len(), VALIDATORS);
     peers
         .iter_mut()
@@ -428,12 +778,7 @@ fn start_direct_hosts(network: &Network, peers: &mut [DirectPeer], generation: u
             let requested: SocketAddr = peer.address;
             let mut command: Command = Command::new(env!("CARGO_BIN_EXE_sqlite_source_host"));
             command
-                .args(network.fixture.root_pins(
-                    &network.genesis,
-                    network.digest,
-                    index,
-                    network.domain,
-                ))
+                .args(network.host_root_pins(index))
                 .arg("--signing-key-file")
                 .arg(&network.signing_keys[index])
                 .args([
@@ -452,8 +797,22 @@ fn start_direct_hosts(network: &Network, peers: &mut [DirectPeer], generation: u
                 .arg("--tls-key-pkcs8-der-file")
                 .arg(&peer.key_file)
                 .stderr(Stdio::piped());
+            #[cfg(target_os = "linux")]
+            if let Some(anchors) = &network.independent_anchors {
+                command
+                    .arg("--independent-anchor-db")
+                    .arg(&anchors.paths[index]);
+            }
+            #[cfg(target_os = "linux")]
+            if let (0, Some(socket)) = (index, local_observations_socket) {
+                command.arg("--local-observations-socket").arg(socket);
+            }
+            let startup_byte_cap: std::num::NonZeroUsize =
+                compiled_source_host_process::compiled_host_startup_line_limit(
+                    network.fixture.context.chain_id().as_str(),
+                );
             let (guard, line): (ChildGuard, String) =
-                spawn_bounded_status_line(command, PROCESS_DEADLINE);
+                spawn_bounded_status_line(command, PROCESS_DEADLINE, startup_byte_cap);
             assert!(line.contains("complete=true mode=serving"), "{line}");
             assert_eq!(field(&line, "writer_generation="), generation.to_string());
             let address: SocketAddr = field(&line, "listen=").parse().unwrap();
@@ -517,8 +876,12 @@ fn start_hosts(network: &Network, generation: u64) -> Vec<Host> {
                     "4",
                     "--confirm-offline-fence-advance",
                 ]);
+            let startup_byte_cap: std::num::NonZeroUsize =
+                compiled_source_host_process::compiled_host_startup_line_limit(
+                    network.fixture.context.chain_id().as_str(),
+                );
             let (guard, line): (ChildGuard, String) =
-                spawn_bounded_status_line(command, PROCESS_DEADLINE);
+                spawn_bounded_status_line(command, PROCESS_DEADLINE, startup_byte_cap);
             assert!(
                 line.contains("complete=true mode=serving"),
                 "validator {validator}: {line:?}"
@@ -910,6 +1273,14 @@ fn operation(fence: WriterFenceGeneration, tag: u8) -> DurableOperationContext {
 }
 
 fn open_store(network: &Network, index: usize) -> SqliteDurableStore {
+    #[cfg(target_os = "linux")]
+    if network.independent_anchors.is_some() {
+        return SqliteDurableStore::open_historical(
+            network.state_db(index),
+            network.namespace(index),
+        )
+        .unwrap();
+    }
     SqliteDurableStore::open_existing(network.state_db(index), network.namespace(index)).unwrap()
 }
 
@@ -935,6 +1306,56 @@ fn snapshots(network: &Network) -> Vec<SourceBusinessSnapshot> {
     (0..VALIDATORS)
         .map(|index: usize| snapshot(network, index))
         .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn sqlite_durable_images(network: &Network) -> Vec<sqlite_durable_image::Image> {
+    (0..VALIDATORS)
+        .map(|index: usize| {
+            sqlite_durable_image::capture(&network.state_db(index), &network.blob_db(index))
+        })
+        .collect()
+}
+
+/// Observe descriptor symlink targets without opening any locked SQLite inode.
+/// Current-case main/WAL/SHM descriptors must not survive in the parent; other
+/// concurrently running fixture cases have distinct private directories.
+#[cfg(target_os = "linux")]
+fn assert_no_parent_sqlite_handles(network: &Network) {
+    let mut forbidden: BTreeSet<PathBuf> = BTreeSet::new();
+    for index in 0..VALIDATORS {
+        let mut mains: Vec<PathBuf> = vec![network.state_db(index), network.blob_db(index)];
+        if let Some(restored) = &network.restored_checkpoint {
+            mains.extend(restored.former_and_forensic_paths(index));
+        }
+        if let Some(anchors) = &network.independent_anchors {
+            mains.push(anchors.paths[index].clone());
+            let mut lease: OsString = anchors.paths[index].as_os_str().to_owned();
+            lease.push(".lease");
+            forbidden.insert(PathBuf::from(lease));
+        }
+        for main in mains {
+            for suffix in ["", "-wal", "-shm"] {
+                let mut name: OsString = main.as_os_str().to_os_string();
+                name.push(suffix);
+                forbidden.insert(PathBuf::from(&name));
+                name.push(" (deleted)");
+                forbidden.insert(PathBuf::from(name));
+            }
+        }
+    }
+    for entry in fs::read_dir("/proc/self/fd").unwrap() {
+        let entry: fs::DirEntry = entry.unwrap();
+        match fs::read_link(entry.path()) {
+            Ok(target) => assert!(
+                !forbidden.contains(&target),
+                "parent still holds a current-case SQLite descriptor: {}",
+                target.display()
+            ),
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => panic!("parent descriptor inspection failed: {error}"),
+        }
+    }
 }
 
 fn assert_unchanged(
@@ -1443,6 +1864,15 @@ struct Committed {
 }
 
 fn verify_saved_artifacts(network: &Network, saved: &Saved, nonce: u64) -> Committed {
+    verify_saved_request_artifacts(network, saved, nonce, TRANSFER_REQUEST)
+}
+
+fn verify_saved_request_artifacts(
+    network: &Network,
+    saved: &Saved,
+    nonce: u64,
+    request_id: [u8; 32],
+) -> Committed {
     let signed: SignedPaidIntent = decode_signed_paid_intent(&saved.intent).unwrap();
     assert_eq!(encode_signed_paid_intent(&signed).unwrap(), saved.intent);
     if let Err(error) = authenticate_paid_intent(
@@ -1453,7 +1883,7 @@ fn verify_saved_artifacts(network: &Network, saved: &Saved, nonce: u64) -> Commi
         panic!("saved intent fails genuine authentication: {error:?}");
     }
     assert_eq!(signed.intent.context, network.fixture.context);
-    assert_eq!(signed.intent.request_id, TRANSFER_REQUEST);
+    assert_eq!(signed.intent.request_id, request_id);
     assert_eq!(signed.intent.sender, network.fixture.owner);
     assert_eq!(signed.intent.nonce, nonce);
     assert_eq!(signed.intent.consent.source.id, ObjectId::new(FEE_COIN));
@@ -2302,6 +2732,425 @@ fn actual_local_tls_startup_certifies_a_cli_transfer_refuses_bad_pins_and_replay
     }
 }
 
+/// DR-0275: real successful durable applies whose TLS acknowledgements are all
+/// lost. The caller must fail, then replay the exact saved artifacts once.
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_local_tls_lost_apply_acknowledgements_replay_exact_paid_state_once() {
+    exercise_local_tls_lost_apply_acknowledgements(AckLossBodyFixture::Empty);
+}
+
+/// DR-0277: retain a positive historical body closure while the paid transfer's
+/// own effects remain the original inline Standard Asset effects.
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_local_tls_lost_apply_acknowledgements_preserve_historical_referenced_body() {
+    exercise_local_tls_lost_apply_acknowledgements(AckLossBodyFixture::Historical);
+}
+
+/// DR-0279: restart all owners after durable ACK loss while preserving the
+/// historical referenced-body closure and exact receipt-first replay.
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_local_tls_lost_apply_acknowledgements_preserve_historical_body_after_orderly_restart() {
+    exercise_local_tls_lost_apply_acknowledgements(AckLossBodyFixture::HistoricalOrderlyRestart);
+}
+
+#[cfg(target_os = "linux")]
+enum AckLossBodyFixture {
+    Empty,
+    Historical,
+    HistoricalOrderlyRestart,
+}
+
+#[cfg(target_os = "linux")]
+fn exercise_local_tls_lost_apply_acknowledgements(body_fixture: AckLossBodyFixture) {
+    let network: Network = author_inspect_and_prepare();
+    let historical_body: Option<historical_referenced_body::HistoricalReferencedBody> =
+        match body_fixture {
+            AckLossBodyFixture::Empty => None,
+            AckLossBodyFixture::Historical | AckLossBodyFixture::HistoricalOrderlyRestart => {
+                let body: historical_referenced_body::HistoricalReferencedBody =
+                    historical_referenced_body::HistoricalReferencedBody::install(&network);
+                assert_no_parent_sqlite_handles(&network);
+                Some(body)
+            }
+        };
+    let mut hosts: Vec<Host> = start_hosts(&network, 2);
+    let mut tls: Tls = start_tls(&hosts, &network.tls_dir);
+    let config: PathBuf = write_config(
+        &network.tls_dir.join("ack-loss-network.conf"),
+        &tls_lines(&network, &tls),
+    );
+    let original_lines: Vec<String> = tls_lines(&network, &tls);
+    let original_inputs: Vec<(PathBuf, Vec<u8>)> = std::iter::once(network.genesis.clone())
+        .chain(network.signing_keys.iter().cloned())
+        .chain(std::iter::once(network.owner_seed.clone()))
+        .chain(tls.ca_files.iter().cloned())
+        .chain(std::iter::once(config.clone()))
+        .map(|path: PathBuf| {
+            let bytes: Vec<u8> = fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
+    let initial_leaves: Vec<Vec<u8>> = served_leaves(&tls);
+    let initial_contexts: Vec<(Vec<u8>, Vec<u8>)> = contexts(&tls);
+    let request: RequestId = RequestId::new(TRANSFER_REQUEST).unwrap();
+    let sender: Address = Address::new(network.fixture.owner);
+    let genesis_ids: [ObjectId; 2] = [ObjectId::new(APP_COIN), ObjectId::new(FEE_COIN)];
+    let initial: Observation = observe(&tls.relays, &genesis_ids, request, sender);
+    let nonce: u64 = verify_initial(&network, &initial, sender);
+    if let Some(body) = &historical_body {
+        body.verify(&network, &tls.relays);
+    }
+
+    // Explicitly arm one loss on every same CA/DNS/listener/backend. Ordinary
+    // bind/start remain transparent; no host restart or writer advance occurs.
+    tls.relays = std::mem::take(&mut tls.relays)
+        .into_iter()
+        .enumerate()
+        .map(|(index, relay): (usize, HttpsRelay)| {
+            let listener: TcpListener = relay.stop();
+            HttpsRelay::start_losing_apply_ack_once(
+                listener,
+                hosts[index].address,
+                &tls.leaves[index],
+                TRANSFER_REQUEST,
+            )
+        })
+        .collect();
+    assert_eq!(tls_lines(&network, &tls), original_lines);
+    assert_eq!(served_leaves(&tls), initial_leaves);
+    assert_eq!(contexts(&tls), initial_contexts);
+    for relay in &tls.relays {
+        assert!(relay.lost_apply_acknowledgement().is_none());
+    }
+
+    let first: Outputs = Outputs::new(&network.artifacts_dir, "lost-ack-transfer");
+    let posts: Vec<usize> = forwarded_posts(&tls.relays);
+    let output: Output = run_cli(transfer_args(
+        &network,
+        &config,
+        tls.relays[0].addr,
+        &network.owner_seed,
+        TRANSFER_REQUEST,
+        nonce,
+        &first,
+    ));
+    let stdout: String = String::from_utf8(output.stdout).unwrap();
+    let stderr: String = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
+    assert_ordered(
+        &stdout,
+        &[
+            "fastvote_signed_intent_out=",
+            "fastvote_certificate_formed=true",
+            "fastvote_certificate_out=",
+            "fastvote_publication_source=",
+            "fastvote_availability_certificate_out=",
+            "apply validator=",
+        ],
+    );
+    let apply_lines: BTreeSet<&str> = stdout
+        .lines()
+        .filter(|line: &&str| line.starts_with("apply validator="))
+        .collect();
+    assert_eq!(apply_lines.len(), VALIDATORS, "{stdout}");
+    assert_eq!(stdout.matches("apply validator=").count(), VALIDATORS);
+    for validator in &network.fixture.validators {
+        let expected: String = format!(
+            "apply validator={} status=failed reason=transport error: connection closed before response headers were complete",
+            ValidatorId::new(*validator)
+        );
+        assert!(apply_lines.contains(expected.as_str()), "{stdout}");
+    }
+    assert!(!stdout.contains("status=received"), "{stdout}");
+    assert!(
+        stderr.contains("no configured FastVote endpoint acknowledged the apply; the certified certificate was formed and saved and can be replayed with fastvote-replay"),
+        "{stderr}"
+    );
+    // The production CLI reserves result-out before apply; refusal must leave
+    // it empty, rather than invent an absent file or a successful caller result.
+    assert_reserved_empty(&first.result, "lost apply acknowledgements");
+    assert_all_forwarded(&posts, &tls.relays, "lost apply acknowledgements");
+    let lost: Vec<LostApplyAcknowledgement> = tls
+        .relays
+        .iter()
+        .map(|relay: &HttpsRelay| {
+            let observed: LostApplyAcknowledgement = relay
+                .lost_apply_acknowledgement()
+                .expect("each peer must lose one genuine successful apply ACK");
+            assert!(observed.handshake_completed);
+            assert_eq!(observed.upstream_status, 200);
+            assert_eq!(observed.downstream_application_bytes, 0);
+            assert!(relay.counters.handshakes.load(Ordering::SeqCst) > 0);
+            observed
+        })
+        .collect();
+
+    let intent: Vec<u8> = fs::read(&first.intent).unwrap();
+    let certificate: Vec<u8> = fs::read(&first.certificate).unwrap();
+    let availability: Vec<u8> = fs::read(&first.availability).unwrap();
+    assert!(!intent.is_empty() && !certificate.is_empty() && !availability.is_empty());
+    let signed: SignedPaidIntent = decode_signed_paid_intent(&intent).unwrap();
+    let tx_hash: Digest32 = paid_invocation_digest(&network.fixture.resolver, &signed).unwrap();
+    let expected_apply: Vec<u8> = node_wire::FastVotePublishedApplyRequest {
+        signed_paid_intent: intent.clone(),
+        certificate: certificate.clone(),
+        availability_certificate: availability.clone(),
+    }
+    .encode()
+    .unwrap();
+
+    // Reconcile every durable receipt before retry. Neither a relay capture nor
+    // the caller's failure is accepted as proof that paid execution committed.
+    let mut stored_results: Vec<Vec<u8>> = Vec::with_capacity(VALIDATORS);
+    let mut receipt_bytes: Vec<Vec<u8>> = Vec::with_capacity(VALIDATORS);
+    for (index, relay) in tls.relays.iter().enumerate() {
+        let receipt: HttpReceiptQueryResult = relay_client(relay).query_receipt(request).unwrap();
+        receipt_bytes.push(receipt.encode().unwrap());
+        let HttpReceiptQueryResult::Present {
+            request_id,
+            event_digest,
+            dedup_record_bytes,
+        } = receipt
+        else {
+            panic!("peer {index}: target receipt must exist before replay");
+        };
+        assert_eq!(request_id, request);
+        assert_eq!(event_digest, tx_hash);
+        let record: NodeDedupRecord = NodeDedupRecord::decode(&dedup_record_bytes).unwrap();
+        assert_eq!(record.encode().unwrap(), dedup_record_bytes);
+        assert_eq!(record.request_id(), request);
+        assert_eq!(record.event_digest(), tx_hash);
+        let [response] = record.responses() else {
+            panic!("peer {index}: exactly one persisted response required");
+        };
+        assert_eq!(response.request_id(), request);
+        assert_eq!(response.status(), NodeResponseStatus::Accepted);
+        stored_results.push(response.payload().unwrap().to_vec());
+        let expected_body: Vec<u8> =
+            node_wire::HttpNodeResult::new(request, record.responses().to_vec())
+                .unwrap()
+                .encode()
+                .unwrap();
+        let captured: &LostApplyAcknowledgement = &lost[index];
+        let expected_line: String = format!(
+            "POST {} HTTP/1.1\r\n",
+            node_wire::FASTVOTE_PUBLISHED_APPLY_PATH
+        );
+        assert!(captured.request.starts_with(expected_line.as_bytes()));
+        assert_eq!(
+            &captured.request[captured.request_header_length..],
+            expected_apply,
+            "peer {index}: real dispatched request used exact persisted artifacts"
+        );
+        assert_eq!(
+            &captured.response[captured.response_header_length..],
+            expected_body,
+            "peer {index}: withheld success is exactly the persisted receipt"
+        );
+    }
+    for result in &stored_results {
+        assert_eq!(result, &stored_results[0]);
+    }
+    let saved: Saved = Saved {
+        intent,
+        certificate,
+        availability,
+        // In-memory reconciliation only. The failed CLI's result file stays empty.
+        result: stored_results[0].clone(),
+    };
+    let committed: Committed =
+        verify_saved_request_artifacts(&network, &saved, nonce, TRANSFER_REQUEST);
+    let ids: Vec<ObjectId> = observed_ids(&committed.result);
+    let committed_view: Observation = observe(&tls.relays, &ids, request, sender);
+    for receipt in &receipt_bytes {
+        assert_eq!(receipt, &committed_view.receipt);
+    }
+    verify_committed_state(&network, &committed, &saved, &committed_view);
+    if let Some(body) = &historical_body {
+        body.verify(&network, &tls.relays);
+    }
+
+    // Existing complete owners cover all 12 SQL + 2 blob tables and all four
+    // portable collections, referenced bodies and the exact mutation sequence.
+    let mut before_rows: Vec<sqlite_durable_image::Image> = sqlite_durable_images(&network);
+    let mut before_replay: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    match &historical_body {
+        None => {
+            for captured in &before_replay {
+                assert!(
+                    captured.referenced_blobs.is_empty(),
+                    "this inline transfer fixture has an empty referenced-blob closure"
+                );
+            }
+            eprintln!("ack_loss_replay referenced_blob_closure=empty positive_blob_fault=false");
+        }
+        Some(body) => {
+            for captured in &before_replay {
+                body.assert_snapshot(&network, captured);
+            }
+            eprintln!(
+                "ack_loss_replay referenced_blob_closure=historical_nonempty positive_blob_fault=false paid_produced_blob_publication=false"
+            );
+        }
+    }
+    let restart_after_ack_loss: bool =
+        matches!(&body_fixture, AckLossBodyFixture::HistoricalOrderlyRestart);
+    if restart_after_ack_loss {
+        for (index, relay) in tls.relays.iter().enumerate() {
+            assert_eq!(
+                relay.lost_apply_acknowledgement().as_ref(),
+                Some(&lost[index]),
+                "relay {index}: verify the genuine withheld ACK capture before stop"
+            );
+        }
+        let before_restart: Vec<SourceBusinessSnapshot> = snapshots(&network);
+        let listeners: Vec<TcpListener> = std::mem::take(&mut tls.relays)
+            .into_iter()
+            .map(HttpsRelay::stop)
+            .collect();
+        for host in hosts.drain(..) {
+            host.guard.stop_orderly(PROCESS_DEADLINE);
+        }
+        hosts = start_hosts(&network, 3);
+        let reopened: Vec<SourceBusinessSnapshot> = snapshots(&network);
+        assert_reopened(&before_restart, &reopened, 2, 3);
+        sqlite_durable_image::assert_only_fence_changed(
+            &before_rows,
+            &sqlite_durable_images(&network),
+            2,
+            3,
+        );
+        let relay_count: usize = listeners.len();
+        tls.relays = listeners
+            .into_iter()
+            .zip(&hosts)
+            .zip(&tls.leaves)
+            .map(
+                |((listener, host), leaf): ((TcpListener, &Host), &FixtureLeaf)| {
+                    HttpsRelay::start(listener, host.address, leaf)
+                },
+            )
+            .collect();
+        assert_eq!(relay_count, VALIDATORS);
+        for relay in &tls.relays {
+            assert_eq!(relay.counters.posts.load(Ordering::SeqCst), 0);
+            assert_eq!(relay.counters.requests.load(Ordering::SeqCst), 0);
+            assert!(!relay.apply_ack_loss_is_armed());
+        }
+        assert_eq!(tls_lines(&network, &tls), original_lines);
+        assert_eq!(served_leaves(&tls), initial_leaves);
+        assert_eq!(contexts(&tls), initial_contexts);
+        for (path, bytes) in &original_inputs {
+            assert_eq!(
+                fs::read(path).unwrap().as_slice(),
+                bytes.as_slice(),
+                "{}",
+                path.display()
+            );
+        }
+        for (path, bytes) in [
+            (&first.intent, &saved.intent),
+            (&first.certificate, &saved.certificate),
+            (&first.availability, &saved.availability),
+        ] {
+            assert_eq!(fs::read(path).unwrap(), *bytes);
+        }
+        for (index, relay) in tls.relays.iter().enumerate() {
+            let receipt: HttpReceiptQueryResult =
+                relay_client(relay).query_receipt(request).unwrap();
+            assert_eq!(receipt.encode().unwrap(), receipt_bytes[index]);
+            assert_eq!(
+                observe(std::slice::from_ref(relay), &ids, request, sender),
+                committed_view,
+                "reopened peer {index}: durable business state and receipt"
+            );
+        }
+        verify_committed_state(
+            &network,
+            &committed,
+            &saved,
+            &observe(&tls.relays, &ids, request, sender),
+        );
+        if let Some(body) = &historical_body {
+            body.verify(&network, &tls.relays);
+            for captured in &reopened {
+                body.assert_snapshot(&network, captured);
+            }
+        }
+        before_rows = sqlite_durable_images(&network);
+        before_replay = reopened;
+        eprintln!("ack_loss_replay orderly_restart=true writer_generation=2->3");
+    }
+    let posts: Vec<usize> = forwarded_posts(&tls.relays);
+    let replay: Outputs = Outputs::new(&network.artifacts_dir, "lost-ack-replay");
+    let output: Output = run_cli(replay_args(
+        &network,
+        &config,
+        &first.intent,
+        Some(&first),
+        &replay,
+    ));
+    assert_exact_replay(&output, &replay, &saved, "lost-ACK exact replay");
+    let replay_stdout: &str = std::str::from_utf8(&output.stdout).unwrap();
+    for validator in &network.fixture.validators {
+        let expected: String = format!(
+            "apply validator={} status=received paid_status=Success",
+            ValidatorId::new(*validator)
+        );
+        assert!(
+            replay_stdout.lines().any(|line: &str| line == expected),
+            "{replay_stdout}"
+        );
+    }
+    assert_all_forwarded(&posts, &tls.relays, "lost-ACK exact replay");
+    assert_eq!(sqlite_durable_images(&network), before_rows);
+    assert_unchanged(
+        &before_replay,
+        &snapshots(&network),
+        "lost-ACK exact replay",
+    );
+    let replayed: Observation = observe(&tls.relays, &ids, request, sender);
+    assert_eq!(replayed, committed_view);
+    verify_committed_state(&network, &committed, &saved, &replayed);
+    if let Some(body) = &historical_body {
+        body.verify(&network, &tls.relays);
+    }
+    for (index, relay) in tls.relays.iter().enumerate() {
+        if restart_after_ack_loss {
+            assert!(!relay.apply_ack_loss_is_armed());
+        } else {
+            assert_eq!(
+                relay.lost_apply_acknowledgement().as_ref(),
+                Some(&lost[index])
+            );
+        }
+    }
+    for (path, bytes) in [
+        (&first.intent, &saved.intent),
+        (&first.certificate, &saved.certificate),
+        (&first.availability, &saved.availability),
+    ] {
+        assert_eq!(&fs::read(path).unwrap(), bytes);
+    }
+    assert_reserved_empty(
+        &first.result,
+        "failed caller result remains empty after replay",
+    );
+    assert_eq!(tls_lines(&network, &tls), original_lines);
+    for (path, bytes) in original_inputs {
+        assert_eq!(fs::read(&path).unwrap(), bytes, "{}", path.display());
+    }
+    for relay in tls.relays {
+        let _listener: TcpListener = relay.stop();
+    }
+    for host in hosts {
+        host.guard.stop_orderly(PROCESS_DEADLINE);
+    }
+}
+
 fn direct_refused(
     network: &Network,
     peers: &[DirectPeer],
@@ -2444,11 +3293,54 @@ fn assert_native_termination_summary(stderr: &[u8], reason: &str) {
 fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust_rotation() {
     let network: Network = author_inspect_and_prepare();
     let mut peers: Vec<DirectPeer> = direct_peers(&network);
+    #[cfg(target_os = "linux")]
+    let mut collector: local_observation_collector::Collector = {
+        let end: std::time::Instant = std::time::Instant::now()
+            .checked_add(Duration::from_millis(
+                local_observation_collector::TIMEOUT_MILLIS,
+            ))
+            .expect("one original collector setup-through-completion deadline");
+        local_observation_collector::Collector::start(end, &network.fixture.directory)
+    };
+    #[cfg(target_os = "linux")]
+    let mut hosts: Vec<Host> = start_direct_hosts_with_local_observations(
+        &network,
+        &mut peers,
+        2,
+        Some(collector.socket_path()),
+    );
+    #[cfg(not(target_os = "linux"))]
     let hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 2);
     let lines: Vec<String> = direct_lines(&network, &peers);
     let config: PathBuf = write_config(&network.tls_dir.join("direct-network.conf"), &lines);
     let received: Vec<Vec<u8>> = peers.iter().map(DirectPeer::received).collect();
     let contexts: Vec<(Vec<u8>, Vec<u8>)> = direct_contexts(&peers);
+    #[cfg(target_os = "linux")]
+    {
+        hosts[0].guard.request_usr1(collector.deadline());
+        collector.finish();
+        assert!(
+            hosts[0]
+                .guard
+                .try_wait()
+                .expect("host remains owned after collection")
+                .is_none()
+        );
+        let context: Output = peers[0].context(&peers[0].ca_file);
+        assert!(context.status.success(), "{}", lossy(&context.stderr));
+        assert!(context.stderr.is_empty());
+        assert_eq!(
+            context.stdout, contexts[0].1,
+            "USR1 preserves authenticated context"
+        );
+        assert!(
+            hosts[0]
+                .guard
+                .try_wait()
+                .expect("host remains alive after authenticated context")
+                .is_none()
+        );
+    }
     let original_inputs: Vec<(PathBuf, Vec<u8>)> = std::iter::once(network.genesis.clone())
         .chain(network.signing_keys.iter().cloned())
         .chain(std::iter::once(network.owner_seed.clone()))
@@ -2834,8 +3726,1425 @@ fn actual_direct_tls_hosts_preserve_paid_state_replay_and_explicit_stopped_trust
     for (path, bytes) in original_inputs {
         assert_eq!(fs::read(&path).unwrap(), bytes, "{}", path.display());
     }
+
+    // All original stopped-rotation and refusal assertions precede this
+    // unchanged independent fresh-transfer business oracle.
+    assert_fresh_paid_transfer_after_recovery(
+        RecoveryTransfer {
+            network: &network,
+            peers: &peers,
+            config: &new_config,
+            first: &first,
+            saved: &saved,
+            committed: &committed,
+            committed_view: &committed_view,
+            nonce,
+        },
+        [0x0c; 32],
+        "direct-stopped-rotation-fresh",
+        false,
+    );
+
     for host in hosts {
         let stderr: Vec<u8> = host.guard.stop_orderly_interrupt_observed(PROCESS_DEADLINE);
         assert_native_termination_summary(&stderr, "sigint");
+    }
+}
+
+/// The original stopped-rotation business oracle also qualifies a replacement
+/// writer after complete local connection loss. Each caller supplies its own
+/// fresh request/output destinations; signatures and both quorums remain real.
+struct RecoveryTransfer<'a> {
+    network: &'a Network,
+    peers: &'a [DirectPeer],
+    config: &'a Path,
+    first: &'a Outputs,
+    saved: &'a Saved,
+    committed: &'a Committed,
+    committed_view: &'a Observation,
+    nonce: u64,
+}
+
+fn assert_fresh_paid_transfer_after_recovery(
+    inputs: RecoveryTransfer<'_>,
+    fresh_request_bytes: [u8; 32],
+    output_tag: &str,
+    complete_sql_replay: bool,
+) {
+    let RecoveryTransfer {
+        network,
+        peers,
+        config,
+        first,
+        saved,
+        committed,
+        committed_view,
+        nonce,
+    } = inputs;
+    #[cfg(not(target_os = "linux"))]
+    assert!(!complete_sql_replay);
+    let sender: Address = Address::new(network.fixture.owner);
+    let request: RequestId = RequestId::new(TRANSFER_REQUEST).unwrap();
+    let refund = committed.result.charged.as_ref().unwrap();
+    let refund_ref: &objects::ObjectRef = refund.refund_output.as_ref().unwrap();
+    assert!(refund.refund.get() > 0);
+    assert_eq!(
+        created(&committed.result, refund_ref.id).owner,
+        Owner::Address(sender)
+    );
+    let fresh_request: RequestId = RequestId::new(fresh_request_bytes).unwrap();
+    let fresh_nonce: u64 = peers[0]
+        .client()
+        .query_next_nonce(sender)
+        .unwrap()
+        .next_nonce();
+    assert_eq!(fresh_nonce, nonce.checked_add(1).unwrap());
+    let fresh: Outputs = Outputs::new(&network.artifacts_dir, output_tag);
+    let mut fresh_args: Vec<OsString> = transfer_args(
+        network,
+        config,
+        peers[0].address,
+        &network.owner_seed,
+        fresh_request_bytes,
+        fresh_nonce,
+        &fresh,
+    );
+    replace(
+        &mut fresh_args,
+        "--coin",
+        hex(refund_ref.id.as_bytes()).into(),
+    );
+    let fresh_output: Output = run_cli(fresh_args);
+    assert!(
+        fresh_output.status.success(),
+        "fresh post-recovery transfer: stdout={} stderr={}",
+        lossy(&fresh_output.stdout),
+        lossy(&fresh_output.stderr)
+    );
+    assert_eq!(
+        lossy(&fresh_output.stdout)
+            .matches("status=received paid_status=Success")
+            .count(),
+        VALIDATORS
+    );
+    let fresh_saved: Saved = Saved::read(&fresh);
+    let fresh_committed: Committed =
+        verify_saved_request_artifacts(network, &fresh_saved, fresh_nonce, fresh_request_bytes);
+    let fresh_signed: &SignedPaidIntent = &fresh_committed.signed;
+    let fresh_result: &PaidExecutionResult = &fresh_committed.result;
+    let execution::paid_execution::PaidApplication::Call(fresh_call) =
+        &fresh_signed.intent.application
+    else {
+        panic!("ordinary fresh transfer Call");
+    };
+    assert_eq!(fresh_call.entrypoint, "transfer");
+    let [input] = fresh_call.access.entries.as_slice() else {
+        panic!("one exact fresh coin");
+    };
+    assert_eq!(input.object_ref, *refund_ref);
+    assert_eq!(input.mode, objects::AccessMode::Write);
+    let fresh_recipient: [u8; 32] = VerificationKey::from(&SigningKey::from(RECIPIENT_SEED)).into();
+    assert_eq!(
+        fresh_call.arguments,
+        public_standard_asset::transfer_arguments(&fresh_recipient).unwrap()
+    );
+    assert!(fresh_signed.intent.authorizations.is_empty());
+    let fresh_certificate: FastCertificate =
+        decode_fast_certificate(&fresh_saved.certificate).unwrap();
+    let fresh_availability: AvailabilityCertificate =
+        decode_availability_certificate(&fresh_saved.availability).unwrap();
+    let mut fresh_ids: Vec<ObjectId> = observed_ids(fresh_result);
+    fresh_ids.push(refund_ref.id);
+    fresh_ids.sort_unstable();
+    fresh_ids.dedup();
+    let fresh_view: Observation = observe(peers, &fresh_ids, fresh_request, sender);
+    let (fresh_version, _fresh_digest, fresh_canonical): (u64, Digest32, Vec<u8>) =
+        current_inline(fresh_view.objects.get(&refund_ref.id).unwrap());
+    let transferred: Object = objects::decode_object(&fresh_canonical).unwrap();
+    let fresh_effects: Vec<&ObjectEffect> = effects_for(fresh_result, refund_ref.id);
+    let [
+        ObjectEffect::Mutated {
+            previous_version,
+            new_object,
+        },
+    ] = fresh_effects.as_slice()
+    else {
+        panic!("fresh input must have exactly one mutation: {fresh_effects:?}");
+    };
+    let previous_refund: &Object = created(&committed.result, refund_ref.id);
+    assert_eq!(*previous_version, refund_ref.version);
+    assert_eq!(fresh_version, new_object.version);
+    assert_eq!(fresh_canonical, encode_object(new_object).unwrap());
+    assert_eq!(new_object.data, previous_refund.data);
+    assert_eq!(new_object.type_hash, previous_refund.type_hash);
+    assert_eq!(new_object.schema_version, previous_refund.schema_version);
+    assert_ne!(refund_ref.id, fresh_signed.intent.consent.source.id);
+    assert_eq!(
+        transferred.owner,
+        Owner::Address(Address::new(fresh_recipient))
+    );
+    assert_eq!(coin_amount(&transferred.data).unwrap(), refund.refund.get());
+    match HttpReceiptQueryResult::decode(&fresh_view.receipt).unwrap() {
+        HttpReceiptQueryResult::Present {
+            request_id,
+            event_digest,
+            dedup_record_bytes,
+        } => {
+            assert_eq!(request_id, fresh_request);
+            assert_eq!(event_digest, fresh_committed.tx_hash);
+            let record: NodeDedupRecord = NodeDedupRecord::decode(&dedup_record_bytes).unwrap();
+            assert_eq!(record.encode().unwrap(), dedup_record_bytes);
+            assert_eq!(record.request_id(), fresh_request);
+            assert_eq!(record.event_digest(), fresh_committed.tx_hash);
+            let [response] = record.responses() else {
+                panic!("fresh receipt must contain exactly one response");
+            };
+            assert_eq!(response.request_id(), fresh_request);
+            assert_eq!(response.status(), NodeResponseStatus::Accepted);
+            assert_eq!(response.payload(), Some(fresh_saved.result.as_slice()));
+        }
+        other => panic!("fresh receipt missing: {other:?}"),
+    }
+    for peer in peers {
+        assert_eq!(
+            peer.client()
+                .query_receipt(request)
+                .unwrap()
+                .encode()
+                .unwrap(),
+            committed_view.receipt,
+            "first settlement receipt survives fresh business"
+        );
+    }
+    let fresh_snapshot: Vec<SourceBusinessSnapshot> = snapshots(network);
+    #[cfg(target_os = "linux")]
+    let raw_before_replay: Option<Vec<sqlite_durable_image::Image>> =
+        complete_sql_replay.then(|| sqlite_durable_images(network));
+    #[cfg(target_os = "linux")]
+    let anchors_before_replay: Option<Vec<sqlite_durable_image::AnchorImage>> = network
+        .independent_anchors
+        .as_ref()
+        .map(IndependentAnchors::images);
+    for (index, peer) in peers.iter().enumerate() {
+        assert_eq!(
+            peer.client().query_next_nonce(sender).unwrap().next_nonce(),
+            fresh_nonce.checked_add(1).unwrap()
+        );
+        let replayed: PaidExecutionResult = peer
+            .client()
+            .apply_published_fastvote(
+                fresh_signed,
+                &network.fixture.resolver,
+                &fresh_certificate,
+                &fresh_availability,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            &replayed, fresh_result,
+            "direct host {index} fresh receipt replay"
+        );
+    }
+    assert_unchanged(
+        &fresh_snapshot,
+        &snapshots(network),
+        "fresh post-recovery receipt replay",
+    );
+    assert_eq!(
+        observe(peers, &fresh_ids, fresh_request, sender),
+        fresh_view
+    );
+    #[cfg(target_os = "linux")]
+    if let Some(before) = raw_before_replay {
+        assert_eq!(
+            sqlite_durable_images(network),
+            before,
+            "fresh receipt replay changes no SQL/blob row"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(before) = anchors_before_replay {
+        assert_eq!(
+            network.independent_anchors.as_ref().unwrap().images(),
+            before,
+            "fresh receipt replay changes no independent authority row"
+        );
+    }
+    assert_eq!(
+        &Saved::read(first),
+        saved,
+        "original transfer artifacts retained after fresh commit"
+    );
+}
+
+#[test]
+fn complete_process_pipe_capture_preserves_eof_and_refuses_read_or_channel_failure() {
+    use compiled_source_host_process::{
+        CompletePipeError, read_complete_pipe, receive_complete_pipe,
+    };
+    use std::{
+        io::{self, Cursor, Read},
+        sync::mpsc,
+    };
+
+    let expected: Vec<u8> = vec![0x00, 0xff, 0x07, 0x0a, 0x80];
+    let complete: io::Result<Vec<u8>> = read_complete_pipe(Cursor::new(expected.clone()));
+    let (sender, receiver) = mpsc::channel::<io::Result<Vec<u8>>>();
+    sender.send(complete).unwrap();
+    let captured: Vec<u8> = receive_complete_pipe(&receiver, Duration::ZERO).unwrap();
+    assert_eq!(captured, expected);
+
+    let empty: io::Result<Vec<u8>> = read_complete_pipe(Cursor::new(Vec::<u8>::new()));
+    sender.send(empty).unwrap();
+    assert_eq!(
+        receive_complete_pipe(&receiver, Duration::ZERO).unwrap(),
+        Vec::<u8>::new(),
+        "successful empty EOF is not missing completion"
+    );
+
+    struct PrefixThenError {
+        delivered: usize,
+    }
+    impl Read for PrefixThenError {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let prefix: [u8; 4] = [0x04, 0x03, 0x02, 0x01];
+            if buffer.is_empty() {
+                return Ok(0);
+            }
+            if self.delivered < prefix.len() {
+                let count: usize = buffer.len().min(prefix.len() - self.delivered);
+                buffer[..count].copy_from_slice(&prefix[self.delivered..self.delivered + count]);
+                self.delivered += count;
+                return Ok(count);
+            }
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "capture failed after a real prefix",
+            ))
+        }
+    }
+    let mut refusing: PrefixThenError = PrefixThenError { delivered: 0 };
+    let refused: io::Result<Vec<u8>> = read_complete_pipe(&mut refusing);
+    assert_eq!(
+        refusing.delivered, 4,
+        "read really delivered its nonempty prefix"
+    );
+    sender.send(refused).unwrap();
+    match receive_complete_pipe(&receiver, Duration::ZERO) {
+        Err(CompletePipeError::Read(error)) => {
+            assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+            assert_eq!(error.to_string(), "capture failed after a real prefix");
+        }
+        other => panic!("read failure must preserve its original error, got {other:?}"),
+    }
+    drop(sender);
+
+    let (disconnected_sender, disconnected_receiver) = mpsc::channel::<io::Result<Vec<u8>>>();
+    drop(disconnected_sender);
+    assert!(matches!(
+        receive_complete_pipe(&disconnected_receiver, Duration::ZERO),
+        Err(CompletePipeError::Receive(
+            mpsc::RecvTimeoutError::Disconnected
+        ))
+    ));
+
+    let (pending_sender, pending_receiver) = mpsc::channel::<io::Result<Vec<u8>>>();
+    let pending: Result<Vec<u8>, CompletePipeError> =
+        receive_complete_pipe(&pending_receiver, Duration::ZERO);
+    assert!(matches!(
+        pending,
+        Err(CompletePipeError::Receive(mpsc::RecvTimeoutError::Timeout))
+    ));
+    drop(pending_sender);
+}
+
+#[test]
+fn complete_startup_status_line_requires_first_lf_and_preserves_read_failure() {
+    use compiled_source_host_process::read_complete_status_line;
+    use std::io::{self, Cursor, Read};
+    use std::num::NonZeroUsize;
+
+    let first: &str = "complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234\n";
+    let byte_cap: NonZeroUsize = NonZeroUsize::new(first.len()).unwrap();
+    let with_tail: Vec<u8> = format!("{first}later output\n").into_bytes();
+    let captured: String = read_complete_status_line(Cursor::new(with_tail), byte_cap).unwrap();
+    assert_eq!(captured, first, "only the first complete line is returned");
+
+    struct BytesThenError {
+        bytes: &'static [u8],
+        delivered: usize,
+        failed: bool,
+    }
+    impl Read for BytesThenError {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if buffer.is_empty() {
+                return Ok(0);
+            }
+            if self.delivered < self.bytes.len() {
+                let count: usize = buffer.len().min(self.bytes.len() - self.delivered);
+                buffer[..count]
+                    .copy_from_slice(&self.bytes[self.delivered..self.delivered + count]);
+                self.delivered += count;
+                return Ok(count);
+            }
+            self.failed = true;
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "status read failed after a real prefix",
+            ))
+        }
+    }
+
+    let mut completed: BytesThenError = BytesThenError {
+        bytes: b"complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234\n",
+        delivered: 0,
+        failed: false,
+    };
+    assert_eq!(
+        read_complete_status_line(&mut completed, byte_cap).unwrap(),
+        first
+    );
+    assert_eq!(completed.delivered, completed.bytes.len());
+    assert!(
+        !completed.failed,
+        "a complete first line does not require another read or stream EOF"
+    );
+
+    let empty: io::Error =
+        read_complete_status_line(Cursor::new(Vec::<u8>::new()), byte_cap).unwrap_err();
+    assert_eq!(empty.kind(), io::ErrorKind::UnexpectedEof);
+
+    let unterminated: Vec<u8> =
+        b"complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234".to_vec();
+    let incomplete: io::Error =
+        read_complete_status_line(Cursor::new(unterminated), byte_cap).unwrap_err();
+    assert_eq!(incomplete.kind(), io::ErrorKind::UnexpectedEof);
+
+    let mut refused: BytesThenError = BytesThenError {
+        bytes: b"complete=true mode=serving writer_generation=2 listen=127.0.0.1:1234",
+        delivered: 0,
+        failed: false,
+    };
+    let read_error: io::Error = read_complete_status_line(&mut refused, byte_cap).unwrap_err();
+    assert_eq!(refused.delivered, refused.bytes.len());
+    assert!(
+        refused.failed,
+        "nonempty valid UTF-8 prefix preceded the error"
+    );
+    assert_eq!(read_error.kind(), io::ErrorKind::ConnectionReset);
+    assert_eq!(
+        read_error.to_string(),
+        "status read failed after a real prefix"
+    );
+
+    let invalid: Vec<u8> = vec![0xff, b'\n'];
+    let invalid_error: io::Error =
+        read_complete_status_line(Cursor::new(invalid), byte_cap).unwrap_err();
+    assert_eq!(invalid_error.kind(), io::ErrorKind::InvalidData);
+
+    let crlf: Vec<u8> = b"complete=true mode=serving\r\nmore\n".to_vec();
+    assert_eq!(
+        read_complete_status_line(Cursor::new(crlf), byte_cap).unwrap(),
+        "complete=true mode=serving\r\n",
+        "successful CRLF bytes are preserved rather than normalized"
+    );
+}
+
+#[test]
+fn bounded_startup_status_line_accepts_exact_cap_and_refuses_lf_one_byte_later() {
+    use compiled_source_host_process::read_complete_status_line;
+    use std::{
+        io::{self, Cursor},
+        num::NonZeroUsize,
+    };
+
+    let byte_cap: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+    let exact: String = read_complete_status_line(Cursor::new(b"1234567\n"), byte_cap).unwrap();
+    assert_eq!(exact.as_bytes(), b"1234567\n");
+    let over: io::Error =
+        read_complete_status_line(Cursor::new(b"12345678\n"), byte_cap).unwrap_err();
+    assert_eq!(over.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        over.to_string(),
+        "compiled host first status line exceeded byte cap"
+    );
+    let at_cap_eof: io::Error =
+        read_complete_status_line(Cursor::new(b"12345678"), byte_cap).unwrap_err();
+    assert_eq!(at_cap_eof.kind(), io::ErrorKind::UnexpectedEof);
+}
+
+#[test]
+fn bounded_startup_status_line_counts_the_finite_never_lf_probe() {
+    use compiled_source_host_process::read_complete_status_line;
+    use std::{
+        io::{self, Read},
+        num::NonZeroUsize,
+    };
+
+    struct NeverLf {
+        read_bytes: usize,
+    }
+    impl Read for NeverLf {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            buffer.fill(b'x');
+            self.read_bytes = self.read_bytes.checked_add(buffer.len()).unwrap();
+            Ok(buffer.len())
+        }
+    }
+    let byte_cap: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+    let mut input: NeverLf = NeverLf { read_bytes: 0 };
+    let error: io::Error = read_complete_status_line(&mut input, byte_cap).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "compiled host first status line exceeded byte cap"
+    );
+    assert_eq!(
+        input.read_bytes, 9,
+        "this endless reader supplies only the cap-plus-one probe"
+    );
+}
+
+#[test]
+fn bounded_startup_status_line_preserves_read_error_at_cap_before_lookahead() {
+    use compiled_source_host_process::read_complete_status_line;
+    use std::{
+        io::{self, Read},
+        num::NonZeroUsize,
+    };
+
+    struct CapPrefixThenError {
+        remaining: usize,
+        delivered: usize,
+        failed: bool,
+    }
+    impl Read for CapPrefixThenError {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if buffer.is_empty() {
+                return Ok(0);
+            }
+            if self.remaining > 0 {
+                let count: usize = buffer.len().min(self.remaining);
+                buffer[..count].fill(b'x');
+                self.remaining -= count;
+                self.delivered += count;
+                return Ok(count);
+            }
+            self.failed = true;
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "status read failed at the cap before lookahead",
+            ))
+        }
+    }
+    let byte_cap: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+    let mut input: CapPrefixThenError = CapPrefixThenError {
+        remaining: 8,
+        delivered: 0,
+        failed: false,
+    };
+    let error: io::Error = read_complete_status_line(&mut input, byte_cap).unwrap_err();
+    assert_eq!(input.delivered, 8);
+    assert!(
+        input.failed,
+        "the real error is encountered before the probe supplies its extra byte"
+    );
+    assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+    assert_eq!(
+        error.to_string(),
+        "status read failed at the cap before lookahead"
+    );
+}
+
+#[test]
+fn compiled_host_startup_line_limits_cover_literal_maximum_producer_formats() {
+    use compiled_source_host_process::{
+        compiled_host_startup_line_limit, read_complete_status_line,
+    };
+    use std::{
+        io::Cursor,
+        net::{Ipv6Addr, SocketAddr, SocketAddrV6},
+        num::NonZeroUsize,
+    };
+
+    let chain: String = "研究".repeat(512);
+    assert_eq!(chain.len(), 3_072);
+    assert_eq!(chain.chars().count(), 1_024);
+    let hexadecimal: &str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    assert_eq!(hexadecimal.len(), 64);
+    let address: SocketAddr = SocketAddr::V6(SocketAddrV6::new(
+        Ipv6Addr::new(
+            0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff,
+        ),
+        u16::MAX,
+        0,
+        u32::MAX,
+    ));
+    let listen: String = address.to_string();
+    assert_eq!(
+        listen,
+        "[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff%4294967295]:65535"
+    );
+    assert_eq!(listen.len(), 58);
+
+    // Independent literal producer templates and maxima, not constructor output.
+    let source: String = format!(
+        "complete=true mode=serving chain_id={chain} validator_id={hexadecimal} domain={hexadecimal} protocol_version={} epoch={} writer_generation={} listen={listen}\n",
+        u32::MAX,
+        u64::MAX,
+        u64::MAX,
+    );
+    let successor: String = format!(
+        "complete=true mode=successor-serving domain={hexadecimal} epoch={} validator_id={hexadecimal} writer_generation={} listen={listen} genesis_digest={hexadecimal}\n",
+        u64::MAX,
+        u64::MAX,
+    );
+    let history: String = format!(
+        "complete=true mode=successor-history-material-only domain={hexadecimal} epoch={} validator_id={hexadecimal} writer_generation={} listen={listen}\n",
+        u64::MAX,
+        u64::MAX,
+    );
+    let pg: String = format!(
+        "complete=true mode=serving chain_id={chain} validator_id={hexadecimal} domain={hexadecimal} protocol_version={} epoch={} writer_generation={} listen={listen} manifest_digest={hexadecimal}\n",
+        u32::MAX,
+        u64::MAX,
+        u64::MAX,
+    );
+    assert_eq!(source.len(), 347 + 3_072);
+    assert_eq!(successor.len(), 399);
+    assert_eq!(history.len(), 333);
+    assert_eq!(pg.len(), 428 + 3_072);
+    let byte_cap: NonZeroUsize = compiled_host_startup_line_limit(&chain);
+    assert_eq!(byte_cap.get(), 3_500);
+    assert_eq!(compiled_host_startup_line_limit("").get(), 428);
+    let lines: [String; 4] = [source, successor, history, pg];
+    for line in lines {
+        let input: Cursor<&[u8]> = Cursor::new(line.as_bytes());
+        let captured: String = read_complete_status_line(input, byte_cap).unwrap();
+        assert_eq!(captured.as_bytes(), line.as_bytes());
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
+    exercise_direct_tls_owned_sigkill(false, false, false);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_direct_tls_complete_owner_loss_authorizes_fresh_writer_and_paid_business() {
+    exercise_direct_tls_owned_sigkill(true, false, false);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_direct_tls_independent_anchors_preserve_paid_recovery_after_complete_owner_loss() {
+    exercise_direct_tls_owned_sigkill(true, true, false);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_direct_tls_encrypted_checkpoints_restore_paid_state_without_original_source_paths() {
+    exercise_direct_tls_owned_sigkill(true, true, true);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires explicitly pinned prior 9de6 RELEASE sqlite_source_host"]
+fn actual_previous_release_hosts_upgrade_to_independent_anchors_without_losing_paid_state() {
+    storage_upgrade::exercise();
+}
+
+#[cfg(target_os = "linux")]
+fn exercise_direct_tls_owned_sigkill(
+    total_connection_loss: bool,
+    independent_anchor: bool,
+    encrypted_restore: bool,
+) {
+    use std::os::unix::process::ExitStatusExt;
+
+    assert!(!independent_anchor || total_connection_loss);
+    assert!(!encrypted_restore || (independent_anchor && total_connection_loss));
+    let mut network: Network = author_inspect_and_prepare();
+    if independent_anchor {
+        let anchors: IndependentAnchors = IndependentAnchors::enroll(&network);
+        network.independent_anchors = Some(anchors);
+        assert_missing_independent_anchor_refuses_without_changes(&network);
+    }
+    let mut peers: Vec<DirectPeer> = direct_peers(&network);
+    let mut hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 2);
+    assert_eq!(hosts.len(), VALIDATORS);
+    let endpoints: Vec<SocketAddr> = peers.iter().map(|peer: &DirectPeer| peer.address).collect();
+    assert!(
+        endpoints
+            .iter()
+            .all(|address: &SocketAddr| address.port() != 0)
+    );
+    let distinct_endpoints: BTreeSet<SocketAddr> = endpoints.iter().copied().collect();
+    assert_eq!(distinct_endpoints.len(), VALIDATORS);
+    let lines: Vec<String> = direct_lines(&network, &peers);
+    let config: PathBuf = write_config(
+        &network.tls_dir.join("direct-owned-sigkill-network.conf"),
+        &lines,
+    );
+    let received: Vec<Vec<u8>> = peers.iter().map(DirectPeer::received).collect();
+    let contexts: Vec<(Vec<u8>, Vec<u8>)> = direct_contexts(&peers);
+    let original_inputs: Vec<(PathBuf, Vec<u8>)> = std::iter::once(network.genesis.clone())
+        .chain(network.signing_keys.iter().cloned())
+        .chain(std::iter::once(network.owner_seed.clone()))
+        .chain(peers.iter().map(|peer: &DirectPeer| peer.ca_file.clone()))
+        .chain(peers.iter().map(|peer: &DirectPeer| peer.cert_file.clone()))
+        .chain(peers.iter().map(|peer: &DirectPeer| peer.key_file.clone()))
+        .chain(std::iter::once(config.clone()))
+        .map(|path: PathBuf| {
+            let bytes: Vec<u8> = fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
+    assert_eq!(original_inputs.len(), 19);
+    let sender: Address = Address::new(network.fixture.owner);
+    let request: RequestId = RequestId::new(TRANSFER_REQUEST).unwrap();
+    let initial: Observation = observe(
+        &peers,
+        &[ObjectId::new(APP_COIN), ObjectId::new(FEE_COIN)],
+        request,
+        sender,
+    );
+    let nonce: u64 = verify_initial(&network, &initial, sender);
+    let first: Outputs = Outputs::new(&network.artifacts_dir, "direct-owned-sigkill-transfer");
+    let output: Output = run_cli(transfer_args(
+        &network,
+        &config,
+        peers[0].address,
+        &network.owner_seed,
+        TRANSFER_REQUEST,
+        nonce,
+        &first,
+    ));
+    let stdout: String = lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout={stdout} stderr={}",
+        lossy(&output.stderr)
+    );
+    assert_ordered(
+        &stdout,
+        &[
+            "fastvote_signed_intent_out=",
+            "fastvote_certificate_formed=true",
+            "fastvote_certificate_out=",
+            "fastvote_publication_source=",
+            "fastvote_availability_certificate_out=",
+            "apply validator=",
+        ],
+    );
+    assert_eq!(
+        stdout
+            .matches("status=received paid_status=Success")
+            .count(),
+        VALIDATORS
+    );
+    let saved: Saved = Saved::read(&first);
+    let committed: Committed = verify_saved_artifacts(&network, &saved, nonce);
+    let ids: Vec<ObjectId> = observed_ids(&committed.result);
+    let committed_view: Observation = observe(&peers, &ids, request, sender);
+    verify_committed_state(&network, &committed, &saved, &committed_view);
+
+    // The original case retains real parent-side capabilities. The complete
+    // owner-loss case retains values only: every inspection connection is
+    // dropped before the four sole serving owners are killed and reaped.
+    // Neither case represents guest/host power loss or a media/fsync fault.
+    let stale: Vec<StaleCapability> = if total_connection_loss {
+        Vec::new()
+    } else {
+        (0..VALIDATORS)
+            .map(|index: usize| StaleCapability::hold(&network, index))
+            .collect()
+    };
+    assert_eq!(
+        stale.len(),
+        if total_connection_loss { 0 } else { VALIDATORS }
+    );
+    let raw_before: Option<Vec<sqlite_durable_image::Image>> =
+        total_connection_loss.then(|| sqlite_durable_images(&network));
+    // Guarded complete enumeration of the four business collections and their
+    // referenced blobs requires an empty outbox, not nonempty-outbox replay or
+    // equality of physical SQLite pages.
+    let before: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    if total_connection_loss {
+        assert_no_parent_sqlite_handles(&network);
+    }
+    let owned_pids: Vec<u32> = hosts
+        .iter_mut()
+        .enumerate()
+        .map(|(index, host): (usize, &mut Host)| {
+            assert_eq!(host.address, endpoints[index]);
+            assert!(
+                host.guard
+                    .try_wait()
+                    .expect("owned committed host liveness")
+                    .is_none(),
+                "committed host exited before the explicit fault"
+            );
+            let pid: u32 = host.guard.child_mut().id();
+            assert!(
+                pid > 0 && pid <= i32::MAX as u32,
+                "positive owned committed host PID"
+            );
+            pid
+        })
+        .collect();
+    let distinct_pids: BTreeSet<u32> = owned_pids.iter().copied().collect();
+    assert_eq!(distinct_pids.len(), VALIDATORS);
+    // One original absolute end for all four kills/reaps; no per-child reset.
+    // It bounds polling/eligibility, not kill/wait syscalls or failure cleanup.
+    let end: std::time::Instant = std::time::Instant::now()
+        .checked_add(PROCESS_DEADLINE)
+        .expect("one original owned-host SIGKILL deadline");
+    let crash_receipts: Vec<(u32, std::process::ExitStatus)> = hosts
+        .into_iter()
+        .enumerate()
+        .map(|(index, host): (usize, Host)| {
+            let (pid, status): (u32, std::process::ExitStatus) =
+                host.guard.kill_abruptly_and_reap(end);
+            assert_eq!(
+                pid, owned_pids[index],
+                "same owned host was actually reaped"
+            );
+            assert_eq!(
+                status.signal(),
+                Some(9_i32),
+                "actual SIGKILL, not Drop cleanup"
+            );
+            assert_eq!(status.code(), None);
+            assert!(!status.success());
+            (pid, status)
+        })
+        .collect();
+    assert_eq!(crash_receipts.len(), VALIDATORS);
+
+    // Every serving host is confirmed reaped before any reopen. The complete
+    // owner-loss case has no parent store/blob/statement/transaction holders.
+    // No HTTP query is sent to a stopped host.
+    if total_connection_loss {
+        assert_no_parent_sqlite_handles(&network);
+    }
+    if let Some(before) = &raw_before {
+        assert_eq!(
+            &sqlite_durable_images(&network),
+            before,
+            "all twelve structured and both blob tables survive total owner loss"
+        );
+    }
+    let stopped: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    assert_unchanged(&before, &stopped, "owned SIGKILL stopped-host state");
+    assert_eq!(
+        &Saved::read(&first),
+        &saved,
+        "SIGKILL preserves saved artifacts"
+    );
+    for (path, bytes) in &original_inputs {
+        let actual: Vec<u8> = fs::read(path).unwrap();
+        assert_eq!(&actual, bytes, "SIGKILL preserves input {}", path.display());
+    }
+
+    if let Some(anchors) = &network.independent_anchors {
+        for index in 0..VALIDATORS {
+            let current: AnchorObservation = anchors.checkpoint(&network, index);
+            assert!(
+                current.sequence > 1,
+                "paid startup/operation must advance local acknowledgement"
+            );
+            assert_ne!(current.state_root, anchors.enrolled[index].state_root);
+        }
+    }
+    if encrypted_restore {
+        assert_no_parent_sqlite_handles(&network);
+        let restored = checkpoint_recovery::pack_and_restore(&network);
+        network.restored_checkpoint = Some(restored);
+        network
+            .restored_checkpoint
+            .as_ref()
+            .unwrap()
+            .assert_originals_unavailable();
+        assert_eq!(
+            &sqlite_durable_images(&network),
+            raw_before.as_ref().unwrap(),
+            "actual decrypted snapshots preserve every original SQL/blob row before new fence"
+        );
+        assert_unchanged(
+            &stopped,
+            &snapshots(&network),
+            "source-free encrypted current-store restoration",
+        );
+        assert_no_parent_sqlite_handles(&network);
+    }
+    let mut restarted_hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 3);
+    assert_eq!(restarted_hosts.len(), VALIDATORS);
+    for (index, host) in restarted_hosts.iter().enumerate() {
+        assert_eq!(
+            host.address, endpoints[index],
+            "same nonzero endpoint, no fallback"
+        );
+        assert_eq!(peers[index].address, endpoints[index]);
+    }
+    assert_eq!(direct_lines(&network, &peers), lines);
+    let received_again: Vec<Vec<u8>> = peers.iter().map(DirectPeer::received).collect();
+    assert_eq!(
+        received_again, received,
+        "same authenticated serving certificates"
+    );
+    assert_eq!(
+        direct_contexts(&peers),
+        contexts,
+        "same authenticated SDK/CLI context"
+    );
+    for capability in &stale {
+        // The existing owner creates fresh deadlines now. Its held valid
+        // nonempty CAS/Put and read must refuse specifically as WriterFenced.
+        capability.assert_fenced(network.domain, 3);
+    }
+    if total_connection_loss {
+        let replacement_pids: BTreeSet<u32> = restarted_hosts
+            .iter_mut()
+            .map(|host: &mut Host| {
+                assert!(host.guard.try_wait().unwrap().is_none());
+                host.guard.child_mut().id()
+            })
+            .collect();
+        assert_eq!(replacement_pids.len(), VALIDATORS);
+        assert!(replacement_pids.is_disjoint(&distinct_pids));
+    }
+    let reopened: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    assert_reopened(&before, &reopened, 2, 3);
+    if let Some(before) = &raw_before {
+        sqlite_durable_image::assert_only_fence_changed(
+            before,
+            &sqlite_durable_images(&network),
+            2,
+            3,
+        );
+    }
+    assert_original_intact(
+        &network,
+        &peers,
+        &first,
+        &saved,
+        &reopened,
+        &committed_view,
+        "owned SIGKILL restart before replay",
+    );
+    for (path, bytes) in &original_inputs {
+        let actual: Vec<u8> = fs::read(path).unwrap();
+        assert_eq!(&actual, bytes, "restart preserves input {}", path.display());
+    }
+    let anchors_before_replay: Option<Vec<sqlite_durable_image::AnchorImage>> = network
+        .independent_anchors
+        .as_ref()
+        .map(IndependentAnchors::images);
+    let replay: Outputs = Outputs::new(&network.artifacts_dir, "direct-owned-sigkill-replay");
+    let replay_output: Output = run_cli(replay_args(
+        &network,
+        &config,
+        &first.intent,
+        Some(&first),
+        &replay,
+    ));
+    assert_exact_replay(
+        &replay_output,
+        &replay,
+        &saved,
+        "owned SIGKILL saved replay",
+    );
+    if let Some(expected) = &anchors_before_replay {
+        assert_eq!(
+            &network.independent_anchors.as_ref().unwrap().images(),
+            expected,
+            "receipt-first replay changes no independent acknowledgement or manifest row"
+        );
+    }
+    // Exact receipt/object/nonce bytes and full token/mutation-sequence equality
+    // forbid a second business mutation/receipt commit, not read-only SQL COMMIT.
+    assert_original_intact(
+        &network,
+        &peers,
+        &first,
+        &saved,
+        &reopened,
+        &committed_view,
+        "owned SIGKILL restart after replay",
+    );
+    for (path, bytes) in &original_inputs {
+        let actual: Vec<u8> = fs::read(path).unwrap();
+        assert_eq!(&actual, bytes, "replay preserves input {}", path.display());
+    }
+    let final_snapshot: Option<Vec<SourceBusinessSnapshot>> = if total_connection_loss {
+        let raw_replayed: Vec<sqlite_durable_image::Image> = sqlite_durable_images(&network);
+        sqlite_durable_image::assert_only_fence_changed(
+            raw_before.as_ref().unwrap(),
+            &raw_replayed,
+            2,
+            3,
+        );
+        assert_fresh_paid_transfer_after_recovery(
+            RecoveryTransfer {
+                network: &network,
+                peers: &peers,
+                config: &config,
+                first: &first,
+                saved: &saved,
+                committed: &committed,
+                committed_view: &committed_view,
+                nonce,
+            },
+            [0x0d; 32],
+            "direct-complete-owner-loss-fresh",
+            true,
+        );
+        if let Some(expected) = &anchors_before_replay {
+            assert_ne!(
+                &network.independent_anchors.as_ref().unwrap().images(),
+                expected,
+                "fresh paid state must advance the independently retained acknowledgement"
+            );
+        }
+        // The helper proves actual new business and receipt-first replay. The
+        // physical snapshot must change for that new commit; old replay above
+        // was proven byte-identical across the entire closed SQL inventory.
+        assert_ne!(sqlite_durable_images(&network), raw_replayed);
+        Some(snapshots(&network))
+    } else {
+        None
+    };
+    let final_raw: Option<Vec<sqlite_durable_image::Image>> =
+        total_connection_loss.then(|| sqlite_durable_images(&network));
+    let final_anchors: Option<Vec<sqlite_durable_image::AnchorImage>> = network
+        .independent_anchors
+        .as_ref()
+        .map(IndependentAnchors::images);
+    for host in &mut restarted_hosts {
+        assert!(
+            host.guard
+                .try_wait()
+                .expect("restarted host remains owned after replay")
+                .is_none(),
+            "restarted host exited before the separate ordinary tail stop"
+        );
+    }
+    // Only after every crash/restart/replay assertion: ordinary cleanup is not
+    // the abrupt-fault oracle and carries only the existing lifecycle limits.
+    for host in restarted_hosts {
+        host.guard.stop_orderly(PROCESS_DEADLINE);
+    }
+    if let Some(restored) = &network.restored_checkpoint {
+        restored.assert_originals_unavailable();
+    }
+    let after_stop: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    assert_unchanged(
+        final_snapshot.as_deref().unwrap_or(&reopened),
+        &after_stop,
+        "owned SIGKILL ordinary tail stop",
+    );
+    if let Some(before) = &final_raw {
+        assert_eq!(&sqlite_durable_images(&network), before);
+    }
+    if let Some(expected) = &final_anchors {
+        let anchors: &IndependentAnchors = network.independent_anchors.as_ref().unwrap();
+        assert_eq!(
+            &anchors.images(),
+            expected,
+            "ordinary tail stop preserves acknowledged anchor/manifest rows"
+        );
+        for index in 0..VALIDATORS {
+            let current: AnchorObservation = anchors.checkpoint(&network, index);
+            assert!(current.sequence > 1);
+        }
+    }
+    assert_eq!(
+        &Saved::read(&first),
+        &saved,
+        "tail stop preserves saved artifacts"
+    );
+    for (path, bytes) in &original_inputs {
+        let actual: Vec<u8> = fs::read(path).unwrap();
+        assert_eq!(
+            &actual,
+            bytes,
+            "tail stop preserves input {}",
+            path.display()
+        );
+    }
+}
+
+// Adversarial overlapping startup against the same SQLite files: generation 3
+// is deliberately started while all four generation-2 hosts remain alive,
+// despite the startup command's offline-fence confirmation. Stale capabilities
+// and actual old HTTP operations must refuse; the new generation preserves the
+// acknowledged receipt, replays it and performs a fresh funded operation.
+// This tests fence containment, not permission for a live operational takeover,
+// cross-host restore activation or physical power/media durability.
+#[test]
+fn actual_direct_tls_new_host_claims_next_fence_while_owned_old_hosts_stay_alive_and_fenced() {
+    let network: Network = author_inspect_and_prepare();
+    let mut old_peers: Vec<DirectPeer> = direct_peers(&network);
+    let mut old_hosts: Vec<Host> = start_direct_hosts(&network, &mut old_peers, 2);
+    assert_eq!(old_hosts.len(), VALIDATORS);
+    let old_lines: Vec<String> = direct_lines(&network, &old_peers);
+    let old_config: PathBuf = write_config(
+        &network.tls_dir.join("live-failover-old-network.conf"),
+        &old_lines,
+    );
+
+    let sender: Address = Address::new(network.fixture.owner);
+    let request: RequestId = RequestId::new(TRANSFER_REQUEST).unwrap();
+    let initial: Observation = observe(
+        &old_peers,
+        &[ObjectId::new(APP_COIN), ObjectId::new(FEE_COIN)],
+        request,
+        sender,
+    );
+    let nonce: u64 = verify_initial(&network, &initial, sender);
+
+    let first: Outputs = Outputs::new(&network.artifacts_dir, "live-failover-transfer");
+    let output: Output = run_cli(transfer_args(
+        &network,
+        &old_config,
+        old_peers[0].address,
+        &network.owner_seed,
+        TRANSFER_REQUEST,
+        nonce,
+        &first,
+    ));
+    let stdout: String = lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout={stdout} stderr={}",
+        lossy(&output.stderr)
+    );
+    assert_ordered(
+        &stdout,
+        &[
+            "fastvote_signed_intent_out=",
+            "fastvote_certificate_formed=true",
+            "fastvote_certificate_out=",
+            "fastvote_publication_source=",
+            "fastvote_availability_certificate_out=",
+            "apply validator=",
+        ],
+    );
+    assert_eq!(
+        stdout
+            .matches("status=received paid_status=Success")
+            .count(),
+        VALIDATORS
+    );
+    let saved: Saved = Saved::read(&first);
+    let committed: Committed = verify_saved_artifacts(&network, &saved, nonce);
+    let ids: Vec<ObjectId> = observed_ids(&committed.result);
+    let committed_view: Observation = observe(&old_peers, &ids, request, sender);
+    verify_committed_state(&network, &committed, &saved, &committed_view);
+
+    // A real store handle/CAS/read captured at the pre-takeover fence, held
+    // open exactly like the owned-SIGKILL and stopped-rotation controls.
+    let stale: Vec<StaleCapability> = (0..VALIDATORS)
+        .map(|index: usize| StaleCapability::hold(&network, index))
+        .collect();
+
+    // Every original owned host process is confirmed alive before takeover.
+    let old_pids: Vec<u32> = old_hosts
+        .iter_mut()
+        .enumerate()
+        .map(|(index, host): (usize, &mut Host)| {
+            assert_eq!(host.address, old_peers[index].address);
+            assert!(
+                host.guard
+                    .try_wait()
+                    .expect("poll owned old host before live takeover")
+                    .is_none(),
+                "old host {index} exited before the live takeover"
+            );
+            let pid: u32 = host.guard.child_mut().id();
+            assert!(pid > 0 && pid <= i32::MAX as u32, "positive old host PID");
+            pid
+        })
+        .collect();
+    assert_eq!(
+        old_pids.iter().copied().collect::<BTreeSet<u32>>().len(),
+        VALIDATORS
+    );
+    let before_takeover: Vec<SourceBusinessSnapshot> = snapshots(&network);
+
+    // Live takeover: a second, independently TLS-fixtured host generation
+    // opens the exact same four state/blob files and claims the next fence
+    // while every old host above remains unreaped and unstopped.
+    let new_tls_directory: PathBuf = network.tls_dir.join("live-takeover-tls");
+    fs::create_dir(&new_tls_directory).unwrap();
+    let mut new_peers: Vec<DirectPeer> = direct_peers_in(&new_tls_directory);
+    let new_hosts: Vec<Host> = start_direct_hosts(&network, &mut new_peers, 3);
+    assert_eq!(new_hosts.len(), VALIDATORS);
+
+    // The takeover observation: every old PID is still exactly the same
+    // live, unreaped process immediately after the new fence claim.
+    for (index, host) in old_hosts.iter_mut().enumerate() {
+        assert!(
+            host.guard
+                .try_wait()
+                .expect("poll owned old host at live takeover observation")
+                .is_none(),
+            "old host {index} must still be alive at the takeover observation"
+        );
+        assert_eq!(host.guard.child_mut().id(), old_pids[index]);
+    }
+
+    let after_takeover: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    assert_reopened(&before_takeover, &after_takeover, 2, 3);
+    for capability in &stale {
+        capability.assert_fenced(network.domain, 3);
+    }
+
+    let original_certificate: FastCertificate =
+        decode_fast_certificate(&saved.certificate).unwrap();
+    let original_availability: AvailabilityCertificate =
+        decode_availability_certificate(&saved.availability).unwrap();
+    // Old live HTTP routes return unavailability, never stale success. These
+    // redacted bodies cover several causes; the specific WriterFenced cause
+    // is proven by the held read/CAS capability above, not by HTTP bodies.
+    for (index, peer) in old_peers.iter().enumerate() {
+        let client: Client<RemoteTlsHttpTransport> = peer.client();
+        match client.apply_published_fastvote(
+            &committed.signed,
+            &network.fixture.resolver,
+            &original_certificate,
+            &original_availability,
+            None,
+        ) {
+            Err(ClientError::UnexpectedStatus { status, body }) => {
+                assert_eq!(status, 503, "old peer {index} certified apply");
+                assert_eq!(
+                    body, "durable-storage-unavailable",
+                    "old peer {index} certified apply"
+                );
+            }
+            other => panic!("old peer {index} certified apply must refuse fenced: {other:?}"),
+        }
+        match client.query_object(ObjectId::new(APP_COIN)) {
+            Err(ClientError::UnexpectedStatus { status, body }) => {
+                assert_eq!(status, 503, "old peer {index} object query");
+                assert_eq!(body, "query-unavailable", "old peer {index} object query");
+            }
+            other => panic!("old peer {index} object query must refuse fenced: {other:?}"),
+        }
+        match client.query_receipt(request) {
+            Err(ClientError::UnexpectedStatus { status, body }) => {
+                assert_eq!(status, 503, "old peer {index} receipt query");
+                assert_eq!(body, "query-unavailable", "old peer {index} receipt query");
+            }
+            other => panic!("old peer {index} receipt query must refuse fenced: {other:?}"),
+        }
+        match client.query_next_nonce(sender) {
+            Err(ClientError::UnexpectedStatus { status, body }) => {
+                assert_eq!(status, 503, "old peer {index} next-nonce query");
+                assert_eq!(
+                    body, "query-unavailable",
+                    "old peer {index} next-nonce query"
+                );
+            }
+            other => panic!("old peer {index} next-nonce query must refuse fenced: {other:?}"),
+        }
+        assert!(
+            old_hosts[index]
+                .guard
+                .try_wait()
+                .expect("poll owned old host after fenced queries")
+                .is_none(),
+            "old host {index} must remain alive after serving fenced refusals"
+        );
+    }
+
+    // The new live host generation serves exactly the preserved business
+    // view the old generation committed, with no divergence across peers.
+    assert_eq!(observe(&new_peers, &ids, request, sender), committed_view);
+
+    // The new generation replays the one saved certified result exactly
+    // once; this is the workspace's established no-second-mutation oracle.
+    let new_lines: Vec<String> = direct_lines(&network, &new_peers);
+    let new_config: PathBuf = write_config(
+        &network.tls_dir.join("live-failover-new-network.conf"),
+        &new_lines,
+    );
+    let replay: Outputs = Outputs::new(&network.artifacts_dir, "live-failover-replay");
+    let replay_output: Output = run_cli(replay_args(
+        &network,
+        &new_config,
+        &first.intent,
+        Some(&first),
+        &replay,
+    ));
+    assert_exact_replay(
+        &replay_output,
+        &replay,
+        &saved,
+        "live-takeover new-host replay",
+    );
+    assert_original_intact(
+        &network,
+        &new_peers,
+        &first,
+        &saved,
+        &after_takeover,
+        &committed_view,
+        "live-takeover new-host replay",
+    );
+
+    // The first settlement created a sender-owned refund coin. It funds a
+    // fresh transfer input without changing genesis allocations; the original
+    // Write fee source remains a separate sender-owned object.
+    let refund = committed.result.charged.as_ref().unwrap();
+    let refund_ref: &objects::ObjectRef = refund.refund_output.as_ref().unwrap();
+    assert!(refund.refund.get() > 0);
+    assert_eq!(
+        created(&committed.result, refund_ref.id).owner,
+        Owner::Address(sender)
+    );
+    let fresh_request_bytes: [u8; 32] = [0x67; 32];
+    let fresh_request: RequestId = RequestId::new(fresh_request_bytes).unwrap();
+    let fresh_nonce: u64 = new_peers[0]
+        .client()
+        .query_next_nonce(sender)
+        .unwrap()
+        .next_nonce();
+    assert_eq!(fresh_nonce, nonce.checked_add(1).unwrap());
+    let fresh: Outputs = Outputs::new(&network.artifacts_dir, "live-failover-fresh");
+    let mut fresh_args: Vec<OsString> = transfer_args(
+        &network,
+        &new_config,
+        new_peers[0].address,
+        &network.owner_seed,
+        fresh_request_bytes,
+        fresh_nonce,
+        &fresh,
+    );
+    replace(
+        &mut fresh_args,
+        "--coin",
+        hex(refund_ref.id.as_bytes()).into(),
+    );
+    let fresh_output: Output = run_cli(fresh_args);
+    assert!(
+        fresh_output.status.success(),
+        "fresh post-takeover transfer: stdout={} stderr={}",
+        lossy(&fresh_output.stdout),
+        lossy(&fresh_output.stderr)
+    );
+    assert_eq!(
+        lossy(&fresh_output.stdout)
+            .matches("status=received paid_status=Success")
+            .count(),
+        VALIDATORS
+    );
+    let fresh_saved: Saved = Saved::read(&fresh);
+    let fresh_committed: Committed =
+        verify_saved_request_artifacts(&network, &fresh_saved, fresh_nonce, fresh_request_bytes);
+    let fresh_signed: &SignedPaidIntent = &fresh_committed.signed;
+    let fresh_result: &PaidExecutionResult = &fresh_committed.result;
+    let execution::paid_execution::PaidApplication::Call(fresh_call) =
+        &fresh_signed.intent.application
+    else {
+        panic!("ordinary fresh transfer Call");
+    };
+    assert_eq!(fresh_call.entrypoint, "transfer");
+    let [input] = fresh_call.access.entries.as_slice() else {
+        panic!("one exact fresh coin");
+    };
+    assert_eq!(input.object_ref, *refund_ref);
+    assert_eq!(input.mode, objects::AccessMode::Write);
+    let fresh_recipient: [u8; 32] = VerificationKey::from(&SigningKey::from(RECIPIENT_SEED)).into();
+    assert_eq!(
+        fresh_call.arguments,
+        public_standard_asset::transfer_arguments(&fresh_recipient).unwrap()
+    );
+    assert!(fresh_signed.intent.authorizations.is_empty());
+    let fresh_certificate: FastCertificate =
+        decode_fast_certificate(&fresh_saved.certificate).unwrap();
+    let fresh_availability: AvailabilityCertificate =
+        decode_availability_certificate(&fresh_saved.availability).unwrap();
+    let mut fresh_ids: Vec<ObjectId> = observed_ids(fresh_result);
+    fresh_ids.push(refund_ref.id);
+    fresh_ids.sort_unstable();
+    fresh_ids.dedup();
+    let fresh_view: Observation = observe(&new_peers, &fresh_ids, fresh_request, sender);
+    let (_, _, transferred) = current_inline(fresh_view.objects.get(&refund_ref.id).unwrap());
+    let transferred: Object = objects::decode_object(&transferred).unwrap();
+    assert_eq!(
+        transferred.owner,
+        Owner::Address(Address::new(
+            VerificationKey::from(&SigningKey::from(RECIPIENT_SEED)).into()
+        ))
+    );
+    assert_eq!(coin_amount(&transferred.data).unwrap(), refund.refund.get());
+    let fresh_snapshot: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    for (index, peer) in new_peers.iter().enumerate() {
+        assert_eq!(
+            peer.client().query_next_nonce(sender).unwrap().next_nonce(),
+            fresh_nonce.checked_add(1).unwrap()
+        );
+        let replayed: PaidExecutionResult = peer
+            .client()
+            .apply_published_fastvote(
+                fresh_signed,
+                &network.fixture.resolver,
+                &fresh_certificate,
+                &fresh_availability,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            &replayed, fresh_result,
+            "new peer {index} fresh receipt replay"
+        );
+    }
+    assert_unchanged(
+        &fresh_snapshot,
+        &snapshots(&network),
+        "fresh post-takeover receipt replay",
+    );
+    assert_eq!(
+        observe(&new_peers, &fresh_ids, fresh_request, sender),
+        fresh_view
+    );
+    assert_eq!(
+        Saved::read(&first),
+        saved,
+        "original transfer artifacts retained after fresh commit"
+    );
+
+    // The old generation is unaffected by the new generation's replay: still
+    // alive, still fenced, never a second view of the committed business.
+    for (index, host) in old_hosts.iter_mut().enumerate() {
+        assert!(
+            host.guard
+                .try_wait()
+                .expect("poll owned old host after new-host replay")
+                .is_none(),
+            "old host {index} must remain alive through the new host's replay"
+        );
+    }
+    match old_peers[0].client().query_object(ObjectId::new(APP_COIN)) {
+        Err(ClientError::UnexpectedStatus { status, body }) => {
+            assert_eq!(status, 503);
+            assert_eq!(body, "query-unavailable");
+        }
+        other => panic!("old peer 0 must still refuse fenced after replay: {other:?}"),
+    }
+
+    // Only now: orderly stop/reap every still-owned process with the
+    // existing helper. No foreign-process kill; new generation first, then
+    // the still-alive old generation this test has held open throughout.
+    for host in new_hosts {
+        host.guard.stop_orderly(PROCESS_DEADLINE);
+    }
+    for host in old_hosts {
+        host.guard.stop_orderly(PROCESS_DEADLINE);
     }
 }

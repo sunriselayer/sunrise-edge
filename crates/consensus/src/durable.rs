@@ -64,8 +64,14 @@ const MAX_STATE_COMMITTED: usize = 4_096;
 /// [`decode_vote`]/[`decode_proposal`]/[`decode_quorum_certificate`] are
 /// called standalone (outside a `ConsensusState`).
 const MAX_ENCODED_VOTE_BYTES: usize = 8 * 1024;
-const MAX_ENCODED_CERTIFICATE_BYTES: usize = 8 * 1024 * 1024;
-const MAX_ENCODED_PROPOSAL_BYTES: usize = 10 * 1024 * 1024;
+/// Strict outer-byte admission cap for [`decode_quorum_certificate`], checked
+/// before canonical parsing. This is not a universal encoder limit or proof of
+/// signature, committee, context, or quorum authority.
+pub const MAX_ENCODED_CERTIFICATE_BYTES: usize = 8 * 1024 * 1024;
+/// Strict outer-byte admission cap for [`decode_proposal`], checked before
+/// canonical parsing. This is not a universal encoder limit or proof of
+/// signature, leader eligibility, context, or justify-certificate authority.
+pub const MAX_ENCODED_PROPOSAL_BYTES: usize = 10 * 1024 * 1024;
 const MAX_ENCODED_CONSENSUS_STATE_BYTES: usize = 16 * 1024 * 1024;
 /// Bound on the `votes` slice a caller may pass to
 /// [`ChainedHotStuff::certificate_from_votes`], checked before any

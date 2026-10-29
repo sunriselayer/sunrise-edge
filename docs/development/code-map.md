@@ -30,6 +30,55 @@ with the owning caller/certifier. Independent
 existing FastVote/availability certifier tests pin this boundary; the Rust SDK
 exports the defining consensus type, not a core adapter.
 
+The operator's [common input/output owner](../../apps/operator/src/common.rs)
+shares FastVote scalar parsing, decimal-wire-ID suite/schedule parsing and
+lowercase hex rendering. The genesis author and inspector also share their
+crate-private canonical unsigned-decimal flag helpers, which retain stricter
+spelling rules than FastVote decimal input. The inventory binary reuses the
+same existing 32-byte hex decoder. The literal-ID suite grammar remains
+separate; binaries retain flag collection, error order and dispatch. Literal
+[compatibility controls](../../apps/operator/src/common/tests.rs) cover these
+grammars and display bytes without sharing production expected-value builders.
+
+The PostgreSQL inventory command also uses the existing common TLS connection
+and pool owner. Its four-connection limit, connection policy and caller-owned
+namespace/blob/fence ordering remain local to inventory; the existing common
+owner defines DSN/certificate diagnostics, TCP-host refusal and pool timeouts.
+
+The Rust client's [ordinary deadline guard](../../clients/rust/src/client.rs)
+is shared by frozen-frontier and ordered-history transport calls. Each caller
+retains its original pre-send and post-send positions, absolute deadline and
+error. Receipt-poll exhaustion and transport remaining-time calculation remain
+with their existing owners.
+
+SDK fee-claim and publication review owners share only the private
+[display-text grammar](../../clients/rust/src/review_presentation.rs).
+Length-before-printable-ASCII checks happen before copying; each caller keeps
+its public error type and field names. Review rendering, field/byte budgets,
+hex preallocation checks and business decisions retain their distinct owners.
+Their integration tests share only a
+[recording FIFO transport](../../clients/rust/tests/support/recording_transport.rs);
+response construction, contexts and independent expected payloads stay local.
+
+The CLI's private [input reader](../../apps/cli/src/commands/input_file.rs)
+shares only one open and bounded byte collection. Local, paid, publication and
+network-artifact wrappers retain their own size refusal and public error
+classification. Output reservation, persistence and decoding stay local.
+
+SDK sender, object, receipt, publication and instance queries share the
+crate-private 32-byte lowercase selector formatter in
+[client](../../clients/rust/src/client.rs). Endpoint templates, context checks,
+selector verification and not-found handling remain with each query owner;
+consumer controls compare independent complete literal paths.
+
+Operator integration targets share a neutral
+[test hex formatter](../../apps/operator/tests/support/hex.rs) for fixture
+arguments. Their selected bytes and expected values remain independent of
+production rendering. Startup-refusal controls reuse the existing
+[child guard](../../apps/operator/tests/support/compiled_source_host_process.rs)
+for unwind cleanup only; their original spawn, pipes, poll interval, absolute
+deadline and final output wait remain in the startup test.
+
 ## Follow a request
 
 ```text
@@ -48,10 +97,13 @@ couplings before treating either as a minimal standalone protocol SDK.
 HTTP, clients and provider adapters cannot replace core authorization.
 
 The pure [`node-core::envelope`](../../crates/node-core/src/envelope.rs)
-owner defines request/event/response/dedup data, canonical nested lists and
-their bounds. The core facade reexports existing type paths and retains event
-digest/context authority. `node-wire` consumes that list codec and owns only
-HTTP result framing, outer-request binding and the single-acknowledgement view.
+owner defines request/event/response/dedup data, canonical nested lists, their
+bounds and pure canonical receipt-record request/event binding. The core
+facade reexports existing type paths and retains event digest/context authority.
+Core and wire queries consume the same record binding decision while keeping
+their outer-ID check and caller-local error projection. `node-wire` owns
+HTTP result framing, outer-request binding and the single-acknowledgement view;
+the SDK separately checks the caller's requested receipt selector.
 Its narrow errors do not remove the remaining real core verifier Cargo edges.
 
 The pure [publication-query owner](../../crates/execution/src/publication/query_result.rs)
@@ -64,6 +116,14 @@ selector, semantics and authentication checks stay separate. Independent
 [execution frame controls](../../crates/execution/tests/publication_query_result.rs)
 and unchanged [literal core vectors](../../crates/node-core/src/publication/tests.rs)
 pin this boundary. Other SDK/core dependencies remain.
+
+The raw [submission-signature codec](../../crates/execution/src/lib.rs) owns
+the unchanged E009/version1 field layout and both signature-message families.
+[SDK preparation](../../clients/rust/src/transaction.rs) consumes it directly;
+the [typed core wrapper](../../crates/node-core/src/transaction_auth.rs) and
+public reexports preserve existing APIs. Raw zero/empty operands are syntax,
+not authenticated requests. Core admission and the SDK's RequestId/error
+coupling remain separate; seven new source controls are not executed evidence.
 
 ## Find the owner
 
@@ -97,7 +157,12 @@ pin this boundary. Other SDK/core dependencies remain.
 | Storage implementations | No request supplies its own authoritative domain or writer generation | [`runtime` traits](../../crates/runtime/src/lib.rs) define atomic state, receipts, objects, outbox and fencing | [PostgreSQL](../../crates/runtime-postgres/src/lib.rs), [SQLite](../../crates/runtime-sqlite/src/lib.rs), [SQL-durable](../../crates/runtime-sql-durable/src/lib.rs); [PostgreSQL tests](../../crates/runtime-postgres/tests), [SQLite tests](../../crates/runtime-sqlite/tests) |
 | Native SQLite connection and physical attachment | Structured/import and writable blob constructors; read-only blob inspection retains its narrower contract | Private [connection/settings owner](../../crates/runtime-sqlite/src/native_connection.rs), [metadata/directory owner](../../crates/runtime-sqlite/src/native_files.rs) and [native transaction backend](../../crates/runtime-sqlite/src/rusqlite_backend.rs); logical decisions stay in the shared SQL engine | [Real process-kill, external-lock and attachment controls](../../crates/runtime-sqlite/src/structured/ownership_tests.rs), existing import/Seal/restart and blob tests; local process evidence is not power-loss, off-host recovery or live writer authority |
 | Runtime operation context and component composition | Existing public paths remain reexported from [`runtime`](../../crates/runtime/src/lib.rs); no request supplies authority | Private [operation](../../crates/runtime/src/operation.rs) owns writer fence, deadline, correlation and pre-dispatch cancellation; private [composition](../../crates/runtime/src/composition.rs) wires supplied state/blob/signing/transport/time/scheduler components | Existing bounds/cancellation tests and [root-API component wiring tests](../../crates/runtime/src/tests.rs). Memory stores stay ordinarily compiled for private reconstruction; wiring does not certify provider durability |
-| Observed transaction assembly and read-only verification | [`runtime` transaction builder](../../crates/runtime/src/transaction.rs) and [state/structured read ports](../../crates/runtime/src/state_read.rs), reexported from the runtime facade | Domain-bound observation consistency, explicit strict/exact mutation composition and shared bounds; [paid completion](../../crates/node-core/src/paid_execution.rs) and [fee claims](../../crates/node-core/src/fee_claims.rs) own their strict assembly. Read-only [prepared material](../../crates/node-core/src/fast_path/prepared_material.rs) and [bond-chain verification](../../crates/node-core/src/bond_lifecycle/registration/handler.rs) do not own persistence | [Assembly tests](../../crates/runtime/src/transaction/tests.rs), [genuine paid refusal/replay regression](../../crates/node-core/src/paid_execution/observed_completion_tests.rs), reader negative-capability doc tests, real adapter checks and existing captured reconstruction tests. A builder/reader is not an authenticated snapshot, protocol warrant or confirmed write |
+| Saved successor fee-claim inspection and development signing | [`economics fee-claim-prepare`](../../apps/cli/src/commands/ordered_economics_network.rs) seed-free export and [offline review/sign](../../apps/cli/src/commands/fee_claim_review.rs) | [`PreparedFeeClaim`](../../clients/rust/src/fee_claim_client.rs) owns exact selectors and historical committee identity; [`FeeClaimReview`](../../clients/rust/src/fee_claim_review.rs) renders bounded retained content under the verified workflow, without semantic approval or row/key protection | [Genuine successor-host controls](../../apps/operator/tests/support/successor_host_acceptance.rs) compare saved/legacy candidate bytes and refuse key/recipient/epoch/overwrite substitutions. [Contract](../architecture/fee-claim-review.md) records the non-authorizing boundary; live qualification stays in TODO |
+| Genesis whole-coin transfer custody | Existing [transfer CLI](../../apps/cli/src/commands/standard_asset.rs), [offline preparation/approval/signing](../../apps/cli/src/custody/asset_commands.rs) and bounded local request codec | [Known-code/genesis/object review owner](../../apps/cli/src/custody/asset_transfer.rs) and separate transfer-only policy in the [UID-checked signer](../../apps/cli/src/custody/server.rs); ordinary paid intent and execution stay generic | [Real query/WASM/refusal controls](../../apps/cli/src/custody/asset_transfer_tests.rs) and [contained distinct-UID fixture](../../scripts/check-docker-custody-fixture-1013.mjs); [contract](../architecture/standard-asset-transfer-custody.md). Other signing families and real key ceremonies are separate |
+| Native queued stop and overlapping generations | [Shared admitted dispatcher](../../crates/native-http/src/publication.rs) and [SQLite host composition](../../apps/operator/src/sqlite_source_host.rs) | [Blocking lifecycle](../../crates/native-http/src/lifecycle.rs) owns admission/drain; persisted writer fencing remains in the SQLite runtime | [Queued stop controls](../../crates/native-http/src/tests/native_operations.rs) and [actual overlapping TLS hosts](../../apps/operator/tests/local_tls_startup.rs). Generic HTTP 503 is not a fence-specific oracle; same-file overlap is not physical fault or restore activation |
+| Stop before optional recovery and ordered storage | [`recover_indexed_outbox_once` / `recover_outboxes_once`](../../crates/native-http/src/lib.rs) and [ordered context](../../crates/native-http/src/ordered_economics.rs) | Existing lifecycle signal, permit/drain and typed errors; no abort after durable work starts | [Actual recovery API controls](../../crates/native-http/src/tests/recovery_stop.rs), [ordered router controls](../../crates/native-http/src/tests/ordered_history_http.rs) and [real SQLite manual composition](../../apps/operator/tests/sqlite_source_host_stop_cancellation_oracle.rs). The latter does not invoke the production host factory or signal owner; [DR-0247](../architecture/decisions/0247-native-stop-before-storage-continuation.md) |
+| Refusal-only import history floor | [Import CLI](../../apps/operator/src/business_import.rs) parses independent argv pins; [BusinessPins](../../apps/operator/src/business_pins.rs) compares already-authenticated ancestors | Existing genesis/successor history verification and cut binding remain authority; no checkpoint/state-root or activation permission | [Compiled import controls](../../apps/operator/tests/business_import_sqlite.rs), pure comparison/parser controls and [DR-0248](../architecture/decisions/0248-import-ordered-history-freshness-floor.md) |
+| Observed transaction assembly and read-only verification | [`runtime` transaction builder](../../crates/runtime/src/transaction.rs) and [state/structured read ports](../../crates/runtime/src/state_read.rs), reexported from the runtime facade | Domain-bound observation consistency, explicit strict/exact mutation composition and shared bounds. Direct Atomic/Durable constructors share containment and represented-byte refusal in that private owner, retaining distinct mutation-set admission and empty rules; [paid completion](../../crates/node-core/src/paid_execution.rs) and [fee claims](../../crates/node-core/src/fee_claims.rs) own their strict assembly. Read-only [prepared material](../../crates/node-core/src/fast_path/prepared_material.rs) and [bond-chain verification](../../crates/node-core/src/bond_lifecycle/registration/handler.rs) do not own persistence | [Assembly and direct-constructor controls](../../crates/runtime/src/transaction/tests.rs), [genuine paid refusal/replay regression](../../crates/node-core/src/paid_execution/observed_completion_tests.rs), reader negative-capability doc tests, real adapter checks and existing captured reconstruction tests. A builder/reader is not an authenticated snapshot, protocol warrant or confirmed write |
 | Writer-free original operation and atomic ordered completion | Private [owning proposals](../../crates/node-core/src/operation_preparation.rs), the fee/bond/evidence/control owners above and actual direct committing wrappers | [Observed read scope](../../crates/node-core/src/ordered_economics/observed_read.rs) records deciding physical CAS reads for execution and signing; [completion](../../crates/node-core/src/ordered_economics/completion.rs) shares original evaluation and real confirmation across live/recovery/private replay. Business owners retain their separate logical generation operands; no intercepted commit or fake writable store remains | Genuine preparation tests in each owner, [observation negatives](../../crates/node-core/src/ordered_economics/observed_read/tests.rs), [completion negatives](../../crates/node-core/src/ordered_economics/completion/tests.rs) and [typed real SQLite handoff faults](../../crates/node-core/src/ordered_economics/tests/causal_placement/control_reconstruction/frozen_completion/sqlite_handoff_faults.rs). A prepared proposal cannot expose output as confirmed persistence |
 | Test observation capabilities, not business fixtures | Private test-only [reader](../../crates/node-core/src/test_support/reader_view.rs), [publication counter](../../crates/node-core/src/test_support/counted_blobs.rs) and [complete capture](../../crates/node-core/src/test_support/capture.rs) | Real fee/bond/registration owners compose genuine prior operations and distinct quorum voters; same-signer mirrors establish complete direct/prepared equality without normalizing local history | [Storage-port capture negatives](../../crates/node-core/src/test_support/capture/tests.rs) exercise real reads and row/body differences, not business authority or blob-backed execution. Production replay/source audit and cut/import comparison keep their distinct owning verifiers |
 
@@ -164,6 +229,33 @@ contracts; they do not define protocol rules.
   [neutral compiled-CLI locator](../../apps/operator/tests/support/compiled_cli_process.rs)
   is also reused by existing optional PostgreSQL tests, without importing their
   fixture/deployment authority into local acceptance.
+  The PostgreSQL inventory test reuses existing file-guard/backend/proxy-DSN
+  plumbing from [CLI test support](../../apps/operator/tests/support/cli.rs),
+  while its fixture expectations and durable-state assertions stay independent.
+  The successor artifact/refusal tests share one std-only
+  [temporary-directory owner](../../apps/operator/tests/support/temp_dir.rs).
+  Callers supply their original prefix, tag and atomic counter so directory
+  naming, counter interleaving, scope lifetime and best-effort cleanup remain
+  unchanged. Other temporary-directory owners retain their distinct timestamp
+  and cleanup requirements.
+  Ordinary import/recurrence tests share a read-only
+  [archive snapshot](../../apps/operator/tests/support/archive_snapshot.rs)
+  that preserves relative path keys, directory markers and exact bytes while
+  refusing symlinks and nonregular entries. Before/after comparisons remain
+  with each consumer. Four process-test callers also share only the
+  [successful captured-output assertion](../../apps/operator/tests/support/command_output.rs),
+  retaining status-first diagnostics and strict UTF-8. It owns no spawn,
+  waiting, pipe collection, deadlines or caller-specific output assertions.
+  The [shared compiled-child capture](../../apps/operator/tests/support/compiled_source_host_process.rs)
+  returns full `Output` only after successful pipe reads and reader joins; live
+  startup returns one LF-terminated first line without waiting for host-stream EOF.
+  All ten startup calls pass their actual fixture-chain byte allowance before
+  spawning; the shared reader checks the cap-plus-one physical probe and preserves
+  encountered read/UTF-8 error priority and exact successful bytes. Existing two
+  pure TLS-target controls and four new controls cover refusal, finite never-LF
+  reads and independent maximum producer formats. These are unexecuted source
+  contracts, not heap/timing/whole-EOF or all-path cleanup guarantees; see
+  [DR-0229](../architecture/decisions/0229-bounded-compiled-host-startup-line.md).
 
 ## Successor invocation and immutable transport
 
@@ -198,8 +290,19 @@ contracts; they do not define protocol rules.
   queued, detached and unwinding synchronous work independently of telemetry.
   [Fixed local observations](../../crates/native-http/src/observations.rs)
   belong to existing accept/upgrade/collector/I/O branches, not protocol state
-  or a public metrics endpoint. [Focused lifecycle controls](../../crates/native-http/src/tests/native_operations.rs)
+  or a public metrics endpoint. The [opt-in local exporter](../../apps/operator/src/native_operations/live_observations.rs)
+  owns path validation, an unbound nonblocking datagram sender and charged
+  cooldown; the stop owner retains readiness, signal selection and drain.
+  [Focused lifecycle controls](../../crates/native-http/src/tests/native_operations.rs)
   and the existing four-store direct-TLS fixture retain distinct oracles.
+- [Bounded foreground observation collector](../../apps/operator/src/native_observations.rs)
+  owns exact CLI arguments, Linux retained-directory/socket lifetime, one setup/
+  receive deadline, finite attempts and complete-collection output. The shared
+  [live decoder](../../crates/native-http/src/observations.rs) owns the fixed
+  15-counter grammar beside the unchanged encoders. The collector never unlinks
+  a socket, signals a node or authenticates senders. The existing
+  [Native release owner](../../scripts/check-native-release-evidence.mjs) includes
+  its actual binary as the thirteenth target, not an extra build lane.
 
 - [Core authority](../../crates/node-core/src/serving_authority.rs) separates
   historical evidence from fresh issuer-bound warrants.

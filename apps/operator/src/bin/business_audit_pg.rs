@@ -37,7 +37,7 @@ use sunrise_edge_client::ordered_history_archive::{
 };
 use sunrise_edge_operator::{
     business_snapshot::capture_source_business_snapshot,
-    common::{FlagSet, connect_pool, parse_hash_suite, parse_hex_32},
+    common::{FlagSet, connect_pool, hex_lower as hex, parse_hash_suite, parse_hex_32},
 };
 
 const FLAGS: &[&str] = &[
@@ -65,9 +65,6 @@ fn bounded(value: &str, min: u64, max: u64) -> Result<u64, Box<dyn Error>> {
         return Err("integer outside the allowed operator bound".into());
     }
     Ok(parsed)
-}
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 

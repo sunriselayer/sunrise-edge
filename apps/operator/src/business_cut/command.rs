@@ -35,6 +35,7 @@ const FLAGS: &[&str] = &[
     "--expected-genesis-digest",
     "--ordered-history-dir",
     "--out-dir",
+    crate::local_anchor::FLAG,
     "--state-db",
     "--blob-db",
     "--validator-id",
@@ -48,6 +49,7 @@ const HELP: &str = "Pre-Seal business candidate only; no import, readiness, Seal
 
 struct ExportInputs {
     state: PathBuf,
+    anchor: Option<PathBuf>,
     blobs: PathBuf,
     validator: ValidatorId,
     timeout: u64,
@@ -114,8 +116,10 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
             1,
             4096,
         )?)?;
+        let anchor: Option<PathBuf> = crate::local_anchor::parse(&mut flags)?;
         Some(ExportInputs {
             state,
+            anchor,
             blobs,
             validator,
             timeout,
@@ -170,8 +174,10 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
                 .ok_or("successor source requires --signer-key-file")?;
             let key: ed25519_zebra::SigningKey = load_signing_key_file(&key_path)?;
             let public_key: [u8; 32] = ed25519_zebra::VerificationKey::from(&key).into();
-            let source: SqliteImportTarget = SqliteImportTarget::open_existing(
+            let source: SqliteImportTarget = crate::local_anchor::open_import(
                 &inputs.state,
+                &inputs.blobs,
+                inputs.anchor.as_deref(),
                 SqliteNamespace::new(
                     pins.context.chain_id().clone(),
                     inputs.validator,
@@ -245,13 +251,14 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         if pins.policy.registered_validator(inputs.validator).is_none() {
             return Err("source validator is absent from pinned genesis".into());
         }
-        Some(ExistingSqliteSource::open(
+        Some(ExistingSqliteSource::open_with_anchor(
             &inputs.state,
             &inputs.blobs,
             pins.context.chain_id().clone(),
             inputs.validator,
             pins.domain,
             inputs.timeout,
+            inputs.anchor.as_deref(),
         )?)
     } else {
         None

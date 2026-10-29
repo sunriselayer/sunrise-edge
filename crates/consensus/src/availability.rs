@@ -68,10 +68,10 @@ pub mod union;
 pub use frontier::{
     FrontierError, FrozenFrontierAccumulator, FrozenFrontierCertifier, FrozenFrontierIdentity,
     FrozenFrontierPage, FrozenFrontierPageVerifier, FrozenFrontierVote,
-    MAX_FROZEN_FRONTIER_PAGE_BYTES, MAX_FROZEN_FRONTIER_PAGE_ENTRIES,
-    decode_frozen_frontier_identity, decode_frozen_frontier_page, decode_frozen_frontier_vote,
-    encode_frozen_frontier_identity, encode_frozen_frontier_page, encode_frozen_frontier_vote,
-    verify_frozen_frontier, verify_frozen_frontier_quorum,
+    MAX_FRONTIER_VOTE_BYTES as MAX_FROZEN_FRONTIER_VOTE_BYTES, MAX_FROZEN_FRONTIER_PAGE_BYTES,
+    MAX_FROZEN_FRONTIER_PAGE_ENTRIES, decode_frozen_frontier_identity, decode_frozen_frontier_page,
+    decode_frozen_frontier_vote, encode_frozen_frontier_identity, encode_frozen_frontier_page,
+    encode_frozen_frontier_vote, verify_frozen_frontier, verify_frozen_frontier_quorum,
 };
 
 const AVAILABILITY_IDENTITY_TYPE_ID: u16 = 0xD030;
@@ -917,6 +917,56 @@ mod tests {
                 certifier.verify_certificate(&certificate, &verifier),
                 Ok(())
             );
+        }
+    }
+
+    #[test]
+    fn production_verifier_excludes_malformed_signatures_without_losing_quorum() {
+        let certifier: AvailabilityCertifier = certifier(4);
+        let valid_votes: Vec<AvailabilityVote> =
+            (1..=3).map(|byte| cast(&certifier, byte)).collect();
+        let reference: AvailabilityCertificate = quorum_certificate(&certifier);
+        let reference_bytes: Vec<u8> = encode_availability_certificate(&reference).unwrap();
+        let responses: [UnsupportedSignatureSchemeResponse; 2] = [
+            UnsupportedSignatureSchemeResponse::InvalidSignature,
+            UnsupportedSignatureSchemeResponse::FastPathProfileError,
+        ];
+        let lengths: [usize; 4] = [1, 63, 65, 4096];
+        let malformed_validators: [u8; 2] = [2, 4];
+        for response in responses {
+            let verifier: Ed25519ConsensusVerifier = Ed25519ConsensusVerifier::new(response);
+            for signature_len in lengths {
+                for validator in malformed_validators {
+                    let mut malformed: AvailabilityVote = cast(&certifier, validator);
+                    malformed.signature.resize(signature_len, 0);
+                    let wire: Vec<u8> = encode_availability_vote(&malformed).unwrap();
+                    let decoded: AvailabilityVote = decode_availability_vote(&wire).unwrap();
+                    assert_eq!(decoded, malformed);
+                    assert_eq!(
+                        certifier.verify_vote(&decoded, &verifier),
+                        Err(ConsensusError::InvalidSignature(validator_id(validator))),
+                    );
+                    let positions: [usize; 2] = [0, valid_votes.len()];
+                    for position in positions {
+                        let mut relayed: Vec<AvailabilityVote> = valid_votes.clone();
+                        relayed.insert(position, decoded.clone());
+                        let formed: AvailabilityCertificate = certifier
+                            .try_form_certificate(&identity(), &relayed, &verifier)
+                            .unwrap()
+                            .expect("malformed relay candidate must not discard a valid quorum");
+                        assert_eq!(
+                            encode_availability_certificate(&formed).unwrap(),
+                            reference_bytes,
+                        );
+                    }
+                    let mut insufficient: Vec<AvailabilityVote> = valid_votes[..2].to_vec();
+                    insufficient.push(decoded);
+                    assert_eq!(
+                        certifier.try_form_certificate(&identity(), &insufficient, &verifier),
+                        Ok(None),
+                    );
+                }
+            }
         }
     }
 

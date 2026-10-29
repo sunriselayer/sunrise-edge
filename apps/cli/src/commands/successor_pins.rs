@@ -39,7 +39,7 @@ fn invalid(message: impl Into<String>) -> CliError {
 }
 
 /// Successor flags. A command with its own pinned --domain passes false.
-pub(super) fn successor_flag_specs(with_domain: bool) -> Vec<FlagSpec> {
+pub(crate) fn successor_flag_specs(with_domain: bool) -> Vec<FlagSpec> {
     let mut flags: Vec<FlagSpec> = vec![
         scalar(GENESIS_EPOCH),
         scalar(MAX_LINKS),
@@ -74,7 +74,7 @@ pub(super) fn successor_requested(parsed: &ParsedArgs) -> bool {
 /// and requires signing_context to be exactly its verified e+1 context.
 /// domain is the command own pinned domain, or None to read the successor
 /// domain flag.
-pub(super) fn load_successor_pins(
+pub(crate) fn load_successor_pins(
     parsed: &ParsedArgs,
     genesis_manifest: &str,
     expected_genesis_digest: [u8; 32],

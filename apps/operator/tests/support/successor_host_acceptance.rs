@@ -13,6 +13,7 @@
 use super::compiled_executable_snapshot::CompiledExecutableSnapshot;
 use super::compiled_source_host_process as process;
 use super::{fixture::Fixture, hex};
+use crate::command_output::success;
 use consensus::{ConsensusSigner, QuorumCertificate, decode_quorum_certificate};
 use execution::LocalWasmExecutionEngine;
 use native_http::ordered_economics::{OrderedEconomicsState, certified_ordered_economics_router};
@@ -54,6 +55,10 @@ mod tls_fixture;
 
 #[path = "compiled_cli_process.rs"]
 mod compiled_cli_process;
+
+#[cfg(unix)]
+#[path = "positive_fee_split_export.rs"]
+mod positive_fee_split_export;
 
 struct NativeTlsFiles {
     ca: tls_fixture::FixtureCa,
@@ -220,16 +225,6 @@ pub struct SuccessorProcessInputs {
     pub binding: runtime::inactive_import::ImportBinding,
 }
 
-fn success(output: Output) -> String {
-    assert!(
-        output.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
-}
-
 fn pins(command: &mut Command, fixture: &Fixture, inputs: &SuccessorProcessInputs) {
     command.args([
         "--chain-id",
@@ -336,8 +331,10 @@ fn start_host(
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    let startup_byte_cap: std::num::NonZeroUsize =
+        process::compiled_host_startup_line_limit(fixture.network.chain_id.as_str());
     let (mut guard, line): (process::ChildGuard, String) =
-        process::spawn_bounded_status_line(command, Duration::from_secs(600));
+        process::spawn_bounded_status_line(command, Duration::from_secs(600), startup_byte_cap);
     // The host prints exactly one flushed line after its startup gate and
     // the actual bind; a failed startup closes stdout without it.
     assert!(
@@ -1246,12 +1243,35 @@ fn imported_escrow_fee_claim(
         },
     )
     .unwrap();
+    if matches!(
+        &prepared.operation,
+        node_core::fee_claims::codec::FeeClaimOperation::Split { .. }
+    ) {
+        positive_split_meaning_policy_parity(
+            workflow,
+            view,
+            &request_frame,
+            &prepared,
+            &frame,
+            &original_signature,
+            &original_claim,
+        );
+    }
     let retained =
         sunrise_edge_client::PreparedFeeClaim::prepare(workflow, &request_frame, prepared.clone())
             .unwrap();
     assert_eq!(retained.claimant(), objects::Address::new(public));
     assert_eq!(retained.signable_frame(), frame);
     assert_eq!(retained.request(), &request_frame);
+    let review: sunrise_edge_client::FeeClaimReview =
+        sunrise_edge_client::FeeClaimReview::build(&retained).unwrap();
+    assert!(review.render_text().contains(&hex(&frame)));
+    assert!(review.render_text().contains(&hex(&public)));
+    assert!(
+        review
+            .render_text()
+            .contains(&prepared.certificate_epoch.get().to_string())
+    );
     let external =
         external_signer::TestSigner::new(claimant.seed, external_signer::Behavior::Valid);
     assert_eq!(
@@ -1414,7 +1434,7 @@ fn imported_escrow_fee_claim(
             leg_file.to_str().unwrap().into(),
         ]);
     }
-    cli(&["economics", "fee-claim-prepare"], tail);
+    cli(&["economics", "fee-claim-prepare"], tail.clone());
     let cli_candidate: node_core::ordered_economics::OrderedCandidate =
         node_core::ordered_economics::decode_ordered_candidate(&std::fs::read(&candidate).unwrap())
             .unwrap();
@@ -1422,10 +1442,212 @@ fn imported_escrow_fee_claim(
         cli_candidate.intent, original_claim,
         "the actual development CLI retains original historical claim bytes"
     );
+    // The actual seed-free peer preparation and independent offline review/sign
+    // consumer reuse this genuine verified workflow, including its historical
+    // certificate committee after current membership changes. No extra host,
+    // shortened recurrence or fabricated trusted workflow is introduced.
+    let private: PathBuf = candidate.with_extension("review-private");
+    std::fs::create_dir(&private).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let request_path: PathBuf = private.join("request.bin");
+    let intent_path: PathBuf = private.join("intent.bin");
+    let mut seed_free: Vec<String> = Vec::new();
+    for pair in tail.chunks_exact(2) {
+        if !["--claimant-seed-file", "--created-checkpoint", "--out"].contains(&pair[0].as_str()) {
+            seed_free.extend_from_slice(pair);
+        }
+    }
+    seed_free.extend([
+        "--claimant-public-key".into(),
+        hex(&public),
+        "--review-request-out".into(),
+        request_path.to_str().unwrap().into(),
+        "--review-intent-out".into(),
+        intent_path.to_str().unwrap().into(),
+    ]);
+    let refuse_cli = |action: &str, tail: Vec<String>| -> String {
+        let mut arguments: Vec<OsString> =
+            vec![OsString::from("economics"), OsString::from(action)];
+        arguments.extend(tail.into_iter().map(OsString::from));
+        tokio::task::block_in_place(|| sunrise_edge_cli::run(arguments))
+            .unwrap_err()
+            .to_string()
+    };
+    let replace_flag = |values: &[String], flag: &str, value: &str| -> Vec<String> {
+        let mut replaced: Vec<String> = Vec::new();
+        let mut found: bool = false;
+        for pair in values.chunks_exact(2) {
+            replaced.push(pair[0].clone());
+            if pair[0] == flag {
+                replaced.push(value.to_string());
+                found = true;
+            } else {
+                replaced.push(pair[1].clone());
+            }
+        }
+        assert!(found, "missing flag {flag}");
+        replaced
+    };
+    let other_public: [u8; 32] =
+        ed25519_zebra::VerificationKey::from(&fixture.network.validators[2].signing_key).into();
+    assert_ne!(other_public, public);
+    let wrong_claimant: Vec<String> =
+        replace_flag(&seed_free, "--claimant-public-key", &hex(&other_public));
+    assert!(!refuse_cli("fee-claim-prepare", wrong_claimant).is_empty());
+    assert!(!request_path.exists() && !intent_path.exists());
+    cli(&["economics", "fee-claim-prepare"], seed_free.clone());
+    assert!(refuse_cli("fee-claim-prepare", seed_free).contains("already exists"));
+    let saved_request: Vec<u8> = std::fs::read(&request_path).unwrap();
+    let saved_intent: Vec<u8> = std::fs::read(&intent_path).unwrap();
+    #[cfg(unix)]
+    if matches!(
+        &prepared.operation,
+        node_core::fee_claims::codec::FeeClaimOperation::Split { .. }
+    ) {
+        positive_split_custody_prepare_consumer(
+            fixture,
+            workflow,
+            view,
+            &request_frame,
+            &prepared,
+            &flags,
+            &saved_request,
+            &saved_intent,
+        );
+    }
+    assert_eq!(saved_request, request_frame.encode().unwrap());
+    assert_eq!(
+        saved_intent,
+        node_core::fee_claims::codec::encode_fee_claim_intent(&prepared).unwrap()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [&request_path, &intent_path] {
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+    let mut offline: Vec<String> = Vec::new();
+    for pair in flags.chunks_exact(2) {
+        if ![
+            "--ordered-network",
+            "--deadline-seconds",
+            "--per-request-cap-seconds",
+        ]
+        .contains(&pair[0].as_str())
+        {
+            offline.extend_from_slice(pair);
+        }
+    }
+    offline.extend([
+        "--request".into(),
+        request_path.to_str().unwrap().into(),
+        "--intent".into(),
+        intent_path.to_str().unwrap().into(),
+    ]);
+    cli(&["economics", "fee-claim-review"], offline.clone());
+    for (label, altered_intent) in [
+        ("recipient", &other_recipient),
+        ("certificate", &later_epoch),
+    ] {
+        let altered_path: PathBuf = private.join(format!("altered-{label}.bin"));
+        std::fs::write(
+            &altered_path,
+            node_core::fee_claims::codec::encode_fee_claim_intent(altered_intent).unwrap(),
+        )
+        .unwrap();
+        let altered: Vec<String> =
+            replace_flag(&offline, "--intent", altered_path.to_str().unwrap());
+        assert!(!refuse_cli("fee-claim-review", altered.clone()).is_empty());
+        let refused_out: PathBuf = private.join(format!("refused-{label}.candidate"));
+        let mut altered_sign: Vec<String> = altered;
+        altered_sign.extend([
+            "--claimant-seed-file".into(),
+            seed_file.to_str().unwrap().into(),
+            "--created-checkpoint".into(),
+            HOST_CHECKPOINT.to_string(),
+            "--out".into(),
+            refused_out.to_str().unwrap().into(),
+        ]);
+        assert!(!refuse_cli("fee-claim-sign", altered_sign).is_empty());
+        assert!(!refused_out.exists());
+    }
+    let wrong_seed: PathBuf = private.join("wrong.seed");
+    std::fs::write(&wrong_seed, hex(&fixture.network.validators[2].seed)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wrong_seed, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let wrong_key_out: PathBuf = private.join("wrong-key.candidate");
+    let mut wrong_sign: Vec<String> = offline.clone();
+    wrong_sign.extend([
+        "--claimant-seed-file".into(),
+        wrong_seed.to_str().unwrap().into(),
+        "--created-checkpoint".into(),
+        HOST_CHECKPOINT.to_string(),
+        "--out".into(),
+        wrong_key_out.to_str().unwrap().into(),
+    ]);
+    assert!(
+        refuse_cli("fee-claim-sign", wrong_sign)
+            .contains("signing key is not the requested claimant public key")
+    );
+    assert!(!wrong_key_out.exists());
+    let offline_candidate: PathBuf = candidate.with_extension("offline.candidate");
+    offline.extend([
+        "--claimant-seed-file".into(),
+        seed_file.to_str().unwrap().into(),
+        "--created-checkpoint".into(),
+        HOST_CHECKPOINT.to_string(),
+        "--out".into(),
+        offline_candidate.to_str().unwrap().into(),
+    ]);
+    cli(&["economics", "fee-claim-sign"], offline);
+    assert_eq!(
+        std::fs::read(&offline_candidate).unwrap(),
+        std::fs::read(&candidate).unwrap(),
+        "the independently reviewed saved bytes produce the exact legacy signed candidate"
+    );
+    assert_eq!(saved_request, std::fs::read(&request_path).unwrap());
+    assert_eq!(saved_intent, std::fs::read(&intent_path).unwrap());
+    #[cfg(unix)]
+    let protected_candidate: Option<PathBuf> = if matches!(
+        &prepared.operation,
+        node_core::fee_claims::codec::FeeClaimOperation::Split { .. }
+    ) {
+        positive_split_uid_inline(
+            fixture,
+            hosts,
+            workflow,
+            view,
+            &request_frame,
+            &prepared,
+            &original_claim,
+            &std::fs::read(&candidate).unwrap(),
+            &flags,
+        )
+    } else {
+        assert!(
+            positive_fee_split_export::selection().is_none(),
+            "positive-only fixture selected for another fee claim family"
+        );
+        None
+    };
+    #[cfg(not(unix))]
+    let protected_candidate: Option<PathBuf> = None;
+    let submission_candidate: &Path = protected_candidate.as_deref().unwrap_or(&candidate);
     let mut submit: Vec<String> = flags;
     submit.extend([
         "--candidate".to_string(),
-        candidate.to_str().unwrap().into(),
+        submission_candidate.to_str().unwrap().into(),
         "--out".into(),
         fixture
             .directory
@@ -1439,7 +1661,469 @@ fn imported_escrow_fee_claim(
             .into(),
     ]);
     cli(&["economics", "network-submit"], submit);
+    if protected_candidate.is_some() {
+        println!("positive_fee_split_protected_candidate_submitted=passed");
+    }
     request
+}
+
+/// Only selected after all original byte-oracle assertions have completed.
+/// Auxiliary cases are real host preparations, never additional submissions.
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+fn positive_split_uid_inline(
+    fixture: &Fixture,
+    hosts: &[HostProcess],
+    workflow: &SuccessorWorkflowAuthority,
+    view: &node_core::fee_claims::FeeClaimInspection,
+    original_request: &node_wire::FeeClaimPrepareRequest,
+    original_intent: &node_core::fee_claims::codec::FeeClaimIntent,
+    original_outer: &[u8],
+    original_candidate: &[u8],
+    flags: &[String],
+) -> Option<PathBuf> {
+    let selected: positive_fee_split_export::Selection = positive_fee_split_export::selection()?;
+    let before: OrderedStatus = status(hosts[0].address);
+    let nonce_before: u64 = Client::new(transport(hosts[0].address))
+        .query_next_nonce(objects::Address::new(original_request.claimant_public_key))
+        .unwrap()
+        .next_nonce();
+    let claimant_index: usize = original_member_index(fixture, [0xa2; 32]);
+    let claimant: &super::genesis_fixture::FastVoteValidator =
+        &fixture.network.validators[claimant_index];
+    let mut cases: Vec<positive_fee_split_export::PublicCase> =
+        vec![positive_fee_split_export::PublicCase {
+            label: "A",
+            request: original_request.clone(),
+            intent: original_intent.clone(),
+            signed_outer: original_outer.to_vec(),
+            candidate: original_candidate.to_vec(),
+        }];
+    for (label, tag) in [("B", 0xA7_u8), ("C", 0xA8), ("D", 0xA9)] {
+        let mut leg: execution::local_execution::SignedLocalExecutionIntent =
+            execution::local_execution::decode_signed_local_execution(
+                original_request.signed_leg.as_deref().unwrap(),
+            )
+            .unwrap();
+        let id: [u8; 32] = epoch_request_id(workflow.expected_context().epoch().get(), tag);
+        leg.intent.call.request_id = id;
+        let frame: Vec<u8> = execution::local_execution::local_execution_signing_frame(
+            workflow.expected_context(),
+            &leg.intent,
+        )
+        .unwrap();
+        leg.signature = claimant.signing_key.sign(&frame).into();
+        let mut request: node_wire::FeeClaimPrepareRequest = original_request.clone();
+        request.request_id = id;
+        request.signed_leg =
+            Some(execution::local_execution::encode_signed_local_execution(&leg).unwrap());
+        let intent: node_core::fee_claims::codec::FeeClaimIntent =
+            Client::new(transport(hosts[0].address))
+                .prepare_successor_fee_claim(workflow, &request, None)
+                .unwrap();
+        sunrise_edge_client::verify_prepared_fee_claim(workflow, &request, &intent).unwrap();
+        let digest: protocol_types::Digest32 = node_core::fee_claims::fee_claim_intent_digest(
+            workflow.ordered_policy().resolver(),
+            &intent,
+        )
+        .unwrap();
+        let frame: Vec<u8> =
+            node_core::fee_claims::fee_claim_signing_frame(&intent.context, digest).unwrap();
+        let signed_outer: Vec<u8> = node_core::fee_claims::codec::encode_signed_fee_claim_intent(
+            &node_core::fee_claims::codec::SignedFeeClaimIntent {
+                intent: intent.clone(),
+                signature: claimant.signing_key.sign(&frame).into(),
+            },
+        )
+        .unwrap();
+        let candidate: Vec<u8> = sunrise_edge_client::fee_claim_candidate(
+            workflow,
+            id,
+            signed_outer.clone(),
+            HOST_CHECKPOINT,
+        )
+        .unwrap();
+        cases.push(positive_fee_split_export::PublicCase {
+            label,
+            request,
+            intent,
+            signed_outer,
+            candidate,
+        });
+    }
+    assert_eq!(
+        status(hosts[0].address),
+        before,
+        "public auxiliary preparations mutate no ordered state"
+    );
+    assert_eq!(
+        Client::new(transport(hosts[0].address))
+            .query_next_nonce(objects::Address::new(original_request.claimant_public_key))
+            .unwrap()
+            .next_nonce(),
+        nonce_before,
+        "auxiliary host preparations leave the observed nonce unchanged"
+    );
+    let fee_object: Vec<u8> =
+        objects::encode_object(&view.execution.as_ref().unwrap().fee_output).unwrap();
+    let candidate: Vec<u8> = positive_fee_split_export::run(
+        selected,
+        workflow,
+        &fixture.network.resolver,
+        &fixture.network.manifest_bytes,
+        fixture.network.manifest_digest,
+        flags,
+        &fee_object,
+        &cases,
+    );
+    assert_eq!(candidate, original_candidate);
+    let path: PathBuf = fixture
+        .directory
+        .0
+        .join("positive-protected-original.candidate");
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file: std::fs::File = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .unwrap();
+    file.write_all(&candidate).unwrap();
+    file.sync_all().unwrap();
+    Some(path)
+}
+
+/// The original positive claim supplies genuine independently verified successor
+/// and historical committee authority. This adds no host, shortened recurrence,
+/// custody key or signing backend; both existing signatures remain the oracle.
+fn positive_split_meaning_policy_parity(
+    workflow: &SuccessorWorkflowAuthority,
+    view: &node_core::fee_claims::FeeClaimInspection,
+    request: &node_wire::FeeClaimPrepareRequest,
+    intent: &node_core::fee_claims::codec::FeeClaimIntent,
+    original_frame: &[u8],
+    original_signature: &[u8; 64],
+    original_claim: &[u8],
+) {
+    use sunrise_edge_cli::positive_fee_claim_split::{
+        HistoricalClaimantPin, PositiveSplitTerms, PreparedPositiveSplitClaim,
+        PreparedPositiveSplitLeg, RetainedFeeObject, SignedPositiveSplitLeg,
+        StandardAssetPositiveSplitPolicy,
+    };
+    let bytes: &[u8] = request.signed_leg.as_deref().unwrap();
+    let signed: execution::local_execution::SignedLocalExecutionIntent =
+        execution::local_execution::decode_signed_local_execution(bytes).unwrap();
+    let pin: HistoricalClaimantPin = HistoricalClaimantPin {
+        certificate_epoch: intent.certificate_epoch,
+        validator: request.validator_id,
+        public_key: objects::Address::new(request.claimant_public_key),
+    };
+    let policy: StandardAssetPositiveSplitPolicy<'_> =
+        StandardAssetPositiveSplitPolicy::new(workflow, pin).unwrap();
+    let terms: PositiveSplitTerms = PositiveSplitTerms {
+        escrow_request_id: request.escrow_request_id,
+        request_id: request.request_id,
+        amount: intent.share_amount,
+        recipient: request.recipient,
+        nonce: signed.intent.call.nonce,
+        gas_limit: signed.intent.call.gas_limit,
+    };
+    let object: RetainedFeeObject = RetainedFeeObject {
+        canonical_bytes: objects::encode_object(&view.execution.as_ref().unwrap().fee_output)
+            .unwrap(),
+        reference: intent.expected_fee_output.clone(),
+        hash_epoch: workflow.expected_context().epoch(),
+    };
+    let leg_frame: Vec<u8> = execution::local_execution::local_execution_signing_frame(
+        workflow.expected_context(),
+        &signed.intent,
+    )
+    .unwrap();
+    let prepared_leg: PreparedPositiveSplitLeg<'_> =
+        policy.prepare_leg(terms.clone(), object.clone()).unwrap();
+    assert_eq!(prepared_leg.signable_frame(), leg_frame);
+    assert_eq!(prepared_leg.review().amount(), intent.share_amount);
+    let reviewed_leg: SignedPositiveSplitLeg<'_> =
+        prepared_leg.finalize(signed.signature.to_vec()).unwrap();
+    assert_eq!(reviewed_leg.canonical_signed_leg(), bytes);
+    assert_eq!(reviewed_leg.request(), *request);
+    let request_bytes: Vec<u8> = request.encode().unwrap();
+    let intent_bytes: Vec<u8> =
+        node_core::fee_claims::codec::encode_fee_claim_intent(intent).unwrap();
+    let prepared_claim: PreparedPositiveSplitClaim<'_> = reviewed_leg
+        .prepare_claim(&request_bytes, &intent_bytes)
+        .unwrap();
+    assert_eq!(prepared_claim.signable_frame(), original_frame);
+    assert!(
+        prepared_claim
+            .review_text()
+            .contains("claim_entitlement=not_proven")
+    );
+    assert!(
+        prepared_claim
+            .review_text()
+            .contains("proposed_row_digests_and_generation=not_independently_certified")
+    );
+    assert!(
+        prepared_claim
+            .review_text()
+            .contains("review_kind=non_authorizing_content_inspection")
+    );
+    assert_eq!(
+        prepared_claim
+            .finalize(original_signature.to_vec())
+            .unwrap(),
+        original_claim
+    );
+
+    let mut wrong_pin: HistoricalClaimantPin = pin;
+    wrong_pin.certificate_epoch = workflow.expected_context().epoch();
+    assert!(StandardAssetPositiveSplitPolicy::new(workflow, wrong_pin).is_err());
+    wrong_pin = pin;
+    wrong_pin.public_key = objects::Address::new([0; 32]);
+    assert!(StandardAssetPositiveSplitPolicy::new(workflow, wrong_pin).is_err());
+    let mut changed_request: node_wire::FeeClaimPrepareRequest = request.clone();
+    changed_request.request_id = [0xf2; 32];
+    let mut changes: Vec<node_core::fee_claims::codec::FeeClaimIntent> = Vec::new();
+    let mut changed: node_core::fee_claims::codec::FeeClaimIntent = intent.clone();
+    changed.share_amount += 1;
+    changes.push(changed);
+    changed = intent.clone();
+    changed.expected_fee_output.version += 1;
+    changes.push(changed);
+    changed = intent.clone();
+    changed.recipient = sunrise_edge_client::LocalSigner::from_seed([0xf3; 32]).address();
+    changes.push(changed);
+    changed = intent.clone();
+    let node_core::fee_claims::codec::FeeClaimOperation::Split {
+        expected_payout, ..
+    } = &mut changed.operation
+    else {
+        panic!("positive Split oracle")
+    };
+    *expected_payout = None;
+    changes.push(changed);
+    changed = intent.clone();
+    let node_core::fee_claims::codec::FeeClaimOperation::Split {
+        expected_payout: Some(payout),
+        ..
+    } = &mut changed.operation
+    else {
+        panic!("positive Split v2 payout oracle")
+    };
+    payout.version += 1;
+    changes.push(changed);
+    for changed in changes {
+        let leg: SignedPositiveSplitLeg<'_> = policy
+            .prepare_leg(terms.clone(), object.clone())
+            .unwrap()
+            .finalize(signed.signature.to_vec())
+            .unwrap();
+        assert!(
+            leg.prepare_claim(
+                &request_bytes,
+                &node_core::fee_claims::codec::encode_fee_claim_intent(&changed).unwrap()
+            )
+            .is_err()
+        );
+    }
+    let leg: SignedPositiveSplitLeg<'_> = policy
+        .prepare_leg(terms.clone(), object.clone())
+        .unwrap()
+        .finalize(signed.signature.to_vec())
+        .unwrap();
+    assert!(
+        leg.prepare_claim(&changed_request.encode().unwrap(), &intent_bytes)
+            .is_err()
+    );
+    let mut trailing: Vec<u8> = intent_bytes.clone();
+    trailing.push(0);
+    let leg: SignedPositiveSplitLeg<'_> = policy
+        .prepare_leg(terms, object)
+        .unwrap()
+        .finalize(signed.signature.to_vec())
+        .unwrap();
+    assert!(leg.prepare_claim(&request_bytes, &trailing).is_err());
+    println!("positive_split_meaning_policy_parity=passed");
+}
+
+/// Production CLI preparation consumes independently verified genuine successor
+/// artifacts. This adds no key, approval, signature or UID-protection claim.
+/// Existing independent signatures remain the byte oracle in the adjacent helper.
+#[allow(clippy::too_many_arguments)]
+#[cfg(unix)]
+fn positive_split_custody_prepare_consumer(
+    fixture: &Fixture,
+    workflow: &SuccessorWorkflowAuthority,
+    view: &node_core::fee_claims::FeeClaimInspection,
+    request: &node_wire::FeeClaimPrepareRequest,
+    intent: &node_core::fee_claims::codec::FeeClaimIntent,
+    flags: &[String],
+    saved_request: &[u8],
+    saved_intent: &[u8],
+) {
+    use std::os::unix::fs::PermissionsExt;
+    let directory: PathBuf = fixture
+        .directory
+        .0
+        .join(format!("positive-custody-{}", hex(&request.request_id)));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let put = |name: &str, bytes: &[u8]| -> String {
+        let path: PathBuf = directory.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        path.to_str().unwrap().into()
+    };
+    let context: &execution::publication::PublicationContext = workflow.expected_context();
+    let config: String = format!(
+        "chain_id={}\nprotocol_version={}\nepoch={}\nhash_suite_id={}\ndomain={}\npublisher_public_key={}\noperator_uid=0\n",
+        context.chain_id(),
+        context.protocol_version().get(),
+        context.epoch().get(),
+        workflow
+            .ordered_policy()
+            .resolver()
+            .suite_for_epoch(context.epoch())
+            .unwrap()
+            .id
+            .get(),
+        hex(fixture.network.domain.as_bytes()),
+        hex(&request.claimant_public_key)
+    );
+    let config_path: String = put("config", config.as_bytes());
+    let mut trust: Vec<String> = vec![
+        "--config".into(),
+        config_path.clone(),
+        "--genesis-manifest-file".into(),
+        fixture
+            .directory
+            .0
+            .join("genesis.bin")
+            .to_str()
+            .unwrap()
+            .into(),
+        "--genesis-digest".into(),
+        hex(&fixture.network.manifest_digest),
+        "--certificate-epoch".into(),
+        intent.certificate_epoch.get().to_string(),
+        "--validator-id".into(),
+        request.validator_id.to_string(),
+    ];
+    for pair in flags.chunks_exact(2) {
+        if pair[0].starts_with("--successor-") || pair[0] == "--suite" {
+            trust.extend_from_slice(pair);
+        }
+    }
+    let signed: execution::local_execution::SignedLocalExecutionIntent =
+        execution::local_execution::decode_signed_local_execution(
+            request.signed_leg.as_deref().unwrap(),
+        )
+        .unwrap();
+    let object: String = put(
+        "fee-object",
+        &objects::encode_object(&view.execution.as_ref().unwrap().fee_output).unwrap(),
+    );
+    let reference: String = put(
+        "fee-ref",
+        &objects::encode_object_ref(&intent.expected_fee_output).unwrap(),
+    );
+    let leg_out: String = directory.join("leg-request").to_str().unwrap().into();
+    let mut leg: Vec<String> = trust.clone();
+    leg.extend([
+        "--fee-object".into(),
+        object,
+        "--fee-ref".into(),
+        reference,
+        "--fee-object-hash-epoch".into(),
+        context.epoch().get().to_string(),
+        "--escrow-request-id".into(),
+        hex(&request.escrow_request_id),
+        "--request-id".into(),
+        hex(&request.request_id),
+        "--amount".into(),
+        intent.share_amount.to_string(),
+        "--recipient".into(),
+        request.recipient.to_string(),
+        "--nonce".into(),
+        signed.intent.call.nonce.to_string(),
+        "--gas-limit".into(),
+        signed.intent.call.gas_limit.to_string(),
+        "--out".into(),
+        leg_out.clone(),
+    ]);
+    cli(&["custody", "prepare-fee-split-leg"], leg.clone());
+    let leg_bytes: Vec<u8> = std::fs::read(&leg_out).unwrap();
+    assert_eq!(&leg_bytes[..3], &[1, 6, 1]);
+    let second: String = directory.join("leg-request-again").to_str().unwrap().into();
+    *leg.last_mut().unwrap() = second.clone();
+    cli(&["custody", "prepare-fee-split-leg"], leg);
+    assert_eq!(leg_bytes, std::fs::read(second).unwrap());
+    let signed_path: String = put("signed-leg", request.signed_leg.as_deref().unwrap());
+    let host_request: String = put("host-request", saved_request);
+    let host_intent: String = put("host-intent", saved_intent);
+    let claim_out: String = directory.join("claim-request").to_str().unwrap().into();
+    let mut claim: Vec<String> = trust;
+    claim.extend([
+        "--request".into(),
+        leg_out.clone(),
+        "--signed-leg".into(),
+        signed_path,
+        "--host-request".into(),
+        host_request,
+        "--host-intent".into(),
+        host_intent.clone(),
+        "--out".into(),
+        claim_out.clone(),
+    ]);
+    cli(&["custody", "prepare-fee-split-claim"], claim.clone());
+    let claim_bytes: Vec<u8> = std::fs::read(&claim_out).unwrap();
+    assert_eq!(&claim_bytes[..3], &[1, 6, 2]);
+    assert_eq!(&claim_bytes[3..leg_bytes.len()], &leg_bytes[3..]);
+    let mut wrong_signature: execution::local_execution::SignedLocalExecutionIntent =
+        signed.clone();
+    wrong_signature.signature[0] ^= 1;
+    let wrong_signature_path: String = put(
+        "wrong-leg-signature",
+        &execution::local_execution::encode_signed_local_execution(&wrong_signature).unwrap(),
+    );
+    let signature_refused: PathBuf = directory.join("refused-leg-signature");
+    let mut wrong_signature_claim: Vec<String> = claim.clone();
+    for pair in wrong_signature_claim.chunks_exact_mut(2) {
+        if pair[0] == "--signed-leg" {
+            pair[1] = wrong_signature_path.clone();
+        }
+        if pair[0] == "--out" {
+            pair[1] = signature_refused.to_str().unwrap().into();
+        }
+    }
+    let mut arguments: Vec<OsString> = vec!["custody".into(), "prepare-fee-split-claim".into()];
+    arguments.extend(wrong_signature_claim.into_iter().map(OsString::from));
+    assert!(tokio::task::block_in_place(|| sunrise_edge_cli::run(arguments)).is_err());
+    assert!(!signature_refused.exists());
+    let mut altered: node_core::fee_claims::codec::FeeClaimIntent = intent.clone();
+    altered.share_amount += 1;
+    let altered_path: String = put(
+        "altered-intent",
+        &node_core::fee_claims::codec::encode_fee_claim_intent(&altered).unwrap(),
+    );
+    let refused: PathBuf = directory.join("refused-claim");
+    for pair in claim.chunks_exact_mut(2) {
+        if pair[0] == "--host-intent" {
+            pair[1] = altered_path.clone();
+        }
+        if pair[0] == "--out" {
+            pair[1] = refused.to_str().unwrap().into();
+        }
+    }
+    let mut arguments: Vec<OsString> = vec!["custody".into(), "prepare-fee-split-claim".into()];
+    arguments.extend(claim.into_iter().map(OsString::from));
+    assert!(tokio::task::block_in_place(|| sunrise_edge_cli::run(arguments)).is_err());
+    assert!(!refused.exists());
+    assert_eq!(saved_intent, std::fs::read(host_intent).unwrap());
+    assert_eq!(leg_bytes, std::fs::read(leg_out).unwrap());
+    assert_eq!(config.as_bytes(), std::fs::read(config_path).unwrap());
 }
 
 fn receipts(
@@ -1518,7 +2202,7 @@ fn receipts(
 
 /// Positive first-successor process acceptance; see the module boundary.
 pub async fn run(
-    fixture: &Fixture,
+    fixture: &mut Fixture,
     inputs: &SuccessorProcessInputs,
     seal: &OrderedCandidate,
     fence: WriterFenceGeneration,
@@ -1529,7 +2213,7 @@ pub async fn run(
 }
 
 fn accept(
-    fixture: &Fixture,
+    fixture: &mut Fixture,
     inputs: &SuccessorProcessInputs,
     seal: &OrderedCandidate,
     export: &Path,

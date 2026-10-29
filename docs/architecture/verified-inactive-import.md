@@ -26,6 +26,48 @@ membership, readiness or activation proof. Import preserves the outgoing
 context and authenticated generation floor; it does not admit a successor
 generation or silently switch the defining-code/economics epoch.
 
+## Independently retained ordered-history floor
+
+[DR-0248](decisions/0248-import-ordered-history-freshness-floor.md) adds optional
+`--history-floor-epoch`, `--history-floor-height` and `--history-floor-digest`
+pins to both import modes. Supply all three from an earlier independently
+verified observation retained outside the artifacts being restored. After
+authenticating the entire current-epoch history, import refuses a target below
+the floor or a different block digest at that height, before opening or creating destination databases.
+It also refuses either direction of epoch mismatch. No flags preserves the
+original behavior; every accepted cut still undergoes the original independent
+proof reconstruction and exact history binding.
+
+The floor bounds one ordered-history position. It does not authenticate a
+whole-state root, latest network state or owned fast-path position, detect
+every store rollback, exclude an old writer or grant activation. Encrypted
+recovery retains its existing exact cut/package pins. Published checkpoint
+authority remains a separate requirement.
+
+## Independently retained closure-identity pins
+
+[DR-0252](decisions/0252-import-closure-identity-pins.md) adds optional
+`--expected-cut-digest`, `--expected-package-digest` and `--expected-plan-digest`
+pins to both import modes. Supply all three, retained from an earlier
+independent run or verification kept outside the cut, ordered-history archive
+or successor artifacts being restored; malformed hex or a strict subset refuses
+before any file access. After the independent saved-proof verification that
+produces `VerifiedImportPlan`, and before any destination database is created
+or opened, import compares all three fields of `verified.binding()` against the
+supplied pins and refuses with one fixed message on any mismatch. No pins
+preserves the original behavior.
+
+This pins one saved package's closure identity, not a state root or quorum
+publication for the current cut. It is not latest-state or owned fast-path
+freshness, whole-store rollback detection, old-writer exclusion, activation, or
+a claim of cross-file atomicity between the two destination files. `plan_digest`
+is derived locally from the saved package, so a mismatch after a legitimately
+different retained proof subset for the same cut is a correct refusal, not a
+fault. The ordered-history floor above and this closure-identity pin are
+separate checks; neither stands in for the other or for a quorum-signed
+checkpoint. Encrypted recovery keeps its own separate exact cut/package pins
+and gains no `plan_digest` argument here.
+
 ## Permanent storage origin
 
 | Lifecycle | Durable meaning | Fresh execution and protocol signing |
@@ -46,8 +88,8 @@ domain, fence and deadline validation. A captured read-only source view cannot
 invent live admission authority. Normal bootstrap/open and ordinary commits
 refuse an import origin; the commit recheck is atomic with the mutation.
 
-Native durable SQLite uses schema version 3 and shared SQL metadata identity
-v4, including mandatory protected readiness storage outside business inventory.
+Native durable SQLite uses schema version 5 and shared SQL metadata identity
+v6, including mandatory protected readiness storage outside business inventory.
 Older initialized durable files are explicitly unsupported, not silently
 migrated, repaired or reset. PostgreSQL implements verified Ordinary origin
 without import bootstrap. Shared SQL enforcement does not establish a deployed

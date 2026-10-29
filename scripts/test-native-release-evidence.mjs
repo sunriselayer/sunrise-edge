@@ -10,9 +10,9 @@ import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { NODE_VERSION, NAMES, TARGET, LIMITS, parseCli, validateCallerEnv, verifyRegistryPackage,
-  verifyCargoOk, compareFiles, compareArtifacts, runFixtureEvidence, runNativeReleaseEvidence } from "./check-native-release-evidence.mjs";
+  verifyCargoOk, heldFile, compareFiles, compareArtifacts, runFixtureEvidence, runNativeReleaseEvidence } from "./check-native-release-evidence.mjs";
 
-assert.equal(process.version, NODE_VERSION, "Use installed pinned Node 22.20.0");
+assert.equal(process.version, NODE_VERSION, "Use installed pinned Node 24.19.0");
 const root = mkdtempSync("/tmp/sunrise-edge-native-fixtures-");
 let passed = 0;
 const sha = b => createHash("sha256").update(b).digest("hex");
@@ -33,6 +33,20 @@ function attachedDescriptors(p) {
     try { return readlinkSync(`/proc/self/fd/${n}`) === p; }
     catch (e) { if (e.code === "ENOENT") return false; throw e; }
   }).length;
+}
+function recoverFixtureDescriptors(captured, originalStat, originalClose) {
+  // Successful controls require real EBADF assertions BEFORE this recovery.
+  // Only close a still-open captured descriptor attached to this owned fixture.
+  for (const record of captured) {
+    let actual;
+    try { actual = originalStat(record.fd); }
+    catch (e) { if (e.code === "EBADF") continue; throw e; }
+    assert.equal(actual.isFile(), true);
+    assert.equal(actual.dev, record.dev);
+    assert.equal(actual.ino, record.ino);
+    assert.equal(readlinkSync(`/proc/self/fd/${record.fd}`), record.path);
+    originalClose(record.fd);
+  }
 }
 function cargoLinks(compiler, names) {
   const groups = [...NAMES.map(name => [path.join(compiler, TARGET, "release", name),
@@ -157,8 +171,17 @@ function fixture(label, scenario = {}) {
     target("sunrise-edge-cli", path.join(source, "apps/cli/src/main.rs"), "bin")], { default: [], "usb-hid": [] });
   workspace("sunrise-edge-ledger", "crates/ledger", [target("sunrise_edge_ledger", path.join(source, "crates/ledger/src/lib.rs"))], { default: [], "usb-hid": [] });
   workspace("runtime-postgres", "crates/runtime-postgres", [target("runtime_postgres", path.join(source, "crates/runtime-postgres/src/lib.rs"))]);
-  packages.push({ ...dep, features: {}, dependencies: [], targets: [target("vcpkg", path.join(dep.expanded, "src/lib.rs")),
-    target("build-script-build", path.join(dep.expanded, "build.rs"), "custom-build")] });
+  const depTargets = [target("vcpkg", path.join(dep.expanded, "src/lib.rs")),
+    target("build-script-build", path.join(dep.expanded, "build.rs"), "custom-build")];
+  for (const extra of scenario.registryExtraTargets ?? []) {
+    // A declared but unselected example/test/bench/bin target may have no backing
+    // file at all (published crates can omit them); an escaped one still writes a
+    // real file outside the package root to prove the boundary check still fires.
+    const src = extra.escape ? path.join(parent, `escaped-${extra.name}.rs`) : path.join(dep.expanded, extra.rel);
+    if (extra.escape) file(src, "// escaped unselected registry target fixture\n");
+    depTargets.push(target(extra.name, src, extra.kind));
+  }
+  packages.push({ ...dep, features: {}, dependencies: [], targets: depTargets });
   const lockedPackages = [...packages]; let cachedOnly;
   if (scenario.cachedOnly || scenario.missingUnrelatedArchive) {
     const name = "unused-cache-fixture", version = "1.0.0";
@@ -235,9 +258,10 @@ function fixture(label, scenario = {}) {
       if (scenario.fault === "spawn") return spawn("/nonexistent-native-fixture-tool", [], options);
       const artifacts = [];
       for (const p of data.closure.selected) for (const t of p.targets) {
+        if (p.source && ["bin", "example", "test", "bench"].some(kind => t.kind.includes(kind)) && !scenario.emitUnselected) continue;
         const shipped = data.closure.shipped.find(s => s.name === t.name && s.packageId === p.id);
         const output = shipped ? path.join(data.compiler, TARGET, "release", t.name) : path.join(data.compiler, "release/deps", `${p.name}-${t.name}`);
-        artifacts.push({ reason: "compiler-artifact", package_id: p.id, manifest_path: p.manifest_path, target: t,
+        artifacts.push({ reason: scenario.unselectedDiagnostic && t.kind.includes("example") ? "compiler-message" : "compiler-artifact", package_id: p.id, manifest_path: p.manifest_path, target: t,
           profile: { test: false, opt_level: t.kind.includes("custom-build") ? "0" : "3" }, features: [], fresh: false,
           executable: shipped ? output : null, filenames: [output] });
       }
@@ -286,6 +310,14 @@ function retainedCleanup(f, r) {
 }
 
 try {
+  await check("closed thirteen shipped targets include encrypted recovery and local collection", () => {
+    assert.deepEqual(NAMES, [
+      "sqlite_genesis", "standard_asset_genesis", "genesis_inspect", "sqlite_source_host",
+      "business_cut", "business_import", "business_recovery", "conditional_readiness", "ordered_seal",
+      "successor_activation", "successor_host", "native_observations", "sunrise-edge-cli",
+    ]);
+    assert.equal(Object.isFrozen(NAMES), true);
+  });
   await check("GNU L archive/source and cargo-ok independent positive", async () => {
     const p = packageFixture("archive-positive"); const r = await verifyRegistryPackage(p);
     assert.equal(r.entries, 5); assert.equal(r.inventory.filter(x => x.kind === "file").length, 4);
@@ -402,13 +434,79 @@ try {
   await check("full sequential orchestration positive; fixture NEVER native complete", async () => {
     const f = fixture("positive", { mode: 0o751 }); const sentinel = path.join(f.parent, "sentinel"); file(sentinel, "original before run");
     const r = await runFixtureEvidence(f.args, f.doubles, { AWS_SECRET_ACCESS_KEY: "not inherited" });
-    assert.equal(r.complete, false); assert.equal(r.fixturePassed, true); assert.equal(r.comparisons.length, 11); assert.equal(r.boundaries.length, 5);
+    assert.equal(r.complete, false); assert.equal(r.fixturePassed, true); assert.equal(r.comparisons.length, 13); assert.equal(r.boundaries.length, 5);
+    assert.deepEqual(r.comparisons.map(a => a.name), [
+      "sqlite_genesis", "standard_asset_genesis", "genesis_inspect", "sqlite_source_host",
+      "business_cut", "business_import", "business_recovery", "conditional_readiness", "ordered_seal",
+      "successor_activation", "successor_host", "native_observations", "sunrise-edge-cli",
+    ]);
     assert.ok(r.builds.a.artifacts.every(a => a.mode === 0o751)); assert.equal(existsSync(path.join(f.output, "compiler-a")), false);
     assert.equal(existsSync(path.join(f.output, "compiler-b")), false); assert.equal(readFileSync(sentinel, "utf8"), "original before run");
     assert.equal(r.sourceLease.released, true); assert.equal(r.builds.b.exit, 0); assert.match(readFileSync(r.builds.a.logs.stderr, "utf8"), /non-JSON/);
     assert.ok(r.builds.a.observations.dependencies.some(a => a.target.kind.includes("custom-build")));
     assert.equal(r.inputs.tools.linkerRoles.target.linker, path.join(f.tools, "ld"));
     assert.match(r.inputs.tools.linkerRoles.host.implementation, /rust-lld$/);
+  });
+  await check("omitted declared registry example accepted only as unselected target", async () => {
+    // cookie-factory 0.3.3 declares examples in Cargo metadata that the published
+    // crate never ships; this must not require a held file for an unselected kind.
+    const f = fixture("registry-example-omitted", { registryExtraTargets: [
+      ...(["example", "test", "bench", "bin"].map(kind => ({ name: `unselected-${kind}`, kind, rel: `${kind}/missing.rs` }))),
+    ] });
+    assert.ok(["example", "test", "bench", "bin"].every(kind => !existsSync(path.join(f.dep.expanded, `${kind}/missing.rs`))));
+    const r = await runFixtureEvidence(f.args, f.doubles);
+    assert.equal(r.complete, false); assert.equal(r.fixturePassed, true);
+    assert.equal(r.comparisons.length, NAMES.length);
+    assert.ok(["example", "test", "bench", "bin"].every(kind => !existsSync(path.join(f.dep.expanded, `${kind}/missing.rs`))));
+  });
+  for (const [label, rel] of [["library", "src/lib.rs"], ["build-script", "build.rs"]])
+    await check(`missing registry ${label} source refused before any build`, async () => {
+      const f = fixture(`registry-missing-${label}`);
+      unlinkSync(path.join(f.dep.expanded, rel));
+      await badRun(f, /ENOENT/);
+      assert.deepEqual(f.calls.builds, { a: 0, b: 0 });
+    });
+  for (const kind of ["bin", "example", "test", "bench"])
+    await check(`observed unselected registry ${kind} refuses completion`, async () => {
+      const f = fixture(`registry-unselected-${kind}-artifact`, { emitUnselected: true, registryExtraTargets: [
+        { name: `unselected-${kind}`, kind, rel: `${kind}/missing.rs` },
+      ] });
+      await badRun(f, /Cargo observed unselected registry target/);
+      assert.deepEqual(f.calls.builds, { a: 1, b: 0 });
+    });
+  await check("observed unselected registry diagnostic refuses before diagnostic early return", async () => {
+    const f = fixture("registry-unselected-example-diagnostic", { emitUnselected: true, unselectedDiagnostic: true,
+      registryExtraTargets: [{ name: "unselected-example", kind: "example", rel: "example/missing.rs" }],
+    });
+    await badRun(f, /Cargo observed unselected registry target/);
+    assert.deepEqual(f.calls.builds, { a: 1, b: 0 });
+  });
+  await check("missing registry proc-macro source refused before any build", async () => {
+    const f = fixture("registry-missing-proc-macro", { registryExtraTargets: [
+      { name: "missing-macro", kind: "proc-macro", rel: "macro/missing.rs" },
+    ] });
+    await badRun(f, /ENOENT/); assert.deepEqual(f.calls.builds, { a: 0, b: 0 });
+  });
+  await check("noncanonical unselected registry source refuses traversal before build", async () => {
+    const f = fixture("registry-example-traversal");
+    f.packages.find(p => p.name === "vcpkg").targets.push({
+      name: "traversal-example", kind: ["example"], crate_types: ["bin"],
+      src_path: `${f.dep.expanded}/examples/../../escaped.rs`, edition: "2021",
+    });
+    await badRun(f, /Noncanonical absolute path/); assert.deepEqual(f.calls.builds, { a: 0, b: 0 });
+  });
+  await check("unknown registry target kind refuses before any build", async () => {
+    const f = fixture("registry-unknown-kind", { registryExtraTargets: [
+      { name: "unknown", kind: "future-target-kind", rel: "unknown/missing.rs" },
+    ] });
+    await badRun(f, /Unsupported registry target kind/); assert.deepEqual(f.calls.builds, { a: 0, b: 0 });
+  });
+  await check("escaped unselected registry target is still refused", async () => {
+    const f = fixture("registry-example-escaped", { registryExtraTargets: [
+      { name: "escaped-example", kind: "example", escape: true },
+    ] });
+    await badRun(f, /Target source escapes package\/source/);
+    assert.deepEqual(f.calls.builds, { a: 0, b: 0 });
   });
   await check("child-local restrictive umask preserves exact raw and saved artifact modes", async () => {
     const parentMask = process.umask(); const raw = {};
@@ -456,7 +554,7 @@ try {
         const after = oldStat(fds[0]); assert.equal(after.nlink, before - 1); transitions.get(group).push(after.nlink);
       }
     } }, () => runFixtureEvidence(f.args, f.doubles));
-    assert.equal(r.complete, false); assert.equal(r.fixturePassed, true); assert.equal(r.comparisons.length, 11);
+    assert.equal(r.complete, false); assert.equal(r.fixturePassed, true); assert.equal(r.comparisons.length, 13);
     assert.equal(r.cleanup.length, 4); assert.ok(r.cleanup.every(x => x.success));
     assert.deepEqual(f.calls.builds, { a: 1, b: 1 });
     descriptors.assertClosed(); assert.equal(descriptors.result().maximum, 1);
@@ -804,6 +902,110 @@ try {
     const f = fixture("lease"); let tested = false;
     f.doubles.stage = async n => { if (n === "build-a") { await assert.rejects(() => runFixtureEvidence(f.args.map(x => x === f.output ? path.join(f.parent, "other-evidence") : x), f.doubles), /EEXIST/); tested = true; } };
     const r = await runFixtureEvidence(f.args, f.doubles); assert.equal(r.fixturePassed, true); assert.equal(tested, true);
+  });
+  await check("held file real acquisition/check/close preserves complete owned fixture", async () => {
+    const parent = path.join(root, "held-file-positive"); mkdirSync(parent);
+    const p = path.join(parent, "artifact"); file(p, "independent held-file positive bytes\n", 0o751);
+    const before = expandedState(parent), expected = lstatSync(p), descriptors = attachedDescriptors(p);
+    const originalOpen = fs.openSync, originalStat = fs.fstatSync, originalClose = fs.closeSync;
+    const captured = [];
+    try {
+      await withFsSeams({ openSync(...args) {
+        const fd = originalOpen(...args);
+        if (args[0] === p) captured.push({ fd, path: p, dev: expected.dev, ino: expected.ino });
+        return fd;
+      } }, () => {
+        const h = heldFile(p, { executable: true, singleLink: true });
+        assert.equal(captured.length, 1); assert.equal(h.fd, captured[0].fd);
+        const actual = originalStat(h.fd);
+        assert.equal(actual.isFile(), true); assert.equal(actual.dev, expected.dev); assert.equal(actual.ino, expected.ino);
+        assert.equal(readlinkSync(`/proc/self/fd/${h.fd}`), p);
+        assert.equal(attachedDescriptors(p), descriptors + 1);
+        h.check(); h.close();
+        assert.throws(() => originalStat(h.fd), e => e.code === "EBADF");
+        assert.equal(attachedDescriptors(p), descriptors);
+      });
+      assert.deepEqual(expandedState(parent), before);
+    } finally { recoverFixtureDescriptors(captured, originalStat, originalClose); }
+  });
+  await check("held file sixteen real-open first-stat failures close before fixture recovery", async () => {
+    const parent = path.join(root, "held-file-first-stat"); mkdirSync(parent);
+    const p = path.join(parent, "artifact"); file(p, "independent first-stat fixture bytes\n", 0o751);
+    const before = expandedState(parent), expected = lstatSync(p), descriptors = attachedDescriptors(p);
+    const originalOpen = fs.openSync, originalStat = fs.fstatSync, originalClose = fs.closeSync;
+    const captured = []; let current, injected, statCalls;
+    try {
+      await withFsSeams({
+        openSync(...args) {
+          const fd = originalOpen(...args);
+          if (args[0] === p) {
+            current = { fd, path: p, dev: expected.dev, ino: expected.ino }; captured.push(current);
+          }
+          return fd;
+        },
+        fstatSync(fd) {
+          if (current && fd === current.fd) {
+            statCalls++; assert.equal(statCalls, 1);
+            const actual = originalStat(fd);
+            assert.equal(actual.isFile(), true); assert.equal(actual.dev, expected.dev); assert.equal(actual.ino, expected.ino);
+            assert.equal(readlinkSync(`/proc/self/fd/${fd}`), p);
+            throw injected;
+          }
+          return originalStat(fd);
+        },
+      }, () => {
+        for (let i = 0; i < 16; i++) {
+          current = null; statCalls = 0; injected = new Error(`fixture held-file first stat ${i}`);
+          assert.throws(() => heldFile(p), e => e === injected);
+          assert.ok(current && Number.isInteger(current.fd));
+          assert.equal(captured.length, i + 1); assert.equal(statCalls, 1);
+          assert.throws(() => originalStat(current.fd), e => e.code === "EBADF");
+          assert.equal(attachedDescriptors(p), descriptors);
+        }
+      });
+      assert.equal(captured.length, 16); assert.deepEqual(expandedState(parent), before);
+    } finally { recoverFixtureDescriptors(captured, originalStat, originalClose); }
+  });
+  await check("comparator second initial-stat failure closes both real attachments before recovery", async () => {
+    const parent = path.join(root, "comparator-second-stat"); mkdirSync(parent);
+    const a = path.join(parent, "a"), b = path.join(parent, "b");
+    const bytes = Buffer.from("independent comparator first-stat bytes\n");
+    file(a, bytes, 0o751); file(b, bytes, 0o751);
+    const before = expandedState(parent), expectedA = lstatSync(a), expectedB = lstatSync(b);
+    const descriptorsA = attachedDescriptors(a), descriptorsB = attachedDescriptors(b);
+    const originalOpen = fs.openSync, originalStat = fs.fstatSync, originalClose = fs.closeSync;
+    const captured = [], injected = new Error("fixture comparator second initial stat"); let injections = 0;
+    try {
+      await withFsSeams({
+        openSync(...args) {
+          const fd = originalOpen(...args);
+          if (args[0] === a || args[0] === b) {
+            const expected = args[0] === a ? expectedA : expectedB;
+            captured.push({ fd, path: args[0], dev: expected.dev, ino: expected.ino });
+          }
+          return fd;
+        },
+        fstatSync(fd) {
+          const second = captured.find(record => record.path === b && record.fd === fd);
+          if (second) {
+            injections++; assert.equal(injections, 1);
+            const actual = originalStat(fd), first = captured.find(record => record.path === a);
+            assert.ok(first); const firstActual = originalStat(first.fd);
+            assert.equal(firstActual.dev, expectedA.dev); assert.equal(firstActual.ino, expectedA.ino);
+            assert.equal(actual.isFile(), true); assert.equal(actual.dev, expectedB.dev); assert.equal(actual.ino, expectedB.ino);
+            assert.equal(readlinkSync(`/proc/self/fd/${fd}`), b);
+            throw injected;
+          }
+          return originalStat(fd);
+        },
+      }, () => {
+        assert.throws(() => compareFiles(a, b, bytes.length), e => e === injected);
+        assert.deepEqual(captured.map(record => record.path), [a, b]); assert.equal(injections, 1);
+        for (const record of captured) assert.throws(() => originalStat(record.fd), e => e.code === "EBADF");
+        assert.equal(attachedDescriptors(a), descriptorsA); assert.equal(attachedDescriptors(b), descriptorsB);
+      });
+      assert.deepEqual(expandedState(parent), before);
+    } finally { recoverFixtureDescriptors(captured, originalStat, originalClose); }
   });
   await check("comparator first attachment closes when second acquisition fails", () => {
     const a = path.join(root, "second-open-a"); file(a, "fixture bytes", 0o755);

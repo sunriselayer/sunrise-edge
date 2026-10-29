@@ -22,7 +22,8 @@
 //!
 //! Every protocol-critical type exposes an `encode_*` function that uses the
 //! same `CanonicalStruct` framing used throughout the workspace.  Type-id
-//! constants in this crate live in the `0x6xxx` namespace.
+//! constants in this crate live in the `0x6xxx` namespace, except the existing
+//! `0xE009` submission-signature envelope retained for compatibility.
 
 use abi::{AbiError, AccessManifest, decode_access_manifest, encode_access_manifest};
 use canonical_encoding::{
@@ -50,6 +51,21 @@ const EXECUTION_EFFECTS_TYPE_ID: u16 = 0x6004;
 const OBJECT_EFFECTS_LIST_TYPE_ID: u16 = 0x6005;
 const EVENT_RECORDS_LIST_TYPE_ID: u16 = 0x6006;
 const ENCODING_VERSION: u16 = 1;
+
+/// The stable, exact transaction-v1 signature message family.
+///
+/// This string is part of the signed byte layout via
+/// [`crypto::frame_signature_message`]. Changing it changes every future
+/// transaction signature and requires a protocol-critical compatibility review.
+pub const TRANSACTION_V1_MESSAGE_TYPE: &str = "transaction-v1";
+
+/// Stable message family for profile-2 submission signatures that bind the
+/// durable request identity to the otherwise unchanged Transaction v1 bytes.
+pub const SUBMIT_TRANSACTION_V1_MESSAGE_TYPE: &str = "submit-transaction-v1";
+
+/// Existing canonical type id for the profile-2 submission-signature envelope.
+pub const SUBMIT_TRANSACTION_SIGNABLE_TYPE_ID: u16 = 0xE009;
+const SUBMIT_TRANSACTION_SIGNABLE_ENCODING_VERSION: u16 = 1;
 
 // ── transaction decode resource bounds ──────────────────────────────────────
 //
@@ -507,6 +523,29 @@ pub fn encode_transaction_signable(tx: &Transaction) -> Result<Vec<u8>, Executio
         canonical.field_bytes(11, encode_fee_payment(fee_payment)?)?;
     }
     Ok(canonical.finish()?)
+}
+
+/// Structurally encodes the existing profile-2 submission-signature payload.
+///
+/// Field 1 is exactly the supplied 32 raw identity bytes; field 2 is exactly
+/// `transaction_signable`. Zero identity bytes and an empty payload are encoded
+/// without validating a nonzero request id, transaction schema or signature.
+/// This function creates no authenticated submission or storage authority.
+///
+/// Both fields are copied before [`CanonicalStruct::finish`] applies its shared
+/// canonical frame bound. That bound is not preallocation admission or the
+/// separate, tighter transaction-authentication signable-byte limit.
+pub fn encode_submit_transaction_signable_payload(
+    request_id: &[u8; 32],
+    transaction_signable: &[u8],
+) -> Result<Vec<u8>, CanonicalEncodingError> {
+    let mut canonical: CanonicalStruct = CanonicalStruct::new(
+        SUBMIT_TRANSACTION_SIGNABLE_TYPE_ID,
+        SUBMIT_TRANSACTION_SIGNABLE_ENCODING_VERSION,
+    );
+    canonical.field_bytes(1, request_id.to_vec())?;
+    canonical.field_bytes(2, transaction_signable.to_vec())?;
+    canonical.finish()
 }
 
 /// Hashes the signable transaction payload using the suite selected from the
@@ -2208,6 +2247,51 @@ mod tests {
         assert_eq!(
             hex,
             "534e5245016001000c0001000a000000746573742d636861696e020004000000010000000300080000000000000000000000040020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa05000800000001000000000000000600cd000000534e5245025001000200010004000000010000000200b3000000534e524501500100020001008c000000534e5245044001000300010030000000534e524501400100010001002000000011111111111111111111111111111111111111111111111111111111111111110200080000000100000000000000030038000000534e524503010100020001000200000001000200200000001111111111111111111111111111111111111111111111111111111111111111020011000000534e52450640010001000100010000000107008c000000534e5245044001000300010030000000534e5245014001000100010020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0200080000000100000000000000030038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb08000300000072756e0900000000000a0008000000e8030000000000000b00e0000000534e5245027001000300010030000000534e5245017001000100010020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc020008000000090000000000000003008c000000534e5245044001000300010030000000534e5245014001000100010020000000dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0200080000000200000000000000030038000000534e52450301010002000100020000000100020020000000dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0c00200000000101010101010101010101010101010101010101010101010101010101010101"
+        );
+    }
+
+    #[test]
+    fn submission_payload_preserves_independent_raw_golden_bytes() {
+        let request_id: [u8; 32] = [0x5A; 32];
+        let payload: [u8; 3] = [0x01, 0x02, 0x03];
+        let expected: [u8; 57] = [
+            0x53, 0x4E, 0x52, 0x45, 0x09, 0xE0, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x20, 0x00,
+            0x00, 0x00, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A,
+            0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A,
+            0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x02, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x02,
+            0x03,
+        ];
+        let actual: Vec<u8> =
+            encode_submit_transaction_signable_payload(&request_id, &payload).unwrap();
+        assert_eq!(actual.as_slice(), expected.as_slice());
+    }
+
+    #[test]
+    fn submission_payload_structurally_encodes_zero_identity_and_empty_payload() {
+        let request_id: [u8; 32] = [0; 32];
+        let expected: [u8; 54] = [
+            0x53, 0x4E, 0x52, 0x45, 0x09, 0xE0, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x20, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let actual: Vec<u8> = encode_submit_transaction_signable_payload(&request_id, &[]).unwrap();
+        assert_eq!(actual.as_slice(), expected.as_slice());
+    }
+
+    #[test]
+    fn submission_payload_retains_exact_shared_frame_bound() {
+        // Encoder-only boundary operands, not admissible authenticated transactions.
+        let request_id: [u8; 32] = [0x5A; 32];
+        let payload: Vec<u8> = vec![0x01_u8; 33_554_379];
+        let exact: Vec<u8> =
+            encode_submit_transaction_signable_payload(&request_id, &payload[..33_554_378])
+                .unwrap();
+        assert_eq!(exact.len(), 33_554_432);
+        drop(exact);
+        assert_eq!(
+            encode_submit_transaction_signable_payload(&request_id, &payload),
+            Err(CanonicalEncodingError::FrameTooLarge(33_554_433))
         );
     }
 }

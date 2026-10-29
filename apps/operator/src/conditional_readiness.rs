@@ -44,6 +44,7 @@ const FLAGS: &[&str] = &[
     "--cut-dir",
     "--next-set",
     "--out-dir",
+    crate::local_anchor::FLAG,
     "--state-db",
     "--blob-db",
     "--validator-id",
@@ -71,6 +72,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     let mut accepted: Vec<&'static str> = FLAGS.to_vec();
     accepted.extend_from_slice(CHAIN_FLAGS);
     let mut flags: FlagSet = FlagSet::parse(values, &accepted, &[])?;
+    let anchor: Option<PathBuf> = crate::local_anchor::parse(&mut flags)?;
     let chain_inputs: Option<SuccessorChainInputs> =
         SuccessorChainInputs::parse_optional(&mut flags)?;
     let inputs: BusinessPinInputs = BusinessPinInputs::parse(&mut flags)?;
@@ -103,6 +105,9 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         flags.many("--vote")
     };
     flags.finish()?;
+    if !voting && anchor.is_some() {
+        return Err("certificate mode has no local anchor/store".into());
+    }
     if !voting && !(1..=MAX_READINESS_MEMBERS).contains(&vote_paths.len()) {
         return Err("certificate requires one to 256 bounded vote files".into());
     }
@@ -182,8 +187,13 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         }
         let namespace: SqliteNamespace =
             SqliteNamespace::new(pins.context.chain_id().clone(), validator, pins.domain);
-        let target: SqliteImportTarget =
-            SqliteImportTarget::open_existing(&state, namespace, verified.binding())?;
+        let target: SqliteImportTarget = crate::local_anchor::open_import(
+            &state,
+            &blobs,
+            anchor.as_deref(),
+            namespace,
+            verified.binding(),
+        )?;
         let bodies: SqliteBlobStore = SqliteBlobStore::open_existing(&blobs)?;
         let key_path: PathBuf = if key_path.is_absolute() {
             key_path

@@ -15,10 +15,14 @@ use axum::{
 };
 use consensus::ConsensusSigner;
 use core::fmt;
+#[cfg(target_os = "linux")]
+pub mod certified_custody;
 mod fastvote;
 mod lifecycle;
 mod local_execution;
 mod observations;
+#[cfg(target_os = "linux")]
+pub mod ordered_custody;
 pub mod ordered_economics;
 mod paid_execution;
 mod publication;
@@ -39,7 +43,10 @@ use node_core::{
     query_committed_epoch_state, query_object, query_request_receipt, query_sender_next_nonce,
 };
 use objects::{Address, ObjectId};
-pub use observations::{NativeHttpObservations, NativeHttpSnapshot, NativeStopReason};
+pub use observations::{
+    NativeHttpLiveRecordError, NativeHttpObservations, NativeHttpSnapshot, NativeStopReason,
+    decode_live_summary,
+};
 use protocol_config::{
     DomainPlacementManifest, ProtocolConfig, ProtocolConfigError, resolve_transaction_auth_profile,
 };
@@ -100,7 +107,7 @@ pub use node_wire::{
     http_receipt_query_result,
 };
 
-/// Maximum HTTP body size. The allowance above the inner payload covers framing.
+/// Default HTTP body size. The allowance above the inner payload covers framing.
 pub const MAX_HTTP_EVENT_BODY_BYTES: usize = MAX_NODE_PAYLOAD_BYTES + 512;
 /// Bounded native delivery lease; expired work is deliberately redelivered.
 pub const NATIVE_OUTBOX_LEASE_MILLIS: u64 = 30_000;
@@ -143,6 +150,7 @@ pub struct NativeHttpServePolicy {
     response_total_timeout: Duration,
     local_publication: bool,
     local_execution: bool,
+    certified_publication: bool,
 }
 
 impl NativeHttpServePolicy {
@@ -181,6 +189,7 @@ impl NativeHttpServePolicy {
             response_total_timeout: Duration::from_millis(response_total_timeout_millis.get()),
             local_publication: false,
             local_execution: false,
+            certified_publication: false,
         })
     }
 
@@ -205,6 +214,16 @@ impl NativeHttpServePolicy {
         self.local_execution = enabled;
         self
     }
+
+    /// Applies the existing bundle body bound to exact certified publication
+    /// retain and canonical drain-import POST paths at the outer collector.
+    /// This defaults off and mounts no route or grants protocol authority; the
+    /// embedding host must independently compose the certified router.
+    #[must_use]
+    pub const fn with_certified_publication(mut self, enabled: bool) -> Self {
+        self.certified_publication = enabled;
+        self
+    }
 }
 
 impl Default for NativeHttpServePolicy {
@@ -212,6 +231,7 @@ impl Default for NativeHttpServePolicy {
         Self {
             local_publication: false,
             local_execution: false,
+            certified_publication: false,
             max_connections: NonZeroUsize::new(DEFAULT_NATIVE_HTTP_CONNECTIONS)
                 .unwrap_or(NonZeroUsize::MIN),
             header_read_timeout: Duration::from_millis(DEFAULT_NATIVE_HTTP_HEADER_READ_MILLIS),
@@ -737,6 +757,15 @@ impl NativeBlockingExecutor {
         self.observations.clone()
     }
 
+    /// Returns a trusted cancellation signal backed by this executor's own
+    /// stop state (DR-0222). `is_cancelled()` becomes true from the moment
+    /// `close` is called on this executor or any of its clones, independent
+    /// of permit admission; it never reflects a merely saturated pool.
+    #[must_use]
+    pub fn stop_cancellation(&self) -> Arc<dyn InvocationCancellation> {
+        Arc::new(StopCancellation(Arc::clone(&self.lifecycle)))
+    }
+
     fn try_acquire(&self) -> Result<lifecycle::BlockingPermit, TryAcquireError> {
         let result: Result<lifecycle::BlockingPermit, TryAcquireError> =
             self.lifecycle.acquire(&self.permits, &self.observations);
@@ -746,6 +775,17 @@ impl NativeBlockingExecutor {
             Err(TryAcquireError::Closed) => self.observations.0.blocking_closed.increment(),
         }
         result
+    }
+}
+
+/// Private [`InvocationCancellation`] backed by an executor's own stop
+/// state. Constructed only through [`NativeBlockingExecutor::stop_cancellation`].
+#[derive(Debug)]
+struct StopCancellation(Arc<lifecycle::BlockingLifecycle>);
+
+impl InvocationCancellation for StopCancellation {
+    fn is_cancelled(&self) -> bool {
+        self.0.is_closed()
     }
 }
 
@@ -1527,9 +1567,7 @@ async fn serve_connection<S>(
         dispatch_bounded_request(
             app.clone(),
             request,
-            policy.body_total_timeout,
-            policy.local_publication,
-            policy.local_execution,
+            policy,
             Arc::clone(&request_read_complete),
             Arc::clone(&request_observations),
         )
@@ -1563,29 +1601,15 @@ async fn serve_connection<S>(
 async fn dispatch_bounded_request(
     app: Router,
     request: Request<Incoming>,
-    body_total_timeout: Duration,
-    local_publication: bool,
-    local_execution: bool,
+    policy: NativeHttpServePolicy,
     request_read_complete: Arc<AtomicBool>,
     observations: Arc<observations::ConnectionObservations>,
 ) -> Result<Response, Infallible> {
     let (parts, incoming) = request.into_parts();
     let body = Body::new(incoming);
-    let limit: usize = if local_publication
-        && parts.method == axum::http::Method::POST
-        && parts.uri.path() == publication::PUBLICATION_PATH
-    {
-        execution::publication::MAX_PUBLICATION_SUBMISSION_BYTES
-    } else if local_execution
-        && parts.method == axum::http::Method::POST
-        && parts.uri.path() == local_execution::EXECUTION_PATH
-    {
-        execution::local_execution::MAX_LOCAL_EXECUTION_INTENT_BYTES
-    } else {
-        MAX_HTTP_EVENT_BODY_BYTES
-    };
+    let limit: usize = request_body_limit(policy, &parts.method, parts.uri.path());
     let collected: Result<Result<Bytes, axum::Error>, tokio::time::error::Elapsed> =
-        timeout(body_total_timeout, to_bytes(body, limit)).await;
+        timeout(policy.body_total_timeout, to_bytes(body, limit)).await;
     // Only this connection's bounded collector ends its ingress-read phase.
     // Terminal size/read/total-time refusals end it too: their response writes
     // remain bounded, and no router work or second request can follow them.
@@ -1618,6 +1642,37 @@ async fn dispatch_bounded_request(
         Err(error) => match error {},
     };
     Ok(response)
+}
+
+fn request_body_limit(
+    policy: NativeHttpServePolicy,
+    method: &axum::http::Method,
+    path: &str,
+) -> usize {
+    if method != axum::http::Method::POST {
+        return MAX_HTTP_EVENT_BODY_BYTES;
+    }
+    if policy.certified_publication && is_certified_publication_body_path(path) {
+        consensus::bundle::MAX_ENCODED_BUNDLE_BYTES
+    } else if policy.local_publication && path == publication::PUBLICATION_PATH {
+        execution::publication::MAX_PUBLICATION_SUBMISSION_BYTES
+    } else if policy.local_execution && path == local_execution::EXECUTION_PATH {
+        execution::local_execution::MAX_LOCAL_EXECUTION_INTENT_BYTES
+    } else {
+        MAX_HTTP_EVENT_BODY_BYTES
+    }
+}
+
+fn is_certified_publication_body_path(path: &str) -> bool {
+    if path == FASTVOTE_PUBLICATION_RETAIN_PATH {
+        return true;
+    }
+    // Inspect the raw URI path. The existing parser rejects percent encoding,
+    // uppercase hex, trailing slashes and extra segments without normalization.
+    let validator_id: Option<&str> = node_wire::FASTVOTE_DRAIN_IMPORT_PATH
+        .strip_suffix("{validator_id}")
+        .and_then(|prefix: &str| path.strip_prefix(prefix));
+    validator_id.and_then(decode_hex64_selector).is_some()
 }
 
 struct IoIdleTimeoutStream<S> {
@@ -1944,7 +1999,9 @@ impl Error for IndexedOutboxRecoveryError {
 /// The scheduler supplies no cursor, domain, clock, fence, or deadline. Trusted
 /// embedding composition supplies immutable authority and identity sources.
 /// Claim and acknowledgement ambiguity each receive one same-identity
-/// reconciliation attempt; an unreconciled claim is never sent.
+/// reconciliation attempt; an unreconciled claim is never sent. An admitted job
+/// still queued when shared admission closes refuses before accessing runtime;
+/// a recovery that has already entered its work continues to completion.
 pub async fn recover_indexed_outbox_once<R, I>(
     runtime: Arc<R>,
     authority: IndexedOutboxRecoveryAuthority,
@@ -1956,6 +2013,7 @@ where
     R::State: IndexedOutboxRepository,
     I: IndexedOutboxIdentitySource + Send + Sync + 'static,
 {
+    let stop: Arc<dyn InvocationCancellation> = blocking_executor.stop_cancellation();
     let permit = match blocking_executor.try_acquire() {
         Ok(permit) => permit,
         Err(TryAcquireError::NoPermits) => {
@@ -1967,6 +2025,9 @@ where
     };
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        if stop.is_cancelled() {
+            return Err(IndexedOutboxRecoveryError::AdmissionClosed);
+        }
         recover_indexed_outbox_once_blocking(runtime.as_ref(), authority, identities.as_ref())
     })
     .await
@@ -2108,7 +2169,8 @@ where
 /// and page size, and must invoke this function again while a continuation is
 /// returned. A later sweep restarts with `after = None`. This function creates
 /// no loop or background task and shares admission with HTTP when given the
-/// same [`NativeBlockingExecutor`].
+/// same [`NativeBlockingExecutor`]. An admitted job still queued when admission
+/// closes refuses before discovery; already entered work still completes.
 pub async fn recover_outboxes_once<R, L>(
     runtime: Arc<R>,
     config: NodeConfig,
@@ -2125,6 +2187,7 @@ where
     let layout = PersistenceLayout::new(config.chain_id().clone(), config.protocol_version());
     let scan = StateKeyScan::new(layout.outbox_prefix(), after, scan_limit)
         .map_err(NativeOutboxRecoveryError::Runtime)?;
+    let stop: Arc<dyn InvocationCancellation> = blocking_executor.stop_cancellation();
     let permit = match blocking_executor.try_acquire() {
         Ok(permit) => permit,
         Err(TryAcquireError::NoPermits) => {
@@ -2136,6 +2199,9 @@ where
     };
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        if stop.is_cancelled() {
+            return Err(NativeOutboxRecoveryError::AdmissionClosed);
+        }
         recover_outboxes_once_blocking(runtime.as_ref(), &config, lease_ids.as_ref(), &scan)
     })
     .await
@@ -2318,6 +2384,7 @@ where
     if initial_cancelled {
         return cancelled_before_storage_response();
     }
+    let stop_cancellation: Arc<dyn InvocationCancellation> = blocking_executor.stop_cancellation();
     let permit = match blocking_executor.try_acquire() {
         Ok(permit) => permit,
         Err(TryAcquireError::NoPermits) => return overload_response(),
@@ -2327,6 +2394,9 @@ where
     };
     let blocking_work = tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        if stop_cancellation.is_cancelled() {
+            return Err(InvocationError::CancelledBeforeStorage);
+        }
         work(body)
     });
     let result = match blocking_work.await {
@@ -2427,6 +2497,7 @@ where
     if initial_cancelled {
         return cancelled_before_storage_response();
     }
+    let stop_cancellation: Arc<dyn InvocationCancellation> = blocking_executor.stop_cancellation();
     let permit = match blocking_executor.try_acquire() {
         Ok(permit) => permit,
         Err(TryAcquireError::NoPermits) => return overload_response(),
@@ -2436,6 +2507,9 @@ where
     };
     let blocking_work = tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        if stop_cancellation.is_cancelled() {
+            return Err(QueryInvocationError::CancelledBeforeStorage);
+        }
         work()
     });
     let result = match blocking_work.await {

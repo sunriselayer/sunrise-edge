@@ -26,12 +26,7 @@ fn invalid(message: impl Into<String>) -> CliError {
 }
 
 pub(super) fn read_bounded(path: &str, maximum: usize) -> Result<Vec<u8>, CliError> {
-    let mut bytes: Vec<u8> = Vec::new();
-    File::open(path)
-        .map_err(failure)?
-        .take((maximum + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(failure)?;
+    let bytes: Vec<u8> = super::input_file::read_for_size_check(path, maximum).map_err(failure)?;
     if bytes.len() > maximum {
         return Err(invalid(format!("{path} exceeds the maximum accepted size")));
     }

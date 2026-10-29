@@ -11,15 +11,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInflateRaw } from "node:zlib";
 
-export const NODE_VERSION = "v22.20.0";
+export const NODE_VERSION = "v24.19.0";
 export const RUST_VERSION = "1.97.1";
 export const TARGET = "x86_64-unknown-linux-gnu";
 export const NAMES = Object.freeze([
   "sqlite_genesis", "standard_asset_genesis", "genesis_inspect", "sqlite_source_host",
-  "business_cut", "business_import", "conditional_readiness", "ordered_seal",
-  "successor_activation", "successor_host", "sunrise-edge-cli",
+  "business_cut", "business_import", "business_recovery", "conditional_readiness", "ordered_seal",
+  "successor_activation", "successor_host", "native_observations", "sunrise-edge-cli",
 ]);
 const PACKAGES = ["sunrise-edge-operator", "sunrise-edge-cli"];
+const REGISTRY_LIBRARY_KINDS = new Set(["lib", "rlib", "dylib", "cdylib", "staticlib"]);
+const REGISTRY_UNSELECTED_KINDS = new Set(["bin", "example", "test", "bench"]);
 const SCRIPT = fileURLToPath(import.meta.url);
 const GiB = 1024 ** 3;
 export const LIMITS = Object.freeze({
@@ -71,8 +73,8 @@ export function heldFile(p, { executable = false, singleLink = false } = {}) {
     `Not an ordinary executable: ${p}`);
   if (singleLink) requireThat(before.nlink === 1, `Aliased saved file: ${p}`);
   const fd = openSync(p, F.O_RDONLY | F.O_NOFOLLOW | F.O_NONBLOCK);
-  const initial = fstatSync(fd);
   try {
+    const initial = fstatSync(fd);
     requireThat(same(stamp(initial), stamp(before)), `Changed file attachment: ${p}`);
     return {
       fd, initial, path: p,
@@ -213,7 +215,7 @@ export function verifyTools(ctx) {
   }
   for (const name of ["cargo", "rustc", "rustdoc", "cc"]) requireThat(!/rustup|ccache|sccache/.test(path.basename(tools[name].resolved)), "Toolchain/compiler/cache wrappers are forbidden");
   tools.node.version = textProbe(ctx, ctx.args.node, ["--version"]);
-  requireThat(tools.node.version === NODE_VERSION, "Node version must be 22.20.0");
+  requireThat(tools.node.version === NODE_VERSION, "Node version must be 24.19.0");
   tools.git.version = textProbe(ctx, ctx.args.git, ["--version"]);
   tools.cargo.version = textProbe(ctx, ctx.args.cargo, ["-vV"]);
   tools.rustc.version = textProbe(ctx, ctx.args.rustc, ["-vV"]);
@@ -658,8 +660,17 @@ export function resolveClosure(ctx) {
       requireThat(ctx.source.files.some(f => f.path === p.manifest_path), "Uncommitted path dependency manifest");
     }
     for (const target of p.targets) {
+      absolute(target.src_path);
       requireThat(within(p.source ? p.expanded : ctx.args.source, target.src_path), "Target source escapes package/source");
-      heldFile(target.src_path).close();
+      if (!p.source) { heldFile(target.src_path).close(); continue; }
+      // Published registry crates may legitimately omit declared example/test/bench/bin
+      // sources (e.g. cookie-factory 0.3.3); this recipe never selects those targets.
+      requireThat(Array.isArray(target.kind) && target.kind.length > 0, "Malformed registry target kind");
+      const library = target.kind.every(k => REGISTRY_LIBRARY_KINDS.has(k));
+      const buildOrMacro = same(target.kind, ["proc-macro"]) || same(target.kind, ["custom-build"]);
+      const unselected = target.kind.length === 1 && REGISTRY_UNSELECTED_KINDS.has(target.kind[0]);
+      requireThat(library || buildOrMacro || unselected, `Unsupported registry target kind: ${target.kind.join(",")}`);
+      if (library || buildOrMacro) heldFile(target.src_path).close();
     }
   }
   for (const name of NAMES) {
@@ -983,6 +994,8 @@ function validateObservation(message, closure, compiler, observations) {
   const declared = target && pkg.targets.find(t => t.name === target.name && same(t.kind, target.kind) &&
     same(t.crate_types, target.crate_types) && t.src_path === target.src_path);
   requireThat(declared, "Cargo target identity mismatch");
+  requireThat(!pkg.source || !declared.kind.some(kind => REGISTRY_UNSELECTED_KINDS.has(kind)),
+    "Cargo observed unselected registry target");
   if (message.reason === "compiler-message") { observations.diagnostics++; return; }
   requireThat(message.fresh === false && message.profile && message.profile.test === false &&
     message.manifest_path === pkg.manifest_path, "Unexpected reused/nonrelease or wrong-manifest Cargo artifact");
@@ -1335,7 +1348,7 @@ async function orchestrate(args, { fixture = false, doubles = {}, callerEnv = pr
   return manifest;
 }
 export async function runNativeReleaseEvidence(argv) {
-  requireThat(process.platform === "linux" && process.arch === "x64" && process.version === NODE_VERSION, "Requires Linux x86_64 and installed Node 22.20.0");
+  requireThat(process.platform === "linux" && process.arch === "x64" && process.version === NODE_VERSION, "Requires Linux x86_64 and installed Node 24.19.0");
   requireThat(process.execArgv.length === 0, "Undeclared Node execution flags");
   return orchestrate(parseCli(argv)); // No production CLI bypass or injected doubles.
 }
@@ -1345,7 +1358,7 @@ export async function runFixtureEvidence(args, doubles, callerEnv = {}) {
 if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT) {
   try {
     await runNativeReleaseEvidence(process.argv.slice(2));
-    process.stdout.write("Two native builds and eleven full-byte comparisons succeeded; local evidence only.\n");
+    process.stdout.write(`Two native builds and ${NAMES.length} full-byte comparisons succeeded; local evidence only.\n`);
   } catch (e) {
     process.stderr.write(`${e.message}\n`); process.exitCode = 1;
   }

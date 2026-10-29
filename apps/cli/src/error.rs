@@ -158,13 +158,29 @@ pub enum CliError {
     /// A Ledger signer was selected, but this binary was built without the
     /// `usb-hid` Cargo feature, so no real USB/HID transport is available.
     LedgerTransportFeatureDisabled,
+    /// The `custody` command requires an explicit action.
+    MissingCustodyAction,
+    /// The custody action is not implemented.
+    UnknownCustodyAction(String),
+    /// A custody operation (`keygen`, `approve`, `serve`, or the publication
+    /// client's custody leg) failed. Boxed for the same reason as
+    /// `ClientError` above.
+    Custody(Box<crate::custody::CustodyError>),
+    /// Exactly one or two of the three required custody signer flags
+    /// (`--custody-socket`/`--custody-uid`/`--custody-expected-public-key`)
+    /// were supplied; all three are required together, with no default or
+    /// environment-variable fallback.
+    PartialCustodySignerConfiguration {
+        /// The flag that must also be supplied to complete the trio.
+        missing: &'static str,
+    },
 }
 
 impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingCommand => f.write_str(
-                "no subcommand supplied; expected one of: address, context, object, receipt, next-nonce, transfer, split, merge, mint, burn, contract",
+                "no subcommand supplied; expected one of: address, context, object, receipt, next-nonce, transfer, split, merge, mint, burn, contract, economics, custody",
             ),
             Self::UnknownCommand(command) => write!(f, "unknown subcommand: {command:?}"),
             Self::MissingContractAction => f.write_str("contract requires an action: validate, publish, query, instantiate, call, query-instance, paid-publish, paid-instantiate, paid-call, fastvote-replay, fastvote-catch-up, fastvote-frontier-advance, fastvote-frontier-export, fastvote-drain-local-ready, or fastvote-drain-member"),
@@ -245,6 +261,17 @@ impl fmt::Display for CliError {
             Self::LedgerTransportFeatureDisabled => f.write_str(
                 "a Ledger signer was selected, but this binary was built without the usb-hid feature",
             ),
+            Self::MissingCustodyAction => f.write_str(
+                "custody requires an action: keygen, approve, or serve",
+            ),
+            Self::UnknownCustodyAction(action) => {
+                write!(f, "unknown custody action: {action:?}; expected keygen, approve, or serve")
+            }
+            Self::Custody(error) => write!(f, "{error}"),
+            Self::PartialCustodySignerConfiguration { missing } => write!(
+                f,
+                "--custody-socket, --custody-uid, and --custody-expected-public-key must all be supplied together; missing {missing}"
+            ),
         }
     }
 }
@@ -271,6 +298,7 @@ impl std::error::Error for CliError {
             Self::LedgerExpectedFirmwareVersion(error) => Some(error),
             Self::LedgerConnect(error) => Some(error.as_ref()),
             Self::LedgerIdentity(error) => Some(error.as_ref()),
+            Self::Custody(error) => Some(error.as_ref()),
             _ => None,
         }
     }
@@ -333,5 +361,11 @@ impl From<ExpectedProtocolContextError> for CliError {
 impl From<CanonicalEncodingError> for CliError {
     fn from(value: CanonicalEncodingError) -> Self {
         Self::CanonicalEncoding(value)
+    }
+}
+
+impl From<crate::custody::CustodyError> for CliError {
+    fn from(value: crate::custody::CustodyError) -> Self {
+        Self::Custody(Box::new(value))
     }
 }

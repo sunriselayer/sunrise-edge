@@ -57,6 +57,43 @@ dependencies or claim a PG-free graph. Bundled SQLite and ring require native
 CC inputs. PG-only binaries/services, tests/examples and provider builds are
 excluded; no `--workspace`, `--bins`, `--all-targets` or `--all-features`.
 
+### 2026-10-08 encrypted-recovery target amendment
+
+[DR-0221](0221-encrypted-recovery-closure.md) adds the ordinary native operator
+`business_recovery`. Include its real `apps/operator/src/bin/business_recovery.rs`
+target in the SAME closed evidence owner, between `business_import` and
+`conditional_readiness`: twelve selected binaries, not an arbitrary `--bins`
+expansion or another build lane. Reconcile twelve actual package/bin/executable
+observations and compare all twelve saved artifacts with the unchanged full-byte,
+mode, ownership and cleanup rules. Independently assert the closed list in the
+existing cheap fixture owner; doubles are not native execution.
+
+The eleven-target recipe and its original acceptance remain historical evidence
+for their exact source. They do not qualify the newly selected recovery binary
+or its new dependency graph. A new exact committed source, accepted dependency
+closure and two fresh twelve-target builds remain required. This amendment grants
+neither dependency execution nor a resource reservation or release approval.
+
+### 2026-10-10 bounded local-collection target amendment
+
+[DR-0224](0224-bounded-local-observation-collector.md) adds the foreground
+`native_observations` operator binary. Include its actual
+`apps/operator/src/bin/native_observations.rs` target in this SAME closed owner,
+after `successor_host` and before `sunrise-edge-cli`. Retain all twelve existing
+targets, including `business_recovery`: thirteen actual package/bin/executable
+observations and thirteen saved-artifact comparisons are now required.
+Independently assert the complete list in the existing cheap fixture owner.
+Do not use arbitrary `--bins`, create another build lane, alter resource/cache/
+target rules, or reuse old eleven-/twelve-target output as new qualification.
+
+The original eleven-target recipe and the dated recovery amendment above remain
+historical contracts for their exact sources. For the current recipe, their
+closed argv additionally selects `--bin business_recovery` after `business_import`
+and `--bin native_observations` after `successor_host`. Every actual selected
+target must satisfy the unchanged byte/mode/ownership/cleanup rules in both
+fresh builds. New exact-source/dependency review and execution remain separate
+gates; the source target amendment grants no invocation or release authority.
+
 ## Closed recipe and inputs
 
 Use installed Node 22.20.0, checked through `process.version`; require its
@@ -295,3 +332,39 @@ Release-profile process acceptance, canonical/effects/consensus/proof parity,
 advisory review, upgrade/migration/restore, custody/signing, PKI, provider scope
 and public go/no-go stay separate. Required source/repository acceptance remains;
 this outcome does not complete M7 or authorize public release.
+
+## Source amendment: failed held-file acquisition (2026-10-11, Asia/Tokyo)
+
+The native release file holder's initial attachment stat now occurs first inside
+its existing cleanup `try`, immediately after the same successful open. A failed
+initial stat therefore reaches the holder's own close before ownership can be
+returned to a caller. Open flags, prior checks, attachment validation, returned
+fields/methods and the existing catch are unchanged. The original error object
+is preserved when close succeeds; a close failure can still replace it. This
+does not claim universal cleanup or change later I/O failure handling.
+
+Three added source controls require a real captured descriptor and use the
+preheld original stat operation to require `EBADF` before fixture recovery:
+positive acquisition/check/close, exactly sixteen real-open/first-stat failures,
+and comparator second-attachment failure with both descriptors closed. They
+also require unchanged complete owned-fixture bytes and recorded stamps.
+Existing test-only seams restore original methods in `finally`; failure recovery
+may close only captured descriptors matching the owned fixture's device, inode
+and exact descriptor path. Recovery does not make a failed assertion pass.
+
+These controls are UNEXECUTED source declarations, not observed operating-system
+failures or completed release evidence. All original controls, thirteen selected
+targets, recipes, resource/lineage checks and release prerequisites are retained.
+No production hook or API, acquisition workflow or new execution authority is
+introduced. R4, M7, runtime/PG, durability, custody and public launch remain open.
+
+## Source amendment: registry target-kind scope (2026-10-13, Asia/Singapore)
+
+[DR-0239](0239-registry-dependency-target-kind-scope.md) narrows which
+selected-package targets require a held source file before Cargo introspection.
+A registry dependency's declared `example`/`test`/`bench`/`bin` target, which
+this recipe never selects, is no longer required to exist on disk; a workspace
+target and a registry `lib`/`proc-macro`/`custom-build` target still are, and
+the existing package/source-boundary check still applies to every target.
+This fixes a false refusal, not a relaxation of the closed recipe, shipped
+thirteen-target binding or any archive/expanded/tool/resource observation.

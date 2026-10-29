@@ -16,6 +16,14 @@ plans and command baselines check the actual dispatch, including failures
 inside a recipe. Workflow jobs and success-only aggregates remain separate
 consumers, not a second definition of gate execution.
 
+The SQLite inventory fixture owns its exact exporter selector and calls the
+same discovery/execution helper as the PostgreSQL inventory fixture. Its
+standalone entrypoint and the `rust-tests` dispatcher therefore run one exact
+discovery followed by one execution; the dispatcher only delegates. Fixture
+environment, inventory CLI assertions and cleanup remain local to the fixture.
+Independent command doubles cover both entrypoints and prevent execution after
+missing, ambiguous or failed discovery, or inventory use after a failed export.
+
 [DR-0193](decisions/0193-required-recurring-acceptance.md) gives three heavy,
 always-ignored cases their own unconditional (never PostgreSQL-gated) lane
 each, rather than letting either share `rust-tests`' budget or drop out of
@@ -68,6 +76,18 @@ The required workflow has no path filters or conditional/tolerated failures.
 Stable `check` runs with `always()` and accepts explicit success from exactly
 these seven dependencies. Missing, failed, cancelled, skipped and unknown
 results are errors.
+
+The hosted `recurring-sqlite` lane selects Cargo dev/test optimization level 2
+for its complete process workload, with debug assertions and overflow checks
+explicitly enabled in both profiles. Ordinary builds retain workspace level 1;
+the existing curve-only level 3 override remains. A redundant node-core level 1
+override is omitted so this package inherits the selected level without losing
+its explicit safety checks. No selector, fixture, epoch, wait, fault, restart or
+refusal changes, and the 360-minute job budget remains. The independent gate
+contract rejects missing/weakened settings or their use in another lane.
+[DR-0240](decisions/0240-recurring-ci-compilation-profile.md) owns this choice.
+Record the actual compilation profile with source and results; optimization
+does not itself prove completion or a speed improvement.
 
 ## Explicit PostgreSQL acceptance
 

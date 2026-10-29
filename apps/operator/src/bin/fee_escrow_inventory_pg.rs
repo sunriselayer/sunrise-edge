@@ -4,39 +4,29 @@
 
 use hashing::HashSuiteResolver;
 use node_core::fee_claims::{FeeEscrowInventorySweep, verify_fee_escrow_inventory_all};
-use postgres::{
-    Config,
-    config::{Host, SslMode},
-};
-use postgres_rustls::{MakeTlsConnector, tokio_rustls::TlsConnector};
-use protocol_types::{
-    AtomicityDomainId, ChainId, Epoch, HashAlgorithmId, HashSuite, HashSuiteId, HashSuiteSchedule,
-    ProtocolVersion, ValidatorId,
-};
+use postgres_rustls::MakeTlsConnector;
+use protocol_types::{AtomicityDomainId, ChainId, HashSuiteSchedule, ProtocolVersion, ValidatorId};
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
 use runtime::{
     Clock, DurableOperationContext, StorageCorrelationId, StorageDeadline, SystemClock,
     WriterFenceGeneration,
 };
 use runtime_postgres::{
-    PostgresBlobStore, PostgresDurableStore, PostgresNamespace, PostgresPoolConfig,
-    PostgresTransactionPolicy, advance_writer_fence, build_postgres_pool, inspect_namespace,
+    PostgresBlobStore, PostgresDurableStore, PostgresNamespace, PostgresTransactionPolicy,
+    advance_writer_fence, inspect_namespace,
 };
-use rustls::{ClientConfig, RootCertStore, pki_types::CertificateDer};
 use std::{
     env,
     error::Error,
     ffi::OsString,
-    fs,
     num::{NonZeroU32, NonZeroUsize},
     path::PathBuf,
     process::ExitCode,
-    str::FromStr,
-    sync::Arc,
-    time::Duration,
 };
 
-const POSTGRES_DSN_ENV: &str = "SUNRISE_EDGE_OPERATOR_POSTGRES_DSN";
+use sunrise_edge_operator::common::{
+    connect_pool, parse_decimal_hash_suite as parse_suite, parse_hex_32,
+};
 
 struct Args {
     ca_der: PathBuf,
@@ -58,52 +48,6 @@ fn set_once(slot: &mut Option<String>, flag: &str, value: String) -> Result<(), 
         return Err(format!("duplicate {flag}"));
     }
     Ok(())
-}
-
-fn parse_hex_32(value: &str, flag: &str) -> Result<[u8; 32], String> {
-    if value.len() != 64 || !value.bytes().all(|byte: u8| byte.is_ascii_hexdigit()) {
-        return Err(format!("{flag} must be 64 hex digits"));
-    }
-    let mut bytes: [u8; 32] = [0; 32];
-    for (index, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
-            .map_err(|_| format!("{flag} contains invalid hex"))?;
-    }
-    Ok(bytes)
-}
-
-fn parse_suite(value: &str) -> Result<HashSuiteSchedule, String> {
-    let fields: Vec<&str> = value.split(':').collect();
-    if fields.len() != 8 {
-        return Err("--suite needs epoch:id:transaction:object:effects:code:config:certificate (decimal wire ids)".into());
-    }
-    let epoch: u64 = fields[0].parse().map_err(|_| "invalid suite epoch")?;
-    let id: u16 = fields[1].parse().map_err(|_| "invalid suite id")?;
-    if id == 0 {
-        return Err("zero suite id".into());
-    }
-    let algorithm = |index: usize| -> Result<HashAlgorithmId, String> {
-        let number: u16 = fields[index]
-            .parse()
-            .map_err(|_| "invalid hash algorithm id")?;
-        match HashAlgorithmId::try_from(number) {
-            Ok(HashAlgorithmId::Sha2_256) => Ok(HashAlgorithmId::Sha2_256),
-            Ok(HashAlgorithmId::Sha3_256) => Ok(HashAlgorithmId::Sha3_256),
-            _ => Err("unsupported hash algorithm id".into()),
-        }
-    };
-    Ok(HashSuiteSchedule {
-        activation_epoch: Epoch::new(epoch),
-        suite: HashSuite {
-            id: HashSuiteId::new(id),
-            transaction_hash: algorithm(2)?,
-            object_digest: algorithm(3)?,
-            effects_hash: algorithm(4)?,
-            code_hash: algorithm(5)?,
-            config_hash: algorithm(6)?,
-            certificate_hash: algorithm(7)?,
-        },
-    })
 }
 
 fn parse_args(values: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
@@ -193,47 +137,14 @@ fn parse_args(values: impl IntoIterator<Item = OsString>) -> Result<Args, String
     })
 }
 
-fn require_tls_tcp_host(config: &mut Config) -> Result<(), &'static str> {
-    if !matches!(config.get_hosts(), [Host::Tcp(_)]) {
-        return Err("PostgreSQL connection requires exactly one TCP host for TLS identity");
-    }
-    // Never honor libpq's `prefer` fallback or a DSN's `disable`: the Rustls
-    // connector validates the peer certificate and its configured host name.
-    config.ssl_mode(SslMode::Require);
-    Ok(())
-}
-
 fn run() -> Result<(), Box<dyn Error>> {
     let args: Args = parse_args(env::args_os().skip(1))?;
-    let dsn: String = env::var(POSTGRES_DSN_ENV)
-        .map_err(|_| format!("{POSTGRES_DSN_ENV} must be set in the operator environment"))?;
-    let mut config: Config =
-        Config::from_str(&dsn).map_err(|_| "invalid PostgreSQL connection configuration")?;
-    require_tls_tcp_host(&mut config)?;
-
-    let certificate: Vec<u8> = fs::read(&args.ca_der)?;
-    let mut roots: RootCertStore = RootCertStore::empty();
-    roots
-        .add(CertificateDer::from(certificate))
-        .map_err(|_| "invalid DER TLS root certificate")?;
-    let tls_config: ClientConfig =
-        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .map_err(|_| "unsupported TLS protocol versions")?
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-    let tls: MakeTlsConnector = MakeTlsConnector::new(TlsConnector::from(Arc::new(tls_config)));
-    let pool_config: PostgresPoolConfig = PostgresPoolConfig::new(
+    let pool: Pool<PostgresConnectionManager<MakeTlsConnector>> = connect_pool(
+        &args.ca_der,
         // One structured scan and one blob read may overlap; leave room for
         // the final metadata check without waiting on a two-slot pool.
         NonZeroU32::new(4).ok_or("zero pool size")?,
-        Duration::from_secs(10),
-        Duration::from_secs(30),
-        Duration::from_secs(300),
     )?;
-    let pool: Pool<PostgresConnectionManager<MakeTlsConnector>> =
-        build_postgres_pool(config, tls, pool_config)
-            .map_err(|_| "PostgreSQL TLS connection or pool initialization failed")?;
     let resolver: HashSuiteResolver =
         HashSuiteResolver::new(args.chain.clone(), args.protocol_version, args.schedule)?;
     let namespace: PostgresNamespace =
@@ -326,6 +237,9 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postgres::{Config, config::SslMode};
+    use std::str::FromStr;
+    use sunrise_edge_operator::common::require_tls_tcp_host;
 
     fn valid_args() -> Vec<OsString> {
         [
@@ -362,6 +276,44 @@ mod tests {
         let page: usize = values.iter().position(|value| value == "1").unwrap();
         values[page] = OsString::from("1025");
         assert!(parse_args(values).is_err());
+    }
+
+    #[test]
+    fn inventory_argv_preserves_hex_forms_and_refusal_order() {
+        let mixed: &str = "aBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaB";
+        let mut values: Vec<OsString> = valid_args();
+        for flag in ["--validator-id", "--domain"] {
+            let index: usize = values
+                .iter()
+                .position(|value: &OsString| value == flag)
+                .unwrap();
+            values[index + 1] = OsString::from(mixed);
+        }
+        let args: Args = parse_args(values).unwrap();
+        assert_eq!(args.validator.as_bytes(), &[0xab; 32]);
+        assert_eq!(args.domain.as_bytes(), &[0xab; 32]);
+
+        let mut values: Vec<OsString> = valid_args();
+        for flag in ["--validator-id", "--domain"] {
+            let index: usize = values
+                .iter()
+                .position(|value: &OsString| value == flag)
+                .unwrap();
+            values[index + 1] = OsString::from("bad");
+        }
+        assert_eq!(
+            parse_args(values).err().unwrap(),
+            "--validator-id must be 64 hex digits"
+        );
+
+        let mut values: Vec<OsString> = valid_args();
+        let index: usize = values
+            .iter()
+            .position(|value: &OsString| value == "--domain")
+            .unwrap();
+        values[index + 1] =
+            OsString::from("0000000000000000000000000000000000000000000000000000000000000000");
+        assert_eq!(parse_args(values).err().unwrap(), "zero atomicity domain");
     }
 
     #[test]

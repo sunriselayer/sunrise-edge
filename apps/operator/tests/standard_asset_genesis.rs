@@ -146,7 +146,12 @@ fn real_author_is_deterministic_and_installs_four_independent_validator_pairs() 
                 "4",
                 "--confirm-offline-fence-advance",
             ]);
-        let (mut host, status) = spawn_bounded_status_line(command, Duration::from_secs(20));
+        let startup_byte_cap: std::num::NonZeroUsize =
+            compiled_source_host_process::compiled_host_startup_line_limit(
+                fixture.context.chain_id().as_str(),
+            );
+        let (mut host, status) =
+            spawn_bounded_status_line(command, Duration::from_secs(20), startup_byte_cap);
         let address: SocketAddr = field(&status, "listen=").parse().unwrap();
         generations.push(field(&status, "writer_generation=").parse().unwrap());
         let transport: LoopbackHttpTransport = LoopbackHttpTransport::new(

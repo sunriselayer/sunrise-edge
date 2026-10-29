@@ -25,6 +25,18 @@ roadmap describes a later target state.
 - [Native SQLite connection and attachment ownership](decisions/0210-native-sqlite-connection-ownership.md):
   one native settings owner, lock-safe identity checks and explicit operator
   commit ambiguity; shared SQL decisions and live protocol authority stay separate.
+- [Complete-owner-loss local SQLite writer failover control](decisions/0260-complete-owner-loss-local-writer-failover.md):
+  separate actual sole-writer SIGKILL/reap and fresh generation business, with
+  complete SQL/portable/blob reconciliation; host/power/media/fsync faults
+  retain separate owning boundaries.
+- [Native SQLite virtual power and block-error profile](native-sqlite-virtual-fault-profile.md)
+  ([DR-0262](decisions/0262-native-sqlite-virtual-power-and-block-errors.md)):
+  actual guest kernel/cache loss and typed block EIO under source COMMIT,
+  independent cold full-image reconciliation and fresh fenced work.
+- [Independent-anchor virtual fault profile](decisions/0266-independent-anchor-virtual-fault-profile.md):
+  separate guest source/authority devices, real Pending/source/finalize cuts,
+  phase-specific write/flush errors, closed authority manifests and supported
+  exact-new reconciliation or unchanged Pending-old safe stop.
 - [Owned local TLS stop and explicit rotation](decisions/0216-local-tls-stop-restart-rotation.md):
   retained listener and trust boundaries, actual served-leaf observation and
   orderly compiled-host restart; separate from production PKI and custody.
@@ -36,9 +48,134 @@ roadmap describes a later target state.
   ([DR-0222](decisions/0222-native-stop-and-operational-observations.md)):
   explicit SIGINT/SIGTERM ownership, actual admitted-work drain and bounded
   secret-free counters; no protocol, public-readiness or deployment authority.
+  [DR-0247](decisions/0247-native-stop-before-storage-continuation.md) extends
+  cooperative checks to queued scheduler recovery and ordered storage context.
+  [DR-0250](decisions/0250-successor-operation-context-stop-check.md) rechecks
+  the same successor executor before fresh authority and storage resolution.
+  [DR-0251](decisions/0251-successor-historical-read-stop-check.md) rechecks
+  the separate signerless successor-history read boundary's own executor
+  before its policy/storage resolution.
+- [Native source-host SIGTERM wiring oracle](native-source-host-sigterm-wiring-oracle.md)
+  ([DR-0254](decisions/0254-native-source-host-sigterm-wiring-oracle.md)):
+  a real compiled `sqlite_source_host` process and a real SIGTERM prove the
+  production constructor wires that signal to the exact executor the
+  ordered-economics `propose` route's own cancellation check honors, through
+  a deterministic listener-drop barrier; wiring only, not the late
+  pre-storage window isolation DR-0247 already covers separately.
+  [DR-0256](decisions/0256-native-frontier-sigterm-wiring-oracle.md) extends
+  the same barrier to the certified FastVote router's own, separately wired
+  frontier-maintenance `advance` route
+  ([native frontier-maintenance SIGTERM wiring oracle](native-frontier-sigterm-wiring-oracle.md)).
+- [Independent import history floor](decisions/0248-import-ordered-history-freshness-floor.md):
+  retained same-epoch ancestor pins refuse older or conflicting ordered history
+  before opening or creating destination databases; no checkpoint/state-root or activation authority.
+- [Independent import closure-identity pins](decisions/0252-import-closure-identity-pins.md):
+  retained exact cut/package/plan digest pins refuse a differing independently
+  reverified closure before opening or creating destination databases; no
+  checkpoint/state-root or activation authority.
+- [Encrypted local checkpoint continuation](local-checkpoint-backup.md)
+  ([DR-0263](decisions/0263-encrypted-local-checkpoint-continuation.md)):
+  complete same-layout SQLite snapshots, existing independent currentness,
+  maintained age transport and fresh-fence continuation; v1 proof archives
+  and activated protocol migration retain their original owners.
+- [Stopped Native storage-profile software upgrade](decisions/0265-stopped-native-storage-profile-upgrade.md):
+  pinned prior RELEASE hosts, explicit one-way independent-anchor enrollment,
+  incompatible old-writer refusal, historical receipt/body preservation and
+  fresh fenced paid business; structural version5 and protocol remain fixed.
 - [Immutable operation signing preparation](signing-preparation.md): one
   mechanical frame/identity owner, operation-specific immutable trust inputs,
   actual SDK/CLI consumers and the separate custody/content-review boundary.
+- [Positive Standard Asset fee-claim Split proposal policy](positive-fee-claim-split-policy.md)
+  ([DR-0267](decisions/0267-positive-standard-asset-fee-claim-policy.md)):
+  two immutable recognized leg/claim owners, verified historical identity and
+  explicit retained-input/currentness limits; protected backend remains separate.
+- [Positive Standard Asset fee-claim Split custody](positive-standard-asset-fee-claim-custody.md)
+  ([DR-0269](decisions/0269-positive-standard-asset-fee-claim-custody.md)):
+  closed historical-key Leg/Claim backend, complete phase approvals and one
+  permanent cancellation, with genuine workflow and actual UID qualification distinct.
+- [Genuine positive Split UID fixture](positive-fee-split-uid-fixture.md)
+  ([DR-0270](decisions/0270-genuine-positive-split-uid-fixture.md)):
+  complete first-successor public export, two-phase UID lifecycle and inline
+  protected candidate parity into the original ordered submission.
+- [Bounded publication metadata review](publication-review.md)
+  ([DR-0237](decisions/0237-bounded-publication-review-presentation.md)):
+  exact immutable artifact/frame correspondence, bounded terminal-safe output
+  and diagnostic component hashes, without provenance or approval authority.
+- [Saved successor fee-claim review](fee-claim-review.md)
+  ([DR-0245](decisions/0245-saved-successor-fee-claim-review.md)):
+  seed-free canonical exports, bounded exact-content inspection and offline
+  development signing under the independently verified historical committee.
+- [Publication-only local OS custody](local-publication-custody.md)
+  ([DR-0238](decisions/0238-publication-only-local-os-custody.md)):
+  separate UID/key permissions, independently pinned preimages, exact approval,
+  authenticated local IPC and refusal/restart controls.
+- [Stopped original ordered key recovery](decisions/0273-original-ordered-stopped-key-recovery.md):
+  same-identity disposable-key recovery to new worker-only paths, preserving
+  source/body/anchor stores and existing ordered replay/progress owners.
+- [Stopped certified worker key recovery](decisions/0274-certified-stopped-key-recovery.md):
+  recovered key paths shared by the existing certified and later ordered modes,
+  with unchanged identity, retention and local-OS authority boundaries.
+- [Local TLS acknowledgement loss](decisions/0275-local-tls-durable-ack-loss.md):
+  one real successful published-apply response per peer withheld before TLS
+  application forwarding, receipt-first reconciliation and exact paid replay.
+- [Historical referenced-body preservation through TLS acknowledgement loss](decisions/0277-historical-blob-ack-loss.md):
+  a fixed canonical 70 KiB historical object remains in the exact referenced
+  closure before loss, after receipt reconciliation and after paid replay.
+- [Orderly restart after historical-body acknowledgement loss](decisions/0279-orderly-restart-after-historical-ack-loss.md):
+  all four owners reopen the same stores before exact replay, preserving the
+  historical body and receipts with only the existing writer-fence change.
+- [Original ordered protocol custody](local-protocol-custody.md)
+  ([DR-0264](decisions/0264-original-ordered-protocol-custody-worker.md)):
+  distinct-UID authority-owning worker and ordered-only HTTP frontend; existing
+  protocol owners/bytes retained, with no per-request raw signature endpoint.
+- [Certified FastVote protocol custody](certified-fastvote-protocol-custody.md)
+  ([DR-0268](decisions/0268-certified-fastvote-protocol-custody-worker.md)):
+  separate local-OS worker profile for the complete existing certified router,
+  with authority/key/confirmed retention together and a keyless HTTP/TLS frontend.
+  The [selected multi-UID fixture](local-certified-protocol-custody-fixture.md)
+  specifies actual paid/quorum/retention, TLS, restart and pre-DrainSet controls.
+- [Publication custody lifecycle](publication-custody-lifecycle.md)
+  ([DR-0244](decisions/0244-publication-approval-revocation-and-key-lifecycle.md)):
+  durable request cancellation and stopped disposable-key recovery/rotation.
+- [Genesis Standard Asset transfer custody](standard-asset-transfer-custody.md)
+  ([DR-0246](decisions/0246-genesis-standard-asset-transfer-custody.md)):
+  independent object preimages and known-code whole-coin review, separate
+  transfer-only signer and the ordinary paid CLI consumer.
+  [DR-0276](decisions/0276-live-recovered-genesis-transfer.md) uses the recovered
+  same-identity key for the existing live A-to-B-to-A handoff and restarts.
+- [Genesis Standard Asset split/merge custody](standard-asset-split-merge-custody.md)
+  ([DR-0249](decisions/0249-genesis-standard-asset-split-merge-custody.md)):
+  shares the transfer family's genesis/code/instance/policy pin, adds a
+  separate kind-3 split/merge signer and overflow-checked review, and
+  connects the ordinary paid `split`/`merge` CLI consumer.
+  [DR-0278](decisions/0278-live-recovered-genesis-split-merge.md) connects the
+  stopped, recovered same-identity key to those existing live operations.
+- [Genesis Standard Asset mint/burn custody](standard-asset-mint-burn-custody.md)
+  ([DR-0253](decisions/0253-genesis-standard-asset-mint-burn-custody.md)):
+  shares the transfer/split/merge families' genesis/code/instance/policy
+  pin, adds a separate kind-4 mint/burn signer with an independently
+  rebuilt checked-supply review, and connects the ordinary paid
+  `mint`/`burn` CLI consumer.
+  [DR-0280](decisions/0280-live-recovered-genesis-mint-burn.md) selects the
+  already recovered same-identity key for those existing live operations and
+  the revoked restart.
+- [Standard Asset create-asset custody](standard-asset-create-asset-custody.md)
+  ([DR-0255](decisions/0255-standard-asset-create-asset-custody.md)): shares
+  the same `PinnedAssetTrust` genesis/code/policy pin via a new
+  `AssetCreateTrust`, but — unlike every other family — independently
+  derives a *fresh* application `InstanceTarget` for a separate kind-5
+  signer, and connects the ordinary paid `create-asset` CLI consumer.
+- [Optional mint/burn application asset pin](decisions/0258-mint-burn-application-asset-pin.md)
+  (DR-0258; see also
+  [mint/burn custody](standard-asset-mint-burn-custody.md#optional-application-asset-pin-dr-0258)):
+  one small, independently local, all-or-none non-genesis asset/instance pin
+  introduced for mint/burn to target a `create-asset`-created asset; no
+  new wire kind/version or change to genesis fee authority. DR-0261 below
+  extends that same pin to transfer/split/merge.
+- [Own-created Standard Asset Coin custody](standard-asset-application-coin-custody.md)
+  ([DR-0261](decisions/0261-created-standard-asset-coin-custody.md)):
+  extends the same immutable local pin to transfer and split/merge, keeping
+  genesis fee typing, whole-frame approval and no-pin bytes unchanged.
 - [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
   an explicitly configured closed HTTPS transport, separate from default
   event-only relays, embedded DO policy and core authority.
@@ -79,6 +216,9 @@ roadmap describes a later target state.
   ([DR-0183](decisions/0183-test-observation-ownership.md)):
   private reader/counter/capture mechanics, complete direct/prepared persisted
   equivalence, and distinct replay and cut/import comparison responsibilities.
+- [Bounded compiled-host startup line](decisions/0229-bounded-compiled-host-startup-line.md):
+  fixture-derived byte allowance and finite first-line probing in shared test
+  supervision; source contracts, not runtime or all-path cleanup qualification.
 - [Smart contracts](../smartcontract/README.md): publication/call lifecycle and
   Standard Asset/fee semantics.
 - [Durable local code publication](decisions/0121-durable-local-code-publication.md):
@@ -155,6 +295,11 @@ roadmap describes a later target state.
   ([DR-0176](decisions/0176-verified-inactive-business-import.md)):
   private raw-plan derivation, permanent import origin, atomic bounded storage
   and core/live-response guards; no readiness, Seal or activation authority.
+- [Encrypted saved-business-closure transport](encrypted-recovery-closure.md)
+  ([DR-0221](decisions/0221-encrypted-recovery-closure.md), accepted design):
+  disposable local X25519/age transport for original and full successor saved
+  roles, opt-in bounded reads and independent inactive verification; source
+  candidate, not execution, real custody or off-host recovery qualification.
 - [Conditional readiness and ordered Seal](conditional-readiness-seal.md)
   ([DR-0178](decisions/0178-conditional-readiness-wire-and-retention.md)):
   private fresh staging verification, actual-key-bound votes, weighted public
@@ -199,6 +344,11 @@ roadmap describes a later target state.
   ([DR-0172](decisions/0172-storage-neutral-required-validation.md)):
   seven required storage-neutral owners and separately selected complete PG
   acceptance, each with a success-only result; no mandatory database product.
+- [Native release handoff: artifact-to-capability/runbook bindings](native-release-handoff.md)
+  ([DR-0241](decisions/0241-native-release-handoff-bindings.md)): the thirteen
+  DR-0213 evidence artifacts bound to their source owner, actual modes,
+  accepted capability, and existing runbook; documentation only, no R4/M7
+  completion claim.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:
@@ -207,3 +357,5 @@ separate operational references:
 Current work queues, gate summaries, and roadmap sequencing belong only in
 [`TODO.md`](../../TODO.md). Architecture documents may describe implemented
 behavior and preserve historical evidence inside accepted decision records.
+
+- [Independent local checkpoint anchor](local-checkpoint-anchor.md): opt-in local storage acknowledgement, complete typed state/body roots, crash reconciliation and clone exclusion; [DR-0259](decisions/0259-independent-local-checkpoint-anchor.md).

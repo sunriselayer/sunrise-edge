@@ -29,6 +29,28 @@ impl ExistingSqliteSource {
         domain: AtomicityDomainId,
         timeout_seconds: u64,
     ) -> Result<Self, Box<dyn Error>> {
+        Self::open_with_anchor(
+            durable_file,
+            blob_file,
+            chain,
+            validator,
+            domain,
+            timeout_seconds,
+            None,
+        )
+    }
+
+    /// Explicit independent-anchor profile for an already enrolled source.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with_anchor(
+        durable_file: &Path,
+        blob_file: &Path,
+        chain: ChainId,
+        validator: ValidatorId,
+        domain: AtomicityDomainId,
+        timeout_seconds: u64,
+        anchor: Option<&Path>,
+    ) -> Result<Self, Box<dyn Error>> {
         if !(1..=3600).contains(&timeout_seconds) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -37,8 +59,15 @@ impl ExistingSqliteSource {
             .into());
         }
         let namespace: SqliteNamespace = SqliteNamespace::new(chain, validator, domain);
-        let durable: SqliteDurableStore =
-            SqliteDurableStore::open_historical(durable_file, namespace)?;
+        let durable: SqliteDurableStore = match anchor {
+            Some(anchor) => SqliteDurableStore::open_historical_anchored(
+                durable_file,
+                blob_file,
+                anchor,
+                namespace,
+            )?,
+            None => SqliteDurableStore::open_historical(durable_file, namespace)?,
+        };
         let blobs: SqliteBlobStore = SqliteBlobStore::open_existing(blob_file)?;
         let writer: WriterFenceGeneration = durable.writer_fence()?;
         let deadline: u64 = SystemClock

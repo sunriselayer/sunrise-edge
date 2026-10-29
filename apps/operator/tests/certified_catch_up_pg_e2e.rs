@@ -36,8 +36,8 @@ use sunrise_edge_client::{
     apply_fastvote_to_all, collect_fastvote_certificate, encode_fast_certificate,
 };
 use support::cli::{
-    CliContext, admin_pool, current_fee_coin_ref, install_genesis, namespace_init, proxied_dsn,
-    read_context, single_tcp_backend_addr, temp_path, to_hex, write_signing_key_file,
+    CliContext, admin_pool, current_fee_coin_ref, edge_cli_binary, install_genesis, namespace_init,
+    proxied_dsn, read_context, single_tcp_backend_addr, temp_path, to_hex, write_signing_key_file,
 };
 use support::genesis_fixture::{FastVoteGenesisFixture, build_catch_up_network_fixture};
 use support::host::{HostProcess, TempDir, spawn_host};
@@ -87,21 +87,6 @@ fn endpoint(
         ),
     }
 }
-fn cli_binary() -> PathBuf {
-    let binary: PathBuf = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("sunrise-edge-cli");
-    assert!(
-        binary.is_file(),
-        "build sunrise-edge-cli before the exact live catch-up test (scripts/check-fastvote-pg.sh does this)"
-    );
-    binary
-}
-
 fn current_ref(
     pool: &AdminPool,
     namespace: &PostgresNamespace,
@@ -164,7 +149,7 @@ fn catch_up(
     result_dir: &Path,
     extra: &[(&str, &str)],
 ) -> Output {
-    let mut command: Command = Command::new(cli_binary());
+    let mut command: Command = Command::new(edge_cli_binary());
     let mut flags: Vec<(String, String)> = vec![
         (
             "--expected-chain-id".to_owned(),
@@ -346,7 +331,7 @@ fn certified_catch_up_pg_missed_prepare_binary_cli_e2e() {
         return;
     };
     let _live_lock = support::LiveTestLock::acquire();
-    let _binary: PathBuf = cli_binary();
+    let _binary: PathBuf = edge_cli_binary();
     let config: Config = Config::from_str(&database_url).unwrap();
     let backend: SocketAddr = single_tcp_backend_addr(&config, support::LIVE_POSTGRES_URL_ENV);
     let (proxy, _, ca) = support::tls_relay::TlsPassthroughProxy::spawn(backend);

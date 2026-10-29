@@ -25,6 +25,7 @@ use sunrise_edge_ledger::{
 
 use crate::args::{FlagSpec, ParsedArgs, scalar};
 use crate::error::CliError;
+use crate::hex::decode_hex_32;
 use crate::parse::parse_u32;
 
 /// Development-only local seed file flag.
@@ -36,6 +37,15 @@ pub const LEDGER_ACCOUNT: &str = "--ledger-account";
 /// Ledger expected dashboard-reported firmware (Secure Element) version
 /// flag.
 pub const LEDGER_EXPECTED_FIRMWARE_VERSION: &str = "--ledger-expected-firmware-version";
+/// Custody Unix domain socket path flag. See `crate::custody`.
+pub const CUSTODY_SOCKET: &str = "--custody-socket";
+/// Custody server's pinned expected UID flag; checked via `peer_cred`
+/// before any request is sent, so an impostor socket is refused.
+pub const CUSTODY_UID: &str = "--custody-uid";
+/// Custody's pinned expected Ed25519 public key (hex), used both to build
+/// the locally signed publisher identity and as the frame/signature
+/// verification key `PreparedPublication::finalize` checks against.
+pub const CUSTODY_EXPECTED_PUBLIC_KEY: &str = "--custody-expected-public-key";
 
 /// The signer-selection flags every signer-capable subcommand accepts, in
 /// addition to its own flags.
@@ -46,6 +56,9 @@ pub fn signer_flag_specs() -> Vec<FlagSpec> {
         scalar(LEDGER_HID_PATH),
         scalar(LEDGER_ACCOUNT),
         scalar(LEDGER_EXPECTED_FIRMWARE_VERSION),
+        scalar(CUSTODY_SOCKET),
+        scalar(CUSTODY_UID),
+        scalar(CUSTODY_EXPECTED_PUBLIC_KEY),
     ]
 }
 
@@ -69,6 +82,17 @@ pub enum SignerSelection {
         /// this host requires before opening the Sunrise application.
         expected_firmware_version: ExpectedFirmwareVersion,
     },
+    /// An operation-specific local custody process (`crate::custody`), reached
+    /// over a pinned Unix socket. Every field is explicit; none has a
+    /// default or environment-variable fallback.
+    Custody {
+        /// Path to custody's Unix domain socket.
+        socket: String,
+        /// Custody server's pinned expected UID.
+        custody_uid: u32,
+        /// Custody's pinned expected Ed25519 public key.
+        expected_public_key: [u8; 32],
+    },
 }
 
 /// Parses the required, explicit, all-or-none signer selection.
@@ -77,37 +101,70 @@ pub fn parse_signer_selection(parsed: &ParsedArgs) -> Result<SignerSelection, Cl
     let ledger_hid = parsed.is_present(LEDGER_HID_PATH);
     let ledger_account = parsed.is_present(LEDGER_ACCOUNT);
     let ledger_firmware = parsed.is_present(LEDGER_EXPECTED_FIRMWARE_VERSION);
+    let ledger_any = ledger_hid || ledger_account || ledger_firmware;
+    let custody_socket = parsed.is_present(CUSTODY_SOCKET);
+    let custody_uid = parsed.is_present(CUSTODY_UID);
+    let custody_key = parsed.is_present(CUSTODY_EXPECTED_PUBLIC_KEY);
+    let custody_any = custody_socket || custody_uid || custody_key;
 
-    match (local, ledger_hid, ledger_account, ledger_firmware) {
-        (true, false, false, false) => Ok(SignerSelection::Local {
+    let selected_group_count =
+        usize::from(local) + usize::from(ledger_any) + usize::from(custody_any);
+    if selected_group_count == 0 {
+        return Err(CliError::MissingSignerSelection);
+    }
+    if selected_group_count > 1 {
+        return Err(CliError::ConflictingSignerSelection);
+    }
+
+    if local {
+        return Ok(SignerSelection::Local {
             seed_file: parsed.require(SEED_FILE)?.to_string(),
-        }),
-        (false, true, true, true) => {
-            let expected_firmware_version =
-                ExpectedFirmwareVersion::new(parsed.require(LEDGER_EXPECTED_FIRMWARE_VERSION)?)
-                    .map_err(CliError::LedgerExpectedFirmwareVersion)?;
-            let account = parse_u32(LEDGER_ACCOUNT, parsed.require(LEDGER_ACCOUNT)?)?;
-            DerivationPath::provisional(account)
-                .map_err(|error| CliError::LedgerConnect(Box::new(error)))?;
-            Ok(SignerSelection::Ledger {
-                hid_path: parsed.require(LEDGER_HID_PATH)?.to_string(),
-                account,
-                expected_firmware_version,
-            })
-        }
-        (false, false, false, false) => Err(CliError::MissingSignerSelection),
-        (true, _, _, _) => Err(CliError::ConflictingSignerSelection),
-        (false, hid, account, _firmware) => {
-            let missing = if !hid {
+        });
+    }
+
+    if ledger_any {
+        if !(ledger_hid && ledger_account && ledger_firmware) {
+            let missing = if !ledger_hid {
                 LEDGER_HID_PATH
-            } else if !account {
+            } else if !ledger_account {
                 LEDGER_ACCOUNT
             } else {
                 LEDGER_EXPECTED_FIRMWARE_VERSION
             };
-            Err(CliError::PartialLedgerSignerConfiguration { missing })
+            return Err(CliError::PartialLedgerSignerConfiguration { missing });
         }
+        let expected_firmware_version =
+            ExpectedFirmwareVersion::new(parsed.require(LEDGER_EXPECTED_FIRMWARE_VERSION)?)
+                .map_err(CliError::LedgerExpectedFirmwareVersion)?;
+        let account = parse_u32(LEDGER_ACCOUNT, parsed.require(LEDGER_ACCOUNT)?)?;
+        DerivationPath::provisional(account)
+            .map_err(|error| CliError::LedgerConnect(Box::new(error)))?;
+        return Ok(SignerSelection::Ledger {
+            hid_path: parsed.require(LEDGER_HID_PATH)?.to_string(),
+            account,
+            expected_firmware_version,
+        });
     }
+
+    debug_assert!(custody_any);
+    if !(custody_socket && custody_uid && custody_key) {
+        let missing = if !custody_socket {
+            CUSTODY_SOCKET
+        } else if !custody_uid {
+            CUSTODY_UID
+        } else {
+            CUSTODY_EXPECTED_PUBLIC_KEY
+        };
+        return Err(CliError::PartialCustodySignerConfiguration { missing });
+    }
+    Ok(SignerSelection::Custody {
+        socket: parsed.require(CUSTODY_SOCKET)?.to_string(),
+        custody_uid: parse_u32(CUSTODY_UID, parsed.require(CUSTODY_UID)?)?,
+        expected_public_key: decode_hex_32(
+            CUSTODY_EXPECTED_PUBLIC_KEY,
+            parsed.require(CUSTODY_EXPECTED_PUBLIC_KEY)?,
+        )?,
+    })
 }
 
 /// Connects a [`LedgerExternalSigner`] over an already-constructed
@@ -436,6 +493,62 @@ mod tests {
                 expected_firmware_version: ExpectedFirmwareVersion::new("1.6.0").unwrap(),
             }
         );
+    }
+
+    #[test]
+    fn selects_custody_when_all_three_custody_flags_are_present() {
+        let key_hex = "ab".repeat(32);
+        let selection = parse_signer_selection(&parsed(&[
+            (CUSTODY_SOCKET, "/run/custody/custody.sock"),
+            (CUSTODY_UID, "1001"),
+            (CUSTODY_EXPECTED_PUBLIC_KEY, &key_hex),
+        ]))
+        .unwrap();
+        assert_eq!(
+            selection,
+            SignerSelection::Custody {
+                socket: "/run/custody/custody.sock".to_string(),
+                custody_uid: 1001,
+                expected_public_key: [0xAB; 32],
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_exactly_one_or_two_of_the_three_custody_flags() {
+        assert!(matches!(
+            parse_signer_selection(&parsed(&[(CUSTODY_SOCKET, "/s")])),
+            Err(CliError::PartialCustodySignerConfiguration {
+                missing: CUSTODY_UID
+            })
+        ));
+        assert!(matches!(
+            parse_signer_selection(&parsed(&[(CUSTODY_SOCKET, "/s"), (CUSTODY_UID, "1"),])),
+            Err(CliError::PartialCustodySignerConfiguration {
+                missing: CUSTODY_EXPECTED_PUBLIC_KEY
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_custody_combined_with_local_or_ledger() {
+        let key_hex = "cd".repeat(32);
+        assert!(matches!(
+            parse_signer_selection(&parsed(&[
+                (SEED_FILE, "seed.hex"),
+                (CUSTODY_SOCKET, "/s"),
+                (CUSTODY_UID, "1"),
+                (CUSTODY_EXPECTED_PUBLIC_KEY, &key_hex),
+            ])),
+            Err(CliError::ConflictingSignerSelection)
+        ));
+        assert!(matches!(
+            parse_signer_selection(&parsed(&[
+                (LEDGER_HID_PATH, "/dev/hidraw0"),
+                (CUSTODY_SOCKET, "/s"),
+            ])),
+            Err(CliError::ConflictingSignerSelection)
+        ));
     }
 
     #[test]

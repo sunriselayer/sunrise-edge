@@ -493,11 +493,13 @@ impl<T: Transport> Client<T> {
     ) -> Result<Option<InstanceRecord>, ClientError> {
         crate::publication_client::trusted_context(resolver, expected)?;
         self.query_verified_context(expected)?;
-        let hex =
-            |bytes: &[u8]| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
         let request: WireRequest = WireRequest {
             method: Method::Get,
-            path: format!("/v1/contracts/instances/{}/{}", hex(&creator), hex(&seed)),
+            path: format!(
+                "/v1/contracts/instances/{}/{}",
+                crate::client::hex64_lower(&creator),
+                crate::client::hex64_lower(&seed)
+            ),
             content_type: None,
             body: vec![],
             deadline: None,

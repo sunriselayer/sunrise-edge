@@ -8,13 +8,7 @@ use crate::{
     seed::load_dev_seed,
     signer::{SignerSelection, parse_signer_selection, signer_flag_specs},
 };
-use std::{
-    error::Error,
-    ffi::OsString,
-    fs::File,
-    io::{Read, Write},
-    path::Path,
-};
+use std::{error::Error, ffi::OsString, fs::File, io::Write, path::Path};
 use sunrise_edge_client::{call::CallIntent, local_execution::*, *};
 
 fn failure(error: impl Error + Send + Sync + 'static) -> CliError {
@@ -27,12 +21,7 @@ fn invalid(message: &'static str) -> CliError {
     ))
 }
 fn read(path: &str, maximum: usize) -> Result<Vec<u8>, CliError> {
-    let mut bytes: Vec<u8> = vec![];
-    File::open(path)
-        .map_err(failure)?
-        .take((maximum + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(failure)?;
+    let bytes: Vec<u8> = super::input_file::read_for_size_check(path, maximum).map_err(failure)?;
     if bytes.len() > maximum {
         return Err(invalid("canonical input file too large"));
     }
@@ -140,6 +129,14 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             )?)),
             SignerSelection::Ledger { .. } => {
                 return Err(invalid("Ledger local execution signing is not supported"));
+            }
+            // Custody is publication-only; refused before any file,
+            // network, or device I/O.
+            SignerSelection::Custody { .. } => {
+                return Err(crate::custody::CustodyError::PublicationOnly {
+                    command: "local execution",
+                }
+                .into());
             }
         }
     };
@@ -343,6 +340,30 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
+    /// Local/general execution must refuse custody signing before any
+    /// file, network, or device I/O — in particular before ever requiring
+    /// `--endpoint`, which this call deliberately omits.
+    #[test]
+    fn rejects_custody_signer_selection_before_any_io() {
+        let error = run(
+            "instantiate",
+            vec![
+                OsString::from("--custody-socket"),
+                OsString::from("/nonexistent/custody.sock"),
+                OsString::from("--custody-uid"),
+                OsString::from("1001"),
+                OsString::from("--custody-expected-public-key"),
+                OsString::from("ab".repeat(32)),
+            ],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CliError::Custody(inner)
+                if matches!(*inner, crate::custody::CustodyError::PublicationOnly { command: "local execution" })
+        ));
+    }
+
     #[test]
     fn existing_result_or_same_output_paths_stop_before_submit() {
         for existing in [true, false] {
@@ -388,5 +409,41 @@ mod tests {
             );
             std::fs::remove_file(&path).unwrap();
         }
+    }
+
+    #[test]
+    fn bounded_input_errors_keep_local_execution_classification() {
+        let path: std::path::PathBuf = std::env::temp_dir().join(format!(
+            "sunrise-local-input-errors-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        let path_text: &str = path.to_str().unwrap();
+        let mut file: File = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"input").unwrap();
+        drop(file);
+        assert_eq!(read(path_text, 5).unwrap(), b"input");
+        let oversized: CliError = read(path_text, 4).unwrap_err();
+        assert!(matches!(
+            oversized,
+            CliError::LocalExecution(inner)
+                if inner.downcast_ref::<std::io::Error>().is_some_and(|source| {
+                    source.kind() == std::io::ErrorKind::InvalidInput
+                        && source.to_string() == "canonical input file too large"
+                })
+        ));
+        std::fs::remove_file(&path).unwrap();
+        let missing: CliError = read(path_text, 4).unwrap_err();
+        assert!(matches!(
+            missing,
+            CliError::LocalExecution(inner)
+                if inner.downcast_ref::<std::io::Error>().is_some_and(|source| {
+                    source.kind() == std::io::ErrorKind::NotFound
+                })
+        ));
     }
 }

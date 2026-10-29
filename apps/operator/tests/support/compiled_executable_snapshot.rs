@@ -9,6 +9,7 @@ pub struct CompiledExecutableSnapshot {
     _owner: Arc<Directory>,
     pub business_cut: PathBuf,
     pub business_import: PathBuf,
+    pub business_recovery: PathBuf,
     pub conditional_readiness: PathBuf,
     pub ordered_seal: PathBuf,
     pub successor_activation: PathBuf,
@@ -30,6 +31,8 @@ impl CompiledExecutableSnapshot {
         let business_cut: PathBuf = copy(env!("CARGO_BIN_EXE_business_cut"), "business_cut");
         let business_import: PathBuf =
             copy(env!("CARGO_BIN_EXE_business_import"), "business_import");
+        let business_recovery: PathBuf =
+            copy(env!("CARGO_BIN_EXE_business_recovery"), "business_recovery");
         let conditional_readiness: PathBuf = copy(
             env!("CARGO_BIN_EXE_conditional_readiness"),
             "conditional_readiness",
@@ -48,6 +51,7 @@ impl CompiledExecutableSnapshot {
             _owner: owner,
             business_cut,
             business_import,
+            business_recovery,
             conditional_readiness,
             ordered_seal,
             successor_activation,

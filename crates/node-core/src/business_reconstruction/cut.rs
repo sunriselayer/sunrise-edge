@@ -32,9 +32,9 @@ mod tests;
 mod transfer;
 pub use codec::{
     decode_business_cut_chunk, decode_business_cut_descriptor, decode_business_cut_identity,
-    decode_business_cut_package, decode_business_cut_page, encode_business_cut_chunk,
-    encode_business_cut_descriptor, encode_business_cut_identity, encode_business_cut_package,
-    encode_business_cut_page,
+    decode_business_cut_package, decode_business_cut_page, decode_business_cut_page_bounded,
+    encode_business_cut_chunk, encode_business_cut_descriptor, encode_business_cut_identity,
+    encode_business_cut_package, encode_business_cut_page,
 };
 pub use transfer::BusinessCutPageVerifier;
 

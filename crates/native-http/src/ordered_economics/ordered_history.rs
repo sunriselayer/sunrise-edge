@@ -44,6 +44,13 @@ where
         )
 }
 
+pub(super) fn unsupported_content_response() -> Response {
+    error_response(
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "unsupported-ordered-history-content",
+    )
+}
+
 fn unavailable() -> Response {
     // Even pure failure of archived candidate authentication is a source
     // refusal, never an ordinary business rejection or synthesized receipt.
@@ -102,7 +109,7 @@ fn require_pinned_identity<S, C, I, Sig>(
 }
 
 #[allow(clippy::result_large_err)]
-fn post_body(
+pub(super) fn post_body(
     headers: &HeaderMap,
     body: Result<Bytes, BytesRejection>,
     max_bytes: usize,
@@ -110,16 +117,31 @@ fn post_body(
     if !has_media_type(headers, NODE_EVENT_MEDIA_TYPE)
         || crate::has_unsupported_content_encoding(headers)
     {
-        return Err(error_response(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported-ordered-history-content",
-        ));
+        return Err(unsupported_content_response());
     }
     let body: Bytes = body.map_err(|error| error_response(error.status(), "body-rejected"))?;
     if body.len() > max_bytes {
         return Err(error_response(
             StatusCode::PAYLOAD_TOO_LARGE,
             "ordered-history-body-too-large",
+        ));
+    }
+    Ok(body)
+}
+
+#[allow(clippy::result_large_err)]
+pub(super) fn summary_body(
+    headers: &HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Bytes, Response> {
+    if crate::has_unsupported_content_encoding(headers) {
+        return Err(unsupported_content_response());
+    }
+    let body: Bytes = body.map_err(|error| error_response(error.status(), "body-rejected"))?;
+    if !body.is_empty() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "ordered-history-summary-body-not-empty",
         ));
     }
     Ok(body)
@@ -136,21 +158,8 @@ where
     I: IndexedOutboxIdentitySource + Send + Sync + 'static,
     Sig: ConsensusSigner + Send + Sync + 'static,
 {
-    if crate::has_unsupported_content_encoding(&headers) {
-        return error_response(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported-ordered-history-content",
-        );
-    }
-    let body: Bytes = match body {
-        Ok(value) => value,
-        Err(error) => return error_response(error.status(), "body-rejected"),
-    };
-    if !body.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "ordered-history-summary-body-not-empty",
-        );
+    if let Err(response) = summary_body(&headers, body) {
+        return response;
     }
     publication::admitted(
         state.is_cancelled(),

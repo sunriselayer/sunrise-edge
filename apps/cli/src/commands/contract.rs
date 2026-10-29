@@ -13,7 +13,7 @@ use crate::args::{ArgsError, parse_flags, scalar};
 use crate::error::CliError;
 
 /// Dispatches local validation, authenticated publication, or verified query.
-/// Only `validate` avoids signer, transport and node context construction.
+/// `validate` and `preview` avoid signer and transport construction.
 pub fn run<I>(args: I) -> Result<(), CliError>
 where
     I: IntoIterator<Item = OsString>,
@@ -21,7 +21,7 @@ where
     let mut args = args.into_iter();
     let action: OsString = args.next().ok_or(CliError::MissingContractAction)?;
     let action: &str = action.to_str().ok_or(ArgsError::NonUtf8Token)?;
-    if action == "publish" || action == "query" {
+    if action == "publish" || action == "query" || action == "preview" {
         return super::publication::run(action, args);
     }
     if matches!(action, "instantiate" | "call" | "query-instance") {

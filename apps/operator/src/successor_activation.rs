@@ -33,6 +33,7 @@ const FLAGS: &[&str] = &[
     "--manifest-history-dir",
     "--certificate-dir",
     "--successor-max-links",
+    crate::local_anchor::FLAG,
     "--target-state-db",
     "--target-blob-db",
     "--validator-id",
@@ -52,6 +53,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         return Err(HELP.into());
     }
     let mut flags: FlagSet = FlagSet::parse(values, FLAGS, &[])?;
+    let anchor: Option<PathBuf> = crate::local_anchor::parse(&mut flags)?;
     let chain: SuccessorChainInputs = SuccessorChainInputs::parse_required(&mut flags)?;
     let inputs: BusinessPinInputs =
         BusinessPinInputs::parse_with_history(&mut flags, chain.first_history().to_path_buf())?;
@@ -93,8 +95,13 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
 
     let namespace: SqliteNamespace =
         SqliteNamespace::new(pins.context.chain_id().clone(), validator, pins.domain);
-    let target: SqliteImportTarget =
-        SqliteImportTarget::open_existing(&state_path, namespace, authority.import_binding())?;
+    let target: SqliteImportTarget = crate::local_anchor::open_import(
+        &state_path,
+        &blob_path,
+        anchor.as_deref(),
+        namespace,
+        authority.import_binding(),
+    )?;
     let blobs: SqliteBlobStore = SqliteBlobStore::open_existing(&blob_path)?;
 
     let key_path: PathBuf = if key_path.is_absolute() {

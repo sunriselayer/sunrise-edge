@@ -232,9 +232,10 @@ Phase 15 adds the `native-http` crate around node-core using Axum and Tokio.
 `POST /v1/events` accepts exactly one body with media type
 `application/vnd.sunrise-edge.node-event`, no unrecognized media-type
 parameters, and no content encoding other than absent or `identity`. The body
-limit is 16 MiB plus a fixed 512-byte framing allowance; the inner node event
-still enforces its independent canonical and payload bounds. Successful calls
-return a versioned canonical `HttpNodeResult` as
+limit is `MAX_HTTP_EVENT_BODY_BYTES`, defined as
+`node_core::MAX_NODE_PAYLOAD_BYTES + 512` for the framing allowance; the inner
+node event still enforces its independent canonical and payload bounds.
+Successful calls return a versioned canonical `HttpNodeResult` as
 `application/vnd.sunrise-edge.node-result`. Nested responses retain stable
 request IDs and adapter-neutral canonical `NodeResponse` framing.
 
@@ -354,6 +355,34 @@ connection/blocking permits, EOF/errors and independent response-write timers
 remain unchanged. This phase marker is transport metadata, not execution,
 signing or storage authority; operation deadlines remain with their owners.
 
+[DR-0226](decisions/0226-native-certified-publication-collector.md) gives the
+outer collector a separate, default-off
+`NativeHttpServePolicy::with_certified_publication` opt-in. Only POST to the
+exact `/v1/fastvote/publications/retain` path or
+`/v1/fastvote/drain/import/` followed by exactly 64 lowercase ASCII hex
+characters uses `consensus::bundle::MAX_ENCODED_BUNDLE_BYTES`. The latter uses
+the existing selector decoder. Selection uses the raw URI path, excluding the
+query, with no trimming, normalization or percent decoding. Trailing slashes,
+extra segments, malformed selectors, other methods and unrelated paths retain
+their existing collector bounds. Router-local limits and all signature,
+membership, serving-epoch, writer-fence and commit checks remain independent.
+
+The original PostgreSQL FastVote host opts in on its existing plaintext serve
+call. Original SQLite and activated-successor serving opt in on both existing
+plaintext and direct-TLS branches. Signerless successor history, devnet and
+default serve policies stay unchanged. Enabling collector admission mounts no
+route and grants no execution, signing, retention or import authority; disabled
+and direct-mutation route refusals remain with their existing routers.
+
+Focused raw-TCP controls use bounded chunked writes and a test-only Bytes
+probe with its Axum extractor limit explicitly raised to the bundle ceiling.
+They require the exact received length on dispatch and zero handler/dispatch
+counts on collector rejection, at the default and bundle boundaries. This
+isolates collector compatibility, not semantic retention of a valid large
+publication. Connection/header/input/output deadlines, permits, cancellation,
+request-read phase completion and ambiguous commit behavior are unchanged; the
+global default body and response ceilings are not raised.
+
 Canonical event decoding, node-core invocation, synchronous runtime/store
 calls, request-scoped outbox delivery, and canonical result encoding run as one
 `spawn_blocking` job while holding the admission permit. The permit is acquired
@@ -371,8 +400,12 @@ blocking job or release its work permit before actual completion. A lost
 confirmation is unknown and reconciles by exact saved intent and receipt, not
 new signing or an invented rollback/rejection. Connection handshake/output
 budgets do not promise globally bounded host shutdown or storage cancellation.
-Operational cancellation policy, measured load capacity and circuit breaking
-remain required.
+The Native SQLite host connects its stop owner to the existing cooperative
+cancellation checks. The shared admitted, structured-event and query dispatchers refuse queued blocking
+jobs if stop occurred before their work closure starts; already entered work
+still completes and drains. This check is not an atomic storage-abort fence.
+Measured load capacity, broader cancellation policy and circuit breaking remain
+required; DR-0222 records the exact stop boundary.
 
 An embedding scheduler may call `recover_outboxes_once` without an active HTTP
 request. It scans one bounded outbox-key page, validates delivery/batch identity
@@ -609,12 +642,14 @@ node-core deployment, including platform-generated rejection and timeout paths.
 
 ## 39. Repository validation gate
 
-The repository pins Rust 1.97.1, Node.js 22.20.0 in CI, and Deno 2.9.4.
+The repository pins Rust 1.97.1, Node.js 24.19.0 in CI, and Deno 2.9.4.
 [`Repository validation`](repository-validation.md) defines the complete serial
 local entrypoint, isolated parallel CI lanes and the success-only required
 `check` result. The partition preserves Rust formatting/all-feature tests and
 Clippy, live PostgreSQL/fault acceptance, independent vectors, Cloudflare
 type/lint/workerd validation, all four portable adapter suites and hygiene.
+[DR-0243](decisions/0243-node24-validation-profile.md) supersedes the earlier Node
+pin for every Node lane, including the real SDK relay fixtures.
 
 This is an As-Is regression gate, not release provenance. Production still
 requires reviewed periodic updates to the pinned action revisions, dependency

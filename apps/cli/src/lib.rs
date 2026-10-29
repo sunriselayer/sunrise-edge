@@ -24,11 +24,13 @@
 
 mod args;
 mod commands;
+mod custody;
 mod error;
 mod hex;
 mod net;
 mod output;
 mod parse;
+pub mod positive_fee_claim_split;
 mod seed;
 mod signer;
 #[cfg(test)]
@@ -85,6 +87,7 @@ where
             commands::standard_asset::run(command.as_str(), iterator)
         }
         "economics" => commands::ordered_economics_network::run(iterator),
+        "custody" => custody::run(iterator),
         other => Err(CliError::UnknownCommand(other.to_string())),
     }
 }

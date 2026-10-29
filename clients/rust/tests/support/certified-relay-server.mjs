@@ -5,7 +5,7 @@ import { createCertifiedVercelHandler } from "../../../../adapters/vercel/src/ad
 
 // This bridge is a test-owned HTTP/Fetch adapter, NOT the deployed Vercel runtime.
 // The actual certified constructor and native Node HTTP/TLS framing are exercised.
-equal(process.version, "v22.20.0", "owning rust-tests lane must supply pinned Node");
+equal(process.version, "v24.19.0", "owning rust-tests lane must supply pinned Node");
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 const input = lines[Symbol.asyncIterator]();
 const configLine = await input.next();

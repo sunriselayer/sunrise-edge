@@ -16,7 +16,7 @@ use protocol_types::{ChainId, Epoch, HashPurpose, ProtocolVersion};
 
 use crate::context::ExpectedProtocolContext;
 use crate::error::ClientError;
-use crate::transport::{Method, Transport, WireRequest};
+use crate::transport::{Method, Transport, TransportError, WireRequest};
 
 /// Explicit inputs for one `SubmitTransaction` event.
 ///
@@ -300,6 +300,14 @@ where
     }
 }
 
+/// Checks the caller's unchanged absolute deadline around one transport send.
+pub(crate) fn require_deadline_live(deadline: Option<Instant>) -> Result<(), ClientError> {
+    if deadline.is_some_and(|value: Instant| Instant::now() >= value) {
+        return Err(TransportError::RequestDeadlineExceeded.into());
+    }
+    Ok(())
+}
+
 pub(crate) fn expect_success(
     response: crate::transport::WireResponse,
     expected_content_type: &'static str,
@@ -327,7 +335,7 @@ fn substitute_selector(template: &str, placeholder: &str, value: &str) -> String
     template.replacen(placeholder, value, 1)
 }
 
-fn hex64_lower(bytes: &[u8; 32]) -> String {
+pub(crate) fn hex64_lower(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
@@ -342,6 +350,23 @@ mod tests {
     use objects::{Object, ObjectRef, Owner, encode_object};
     use protocol_types::{Digest32, HashAlgorithmId, SignatureSchemeId};
     use std::cell::RefCell;
+
+    #[test]
+    fn deadline_admission_accepts_unbounded_and_future_and_rejects_expired() {
+        let future: Instant = Instant::now()
+            .checked_add(Duration::from_secs(3_600))
+            .unwrap();
+        assert!(require_deadline_live(None).is_ok());
+        assert!(require_deadline_live(Some(future)).is_ok());
+
+        let expired: Instant = Instant::now();
+        assert!(matches!(
+            require_deadline_live(Some(expired)),
+            Err(ClientError::Transport(
+                TransportError::RequestDeadlineExceeded
+            ))
+        ));
+    }
 
     struct FakeTransport {
         responses: RefCell<Vec<Result<WireResponse, TransportError>>>,
@@ -524,6 +549,92 @@ mod tests {
             ClientError::NextNonceQuerySelectorMismatch { expected, actual }
                 if expected == requested_sender && actual == returned_sender
         ));
+    }
+
+    #[test]
+    fn query_receipt_preserves_exact_present_record_bytes() {
+        let request_id: RequestId = RequestId::new([0x22; 32]).unwrap();
+        let event_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x11; 32]);
+        let expected: HttpReceiptQueryResult = HttpReceiptQueryResult::Present {
+            request_id,
+            event_digest,
+            dedup_record_bytes: sample_dedup_record_bytes(request_id),
+        };
+        let encoded: Vec<u8> = expected.encode().unwrap();
+        let transport: FakeTransport =
+            FakeTransport::new(vec![ok_response(QUERY_RESULT_MEDIA_TYPE, encoded.clone())]);
+        let client: Client<FakeTransport> = Client::new(transport);
+
+        let result: HttpReceiptQueryResult = client.query_receipt(request_id).unwrap();
+
+        assert_eq!(result, expected);
+        assert_eq!(result.encode().unwrap(), encoded);
+        let requests: std::cell::Ref<'_, Vec<WireRequest>> = client.transport().requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, Method::Get);
+        assert_eq!(
+            requests[0].path,
+            format!("/v1/receipts/{}", "22".repeat(32))
+        );
+    }
+
+    #[test]
+    fn query_receipt_rejects_nested_decode_before_outer_selector_mismatch() {
+        let requested_id: RequestId = RequestId::new([0x23; 32]).unwrap();
+        let outer_id: RequestId = RequestId::new([0x24; 32]).unwrap();
+        let event_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x25; 32]);
+        let frame: HttpReceiptQueryResult = HttpReceiptQueryResult::Present {
+            request_id: outer_id,
+            event_digest,
+            dedup_record_bytes: vec![0xFF, 0x00],
+        };
+        let transport: FakeTransport = FakeTransport::new(vec![ok_response(
+            QUERY_RESULT_MEDIA_TYPE,
+            frame.encode().unwrap(),
+        )]);
+        let client: Client<FakeTransport> = Client::new(transport);
+
+        let error: ClientError = client.query_receipt(requested_id).unwrap_err();
+
+        assert!(matches!(
+            &error,
+            ClientError::Wire(node_wire::QueryResultError::InvalidDedupRecord(_))
+        ));
+        let source: &(dyn std::error::Error + 'static) = std::error::Error::source(&error).unwrap();
+        assert!(source.source().is_none());
+        assert_eq!(client.transport().requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn query_receipt_binds_nested_fields_to_outer_frame_before_requested_selector() {
+        let requested_id: RequestId = RequestId::new([0x26; 32]).unwrap();
+        let outer_id: RequestId = RequestId::new([0x27; 32]).unwrap();
+        let nested_id: RequestId = RequestId::new([0x28; 32]).unwrap();
+        let outer_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x29; 32]);
+        let nested_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha3_256, [0x2A; 32]);
+        let record: node_core::NodeDedupRecord =
+            node_core::NodeDedupRecord::new(nested_id, nested_digest, Vec::new()).unwrap();
+        let frame: HttpReceiptQueryResult = HttpReceiptQueryResult::Present {
+            request_id: outer_id,
+            event_digest: outer_digest,
+            dedup_record_bytes: record.encode().unwrap(),
+        };
+        let transport: FakeTransport = FakeTransport::new(vec![ok_response(
+            QUERY_RESULT_MEDIA_TYPE,
+            frame.encode().unwrap(),
+        )]);
+        let client: Client<FakeTransport> = Client::new(transport);
+
+        let error: ClientError = client.query_receipt(requested_id).unwrap_err();
+
+        assert!(matches!(
+            &error,
+            ClientError::Wire(node_wire::QueryResultError::RequestIdentityMismatch { expected, actual })
+                if *expected == outer_id && *actual == nested_id
+        ));
+        let source: &(dyn std::error::Error + 'static) = std::error::Error::source(&error).unwrap();
+        assert!(source.source().is_none());
+        assert_eq!(client.transport().requests.borrow().len(), 1);
     }
 
     #[test]

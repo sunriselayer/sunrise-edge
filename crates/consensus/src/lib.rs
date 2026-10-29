@@ -46,20 +46,20 @@ pub use availability::{
     FrozenFrontierPage, FrozenFrontierPageVerifier, FrozenFrontierVote,
     MAX_ENCODED_IDENTITY_BYTES as MAX_ENCODED_AVAILABILITY_IDENTITY_BYTES,
     MAX_ENCODED_VOTE_BYTES as MAX_ENCODED_AVAILABILITY_VOTE_BYTES, MAX_FROZEN_FRONTIER_PAGE_BYTES,
-    MAX_FROZEN_FRONTIER_PAGE_ENTRIES, bundle, decode_availability_certificate,
-    decode_availability_identity, decode_availability_vote, decode_frozen_frontier_identity,
-    decode_frozen_frontier_page, decode_frozen_frontier_vote, encode_availability_certificate,
-    encode_availability_identity, encode_availability_vote, encode_frozen_frontier_identity,
-    encode_frozen_frontier_page, encode_frozen_frontier_vote, verify_frozen_frontier,
-    verify_frozen_frontier_quorum,
+    MAX_FROZEN_FRONTIER_PAGE_ENTRIES, MAX_FROZEN_FRONTIER_VOTE_BYTES, bundle,
+    decode_availability_certificate, decode_availability_identity, decode_availability_vote,
+    decode_frozen_frontier_identity, decode_frozen_frontier_page, decode_frozen_frontier_vote,
+    encode_availability_certificate, encode_availability_identity, encode_availability_vote,
+    encode_frozen_frontier_identity, encode_frozen_frontier_page, encode_frozen_frontier_vote,
+    verify_frozen_frontier, verify_frozen_frontier_quorum,
 };
 pub use commit_proof::{
     CommittedBlockProof, MAX_ENCODED_COMMITTED_BLOCK_PROOF_BYTES, decode_committed_block_proof,
     encode_committed_block_proof,
 };
 pub use durable::{
-    decode_consensus_state, decode_proposal, decode_quorum_certificate, decode_vote,
-    encode_consensus_state,
+    MAX_ENCODED_CERTIFICATE_BYTES, MAX_ENCODED_PROPOSAL_BYTES, decode_consensus_state,
+    decode_proposal, decode_quorum_certificate, decode_vote, encode_consensus_state,
 };
 pub use epoch_transition::{
     EpochTransitionCertificate, EpochTransitionCertifier, EpochTransitionVote,
@@ -580,6 +580,8 @@ pub enum UnsupportedSignatureSchemeResponse {
 /// keys, membership, context, quorum and historical/live authority remain with
 /// the owning certifier and its caller. Unsupported-scheme behavior must be
 /// selected explicitly; there is no default or caller-defined diagnostic.
+/// Malformed signature lengths are invalid untrusted candidates, not verifier
+/// infrastructure failures. Registered-key errors retain their precedence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ed25519ConsensusVerifier {
     unsupported_scheme_response: UnsupportedSignatureSchemeResponse,
@@ -614,9 +616,11 @@ impl ConsensusVerifier for Ed25519ConsensusVerifier {
         }
         let verifier: Ed25519Verifier = Ed25519Verifier::from_verifying_key_bytes(public_key)
             .map_err(|error| error.to_string())?;
-        verifier
-            .verify_framed(framed, signature)
-            .map_err(|error| error.to_string())
+        match verifier.verify_framed(framed, signature) {
+            Ok(valid) => Ok(valid),
+            Err(CryptoError::InvalidSignatureLength(_)) => Ok(false),
+            Err(error) => Err(error.to_string()),
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,27 @@ const registry = join(root, "scripts/ci-gates.sh");
 const execution = join(root, "scripts/ci-execution.sh");
 const requiredGroups = ["lint", "rust-tests", "portable-tools", "cloudflare", "core-recurrence", "readiness-sqlite", "recurring-sqlite"];
 const postgresGroups = ["pg-storage", "pg-lifecycle", "pg-drain-history", "pg-business-audit", "pg-recovery-economics"];
+const cargoManifest = readFileSync(join(root, "Cargo.toml"), "utf8");
+function profileBlock(name) {
+  const start = cargoManifest.indexOf(`[${name}]\n`);
+  assert.notEqual(start, -1);
+  const tail = cargoManifest.slice(start + name.length + 3);
+  return tail.slice(0, tail.search(/\n\[/) < 0 ? tail.length : tail.search(/\n\[/));
+}
+// A named package override would silently defeat the lane's selected level.
+assert.match(profileBlock("profile.dev"), /^opt-level = 1$/m);
+assert.doesNotMatch(cargoManifest, /^\[profile\.test(?:\.|\])/m);
+assert.match(profileBlock("profile.dev.package.curve25519-dalek"), /^opt-level = 3$/m);
+assert.doesNotMatch(profileBlock("profile.dev.package.node-core"), /^opt-level\s*=/m);
+for (const [, name] of cargoManifest.matchAll(/^\[(profile\.dev\.package\.[^\]\n]+)\]$/gm)) {
+  if (/^opt-level\s*=/m.test(profileBlock(name))) {
+    assert.equal(name, "profile.dev.package.curve25519-dalek");
+  }
+}
+for (const name of ["profile.dev", "profile.dev.package.curve25519-dalek", "profile.dev.package.node-core"]) {
+  assert.match(profileBlock(name), /^debug-assertions = true$/m);
+  assert.match(profileBlock(name), /^overflow-checks = true$/m);
+}
 const groups = [
   "lint", "rust-tests", "pg-storage", "pg-lifecycle", "pg-drain-history",
   "pg-business-audit", "pg-recovery-economics", "portable-tools", "cloudflare",
@@ -172,6 +193,8 @@ function checkWorkflow(text, profile) {
     `        run: node scripts/check-ci-results.mjs${pg ? " --profile postgres" : ""}`,
   ]);
   assert(!/continue-on-error:|paths:|paths-ignore:/.test(text));
+  assert.equal([...text.matchAll(/CARGO_PROFILE_(?:DEV|TEST)_(?:OPT_LEVEL|DEBUG_ASSERTIONS|OVERFLOW_CHECKS):/g)].length,
+    pg ? 0 : 6);
   if (!pg) assert(!/services:|SUNRISE_EDGE_TEST_POSTGRES_|pg-/.test(text));
   for (const name of members) {
     const job = jobs.get(name);
@@ -191,6 +214,16 @@ function checkWorkflow(text, profile) {
     for (const fault of faults) {
       assert.equal(job.includes(`SUNRISE_EDGE_TEST_POSTGRES_${fault}_REQUIRED: "1"`), name === "pg-storage");
     }
+    const compilationLines = job.split("\n").filter((line) =>
+      /CARGO_PROFILE_(DEV|TEST)_(OPT_LEVEL|DEBUG_ASSERTIONS|OVERFLOW_CHECKS):/.test(line));
+    assert.deepEqual(compilationLines, name === "recurring-sqlite" ? [
+      '      CARGO_PROFILE_DEV_OPT_LEVEL: "2"',
+      '      CARGO_PROFILE_TEST_OPT_LEVEL: "2"',
+      '      CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: "true"',
+      '      CARGO_PROFILE_TEST_DEBUG_ASSERTIONS: "true"',
+      '      CARGO_PROFILE_DEV_OVERFLOW_CHECKS: "true"',
+      '      CARGO_PROFILE_TEST_OVERFLOW_CHECKS: "true"',
+    ] : []);
   }
   if (pg) {
     assert(jobs.get("pg-storage").includes("SUNRISE_EDGE_TEST_POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}"));
@@ -203,8 +236,10 @@ function checkWorkflow(text, profile) {
     "CARGO_INCREMENTAL: \"0\"", "CARGO_PROFILE_DEV_DEBUG: \"0\"", "CARGO_PROFILE_TEST_DEBUG: \"0\"",
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
-    "node-version: 22.20.0",
   ]) assert(text.includes(value));
+  // DR-0243: every Node lane, including the owning SDK relay lane, pins 24.19.0.
+  assert.deepEqual([...text.matchAll(/node-version: (\S+)/g)].map((m) => m[1]),
+    pg ? ["24.19.0"] : ["24.19.0", "24.19.0", "24.19.0", "24.19.0", "24.19.0"]);
   if (!pg) for (const value of [
     "denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed", "deno-version: 2.9.4",
     "cargo install wasm-bindgen-cli --version 0.2.127 --locked", "npm ci --prefix adapters/cloudflare-workers",
@@ -219,7 +254,7 @@ function checkWorkflow(text, profile) {
 const sdkNodeSetup = "      - name: Set up Node.js for real SDK relay interoperability\n" +
   "        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0\n" +
   "        with:\n" +
-  "          node-version: 22.20.0\n";
+  "          node-version: 24.19.0\n";
 const profiles = [["required", requiredGroups, ".github/workflows/ci.yml"], ["postgres", postgresGroups, ".github/workflows/postgres.yml"]];
 for (const [profile, members, path] of profiles) {
   const workflow = readFileSync(join(root, path), "utf8");
@@ -247,12 +282,25 @@ for (const [profile, members, path] of profiles) {
     assert.throws(() => checkWorkflow(workflow.replace('SUNRISE_EDGE_TEST_POSTGRES_CRASH_REQUIRED: "1"', 'SUNRISE_EDGE_TEST_POSTGRES_CRASH_REQUIRED: "0"'), profile));
     assert.throws(() => checkWorkflow(workflow.replace("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request:\n"), profile));
     assert.throws(() => checkWorkflow(workflow.replace(" --profile postgres", ""), profile));
+    assert.throws(() => checkWorkflow(workflow.replace("node-version: 24.19.0", "node-version: 22.20.0"), profile));
   } else {
     assert.throws(() => checkWorkflow(workflow.replace(sdkNodeSetup, ""), profile));
     assert.throws(() => checkWorkflow(workflow.replace(sdkNodeSetup,
-      sdkNodeSetup.replace("22.20.0", "26.9.0")), profile));
+      sdkNodeSetup.replace("24.19.0", "22.20.0")), profile));
+    assert.throws(() => checkWorkflow(workflow.replace(sdkNodeSetup,
+      sdkNodeSetup.replace("24.19.0", "26.9.0")), profile));
+    // Reject an old Node pin in both ordinary and SDK relay owners.
+    assert.throws(() => checkWorkflow(workflow.replace("          node-version: 24.19.0\n", "          node-version: 22.20.0\n"), profile));
     for (const extra of ["  SUNRISE_EDGE_TEST_POSTGRES_URL: unused\n", "  services:\n    postgres: unused\n"]) {
       assert.throws(() => checkWorkflow(workflow.replace("env:\n", `env:\n${extra}`), profile));
+    }
+    for (const setting of ["DEV_OPT_LEVEL", "TEST_OPT_LEVEL", "DEV_DEBUG_ASSERTIONS",
+      "TEST_DEBUG_ASSERTIONS", "DEV_OVERFLOW_CHECKS", "TEST_OVERFLOW_CHECKS"]) {
+      const value = setting.endsWith("OPT_LEVEL") ? "2" : "true";
+      const line = `      CARGO_PROFILE_${setting}: "${value}"\n`;
+      assert.throws(() => checkWorkflow(workflow.replace(line, ""), profile));
+      assert.throws(() => checkWorkflow(workflow.replace(line,
+        line.replace(`"${value}"`, setting.endsWith("OPT_LEVEL") ? '"0"' : '"false"')), profile));
     }
   }
 
@@ -308,11 +356,11 @@ const {appendFileSync,writeFileSync}=require('node:fs');
 const {join}=require('node:path');
 const {spawnSync}=require('node:child_process');
 const tool=${JSON.stringify(tool)},args=process.argv.slice(2);
-appendFileSync(process.env.CI_MOCK_LOG,JSON.stringify({tool,args,cwd:process.cwd()})+'\\n');
+appendFileSync(process.env.CI_MOCK_LOG,JSON.stringify({tool,args,cwd:process.cwd(),fixtureDir:process.env.SUNRISE_EDGE_ESCROW_FIXTURE_DIR})+'\\n');
 if(process.env.CI_MOCK_FAIL_TOOL===tool)process.exit(17);
 if(process.env.CI_MOCK_FAIL_ARG&&args.includes(process.env.CI_MOCK_FAIL_ARG))process.exit(19);
 const script=args[0]?.split('/').at(-1);
-if(tool==='bash'&&(['check-fastvote-pg.sh','check-fee-escrow-inventory-pg.sh'].includes(script)
+if(tool==='bash'&&(['check-fastvote-pg.sh','check-fee-escrow-inventory.sh','check-fee-escrow-inventory-pg.sh'].includes(script)
  ||(script==='check-postgres-soak.sh'&&!(args.length===2&&args[1]==='--self-test-cli'))
  ||(args[0]==='-c'&&args[1]==='run_phases'))){
  const child=spawnSync(${JSON.stringify(realBash)},args,{stdio:'inherit',env:process.env});
@@ -326,12 +374,16 @@ if(tool==='cargo'&&args[0]==='test'&&args.includes('--ignored')&&args.includes('
 if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')&&args.includes(process.env.CI_MOCK_FAIL_TEST))process.exit(18);
 // Only shell-dispatch sentinels, never authentic fixture material/test bodies.
 if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
- if(args.includes('fee_claims::tests::certified_multi_escrow_inventory::export_certified_operator_fixture_postgres')){
+ if(['fee_claims::tests::certified_multi_escrow_inventory::export_certified_operator_fixture',
+     'fee_claims::tests::certified_multi_escrow_inventory::export_certified_operator_fixture_postgres'].some(name=>args.includes(name))){
   writeFileSync(join(process.env.SUNRISE_EDGE_ESCROW_FIXTURE_DIR,'validator_id.hex'),'0'.repeat(64)+'\\n');
  }
  if(args.includes('fast_path::soak_tests::live_postgres_certified_load_exports_recovery_handoff')){
   writeFileSync(join(process.env.SUNRISE_EDGE_SOAK_DIR,'handoff.kv'),'mock dispatch sentinel only\\n');
  }
+}
+if(tool==='cargo'&&JSON.stringify(args.slice(0,7))===JSON.stringify(['run','--quiet','-p','sunrise-edge-devnet','--bin','fee_escrow_inventory','--'])){
+ console.log('complete=true writer_generation=2 pages=2 verified_rows=2 verified_claims=0 verified_payouts=0');
 }
 `;
     writeFileSync(join(directory, tool), body, { flag: "wx", mode: 0o755 });
@@ -381,6 +433,7 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   const expectedContractCommands = [
     ["node", ["scripts/test-ci-gates.mjs"]],
     ["node", ["scripts/test-native-release-evidence.mjs"]],
+    ["bash", ["scripts/test-postgres-docker-cleanup.sh"]],
   ];
   function checkContractTrace(log) {
     assert.deepEqual(log.map(({ tool, args }) => [tool, args]), expectedContractCommands);
@@ -398,8 +451,6 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     assert.equal(refused.log.length, 0);
   }
   for (const [prerequisite, fn, args] of [
-    ["ci_require_exact_ignored_test", "ci_check_sqlite_inventory", []],
-    ["ci_require_exact_ignored_test", "ci_run_action", ["sqlite-inventory"]],
     ["ci_require_exact_ignored_test", "ci_run_exact_ignored_test", ["name", "yes", "-p", "node-core", "--lib"]],
     ["ci_require_storage_neutral", "ci_run_gate", ["required"]],
     ["ci_require_postgres", "ci_run_gate", ["full"]],
@@ -413,8 +464,6 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     assert.equal(refused.status, 9, `${fn} must propagate ${prerequisite}'s returned failure`);
     assert.deepEqual(refused.log, [], `${fn} must not run a consumer after a failed prerequisite`);
   }
-  const refusedInventory = runFunction("ci_run_gate", ["rust-tests"], { CI_MOCK_FAIL_PREREQUISITE: "ci_require_exact_ignored_test" });
-  assert.equal(refusedInventory.status, 9);
   const compiledCliBuild = ["build", "-p", "sunrise-edge-cli", "--bin", "sunrise-edge-cli", "--all-features"];
   const compiledCliExtendedGroups = ["readiness-sqlite", "recurring-sqlite"];
   function checkCompiledCliExtendedTrace(log, group) {
@@ -438,10 +487,6 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
       assert.equal(refused.status, 9); assert.deepEqual(refused.log, [], "invalid selection must not build the CLI");
     }
   }
-  assert.deepEqual(refusedInventory.log.map(({ tool, args }) => [tool, args]), [
-    ["cargo", compiledCliBuild],
-    ["cargo", ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"]],
-  ], "failed discovery must stop the nested gate before the inventory consumer");
   for (const action of ["rust-tests-required", "rust-tests-full", "pg-storage-tests"]) {
     const failedBuild = runFunction("ci_run_action", [action], { CI_MOCK_FAIL_ARG: "build" });
     assert.equal(failedBuild.status, 19);
@@ -496,6 +541,20 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     assert.throws(() => checkContractTrace(mutated.log),
       "a removed or duplicated owner must fail independent command expectations");
   }
+  const cleanupContractCommand = "bash scripts/test-postgres-docker-cleanup.sh";
+  for (const [index, replacement] of [
+    ": # intentionally removed cleanup contract owner",
+    `${cleanupContractCommand}\n      ${cleanupContractCommand}`,
+  ].entries()) {
+    const changed = safeExecutionText.replace(cleanupContractCommand, replacement);
+    assert.notEqual(changed, safeExecutionText);
+    const mutatedPath = join(directory, `cleanup-contract-owner-mutation-${index}.sh`);
+    writeFileSync(mutatedPath, changed, { flag: "wx", mode: 0o700 });
+    const mutated = runBash([functionScript, registry, mutatedPath, "ci_run_action", "gate-contract"]);
+    assert.equal(mutated.status, 0, mutated.stderr);
+    assert.throws(() => checkContractTrace(mutated.log),
+      "a removed or duplicated cleanup owner must fail independent command expectations");
+  }
   const unguardedContract = safeExecutionText.replace(
     'node scripts/test-ci-gates.mjs || return "$?"', "node scripts/test-ci-gates.mjs");
   assert.notEqual(unguardedContract, safeExecutionText);
@@ -507,6 +566,17 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   assert.equal(hiddenContractFailure.status, 0,
     "the mutation must reproduce an error hidden by nested disabled errexit");
   checkContractTrace(hiddenContractFailure.log);
+  const unguardedNativeContract = safeExecutionText.replace(
+    'node scripts/test-native-release-evidence.mjs || return "$?"', "node scripts/test-native-release-evidence.mjs");
+  assert.notEqual(unguardedNativeContract, safeExecutionText);
+  const unguardedNativeContractPath = join(directory, "unguarded-native-contract-mutation.sh");
+  writeFileSync(unguardedNativeContractPath, unguardedNativeContract, { flag: "wx", mode: 0o700 });
+  const hiddenNativeContractFailure = runBash(
+    [functionScript, registry, unguardedNativeContractPath, "ci_run_action", "gate-contract"],
+    { CI_MOCK_FAIL_ARG: "scripts/test-native-release-evidence.mjs" });
+  assert.equal(hiddenNativeContractFailure.status, 0,
+    "a successful cleanup owner must expose the unguarded native-contract failure mutation");
+  checkContractTrace(hiddenNativeContractFailure.log);
   const required = passed(run("scripts/check-all.sh"));
   const full = passed(run("scripts/check-all.sh", ["--full"], pgEnvironment));
   const lanes = new Map(groups.map((group) => [group, passed(run("scripts/check-all.sh", ["--group", group], postgresGroups.includes(group) ? pgEnvironment : {}))]));
@@ -520,13 +590,14 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     [["cargo", "test"], ["cargo", "test"]], "core-only recurrence must not gain a CLI prerequisite");
   const union = [...lanes.values()].flat();
   function contractEvents(log) {
-    return log.filter(({ tool, args }) => tool === "node" && expectedContractCommands.some(
-      ([, expected]) => args[0] === expected[0]));
+    return log.filter(({ tool, args }) => expectedContractCommands.some(
+      ([expectedTool, expectedArgs]) => tool === expectedTool && args.length === expectedArgs.length &&
+        args.every((argument, index) => argument === expectedArgs[index])));
   }
   for (const log of [required, full, lanes.get("lint")]) {
     checkContractTrace(contractEvents(log));
     assert.deepEqual(log.slice(0, expectedContractCommands.length), contractEvents(log),
-      "both contract tests must finish before any later gate action");
+      "all three contract tests must finish before any later gate action");
   }
   for (const [group, log] of lanes) {
     if (group !== "lint") assert.deepEqual(contractEvents(log), [],
@@ -559,6 +630,7 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   assert.deepEqual(full.filter(({ tool }) => tool === "deno").map(({ args, cwd }) => [args, relative(root, cwd)]),
     ["deno", "vercel", "supabase-edge", "aws-lambda"].map((name) => [["task", "check"], `adapters/${name}`]));
   assert.deepEqual(full.filter(({ tool, args }) => tool === "bash" && args[0].startsWith("scripts/")).map(({ args }) => args), [
+    ["scripts/test-postgres-docker-cleanup.sh"],
     ["scripts/check-fee-escrow-inventory.sh"], ["scripts/check-fee-escrow-inventory-pg.sh"],
     ["scripts/check-fastvote-pg.sh"], ["scripts/check-postgres-soak.sh", "--self-test-cli"],
     ["scripts/check-postgres-soak.sh", "--smoke"], ["scripts/build-cloudflare-validator.sh"],
@@ -576,20 +648,22 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     return args.find((arg) => [...expectedCases, ...auxiliary.map((row) => row[2]), ...recurringCases.map((row) => row[3])].includes(arg));
   }
   const expectedPgOrder = [...auxiliary.slice(1, 3).map((row) => row[2]), ...expectedCases, ...auxiliary.slice(3).map((row) => row[2])];
-  const expectedIgnoredOrder = [...recurringCases.map((row) => row[3]), ...expectedPgOrder];
+  const expectedIgnoredOrder = [auxiliary[0][2], ...recurringCases.map((row) => row[3]), ...expectedPgOrder];
   assert.deepEqual(fullIgnored.map(ignoredName), expectedIgnoredOrder);
   assert.deepEqual(ignoredExecutions(union).map(ignoredName).sort(), [...expectedIgnoredOrder].sort());
   for (const log of [full, union]) {
     assert.deepEqual(ignoredExecutions(log).map(ignoredName).filter((name) => expectedCases.includes(name)), expectedCases);
   }
-  assert.equal(ignoredExecutions(required).length, recurringCases.length);
-  assert.deepEqual(ignoredExecutions(required).map(ignoredName).sort(), recurringCases.map((row) => row[3]).sort());
+  assert.equal(ignoredExecutions(required).length, recurringCases.length + 1);
+  assert.deepEqual(ignoredExecutions(required).map(ignoredName).sort(), [auxiliary[0][2], ...recurringCases.map((row) => row[3])].sort());
   assert.deepEqual(required.filter(({ tool, args }) => tool === "bash").map(({ args }) => args), [
+    ["scripts/test-postgres-docker-cleanup.sh"],
     ["scripts/check-fee-escrow-inventory.sh"], ["scripts/check-postgres-soak.sh", "--self-test-cli"], ["scripts/build-cloudflare-validator.sh"],
   ]);
   assert.deepEqual(required.filter(({ tool, args }) => tool === "cargo" && args[0] === "test").map(({ args }) => args), [
     ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"],
     ["test", "--quiet", "-p", "node-core", "--lib", auxiliary[0][2], "--", "--ignored", "--exact", "--list"],
+    ["test", "--quiet", "-p", "node-core", "--lib", auxiliary[0][2], "--", "--ignored", "--exact"],
     ["test", "--quiet", "-p", "node-core", "--lib", recurringCases[0][3], "--", "--ignored", "--exact", "--list"],
     ["test", "--quiet", "-p", "node-core", "--lib", recurringCases[0][3], "--", "--ignored", "--exact"],
     ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[1][2], recurringCases[1][3], "--", "--ignored", "--exact", "--list"],
@@ -597,18 +671,7 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[2][2], recurringCases[2][3], "--", "--ignored", "--exact", "--list"],
     ["test", "--quiet", "-p", "sunrise-edge-operator", "--test", recurringCases[2][2], recurringCases[2][3], "--", "--ignored", "--exact", "--nocapture"],
   ]);
-  for (const [group, pkg, target, name, capture] of cases) {
-    const log = lanes.get(group);
-    const checks = log.filter(({ tool, args }) => tool === "cargo" && args.includes(name));
-    assert.equal(checks.length, 2, `${name} needs discovery and execution`);
-    assert(checks[0].args.includes("--list"));
-    assert(!checks[1].args.includes("--list"));
-    assert(checks[1].args.includes("--exact"));
-    assert.equal(checks[1].args[checks[1].args.indexOf("-p") + 1], pkg);
-    assert.equal(checks[1].args.includes("--nocapture"), capture === "yes");
-    assert(target === "--lib" ? checks[1].args.includes("--lib") : checks[1].args.includes(target));
-  }
-  for (const [group, pkg, target, name, capture] of recurringCases) {
+  for (const [group, pkg, target, name, capture] of [...cases, ...recurringCases]) {
     const log = lanes.get(group);
     const checks = log.filter(({ tool, args }) => tool === "cargo" && args.includes(name));
     assert.equal(checks.length, 2, `${name} needs discovery and execution`);
@@ -621,14 +684,24 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
   }
   for (const [group, , name] of auxiliary) {
     const checks = lanes.get(group).filter(({ tool, args }) => tool === "cargo" && args.includes(name));
-    assert.equal(checks.length, group === "rust-tests" ? 1 : 2, `${name} must retain its discovery/owning script`);
+    assert.equal(checks.length, 2, `${name} must retain its discovery/owning script`);
     assert(checks[0].args.includes("--list"));
-    if (group !== "rust-tests") assert(checks[1].args.includes("--ignored") && checks[1].args.includes("--exact"));
+    assert(checks[1].args.includes("--ignored") && checks[1].args.includes("--exact"));
+  }
+  function sqliteInventoryArgs(dataDirectory) {
+    return ["run", "--quiet", "-p", "sunrise-edge-devnet", "--bin", "fee_escrow_inventory", "--",
+      "--data-dir", dataDirectory, "--chain-id", "paid-durable", "--validator-id", "0".repeat(64),
+      "--domain", "08".repeat(32), "--protocol-version", "3", "--suite", "0:1:1:1:1:1:1:1",
+      "--page-size", "1", "--timeout-seconds", "60", "--confirm-offline-fence-advance"];
   }
   function gateEvents(log) {
     return log.flatMap(({ tool, args, cwd }) => {
       if (tool === "cargo" && args[0] === "build") return [];
       if (tool === "cargo" && args.includes("--list")) return [];
+      if (tool === "cargo" && args[0] === "run" && args[5] === "fee_escrow_inventory") {
+        assert.deepEqual(args, sqliteInventoryArgs(args[8]));
+        return [JSON.stringify([tool, sqliteInventoryArgs("<fixture-directory>"), ""])];
+      }
       if (tool === "cargo" && args[0] === "test" && !args.includes("--ignored")) {
         if (args.includes("--workspace")) {
           assert.deepEqual(args, ["test", "--workspace", "--all-targets", "--all-features", ...(args.includes("--exclude") ? ["--exclude", "runtime-postgres"] : [])]);
@@ -813,9 +886,42 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     assert.notEqual(failed.status, 0);
     assert(!failed.log.some(({ tool, args }) => tool === forbidden || args.includes(forbidden)));
   }
-  const missingSqlite = run("scripts/check-all.sh", ["--group", "rust-tests"], { CI_MOCK_MISSING_TEST: auxiliary[0][2] });
-  assert.notEqual(missingSqlite.status, 0);
-  assert(!missingSqlite.log.some(({ tool }) => tool === "bash"));
+  // Exercise both actual shell entrypoints: function overrides in the parent
+  // cannot establish discovery/execution behavior in the owning child script.
+  const sqliteSelector = auxiliary[0][2];
+  for (const [script, args] of [
+    ["scripts/check-fee-escrow-inventory.sh", []],
+    ["scripts/check-all.sh", ["--group", "rust-tests"]],
+  ]) {
+    for (const [overrides, status, exporterCalls] of [
+      [{}, 0, 2],
+      [{ CI_MOCK_MISSING_TEST: sqliteSelector }, 1, 1],
+      [{ CI_MOCK_DUPLICATE_TEST: sqliteSelector }, 1, 1],
+      [{ CI_MOCK_FAIL_TEST: sqliteSelector }, 18, 2],
+      [{ CI_MOCK_FAIL_ARG: "--list" }, 19, 1],
+    ]) {
+      const checked = run(script, args, overrides);
+      assert.equal(checked.status, status, checked.stderr);
+      const exporter = checked.log.filter(({ tool, args }) => tool === "cargo" && args.includes(sqliteSelector));
+      assert.equal(exporter.length, exporterCalls);
+      assert.deepEqual(exporter[0].args,
+        ["test", "--quiet", "-p", "node-core", "--lib", sqliteSelector, "--", "--ignored", "--exact", "--list"]);
+      if (exporterCalls === 2) {
+        assert.deepEqual(exporter[1].args,
+          ["test", "--quiet", "-p", "node-core", "--lib", sqliteSelector, "--", "--ignored", "--exact"]);
+        assert(checked.log.indexOf(exporter[0]) < checked.log.indexOf(exporter[1]));
+      }
+      const inventory = checked.log.filter(({ tool, args }) => tool === "cargo" && args[0] === "run");
+      assert.equal(inventory.length, status === 0 ? 1 : 0, "failed discovery/export must prevent the inventory CLI");
+      assert.equal(typeof exporter[0].fixtureDir, "string");
+      assert(exporter.every(({ fixtureDir }) => fixtureDir === exporter[0].fixtureDir));
+      if (status === 0) {
+        assert.deepEqual(inventory[0].args, sqliteInventoryArgs(exporter[0].fixtureDir));
+        assert(checked.log.indexOf(exporter[1]) < checked.log.indexOf(inventory[0]));
+      }
+      assert.equal(existsSync(exporter[0].fixtureDir), false, "the owner must clean its fixture on success and failure");
+    }
+  }
   const selfTest = run("scripts/check-postgres-soak.sh", ["--self-test-cli"]);
   assert.equal(selfTest.status, 0, selfTest.stderr);
   assert(selfTest.stdout.includes("all CLI self-test cases passed"));
@@ -823,4 +929,4 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }
-console.log("CI gate contract passed: 7 required lanes, 5 explicit PostgreSQL lanes, 19 retained plus 3 new required-recurrence ignored selectors, two DB/compiler-free contract owners, complete required/full coverage and fail-closed dispatch/results");
+console.log("CI gate contract passed: 7 required lanes, 5 explicit PostgreSQL lanes, 19 retained plus 3 new required-recurrence ignored selectors, three DB/compiler-free contract owners, complete required/full coverage and fail-closed dispatch/results");

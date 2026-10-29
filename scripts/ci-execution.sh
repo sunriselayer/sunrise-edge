@@ -58,9 +58,6 @@ ci_check_rust_style() {
 }
 
 ci_check_sqlite_inventory() {
-  ci_require_exact_ignored_test \
-    fee_claims::tests::certified_multi_escrow_inventory::export_certified_operator_fixture \
-    -p node-core --lib || return "$?"
   bash scripts/check-fee-escrow-inventory.sh
 }
 
@@ -144,7 +141,8 @@ ci_run_action() {
   case "$1" in
     gate-contract)
       node scripts/test-ci-gates.mjs || return "$?"
-      node scripts/test-native-release-evidence.mjs
+      node scripts/test-native-release-evidence.mjs || return "$?"
+      bash scripts/test-postgres-docker-cleanup.sh
       ;;
     rust-style) ci_check_rust_style ;;
     rust-tests-required)

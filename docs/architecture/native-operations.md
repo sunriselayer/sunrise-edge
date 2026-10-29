@@ -34,6 +34,41 @@ and pre-spawn refusal must not leak tracking. Closing is permanent for that
 executor. Live reopening constructs a new host and advances the existing writer
 fence. Signerless history reopening claims or advances no live writer fence.
 
+The trusted stop signal also refuses a shared-dispatch blocking job if it has
+not entered its work closure yet. `blocking_admitted` still counts that permit
+admission, including queued jobs later refused after stop. It does not count
+executed storage operations or successful business calls.
+
+[DR-0247](decisions/0247-native-stop-before-storage-continuation.md) applies
+the same queued-entry stop check to both optional scheduler recovery APIs.
+They return their existing typed `AdmissionClosed` before runtime access;
+already entered claim/send/acknowledgement work retains its reconciliation.
+Ordered economics also rechecks its injected cancellation after the existing
+identity/clock/deadline preparation and before returning the first storage
+context. These cooperative checks do not make cancellation atomic with a
+storage call. The real SQLite/HTTP test composition does not invoke the
+production host constructor or signal owner and cannot qualify that wiring.
+
+[DR-0250](decisions/0250-successor-operation-context-stop-check.md) extends
+the same cooperative check to the recurring-successor host's own
+`operation_context`: after identity/clock/deadline preparation succeeds, it
+derives cancellation from the same `blocking_executor` every successor route
+already shares and refuses before `with_authority` resolves fresh authority or
+touches storage. Existing error priority and authority behavior are otherwise
+unchanged, and this does not qualify the compiled successor host's or CLI's
+executor wiring either.
+
+[DR-0251](decisions/0251-successor-historical-read-stop-check.md) applies the
+same cooperative check to the separate signerless successor-history read
+owner, `successor::historical::read`, which has its own composition and does
+not call `operation_context`. After its own identity/clock/deadline
+preparation succeeds, it derives cancellation from the same
+`SuccessorHistoricalComposition::blocking_executor` all three signerless
+history routes share and refuses before `policy_source.ordered_policy` runs.
+Existing `ordered-history-unavailable` error priority is otherwise unchanged,
+and this does not qualify the compiled successor-history host's or CLI's
+executor wiring either.
+
 No started database operation is aborted, declared rolled back, or turned into
 a Rejected receipt because the host or client is stopping. A lost response
 remains unknown until the exact saved intent and receipt reconcile it. Keep all
@@ -70,6 +105,79 @@ This is not a public metrics endpoint, live alert policy, globally bounded
 stderr I/O, an SLO or a capacity/abuse qualification. Those remain separate
 deployment choices; no network telemetry destination is introduced.
 
+## Opt-in live local observations
+
+[DR-0223](decisions/0223-local-native-observation-export.md) adds a separate
+local source contract for `--local-observations-socket ABSOLUTE_PATH` on the
+SQLite source host and both successor serving modes. It is disabled by default.
+The caller must already own an operational Unix datagram collector and its
+trusted directory. The pathname must be absolute, NUL-free and at most 100
+bytes; invalid/duplicate/unsupported options refuse before I/O. An unbound,
+nonblocking sender connects before TLS/archive/key/store/fence access. The host
+creates no socket file, collector or directory and never repairs, removes or
+reconnects the destination.
+
+Opt-in SIGUSR1 registration occurs at the existing stop installation point,
+before listener bind/readiness, not at the beginning of startup. Wait for the
+existing readiness output before requesting a snapshot. Registration failures
+may follow a fence claim, without rollback. Tokio's process-wide signal handler
+is not restored on receiver drop; only a fresh disabled process is guaranteed
+not to install this handler.
+
+After readiness, SIGUSR1 requests one fixed `native_operations schema=1
+kind=live` record with the existing 15 counters and one LF. A monotonic
+one-second cooldown is charged even when the nonblocking send fails; observation
+polling waits during that cooldown while SIGINT/SIGTERM remain prioritized.
+Samples may coalesce, throttle or be dropped; no retry, stdout/stderr write or
+detached sampler follows. A closed observation stream disables its branch.
+The termination record and actual close/drain/error owner remain separate and
+unchanged. Counter loads are not atomic, application-success or readiness
+evidence. This is no public endpoint, delivery guarantee, alert/SLO policy or
+global timing/capacity qualification. Source controls and runtime acceptance
+remain distinct.
+
+## Bounded foreground collection
+
+[DR-0224](decisions/0224-bounded-local-observation-collector.md) defines the
+Linux-only operator receiver `native_observations`. It requires each of
+`--socket ABSOLUTE_PATH`, `--max-samples N` and `--timeout-ms MS` exactly once.
+Use an existing effective-UID-owned mode-0700 parent and a fresh absolute socket
+path. The command validates arguments before I/O, retains a no-follow directory
+descriptor chain, and binds through the held parent's process-self FD path.
+Both the supplied path and that FD-relative address have separate 100-byte
+bounds. Trusted Linux procfs and the same-UID caller remain environmental
+assumptions; attachment checks do not exclude every malicious same-UID rename.
+
+The receiver accepts 1 through 1,024 samples and 1 through 300,000 milliseconds.
+One checked monotonic deadline covers setup and collection, with checks around
+directory/procfs/bind work and every receive. A fixed 2,048-byte receive buffer
+refuses a length at capacity, including truncated larger datagrams. Every
+attempt, including interruption, is charged to a 4,096-attempt ceiling. The
+shared native-http decoder accepts only the exact schema-1 live record with
+15 ordered canonical u64 counters and one LF, not termination records or
+arbitrary text. It changes neither existing encoder nor producer behavior.
+
+Start this foreground collector before the opted-in host, then request samples
+only after the host's ordinary readiness. The collector itself sends no signal,
+starts no host, creates no directory and grants no readiness or node-control
+authority. Producer coalescing, cooldown and dropped sends can make collection
+expire. Use one collector per explicitly chosen local host; this command does
+not authenticate or attribute same-UID senders.
+
+Only exact-count collection completed before expiry, with the retained socket
+and parent chain still attached, reaches stdout. Socket and directory descriptors
+close first. Collection failure leaves stdout empty and reports a fixed category,
+without paths, peer data, received bytes or raw OS errors. Output write/flush
+failure may leave a canonical prefix but returns failure, not a complete export.
+Deadline checks cannot interrupt a stalled syscall or blocked output sink; the
+caller owns an external watchdog when needed.
+
+There is no unlink or stale-path repair, including for the collector's own closed
+socket. Success or a later failure retains that leaf; it is not qualified evidence
+of delivery. After the foreground process ends, the caller separately inspects
+and removes only its owned residue, then uses a fresh path. Do not restart by
+adopting or removing an existing regular file, symlink or socket automatically.
+
 ## Acceptance
 
 - Prove acquire/close races, pre-spawn permit release, multiple drain waiters,
@@ -82,9 +190,30 @@ deployment choices; no network telemetry destination is introduced.
   coverage and add actual owned-child SIGTERM with successful ordinary reap,
   same-endpoint restart, exact receipts/nonce/objects/blobs, saved-intent replay
   and genuine stale-writer fencing. Forced teardown is failure cleanup only.
+- In that existing nonignored fixture on Linux, opt in only the selected host's
+  first boot against a fresh private foreground collector. After ordinary TLS
+  traffic/readiness, request one SIGUSR1 sample without stopping the host. Require
+  ordinary collector success/reap, complete bounded stdout and actual pipe EOF,
+  empty stderr, strict full-record decoding and positive admission/dispatch
+  counters. Check that the host remains alive and its authenticated context bytes
+  are unchanged; retain every later transaction/replay/rotation/stop assertion.
+  Use one setup-through-collection deadline and preserve cleanup failures. This
+  source control is not an executed delivery pass or authenticated attribution.
 - Keep activated-successor/history consumers under the same owner, preserve
   their existing authority/refusal fixtures, and add no duplicated recurrence
   runner, heavy CI lane, selected-PG claim or skipped required gate.
+  The existing Linux successor TLS fixture now uses that private collector after
+  its actual context/status, imported-receipt and CLI traffic and complete
+  protected-state check. After one non-stopping sample, repeat authenticated
+  context/status byte comparisons and the complete state oracle before the
+  original certificate-refusal/restoration and successful-stop controls.
+  Signerless history opts in only on restart zero, repeats the full actual
+  material oracle after collection, and keeps the retired signing key absent
+  through both restarts; restart one stays default-off. Both existing ignored
+  fixtures keep their selectors and unconditional owning CI lanes. One original
+  300,000 ms collector deadline covers setup, signal and strict full capture;
+  a 600-second host bound grants no additional collection eligibility. Source
+  inspection is separate from formatting, compilation and observed delivery.
 
 Only disposable local SQLite and loopback traffic are authorized here. This
 contract is not cloud deployment, production custody, power-loss safety,

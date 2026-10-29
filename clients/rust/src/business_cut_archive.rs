@@ -17,7 +17,7 @@ use node_core::business_reconstruction::{
         MAX_BUSINESS_CUT_PAGE_BYTES, MAX_BUSINESS_CUT_PAGE_ENTRIES, SavedBusinessCut,
         SavedBusinessCutComponent, VerifiedBusinessCut, decode_business_cut_chunk,
         decode_business_cut_identity, decode_business_cut_package, decode_business_cut_page,
-        encode_business_cut_package, verify_saved_business_cut,
+        decode_business_cut_page_bounded, encode_business_cut_package, verify_saved_business_cut,
     },
 };
 use protocol_types::AtomicityDomainId;
@@ -220,6 +220,37 @@ pub fn chunk_name(collection: BusinessCutCollection, component: u64, offset: u64
     )
 }
 
+/// Exact existing saved-cut FILE names and their defining transport byte limits.
+/// Used by the local transport, not a permissive filename glob or a proof.
+#[must_use]
+pub fn relative_file_limit(name: &str) -> Option<usize> {
+    ImmutableArchiveReader::relative_filename(name).ok()?;
+    match name {
+        "identity.bin" | "package.bin" | "complete" => {
+            return Some(MAX_BUSINESS_CUT_DESCRIPTOR_BYTES);
+        }
+        "transfer.bin" => return Some(TRANSFER_BYTES),
+        "source-token.bin" => return Some(MAX_SOURCE_BYTES),
+        _ => {}
+    }
+    let inner: &str = name.strip_suffix(".bin")?;
+    if let Some(inner) = inner.strip_prefix("page-") {
+        let (collection, index): (&str, &str) = inner.split_once('-')?;
+        let collection: BusinessCutCollection =
+            BusinessCutCollection::from_wire(collection.parse().ok()?).ok()?;
+        let index: u64 = index.parse().ok()?;
+        return (name == page_name(collection, index)).then_some(MAX_BUSINESS_CUT_PAGE_BYTES);
+    }
+    let inner: &str = inner.strip_prefix("chunk-")?;
+    let (collection, rest): (&str, &str) = inner.split_once('-')?;
+    let (component, offset): (&str, &str) = rest.split_once('-')?;
+    let collection: BusinessCutCollection =
+        BusinessCutCollection::from_wire(collection.parse().ok()?).ok()?;
+    let component: u64 = component.parse().ok()?;
+    let offset: u64 = offset.parse().ok()?;
+    (name == chunk_name(collection, component, offset)).then_some(MAX_SAVED_CHUNK_BYTES)
+}
+
 /// Independently verifies a complete immutable saved cut under local pins.
 /// Neither the local source token nor the marker can authorize reconstruction.
 pub fn verify_business_cut_archive(
@@ -227,7 +258,14 @@ pub fn verify_business_cut_archive(
     archive: &ImmutableArchiveReader,
 ) -> Result<VerifiedBusinessCut, CutArchiveError> {
     let saved: SavedBusinessCut = read_business_cut_archive(&plan, archive)?;
-    verify_saved_business_cut(plan, &saved).map_err(CutArchiveError::from)
+    if let Some(budget) = archive.read_budget() {
+        budget.check()?;
+    }
+    let verified: VerifiedBusinessCut = verify_saved_business_cut(plan, &saved)?;
+    if let Some(budget) = archive.read_budget() {
+        budget.check()?;
+    }
+    Ok(verified)
 }
 
 /// Parses and verifies exact bounded transport, not business authority.
@@ -242,12 +280,29 @@ pub fn read_business_cut_archive(
     let package: BusinessCutPackageIdentity = decode_business_cut_package(
         &archive.read("package.bin", MAX_BUSINESS_CUT_DESCRIPTOR_BYTES)?,
     )?;
+    if let Some(budget) = archive.read_budget() {
+        budget.check_height_target(identity.ordered_history.through_height)?;
+        budget.require_components(package.component_count)?;
+        let mut declared: u64 = 0;
+        for stream in &package.streams {
+            declared = declared
+                .checked_add(stream.count)
+                .ok_or_else(|| budget.refuse())?;
+            budget.require_components(declared)?;
+        }
+        if declared != package.component_count {
+            return Err(invalid("saved cut declared component totals differ"));
+        }
+    }
     let limits: CutArchiveLimits =
         CutArchiveLimits::from_transfer_bytes(&archive.read("transfer.bin", TRANSFER_BYTES)?)?;
     let token: PortableSnapshotToken =
         decode_saved_source_token(&archive.read("source-token.bin", MAX_SOURCE_BYTES)?)?;
     if token.domain() != plan.domain {
         return Err(invalid("saved source token belongs to a foreign domain"));
+    }
+    if let Some(budget) = archive.read_budget() {
+        budget.charge_observations(5)?;
     }
     let mut expected: BTreeSet<String> = [
         "identity.bin",
@@ -270,18 +325,52 @@ pub fn read_business_cut_archive(
         let mut page_index: u64 = 0;
         let mut component_index: u64 = 0;
         loop {
+            if let Some(budget) = archive.read_budget() {
+                budget.charge_observations(1)?;
+            }
             let name: String = page_name(collection, page_index);
-            let page: BusinessCutPage =
-                decode_business_cut_page(&archive.read(&name, MAX_BUSINESS_CUT_PAGE_BYTES)?)?;
+            let page_bytes: Vec<u8> = archive.read(&name, MAX_BUSINESS_CUT_PAGE_BYTES)?;
+            let page: BusinessCutPage = if let Some(budget) = archive.read_budget() {
+                let remaining: usize = budget
+                    .remaining_components()?
+                    .min(limits.page_entries.get());
+                decode_business_cut_page_bounded(
+                    &page_bytes,
+                    remaining,
+                    &mut |count: usize| -> bool {
+                        u64::try_from(count)
+                            .ok()
+                            .is_some_and(|count: u64| budget.charge_components(count).is_ok())
+                    },
+                )
+                .map_err(|_| budget.refuse())?
+            } else {
+                decode_business_cut_page(&page_bytes)?
+            };
             expected.insert(name);
             if page.collection != collection || page.descriptors.len() > limits.page_entries.get() {
                 return Err(invalid("saved cut page has foreign collection or sizing"));
             }
+            if let Some(budget) = archive.read_budget() {
+                budget.check()?;
+            }
             page_verifier.push_page(plan.genesis_root.genesis_resolver(), &page)?;
+            if let Some(budget) = archive.read_budget() {
+                budget.check()?;
+            }
             for descriptor in &page.descriptors {
+                if let Some(budget) = archive.read_budget() {
+                    // The exact codec has already enforced the smaller native body bound.
+                    budget.check_component_bytes(descriptor.length, 32 * 1024 * 1024)?;
+                }
                 let mut bytes: Vec<u8> = Vec::new();
                 let mut offset: u64 = 0;
                 while offset < descriptor.length {
+                    if let Some(budget) = archive.read_budget() {
+                        budget.charge_observations(1)?;
+                        // A chunk decodes another complete descriptor; repeats count too.
+                        budget.charge_components(1)?;
+                    }
                     let name: String = chunk_name(collection, component_index, offset);
                     let chunk =
                         decode_business_cut_chunk(&archive.read(&name, MAX_SAVED_CHUNK_BYTES)?)?;
@@ -302,10 +391,28 @@ pub fn read_business_cut_archive(
                             "saved cut chunk is foreign, reordered, substituted or truncated",
                         ));
                     }
+                    if let Some(budget) = archive.read_budget() {
+                        let next: usize = bytes
+                            .len()
+                            .checked_add(chunk.bytes.len())
+                            .ok_or_else(|| budget.refuse())?;
+                        if u64::try_from(next).map_err(|_| budget.refuse())? > descriptor.length {
+                            return Err(budget.refuse().into());
+                        }
+                        bytes
+                            .try_reserve_exact(chunk.bytes.len())
+                            .map_err(|_| budget.refuse())?;
+                    }
                     bytes.extend_from_slice(&chunk.bytes);
                     offset = offset
                         .checked_add(count)
                         .ok_or_else(|| invalid("saved chunk cursor overflow"))?;
+                }
+                if let Some(budget) = archive.read_budget() {
+                    budget.check()?;
+                    components
+                        .try_reserve_exact(1)
+                        .map_err(|_| budget.refuse())?;
                 }
                 components.push(SavedBusinessCutComponent {
                     descriptor: descriptor.clone(),
@@ -322,7 +429,13 @@ pub fn read_business_cut_archive(
                 .checked_add(1)
                 .ok_or_else(|| invalid("saved page cursor overflow"))?;
         }
+        if let Some(budget) = archive.read_budget() {
+            budget.check()?;
+        }
         page_verifier.finish()?;
+        if let Some(budget) = archive.read_budget() {
+            budget.check()?;
+        }
     }
     if archive.names()? != expected {
         return Err(invalid("saved cut has missing, surplus or foreign files"));
@@ -338,4 +451,36 @@ pub fn read_business_cut_archive(
         components,
     };
     Ok(saved)
+}
+
+#[cfg(test)]
+mod local_name_tests {
+    use super::*;
+
+    #[test]
+    fn local_names_are_exact_existing_generated_layouts() {
+        for collection in BUSINESS_CUT_STREAMS {
+            assert_eq!(
+                relative_file_limit(&page_name(collection, 0)),
+                Some(MAX_BUSINESS_CUT_PAGE_BYTES)
+            );
+            assert_eq!(
+                relative_file_limit(&chunk_name(collection, 1, 0)),
+                Some(MAX_SAVED_CHUNK_BYTES)
+            );
+        }
+        for name in [
+            "page-1-0.bin",
+            "page-08-00000000000000000000.bin",
+            "../identity.bin",
+            "identity.bin/",
+            "transfer.bin/extra",
+        ] {
+            assert!(relative_file_limit(name).is_none());
+        }
+        assert_eq!(
+            relative_file_limit("source-token.bin"),
+            Some(MAX_SOURCE_BYTES)
+        );
+    }
 }

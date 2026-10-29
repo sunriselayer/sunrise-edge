@@ -1,6 +1,8 @@
 //! Private local acceptance transport: terminate fixture TLS and forward exact
 //! HTTP bytes to one real compiled loopback host. It produces no protocol result
 //! and holds no validator signing authority. Its keys authenticate fixture TLS.
+//! Only an explicitly armed test mode can withhold one genuine successful apply
+//! acknowledgement after reading it completely and before any application write.
 
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
@@ -16,7 +18,7 @@ use std::{
     io::{self, Read, Write},
     net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     thread::{self, JoinHandle},
@@ -130,6 +132,24 @@ pub struct RelayCounters {
     pub posts: AtomicUsize,
 }
 
+/// Bounded original bytes observed after a genuine successful upstream apply.
+/// No response is constructed by the relay and no TLS application bytes escape.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LostApplyAcknowledgement {
+    pub request: Vec<u8>,
+    pub request_header_length: usize,
+    pub response: Vec<u8>,
+    pub response_header_length: usize,
+    pub upstream_status: u16,
+    pub handshake_completed: bool,
+    pub downstream_application_bytes: usize,
+}
+
+struct ApplyAckLoss {
+    target: [u8; 32],
+    observed: Option<LostApplyAcknowledgement>,
+}
+
 /// One bounded CA/DNS endpoint in front of one actual local host. Explicit
 /// stopped rotation joins successfully and retains the exact bound listener.
 pub struct HttpsRelay {
@@ -137,6 +157,7 @@ pub struct HttpsRelay {
     pub ca_der: Vec<u8>,
     pub server_name: String,
     pub counters: Arc<RelayCounters>,
+    apply_ack_loss: Option<Arc<Mutex<ApplyAckLoss>>>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<TcpListener>>,
 }
@@ -149,6 +170,49 @@ impl HttpsRelay {
     }
 
     pub fn start(listener: TcpListener, backend: SocketAddr, leaf: &FixtureLeaf) -> Self {
+        Self::start_mode(listener, backend, leaf, None)
+    }
+
+    /// Explicit test-only one-shot: withhold the first complete successful
+    /// published-apply acknowledgement for this exact request on this peer.
+    pub fn start_losing_apply_ack_once(
+        listener: TcpListener,
+        backend: SocketAddr,
+        leaf: &FixtureLeaf,
+        target: [u8; 32],
+    ) -> Self {
+        node_core::RequestId::new(target).expect("ACK-loss target request ID");
+        Self::start_mode(
+            listener,
+            backend,
+            leaf,
+            Some(Arc::new(Mutex::new(ApplyAckLoss {
+                target,
+                observed: None,
+            }))),
+        )
+    }
+
+    pub fn apply_ack_loss_is_armed(&self) -> bool {
+        self.apply_ack_loss.is_some()
+    }
+
+    pub fn lost_apply_acknowledgement(&self) -> Option<LostApplyAcknowledgement> {
+        self.apply_ack_loss
+            .as_ref()
+            .expect("ACK loss requires explicit arming")
+            .lock()
+            .expect("ACK-loss observation mutex")
+            .observed
+            .clone()
+    }
+
+    fn start_mode(
+        listener: TcpListener,
+        backend: SocketAddr,
+        leaf: &FixtureLeaf,
+        apply_ack_loss: Option<Arc<Mutex<ApplyAckLoss>>>,
+    ) -> Self {
         assert!(
             backend.ip().is_loopback(),
             "HTTPS fixture backend must be loopback"
@@ -166,6 +230,7 @@ impl HttpsRelay {
         let counters: Arc<RelayCounters> = Arc::new(RelayCounters::default());
         let worker_stop: Arc<AtomicBool> = Arc::clone(&stop);
         let worker_counters: Arc<RelayCounters> = Arc::clone(&counters);
+        let worker_ack_loss: Option<Arc<Mutex<ApplyAckLoss>>> = apply_ack_loss.clone();
         let deadline: Instant = Instant::now()
             .checked_add(MAX_LIFETIME)
             .expect("HTTPS fixture lifetime overflow");
@@ -193,6 +258,7 @@ impl HttpsRelay {
                             &worker_counters,
                             Arc::clone(&worker_stop),
                             connection_deadline.min(deadline),
+                            worker_ack_loss.as_deref(),
                         );
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -209,6 +275,7 @@ impl HttpsRelay {
             ca_der: leaf.ca_der.clone(),
             server_name: leaf.server_name.clone(),
             counters,
+            apply_ack_loss,
             stop,
             worker: Some(worker),
         }
@@ -442,6 +509,7 @@ fn forward_connection(
     counters: &RelayCounters,
     stop: Arc<AtomicBool>,
     deadline: Instant,
+    apply_ack_loss: Option<&Mutex<ApplyAckLoss>>,
 ) -> io::Result<()> {
     socket.set_nonblocking(false)?;
     let connection: ServerConnection =
@@ -475,10 +543,145 @@ fn forward_connection(
     upstream.write_all(&request)?;
     upstream.flush()?;
     let response: Vec<u8> = read_response(&mut upstream)?;
-    tls.write_all(&response)?;
-    tls.flush()?;
-    tls.conn.send_close_notify();
-    tls.flush()
+    let mut downstream: ApplicationResponseWriter<'_> = ApplicationResponseWriter {
+        tls: &mut tls,
+        application_bytes: 0,
+    };
+    if let Some(loss) = apply_ack_loss {
+        let mut loss: std::sync::MutexGuard<'_, ApplyAckLoss> = loss
+            .lock()
+            .map_err(|_| invalid("ACK-loss observation poisoned"))?;
+        if loss.observed.is_none()
+            && matches_published_apply(&request, loss.target)
+            && let Some((upstream_status, response_header_length)) =
+                successful_apply_response(&response, loss.target)
+        {
+            loss.observed = Some(LostApplyAcknowledgement {
+                request_header_length: http_header_length(&request)
+                    .expect("already matched complete request"),
+                request,
+                response,
+                response_header_length,
+                upstream_status,
+                handshake_completed: !downstream.tls.conn.is_handshaking(),
+                downstream_application_bytes: downstream.application_bytes,
+            });
+            // Drop the real socket without close_notify, any application write,
+            // or a manufactured HTTP/TLS result. Only this peer's one-shot is
+            // consumed; exact replay takes the ordinary forwarding path below.
+            return Ok(());
+        }
+    }
+    downstream.write_all(&response)?;
+    downstream.flush()?;
+    downstream.tls.conn.send_close_notify();
+    downstream.flush()
+}
+
+/// Counts actual plaintext response bytes accepted by rustls, including partial
+/// writes. Handshake records cannot count as HTTP application-response bytes.
+struct ApplicationResponseWriter<'a> {
+    tls: &'a mut StreamOwned<ServerConnection, DeadlineSocket>,
+    application_bytes: usize,
+}
+
+impl Write for ApplicationResponseWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let written: usize = self.tls.write(bytes)?;
+        self.application_bytes = self
+            .application_bytes
+            .checked_add(written)
+            .ok_or_else(|| invalid("HTTPS application response byte count overflow"))?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.tls.flush()
+    }
+}
+
+fn http_header_length(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .windows(4)
+        .position(|window: &[u8]| window == b"\r\n\r\n")
+        .map(|position: usize| position + 4)
+}
+
+fn matches_published_apply(request: &[u8], target: [u8; 32]) -> bool {
+    let Some(header_length) = http_header_length(request) else {
+        return false;
+    };
+    let expected: String = format!(
+        "POST {} HTTP/1.1\r\n",
+        node_wire::FASTVOTE_PUBLISHED_APPLY_PATH
+    );
+    if !request.starts_with(expected.as_bytes()) {
+        return false;
+    }
+    let apply: node_wire::FastVotePublishedApplyRequest =
+        match node_wire::FastVotePublishedApplyRequest::decode(&request[header_length..]) {
+            Ok(apply) => apply,
+            Err(_) => return false,
+        };
+    let signed: execution::paid_execution::SignedPaidIntent =
+        match execution::paid_execution::decode_signed_paid_intent(&apply.signed_paid_intent) {
+            Ok(signed) => signed,
+            Err(_) => return false,
+        };
+    signed.intent.request_id == target
+}
+
+/// A complete fixed-length 200 response must contain the original canonical
+/// single Accepted node result and successful paid payload for the target.
+fn successful_apply_response(response: &[u8], target: [u8; 32]) -> Option<(u16, usize)> {
+    let header_length: usize = http_header_length(response)?;
+    let header: &str = std::str::from_utf8(&response[..header_length - 4]).ok()?;
+    let mut lines: std::str::Split<'_, &str> = header.split("\r\n");
+    let status_line: Vec<&str> = lines.next()?.split_ascii_whitespace().collect();
+    if status_line.len() < 2 || status_line[0] != "HTTP/1.1" {
+        return None;
+    }
+    let status: u16 = status_line[1].parse::<u16>().ok()?;
+    if status != 200 {
+        return None;
+    }
+    let mut length: Option<usize> = None;
+    for line in lines {
+        let (name, value): (&str, &str) = line.split_once(':')?;
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return None;
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if length.is_some() {
+                return None;
+            }
+            length = Some(value.trim().parse::<usize>().ok()?);
+        }
+    }
+    let body: &[u8] = &response[header_length..];
+    if length? != body.len() {
+        return None;
+    }
+    let result: node_wire::HttpNodeResult = node_wire::HttpNodeResult::decode(body).ok()?;
+    if result.request_id().as_bytes() != &target || result.encode().ok()? != body {
+        return None;
+    }
+    let [accepted] = result.responses() else {
+        return None;
+    };
+    if accepted.status() != node_core::NodeResponseStatus::Accepted {
+        return None;
+    }
+    let paid: execution::paid_execution::PaidExecutionResult =
+        execution::paid_execution::decode_paid_execution_result(accepted.payload()?).ok()?;
+    if paid.request_id != target
+        || paid.status != execution::paid_execution::PaidExecutionStatus::Success
+        || execution::paid_execution::encode_paid_execution_result(&paid).ok()?
+            != accepted.payload()?
+    {
+        return None;
+    }
+    Some((status, header_length))
 }
 
 /// Reads only a capped header plus any body bytes coalesced into those reads.

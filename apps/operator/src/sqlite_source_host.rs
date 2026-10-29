@@ -57,12 +57,14 @@ const VALUE_FLAGS: &[&str] = &[
     "--genesis-manifest",
     "--expected-genesis-digest",
     "--signing-key-file",
+    crate::local_anchor::FLAG,
     "--state-db",
     "--blob-db",
     "--listen",
     "--created-checkpoint",
     "--timeout-seconds",
     "--max-concurrent",
+    crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG,
     native_tls::CERT_FLAG,
     native_tls::KEY_FLAG,
 ];
@@ -78,7 +80,61 @@ const MAX_HOST_TIMEOUT_SECONDS: u64 = native_http::MAX_INDEXED_OUTBOX_OPERATION_
 /// after the single fence claim, under the context this host actually
 /// serves with; the Tokio HTTP loop below is transport only.
 pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>> {
+    let mut tokens: Vec<OsString> = tokens.into_iter().collect();
+    if tokens
+        .first()
+        .is_some_and(|value| value == "protocol-worker" || value == "protocol-frontend")
+    {
+        let worker: bool = tokens.remove(0) == "protocol-worker";
+        return crate::protocol_custody::run(worker, tokens);
+    }
+    if tokens
+        .first()
+        .is_some_and(|value| value == "certified-worker" || value == "certified-frontend")
+    {
+        let worker: bool = tokens.remove(0) == "certified-worker";
+        return crate::protocol_custody::run_certified(worker, tokens);
+    }
+    if tokens
+        .first()
+        .is_some_and(|value| value == "anchor-checkpoint")
+    {
+        tokens.remove(0);
+        return crate::local_anchor::checkpoint(tokens);
+    }
+    if tokens
+        .first()
+        .is_some_and(|value| value == "anchor-enroll" || value == "anchor-inspect")
+    {
+        let inspect: bool = tokens.remove(0) == "anchor-inspect";
+        return crate::local_anchor::enroll(inspect, tokens);
+    }
+    run_original(tokens, None)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn run_worker(
+    tokens: Vec<OsString>,
+    worker: crate::protocol_custody::Worker,
+) -> Result<(), Box<dyn Error>> {
+    run_original(tokens, Some(worker))
+}
+
+#[cfg(not(target_os = "linux"))]
+type WorkerMode = ();
+#[cfg(target_os = "linux")]
+type WorkerMode = crate::protocol_custody::Worker;
+
+// One original startup/authority owner, reused without copying its decisions.
+// The new worker mode is reachable only from a private custody-owned config.
+fn run_original(tokens: Vec<OsString>, worker: Option<WorkerMode>) -> Result<(), Box<dyn Error>> {
     let mut flags: FlagSet = FlagSet::parse(tokens, VALUE_FLAGS, BOOL_FLAGS)?;
+    let anchor: Option<PathBuf> = crate::local_anchor::parse(&mut flags)?;
+    if worker.is_some() && anchor.is_none() {
+        return Err(
+            "original ordered custody requires the explicit enrolled independent anchor".into(),
+        );
+    }
     let confirmed: bool = flags.bool("--confirm-offline-fence-advance");
     let chain: ChainId =
         ChainId::new(flags.one("--chain-id")?).map_err(|_| "invalid --chain-id")?;
@@ -119,11 +175,24 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     let signing_key_path: PathBuf = PathBuf::from(flags.one("--signing-key-file")?);
     let state_db: PathBuf = PathBuf::from(flags.one("--state-db")?);
     let blob_db: PathBuf = PathBuf::from(flags.one("--blob-db")?);
-    let listen: String = flags.one("--listen")?;
-    let created_checkpoint: u64 = flags
-        .one("--created-checkpoint")?
-        .parse()
-        .map_err(|_| "invalid --created-checkpoint")?;
+    let listen: String = if worker.is_some() {
+        "127.0.0.1:0".into()
+    } else {
+        flags.one("--listen")?
+    };
+    #[cfg(target_os = "linux")]
+    let certified_worker: bool = worker
+        .as_ref()
+        .is_some_and(crate::protocol_custody::Worker::is_certified);
+    #[cfg(not(target_os = "linux"))]
+    let certified_worker: bool = false;
+    let created_checkpoint: u64 = if worker.is_some() && !certified_worker {
+        "0".into()
+    } else {
+        flags.one("--created-checkpoint")?
+    }
+    .parse()
+    .map_err(|_| "invalid --created-checkpoint")?;
     let timeout_seconds: u64 = flags
         .one("--timeout-seconds")?
         .parse()
@@ -139,6 +208,10 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         return Err("--max-concurrent must be 1..=256".into());
     }
     let tls_inputs: NativeTlsInputs = NativeTlsInputs::parse(&mut flags)?;
+    let local_observations_path: Option<crate::native_operations::LocalObservationsPath> =
+        crate::native_operations::LocalObservationsPath::parse(
+            flags.optional_one(crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG)?,
+        )?;
     flags.finish()?;
     if !confirmed {
         return Err(
@@ -153,6 +226,8 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     if !listen_addr.ip().is_loopback() {
         return Err("--listen must be a loopback address".into());
     }
+    let local_observations: crate::native_operations::PreparedLocalObservations =
+        crate::native_operations::PreparedLocalObservations::connect(local_observations_path)?;
     let tls: Option<tokio_rustls::TlsAcceptor> = tls_inputs.load()?;
 
     let resolver: HashSuiteResolver =
@@ -173,7 +248,8 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     }
 
     let namespace: SqliteNamespace = SqliteNamespace::new(chain.clone(), validator, domain);
-    let store: SqliteDurableStore = SqliteDurableStore::open_existing(&state_db, namespace)?;
+    let store: SqliteDurableStore =
+        crate::local_anchor::open_original(&state_db, &blob_db, anchor.as_deref(), namespace)?;
     let previous: WriterFenceGeneration = store.writer_fence()?;
     let timeout_millis: u64 = timeout_seconds
         .checked_mul(1000)
@@ -264,12 +340,13 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         NoOutboundTransport,
         SystemClock,
         SequentialIdentitySource,
-    > = StructuredDurableNativeComponents::new(
+    > = StructuredDurableNativeComponents::with_cancellation(
         store_arc.clone(),
         blob_arc.clone(),
         Arc::new(NoOutboundTransport),
         clock_arc.clone(),
         identities_arc.clone(),
+        blocking_executor.stop_cancellation(),
     );
 
     let ordered_policy: OrderedEconomicsPolicy =
@@ -313,9 +390,40 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         seal: Some(seal),
         signer: ordered_signer,
         blocking_executor: blocking_executor.clone(),
-        cancellation: None,
+        cancellation: Some(blocking_executor.stop_cancellation()),
     };
     let ordered_router = certified_ordered_economics_router(ordered_state);
+
+    #[cfg(target_os = "linux")]
+    if let Some(worker) = worker {
+        if worker.is_certified() {
+            let router = certified_fastvote_router_with_executor(
+                components,
+                fastvote,
+                protocol_config,
+                authority,
+                node_config,
+                resolver,
+                Vec::new(),
+                blocking_executor.clone(),
+            )
+            .map_err(|error| format!("failed to compose certified FastVote router: {error}"))?;
+            return worker.serve_certified(
+                router,
+                blocking_executor,
+                native_http::certified_custody::Identity::new(
+                    validator,
+                    domain,
+                    root.digest().bytes(),
+                ),
+            );
+        }
+        return worker.serve(
+            ordered_router,
+            blocking_executor,
+            native_http::ordered_custody::Identity::new(validator, domain, root.digest().bytes()),
+        );
+    }
 
     let router = certified_fastvote_router_with_executor(
         components,
@@ -334,7 +442,7 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let mut stop = crate::native_operations::StopOwner::install()?;
+        let mut stop = crate::native_operations::StopOwner::install(local_observations)?;
         let listener = tokio::net::TcpListener::bind(listen_addr).await?;
         let bound_addr = listener.local_addr()?;
         if !stop.stop_before_readiness() {
@@ -346,17 +454,20 @@ pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         );
         use std::io::Write;
         std::io::stdout().flush()?;
+        stop.readiness_announced();
         }
+        let serve_policy: native_http::NativeHttpServePolicy =
+            native_http::NativeHttpServePolicy::default().with_certified_publication(true);
         crate::native_operations::serve(blocking_executor, stop, move |shutdown, observations| async move {
         match tls {
             None => native_http::serve_with_stream_upgrade_observed(
-                listener, router, native_http::NativeHttpServePolicy::default(),
+                listener, router, serve_policy,
                 |stream: tokio::net::TcpStream| async move { Ok::<_, std::io::Error>(stream) },
                 shutdown, observations).await,
             Some(acceptor) => native_http::serve_with_stream_upgrade_observed(
                 listener,
                 router,
-                native_http::NativeHttpServePolicy::default(),
+                serve_policy,
                 move |stream: tokio::net::TcpStream| native_tls::accept(acceptor.clone(), stream),
                 shutdown,
                 observations,
@@ -435,6 +546,37 @@ mod tests {
                 .to_string()
                 .contains("--confirm-offline-fence-advance")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_observations_option_defaults_off_and_invalid_forms_refuse_before_io() {
+        let default_error: String = run(args_with("127.0.0.1:0", false))
+            .unwrap_err()
+            .to_string();
+        assert!(default_error.contains("--confirm-offline-fence-advance"));
+
+        let overlong_path: String = format!("/{}", "a".repeat(100));
+        let invalid_values: Vec<(String, &str)> = vec![
+            ("relative.sock".into(), "requires an absolute path"),
+            ("/tmp/a\0b".into(), "without NUL"),
+            (overlong_path, "path exceeds 100 bytes"),
+        ];
+        for (value, expected) in invalid_values {
+            let mut args: Vec<OsString> = args_with("127.0.0.1:0", true);
+            args.push(crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG.into());
+            args.push(value.into());
+            let error: String = run(args).unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+        }
+
+        let mut duplicate_args: Vec<OsString> = args_with("127.0.0.1:0", true);
+        for path in ["/tmp/first.sock", "/tmp/second.sock"] {
+            duplicate_args.push(crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG.into());
+            duplicate_args.push(path.into());
+        }
+        let duplicate_error: String = run(duplicate_args).unwrap_err().to_string();
+        assert!(duplicate_error.contains("must be supplied at most once"));
     }
 
     #[test]

@@ -212,6 +212,105 @@ pub(crate) fn slash_receipt_digest(
     Ok(resolver.hash_for_purpose(context.epoch(), HashPurpose::NodeEvent, intent_bytes)?)
 }
 
+/// Pure checks shared by historical execution and fresh ordered admission.
+/// This preserves execution's original identity/error order, including its
+/// historical protocol-context behavior. Fresh admission separately requires
+/// the decoded evidence protocol to equal its independently pinned protocol.
+pub(crate) fn verify_evidence_identity(
+    resolver: &HashSuiteResolver,
+    intent: &SlashIntent,
+    evidence_record: &equivocation::FastPathEquivocationEvidenceRecord,
+) -> Result<equivocation::DecodedEquivocationEvidence, BondLifecycleError> {
+    let decoded: equivocation::DecodedEquivocationEvidence =
+        equivocation::decode_dispatched(&evidence_record.evidence_bytes)
+            .map_err(|_| BondLifecycleError::Invalid("evidence row does not decode"))?;
+    if decoded.chain_id() != intent.context.chain_id()
+        || decoded.epoch() != intent.evidence_epoch
+        || decoded.validator() != intent.validator_id
+    {
+        return Err(BondLifecycleError::Invalid(
+            "evidence identity does not match the claimed selector",
+        ));
+    }
+    let recomputed_digest: Digest32 = equivocation::normalized_identity_digest(resolver, &decoded)
+        .map_err(|_| BondLifecycleError::Invalid("evidence normalized identity recomputation"))?;
+    if recomputed_digest != intent.conflict_digest {
+        return Err(BondLifecycleError::Invalid(
+            "evidence record does not match its own key digest",
+        ));
+    }
+    // Both attached preimages are untrusted until each hashes to the exact
+    // digest its own signed FastVote carries. The consensus proof verifier
+    // checks the overlapping object, not these node-core hash bindings.
+    if let equivocation::DecodedEquivocationEvidence::ObjectConflict(evidence) = &decoded {
+        let low_hash: Digest32 = resolver.hash_for_purpose(
+            evidence.low.epoch,
+            HashPurpose::ExecutionEffects,
+            &consensus::encode_locked_object_set_preimage(&evidence.low_preimage)
+                .map_err(|_| BondLifecycleError::Invalid("evidence preimage encoding"))?,
+        )?;
+        if low_hash != evidence.low.locked_objects_digest {
+            return Err(BondLifecycleError::Invalid(
+                "attached preimage does not hash to its FastVote locked_objects_digest",
+            ));
+        }
+        let high_hash: Digest32 = resolver.hash_for_purpose(
+            evidence.high.epoch,
+            HashPurpose::ExecutionEffects,
+            &consensus::encode_locked_object_set_preimage(&evidence.high_preimage)
+                .map_err(|_| BondLifecycleError::Invalid("evidence preimage encoding"))?,
+        )?;
+        if high_hash != evidence.high.locked_objects_digest {
+            return Err(BondLifecycleError::Invalid(
+                "attached preimage does not hash to its FastVote locked_objects_digest",
+            ));
+        }
+    }
+    Ok(decoded)
+}
+
+/// Re-verifies both signed statements for every evidence family against the
+/// actual independently loaded committee. This grants no custody capability
+/// and does not execute, prepare or mutate the economic operation.
+pub(crate) fn verify_evidence_proof(
+    decoded: &equivocation::DecodedEquivocationEvidence,
+    validator_set: ValidatorSet,
+) -> Result<(), BondLifecycleError> {
+    match decoded {
+        equivocation::DecodedEquivocationEvidence::FastVote(evidence) => {
+            consensus::verify_fast_vote_equivocation_evidence(
+                evidence,
+                validator_set,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
+            .map_err(|_| BondLifecycleError::Invalid("evidence reverification failed"))?;
+        }
+        equivocation::DecodedEquivocationEvidence::ObjectConflict(evidence) => {
+            consensus::verify_fast_vote_object_conflict_evidence(
+                evidence,
+                validator_set,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
+            .map_err(|_| BondLifecycleError::Invalid("evidence reverification failed"))?;
+        }
+        equivocation::DecodedEquivocationEvidence::EpochTransition(evidence) => {
+            consensus::verify_epoch_transition_equivocation_evidence(
+                evidence,
+                validator_set,
+                &consensus::Ed25519ConsensusVerifier::new(
+                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                ),
+            )
+            .map_err(|_| BondLifecycleError::Invalid("evidence reverification failed"))?;
+        }
+    }
+    Ok(())
+}
+
 /// Builds the `ForfeitedCollateral` scope matching `scope`'s chain/subject/
 /// resource but a different purpose.
 fn forfeited_scope(
@@ -493,55 +592,10 @@ where
                     "no evidence recorded for the claimed selector",
                 ))?,
         )?;
+    // 9-10. The original pure identity, typed-digest and both preimage
+    // checks still precede the historical committee read and proof checks.
     let decoded: equivocation::DecodedEquivocationEvidence =
-        equivocation::decode_dispatched(&evidence_record.evidence_bytes)
-            .map_err(|_| BondLifecycleError::Invalid("evidence row does not decode"))?;
-
-    // 9. cross-check the decoded evidence's own identity/context against the
-    // exact key selector it was read at, and against the bond being slashed.
-    if decoded.chain_id() != intent.context.chain_id()
-        || decoded.epoch() != intent.evidence_epoch
-        || decoded.validator() != intent.validator_id
-    {
-        return Err(BondLifecycleError::Invalid(
-            "evidence identity does not match the claimed selector",
-        ));
-    }
-    let recomputed_digest: Digest32 = equivocation::normalized_identity_digest(resolver, &decoded)
-        .map_err(|_| BondLifecycleError::Invalid("evidence normalized identity recomputation"))?;
-    if recomputed_digest != intent.conflict_digest {
-        return Err(BondLifecycleError::Invalid(
-            "evidence record does not match its own key digest",
-        ));
-    }
-
-    // 10. class (b)'s mandatory preimage-hash-to-signed-digest checks,
-    // independently re-run: an attached preimage is untrusted bytes until
-    // proven to hash to the exact digest its own vote signed.
-    if let equivocation::DecodedEquivocationEvidence::ObjectConflict(evidence) = &decoded {
-        let low_hash: Digest32 = resolver.hash_for_purpose(
-            evidence.low.epoch,
-            HashPurpose::ExecutionEffects,
-            &consensus::encode_locked_object_set_preimage(&evidence.low_preimage)
-                .map_err(|_| BondLifecycleError::Invalid("evidence preimage encoding"))?,
-        )?;
-        if low_hash != evidence.low.locked_objects_digest {
-            return Err(BondLifecycleError::Invalid(
-                "attached preimage does not hash to its FastVote locked_objects_digest",
-            ));
-        }
-        let high_hash: Digest32 = resolver.hash_for_purpose(
-            evidence.high.epoch,
-            HashPurpose::ExecutionEffects,
-            &consensus::encode_locked_object_set_preimage(&evidence.high_preimage)
-                .map_err(|_| BondLifecycleError::Invalid("evidence preimage encoding"))?,
-        )?;
-        if high_hash != evidence.high.locked_objects_digest {
-            return Err(BondLifecycleError::Invalid(
-                "attached preimage does not hash to its FastVote locked_objects_digest",
-            ));
-        }
-    }
+        verify_evidence_identity(resolver, &intent, &evidence_record)?;
 
     // 11. full re-verification against the chain-anchored historical
     // validator set (DR-0133 §7) -- never merely trusting a stored row.
@@ -555,38 +609,7 @@ where
         intent.evidence_epoch,
     )
     .map_err(|_| BondLifecycleError::Invalid("historical validator set unavailable"))?;
-    match &decoded {
-        equivocation::DecodedEquivocationEvidence::FastVote(evidence) => {
-            consensus::verify_fast_vote_equivocation_evidence(
-                evidence,
-                validator_set,
-                &consensus::Ed25519ConsensusVerifier::new(
-                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
-                ),
-            )
-            .map_err(|_| BondLifecycleError::Invalid("evidence reverification failed"))?;
-        }
-        equivocation::DecodedEquivocationEvidence::ObjectConflict(evidence) => {
-            consensus::verify_fast_vote_object_conflict_evidence(
-                evidence,
-                validator_set,
-                &consensus::Ed25519ConsensusVerifier::new(
-                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
-                ),
-            )
-            .map_err(|_| BondLifecycleError::Invalid("evidence reverification failed"))?;
-        }
-        equivocation::DecodedEquivocationEvidence::EpochTransition(evidence) => {
-            consensus::verify_epoch_transition_equivocation_evidence(
-                evidence,
-                validator_set,
-                &consensus::Ed25519ConsensusVerifier::new(
-                    consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
-                ),
-            )
-            .map_err(|_| BondLifecycleError::Invalid("evidence reverification failed"))?;
-        }
-    }
+    verify_evidence_proof(&decoded, validator_set)?;
 
     // 12. live collateral and liability-floor-vs-evidence-epoch
     // requirements. Gating on `slashable_from_epoch` -- never on

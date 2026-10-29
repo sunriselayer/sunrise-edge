@@ -14,12 +14,17 @@
 //! SQLite WAL requires local storage with working shared-memory semantics. This
 //! crate does not make network filesystems or serverless ephemeral disks durable.
 
+mod anchor;
 mod blob;
 mod native_connection;
 mod native_files;
 mod rusqlite_backend;
 mod structured;
 
+pub use anchor::{
+    AnchorCheckpoint, ConfiguredCheckpointAuthority, IndependentAnchorError, LocalSnapshotLimits,
+    LocalStoreCheckpoint, enroll_independent_anchor, inspect_independent_anchor_inputs,
+};
 pub use blob::{SQLITE_BLOB_SCHEMA_IDENTITY, SqliteBlobStore, SqliteBlobStoreError};
 pub use structured::{
     SQLITE_STRUCTURED_SCHEMA_IDENTITY, SqliteDurableStore, SqliteDurableStoreError,

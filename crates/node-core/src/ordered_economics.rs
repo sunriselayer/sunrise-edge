@@ -128,11 +128,12 @@ pub use ordered_history::{
     OrderedHistoryComponentKind, OrderedHistoryComponentRef, OrderedHistoryHeightDescriptor,
     OrderedHistoryHeightMaterial, OrderedHistoryIdentity, OrderedHistorySummary,
     OrderedHistoryVerifier, VerifiedOrderedHistory, decode_ordered_history_height_descriptor,
-    decode_ordered_history_identity, decode_ordered_history_summary,
-    encode_ordered_history_height_descriptor, encode_ordered_history_identity,
-    encode_ordered_history_summary, ordered_history_component_digest,
-    ordered_history_descriptor_digest, query_ordered_history_summary,
-    read_ordered_history_component_chunk, read_ordered_history_height_descriptor,
+    decode_ordered_history_height_descriptor_bounded, decode_ordered_history_identity,
+    decode_ordered_history_summary, encode_ordered_history_height_descriptor,
+    encode_ordered_history_identity, encode_ordered_history_summary,
+    ordered_history_component_digest, ordered_history_descriptor_digest,
+    query_ordered_history_summary, read_ordered_history_component_chunk,
+    read_ordered_history_height_descriptor,
 };
 pub use policy::{
     ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE, OrderedEconomicsEnvironment, OrderedEconomicsPolicy,

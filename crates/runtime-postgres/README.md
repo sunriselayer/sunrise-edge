@@ -83,22 +83,69 @@ serialization exhaustion, schema-skew injection, and the commit-loss
 connection-loss capability described above. CI supplies a digest-pinned
 PostgreSQL 18 service and runs this test through the normal workspace gate.
 
+### Bounded local Docker runner
+
+`scripts/run-postgres-docker-tests.sh schema`, `crash`, `suite` and `profile` provision
+fresh test-only resources from the exact locally installed image digests. They
+never pull an image or attach host data. `suite` runs all `runtime-postgres`
+targets with every optional fault prerequisite required and serial test owners;
+it is not the separate complete PG protocol/soak workflow. `profile` runs all
+five existing PG workflow groups, including compiled CLI, inventory, protocol,
+economics and bounded soak/recovery, with no replaced selectors. The direct
+runtime suite uses `--locked --offline`; existing workflow recipes additionally
+require the caller's prepared offline Cargo environment.
+
+The runner keeps the 512 MiB noswap data allocation mounted through whole-PG
+kill/start, checks actual kernel mounts and the same cluster identity, and uses
+separate bounded 16 MiB and 4 MiB noswap scratch volumes. A concrete loopback
+port remains fixed across restart. TCP readiness excludes the image's temporary
+Unix-only initialization server. Only exact generated, owner-labelled resources
+are removed on exit; a bind collision or mismatched resource is a failure, not
+permission to stop another workload. These local tests do not simulate host
+power loss or certify production storage, keys or operators.
+
 ### Live SIGKILL crash-recovery test
 
 `tests/postgres_crash_recovery.rs` is a separate test binary that kills and
 restarts the whole database-service container, so it requires **both**
 `SUNRISE_EDGE_TEST_POSTGRES_URL` **and** the exact full Docker container ID
-of that same container, in `SUNRISE_EDGE_TEST_POSTGRES_CONTAINER_ID`. A safe
-way to produce both against a disposable, named test container:
+of that same container, in `SUNRISE_EDGE_TEST_POSTGRES_CONTAINER_ID`.
+
+Provision it only through a separately qualified, disposable Docker-owned
+runner. Its PostgreSQL container must use the pinned image below,
+a concrete loopback-only port that remains unchanged across kill/start
+(the manual example uses `--publish 127.0.0.1:55432:5432`),
+`--memory 1g --memory-swap 1g` and
+`--pids-limit 512`, with fresh test-only credentials and database
+`sunrise_edge_test`. No public binding or host bind mount belongs in this
+crash fixture.
+
+Storage must stay bounded **and survive the whole-container kill/start**.
+One container-owned approach is a fresh Docker-managed local volume with
+`type=tmpfs`, `device=tmpfs` and options
+`rw,noswap,size=512m,mode=1777`, mounted at `/var/lib/postgresql`. A separate
+bounded, network-disabled keeper container must keep that exact volume
+mounted continuously before PostgreSQL starts and through its kill/restart
+and reconciliation. The runner must verify the effective noswap/size, the
+same volume attachment and a retained marker from both containers; record
+the exact owned container/volume identities; and release only those
+resources after the test. This support module does not provision or qualify
+that runner. A plain Docker volume has no such size bound, and a container
+`--tmpfs` mount is recreated empty by `docker start`: neither is a substitute.
+Do not emulate this with an arbitrary host path or a privileged host mount.
+
+After that runner supplies its exact container name and fresh URL, use the
+full ID of the same container (the password below is only an example of the
+runner's disposable credential):
 
 ```bash
-docker run -d --name sunrise-edge-pg-crash-test \
-  -e POSTGRES_PASSWORD=test -e POSTGRES_DB=sunrise_edge_test \
-  -p 55432:5432 postgres:18.6-alpine3.24@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
-CONTAINER_ID="$(docker inspect --format '{{.Id}}' sunrise-edge-pg-crash-test)"
+# Runner image: postgres:18.6-alpine3.24@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+: "${CRASH_TEST_CONTAINER:?set to the exact container name supplied by the qualified runner}"
+CONTAINER_ID="$(docker inspect --format '{{.Id}}' "$CRASH_TEST_CONTAINER")"
 
 SUNRISE_EDGE_TEST_POSTGRES_URL=postgresql://postgres:test@127.0.0.1:55432/sunrise_edge_test \
 SUNRISE_EDGE_TEST_POSTGRES_CONTAINER_ID="$CONTAINER_ID" \
+SUNRISE_EDGE_TEST_POSTGRES_CRASH_REQUIRED=1 \
   cargo test -p runtime-postgres --test postgres_crash_recovery
 ```
 
@@ -136,9 +183,13 @@ SUNRISE_EDGE_TEST_POSTGRES_DISK_FULL_REQUIRED=1 \
   cargo test -p runtime-postgres --all-features --test postgres_disk_full -- --nocapture
 ```
 
-The test keeps PGDATA/WAL on an unfilled 512 MiB tmpfs, fills only a distinct
-64 MiB default tablespace, proves direct SQLSTATE `53100` and the adapter's
-definite pre-commit `UnavailableBeforeCommit`, then frees space and reconciles
+The test requests explicit noswap for both tmpfs mounts and checks the complete
+effective kernel mount table before readiness and every fault-preparation exec.
+Missing noswap, an unexpected size/type/bind root, a duplicate or a nested
+mount fails closed before the requested command. The test keeps PGDATA/WAL on
+an unfilled 512 MiB tmpfs, fills only a distinct 64 MiB default tablespace,
+proves direct SQLSTATE `53100` and the adapter's definite pre-commit
+`UnavailableBeforeCommit`, then frees space and reconciles
 exact non-publication and recovery through the same pool/store. It force-removes
 only its exact created container on normal return or panic. Leaving both
 variables unset skips the test; setting the required flag without a valid
@@ -152,6 +203,9 @@ production certification.
 disposable PostgreSQL 18 container that relocates `pg_wal` (via `initdb
 --waldir`) onto its own small 64 MiB tmpfs, distinct from and much smaller
 than the unfilled 512 MiB tmpfs holding PGDATA and the default tablespace.
+Both mounts request explicit noswap; the same effective-mount verification as
+the disk-full fixture runs before readiness and every exec, including each
+of its two fills. Unsupported noswap is a refusal, not a weaker fallback.
 Set both variables to make it required locally:
 
 ```bash
@@ -431,3 +485,19 @@ explicitly a bounded local PgBouncer transaction-pooling rehearsal only, not
 provider-managed pooler service certification: it does not cover load/soak
 capacity, PgBouncer high availability or connection draining, TLS on either
 the client or backend leg, real writer failover, or production readiness.
+
+### 2026-10-13 cleanup validation
+
+The runner now sources `scripts/postgres-docker-cleanup.sh`. Container removal
+requires the exact generated name, recorded ID and invocation owner label;
+volume removal requires its exact name, local driver and owner label.
+Unknown ownership or failed/malformed absence listings refuse cleanup.
+`scripts/test-postgres-docker-cleanup.sh` has 43 file-backed mock controls
+loading these same actual functions, including owner mismatch, exact-name
+presence, successful absence, stop/remove ordering and failure propagation.
+The real `schema` run `validation-0a2fb454201e4c218fec58f73d7f523b`
+passed one live schema test and 77 support tests, with exit zero, both output
+streams at EOF and its owning cgroup absent. This is additive cleanup evidence,
+not another full PG profile or a passed full required rerun. Successful listing
+absence is a timed observation: no universally atomic/all-path cleanup or
+malformed-NUL handling guarantee follows from these bounded controls.

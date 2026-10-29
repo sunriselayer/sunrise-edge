@@ -180,6 +180,9 @@ pub enum SuccessorInvocationError {
     OriginalGenesis,
     /// Successor fee-claim preparation refused.
     FeeClaim(FeeClaimError),
+    /// The host's shared blocking executor closed before storage/authority
+    /// access; identity, clock and deadline preparation already succeeded.
+    CancelledBeforeStorage,
 }
 
 impl fmt::Display for SuccessorInvocationError {
@@ -194,6 +197,9 @@ impl fmt::Display for SuccessorInvocationError {
                 f.write_str("namespace is an original genesis; successor host refuses it")
             }
             Self::FeeClaim(error) => write!(f, "successor fee claim refused: {error:?}"),
+            Self::CancelledBeforeStorage => {
+                f.write_str("successor host admission closed before storage access")
+            }
         }
     }
 }
@@ -248,6 +254,10 @@ fn operation_context<S>(
         .checked_add(timeout_millis)
         .and_then(StorageDeadline::new)
         .ok_or(SuccessorInvocationError::DeadlineOverflow)?;
+    let stop: Arc<dyn InvocationCancellation> = host.blocking_executor.stop_cancellation();
+    if stop.is_cancelled() {
+        return Err(SuccessorInvocationError::CancelledBeforeStorage);
+    }
     Ok(DurableOperationContext::new(
         host.writer_fence,
         deadline,
@@ -333,6 +343,7 @@ fn invocation_error_response(error: &SuccessorInvocationError) -> Response {
         SuccessorInvocationError::FeeClaim(_) => {
             error_response(StatusCode::BAD_REQUEST, "successor-fee-claim-rejected")
         }
+        SuccessorInvocationError::CancelledBeforeStorage => cancelled_before_storage_response(),
     }
 }
 

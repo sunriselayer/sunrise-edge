@@ -51,7 +51,9 @@
 #![forbid(unsafe_code)]
 
 use sunrise_edge_operator::common::{
-    FlagSet, connect_pool, load_signing_key_file, parse_hex_32, require_live_fastvote_pin,
+    FlagSet, connect_pool, hex_lower as to_hex, load_signing_key_file, parse_chain,
+    parse_decimal_hash_schedule as parse_schedule, parse_domain, parse_epoch, parse_hex_32,
+    parse_protocol_version, parse_u64_bounded, parse_validator, require_live_fastvote_pin,
 };
 use sunrise_edge_operator::host_protocol_context::host_query_protocol_config;
 use sunrise_edge_operator::host_runtime::{
@@ -79,8 +81,7 @@ use node_core::{NodeConfig, local_instance_state};
 use postgres_rustls::MakeTlsConnector;
 use protocol_config::ProtocolConfig;
 use protocol_types::{
-    AtomicityDomainId, ChainId, Epoch, HashAlgorithmId, HashSuite, HashSuiteId, HashSuiteSchedule,
-    ProtocolVersion, ValidatorId,
+    AtomicityDomainId, ChainId, Epoch, HashSuiteSchedule, ProtocolVersion, ValidatorId,
 };
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
 use runtime::{
@@ -96,94 +97,6 @@ use std::{
     process::ExitCode, sync::Arc, time::Duration,
 };
 use sunrise_edge_client::load_verified_genesis_root;
-
-fn parse_chain(value: String) -> Result<ChainId, String> {
-    ChainId::new(value).map_err(|_| "invalid --chain-id".to_string())
-}
-
-fn parse_validator(value: &str) -> Result<ValidatorId, String> {
-    Ok(ValidatorId::new(parse_hex_32(value, "--validator-id")?))
-}
-
-fn parse_domain(value: &str) -> Result<AtomicityDomainId, String> {
-    AtomicityDomainId::new(parse_hex_32(value, "--domain")?).map_err(|_| "zero --domain".into())
-}
-
-fn parse_protocol_version(value: &str) -> Result<ProtocolVersion, String> {
-    let version: u32 = value.parse().map_err(|_| "invalid --protocol-version")?;
-    if version == 0 {
-        return Err("zero --protocol-version".into());
-    }
-    Ok(ProtocolVersion::new(version))
-}
-
-fn parse_epoch(value: &str) -> Result<Epoch, String> {
-    let epoch: u64 = value.parse().map_err(|_| "invalid --epoch")?;
-    Ok(Epoch::new(epoch))
-}
-
-fn parse_u64_bounded(value: &str, field: &str, min: u64, max: u64) -> Result<u64, String> {
-    let parsed: u64 = value.parse().map_err(|_| format!("invalid {field}"))?;
-    if !(min..=max).contains(&parsed) {
-        return Err(format!("{field} must be {min}..={max}"));
-    }
-    Ok(parsed)
-}
-
-fn parse_suite(value: &str) -> Result<HashSuiteSchedule, String> {
-    let fields: Vec<&str> = value.split(':').collect();
-    if fields.len() != 8 {
-        return Err(
-            "--suite needs epoch:id:transaction:object:effects:code:config:certificate (decimal wire ids)"
-                .into(),
-        );
-    }
-    let epoch: u64 = fields[0].parse().map_err(|_| "invalid suite epoch")?;
-    let id: u16 = fields[1].parse().map_err(|_| "invalid suite id")?;
-    if id == 0 {
-        return Err("zero suite id".into());
-    }
-    let algorithm = |index: usize| -> Result<HashAlgorithmId, String> {
-        let number: u16 = fields[index]
-            .parse()
-            .map_err(|_| "invalid hash algorithm id")?;
-        match HashAlgorithmId::try_from(number) {
-            Ok(HashAlgorithmId::Sha2_256) => Ok(HashAlgorithmId::Sha2_256),
-            Ok(HashAlgorithmId::Sha3_256) => Ok(HashAlgorithmId::Sha3_256),
-            _ => Err("unsupported hash algorithm id".into()),
-        }
-    };
-    Ok(HashSuiteSchedule {
-        activation_epoch: Epoch::new(epoch),
-        suite: HashSuite {
-            id: HashSuiteId::new(id),
-            transaction_hash: algorithm(2)?,
-            object_digest: algorithm(3)?,
-            effects_hash: algorithm(4)?,
-            code_hash: algorithm(5)?,
-            config_hash: algorithm(6)?,
-            certificate_hash: algorithm(7)?,
-        },
-    })
-}
-
-fn parse_schedule(values: &[String]) -> Result<Vec<HashSuiteSchedule>, String> {
-    if values.is_empty() {
-        return Err("at least one --suite is required".into());
-    }
-    if values.len() > 64 {
-        return Err("too many --suite entries (maximum 64)".into());
-    }
-    values.iter().map(|value| parse_suite(value)).collect()
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    let mut text: String = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        text.push_str(&format!("{byte:02x}"));
-    }
-    text
-}
 
 // ---------------------------------------------------------------------
 // Genesis manifest trust: identical to `fastvote_pg`'s own loader.
@@ -580,7 +493,9 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
         );
         use std::io::Write;
         std::io::stdout().flush()?;
-        native_http::serve(listener, router, async {
+        let serve_policy: native_http::NativeHttpServePolicy =
+            native_http::NativeHttpServePolicy::default().with_certified_publication(true);
+        native_http::serve_with_policy(listener, router, serve_policy, async {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await

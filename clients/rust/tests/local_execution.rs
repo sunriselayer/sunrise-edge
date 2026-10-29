@@ -11,6 +11,9 @@ use sunrise_edge_client::{call::CallIntent, local_execution::*, publication::*, 
 #[path = "support/acknowledgement.rs"]
 mod acknowledgement;
 
+#[path = "support/recording_transport.rs"]
+mod recording_transport;
+
 #[path = "support/external_signer.rs"]
 mod external_signer;
 
@@ -1002,4 +1005,66 @@ fn normalized_rejected_result_is_returned_without_becoming_success() {
             .unwrap(),
         result
     );
+}
+
+#[test]
+fn instance_query_preserves_complete_mixed_hex_path_and_not_found() {
+    let first: [u8; 32] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
+    ];
+    let seed: [u8; 32] = [
+        0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8, 0xf7, 0xf6, 0xf5, 0xf4, 0xf3, 0xf2, 0xf1,
+        0xf0, 0xef, 0xee, 0xed, 0xec, 0xeb, 0xea, 0xe9, 0xe8, 0xe7, 0xe6, 0xe5, 0xe4, 0xe3, 0xe2,
+        0xe1, 0xe0,
+    ];
+    let expected: ExpectedProtocolContext = expected();
+    let resolver: HashSuiteResolver = local_publication_resolver(&expected).unwrap();
+    let context: HttpContextQueryResult = HttpContextQueryResult::new(
+        expected.chain_id().clone(),
+        expected.protocol_version(),
+        expected.epoch(),
+        expected.hash_suite_id(),
+        2,
+        1,
+        2,
+        expected.domain(),
+        vec![1],
+    )
+    .unwrap();
+    let client: Client<recording_transport::FakeTransport> =
+        Client::new(recording_transport::FakeTransport {
+            responses: RefCell::new(VecDeque::from([
+                response(context.encode().unwrap(), QUERY_RESULT_MEDIA_TYPE),
+                WireResponse {
+                    status: 404,
+                    content_type: None,
+                    body: Vec::new(),
+                },
+            ])),
+            requests: RefCell::new(Vec::new()),
+        });
+    assert_eq!(
+        client
+            .query_instance(first, seed, &resolver, &expected)
+            .unwrap(),
+        None
+    );
+    let requests: std::cell::Ref<'_, Vec<WireRequest>> = client.transport().requests.borrow();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, Method::Get);
+    assert_eq!(requests[0].path, "/v1/context");
+    assert_eq!(requests[1].method, Method::Get);
+    assert_eq!(
+        requests[1].path,
+        concat!(
+            "/v1/contracts/instances/",
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f/",
+            "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0"
+        )
+    );
+    assert_eq!(requests[1].content_type, None);
+    assert!(requests[1].body.is_empty());
+    assert_eq!(requests[1].deadline, None);
 }

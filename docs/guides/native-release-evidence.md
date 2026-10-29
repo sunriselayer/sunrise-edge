@@ -1,12 +1,17 @@
 # Native release artifact evidence
 
 The bounded runner implements [DR-0213](../architecture/decisions/0213-native-release-artifact-evidence.md).
-It records source, locked dependencies, tools and flags, then compares eleven
+It records source, locked dependencies, tools and flags, then compares thirteen
 executables from two fresh sequential builds. It never executes those executables.
 Linux `x86_64-unknown-linux-gnu` is a local evidence profile, not production or
 provider qualification. Actual native rebuilding, required repository/process
 acceptance and M7 completion need separate evidence; neither this guide nor fixture
 results claims those gates.
+
+[Native release handoff](../architecture/native-release-handoff.md) binds each
+of these thirteen saved artifacts, by source, to its accepted capability and
+existing operator runbook; it does not change how this runner selects,
+builds, or compares them.
 
 ## Prerequisites and ownership
 
@@ -20,7 +25,8 @@ The lease lives in mode-0700 `/tmp/sunrise-edge-native-evidence-<uid>`; it is re
 only by its recorded owner after descendants stop. A stale/conflicting lease fails
 closed; there is no automatic scavenging or general approval-token interface.
 
-Use installed Node exactly 22.20.0 and explicit installed Cargo/rustc/rustdoc
+[DR-0243](../architecture/decisions/0243-node24-validation-profile.md) supersedes the old Node pin.
+Use installed Node exactly 24.19.0 and explicit installed Cargo/rustc/rustdoc
 1.97.1 paths, not PATH defaults or rustup proxies. Supply explicit Git, GNU CC,
 AR and GNU linker paths and an existing absolute Cargo cache. Driver aliases are
 resolved and recorded. The source must be a clean committed repository root with
@@ -52,7 +58,8 @@ the explicit GNU target, JSON diagnostics and only these selected binaries:
 
 - `sunrise-edge-operator`: `sqlite_genesis`, `standard_asset_genesis`,
   `genesis_inspect`, `sqlite_source_host`, `business_cut`, `business_import`,
-  `conditional_readiness`, `ordered_seal`, `successor_activation`, `successor_host`.
+  `business_recovery`, `conditional_readiness`, `ordered_seal`, `successor_activation`,
+  `successor_host`, `native_observations`.
 - `sunrise-edge-cli`: `sunrise-edge-cli`, with no USB/HID feature.
 
 The actual normal/build closure retains PostgreSQL libraries; no PG-only binary,
@@ -60,7 +67,7 @@ service, provider build, test or example is selected. Cargo tree resolves target
 conditions and selected feature sets; Cargo metadata supplies package/target/source
 identities, not workspace-wide selected-feature proof. Both builds must reconcile
 the exact selected package set, feature unions and every distinct feature variant,
-plus exactly eleven package/bin/executable observations, not just eleven names.
+plus exactly thirteen package/bin/executable observations, not just thirteen names.
 Actual host/target roles are recorded from owned release paths; build-script and
 proc-macro outputs must be host, while shipped binaries must be target. Malformed JSON,
 unfinished JSON tails, fresh/reused artifacts and unexpected outputs fail closed.
@@ -107,7 +114,7 @@ configuration, tools, closure, archives, expanded inventories and markers are
 read again before/after both builds and before final success. Freeze ownership is
 still necessary: boundary checks cannot prove that no change-and-revert occurred.
 
-`compiler-a` and `temp-a` are new empty directories. Eleven saved `artifacts-a`
+`compiler-a` and `temp-a` are new empty directories. Thirteen saved `artifacts-a`
 copies preserve actual modes, cannot alias compiler or other snapshot files,
 and are synchronized and rehashed. Only after stopped descendants and verified
 snapshots can the exact created compiler/temp directories be removed, checking
@@ -132,7 +139,7 @@ type/identity/owner/mode/containment checks. Cleanup is successful only after al
 removals and synchronization; any failure keeps the record incomplete.
 
 Then independently fresh B repeats the same recipe. B cleanup
-also requires eleven comparisons: names/modes/sizes/hashes and every byte to exact
+also requires thirteen comparisons: names/modes/sizes/hashes and every byte to exact
 EOF with held regular-file attachments. Successful storage is bounded to one
 compiler target plus two snapshot sets; this is not a disk-capacity guarantee.
 
@@ -150,9 +157,9 @@ After approval, commit/freeze and budget allocation, substitute the exact review
 SHA and absolute paths. The installed Node must invoke the committed source script:
 
 ```sh
-/absolute/installed/node-22.20.0 /absolute/clean-source/scripts/check-native-release-evidence.mjs \
+/absolute/installed/node-24.19.0 /absolute/clean-source/scripts/check-native-release-evidence.mjs \
   --source /absolute/clean-source --expected-sha REVIEWED_40_HEX_COMMITTED_SHA \
-  --node /absolute/installed/node-22.20.0 --git /usr/bin/git \
+  --node /absolute/installed/node-24.19.0 --git /usr/bin/git \
   --cargo /absolute/toolchain-1.97.1/bin/cargo \
   --rustc /absolute/toolchain-1.97.1/bin/rustc \
   --rustdoc /absolute/toolchain-1.97.1/bin/rustdoc \
@@ -179,7 +186,7 @@ Doubles cannot select a production bypass or set native
 `complete=true`:
 
 ```sh
-/absolute/installed/node-22.20.0 scripts/test-native-release-evidence.mjs
+/absolute/installed/node-24.19.0 scripts/test-native-release-evidence.mjs
 ```
 
 Even successful native evidence is same-host/shared-cache equality, not upstream

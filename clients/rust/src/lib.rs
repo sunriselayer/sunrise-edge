@@ -64,6 +64,7 @@ pub mod fastvote_drain_driver;
 pub mod fastvote_frontier_client;
 pub mod fastvote_publication_client;
 pub mod fee_claim_client;
+pub mod fee_claim_review;
 pub mod immutable_archive;
 pub mod key;
 pub mod local_execution_client;
@@ -73,6 +74,8 @@ pub mod ordered_history_archive;
 pub mod ordered_history_client;
 pub mod paid_execution_client;
 pub mod publication_client;
+pub mod publication_review;
+mod review_presentation;
 mod signing_frame;
 pub mod successor_artifacts;
 pub mod successor_authority;
@@ -84,6 +87,7 @@ pub use abi::package_types::PackageOrigin;
 pub use abi::{decode_access_manifest, executable_abi};
 pub use client::{Client, ReceiptPollBounds, SubmitTransactionRequest};
 pub use context::{ExpectedProtocolContext, ExpectedProtocolContextError, ProtocolContextMismatch};
+pub use crypto::{Ed25519OwnerAddressPolicy, validate_ed25519_owner_address};
 pub use error::ClientError;
 pub use execution::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION;
 pub use execution::paid_execution::{
@@ -139,9 +143,11 @@ pub use consensus::{
     encode_frozen_frontier_vote,
 };
 pub use fee_claim_client::{
-    FeeClaimPreparationError, PreparedFeeClaim, fee_claim_candidate,
+    FeeClaimIntent, FeeClaimOperation, FeeClaimPreparationError, MAX_FEE_CLAIM_INTENT_BYTES,
+    PreparedFeeClaim, decode_fee_claim_intent, encode_fee_claim_intent, fee_claim_candidate,
     require_successor_fee_claim_request, sign_prepared_fee_claim, verify_prepared_fee_claim,
 };
+pub use fee_claim_review::{FeeClaimReview, FeeClaimReviewError};
 pub use node_core::admission_profile::{
     ExternalRequestLane, VerifiedAdmissionProfile, require_external_request_lane,
 };
@@ -163,6 +169,7 @@ pub use node_wire::{
 };
 pub use node_wire::{
     FEE_CLAIM_PREPARE_PATH, FeeClaimPrepareRequest, MAX_FEE_CLAIM_PREPARE_LEG_BYTES,
+    MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES,
 };
 pub use paid_execution_client::{
     PAID_EXECUTION_PATH, PAID_FEE_POLICY_PATH, PreparedPaidExecution, build_signed_paid_execution,
@@ -171,6 +178,10 @@ pub use protocol_types::{HashSuite, HashSuiteSchedule};
 pub use publication_client::{
     PreparedPublication, PublicationQueryResult, build_signed_publication,
     local_publication_resolver,
+};
+pub use publication_review::{
+    DependencyReview, MAX_REVIEW_DISPLAY_BYTES, MAX_REVIEW_TOTAL_FIELDS, PublicationReview,
+    PublicationReviewError,
 };
 pub use signing_view::{
     ClearSigningPolicy, ClearSigningPolicyError, ClearSigningView, DeviceSigningProfile,
@@ -210,9 +221,13 @@ pub use execution::{
     decode_event_record, decode_execution_effects, decode_object_effect, publication,
     validate_contract_wasm,
 };
+pub use node_core::genesis::MAX_GENESIS_MANIFEST_BYTES;
 pub use node_core::ordered_economics as ordered_economics_core;
 pub use node_core::publication::local_publication_profile_semantics;
-pub use node_core::{EnvelopeError, NodeCoreError, NodeResponse, NodeResponseStatus, RequestId};
+pub use node_core::{
+    EnvelopeError, MAX_AUTHENTICATED_OBJECT_BODY_BYTES, NodeCoreError, NodeResponse,
+    NodeResponseStatus, RequestId,
+};
 pub use node_wire::ordered_economics;
 pub use node_wire::ordered_history as ordered_history_wire;
 pub use node_wire::{
@@ -225,7 +240,8 @@ pub use node_wire::{
     QueryResultError, ReceiptQueryStatus,
 };
 pub use objects::{
-    AccessMode, Address, Object, ObjectError, ObjectId, ObjectRef, Owner, decode_object,
+    AccessMode, Address, Object, ObjectError, ObjectId, ObjectRef, Owner, ProtocolCustodyPurpose,
+    ProtocolCustodyScope, decode_object, decode_object_ref, encode_object, encode_object_ref,
 };
 pub use validator_set::{ValidatorInfo, ValidatorSet};
 

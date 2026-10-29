@@ -1278,3 +1278,155 @@ fn read_provenance(
         .unwrap();
     logical_generation::decode_logical_provenance_record(row.value().unwrap()).unwrap()
 }
+
+#[test]
+fn durable_receipt_reconciliation_absence_and_exact_response_do_no_new_work() {
+    let store: ScriptedDurableStore = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let context: DurableOperationContext = durable_context();
+    let id: RequestId = request(0xA1);
+    let digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0xA2; 32]);
+    assert!(
+        durable_reconciliation::reconcile_receipt(&store, &context, domain(0xC1), id, digest)
+            .unwrap()
+            .is_none()
+    );
+    let responses: Vec<NodeResponse> = vec![
+        NodeResponse::new(
+            id,
+            NodeResponseStatus::Accepted,
+            Some(canonical(TEST_PAYLOAD_TYPE_ID, 0xA3)),
+        )
+        .unwrap(),
+    ];
+    let bytes: Vec<u8> = NodeDedupRecord::new(id, digest, responses.clone())
+        .unwrap()
+        .encode()
+        .unwrap();
+    let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
+        DurableRequestId::new(*id.as_bytes()).unwrap(),
+        digest,
+        bytes,
+    )
+    .unwrap();
+    store.receipt.lock().unwrap().replace(receipt.clone());
+    let output: NodeOutput =
+        durable_reconciliation::reconcile_receipt(&store, &context, domain(0xC1), id, digest)
+            .unwrap()
+            .unwrap();
+    assert_eq!(output.responses(), responses);
+    assert!(output.outbound_messages().is_empty());
+    assert_eq!(*store.receipt.lock().unwrap(), Some(receipt));
+    assert!(store.commits.lock().unwrap().is_empty());
+    assert_eq!(store.state_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(store.object_head_reads.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn durable_receipt_reconciliation_outer_identity_and_reuse_precede_decode() {
+    let id: RequestId = request(0xA4);
+    let expected: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0xA5; 32]);
+    let other_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha3_256, [0xA6; 32]);
+    for outer_id in [request(0xA7), id] {
+        let store: ScriptedDurableStore =
+            ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+        let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
+            DurableRequestId::new(*outer_id.as_bytes()).unwrap(),
+            other_digest,
+            vec![0xEE, 0x00],
+        )
+        .unwrap();
+        store.receipt.lock().unwrap().replace(receipt.clone());
+        let error: NodeCoreError = durable_reconciliation::reconcile_receipt(
+            &store,
+            &durable_context(),
+            domain(0xC1),
+            id,
+            expected,
+        )
+        .unwrap_err();
+        if outer_id == id {
+            assert!(matches!(error, NodeCoreError::RequestIdReuse));
+        } else {
+            assert!(matches!(
+                error,
+                NodeCoreError::PersistenceInvariant(
+                    "durable receipt lookup returned another request"
+                )
+            ));
+        }
+        assert_eq!(*store.receipt.lock().unwrap(), Some(receipt));
+        assert!(store.commits.lock().unwrap().is_empty());
+        assert_eq!(store.state_reads.load(Ordering::SeqCst), 0);
+        assert_eq!(store.object_head_reads.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn durable_receipt_reconciliation_nested_binding_keeps_original_errors() {
+    let id: RequestId = request(0xA8);
+    let expected: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0xA9; 32]);
+    let nested_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha3_256, [0xAA; 32]);
+    for nested_id in [request(0xAB), id] {
+        let store: ScriptedDurableStore =
+            ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+        let bytes: Vec<u8> = NodeDedupRecord::new(nested_id, nested_digest, Vec::new())
+            .unwrap()
+            .encode()
+            .unwrap();
+        let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
+            DurableRequestId::new(*id.as_bytes()).unwrap(),
+            expected,
+            bytes,
+        )
+        .unwrap();
+        store.receipt.lock().unwrap().replace(receipt.clone());
+        let error: NodeCoreError = durable_reconciliation::reconcile_receipt(
+            &store,
+            &durable_context(),
+            domain(0xC1),
+            id,
+            expected,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            NodeCoreError::PersistenceInvariant(
+                "durable receipt projection and canonical record differ"
+            )
+        ));
+        assert_eq!(*store.receipt.lock().unwrap(), Some(receipt));
+        assert!(store.commits.lock().unwrap().is_empty());
+        assert_eq!(store.state_reads.load(Ordering::SeqCst), 0);
+        assert_eq!(store.object_head_reads.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn durable_receipt_reconciliation_malformed_bytes_keep_decode_error() {
+    let store: ScriptedDurableStore = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let id: RequestId = request(0xAC);
+    let digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0xAD; 32]);
+    let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
+        DurableRequestId::new(*id.as_bytes()).unwrap(),
+        digest,
+        vec![0xEE, 0x00],
+    )
+    .unwrap();
+    store.receipt.lock().unwrap().replace(receipt.clone());
+    let error: NodeCoreError = durable_reconciliation::reconcile_receipt(
+        &store,
+        &durable_context(),
+        domain(0xC1),
+        id,
+        digest,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        NodeCoreError::PersistenceInvariant("invalid durable receipt")
+    ));
+    assert_eq!(*store.receipt.lock().unwrap(), Some(receipt));
+    assert!(store.commits.lock().unwrap().is_empty());
+    assert_eq!(store.state_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(store.object_head_reads.load(Ordering::SeqCst), 0);
+}

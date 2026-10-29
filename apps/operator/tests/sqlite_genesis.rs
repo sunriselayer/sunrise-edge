@@ -1170,7 +1170,12 @@ fn start_sqlite_source_host(
         "4",
         "--confirm-offline-fence-advance",
     ]);
-    let (mut guard, line) = spawn_bounded_status_line(command, Duration::from_secs(30));
+    let startup_byte_cap: std::num::NonZeroUsize =
+        compiled_source_host_process::compiled_host_startup_line_limit(
+            built.network.chain_id.as_str(),
+        );
+    let (mut guard, line) =
+        spawn_bounded_status_line(command, Duration::from_secs(30), startup_byte_cap);
     if line.is_empty() {
         panic!(
             "sqlite-source-host exited before serving: {:?}",

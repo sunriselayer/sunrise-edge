@@ -13,6 +13,7 @@ ed25519-zebra.workspace = true
 execution.workspace = true
 fees.workspace = true
 hashing.workspace = true
+libc.workspace = true
 node-core.workspace = true
 node-wire.workspace = true
 runtime.workspace = true

@@ -44,6 +44,11 @@ use std::fmt;
 /// treated as absent/Inactive.
 pub const SQL_DURABLE_SCHEMA_IDENTITY: &[u8] = b"sunrise-edge/sqlite/structured/schema/v6";
 
+/// Explicit native storage profile requiring independent anchor mediation.
+/// Baseline engines reject this identity, including handles opened before enrollment.
+pub const SQL_ANCHORED_SCHEMA_IDENTITY: &[u8] =
+    b"sunrise-edge/sqlite/structured/schema/v6/independent-anchor/v1";
+
 pub(crate) const OBJECT_HEAD_STATUS_CURRENT: i64 = 1;
 pub(crate) const OBJECT_HEAD_STATUS_TOMBSTONED: i64 = 2;
 
@@ -380,7 +385,7 @@ pub fn verify_namespace(
     )?;
     let row = rows.one()?.ok_or(SchemaError::InvalidPersistedMetadata)?;
     let schema_identity = row.blob(0).map_err(SqlSessionError::from)?;
-    if schema_identity != SQL_DURABLE_SCHEMA_IDENTITY {
+    if schema_identity != session.namespace_schema_identity() {
         return Err(SchemaError::SchemaIdentityMismatch);
     }
     // Absence of this mandatory protected owner is never an absent cache.
@@ -561,7 +566,7 @@ pub fn bootstrap_namespace(
               mutation_sequence, source_instance_id, namespace_origin, import_binding)
          VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, randomblob(16), 1, NULL)",
         &[
-            SqlValue::Blob(SQL_DURABLE_SCHEMA_IDENTITY.to_vec()),
+            SqlValue::Blob(session.namespace_schema_identity().to_vec()),
             SqlValue::Text(namespace.chain_id().as_str().to_owned()),
             SqlValue::Blob(namespace.validator_id().as_bytes().to_vec()),
             SqlValue::Blob(namespace.domain().as_bytes().to_vec()),
@@ -613,7 +618,7 @@ pub fn bootstrap_import_namespace(
              writer_fence, mutation_sequence, source_instance_id, namespace_origin, import_binding)
          VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, randomblob(16), 2, ?7)",
         &[
-            SqlValue::Blob(SQL_DURABLE_SCHEMA_IDENTITY.to_vec()),
+            SqlValue::Blob(session.namespace_schema_identity().to_vec()),
             SqlValue::Text(namespace.chain_id().as_str().to_owned()),
             SqlValue::Blob(namespace.validator_id().as_bytes().to_vec()),
             SqlValue::Blob(namespace.domain().as_bytes().to_vec()),

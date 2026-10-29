@@ -53,6 +53,16 @@ pre-sign boundaries, not key protection. Genuine registration and historical
 fee-claim controls remain inside the original owning operator recurrence; merely
 compiling those controls does not prove that expensive workflow passed.
 
+## Fee-claim review consumer
+
+[Saved successor fee-claim review](fee-claim-review.md) consumes the retained
+`PreparedFeeClaim` through `FeeClaimReview`. Seed-free prepare exports and offline
+review/development-sign commands use the same canonical inputs and independently
+verified workflow. Displayed host-proposed economics and generic leg arguments
+are not semantic approval or current-row proof. This adds no protected fee-claim
+backend or publication-custody permission; [DR-0245](decisions/0245-saved-successor-fee-claim-review.md)
+records the exact boundary.
+
 ## Separate M2 requirements
 
 Mechanical signature validity is not independent human content review. A future
@@ -78,3 +88,21 @@ Its contract is independently design-reviewed, not provider selection or M2
 qualification. It explicitly defers an additional presentation layer without a
 concrete trusted review consumer; repeating these prepared-owner guarantees is
 not another security boundary.
+
+[DR-0238](decisions/0238-publication-only-local-os-custody.md) implements one
+of DR-0214's compared candidates ("dedicated encrypted local custody," without
+the encryption) for `PreparedPublication` only. Its `serve` process never
+receives a caller-supplied frame: it rebuilds `PreparedPublication` from its
+own pinned config and the caller's bounded artifact/nonce/request-id, and
+`custody approve` is the human-review consumer of `PublicationReview` this
+document's "Separate M2 requirements" section above anticipates. It does not
+migrate any other prepared owner, `ConsensusSigner`, readiness, or genesis/
+admin signing, and it is not an at-rest-encryption or compromised-root claim.
+
+[DR-0246](decisions/0246-genesis-standard-asset-transfer-custody.md) adds a
+separate [genesis Standard Asset transfer](standard-asset-transfer-custody.md)
+consumer of `PreparedPaidExecution`. Its custody process pins genesis and the
+in-tree code/fee semantics, reconstructs signed object references from canonical
+preimages and renders their amounts before exact-frame approval. The original
+publication server remains closed to this family. This does not migrate other
+paid operations, fee claims, automatic consensus/readiness or genesis/admin keys.

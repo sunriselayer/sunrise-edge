@@ -18,6 +18,10 @@ mod acknowledgement;
 #[path = "support/external_signer.rs"]
 mod external_signer;
 
+#[path = "support/recording_transport.rs"]
+mod recording_transport;
+use recording_transport::FakeTransport;
+
 #[test]
 fn prepared_publication_preserves_independent_bytes_and_owned_artifact() {
     use external_signer::{Behavior, TestSigner};
@@ -266,17 +270,6 @@ fn expected_context() -> PublicationContext {
         expected.epoch(),
     )
     .unwrap()
-}
-
-struct FakeTransport {
-    responses: RefCell<VecDeque<WireResponse>>,
-    requests: RefCell<Vec<WireRequest>>,
-}
-impl Transport for FakeTransport {
-    fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportError> {
-        self.requests.borrow_mut().push(request.clone());
-        Ok(self.responses.borrow_mut().pop_front().unwrap())
-    }
 }
 
 fn expected() -> ExpectedProtocolContext {
@@ -938,4 +931,38 @@ fn malformed_oversized_and_trailing_query_frames_are_rejected() {
             ))
         ))
     ));
+}
+
+#[test]
+fn publication_query_preserves_complete_mixed_hex_path_and_not_found() {
+    let first: [u8; 32] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
+    ];
+    let seed: [u8; 32] = [
+        0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8, 0xf7, 0xf6, 0xf5, 0xf4, 0xf3, 0xf2, 0xf1,
+        0xf0, 0xef, 0xee, 0xed, 0xec, 0xeb, 0xea, 0xe9, 0xe8, 0xe7, 0xe6, 0xe5, 0xe4, 0xe3, 0xe2,
+        0xe1, 0xe0,
+    ];
+    let origin: PackageOrigin =
+        PackageOrigin::unverified(expected().chain_id().clone(), first, seed).unwrap();
+    let client: Client<FakeTransport> = client(response(404, QUERY_RESULT_MEDIA_TYPE, Vec::new()));
+    assert_eq!(query(&client, &origin).unwrap(), None);
+    let requests: std::cell::Ref<'_, Vec<WireRequest>> = client.transport().requests.borrow();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, Method::Get);
+    assert_eq!(requests[0].path, "/v1/context");
+    assert_eq!(requests[1].method, Method::Get);
+    assert_eq!(
+        requests[1].path,
+        concat!(
+            "/v1/contracts/publications/",
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f/",
+            "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0"
+        )
+    );
+    assert_eq!(requests[1].content_type, None);
+    assert!(requests[1].body.is_empty());
+    assert_eq!(requests[1].deadline, None);
 }

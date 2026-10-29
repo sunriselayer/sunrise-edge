@@ -8,9 +8,10 @@
 //! the operator activation/host and by successor CLI workflows.
 
 use crate::business_cut_archive::{CutArchiveError, read_business_cut_archive};
-use crate::immutable_archive::ImmutableArchiveReader;
+use crate::immutable_archive::{ArchiveReadBudget, ImmutableArchiveReader};
 use crate::ordered_history_archive::{
-    read_ordered_history_height, read_verified_ordered_history_archive,
+    read_ordered_history_height, read_ordered_history_height_bounded,
+    read_verified_ordered_history_archive, read_verified_ordered_history_archive_bounded,
 };
 use node_core::business_reconstruction::{BusinessReconstructionPlan, cut::SavedBusinessCut};
 use node_core::ordered_economics::{
@@ -86,19 +87,54 @@ impl SuccessorChainArtifactFiles {
         directories: &[SuccessorLinkArchiveDirectories<'_>],
         budget: SuccessorChainBudget,
     ) -> Result<Self, SuccessorActivationError> {
+        Self::open_selected(directories, budget, None)
+    }
+
+    /// Additive local profile: one invocation handle is installed in EVERY role
+    /// before its constructor walks/staging validation. No accepted proof is cached.
+    pub fn open_bounded(
+        directories: &[SuccessorLinkArchiveDirectories<'_>],
+        chain_budget: SuccessorChainBudget,
+        read_budget: &ArchiveReadBudget,
+    ) -> Result<Self, SuccessorActivationError> {
+        Self::open_selected(directories, chain_budget, Some(read_budget))
+    }
+
+    fn open_selected(
+        directories: &[SuccessorLinkArchiveDirectories<'_>],
+        budget: SuccessorChainBudget,
+        read_budget: Option<&ArchiveReadBudget>,
+    ) -> Result<Self, SuccessorActivationError> {
         require_successor_chain_budget(directories.len(), budget)?;
-        let mut links: Vec<SuccessorLinkArchiveFiles> = Vec::with_capacity(directories.len());
+        let mut links: Vec<SuccessorLinkArchiveFiles> = if let Some(read_budget) = read_budget {
+            let roles: usize = directories
+                .len()
+                .checked_mul(4)
+                .and_then(|count: usize| count.checked_add(3))
+                .ok_or(SuccessorArtifactError::Oversized)?;
+            read_budget
+                .check_roles(roles)
+                .map_err(|_| SuccessorArtifactError::Oversized)?;
+            let mut links: Vec<SuccessorLinkArchiveFiles> = Vec::new();
+            links.try_reserve_exact(directories.len()).map_err(|_| {
+                read_budget.refuse();
+                SuccessorArtifactError::Oversized
+            })?;
+            links
+        } else {
+            Vec::with_capacity(directories.len())
+        };
         for directory in directories {
             let plan_history: ImmutableArchiveReader =
-                ImmutableArchiveReader::open(directory.plan_history)
+                open_selected_archive(directory.plan_history, read_budget)
                     .map_err(|_| SuccessorArtifactError::Io)?;
-            let cut: ImmutableArchiveReader = ImmutableArchiveReader::open(directory.cut)
+            let cut: ImmutableArchiveReader = open_selected_archive(directory.cut, read_budget)
                 .map_err(|_| SuccessorArtifactError::Io)?;
             let manifest_history: ImmutableArchiveReader =
-                ImmutableArchiveReader::open(directory.manifest_history)
+                open_selected_archive(directory.manifest_history, read_budget)
                     .map_err(|_| SuccessorArtifactError::Io)?;
             let certificate: ImmutableArchiveReader =
-                ImmutableArchiveReader::open(directory.certificate)
+                open_selected_archive(directory.certificate, read_budget)
                     .map_err(|_| SuccessorArtifactError::Io)?;
             let pins: SuccessorLinkPins = SuccessorLinkPins {
                 cut_identity: read_identity(&plan_history)?,
@@ -123,6 +159,30 @@ impl SuccessorChainArtifactFiles {
             .iter()
             .map(|link: &SuccessorLinkArchiveFiles| link.pins.clone())
             .collect()
+    }
+
+    /// Fallible bounded pin cloning, under the same handle and logical role ceiling.
+    pub fn pins_bounded(&self) -> Result<Vec<SuccessorLinkPins>, SuccessorArtifactError> {
+        let budget: &ArchiveReadBudget = self
+            .links
+            .first()
+            .and_then(|link| link.plan_history.read_budget())
+            .ok_or(SuccessorArtifactError::Malformed)?;
+        budget
+            .check_roles(
+                self.links
+                    .len()
+                    .checked_mul(4)
+                    .and_then(|count: usize| count.checked_add(3))
+                    .ok_or(SuccessorArtifactError::Oversized)?,
+            )
+            .map_err(|_| SuccessorArtifactError::Oversized)?;
+        budget
+            .charge_observations(
+                u64::try_from(self.links.len()).map_err(|_| SuccessorArtifactError::Oversized)?,
+            )
+            .map_err(|_| SuccessorArtifactError::Io)?;
+        Ok(self.pins())
     }
 
     /// Rechecks every held input archive against a proposed output path.
@@ -155,6 +215,29 @@ impl SuccessorChainArtifactFiles {
     }
 }
 
+fn open_selected_archive(
+    path: &Path,
+    budget: Option<&ArchiveReadBudget>,
+) -> std::io::Result<ImmutableArchiveReader> {
+    match budget {
+        Some(budget) => ImmutableArchiveReader::open_bounded(path, budget),
+        None => ImmutableArchiveReader::open(path),
+    }
+}
+
+fn require_certificate_inventory(
+    archive: &ImmutableArchiveReader,
+) -> Result<(), SuccessorArtifactError> {
+    if archive.read_budget().is_some() {
+        let names: std::collections::BTreeSet<String> =
+            archive.names().map_err(|_| SuccessorArtifactError::Io)?;
+        if names.len() != 1 || !names.contains("certificate.bin") {
+            return Err(SuccessorArtifactError::Malformed);
+        }
+    }
+    Ok(())
+}
+
 fn read_identity(
     archive: &ImmutableArchiveReader,
 ) -> Result<OrderedHistoryIdentity, SuccessorArtifactError> {
@@ -175,8 +258,15 @@ impl SuccessorChainArtifacts for SuccessorChainArtifactFiles {
             .ensure_attached()
             .map_err(|_| SuccessorArtifactError::Io)?;
         let (identity, _ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
-            read_verified_ordered_history_archive(plan.ordered_policy, link.plan_history.root())
-                .map_err(|_| SuccessorArtifactError::Malformed)?;
+            if link.plan_history.read_budget().is_some() {
+                read_verified_ordered_history_archive_bounded(
+                    plan.ordered_policy,
+                    &link.plan_history,
+                )
+            } else {
+                read_verified_ordered_history_archive(plan.ordered_policy, link.plan_history.root())
+            }
+            .map_err(|_| SuccessorArtifactError::Malformed)?;
         link.plan_history
             .ensure_attached()
             .map_err(|_| SuccessorArtifactError::Io)?;
@@ -200,9 +290,16 @@ impl SuccessorChainArtifacts for SuccessorChainArtifactFiles {
         link.manifest_history
             .ensure_attached()
             .map_err(|_| SuccessorArtifactError::Io)?;
-        let material: OrderedHistoryHeightMaterial =
+        let material: OrderedHistoryHeightMaterial = if link
+            .manifest_history
+            .read_budget()
+            .is_some()
+        {
+            read_ordered_history_height_bounded(policy, &link.manifest_history, identity, height)
+        } else {
             read_ordered_history_height(policy, link.manifest_history.root(), identity, height)
-                .map_err(|_| SuccessorArtifactError::Malformed)?;
+        }
+        .map_err(|_| SuccessorArtifactError::Malformed)?;
         link.manifest_history
             .ensure_attached()
             .map_err(|_| SuccessorArtifactError::Io)?;
@@ -216,6 +313,7 @@ impl SuccessorChainArtifacts for SuccessorChainArtifactFiles {
     ) -> Result<Vec<u8>, SuccessorArtifactError> {
         let length: usize = bounded_certificate_length(length)?;
         let link: &SuccessorLinkArchiveFiles = self.link(index)?;
+        require_certificate_inventory(&link.certificate)?;
         let bytes: Vec<u8> = link
             .certificate
             .read("certificate.bin", length)
@@ -229,6 +327,7 @@ impl SuccessorChainArtifacts for SuccessorChainArtifactFiles {
         if bytes.len() != length {
             return Err(SuccessorArtifactError::Malformed);
         }
+        require_certificate_inventory(&link.certificate)?;
         Ok(bytes)
     }
 }
@@ -305,13 +404,23 @@ impl SuccessorArtifactSource for SuccessorArtifactFiles<'_> {
         self.manifest_history
             .ensure_attached()
             .map_err(|_| SuccessorArtifactError::Io)?;
-        let material: OrderedHistoryHeightMaterial = read_ordered_history_height(
-            self.plan.ordered_policy,
-            self.manifest_history.root(),
-            identity,
-            height,
-        )
-        .map_err(|_| SuccessorArtifactError::Malformed)?;
+        let material: OrderedHistoryHeightMaterial =
+            if self.manifest_history.read_budget().is_some() {
+                read_ordered_history_height_bounded(
+                    self.plan.ordered_policy,
+                    &self.manifest_history,
+                    identity,
+                    height,
+                )
+            } else {
+                read_ordered_history_height(
+                    self.plan.ordered_policy,
+                    self.manifest_history.root(),
+                    identity,
+                    height,
+                )
+            }
+            .map_err(|_| SuccessorArtifactError::Malformed)?;
         self.manifest_history
             .ensure_attached()
             .map_err(|_| SuccessorArtifactError::Io)?;
@@ -320,6 +429,7 @@ impl SuccessorArtifactSource for SuccessorArtifactFiles<'_> {
 
     fn readiness_certificate(&mut self, length: u32) -> Result<Vec<u8>, SuccessorArtifactError> {
         let length: usize = bounded_certificate_length(length)?;
+        require_certificate_inventory(&self.certificate_archive)?;
         let bytes: Vec<u8> = self
             .certificate_archive
             .read("certificate.bin", length)
@@ -333,6 +443,7 @@ impl SuccessorArtifactSource for SuccessorArtifactFiles<'_> {
         if bytes.len() != length {
             return Err(SuccessorArtifactError::Malformed);
         }
+        require_certificate_inventory(&self.certificate_archive)?;
         Ok(bytes)
     }
 }
@@ -354,10 +465,33 @@ mod tests {
         MAX_READINESS_CERTIFICATE_TRANSPORT_BYTES, SuccessorChainArtifactFiles,
         SuccessorLinkArchiveDirectories, bounded_certificate_length,
     };
+    use crate::immutable_archive::ArchiveReadBudget;
     use node_core::serving_authority::{
         SuccessorActivationError, SuccessorArtifactError, SuccessorChainBudget,
     };
     use std::{num::NonZeroU32, path::Path};
+
+    #[test]
+    fn bounded_role_count_precedes_root_io_and_refusal_is_shared() {
+        let missing: &Path = Path::new("/missing-bounded-predecessor-before-root-io");
+        let directories: Vec<SuccessorLinkArchiveDirectories<'_>> = (0..17)
+            .map(|_| SuccessorLinkArchiveDirectories {
+                plan_history: missing,
+                cut: missing,
+                manifest_history: missing,
+                certificate: missing,
+            })
+            .collect();
+        let chain: SuccessorChainBudget = SuccessorChainBudget::new(NonZeroU32::new(17).unwrap());
+        let read: ArchiveReadBudget = ArchiveReadBudget::new(Default::default()).unwrap();
+        assert!(matches!(
+            SuccessorChainArtifactFiles::open_bounded(&directories, chain, &read),
+            Err(SuccessorActivationError::Artifact(
+                SuccessorArtifactError::Oversized
+            ))
+        ));
+        assert!(read.clone().check().is_err());
+    }
 
     #[test]
     fn chain_budget_refuses_before_opening_any_directory() {

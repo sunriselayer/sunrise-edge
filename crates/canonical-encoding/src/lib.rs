@@ -165,6 +165,13 @@ pub enum CanonicalDecodingError {
     },
     /// Bytes remained after the declared fields.
     TrailingBytes(usize),
+    /// An opt-in caller refused the declared field count before field allocation.
+    FieldCountExceeded {
+        /// Caller-selected local maximum, not a protocol format limit.
+        maximum: usize,
+        /// Declared count in the existing canonical header.
+        actual: usize,
+    },
     /// A requested field was absent.
     MissingField(u16),
     /// A schema decoder encountered a field it does not define.
@@ -221,6 +228,10 @@ impl fmt::Display for CanonicalDecodingError {
             Self::TrailingBytes(length) => {
                 write!(f, "canonical frame has {length} trailing bytes")
             }
+            Self::FieldCountExceeded { maximum, actual } => write!(
+                f,
+                "canonical field count {actual} exceeds local bound {maximum}"
+            ),
             Self::MissingField(field_id) => {
                 write!(f, "missing canonical field id: {field_id}")
             }
@@ -370,6 +381,15 @@ impl<'a> CanonicalFrame<'a> {
 
 /// Decodes and validates one complete canonical frame without copying fields.
 pub fn decode_canonical_frame(input: &[u8]) -> Result<CanonicalFrame<'_>, CanonicalDecodingError> {
+    decode_canonical_frame_bounded(input, usize::MAX)
+}
+
+/// Same canonical parser/bytes, with additive local admission before the declared
+/// field count allocates its index. Ordinary decoding keeps its error priority.
+pub fn decode_canonical_frame_bounded(
+    input: &[u8],
+    maximum_fields: usize,
+) -> Result<CanonicalFrame<'_>, CanonicalDecodingError> {
     if input.len() > MAX_CANONICAL_FRAME_BYTES {
         return Err(CanonicalDecodingError::FrameTooLarge(input.len()));
     }
@@ -382,6 +402,12 @@ pub fn decode_canonical_frame(input: &[u8]) -> Result<CanonicalFrame<'_>, Canoni
     let type_id = read_u16(input, &mut offset)?;
     let version = read_u16(input, &mut offset)?;
     let field_count = usize::from(read_u16(input, &mut offset)?);
+    if field_count > maximum_fields {
+        return Err(CanonicalDecodingError::FieldCountExceeded {
+            maximum: maximum_fields,
+            actual: field_count,
+        });
+    }
     let mut fields = Vec::with_capacity(field_count);
     let mut previous = None;
 
@@ -692,6 +718,17 @@ mod tests {
         let encoded = canonical.finish().unwrap();
 
         let decoded = decode_canonical_frame(&encoded).unwrap();
+        assert_eq!(
+            decode_canonical_frame_bounded(&encoded, 4).unwrap(),
+            decoded
+        );
+        assert!(matches!(
+            decode_canonical_frame_bounded(&encoded, 3),
+            Err(CanonicalDecodingError::FieldCountExceeded {
+                maximum: 3,
+                actual: 4
+            })
+        ));
         assert_eq!(decoded.type_id(), 0x2345);
         assert_eq!(decoded.version(), 7);
         assert_eq!(decoded.field_count(), 4);
@@ -716,6 +753,26 @@ mod tests {
             ));
         }
         assert!(decode_canonical_frame(&encoded).is_ok());
+    }
+
+    #[test]
+    fn local_field_admission_precedes_declared_count_allocation_or_body_walk() {
+        let mut header: Vec<u8> = PROTOCOL_MAGIC.to_vec();
+        header.extend_from_slice(&0x2345_u16.to_le_bytes());
+        header.extend_from_slice(&1_u16.to_le_bytes());
+        header.extend_from_slice(&u16::MAX.to_le_bytes());
+        assert!(matches!(
+            decode_canonical_frame_bounded(&header, 6),
+            Err(CanonicalDecodingError::FieldCountExceeded {
+                maximum: 6,
+                actual: 65_535
+            })
+        ));
+        // The ordinary malformed-frame error is unchanged and is not a local cap.
+        assert!(matches!(
+            decode_canonical_frame(&header),
+            Err(CanonicalDecodingError::Truncated { .. })
+        ));
     }
 
     #[test]

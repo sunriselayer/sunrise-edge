@@ -18,10 +18,11 @@ pub const FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH: &str = "/v1/fastvote/frontier/a
 pub const FROZEN_FRONTIER_PAGE_REQUEST_TYPE_ID: u16 = 0xE107;
 pub const FROZEN_FRONTIER_PAGE_RESPONSE_TYPE_ID: u16 = 0xE108;
 const VERSION: u16 = 1;
-pub const MAX_FRONTIER_PAGE_LIMIT: u16 = 128;
+const _: () = assert!(consensus::MAX_FROZEN_FRONTIER_PAGE_ENTRIES <= u16::MAX as usize);
+pub const MAX_FRONTIER_PAGE_LIMIT: u16 = consensus::MAX_FROZEN_FRONTIER_PAGE_ENTRIES as u16;
 pub const MAX_FRONTIER_PAGE_REQUEST_BYTES: usize = 128;
-pub const MAX_FRONTIER_VOTE_BYTES: usize = 8 * 1024;
-pub const MAX_FRONTIER_PAGE_BYTES: usize = 512 * 1024;
+pub const MAX_FRONTIER_VOTE_BYTES: usize = consensus::MAX_FROZEN_FRONTIER_VOTE_BYTES;
+pub const MAX_FRONTIER_PAGE_BYTES: usize = consensus::MAX_FROZEN_FRONTIER_PAGE_BYTES;
 pub const MAX_FRONTIER_PAGE_RESPONSE_BYTES: usize =
     MAX_FRONTIER_VOTE_BYTES + MAX_FRONTIER_PAGE_BYTES + 64;
 
@@ -261,6 +262,165 @@ mod tests {
         );
         assert!(
             FrozenFrontierPageResponse::decode(&[0; MAX_FRONTIER_PAGE_RESPONSE_BYTES + 1]).is_err()
+        );
+    }
+
+    #[test]
+    fn frontier_wire_caps_match_literals_and_owner() {
+        let vote_cap: usize = 8_192;
+        let page_cap: usize = 524_288;
+        let entry_cap: u16 = 128;
+        let request_cap: usize = 128;
+        let response_cap: usize = 532_544;
+        assert_eq!(MAX_FRONTIER_VOTE_BYTES, vote_cap);
+        assert_eq!(MAX_FRONTIER_PAGE_BYTES, page_cap);
+        assert_eq!(MAX_FRONTIER_PAGE_LIMIT, entry_cap);
+        assert_eq!(MAX_FRONTIER_PAGE_REQUEST_BYTES, request_cap);
+        assert_eq!(MAX_FRONTIER_PAGE_RESPONSE_BYTES, response_cap);
+        assert_eq!(
+            MAX_FRONTIER_VOTE_BYTES,
+            consensus::MAX_FROZEN_FRONTIER_VOTE_BYTES
+        );
+        assert_eq!(
+            MAX_FRONTIER_PAGE_BYTES,
+            consensus::MAX_FROZEN_FRONTIER_PAGE_BYTES
+        );
+        assert_eq!(
+            usize::from(MAX_FRONTIER_PAGE_LIMIT),
+            consensus::MAX_FROZEN_FRONTIER_PAGE_ENTRIES
+        );
+        assert_eq!(
+            MAX_FRONTIER_PAGE_RESPONSE_BYTES,
+            MAX_FRONTIER_VOTE_BYTES + MAX_FRONTIER_PAGE_BYTES + 64
+        );
+    }
+
+    #[test]
+    fn frontier_request_literal_limit_boundary() {
+        let request: FrozenFrontierPageRequest = FrozenFrontierPageRequest {
+            epoch: Epoch::new(8),
+            after_request_id: None,
+            limit: 128,
+        };
+        let encoded: Vec<u8> = request.encode().unwrap();
+        assert_eq!(
+            FrozenFrontierPageRequest::decode(&encoded).unwrap(),
+            request
+        );
+        let excessive_limit: FrozenFrontierPageRequest = FrozenFrontierPageRequest {
+            epoch: Epoch::new(8),
+            after_request_id: None,
+            limit: 129,
+        };
+        assert_eq!(
+            excessive_limit.encode(),
+            Err(FrozenFrontierWireError::Invalid("frontier page limit"))
+        );
+
+        // This complete literal frame has an otherwise valid empty cursor.
+        let mut limit_frame: CanonicalStruct = CanonicalStruct::new(0xE107, 1);
+        limit_frame.field_u64(1, 8).unwrap();
+        limit_frame.field_bytes(2, Vec::<u8>::new()).unwrap();
+        limit_frame.field_u16(3, 129).unwrap();
+        let excessive_limit_bytes: Vec<u8> = limit_frame.finish().unwrap();
+        assert_eq!(
+            FrozenFrontierPageRequest::decode(&excessive_limit_bytes),
+            Err(FrozenFrontierWireError::Invalid("frontier page limit"))
+        );
+
+        let excessive: FrozenFrontierPageRequest = FrozenFrontierPageRequest {
+            after_request_id: Some([0u8; 32]),
+            limit: 129,
+            ..request
+        };
+        assert_eq!(
+            excessive.encode(),
+            Err(FrozenFrontierWireError::Invalid("frontier page limit"))
+        );
+
+        // Type/version/fields and the 32-byte cursor length are valid. Only
+        // after those checks does limit refusal precede zero-cursor refusal.
+        let mut frame: CanonicalStruct = CanonicalStruct::new(0xE107, 1);
+        frame.field_u64(1, 8).unwrap();
+        frame.field_bytes(2, vec![0u8; 32]).unwrap();
+        frame.field_u16(3, 129).unwrap();
+        let excessive_bytes: Vec<u8> = frame.finish().unwrap();
+        assert_eq!(
+            FrozenFrontierPageRequest::decode(&excessive_bytes),
+            Err(FrozenFrontierWireError::Invalid("frontier page limit"))
+        );
+    }
+
+    #[test]
+    fn frontier_request_literal_outer_boundary() {
+        let at_cap: Vec<u8> = vec![0u8; 128];
+        assert!(matches!(
+            FrozenFrontierPageRequest::decode(&at_cap),
+            Err(FrozenFrontierWireError::Decoding(_))
+        ));
+        let above_cap: Vec<u8> = vec![0u8; 129];
+        assert_eq!(
+            FrozenFrontierPageRequest::decode(&above_cap),
+            Err(FrozenFrontierWireError::Invalid("frontier request bound"))
+        );
+    }
+
+    #[test]
+    fn frontier_response_literal_component_boundaries() {
+        // These are opaque wire-envelope fixtures, not valid consensus
+        // votes/pages or authenticated frontier capacity evidence.
+        let response: FrozenFrontierPageResponse = FrozenFrontierPageResponse {
+            vote: vec![0u8; 8_192],
+            page: vec![0u8; 524_288],
+        };
+        let encoded: Vec<u8> = response.encode().unwrap();
+        assert_eq!(encoded.len(), 532_502);
+        assert_eq!(
+            FrozenFrontierPageResponse::decode(&encoded).unwrap(),
+            response
+        );
+
+        let frame_bytes: fn(&[u8], &[u8]) -> Vec<u8> = |vote: &[u8], page: &[u8]| -> Vec<u8> {
+            let mut frame: CanonicalStruct = CanonicalStruct::new(0xE108, 1);
+            frame.field_bytes(1, vote.to_vec()).unwrap();
+            frame.field_bytes(2, page.to_vec()).unwrap();
+            frame.finish().unwrap()
+        };
+        let cases: [(usize, usize, &'static str, usize); 3] = [
+            (8_193, 524_288, "frontier vote bound", 532_503),
+            (8_192, 524_289, "frontier page bound", 532_503),
+            (8_193, 524_289, "frontier vote bound", 532_504),
+        ];
+        for (vote_length, page_length, reason, encoded_length) in cases {
+            let excessive: FrozenFrontierPageResponse = FrozenFrontierPageResponse {
+                vote: vec![0u8; vote_length],
+                page: vec![0u8; page_length],
+            };
+            assert_eq!(
+                excessive.encode(),
+                Err(FrozenFrontierWireError::Invalid(reason))
+            );
+            let excessive_bytes: Vec<u8> = frame_bytes(&excessive.vote, &excessive.page);
+            assert_eq!(excessive_bytes.len(), encoded_length);
+            assert!(excessive_bytes.len() < 532_544);
+            assert_eq!(
+                FrozenFrontierPageResponse::decode(&excessive_bytes),
+                Err(FrozenFrontierWireError::Invalid(reason))
+            );
+        }
+    }
+
+    #[test]
+    fn frontier_response_literal_outer_boundary() {
+        let at_cap: Vec<u8> = vec![0u8; 532_544];
+        assert!(matches!(
+            FrozenFrontierPageResponse::decode(&at_cap),
+            Err(FrozenFrontierWireError::Decoding(_))
+        ));
+        let above_cap: Vec<u8> = vec![0u8; 532_545];
+        assert_eq!(
+            FrozenFrontierPageResponse::decode(&above_cap),
+            Err(FrozenFrontierWireError::Invalid("frontier response bound"))
         );
     }
 }

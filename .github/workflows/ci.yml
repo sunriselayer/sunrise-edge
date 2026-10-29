@@ -29,7 +29,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22.20.0
+          node-version: 24.19.0
 
       - name: Run repository gate
         run: ./scripts/check-all.sh --group lint
@@ -43,7 +43,7 @@ jobs:
       - name: Set up Node.js for real SDK relay interoperability
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22.20.0
+          node-version: 24.19.0
       - name: Run repository gate
         run: ./scripts/check-all.sh --group rust-tests
 
@@ -56,7 +56,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22.20.0
+          node-version: 24.19.0
 
       - name: Set up Deno
         uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
@@ -75,9 +75,12 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22.20.0
+          node-version: 24.19.0
           cache: npm
           cache-dependency-path: adapters/cloudflare-workers/package-lock.json
+
+      - name: Install pinned Cloudflare CLI
+        run: npm install --global cf@1.0.0-beta.13
 
       - name: Install Cloudflare adapter dependencies
         run: npm ci --prefix adapters/cloudflare-workers
@@ -111,6 +114,15 @@ jobs:
   recurring-sqlite:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # Optimize the complete unchanged workload; keep every development check.
+    # This affects compilation only, never epochs, waits, fixtures or selectors.
+    env:
+      CARGO_PROFILE_DEV_OPT_LEVEL: "2"
+      CARGO_PROFILE_TEST_OPT_LEVEL: "2"
+      CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: "true"
+      CARGO_PROFILE_TEST_DEBUG_ASSERTIONS: "true"
+      CARGO_PROFILE_DEV_OVERFLOW_CHECKS: "true"
+      CARGO_PROFILE_TEST_OVERFLOW_CHECKS: "true"
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -138,7 +150,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22.20.0
+          node-version: 24.19.0
 
       - name: Require every repository gate to succeed
         env:

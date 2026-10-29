@@ -36,6 +36,9 @@ mod successor_registration_reuse;
 #[path = "successor_seal_faults.rs"]
 mod successor_seal_faults;
 
+#[path = "successor_activation_reply_loss.rs"]
+mod successor_activation_reply_loss;
+
 struct Artifacts<'a> {
     saved: &'a SavedBusinessCut,
     history: &'a [OrderedHistoryHeightMaterial],

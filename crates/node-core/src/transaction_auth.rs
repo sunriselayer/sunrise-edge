@@ -38,12 +38,15 @@
 use core::fmt;
 use std::error::Error;
 
-use canonical_encoding::{CanonicalEncodingError, CanonicalStruct};
+use canonical_encoding::CanonicalEncodingError;
 use crypto::{
     CryptoError, Ed25519OwnerAddressError, Ed25519OwnerAddressPolicy, Ed25519Verifier,
     SignatureDomain, SignatureMessageType, SignatureVerifier, validate_ed25519_owner_address,
 };
-use execution::{ExecutionError, Transaction, decode_transaction, encode_transaction_signable};
+use execution::{
+    ExecutionError, Transaction, decode_transaction, encode_submit_transaction_signable_payload,
+    encode_transaction_signable,
+};
 use protocol_config::{
     AddressBinding, ProtocolConfig, ProtocolConfigError, resolve_transaction_auth_profile,
 };
@@ -51,23 +54,10 @@ use protocol_types::{ChainId, Epoch, ProtocolVersion};
 
 use crate::RequestId;
 
-/// The stable, exact transaction-v1 signature message family.
-///
-/// This string is part of the signed byte layout via
-/// [`crypto::frame_signature_message`]. Changing it changes every future
-/// transaction signature and must go through the same protocol-critical
-/// change process as any other wire constant. It is `pub` so a client that
-/// builds and signs a transaction (see `clients/rust`) uses this exact,
-/// single-sourced value rather than duplicating the literal.
-pub const TRANSACTION_V1_MESSAGE_TYPE: &str = "transaction-v1";
-
-/// Stable message family for profile-2 submission signatures that bind the
-/// durable request identity to the otherwise unchanged Transaction v1 bytes.
-pub const SUBMIT_TRANSACTION_V1_MESSAGE_TYPE: &str = "submit-transaction-v1";
-
-/// Canonical type id for the profile-2 submission-signature envelope.
-pub const SUBMIT_TRANSACTION_SIGNABLE_TYPE_ID: u16 = 0xE009;
-const SUBMIT_TRANSACTION_SIGNABLE_ENCODING_VERSION: u16 = 1;
+pub use execution::{
+    SUBMIT_TRANSACTION_SIGNABLE_TYPE_ID, SUBMIT_TRANSACTION_V1_MESSAGE_TYPE,
+    TRANSACTION_V1_MESSAGE_TYPE,
+};
 
 /// Deterministic upper bound on a transaction's canonical *signable* byte
 /// length (the [`execution::encode_transaction_signable`] output), enforced
@@ -214,13 +204,7 @@ pub fn encode_submit_transaction_signable(
     request_id: RequestId,
     transaction_signable: &[u8],
 ) -> Result<Vec<u8>, CanonicalEncodingError> {
-    let mut canonical: CanonicalStruct = CanonicalStruct::new(
-        SUBMIT_TRANSACTION_SIGNABLE_TYPE_ID,
-        SUBMIT_TRANSACTION_SIGNABLE_ENCODING_VERSION,
-    );
-    canonical.field_bytes(1, request_id.as_bytes().to_vec())?;
-    canonical.field_bytes(2, transaction_signable.to_vec())?;
-    canonical.finish()
+    encode_submit_transaction_signable_payload(request_id.as_bytes(), transaction_signable)
 }
 
 /// The explicit, caller-supplied trusted signing/replay context.
@@ -1239,5 +1223,19 @@ mod tests {
         assert_eq!(authenticated.transaction().nonce, 1);
         assert_eq!(authenticated.transaction().entrypoint, "noop");
         assert_eq!(authenticated.transaction().args, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn typed_submission_wrapper_retains_overflow_and_nonzero_identity_boundary() {
+        let request_id: RequestId = RequestId::new([0x5A; 32]).unwrap();
+        let payload: Vec<u8> = vec![0x01_u8; 33_554_379];
+        assert_eq!(
+            encode_submit_transaction_signable(request_id, &payload),
+            Err(CanonicalEncodingError::FrameTooLarge(33_554_433))
+        );
+        assert_eq!(
+            RequestId::new([0; 32]),
+            Err(crate::EnvelopeError::ZeroRequestId)
+        );
     }
 }

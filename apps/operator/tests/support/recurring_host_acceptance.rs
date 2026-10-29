@@ -6,6 +6,8 @@
 use super::super::ordered_seal_sqlite_acceptance::{
     acknowledged_output, saved_configured_peer_results, saved_policy_submission_rounds,
 };
+#[cfg(target_os = "linux")]
+use super::process::local_observation_collector;
 use super::*;
 use crate::acceptance_timing::{AcceptanceSpan, Stage};
 use consensus::readiness::ReadinessCertificate;
@@ -23,6 +25,10 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 use sunrise_edge_client::load_successor_chain_workflow_from_directories;
 use sunrise_edge_client::successor_artifacts::SuccessorChainArtifactFiles;
+
+#[path = "archive_snapshot.rs"]
+mod archive_snapshot;
+use archive_snapshot::snapshot as successor_floor_snapshot;
 
 #[path = "recurring_lifecycle_acceptance.rs"]
 mod lifecycle;
@@ -180,6 +186,15 @@ pub(super) fn prove_direct_live_tls(
     let directory: PathBuf = fixture.directory.0.join("direct-successor-tls");
     std::fs::create_dir(&directory).unwrap();
     let tls: NativeTlsFiles = NativeTlsFiles::new(&directory, "live");
+    #[cfg(target_os = "linux")]
+    let mut collector: local_observation_collector::Collector = {
+        let end: Instant = Instant::now()
+            .checked_add(Duration::from_millis(
+                local_observation_collector::TIMEOUT_MILLIS,
+            ))
+            .expect("one successor collector setup-through-completion deadline");
+        local_observation_collector::Collector::start(end, &fixture.directory.0)
+    };
     let mut command: Command = Command::new(&inputs.executables.successor_host);
     command.arg("serve");
     pins(&mut command, fixture, inputs);
@@ -194,8 +209,16 @@ pub(super) fn prove_direct_live_tls(
         "--confirm-offline-fence-advance",
     ]);
     tls.flags(&mut command);
+    #[cfg(target_os = "linux")]
+    command
+        .arg("--local-observations-socket")
+        .arg(collector.socket_path());
+    let startup_byte_cap: std::num::NonZeroUsize =
+        process::compiled_host_startup_line_limit(fixture.network.chain_id.as_str());
     let (guard, line): (process::ChildGuard, String) =
-        process::spawn_bounded_status_line(command, Duration::from_secs(600));
+        process::spawn_bounded_status_line(command, Duration::from_secs(600), startup_byte_cap);
+    #[cfg(target_os = "linux")]
+    let mut guard: process::ChildGuard = guard;
     assert!(line.contains("mode=successor-serving"), "{line}");
     assert_eq!(
         field(&line, "epoch="),
@@ -245,6 +268,22 @@ pub(super) fn prove_direct_live_tls(
     let context: node_wire::HttpContextQueryResult = client.query_context().unwrap();
     assert_eq!(context.epoch(), current.expected_context().epoch());
     assert_eq!(context.chain_id(), current.expected_context().chain_id());
+    #[cfg(target_os = "linux")]
+    let context_response: WireResponse = {
+        let response: WireResponse = tls.raw(
+            address,
+            Method::Get,
+            node_wire::QUERY_CONTEXT_PATH,
+            None,
+            Vec::new(),
+        );
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            node_wire::HttpContextQueryResult::decode(&response.body).unwrap(),
+            context
+        );
+        response
+    };
     let status_response: WireResponse = tls.raw(
         address,
         Method::Get,
@@ -296,6 +335,49 @@ pub(super) fn prove_direct_live_tls(
     assert!(context_output.status.success() && !context_output.stdout.is_empty());
     assert!(context_output.stderr.is_empty());
     assert_eq!(protected_state(fixture, &targets), started);
+
+    #[cfg(target_os = "linux")]
+    {
+        guard.request_usr1(collector.deadline());
+        collector.finish();
+        assert!(
+            guard
+                .try_wait()
+                .expect("successor remains owned after collection")
+                .is_none()
+        );
+        let observed_context: WireResponse = tls.raw(
+            address,
+            Method::Get,
+            node_wire::QUERY_CONTEXT_PATH,
+            None,
+            Vec::new(),
+        );
+        assert_eq!(observed_context.status, context_response.status);
+        assert_eq!(
+            observed_context.body, context_response.body,
+            "USR1 preserves authenticated successor context bytes"
+        );
+        let observed_status: WireResponse = tls.raw(
+            address,
+            Method::Get,
+            node_wire::ordered_economics::ORDERED_ECONOMICS_STATUS_PATH,
+            None,
+            Vec::new(),
+        );
+        assert_eq!(observed_status.status, status_response.status);
+        assert_eq!(
+            observed_status.body, status_response.body,
+            "USR1 preserves authenticated successor status bytes"
+        );
+        assert!(
+            guard
+                .try_wait()
+                .expect("successor remains alive after authenticated reads")
+                .is_none()
+        );
+        assert_eq!(protected_state(fixture, &targets), started);
+    }
 
     let certificate: PathBuf = inputs.certificate.join("certificate.bin");
     let original: Vec<u8> = std::fs::read(&certificate).unwrap();
@@ -619,8 +701,10 @@ fn start(
         .args(flags)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    let startup_byte_cap: std::num::NonZeroUsize =
+        process::compiled_host_startup_line_limit(fixture.network.chain_id.as_str());
     let (mut guard, line): (process::ChildGuard, String) =
-        process::spawn_bounded_status_line(command, Duration::from_secs(600));
+        process::spawn_bounded_status_line(command, Duration::from_secs(600), startup_byte_cap);
     assert!(
         !line.is_empty(),
         "recurring host failed: {:?}",
@@ -1017,6 +1101,20 @@ fn prove_direct_history_tls(
     let absent_key: ArtifactChange = ArtifactChange::inject(&signing_key, &held_key, true);
     let mut address: SocketAddr = "127.0.0.1:0".parse().unwrap();
     for _restart in 0..2 {
+        #[cfg(target_os = "linux")]
+        let mut collector: Option<local_observation_collector::Collector> = if _restart == 0 {
+            let end: Instant = Instant::now()
+                .checked_add(Duration::from_millis(
+                    local_observation_collector::TIMEOUT_MILLIS,
+                ))
+                .expect("one history collector setup-through-completion deadline");
+            Some(local_observation_collector::Collector::start(
+                end,
+                &fixture.directory.0,
+            ))
+        } else {
+            None
+        };
         let mut flags: Vec<String> = historical_startup_flags(fixture, links, targets, 1);
         let listen: usize = flags
             .iter()
@@ -1026,9 +1124,19 @@ fn prove_direct_history_tls(
         let mut command: Command = Command::new(&executables.successor_host);
         command.arg("serve-history").args(flags);
         tls.flags(&mut command);
+        #[cfg(target_os = "linux")]
+        if let Some(collector) = collector.as_ref() {
+            command
+                .arg("--local-observations-socket")
+                .arg(collector.socket_path());
+        }
         let requested: SocketAddr = address;
+        let startup_byte_cap: std::num::NonZeroUsize =
+            process::compiled_host_startup_line_limit(fixture.network.chain_id.as_str());
         let (guard, line): (process::ChildGuard, String) =
-            process::spawn_bounded_status_line(command, Duration::from_secs(600));
+            process::spawn_bounded_status_line(command, Duration::from_secs(600), startup_byte_cap);
+        #[cfg(target_os = "linux")]
+        let mut guard: process::ChildGuard = guard;
         assert!(
             line.contains("mode=successor-history-material-only"),
             "{line}"
@@ -1044,6 +1152,25 @@ fn prove_direct_history_tls(
         }
         direct_history_material(&tls, address, current, identity, &descriptor, seal);
         assert_eq!(protected_state(fixture, targets), intact);
+        #[cfg(target_os = "linux")]
+        if let Some(collector) = collector.as_mut() {
+            guard.request_usr1(collector.deadline());
+            collector.finish();
+            assert!(
+                guard
+                    .try_wait()
+                    .expect("history host remains owned after collection")
+                    .is_none()
+            );
+            direct_history_material(&tls, address, current, identity, &descriptor, seal);
+            assert!(
+                guard
+                    .try_wait()
+                    .expect("history host remains alive after authenticated material")
+                    .is_none()
+            );
+            assert_eq!(protected_state(fixture, targets), intact);
+        }
         guard.stop_orderly(Duration::from_secs(600));
         assert_eq!(
             protected_state(fixture, targets),
@@ -2042,6 +2169,22 @@ fn install_next(
         success(vote.expect("successful create-sqlite precedes vote-sqlite"));
         votes.push(vote_file);
     }
+    // DR-0248: the independent ordered-history floor over `business_import`'s
+    // own `load_with_successor` admission path, scoped to the first
+    // successor link only. Reuses exactly this call's own genuine current
+    // (e+1) history/cut and `current_operator_pins`; no new history or cut
+    // export, no production/runtime/wait change.
+    if links.len() == 1 {
+        successor_import_history_floor_controls(
+            executables,
+            fixture,
+            links,
+            current,
+            history,
+            &cut,
+            directory,
+        );
+    }
     let certificate: PathBuf = directory.join("readiness-certificate");
     std::fs::create_dir(&certificate).unwrap();
     let mut flags: Vec<String> = current_operator_pins(fixture, links, history);
@@ -2081,6 +2224,270 @@ fn install_next(
         );
     }
     (next, cut, certificate)
+}
+
+fn successor_floor_identity_fields(text: &str) -> Vec<&str> {
+    text.split_whitespace()
+        .filter(|word| {
+            word.starts_with("cut=") || word.starts_with("package=") || word.starts_with("plan=")
+        })
+        .collect()
+}
+
+fn successor_floor_absent(path: &Path) {
+    assert!(matches!(
+        std::fs::symlink_metadata(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    ));
+}
+
+/// DR-0248's independent ordered-history floor, exercised through
+/// `business_import`'s own `load_with_successor` admission path, scoped to
+/// the first successor link (`links.len() == 1`, current epoch e+1). Reuses
+/// exactly this call's own genuine current history/cut and
+/// `current_operator_pins`; the imported current epoch is the genuine
+/// successor e+1 this `install_next` call already proved, never genesis.
+fn successor_import_history_floor_controls(
+    executables: &CompiledExecutableSnapshot,
+    fixture: &Fixture,
+    links: &[Link],
+    current: &SuccessorWorkflowAuthority,
+    history: &Path,
+    cut: &Path,
+    directory: &Path,
+) {
+    assert_eq!(links.len(), 1, "scoped to the first successor link only");
+    let archive: sunrise_edge_client::immutable_archive::ImmutableArchiveReader =
+        sunrise_edge_client::immutable_archive::ImmutableArchiveReader::open(history).unwrap();
+    let identity_bytes: Vec<u8> =
+        sunrise_edge_client::ordered_history_archive::read_regular_archive_file(
+            archive.root(),
+            Path::new("identity.bin"),
+            node_core::ordered_economics::MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
+        )
+        .unwrap();
+    let identity: node_core::ordered_economics::OrderedHistoryIdentity =
+        node_core::ordered_economics::decode_ordered_history_identity(&identity_bytes).unwrap();
+    let epoch: u64 = current.expected_context().epoch().get();
+    assert_eq!(
+        identity.context.epoch().get(),
+        epoch,
+        "the independently verified current successor history identity is explicitly e+1"
+    );
+    let tip_height: u64 = identity.through_height;
+    assert!(
+        tip_height >= 2,
+        "the first successor epoch's own frozen/drained history must have more than one height"
+    );
+    let tip_digest: [u8; 32] = identity.through_digest.bytes();
+    let interior_bytes: Vec<u8> =
+        sunrise_edge_client::ordered_history_archive::read_regular_archive_file(
+            archive.root(),
+            Path::new("height-00000000000000000001/descriptor.bin"),
+            node_core::ordered_economics::MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
+        )
+        .unwrap();
+    let interior: node_core::ordered_economics::OrderedHistoryHeightDescriptor =
+        node_core::ordered_economics::decode_ordered_history_height_descriptor(&interior_bytes)
+            .unwrap();
+    let interior_digest: [u8; 32] = interior.block_digest.bytes();
+
+    let root: PathBuf = directory.join("successor-floor");
+    std::fs::create_dir(&root).unwrap();
+    let state: PathBuf = root.join("state.sqlite");
+    let blobs: PathBuf = root.join("blobs.sqlite");
+    let fresh_validator: ValidatorId = ValidatorId::new([0xF5; 32]);
+    let import_binary: &str = executables.business_import.to_str().unwrap();
+    let base_flags = |floor: Option<(u64, u64, [u8; 32])>| -> Vec<String> {
+        let mut flags: Vec<String> = current_operator_pins(fixture, links, history);
+        flags.extend([
+            "--cut-dir".into(),
+            cut.to_str().unwrap().into(),
+            "--state-db".into(),
+            state.to_str().unwrap().into(),
+            "--blob-db".into(),
+            blobs.to_str().unwrap().into(),
+            "--validator-id".into(),
+            hex(fresh_validator.as_bytes()),
+            "--max-new-batches".into(),
+            "4096".into(),
+            "--timeout-seconds".into(),
+            "300".into(),
+        ]);
+        if let Some((floor_epoch, floor_height, floor_digest)) = floor {
+            flags.extend([
+                "--history-floor-epoch".into(),
+                floor_epoch.to_string(),
+                "--history-floor-height".into(),
+                floor_height.to_string(),
+                "--history-floor-digest".into(),
+                hex(&floor_digest),
+            ]);
+        }
+        flags
+    };
+
+    let link_snapshots: Vec<[BTreeMap<PathBuf, Option<Vec<u8>>>; 4]> = links
+        .iter()
+        .map(|link| {
+            [
+                successor_floor_snapshot(&link.plan_history),
+                successor_floor_snapshot(&link.cut),
+                successor_floor_snapshot(&link.manifest_history),
+                successor_floor_snapshot(&link.certificate),
+            ]
+        })
+        .collect();
+    let original_history: BTreeMap<PathBuf, Option<Vec<u8>>> = successor_floor_snapshot(history);
+    let original_cut: BTreeMap<PathBuf, Option<Vec<u8>>> = successor_floor_snapshot(cut);
+    let assert_inputs_unchanged = || {
+        for (link, snapshot) in links.iter().zip(&link_snapshots) {
+            assert_eq!(successor_floor_snapshot(&link.plan_history), snapshot[0]);
+            assert_eq!(successor_floor_snapshot(&link.cut), snapshot[1]);
+            assert_eq!(
+                successor_floor_snapshot(&link.manifest_history),
+                snapshot[2]
+            );
+            assert_eq!(successor_floor_snapshot(&link.certificate), snapshot[3]);
+        }
+        assert_eq!(successor_floor_snapshot(history), original_history);
+        assert_eq!(successor_floor_snapshot(cut), original_cut);
+    };
+
+    // Negative: a floor above the exact authenticated tip refuses before
+    // any destination is created, under the genuine successor authority.
+    let above: Output = operator_output(
+        import_binary,
+        "create-sqlite",
+        base_flags(Some((epoch, tip_height.checked_add(1).unwrap(), [0u8; 32]))),
+    );
+    assert!(!above.status.success());
+    assert!(
+        String::from_utf8_lossy(&above.stderr).contains("below the independent history floor"),
+        "{}",
+        String::from_utf8_lossy(&above.stderr),
+    );
+    successor_floor_absent(&state);
+    successor_floor_absent(&blobs);
+    assert_inputs_unchanged();
+
+    // Negative: a conflicting digest at the exact tip height refuses, even
+    // though the height itself matches the genuinely authenticated tip.
+    let mut flipped_tip: [u8; 32] = tip_digest;
+    flipped_tip[31] ^= 1;
+    let wrong_digest: Output = operator_output(
+        import_binary,
+        "create-sqlite",
+        base_flags(Some((epoch, tip_height, flipped_tip))),
+    );
+    assert!(!wrong_digest.status.success());
+    assert!(
+        String::from_utf8_lossy(&wrong_digest.stderr)
+            .contains("does not extend the independent history floor block"),
+        "{}",
+        String::from_utf8_lossy(&wrong_digest.stderr),
+    );
+    successor_floor_absent(&state);
+    successor_floor_absent(&blobs);
+    assert_inputs_unchanged();
+
+    // Negative: a genuinely foreign epoch refuses before height/digest are
+    // even compared, regardless of how plausible the rest of the floor is.
+    let foreign_epoch: Output = operator_output(
+        import_binary,
+        "create-sqlite",
+        base_flags(Some((epoch.checked_sub(1).unwrap(), 1, tip_digest))),
+    );
+    assert!(!foreign_epoch.status.success());
+    assert!(
+        String::from_utf8_lossy(&foreign_epoch.stderr)
+            .contains("history floor epoch differs from the verified current epoch"),
+        "{}",
+        String::from_utf8_lossy(&foreign_epoch.stderr),
+    );
+    successor_floor_absent(&state);
+    successor_floor_absent(&blobs);
+    assert_inputs_unchanged();
+
+    // Positive: the exact authenticated tip is accepted and the genuine
+    // successor import completes -- CompleteInactive, never genesis.
+    let accept_tip: Output = operator_output(
+        import_binary,
+        "create-sqlite",
+        base_flags(Some((epoch, tip_height, tip_digest))),
+    );
+    assert!(
+        accept_tip.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&accept_tip.stdout),
+        String::from_utf8_lossy(&accept_tip.stderr),
+    );
+    let accept_text: String = String::from_utf8_lossy(&accept_tip.stdout).into_owned();
+    assert!(accept_text.contains("business_import=complete-inactive"));
+    assert_inputs_unchanged();
+
+    // Positive interior ancestor: a genuinely committed earlier height is
+    // also accepted, on the already-completed destination, via resume.
+    let accept_interior: Output = operator_output(
+        import_binary,
+        "resume-sqlite",
+        base_flags(Some((epoch, 1, interior_digest))),
+    );
+    assert!(
+        accept_interior.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&accept_interior.stdout),
+        String::from_utf8_lossy(&accept_interior.stderr),
+    );
+    let interior_text: String = String::from_utf8_lossy(&accept_interior.stdout).into_owned();
+    assert!(interior_text.contains("business_import=complete-inactive"));
+    assert_eq!(
+        successor_floor_identity_fields(&accept_text),
+        successor_floor_identity_fields(&interior_text)
+    );
+    assert_inputs_unchanged();
+
+    // Negative resume: a wrong floor on resume reaches the same verified
+    // successor gate and leaves the existing destination bytes unchanged.
+    let state_before: Vec<u8> = std::fs::read(&state).unwrap();
+    let blobs_before: Vec<u8> = std::fs::read(&blobs).unwrap();
+    let resume_wrong: Output = operator_output(
+        import_binary,
+        "resume-sqlite",
+        base_flags(Some((epoch, tip_height, flipped_tip))),
+    );
+    assert!(!resume_wrong.status.success());
+    assert!(
+        String::from_utf8_lossy(&resume_wrong.stderr)
+            .contains("does not extend the independent history floor block"),
+        "{}",
+        String::from_utf8_lossy(&resume_wrong.stderr),
+    );
+    assert_eq!(std::fs::read(&state).unwrap(), state_before);
+    assert_eq!(std::fs::read(&blobs).unwrap(), blobs_before);
+    assert_inputs_unchanged();
+
+    // Valid resume with no floor at all retains the original successor
+    // import semantics: still CompleteInactive, no new batches, same binding.
+    let resume_valid: Output = operator_output(import_binary, "resume-sqlite", base_flags(None));
+    assert!(
+        resume_valid.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&resume_valid.stdout),
+        String::from_utf8_lossy(&resume_valid.stderr),
+    );
+    let resume_text: String = String::from_utf8_lossy(&resume_valid.stdout).into_owned();
+    assert!(resume_text.contains("business_import=complete-inactive"));
+    assert!(resume_text.contains("new_batches=0"));
+    assert_eq!(
+        successor_floor_identity_fields(&accept_text),
+        successor_floor_identity_fields(&resume_text)
+    );
+    assert_eq!(
+        successor_floor_identity_fields(&interior_text),
+        successor_floor_identity_fields(&resume_text)
+    );
+    assert_inputs_unchanged();
 }
 
 fn inspect_old_share(
@@ -2389,7 +2796,7 @@ fn assert_prior_epoch_envelopes_refused(
 }
 
 pub(super) fn run(
-    fixture: &Fixture,
+    fixture: &mut Fixture,
     inputs: &SuccessorProcessInputs,
     initial_history: &Path,
     original_seal_request: [u8; 32],
@@ -2958,4 +3365,182 @@ pub(super) fn run(
     let _terminal_envelopes: (Vec<u8>, Vec<u8>) =
         prove_f_ordered_quorum(&unlocked, &hosts, &final_directory);
     verify_receipts(&receipt_history, &hosts);
+    // All existing genuine seven-epoch/full-unlock assertions above have
+    // finished. Recovery adds a SEPARATE terminal control transition at the
+    // post-withdrawal e8 cut; it does not advance or activate e9.
+    let pre_freeze: ProtectedState = protected_state(fixture, &targets);
+    let recovery_control: PathBuf = final_directory.join("terminal-recovery-control");
+    std::fs::create_dir(&recovery_control).unwrap();
+    let _terminal_freeze: (Vec<u8>, Vec<u8>) = freeze_and_drain(
+        fixture,
+        &links,
+        &unlocked,
+        &targets,
+        &hosts,
+        &recovery_control,
+        &final_network,
+        &targets.members,
+    );
+    let post_freeze: ProtectedState = protected_state(fixture, &targets);
+    assert_ne!(
+        post_freeze, pre_freeze,
+        "genuine terminal Freeze/drain changes control/receipt state; it is not a no-write claim"
+    );
+    let terminal_history: PathBuf = recovery_control.join("history-through-cut");
+    export_history(
+        fixture,
+        &links,
+        &unlocked,
+        &final_network,
+        hosts[0].validator,
+        &terminal_history,
+    );
+    let terminal_cut: PathBuf = recovery_control.join("business-cut");
+    std::fs::create_dir(&terminal_cut).unwrap();
+    let mut terminal_pins: Vec<String> = current_operator_pins(fixture, &links, &terminal_history);
+    let mut export_flags: Vec<String> = terminal_pins.clone();
+    export_flags.extend(target_flags(&targets, 0, true));
+    export_flags.extend([
+        "--out-dir".into(),
+        terminal_cut.to_str().unwrap().into(),
+        "--timeout-seconds".into(),
+        "3600".into(),
+    ]);
+    assert!(
+        operator(
+            inputs.executables.business_cut.to_str().unwrap(),
+            "export-sqlite",
+            export_flags
+        )
+        .contains("business_cut=complete")
+    );
+    let latest_identity: node_core::business_reconstruction::cut::BusinessCutIdentity =
+        node_core::business_reconstruction::cut::decode_business_cut_identity(
+            &std::fs::read(terminal_cut.join("identity.bin")).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(latest_identity.context.epoch(), terminal_epoch);
+    assert_eq!(unlocked.authority().link_count() as usize, links.len());
+    assert_eq!(
+        links.len(),
+        8,
+        "full e8 closure keeps the original e0->e1 link and seven recurrent handoffs"
+    );
+    let expected_binding: runtime::ImportBinding = {
+        let archive: sunrise_edge_client::immutable_archive::ImmutableArchiveReader =
+            sunrise_edge_client::immutable_archive::ImmutableArchiveReader::open(&terminal_cut)
+                .unwrap();
+        let plan: node_core::business_reconstruction::BusinessReconstructionPlan<'_> =
+            fixture.plan(&latest_identity.ordered_history, fixture.operation);
+        let saved: node_core::business_reconstruction::cut::SavedBusinessCut =
+            sunrise_edge_client::business_cut_archive::read_business_cut_archive(&plan, &archive)
+                .unwrap();
+        let verified: node_core::business_reconstruction::inactive_import::VerifiedImportPlan = node_core::business_reconstruction::inactive_import::verify_saved_business_import_chain(plan, unlocked.authority(), &latest_identity.ordered_history, &saved).unwrap();
+        verified.binding().clone()
+    }; // No cached proof permit or attached source reader crosses cold recovery.
+    assert_eq!(expected_binding.context.epoch, terminal_epoch);
+    assert_eq!(
+        expected_binding.generation_floor,
+        latest_identity.generation_floor
+    );
+    let mut withdrawal_state: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+    for owner in &owners {
+        let key: Vec<u8> = node_core::local_instance_state::fastpath_bond_record_key(
+            &fixture.network.chain_id,
+            &owner.member.validator_id,
+        )
+        .unwrap();
+        let bytes: Vec<u8> = retained_state(&post_freeze.business[0], &key);
+        let bond: node_core::fast_path::records::FastPathBondRecord =
+            node_core::fast_path::records::decode_fastpath_bond_record(&bytes).unwrap();
+        assert_eq!(
+            bond.state,
+            node_core::fast_path::records::FastPathBondState::Exited,
+            "genuine full-unlock withdrawal is retained before transport"
+        );
+        assert_eq!(
+            retained_state(&pre_freeze.business[0], &key),
+            bytes,
+            "terminal Freeze/drain preserves unlocked owner bytes"
+        );
+        for snapshot in &post_freeze.business {
+            assert_eq!(retained_state(snapshot, &key), bytes);
+        }
+        withdrawal_state.insert(key, bytes);
+        let nonce: Vec<u8> = runtime::PersistenceLayout::new(
+            fixture.network.chain_id.clone(),
+            fixture.network.protocol_version,
+        )
+        .sender_nonce_key(*owner.member.validator_id.as_bytes(), terminal_epoch);
+        let bytes: Vec<u8> = retained_state(&post_freeze.business[0], &nonce);
+        assert_eq!(
+            retained_state(&pre_freeze.business[0], &nonce),
+            bytes,
+            "terminal control does not substitute withdrawn owner nonces"
+        );
+        withdrawal_state.insert(nonce, bytes);
+    }
+    // Every serving child is killed+reaped by its existing concrete Drop;
+    // preceding in-process seal servers were awaited and their ports/stores
+    // dropped; historical exporter servers/tasks also finished before here.
+    // protected_state/local archive scopes above retained only owned DATA.
+    hosts.clear();
+    fixture.close_source_owners(); // Drop actual original blob pool, no dummy DB.
+    let relocation: super::super::fixture::Directory =
+        super::super::fixture::Directory::new("recurring-terminal-encrypted-relocation");
+    let predecessors: Vec<[PathBuf; 4]> = links
+        .iter()
+        .map(|link: &Link| {
+            [
+                link.plan_history.clone(),
+                link.cut.clone(),
+                link.manifest_history.clone(),
+                link.certificate.clone(),
+            ]
+        })
+        .collect();
+    let terminal_pins: Vec<OsString> = terminal_pins.drain(..).map(OsString::from).collect();
+    // First-successor targets were created in independent Directory owners;
+    // later epoch targets are under the original fixture root. Hide BOTH,
+    // plus the explicit current targets, rather than retaining retired SQL.
+    let mut unavailable_roots: Vec<PathBuf> = vec![fixture.directory.0.clone()];
+    unavailable_roots.extend(inputs.targets.iter().cloned());
+    unavailable_roots.extend(targets.paths.iter().cloned());
+    let expected_local_receipts: BTreeMap<
+        runtime::portable::DurableRecordKey,
+        protocol_types::Digest32,
+    > = super::super::encrypted_recovery_acceptance::local_prepare_receipts(
+        &post_freeze.business[0],
+        &fixture.network.resolver,
+    );
+    let recovered: node_core::business_reconstruction::SourceBusinessSnapshot =
+        super::super::encrypted_recovery_acceptance::relocate(
+            super::super::encrypted_recovery_acceptance::Relocation {
+                recovery: &inputs.executables.business_recovery,
+                importer: &inputs.executables.business_import,
+                pins: &terminal_pins,
+                cut: &terminal_cut,
+                predecessors: &predecessors,
+                genesis: &fixture.directory.0.join("genesis.bin"),
+                unavailable_roots: &unavailable_roots,
+                work: &relocation.0,
+                binding: &expected_binding,
+                validator: ValidatorId::new([0xec; 32]),
+                expected_state: &withdrawal_state,
+                expected_business: &post_freeze.business[0],
+                expected_local_receipts: &expected_local_receipts,
+            },
+        );
+    assert!(recovered.token.namespace() != post_freeze.business[0].token.namespace());
+    assert_eq!(
+        recovered.token.writer_fence(),
+        WriterFenceGeneration::new(1).unwrap()
+    );
+}
+
+fn retained_state(
+    snapshot: &node_core::business_reconstruction::SourceBusinessSnapshot,
+    key: &[u8],
+) -> Vec<u8> {
+    snapshot.records.iter().find(|record| matches!(record.descriptor.key(), runtime::portable::DurableRecordKey::State(actual) if actual.as_slice() == key)).and_then(|record| record.value.clone()).expect("genuine retained business state bytes")
 }

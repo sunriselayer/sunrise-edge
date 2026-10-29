@@ -69,3 +69,25 @@ Capture plumbing may move to a private test module, but its existing consumers
 must use that same implementation. Relocation alone is not the improvement:
 the material change is complete persisted-result equivalence and removal of
 test fixture dependency inversions, with no broadened authority.
+
+## Bounded compiled-host observation
+
+The shared compiled-child supervisor owns capture, not a business result.
+Full `Output` requires successful complete pipe reads and both reader joins.
+Live startup instead captures exactly one LF-terminated line without requiring
+host-stream EOF; a line alone does not establish survival or serving authority.
+
+[DR-0229](decisions/0229-bounded-compiled-host-startup-line.md) gives every
+existing startup caller a test-private allowance calculated before spawning
+from its genuine fixture chain: 428 fixed bytes plus exact chain UTF-8 bytes,
+including LF. Checked cap-plus-one probing bounds physical input supplied to
+the reader. Encountered read/UTF-8 errors precede cap/EOF classification;
+successful bytes, including CRLF, are unchanged. `BufReader` may prefetch past
+LF, and errors beyond the bounded probe remain unobserved. This is not a bound
+on read calls, heap capacity, blocking duration or all-path process cleanup.
+
+Pure source controls retain original read/channel/first-line cases and add
+exact-cap, over-cap, never-LF, encountered-error and independent literal-format
+expectations. They remain unexecuted. Existing child ownership, deadlines,
+real startup/restart/fence/fault scenarios and release requirements remain;
+observation source changes neither close R3 nor qualify runtime or durability.

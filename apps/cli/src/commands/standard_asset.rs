@@ -72,6 +72,67 @@ fn invalid(message: &'static str) -> CliError {
     ))
 }
 
+enum AssetSigner {
+    Local(Box<LocalSigner>),
+    Custody(crate::custody::CustodyTarget),
+}
+
+/// The one caller-built, untrusted preimage set custody receives for each
+/// accepted custody-signed Standard Asset action. Custody never trusts this
+/// shape itself: it always rebuilds the exact amounts/overflow outcome from
+/// the carried canonical object preimages under its own pinned trust.
+enum CustodySigningRequest {
+    Transfer(crate::custody::AssetTransferRequest),
+    Split(crate::custody::AssetSplitRequest),
+    Merge(crate::custody::AssetMergeRequest),
+    Mint(crate::custody::AssetMintRequest),
+    Burn(crate::custody::AssetBurnRequest),
+    Create(crate::custody::AssetCreateRequest),
+}
+
+impl AssetSigner {
+    fn address(&self) -> Address {
+        match self {
+            Self::Local(signer) => signer.address(),
+            Self::Custody(target) => Address::new(target.expected_public_key),
+        }
+    }
+
+    fn sign(
+        &self,
+        prepared: PreparedPaidExecution,
+        request: Option<&CustodySigningRequest>,
+    ) -> Result<sunrise_edge_client::SignedPaidIntent, CliError> {
+        match self {
+            Self::Local(signer) => Ok(prepared.sign_and_finalize_with(signer.as_ref())?),
+            Self::Custody(target) => {
+                let request = request.ok_or_else(|| invalid("custody requires exact preimages"))?;
+                let signature: [u8; 64] = match request {
+                    CustodySigningRequest::Transfer(request) => {
+                        crate::custody::client::request_transfer_signature(target, request)?
+                    }
+                    CustodySigningRequest::Split(request) => {
+                        crate::custody::client::request_split_signature(target, request)?
+                    }
+                    CustodySigningRequest::Merge(request) => {
+                        crate::custody::client::request_merge_signature(target, request)?
+                    }
+                    CustodySigningRequest::Mint(request) => {
+                        crate::custody::client::request_mint_signature(target, request)?
+                    }
+                    CustodySigningRequest::Burn(request) => {
+                        crate::custody::client::request_burn_signature(target, request)?
+                    }
+                    CustodySigningRequest::Create(request) => {
+                        crate::custody::client::request_create_signature(target, request)?
+                    }
+                };
+                Ok(prepared.finalize(signature.to_vec())?)
+            }
+        }
+    }
+}
+
 fn common_specs() -> Vec<FlagSpec> {
     let mut specs: Vec<FlagSpec> = vec![
         scalar(ENDPOINT),
@@ -600,24 +661,65 @@ where
         super::fastvote_network::validate_paid_network_flags(&parsed)?;
     }
     let signer_selection: SignerSelection = parse_signer_selection(&parsed)?;
+    // Refused immediately, before any FastVote/network peer validation,
+    // signer file access, or device I/O.
     if matches!(signer_selection, SignerSelection::Ledger { .. }) {
         return Err(invalid(
             "Ledger paid Standard Asset signing is not supported",
         ));
     }
-    let load_signer = || -> Result<LocalSigner, CliError> {
+    if matches!(signer_selection, SignerSelection::Custody { .. })
+        && action != "transfer"
+        && action != "split"
+        && action != "merge"
+        && action != "mint"
+        && action != "burn"
+        && action != "create-asset"
+    {
+        return Err(invalid(
+            "custody paid Standard Asset signing is not supported",
+        ));
+    }
+    if let SignerSelection::Custody {
+        expected_public_key,
+        ..
+    } = &signer_selection
+    {
+        // DR-0261: transfer/split/merge join mint/burn's independently
+        // local application pin. Reject a partial pair before endpoint or
+        // signer I/O. The protected process pins the same target separately;
+        // these client flags never select or replace its trust.
+        if action != "create-asset" {
+            let _application: Option<(ObjectId, &str)> = application_selection(&parsed)?;
+        }
+        if let Some(value) = parsed.get(REFUND_RECIPIENT)
+            && decode_hex_32(REFUND_RECIPIENT, value)? != *expected_public_key
+        {
+            return Err(invalid("custody signing requires the sender refund"));
+        }
+    }
+    let load_signer = || -> Result<AssetSigner, CliError> {
         match &signer_selection {
-            SignerSelection::Local { seed_file } => {
-                Ok(LocalSigner::from_seed(load_dev_seed(Path::new(seed_file))?))
-            }
+            SignerSelection::Local { seed_file } => Ok(AssetSigner::Local(Box::new(
+                LocalSigner::from_seed(load_dev_seed(Path::new(seed_file))?),
+            ))),
             SignerSelection::Ledger { .. } => Err(invalid(
                 "Ledger paid Standard Asset signing is not supported",
             )),
+            SignerSelection::Custody {
+                socket,
+                custody_uid,
+                expected_public_key,
+            } => Ok(AssetSigner::Custody(crate::custody::CustodyTarget {
+                socket: socket.into(),
+                custody_uid: *custody_uid,
+                expected_public_key: *expected_public_key,
+            })),
         }
     };
     // Keep direct mode's existing local-input order. Network mode validates
     // the selected cohort peer before reading the signing seed.
-    let direct_signer: Option<LocalSigner> = if budget.is_none() {
+    let direct_signer: Option<AssetSigner> = if budget.is_none() {
         Some(load_signer()?)
     } else {
         None
@@ -657,7 +759,7 @@ where
     if let Some(budget) = budget {
         budget.ensure_live()?;
     }
-    let signer: LocalSigner = match direct_signer {
+    let signer: AssetSigner = match direct_signer {
         Some(signer) => signer,
         None => load_signer()?,
     };
@@ -739,6 +841,7 @@ where
         if target == policy.instance {
             return Err(invalid("asset instance collides with the fee instance"));
         }
+        let custody_create: bool = matches!(signer, AssetSigner::Custody(_));
         let call: CallIntent = CallIntent {
             context,
             request_id: *request_id.as_bytes(),
@@ -767,7 +870,30 @@ where
             gas_limit,
             Vec::new(),
         )?;
-        let signed = prepared.sign_and_finalize_with(&signer)?;
+        let custody_request: Option<CustodySigningRequest> = if custody_create {
+            let HttpObjectQueryResult::CurrentInline {
+                canonical_object_bytes: fee_bytes,
+                ..
+            } = &queried_fee
+            else {
+                return Err(invalid(
+                    "custody fee source requires canonical inline preimage",
+                ));
+            };
+            Some(CustodySigningRequest::Create(
+                crate::custody::AssetCreateRequest {
+                    seed: instance_seed,
+                    fee_bytes: fee_bytes.clone(),
+                    nonce,
+                    request_id,
+                    max_fee: prepared.intent().consent.max_fee.get(),
+                    gas_limit,
+                },
+            ))
+        } else {
+            None
+        };
+        let signed = signer.sign(prepared, custody_request.as_ref())?;
         let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
         let record_bytes: Vec<u8> = encode_instance_record(&record).map_err(failure)?;
         let result: PaidExecutionResult = if let Some((endpoints, certifier, admission)) = &network
@@ -834,6 +960,12 @@ where
         genesis_asset,
     )?;
     let operation: AssetOperation = operation(action, &parsed)?;
+    let custody_transfer: bool = matches!(signer, AssetSigner::Custody(_));
+    // Captured in `operation.inputs` order (so, for `merge`, `into` then
+    // `from`): the exact canonical preimage of every non-fee application
+    // input, for custody to receive. Custody never trusts this order or
+    // content either: it decodes and re-validates every preimage itself.
+    let mut custody_input_preimages: Vec<Vec<u8>> = Vec::new();
     let mut access: AccessManifest = AccessManifest::new();
     for (id, mode, kind, flag) in &operation.inputs {
         let tag: ScopedTypeTag = expected_tag(*kind, target.code.origin(), &target.asset)?;
@@ -847,6 +979,25 @@ where
                 &tag,
                 flag,
             )?
+        } else if custody_transfer {
+            let result: HttpObjectQueryResult = client.query_object(*id)?;
+            let reference: ObjectRef = validate_owned_input(
+                &result,
+                &resolver,
+                &expected,
+                signer.address(),
+                *id,
+                &tag,
+                flag,
+            )?;
+            if let HttpObjectQueryResult::CurrentInline {
+                canonical_object_bytes,
+                ..
+            } = result
+            {
+                custody_input_preimages.push(canonical_object_bytes);
+            }
+            reference
         } else {
             owned_input(
                 &client,
@@ -891,7 +1042,103 @@ where
         gas_limit,
         Vec::new(),
     )?;
-    let signed = prepared.sign_and_finalize_with(&signer)?;
+    let custody_request: Option<CustodySigningRequest> = if custody_transfer {
+        let HttpObjectQueryResult::CurrentInline {
+            canonical_object_bytes: fee_bytes,
+            ..
+        } = &queried_fee
+        else {
+            return Err(invalid(
+                "custody fee source requires canonical inline preimage",
+            ));
+        };
+        let mut inputs = custody_input_preimages.into_iter();
+        match action {
+            "transfer" => Some(CustodySigningRequest::Transfer(
+                crate::custody::AssetTransferRequest {
+                    coin_bytes: inputs.next().ok_or_else(|| {
+                        invalid("custody transfer coin and fee source must be distinct")
+                    })?,
+                    fee_bytes: fee_bytes.clone(),
+                    recipient: decode_hex_32(RECIPIENT, parsed.require(RECIPIENT)?)?,
+                    nonce,
+                    request_id,
+                    max_fee: prepared.intent().consent.max_fee.get(),
+                    gas_limit,
+                },
+            )),
+            "split" => Some(CustodySigningRequest::Split(
+                crate::custody::AssetSplitRequest {
+                    coin_bytes: inputs.next().ok_or_else(|| {
+                        invalid("custody split coin and fee source must be distinct")
+                    })?,
+                    fee_bytes: fee_bytes.clone(),
+                    amount: parse_u64(AMOUNT, parsed.require(AMOUNT)?)?,
+                    recipient: decode_hex_32(RECIPIENT, parsed.require(RECIPIENT)?)?,
+                    nonce,
+                    request_id,
+                    max_fee: prepared.intent().consent.max_fee.get(),
+                    gas_limit,
+                },
+            )),
+            "merge" => {
+                let into_bytes = inputs
+                    .next()
+                    .ok_or_else(|| invalid("custody merge requires both distinct owned inputs"))?;
+                let from_bytes = inputs
+                    .next()
+                    .ok_or_else(|| invalid("custody merge requires both distinct owned inputs"))?;
+                Some(CustodySigningRequest::Merge(
+                    crate::custody::AssetMergeRequest {
+                        into_bytes,
+                        from_bytes,
+                        fee_bytes: fee_bytes.clone(),
+                        nonce,
+                        request_id,
+                        max_fee: prepared.intent().consent.max_fee.get(),
+                        gas_limit,
+                    },
+                ))
+            }
+            "mint" => Some(CustodySigningRequest::Mint(
+                crate::custody::AssetMintRequest {
+                    cap_bytes: inputs.next().ok_or_else(|| {
+                        invalid("custody mint cap and fee source must be distinct")
+                    })?,
+                    fee_bytes: fee_bytes.clone(),
+                    amount: parse_u64(AMOUNT, parsed.require(AMOUNT)?)?,
+                    recipient: decode_hex_32(RECIPIENT, parsed.require(RECIPIENT)?)?,
+                    nonce,
+                    request_id,
+                    max_fee: prepared.intent().consent.max_fee.get(),
+                    gas_limit,
+                },
+            )),
+            "burn" => {
+                let cap_bytes = inputs
+                    .next()
+                    .ok_or_else(|| invalid("custody burn requires both distinct owned inputs"))?;
+                let coin_bytes = inputs
+                    .next()
+                    .ok_or_else(|| invalid("custody burn requires both distinct owned inputs"))?;
+                Some(CustodySigningRequest::Burn(
+                    crate::custody::AssetBurnRequest {
+                        cap_bytes,
+                        coin_bytes,
+                        fee_bytes: fee_bytes.clone(),
+                        nonce,
+                        request_id,
+                        max_fee: prepared.intent().consent.max_fee.get(),
+                        gas_limit,
+                    },
+                ))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let signed = signer.sign(prepared, custody_request.as_ref())?;
     let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
     let result: PaidExecutionResult = if let Some((endpoints, certifier, admission)) = &network {
         super::fastvote_network::run_network_submit(
@@ -937,6 +1184,143 @@ mod tests {
         call_values::{CallValue, encode_call_value},
         package_types::{PackageOrigin, derive_scoped_type_id},
     };
+
+    /// An unknown action still refuses before any signer-selection check at
+    /// all, since `run`'s own action match rejects it first. There is no
+    /// longer any defined action for which the (now unreachable in
+    /// practice) "custody paid Standard Asset signing is not supported"
+    /// gate inside `run` actually fires: `transfer`/`split`/`merge`/
+    /// `mint`/`burn`/`create-asset` are every action `run` accepts, and
+    /// custody now supports all six.
+    #[test]
+    fn rejects_an_unknown_action_before_any_signer_selection() {
+        let error: CliError = run(
+            "mint-and-burn",
+            vec![
+                OsString::from("--custody-socket"),
+                OsString::from("/nonexistent/custody.sock"),
+                OsString::from("--custody-uid"),
+                OsString::from("1001"),
+                OsString::from("--custody-expected-public-key"),
+                OsString::from("ab".repeat(32)),
+            ],
+        )
+        .unwrap_err();
+        assert!(matches!(error, CliError::LocalExecution(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("unknown Standard Asset operation")
+        );
+    }
+
+    /// `split`/`merge` (DR-0249), `mint`/`burn` (DR-0253) and `create-asset`
+    /// (DR-0255) must all pass the custody-selection gate itself and fail
+    /// only on a later, genuinely missing requirement — never on the "not
+    /// supported" refusal.
+    #[test]
+    fn allows_custody_signer_selection_for_split_merge_mint_burn_create_before_other_required_flags()
+     {
+        for action in ["split", "merge", "mint", "burn", "create-asset"] {
+            let error = run(
+                action,
+                vec![
+                    OsString::from("--custody-socket"),
+                    OsString::from("/nonexistent/custody.sock"),
+                    OsString::from("--custody-uid"),
+                    OsString::from("1001"),
+                    OsString::from("--custody-expected-public-key"),
+                    OsString::from("ab".repeat(32)),
+                ],
+            )
+            .unwrap_err();
+            assert!(
+                !error
+                    .to_string()
+                    .contains("custody paid Standard Asset signing is not supported")
+            );
+        }
+    }
+
+    #[test]
+    fn custody_transfer_rejects_partial_asset_pin_or_foreign_refund_before_endpoint_access() {
+        for (flag, value, reason) in [
+            (
+                ASSET,
+                "11".repeat(32),
+                "--asset and --instance-ref must be provided together",
+            ),
+            (
+                REFUND_RECIPIENT,
+                "11".repeat(32),
+                "custody signing requires the sender refund",
+            ),
+        ] {
+            let error = run(
+                "transfer",
+                vec![
+                    OsString::from("--custody-socket"),
+                    OsString::from("/nonexistent/custody.sock"),
+                    OsString::from("--custody-uid"),
+                    OsString::from("12001"),
+                    OsString::from("--custody-expected-public-key"),
+                    OsString::from("ab".repeat(32)),
+                    OsString::from(flag),
+                    OsString::from(value),
+                ],
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(reason));
+        }
+    }
+
+    /// Every supported Call family accepts the pair, while a partial pair
+    /// refuses before any endpoint or pin-file access. create-asset has no
+    /// such flags: its parser already rejects them as unknown.
+    #[test]
+    fn custody_call_families_accept_an_application_pair_and_refuse_partial_pins() {
+        for action in ["transfer", "split", "merge", "mint", "burn"] {
+            let common: Vec<OsString> = vec![
+                OsString::from("--custody-socket"),
+                OsString::from("/nonexistent/custody.sock"),
+                OsString::from("--custody-uid"),
+                OsString::from("12002"),
+                OsString::from("--custody-expected-public-key"),
+                OsString::from("ab".repeat(32)),
+            ];
+            let mut both: Vec<OsString> = common.clone();
+            both.extend([
+                OsString::from(ASSET),
+                OsString::from("11".repeat(32)),
+                OsString::from(INSTANCE_REF),
+                OsString::from("/nonexistent/instance-ref.bin"),
+            ]);
+            let error: CliError = run(action, both).unwrap_err();
+            assert!(
+                !error
+                    .to_string()
+                    .contains("custody signing requires the genesis asset")
+            );
+            assert!(
+                !error
+                    .to_string()
+                    .contains("--asset and --instance-ref must be provided together")
+            );
+            for (flag, value) in [
+                (ASSET, "11".repeat(32)),
+                (INSTANCE_REF, "/nonexistent/instance-ref.bin".to_owned()),
+            ] {
+                let mut partial: Vec<OsString> = common.clone();
+                partial.extend([OsString::from(flag), OsString::from(value)]);
+                let error: CliError = run(action, partial).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("--asset and --instance-ref must be provided together")
+                );
+            }
+        }
+    }
     use execution::{
         ExecutionEffects, ExecutionStatus,
         paid_execution::{PaidChargedOutcome, PaidResultKind, PaidResultTarget},
