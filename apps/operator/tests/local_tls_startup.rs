@@ -5,8 +5,10 @@
 //! own bounded loopback TLS terminator with an independent CA and DNS name ->
 //! one separately compiled CLI certified transfer, exact replay in the same
 //! boot and after reopening every host, and pin/TLS/cohort/request-ID refusals.
-//! The terminator forwards exact HTTP bytes; every protocol result comes from
+//! The default terminator forwards exact HTTP bytes; every protocol result comes from
 //! an actual host. All keys and CAs are disposable fixture material.
+//! DR-0275 explicitly withholds genuine durable apply acknowledgements once,
+//! then checks receipt-first exact replay with complete unchanged state images.
 //! DR-0219 separately runs the same complete business oracles against direct
 //! production-host termination and its actual 2 -> 3 -> 4 stopped fences.
 
@@ -48,6 +50,8 @@ use execution::paid_execution::{
 };
 use fees::Amount;
 use fees::reservation::{Admission, Settlement};
+#[cfg(target_os = "linux")]
+use https_relay::LostApplyAcknowledgement;
 use https_relay::{
     FixtureCa, FixtureLeaf, HttpsRelay, PeerClose, authenticated_leaf, fixture_server_name,
 };
@@ -2714,6 +2718,274 @@ fn actual_local_tls_startup_certifies_a_cli_transfer_refuses_bad_pins_and_replay
             "original pinned input changed: {}",
             path.display()
         );
+    }
+    for relay in tls.relays {
+        let _listener: TcpListener = relay.stop();
+    }
+    for host in hosts {
+        host.guard.stop_orderly(PROCESS_DEADLINE);
+    }
+}
+
+/// DR-0275: real successful durable applies whose TLS acknowledgements are all
+/// lost. The caller must fail, then replay the exact saved artifacts once.
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_local_tls_lost_apply_acknowledgements_replay_exact_paid_state_once() {
+    let network: Network = author_inspect_and_prepare();
+    let hosts: Vec<Host> = start_hosts(&network, 2);
+    let mut tls: Tls = start_tls(&hosts, &network.tls_dir);
+    let config: PathBuf = write_config(
+        &network.tls_dir.join("ack-loss-network.conf"),
+        &tls_lines(&network, &tls),
+    );
+    let original_lines: Vec<String> = tls_lines(&network, &tls);
+    let original_inputs: Vec<(PathBuf, Vec<u8>)> = std::iter::once(network.genesis.clone())
+        .chain(network.signing_keys.iter().cloned())
+        .chain(std::iter::once(network.owner_seed.clone()))
+        .chain(tls.ca_files.iter().cloned())
+        .chain(std::iter::once(config.clone()))
+        .map(|path: PathBuf| {
+            let bytes: Vec<u8> = fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
+    let initial_leaves: Vec<Vec<u8>> = served_leaves(&tls);
+    let initial_contexts: Vec<(Vec<u8>, Vec<u8>)> = contexts(&tls);
+    let request: RequestId = RequestId::new(TRANSFER_REQUEST).unwrap();
+    let sender: Address = Address::new(network.fixture.owner);
+    let genesis_ids: [ObjectId; 2] = [ObjectId::new(APP_COIN), ObjectId::new(FEE_COIN)];
+    let initial: Observation = observe(&tls.relays, &genesis_ids, request, sender);
+    let nonce: u64 = verify_initial(&network, &initial, sender);
+
+    // Explicitly arm one loss on every same CA/DNS/listener/backend. Ordinary
+    // bind/start remain transparent; no host restart or writer advance occurs.
+    tls.relays = std::mem::take(&mut tls.relays)
+        .into_iter()
+        .enumerate()
+        .map(|(index, relay): (usize, HttpsRelay)| {
+            let listener: TcpListener = relay.stop();
+            HttpsRelay::start_losing_apply_ack_once(
+                listener,
+                hosts[index].address,
+                &tls.leaves[index],
+                TRANSFER_REQUEST,
+            )
+        })
+        .collect();
+    assert_eq!(tls_lines(&network, &tls), original_lines);
+    assert_eq!(served_leaves(&tls), initial_leaves);
+    assert_eq!(contexts(&tls), initial_contexts);
+    for relay in &tls.relays {
+        assert!(relay.lost_apply_acknowledgement().is_none());
+    }
+
+    let first: Outputs = Outputs::new(&network.artifacts_dir, "lost-ack-transfer");
+    let posts: Vec<usize> = forwarded_posts(&tls.relays);
+    let output: Output = run_cli(transfer_args(
+        &network,
+        &config,
+        tls.relays[0].addr,
+        &network.owner_seed,
+        TRANSFER_REQUEST,
+        nonce,
+        &first,
+    ));
+    let stdout: String = String::from_utf8(output.stdout).unwrap();
+    let stderr: String = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
+    assert_ordered(
+        &stdout,
+        &[
+            "fastvote_signed_intent_out=",
+            "fastvote_certificate_formed=true",
+            "fastvote_certificate_out=",
+            "fastvote_publication_source=",
+            "fastvote_availability_certificate_out=",
+            "apply validator=",
+        ],
+    );
+    let apply_lines: BTreeSet<&str> = stdout
+        .lines()
+        .filter(|line: &&str| line.starts_with("apply validator="))
+        .collect();
+    assert_eq!(apply_lines.len(), VALIDATORS, "{stdout}");
+    assert_eq!(stdout.matches("apply validator=").count(), VALIDATORS);
+    for validator in &network.fixture.validators {
+        let expected: String = format!(
+            "apply validator={} status=failed reason=transport error: connection closed before response headers were complete",
+            ValidatorId::new(*validator)
+        );
+        assert!(apply_lines.contains(expected.as_str()), "{stdout}");
+    }
+    assert!(!stdout.contains("status=received"), "{stdout}");
+    assert!(
+        stderr.contains("no configured FastVote endpoint acknowledged the apply; the certified certificate was formed and saved and can be replayed with fastvote-replay"),
+        "{stderr}"
+    );
+    // The production CLI reserves result-out before apply; refusal must leave
+    // it empty, rather than invent an absent file or a successful caller result.
+    assert_reserved_empty(&first.result, "lost apply acknowledgements");
+    assert_all_forwarded(&posts, &tls.relays, "lost apply acknowledgements");
+    let lost: Vec<LostApplyAcknowledgement> = tls
+        .relays
+        .iter()
+        .map(|relay: &HttpsRelay| {
+            let observed: LostApplyAcknowledgement = relay
+                .lost_apply_acknowledgement()
+                .expect("each peer must lose one genuine successful apply ACK");
+            assert!(observed.handshake_completed);
+            assert_eq!(observed.upstream_status, 200);
+            assert_eq!(observed.downstream_application_bytes, 0);
+            assert!(relay.counters.handshakes.load(Ordering::SeqCst) > 0);
+            observed
+        })
+        .collect();
+
+    let intent: Vec<u8> = fs::read(&first.intent).unwrap();
+    let certificate: Vec<u8> = fs::read(&first.certificate).unwrap();
+    let availability: Vec<u8> = fs::read(&first.availability).unwrap();
+    assert!(!intent.is_empty() && !certificate.is_empty() && !availability.is_empty());
+    let signed: SignedPaidIntent = decode_signed_paid_intent(&intent).unwrap();
+    let tx_hash: Digest32 = paid_invocation_digest(&network.fixture.resolver, &signed).unwrap();
+    let expected_apply: Vec<u8> = node_wire::FastVotePublishedApplyRequest {
+        signed_paid_intent: intent.clone(),
+        certificate: certificate.clone(),
+        availability_certificate: availability.clone(),
+    }
+    .encode()
+    .unwrap();
+
+    // Reconcile every durable receipt before retry. Neither a relay capture nor
+    // the caller's failure is accepted as proof that paid execution committed.
+    let mut stored_results: Vec<Vec<u8>> = Vec::with_capacity(VALIDATORS);
+    let mut receipt_bytes: Vec<Vec<u8>> = Vec::with_capacity(VALIDATORS);
+    for (index, relay) in tls.relays.iter().enumerate() {
+        let receipt: HttpReceiptQueryResult = relay_client(relay).query_receipt(request).unwrap();
+        receipt_bytes.push(receipt.encode().unwrap());
+        let HttpReceiptQueryResult::Present {
+            request_id,
+            event_digest,
+            dedup_record_bytes,
+        } = receipt
+        else {
+            panic!("peer {index}: target receipt must exist before replay");
+        };
+        assert_eq!(request_id, request);
+        assert_eq!(event_digest, tx_hash);
+        let record: NodeDedupRecord = NodeDedupRecord::decode(&dedup_record_bytes).unwrap();
+        assert_eq!(record.encode().unwrap(), dedup_record_bytes);
+        assert_eq!(record.request_id(), request);
+        assert_eq!(record.event_digest(), tx_hash);
+        let [response] = record.responses() else {
+            panic!("peer {index}: exactly one persisted response required");
+        };
+        assert_eq!(response.request_id(), request);
+        assert_eq!(response.status(), NodeResponseStatus::Accepted);
+        stored_results.push(response.payload().unwrap().to_vec());
+        let expected_body: Vec<u8> =
+            node_wire::HttpNodeResult::new(request, record.responses().to_vec())
+                .unwrap()
+                .encode()
+                .unwrap();
+        let captured: &LostApplyAcknowledgement = &lost[index];
+        let expected_line: String = format!(
+            "POST {} HTTP/1.1\r\n",
+            node_wire::FASTVOTE_PUBLISHED_APPLY_PATH
+        );
+        assert!(captured.request.starts_with(expected_line.as_bytes()));
+        assert_eq!(
+            &captured.request[captured.request_header_length..],
+            expected_apply,
+            "peer {index}: real dispatched request used exact persisted artifacts"
+        );
+        assert_eq!(
+            &captured.response[captured.response_header_length..],
+            expected_body,
+            "peer {index}: withheld success is exactly the persisted receipt"
+        );
+    }
+    for result in &stored_results {
+        assert_eq!(result, &stored_results[0]);
+    }
+    let saved: Saved = Saved {
+        intent,
+        certificate,
+        availability,
+        // In-memory reconciliation only. The failed CLI's result file stays empty.
+        result: stored_results[0].clone(),
+    };
+    let committed: Committed =
+        verify_saved_request_artifacts(&network, &saved, nonce, TRANSFER_REQUEST);
+    let ids: Vec<ObjectId> = observed_ids(&committed.result);
+    let committed_view: Observation = observe(&tls.relays, &ids, request, sender);
+    for receipt in &receipt_bytes {
+        assert_eq!(receipt, &committed_view.receipt);
+    }
+    verify_committed_state(&network, &committed, &saved, &committed_view);
+
+    // Existing complete owners cover all 12 SQL + 2 blob tables and all four
+    // portable collections, referenced bodies and the exact mutation sequence.
+    let before_rows: Vec<sqlite_durable_image::Image> = sqlite_durable_images(&network);
+    let before_replay: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    for captured in &before_replay {
+        assert!(
+            captured.referenced_blobs.is_empty(),
+            "this inline transfer fixture has an empty referenced-blob closure"
+        );
+    }
+    eprintln!("ack_loss_replay referenced_blob_closure=empty positive_blob_fault=false");
+    let posts: Vec<usize> = forwarded_posts(&tls.relays);
+    let replay: Outputs = Outputs::new(&network.artifacts_dir, "lost-ack-replay");
+    let output: Output = run_cli(replay_args(
+        &network,
+        &config,
+        &first.intent,
+        Some(&first),
+        &replay,
+    ));
+    assert_exact_replay(&output, &replay, &saved, "lost-ACK exact replay");
+    let replay_stdout: &str = std::str::from_utf8(&output.stdout).unwrap();
+    for validator in &network.fixture.validators {
+        let expected: String = format!(
+            "apply validator={} status=received paid_status=Success",
+            ValidatorId::new(*validator)
+        );
+        assert!(
+            replay_stdout.lines().any(|line: &str| line == expected),
+            "{replay_stdout}"
+        );
+    }
+    assert_all_forwarded(&posts, &tls.relays, "lost-ACK exact replay");
+    assert_eq!(sqlite_durable_images(&network), before_rows);
+    assert_unchanged(
+        &before_replay,
+        &snapshots(&network),
+        "lost-ACK exact replay",
+    );
+    let replayed: Observation = observe(&tls.relays, &ids, request, sender);
+    assert_eq!(replayed, committed_view);
+    verify_committed_state(&network, &committed, &saved, &replayed);
+    for (index, relay) in tls.relays.iter().enumerate() {
+        assert_eq!(
+            relay.lost_apply_acknowledgement().as_ref(),
+            Some(&lost[index])
+        );
+    }
+    for (path, bytes) in [
+        (&first.intent, &saved.intent),
+        (&first.certificate, &saved.certificate),
+        (&first.availability, &saved.availability),
+    ] {
+        assert_eq!(&fs::read(path).unwrap(), bytes);
+    }
+    assert_reserved_empty(
+        &first.result,
+        "failed caller result remains empty after replay",
+    );
+    assert_eq!(tls_lines(&network, &tls), original_lines);
+    for (path, bytes) in original_inputs {
+        assert_eq!(fs::read(&path).unwrap(), bytes, "{}", path.display());
     }
     for relay in tls.relays {
         let _listener: TcpListener = relay.stop();

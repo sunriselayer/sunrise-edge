@@ -422,9 +422,42 @@ try {
     result.child_records.length > 40 && result.child_records.length <= 160 && result.child_records.every((row) =>
       row.waited === true && row.stdout_eof === true && row.stderr_eof === true && Number.isInteger(row.exit) && [12001, 12002, 12003].includes(row.uid)),
   'actual role/component evidence is incomplete');
+  const recovery = result.recovery;
+  require_(recovery && recovery.workers === 4 && recovery.seed_bytes === 32 && recovery.same_seed === true &&
+    recovery.original_keys_unavailable === true && recovery.all_original_workers_waited === true &&
+    recovery.only_signing_key_file_changed === true && recovery.authority_pins_unchanged === true &&
+    recovery.helper_uid === 12001 && recovery.helper_caps === 0 &&
+    JSON.stringify(recovery.read_refusal_uids) === '[12002,12003]' &&
+    Array.isArray(recovery.original_worker_pids) && recovery.original_worker_pids.length === 4 &&
+    Array.isArray(recovery.keys) && recovery.keys.length === 4 && recovery.keys.every((row, index) =>
+      row.index === index && /^[0-9a-f]{64}$/u.test(row.validator) && row.original_key === `/work/worker/v${index}/validator.key` &&
+      row.backup_key === `/work/worker/v${index}/key-backup/validator.seed` && row.restored_key === `/work/worker/v${index}/key-recovery/validator.key`) &&
+    new Set(recovery.keys.map((row) => row.validator)).size === 4,
+  'stopped same-identity key recovery evidence differs');
+  for (const [index, pid] of recovery.original_worker_pids.entries()) {
+    const original = result.child_records.filter((row) => row.label === `worker-${index}`);
+    const restored = result.child_records.filter((row) => row.label === `recovered-worker-${index}`);
+    require_(Number.isInteger(pid) && pid > 0 && pid <= 2147483647 && original.length === 1 && original[0].pid === pid &&
+      original[0].uid === 12001 && original[0].gid === 12001 && original[0].exit === 0 &&
+      restored.length === 1 && restored[0].uid === 12001 && restored[0].gid === 12001 && restored[0].exit === 0,
+    'original stopped or restored worker receipt differs');
+  }
+  for (const [label, uid] of [['stopped-key-recovery', 12001], ['recovery-filesystem-refusal-12002', 12002], ['recovery-filesystem-refusal-12003', 12003]]) {
+    const matches = result.child_records.filter((row) => row.label === label);
+    require_(matches.length === 1 && matches[0].uid === uid && matches[0].gid === uid && matches[0].exit === 0,
+      'capability-free recovery/refusal child receipt differs');
+  }
   for (const phase of ['filesystem-refusals', 'intruder-before-body', 'authenticated-stalled-body-deadline', 'frontend-refuses-impostor-before-body', 'missing-anchor-and-competing-lease',
+    'stopped-same-identity-key-recovery', 'recovery-filesystem-refusals',
     'propose-first', 'propose-repeat', 'votes-first', 'votes-repeat', 'worker-down', 'certificate', 'fresh', 'replay', 'oracle-fence-2', 'oracle-fence-3',
     'oracle-retained-1', 'oracle-retained-2', 'oracle-finish']) require_(result.phases.includes(phase), 'actual phase receipt missing');
+  const recoveredAt = result.phases.indexOf('stopped-same-identity-key-recovery');
+  require_(result.phases.indexOf('worker-down') < recoveredAt &&
+    result.phases.indexOf('recovery-filesystem-refusals') < recoveredAt && recoveredAt < result.phases.indexOf('oracle-fence-3') &&
+    result.phases.indexOf('oracle-fence-3') < result.phases.lastIndexOf('votes-repeat') &&
+    result.phases.lastIndexOf('votes-repeat') < result.phases.indexOf('certificate') &&
+    result.phases.indexOf('certificate') < result.phases.indexOf('fresh') && result.phases.indexOf('fresh') < result.phases.indexOf('replay'),
+  'restored-path signing/replay phase order differs');
   }
 
 } catch (error) {
