@@ -76,6 +76,37 @@ kind-2/3/4 processes compare offline and actual CLI signatures, then refuse
 revoked requests before and after restart without creating output. This adds
 no key recovery or generation step and keeps the original resource limits.
 
+## Live Coin consumer of the recovered key (2026-10-29)
+
+[DR-0281](decisions/0281-live-recovered-application-coins.md) connects the
+existing `own-recovered.seed.restored` produced by
+`phase_own_asset_mint_burn` to the following six Coin stages: mint-one,
+split, merge, burn, mint-two and transfer. Both application recovery profiles
+run this same setup. Before the sequence, every prior tracked custody signer
+must have completed communicate/reap and left neither PID nor socket. The
+selected recovered path must be a custody-UID-owned regular mode-0600 file,
+with a path and device/inode distinct from the original disposable seed.
+
+Each of the existing five signer groups and its revoked restart loads that
+same recovered path. Evidence records each selected path from the actual
+child argv retained by `start_serve`; Python rejects a different selection,
+and Node independently checks all ten paths against
+`/work/custody-create/own-recovered.seed.restored`. The original 47 application
+setup predicates and all six independent stage/result/replay checks remain.
+For a group containing `n` stages, the live counters remain
+`3n/3n/2n/n` accepted/handled/signed/refused, and its revoked restart retains
+`n/n/0/n`.
+
+The initial own-created mint/burn and its historical same-frame recovery
+reference retain their existing order and original key selection. The later
+historical kind-2/3 recovery profiles also retain their signing-only requests,
+copies, comparisons and revocation controls. This consumer adds no operation,
+key copy, identity, authority, profile or child, and preserves the public pins,
+approvals, frames, signatures, receipts, nonces, owners, supply checks and all
+existing resource, capture, PTY and time limits. Actual fixture qualification
+and output headroom remain source-specific evidence in TODO.md; this same-key
+consumer establishes no creator/TreasuryCap migration or key rotation.
+
 ## Qualification boundary
 
 Pure source controls use synthetic canonical application preimages and the
