@@ -269,3 +269,38 @@ any refusal check above. Other asset profiles' live recovery and full key
 rotation, other automatic signing families/epochs, and any other not-yet-listed
 M2 lifecycle work remain open per `TODO.md`. The original own-created mint/burn
 recovery result and this new transfer source control remain separate evidence.
+
+
+### 2026-10-17 selected genesis Coin positive identity handoff
+
+The [two-owner genesis transfer control](standard-asset-transfer-custody.md#two-owner-genesis-coin-identity-handoff-control)
+is the narrow positive ownership case separate from the historical recovery
+and rotation-refusal controls above. In a fresh two-owner development genesis,
+A transfers one actual whole genesis Coin to the existing disposable B, then
+B transfers the same CURRENT version-2 Coin back to A through its own protected
+transfer consumer and its own independently prefunded fee Coin. No new key is
+created for this extension. The resulting live Coin is version 3/owner A;
+A and B each advance their own nonce from 0 to 1. Before the first transition
+B must refuse A's owned preimage; afterward A must refuse the actual B-owned
+preimage. Both identity-specific approvals have attended confirmation,
+offline/CLI byte equality, same-process cancellation and restarted refusal,
+with old A signers actually stopped before B authority. Independent paid
+result/effect/receipt and saved-replay checks run against the SAME live store.
+
+The original/C/MB/T/G/E67/publication-six/application-Coin-six flows retain
+their exact definitions, request IDs, counters and assertions. The extension
+adds only two actual transfer submissions, not split/merge/mint/cap actions.
+Its exact 26 normal children, 30 private evidence leaves, six absent-output
+refusals, 2 MiB generated/48 KiB captured/4 KiB summary suballocations and
+failure-only same-UID cleanup are specified in the transfer guide. All global
+280-second Node/230-second Python, 64 KiB Docker wire, 262144-byte captured
+child output, 64 MiB volume, 512 MiB/no additional swap, 64 PIDs/CPU1/network
+and capability bounds remain. Finite transport admission still requires
+complete actual output; static headroom or a source addition is not a pass.
+
+The earlier still-open positive-rotation statement remains applicable to the
+other profiles and full wallet/account migration. This selected genesis Coin
+source does not widen `ApplicationAssetPin::new`'s creator==publisher check,
+move an immutable application creator/TreasuryCap, migrate A's fees, authorize
+new automatic signing families or establish public ceremony/all-M2 readiness.
+Actual source-bound execution and later full-gate acceptance remain in TODO.

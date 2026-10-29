@@ -1,0 +1,162 @@
+{
+  "ingress": {
+    "worker": {
+      "name": "sunrise-edge-cloudflare-ingress",
+      "entrypoint": "../../src/index.ts",
+      "compatibilityDate": "2026-08-20",
+      "compatibilityFlags": [
+        "nodejs_compat"
+      ],
+      "observability": {
+        "enabled": true,
+        "headSamplingRate": 1
+      },
+      "env": {
+        "NODE_CORE": {
+          "type": "worker",
+          "worker": "sunrise-edge-node-core"
+        }
+      }
+    }
+  },
+  "validator": {
+    "worker": {
+      "name": "sunrise-edge-experimental-validator",
+      "entrypoint": "../../src/validator/index.ts",
+      "compatibilityDate": "2026-08-27",
+      "compatibilityFlags": [
+        "nodejs_compat"
+      ],
+      "workersDev": false,
+      "previewUrls": false,
+      "observability": {
+        "enabled": true,
+        "headSamplingRate": 1
+      },
+      "exports": {
+        "ValidatorObject": {
+          "type": "durable-object",
+          "storage": "sqlite"
+        }
+      },
+      "env": {
+        "VALIDATOR_ACTOR_NAME": {
+          "type": "text",
+          "value": "unconfigured"
+        },
+        "VALIDATOR_GENESIS": {
+          "type": "text",
+          "value": ""
+        },
+        "VALIDATOR_CONFIG": {
+          "type": "secret"
+        },
+        "VALIDATOR_BEARER_TOKEN": {
+          "type": "secret"
+        },
+        "VALIDATOR_STATE": {
+          "type": "durable-object",
+          "worker": "sunrise-edge-experimental-validator",
+          "exportName": "ValidatorObject"
+        }
+      }
+    }
+  },
+  "certified": {
+    "worker": {
+      "name": "sunrise-edge-certified-relay",
+      "entrypoint": "../../src/certified.ts",
+      "compatibilityDate": "2026-08-20",
+      "compatibilityFlags": [
+        "enable_request_signal"
+      ],
+      "workersDev": false,
+      "previewUrls": false,
+      "observability": {
+        "enabled": false
+      },
+      "env": {
+        "SUNRISE_NODE_CORE_URL": {
+          "type": "text",
+          "value": "https://certified-host.invalid"
+        },
+        "SUNRISE_NODE_CORE_BEARER_TOKEN": {
+          "type": "secret"
+        }
+      }
+    }
+  },
+  "sql": {
+    "worker": {
+      "name": "sunrise-edge-sql-bridge-test",
+      "entrypoint": "../../test/validator/sql-probe.ts",
+      "compatibilityDate": "2026-08-27",
+      "compatibilityFlags": [
+        "nodejs_compat"
+      ],
+      "exports": {
+        "SqlProbe": {
+          "type": "durable-object",
+          "storage": "sqlite"
+        }
+      },
+      "env": {
+        "SQL_PROBE": {
+          "type": "durable-object",
+          "worker": "sunrise-edge-sql-bridge-test",
+          "exportName": "SqlProbe"
+        }
+      }
+    }
+  },
+  "contract": {
+    "worker": {
+      "name": "sunrise-edge-closed-contract-test",
+      "entrypoint": "../../test/validator/contract-worker.ts",
+      "compatibilityDate": "2026-08-27",
+      "compatibilityFlags": [
+        "nodejs_compat"
+      ],
+      "exports": {
+        "ValidatorZero": {
+          "type": "durable-object",
+          "storage": "sqlite"
+        },
+        "ValidatorOne": {
+          "type": "durable-object",
+          "storage": "sqlite"
+        },
+        "ValidatorTwo": {
+          "type": "durable-object",
+          "storage": "sqlite"
+        },
+        "ValidatorThree": {
+          "type": "durable-object",
+          "storage": "sqlite"
+        }
+      },
+      "env": {
+        "VALIDATOR_ZERO": {
+          "type": "durable-object",
+          "worker": "sunrise-edge-closed-contract-test",
+          "exportName": "ValidatorZero"
+        },
+        "VALIDATOR_ONE": {
+          "type": "durable-object",
+          "worker": "sunrise-edge-closed-contract-test",
+          "exportName": "ValidatorOne"
+        },
+        "VALIDATOR_TWO": {
+          "type": "durable-object",
+          "worker": "sunrise-edge-closed-contract-test",
+          "exportName": "ValidatorTwo"
+        },
+        "VALIDATOR_THREE": {
+          "type": "durable-object",
+          "worker": "sunrise-edge-closed-contract-test",
+          "exportName": "ValidatorThree"
+        }
+      }
+    }
+  }
+}
