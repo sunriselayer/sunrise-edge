@@ -3041,6 +3041,8 @@ def stop_owned_process(process, uid, gid):
 
 
 def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, generated, definition_hex, cap_hex, strict_pty_accounting=False):
+    require_custody_signers_stopped()
+    initial_recovered_key = initial_application_key_path()
     def trust_flags(directory):
         return ["--config", f"{directory}/config", "--genesis-manifest-file", f"{directory}/genesis.bin", "--genesis-digest", generated["digest"]]
     def application_flags(directory):
@@ -3071,7 +3073,7 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
 
     def serve_command(count):
         return cli_argv("custody", "serve-mint-burn", *application_flags(custody_dir),
-            "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
+            "--key-file", initial_recovered_key, "--socket", socket_path,
             "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
 
 
@@ -3103,6 +3105,7 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     serve = None
     try:
         serve = start_serve(socket_path, 30, 6, 6, command=serve_command(6))
+        initial_live_key_path = initial_application_key_path(serve)
         sign_mint = cli_argv("custody", "sign-mint", *application_flags(operator_dir),
             "--request-file", f"{operator_dir}/own-mint-request.bin", *signer)
         rc, _out, err = run_exec([*sign_mint, "--out", f"{operator_dir}/own-offline-mint.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
@@ -3238,6 +3241,7 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
 
     restarted = start_serve(socket_path, 30, 2, 2, command=serve_command(2))
     try:
+        initial_restart_key_path = initial_application_key_path(restarted)
         rc, _out, refusal = run_exec([*sign_mint, "--out", f"{operator_dir}/own-revoked-mint-restart.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
         if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/own-revoked-mint-restart.bin"):
             raise FixtureFailure("revoked own-asset mint produced output after restart")
@@ -3415,6 +3419,7 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
             for process in (serve, restarted, reference_serve, recovered_serve, recovered_restarted)):
         raise FixtureFailure("strict application setup mint/burn children remain after actual wait")
     return {
+        "live_key_path": initial_live_key_path, "restart_key_path": initial_restart_key_path,
         "actual_cli": True, "own_mint_self": True, "after_own_mint_verified": True,
         "own_burn_verified": verify_own_burn.get("verified") is True,
         "offline_bytes_equal": True, "replay_equal": verify_own_burn.get("replay_equal") is True,
@@ -3827,7 +3832,49 @@ def phase_create_recovery(public_key, custody_dir, operator_dir, approvals, trus
     return result
 
 
+def initial_application_key_path(process=None):
+    original_key = f"{ROOT}/custody-keys/custody.seed"
+    recovered_key = f"{ROOT}/custody-keys/custody.seed.restored"
+    original_stat, recovered_stat = os.lstat(original_key), os.lstat(recovered_key)
+    if (not stat.S_ISREG(recovered_stat.st_mode) or recovered_stat.st_uid != CUSTODY_UID
+            or stat.S_IMODE(recovered_stat.st_mode) != 0o600 or recovered_stat.st_nlink != 1
+            or recovered_key == original_key
+            or (recovered_stat.st_dev, recovered_stat.st_ino) == (original_stat.st_dev, original_stat.st_ino)):
+        raise FixtureFailure("initial application consumer requires the distinct recovered same-identity key")
+    if process is None:
+        return recovered_key
+    selected_path = _custody_signer_runs.get(process, {}).get("key_file")
+    if selected_path != recovered_key:
+        raise FixtureFailure("initial application signer did not select the recovered key path")
+    return selected_path
+
+
+def phase_initial_application_recovery():
+    if _custody_signer_runs:
+        raise FixtureFailure("initial application recovery requires no prior custody signer")
+    original_key = f"{ROOT}/custody-keys/custody.seed"
+    files = [f"{ROOT}/custody-keys/custody.seed.backup", f"{ROOT}/custody-keys/custody.seed.restored"]
+    if any(os.path.lexists(path) for path in files):
+        raise FixtureFailure("initial application recovery requires absent backup/restored paths")
+    recovered_key = phase_recover_private_key(original_key)
+    if initial_application_key_path() != recovered_key:
+        raise FixtureFailure("initial application recovery returned a different restored path")
+    metadata = [os.lstat(path) for path in [original_key, *files]]
+    if (any(not stat.S_ISREG(meta.st_mode) or meta.st_uid != CUSTODY_UID
+            or stat.S_IMODE(meta.st_mode) != 0o600 or meta.st_nlink != 1 for meta in metadata)
+            or len({(meta.st_dev, meta.st_ino) for meta in metadata}) != 3):
+        raise FixtureFailure("initial application recovery files are not private distinct regular files")
+    generated_bytes = sum(meta.st_size for meta in metadata[1:])
+    if not 0 < generated_bytes <= 512:
+        raise FixtureFailure("initial application recovery exceeds the existing two-copy size bound")
+    return {"no_prior_signers": True, "recovered_files_distinct": True, "copy_children_waited": True,
+        "original_key_path": original_key, "recovered_key_path": recovered_key,
+        "generated_paths": files, "generated_files": 2, "generated_bytes": generated_bytes,
+        "private_copy_children": 2, "run_exec_children": 0, "pty_children": 0, "serve_children": 0}
+
+
 def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context=None):
+    initial_recovered_key = initial_application_key_path()
     custody_dir, operator_dir = f"{ROOT}/custody-create", f"{ROOT}/operator/create"
     for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
         os.mkdir(path, 0o700)
@@ -3862,7 +3909,7 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
 
     def serve_command(count):
         return cli_argv("custody", "serve-create", *trust_flags(custody_dir),
-            "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
+            "--key-file", initial_recovered_key, "--socket", socket_path,
             "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
 
 
@@ -3895,6 +3942,7 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
     native = None
     try:
         serve = start_serve(socket_path, 30, 3, 3, command=serve_command(3))
+        initial_live_key_path = initial_application_key_path(serve)
         sign_create = cli_argv("custody", "sign-create", *trust_flags(operator_dir),
             "--request-file", f"{operator_dir}/create-request.bin", *signer)
         rc, _out, err = run_exec([*sign_create, "--out", f"{operator_dir}/offline-create.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
@@ -4029,6 +4077,7 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
 
     restarted = start_serve(socket_path, 30, 1, 1, command=serve_command(1))
     try:
+        initial_restart_key_path = initial_application_key_path(restarted)
         rc, _out, refusal = run_exec([*sign_create, "--out", f"{operator_dir}/revoked-create-restart.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
         if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-create-restart.bin"):
             raise FixtureFailure("revoked create produced output after restart")
@@ -4052,6 +4101,7 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
             "asset":after_create["definition_hex"]})
 
     return {
+        "live_key_path": initial_live_key_path, "restart_key_path": initial_restart_key_path,
         "actual_cli": True, "create_self": True, "after_create_verified": True,
         "replay_equal": after_create.get("replay_equal") is True,
         "definition_hex": after_create.get("definition_hex"),
@@ -4517,6 +4567,7 @@ def application_transfer_recovery_main(split_merge=False):
     phase_setup()
     public_key = phase_keygen()
     phase_write_config(public_key)
+    initial_recovery = phase_initial_application_recovery()
     context = {}
     create, mint_burn, coins = phase_create_asset(public_key, strict_pty_accounting=True, recovery_context=context)
     custody_dir, operator_dir = f"{ROOT}/custody-create", f"{ROOT}/operator/create"
@@ -4545,6 +4596,7 @@ def application_transfer_recovery_main(split_merge=False):
         "generated_bytes_total":total_bytes,"key_isolation":{"custody_uid":CUSTODY_UID,"operator_uid":OPERATOR_UID,
             "intruder_uid":INTRUDER_UID,"read_refusals":3 if split_merge else 2,
             "approval_write_refusals":3 if split_merge else 2,"isolation_children_waited":6 if split_merge else 4},
+        "initial_application_recovery":initial_recovery,
         "create_asset":create,"created_asset_mint_burn":mint_burn,"created_asset_coin_operations":coins,
         ("application_split_merge_recovery" if split_merge else "application_transfer_recovery"):recovery},sort_keys=True))
 
@@ -5002,14 +5054,14 @@ function validateApplicationSetupResult(result) {
     }
   }
   // The reference serve signs the exact SAME newly approved frame with the
-  // ORIGINAL key file, before it is ever recovered, on its own distinct
-  // socket: exactly 1 connection/1 handled/1 signed/0 refused.
+  // ORIGINAL key file on its distinct socket, before this historical
+  // consumer's own recovery copies: exactly 1 connection/1 handled/1 signed/0 refused.
   if (JSON.stringify(result.created_asset_mint_burn.reference_summary) !==
       JSON.stringify(countKeys.map((name, index) => `${name}=${[1, 1, 1, 0][index]}`))) {
     throw new Error('the own-asset mint/burn reference serve counters are incomplete or differ');
   }
-  // The recovered-key profile's own serve only starts after the original
-  // key's serve, restarted-serve and reference serve above have all
+  // The historical recovered-key serve only starts after the initial live
+  // serve, restarted-serve and original-key reference serve above have all
   // already stopped (see `phase_own_asset_mint_burn`'s own socket-gone
   // checks), so its counters are independent of, and checked separately
   // from, those above: 1 positive sign (the new recovery-id request, whose
@@ -5057,6 +5109,24 @@ function validateApplicationSetupResult(result) {
     }
     if (group.live_key_path !== coinFlow.recovered_key_path || group.restart_key_path !== coinFlow.recovered_key_path) {
       throw new Error('each application Coin live signer and revoked restart must use the recovered application key path');
+    }
+  }
+  const initial = result.initial_application_recovery;
+  const initialOriginal = '/work/custody-keys/custody.seed';
+  const initialFiles = [`${initialOriginal}.backup`, `${initialOriginal}.restored`];
+  if (!initial || ['no_prior_signers', 'recovered_files_distinct', 'copy_children_waited']
+    .some((key) => initial[key] !== true) || initial.original_key_path !== initialOriginal ||
+    initial.recovered_key_path !== initialFiles[1] ||
+    JSON.stringify(initial.generated_paths) !== JSON.stringify(initialFiles) ||
+    initial.generated_files !== 2 || initial.private_copy_children !== 2 ||
+    initial.run_exec_children !== 0 || initial.pty_children !== 0 || initial.serve_children !== 0 ||
+    !Number.isSafeInteger(initial.generated_bytes) || initial.generated_bytes <= 0 || initial.generated_bytes > 512 ||
+    Buffer.byteLength(JSON.stringify(initial)) > 1024) {
+    throw new Error('the initial application recovery preparation evidence is incomplete');
+  }
+  for (const flow of [result.create_asset, result.created_asset_mint_burn]) {
+    if (flow.live_key_path !== initialFiles[1] || flow.restart_key_path !== initialFiles[1]) {
+      throw new Error('the initial create/mint/burn live signers and revoked restarts must use the early recovered key');
     }
   }
 }

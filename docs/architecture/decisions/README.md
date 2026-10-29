@@ -163,3 +163,4 @@ in [`TODO.md`](../../../TODO.md).
 - [DR-0279: orderly restart after historical-body acknowledgement loss](0279-orderly-restart-after-historical-ack-loss.md)
 - [DR-0280: live genesis mint/burn with the recovered same-identity key](0280-live-recovered-genesis-mint-burn.md)
 - [DR-0281: live application Coins with the recovered same-identity key](0281-live-recovered-application-coins.md)
+- [DR-0282: initial application operations with the recovered same-identity key](0282-initial-recovered-application-key.md)
