@@ -1124,8 +1124,9 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
 
 ### M2のfamily別対応と残件 (2026-10-29)
 
-現行source `34da6a55` / tree `10b53dc5` を、上の実績と各familyの既存契約へ対応付けた。
-同treeの完全required/全8 CIは `5ac947f3` の記録を参照する。
+main統合時のsource `34da6a55` / tree `10b53dc5` を、上の実績と各familyの既存契約へ対応付けた。
+このtreeの完全required/全8 CIは `5ac947f3` の記録を参照する。
+後続source `ef0cea4e` のapplication Coin復旧鍵consumerは、下表と2026-10-29の検証記録を参照する。
 以下の「完了」は各行に示す選択済み子条件の範囲であり、親M2の完了や最新sourceのRELEASE認定ではない。
 新しいoperation・identity・authorityやtrust条件を追加する表ではない。
 
@@ -1137,19 +1138,20 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
 | Genesis mint/burn / kind4 | E212/E213/E218/E219/E222の復旧同一A鍵によるlive mint/burn・restartと元runtime | 選択済み子条件は完了。古いE41/E141のlive未接続やgate待ちを現在の残件に戻さない |
 | Create-asset / kind5 | E49の実create/receipt/replay/取消、E141の停止後の同一frame署名復旧 | 復旧は歴史preimageのsigning-only。復旧鍵によるlive createは未対応。既存instance seed/fee/nonceを再送するだけでは達成しない |
 | Own-created application mint/burn | E62の実supply遷移、E67のhistorical burn復旧・取消/restart | 初回live mint/burn後に復旧鍵を作る順序。初回liveへの接続にはsetup順序の整理が必要で、単純なpath置換とは扱わない |
-| Application Coinの既存6 stages / kinds2/3/4 | E74/E75の有料操作・replay/取消/restart、E177/E180のhistorical kind2/3復旧、E182のRELEASE CLI profiles | 後続live groupsは元鍵を使う。同一鍵の復旧先はこのsequenceより前に存在し、既存live操作と取消後restartへの接続が次の具体的候補 |
+| Application Coinの既存6 stages / kinds2/3/4 | E74/E75の有料操作とhistorical復旧を保持。ef0の4完全profiles・local完全required・全8 CIで、既存復旧鍵による6 live操作と5 groupsの取消後restartを確認 | 選択済みconsumer接続は完了。初回create/初回application mint-burn、正のidentity rotationや全M2はこの範囲に含めない |
 | Positive fee-claim strict partial Split | E128の実protected候補送信、Leg/Claim別承認、永久取消、復旧/restart/expiry/rotation mismatch | 選択済みcomponentの範囲。live escrow/nonce/entitlementや新しいhistorical identityへの正のrotationはこの結果へ含めない |
 | ZeroShare / FinalTransfer fee claims | E23/E24のsaved review・開発用署名とFinalTransfer structural表示 | ZeroShare WIPは未統合・未検証・停止中。FinalTransferは既存positive Split serverの対象外で、具体的なprotected backend契約は未確定 |
 | Automatic original ordered proposal/vote | E91のworker/frontend分離とTLS/UID、E194/E198/E199の同一identity復旧とgate | 選択済みoriginal epochの同一host復旧。新identity/membership、後継epochやoff-host復旧は別条件 |
 | Automatic certified FastVote/availability ACK/original frontier vote | E129の21-route UID/TLS、E194の復旧path・vote/ACK一致とfresh paid business | 選択済み同一identity復旧。人のasset承認とは別のlive authority条件を保持し、正のidentity/membership rotationや本番復旧操作を含めない |
 
-次の通常実装候補は、[既存fixture](scripts/check-docker-custody-fixture-1013.mjs) の
-`phase_own_asset_mint_burn` が生成した `own-recovered.seed.restored` を、その後の
-`phase_own_asset_coin_operations` の既存6 stagesと取消後restartに接続すること。
-現在は後者の `serve_command` が元の `custody.seed` を選択する。
-同一identity・既存operation/approval/frame/receipt/nonce/counter・元profile別上限を保持し、
-historical signing-onlyの既存controlsも残す。この表では実装・実行せず、成功にも数えない。
-Create-assetと初回application mint/burnのlive復旧は、復旧鍵が存在する時点を先に整理する別候補とする。
+[ef0のfixture](https://github.com/sunriselayer/sunrise-edge/blob/ef0cea4e33e942f22aa40379e6d426579f846109/scripts/check-docker-custody-fixture-1013.mjs) で、
+`phase_own_asset_mint_burn` が生成する `own-recovered.seed.restored` を、後続の
+`phase_own_asset_coin_operations` の既存6 stagesと全5 groupsの取消後restartへ接続した。
+元47 setup predicates、historical signing-only controls、operation/approval/frame/receipt/
+nonce/counterと元profile別上限を保持し、追加2 flagsは別に照合した。
+[実検証記録](docs/development/validation/2026-10-29-recovered-application-coins/README.md) の
+4完全profiles・同sourceの完全required・全8 CIでこのconsumerを完了した。
+Create-assetと初回application mint/burnのlive復旧は、復旧鍵が存在する時点の整理が残る。
 
 [prepared signing owners](docs/architecture/signing-preparation.md) のtransaction/local/general/paid/bond等は、
 prepare/finalizeの共通化や開発用LocalSignerだけでprotected backendの受入済みfamilyにはならない。
@@ -2058,3 +2060,35 @@ main統合は実装の集約であり、親D02/M1/M2/M3/M7や公開準備6件の
 
 [統合・照合記録](docs/development/validation/2026-10-29-parent-stack-integration/README.md) に
 32 headsの祖先照合、元reviewのdisposition、PR状態と文書同期の範囲を記録する。
+
+
+## 2026-10-29 復旧application鍵による既存6段階Coin操作
+
+ユーザーの「すすめよ」により、既に具体化していた復旧鍵consumerを実装・検証した。
+Source `ef0cea4e33e942f22aa40379e6d426579f846109` / tree `38621a364d01e691c9496f2b6756d87de9827818` を
+commit/pushし、main向けの通常[PR #337](https://github.com/sunriselayer/sunrise-edge/pull/337) を作成した。
+既存の復旧済み同一application鍵をmint-one・split・merge・burn・mint-two・transferと
+5 live groups/5 revoked restartsへ接続し、実child argvとregular/UID/mode0600/path/inodeを照合する。
+元47 setup predicatesと独立stage/replay/counter、historical recovery、全上限を保持した。
+
+実4完全Docker profilesは成功。最初のcontroller metadata admission失敗は製品dispatch前に終了し、
+元rawを保持した。controllerのuser-bus環境だけを修正した実行で、67 commands/134 streamsの
+実exit0・両EOF/wait/reap・既知PID/cgroup解放をroot照合した。Cargo `fresh:true` はcache再利用として残す。
+
+同sourceのliteral npm ci+完全requiredは10:48:22-13:29:06 UTCに自然成功。
+Rust147 summariesは4,427/0/43、CF全66成功。invocation合計とignoredを区別した。
+全42 commands/84 streams、source1,243 inputs/runtime23/CF2,347 rolesとlayout2,725行、
+7epochs/e8の元1832-byte候補2件とterminal-unlock end rawを照合し、空の完了unitを停止した。
+
+[全8 CI run40860404544](https://github.com/sunriselayer/sunrise-edge/actions/runs/40860404544) は
+attempt1で15:43:07 UTCまでに全job自然success、Bugbotを含む全9 checksもsuccess。
+全8実checkout `f9cd48dd` はtree `38621a36`、ordered parents `[27650eea, ef0cea4e]` と一致した。
+rootが8 raw/1,238,733 bytes、687 checksum files、148 commandsと39 wrappersの実exit/EOF/wait、
+既知229 PIDs不在を照合した。取得からsealer終了まで10.319秒。8 noticesはrunner移行案内でwarning/failure0。
+Bugbotはadvertised0でannotation endpoint未取得を明記し、review/comments0を別rawで確認した。
+読取側のfilename globとURL query仮定の失敗を保存し、製品/CIのrerun/cancelは0。
+
+[検証記録](docs/development/validation/2026-10-29-recovered-application-coins/README.md) と
+上のfamily表へ反映し、今回のconsumerだけを完了する。PR #337は未merge。
+元85 checkbox /71完了 /14未完了と親D02/M1/M2/M3/M7を保持する。
+初回create/application mint-burn、各familyの残るlifecycle/全体対応と停止対象は引き続き残る。
