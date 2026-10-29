@@ -28,8 +28,9 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
   残るコード・検証の親項目はD02/M1/M2/M3/M7の5件です。
   M4はexact `5f6b1819` の選択済みNative+SQLite/trusted-local-OS範囲をE152で完了しました。
   元M5の実PKI・capacity・alerts・運用の公開条件はD04/D07/M8に残ります。
-  継続中の統合変更は[Draft PR #320](https://github.com/sunriselayer/sunrise-edge/pull/320)。
-  このDraftの存在を完全required/CI・Nativeまたは親項目の完了には数えません。
+  #301-#332のsource変更は[PR #332](https://github.com/sunriselayer/sunrise-edge/pull/332) の
+  通常merge `b191bbe6` でmainへ統合しました。完全required/CI・Nativeの受入は下の実source別記録に従い、
+  main統合だけで親5項目や公開条件を完了にはしません。
   positive Splitとcertified FastVoteの追加実装は、別の統合branch
   `codex/positive-certified-integration-1017` の `3b4aa7ff` に通常mergeしました。
   追加UID fixtureはE128/E129で選択範囲の実行・照合が完了しました。
@@ -116,8 +117,8 @@ mint/burn子項目はE213/E218/E219/E222の同source照合で完了していま�
 
 | 対象 | 現在確認できた事実 | 扱い |
 | --- | --- | --- |
-| main | `ffcf5767`。PR #299の正常merge。作業ツリーはclean | 既存の統合済みbaseline |
-| 復元修正 | `c69fa2f0` / `codex/fresh-slash-evidence-1011` はGitに残存。PR #301の対象 | mainへ統合済みとは扱わない |
+| mainのsource統合pin | PR #332の正常merge `b191bbe6` / tree `10b53dc5`。元baselineはPR #299の `ffcf5767` | #301-#332の全headと既存履歴を保持。後続の文書同期とは別のsource pin |
+| 復元修正 | `c69fa2f0` / `codex/fresh-slash-evidence-1011` はGitに残存。PR #301の対象 | #332の正常mergeを通じてmainへ統合済み。元の実検証範囲は保持 |
 | Blob強制停止テスト | `f093fb6c` / `codex/blob-crash-1013` はGitに残存 | c69の総合テストに含めない |
 | 署名試作 | `codex/publication-review-1013` のHEADはc69。試作は未コミットだった | 現在の回収可否は不明。実装済みとは扱わない |
 | 旧作業コピー・専用キャッシュ・raw検証資料 | 人がキャッシュを手動削除したと以前のチャットで確認。旧パスは不在 | 未コミット署名試作・ローカルrawは未回収。Git登録はファイル残存の証明ではない |
@@ -1121,6 +1122,43 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
     実鍵・実administrator/recovery役割とceremonyはD04/D06/D07へ残す。Ledgerは別途deferred。
 
+### M2のfamily別対応と残件 (2026-10-29)
+
+現行source `34da6a55` / tree `10b53dc5` を、上の実績と各familyの既存契約へ対応付けた。
+同treeの完全required/全8 CIは `5ac947f3` の記録を参照する。
+以下の「完了」は各行に示す選択済み子条件の範囲であり、親M2の完了や最新sourceのRELEASE認定ではない。
+新しいoperation・identity・authorityやtrust条件を追加する表ではない。
+
+| Family | 実装・実検証で確認済みの範囲 | 残件・境界 |
+| --- | --- | --- |
+| Publication / kind1 | E9/E21/E22の別UID承認・取消・同一鍵復旧・独立した新鍵/config/approvalの検証 | 選択済みlocal componentは完了。署名済み要求の取消、account移行や実ceremonyとは別 |
+| Genesis whole-Coin transfer / kind2 | E149のA→B→A ownership、E203-E205の復旧同一A鍵によるlive操作と取消後restart | 選択済み子条件は完了。wallet/account/fee全体の正の鍵交換とは別 |
+| Genesis split/merge / kind3 | E174のforeign split/返送、E206/E208/E209の復旧同一A鍵による既存self操作とrestart | 選択済み子条件は完了。foreign ownershipと同一鍵復旧を相互に代用しない |
+| Genesis mint/burn / kind4 | E212/E213/E218/E219/E222の復旧同一A鍵によるlive mint/burn・restartと元runtime | 選択済み子条件は完了。古いE41/E141のlive未接続やgate待ちを現在の残件に戻さない |
+| Create-asset / kind5 | E49の実create/receipt/replay/取消、E141の停止後の同一frame署名復旧 | 復旧は歴史preimageのsigning-only。復旧鍵によるlive createは未対応。既存instance seed/fee/nonceを再送するだけでは達成しない |
+| Own-created application mint/burn | E62の実supply遷移、E67のhistorical burn復旧・取消/restart | 初回live mint/burn後に復旧鍵を作る順序。初回liveへの接続にはsetup順序の整理が必要で、単純なpath置換とは扱わない |
+| Application Coinの既存6 stages / kinds2/3/4 | E74/E75の有料操作・replay/取消/restart、E177/E180のhistorical kind2/3復旧、E182のRELEASE CLI profiles | 後続live groupsは元鍵を使う。同一鍵の復旧先はこのsequenceより前に存在し、既存live操作と取消後restartへの接続が次の具体的候補 |
+| Positive fee-claim strict partial Split | E128の実protected候補送信、Leg/Claim別承認、永久取消、復旧/restart/expiry/rotation mismatch | 選択済みcomponentの範囲。live escrow/nonce/entitlementや新しいhistorical identityへの正のrotationはこの結果へ含めない |
+| ZeroShare / FinalTransfer fee claims | E23/E24のsaved review・開発用署名とFinalTransfer structural表示 | ZeroShare WIPは未統合・未検証・停止中。FinalTransferは既存positive Split serverの対象外で、具体的なprotected backend契約は未確定 |
+| Automatic original ordered proposal/vote | E91のworker/frontend分離とTLS/UID、E194/E198/E199の同一identity復旧とgate | 選択済みoriginal epochの同一host復旧。新identity/membership、後継epochやoff-host復旧は別条件 |
+| Automatic certified FastVote/availability ACK/original frontier vote | E129の21-route UID/TLS、E194の復旧path・vote/ACK一致とfresh paid business | 選択済み同一identity復旧。人のasset承認とは別のlive authority条件を保持し、正のidentity/membership rotationや本番復旧操作を含めない |
+
+次の通常実装候補は、[既存fixture](scripts/check-docker-custody-fixture-1013.mjs) の
+`phase_own_asset_mint_burn` が生成した `own-recovered.seed.restored` を、その後の
+`phase_own_asset_coin_operations` の既存6 stagesと取消後restartに接続すること。
+現在は後者の `serve_command` が元の `custody.seed` を選択する。
+同一identity・既存operation/approval/frame/receipt/nonce/counter・元profile別上限を保持し、
+historical signing-onlyの既存controlsも残す。この表では実装・実行せず、成功にも数えない。
+Create-assetと初回application mint/burnのlive復旧は、復旧鍵が存在する時点を先に整理する別候補とする。
+
+[prepared signing owners](docs/architecture/signing-preparation.md) のtransaction/local/general/paid/bond等は、
+prepare/finalizeの共通化や開発用LocalSignerだけでprotected backendの受入済みfamilyにはならない。
+全accepted familyの有限な一覧とprotected governance consumerの具体契約は、参照した既存M2資料では
+まだ確定できない。ProposedのDR-0214をAcceptedへ読み替えず、不明な全体対応を完了にしない。
+同一鍵復旧・鍵違い拒否・正のownership/identity rotationは別々に扱い、application creator/
+TreasuryCap・account/feeの移行をgenesis Coin handoffから推定しない。
+実役割/実鍵/ceremony/実topologyはD04/D06/D07、Ledgerは既存deferredのまま保持する。
+
 - [ ] **M3: selected SQLite profileのdurabilityを検証する**
   - 対象: 検証。atomic object/state/nonce/receipt/outbox、indexed delivery、
     full-read revision/ABA、reopen・fencing・ambiguity reconciliationと実際のfault boundaries。
@@ -1975,7 +2013,7 @@ GitHub連携のmerge APIは403で変更なし。通常のgh認証でmergeし、P
 実mergeは `34da6a5566c0702dfdd009497557dcca2fe1f404`、
 2026-10-29 08:52:12 UTC (16:52:12 SGT) 。公式Git metadataのtree `10b53dc5` と
 ordered parents `[55a787d8, 5ac947f3]` は、検証済みsource/CI treeと一致した。
-merge先は `codex/live-genesis-mint-burn-1022` で、[親PR #332](https://github.com/sunriselayer/sunrise-edge/pull/332) はopen/Draft。
+merge先は `codex/live-genesis-mint-burn-1022` で、当時の[親PR #332](https://github.com/sunriselayer/sunrise-edge/pull/332) はopen/Draft。
 親stackのmain統合は今回のmergeには含めない。
 raw receipt `maintenance-four-1029-merge336-receipt.json` / SHA256
 `2c613ca28bb5dee46d5f491473ff49f737b1a8a435f21bdda24b49337334e22e` を保存した。
@@ -1985,3 +2023,38 @@ raw receipt `maintenance-four-1029-merge336-receipt.json` / SHA256
 追加の通常実装不足はまだ特定していない。M2は既存のfamily/lifecycle範囲の具体的な未達対応を
 特定してから次の独立sliceを選ぶ。M3のE210では追加の通常assertion不足を特定しておらず、
 同じ検証の再実行だけを残件や完了根拠にしない。停止対象と親項目の元条件は維持する。
+
+## 2026-10-29 親PR群のmain統合とM2 family別残件
+
+ユーザーの「親PR群の統合整理」「マージする形」により、#301-#332の32 source PRを対象とした。
+main `ffcf5767`、全32 heads、完全required/全8 CIを確認済みの `5ac947f3` は、
+先端 `34da6a55` の祖先である。先端の全Git tree `10b53dc5` はその検証済みtreeと一致し、
+停止対象のcodeや新機能を追加せず、#332だけをmainへretargetしてReadyにした。
+
+2026-10-29 09:13:18 UTC (17:13:18 SGT) に#332をexpected-head guard付き通常mergeした。
+実commit `b191bbe6a12f36c2677a9383451bd8c6af830a0e` / tree `10b53dc5`、
+ordered parents `[ffcf5767, 34da6a55]` を公式metadataとlocal Gitで照合した。
+mainで全32元headsが祖先であり、squash/rebase/force pushや履歴の削除はない。
+古い独立候補#235/#298とDependabot更新はこのsource統合に含めない。
+
+対象32 PRはopenが0になり、全体のopen PRは45件から13件へ減った。
+#301-#319と#332はmain統合に伴うmerge状態を確認し、#321-#331は既にmainへ含まれる
+元headと同じtreeを元の親系列へ通常mergeして、PR記録も揃えた。#320は統合時にClosedとなり、
+元baseはrepository既定の自動削除で不在、reopenもAPIに拒否されたため、統合済みClosedとして保持する。
+最終状態は31 Merged /1 Closed。#320の元head `7658629a` もmainに含まれる。
+branchの自動削除設定は変更せず、明示的なbranch削除・sourceのsquash/rebase/force pushは行わない。
+
+未解決だった既存Bugbot2件はrootとread-only担当が現行contractへ対応付け、threadをresolveした。
+#320のworkerはlimit到達後にshutdownをawaitし、frontendもshutdownからdrainして戻る。
+lifecycle結果はshutdown完了前に送られるため、指摘されたclean-return pathとは一致しない。
+#321のfrontier/unionは元のTSVからresult-or-emptyであり、実handlerの204は途中進捗、
+200のfinal artifactは既存検証を通る。コード修正・新規runtime実行・独立security監査ではない。
+
+main統合は実装の集約であり、親D02/M1/M2/M3/M7や公開準備6件の完了にはしない。
+追加のcurrent-head/main CIは別runとして保持し、その実行中結果を成功とは記録しない。
+旧85 checkbox /71完了 /14未完了を保持したまま、M2直下にfamily別の既存実績・残件表を追加した。
+次の具体的な通常候補は、既存の復旧application鍵を後続6-stage live Coin操作と取消後restartへ
+接続すること。今回は残件の具体化までで、fixtureの変更や実行はしていない。
+
+[統合・照合記録](docs/development/validation/2026-10-29-parent-stack-integration/README.md) に
+32 headsの祖先照合、元reviewのdisposition、PR状態と文書同期の範囲を記録する。

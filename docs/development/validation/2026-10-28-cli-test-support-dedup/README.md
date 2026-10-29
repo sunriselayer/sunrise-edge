@@ -75,9 +75,13 @@ GitHub連携は403で変更なしのため、通常gh認証で実行した。PR�
 `10b53dc5c42b88086c56af24ef6403bcd846c827`、ordered parentsは
 `[55a787d8a5f8ace68ca8a04bb7dee014c66aa8fe, 5ac947f3856d3abbfb39abbdcf3e713d328cb7b4]`。
 treeは検証済みsource/CIと一致する。merge先は `codex/live-genesis-mint-burn-1022`。
-親PR #332はopen/Draftで、main統合とは区別する。raw receipt
+このmerge時点の親PR #332はopen/Draftで、main統合とは区別する。raw receipt
 `maintenance-four-1029-merge336-receipt.json` のSHA256は
 `2c613ca28bb5dee46d5f491473ff49f737b1a8a435f21bdda24b49337334e22e`。
+
+後続の2026-10-29 09:13:18 UTCに、親stack全体は#332 merge `b191bbe6` でmainへ統合した。
+そのtreeは同じ `10b53dc5`。PR整理とM2残件の対応は
+[親stack統合記録](../2026-10-29-parent-stack-integration/README.md) を参照する。
 
 ## 保存先
 
