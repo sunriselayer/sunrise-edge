@@ -527,6 +527,25 @@ fn snapshot_paths(f: &Fixture, name: &str) -> (PathBuf, PathBuf) {
 
 #[test]
 fn checkpoint_snapshot_restores_source_free_complete_rows_bodies_fence_and_receipt_replay() {
+    // Create this fixture after re-exec so concurrent parent tests cannot
+    // temporarily inherit its flock lease before their own exec.
+    const CHILD_ENV: &str = "SUNRISE_SQLITE_CHECKPOINT_SNAPSHOT_REEXEC_CHILD";
+    if std::env::var_os(CHILD_ENV).is_none() {
+        let directory: Directory = Directory::new();
+        let mut command: Command = child_command(
+            "structured::ownership_tests::anchor::checkpoint_snapshot_restores_source_free_complete_rows_bodies_fence_and_receipt_replay",
+            &directory.database(),
+        );
+        command.env(CHILD_ENV, "1");
+        let output: std::process::Output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let f: Fixture = Fixture::new();
     f.enroll();
     let store: SqliteDurableStore = f.open().unwrap();
