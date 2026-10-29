@@ -118,6 +118,9 @@ roadmap describes a later target state.
 - [Local TLS acknowledgement loss](decisions/0275-local-tls-durable-ack-loss.md):
   one real successful published-apply response per peer withheld before TLS
   application forwarding, receipt-first reconciliation and exact paid replay.
+- [Historical referenced-body preservation through TLS acknowledgement loss](decisions/0277-historical-blob-ack-loss.md):
+  a fixed canonical 70 KiB historical object remains in the exact referenced
+  closure before loss, after receipt reconciliation and after paid replay.
 - [Original ordered protocol custody](local-protocol-custody.md)
   ([DR-0264](decisions/0264-original-ordered-protocol-custody-worker.md)):
   distinct-UID authority-owning worker and ordered-only HTTP frontend; existing
@@ -135,6 +138,8 @@ roadmap describes a later target state.
   ([DR-0246](decisions/0246-genesis-standard-asset-transfer-custody.md)):
   independent object preimages and known-code whole-coin review, separate
   transfer-only signer and the ordinary paid CLI consumer.
+  [DR-0276](decisions/0276-live-recovered-genesis-transfer.md) uses the recovered
+  same-identity key for the existing live A-to-B-to-A handoff and restarts.
 - [Genesis Standard Asset split/merge custody](standard-asset-split-merge-custody.md)
   ([DR-0249](decisions/0249-genesis-standard-asset-split-merge-custody.md)):
   shares the transfer family's genesis/code/instance/policy pin, adds a
