@@ -121,6 +121,9 @@ roadmap describes a later target state.
 - [Historical referenced-body preservation through TLS acknowledgement loss](decisions/0277-historical-blob-ack-loss.md):
   a fixed canonical 70 KiB historical object remains in the exact referenced
   closure before loss, after receipt reconciliation and after paid replay.
+- [Orderly restart after historical-body acknowledgement loss](decisions/0279-orderly-restart-after-historical-ack-loss.md):
+  all four owners reopen the same stores before exact replay, preserving the
+  historical body and receipts with only the existing writer-fence change.
 - [Original ordered protocol custody](local-protocol-custody.md)
   ([DR-0264](decisions/0264-original-ordered-protocol-custody-worker.md)):
   distinct-UID authority-owning worker and ordered-only HTTP frontend; existing
@@ -145,6 +148,8 @@ roadmap describes a later target state.
   shares the transfer family's genesis/code/instance/policy pin, adds a
   separate kind-3 split/merge signer and overflow-checked review, and
   connects the ordinary paid `split`/`merge` CLI consumer.
+  [DR-0278](decisions/0278-live-recovered-genesis-split-merge.md) connects the
+  stopped, recovered same-identity key to those existing live operations.
 - [Genesis Standard Asset mint/burn custody](standard-asset-mint-burn-custody.md)
   ([DR-0253](decisions/0253-genesis-standard-asset-mint-burn-custody.md)):
   shares the transfer/split/merge families' genesis/code/instance/policy

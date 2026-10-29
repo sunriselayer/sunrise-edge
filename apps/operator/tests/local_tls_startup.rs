@@ -2748,10 +2748,19 @@ fn actual_local_tls_lost_apply_acknowledgements_preserve_historical_referenced_b
     exercise_local_tls_lost_apply_acknowledgements(AckLossBodyFixture::Historical);
 }
 
+/// DR-0279: restart all owners after durable ACK loss while preserving the
+/// historical referenced-body closure and exact receipt-first replay.
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_local_tls_lost_apply_acknowledgements_preserve_historical_body_after_orderly_restart() {
+    exercise_local_tls_lost_apply_acknowledgements(AckLossBodyFixture::HistoricalOrderlyRestart);
+}
+
 #[cfg(target_os = "linux")]
 enum AckLossBodyFixture {
     Empty,
     Historical,
+    HistoricalOrderlyRestart,
 }
 
 #[cfg(target_os = "linux")]
@@ -2760,14 +2769,14 @@ fn exercise_local_tls_lost_apply_acknowledgements(body_fixture: AckLossBodyFixtu
     let historical_body: Option<historical_referenced_body::HistoricalReferencedBody> =
         match body_fixture {
             AckLossBodyFixture::Empty => None,
-            AckLossBodyFixture::Historical => {
+            AckLossBodyFixture::Historical | AckLossBodyFixture::HistoricalOrderlyRestart => {
                 let body: historical_referenced_body::HistoricalReferencedBody =
                     historical_referenced_body::HistoricalReferencedBody::install(&network);
                 assert_no_parent_sqlite_handles(&network);
                 Some(body)
             }
         };
-    let hosts: Vec<Host> = start_hosts(&network, 2);
+    let mut hosts: Vec<Host> = start_hosts(&network, 2);
     let mut tls: Tls = start_tls(&hosts, &network.tls_dir);
     let config: PathBuf = write_config(
         &network.tls_dir.join("ack-loss-network.conf"),
@@ -2966,8 +2975,8 @@ fn exercise_local_tls_lost_apply_acknowledgements(body_fixture: AckLossBodyFixtu
 
     // Existing complete owners cover all 12 SQL + 2 blob tables and all four
     // portable collections, referenced bodies and the exact mutation sequence.
-    let before_rows: Vec<sqlite_durable_image::Image> = sqlite_durable_images(&network);
-    let before_replay: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    let mut before_rows: Vec<sqlite_durable_image::Image> = sqlite_durable_images(&network);
+    let mut before_replay: Vec<SourceBusinessSnapshot> = snapshots(&network);
     match &historical_body {
         None => {
             for captured in &before_replay {
@@ -2986,6 +2995,94 @@ fn exercise_local_tls_lost_apply_acknowledgements(body_fixture: AckLossBodyFixtu
                 "ack_loss_replay referenced_blob_closure=historical_nonempty positive_blob_fault=false paid_produced_blob_publication=false"
             );
         }
+    }
+    let restart_after_ack_loss: bool =
+        matches!(&body_fixture, AckLossBodyFixture::HistoricalOrderlyRestart);
+    if restart_after_ack_loss {
+        for (index, relay) in tls.relays.iter().enumerate() {
+            assert_eq!(
+                relay.lost_apply_acknowledgement().as_ref(),
+                Some(&lost[index]),
+                "relay {index}: verify the genuine withheld ACK capture before stop"
+            );
+        }
+        let before_restart: Vec<SourceBusinessSnapshot> = snapshots(&network);
+        let listeners: Vec<TcpListener> = std::mem::take(&mut tls.relays)
+            .into_iter()
+            .map(HttpsRelay::stop)
+            .collect();
+        for host in hosts.drain(..) {
+            host.guard.stop_orderly(PROCESS_DEADLINE);
+        }
+        hosts = start_hosts(&network, 3);
+        let reopened: Vec<SourceBusinessSnapshot> = snapshots(&network);
+        assert_reopened(&before_restart, &reopened, 2, 3);
+        sqlite_durable_image::assert_only_fence_changed(
+            &before_rows,
+            &sqlite_durable_images(&network),
+            2,
+            3,
+        );
+        let relay_count: usize = listeners.len();
+        tls.relays = listeners
+            .into_iter()
+            .zip(&hosts)
+            .zip(&tls.leaves)
+            .map(
+                |((listener, host), leaf): ((TcpListener, &Host), &FixtureLeaf)| {
+                    HttpsRelay::start(listener, host.address, leaf)
+                },
+            )
+            .collect();
+        assert_eq!(relay_count, VALIDATORS);
+        for relay in &tls.relays {
+            assert_eq!(relay.counters.posts.load(Ordering::SeqCst), 0);
+            assert_eq!(relay.counters.requests.load(Ordering::SeqCst), 0);
+            assert!(!relay.apply_ack_loss_is_armed());
+        }
+        assert_eq!(tls_lines(&network, &tls), original_lines);
+        assert_eq!(served_leaves(&tls), initial_leaves);
+        assert_eq!(contexts(&tls), initial_contexts);
+        for (path, bytes) in &original_inputs {
+            assert_eq!(
+                fs::read(path).unwrap().as_slice(),
+                bytes.as_slice(),
+                "{}",
+                path.display()
+            );
+        }
+        for (path, bytes) in [
+            (&first.intent, &saved.intent),
+            (&first.certificate, &saved.certificate),
+            (&first.availability, &saved.availability),
+        ] {
+            assert_eq!(fs::read(path).unwrap(), *bytes);
+        }
+        for (index, relay) in tls.relays.iter().enumerate() {
+            let receipt: HttpReceiptQueryResult =
+                relay_client(relay).query_receipt(request).unwrap();
+            assert_eq!(receipt.encode().unwrap(), receipt_bytes[index]);
+            assert_eq!(
+                observe(std::slice::from_ref(relay), &ids, request, sender),
+                committed_view,
+                "reopened peer {index}: durable business state and receipt"
+            );
+        }
+        verify_committed_state(
+            &network,
+            &committed,
+            &saved,
+            &observe(&tls.relays, &ids, request, sender),
+        );
+        if let Some(body) = &historical_body {
+            body.verify(&network, &tls.relays);
+            for captured in &reopened {
+                body.assert_snapshot(&network, captured);
+            }
+        }
+        before_rows = sqlite_durable_images(&network);
+        before_replay = reopened;
+        eprintln!("ack_loss_replay orderly_restart=true writer_generation=2->3");
     }
     let posts: Vec<usize> = forwarded_posts(&tls.relays);
     let replay: Outputs = Outputs::new(&network.artifacts_dir, "lost-ack-replay");
@@ -3022,10 +3119,14 @@ fn exercise_local_tls_lost_apply_acknowledgements(body_fixture: AckLossBodyFixtu
         body.verify(&network, &tls.relays);
     }
     for (index, relay) in tls.relays.iter().enumerate() {
-        assert_eq!(
-            relay.lost_apply_acknowledgement().as_ref(),
-            Some(&lost[index])
-        );
+        if restart_after_ack_loss {
+            assert!(!relay.apply_ack_loss_is_armed());
+        } else {
+            assert_eq!(
+                relay.lost_apply_acknowledgement().as_ref(),
+                Some(&lost[index])
+            );
+        }
     }
     for (path, bytes) in [
         (&first.intent, &saved.intent),

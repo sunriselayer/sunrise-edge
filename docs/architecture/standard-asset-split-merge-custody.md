@@ -106,7 +106,12 @@ family (DR-0255); `transfer` is unaffected and stays on kind 2.
 
 `custody revoke`, recovery and rotation reuse the existing durable store and
 lifecycle exactly as DR-0246 describes; nothing about expiry, revocation or
-key recovery changes for this family. The separately owned Docker fixture extends the original publication, six
+key recovery changes for this family. Under [DR-0278](decisions/0278-live-recovered-genesis-split-merge.md), the existing
+genesis self-split/merge fixture loads the already stopped and restored same-A
+genesis key for its live operations and revoked restart; its historical
+signing-only recovery checks still run afterward as a separate control. This
+does not add an identity, authority, approval, operation, selector, or signing
+family. The separately owned Docker fixture extends the original publication, six
 lifecycle and transfer controls with an actual CLI split-to-self then merge
 round trip in fresh stores. It uses the same fixed container image, resource,
 output and time bounds and no-network policy. It checks the exact offline/CLI

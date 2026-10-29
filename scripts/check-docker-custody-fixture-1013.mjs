@@ -237,6 +237,224 @@ const binds = [
 // the live approval, then revocation leaves both the same server and a
 // fresh restart refusing further signatures.
 
+// Explanatory Python comments moved out of the bootstrap payload to preserve
+// its fixed argv budget. The probe source and executable statements are unchanged.
+//# DR-0258: the application-pinned mint/burn request IDs for the asset this
+//# same fixture run just created, distinct from MINT_REQUEST_ID/BURN_REQUEST_ID
+//# (93/94) below, which only ever target the pinned genesis TreasuryCap.
+//# Half of apps/devnet's DEVNET_PAID_SPEND_COIN_BALANCE (10_000_000); the
+//# split amount must stay strictly between zero and the held balance.
+//# The whole minted Coin is burned in full (burn has no amount argument), so
+//# this amount is never partial and never leaves a mint-only residue.
+//# DR-0258: minted then fully burned against the asset this fixture run just
+//# created, independent of MINT_AMOUNT above (the pinned genesis TreasuryCap).
+//# Only the existing finite signer launches enter this ledger. Completion is
+//# recorded by their owning communicate calls, never inferred from a receipt.
+//        # Failed-output accounting must retain its refusal and expose only
+//        # bounded public diagnostics, never arbitrary argv/environment data.
+//        # Narrowly scoped: used only as the transient coordination point for
+//        # the impostor-peer-UID listener both the intruder (bind) and the
+//        # operator (connect) must reach; nothing sensitive is ever stored
+//        # here, and the socket is unlinked immediately after that one check.
+//    # Metadata only: the seed's own bytes are never read, printed, or compared.
+//    # One charge owner for every completed approval PTY; callers keep the length only.
+//    # Root reads only non-secret evidence here (an approval record, never a
+//    # key): bounded, and only ever used for byte-for-byte comparison.
+//    # No PTY here at all (unlike phase_approve_via_pty): this both keeps the
+//    # negative case simple and proves the revoked refusal is reported before
+//    # any terminal is ever required, since a terminal-requirement refusal
+//    # would otherwise mask it.
+//    # Fixed disposable paths only. Key bytes never leave the custody UID.
+//            # Same group as the operator (custody's own group), so this
+//            # proves the server checks the exact peer UID, not merely group
+//            # membership on the socket's directory/file.
+//    # A throwaway, genuinely different disposable identity/config (DR-0244
+//    # rotation steps 2-3): same chain_id/protocol_version/epoch/hash_suite/
+//    # domain/operator_uid pin every whole-coin-test family phase already
+//    # writes for itself, only the publisher key differs, so a rotation
+//    # refusal lands on the intended owner-mismatch check instead of an
+//    # unrelated context/genesis mismatch. 'name' keeps multiple rotation
+//    # configs inside one shared custody_dir (phase_create_asset and
+//    # phase_own_asset_mint_burn) from colliding on the same path.
+//    # Cheap and purely local: 'prepare-*' only decodes/validates, it never
+//    # touches a running serve, the native backend, or chain state, so this
+//    # never needs a fresh ledger execution or a new owned object. out_path
+//    # must be a distinct, not-yet-occupied path (each call site uses its
+//    # own), so a leftover file from an unrelated earlier step can never be
+//    # mistaken for evidence that this one refusal still wrote nothing.
+//    # The original transfer signer and its revoked restart have already
+//    # exited. This is signing-only: the retained preimages are not submitted
+//    # again, and the original business nonce/receipt assertions do not change.
+//        # Public canonical preimages only; seed contents stay inside UID copy children.
+//    # No signer using the original key remains alive before the private copy.
+//    # Independent genuine TWO-OWNER genesis/store; reuse A's already recovered
+//    # same-identity path and existing B. No seed read/copy/keygen or migration.
+//            # All A signers/restarts below are actually waited and absent
+//            # before this loop ever prepares, approves or serves as B.
+//            # Saved CLI outputs inherit this phase's private-file creation policy.
+//        # Failure-only same-UID signal children use existing SETUID/SETGID,
+//        # never CAP_KILL. An unreaped Popen retains its numeric PID ownership.
+//    # SQLite pins readable ancestor directory descriptors. The original
+//    # publication phase used an execute-only volume root. Only this new
+//    # SQLite phase exposes the fixed top-level names; every key, approval,
+//    # operator and database directory stays private and no write permission
+//    # is granted. Re-run the actual operator key/approval refusals here.
+//        # Rotation refusal (DR-0244 step 4/5, cheap and local): the exact
+//        # already-exported owned coin preimage still fails prepare-transfer
+//        # under a genuinely different, freshly generated publisher/config.
+//    # Both requests are signing-only over retained ORIGINAL preimages. The
+//    # merge inputs came from original91/a1's actual split, never fresh9b/a7.
+//        # Only bounded NONSECRET canonical preimages/requests/signatures.
+//    # Every original/reference signer was waited before these two private
+//    # custody-UID copies. Never copy the approval/revocation store or key bytes to root.
+//    # Fresh phase directories only: this reuses the exact same one-owner,
+//    # one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
+//    # already builds (via its own unmodified "generate"/"serve" modes),
+//    # booted into a brand-new store here. It never touches phase_transfer's
+//    # own custody-transfer/operator/transfer directories, genesis, coins or
+//    # assertions.
+//    # ---- split: prepare / approve / offline sign / actual CLI split ----
+//        # ---- after-split: independent verification plus fresh merge preimages ----
+//        # ---- merge: prepare / approve / offline sign / actual CLI merge ----
+//        # ---- verify-merge: independent verification plus both-request replay ----
+//        # ---- revocation: both requests refused, same process, no output ----
+//        # Rotation refusal (DR-0244 step 4/5, cheap and local): the exact
+//        # already-exported owned coin preimage still fails prepare-split
+//        # under a genuinely different, freshly generated publisher/config.
+//    # Original business roles and original revoked restart must be fully stopped.
+//    # Both requests are signing-only over retained ORIGINAL preimages. Burn
+//    # inputs came from original93's actual mint, never fresh9e output. The
+//    # original ledger already burned that Coin; no new request is submitted.
+//        # Only bounded NONSECRET canonical preimages/requests/signatures.
+//    # Every original/reference signer was waited before these two private
+//    # custody-UID copies. Never copy the approval/revocation store or key bytes to root.
+//    # Fresh phase directories only: this reuses the exact same one-owner,
+//    # one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
+//    # already builds (via its own unmodified "generate"/"serve" modes),
+//    # booted into a brand-new store here. It never touches phase_transfer's
+//    # or phase_split_merge's own directories, genesis, coins or assertions.
+//    # The TreasuryCap preimage those modes never export is independently
+//    # rebuilt by 'asset_mint_burn_fixture::distinct_uid_mint_burn_probe's own
+//    # "generate-cap" mode instead.
+//    # ---- mint: prepare / approve / offline sign / actual CLI mint ----
+//        # ---- after-mint: independent verification plus fresh burn preimages ----
+//        # ---- burn: prepare / approve / offline sign / actual CLI burn ----
+//        # ---- verify-burn: independent verification plus both-request replay ----
+//        # ---- revocation: both requests refused, same process, no output ----
+//        # Rotation refusal (DR-0244 step 4/5, cheap and local): the exact
+//        # already-exported owned cap preimage still fails prepare-mint
+//        # under a genuinely different, freshly generated publisher/config.
+//    # Keep the original mint/burn execution, replay and signer counters.
+//    # No original native host or signer may remain before this new control.
+//    # CAP_KILL is deliberately absent. Signal only our Popen child, as its UID,
+//    # using the already permitted SETUID/SETGID boundary and one shared 5s cap.
+//    # Public CLI output becomes the operator's own independently local pin.
+//    # Its owner sets the required private mode; the supervisor needs no FOWNER.
+//    # ---- own-mint: prepare / approve / offline sign / actual CLI mint ----
+//        # Distinct source names from after-create's own own-cap.bin/own-fee.bin
+//        # (copied into custody_dir earlier, for the mint leg): after-own-mint
+//        # exports the post-mint burn-input preimages under own-burn-cap.bin/
+//        # own-burn-fee.bin precisely to avoid colliding with those, since
+//        # write_review_preimage never overwrites an existing path.
+//        # ---- own-burn: prepare / approve / offline sign / actual CLI burn ----
+//        # ---- revocation: both requests refused, same process, no output ----
+//        # Rotation refusal (DR-0244 step 4/5, cheap and local): the
+//        # application-pinned own-created profile's own InstanceRecord
+//        # creator check fires on this family specifically, strictly before
+//        # the cap/fee ownership checks every other family relies on.
+//    # ---- recovered-key control (DR-0244 recovery), only now that the
+//    # original key's own serve and restarted-serve have both fully stopped
+//    # (reaped) and their shared socket path is confirmed gone.
+//    #
+//    # A genuinely new, never-before-approved request over the SAME
+//    # already-captured own-burn inputs/expiry (same cap/coin/fee preimages,
+//    # same 3600s window), rather than ever reapproving or resigning a
+//    # revoked ID. request_id is itself part of the signed CallIntent
+//    # (asset_mint_burn.rs's "request_id: *request.request_id.as_bytes()"),
+//    # so this fresh ID's own signature is NOT the same bytes as
+//    # OWN_BURN_REQUEST_ID's original signature, and no step below ever
+//    # compares against that original signature; see this fixture's own
+//    # docs note on that point.
+//    # ---- reference signature: the ORIGINAL key file, still not copied
+//    # anywhere, signs this exact SAME newly approved frame once, through its
+//    # own dedicated bounded serve-mint-burn on a distinct socket. This is
+//    # the expected signature the recovered key must reproduce below, over
+//    # the identical unchanged request, never a different request ID.
+//    # Only now, with the reference serve (and every earlier serve using the
+//    # original key file) fully stopped and reaped, recover the SAME
+//    # disposable seed into a new owner-private path.
+//        # 1) the new, still-unrevoked recovery approval signs under the
+//        # recovered key: this is offline signing only, never executed on
+//        # the native ledger, so the original supply/nonce/receipts above
+//        # stay exactly as already asserted. The recovered key must
+//        # reproduce, byte for byte, the reference signature the ORIGINAL
+//        # key already produced over this identical unchanged frame above,
+//        # before it was ever copied anywhere; this never compares across
+//        # two different request IDs.
+//        # 2) a revocation that predates the recovery (OWN_BURN_REQUEST_ID,
+//        # revoked above while the original key's serve was still the only
+//        # live signer) still refuses under the recovered key.
+//        # 3) revoking the new recovery ID itself, then showing the SAME
+//        # recovered-key instance also enforces that new revocation.
+//    # The recovered-key profile also retains BOTH the pre-existing and the
+//    # newly issued revocation across its own independent restart.
+//    # Separate follow-on only after the entire original E67 sequence returned.
+//    # No original files, IDs, counters or stopped key-recovery ordering change.
+//    # Start cap3/supply0/nonce3; finish cap6/supply5M/nonce9. Self-transfer
+//    # remains refused: the last whole Coin goes to the existing distinct
+//    # disposable recipient already used by the original transfer fixture.
+//    # Each group stays within the original largest 6-request/30-second
+//    # application-family invocation. No server lifetime or host bound grows.
+//    # Signing-only over the original seed/fee/nonce, after the actual create
+//    # and all its follow-ons stopped. The target already exists: this does
+//    # not submit another Instantiate or claim live nonce/fee/seed freshness.
+//        # Bounded NONSECRET request/preimage/signature reads only; private
+//        # seed bytes remain inside the existing custody-UID copy children.
+//    # The original create, its follow-ons/restart and this reference have
+//    # all been waited. Restore only the key, retaining approval/tombstones.
+//    # ---- create: prepare / approve (real PTY, full typed confirmation) / ----
+//    # offline sign / actual CLI create-asset, with --fee-source and the real
+//    # canonical fee preimage, never a Coin/TreasuryCap input.
+//    # phase_approve_via_pty captures whatever exact "Type exactly to
+//    # approve:\n<confirmation>" line approve-create actually prints (its
+//    # own full "APPROVE-CREATE sender=... seed=... new_instance_*
+//    # fee_balance=... max_fee=... nonce=... request_id=... not_after=..."
+//    # shape, distinct from every other family's confirmation text) and
+//    # echoes it back verbatim; it never hardcodes the text itself.
+//        # The real standard_asset create-asset CLI, custody-mediated: the
+//        # required --fee-source plus --instance-seed/--instance-ref-out it
+//        # already had, now driven through --custody-socket/--custody-uid/
+//        # --custody-expected-public-key like every other protected family.
+//        # ---- after-create: independent verification plus exact replay ----
+//        # ---- revocation: refused on the same server, no signed output ----
+//        # Rotation refusal (DR-0244 step 4/5, cheap and local): create-asset
+//        # carries no pre-existing owned Coin/TreasuryCap input, only a fee
+//        # source, so its own rotation-bound check is the fee owner binding:
+//        # the exact already-exported fee preimage still fails prepare-create
+//        # under a genuinely different, freshly generated publisher/config.
+//        # DR-0258: before this phase's own native backend is ever stopped,
+//        # independently exercise an application-pinned mint-then-burn round
+//        # trip against the asset it just created, through a separate
+//        # kind-4 serve-mint-burn process.
+//        # The complete original own-asset/E67 lifecycle is finished before
+//        # this independent follow-on uses new request IDs and output paths.
+//    # ---- restart: the same revoked request id stays refused ----
+//    # The original kind-5 and all its actual business follow-ons retain
+//    # their original counters. Finish them before the separate recovery.
+//    # Independent genuine TWO-OWNER genesis/store; B already exists, no seed
+//    # read/copy/keygen and no migration of A's fee balance or app creator.
+//            # All A signers/restarts below are actually waited and absent
+//            # before this loop ever prepares, approves or serves as B.
+//            # Saved CLI outputs inherit this phase's private-file creation policy.
+//        # Failure-only same-UID signal children use existing SETUID/SETGID,
+//        # never CAP_KILL. An unreaped Popen retains its numeric PID ownership.
+//    # ---- Custody revocation lifecycle ----
+//    # ---- Custody-owned private recovery of the same disposable seed ----
+//    # ---- A second, independently keyed custody identity ----
+//    # This independent invocation starts with fresh accounting and a fresh
+//    # container allocation. Never reset or discard accounting within a run.
+//    # The common real-UID probes actually wait for both permission checks:
+//    # neither seed can be opened and neither retained approval can be edited.
 const probe = String.raw`
 import errno, json, os, pty, select, socket, stat, subprocess, sys, time
 
@@ -266,28 +484,28 @@ MERGE_REQUEST_ID = "92" * 32
 MINT_REQUEST_ID = "93" * 32
 BURN_REQUEST_ID = "94" * 32
 CREATE_REQUEST_ID = "95" * 32
-# DR-0258: the application-pinned mint/burn request IDs for the asset this
-# same fixture run just created, distinct from MINT_REQUEST_ID/BURN_REQUEST_ID
-# (93/94) below, which only ever target the pinned genesis TreasuryCap.
+
+
+
 OWN_MINT_REQUEST_ID = "96" * 32
 OWN_BURN_REQUEST_ID = "97" * 32
 CREATE_INSTANCE_SEED_HEX = "5f" * 32
-# Half of apps/devnet's DEVNET_PAID_SPEND_COIN_BALANCE (10_000_000); the
-# split amount must stay strictly between zero and the held balance.
+
+
 SPLIT_AMOUNT = 5_000_000
 RECOMBINED_AMOUNT = 10_000_000
-# The whole minted Coin is burned in full (burn has no amount argument), so
-# this amount is never partial and never leaves a mint-only residue.
+
+
 MINT_AMOUNT = 5_000_000
-# DR-0258: minted then fully burned against the asset this fixture run just
-# created, independent of MINT_AMOUNT above (the pinned genesis TreasuryCap).
+
+
 OWN_ASSET_MINT_AMOUNT = 5_000_000
 
 INTERNAL_DEADLINE = time.monotonic() + 230.0
 OUTPUT_CAP = 262_144
 _output_used = 0
-# Only the existing finite signer launches enter this ledger. Completion is
-# recorded by their owning communicate calls, never inferred from a receipt.
+
+
 _custody_signer_runs = {}
 
 
@@ -343,8 +561,8 @@ def run_exec(argv, uid, gid, groups, env=None, timeout=20, input_bytes=None):
     try:
         charge_output(len(out) + len(err))
     except FixtureFailure as error:
-        # Failed-output accounting must retain its refusal and expose only
-        # bounded public diagnostics, never arbitrary argv/environment data.
+
+
         diagnostic = {"error":"captured output allocation exceeded", "command":"other",
             "before":output_before, "stdout_bytes":len(out), "stderr_bytes":len(err),
             "after":_output_used, "cap":OUTPUT_CAP, "returncode":proc.returncode}
@@ -446,10 +664,10 @@ def phase_setup():
         (f"{ROOT}/run", 0o750, CUSTODY_UID, CUSTODY_GID),
         (f"{ROOT}/operator", 0o700, OPERATOR_UID, OPERATOR_GID),
         (f"{ROOT}/intruder", 0o700, INTRUDER_UID, INTRUDER_GID),
-        # Narrowly scoped: used only as the transient coordination point for
-        # the impostor-peer-UID listener both the intruder (bind) and the
-        # operator (connect) must reach; nothing sensitive is ever stored
-        # here, and the socket is unlinked immediately after that one check.
+
+
+
+
         (f"{ROOT}/shared", 0o777, 0, 0),
     ]
     for path, mode, uid, gid in entries:
@@ -482,7 +700,7 @@ def phase_keygen(key_path=f"{ROOT}/custody-keys/custody.seed"):
             public_key = line.split("=", 1)[1].strip()
     if not public_key or len(public_key) != 64:
         raise FixtureFailure("custody keygen did not print a 64-hex public_key")
-    # Metadata only: the seed's own bytes are never read, printed, or compared.
+
     key_stat = os.stat(key_path)
     if stat.S_IMODE(key_stat.st_mode) != 0o600 or key_stat.st_uid != CUSTODY_UID:
         raise FixtureFailure("custody key file metadata is not exactly owner=custody, mode 0600")
@@ -603,7 +821,7 @@ def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, exp
         except OSError:
             pass
     _pid, status = os.waitpid(pid, 0)
-    # One charge owner for every completed approval PTY; callers keep the length only.
+
     charge_output(len(captured))
     if expectation_error is not None:
         raise FixtureFailure(expectation_error)
@@ -696,8 +914,8 @@ def phase_revoke(approvals_dir, request_id_hex):
 
 
 def read_file_bytes_as_root(path, max_bytes=65536):
-    # Root reads only non-secret evidence here (an approval record, never a
-    # key): bounded, and only ever used for byte-for-byte comparison.
+
+
     with open(path, "rb") as source:
         data = source.read(max_bytes + 1)
     if len(data) > max_bytes:
@@ -732,10 +950,10 @@ def phase_reject_reapproval_of_revoked(config_path, artifact_path, nonce, reques
         "--request-id", request_id_hex,
         "--expires-in-seconds", "3600",
     )
-    # No PTY here at all (unlike phase_approve_via_pty): this both keeps the
-    # negative case simple and proves the revoked refusal is reported before
-    # any terminal is ever required, since a terminal-requirement refusal
-    # would otherwise mask it.
+
+
+
+
     rc, _out, err = run_exec(argv, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], timeout=10)
     if rc == 0:
         raise FixtureFailure("reapproving a revoked request id unexpectedly succeeded")
@@ -744,7 +962,7 @@ def phase_reject_reapproval_of_revoked(config_path, artifact_path, nonce, reques
 
 
 def custody_private_copy(source_path, dest_path, max_bytes=256, replace=False):
-    # Fixed disposable paths only. Key bytes never leave the custody UID.
+
     pid = os.fork()
     if pid == 0:
         try:
@@ -924,9 +1142,9 @@ def phase_intruder_wrong_peer_uid(socket_path):
     pid = os.fork()
     if pid == 0:
         try:
-            # Same group as the operator (custody's own group), so this
-            # proves the server checks the exact peer UID, not merely group
-            # membership on the socket's directory/file.
+
+
+
             os.setgroups([INTRUDER_GID, CUSTODY_GID])
             os.setgid(INTRUDER_GID)
             os.setuid(INTRUDER_UID)
@@ -1131,14 +1349,14 @@ def phase_new_identity(socket_path, old_public_key):
 
 
 def family_rotation_config(custody_dir, name="rotation"):
-    # A throwaway, genuinely different disposable identity/config (DR-0244
-    # rotation steps 2-3): same chain_id/protocol_version/epoch/hash_suite/
-    # domain/operator_uid pin every whole-coin-test family phase already
-    # writes for itself, only the publisher key differs, so a rotation
-    # refusal lands on the intended owner-mismatch check instead of an
-    # unrelated context/genesis mismatch. 'name' keeps multiple rotation
-    # configs inside one shared custody_dir (phase_create_asset and
-    # phase_own_asset_mint_burn) from colliding on the same path.
+
+
+
+
+
+
+
+
     new_public_key = phase_keygen(f"{custody_dir}/{name}.seed")
     config_path = f"{custody_dir}/{name}.config"
     text = (
@@ -1155,12 +1373,12 @@ def family_rotation_config(custody_dir, name="rotation"):
 
 
 def expect_prepare_rotation_refusal(label, command, expected_substring, out_path):
-    # Cheap and purely local: 'prepare-*' only decodes/validates, it never
-    # touches a running serve, the native backend, or chain state, so this
-    # never needs a fresh ledger execution or a new owned object. out_path
-    # must be a distinct, not-yet-occupied path (each call site uses its
-    # own), so a leftover file from an unrelated earlier step can never be
-    # mistaken for evidence that this one refusal still wrote nothing.
+
+
+
+
+
+
     if os.path.lexists(out_path):
         raise FixtureFailure(f"{label}: its own --out path is already occupied before the refusal is even attempted")
     rc, _out, err = run_exec(command, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], timeout=10)
@@ -1209,9 +1427,9 @@ def application_recovery_review(out, kind, public_key, directory, trust_flags, a
 
 
 def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags, recipient, previous_request_id, application_asset=None):
-    # The original transfer signer and its revoked restart have already
-    # exited. This is signing-only: the retained preimages are not submitted
-    # again, and the original business nonce/receipt assertions do not change.
+
+
+
     output_before = _output_used
     run_calls = 0
     def invoke(*args, **kwargs):
@@ -1230,7 +1448,7 @@ def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, tr
     fee_path = f"{custody_dir}/app-coins-inputs-8/app-coins-fee-8.bin" if app else f"{custody_dir}/fee.bin"
     old_request = f"{operator_dir}/app-coins-transfer-request.bin" if app else f"{operator_dir}/request.bin"
     def evidence(path, uid):
-        # Public canonical preimages only; seed contents stay inside UID copy children.
+
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
             before = os.fstat(fd)
@@ -1306,7 +1524,7 @@ def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, tr
     if app and (reference.returncode != 0 or os.path.exists(f"/proc/{reference.pid}")):
         raise FixtureFailure("application reference signer remains before private copy")
     request_before = [evidence(path,uid) for path,uid in ((request_path,CUSTODY_UID),(operator_request,OPERATOR_UID))] if app else []
-    # No signer using the original key remains alive before the private copy.
+
     backup_path = f"{custody_dir}/app-transfer-recovered.seed.backup" if app else f"{custody_dir}/recovered.seed.backup"
     restored_path = f"{custody_dir}/app-transfer-recovered.seed.restored" if app else f"{custody_dir}/recovered.seed.restored"
     key_file = phase_recover_private_key(f"{ROOT}/custody-keys/custody.seed", backup_path, restored_path)
@@ -1395,8 +1613,8 @@ def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, tr
 
 
 def phase_genesis_coin_identity_handoff(public_key, restored_key_path):
-    # Independent genuine TWO-OWNER genesis/store; reuse A's already recovered
-    # same-identity path and existing B. No seed read/copy/keygen or migration.
+
+
     require_custody_signers_stopped()
     original_key_path = f"{ROOT}/custody-keys/custody.seed"
     if restored_key_path != f"{ROOT}/custody-keys/custody.seed.restored" or restored_key_path == original_key_path:
@@ -1505,8 +1723,8 @@ def phase_genesis_coin_identity_handoff(public_key, restored_key_path):
                 if not line or len(startup) > 16384: raise FixtureFailure("handoff host startup incomplete/oversize")
                 if line.startswith(b'{"address":'): address = json.loads(line)["address"]
         for index, tag in enumerate(("a", "b")):
-            # All A signers/restarts below are actually waited and absent
-            # before this loop ever prepares, approves or serves as B.
+
+
             if index == 1:
                 if any(proc.returncode is None or os.path.exists(f"/proc/{proc.pid}") for proc, _u, _g in processes[1:]):
                     raise FixtureFailure("old A authority is still live at B handoff")
@@ -1544,7 +1762,7 @@ def phase_genesis_coin_identity_handoff(public_key, restored_key_path):
                 "--coin", generated["coin"], "--fee-source", generated[f"fee_{tag}"], "--recipient", owners[1-index],
                 "--nonce", "0", "--request-id", ids[index], "--max-fee", "1000000", "--gas-limit", "200000",
                 "--submission-out", f"{operator_dir}/{tag}-submission.bin", "--result-out", f"{operator_dir}/{tag}-result.bin")
-            # Saved CLI outputs inherit this phase's private-file creation policy.
+
             handoff_umask = os.umask(0o077)
             try:
                 passed(actual, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID], marker=b"paid_status=Success")
@@ -1588,8 +1806,8 @@ def phase_genesis_coin_identity_handoff(public_key, restored_key_path):
         if native.returncode != 0 or b"1 passed; 0 failed; 0 ignored" not in out or os.path.exists(f"/proc/{native.pid}"):
             raise FixtureFailure("handoff single live host failed wait/PID closure")
     finally:
-        # Failure-only same-UID signal children use existing SETUID/SETGID,
-        # never CAP_KILL. An unreaped Popen retains its numeric PID ownership.
+
+
         for proc, uid, gid in processes:
             if proc.poll() is None:
                 pid = os.fork()
@@ -1683,11 +1901,11 @@ def phase_transfer(public_key):
     rc, _out, err = run_exec([*sign, "--out", f"{operator_dir}/offline.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
     if rc != 0:
         raise FixtureFailure(f"protected offline transfer sign failed: {err!r}")
-    # SQLite pins readable ancestor directory descriptors. The original
-    # publication phase used an execute-only volume root. Only this new
-    # SQLite phase exposes the fixed top-level names; every key, approval,
-    # operator and database directory stays private and no write permission
-    # is granted. Re-run the actual operator key/approval refusals here.
+
+
+
+
+
     os.chmod(ROOT, 0o755)
     phase_operator_cannot_read_or_edit(request_id)
     def operator_identity():
@@ -1744,9 +1962,9 @@ def phase_transfer(public_key):
         summary = wait_serve(serve, extra_seconds=8)
         check_summary("transfer", summary, {"connections_accepted":"3", "requests_handled":"3", "requests_signed":"2", "requests_refused":"1"})
 
-        # Rotation refusal (DR-0244 step 4/5, cheap and local): the exact
-        # already-exported owned coin preimage still fails prepare-transfer
-        # under a genuinely different, freshly generated publisher/config.
+
+
+
         rotation_config = family_rotation_config(custody_dir)
         rotation_prepare = cli_argv("custody", "prepare-transfer",
             "--config", rotation_config, "--genesis-manifest-file", f"{custody_dir}/genesis.bin",
@@ -1789,8 +2007,8 @@ def phase_transfer(public_key):
 
 
 def phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags, application=None):
-    # Both requests are signing-only over retained ORIGINAL preimages. The
-    # merge inputs came from original91/a1's actual split, never fresh9b/a7.
+
+
     output_before = _output_used
     app = application is not None
     prefix = "app-" if app else ""
@@ -1834,7 +2052,7 @@ def phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals,
         allocation()
         return result
     def evidence(path, owner):
-        # Only bounded NONSECRET canonical preimages/requests/signatures.
+
         def stamp(meta):
             return (meta.st_dev, meta.st_ino, meta.st_uid, meta.st_gid, meta.st_mode,
                     meta.st_nlink, meta.st_size, meta.st_mtime_ns, meta.st_ctime_ns)
@@ -1955,8 +2173,8 @@ def phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals,
     finally:
         if reference.poll() is None:
             stop_owned_process(reference, CUSTODY_UID, CUSTODY_GID)
-    # Every original/reference signer was waited before these two private
-    # custody-UID copies. Never copy the approval/revocation store or key bytes to root.
+
+
     key_file = phase_recover_private_key(f"{ROOT}/custody-keys/custody.seed", backup_path, restored_path)
     allocation()
     old_requests = ([f"{operator_dir}/app-coins-{kind}-request.bin" for kind in ("split","merge")] if app else
@@ -2016,13 +2234,22 @@ def phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals,
 
 
 def phase_split_merge(public_key):
-    # Fresh phase directories only: this reuses the exact same one-owner,
-    # one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
-    # already builds (via its own unmodified "generate"/"serve" modes),
-    # booted into a brand-new store here. It never touches phase_transfer's
-    # own custody-transfer/operator/transfer directories, genesis, coins or
-    # assertions.
+
+
+
+
+
+
     custody_dir, operator_dir = f"{ROOT}/custody-split-merge", f"{ROOT}/operator/split-merge"
+    require_custody_signers_stopped()
+    recovered_key = f"{ROOT}/custody-keys/custody.seed.restored"
+    original_key = f"{ROOT}/custody-keys/custody.seed"
+    recovered_stat = os.lstat(recovered_key)
+    original_stat = os.lstat(original_key)
+    if (not stat.S_ISREG(recovered_stat.st_mode) or recovered_stat.st_uid != CUSTODY_UID
+            or stat.S_IMODE(recovered_stat.st_mode) != 0o600
+            or (recovered_stat.st_dev, recovered_stat.st_ino) == (original_stat.st_dev, original_stat.st_ino)):
+        raise FixtureFailure("split/merge live consumer requires the stopped, distinct recovered genesis key")
     for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
         os.mkdir(path, 0o700)
         os.chown(path, uid, gid)
@@ -2056,10 +2283,14 @@ def phase_split_merge(public_key):
 
     def serve_command(count):
         return cli_argv("custody", "serve-split-merge", *trust_flags(custody_dir),
-            "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
+            "--key-file", recovered_key, "--socket", socket_path,
             "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
 
-    # ---- split: prepare / approve / offline sign / actual CLI split ----
+    def require_recovered_signer(process):
+        if _custody_signer_runs.get(process, {}).get("key_file") != recovered_key:
+            raise FixtureFailure("split/merge live signer did not load the recovered genesis key path")
+
+
     prepare_split = cli_argv("custody", "prepare-split", *trust_flags(custody_dir),
         "--coin-file", f"{custody_dir}/coin.bin", "--fee-source-file", f"{custody_dir}/fee.bin",
         "--amount", str(SPLIT_AMOUNT), "--recipient", public_key, "--nonce", "0", "--request-id", SPLIT_REQUEST_ID,
@@ -2081,6 +2312,7 @@ def phase_split_merge(public_key):
     native = None
     try:
         serve = start_serve(socket_path, 30, 6, 6, command=serve_command(6))
+        require_recovered_signer(serve)
         sign_split = cli_argv("custody", "sign-split", *trust_flags(operator_dir),
             "--request-file", f"{operator_dir}/split-request.bin", *signer)
         rc, _out, err = run_exec([*sign_split, "--out", f"{operator_dir}/offline-split.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
@@ -2128,7 +2360,7 @@ def phase_split_merge(public_key):
             if source.read(1048577) != offline_split:
                 raise FixtureFailure("offline and actual CLI split signed bytes differ")
 
-        # ---- after-split: independent verification plus fresh merge preimages ----
+
         split_merge_probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
             "custody::asset_split_merge_fixture::distinct_uid_split_merge_probe", "--exact", "--ignored", "--nocapture", "--format", "terse"]
         def split_merge_env(mode, **overrides):
@@ -2157,7 +2389,7 @@ def phase_split_merge(public_key):
         for name in ["into.bin", "from.bin", "fee.bin"]:
             copy_private(operator_dir, merge_inputs_dir, name, CUSTODY_UID, CUSTODY_GID)
 
-        # ---- merge: prepare / approve / offline sign / actual CLI merge ----
+
         prepare_merge = cli_argv("custody", "prepare-merge", *trust_flags(custody_dir),
             "--into-file", f"{merge_inputs_dir}/into.bin", "--from-file", f"{merge_inputs_dir}/from.bin",
             "--fee-source-file", f"{merge_inputs_dir}/fee.bin", "--nonce", "1", "--request-id", MERGE_REQUEST_ID,
@@ -2195,7 +2427,7 @@ def phase_split_merge(public_key):
             if source.read(1048577) != offline_merge:
                 raise FixtureFailure("offline and actual CLI merge signed bytes differ")
 
-        # ---- verify-merge: independent verification plus both-request replay ----
+
         rc, out, err = run_exec(split_merge_probe_argv, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID],
             env=split_merge_env("verify-merge",
                 CUSTODY_SPLIT_MERGE_NEW_COIN_HEX=new_coin_hex,
@@ -2205,7 +2437,7 @@ def phase_split_merge(public_key):
                 or verify_merge.get("replay_equal") is not True or verify_merge.get("next_nonce") != 2):
             raise FixtureFailure(f"verify-merge verification failed: {err!r}")
 
-        # ---- revocation: both requests refused, same process, no output ----
+
         rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", SPLIT_REQUEST_ID),
             CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
         if rc != 0:
@@ -2227,9 +2459,9 @@ def phase_split_merge(public_key):
             "requests_signed": "4", "requests_refused": "2",
         })
 
-        # Rotation refusal (DR-0244 step 4/5, cheap and local): the exact
-        # already-exported owned coin preimage still fails prepare-split
-        # under a genuinely different, freshly generated publisher/config.
+
+
+
         rotation_config = family_rotation_config(custody_dir)
         rotation_prepare = cli_argv("custody", "prepare-split",
             "--config", rotation_config, "--genesis-manifest-file", f"{custody_dir}/genesis.bin",
@@ -2258,6 +2490,7 @@ def phase_split_merge(public_key):
         os.chmod(ROOT, 0o711)
 
     restarted = start_serve(socket_path, 30, 2, 2, command=serve_command(2))
+    require_recovered_signer(restarted)
     try:
         rc, _out, refusal = run_exec([*sign_split, "--out", f"{operator_dir}/revoked-split-restart.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
         if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/revoked-split-restart.bin"):
@@ -2272,7 +2505,7 @@ def phase_split_merge(public_key):
         if restarted.poll() is None:
             restarted.kill(); restarted.wait(timeout=5)
 
-    # Original business roles and original revoked restart must be fully stopped.
+
     if any(os.path.exists(f"/proc/{process.pid}") for process in (native, serve, restarted)) or os.path.lexists(socket_path):
         raise FixtureFailure("original split/merge roles were not stopped before recovery")
     recovery = phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags)
@@ -2288,9 +2521,9 @@ def phase_split_merge(public_key):
 
 
 def phase_genesis_mint_burn_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags):
-    # Both requests are signing-only over retained ORIGINAL preimages. Burn
-    # inputs came from original93's actual mint, never fresh9e output. The
-    # original ledger already burned that Coin; no new request is submitted.
+
+
+
     output_before = _output_used
     request_ids = ("9e" * 32, "9f" * 32)
     old_ids = (MINT_REQUEST_ID, BURN_REQUEST_ID)
@@ -2332,7 +2565,7 @@ def phase_genesis_mint_burn_recovery(public_key, custody_dir, operator_dir, appr
         allocation()
         return result
     def evidence(path, owner):
-        # Only bounded NONSECRET canonical preimages/requests/signatures.
+
         def stamp(meta):
             return (meta.st_dev, meta.st_ino, meta.st_uid, meta.st_gid, meta.st_mode,
                     meta.st_nlink, meta.st_size, meta.st_mtime_ns, meta.st_ctime_ns)
@@ -2428,8 +2661,8 @@ def phase_genesis_mint_burn_recovery(public_key, custody_dir, operator_dir, appr
         if reference.poll() is None:
             stop_owned_process(reference, CUSTODY_UID, CUSTODY_GID)
     reference_before = {path: evidence(path, OPERATOR_UID) for path in references}
-    # Every original/reference signer was waited before these two private
-    # custody-UID copies. Never copy the approval/revocation store or key bytes to root.
+
+
     key_file = phase_recover_private_key(f"{ROOT}/custody-keys/custody.seed", backup_path, restored_path)
     allocation()
     old_requests = [f"{operator_dir}/mint-request.bin", f"{operator_dir}/burn-request.bin"]
@@ -2486,14 +2719,14 @@ def phase_genesis_mint_burn_recovery(public_key, custody_dir, operator_dir, appr
 
 
 def phase_mint_burn(public_key):
-    # Fresh phase directories only: this reuses the exact same one-owner,
-    # one-app-coin/one-fee-coin devnet genesis 'distinct_uid_transfer_probe'
-    # already builds (via its own unmodified "generate"/"serve" modes),
-    # booted into a brand-new store here. It never touches phase_transfer's
-    # or phase_split_merge's own directories, genesis, coins or assertions.
-    # The TreasuryCap preimage those modes never export is independently
-    # rebuilt by 'asset_mint_burn_fixture::distinct_uid_mint_burn_probe's own
-    # "generate-cap" mode instead.
+
+
+
+
+
+
+
+
     custody_dir, operator_dir = f"{ROOT}/custody-mint-burn", f"{ROOT}/operator/mint-burn"
     for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
         os.mkdir(path, 0o700)
@@ -2550,7 +2783,7 @@ def phase_mint_burn(public_key):
             "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
             "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
 
-    # ---- mint: prepare / approve / offline sign / actual CLI mint ----
+
     prepare_mint = cli_argv("custody", "prepare-mint", *trust_flags(custody_dir),
         "--cap-file", f"{custody_dir}/cap.bin", "--fee-source-file", f"{custody_dir}/fee.bin",
         "--amount", str(MINT_AMOUNT), "--recipient", public_key, "--nonce", "0", "--request-id", MINT_REQUEST_ID,
@@ -2619,7 +2852,7 @@ def phase_mint_burn(public_key):
             if source.read(1048577) != offline_mint:
                 raise FixtureFailure("offline and actual CLI mint signed bytes differ")
 
-        # ---- after-mint: independent verification plus fresh burn preimages ----
+
         rc, out, err = run_exec(mint_burn_probe_argv, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID],
             env=mint_burn_env("after-mint", CUSTODY_MINT_BURN_DIR=operator_dir, CUSTODY_MINT_BURN_ENDPOINT=address,
                 CUSTODY_MINT_BURN_CAP_HEX=cap_hex, CUSTODY_MINT_BURN_FEE_COIN_HEX=generated["fee"],
@@ -2637,7 +2870,7 @@ def phase_mint_burn(public_key):
         for name in ["cap.bin", "coin.bin", "fee.bin"]:
             copy_private(operator_dir, burn_inputs_dir, name, CUSTODY_UID, CUSTODY_GID)
 
-        # ---- burn: prepare / approve / offline sign / actual CLI burn ----
+
         prepare_burn = cli_argv("custody", "prepare-burn", *trust_flags(custody_dir),
             "--cap-file", f"{burn_inputs_dir}/cap.bin", "--coin-file", f"{burn_inputs_dir}/coin.bin",
             "--fee-source-file", f"{burn_inputs_dir}/fee.bin", "--nonce", "1", "--request-id", BURN_REQUEST_ID,
@@ -2676,7 +2909,7 @@ def phase_mint_burn(public_key):
             if source.read(1048577) != offline_burn:
                 raise FixtureFailure("offline and actual CLI burn signed bytes differ")
 
-        # ---- verify-burn: independent verification plus both-request replay ----
+
         rc, out, err = run_exec(mint_burn_probe_argv, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID],
             env=mint_burn_env("verify-burn", CUSTODY_MINT_BURN_DIR=operator_dir, CUSTODY_MINT_BURN_ENDPOINT=address,
                 CUSTODY_MINT_BURN_CAP_HEX=cap_hex, CUSTODY_MINT_BURN_FEE_COIN_HEX=generated["fee"],
@@ -2686,7 +2919,7 @@ def phase_mint_burn(public_key):
                 or verify_burn.get("replay_equal") is not True or verify_burn.get("next_nonce") != 2):
             raise FixtureFailure(f"verify-burn verification failed: {err!r}")
 
-        # ---- revocation: both requests refused, same process, no output ----
+
         rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", MINT_REQUEST_ID),
             CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
         if rc != 0:
@@ -2708,9 +2941,9 @@ def phase_mint_burn(public_key):
             "requests_signed": "4", "requests_refused": "2",
         })
 
-        # Rotation refusal (DR-0244 step 4/5, cheap and local): the exact
-        # already-exported owned cap preimage still fails prepare-mint
-        # under a genuinely different, freshly generated publisher/config.
+
+
+
         rotation_config = family_rotation_config(custody_dir)
         rotation_prepare = cli_argv("custody", "prepare-mint",
             "--config", rotation_config, "--genesis-manifest-file", f"{custody_dir}/genesis.bin",
@@ -2753,8 +2986,8 @@ def phase_mint_burn(public_key):
         if restarted.poll() is None:
             restarted.kill(); restarted.wait(timeout=5)
 
-    # Keep the original mint/burn execution, replay and signer counters.
-    # No original native host or signer may remain before this new control.
+
+
     if any(process is None or process.poll() is None or os.path.exists(f"/proc/{process.pid}")
            for process in (serve, restarted, native)) or os.path.lexists(socket_path):
         raise FixtureFailure("original genesis mint/burn roles remain before key recovery")
@@ -2772,8 +3005,8 @@ def phase_mint_burn(public_key):
 
 
 def stop_owned_process(process, uid, gid):
-    # CAP_KILL is deliberately absent. Signal only our Popen child, as its UID,
-    # using the already permitted SETUID/SETGID boundary and one shared 5s cap.
+
+
     if process is None or process.poll() is not None:
         return
     cleanup_deadline = time.monotonic() + 5
@@ -2805,8 +3038,8 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     for name in ["own-cap.bin", "own-fee.bin", "create-instance.bin"]:
         copy_private(operator_dir, custody_dir, name, CUSTODY_UID, CUSTODY_GID)
 
-    # Public CLI output becomes the operator's own independently local pin.
-    # Its owner sets the required private mode; the supervisor needs no FOWNER.
+
+
     rc, _out, err = run_exec(
         [sys.executable, "-I", "-S", "-c", "import os,sys;os.chmod(sys.argv[1],0o600)", f"{operator_dir}/create-instance.bin"],
         OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID], timeout=5)
@@ -2822,7 +3055,7 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
             "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
             "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
 
-    # ---- own-mint: prepare / approve / offline sign / actual CLI mint ----
+
     prepare_mint = cli_argv("custody", "prepare-mint", *application_flags(custody_dir),
         "--cap-file", f"{custody_dir}/own-cap.bin", "--fee-source-file", f"{custody_dir}/own-fee.bin",
         "--amount", str(OWN_ASSET_MINT_AMOUNT), "--recipient", public_key, "--nonce", "1", "--request-id", OWN_MINT_REQUEST_ID,
@@ -2881,18 +3114,18 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
             raise FixtureFailure(f"after-own-mint verification failed: {err!r}")
         new_coin_hex = after_own_mint["new_coin_hex"]
 
-        # Distinct source names from after-create's own own-cap.bin/own-fee.bin
-        # (copied into custody_dir earlier, for the mint leg): after-own-mint
-        # exports the post-mint burn-input preimages under own-burn-cap.bin/
-        # own-burn-fee.bin precisely to avoid colliding with those, since
-        # write_review_preimage never overwrites an existing path.
+
+
+
+
+
         burn_inputs_dir = f"{custody_dir}/own-burn-inputs"
         os.mkdir(burn_inputs_dir, 0o700)
         os.chown(burn_inputs_dir, CUSTODY_UID, CUSTODY_GID)
         for name in ["own-burn-cap.bin", "own-coin.bin", "own-burn-fee.bin"]:
             copy_private(operator_dir, burn_inputs_dir, name, CUSTODY_UID, CUSTODY_GID)
 
-        # ---- own-burn: prepare / approve / offline sign / actual CLI burn ----
+
         prepare_burn = cli_argv("custody", "prepare-burn", *application_flags(custody_dir),
             "--cap-file", f"{burn_inputs_dir}/own-burn-cap.bin", "--coin-file", f"{burn_inputs_dir}/own-coin.bin",
             "--fee-source-file", f"{burn_inputs_dir}/own-burn-fee.bin", "--nonce", "2", "--request-id", OWN_BURN_REQUEST_ID,
@@ -2939,7 +3172,7 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
                 or verify_own_burn.get("replay_equal") is not True or verify_own_burn.get("next_nonce") != 3):
             raise FixtureFailure(f"verify-own-burn verification failed: {err!r}")
 
-        # ---- revocation: both requests refused, same process, no output ----
+
         rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", OWN_MINT_REQUEST_ID),
             CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
         if rc != 0:
@@ -2961,10 +3194,10 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
             "requests_signed": "4", "requests_refused": "2",
         })
 
-        # Rotation refusal (DR-0244 step 4/5, cheap and local): the
-        # application-pinned own-created profile's own InstanceRecord
-        # creator check fires on this family specifically, strictly before
-        # the cap/fee ownership checks every other family relies on.
+
+
+
+
         rotation_config = family_rotation_config(custody_dir, name="own-rotation")
         rotation_prepare = cli_argv("custody", "prepare-mint",
             "--config", rotation_config, "--genesis-manifest-file", f"{custody_dir}/genesis.bin",
@@ -3001,19 +3234,19 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     if os.path.lexists(socket_path):
         raise FixtureFailure("own-asset mint/burn restarted serve left its bound socket behind")
 
-    # ---- recovered-key control (DR-0244 recovery), only now that the
-    # original key's own serve and restarted-serve have both fully stopped
-    # (reaped) and their shared socket path is confirmed gone.
-    #
-    # A genuinely new, never-before-approved request over the SAME
-    # already-captured own-burn inputs/expiry (same cap/coin/fee preimages,
-    # same 3600s window), rather than ever reapproving or resigning a
-    # revoked ID. request_id is itself part of the signed CallIntent
-    # (asset_mint_burn.rs's "request_id: *request.request_id.as_bytes()"),
-    # so this fresh ID's own signature is NOT the same bytes as
-    # OWN_BURN_REQUEST_ID's original signature, and no step below ever
-    # compares against that original signature; see this fixture's own
-    # docs note on that point.
+
+
+
+
+
+
+
+
+
+
+
+
+
     recovery_request_id = "9a" * 32
     prepare_recovery_burn = cli_argv("custody", "prepare-burn", *application_flags(custody_dir),
         "--cap-file", f"{burn_inputs_dir}/own-burn-cap.bin", "--coin-file", f"{burn_inputs_dir}/own-coin.bin",
@@ -3031,11 +3264,11 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
         raise FixtureFailure("own-asset recovery burn approval unexpectedly accepted a pipe")
     pty_bytes = phase_approve_via_pty(None, None, 2, recovery_request_id, 3600, command=approve_recovery_burn)
 
-    # ---- reference signature: the ORIGINAL key file, still not copied
-    # anywhere, signs this exact SAME newly approved frame once, through its
-    # own dedicated bounded serve-mint-burn on a distinct socket. This is
-    # the expected signature the recovered key must reproduce below, over
-    # the identical unchanged request, never a different request ID.
+
+
+
+
+
     reference_socket_path = f"{ROOT}/run/create-mint-burn-reference.sock"
     reference_signer = ["--custody-socket", reference_socket_path, "--custody-uid", str(CUSTODY_UID),
                          "--custody-expected-public-key", public_key]
@@ -3063,9 +3296,9 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     if os.path.lexists(reference_socket_path):
         raise FixtureFailure("reference own-asset mint/burn serve left its bound socket behind")
 
-    # Only now, with the reference serve (and every earlier serve using the
-    # original key file) fully stopped and reaped, recover the SAME
-    # disposable seed into a new owner-private path.
+
+
+
     recovered_key_path = phase_recover_private_key(
         f"{ROOT}/custody-keys/custody.seed",
         backup_path=f"{custody_dir}/own-recovered.seed.backup",
@@ -3087,14 +3320,14 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
 
     recovered_serve = start_serve(recovered_socket_path, 15, 3, 3, command=recovered_serve_command(3))
     try:
-        # 1) the new, still-unrevoked recovery approval signs under the
-        # recovered key: this is offline signing only, never executed on
-        # the native ledger, so the original supply/nonce/receipts above
-        # stay exactly as already asserted. The recovered key must
-        # reproduce, byte for byte, the reference signature the ORIGINAL
-        # key already produced over this identical unchanged frame above,
-        # before it was ever copied anywhere; this never compares across
-        # two different request IDs.
+
+
+
+
+
+
+
+
         rc, _out, err = run_exec([*sign_recovery_burn, "--out", f"{operator_dir}/own-recovery-burn-signed.bin"],
             OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
         if rc != 0:
@@ -3108,16 +3341,16 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
                 "the recovered key's signature over the identical new frame differs from the original key's reference signature"
             )
 
-        # 2) a revocation that predates the recovery (OWN_BURN_REQUEST_ID,
-        # revoked above while the original key's serve was still the only
-        # live signer) still refuses under the recovered key.
+
+
+
         rc, _out, refusal = run_exec([*sign_original_burn_recovered, "--out", f"{operator_dir}/own-revoked-burn-recovered.bin"],
             OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
         if rc == 0 or b"custody refused the request: no_approval" not in refusal or os.path.lexists(f"{operator_dir}/own-revoked-burn-recovered.bin"):
             raise FixtureFailure("a pre-existing revocation did not survive key recovery")
 
-        # 3) revoking the new recovery ID itself, then showing the SAME
-        # recovered-key instance also enforces that new revocation.
+
+
         rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", recovery_request_id),
             CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
         if rc != 0:
@@ -3138,8 +3371,8 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     if os.path.lexists(recovered_socket_path):
         raise FixtureFailure("recovered-key own-asset serve left its bound socket behind")
 
-    # The recovered-key profile also retains BOTH the pre-existing and the
-    # newly issued revocation across its own independent restart.
+
+
     recovered_restarted = start_serve(recovered_socket_path, 15, 2, 2, command=recovered_serve_command(2))
     try:
         rc, _out, refusal = run_exec([*sign_original_burn_recovered, "--out", f"{operator_dir}/own-revoked-burn-recovered-restart.bin"],
@@ -3183,11 +3416,11 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
 
 
 def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, address, generated, definition_hex, cap_hex, strict_pty_accounting=False):
-    # Separate follow-on only after the entire original E67 sequence returned.
-    # No original files, IDs, counters or stopped key-recovery ordering change.
-    # Start cap3/supply0/nonce3; finish cap6/supply5M/nonce9. Self-transfer
-    # remains refused: the last whole Coin goes to the existing distinct
-    # disposable recipient already used by the original transfer fixture.
+
+
+
+
+
     approvals = f"{ROOT}/custody-approvals"
     probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
         "custody::asset_application_coin_fixture::distinct_uid_application_coin_probe",
@@ -3249,8 +3482,8 @@ def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, addre
         ("mint-two", "mint", "a4" * 32, "coin-after-mint-two"),
         ("transfer", "transfer", "a5" * 32, "coin-verify-transfer"),
     ]
-    # Each group stays within the original largest 6-request/30-second
-    # application-family invocation. No server lifetime or host bound grows.
+
+
     for family, selected in [("mint-burn", [0]), ("split-merge", [1, 2]),
                              ("mint-burn", [3]), ("mint-burn", [4]), ("transfer", [5])]:
         socket_path = f"{ROOT}/run/app-coins-{definitions[selected[0]][0]}.sock"
@@ -3373,9 +3606,9 @@ def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, addre
 
 
 def phase_create_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags):
-    # Signing-only over the original seed/fee/nonce, after the actual create
-    # and all its follow-ons stopped. The target already exists: this does
-    # not submit another Instantiate or claim live nonce/fee/seed freshness.
+
+
+
     output_before = _output_used
     request_id = "9d" * 32
     request_path = f"{custody_dir}/recovery-create-request.bin"
@@ -3412,8 +3645,8 @@ def phase_create_recovery(public_key, custody_dir, operator_dir, approvals, trus
         allocation()
         return result
     def evidence(path, owner):
-        # Bounded NONSECRET request/preimage/signature reads only; private
-        # seed bytes remain inside the existing custody-UID copy children.
+
+
         def stamp(meta):
             return (meta.st_dev, meta.st_ino, meta.st_uid, meta.st_gid, meta.st_mode,
                     meta.st_nlink, meta.st_size, meta.st_mtime_ns, meta.st_ctime_ns)
@@ -3500,8 +3733,8 @@ def phase_create_recovery(public_key, custody_dir, operator_dir, approvals, trus
         if reference.poll() is None:
             stop_owned_process(reference, CUSTODY_UID, CUSTODY_GID)
     reference_before = evidence(reference_path, OPERATOR_UID)
-    # The original create, its follow-ons/restart and this reference have
-    # all been waited. Restore only the key, retaining approval/tombstones.
+
+
     key_file = phase_recover_private_key(f"{ROOT}/custody-keys/custody.seed", backup_path, restored_path)
     allocation()
     def refused(index, socket_path, request_file):
@@ -3592,9 +3825,9 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
             "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
             "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
 
-    # ---- create: prepare / approve (real PTY, full typed confirmation) / ----
-    # offline sign / actual CLI create-asset, with --fee-source and the real
-    # canonical fee preimage, never a Coin/TreasuryCap input.
+
+
+
     prepare_create = cli_argv("custody", "prepare-create", *trust_flags(custody_dir),
         "--seed", CREATE_INSTANCE_SEED_HEX, "--fee-source-file", f"{custody_dir}/fee.bin",
         "--nonce", "0", "--request-id", CREATE_REQUEST_ID,
@@ -3610,12 +3843,12 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
     rc, _out, refusal = run_exec(approve_create, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
     if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
         raise FixtureFailure("create approval unexpectedly accepted a pipe")
-    # phase_approve_via_pty captures whatever exact "Type exactly to
-    # approve:\n<confirmation>" line approve-create actually prints (its
-    # own full "APPROVE-CREATE sender=... seed=... new_instance_*
-    # fee_balance=... max_fee=... nonce=... request_id=... not_after=..."
-    # shape, distinct from every other family's confirmation text) and
-    # echoes it back verbatim; it never hardcodes the text itself.
+
+
+
+
+
+
     pty_bytes = phase_approve_via_pty(None, None, 0, CREATE_REQUEST_ID, 3600, command=approve_create)
 
     serve = None
@@ -3653,10 +3886,10 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
                 if line.startswith(b'{"address":'):
                     address = json.loads(line)["address"]
 
-        # The real standard_asset create-asset CLI, custody-mediated: the
-        # required --fee-source plus --instance-seed/--instance-ref-out it
-        # already had, now driven through --custody-socket/--custody-uid/
-        # --custody-expected-public-key like every other protected family.
+
+
+
+
         create_command = cli_argv("create-asset", "--endpoint", address, *signer,
             "--expected-chain-id", "custody-whole-coin-test", "--expected-protocol-version", "7",
             "--expected-epoch", "0", "--expected-hash-suite-id", "1", "--expected-domain", DOMAIN_HEX,
@@ -3673,7 +3906,7 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
             if source.read(1048577) != offline_create:
                 raise FixtureFailure("offline and actual CLI create signed bytes differ")
 
-        # ---- after-create: independent verification plus exact replay ----
+
         create_probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
             "custody::asset_create_fixture::distinct_uid_create_asset_probe", "--exact", "--ignored", "--nocapture", "--format", "terse"]
         create_env = {
@@ -3689,7 +3922,7 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
                 or after_create.get("replay_equal") is not True or after_create.get("next_nonce") != 1):
             raise FixtureFailure(f"after-create verification failed: {err!r}")
 
-        # ---- revocation: refused on the same server, no signed output ----
+
         rc, _out, err = run_exec(cli_argv("custody", "revoke", "--approvals-dir", approvals, "--request-id", CREATE_REQUEST_ID),
             CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
         if rc != 0:
@@ -3704,11 +3937,11 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
             "requests_signed": "2", "requests_refused": "1",
         })
 
-        # Rotation refusal (DR-0244 step 4/5, cheap and local): create-asset
-        # carries no pre-existing owned Coin/TreasuryCap input, only a fee
-        # source, so its own rotation-bound check is the fee owner binding:
-        # the exact already-exported fee preimage still fails prepare-create
-        # under a genuinely different, freshly generated publisher/config.
+
+
+
+
+
         rotation_config = family_rotation_config(custody_dir)
         rotation_prepare = cli_argv("custody", "prepare-create",
             "--config", rotation_config, "--genesis-manifest-file", f"{custody_dir}/genesis.bin",
@@ -3722,18 +3955,18 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
             f"{custody_dir}/rotation-create-request.bin",
         )
 
-        # DR-0258: before this phase's own native backend is ever stopped,
-        # independently exercise an application-pinned mint-then-burn round
-        # trip against the asset it just created, through a separate
-        # kind-4 serve-mint-burn process.
+
+
+
+
         own_mint_burn_summary = phase_own_asset_mint_burn(
             custody_dir, operator_dir, public_key, address, generated,
             after_create["definition_hex"], after_create["treasury_cap_hex"],
             strict_pty_accounting=strict_pty_accounting,
         )
 
-        # The complete original own-asset/E67 lifecycle is finished before
-        # this independent follow-on uses new request IDs and output paths.
+
+
         own_coin_summary = phase_own_asset_coin_operations(
             custody_dir, operator_dir, public_key, address, generated,
             after_create["definition_hex"], after_create["treasury_cap_hex"],
@@ -3753,7 +3986,7 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
             stop_owned_process(process, uid, gid)
         os.chmod(ROOT, 0o711)
 
-    # ---- restart: the same revoked request id stays refused ----
+
     restarted = start_serve(socket_path, 30, 1, 1, command=serve_command(1))
     try:
         rc, _out, refusal = run_exec([*sign_create, "--out", f"{operator_dir}/revoked-create-restart.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
@@ -3766,8 +3999,8 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
         if restarted.poll() is None:
             stop_owned_process(restarted, CUSTODY_UID, CUSTODY_GID)
 
-    # The original kind-5 and all its actual business follow-ons retain
-    # their original counters. Finish them before the separate recovery.
+
+
     if any(process is None or process.poll() is None or os.path.exists(f"/proc/{process.pid}")
            for process in (serve, restarted, native)) or os.path.lexists(socket_path):
         raise FixtureFailure("original create processes/socket remain before key recovery")
@@ -3791,8 +4024,8 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
 
 
 def phase_genesis_split_identity_handoff(public_key):
-    # Independent genuine TWO-OWNER genesis/store; B already exists, no seed
-    # read/copy/keygen and no migration of A's fee balance or app creator.
+
+
     output_before = _output_used
     custody_dir, operator_dir = f"{ROOT}/custody-split-handoff", f"{ROOT}/operator/split-handoff"
     for path, uid, gid in [(custody_dir, CUSTODY_UID, CUSTODY_GID), (operator_dir, OPERATOR_UID, OPERATOR_GID)]:
@@ -3894,8 +4127,8 @@ def phase_genesis_split_identity_handoff(public_key):
                 if not line or len(startup) > 16384: raise FixtureFailure("split handoff host startup incomplete/oversize")
                 if line.startswith(b'{"address":'): address = json.loads(line)["address"]
         for index, tag in enumerate(("a", "b")):
-            # All A signers/restarts below are actually waited and absent
-            # before this loop ever prepares, approves or serves as B.
+
+
             if index == 1:
                 if any(proc.returncode is None or os.path.exists(f"/proc/{proc.pid}") for proc, _u, _g in processes[1:]):
                     raise FixtureFailure("old A authority is still live at B handoff")
@@ -3972,7 +4205,7 @@ def phase_genesis_split_identity_handoff(public_key):
                 "--nonce", "0", "--request-id", ids[index], "--max-fee", "1000000", "--gas-limit", "200000",
                 "--submission-out", f"{operator_dir}/{tag}-submission.bin", "--result-out", f"{operator_dir}/{tag}-result.bin",
                 *(["--amount", str(SPLIT_AMOUNT)] if index == 0 else []))
-            # Saved CLI outputs inherit this phase's private-file creation policy.
+
             handoff_umask = os.umask(0o077)
             try:
                 passed(actual, OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID], marker=b"paid_status=Success")
@@ -4021,8 +4254,8 @@ def phase_genesis_split_identity_handoff(public_key):
         if native.returncode != 0 or b"1 passed; 0 failed; 0 ignored" not in out or os.path.exists(f"/proc/{native.pid}"):
             raise FixtureFailure("split handoff single live host failed wait/PID closure")
     finally:
-        # Failure-only same-UID signal children use existing SETUID/SETGID,
-        # never CAP_KILL. An unreaped Popen retains its numeric PID ownership.
+
+
         for proc, uid, gid in processes:
             if proc.poll() is None:
                 pid = os.fork()
@@ -4114,7 +4347,7 @@ def main():
     if first["signature_hex"] != second["signature_hex"]:
         raise FixtureFailure("the restarted serve process did not reproduce the identical persisted signature")
 
-    # ---- Custody revocation lifecycle ----
+
     approvals_dir = f"{ROOT}/custody-approvals"
     phase_operator_cannot_revoke(approvals_dir, MAIN_REQUEST_ID)
     live_proc = start_serve(socket_path, total_deadline_secs=10, max_connections=2, max_requests=2)
@@ -4140,7 +4373,7 @@ def main():
     if os.path.lexists(socket_path):
         raise FixtureFailure("post-revocation restarted custody left its bound socket behind")
 
-    # ---- Custody-owned private recovery of the same disposable seed ----
+
     main_key_path = f"{ROOT}/custody-keys/custody.seed"
     require_custody_signers_stopped()
     restored_key_path = phase_recover_private_key(main_key_path)
@@ -4162,7 +4395,7 @@ def main():
         "custody key file's derived public key does not match the configured publisher",
     )
 
-    # ---- A second, independently keyed custody identity ----
+
     new_identity_summary = phase_new_identity(socket_path, public_key)
 
     transfer_summary = phase_transfer(public_key)
@@ -4203,8 +4436,8 @@ def main():
 
 
 def genesis_split_handoff_main():
-    # This independent invocation starts with fresh accounting and a fresh
-    # container allocation. Never reset or discard accounting within a run.
+
+
     phase_setup()
     public_key = phase_keygen()
     phase_write_config(public_key)
@@ -4214,8 +4447,8 @@ def genesis_split_handoff_main():
     if public_key == second_public_key:
         raise FixtureFailure("split profile requires two independent disposable publishers")
     split_summary = phase_genesis_split_identity_handoff(public_key)
-    # The common real-UID probes actually wait for both permission checks:
-    # neither seed can be opened and neither retained approval can be edited.
+
+
     phase_operator_cannot_read_or_edit("c1" * 32)
     phase_operator_cannot_read_or_edit("c2" * 32, second_key_path)
     total_bytes = 0
