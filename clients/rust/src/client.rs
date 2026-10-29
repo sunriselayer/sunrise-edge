@@ -335,7 +335,7 @@ fn substitute_selector(template: &str, placeholder: &str, value: &str) -> String
     template.replacen(placeholder, value, 1)
 }
 
-fn hex64_lower(bytes: &[u8; 32]) -> String {
+pub(crate) fn hex64_lower(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 

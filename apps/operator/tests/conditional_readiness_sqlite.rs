@@ -17,6 +17,8 @@ mod encrypted_recovery_acceptance;
 mod fixture;
 #[path = "support/genesis_fixture.rs"]
 pub mod genesis_fixture;
+#[path = "support/hex.rs"]
+mod hex;
 #[path = "support/ordered_seal_sqlite_acceptance.rs"]
 mod ordered_seal_sqlite_acceptance;
 #[path = "support/successor_host_acceptance.rs"]
@@ -29,6 +31,7 @@ use consensus::readiness::{
     decode_readiness_vote,
 };
 use fixture::{Directory, Fixture, copy_files, files};
+use hex::hex;
 use node_core::business_reconstruction::{
     SourceBusinessSnapshot,
     cut::{
@@ -56,13 +59,6 @@ use sunrise_edge_operator::{
     immutable_archive::ImmutableArchive,
 };
 use validator_set::{ValidatorInfo, ValidatorSet, encode_validator_set};
-
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte: &u8| format!("{byte:02x}"))
-        .collect()
-}
 
 /// Assemble public paginated transport from a genuinely verified archive;
 /// private import verification must still reconstruct it independently.

@@ -15,10 +15,13 @@ mod encrypted_recovery_acceptance;
 mod fixture;
 #[path = "support/genesis_fixture.rs"]
 pub mod genesis_fixture;
+#[path = "support/hex.rs"]
+mod hex;
 
 use archive_snapshot::snapshot as history_files;
 use command_output::success;
 use fixture::{Directory, Fixture, copy_files, files};
+use hex::hex;
 use node_core::business_reconstruction::cut::{BusinessCutIdentity, decode_business_cut_identity};
 use node_core::business_reconstruction::{BusinessReconstructionPlan, SourceBusinessSnapshot};
 use node_core::ordered_economics::{OrderedHistoryHeightMaterial, OrderedHistoryIdentity};
@@ -42,13 +45,6 @@ use std::{
 use sunrise_edge_operator::{
     business_snapshot::capture_source_business_snapshot, source_sqlite::ExistingSqliteSource,
 };
-
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte: &u8| format!("{byte:02x}"))
-        .collect()
-}
 
 fn pinned_arguments(
     fixture: &Fixture,

@@ -9,13 +9,7 @@ use crate::{
     seed::load_dev_seed,
     signer::{SignerSelection, parse_signer_selection, signer_flag_specs},
 };
-use std::{
-    error::Error,
-    ffi::OsString,
-    fs::File,
-    io::{Read, Write},
-    path::Path,
-};
+use std::{error::Error, ffi::OsString, fs::File, io::Write, path::Path};
 use sunrise_edge_client::publication::MAX_ABI_DECLARATION_BYTES;
 use sunrise_edge_client::{
     FeeSourceConsent, PaidApplication, PaidExecutionResult, PaidExecutionStatus,
@@ -45,12 +39,7 @@ pub(super) fn validate_remote_instance(
 }
 
 pub(super) fn read(path: &str, maximum: usize) -> Result<Vec<u8>, CliError> {
-    let mut bytes: Vec<u8> = Vec::new();
-    File::open(path)
-        .map_err(failure)?
-        .take((maximum + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(failure)?;
+    let bytes: Vec<u8> = super::input_file::read_for_size_check(path, maximum).map_err(failure)?;
     if bytes.len() > maximum {
         return Err(invalid("canonical input file too large"));
     }
@@ -656,5 +645,37 @@ mod tests {
         for path in [result_path, submission_path, derived_path] {
             std::fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn bounded_input_errors_keep_paid_execution_classification() {
+        let path: std::path::PathBuf = temporary_path("input-errors");
+        let path_text: &str = path.to_str().unwrap();
+        let mut file: File = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"input").unwrap();
+        drop(file);
+        assert_eq!(read(path_text, 5).unwrap(), b"input");
+        let oversized: CliError = read(path_text, 4).unwrap_err();
+        assert!(matches!(
+            oversized,
+            CliError::LocalExecution(inner)
+                if inner.downcast_ref::<std::io::Error>().is_some_and(|source| {
+                    source.kind() == std::io::ErrorKind::InvalidInput
+                        && source.to_string() == "canonical input file too large"
+                })
+        ));
+        std::fs::remove_file(&path).unwrap();
+        let missing: CliError = read(path_text, 4).unwrap_err();
+        assert!(matches!(
+            missing,
+            CliError::LocalExecution(inner)
+                if inner.downcast_ref::<std::io::Error>().is_some_and(|source| {
+                    source.kind() == std::io::ErrorKind::NotFound
+                })
+        ));
     }
 }

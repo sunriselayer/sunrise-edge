@@ -9,9 +9,12 @@ mod command_output;
 mod fixture;
 #[path = "support/genesis_fixture.rs"]
 pub mod genesis_fixture;
+#[path = "support/hex.rs"]
+mod hex;
 
 use command_output::success;
 use fixture::{Directory, Fixture, copy_files, files};
+use hex::hex;
 use node_core::business_reconstruction::{
     SourceBusinessSnapshot,
     cut::{decode_business_cut_chunk, encode_business_cut_chunk},
@@ -67,13 +70,6 @@ fn command(fixture: &Fixture, history: &Path, output: &Path, mode: &str) -> Comm
     }
     command
 }
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte: &u8| format!("{byte:02x}"))
-        .collect()
-}
-
 #[test]
 fn genuine_sqlite_cut_immutable_resume_reopen_offline_verify_and_fence_refusal() {
     let mut fixture: Fixture = Fixture::new();

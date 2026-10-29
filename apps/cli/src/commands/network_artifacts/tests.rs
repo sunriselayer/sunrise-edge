@@ -107,3 +107,30 @@ fn input_symlinks_are_read_but_output_symlinks_and_directory_aliases_are_refused
     );
     assert!(!output.exists());
 }
+
+#[test]
+fn bounded_input_errors_keep_network_artifact_classification() {
+    let directory: TestDirectory = TestDirectory::new();
+    let path: PathBuf = directory.path("input-errors");
+    let path_text: &str = path.to_str().unwrap();
+    std::fs::write(&path, b"input").unwrap();
+    let oversized: CliError = read_bounded(path_text, 4).unwrap_err();
+    assert!(matches!(
+        oversized,
+        CliError::LocalExecution(inner)
+            if inner.downcast_ref::<std::io::Error>().is_some_and(|source| {
+                source.kind() == std::io::ErrorKind::InvalidInput
+                    && source.to_string()
+                        == format!("{path_text} exceeds the maximum accepted size")
+            })
+    ));
+    let missing_path: PathBuf = directory.path("missing-input");
+    let missing: CliError = read_bounded(missing_path.to_str().unwrap(), 4).unwrap_err();
+    assert!(matches!(
+        missing,
+        CliError::LocalExecution(inner)
+            if inner.downcast_ref::<std::io::Error>().is_some_and(|source| {
+                source.kind() == std::io::ErrorKind::NotFound
+            })
+    ));
+}
