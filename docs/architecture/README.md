@@ -176,6 +176,9 @@ roadmap describes a later target state.
   ([DR-0261](decisions/0261-created-standard-asset-coin-custody.md)):
   extends the same immutable local pin to transfer and split/merge, keeping
   genesis fee typing, whole-frame approval and no-pin bytes unchanged.
+  [DR-0281](decisions/0281-live-recovered-application-coins.md) selects the
+  already recovered application key for the existing six live Coin stages
+  and each signer group's revoked restart.
 - [Portable certified relay contract](decisions/0204-portable-certified-relay.md):
   an explicitly configured closed HTTPS transport, separate from default
   event-only relays, embedded DO policy and core authority.

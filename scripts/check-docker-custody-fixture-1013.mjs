@@ -3440,6 +3440,22 @@ def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, addre
 
 
 
+    require_custody_signers_stopped()
+    original_key = f"{ROOT}/custody-keys/custody.seed"
+    recovered_key = f"{custody_dir}/own-recovered.seed.restored"
+    recovered_stat = os.lstat(recovered_key)
+    original_stat = os.lstat(original_key)
+    if (recovered_key == original_key or not stat.S_ISREG(recovered_stat.st_mode)
+            or recovered_stat.st_uid != CUSTODY_UID or stat.S_IMODE(recovered_stat.st_mode) != 0o600
+            or (recovered_stat.st_dev, recovered_stat.st_ino) == (original_stat.st_dev, original_stat.st_ino)):
+        raise FixtureFailure("application Coin live consumer requires the stopped, distinct recovered application key")
+
+    def recovered_signer_path(process):
+        selected_path = _custody_signer_runs.get(process, {}).get("key_file")
+        if selected_path != recovered_key:
+            raise FixtureFailure("application Coin signer did not load the recovered application key path")
+        return selected_path
+
     approvals = f"{ROOT}/custody-approvals"
     probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
         "custody::asset_application_coin_fixture::distinct_uid_application_coin_probe",
@@ -3509,7 +3525,7 @@ def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, addre
         signer = ["--custody-socket", socket_path, "--custody-uid", str(CUSTODY_UID), "--custody-expected-public-key", public_key]
         def serve_command(count):
             return cli_argv("custody", f"serve-{family}", *application_flags(custody_dir),
-                "--key-file", f"{ROOT}/custody-keys/custody.seed", "--socket", socket_path,
+                "--key-file", recovered_key, "--socket", socket_path,
                 "--approvals-dir", approvals, "--max-connections", str(count), "--max-requests", str(count), "--total-deadline-secs", "30")
         signs = []
         serve = None
@@ -3559,6 +3575,7 @@ def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, addre
                 if serve is None:
                     count = 3 * len(selected)
                     serve = start_serve(socket_path, 30, count, count, command=serve_command(count))
+                    live_key_path = recovered_signer_path(serve)
                 sign = cli_argv("custody", f"sign-{action}", *application_flags(operator_dir), "--request-file", f"{operator_dir}/{request_name}", *signer)
                 rc, _out, err = run_exec([*sign, "--out", f"{operator_dir}/app-coins-{tag}-offline.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
                 if rc != 0:
@@ -3600,6 +3617,7 @@ def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, addre
         n = len(selected)
         restarted = start_serve(socket_path, 30, n, n, command=serve_command(n))
         try:
+            restart_key_path = recovered_signer_path(restarted)
             for tag, _request_id, sign in signs:
                 refused_path = f"{operator_dir}/app-coins-{tag}-revoked-restart.bin"
                 rc, _out, refusal = run_exec([*sign, "--out", refused_path], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
@@ -3617,8 +3635,11 @@ def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, addre
                 for process in (serve, restarted)):
             raise FixtureFailure("strict application setup Coin children remain after actual wait")
         groups.append({"family": family, "tags": [definitions[index][0] for index in selected],
+            "live_key_path": live_key_path, "restart_key_path": restart_key_path,
             "serve_summary": summary.strip().splitlines(), "restart_summary": restart_summary.strip().splitlines()})
-    return {"actual_cli": True, "offline_bytes_equal": True, "all_saved_replays": True,
+    return {"original_key_path": original_key, "recovered_key_path": recovered_key,
+        "prior_signers_stopped_before_live": True, "recovered_key_file_distinct": True,
+        "actual_cli": True, "offline_bytes_equal": True, "all_saved_replays": True,
         "revoked": True, "revoked_after_restart": True, "intermediate_supply_zero": stages[3]["supply"] == 0,
         "final_supply": state["supply"], "final_cap_version": state["cap_version"], "final_next_nonce": state["next_nonce"],
         "asset_hex": definition_hex, "stages": stages, "groups": groups}
@@ -5008,6 +5029,12 @@ function validateApplicationSetupResult(result) {
     throw new Error('the own-created application Coin flow evidence is incomplete');
   }
   const coinModes = ['coin-after-mint-one', 'coin-after-split', 'coin-after-merge', 'coin-after-burn', 'coin-after-mint-two', 'coin-verify-transfer'];
+  if (coinFlow.original_key_path !== '/work/custody-keys/custody.seed' ||
+      coinFlow.recovered_key_path !== '/work/custody-create/own-recovered.seed.restored' ||
+      coinFlow.original_key_path === coinFlow.recovered_key_path ||
+      coinFlow.prior_signers_stopped_before_live !== true || coinFlow.recovered_key_file_distinct !== true) {
+    throw new Error('the application Coin flow must select the stopped, distinct recovered same-identity key');
+  }
   const coinCaps = [4, 4, 4, 5, 6, 6];
   const coinSupplies = [5_000_000, 5_000_000, 5_000_000, 0, 5_000_000, 5_000_000];
   for (const [index, stage] of coinFlow.stages.entries()) {
@@ -5027,6 +5054,9 @@ function validateApplicationSetupResult(result) {
         JSON.stringify(group.serve_summary) !== JSON.stringify(countKeys.map((key, column) => `${key}=${[3 * n, 3 * n, 2 * n, n][column]}`)) ||
         JSON.stringify(group.restart_summary) !== JSON.stringify(countKeys.map((key, column) => `${key}=${[n, n, 0, n][column]}`))) {
       throw new Error('the application Coin protected signer or restarted-refusal counters differ');
+    }
+    if (group.live_key_path !== coinFlow.recovered_key_path || group.restart_key_path !== coinFlow.recovered_key_path) {
+      throw new Error('each application Coin live signer and revoked restart must use the recovered application key path');
     }
   }
 }
