@@ -1,0 +1,119 @@
+# Operator helperとSQLite inventoryの通常保守
+
+Date: 2026-10-27 (Asia/Singapore)
+
+Source: `a3fa4576f18f81b6d81e4dd7ebb5dd3f18c3b680`
+
+Tree: `99fb314dd9aaac5e38e11802136afbb305dfcc84`
+
+Base: `8da1d620cba7428672df086318b2df2d3cec5976`
+
+[PR #333](https://github.com/sunriselayer/sunrise-edge/pull/333)
+
+ユーザーのmerge承認により、2026-10-27 09:12:32 UTCに既存base branch
+`codex/live-genesis-mint-burn-1022` へmergeした。
+Merge commitは `bfbca5fcdf6144241a4e7db8b8095375e1c92f7d`、treeは上記と一致し、
+parentsは `[8da1d620, a3fa4576]`。全8 CIとBugbotのsuccess、レビュー指摘0件、
+exact headを確認し、通常認証でmergeした。mainへの統合やbranch削除は行っていない。
+
+## 変更範囲
+
+- FastVote PGのscalar、decimal hash-suite、schedule parserをoperator commonへ移した。
+  literal-ID grammarは独立したまま、数値表記、診断と最初のerror、schedule順序と上限を保持した。
+- 小文字hex表示の7実装を共通helperへまとめた。既存の独立した期待値は保持した。
+- SQLite inventory fixtureがexporterのexact selectorとdiscovery/executionを所有する。
+  CI dispatcherも同fixtureを呼び、二重のselector管理を解消した。
+  standalone/CIの両入口で列挙0件、重複、列挙失敗、export失敗とcleanupを検証する。
+
+実装commitは `3a2e3aa4` と `a3fa4576`。依存、Cargo profile、protocol、custody、
+元のgate membership、selector、timeout、fault/workloadは変更していない。
+
+## 検証
+
+追加Rust互換性テストは8 passed / 0 failed / 0 ignored。
+Node 24.19.0の `scripts/test-ci-gates.mjs` 全体、rustfmt、bash syntax、diff checkは成功。
+通常の限定correctness reviewではblocking regressionを確認しなかった。
+
+同sourceのlocal実行は04:10:41 UTC開始、07:36:13 UTC自然終了。
+literal `npm ci --prefix adapters/cloudflare-workers`、`./scripts/check-all.sh`、
+既存の完全5-group PostgreSQL `profile` は全てactual exit 0で、
+それぞれ1.887秒、11,272.598秒、1,053.462秒だった。
+
+requiredのRust147 summariesは4,408 passed / 0 failed / 43 ignored、CFは
+13 + 28 + 10 + 15の全66件成功。元7 epochsとepoch8のterminal unlockを保持し、
+長時間host scenarioも9,610.08秒で成功した。
+PGはpg-storage、pg-lifecycle、pg-drain-history、pg-business-audit、
+pg-recovery-economicsの全5 groupsを実行し、Rust83 summariesは
+1,493 passed / 0 failed / 20 ignoredだった。
+crash、disk-full、WAL-full、connection exhaustion、backup/restore、PgBouncerの
+元required flagsを保持し、対応する実targetの成功とskipなしを照合した。
+これらは重複helperや別exact実行を含むsummary合計で、distinct test数ではない。
+
+rootは全43 commandsの86 streams、実両EOF/wait/reap、全1,225 source inputsの
+metadata/SHA/HEAD/tree/clean set、23 runtime tool roles、CFの2,347 tool rolesと
+2,725 layout rowsを終了後にも照合した。ownerと全command PID、captured cgroupの
+不在を確認し、自然終了証跡の保存後に空の完了unitだけを停止した。
+今回のPG owner label付きcontainer/volumeとraw記録のPG名は残っていない。
+
+全体Docker一覧を開始時と完全一致させる最初の終了後readerは停止した。
+別のd6e名container等の増減があるため、差分と失敗を保存し、今回のownerと
+記録したPG名の解放を確認した。rootはDockerの削除やpruneを行っていない。
+
+passing contract suite内のworkerd例外診断とmissing live secret warningはrawに保持する。
+既存test sourceにはplacement不一致や再open拒否の明示的なrejects検査があるが、
+各診断の個別対応付けやproduction設定の準備完了は主張しない。
+既存ignored testsも未実行として残す。
+
+[全8 CI](https://github.com/sunriselayer/sunrise-edge/actions/runs/40447306260) は
+attempt1のまま08:59:30 UTCに全job自然successとなった。
+rootは実8 raw logsの1,235,663 bytesと封印済みindexの全483 filesを再hashし、
+各checkout `f5ac237466f904921a99704c996a91def92b3c9a`、tree `99fb314d`、
+parents `[8da1d620, a3fa4576]` を実logとGitHub commit metadataで照合した。
+CIのRust147 summariesも4,408/0/43、CF全66件成功だった。
+
+初回のlog取得はghのescape-output guardで全8 childがexit1/0 raw bytesとなった。
+失敗を保持し、文書化されたbyte保持用flagでread-only取得を行った。
+取得の最初の2 attemptsはPID未記録のため、そのPID不在は主張しない。
+最後の完全取得は実両EOF/waitとcollector/全8 child PIDの不在を確認した。
+全保存attemptのrawは2,471,326 bytes、封印まで204.021秒で元上限内。
+early observerのinterval guardによるexit75も保存し、製品CIのrerun/cancelは行わなかった。
+
+local実行は既存source、target、cache、node_modulesを再利用し、専用の有限serviceで
+単一ownerが順番に実行する。Node 24.19.0、Rust 1.97.1、Deno 2.9.4、
+cf 1.0.0-beta.13を固定し、直接Wranglerを呼ばない。
+worktree、compiler cache、tool binaryのコピーやglobal default変更は行っていない。
+
+## 実行前の停止と保存
+
+最初のCF wrapper preflightは、旧manifestのfilesystem device 43と実配置52の不一致で停止した。
+製品検証の開始前であり、製品テスト失敗や成功へは数えない。
+全2,347 body hashesと2,725 layout rowsを照合し、device以外のmetadata、link target、
+resolved pathが一致した。system toolのdevice 37は変わっていない。
+
+初回readerが全toolのdevice変更を要求した停止も含め、旧manifest、wrapper、失敗rawを保存した。
+現在の配置に対応するmanifestへ固定し直し、wrapperのguard本体を保持した。
+deviceが変化した原因はこの照合では確定していない。
+
+ローカル証跡root:
+`/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013`
+
+| 証跡 | SHA-256 |
+| --- | --- |
+| `maintenance-dedup-1027-source-index.json` | `4f726376a102fb0500ac3e01d2670aa9aef351ced5eaaa47718699caa1807e1c` |
+| `maintenance-dedup-1027-owner.py` | `d9ed76c9e06f3d6a9fbb71342ae1cbc11bdf451fe348199fe59f22bc00dc6149` |
+| `maintenance-dedup-1027-config.json` | `312e3090e6a778f3a238162c0cf75b103a80fa5114bf7e9e22acd1cc6e66be97` |
+| `maintenance-dedup-1027-cf-closure-device52.json` | `8ceee07cbd07993a808edba96aba91d6974f1f1d8b9e823f27c19c886b86bd6c` |
+| `maintenance-dedup-1027-root-local-qualified.json` | `a2d32c3dbcd14254932e944aa5831ac7705e8f3cf40a354b41caa3e7bc787df0` |
+| `maintenance-dedup-1027-root-postclose-qualified.json` | `6b87f1f4afe9e714d4bf4d5294b3bf51d74cdef1a0f14919cd1edf7fc7b91d77` |
+| `maintenance-dedup-1027-root-docker-closure.json` | `ecd1fd6c2f189762574cd3896c7a7dcba789edcbbf743b14e06ad05862a773ca` |
+| `maintenance-dedup-1027-root-ci-qualified.json` | `51bfc507d56c8f680323de2b700019f6e8b0abd62b166d950d22eced2658fb7a` |
+| `maintenance-dedup-1027-ci-run-40447306260-20261027T040242Z/file-index.json` | `0095dd7cdff19129cb651896e0f4f2a5b124ab78fe4e94a31c3720255fe1d0b0` |
+| `maintenance-dedup-1027-merge-receipt.json` | `5c38e0bba8c457f68d3f84461689b9688ee0bee17128861982df7f63f82b286f` |
+
+## 元のTODOとの関係
+
+今回の3件は実装、互換性/契約テスト、同source完全required、完全5-group PG、全8 CIと
+終了後照合がそろったため完了。通常保守であり、D02/M1/M2/M3/M7の親5件は未完了のまま。
+停止済みの独立監査、ZeroShare、M3 torn-WAL/mechanism2、独立anchor VM boot修正は再開していない。
+この保守変更について新しいNative/M7 RELEASE認定は主張しない。
+main merge、deploy、実鍵、host user、security policy変更、定期タスク再作成は行っていない。
