@@ -123,12 +123,39 @@ fee recipient.
 `custody revoke` reuses the existing durable store exactly as DR-0246/
 DR-0249/DR-0253 describe, and this family's own revocation, expiry, and
 tampered-or-restored-record refusals are directly tested
-(`asset_create_tests.rs`). Key recovery and rotation share the same code
-paths as every other family and are not expected to differ, but — unlike
-revocation — neither is exercised by a create-asset-specific test; this is
-not new-family acceptance evidence for recovery or rotation. New assets
+(`asset_create_tests.rs`). The contained fixture adds a create-specific
+same-key recovery consumer described below. Full key rotation and ownership
+migration remain separate from this consumer. New assets
 created through this family remain unsupported by every other
 genesis-only custody family; this does not widen `transfer`/`split`/
 `merge`/`mint`/`burn` to any newly created asset. Actual source and
 execution qualification, including any Docker fixture extension, belong in
 [TODO.md](../../TODO.md).
+
+### Same-key recovery consumer
+
+After the original create-asset, its revoked restart and all own-created
+mint/burn/E67/Coin follow-ons have stopped, the fixture prepares a fresh `9d`
+request using the original public instance seed, canonical fee preimage and
+nonce. This is offline signing only. That seed's instance already exists and
+the fee/nonce preimages are historical: no second `Instantiate` is submitted
+and no live freshness or execution success is claimed.
+
+The request receives its own full attended `APPROVE-CREATE` review. An
+original-key `serve-create` signs this exact fresh frame, then exits and loses
+its socket before the existing custody-UID backup/restore helper runs. A
+recovered-key `serve-create` must produce identical complete signed bytes
+through the real `sign-create` CLI and its independent finalization. The old
+`95` revocation remains effective; cancelling `9d` refuses it in the same
+process, and a recovered-key restart refuses both IDs again. The exact
+reference/recovery/restart counts are 1/1/1/0, 3/3/1/2 and 2/2/0/2.
+
+Original config/genesis/fee/request and approval/revocation attachments, the
+fresh reviewed request and the same-frame reference must remain unchanged.
+Eight generated files stay private at mode 0600, and four refused output paths
+must stay absent. The added source control has nine direct CLI children, one
+PTY, three bounded signers and two custody-UID private-copy children, with
+16 KiB generated-file, 32 KiB captured-output and 2 KiB summary suballocations
+inside the unchanged fixture totals. All original/T/G cases and counters
+remain. Source coverage and actual execution qualification are distinct;
+[TODO.md](../../TODO.md) owns the latter.
