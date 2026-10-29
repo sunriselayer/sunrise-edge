@@ -15,6 +15,8 @@ use axum::{
 };
 use consensus::ConsensusSigner;
 use core::fmt;
+#[cfg(target_os = "linux")]
+pub mod certified_custody;
 mod fastvote;
 mod lifecycle;
 mod local_execution;

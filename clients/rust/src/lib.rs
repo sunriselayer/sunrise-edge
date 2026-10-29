@@ -239,8 +239,8 @@ pub use node_wire::{
     QueryResultError, ReceiptQueryStatus,
 };
 pub use objects::{
-    AccessMode, Address, Object, ObjectError, ObjectId, ObjectRef, Owner, decode_object,
-    encode_object,
+    AccessMode, Address, Object, ObjectError, ObjectId, ObjectRef, Owner, ProtocolCustodyPurpose,
+    ProtocolCustodyScope, decode_object, decode_object_ref, encode_object, encode_object_ref,
 };
 pub use validator_set::{ValidatorInfo, ValidatorSet};
 

@@ -22,7 +22,7 @@ fn invalid(message: impl Into<String>) -> CliError {
 
 /// Only the explicit schedule and declared successor directory lists are
 /// repeatable. Scalar pins stay strict before any file access.
-pub(super) fn parse_pinned_flags<I: IntoIterator<Item = OsString>>(
+pub(crate) fn parse_pinned_flags<I: IntoIterator<Item = OsString>>(
     args: I,
     specs: &[FlagSpec],
 ) -> Result<(ParsedArgs, Vec<HashSuiteSchedule>), CliError> {
@@ -87,7 +87,7 @@ pub(super) fn parse_pinned_flags<I: IntoIterator<Item = OsString>>(
 
 /// A complete locally configured schedule, with the declared current suite
 /// checked independently. An endpoint cannot choose this resolver.
-pub(super) fn publication_resolver(
+pub(crate) fn publication_resolver(
     expected: &sunrise_edge_client::ExpectedProtocolContext,
     schedules: Vec<HashSuiteSchedule>,
 ) -> Result<sunrise_edge_client::HashSuiteResolver, CliError> {

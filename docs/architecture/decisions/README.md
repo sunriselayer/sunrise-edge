@@ -148,3 +148,8 @@ in [`TODO.md`](../../../TODO.md).
 - [DR-0262: Native SQLite virtual power and typed block errors](0262-native-sqlite-virtual-power-and-block-errors.md)
 - [DR-0264: original ordered protocol custody worker](0264-original-ordered-protocol-custody-worker.md)
 - [DR-0265: stopped Native storage-profile software upgrade](0265-stopped-native-storage-profile-upgrade.md)
+- [DR-0267: positive Standard Asset fee-claim Split proposal policy](0267-positive-standard-asset-fee-claim-policy.md)
+- [DR-0268: certified FastVote protocol custody worker](0268-certified-fastvote-protocol-custody-worker.md)
+- [DR-0269: protected positive Standard Asset fee-claim Split](0269-positive-standard-asset-fee-claim-custody.md)
+- [DR-0270: genuine positive Split UID fixture](0270-genuine-positive-split-uid-fixture.md)
+- [DR-0271: current certified FastVote multi-UID component fixture](0271-certified-fastvote-multiuid-fixture.md)

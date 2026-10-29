@@ -229,6 +229,25 @@ enum SigningPolicy {
     SplitMerge(Box<AssetSplitMergeTrust>),
     MintBurn(Box<AssetMintBurnTrust>),
     Create(Box<AssetCreateTrust>),
+    PositiveFeeSplit(Box<super::positive_fee_split::PositiveFeeSplitTrust>),
+}
+
+pub(super) fn run_positive_fee_split(
+    config: CustodyConfig,
+    signer: LocalSigner,
+    socket_path: &Path,
+    approvals_dir: &Path,
+    bounds: ServeBounds,
+    trust: super::positive_fee_split::PositiveFeeSplitTrust,
+) -> Result<ServeSummary, CustodyError> {
+    run_with_policy(
+        config,
+        signer,
+        socket_path,
+        approvals_dir,
+        bounds,
+        SigningPolicy::PositiveFeeSplit(Box::new(trust)),
+    )
 }
 
 fn run_with_policy(
@@ -462,6 +481,7 @@ async fn handle_one_connection(
         SigningPolicy::SplitMerge(_) => asset_split_merge_wire::MAX_REQUEST_BYTES,
         SigningPolicy::MintBurn(_) => asset_mint_burn_wire::MAX_REQUEST_BYTES,
         SigningPolicy::Create(_) => asset_create_wire::MAX_REQUEST_BYTES,
+        SigningPolicy::PositiveFeeSplit(_) => super::positive_fee_split_wire::MAX_REQUEST_BYTES,
     };
     let frame = match read_request_frame(&mut stream, maximum).await {
         Ok(frame) => frame,
@@ -490,6 +510,13 @@ async fn handle_one_connection(
             .map_err(|error| refusal_status_for_wire_error(&error))
             .and_then(|request| {
                 sign_create_request(config, signer, approvals_dir, trust, &request)
+            }),
+        SigningPolicy::PositiveFeeSplit(trust) => super::positive_fee_split_wire::decode(&frame)
+            .map_err(|error| refusal_status_for_wire_error(&error))
+            .and_then(|request| {
+                trust
+                    .sign_approved(signer, approvals_dir, &request)
+                    .map_err(|_| CustodyResponseStatus::NoApproval)
             }),
     };
     match result {
