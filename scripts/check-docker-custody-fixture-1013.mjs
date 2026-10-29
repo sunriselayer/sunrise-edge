@@ -46,11 +46,14 @@
 //   node scripts/check-docker-custody-fixture-1013.mjs \
 //     --cli-binary /abs/path/to/target/.../sunrise-edge-cli \
 //     --test-binary /abs/path/to/target/.../deps/sunrise_edge_cli-<hash>
-// The default runs the original 117 checks. The independent foreign-split
-// control uses the same inputs plus --profile genesis-split-handoff; each
-// invocation has its own unchanged resource and captured-output bounds.
-// Historical application transfer recovery is a third separate profile,
-// --profile application-transfer-recovery, with all captured setup PTYs charged.
+// --profile publication-genesis (also the omitted/default alias) runs the
+// publication/genesis core. Pair it with --profile application-transfer-recovery
+// to retain every original 117 predicate: core70 plus application setup47,
+// counting the common success/cleanup predicates once. Each is a separate
+// allocation and invocation with unchanged bounds. --profile genesis-split-handoff
+// retains its separate 21 controls. No profile resets its captured-output counter.
+// --profile application-split-merge-recovery separately covers historical
+// application kind-3 recovery with the same complete application setup.
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
@@ -84,7 +87,7 @@ let volumeMountpoint;
 // ---- argument parsing: explicit, absolute, pre-validated host paths only ----
 
 function parseArgs(argv) {
-  const out = { profile: 'default' };
+  const out = { profile: 'publication-genesis' };
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
     const value = argv[index + 1];
@@ -93,8 +96,9 @@ function parseArgs(argv) {
     else if (flag === '--profile') out.profile = value;
     else throw new Error(`unknown or incomplete argument: ${flag ?? '(missing)'}`);
   }
-  if (!['default', 'genesis-split-handoff', 'application-transfer-recovery'].includes(out.profile)) {
-    throw new Error('unknown or incomplete --profile; expected default, genesis-split-handoff or application-transfer-recovery');
+  if (out.profile === 'default') out.profile = 'publication-genesis';
+  if (!['publication-genesis', 'genesis-split-handoff', 'application-transfer-recovery', 'application-split-merge-recovery'].includes(out.profile)) {
+    throw new Error('unknown or incomplete --profile; expected publication-genesis (default alias), genesis-split-handoff, application-transfer-recovery or application-split-merge-recovery');
   }
   if (!out.cliBinary || !out.testBinary) {
     throw new Error('both --cli-binary and --test-binary are required, with no default or discovery');
@@ -558,6 +562,8 @@ def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, exp
         except OSError:
             pass
     _pid, status = os.waitpid(pid, 0)
+    # One charge owner for every completed approval PTY; callers keep the length only.
+    charge_output(len(captured))
     if expectation_error is not None:
         raise FixtureFailure(expectation_error)
     if confirmation_line is None:
@@ -1106,6 +1112,42 @@ def expect_prepare_rotation_refusal(label, command, expected_substring, out_path
         raise FixtureFailure(f"{label}: a refused prepare still wrote its --out path")
 
 
+def application_recovery_review(out, kind, public_key, directory, trust_flags, asset, nonce, request_id, operation_lines, object_specs=()):
+    prepared_lines = out.decode("ascii").splitlines()
+    if not prepared_lines or prepared_lines[-1] != f"{kind}_request_exported=true":
+        raise FixtureFailure("application recovery review export boundary differs")
+    review_lines = tuple(prepared_lines[:-1])
+    fields = dict(line.split("=",1) for line in review_lines)
+    pins = trust_flags(directory)
+    expected = ["chain_id=custody-whole-coin-test", "protocol_version=7", "epoch=0", f"domain={DOMAIN_HEX}",
+        f"genesis_digest=sha2-256:{pins[pins.index('--genesis-digest')+1]}", f"sender={public_key}",
+        f"entrypoint={kind}", "application_pinned=true", f"application_asset={asset}",
+        f"application_instance_creator={public_key}", f"application_instance_seed={CREATE_INSTANCE_SEED_HEX}",
+        "application_instance_revision=1", "max_fee=1000000", f"refund_recipient={public_key}",
+        "gas_limit=200000", f"nonce={nonce}", f"request_id={request_id}", "freshness=enforced-at-execution-not-preparation", *operation_lines]
+    required = ("domain", "genesis_digest", "code_origin_publisher", "code_origin_seed", "code_revision", "code_artifact_digest",
+        "asset", "schema", "instance_creator", "instance_seed", "instance_revision", "instance_record_digest",
+        "application_instance_seed", "application_instance_record_digest", "fee_source_id", "reserve_entrypoint",
+        "settle_entrypoint", "fee_recipient", "base_policy_digest", "conversion_divisor", "reserve_allowance", "settle_allowance",
+        "gas_schedule", "policy_calls", "policy_handles", "policy_creations", "policy_events", "policy_memory_bytes",
+        "policy_output_bytes", "policy_publish_artifact_byte_price", "policy_publish_closure_node_price", "signing_frame", "fee_balance")
+    required += ("into_id", "from_id") if kind == "merge" else ("coin_id",)
+    if len(fields) != len(review_lines) or any(not value for value in fields.values()) or any(line not in review_lines for line in expected) or any(key not in fields for key in required):
+        raise FixtureFailure("application recovery full operation/pin/policy/frame review differs")
+    for key, prefix, suffix in object_specs:
+        line = f"{key}={fields[key]}"
+        digest = line[len(prefix):len(line)-len(suffix) if suffix else None]
+        if not line.startswith(prefix) or not line.endswith(suffix) or len(digest) != 64 or bytes.fromhex(digest).hex() != digest:
+            raise FixtureFailure("application recovery exact historical object review differs")
+    balance = fields["fee_balance"]
+    if not balance.isascii() or not balance.isdecimal() or str(int(balance)) != balance or int(balance) <= 1000000 or f"minimum_fee_source_balance={int(balance)-1000000}" not in review_lines:
+        raise FixtureFailure("application recovery genesis fee review differs")
+    frame = fields["signing_frame"]
+    if not frame or bytes.fromhex(frame).hex() != frame:
+        raise FixtureFailure("application recovery frame is not complete canonical hex")
+    return review_lines, balance
+
+
 def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags, recipient, previous_request_id, application_asset=None):
     # The original transfer signer and its revoked restart have already
     # exited. This is signing-only: the retained preimages are not submitted
@@ -1157,33 +1199,8 @@ def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, tr
         raise FixtureFailure(f"recovery transfer prepare failed: {err!r}")
     review_lines, confirmation_prefix = (), None
     if app:
-        prepared_lines = out.decode("ascii").splitlines()
-        if not prepared_lines or prepared_lines[-1] != "transfer_request_exported=true":
-            raise FixtureFailure("application recovery review export boundary differs")
-        review_lines = tuple(prepared_lines[:-1])
-        fields = dict(line.split("=",1) for line in review_lines)
-        pins = trust_flags(custody_dir)
-        expected = ["chain_id=custody-whole-coin-test", "protocol_version=7", "epoch=0", f"domain={DOMAIN_HEX}",
-            f"genesis_digest=sha2-256:{pins[pins.index('--genesis-digest')+1]}", f"sender={public_key}",
-            "entrypoint=transfer", "application_pinned=true", f"application_asset={application_asset}",
-            f"application_instance_creator={public_key}", f"application_instance_seed={CREATE_INSTANCE_SEED_HEX}",
-            "application_instance_revision=1", "amount=5000000",
-            "transfer=whole-coin-unchanged", f"recipient={recipient}", "max_fee=1000000", f"refund_recipient={public_key}",
-            "gas_limit=200000", "nonce=8", f"request_id={request_id}", "freshness=enforced-at-execution-not-preparation"]
-        required = ("domain", "genesis_digest", "code_origin_publisher", "code_origin_seed", "code_revision", "code_artifact_digest",
-            "asset", "schema", "instance_creator", "instance_seed", "instance_revision", "instance_record_digest",
-            "application_instance_seed", "application_instance_record_digest", "coin_id", "fee_source_id", "reserve_entrypoint",
-            "settle_entrypoint", "fee_recipient", "base_policy_digest", "conversion_divisor", "reserve_allowance", "settle_allowance",
-            "gas_schedule", "policy_calls", "policy_handles", "policy_creations", "policy_events", "policy_memory_bytes",
-            "policy_output_bytes", "policy_publish_artifact_byte_price", "policy_publish_closure_node_price", "signing_frame", "fee_balance")
-        if len(fields) != len(review_lines) or any(not value for value in fields.values()) or any(line not in review_lines for line in expected) or any(key not in fields for key in required):
-            raise FixtureFailure("application recovery full operation/pin/policy/frame review differs")
-        balance = fields["fee_balance"]
-        if not balance.isascii() or not balance.isdecimal() or str(int(balance)) != balance or int(balance) <= 1000000 or f"minimum_fee_source_balance={int(balance)-1000000}" not in review_lines:
-            raise FixtureFailure("application recovery genesis fee review differs")
-        frame = fields["signing_frame"]
-        if not frame or bytes.fromhex(frame).hex() != frame:
-            raise FixtureFailure("application recovery frame is not complete canonical hex")
+        review_lines, balance = application_recovery_review(out, "transfer", public_key, custody_dir, trust_flags,
+            application_asset, 8, request_id, ["amount=5000000", "transfer=whole-coin-unchanged", f"recipient={recipient}"])
         confirmation_prefix = f"APPROVE-TRANSFER sender={public_key} amount=5000000 recipient={recipient} fee_balance={balance} max_fee=1000000 nonce=8 request_id={request_id} not_after="
     with open(operator_request, "xb") as target:
         target.write(read_file_bytes_as_root(request_path))
@@ -1196,7 +1213,6 @@ def phase_transfer_recovery(public_key, custody_dir, operator_dir, approvals, tr
         raise FixtureFailure("recovery transfer approval unexpectedly accepted a pipe")
     pty_output_bytes = phase_approve_via_pty(None, None, nonce, request_id, 3600, command=approve,
         expected_review_lines=review_lines, expected_confirmation_prefix=confirmation_prefix)
-    charge_output(pty_output_bytes)
     if app and _output_used - output_before > 16384:
         raise FixtureFailure("application transfer recovery captured PTY exceeds16KiB")
 
@@ -1437,7 +1453,6 @@ def phase_genesis_coin_identity_handoff(public_key):
             if rc == 0 or b"custody approve requires an interactive terminal" not in err:
                 raise FixtureFailure("handoff approval accepted pipe or wrong refusal")
             pty_bytes = phase_approve_via_pty(None, None, 0, ids[index], 3600, command=approve)
-            charge_output(pty_bytes)
             pty_count += 1
             if _output_used - output_before > 49152:
                 raise FixtureFailure("handoff PTY capture exceeds48KiB phase allocation")
@@ -1695,22 +1710,24 @@ def phase_transfer(public_key):
     return {"actual_cli":True, "whole_coin":True, "offline_bytes_equal":True, "replay_equal":True, "revoked":True, "revoked_after_restart":True, "rotation_refused":True, "recovery":recovery}
 
 
-def phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags):
+def phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals, trust_flags, application=None):
     # Both requests are signing-only over retained ORIGINAL preimages. The
-    # merge inputs came from original91's actual split, never fresh9b output.
+    # merge inputs came from original91/a1's actual split, never fresh9b/a7.
     output_before = _output_used
-    request_ids = ("9b" * 32, "9c" * 32)
-    old_ids = (SPLIT_REQUEST_ID, MERGE_REQUEST_ID)
-    request_paths = [f"{custody_dir}/recovery-{kind}-request.bin" for kind in ("split", "merge")]
-    operator_requests = [f"{operator_dir}/recovery-{kind}-request.bin" for kind in ("split", "merge")]
-    references = [f"{operator_dir}/recovery-{kind}-reference.bin" for kind in ("split", "merge")]
-    signed_paths = [f"{operator_dir}/recovery-{kind}-signed.bin" for kind in ("split", "merge")]
-    backup_path, restored_path = f"{custody_dir}/recovered.seed.backup", f"{custody_dir}/recovered.seed.restored"
+    app = application is not None
+    prefix = "app-" if app else ""
+    request_ids = ("a7" * 32, "a8" * 32) if app else ("9b" * 32, "9c" * 32)
+    old_ids = ("a1" * 32, "a2" * 32) if app else (SPLIT_REQUEST_ID, MERGE_REQUEST_ID)
+    request_paths = [f"{custody_dir}/{prefix}recovery-{kind}-request.bin" for kind in ("split", "merge")]
+    operator_requests = [f"{operator_dir}/{prefix}recovery-{kind}-request.bin" for kind in ("split", "merge")]
+    references = [f"{operator_dir}/{prefix}recovery-{kind}-reference.bin" for kind in ("split", "merge")]
+    signed_paths = [f"{operator_dir}/{prefix}recovery-{kind}-signed.bin" for kind in ("split", "merge")]
+    backup_path, restored_path = f"{custody_dir}/{prefix}recovered.seed.backup", f"{custody_dir}/{prefix}recovered.seed.restored"
     files = [request_paths[0], operator_requests[0], request_paths[1], operator_requests[1],
              *references, *signed_paths, backup_path, restored_path,
              *(f"{approvals}/{request_id}" for request_id in request_ids),
              *(f"{approvals}/{request_id}.revoked" for request_id in request_ids)]
-    refusal_paths = [f"{operator_dir}/recovery-{label}.bin" for label in (
+    refusal_paths = [f"{operator_dir}/{prefix}recovery-{label}.bin" for label in (
         "old-split-revoked", "old-merge-revoked", "new-split-revoked", "new-merge-revoked",
         "old-split-revoked-restart", "old-merge-revoked-restart",
         "new-split-revoked-restart", "new-merge-revoked-restart")]
@@ -1765,10 +1782,17 @@ def phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals,
         if stamp(os.lstat(path)) != stamp(before):
             raise FixtureFailure("split/merge recovery evidence attachment changed")
         return stamp(before), bytes(chunks)
-    fixed_paths = [(f"{custody_dir}/{name}", CUSTODY_UID) for name in (
-        "config", "genesis.bin", "coin.bin", "fee.bin", "merge-inputs/into.bin",
-        "merge-inputs/from.bin", "merge-inputs/fee.bin")]
-    fixed_paths += [(f"{operator_dir}/{name}", OPERATOR_UID) for name in ("config", "genesis.bin")]
+    if app:
+        fixed_paths = [(f"{directory}/{name}", uid) for directory, uid in
+            ((custody_dir,CUSTODY_UID),(operator_dir,OPERATOR_UID)) for name in ("config","genesis.bin","create-instance.bin")]
+        fixed_paths += [(f"{custody_dir}/app-coins-inputs-{nonce}/app-coins-{role}-{nonce}.bin", CUSTODY_UID)
+            for nonce, roles in ((4,("first","fee")),(5,("first","split","fee"))) for role in roles]
+        fixed_paths += [(f"{operator_dir}/app-coins-{kind}-request.bin",OPERATOR_UID) for kind in ("split","merge")]
+    else:
+        fixed_paths = [(f"{custody_dir}/{name}", CUSTODY_UID) for name in (
+            "config", "genesis.bin", "coin.bin", "fee.bin", "merge-inputs/into.bin",
+            "merge-inputs/from.bin", "merge-inputs/fee.bin")]
+        fixed_paths += [(f"{operator_dir}/{name}", OPERATOR_UID) for name in ("config", "genesis.bin")]
     fixed_paths += [(f"{approvals}/{request_id}.revoked", CUSTODY_UID) for request_id in old_ids]
     fixed_before = {path: evidence(path, owner) for path, owner in fixed_paths}
     merge_inputs = f"{custody_dir}/merge-inputs"
@@ -1777,12 +1801,34 @@ def phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals,
                    "--amount", str(SPLIT_AMOUNT), "--recipient", public_key] if kind == "split" else
                   ["--into-file", f"{merge_inputs}/into.bin", "--from-file", f"{merge_inputs}/from.bin",
                    "--fee-source-file", f"{merge_inputs}/fee.bin"])
+        nonce = index + 4 if app else index
+        if app:
+            directory = f"{custody_dir}/app-coins-inputs-{nonce}"
+            preimage = lambda role: f"{directory}/app-coins-{role}-{nonce}.bin"
+            inputs = (["--coin-file",preimage("first"),"--amount","2000000","--recipient",public_key] if kind == "split" else
+                ["--into-file",preimage("first"),"--from-file",preimage("split")]) + ["--fee-source-file",preimage("fee")]
         prepare = cli_argv("custody", "prepare-" + kind, *trust_flags(custody_dir), *inputs,
-            "--nonce", str(index), "--request-id", request_ids[index],
+            "--nonce", str(nonce), "--request-id", request_ids[index],
             "--max-fee", "1000000", "--gas-limit", "200000", "--out", request_paths[index])
         rc, out, err = invoke(prepare, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
         if rc != 0 or (kind + "_request_exported=true").encode() not in out:
             raise FixtureFailure(f"recovery {kind} preparation failed: {err!r}")
+        review_lines, confirmation_prefix = (), None
+        if app:
+            first, split = application["first"], application["split"]
+            if kind == "split":
+                operation = ["held=5000000","split_amount=2000000","remainder=3000000",f"recipient={public_key}","recipient_is_self=true"]
+                objects = [("coin_id",f"coin_id={first} coin_version=1 coin_digest=sha2-256:"," coin_mode=write")]
+                typed = f"APPROVE-SPLIT sender={public_key} held=5000000 amount=2000000 recipient={public_key} recipient_is_self=true "
+            else:
+                operation = ["into_amount=3000000","from_amount=2000000","checked_total=5000000"]
+                objects = [("into_id",f"into_id={first} into_version=2 into_digest=sha2-256:"," into_mode=write"),
+                    ("from_id",f"from_id={split} from_version=1 from_digest=sha2-256:"," from_mode=consume")]
+                typed = f"APPROVE-MERGE sender={public_key} into_amount=3000000 from_amount=2000000 checked_total=5000000 "
+            objects.append(("fee_source_id",f"fee_source_id={application['fee']} fee_source_version={nonce+1} fee_source_digest=sha2-256:",""))
+            review_lines, balance = application_recovery_review(out,kind,public_key,custody_dir,trust_flags,
+                application["asset"],nonce,request_ids[index],operation,objects)
+            confirmation_prefix = typed + f"fee_balance={balance} max_fee=1000000 nonce={nonce} request_id={request_ids[index]} not_after="
         request_bytes = evidence(request_paths[index], CUSTODY_UID)[1]
         with open(operator_requests[index], "xb") as target:
             target.write(request_bytes)
@@ -1795,11 +1841,12 @@ def phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals,
         rc, _out, refusal = invoke(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
         if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
             raise FixtureFailure("split/merge recovery approval accepted a pipe")
-        charge_output(phase_approve_via_pty(None, None, index, request_ids[index], 3600, command=approve))
+        phase_approve_via_pty(None, None, nonce, request_ids[index], 3600, command=approve,
+            expected_review_lines=review_lines, expected_confirmation_prefix=confirmation_prefix)
         allocation()
     request_before = {path: evidence(path, owner) for path, owner in
         [*((path, CUSTODY_UID) for path in request_paths), *((path, OPERATOR_UID) for path in operator_requests)]}
-    reference_socket, recovered_socket = f"{ROOT}/run/split-merge-reference.sock", f"{ROOT}/run/split-merge-recovered.sock"
+    reference_socket, recovered_socket = f"{ROOT}/run/{prefix}split-merge-reference.sock", f"{ROOT}/run/{prefix}split-merge-recovered.sock"
     if any(os.path.lexists(path) for path in (reference_socket, recovered_socket)):
         raise FixtureFailure("split/merge recovery socket path is occupied")
     def serve(key_file, socket_path, count):
@@ -1834,7 +1881,8 @@ def phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals,
     # custody-UID copies. Never copy the approval/revocation store or key bytes to root.
     key_file = phase_recover_private_key(f"{ROOT}/custody-keys/custody.seed", backup_path, restored_path)
     allocation()
-    old_requests = [f"{operator_dir}/split-request.bin", f"{operator_dir}/merge-request.bin"]
+    old_requests = ([f"{operator_dir}/app-coins-{kind}-request.bin" for kind in ("split","merge")] if app else
+        [f"{operator_dir}/split-request.bin", f"{operator_dir}/merge-request.bin"])
     def refused(index, socket_path, kind, request_path):
         rc, _out, err = invoke([*sign(kind, socket_path, request_path), "--out", refusal_paths[index]],
             OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
@@ -1881,6 +1929,9 @@ def phase_split_merge_recovery(public_key, custody_dir, operator_dir, approvals,
         "generated_bytes":generated_bytes, "captured_output_bytes":captured_output_bytes,
         "run_exec_children":run_calls, "pty_children":2, "private_copy_children":2, "serve_children":3,
         "reference_summary":reference_summary, "serve_summary":recovered_summary, "restart_summary":restart_summary}
+    if app:
+        result.update({"application_asset":application["asset"], "historical_nonces":[4,5],
+            "review_content_checked":True, "original_reference_stopped_before_copy":True})
     if len(json.dumps(result, sort_keys=True).encode("utf8")) > 4096:
         raise FixtureFailure("split/merge recovery final evidence exceeds4KiB")
     return result
@@ -2261,7 +2312,7 @@ def phase_genesis_mint_burn_recovery(public_key, custody_dir, operator_dir, appr
         rc, _out, refusal = invoke(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
         if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
             raise FixtureFailure("genesis mint/burn recovery approval accepted a pipe")
-        charge_output(phase_approve_via_pty(None, None, index, request_ids[index], 3600, command=approve))
+        phase_approve_via_pty(None, None, index, request_ids[index], 3600, command=approve)
         allocation()
     reviewed_paths = [*((path, CUSTODY_UID) for path in request_paths),
                       *((path, OPERATOR_UID) for path in operator_requests),
@@ -2719,8 +2770,6 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
         raise FixtureFailure("own-asset mint approval unexpectedly accepted a pipe")
     pty_bytes = phase_approve_via_pty(None, None, 1, OWN_MINT_REQUEST_ID, 3600, command=approve_mint)
-    if strict_pty_accounting:
-        charge_output(pty_bytes)
 
     create_probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
         "custody::asset_create_fixture::distinct_uid_create_asset_probe", "--exact", "--ignored", "--nocapture", "--format", "terse"]
@@ -2791,8 +2840,6 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
         if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
             raise FixtureFailure("own-asset burn approval unexpectedly accepted a pipe")
         pty_bytes = phase_approve_via_pty(None, None, 2, OWN_BURN_REQUEST_ID, 3600, command=approve_burn)
-        if strict_pty_accounting:
-            charge_output(pty_bytes)
 
         sign_burn = cli_argv("custody", "sign-burn", *application_flags(operator_dir),
             "--request-file", f"{operator_dir}/own-burn-request.bin", *signer)
@@ -2915,8 +2962,6 @@ def phase_own_asset_mint_burn(custody_dir, operator_dir, public_key, address, ge
     if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
         raise FixtureFailure("own-asset recovery burn approval unexpectedly accepted a pipe")
     pty_bytes = phase_approve_via_pty(None, None, 2, recovery_request_id, 3600, command=approve_recovery_burn)
-    if strict_pty_accounting:
-        charge_output(pty_bytes)
 
     # ---- reference signature: the ORIGINAL key file, still not copied
     # anywhere, signs this exact SAME newly approved frame once, through its
@@ -3191,8 +3236,6 @@ def phase_own_asset_coin_operations(custody_dir, operator_dir, public_key, addre
                 if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
                     raise FixtureFailure(f"application Coin {tag} approval accepted a pipe")
                 pty_bytes = phase_approve_via_pty(None, None, nonce, request_id, 3600, command=approve)
-                if strict_pty_accounting:
-                    charge_output(pty_bytes)
                 if serve is None:
                     count = 3 * len(selected)
                     serve = start_serve(socket_path, 30, count, count, command=serve_command(count))
@@ -3353,7 +3396,7 @@ def phase_create_recovery(public_key, custody_dir, operator_dir, approvals, trus
     rc, _out, refusal = invoke(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID])
     if rc == 0 or b"custody approve requires an interactive terminal" not in refusal:
         raise FixtureFailure("create recovery approval accepted a pipe")
-    charge_output(phase_approve_via_pty(None, None, 0, request_id, 3600, command=approve))
+    phase_approve_via_pty(None, None, 0, request_id, 3600, command=approve)
     allocation()
     reviewed_paths = [(request_path, CUSTODY_UID), (operator_request, OPERATOR_UID),
                       (f"{approvals}/{request_id}", CUSTODY_UID)]
@@ -3525,8 +3568,6 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
     # shape, distinct from every other family's confirmation text) and
     # echoes it back verbatim; it never hardcodes the text itself.
     pty_bytes = phase_approve_via_pty(None, None, 0, CREATE_REQUEST_ID, 3600, command=approve_create)
-    if strict_pty_accounting:
-        charge_output(pty_bytes)
 
     serve = None
     native = None
@@ -3685,7 +3726,7 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
     if recovery_context is not None:
         if not strict_pty_accounting or recovery_context:
             raise FixtureFailure("application recovery context requires fresh strict accounting")
-        recovery_context.update({"digest":generated["digest"], "recipient":generated["recipient"],
+        recovery_context.update({"digest":generated["digest"], "recipient":generated["recipient"], "fee":generated["fee"],
             "asset":after_create["definition_hex"]})
 
     return {
@@ -3862,7 +3903,6 @@ def phase_genesis_split_identity_handoff(public_key):
                 raise FixtureFailure("split handoff approval accepted pipe or wrong refusal")
             pty_bytes = phase_approve_via_pty(None, None, 0, ids[index], 3600, command=approve,
                 expected_review_lines=review_lines, expected_confirmation_prefix=confirmation_prefix)
-            charge_output(pty_bytes)
             pty_count += 1
             if _output_used - output_before > 49152:
                 raise FixtureFailure("split handoff PTY capture exceeds48KiB phase allocation")
@@ -4078,7 +4118,6 @@ def main():
     transfer_summary = phase_transfer(public_key)
     split_merge_summary = phase_split_merge(public_key)
     mint_burn_summary = phase_mint_burn(public_key)
-    create_asset_summary, created_asset_mint_burn_summary, created_asset_coin_summary = phase_create_asset(public_key)
 
     coin_identity_handoff_summary = phase_genesis_coin_identity_handoff(public_key)
 
@@ -4094,7 +4133,9 @@ def main():
 
     print(json.dumps({
         "ok": True,
-        "scope": "custody_fixture_1013_docker_linux_uid_pty",
+        "scope": "custody_fixture_1013_publication_genesis_docker_linux_uid_pty",
+        "profile": "publication-genesis",
+        "captured_output_bytes": _output_used,
         "serve_summary": serve_summary.strip().splitlines(),
         "restart_signature_match": True,
         "generated_bytes_total": total_bytes,
@@ -4105,9 +4146,6 @@ def main():
         "transfer": transfer_summary,
         "split_merge": split_merge_summary,
         "mint_burn": mint_burn_summary,
-        "create_asset": create_asset_summary,
-        "created_asset_mint_burn": created_asset_mint_burn_summary,
-        "created_asset_coin_operations": created_asset_coin_summary,
         "genesis_coin_identity_handoff": coin_identity_handoff_summary,
         "lifecycle_summaries": [live_summary.strip().splitlines(), third_summary.strip().splitlines(), *recovery_summaries,
                                 restored_approval_summary, new_identity_summary],
@@ -4152,7 +4190,7 @@ def genesis_split_handoff_main():
     }, sort_keys=True))
 
 
-def application_transfer_recovery_main():
+def application_transfer_recovery_main(split_merge=False):
     phase_setup()
     public_key = phase_keygen()
     phase_write_config(public_key)
@@ -4162,9 +4200,15 @@ def application_transfer_recovery_main():
     def trust(directory):
         return ["--config", f"{directory}/config", "--genesis-manifest-file", f"{directory}/genesis.bin",
             "--genesis-digest", context["digest"], "--asset", context["asset"], "--instance-ref", f"{directory}/create-instance.bin"]
-    recovery = phase_transfer_recovery(public_key,custody_dir,operator_dir,f"{ROOT}/custody-approvals",trust,
-        context["recipient"],"a5"*32,application_asset=context["asset"])
-    phase_operator_cannot_read_or_edit("a6"*32, f"{custody_dir}/app-transfer-recovered.seed.restored")
+    if split_merge:
+        context.update({"first":coins["stages"][0]["first_coin_hex"], "split":coins["stages"][1]["split_coin_hex"]})
+        recovery = phase_split_merge_recovery(public_key,custody_dir,operator_dir,f"{ROOT}/custody-approvals",trust,context)
+        for request_id in ("a7"*32,"a8"*32):
+            phase_operator_cannot_read_or_edit(request_id,f"{custody_dir}/app-recovered.seed.restored")
+    else:
+        recovery = phase_transfer_recovery(public_key,custody_dir,operator_dir,f"{ROOT}/custody-approvals",trust,
+            context["recipient"],"a5"*32,application_asset=context["asset"])
+        phase_operator_cannot_read_or_edit("a6"*32, f"{custody_dir}/app-transfer-recovered.seed.restored")
     total_bytes = 0
     for dirpath, _dirs, names in os.walk(ROOT):
         for name in names:
@@ -4172,23 +4216,27 @@ def application_transfer_recovery_main():
             except FileNotFoundError: continue
     if total_bytes > 64*1024*1024:
         raise FixtureFailure("generated fixture files exceed the64MiB bound")
-    print(json.dumps({"ok":True,"scope":"custody_fixture_1013_application_transfer_recovery_docker_linux_uid_pty",
-        "profile":"application-transfer-recovery","strict_pty_accounting":True,"captured_output_bytes":_output_used,
+    profile = "application-split-merge-recovery" if split_merge else "application-transfer-recovery"
+    print(json.dumps({"ok":True,"scope":"custody_fixture_1013_"+profile.replace("-","_")+"_docker_linux_uid_pty",
+        "profile":profile,"strict_pty_accounting":True,"captured_output_bytes":_output_used,
         "generated_bytes_total":total_bytes,"key_isolation":{"custody_uid":CUSTODY_UID,"operator_uid":OPERATOR_UID,
-            "intruder_uid":INTRUDER_UID,"read_refusals":2,"approval_write_refusals":2,"isolation_children_waited":4},
+            "intruder_uid":INTRUDER_UID,"read_refusals":3 if split_merge else 2,
+            "approval_write_refusals":3 if split_merge else 2,"isolation_children_waited":6 if split_merge else 4},
         "create_asset":create,"created_asset_mint_burn":mint_burn,"created_asset_coin_operations":coins,
-        "application_transfer_recovery":recovery},sort_keys=True))
+        ("application_split_merge_recovery" if split_merge else "application_transfer_recovery"):recovery},sort_keys=True))
 
 
 try:
     if len(sys.argv) != 2:
         raise FixtureFailure("fixture requires one explicit profile selector")
-    if sys.argv[1] == "default":
+    if sys.argv[1] == "publication-genesis":
         main()
     elif sys.argv[1] == "genesis-split-handoff":
         genesis_split_handoff_main()
     elif sys.argv[1] == "application-transfer-recovery":
         application_transfer_recovery_main()
+    elif sys.argv[1] == "application-split-merge-recovery":
+        application_transfer_recovery_main(True)
     else:
         raise FixtureFailure("unknown fixture profile selector")
 except FixtureFailure as failure:
@@ -4347,8 +4395,10 @@ async function inspectVolume(cleanup = false) {
   return volume;
 }
 
-function validateDefaultResult(result) {
-  if (result.scope !== 'custody_fixture_1013_docker_linux_uid_pty' || result.restart_signature_match !== true ||
+function validatePublicationGenesisResult(result) {
+  if (result.scope !== 'custody_fixture_1013_publication_genesis_docker_linux_uid_pty' ||
+      result.profile !== 'publication-genesis' || !Number.isSafeInteger(result.captured_output_bytes) ||
+      result.captured_output_bytes <= 0 || result.captured_output_bytes > 262_144 || result.restart_signature_match !== true ||
       !Number.isSafeInteger(result.generated_bytes_total) || result.generated_bytes_total <= 0 ||
       result.generated_bytes_total > 64 * 1024 * 1024 ||
       result.revocation_enforced !== true || result.recovery_signature_match !== true ||
@@ -4523,6 +4573,15 @@ function validateDefaultResult(result) {
       throw new Error('the identity-matched handoff signer lifecycle counters differ');
     }
   }
+  if (!Array.isArray(result.lifecycle_summaries) || result.lifecycle_summaries.length !== expectedLifecycle.length ||
+      result.lifecycle_summaries.some((summary, index) =>
+        JSON.stringify(summary) !== JSON.stringify(countKeys.map((key, column) => `${key}=${expectedLifecycle[index][column]}`)))) {
+    throw new Error('the lifecycle serve summaries are incomplete or differ');
+  }
+}
+
+function validateApplicationSetupResult(result) {
+  const countKeys = ['connections_accepted', 'requests_handled', 'requests_signed', 'requests_refused'];
   // `phase_create_asset`'s own `check_summary` calls already enforce the
   // exact kind-5 serve counts (3/3/2/1, then 1/1/0/1 after revocation and
   // restart) by raising inside the container on any mismatch, exactly like
@@ -4652,11 +4711,6 @@ function validateDefaultResult(result) {
       throw new Error('the application Coin protected signer or restarted-refusal counters differ');
     }
   }
-  if (!Array.isArray(result.lifecycle_summaries) || result.lifecycle_summaries.length !== expectedLifecycle.length ||
-      result.lifecycle_summaries.some((summary, index) =>
-        JSON.stringify(summary) !== JSON.stringify(countKeys.map((key, column) => `${key}=${expectedLifecycle[index][column]}`)))) {
-    throw new Error('the lifecycle serve summaries are incomplete or differ');
-  }
 }
 
 function validateGenesisSplitHandoffResult(result) {
@@ -4718,6 +4772,7 @@ function validateGenesisSplitHandoffResult(result) {
 }
 
 function validateApplicationTransferRecoveryResult(result) {
+  validateApplicationSetupResult(result);
   const isolation = result.key_isolation;
   const recovery = result.application_transfer_recovery;
   const created = result.create_asset;
@@ -4755,6 +4810,50 @@ function validateApplicationTransferRecoveryResult(result) {
   for (const [key, counts] of [['reference_summary',[1,1,1,0]],['serve_summary',[3,3,1,2]],['restart_summary',[2,2,0,2]]]) {
     if (JSON.stringify(recovery[key]) !== JSON.stringify(countKeys.map((name,index) => `${name}=${counts[index]}`)))
       throw new Error('application recovery actual signer counters differ');
+  }
+}
+
+function validateApplicationSplitMergeRecoveryResult(result) {
+  validateApplicationSetupResult(result);
+  const isolation = result.key_isolation;
+  const recovery = result.application_split_merge_recovery;
+  const created = result.create_asset;
+  const coins = result.created_asset_coin_operations;
+  if (result.scope !== 'custody_fixture_1013_application_split_merge_recovery_docker_linux_uid_pty' ||
+      result.profile !== 'application-split-merge-recovery' || result.strict_pty_accounting !== true ||
+      !Number.isSafeInteger(result.captured_output_bytes) || result.captured_output_bytes <= 0 || result.captured_output_bytes > 262_144 ||
+      !Number.isSafeInteger(result.generated_bytes_total) || result.generated_bytes_total <= 0 || result.generated_bytes_total > 64*1024*1024 ||
+      !isolation || isolation.custody_uid !== 12001 || isolation.operator_uid !== 12002 || isolation.intruder_uid !== 12003 ||
+      isolation.read_refusals !== 3 || isolation.approval_write_refusals !== 3 || isolation.isolation_children_waited !== 6 ||
+      !created || !coins || !recovery) throw new Error('application split/merge recovery setup evidence is incomplete');
+  const predicates = ['sign_only','same_frame_bytes','retained_preimages_unchanged','old_revocation_retained',
+    'new_revocation_enforced','revoked_after_restart','all_sockets_absent','review_content_checked','original_reference_stopped_before_copy'];
+  if (predicates.some((key) => recovery[key] !== true)) throw new Error('application split/merge recovery predicate is incomplete');
+  if (recovery.application_asset !== created.definition_hex || coins.asset_hex !== created.definition_hex ||
+      JSON.stringify(recovery.request_ids) !== JSON.stringify(['a7'.repeat(32),'a8'.repeat(32)]) ||
+      JSON.stringify(recovery.previous_request_ids) !== JSON.stringify(['a1'.repeat(32),'a2'.repeat(32)]) ||
+      JSON.stringify(recovery.historical_nonces) !== '[4,5]' ||
+      recovery.generated_files !== 14 || recovery.run_exec_children !== 18 || recovery.pty_children !== 2 ||
+      recovery.private_copy_children !== 2 || recovery.serve_children !== 3 ||
+      !Number.isSafeInteger(recovery.generated_bytes) || recovery.generated_bytes <= 0 || recovery.generated_bytes > 32_768 ||
+      !Number.isSafeInteger(recovery.captured_output_bytes) || recovery.captured_output_bytes <= 0 || recovery.captured_output_bytes > 49_152 ||
+      Buffer.byteLength(JSON.stringify(recovery)) > 4096) throw new Error('application split/merge recovery identity or finite allocation differs');
+  const custody = '/work/custody-create', operator = '/work/operator/create';
+  const ids = ['a7'.repeat(32),'a8'.repeat(32)];
+  const paths = [`${custody}/app-recovery-split-request.bin`,`${operator}/app-recovery-split-request.bin`,
+    `${custody}/app-recovery-merge-request.bin`,`${operator}/app-recovery-merge-request.bin`,
+    ...['reference','signed'].flatMap((suffix) => ['split','merge'].map((kind) => `${operator}/app-recovery-${kind}-${suffix}.bin`)),
+    `${custody}/app-recovered.seed.backup`,`${custody}/app-recovered.seed.restored`,
+    ...ids.map((id) => `/work/custody-approvals/${id}`),...ids.map((id) => `/work/custody-approvals/${id}.revoked`)];
+  const refusals = ['old-split-revoked','old-merge-revoked','new-split-revoked','new-merge-revoked',
+    'old-split-revoked-restart','old-merge-revoked-restart','new-split-revoked-restart','new-merge-revoked-restart']
+    .map((label) => `${operator}/app-recovery-${label}.bin`);
+  if (JSON.stringify(recovery.generated_paths) !== JSON.stringify(paths) || JSON.stringify(recovery.refusal_paths) !== JSON.stringify(refusals))
+    throw new Error('application split/merge recovery exact file/refusal inventory differs');
+  const countKeys = ['connections_accepted','requests_handled','requests_signed','requests_refused'];
+  for (const [key, counts] of [['reference_summary',[2,2,2,0]],['serve_summary',[6,6,2,4]],['restart_summary',[4,4,0,4]]]) {
+    if (JSON.stringify(recovery[key]) !== JSON.stringify(countKeys.map((name,index) => `${name}=${counts[index]}`)))
+      throw new Error('application split/merge recovery actual signer counters differ');
   }
 }
 
@@ -4828,9 +4927,10 @@ try {
   if (completed.code !== 0 || result.ok !== true) {
     throw new Error(`fixture reported failure: ${result?.error ?? completed.stderr.trim() ?? 'unknown'}`);
   }
-  if (profile === 'default') validateDefaultResult(result);
+  if (profile === 'publication-genesis') validatePublicationGenesisResult(result);
   else if (profile === 'genesis-split-handoff') validateGenesisSplitHandoffResult(result);
-  else validateApplicationTransferRecoveryResult(result);
+  else if (profile === 'application-transfer-recovery') validateApplicationTransferRecoveryResult(result);
+  else validateApplicationSplitMergeRecoveryResult(result);
 } catch (error) {
   primaryError = error;
 } finally {

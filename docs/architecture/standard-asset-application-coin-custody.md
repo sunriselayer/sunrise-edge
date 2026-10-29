@@ -90,9 +90,16 @@ public deployment or independent security clearance follows from this slice.
 The separate `--profile application-transfer-recovery` invocation runs fresh
 contained application setup and then exercises kind-2 same-key recovery. Use
 it with the same explicit `--cli-binary` and `--test-binary` inputs as the
-existing Docker fixture. The omitted/default profile retains its original
-117 checks; `--profile genesis-split-handoff` retains its separate 21. This
-profile does not append work to either invocation or reset its accounting.
+existing Docker fixture. `--profile publication-genesis` and its omitted or
+`--profile default` aliases select the publication/genesis core. Its 70
+completion predicates and this profile's 47 original application setup
+predicates retain the original 117-predicate coverage across two invocations,
+with common success/cleanup counted once. The complete original create,
+recovered-key mint/burn, six-stage Coin and signer-group host checks also run
+for this profile; its additional historical transfer recovery stays here.
+`--profile genesis-split-handoff` retains its separate 21. Each invocation has
+its own allocation and accounting; no counter is reset within an allocation.
+The old single-result 117-field shape is not the core result schema.
 
 It retains the application Coin and separate genesis fee preimages from
 historical nonce eight, after all original business signers and the native
@@ -110,12 +117,15 @@ the original seed, and the new isolation probe checks the actual restored path;
 both also refuse operator edits to their corresponding approval. Public preimages, trust files
 and requests must retain their bytes and attachment metadata.
 
-The new profile opts into strict PTY accounting for its entire reused create,
-own mint/burn and six-operation application Coin setup. Each captured PTY is
-charged once, including the setup calls whose original default path only had
-the local 16KiB PTY limit. That inherited default accounting behavior is
-preserved here; this new profile's later success cannot establish complete
-cumulative PTY accounting for the older default invocation. The new recovery
+The shared approval helper charges each completed PTY capture exactly once,
+after waiting for its child and before checking the review, exit status or
+approval record. Callers retain the returned byte length without charging it
+again. This includes the default invocation and every separate profile;
+phase-local totals still measure the same cumulative counter without resets.
+The strict application setup option retains its additional child-closure
+checks; accounting no longer depends on that option. Each PTY retains its
+16KiB local limit, and actual invocation headroom remains an owning-run result.
+The new recovery
 adds exactly nine CLI children, one PTY, two custody-private copy children and
 three bounded signers, with eight generated private leaves, four absent
 refusal outputs, at most 16KiB generated content and 16KiB captured output.
@@ -126,6 +136,50 @@ Actual output headroom is an owning-run result, not a source-only guarantee.
 The fresh recovery request is signed only and is never submitted. It makes no
 claim about the historical nonce or fee being usable again, another business
 execution, a new owner, creator migration, key rotation or live currentness.
-Application split/merge recovery remains separate pending work. Static source
-checks do not establish distinct-UID execution; TODO.md owns actual owning,
-full-required and hosted validation for the selected source.
+Static source checks do not establish distinct-UID execution; TODO.md owns
+actual owning, full-required and hosted validation for the selected source.
+
+## Historical split/merge recovery profile (2026-10-18)
+
+The separate `--profile application-split-merge-recovery` invocation repeats
+the strict create, mint/burn, six-stage Coin and create-recovery setup, including
+the exact same 47 application setup validations. It then signs two independent
+historical kind-3 requests: fresh `a7` uses the retained nonce-four first Coin
+and genesis fee preimages, and fresh `a8` uses the retained nonce-five first
+Coin, split Coin and fee preimages. The merge preimages are outputs of the
+original `a1` split, not outputs of `a7`, which is never submitted.
+
+Every role retains the complete application definition/InstanceRecord and
+separate genesis fee pins. Before either terminal confirmation is echoed,
+the fixture checks the complete prepare review and exact typed confirmation
+prefix. The split review must show the original first Coin at version one,
+5M held, 2M split to self and 3M remainder. The merge review must show that
+first Coin at version two with 3M, the distinct split Coin at version one with
+2M and consume mode, and a checked 5M total. Both reviews include their exact
+historical genesis fee identity/version, policy fields and complete frame.
+
+The original key signs those same two frames as references. Its process must
+exit, be waited and leave neither PID nor socket before the two custody-UID
+backup/restored-key copy children run. Restored-key signatures must match the
+reference bytes. Old `a1`/`a2` requests and newly revoked `a7`/`a8` requests
+must refuse without outputs, both before and after a signer restart. All
+public attachments remain byte- and metadata-identical. Operator probes use
+the actual restored-key path and each new approval; together with the setup
+probe they record three read refusals, three edit refusals and six waited
+children. The two new read probes repeat the same restored-key path; these
+counts do not represent three unique keys. They are separate from the
+recovery's 25 children.
+
+The recovery adds exactly 18 CLI children, two PTYs, two private-copy children
+and three signers. Its fixed allocation has 14 generated private leaves,
+eight absent refusal paths, at most 32KiB generated content, 48KiB captured
+output and a 4KiB recovery summary. All successful PTY captures are charged
+once. The invocation retains the same 256KiB global capture limit, 16KiB
+per-PTY limit, deadlines, Docker limits and wire/transport bounds. Core70,
+genesis split-handoff21 and application transfer recovery remain independent
+profiles with their existing checks. Actual headroom requires an owning run.
+
+These are historical signing-only requests, not a new split-to-merge execution
+chain. They establish no reusable nonce/fee freshness, current state, owner
+change, creator migration, key rotation or new policy. Qualification remains
+source-specific in TODO.md.
