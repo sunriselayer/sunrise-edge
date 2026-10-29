@@ -84,3 +84,48 @@ application execution or currentness. Distinct-UID CLI execution, owning/full
 validation and release gates remain source-specific acceptance work tracked
 in TODO.md. No real-key custody, ownership migration, automatic signing,
 public deployment or independent security clearance follows from this slice.
+
+## Historical transfer recovery profile (2026-10-18)
+
+The separate `--profile application-transfer-recovery` invocation runs fresh
+contained application setup and then exercises kind-2 same-key recovery. Use
+it with the same explicit `--cli-binary` and `--test-binary` inputs as the
+existing Docker fixture. The omitted/default profile retains its original
+117 checks; `--profile genesis-split-handoff` retains its separate 21. This
+profile does not append work to either invocation or reset its accounting.
+
+It retains the application Coin and separate genesis fee preimages from
+historical nonce eight, after all original business signers and the native
+host have actually stopped. A fresh `a6` request uses the unchanged complete
+application definition/InstanceRecord and genesis pins in every custody and
+operator role. The real terminal must display the complete prepared review,
+including application identity, whole amount, recipient, fee policy and full
+signing frame, and the exact `APPROVE-TRANSFER` prefix before confirmation.
+The original key signs that same request once; its process is waited, its PID
+is absent and its socket is gone before the custody UID makes the existing
+private backup/restored-key copies. The restored signer must produce identical
+bytes. The old `a5` revocation and new `a6` revocation each refuse with absent
+outputs in the same process and after restart. The setup isolation probe checks
+the original seed, and the new isolation probe checks the actual restored path;
+both also refuse operator edits to their corresponding approval. Public preimages, trust files
+and requests must retain their bytes and attachment metadata.
+
+The new profile opts into strict PTY accounting for its entire reused create,
+own mint/burn and six-operation application Coin setup. Each captured PTY is
+charged once, including the setup calls whose original default path only had
+the local 16KiB PTY limit. That inherited default accounting behavior is
+preserved here; this new profile's later success cannot establish complete
+cumulative PTY accounting for the older default invocation. The new recovery
+adds exactly nine CLI children, one PTY, two custody-private copy children and
+three bounded signers, with eight generated private leaves, four absent
+refusal outputs, at most 16KiB generated content and 16KiB captured output.
+Every invocation retains the global 256KiB captured-output limit, 280/230-second
+Node/Python deadlines and original Docker, volume, wire and transport bounds.
+Actual output headroom is an owning-run result, not a source-only guarantee.
+
+The fresh recovery request is signed only and is never submitted. It makes no
+claim about the historical nonce or fee being usable again, another business
+execution, a new owner, creator migration, key rotation or live currentness.
+Application split/merge recovery remains separate pending work. Static source
+checks do not establish distinct-UID execution; TODO.md owns actual owning,
+full-required and hosted validation for the selected source.
