@@ -3,7 +3,7 @@
 Source `5ac947f3856d3abbfb39abbdcf3e713d328cb7b4` / tree
 `10b53dc5c42b88086c56af24ef6403bcd846c827`。
 BaseはPR #335 merge `55a787d8`。
-[PR #336](https://github.com/sunriselayer/sunrise-edge/pull/336) はReady for review。
+[PR #336](https://github.com/sunriselayer/sunrise-edge/pull/336) は2026-10-29にmerge済み。
 
 CLIの1回openとbounded read、SDKのtyped32 query hex、operatorのtest hex5コピー、
 startup-refusalの既存ChildGuard再利用を実装し、commit/pushした。
@@ -53,7 +53,7 @@ Bugbotがannotations0のため専用annotation fileを持たない点の初回�
 製品検証・CIを再実行した結果ではない。
 
 4件すべてを実装・同sourceの完全required/全8 CI・終了後照合がそろったため完了とする。
-実装と検証記録をcommit/pushし、PR #336はReady for review。
+実装と検証記録をcommit/pushし、PR #336は2026-10-29にmergeした。
 PG実装・依存の変更とPG deploymentの主張は含まず、別PG profileを今回の実行に含めない。
 
 既存checkout/target/cache、Node24.19.0、Rust1.97.1、Deno2.9.4、cfとretained wrappersを再利用した。
@@ -63,6 +63,21 @@ full ownerは28200秒work +300秒cleanup、service上限を含め28800秒以内�
 
 元の85 checkbox /71完了 /14未完了とD02/M1/M2/M3/M7の親5件は保持する。
 停止済み監査、ZeroShare、torn-WAL/mechanism2、独立anchor guestには着手しない。
+
+## Merge確認
+
+2026-10-29 08:52:12 UTC (16:52:12 SGT) に通常mergeした。
+直前のhead `5ac947f3` /base `55a787d8`、Bugbot no issues、全9 checks success、
+review/comments/未解決threadsなしを確認し、expected-head guardを使用した。
+GitHub連携は403で変更なしのため、通常gh認証で実行した。PR作成専用PATは使用していない。
+
+実merge `34da6a5566c0702dfdd009497557dcca2fe1f404` の公式treeは
+`10b53dc5c42b88086c56af24ef6403bcd846c827`、ordered parentsは
+`[55a787d8a5f8ace68ca8a04bb7dee014c66aa8fe, 5ac947f3856d3abbfb39abbdcf3e713d328cb7b4]`。
+treeは検証済みsource/CIと一致する。merge先は `codex/live-genesis-mint-burn-1022`。
+親PR #332はopen/Draftで、main統合とは区別する。raw receipt
+`maintenance-four-1029-merge336-receipt.json` のSHA256は
+`2c613ca28bb5dee46d5f491473ff49f737b1a8a435f21bdda24b49337334e22e`。
 
 ## 保存先
 

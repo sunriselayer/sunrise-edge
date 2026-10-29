@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-10-27 (Asia/Singapore)。これは唯一の現行作業表です。
+更新: 2026-10-29 (Asia/Singapore)。これは唯一の現行作業表です。
 設計は[architecture](docs/architecture/README.md)、実装場所は
 [code map](docs/development/code-map.md)、整理の決定は
 [DR-0236](docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md)に置きます。
@@ -97,8 +97,9 @@ Delivery 4の8件には順番どおりD01-D08を付けました。
 2026-10-22追記: 復旧済み同一鍵のgenesis split/mergeと、参照body付きACK喪失後の
 正常再起動・同一要求再送の2子条件を、同じb389 sourceのE206/E208/E209で完了しました。
 同日の次作業として、元M2 recovery条件からgenesis mint/burnのlive復旧鍵consumerを
-1子項目へ細分化しました。現行チェックボックスは **85個中70個完了・15個未完了**。
-残る15個はコード・検証の親5件、停止中の子3件、検証中のmint/burn子1件、公開準備の親6件です。
+1子項目へ細分化しました。現行チェックボックスは **85個中71個完了・14個未完了**。
+残る14個はコード・検証の親5件、停止中の子3件、公開準備の親6件です。
+mint/burn子項目はE213/E218/E219/E222の同source照合で完了しています。
 旧20親項目の9完了/11未完了は変わりません。
 
 チェックは各行に明記した「対象」の完了を示します。実装があること、
@@ -1958,8 +1959,29 @@ checksum対象1,048 filesとmanifest、224 commandsの実exit/両EOF/waitとPID�
 各実checkout `f1e8ed1c` はtree `10b53dc5`、parents `[55a787d8, 5ac947f3]` と公式metadataでも一致した。
 Bugbotを含む全9 checksはsuccess、issue/review/commentsは0。8 annotationsはrunner-image移行noticeでwarning/failure0。
 終了後readerの3件のschema/ANSI/path仮定の停止も保持し、製品やCIのrerun/cancelは0。
-[PR #336](https://github.com/sunriselayer/sunrise-edge/pull/336) はReady for review。
+[PR #336](https://github.com/sunriselayer/sunrise-edge/pull/336) は2026-10-29にmerge済み。
 [検証記録](docs/development/validation/2026-10-28-cli-test-support-dedup/README.md) をcommit/pushした。
 
 元の85 checkbox /71完了 /14未完了と親D02/M1/M2/M3/M7は変えない。
 停止済み監査・ZeroShare・torn-WAL/mechanism2・独立anchor guestには着手せず、新しい親完了条件も追加しない。
+
+## 2026-10-29 PR #336 mergeと残件確認
+
+ユーザーの「bugbot問題なかったらマージしよ」により、現行head `5ac947f3` の
+Bugbotはno issues、元全8 CI jobsを含む全9 checksはsuccess、reviews/comments/未解決threadsは0と再確認した。
+headとbase `55a787d8` を直前に照合し、expected-head guard付き通常mergeを実行した。
+GitHub連携のmerge APIは403で変更なし。通常のgh認証でmergeし、PR作成専用PATは使用していない。
+
+実mergeは `34da6a5566c0702dfdd009497557dcca2fe1f404`、
+2026-10-29 08:52:12 UTC (16:52:12 SGT) 。公式Git metadataのtree `10b53dc5` と
+ordered parents `[55a787d8, 5ac947f3]` は、検証済みsource/CI treeと一致した。
+merge先は `codex/live-genesis-mint-burn-1022` で、[親PR #332](https://github.com/sunriselayer/sunrise-edge/pull/332) はopen/Draft。
+親stackのmain統合は今回のmergeには含めない。
+raw receipt `maintenance-four-1029-merge336-receipt.json` / SHA256
+`2c613ca28bb5dee46d5f491473ff49f737b1a8a435f21bdda24b49337334e22e` を保存した。
+
+現行の未完了14チェックは、コード・検証の親D02/M1/M2/M3/M7、停止中の子3件、
+公開準備D04/D06/D07/D08/M6/M8。今回の通常保守4件は完了しており、
+追加の通常実装不足はまだ特定していない。M2は既存のfamily/lifecycle範囲の具体的な未達対応を
+特定してから次の独立sliceを選ぶ。M3のE210では追加の通常assertion不足を特定しておらず、
+同じ検証の再実行だけを残件や完了根拠にしない。停止対象と親項目の元条件は維持する。
