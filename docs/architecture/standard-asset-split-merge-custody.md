@@ -257,3 +257,43 @@ attributed harness containing its exact selector; a later MJS-only profile
 layout change does not relabel that compiled harness's source. It does not relax `ApplicationAssetPin`'s
 creator==publisher rule, establish an application-wallet handoff, key recovery,
 full key/account rotation, public ceremony or all-M2 completion.
+
+### 2026-10-30 recovered-A foreign split consumer
+
+[DR-0283](decisions/0283-live-recovered-genesis-foreign-split.md) connects
+the independent foreign-split profile's existing A operation and revoked
+restart to the recovered same-A key. After the original A/B keygen and config
+setup, the unchanged early-recovery helper requires an empty signer registry
+and absent default backup/restored paths, then uses the existing custody-UID
+copy primitive twice. Each child completes its private copy and is waited
+before any signer starts. The original, backup and restored files must be
+custody-owned regular single-link mode-0600 files with distinct device/inodes.
+The existing nonempty stopped-signer guard is unchanged.
+
+A's existing kind-3 live foreign split and its revoked restart select
+`/work/custody-keys/custody.seed.restored`. B's kind-2 return and its revoked
+restart retain `/work/custody-keys/custody2.seed`. Python records and checks
+all four selected paths from the retained actual `Popen` argv; independent
+Node validation requires exactly those A/B path pairs. The original-seed
+isolation probes, B's return, all 21 original predicates, full reviews,
+frames, signature comparisons, separate fees/nonces, independent results,
+receipts, saved replays and six absent refusal outputs remain.
+
+The new top-level `genesis_split_key_recovery` object holds the recovery
+helper's three additive predicates, exact paths, waited-copy accounting,
+observed per-file sizes and both actual argv arrays. It is outside the old
+4KiB phase summary and its unchanged accounting: 19 exec, two PTY, four
+signers, one host, zero private copies and 32 evidence leaves. Original setup
+still has two keygens and four waited isolation children. The separate
+preparation adds exactly two private-copy children and two files, each at
+most 256 bytes and together at most 512 bytes. The existing 65-byte key format
+adds 130 logical bytes. It adds no CLI, PTY, approval, signer, business
+operation, profile or identity. Its separate JSON evidence is bounded to
+2KiB; all existing volume, PID, memory, output, transport and time limits
+remain unchanged.
+
+This reuses the same identity and current approved operations. It does not
+establish positive key/identity rotation, move application or fee authority,
+or complete M2. Source checks do not establish actual execution, timing,
+capture, inode or physical resource headroom; qualification remains in
+TODO.md.

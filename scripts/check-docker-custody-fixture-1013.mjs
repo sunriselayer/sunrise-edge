@@ -4113,7 +4113,7 @@ def phase_create_asset(public_key, strict_pty_accounting=False, recovery_context
     }, own_mint_burn_summary, own_coin_summary
 
 
-def phase_genesis_split_identity_handoff(public_key):
+def phase_genesis_split_identity_handoff(public_key, key_recovery):
 
 
     output_before = _output_used
@@ -4162,7 +4162,7 @@ def phase_genesis_split_identity_handoff(public_key):
         raise FixtureFailure("split handoff requires the existing independent B publisher")
     owners = (public_key, second)
     ids = ("c1" * 32, "c2" * 32)
-    keys = (f"{ROOT}/custody-keys/custody.seed", f"{ROOT}/custody-keys/custody2.seed")
+    keys = (key_recovery["recovered_key_path"], f"{ROOT}/custody-keys/custody2.seed")
     sockets = (f"{ROOT}/run/split-handoff-a.sock", f"{ROOT}/run/split-handoff-b.sock")
     approvals = f"{ROOT}/custody-approvals"
     probe_argv = [LD_SO, "--library-path", LIB_DIR, HARNESS,
@@ -4286,6 +4286,10 @@ def phase_genesis_split_identity_handoff(public_key):
             signer = ["--custody-socket", sockets[index], "--custody-uid", str(CUSTODY_UID), "--custody-expected-public-key", owners[index]]
             sign = cli_argv("custody", "sign-split" if index == 0 else "sign-transfer", *trust(index, operator_dir), "--request-file", f"{operator_dir}/{tag}-request.bin", *signer)
             serve = start_serve(sockets[index], 30, 3, 3, command=serving(3)); processes.append((serve, CUSTODY_UID, CUSTODY_GID))
+            selected_key_path = _custody_signer_runs[serve]["key_file"]
+            if selected_key_path != keys[index]:
+                raise FixtureFailure("split handoff live signer selected a different key path")
+            key_recovery["live_key_paths"].append(selected_key_path)
             passed([*sign, "--out", f"{operator_dir}/{tag}-offline.bin"], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
             generated_paths.append(f"{operator_dir}/{tag}-offline.bin")
             actual = cli_argv("split" if index == 0 else "transfer", "--endpoint", address, *signer,
@@ -4328,6 +4332,10 @@ def phase_genesis_split_identity_handoff(public_key):
                     if serve.returncode != 0 or os.path.exists(f"/proc/{serve.pid}") or os.path.lexists(sockets[index]):
                         raise FixtureFailure("split handoff live authority failed actual wait/PID/socket stop")
                     serve = start_serve(sockets[index], 30, 1, 1, command=serving(1)); processes.append((serve, CUSTODY_UID, CUSTODY_GID))
+                    selected_key_path = _custody_signer_runs[serve]["key_file"]
+                    if selected_key_path != keys[index]:
+                        raise FixtureFailure("split handoff restarted signer selected a different key path")
+                    key_recovery["restart_key_paths"].append(selected_key_path)
                 path = f"{operator_dir}/{tag}-revoked{'-restart' if restarting else ''}.bin"
                 if os.path.lexists(path): raise FixtureFailure("split handoff refusal path occupied")
                 rc, _out, err = execute([*sign, "--out", path], OPERATOR_UID, OPERATOR_GID, [OPERATOR_GID, CUSTODY_GID])
@@ -4536,7 +4544,10 @@ def genesis_split_handoff_main():
     phase_write_config(second_public_key, f"{ROOT}/custody-keys/custody2.config")
     if public_key == second_public_key:
         raise FixtureFailure("split profile requires two independent disposable publishers")
-    split_summary = phase_genesis_split_identity_handoff(public_key)
+    key_recovery = phase_initial_application_recovery()
+    key_recovery.update({"generated_file_bytes": [os.lstat(path).st_size for path in key_recovery["generated_paths"]],
+        "live_key_paths": [], "restart_key_paths": []})
+    split_summary = phase_genesis_split_identity_handoff(public_key, key_recovery)
 
 
     phase_operator_cannot_read_or_edit("c1" * 32)
@@ -4560,6 +4571,7 @@ def genesis_split_handoff_main():
             "setup_exec_children": 2, "read_refusals": 2,
             "approval_write_refusals": 2, "isolation_children_waited": 4},
         "genesis_split_identity_handoff": split_summary,
+        "genesis_split_key_recovery": key_recovery,
     }, sort_keys=True))
 
 
@@ -5186,6 +5198,25 @@ function validateGenesisSplitHandoffResult(result) {
   }
   if (JSON.stringify(isolation.publishers) !== JSON.stringify(splitHandoff.owners)) {
     throw new Error('the split profile setup identities differ from the actual protected operation owners');
+  }
+  const recovery = result.genesis_split_key_recovery;
+  const originalA = '/work/custody-keys/custody.seed';
+  const recoveryFiles = [`${originalA}.backup`, `${originalA}.restored`];
+  const selectedKeys = [recoveryFiles[1], '/work/custody-keys/custody2.seed'];
+  if (!recovery || ['no_prior_signers', 'recovered_files_distinct', 'copy_children_waited']
+    .some((key) => recovery[key] !== true) || recovery.original_key_path !== originalA ||
+    recovery.recovered_key_path !== recoveryFiles[1] ||
+    JSON.stringify(recovery.generated_paths) !== JSON.stringify(recoveryFiles) ||
+    recovery.generated_files !== 2 || recovery.private_copy_children !== 2 ||
+    recovery.run_exec_children !== 0 || recovery.pty_children !== 0 || recovery.serve_children !== 0 ||
+    !Array.isArray(recovery.generated_file_bytes) || recovery.generated_file_bytes.length !== 2 ||
+    recovery.generated_file_bytes.some((bytes) => !Number.isSafeInteger(bytes) || bytes <= 0 || bytes > 256) ||
+    !Number.isSafeInteger(recovery.generated_bytes) || recovery.generated_bytes <= 0 || recovery.generated_bytes > 512 ||
+    recovery.generated_file_bytes.reduce((sum, bytes) => sum + bytes, 0) !== recovery.generated_bytes ||
+    JSON.stringify(recovery.live_key_paths) !== JSON.stringify(selectedKeys) ||
+    JSON.stringify(recovery.restart_key_paths) !== JSON.stringify(selectedKeys) ||
+    Buffer.byteLength(JSON.stringify(recovery)) > 2048) {
+    throw new Error('the genesis foreign-split recovered-A preparation or actual A/B signer selection differs');
   }
 }
 
