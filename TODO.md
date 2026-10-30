@@ -2104,7 +2104,7 @@ Bugbotはadvertised0でannotation endpoint未取得を明記し、review/comment
 ユーザーの承認により、全9 checksとBugbot no issuesを再確認し、PR #337をmainへ通常mergeした。
 実merge `5626863a` / tree `38621a36`、ordered parents `[27650eea, ef0cea4e]` を照合した。
 既存checkoutを再利用し、初回consumerをsource `76345c53` / tree `12e140c6` にcommit/pushした。
-[PR #338](https://github.com/sunriselayer/sunrise-edge/pull/338) はmain向けReady、未merge。
+[PR #338](https://github.com/sunriselayer/sunrise-edge/pull/338) は2026-10-30にmainへmerge済み。
 
 初回signer前に既存helperで同一application鍵のearly backup/restore pairを作り、
 2files/2copychildren/130 logical bytes・元seedと別inodeのregular/UID/mode0600を確認した。
@@ -2134,3 +2134,27 @@ product/CIのrerun・cancel・raw再取得は0。
 元85 checkbox /71完了 /14未完了と親D02/M1/M2/M3/M7は維持する。
 全accepted signing family、正のidentity/ownership rotation、creator/TreasuryCapや実ceremonyを
 同一鍵復旧の成功から推定せず、停止対象は再開していない。
+
+## 2026-10-30 PR #338 mergeと次のM2候補
+
+ユーザーの指示により、head `76345c53` /base `5626863a`、Ready、全9 checks success、
+完全paginationのreviews/issue comments/inline comments各0を再確認して通常mergeした。
+実merge `9d22920ad08c9f9b05aedd9e6dfcf8730bb9ec09` は2026-10-30 10:44:20 SGT。
+公式Git metadataとlocal mainのtree `12e140c6`、ordered parents `[5626863a, 76345c53]` は
+前回の完全required/全8 CIの検証済みsource treeと一致する。local mainもfast-forward済み・clean。
+通常gh認証を使い、PR作成専用PATは使用しない。mainの自動CIは別runであり、その結果を先取りしない。
+
+次の具体的な通常候補は、既存 `genesis-split-handoff` のA側live foreign splitと
+取消後restartを復旧した同一A鍵へ接続すること。現在はfresh A/Bの元seed pathsを使い、
+A→BへのsplitとB→Aへの同一Coin返送を実行する。self split/mergeの復旧済み条件とは区別する。
+Bの返送、元21 predicates・操作/承認/frame/nonce/fee/receipt/replay/取消と元上限を維持し、
+復旧準備・path選択・追加資源の実測を別に検証する。これは既存recovery consumerの拡張候補であり、
+新しいM2必須gateの追加でも、実装・実行済みの完了記録でもない。
+
+もう一つは、prepared owner→実CLI consumer→受入済みprotected backend→lifecycle証跡の
+有限な対応表の具体化。generic local/paid/bondの開発用署名をprotected対応と数えず、
+明示的な拒否や未接続を記録する。FinalTransfer/governanceの新backend、identity/creator移行は
+既存契約だけのpath接続ではなく、具体的な契約設計から分ける。
+停止済み監査・ZeroShare WIP/fixture・torn-WAL/mechanism2・独立anchor guestは再開していない。
+元85 checkbox /71完了 /14未完了と親D02/M1/M2/M3/M7は維持する。
+[merge・次候補の照合記録](docs/development/validation/2026-10-30-pr338-merge-and-m2-next/README.md) を参照する。

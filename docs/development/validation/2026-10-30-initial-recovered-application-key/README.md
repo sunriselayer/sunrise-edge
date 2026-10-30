@@ -4,7 +4,9 @@
 ユーザーはPR #337のmergeと、初回create・初回own-created mint/burnへの復旧鍵接続、検証・commit・pushを承認した。
 Source `76345c539ea333b79bbd2ca4c2e54eb945ca00d9`、tree `12e140c6b6e2a41c83149c64685fddc5192e7608`、
 base `5626863a563216af5c4bb78b4122bd7861498f09`。
-[PR #338](https://github.com/sunriselayer/sunrise-edge/pull/338) はmainへ直接向けたReady PR。
+[PR #338](https://github.com/sunriselayer/sunrise-edge/pull/338) はmainへ直接向けたReady PRとして作成し、
+2026-10-30 10:44:20 SGTにmerge済み。実merge `9d22920a` は同tree。
+[merge記録](../2026-10-30-pr338-merge-and-m2-next/README.md) を参照する。
 
 ## PR #337のmerge
 
