@@ -76,6 +76,35 @@ kind-2/3/4 processes compare offline and actual CLI signatures, then refuse
 revoked requests before and after restart without creating output. This adds
 no key recovery or generation step and keeps the original resource limits.
 
+## Initial mint/burn consumer of the recovered key (2026-10-30)
+
+[DR-0282](decisions/0282-initial-recovered-application-key.md) adds a separate
+early same-identity backup/restore preparation before the first create-asset.
+The initial own-created mint and burn and their revoked restart share that
+already prepared `/work/custody-keys/custody.seed.restored` path with the
+initial create-asset signer. At mint/burn entry, the tracked create signer
+must have completed communicate/reap and removed its PID/socket. The recovered
+file must remain regular, single-link, custody-owned mode 0600 and distinct
+from the original path and device/inode. Each live/restart selected path comes
+from the actual retained child argv and is validated in Python and Node.
+
+This preparation adds exactly two custody-UID copy children and two private
+files, at most 512 bytes combined, with no additional CLI, PTY, approval,
+signer or business operation. It is recorded separately from the original
+47 setup predicates and the later historical allocations. Initial mint/burn
+counters remain 6/6/4/2 and restart 2/2/0/2. The same signature/frame, paid
+result, receipt/replay, nonce, supply, owner, rotation-refusal and original
+isolation controls remain. All four whole profiles and existing global and
+phase-local limits retain their original selectors and values.
+
+The `9a` historical original-key reference still signs and stops before its
+own `own-recovered.seed.backup`/`.restored` copies. That later restored path
+continues to serve the completed six-stage consumer below. The `9d` create
+recovery and historical `a6`/`a7`/`a8` profiles retain their existing order,
+copy counts, requests and signing-only boundaries. This initial consumer
+adds no identity, ownership policy or trust contract; actual qualification
+remains source-specific in TODO.md.
+
 ## Live Coin consumer of the recovered key (2026-10-29)
 
 [DR-0281](decisions/0281-live-recovered-application-coins.md) connects the
@@ -97,9 +126,10 @@ For a group containing `n` stages, the live counters remain
 `3n/3n/2n/n` accepted/handled/signed/refused, and its revoked restart retains
 `n/n/0/n`.
 
-The initial own-created mint/burn and its historical same-frame recovery
-reference retain their existing order and original key selection. The later
-historical kind-2/3 recovery profiles also retain their signing-only requests,
+DR-0281 retained the initial mint/burn's original key selection; DR-0282 above
+separately selects the early restored path for that initial consumer. Its
+historical same-frame reference retains the original key selection and order
+before its own later copies. The historical kind-2/3 recovery profiles retain their signing-only requests,
 copies, comparisons and revocation controls. This consumer adds no operation,
 key copy, identity, authority, profile or child, and preserves the public pins,
 approvals, frames, signatures, receipts, nonces, owners, supply checks and all

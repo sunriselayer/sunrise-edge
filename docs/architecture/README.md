@@ -165,6 +165,9 @@ roadmap describes a later target state.
   `AssetCreateTrust`, but — unlike every other family — independently
   derives a *fresh* application `InstanceTarget` for a separate kind-5
   signer, and connects the ordinary paid `create-asset` CLI consumer.
+  [DR-0282](decisions/0282-initial-recovered-application-key.md) prepares the
+  recovered same-identity key before the first create and shares it with
+  initial own-created mint/burn and their revoked restarts.
 - [Optional mint/burn application asset pin](decisions/0258-mint-burn-application-asset-pin.md)
   (DR-0258; see also
   [mint/burn custody](standard-asset-mint-burn-custody.md#optional-application-asset-pin-dr-0258)):
