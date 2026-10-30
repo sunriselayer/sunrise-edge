@@ -1135,7 +1135,7 @@ main統合時のsource `34da6a55` / tree `10b53dc5` を、上の実績と各fami
 | --- | --- | --- |
 | Publication / kind1 | E9/E21/E22の別UID承認・取消・同一鍵復旧・独立した新鍵/config/approvalの検証 | 選択済みlocal componentは完了。署名済み要求の取消、account移行や実ceremonyとは別 |
 | Genesis whole-Coin transfer / kind2 | E149のA→B→A ownership、E203-E205の復旧同一A鍵によるlive操作と取消後restart | 選択済み子条件は完了。wallet/account/fee全体の正の鍵交換とは別 |
-| Genesis split/merge / kind3 | E174のforeign split/返送、E206/E208/E209の復旧同一A鍵による既存self操作とrestart | 選択済み子条件は完了。foreign ownershipと同一鍵復旧を相互に代用しない |
+| Genesis split/merge / kind3 | E174のforeign split/返送、E206/E208/E209の復旧同一A鍵によるself操作とrestart。77f6の4完全profiles・完全required・全8 CIで、独立foreign-split profileの復旧同一A鍵によるlive splitとrestart、元Bの返送を確認 | 選択済みconsumer接続は完了。B鍵復旧、正のidentity rotationやwallet/account/fee全体の移行は含めない |
 | Genesis mint/burn / kind4 | E212/E213/E218/E219/E222の復旧同一A鍵によるlive mint/burn・restartと元runtime | 選択済み子条件は完了。古いE41/E141のlive未接続やgate待ちを現在の残件に戻さない |
 | Create-asset / kind5 | E49の実create/receipt/replay/取消とE141の歴史frame署名復旧を保持。7634の4完全profiles・完全required・全8 CIで、early同一復旧鍵による初回live createと取消後restartを確認 | 選択済みconsumer接続は完了。新identityへの正のrotation、creator/TreasuryCap移行や実ceremonyは含めない |
 | Own-created application mint/burn | E62の実supply遷移とE67のhistorical burn復旧・取消/restartを保持。7634で初回create前にearly復旧pairを作り、初回live mint/burnと取消後restartを接続し、4完全profiles・完全required・全8 CIで確認 | 選択済みconsumer接続は完了。historical停止後copyと後続6-stage用のlater復旧鍵を維持し、全M2や正のidentity/ownership rotationは含めない |
@@ -2150,6 +2150,7 @@ A→BへのsplitとB→Aへの同一Coin返送を実行する。self split/merge
 Bの返送、元21 predicates・操作/承認/frame/nonce/fee/receipt/replay/取消と元上限を維持し、
 復旧準備・path選択・追加資源の実測を別に検証する。これは既存recovery consumerの拡張候補であり、
 新しいM2必須gateの追加でも、実装・実行済みの完了記録でもない。
+この時点の候補は、後続の2026-10-30実装・検証記録で完了した。
 
 もう一つは、prepared owner→実CLI consumer→受入済みprotected backend→lifecycle証跡の
 有限な対応表の具体化。generic local/paid/bondの開発用署名をprotected対応と数えず、
@@ -2158,3 +2159,45 @@ Bの返送、元21 predicates・操作/承認/frame/nonce/fee/receipt/replay/取
 停止済み監査・ZeroShare WIP/fixture・torn-WAL/mechanism2・独立anchor guestは再開していない。
 元85 checkbox /71完了 /14未完了と親D02/M1/M2/M3/M7は維持する。
 [merge・次候補の照合記録](docs/development/validation/2026-10-30-pr338-merge-and-m2-next/README.md) を参照する。
+
+## 2026-10-30 復旧同一A鍵によるforeign splitと取消後restart
+
+ユーザーが前記の候補1を選び、別受取人へのsplitと取消後restartへの復旧鍵接続、
+検証・commit・pushを依頼した。Source `77f6e576986b579ba6962f882c47a7c9829c9731` /
+tree `a036f4ed11633b8ac3f59c29f417afc4c307a92f` をcommit/push済み。
+[PR #339](https://github.com/sunriselayer/sunrise-edge/pull/339) はmain向けReady、未merge。
+既存のearly recovery helperを変更せず、fresh A/B setup後・最初のsigner前に1組のA backup/restoreを作る。
+Aのlive foreign splitと取消後restartは同じ復旧A path、Bの返送とrestartは元B pathを使い、
+actual retained Popen argvの4選択をPython/Node/rootが確認した。
+原21 predicates・phase19exec/2PTY/4signer/1host/0copies/32files、setup2keygen/4waited isolationと
+全操作/承認/frame/nonce/fee/object/result/receipt/replay/取消/元上限を保持する。
+追加は別top-levelの3predicates、2 waited UID copies /2files /実130 logical bytesのみ。
+
+Node24.19.0 syntax・Python AST/compile・通常correctness reviewは成功。
+他55/57関数と元Node validatorは不変。RawPython252,832/262,144B、bootstrap56,725/65,536B。
+初回検証ownerはrootのbridge admission漏れで製品dispatch前に停止し、raw/config/bridgeを保存した。
+検証用設定だけを修正したv2で実4完全profilesが成功。rootが67commands/134streams・570,733B、
+全1,245 source inputs・runtime/artifacts/loader/libs、実EOF/wait/reap・PID/cgroup解放を照合した。
+新A pathと元B path、原21+別3、元live3/3/2/1 /restart1/1/0/1、A→B split/B→A返送を確認。
+Cargo fresh:trueはcache再利用として区別し、成功保存後に空の完了unitを停止した。
+
+同sourceのliteral npm ci +完全check-allは03:27:35–06:13:51 UTCに自然成功。
+rootが42commands/84streams・963,296B、source1,245 files/23tool roles/CF2347roles・2725layoutを照合し、
+147 Rust summariesの4,427 passed/0 failed/43 ignored、CF66 passed、元7epochs/e8の各2件1832-byte候補と
+successor/terminal-unlock endを確認した。root資格`ae47d30a`、reader actual0/両EOF/wait/reap、
+既知owner/cgroup不在と完了空unitだけの停止を保存。監視session143と3batchのGH timeoutは別に保持する。
+
+同sourceの[CI run40997627497 /attempt1](https://github.com/sunriselayer/sunrise-edge/actions/runs/40997627497) は全8 jobsと
+exact-head Bugbot `123874394243` が自然成功。元全8rawは通常ghで各1回・計1,238,646B、
+実checkout0456fcbc/treea036/順序付きparents9d22+77f6を確認。
+rootは全116 physical commands (107成功/保存9失敗)・573 indexed files・178既知PIDs不在、
+原300秒内の取得からsealer終了/rehashまで5.124781秒と元EOF/waitを照合した。root資格`84e362ba`。
+元7epochs/e8の各2件1832-byte候補とend、147 Rust summaries4,427 passed/0 failed/43 ignored、
+CF66 passedを原rawで確認。8 annotationsはplatform notices、warning/failure0、全review/comment inventories0。
+anonymous経路はmetadataだけに使い、解除回答後の終端raw/全paginationには元gh controls/v5 readerを使った。
+原3batchの失敗・observer143・未実行案を保存し、raw retry/CI rerun/cancel/mergeはしていない。
+
+[実装・実検証記録](docs/development/validation/2026-10-30-recovered-genesis-foreign-split/README.md) を参照する。
+今回の同一A consumer接続だけを完了し、元85 checkbox /71完了 /14未完了と親5件は維持する。
+B鍵復旧・正のidentity/ownership rotation・全accepted signing family対応や実ceremonyは含めず、
+停止対象は再開していない。次の通常整理候補はprepared owner→consumer→受入backendの有限な対応表。
