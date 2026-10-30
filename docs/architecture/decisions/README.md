@@ -164,3 +164,4 @@ in [`TODO.md`](../../../TODO.md).
 - [DR-0280: live genesis mint/burn with the recovered same-identity key](0280-live-recovered-genesis-mint-burn.md)
 - [DR-0281: live application Coins with the recovered same-identity key](0281-live-recovered-application-coins.md)
 - [DR-0282: initial application operations with the recovered same-identity key](0282-initial-recovered-application-key.md)
+- [DR-0283: live genesis foreign split with the recovered same-A key](0283-live-recovered-genesis-foreign-split.md)

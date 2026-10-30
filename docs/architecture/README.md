@@ -150,6 +150,9 @@ roadmap describes a later target state.
   connects the ordinary paid `split`/`merge` CLI consumer.
   [DR-0278](decisions/0278-live-recovered-genesis-split-merge.md) connects the
   stopped, recovered same-identity key to those existing live operations.
+  [DR-0283](decisions/0283-live-recovered-genesis-foreign-split.md) separately
+  selects recovered A for the independent foreign split and revoked restart,
+  preserving B's original-key return.
 - [Genesis Standard Asset mint/burn custody](standard-asset-mint-burn-custody.md)
   ([DR-0253](decisions/0253-genesis-standard-asset-mint-burn-custody.md)):
   shares the transfer/split/merge families' genesis/code/instance/policy
