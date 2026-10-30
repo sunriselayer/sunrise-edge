@@ -2165,7 +2165,7 @@ Bの返送、元21 predicates・操作/承認/frame/nonce/fee/receipt/replay/取
 ユーザーが前記の候補1を選び、別受取人へのsplitと取消後restartへの復旧鍵接続、
 検証・commit・pushを依頼した。Source `77f6e576986b579ba6962f882c47a7c9829c9731` /
 tree `a036f4ed11633b8ac3f59c29f417afc4c307a92f` をcommit/push済み。
-[PR #339](https://github.com/sunriselayer/sunrise-edge/pull/339) はmain向けReady、未merge。
+[PR #339](https://github.com/sunriselayer/sunrise-edge/pull/339) はmain向けReadyで作成し、2026-10-30にmerge済み。
 既存のearly recovery helperを変更せず、fresh A/B setup後・最初のsigner前に1組のA backup/restoreを作る。
 Aのlive foreign splitと取消後restartは同じ復旧A path、Bの返送とrestartは元B pathを使い、
 actual retained Popen argvの4選択をPython/Node/rootが確認した。
@@ -2201,3 +2201,19 @@ anonymous経路はmetadataだけに使い、解除回答後の終端raw/全pagin
 今回の同一A consumer接続だけを完了し、元85 checkbox /71完了 /14未完了と親5件は維持する。
 B鍵復旧・正のidentity/ownership rotation・全accepted signing family対応や実ceremonyは含めず、
 停止対象は再開していない。次の通常整理候補はprepared owner→consumer→受入backendの有限な対応表。
+
+## 2026-10-30 PR #339 mergeと次のM2候補
+
+PR #339をmerge済み。main `8a5cc30a` / tree `a036f4ed` / parents `9d22920a,77f6e576` を照合し、
+local mainをfast-forwardしてcleanを確認した。treeは前回の4完全profiles・完全required・全8CIの検証済みsourceと一致する。
+merge直前のexact-head全9checksはSUCCESS、Bugbot指摘なし、reviews/threads各0。main自動CIは別runとして扱う。
+GitHub連携の403後は通常gh認証でhead一致条件付きmergeを行い、作成専用PATは使っていない。
+
+次の通常候補は、既存の署名準備owner→実CLI consumer→受入済みprotected backend→lifecycle実検証の対応表を確定すること。
+generic local/paidのcustody拒否、bondのdevelopment signerと、publication/Standard Asset/positive Splitの有限な専用routeを
+code参照付きで区別する。共有prepare/finalizeの存在をprotected対応と数えず、既存test/完了済みconsumerとの対応漏れを特定する。
+全accepted family/governanceの具体契約は未確定、DR-0214はProposedのまま。前回の範囲外だけを根拠に新しい必須gateを増やさない。
+今回は候補特定までで、新しいsigner接続・architecture対応表実装・runtime検証は行っていない。
+
+[merge・次候補の照合記録](docs/development/validation/2026-10-30-pr339-merge-and-m2-next/README.md) を参照する。
+停止対象と元85 checkbox /71完了 /14未完了、親D02/M1/M2/M3/M7は維持する。
