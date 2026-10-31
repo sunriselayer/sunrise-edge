@@ -2213,7 +2213,34 @@ GitHub連携の403後は通常gh認証でhead一致条件付きmergeを行い、
 generic local/paidのcustody拒否、bondのdevelopment signerと、publication/Standard Asset/positive Splitの有限な専用routeを
 code参照付きで区別する。共有prepare/finalizeの存在をprotected対応と数えず、既存test/完了済みconsumerとの対応漏れを特定する。
 全accepted family/governanceの具体契約は未確定、DR-0214はProposedのまま。前回の範囲外だけを根拠に新しい必須gateを増やさない。
-今回は候補特定までで、新しいsigner接続・architecture対応表実装・runtime検証は行っていない。
+この時点では候補特定まで。architecture対応表と既存testの対応付けは、下記2026-10-31の整理で実施した。
 
 [merge・次候補の照合記録](docs/development/validation/2026-10-30-pr339-merge-and-m2-next/README.md) を参照する。
 停止対象と元85 checkbox /71完了 /14未完了、親D02/M1/M2/M3/M7は維持する。
+
+## 2026-10-31 M2署名経路と既存テストの対応
+
+source `2e2c10fe` で、[署名経路とtest ownerの対応表](https://github.com/sunriselayer/sunrise-edge/blob/2e2c10fe0c360f99400be79ee50cad18f5e2336f/docs/architecture/signing-route-test-map.md) を作成した。
+6 logical entries /7 concrete prepared typesから実CLI・専用backend・既存test関数へ対応付け、
+automatic ordered/certified、別ownerのreadiness、offline genesis authoringも区別した。
+既存architectureのtransfer-only説明を後続の選択済みfamilyへ対応させた。
+これは既存契約の所在を明確にする文書変更で、新backend・trust契約・必須familyを追加するものではない。
+
+| 区分 | 今回確認できた不足・境界 | 次に必要な具体作業と完了の判断 |
+| --- | --- | --- |
+| 全体範囲の未確定 | 実装済み署名経路は有限に列挙できたが、M2で受入対象とする全family/governance consumerの契約は未確定。DR-0214はProposed | 上の実経路を起点に初期profileの対象/閉じる対象を既存要件へ照合し、具体consumer・authority・review内容・backend契約を記録する。generic local/paid/bond/FinalTransferやreadiness/genesisを、prepared型があるだけで受入対象へ追加しない |
+| 未選択経路の実装不在 | 汎用local/general・paidはcustodyを明示拒否。bondとgeneric fee claimは開発用署名。PreparedTransaction helperにproduction CLI dispatch callerなし。readinessは自身のsoftware key、offline genesisはprivate key fileを使い、selected custody workerへは接続しない | 対象に選ぶ具体経路がある場合に限り、そのoperation-specific契約を先に定義し、既存prepared owner/authorityを使うconsumer接続と実検証を追加する。現在の拒否を外したり汎用frame-signingへ置換しない。今回の対応確認から新たな配線バグは特定していない |
+| rotationの実装・証拠の限界 | publicationは新publisherの正の署名、genesis transfer/foreign splitは選択済みCoin ownership handoffを持つ。同一鍵復旧・新鍵の不一致拒否は、application creator/TreasuryCap・account/fee・historical claimant・protocol membershipの新identityへの正の移行を証明しない | 受入対象に必要な移行だけを、既存のauthorized operation/epoch機構と具体的cutover/履歴保持へ対応付ける。ApplicationAssetPinのcreator固定や元certificateのclaimant条件を緩めない。対象未選択の広い移行を新必須gateにはしない |
+| 実検証の帰属 | SDK fake/unit、development e2e、ignored recurrence、実UID/RELEASE profileは別々の証拠。対応表は各ownerと元source/profileを参照する | 最終的に選んだ範囲へ各実行結果を対応付ける。単なるcompile・短いselector・祖先sourceの成功で全体完了を代用しない。停止済み独立監査の再実行は今回の通常作業から除外する |
+
+選択済み同一鍵recovery consumerの追加接続漏れは今回の対応確認では見つかっていない。
+kind2/3/4/5・application初回と6 stages・foreign splitの直近完了を未達へ戻さず、
+B鍵復旧や全identity移行を新しい必須条件にも追加しない。
+安全判定で停止した独立監査・ZeroShare WIP/fixture・torn-WAL/mechanism2・独立anchor guestは対象外のまま。
+
+[PR #340](https://github.com/sunriselayer/sunrise-edge/pull/340) は文書3件だけのReady PR。
+文書250 local links・74関数参照・2担当の対応確認は成功した。
+literal npm ciはactual0。local完全requiredは旧directory pinのdevice52/current53不一致でRust検証前にactual1。
+失敗rawとsource前後一致を保存し、所有PID/cgroup解放を確認した。hosted CIは別runとして進行中で成功を先取りしない。
+[対応確認・実試行記録](docs/development/validation/2026-10-31-m2-signing-route-map/README.md) を参照する。
+親M2の実装・検証完了は主張せず、元85 checkbox /71完了 /14未完了と親5件を維持する。
