@@ -38,6 +38,12 @@
       "executedOrPreparedPath": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-device-transition.json",
       "bytes": 3627,
       "sha256": "58db4481786efcfd98c4152272a4d98e90a9cffda9a10c3ddda098699e266337"
+    },
+    {
+      "recordedPath": "qualify-run.py",
+      "executedOrPreparedPath": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-qualify-v2.py",
+      "bytes": 22265,
+      "sha256": "64ba1256943b6a427cfff44f5ea8dbd720eb24b345722ce571ca6d83d48d1e34"
     }
   ],
   "bundleV2": {
@@ -135,5 +141,12 @@
       "toolRolesRehashed": 2347
     },
     "writerClosed": true
+  },
+  "qualifierCorrection": {
+    "originalPath": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-qualify.py",
+    "originalSha256": "7459302d531c2a42c7680d6690c5df9b9eb0d6436f008ef060f90ba69658a6ae",
+    "actualPath": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-qualify-v2.py",
+    "actualSha256": "64ba1256943b6a427cfff44f5ea8dbd720eb24b345722ce571ca6d83d48d1e34",
+    "reason": "systemd clears ControlGroup after physical release; retain invocation/PID matching and require absent saved group before accepting empty current property."
   }
 }

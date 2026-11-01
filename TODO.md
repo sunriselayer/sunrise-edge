@@ -2257,7 +2257,12 @@ PR head `2e2c10fe` の[CI run41163320441](https://github.com/sunriselayer/sunris
 147 Rust summaries4427/0/43、CF66、元7epochs/e8の1832-byte候補各2件とendをrootが照合した。
 8 runner notices以外のannotationはなく、reviews/comments/threadsは各0。取得側の失敗と訂正も保存した。
 
-local完全requiredは専用unitで2026-11-01T02:21:48Zに開始し、現在実行中。
-終端raw/EOF/wait/reapと所有PID/cgroup解放を確認してから成功を記録し、問題がなければPR #340をmergeする。
+local完全requiredは専用unitで2026-11-01T02:21:48Z–05:10:54Zに自然成功した。
+10 commands/20 streams・961576 bytesの全actual0/EOF/wait/reap、source1246/runtime17/CF2347 rolesと2725 layoutの
+前後・現在一致、既知109 sampled identitiesと10 command PIDs、owner/observerとcgroup解放をrootが照合した。
+147 Rust invocation summaries4427/0/43、CF66。root資格`5330cd4f`。
+終了済みsystemdの空ControlGroup propertyを誤認したreader-v1の失敗を保存し、
+元saved groupの実不在と同一InvocationID/ExecMainPIDを確認するreader-v2がactual0で完了した。
+製品/CIのrerunや判定の省略は行っていない。PR #340のmerge前最終確認へ進む。
 [環境修復・検証記録](docs/development/validation/2026-11-01-pr340-environment-and-validation/README.md) を参照する。
 これはM2の全familyや親5件の完了ではない。停止対象と元85 checkbox /71完了 /14未完了を維持する。

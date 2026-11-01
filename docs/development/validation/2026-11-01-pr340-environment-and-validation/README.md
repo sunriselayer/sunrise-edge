@@ -2,7 +2,7 @@
 
 2026-11-01 (Asia/Singapore)。ユーザーは環境固定情報の不一致修復、完全required、CI結果確認、
 変更のcommit/pushと、問題がなければPR #340のmergeを指示した。
-この記録の段階では環境の再照合とCI確認が完了し、local完全requiredは実行中。mergeは未実施。
+環境の再照合、local完全requiredとCI確認が完了した。merge前の最終確認段階の記録。
 
 ## 対象sourceと環境修復
 
@@ -61,8 +61,26 @@ literal `npm ci --prefix adapters/cloudflare-workers` と `./scripts/check-all.s
 npm300秒/required26000秒、全体28200秒内のcleanup300秒、stream64MiB/total256MiB、
 元dev/test opt2・assertions/overflow checksを維持する。PostgreSQL full profileや停止済み作業は選んでいない。
 
-現在は実行中。終端raw・実EOF/wait/reap・source/tool前後一致と所有PID/cgroup解放を確認してから結果を追記する。
-この時点でlocal完全required成功やPR mergeを主張しない。
+実ownerの開始は2026-11-01T02:21:48.824472Z、自然終了は05:10:54.860441Z。
+10146.049秒でliteral npm ciと完全requiredが成功した。
+10 commands/20 streams・961576 captured bytesの全actual0/両EOF/fullCapture/wait/reapとlength/hashを確認した。
+147 Rust result summariesは4427 passed /0 failed /43 ignoredの実行集計、CF4 suitesは13+28+10+15=66 passed。
+原selector/timeout/7epochsとe8、withdrawal候補の検査を保持し、Deno/Vercel/Supabase/AWSも元requiredのまま完走した。
+invocation集計をdistinct test数や追加RELEASE認定へ読み替えない。local timing表示がない部分はCIの原raw証拠と区別した。
+
+source全1246 filesの前後metadata/body/clean HEAD、6入力metadata files、17 runtime full identities、
+6 wrappersは一致した。独立した終端readerも現在sourceとCF全2347 tool roles/2725 layout/2335 private bodiesを再照合した。
+source snapshot SHA256 `09e72bc59b16129c01430d4b56f52822abf26b2e8c8e4495ef81a7467a759988`。
+root資格SHA256 `5330cd4f84c6fec2930e3649b343af6594a5250122acdc0e160519f622caa84e`。
+
+最初の終端readerはsystemdのControlGroup propertyが終了後も残ると仮定して停止した。
+実際はInvocationID/ExecMainPIDが一致し、自然終了0を保持したままControlGroupだけが空になり、
+元のsaved cgroup pathも既に消失していた。失敗とreader-v1を保存し、v2は同じidentityを維持して
+「propertyが空ならsaved groupの実不在」を要求する形へ訂正した。製品・CIのrerunはしていない。
+reader-v2はactual0で1.897秒、監視observerもactual0/EOFで終了した。
+既知109 sampled PID/start identities、10 command PIDs、owner258735とobserver275554の解放、
+saved cgroup不在を確認した。自然成功の保存後、完了した自己所有unitだけをstopして後片付けした。
+partial/cancelled/強制終了を成功に数えていない。
 
 ## 記録したcontrol source
 
