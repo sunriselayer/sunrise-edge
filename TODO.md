@@ -2263,6 +2263,9 @@ local完全requiredは専用unitで2026-11-01T02:21:48Z–05:10:54Zに自然成�
 147 Rust invocation summaries4427/0/43、CF66。root資格`5330cd4f`。
 終了済みsystemdの空ControlGroup propertyを誤認したreader-v1の失敗を保存し、
 元saved groupの実不在と同一InvocationID/ExecMainPIDを確認するreader-v2がactual0で完了した。
-製品/CIのrerunや判定の省略は行っていない。PR #340のmerge前最終確認へ進む。
+製品/CIのrerunや判定の省略は行っていない。
+検証記録をcommit/pushした後、head一致・Ready/mergeable・全9 current checks success・reviews/threads各0を再確認し、
+PR #340を2026-11-01T05:17:09Zにmergeした。実merge `8afaf356` /tree `d392a0da` /parents `[8a5cc30a,2e2c10fe]` は
+検証済みsource treeと一致し、local mainもfast-forward済み・clean。main自動CIは別runとして扱う。
 [環境修復・検証記録](docs/development/validation/2026-11-01-pr340-environment-and-validation/README.md) を参照する。
 これはM2の全familyや親5件の完了ではない。停止対象と元85 checkbox /71完了 /14未完了を維持する。

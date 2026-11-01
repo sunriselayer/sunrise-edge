@@ -1,0 +1,18 @@
+{
+  "pr": 340,
+  "url": "https://github.com/sunriselayer/sunrise-edge/pull/340",
+  "merged": true,
+  "merged_at": "2026-11-01T05:17:09Z",
+  "merge_commit_sha": "8afaf3566294fe3d6e2096ac4107d2270439b7a8",
+  "head_sha": "2e2c10fe0c360f99400be79ee50cad18f5e2336f",
+  "base_sha": "8a5cc30a1d4a6166c6a69e720713252112817833",
+  "tree": "d392a0da9c8805a8bcc8bf84acd674eb3a42f54e",
+  "orderedParents": [
+    "8a5cc30a1d4a6166c6a69e720713252112817833",
+    "2e2c10fe0c360f99400be79ee50cad18f5e2336f"
+  ],
+  "qualifiedSourceSameTree": true,
+  "mainFreshCIQualified": false,
+  "usedCreationPat": false,
+  "fullQualificationSha256": "5330cd4f84c6fec2930e3649b343af6594a5250122acdc0e160519f622caa84e"
+}

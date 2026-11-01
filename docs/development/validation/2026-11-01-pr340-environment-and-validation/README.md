@@ -2,7 +2,7 @@
 
 2026-11-01 (Asia/Singapore)。ユーザーは環境固定情報の不一致修復、完全required、CI結果確認、
 変更のcommit/pushと、問題がなければPR #340のmergeを指示した。
-環境の再照合、local完全requiredとCI確認が完了した。merge前の最終確認段階の記録。
+環境の再照合、local完全requiredとCI確認を完了し、PR #340をmergeした。
 
 ## 対象sourceと環境修復
 
@@ -81,6 +81,19 @@ reader-v2はactual0で1.897秒、監視observerもactual0/EOFで終了した。
 既知109 sampled PID/start identities、10 command PIDs、owner258735とobserver275554の解放、
 saved cgroup不在を確認した。自然成功の保存後、完了した自己所有unitだけをstopして後片付けした。
 partial/cancelled/強制終了を成功に数えていない。
+
+## PR #340 merge
+
+local完全requiredのroot資格とcontrol sourceをcommit/pushした `3535fef2` の後、
+exact head `2e2c10fe` の全9 current checks success、Ready/mergeable、reviews/threads各0を再確認した。
+通常gh認証でhead一致条件付きmergeを実行し、2026-11-01T05:17:09Z (13:17:09 SGT) に
+`8afaf3566294fe3d6e2096ac4107d2270439b7a8` でmergeされたことを公式PR metadataから確認した。
+作成専用PAT、force pushやchecksの省略は使用していない。
+
+mainのtreeは検証済みsourceと同じ `d392a0da9c8805a8bcc8bf84acd674eb3a42f54e`、
+ordered parentsは `[8a5cc30a,2e2c10fe]`。local mainもfast-forwardしてclean/upstream一致を確認した。
+merge後に自動起動するmain CIは別runであり、この記録で成功済みとはしていない。
+今回の完了は環境修復・選択sourceの完全required/PR CI確認とmergeで、M2/親5件全体の完了ではない。
 
 ## 記録したcontrol source
 
