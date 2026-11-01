@@ -42,8 +42,14 @@ distinct rather than being replaced by a uniform business validation layer.
 Development `LocalSigner`/seed conveniences delegate to these prepared owners.
 Actual CLI local/general execution, paid Call/Instantiate/Publish, publication,
 Standard Asset paid operations, original/successor bond registration and
-successor fee claims use the same preparation and finalization. Fee-source
-ownership checks take the expected public `Address`, not secret-bearing keys.
+successor fee claims use the same preparation and finalization. Their concrete
+signer selections differ: generic local/paid commands reject custody, bond and
+generic fee-claim commands use development signing, and publication/recognized
+Standard Asset/positive Split have dedicated protected routes. The
+[route and test-owner map](signing-route-test-map.md) records these distinctions,
+the separate automatic authority owners and links to dated executed evidence.
+Fee-source ownership checks take the expected public `Address`, not
+secret-bearing keys.
 CLI development seed flags are still development flags; no production provider
 driver or custody flag follows from this refactor.
 
@@ -75,11 +81,13 @@ identity and actual live protocol authority. Readiness has its own narrower
 eligible-key and retention boundary. Native operator/genesis raw-key custody
 and these automatic signers are not migrated by SDK operation preparation.
 
-A real protected provider, operator/key-role separation, exposure controls,
-refusal/restart behavior, trusted content review and recovery/rotation/revocation
-still need design, implementation and qualification. Provider revocation does
-not erase historical signatures or silently rotate an AddressIsPublicKey
-identity. No custody backend or public network launch is selected here.
+For each family, a protected provider, operator/key-role separation, exposure
+controls, refusal/restart behavior, trusted content review and
+recovery/rotation/revocation require their own design and qualification. The
+selected routes below and in the correspondence map supply bounded components;
+their existence does not establish complete coverage of M2. Provider revocation
+does not erase historical signatures or silently rotate an AddressIsPublicKey
+identity. SDK preparation selects no additional backend or public network launch.
 
 [Proposed DR-0214](decisions/0214-protected-custody-and-review-boundary.md)
 separates client review, automatic consensus, readiness and genesis/admin roles,
@@ -106,3 +114,9 @@ in-tree code/fee semantics, reconstructs signed object references from canonical
 preimages and renders their amounts before exact-frame approval. The original
 publication server remains closed to this family. This does not migrate other
 paid operations, fee claims, automatic consensus/readiness or genesis/admin keys.
+Subsequent DR-0249/0253/0255/0258/0261 add the separate recognized split/merge,
+mint/burn, create and own-created application consumers. DR-0269 separately
+selects the strict partial positive fee Split Leg/Claim consumer. See the map
+for their actual CLI/backend/test owners; none enables generic paid execution.
+DR-0264/0268 select automatic ordered/certified workers under their existing
+live-authority owners, independently of these SDK preparations.
