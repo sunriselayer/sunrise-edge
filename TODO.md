@@ -2244,3 +2244,20 @@ literal npm ciはactual0。local完全requiredは旧directory pinのdevice52/cur
 失敗rawとsource前後一致を保存し、所有PID/cgroup解放を確認した。hosted CIは別runとして進行中で成功を先取りしない。
 [対応確認・実試行記録](docs/development/validation/2026-10-31-m2-signing-route-map/README.md) を参照する。
 親M2の実装・検証完了は主張せず、元85 checkbox /71完了 /14未完了と親5件を維持する。
+
+## 2026-11-01 PR #340の環境固定情報修復と検証
+
+ユーザーの指示に従い、旧失敗・wrappers・manifestsを保持して新しい検証入力を作成した。
+7 directory pinsとCF全2725 layout /2347 tool rolesを実照合し、device52→53以外の
+content/metadata/linksを維持した。runtime17 roles、source全1246 filesと実body hashも照合した。
+device検査を省略せず、元256MiB per-file cap、全selector/timeout/epochとCF隔離を保持した。
+
+PR head `2e2c10fe` の[CI run41163320441](https://github.com/sunriselayer/sunrise-edge/actions/runs/41163320441) は全8 jobs、Bugbotを含む全9 checks success。
+全8原raw1238688 bytes、checkout `c3407a61` /tree `d392a0da` /parents `[8a5cc30a,2e2c10fe]`、
+147 Rust summaries4427/0/43、CF66、元7epochs/e8の1832-byte候補各2件とendをrootが照合した。
+8 runner notices以外のannotationはなく、reviews/comments/threadsは各0。取得側の失敗と訂正も保存した。
+
+local完全requiredは専用unitで2026-11-01T02:21:48Zに開始し、現在実行中。
+終端raw/EOF/wait/reapと所有PID/cgroup解放を確認してから成功を記録し、問題がなければPR #340をmergeする。
+[環境修復・検証記録](docs/development/validation/2026-11-01-pr340-environment-and-validation/README.md) を参照する。
+これはM2の全familyや親5件の完了ではない。停止対象と元85 checkbox /71完了 /14未完了を維持する。
