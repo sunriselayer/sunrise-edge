@@ -1,0 +1,17 @@
+
+running 1 test
+test compiled_conditional_readiness_real_retention_restart_and_distinct_certificate ... rounds=4 committed_acknowledged=true block_height=10 manifest=/tmp/cut-operator-genuine-source-1-1/compiled-four-host-seal/compiled-seal-submission.manifest results=/tmp/cut-operator-genuine-source-1-1/compiled-four-host-seal/compiled-seal-submission.results
+replayed_rounds=4 outputs=4 results=/tmp/cut-operator-genuine-source-1-1/compiled-four-host-seal/compiled-seal-replay.results
+rounds=4 committed_acknowledged=true block_height=10 manifest=/tmp/cut-operator-genuine-source-1-1/seal-submission.manifest results=/tmp/cut-operator-genuine-source-1-1/seal-submission.results
+replayed_rounds=4 outputs=4 results=/tmp/cut-operator-genuine-source-1-1/seal-warrant-catchup.results
+replayed_rounds=4 outputs=4 results=/tmp/cut-operator-genuine-source-1-1/seal-replay.results
+history=ordered-prefix-verified through_height=10 through_view=10 through_digest=9ce466c9b5b7a4d32f45c9db06d442add119802f78615733c961c7b491925f7a validator_id=65e8f9b0bc6eae124169f0576f97362d295a8cf5f770b45e14357ce647d33eec note=ordering-and-companion-linkage-only
+FAILED
+
+failures:
+
+failures:
+    compiled_conditional_readiness_real_retention_restart_and_distinct_certificate
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 13.61s
+

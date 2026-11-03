@@ -1,0 +1,50 @@
+[acceptance-timing] stage=initial-readiness epoch=- observation=start elapsed_ms=0
+
+thread 'compiled_conditional_readiness_real_retention_restart_and_distinct_certificate' (8) panicked at apps/operator/tests/support/command_output.rs:6:5:
+stdout= stderr=readiness frontend publication refused: Permission denied (os error 13)
+
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at ./rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at ./rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: conditional_readiness_sqlite::command_output::success
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/apps/operator/tests/support/command_output.rs:6:5
+   3: conditional_readiness_sqlite::protected_vote
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/apps/operator/tests/conditional_readiness_sqlite.rs:431:13
+   4: conditional_readiness_sqlite::run_conditional_readiness::{closure#0}
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/apps/operator/tests/conditional_readiness_sqlite.rs:682:13
+   5: conditional_readiness_sqlite::compiled_conditional_readiness_real_retention_restart_and_distinct_certificate::{closure#0}
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/apps/operator/tests/conditional_readiness_sqlite.rs:492:38
+   6: <core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>> as core::future::future::Future>::poll
+             at ./rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/future/future.rs:133:9
+   7: <tokio::runtime::park::CachedParkThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/park.rs:284:71
+   8: tokio::task::coop::with_budget::<core::task::poll::Poll<()>, <tokio::runtime::park::CachedParkThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:167:5
+   9: tokio::task::coop::budget::<core::task::poll::Poll<()>, <tokio::runtime::park::CachedParkThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:133:5
+  10: <tokio::runtime::park::CachedParkThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/park.rs:284:31
+  11: <tokio::runtime::context::blocking::BlockingRegionGuard>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/blocking.rs:66:14
+  12: <tokio::runtime::scheduler::multi_thread::MultiThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/multi_thread/mod.rs:92:22
+  13: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::multi_thread::MultiThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, ()>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/runtime.rs:65:16
+  14: <tokio::runtime::scheduler::multi_thread::MultiThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/multi_thread/mod.rs:91:9
+  15: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:376:50
+  16: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:343:18
+  17: conditional_readiness_sqlite::compiled_conditional_readiness_real_retention_restart_and_distinct_certificate
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/apps/operator/tests/conditional_readiness_sqlite.rs:492:43
+  18: conditional_readiness_sqlite::compiled_conditional_readiness_real_retention_restart_and_distinct_certificate::{closure#0}
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/apps/operator/tests/conditional_readiness_sqlite.rs:476:90
+  19: <conditional_readiness_sqlite::compiled_conditional_readiness_real_retention_restart_and_distinct_certificate::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at ./rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  20: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at ./rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+[acceptance-timing] stage=initial-readiness epoch=- observation=unwind elapsed_ms=2868
