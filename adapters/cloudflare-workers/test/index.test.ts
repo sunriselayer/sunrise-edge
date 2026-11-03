@@ -119,6 +119,46 @@ describe("Cloudflare ingress", () => {
     });
   });
 
+  it("ends a stalled body read without waiting for stream cancellation", async () => {
+    let cancelCalled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelCalled = true;
+        return new Promise<void>(() => {});
+      },
+    }, { highWaterMark: 0 });
+    await expect(readBoundedBody(stream, 2, {
+      idleTimeoutMilliseconds: 10,
+      totalTimeoutMilliseconds: 100,
+    })).rejects.toMatchObject({ status: 408, code: "request-body-timeout" });
+    expect(cancelCalled).toBe(true);
+    expect(stream.locked).toBe(false);
+  });
+
+  it("stops an aborted event body before node-core dispatch", async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn<Env["NODE_CORE"]["fetch"]>();
+    let cancelCalled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelCalled = true;
+      },
+    }, { highWaterMark: 0 });
+    const pending = handleWebRequest(new Request(`https://edge.example${NODE_EVENT_PATH}`, {
+      method: "POST",
+      headers: { "content-type": NODE_EVENT_MEDIA_TYPE },
+      body: stream,
+      signal: controller.signal,
+    }), { fetch });
+    controller.abort();
+    const response = await pending;
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("request-aborted");
+    expect(cancelCalled).toBe(true);
+    expect(stream.locked).toBe(false);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("allows a provider to narrow but never raise the shared body limit", async () => {
     const fetch = vi.fn<Env["NODE_CORE"]["fetch"]>();
     const narrowed = await handleWebRequest(

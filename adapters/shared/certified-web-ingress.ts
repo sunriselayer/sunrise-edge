@@ -80,7 +80,9 @@ export function createCertifiedWebIngressHandler(
         validateEventRequestHeaders(request.headers, maximumBytes);
         body = route!.requiresEmptyBody && request.body === null
           ? new Uint8Array(0)
-          : await readBoundedBody(request.body, maximumBytes);
+          : await readBoundedBody(request.body, maximumBytes, {
+            signal: request.signal,
+          });
         if (route!.requiresEmptyBody && body.byteLength !== 0) {
           throw new IngressError(400, "body-not-empty");
         }

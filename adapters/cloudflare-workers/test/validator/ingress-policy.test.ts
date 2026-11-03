@@ -64,4 +64,21 @@ describe("certified-only DO ingress", () => {
     if (result instanceof Response) throw new Error("valid carrier rejected");
     expect(result.body).toEqual(new Uint8Array([1, 2]));
   });
+
+  it("stops an aborted validator body before dispatch", async () => {
+    const controller = new AbortController();
+    const stream = new ReadableStream<Uint8Array>({}, { highWaterMark: 0 });
+    const pending = decodeValidatorRequest(new Request("https://edge.example/v1/fastvote/prepare", {
+      method: "POST",
+      headers: { "content-type": "application/vnd.sunrise-edge.node-event" },
+      body: stream,
+      signal: controller.signal,
+    }));
+    controller.abort();
+    const result = await pending;
+    if (!(result instanceof Response)) throw new Error("aborted body admitted");
+    expect(result.status).toBe(400);
+    expect(await result.text()).toBe("invalid-request-body");
+    expect(stream.locked).toBe(false);
+  });
 });

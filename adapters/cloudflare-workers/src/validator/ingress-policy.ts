@@ -1,4 +1,4 @@
-import { readBoundedBody } from "../../../shared/web-ingress";
+import { IngressError, readBoundedBody } from "../../../shared/web-ingress";
 import { timingSafeEqual } from "node:crypto";
 
 export const VALIDATOR_BODY_LIMIT = 1_800_000;
@@ -65,12 +65,18 @@ export async function decodeValidatorRequest(
     return rejected(413, "request-too-large");
   }
   try {
-    const body: Uint8Array = await readBoundedBody(request.body, VALIDATOR_BODY_LIMIT);
+    const body: Uint8Array = await readBoundedBody(request.body, VALIDATOR_BODY_LIMIT, {
+      signal: request.signal,
+    });
+    if (request.signal.aborted) return rejected(400, "request-aborted");
     if (declaredLength !== null && Number(declaredLength) !== body.byteLength) {
       return rejected(400, "content-length-mismatch");
     }
     return { path, body };
   } catch (error: unknown) {
+    if (error instanceof IngressError && error.status === 408) {
+      return rejected(408, "request-body-timeout");
+    }
     if (error instanceof Error && "status" in error && error.status === 413) {
       return rejected(413, "request-too-large");
     }
