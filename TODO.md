@@ -1220,6 +1220,8 @@ N1/N2の実workflow ownerは既存の
 
 N1の現行consumer・core保持境界と別UID worker案は[DR-0284](docs/architecture/decisions/0284-conditional-readiness-protected-worker-proposal.md) に整理した。
 これはProposedであり、保護profileの選択・接続・実検証やN1全体の完了ではない。
+N2の実successor hostと別UID worker/frontend案は[DR-0285](docs/architecture/decisions/0285-successor-protected-host-proposal.md) に整理した。
+元のoriginal/certified workerをsuccessorの合格へ流用せず、N2も未完了とする。
 
 次はM2-N1/N2の具体的なhost/authority設計と、M2-N3の対象選択根拠を固める。
 この時点で未選択の新backend配線や新しい移行を実装しない。N1〜N5の成果を

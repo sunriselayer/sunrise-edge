@@ -91,6 +91,9 @@ roadmap describes a later target state.
 - [Conditional readiness protected worker proposal](decisions/0284-conditional-readiness-protected-worker-proposal.md):
   M2-N1's existing core authority and retained-vote owner, plus a proposed
   distinct-UID local boundary for review; no implementation or profile selection.
+- [Successor protected host proposal](decisions/0285-successor-protected-host-proposal.md):
+  M2-N2's existing fresh-warrant successor host and a proposed worker/frontend
+  split; no implementation or profile selection.
 - [Positive Standard Asset fee-claim Split proposal policy](positive-fee-claim-split-policy.md)
   ([DR-0267](decisions/0267-positive-standard-asset-fee-claim-policy.md)):
   two immutable recognized leg/claim owners, verified historical identity and
