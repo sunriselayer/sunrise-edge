@@ -1,0 +1,270 @@
+{
+  "record_date": "2026-11-03",
+  "timezone": "Asia/Singapore",
+  "kind": "ordinary-document-requirement-correspondence",
+  "source_main": {
+    "commit": "8afaf3566294fe3d6e2096ac4107d2270439b7a8",
+    "tree": "d392a0da9c8805a8bcc8bf84acd674eb3a42f54e"
+  },
+  "status_base": "c12bc7d176a65efeabcec414e918b7f6a17b72b2",
+  "source_inputs": [
+    {
+      "commit": "8afaf3566294fe3d6e2096ac4107d2270439b7a8",
+      "path": "docs/architecture/decisions/0208-native-sqlite-first-and-protected-signing.md",
+      "bytes": 5102,
+      "sha256": "fa53f19bdabe85ce5beaf008b6cf272a09a9e981715cc1b8bb2f7763ea2d769a"
+    },
+    {
+      "commit": "8afaf3566294fe3d6e2096ac4107d2270439b7a8",
+      "path": "docs/architecture/decisions/0211-external-signing-preparation.md",
+      "bytes": 8876,
+      "sha256": "b496c705615b934e24ee86b2e43d989e9acca25121c2865475676957fc4e2772"
+    },
+    {
+      "commit": "8afaf3566294fe3d6e2096ac4107d2270439b7a8",
+      "path": "docs/architecture/decisions/0214-protected-custody-and-review-boundary.md",
+      "bytes": 13566,
+      "sha256": "3257d3b278350262876e0bf8c7154be4ffd1c3eff30ae6e4f1d5508ba8f16ed1"
+    },
+    {
+      "commit": "8afaf3566294fe3d6e2096ac4107d2270439b7a8",
+      "path": "docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md",
+      "bytes": 5542,
+      "sha256": "f4c8ef476b394bd221dfd7e3820f3df31cf3de76b7af458cc9a398b755647629"
+    },
+    {
+      "commit": "8afaf3566294fe3d6e2096ac4107d2270439b7a8",
+      "path": "docs/architecture/decisions/0238-publication-only-local-os-custody.md",
+      "bytes": 11137,
+      "sha256": "d27bfcebf9bd68ca7bf7210a787d3eb86ce121906a2d9fd31dd23eb6325409c9"
+    },
+    {
+      "commit": "8afaf3566294fe3d6e2096ac4107d2270439b7a8",
+      "path": "docs/architecture/decisions/0264-original-ordered-protocol-custody-worker.md",
+      "bytes": 3930,
+      "sha256": "4e3fcedf7afb48ebd5115ee9aaa4e943ac61cf0f89b7e66cd07bb4c630dcef44"
+    },
+    {
+      "commit": "8afaf3566294fe3d6e2096ac4107d2270439b7a8",
+      "path": "docs/architecture/decisions/0268-certified-fastvote-protocol-custody-worker.md",
+      "bytes": 2793,
+      "sha256": "5ce11b7aadebc42cb556cd66efc867b536a535570b0a641766fdfd7b98b93612"
+    },
+    {
+      "commit": "8afaf3566294fe3d6e2096ac4107d2270439b7a8",
+      "path": "docs/architecture/decisions/0269-positive-standard-asset-fee-claim-custody.md",
+      "bytes": 2199,
+      "sha256": "a01e79b499714565cdeca207e92fd428d97e44349c65dfc3fb8c14f8b138aea3"
+    },
+    {
+      "commit": "8afaf3566294fe3d6e2096ac4107d2270439b7a8",
+      "path": "docs/architecture/signing-route-test-map.md",
+      "bytes": 23189,
+      "sha256": "7fae61f9c331790117e28a196c1ce333c05aaa2f8ca9f1744cfd852cfcc39291"
+    },
+    {
+      "commit": "8afaf3566294fe3d6e2096ac4107d2270439b7a8",
+      "path": "docs/architecture/signing-preparation.md",
+      "bytes": 8679,
+      "sha256": "bf8124aa02966eb7c62a726067f5b3b8201d9dbb49241a6bf2e3c0c9e160ffc8"
+    },
+    {
+      "commit": "8afaf3566294fe3d6e2096ac4107d2270439b7a8",
+      "path": "docs/development/history/roadmap-through-2026-10-06.md",
+      "bytes": 398819,
+      "sha256": "f7bbf3abca1f31608740767d55df9610d9029e03610cae5eacef549e68435609"
+    },
+    {
+      "commit": "8afaf3566294fe3d6e2096ac4107d2270439b7a8",
+      "path": "apps/operator/tests/conditional_readiness_sqlite.rs",
+      "bytes": 27054,
+      "sha256": "0fc2c36bf6fd6c59b68ac39644b94593eb75ae3123a0eb5a2661f727708a314c"
+    }
+  ],
+  "status_inputs": [
+    {
+      "commit": "c12bc7d176a65efeabcec414e918b7f6a17b72b2",
+      "path": "TODO.md",
+      "bytes": 363971,
+      "sha256": "636096b521f36b09bfcecfbac3ea599de2fdb700e9eb6735eae13c215c962ba2"
+    },
+    {
+      "commit": "c12bc7d176a65efeabcec414e918b7f6a17b72b2",
+      "path": "docs/development/validation/2026-10-31-m2-signing-route-map/README.md",
+      "bytes": 6792,
+      "sha256": "b83aab8f35ec32b05f33530dd24250c36d23fa82c4554bfa9ac915719f85729b"
+    },
+    {
+      "commit": "c12bc7d176a65efeabcec414e918b7f6a17b72b2",
+      "path": "docs/development/validation/2026-11-01-pr340-environment-and-validation/README.md",
+      "bytes": 8760,
+      "sha256": "704c7f43936d4d995da5db6517a7f1716d9e9ae6721572257a2d76808f18c751"
+    }
+  ],
+  "edited_documents": [
+    {
+      "path": "TODO.md",
+      "bytes": 375320,
+      "sha256": "7ea2bf436c405a6025cb881cbad7835053863ef4fd8a15f269d6805e40ef5821"
+    },
+    {
+      "path": "docs/development/validation/2026-11-03-m2-initial-scope/README.md",
+      "bytes": 3904,
+      "sha256": "bc2c7637fea4412cd0e2d042eeb1947866ce81effb1776c7558ca8bbd775628f"
+    }
+  ],
+  "checks": {
+    "checkbox_sequence_unchanged": true,
+    "counts": {
+      "total": 85,
+      "checked": 71,
+      "open": 14
+    },
+    "original_parent_ids": [
+      "R1",
+      "R2",
+      "R3",
+      "R4",
+      "D01",
+      "D02",
+      "D03",
+      "D05",
+      "M1",
+      "M2",
+      "M3",
+      "M4",
+      "M5",
+      "M7",
+      "D04",
+      "D06",
+      "D07",
+      "D08",
+      "M6",
+      "M8"
+    ],
+    "task_ids": [
+      "M2-N1",
+      "M2-N2",
+      "M2-N3",
+      "M2-N4",
+      "M2-N5"
+    ],
+    "existing_test_function_names": [
+      "compiled_conditional_readiness_real_retention_restart_and_distinct_certificate",
+      "compiled_registered_replacement_and_recurring_successor_hosts"
+    ],
+    "markdown_references": [
+      {
+        "from": "TODO additions",
+        "target": "#m2初期リリース対象の照合-2026-11-03",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "TODO additions",
+        "target": "docs/architecture/decisions/0208-native-sqlite-first-and-protected-signing.md",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "TODO additions",
+        "target": "docs/architecture/decisions/0211-external-signing-preparation.md#content-review-and-automatic-signing",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "TODO additions",
+        "target": "docs/architecture/decisions/0264-original-ordered-protocol-custody-worker.md",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "TODO additions",
+        "target": "docs/architecture/decisions/0268-certified-fastvote-protocol-custody-worker.md",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "TODO additions",
+        "target": "docs/architecture/decisions/0214-protected-custody-and-review-boundary.md",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "TODO additions",
+        "target": "https://github.com/sunriselayer/sunrise-edge/blob/8afaf3566294fe3d6e2096ac4107d2270439b7a8/docs/architecture/signing-route-test-map.md",
+        "validation": "tracked pinned-main blob"
+      },
+      {
+        "from": "TODO additions",
+        "target": "docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "TODO additions",
+        "target": "docs/architecture/decisions/0208-native-sqlite-first-and-protected-signing.md#2026-10-11-bounded-docker-and-launch-scope-amendment",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "TODO additions",
+        "target": "docs/development/history/roadmap-through-2026-10-06.md#fastvote-certified-execution-gate",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "TODO additions",
+        "target": "apps/operator/tests/conditional_readiness_sqlite.rs",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "TODO additions",
+        "target": "docs/development/validation/2026-11-03-m2-initial-scope/README.md",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "TODO additions",
+        "target": "#m2初期リリース対象の照合-2026-11-03",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "record README",
+        "target": "../../../../TODO.md#m2初期リリース対象の照合-2026-11-03",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "record README",
+        "target": "verification.json",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "record README",
+        "target": "../../../architecture/decisions/0236-separated-code-verification-and-launch-tracking.md#documentation-acceptance",
+        "validation": "local destination and optional heading"
+      },
+      {
+        "from": "record README",
+        "target": "../2026-11-01-pr340-environment-and-validation/README.md",
+        "validation": "local destination and optional heading"
+      }
+    ],
+    "references_checked": 17,
+    "diff_check": "passed",
+    "ascii_parentheses_in_added_text": true,
+    "main_checkout_clean": true,
+    "adr0214_proposed_preserved": true,
+    "scope_only_expected_files": true
+  },
+  "runtime_tests_executed": false,
+  "new_product_qualification": false,
+  "public_profile_approved": false,
+  "reviews": {
+    "requirements_and_evidence_explorers": 2,
+    "post_edit_correspondence_review_completed": 1,
+    "second_post_edit_review": "model capacity error; no result; not retried",
+    "review_fixes": [
+      "genesis author/build owner distinct from SDK prepared owner",
+      "two e8 withdrawal candidates, not two per unspecified group"
+    ],
+    "root_review": "full diff and original requirements/evidence checked"
+  },
+  "excluded": [
+    "provider-stopped D02/M1 independent audits",
+    "ZeroShare WIP/fixture",
+    "M3 torn-WAL assessment/mechanism2",
+    "independent anchor VM boot repair"
+  ],
+  "changes_outside_documentation": false
+}

@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-10-29 (Asia/Singapore)。これは唯一の現行作業表です。
+更新: 2026-11-03 (Asia/Singapore)。これは唯一の現行作業表です。
 設計は[architecture](docs/architecture/README.md)、実装場所は
 [code map](docs/development/code-map.md)、整理の決定は
 [DR-0236](docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md)に置きます。
@@ -936,6 +936,8 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     E215のNative13 A/B・E219のpublication-genesis RELEASE・E222の元12 runtimeで照合した。
     ZeroShare専用WIPは未統合・未検証で、
     各familyの残るlifecycle/全体対応をそろえるまでM2全体は未完了。
+    初期profileの既存要件照合と、停止対象を除く具体的な次作業は
+    [M2初期リリース対象の照合](#m2初期リリース対象の照合-2026-11-03) にまとめる。
     実鍵ceremonyの公開条件と区別する。
   - 初期履歴: publication-only Linux試作の回収可否が不明。E4はSDK部分だけの成功。
     新しい[publication metadata preview](docs/architecture/publication-review.md) と
@@ -1165,6 +1167,64 @@ prepare/finalizeの共通化や開発用LocalSignerだけでprotected backendの
 同一鍵復旧・鍵違い拒否・正のownership/identity rotationは別々に扱い、application creator/
 TreasuryCap・account/feeの移行をgenesis Coin handoffから推定しない。
 実役割/実鍵/ceremony/実topologyはD04/D06/D07、Ledgerは既存deferredのまま保持する。
+
+### M2初期リリース対象の照合 (2026-11-03)
+
+照合したmainは `8afaf3566294fe3d6e2096ac4107d2270439b7a8`、tree `d392a0da9c8805a8bcc8bf84acd674eb3a42f54e`。
+現行statusの照合元は `c12bc7d176a65efeabcec414e918b7f6a17b72b2`。
+以下は既存決定から確定できる技術範囲と不足であり、公開release profileの承認や
+ProposedのDR-0214の受入ではない。初期ネットワークを狭く呼び替えて、既存の
+protocol-v3 activation・membership/epoch・protected signing条件を免除しない。
+
+#### 元要件と初期profileの境界
+
+| 既存要件の根拠 | 今回の照合結果 | 残す責務 |
+| --- | --- | --- |
+| [DR-0208](docs/architecture/decisions/0208-native-sqlite-first-and-protected-signing.md) | Native+SQLite first、DO後続、Ledger製品の必須化を解除。ローカルOSを信頼する個別componentは後続ADRで実装済み | key保護・役割分離・操作内容確認・失敗拒否・復旧/交換/取消は引き続きM2。plaintext seedやLocalSignerだけで代替しない |
+| [DR-0211のautomatic/readiness要件](docs/architecture/decisions/0211-external-signing-preparation.md#content-review-and-automatic-signing) | automatic signingとreadinessは別owner。後者のprotected provider・実host接続はまだ選択されていない | readiness保護を任意の追加機能として消さない。actual key/eligible identity・retained slotと独立した署名検証を維持する。各voteに人の承認を加えない |
+| [DR-0264](docs/architecture/decisions/0264-original-ordered-protocol-custody-worker.md)、[DR-0268](docs/architecture/decisions/0268-certified-fastvote-protocol-custody-worker.md) | protected automatic workerはoriginal orderedとcurrent certifiedの閉じた範囲。successorは選択範囲外 | recurring/successorの機能的合格をprotected successor signerの合格にしない。初期profileで実際に使うsuccessorのauthority/host境界を定義する |
+| [DR-0214](docs/architecture/decisions/0214-protected-custody-and-review-boundary.md)、[既存署名経路表](https://github.com/sunriselayer/sunrise-edge/blob/8afaf3566294fe3d6e2096ac4107d2270439b7a8/docs/architecture/signing-route-test-map.md) | 署名準備型、認識済み操作、保護backendは別。genesis作成は実consumerだが、汎用admin signerは存在を仮定できない | 実consumerごとのauthority・承認内容・backendを確定する。単にprepared型があるという理由で全familyを必須化せず、現在の拒否も外さない |
+| [DR-0236](docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md)、[DR-0208のlaunch分離](docs/architecture/decisions/0208-native-sqlite-first-and-protected-signing.md#2026-10-11-bounded-docker-and-launch-scope-amendment) | disposable鍵・値でのparameterized実装/検証は進められる | 実operators/key/recovery roles、genesis/economics、実ceremony・topologyはD04/D06/D07/M6/M8。fixture値で本番を決めない |
+| [元activation条件](docs/development/history/roadmap-through-2026-10-06.md#fastvote-certified-execution-gate)、G | 既存の全accepted familyの認証/認可と元release条件を保持 | 狭いcomponent合格や今回の文書照合でM2/公開readinessを完了にしない。停止済み監査の再試行もこの作業に含めない |
+
+#### 初期候補へ対応付ける実consumer
+
+| 区分 | 実consumerと既存の範囲 | 初期profileでの扱い |
+| --- | --- | --- |
+| 選択済みinteractive component | publication、genesis transfer/split/merge/mint/burn、create、自己作成applicationのmint/burn/Coin操作、positive strict partial SplitのLeg/Claim | 上のfamily表の完了範囲を保持。同一鍵復旧・取消後restartの追加接続漏れは今回も特定していない。SDK fake、実UID、RELEASEの証拠は分ける |
+| 選択済みautomatic component | original ordered proposal/voteとcertified FastVote/availability ACK/original frontier voteのworker/frontend | 元ADRの閉じた経路と同一identity復旧まで。successor/readiness、新membership・off-host復旧まで対応済みとはしない |
+| 具体的な保護境界が残るprotocol owner | `conditional_readiness::ReadinessSigningKey` / operator readiness、`successor-host`の実署名consumer | 下のM2-N1/N2から設計を進める。coreの既存authority/retentionを別signerへ移したり、原profileの未達を任意扱いして消したりしない |
+| 保護署名の対象選択が残るinteractive/author owner | generic local/general・paid、bond registration、FinalTransfer fee claim、offline genesis author | M2-N3で必要性を既存初期機能へ対応付ける。local/paidのcustody拒否、bond/claimの開発用署名、genesis private-file署名はprotected対応ではない。未選択経路の追加実装は自動着手しない |
+| 引き続き対象外 | Ledger製品、追加provider/HA、新たな汎用admin signer、未選択の広いasset/account移行 | 元のdeferred/未選択を保持。新backendや新しい公開操作をこの照合から承認しない |
+
+#### 停止対象を除く有限な次作業
+
+M2-N1〜N5は既存M2の不足を分ける作業IDであり、新しい親gateやcheckboxではない。
+コード変更・実検証の実行や完了は今回記録していない。新しい信頼境界の選択は、既存の
+publication向け判断だけから他roleへ拡張せず、具体設計をreview可能にしてから確定する。
+
+| ID / 現在の状態 | 必要な実装・設計作業 | 完了とするための検証・成果物 | 依存/着手条件 |
+| --- | --- | --- | --- |
+| M2-N1 / 設計から着手可 | readinessのparameterized protected-provider契約を、既存のeligible key・complete inactive target・retained slot ownerへ対応付ける。実hostの鍵load/署名/retained returnを列挙し、providerとhostの責任、停止/拒否/復旧を定義する | architectureと日付付きADRに具体consumer・expected key/domain・既存retentionとの境界を記録。選択後に実hostを接続し、既存readinessのexact owner内で正常署名、wrong-key/拒否、再起動/retained reconciliationを検証する。prepared/fakeだけの成功で閉じない | DR-0211の残件。設計整理は実鍵/実operator待ちにしない。backend接続はそのroleの具体契約確定後 |
+| M2-N2 / 設計から着手可 | successorの自動署名consumerと、original workerだけでは満たせない初期profileの差を列挙する。fresh serving warrant・committee/key一致・writer fence・confirmed retentionを元ownerに残す具体契約を定義する | accepted profileの実host/署名domain/authorityを有限に記載し、選択後のhost接続と元recurring ownerによる実検証を行う。通常hostの平文seedや原epoch worker成功をsuccessor保護の証拠にしない | M2-N1と独立して設計可能。新しいIPC/raw-frame署名契約を先に実装しない。元のmembership/epoch条件を削減しない |
+| M2-N3 / 要件・対象選択の整理から着手可 | generic local/paid、bond registration、FinalTransfer、offline genesis authorを、初期profileで必要な具体操作へ照合する。各行を対象/非公開・未対応/後続へ根拠付きで分類し、genesis/adminは実在するconsumerだけを扱う | 対象に選ぶ行にはauthority、認識済みcode/semantics、完全review内容、backend契約を記録。確定した行に限り既存prepared ownerまたはgenesis author/build ownerを使って具体consumer/backendを接続し、exact-byte/返却署名検証・誤入力/未知操作拒否・実consumerの操作結果を元test ownerで確認する | 型が存在するだけでは実装必須にしない。対象外指定で元accepted機能/activation条件を免除しない。安全判定で停止したZeroShareはこの分類・実装候補から除外 |
+| M2-N4 / 対象別仕様の整理から着手可 | N1〜N3と選択済みfamilyごとに、同一鍵復旧・provider停止/取消・新identityへの交換で必要な動作を区別する。既存authorized operation/epochで可能なcutoverと履歴保持、未対応を明示する | 必要と決めた移行だけ、既存authorityの正の移行と旧権限の扱いを実ledger/receiptで検証する。同一鍵署名一致・wrong-key拒否を正の移行に数えない。新address alias、creator pin緩和、historical claimant書換えを解決策にしない | 残るrotation/revocation要件の具体化。B鍵復旧、全account/fee/TreasuryCap移行、off-host復旧を自動で新必須gateにしない。完了済みconsumerを再実装しない |
+| M2-N5 / 対象source確定後 | 確定した対象と必要なN1〜N4変更を、既存実test owner・source/tree・profile別の証拠へ対応付け、欠ける検証だけを実行計画へ落とす | 既存4完全custody profiles、positive Split、ordered/certified UID、readiness/recurringの該当ownerを選び、実行した範囲のraw/actual exit/EOF/wait/reap/資源解放を照合する。runtime変更後はGのliteral npm ci+完全required・exact-source CIと必要なrelease資格を満たす | 今回のTODO変更や既存証拠の整理だけを理由に製品gateを再実行しない。元selector/timeout/7epochs/e8のwithdrawal候補2件/8links/35rolesを保持。RELEASE/原13-target A/B等は元の適用条件でM7と共用 |
+
+N1/N2の実workflow ownerは既存の
+[`conditional_readiness_sqlite.rs`](apps/operator/tests/conditional_readiness_sqlite.rs) 内の
+`compiled_conditional_readiness_real_retention_restart_and_distinct_certificate` と
+`compiled_registered_replacement_and_recurring_successor_hosts`。新しい短縮版を複製せず、
+保護境界の追加分だけを元ownerへ対応付ける。positive Splitのlive escrow/nonce/entitlementは
+元store-backed preparationとordered executionの責務であり、custodyへ重複実装しない。
+
+次はM2-N1/N2の具体的なhost/authority設計と、M2-N3の対象選択根拠を固める。
+この時点で未選択の新backend配線や新しい移行を実装しない。N1〜N5の成果を
+既存M2の該当条件へ戻して記録し、親M2や元の独立security/release条件の代わりにしない。
+停止済みD02/M1独立監査、ZeroShare WIP/fixture、M3 torn-WAL assessment/mechanism2、
+独立anchor VM boot修正はこの実行キューに入れず、未完了・停止の記録だけを保持する。
+元85 checkbox /71完了 /14未完了と親D02/M1/M2/M3/M7を維持する。
+今回の文書照合と静的検証は[記録](docs/development/validation/2026-11-03-m2-initial-scope/README.md) を参照する。
 
 - [ ] **M3: selected SQLite profileのdurabilityを検証する**
   - 対象: 検証。atomic object/state/nonce/receipt/outbox、indexed delivery、
@@ -1517,7 +1577,10 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
 2. M2のpreview/exportとpublication-only local OS custodyは実装・独立correctness
    review・実UID/PTY/refusal/restartに加え、publicationの取消・鍵復旧/交換をE21/E22で検証済み。
    fee-claimの非承認表示・保存内容のdevelopment signingはE23/E24のlocal完全gateとhosted CIまで成功。
-   残るprotected backend/操作意味の承認、他family/automatic signingと各lifecycleを進める。
+   選択済みasset/automatic componentと直近の復旧consumer接続は上のfamily表へ対応済み。
+   次は[M2-N1〜N5](#m2初期リリース対象の照合-2026-11-03) に従い、readiness/successorの保護境界、
+   未選択consumerの必要性、対象別lifecycle、実sourceごとの不足検証を具体化する。
+   停止対象を再開せず、全prepared型や全identity移行を新たな必須条件にしない。
    D03の元scopeはE14/E15/E16・hosted終端成功で完了。公開前の露出/新advisory確認はD04/M8へ対応する。
 3. M3のf093統合と新しいowningはE7、既存5 ENOSPC controlsはE8で成功。
    残るselected-profile fault/combined条件を進める。
