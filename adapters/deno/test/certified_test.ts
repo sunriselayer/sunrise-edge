@@ -4,6 +4,7 @@ import {
   configuredIngressProfile,
   createCertifiedWebIngressHandler,
 } from "../../shared/certified-web-ingress.ts";
+import { readBoundedBody } from "../../shared/web-ingress.ts";
 import { resolveCertifiedRoute } from "../../shared/certified-routes.ts";
 import {
   type CertifiedRouteFixture,
@@ -522,7 +523,9 @@ Deno.test("certified response guards refuse malformed lengths, encoding, 204 fra
   );
   responses.push(Response.error());
   for (const upstream of responses) {
-    const handler = createCertifiedDenoHandler(config(() => Promise.resolve(upstream)));
+    const handler = createCertifiedDenoHandler(
+      config(() => Promise.resolve(upstream)),
+    );
     const response = await handler(
       new Request("https://edge.example/v1/fastvote/prepare", {
         method: "POST",
@@ -563,8 +566,9 @@ Deno.test("certified unknown-length oversize and declared underflow never expose
       pull(controller) {
         index += 1;
         if (index === 1) controller.enqueue(new Uint8Array([1, 2]));
-        else if (declared === undefined) controller.enqueue(new Uint8Array([3, 4, 5]));
-        else controller.close();
+        else if (declared === undefined) {
+          controller.enqueue(new Uint8Array([3, 4, 5]));
+        } else controller.close();
       },
       cancel() {
         cancelled = true;
@@ -655,7 +659,9 @@ Deno.test("certified disconnect and late fetch resolution cancel their response 
       lateCancelled = true;
     },
   });
-  resolveLate!(new Response(lateBody, { headers: { "content-type": RESULT_MEDIA } }));
+  resolveLate!(
+    new Response(lateBody, { headers: { "content-type": RESULT_MEDIA } }),
+  );
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
   equal(lateCancelled, true);
   equal(lateBody.locked, false);
@@ -705,6 +711,59 @@ Deno.test("certified bounded request overflow and read failure do not dispatch",
   equal(invalid.status, 400);
   equal(await invalid.text(), "invalid-request-body");
   equal(failed.locked, false);
+  equal(calls, 0);
+});
+
+Deno.test("incoming body total deadline survives a slow drip", async () => {
+  let cancelCalled = false;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      timer = setInterval(() => controller.enqueue(new Uint8Array([1])), 8);
+    },
+    cancel() {
+      cancelCalled = true;
+      if (timer !== undefined) clearInterval(timer);
+    },
+  }, { highWaterMark: 0 });
+  await rejects(
+    readBoundedBody(stream, 1024, {
+      idleTimeoutMilliseconds: 100,
+      totalTimeoutMilliseconds: 30,
+    }),
+    { status: 408, code: "request-body-timeout" },
+  );
+  equal(cancelCalled, true);
+  equal(stream.locked, false);
+});
+
+Deno.test("certified incoming abort refuses before upstream dispatch", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  let cancelCalled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    cancel() {
+      cancelCalled = true;
+    },
+  }, { highWaterMark: 0 });
+  const handler = createCertifiedDenoHandler(config(() => {
+    calls += 1;
+    return Promise.reject(new Error("must not dispatch"));
+  }));
+  const pending = handler(
+    new Request("https://edge.example/v1/fastvote/prepare", {
+      method: "POST",
+      headers: { "content-type": EVENT_MEDIA },
+      body: stream,
+      signal: controller.signal,
+    }),
+  );
+  controller.abort();
+  const response = await pending;
+  equal(response.status, 400);
+  equal(await response.text(), "request-aborted");
+  equal(cancelCalled, true);
+  equal(stream.locked, false);
   equal(calls, 0);
 });
 

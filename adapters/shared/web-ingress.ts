@@ -4,6 +4,8 @@ export const NODE_EVENT_MEDIA_TYPE = "application/vnd.sunrise-edge.node-event";
 export const NODE_RESULT_MEDIA_TYPE =
   "application/vnd.sunrise-edge.node-result";
 export const MAX_HTTP_EVENT_BODY_BYTES = 16 * 1024 * 1024 + 512;
+export const MAX_HTTP_BODY_IDLE_MILLIS = 30_000;
+export const MAX_HTTP_BODY_TOTAL_MILLIS = 120_000;
 
 const NODE_CORE_URL = "https://node-core.internal/v1/events";
 
@@ -15,6 +17,12 @@ export interface NodeCoreFetcher {
 export interface WebIngressOptions {
   /** A provider capacity limit that may narrow, but never raise, the protocol limit. */
   readonly maximumRequestBodyBytes?: number;
+}
+
+export interface BodyReadOptions {
+  readonly signal?: AbortSignal;
+  readonly idleTimeoutMilliseconds?: number;
+  readonly totalTimeoutMilliseconds?: number;
 }
 
 /** A pre-dispatch framing refusal; never evidence of an upstream outcome. */
@@ -65,7 +73,11 @@ export async function handleWebRequest(
     const body = await readBoundedBody(
       request.body,
       maximumRequestBodyBytes,
+      { signal: request.signal },
     );
+    if (request.signal.aborted) {
+      throw new IngressError(400, "request-aborted");
+    }
     const downstreamRequest = new Request(NODE_CORE_URL, {
       method: "POST",
       headers: {
@@ -122,26 +134,58 @@ export async function handleWebRequest(
 export async function readBoundedBody(
   body: ReadableStream<Uint8Array> | null,
   maximumBytes: number,
+  options: BodyReadOptions = {},
 ): Promise<Uint8Array<ArrayBuffer>> {
   if (body === null) {
     throw new IngressError(400, "missing-body");
   }
+  const idleTimeoutMilliseconds = validateBodyReadTimeout(
+    options.idleTimeoutMilliseconds ?? MAX_HTTP_BODY_IDLE_MILLIS,
+    MAX_HTTP_BODY_IDLE_MILLIS,
+  );
+  const totalTimeoutMilliseconds = validateBodyReadTimeout(
+    options.totalTimeoutMilliseconds ?? MAX_HTTP_BODY_TOTAL_MILLIS,
+    MAX_HTTP_BODY_TOTAL_MILLIS,
+  );
+  const totalDeadline: number = performance.now() + totalTimeoutMilliseconds;
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  const interruption = (): IngressError =>
+    options.signal?.aborted
+      ? new IngressError(400, "request-aborted")
+      : new IngressError(408, "request-body-timeout");
   try {
     while (true) {
-      const result = await reader.read();
+      const remaining: number = totalDeadline - performance.now();
+      if (remaining <= 0 || options.signal?.aborted) throw interruption();
+      const result = await withBodyReadDeadline(
+        reader.read(),
+        Math.min(remaining, idleTimeoutMilliseconds),
+        options.signal,
+        interruption,
+      );
       if (result.done) {
         break;
       }
       if (result.value.byteLength > maximumBytes - total) {
-        await reader.cancel("request body exceeds adapter limit");
         throw new IngressError(413, "body-too-large");
       }
       chunks.push(result.value);
       total += result.value.byteLength;
     }
+    if (performance.now() >= totalDeadline || options.signal?.aborted) {
+      throw interruption();
+    }
+  } catch (error) {
+    // A custom stream can keep its cancel promise pending. The admission
+    // deadline must still end this invocation without waiting for that promise.
+    try {
+      void reader.cancel("request body admission stopped").catch(() => {});
+    } catch {
+      // Preserve the original admission failure.
+    }
+    throw error;
   } finally {
     reader.releaseLock();
   }
@@ -153,6 +197,53 @@ export async function readBoundedBody(
     offset += chunk.byteLength;
   }
   return output;
+}
+
+function validateBodyReadTimeout(value: number, maximum: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+    throw new TypeError(
+      `body read timeout must be an integer from 1 to ${maximum}`,
+    );
+  }
+  return value;
+}
+
+function withBodyReadDeadline<T>(
+  operation: Promise<T>,
+  timeoutMilliseconds: number,
+  requestSignal: AbortSignal | undefined,
+  interruption: () => IngressError,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      requestSignal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = (): void => {
+      cleanup();
+      reject(interruption());
+    };
+    const timer: ReturnType<typeof setTimeout> = setTimeout(
+      onAbort,
+      timeoutMilliseconds,
+    );
+    if (requestSignal?.aborted) {
+      void operation.catch(() => {});
+      onAbort();
+      return;
+    }
+    requestSignal?.addEventListener("abort", onAbort, { once: true });
+    void operation.then(
+      (value: T) => {
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error instanceof Error ? error : new Error("body read failed"));
+      },
+    );
+  });
 }
 
 function validateMaximumRequestBodyBytes(value: number): number {
