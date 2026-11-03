@@ -1,0 +1,152 @@
+{
+  "purpose": "Archived exact local validation controls, not protocol/runtime implementation. Raw run and large input manifests remain preserved at referenced paths.",
+  "actualDriver": "required-driver.py",
+  "preparerLimit": "Original prepared driver widened file cap; root restored256MiB in separately retained driver-v2 before any validation execution.",
+  "copies": [
+    {
+      "recordedPath": "prepare-environment.py",
+      "executedOrPreparedPath": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-prepare.py",
+      "bytes": 24609,
+      "sha256": "09b9b97d59961130309e3984cd9904e7d8900851163e2c84bb73bcebc37b4118"
+    },
+    {
+      "recordedPath": "required-driver.py",
+      "executedOrPreparedPath": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-driver-v2.py",
+      "bytes": 25717,
+      "sha256": "d7f89448899d5544fd0c3240d72be18f9fe066da4d4f95b24e1e439ba98b4c54"
+    },
+    {
+      "recordedPath": "cargo-wrapper.py",
+      "executedOrPreparedPath": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bin/cargo",
+      "bytes": 8017,
+      "sha256": "381861d7686b84ee8de4b51739d747c49a50b0eb4a32d5b6a2b8849a6361da7b"
+    },
+    {
+      "recordedPath": "cf-wrapper.py",
+      "executedOrPreparedPath": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bin/cf",
+      "bytes": 12987,
+      "sha256": "882869800e50a57cb12c4cd03259dd75c7b419455caffe9620f12549b3b04c04"
+    },
+    {
+      "recordedPath": "admission.json",
+      "executedOrPreparedPath": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-admission.json",
+      "bytes": 8032,
+      "sha256": "2866130ce961714ad37fe2e67d8ca9bf92dcb434686852033a6d3a8a8a296309"
+    },
+    {
+      "recordedPath": "device-transition.json",
+      "executedOrPreparedPath": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-device-transition.json",
+      "bytes": 3627,
+      "sha256": "58db4481786efcfd98c4152272a4d98e90a9cffda9a10c3ddda098699e266337"
+    },
+    {
+      "recordedPath": "qualify-run.py",
+      "executedOrPreparedPath": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-qualify-v2.py",
+      "bytes": 22265,
+      "sha256": "64ba1256943b6a427cfff44f5ea8dbd720eb24b345722ce571ca6d83d48d1e34"
+    }
+  ],
+  "bundleV2": {
+    "artifacts": {
+      "admission": {
+        "bytes": 8032,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-admission.json",
+        "sha256": "2866130ce961714ad37fe2e67d8ca9bf92dcb434686852033a6d3a8a8a296309"
+      },
+      "cfManifest": {
+        "bytes": 4264783,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-cf-closure.json",
+        "sha256": "9a4a2b4930909282aae2327f14a7be8e36f29f7d333fd03d721225aa3495e9be"
+      },
+      "core": {
+        "bytes": 2238,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-wrapper-core.json",
+        "sha256": "f2cc3560b382411513040f447c08330268b88ac50bf6bdf860207cdd644c5f8e"
+      },
+      "driver": {
+        "bytes": 25717,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-driver-v2.py",
+        "sha256": "d7f89448899d5544fd0c3240d72be18f9fe066da4d4f95b24e1e439ba98b4c54"
+      },
+      "runtimeInputs": {
+        "bytes": 22335,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-runtime-inputs.json",
+        "sha256": "b07d7b9088c0f14f6a97e5c9e162f44acdb49017ae1c46d51dee1b016589c872"
+      },
+      "sourceIndex": {
+        "bytes": 543097,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-source-index.json",
+        "sha256": "09e72bc59b16129c01430d4b56f52822abf26b2e8c8e4495ef81a7467a759988"
+      },
+      "transition": {
+        "bytes": 3627,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-device-transition.json",
+        "sha256": "58db4481786efcfd98c4152272a4d98e90a9cffda9a10c3ddda098699e266337"
+      },
+      "wrapper-cargo": {
+        "bytes": 8017,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bin/cargo",
+        "sha256": "381861d7686b84ee8de4b51739d747c49a50b0eb4a32d5b6a2b8849a6361da7b"
+      },
+      "wrapper-cf": {
+        "bytes": 12987,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bin/cf",
+        "sha256": "882869800e50a57cb12c4cd03259dd75c7b419455caffe9620f12549b3b04c04"
+      },
+      "wrapper-node": {
+        "bytes": 334,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bin/node",
+        "sha256": "3792686720650533f4b872be1cd9099ea7fab0564e84a9ecb063ce2b6399a2f2"
+      },
+      "wrapper-npm": {
+        "bytes": 333,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bin/npm",
+        "sha256": "9ddeabc1a481a464bd7d02373e6e35c6b3dae61c4295cf8edbaad44d182874d9"
+      },
+      "wrapper-npx": {
+        "bytes": 333,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bin/npx",
+        "sha256": "9d6785d28d30c355e761a9830e5eaaeaf7245ecbfc975cf507af50b1aa795fb5"
+      },
+      "wrapper-python3": {
+        "bytes": 68,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bin/python3",
+        "sha256": "75122b4fe125329e936b8c2a0eb369e0778123f9cca05c8222aad83f543a8fca"
+      }
+    },
+    "preparedUtc": "2026-11-01T02:16:52.053074+00:00",
+    "preparer": {
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-prepare.py",
+      "sha256": "09b9b97d59961130309e3984cd9904e7d8900851163e2c84bb73bcebc37b4118"
+    },
+    "remainingGate": "Root independent review/admission, then new full-required execution; no prior success inherited.",
+    "rootCorrection": "Restore original256MiB per-file digest bound; keep original prepared driver/bundle immutable.",
+    "schema": 1,
+    "sourceHead": "2e2c10fe0c360f99400be79ee50cad18f5e2336f",
+    "sourceTree": "d392a0da9c8805a8bcc8bf84acd674eb3a42f54e",
+    "state": "PREPARED_ONLY_NOT_EXECUTED",
+    "supersedesBundle": {
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bundle.json",
+      "sha256": "29cbf25eed5f3a95e107847db29d8395c27be5a590fd93e5c3c1a9bbc1597e5d"
+    },
+    "verifiedDifferences": {
+      "deviceTransition": [
+        52,
+        53
+      ],
+      "directoryPins": 7,
+      "layoutDeviceLeaves": 2725,
+      "privateRegularFilesRehashed": 2335,
+      "toolDeviceLeaves": 4682,
+      "toolRolesRehashed": 2347
+    },
+    "writerClosed": true
+  },
+  "qualifierCorrection": {
+    "originalPath": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-qualify.py",
+    "originalSha256": "7459302d531c2a42c7680d6690c5df9b9eb0d6436f008ef060f90ba69658a6ae",
+    "actualPath": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-qualify-v2.py",
+    "actualSha256": "64ba1256943b6a427cfff44f5ea8dbd720eb24b345722ce571ca6d83d48d1e34",
+    "reason": "systemd clears ControlGroup after physical release; retain invocation/PID matching and require absent saved group before accepting empty current property."
+  }
+}

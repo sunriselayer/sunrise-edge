@@ -1,0 +1,143 @@
+{
+  "cfAllowedDelta": "Only layout.device, tools.configured.device and tools.resolved.device leaves equal to parentDevice change to currentDevice; other devices remain exact. Every other key/value, body hash, size, UID/GID, mode, inode, timestamps, link and route compared equal.",
+  "cfParent": {
+    "bytes": 4264552,
+    "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/maintenance-dedup-1027-cf-closure-device52.json",
+    "sha256": "8ceee07cbd07993a808edba96aba91d6974f1f1d8b9e823f27c19c886b86bd6c"
+  },
+  "cfVerification": {
+    "allOtherFieldsEqual": true,
+    "completeHashAndLayoutPasses": 2,
+    "layoutDeviceLeaves": 2725,
+    "privateRegularFilesRehashed": 2335,
+    "toolDeviceLeaves": 4682,
+    "toolRolesRehashed": 2347
+  },
+  "currentDevice": 53,
+  "directoryDeltas": {
+    "cacheRoot": {
+      "currentPin": [
+        53,
+        47863084,
+        1000,
+        448
+      ],
+      "parentPin": [
+        52,
+        47863084,
+        1000,
+        448
+      ],
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-m3-followup-1021-cache"
+    },
+    "cargoHome": {
+      "currentPin": [
+        53,
+        47863085,
+        1000,
+        448
+      ],
+      "parentPin": [
+        52,
+        47863085,
+        1000,
+        448
+      ],
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-m3-followup-1021-cache/cargo-home"
+    },
+    "denoCache": {
+      "currentPin": [
+        53,
+        47863087,
+        1000,
+        448
+      ],
+      "parentPin": [
+        52,
+        47863087,
+        1000,
+        448
+      ],
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-m3-followup-1021-cache/deno-cache"
+    },
+    "npmCache": {
+      "currentPin": [
+        53,
+        47863086,
+        1000,
+        448
+      ],
+      "parentPin": [
+        52,
+        47863086,
+        1000,
+        448
+      ],
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-m3-followup-1021-cache/npm-cache"
+    },
+    "target": {
+      "currentPin": [
+        53,
+        47881681,
+        1000,
+        448
+      ],
+      "parentPin": [
+        52,
+        47881681,
+        1000,
+        448
+      ],
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-m3-followup-1021/target"
+    },
+    "temporary": {
+      "currentPin": [
+        53,
+        47881682,
+        1000,
+        448
+      ],
+      "parentPin": [
+        52,
+        47881682,
+        1000,
+        448
+      ],
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-m3-followup-1021/target/recipe-tmp"
+    },
+    "xdgCache": {
+      "currentPin": [
+        53,
+        47863088,
+        1000,
+        448
+      ],
+      "parentPin": [
+        52,
+        47863088,
+        1000,
+        448
+      ],
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-m3-followup-1021-cache/xdg-cache"
+    }
+  },
+  "historicalFilesystemUuidNotPresentInParentManifest": true,
+  "mount": {
+    "filesystems": [
+      {
+        "fsroot": "/home",
+        "fstype": "btrfs",
+        "maj:min": "0:35",
+        "options": "rw,relatime,seclabel,compress=zstd:1,ssd,discard=async,space_cache=v2,subvolid=257,subvol=/home",
+        "source": "/dev/nvme0n1p3[/home]",
+        "target": "/home",
+        "uuid": "673f9922-f421-44c7-87d5-3e121f1b29d7"
+      }
+    ]
+  },
+  "observedUtc": "2026-11-01T02:16:51.945681+00:00",
+  "parentDevice": 52,
+  "schema": 1,
+  "sourceHead": "2e2c10fe0c360f99400be79ee50cad18f5e2336f",
+  "state": "VERIFIED_DEVICE_ONLY_TRANSITION"
+}

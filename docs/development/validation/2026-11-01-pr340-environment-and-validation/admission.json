@@ -1,0 +1,176 @@
+{
+  "artifacts": {
+    "cfManifest": {
+      "bytes": 4264783,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-cf-closure.json",
+      "sha256": "9a4a2b4930909282aae2327f14a7be8e36f29f7d333fd03d721225aa3495e9be"
+    },
+    "core": {
+      "bytes": 2238,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-wrapper-core.json",
+      "sha256": "f2cc3560b382411513040f447c08330268b88ac50bf6bdf860207cdd644c5f8e"
+    },
+    "runtimeInputs": {
+      "bytes": 22335,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-runtime-inputs.json",
+      "sha256": "b07d7b9088c0f14f6a97e5c9e162f44acdb49017ae1c46d51dee1b016589c872"
+    },
+    "sourceIndex": {
+      "bytes": 543097,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-source-index.json",
+      "sha256": "09e72bc59b16129c01430d4b56f52822abf26b2e8c8e4495ef81a7467a759988"
+    },
+    "transition": {
+      "bytes": 3627,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-device-transition.json",
+      "sha256": "58db4481786efcfd98c4152272a4d98e90a9cffda9a10c3ddda098699e266337"
+    },
+    "wrapper-cargo": {
+      "bytes": 8017,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bin/cargo",
+      "sha256": "381861d7686b84ee8de4b51739d747c49a50b0eb4a32d5b6a2b8849a6361da7b"
+    },
+    "wrapper-cf": {
+      "bytes": 12987,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bin/cf",
+      "sha256": "882869800e50a57cb12c4cd03259dd75c7b419455caffe9620f12549b3b04c04"
+    },
+    "wrapper-node": {
+      "bytes": 334,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bin/node",
+      "sha256": "3792686720650533f4b872be1cd9099ea7fab0564e84a9ecb063ce2b6399a2f2"
+    },
+    "wrapper-npm": {
+      "bytes": 333,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bin/npm",
+      "sha256": "9ddeabc1a481a464bd7d02373e6e35c6b3dae61c4295cf8edbaad44d182874d9"
+    },
+    "wrapper-npx": {
+      "bytes": 333,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bin/npx",
+      "sha256": "9d6785d28d30c355e761a9830e5eaaeaf7245ecbfc975cf507af50b1aa795fb5"
+    },
+    "wrapper-python3": {
+      "bytes": 68,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-bin/python3",
+      "sha256": "75122b4fe125329e936b8c2a0eb369e0778123f9cca05c8222aad83f543a8fca"
+    }
+  },
+  "exactAllowedDeltas": {
+    "cfManifest": [
+      "layout.*.device",
+      "tools.*.configured.device",
+      "tools.*.resolved.device",
+      "sourceRoot",
+      "state",
+      "provenance.currentDeviceTransition"
+    ],
+    "core": [
+      "sourceHead",
+      "sourceTree",
+      "sourceIndexPath",
+      "sourceIndexSha256",
+      "trackedFileCount",
+      "runtimeInputsPath",
+      "runtimeInputsSha256",
+      "directories.*.pin[0]"
+    ],
+    "driver": [
+      "new namespace paths/pins",
+      "enforce prepared source and runtime identities before/after; preserve all selectors/env/budgets"
+    ],
+    "runtimeInputs": [
+      "note",
+      "tools.*.admittedIdentity additions",
+      "cf-closure-manifest path/resolvedPath/sha256 only"
+    ]
+  },
+  "noTestsCompilersInstallsNetworkOrCredentialOperations": true,
+  "parents": {
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-root-state-before.json": {
+      "bytes": 9712,
+      "sha256": "8dab7c923ac5ca0c1105eea774f63cf0dabf655ef81097a682fbe0ef87fbd47d"
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-map-1031-driver.py": {
+      "bytes": 20851,
+      "sha256": "f09501e6bd039b131c7a1554ec0ac682214ff6c419abe0c6a9491b1b79620826"
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-map-1031-run-v1-verified.json": {
+      "bytes": 491,
+      "sha256": "7b77f7281b32fad16c3b9280adc183937a5c146bd4e9cdb6514bd81ae505ddb4"
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/maintenance-dedup-1027-cf-closure-device52.json": {
+      "bytes": 4264552,
+      "sha256": "8ceee07cbd07993a808edba96aba91d6974f1f1d8b9e823f27c19c886b86bd6c"
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/maintenance-six-1028-bin/cargo": {
+      "bytes": 8018,
+      "sha256": "6cd18ed4532e6a2fa6cddd7cb9770e7abc71ce6be6668ac3c113d801e3f8c49f"
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/maintenance-six-1028-bin/cf": {
+      "bytes": 13000,
+      "sha256": "4fcd384f68b02b567de8088d5818112823996caec0179f8c54883da5e856c15c"
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/maintenance-six-1028-bin/node": {
+      "bytes": 334,
+      "sha256": "3792686720650533f4b872be1cd9099ea7fab0564e84a9ecb063ce2b6399a2f2"
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/maintenance-six-1028-bin/npm": {
+      "bytes": 333,
+      "sha256": "9ddeabc1a481a464bd7d02373e6e35c6b3dae61c4295cf8edbaad44d182874d9"
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/maintenance-six-1028-bin/npx": {
+      "bytes": 333,
+      "sha256": "9d6785d28d30c355e761a9830e5eaaeaf7245ecbfc975cf507af50b1aa795fb5"
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/maintenance-six-1028-bin/python3": {
+      "bytes": 68,
+      "sha256": "75122b4fe125329e936b8c2a0eb369e0778123f9cca05c8222aad83f543a8fca"
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/maintenance-six-1028-runtime-inputs.json": {
+      "bytes": 8148,
+      "sha256": "861b2e5629c8b295bdd5f9c5da6214697223bee678383a0632cd5ea3a47d3512"
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/maintenance-six-1028-wrapper-core.json": {
+      "bytes": 2240,
+      "sha256": "97ef73687d2ed11a692418ed45be447a09d2f1fb926c687900daff2c8b03e4c1"
+    }
+  },
+  "rootIndependentFilesystemAndToolValidationRequired": true,
+  "schema": 1,
+  "sourceHead": "2e2c10fe0c360f99400be79ee50cad18f5e2336f",
+  "sourceTree": "d392a0da9c8805a8bcc8bf84acd674eb3a42f54e",
+  "state": "PREPARED_REHASHED_ENVIRONMENT_ROOT_LAUNCH_PENDING",
+  "wrapperChanges": {
+    "cargo": {
+      "allowedDelta": "Only fixed core path/hash",
+      "newSha256": "381861d7686b84ee8de4b51739d747c49a50b0eb4a32d5b6a2b8849a6361da7b",
+      "parentSha256": "6cd18ed4532e6a2fa6cddd7cb9770e7abc71ce6be6668ac3c113d801e3f8c49f"
+    },
+    "cf": {
+      "allowedDelta": "Only fixed core path/hash and CF-manifest path/hash",
+      "newSha256": "882869800e50a57cb12c4cd03259dd75c7b419455caffe9620f12549b3b04c04",
+      "parentSha256": "4fcd384f68b02b567de8088d5818112823996caec0179f8c54883da5e856c15c"
+    },
+    "node": {
+      "allowedDelta": "byte-identical copy",
+      "newSha256": "3792686720650533f4b872be1cd9099ea7fab0564e84a9ecb063ce2b6399a2f2",
+      "parentSha256": "3792686720650533f4b872be1cd9099ea7fab0564e84a9ecb063ce2b6399a2f2"
+    },
+    "npm": {
+      "allowedDelta": "byte-identical copy",
+      "newSha256": "9ddeabc1a481a464bd7d02373e6e35c6b3dae61c4295cf8edbaad44d182874d9",
+      "parentSha256": "9ddeabc1a481a464bd7d02373e6e35c6b3dae61c4295cf8edbaad44d182874d9"
+    },
+    "npx": {
+      "allowedDelta": "byte-identical copy",
+      "newSha256": "9d6785d28d30c355e761a9830e5eaaeaf7245ecbfc975cf507af50b1aa795fb5",
+      "parentSha256": "9d6785d28d30c355e761a9830e5eaaeaf7245ecbfc975cf507af50b1aa795fb5"
+    },
+    "python3": {
+      "allowedDelta": "byte-identical copy",
+      "newSha256": "75122b4fe125329e936b8c2a0eb369e0778123f9cca05c8222aad83f543a8fca",
+      "parentSha256": "75122b4fe125329e936b8c2a0eb369e0778123f9cca05c8222aad83f543a8fca"
+    }
+  }
+}
