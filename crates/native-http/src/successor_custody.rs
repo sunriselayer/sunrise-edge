@@ -41,6 +41,9 @@ const MAX_HEADER: usize = 64 * 1024;
 const MAX_HEADER_TOTAL: usize = 64 * 1024;
 const MAX_PATH: usize = 64 * 1024;
 const MAX_FRAME: usize = MAX_CANONICAL_FRAME_BYTES + 2 * MAX_HEADER_TOTAL + MAX_PATH + 4096;
+/// Smallest worker connection or request budget, and frontend request budget, that can still
+/// serve public work. The frontend's startup preflight spends one of each at both ends.
+pub const MIN_BUDGET: u64 = 2;
 fn refused() -> io::Error {
     io::Error::other("successor custody refused")
 }
@@ -295,6 +298,8 @@ async fn execute(app: Router, input: Input) -> io::Result<Output> {
 }
 
 /// A bounded authenticated socket dispatches exclusively through the real successor router.
+/// A failed, timed-out or abandoned delivery refuses only its own connection; the worker keeps
+/// serving until a budget, the deadline or `shutdown` closes admission.
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_worker<F>(
     listener: UnixListener,
@@ -339,11 +344,13 @@ where
             bytes.extend_from_slice(&output.encode()?);
             crate::local_custody_transport::write_frame(&mut stream, &bytes, refused).await
         };
-        let result: Result<io::Result<()>, tokio::time::error::Elapsed> = tokio::select! {biased; ()=&mut shutdown=>return Ok(()), result=timeout_at(deadline, work)=>result};
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) | Err(_) => return Err(refused()),
-        }
+        // The delivery outcome is deliberately ignored. A frontend deadline, dropped
+        // connection or malformed frame refuses only this connection. It never cancels
+        // a started blocking operation, and it must not end the worker: the owner would
+        // close the executor and a restart would claim the next writer fence, even if
+        // the abandoned work already mutated storage. A lost reply reconciles through
+        // the exact-request path, never through a transport retry.
+        tokio::select! {biased; ()=&mut shutdown=>return Ok(()), _result=timeout_at(deadline, work)=>{}}
     }
 }
 
@@ -419,7 +426,12 @@ impl Frontend {
         .await
         .map_err(|_| refused())?
     }
+    /// A peer-authenticated context query before HTTP readiness. It spends one request at
+    /// both ends, so it is refused before any IPC unless a public request would still fit.
     pub async fn preflight(&self) -> io::Result<()> {
+        if self.remaining.load(Ordering::Relaxed) < MIN_BUDGET {
+            return Err(refused());
+        }
         let input: Input = Input {
             method: Method::GET,
             uri: node_wire::QUERY_CONTEXT_PATH
@@ -457,4 +469,154 @@ async fn proxy(State(frontend): State<Arc<Frontend>>, request: Request<Body>) ->
 }
 pub fn frontend_router(frontend: Arc<Frontend>) -> Router {
     Router::new().fallback(any(proxy)).with_state(frontend)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    struct SocketFixture {
+        directory: PathBuf,
+        path: PathBuf,
+    }
+    impl SocketFixture {
+        fn new(label: &str) -> Self {
+            let nonce: u128 = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            // A short name keeps the socket path below the platform SUN_LEN limit.
+            let name: String = format!("sc-{}-{label}-{nonce}", std::process::id());
+            let directory: PathBuf = std::env::temp_dir().join(name);
+            std::fs::create_dir(&directory).unwrap();
+            let path: PathBuf = directory.join("w.sock");
+            Self { directory, path }
+        }
+    }
+    impl Drop for SocketFixture {
+        fn drop(&mut self) {
+            let _removed: io::Result<()> = std::fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    fn identity() -> Identity {
+        Identity::new(
+            ValidatorId::new([1; 32]),
+            protocol_types::AtomicityDomainId::new([2; 32]).unwrap(),
+            [3; 32],
+            [4; 32],
+        )
+    }
+
+    fn probe() -> Input {
+        Input {
+            method: Method::GET,
+            uri: Uri::from_static("/probe"),
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+
+    fn ok_router() -> Router {
+        Router::new().fallback(|| async { StatusCode::OK })
+    }
+
+    fn own_uid() -> u32 {
+        let (first, _second): (UnixStream, UnixStream) = UnixStream::pair().unwrap();
+        first.peer_cred().unwrap().uid()
+    }
+
+    async fn within<T>(work: impl Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(10), work)
+            .await
+            .unwrap()
+    }
+
+    async fn send(stream: &mut UnixStream, bytes: &[u8]) {
+        let sent: io::Result<()> =
+            crate::local_custody_transport::write_frame(stream, bytes, refused).await;
+        sent.unwrap();
+    }
+
+    async fn receive(stream: &mut UnixStream) -> Vec<u8> {
+        let received: io::Result<Vec<u8>> =
+            crate::local_custody_transport::read_frame(stream, MAX_FRAME + 128, refused).await;
+        received.unwrap()
+    }
+
+    /// One complete request; returns the status the worker's router answered with.
+    async fn exchange_once(path: &std::path::Path) -> StatusCode {
+        let mut stream: UnixStream = UnixStream::connect(path).await.unwrap();
+        send(&mut stream, &probe().encode().unwrap()).await;
+        let bytes: Vec<u8> = receive(&mut stream).await;
+        assert_eq!(bytes.get(..128), Some(identity().encode().as_slice()));
+        Output::decode(bytes.get(128..).unwrap()).unwrap().status
+    }
+
+    #[tokio::test]
+    async fn abandoned_or_malformed_deliveries_do_not_end_the_worker() {
+        let fixture: SocketFixture = SocketFixture::new("lost");
+        let listener: UnixListener = UnixListener::bind(&fixture.path).unwrap();
+        let limit: Duration = Duration::from_secs(30);
+        let end: Instant = Instant::now().checked_add(limit).unwrap();
+        let server = serve_worker(
+            listener,
+            ok_router(),
+            identity(),
+            own_uid(),
+            4,
+            4,
+            Duration::from_millis(300),
+            end,
+            std::future::pending::<()>(),
+        );
+        let client = async {
+            // Sends nothing, so only the per-request deadline can end this delivery.
+            let idle: UnixStream = UnixStream::connect(&fixture.path).await.unwrap();
+            // Announces a frame, then disappears before sending it.
+            let mut truncated: UnixStream = UnixStream::connect(&fixture.path).await.unwrap();
+            truncated.write_u32(1024).await.unwrap();
+            drop(truncated);
+            // A complete frame that is not a request.
+            let mut malformed: UnixStream = UnixStream::connect(&fixture.path).await.unwrap();
+            send(&mut malformed, b"not a request").await;
+            // The same worker still serves a genuine request afterwards.
+            assert_eq!(exchange_once(&fixture.path).await, StatusCode::OK);
+            drop(idle);
+        };
+        let (served, ()) = within(async { tokio::join!(server, client) }).await;
+        served.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_preflight_spends_one_slot_of_each_worker_budget() {
+        for budget in [1, MIN_BUDGET] {
+            let fixture: SocketFixture = SocketFixture::new("budget");
+            let listener: UnixListener = UnixListener::bind(&fixture.path).unwrap();
+            let limit: Duration = Duration::from_secs(30);
+            let end: Instant = Instant::now().checked_add(limit).unwrap();
+            let server = serve_worker(
+                listener,
+                ok_router(),
+                identity(),
+                own_uid(),
+                budget,
+                budget,
+                Duration::from_secs(5),
+                end,
+                std::future::pending::<()>(),
+            );
+            // The first exchange stands for the frontend's startup preflight.
+            let client = async {
+                for _ in 0..budget {
+                    assert_eq!(exchange_once(&fixture.path).await, StatusCode::OK);
+                }
+            };
+            let (served, ()) = within(async { tokio::join!(server, client) }).await;
+            served.unwrap();
+            // A budget of one is spent by the preflight alone; both close admission.
+            assert!(UnixStream::connect(&fixture.path).await.is_err());
+        }
+    }
 }

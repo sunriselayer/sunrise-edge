@@ -70,9 +70,15 @@ status and replay bytes, including refusal and old-epoch behavior. Private
 IPC framing must identify this role distinctly, bound request and response
 bytes, authenticate exact peer UIDs before dispatch, and impose finite
 admission/deadlines. A lost reply is not a safe automatic retry; a started
-operation must drain before key/store/fence ownership is released. Uncertain
-commits use the owning exact reconciliation path, with no successful output
-unless it confirms the retained result.
+operation must drain before key/store/fence ownership is released. A failed,
+timed-out or abandoned delivery refuses only its own connection and never ends
+the worker, whose restart would claim the next writer fence even if the dropped
+work already committed. The frontend's startup preflight spends one connection
+and one request at both ends, so the worker `--max-connections` and
+`--max-requests` and the frontend `--max-requests` must each be at least two;
+the frontend refuses readiness otherwise. Uncertain commits use the owning
+exact reconciliation path, with no successful output unless it confirms the
+retained result.
 
 Same-identity key recovery requires old writer exclusion and the existing
 retained safety history. A different identity needs the existing authorized
