@@ -60,7 +60,7 @@ fn traverse_ancestors(path: &Path) {
         }
         let metadata: fs::Metadata = fs::symlink_metadata(directory).unwrap();
         assert!(metadata.is_dir() && !metadata.file_type().is_symlink());
-        if metadata.permissions().mode() & 0o7777 != 0o750 {
+        if metadata.permissions().mode() & 0o7777 != 0o710 {
             fs::set_permissions(directory, fs::Permissions::from_mode(0o710)).unwrap();
         }
         parent = directory.parent();

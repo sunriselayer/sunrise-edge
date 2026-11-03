@@ -291,6 +291,7 @@ try {
     '--network=none', '--read-only', '--security-opt=no-new-privileges',
     '--cap-drop=ALL', '--cap-add=CHOWN', '--cap-add=DAC_OVERRIDE',
     '--cap-add=SETUID', '--cap-add=SETGID', '--cap-add=KILL',
+    '--cap-add=FOWNER',
     '--pids-limit=128', '--cpus=2',
     `--memory=${inputs.memoryMiB}m`, `--memory-swap=${inputs.memoryMiB}m`,
     '--log-driver=none', '--user=0:0',
