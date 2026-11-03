@@ -76,6 +76,11 @@ const FLAGS: &[&str] = &[
     "--created-checkpoint",
     "--timeout-seconds",
     "--max-concurrent",
+    "--socket",
+    "--frontend-uid",
+    "--max-connections",
+    "--max-requests",
+    "--total-deadline-seconds",
     native_tls::CERT_FLAG,
     native_tls::KEY_FLAG,
     crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG,
@@ -190,14 +195,28 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     if mode == "serve-history" {
         return historical::run(values);
     }
-    if mode != "serve" {
+    if mode == "serve-protected-frontend" {
+        return protected::run_frontend(values);
+    }
+    let worker_mode: bool = mode == "serve-protected-worker";
+    if mode != "serve" && !worker_mode {
         return Err(HELP.into());
     }
     let mut flags: FlagSet = FlagSet::parse(values, FLAGS, BOOL_FLAGS)?;
     let anchor: Option<PathBuf> = crate::local_anchor::parse(&mut flags)?;
     let confirmed: bool = flags.bool("--confirm-offline-fence-advance");
     // Loopback is decided first, before any other flag can cause I/O.
-    let listen: SocketAddr = require_loopback_listen(&flags.one("--listen")?)?;
+    let listen: SocketAddr = if worker_mode {
+        if flags.optional_one("--listen")?.is_some()
+            || !flags.many(native_tls::CERT_FLAG).is_empty()
+            || flags.optional_one(native_tls::KEY_FLAG)?.is_some()
+        {
+            return Err("protected worker cannot own a public listener or TLS key".into());
+        }
+        "127.0.0.1:0".parse()?
+    } else {
+        require_loopback_listen(&flags.one("--listen")?)?
+    };
     if !confirmed {
         return Err("requires --confirm-offline-fence-advance: stop every other writer of this target first; this host claims its writer fence once and holds it while serving".into());
     }
@@ -226,6 +245,11 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         1,
         256,
     )?;
+    let protected: Option<protected::WorkerParams> = if worker_mode {
+        Some(protected::WorkerParams::parse(&mut flags)?)
+    } else {
+        None
+    };
     let tls_inputs: NativeTlsInputs = NativeTlsInputs::parse(&mut flags)?;
     let local_observations_path: Option<crate::native_operations::LocalObservationsPath> =
         crate::native_operations::LocalObservationsPath::parse(
@@ -238,7 +262,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     let local_observations: crate::native_operations::PreparedLocalObservations =
         crate::native_operations::PreparedLocalObservations::connect(local_observations_path)?;
     let tls: Option<tokio_rustls::TlsAcceptor> = tls_inputs.load()?;
-    serve(SuccessorHostInputs {
+    let host: SuccessorHostInputs = SuccessorHostInputs {
         listen,
         inputs,
         chain,
@@ -252,7 +276,11 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         max_concurrent: usize::try_from(max_concurrent)?,
         tls,
         local_observations,
-    })
+    };
+    match protected {
+        Some(params) => protected::serve_worker(host, params),
+        None => serve(host),
+    }
 }
 
 struct SuccessorHostInputs {
@@ -271,7 +299,21 @@ struct SuccessorHostInputs {
     local_observations: crate::native_operations::PreparedLocalObservations,
 }
 
-fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
+struct PreparedHost {
+    router: native_http::successor_custody::Application,
+    executor: NativeBlockingExecutor,
+    listen: SocketAddr,
+    tls: Option<tokio_rustls::TlsAcceptor>,
+    local_observations: crate::native_operations::PreparedLocalObservations,
+    validator: ValidatorId,
+    domain: AtomicityDomainId,
+    epoch: Epoch,
+    generation: WriterFenceGeneration,
+    genesis_digest: String,
+    subject_digest: [u8; 32],
+}
+
+fn prepare(host: SuccessorHostInputs) -> Result<PreparedHost, Box<dyn Error>> {
     let mut artifacts: SuccessorChainArtifactFiles = host.chain.open()?;
     for path in [&host.state_path, &host.blob_path] {
         artifacts.require_output_outside(path)?;
@@ -284,6 +326,7 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
         host.chain.budget,
         &mut artifacts,
     )?;
+    let subject_digest: [u8; 32] = verified.subject_digest().bytes();
 
     let signing_key: SigningKey = load_signing_key_file(&host.key_path)?;
     let signer_public_key: [u8; 32] = VerificationKey::from(&signing_key).into();
@@ -359,12 +402,39 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
     };
     let blocking_executor: NativeBlockingExecutor = composition.blocking_executor.clone();
     let router = successor_router(composition)?;
-    let listen: SocketAddr = host.listen;
+    Ok(PreparedHost {
+        router,
+        executor: blocking_executor,
+        listen: host.listen,
+        tls: host.tls,
+        local_observations: host.local_observations,
+        validator,
+        domain,
+        epoch: serving_epoch,
+        generation,
+        genesis_digest,
+        subject_digest,
+    })
+}
+
+fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
+    let prepared: PreparedHost = prepare(host)?;
+    let PreparedHost {
+        router,
+        executor: blocking_executor,
+        listen,
+        tls,
+        local_observations,
+        validator,
+        domain,
+        epoch: serving_epoch,
+        generation,
+        genesis_digest,
+        ..
+    } = prepared;
     let runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let local_observations: crate::native_operations::PreparedLocalObservations =
-        host.local_observations;
     runtime.block_on(async move {
         let mut stop = crate::native_operations::StopOwner::install(local_observations)?;
         let listener: tokio::net::TcpListener = bind_successor_loopback(listen).await?;
@@ -384,7 +454,7 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
         let serve_policy: native_http::NativeHttpServePolicy =
             native_http::NativeHttpServePolicy::default().with_certified_publication(true);
         crate::native_operations::serve(blocking_executor, stop, move |shutdown, observations| async move {
-        match host.tls {
+        match tls {
             None => native_http::serve_with_stream_upgrade_observed(
                 listener, router, serve_policy,
                 |stream: tokio::net::TcpStream| async move { Ok::<_, std::io::Error>(stream) },
@@ -405,6 +475,7 @@ fn serve(host: SuccessorHostInputs) -> Result<(), Box<dyn Error>> {
 }
 
 mod historical;
+mod protected;
 
 #[cfg(test)]
 mod tests {
