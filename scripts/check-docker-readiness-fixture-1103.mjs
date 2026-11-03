@@ -245,7 +245,11 @@ try {
   }
   const operatorPaths = [...BINARIES.map((name) => join(debug, name)), inputs.harness];
   const cliPath = join(debug, 'sunrise-edge-cli');
-  const paths = [...operatorPaths, cliPath];
+  // The existing successor acceptance helper signals its owned host through
+  // this executable. Keep the tool in the fixture instead of changing that
+  // shared test's process lifecycle for this protected-readiness addition.
+  const killPath = '/usr/bin/kill';
+  const paths = [...operatorPaths, cliPath, killPath];
   const artifacts = paths.map((path) => executable(path, basename(path)));
   const operatorCargoJsonSha256 = cargoArtifacts(inputs.operatorCargoJson, operatorPaths);
   const cliCargoJsonSha256 = cargoArtifacts(inputs.cliCargoJson, [cliPath]);
@@ -268,6 +272,7 @@ try {
   };
   const mounts = [
     `type=bind,source=${debug},target=${debug},readonly`,
+    `type=bind,source=${killPath},target=${killPath},readonly`,
     `type=bind,source=${linked.interpreter.source},target=${linked.interpreter.target},readonly`,
     ...[...linked.libraries].map(([name, source]) => `type=bind,source=${source},target=/mnt/libs/${name},readonly`),
   ];
