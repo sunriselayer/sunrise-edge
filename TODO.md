@@ -2332,3 +2332,11 @@ PR #340を2026-11-01T05:17:09Zにmergeした。実merge `8afaf356` /tree `d392a0
 検証済みsource treeと一致し、local mainもfast-forward済み・clean。main自動CIは別runとして扱う。
 [環境修復・検証記録](docs/development/validation/2026-11-01-pr340-environment-and-validation/README.md) を参照する。
 これはM2の全familyや親5件の完了ではない。停止対象と元85 checkbox /71完了 /14未完了を維持する。
+
+## 2026-11-03 security ingressと開発依存の修正
+
+[PR #341](https://github.com/sunriselayer/sunrise-edge/pull/341) でCloudflare adapterの開発用Vitest/Vite等を更新し、Node 24.19.0のliteral `npm ci`、担当adapterの66 tests、hosted全8 checks成功を確認してmergeした。production dependencyの`npm audit`は0件。開発依存には`minimatch`のmoderate advisoryが残り、非互換majorへの強制更新は行っていない。
+
+[PR #342](https://github.com/sunriselayer/sunrise-edge/pull/342) で共有streamed web ingressのbody読取にidle 30秒・total 120秒の期限とabort伝播を実装した。Bugbotのabort応答指摘を修正し、回帰testとreview threadの解決を確認。最終head `0c19cb5a`のNode 24.19.0 `npm ci`、完全`./scripts/check-all.sh`の自然終了・actual exit 0、[hosted CI run 41612660079](https://github.com/sunriselayer/sunrise-edge/actions/runs/41612660079) の全8 checks成功を確認してmergeした。main merge `923fe5c5` のtreeは検証済みheadと一致する。local rawは `/tmp/sunrise-edge-security-combined-check-0c19-1103.log` に保持した。
+
+Codex Securityの全repo scanはpartial coverageであり、独立したD02/M1全体監査の完了ではない。検出した条件付きmediumのingress所見への上記修正は、親5件の受入完了も意味しない。元85 checkbox /71完了 /14未完了、D02/M1/M2/M3/M7未完了を維持する。
