@@ -7,6 +7,8 @@ pub mod business_recovery;
 pub mod business_snapshot;
 pub mod common;
 pub mod conditional_readiness;
+#[cfg(target_os = "linux")]
+mod conditional_readiness_custody;
 pub mod economics;
 pub mod genesis_inspection;
 mod genesis_output;

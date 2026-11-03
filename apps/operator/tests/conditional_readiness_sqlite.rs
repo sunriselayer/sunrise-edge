@@ -49,9 +49,11 @@ use runtime::{
 use runtime_sqlite::{SqliteImportTarget, SqliteNamespace};
 use std::{
     collections::BTreeMap,
+    io::Read,
     num::NonZeroUsize,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Child, Command, Output, Stdio},
+    time::{Duration, Instant},
 };
 use sunrise_edge_operator::{
     business_cut::{CutArchiveLimits, export_source_business_cut, verify_business_cut_archive},
@@ -163,9 +165,330 @@ fn voting(
     command
 }
 
+#[cfg(target_os = "linux")]
+fn readiness_multiuid_enabled() -> bool {
+    if std::env::var_os("SUNRISE_READINESS_MULTIUID_FIXTURE").is_none() {
+        return false;
+    }
+    assert!(
+        Path::new("/.dockerenv").exists(),
+        "multi-UID fixture requires its bounded container"
+    );
+    let status: String = std::fs::read_to_string("/proc/self/status").unwrap();
+    let effective: u32 = status
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("Uid:")?
+                .split_whitespace()
+                .nth(1)?
+                .parse()
+                .ok()
+        })
+        .unwrap();
+    assert_eq!(
+        effective, 0,
+        "multi-UID fixture requires root inside its container"
+    );
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn change_owner(path: &Path, uid: u32) {
+    let output: Output = Command::new("chown")
+        .arg(format!("{uid}:0"))
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "fixture chown failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn write_private(path: &Path, uid: u32, contents: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, contents).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    change_owner(path, uid);
+}
+
+#[cfg(target_os = "linux")]
+fn wait_bounded(mut child: Child, limit: Duration) -> Output {
+    let end: Instant = Instant::now().checked_add(limit).unwrap();
+    while Instant::now() < end {
+        if child.try_wait().unwrap().is_some() {
+            return child.wait_with_output().unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child.kill().unwrap();
+    let output: Output = child.wait_with_output().unwrap();
+    panic!(
+        "bounded readiness child exceeded {limit:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+struct OwnedWorker(Option<Child>);
+
+#[cfg(target_os = "linux")]
+impl OwnedWorker {
+    fn child(&mut self) -> &mut Child {
+        self.0.as_mut().unwrap()
+    }
+
+    fn take(&mut self) -> Child {
+        self.0.take().unwrap()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for OwnedWorker {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+fn protected_vote(
+    executables: &CompiledExecutableSnapshot,
+    fixture: &Fixture,
+    history: &Path,
+    cut: &Path,
+    next: &Path,
+    destination: &Path,
+    output: &Path,
+    validator: ValidatorId,
+    key: &Path,
+    lost_first: bool,
+) {
+    use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+    const WORKER_UID: u32 = 10_001;
+    const FRONTEND_UID: u32 = 10_002;
+    let mut public: Command = Command::new(&executables.conditional_readiness);
+    pins(&mut public, fixture, history, cut);
+    public.arg("--next-set").arg(next);
+    let args: Vec<String> = public
+        .get_args()
+        .map(|arg| arg.to_str().unwrap().to_owned())
+        .collect();
+    let mut common: String = String::new();
+    for pair in args.chunks_exact(2) {
+        common.push_str(pair[0].trim_start_matches("--"));
+        common.push('=');
+        common.push_str(&pair[1]);
+        common.push('\n');
+    }
+    let socket_dir: Directory = Directory::new("readiness-socket");
+    change_owner(&socket_dir.0, WORKER_UID);
+    std::fs::set_permissions(&socket_dir.0, std::fs::Permissions::from_mode(0o750)).unwrap();
+    let socket: PathBuf = socket_dir.0.join("readiness.sock");
+    let worker_dir: Directory = Directory::new("readiness-worker-config");
+    change_owner(&worker_dir.0, WORKER_UID);
+    std::fs::set_permissions(&worker_dir.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let worker_config: PathBuf = worker_dir.0.join("config");
+    let frontend_dir: Directory = Directory::new("readiness-frontend-config");
+    change_owner(&frontend_dir.0, FRONTEND_UID);
+    std::fs::set_permissions(&frontend_dir.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let frontend_config: PathBuf = frontend_dir.0.join("config");
+    for entry in std::fs::read_dir(destination).unwrap() {
+        let path: PathBuf = entry.unwrap().path();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        change_owner(&path, WORKER_UID);
+    }
+    change_owner(destination, WORKER_UID);
+    std::fs::set_permissions(destination, std::fs::Permissions::from_mode(0o700)).unwrap();
+    change_owner(output, FRONTEND_UID);
+    std::fs::set_permissions(output, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let worker_contents: String = format!(
+        "{common}socket={}\nfrontend-uid={FRONTEND_UID}\nmax-connections=3\nmax-requests=1\ntotal-deadline-seconds=300\ntimeout-seconds=270\nstate-db={}\nblob-db={}\nvalidator-id={}\nsigner-key-file={}\n",
+        socket.display(),
+        destination.join("state.db").display(),
+        destination.join("body.db").display(),
+        hex(validator.as_bytes()),
+        key.display(),
+    );
+    let frontend_contents: String = format!(
+        "{common}socket={}\nworker-uid={WORKER_UID}\ntotal-deadline-seconds=300\nvalidator-id={}\nout-dir={}\n",
+        socket.display(),
+        hex(validator.as_bytes()),
+        output.display(),
+    );
+    write_private(&worker_config, WORKER_UID, &worker_contents);
+    write_private(&frontend_config, FRONTEND_UID, &frontend_contents);
+    let wrong_key: PathBuf = destination.join("wrong.key");
+    std::fs::write(&wrong_key, [0xE5; 32]).unwrap();
+    std::fs::set_permissions(&wrong_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    change_owner(&wrong_key, WORKER_UID);
+    let wrong_config: PathBuf = worker_dir.0.join("wrong-config");
+    let wrong_contents: String = worker_contents.replace(
+        &format!("signer-key-file={}\n", key.display()),
+        &format!("signer-key-file={}\n", wrong_key.display()),
+    );
+    assert_ne!(wrong_contents, worker_contents);
+    write_private(&wrong_config, WORKER_UID, &wrong_contents);
+    let round = |config: &Path, wrong_uid: bool, lost_response: bool| -> Output {
+        assert!(
+            matches!(
+                std::fs::symlink_metadata(&socket),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            ),
+            "protected worker restart found a stale socket"
+        );
+        let mut worker_command: Command = Command::new(&executables.conditional_readiness);
+        worker_command
+            .arg("vote-worker")
+            .arg("--config")
+            .arg(config)
+            .uid(WORKER_UID)
+            .gid(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut worker: OwnedWorker = OwnedWorker(Some(worker_command.spawn().unwrap()));
+        let ready_end: Instant = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
+        while !socket.exists() {
+            if worker.child().try_wait().unwrap().is_some() {
+                let failed: Output = worker.take().wait_with_output().unwrap();
+                panic!(
+                    "protected worker exited before socket bind: {}",
+                    String::from_utf8_lossy(&failed.stderr)
+                );
+            }
+            if Instant::now() >= ready_end {
+                worker.child().kill().unwrap();
+                let failed: Output = worker.take().wait_with_output().unwrap();
+                panic!(
+                    "protected worker did not bind a socket: {}",
+                    String::from_utf8_lossy(&failed.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if wrong_uid {
+            let mut unauthorized: std::os::unix::net::UnixStream =
+                std::os::unix::net::UnixStream::connect(&socket).unwrap();
+            unauthorized
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut response: [u8; 1] = [0];
+            assert_eq!(unauthorized.read(&mut response).unwrap(), 0);
+        }
+        let mut frontend_command: Command = if lost_response {
+            let mut probe: Command = Command::new(std::env::current_exe().unwrap());
+            probe
+                .arg("--ignored")
+                .arg("--exact")
+                .arg("compiled_conditional_readiness_real_retention_restart_and_distinct_certificate")
+                .env("SUNRISE_READINESS_LOST_RESPONSE_SOCKET", &socket);
+            probe
+        } else {
+            let mut frontend: Command = Command::new(&executables.conditional_readiness);
+            frontend
+                .arg("vote-frontend")
+                .arg("--config")
+                .arg(&frontend_config);
+            frontend
+        };
+        frontend_command
+            .uid(FRONTEND_UID)
+            .gid(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let frontend: Output =
+            wait_bounded(frontend_command.spawn().unwrap(), Duration::from_secs(310));
+        let completed: Output = wait_bounded(worker.take(), Duration::from_secs(310));
+        assert!(
+            completed.status.success(),
+            "protected worker failed: {}",
+            String::from_utf8_lossy(&completed.stderr)
+        );
+        let retained: bool =
+            String::from_utf8_lossy(&completed.stdout).contains("readiness_worker=retained-vote");
+        assert_eq!(
+            retained,
+            config == worker_config.as_path(),
+            "unexpected protected retention result"
+        );
+        frontend
+    };
+    if !lost_first {
+        let refusal: Output = round(&wrong_config, false, false);
+        assert!(
+            !refusal.status.success(),
+            "wrong-key protected worker released a vote"
+        );
+        assert!(!output.join("vote.bin").exists());
+        assert!(
+            success(round(&worker_config, true, false))
+                .contains("conditional_readiness=retained-vote")
+        );
+    } else {
+        let lost: Output = round(&worker_config, false, true);
+        assert!(
+            lost.status.success(),
+            "lost-response probe failed: {}",
+            String::from_utf8_lossy(&lost.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&lost.stdout).contains("readiness_lost_response_probe=sent"),
+            "lost-response probe did not execute"
+        );
+        assert!(
+            !output.join("vote.bin").exists(),
+            "closed frontend published a vote"
+        );
+        assert!(
+            success(round(&worker_config, false, false))
+                .contains("conditional_readiness=retained-vote")
+        );
+    }
+    let first: Vec<u8> = std::fs::read(output.join("vote.bin")).unwrap();
+    assert!(
+        success(round(&worker_config, false, false))
+            .contains("conditional_readiness=retained-vote")
+    );
+    assert_eq!(
+        std::fs::read(output.join("vote.bin")).unwrap(),
+        first,
+        "retained readiness vote changed after protected worker restart"
+    );
+    // Restore fixture ownership before the unchanged ordinary CLI assertions.
+    for directory in [destination, output] {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            change_owner(&entry.unwrap().path(), 0);
+        }
+        change_owner(directory, 0);
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "compiles and runs the real conditional_readiness CLI through a four-validator SQLite retain/restart/distinct-certificate cycle; owned by the dedicated readiness-sqlite required CI lane, not ordinary cargo test"]
 async fn compiled_conditional_readiness_real_retention_restart_and_distinct_certificate() {
+    #[cfg(target_os = "linux")]
+    if let Some(socket) = std::env::var_os("SUNRISE_READINESS_LOST_RESPONSE_SOCKET") {
+        let mut stream: tokio::net::UnixStream =
+            tokio::net::UnixStream::connect(PathBuf::from(socket))
+                .await
+                .unwrap();
+        native_http::local_custody_transport::write_frame(&mut stream, b"SRDVOTE1", || {
+            std::io::Error::other("readiness lost-response probe refused")
+        })
+        .await
+        .unwrap();
+        drop(stream);
+        println!("readiness_lost_response_probe=sent");
+        return;
+    }
     run_conditional_readiness(false).await;
 }
 
@@ -353,6 +676,21 @@ async fn run_conditional_readiness(recurring: bool) {
                 b"invalid retained artifact"
             );
             std::fs::remove_file(output.0.join("vote.bin")).unwrap();
+        }
+        #[cfg(target_os = "linux")]
+        if index < 2 && !recurring && readiness_multiuid_enabled() {
+            protected_vote(
+                &executables,
+                &fixture,
+                &history_root,
+                &cut.0,
+                &next,
+                &destination.0,
+                &output.0,
+                validator.validator_id,
+                &key,
+                index == 1,
+            );
         }
         assert!(
             success(
