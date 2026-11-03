@@ -5,8 +5,8 @@ export default defineConfig({
   test: { include: ["test/index.test.ts"] },
   plugins: [
     cloudflareTest({
-      experimental: { newConfig: { configPath: "./profiles/ingress/cloudflare.config.ts" } },
-    remoteBindings: false,
+      config: "./profiles/ingress/cloudflare.config.ts",
+      remoteBindings: false,
       miniflare: {
         serviceBindings: {
           NODE_CORE: async (request: Request): Promise<Response> => {
