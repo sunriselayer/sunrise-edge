@@ -2347,3 +2347,23 @@ PR #340を2026-11-01T05:17:09Zにmergeした。実merge `8afaf356` /tree `d392a0
 [PR #342](https://github.com/sunriselayer/sunrise-edge/pull/342) で共有streamed web ingressのbody読取にidle 30秒・total 120秒の期限とabort伝播を実装した。Bugbotのabort応答指摘を修正し、回帰testとreview threadの解決を確認。最終head `0c19cb5a`のNode 24.19.0 `npm ci`、完全`./scripts/check-all.sh`の自然終了・actual exit 0、[hosted CI run 41612660079](https://github.com/sunriselayer/sunrise-edge/actions/runs/41612660079) の全8 checks成功を確認してmergeした。main merge `923fe5c5` のtreeは検証済みheadと一致する。local rawは `/tmp/sunrise-edge-security-combined-check-0c19-1103.log` に保持した。
 
 Codex Securityの全repo scanはpartial coverageであり、独立したD02/M1全体監査の完了ではない。検出した条件付きmediumのingress所見への上記修正は、親5件の受入完了も意味しない。元85 checkbox /71完了 /14未完了、D02/M1/M2/M3/M7未完了を維持する。
+
+## 2026-11-03 M2-N3/N4の対象整理とN1/N2統合途中
+
+M2-N3/N4は既存M2の実consumerと移行責務を整理する作業IDであり、親の完了条件を変更しない。照合対象はN1/N2統合ソース `0cf22270c4e5798ca86beb81af4377b0f6356966`。新しい署名backendを、型やprepared helperの存在だけで追加しない。停止済みZeroShareも含めない。
+
+| N3の実経路 | 現在の署名・実行状態 | 初期protected対象の判定と次の条件 |
+| --- | --- | --- |
+| generic local/general | [local execution](apps/cli/src/commands/local_execution.rs) はcustodyをI/O前に拒否する。選択済みStandard Asset操作は別の閉じた経路で受ける | generic経路は未選択。既存の選択済みfamilyをgenericへ重複実装しない。具体操作、権限、全review内容が決まるまでbackendを接続しない |
+| paid execution | [paid execution](apps/cli/src/commands/paid_execution.rs) はcustodyをI/O前に拒否する | 初期protected backendは未選択。既存のpaid機能を完了済みとは扱わず、認識済み操作と承認内容が定まるまで拒否を保持 |
+| bond registration | [CLI](apps/cli/src/commands/bond_registration.rs) のdevelopment seedは`structural_registration_claim`、`executed=false`。実登録は元recurring ownerが扱う | protected governance signerは未選択。構造的claimを実行・protected署名の証拠にしない |
+| FinalTransfer fee claim | [review/sign CLI](apps/cli/src/commands/fee_claim_review.rs) はdevelopment seedで署名し、[positive Split custody](docs/architecture/positive-standard-asset-fee-claim-custody.md) はこの経路を含めない | 初期protected経路は未選択。positive Splitをこのclaimへ拡張せず、具体authorityとreview契約の選択後にだけ実装候補にする |
+| offline genesis author | [実author](apps/operator/src/standard_asset_genesis.rs) は期待authorityと鍵を照合してmanifestを署名・検証するが、private key fileを読む | 実consumerとして残す。保護admin/ceremony roleは[DR-0214](docs/architecture/decisions/0214-protected-custody-and-review-boundary.md) で未確定。role、承認内容、backendが確定するまでは保護対応と数えない |
+
+| N4の区別 | 既存の正の実績と残件 |
+| --- | --- |
+| 同一identityの復旧 | 選択済みinteractive familyとoriginal/certified workerの同一鍵復旧は上のfamily表と[DR-0273](docs/architecture/decisions/0273-original-ordered-stopped-key-recovery.md) / [DR-0274](docs/architecture/decisions/0274-certified-stopped-key-recovery.md) の範囲で確認済み。N1 readinessの別UID・retained voteは[実記録](docs/development/validation/2026-11-03-m2-readiness-worker/README.md) で確認したが、N2 successorはまだ実UIDの正の検証がない |
+| provider停止・取消後restart | 選択済み経路の停止・取消後restartは各familyの既存ownerを使う。publicationの新鍵再承認は[DR-0244](docs/architecture/decisions/0244-publication-approval-revocation-and-key-lifecycle.md) の独立した手順であり、資産・account移行の証拠ではない。N2の停止・retentionは元recurring ownerで未検証 |
+| 新identityへの交換 | [DR-0214](docs/architecture/decisions/0214-protected-custody-and-review-boundary.md) の`AddressIsPublicKey`では別公開鍵は別address。必要な正の移行は既存の認可操作・epochと履歴検証で対象別に定義する。wrong-key拒否や同じsignatureの復元を移行成功に数えない。新address alias、creator pin緩和、historical claimant書換え、包括的なB鍵/account/TreasuryCap/off-host移行を新規gateとして追加しない |
+
+N1は既存readiness owner内のreal UID 10001/10002、wrong-key、lost-response、retained restartを通した。N2のworker/frontend sourceは共有IPC上で統合済みで、native-http 246、operator lib 171、successor refusal 8が統合ソースで成功した。N2の実UID正例と元7 epoch/e8 owner、統合後のliteral npm ci+完全required、exact-source CI、M7 release資格は未実施。M2-N5では最終source確定後にこれらを既存ownerへ照合する。元85 checkbox /71完了 /14未完了と親D02/M1/M2/M3/M7は維持する。

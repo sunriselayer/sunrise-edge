@@ -3,9 +3,10 @@
 Date: 2026-11-03, Asia/Singapore
 
 Status: The human selected the trusted local OS and distinct-process/UID
-boundary for successor signing on 2026-11-03. This role-specific transport and
-frontend verification design remains proposed; no successor custody profile
-or provider has been implemented or qualified. Existing original ordered and
+boundary for successor signing on 2026-11-03. The role-specific transport and
+frontend verification are implemented in a development branch. The actual
+distinct-UID successor run and original recurring acceptance are still open;
+no successor release profile or provider is qualified. Existing original ordered and
 certified FastVote worker approvals do not extend to a serving successor.
 
 ## Actual consumer and authority
