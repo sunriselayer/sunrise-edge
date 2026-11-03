@@ -55,6 +55,7 @@ use std::{
     process::{Child, Command, Output, Stdio},
     time::{Duration, Instant},
 };
+use sunrise_edge_client::immutable_archive::ARCHIVE_STAGING_DIRECTORY;
 use sunrise_edge_operator::{
     business_cut::{CutArchiveLimits, export_source_business_cut, verify_business_cut_archive},
     business_snapshot::capture_source_business_snapshot,
@@ -309,6 +310,15 @@ fn protected_vote(
     change_owner(destination, WORKER_UID);
     std::fs::set_permissions(output, std::fs::Permissions::from_mode(0o700)).unwrap();
     change_owner(output, FRONTEND_UID);
+    // The preceding ordinary invalid-artifact refusal opened this archive as
+    // root and left its empty staging role. Transfer that existing role too;
+    // changing only the archive root would make frontend publication fail.
+    for entry in std::fs::read_dir(output).unwrap() {
+        let path: PathBuf = entry.unwrap().path();
+        assert_eq!(path.file_name().unwrap(), ARCHIVE_STAGING_DIRECTORY);
+        assert!(std::fs::symlink_metadata(&path).unwrap().is_dir());
+        change_owner(&path, FRONTEND_UID);
+    }
     let worker_contents: String = format!(
         "{common}socket={}\nfrontend-uid={FRONTEND_UID}\nmax-connections=3\nmax-requests=1\ntotal-deadline-seconds=300\ntimeout-seconds=270\nstate-db={}\nblob-db={}\nvalidator-id={}\nsigner-key-file={}\n",
         socket.display(),
