@@ -8,6 +8,7 @@ The code commit `da03f57421fc2e16bf1f38348e35311b282edb06` connects the existing
 - The existing ignored `compiled_conditional_readiness_real_retention_restart_and_distinct_certificate` owner passed on the host: 1 passed, 0 failed, 21 filtered, 36.20 seconds. [Raw log](raw/ordinary-owner-da03f574.log).
 - The same existing owner passed inside the opt-in bounded Docker fixture with actual process UIDs 10001 (worker) and 10002 (frontend): 1 passed, 0 failed, 21 filtered, 31.13 seconds. The controller admitted the clean exact code commit and Cargo JSON artifacts, pinned the local image and ELF closures, used no network, and recorded `code=0`, `signal=null`, `abortReason=null`, `cleanup=already-removed`. [Receipt](raw/da03f574.json), [stdout](raw/da03f574.stdout), [stderr](raw/da03f574.stderr). The controller limits the run to 900 seconds, 6144 MiB memory, 4096 MiB tmpfs and 128 PIDs.
 - The retained-vote, wrong-key, wrong-UID, lost-response, restart and distinct-certificate assertions are in the original test owner, not in a second copy of the acceptance flow. The Docker fixture is opt-in; ordinary required CI does not acquire host users or production keys.
+- A later build of the native-http unit target exposed two test-only Tokio trait imports omitted by the shared IPC extraction. After restoring those imports, `cargo test --locked --offline -p native-http --lib` passed all 245 tests. [Raw log](raw/native-http-import-fix.log). This later source commit has not yet received the complete required or hosted CI gate.
 
 ## Preserved failed attempts
 
