@@ -394,15 +394,15 @@ fn produce_vote(
         return Err("signer key changed while loading".into());
     }
     let signer: ReadinessSigningKey = ReadinessSigningKey::new(validator, key);
-    if let Some((output, filename)) = prior_output {
-        if output.contains(filename)? {
-            let previous: ReadinessVote =
-                decode_readiness_vote(&output.read(filename, MAX_READINESS_VOTE_BYTES)?)?;
-            if previous.signer != validator {
-                return Err("saved vote signer mismatch".into());
-            }
-            owner.verify_vote(&previous)?;
+    if let Some((output, filename)) = prior_output
+        && output.contains(filename)?
+    {
+        let previous: ReadinessVote =
+            decode_readiness_vote(&output.read(filename, MAX_READINESS_VOTE_BYTES)?)?;
+        if previous.signer != validator {
+            return Err("saved vote signer mismatch".into());
         }
+        owner.verify_vote(&previous)?;
     }
     let members: Vec<FastPathValidatorEntry> = next_set
         .validators()
