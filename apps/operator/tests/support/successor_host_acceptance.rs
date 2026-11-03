@@ -304,17 +304,44 @@ struct HostProcess {
 
 impl Drop for HostProcess {
     fn drop(&mut self) {
-        let _ignored = self.child.kill();
-        let _ignored = self.child.wait();
         #[cfg(target_os = "linux")]
-        if let Some(mut worker) = self.protected_worker.take() {
+        if self.protected_worker.is_some() {
+            let frontend_pid: u32 = self.child.id();
+            // The container's root test owner needs CAP_KILL to signal a
+            // distinct-UID frontend. Never wait on a child we failed to kill.
+            let frontend_stop: std::io::Result<std::process::ExitStatus> =
+                self.child.kill().and_then(|()| self.child.wait());
+            if let Err(error) = frontend_stop {
+                let _observed = self.child.try_wait();
+                if let Some(mut worker) = self.protected_worker.take() {
+                    if worker.kill().is_ok() {
+                        let _ignored = worker.wait();
+                    } else {
+                        let _observed = worker.try_wait();
+                    }
+                }
+                if !std::thread::panicking() {
+                    panic!("protected frontend {frontend_pid} could not be stopped: {error}");
+                }
+                return;
+            }
+            let mut worker: Child = self
+                .protected_worker
+                .take()
+                .expect("protected worker owned");
             if std::thread::panicking() {
-                let _ignored = worker.kill();
-                let _ignored = worker.wait();
+                if worker.kill().is_ok() {
+                    let _ignored = worker.wait();
+                } else {
+                    let _observed = worker.try_wait();
+                }
             } else {
                 process::ChildGuard::new(worker).stop_orderly(Duration::from_secs(60));
             }
+            return;
         }
+        let _ignored = self.child.kill();
+        let _ignored = self.child.wait();
     }
 }
 
