@@ -2,9 +2,11 @@
 
 Date: 2026-11-03, Asia/Singapore
 
-Status: Proposed M2-N2 design. No successor custody profile or provider is
-selected by this document. Existing original ordered and certified FastVote
-worker approvals do not extend to a serving successor.
+Status: The human selected the trusted local OS and distinct-process/UID
+boundary for successor signing on 2026-11-03. This role-specific transport and
+frontend verification design remains proposed; no successor custody profile
+or provider has been implemented or qualified. Existing original ordered and
+certified FastVote worker approvals do not extend to a serving successor.
 
 ## Actual consumer and authority
 
@@ -20,8 +22,8 @@ assertion can authorize a later request.
 
 Actual successor signing consumers are ordered proposal, vote and Tick, FastVote
 prepare, availability ACK and a finalized frozen-frontier vote. The router also
-contains unsigned query, apply, history and drain controls whose state and
-fence ownership cannot be split from a new signer by assuming that a signature
+contains query, apply, history and drain controls that do not invoke the signer.
+Their state and fence ownership cannot be split from a new signer by assuming that a signature
 frame alone proves live authority. `serve-history` is a separate keyless
 historical-read mode; it must not gain a signing route.
 
@@ -30,7 +32,7 @@ original ordered host. [DR-0268](0268-certified-fastvote-protocol-custody-worker
 protects the current original certified host. Their private protocol and
 runtime evidence do not establish protection for this successor host.
 
-## Proposed local boundary for review
+## Selected boundary and proposed composition
 
 Under a trusted local OS, run the whole existing successor composition in a
 distinct-UID worker: signer key, verified chain artifacts, startup resolution,
@@ -50,9 +52,14 @@ checks. The frontend does not reimplement those decisions or accept a raw
 `sign_framed(bytes)` endpoint. Where an existing route commits, successful
 output follows its confirmed commit or exact reconciliation; query and
 liveness routes keep their existing separate response rules. Where a successful
-result includes a signature, frontend verification must bind its independently
-pinned public context, endpoint and request to the existing pure certifier or
-codec; signature validity alone does not grant a fresh serving warrant.
+result includes a signature, frontend verification must bind independently
+trusted successor public context and committee, endpoint and request to the
+existing pure certifier or codec. The original certified frontend's genesis
+committee is not the successor committee and cannot be reused unchanged.
+The worker's reply or query is not a trust root for this public context;
+the frontend needs independently pinned public successor evidence or another
+separately reviewed derivation before implementation. Signature validity
+alone does not grant a fresh serving warrant.
 
 This proposal is one mutually exclusive successor-host mode, not another
 writer beside the ordinary combined host. It does not enlarge original worker
@@ -73,11 +80,12 @@ authority. This profile claims neither independent rollback detection nor
 protection from a compromised worker or root. No real keys, host users,
 security policy or deployment are authorized here.
 
-## Implementation and verification if selected
+## Implementation and verification after design review
 
-Inventory the exact existing successor route/method/body limits before adding
-the private transport. Reuse the current host factory, core and pure response
-verification rather than copying the original/certified workers or adding a
+Inventory the exact existing successor route/method/body limits and settle the
+frontend's independent public successor context before adding the private
+transport. Reuse the current host factory, core and bounded IPC/UID/socket
+primitives rather than copying the original/certified route table or adding a
 second consensus implementation. Preserve `serve-history` as a separate
 keyless constructor. Keep the original seven-epoch and withdrawal checks in
 the existing ignored owner
@@ -89,6 +97,6 @@ assertions do not already cover them. No short duplicate recurrence test can
 replace that run. An implementation change then needs the existing exact-source
 required gate, hosted CI and relevant RELEASE/UID evidence.
 
-The actual role boundary, local pin ownership and recovery authority require
+Detailed role permissions, local pin ownership and recovery authority require
 review before implementation. This document does not close M2-N2, M2 or any
 independent security/release gate. Progress remains in [`TODO.md`](../../../TODO.md).
