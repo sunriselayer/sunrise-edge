@@ -280,6 +280,7 @@ try {
     '--log-driver=none', '--user=0:0',
     '--tmpfs', `/tmp:rw,nosuid,nodev,exec,size=${inputs.tmpfsMiB}m,nr_inodes=65536,mode=1777`,
     '-e', 'SUNRISE_READINESS_MULTIUID_FIXTURE=1', '-e', 'RUST_TEST_THREADS=1',
+    '-e', 'RUST_BACKTRACE=1',
     '-e', 'LD_LIBRARY_PATH=/mnt/libs',
     ...mounts.flatMap((mount) => ['--mount', mount]),
     '--entrypoint', inputs.harness,
