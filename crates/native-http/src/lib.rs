@@ -29,6 +29,8 @@ pub mod ordered_economics;
 mod paid_execution;
 mod publication;
 pub mod successor;
+#[cfg(target_os = "linux")]
+pub mod successor_custody;
 use execution::{ExecutionError, WasmExecutionEngine};
 use hashing::HashSuiteResolver;
 use http_body_util::LengthLimitError;

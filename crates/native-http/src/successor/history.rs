@@ -20,24 +20,30 @@ use node_wire::ordered_history::{
     OrderedHistoryChunkResponse, OrderedHistoryComponentRequest, OrderedHistoryHeightRequest,
 };
 
+macro_rules! history_routes {
+    ($emit:ident, $s:ty) => {
+        $emit! {
+            (Get, ORDERED_HISTORY_SUMMARY_PATH, get(summary::<$s>).layer(DefaultBodyLimit::max(1))),
+            (Post, ORDERED_HISTORY_HEIGHT_PATH, post(height::<$s>).layer(DefaultBodyLimit::max(MAX_ORDERED_HISTORY_HEIGHT_REQUEST_BYTES))),
+            (Post, ORDERED_HISTORY_COMPONENT_PATH, post(component::<$s>).layer(DefaultBodyLimit::max(MAX_ORDERED_HISTORY_COMPONENT_REQUEST_BYTES))),
+        }
+    };
+}
+macro_rules! history_specs {
+    ($(($method:ident, $path:expr, $handler:expr)),* $(,)?) => {
+        pub(super) const SPECS: &[RouteSpec] = &[$(RouteSpec { method: RouteMethod::$method, path: $path }),*];
+    };
+}
+history_routes!(history_specs, ());
+macro_rules! mount_history_routes {
+    ($(($method:ident, $path:expr, $handler:expr)),* $(,)?) => {{
+        let mut router: Router<SharedSuccessorHost<S>> = Router::new();
+        $(router = router.route($path, $handler);)*
+        router
+    }};
+}
 pub(super) fn routes<S: SuccessorStore>() -> Router<SharedSuccessorHost<S>> {
-    Router::new()
-        .route(
-            ORDERED_HISTORY_SUMMARY_PATH,
-            get(summary::<S>).layer(DefaultBodyLimit::max(1)),
-        )
-        .route(
-            ORDERED_HISTORY_HEIGHT_PATH,
-            post(height::<S>).layer(DefaultBodyLimit::max(
-                MAX_ORDERED_HISTORY_HEIGHT_REQUEST_BYTES,
-            )),
-        )
-        .route(
-            ORDERED_HISTORY_COMPONENT_PATH,
-            post(component::<S>).layer(DefaultBodyLimit::max(
-                MAX_ORDERED_HISTORY_COMPONENT_REQUEST_BYTES,
-            )),
-        )
+    history_routes!(mount_history_routes, S)
 }
 
 fn unavailable() -> Response {

@@ -1577,6 +1577,98 @@ where
 /// and successor-scoped ordered history reads. The store must provide the
 /// existing portable repository and outbox exclusion capabilities required
 /// by those same core owners. [SUCCESSOR_REFUSED_CONTROL_PATHS] answer 422 before I/O.
+#[derive(Clone, Copy)]
+pub(crate) enum RouteMethod {
+    Get,
+    Post,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct RouteSpec {
+    method: RouteMethod,
+    path: &'static str,
+}
+
+impl RouteSpec {
+    fn matches_path(self, actual: &str) -> bool {
+        let mut pattern = self.path.split('/');
+        let mut given = actual.split('/');
+        loop {
+            match (pattern.next(), given.next()) {
+                (None, None) => return true,
+                (Some(expected), Some(value))
+                    if expected == value
+                        || (expected.starts_with('{')
+                            && expected.ends_with('}')
+                            && super::decode_hex64_selector(value).is_some()) => {}
+                _ => return false,
+            }
+        }
+    }
+
+    fn matches(self, method: &axum::http::Method, path: &str) -> bool {
+        self.matches_path(path)
+            && match self.method {
+                RouteMethod::Get => {
+                    *method == axum::http::Method::GET || *method == axum::http::Method::HEAD
+                }
+                RouteMethod::Post => *method == axum::http::Method::POST,
+            }
+    }
+}
+
+/// Answers only whether the existing successor router may return a successful
+/// response for this method/path. Malformed requests still go to that router
+/// for its own exact Axum/media/body precedence and refusal bytes.
+pub(crate) fn permits_success(method: &axum::http::Method, path: &str) -> bool {
+    MAIN_SPECS
+        .iter()
+        .chain(history::SPECS)
+        .chain(controls::SPECS)
+        .any(|spec| spec.matches(method, path))
+}
+
+macro_rules! successor_main_routes {
+    ($emit:ident, $s:ty) => {
+        $emit! {
+            (Get, LIVENESS_PATH, get(liveness)),
+            (Get, QUERY_CONTEXT_PATH, get(query_context::<$s>)),
+            (Get, QUERY_OBJECT_PATH, get(query_object_route::<$s>)),
+            (Get, QUERY_RECEIPT_PATH, get(query_receipt_route::<$s>)),
+            (Get, QUERY_NEXT_NONCE_PATH, get(query_next_nonce_route::<$s>)),
+            (Get, publication::QUERY_PATH, get(query_publication_route::<$s>)),
+            (Get, local_execution::INSTANCE_PATH, get(query_instance_route::<$s>)),
+            (Get, paid_execution::PAID_FEE_POLICY_PATH, get(query_fee_policy_route::<$s>)),
+            (Post, ORDERED_ECONOMICS_PROPOSE_PATH, post(ordered_propose::<$s>).layer(DefaultBodyLimit::max(MAX_ORDERED_PROPOSE_REQUEST_BYTES))),
+            (Post, ORDERED_ECONOMICS_PROPOSAL_PATH, post(ordered_proposal::<$s>).layer(DefaultBodyLimit::max(MAX_ORDERED_PROPOSAL_BYTES))),
+            (Post, ORDERED_ECONOMICS_OBSERVE_PATH, post(ordered_observe::<$s>).layer(DefaultBodyLimit::max(MAX_ORDERED_PROPOSAL_BYTES))),
+            (Post, ORDERED_ECONOMICS_CERTIFICATE_PATH, post(ordered_certificate::<$s>).layer(DefaultBodyLimit::max(MAX_ORDERED_CERTIFICATE_BYTES))),
+            (Get, ORDERED_ECONOMICS_STATUS_PATH, get(ordered_status::<$s>)),
+            (Get, ORDERED_ECONOMICS_OUTCOME_ROUTE, get(ordered_outcome::<$s>)),
+            (Post, ORDERED_ECONOMICS_TICK_PATH, post(ordered_tick::<$s>).layer(DefaultBodyLimit::max(1))),
+            (Post, FASTVOTE_PREPARE_PATH, post(fastvote_prepare::<$s>).layer(DefaultBodyLimit::max(MAX_SIGNED_PAID_INTENT_BYTES))),
+            (Post, FASTVOTE_CERTIFICATES_PATH, post(fastvote_apply::<$s>).layer(DefaultBodyLimit::max(MAX_FASTVOTE_APPLY_REQUEST_BYTES))),
+            (Post, FASTVOTE_PUBLICATION_SOURCE_PATH, post(fastvote_publication_source::<$s>).layer(DefaultBodyLimit::max(MAX_FASTVOTE_APPLY_REQUEST_BYTES))),
+            (Post, FASTVOTE_PUBLICATION_RETAIN_PATH, post(fastvote_publication_retain::<$s>).layer(DefaultBodyLimit::max(consensus::bundle::MAX_ENCODED_BUNDLE_BYTES))),
+            (Post, FASTVOTE_PUBLISHED_APPLY_PATH, post(fastvote_published_apply::<$s>).layer(DefaultBodyLimit::max(MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES))),
+            (Post, node_wire::FEE_CLAIM_PREPARE_PATH, post(fee_claim_prepare::<$s>).layer(DefaultBodyLimit::max(node_wire::MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES))),
+        }
+    };
+}
+macro_rules! main_specs {
+    ($(($method:ident, $path:expr, $handler:expr)),* $(,)?) => {
+        const MAIN_SPECS: &[RouteSpec] = &[$(RouteSpec { method: RouteMethod::$method, path: $path }),*];
+    };
+}
+successor_main_routes!(main_specs, ());
+macro_rules! mount_main_routes {
+    ($(($method:ident, $path:expr, $handler:expr)),* $(,)?) => {{
+        let mut router: Router<SharedSuccessorHost<S>> = Router::new();
+        $(router = router.route($path, $handler);)*
+        router
+    }};
+}
+
 pub fn successor_router<S>(
     host: SuccessorHostComposition<S>,
 ) -> Result<Router, SuccessorRouterError>
@@ -1595,77 +1687,7 @@ where
         return Err(SuccessorRouterError::ZeroOperationTimeout);
     }
     let shared: SharedSuccessorHost<S> = Arc::new(host);
-    let mut router: Router<SharedSuccessorHost<S>> = Router::new()
-        .route(LIVENESS_PATH, get(liveness))
-        .route(QUERY_CONTEXT_PATH, get(query_context::<S>))
-        .route(QUERY_OBJECT_PATH, get(query_object_route::<S>))
-        .route(QUERY_RECEIPT_PATH, get(query_receipt_route::<S>))
-        .route(QUERY_NEXT_NONCE_PATH, get(query_next_nonce_route::<S>))
-        .route(publication::QUERY_PATH, get(query_publication_route::<S>))
-        .route(
-            local_execution::INSTANCE_PATH,
-            get(query_instance_route::<S>),
-        )
-        .route(
-            paid_execution::PAID_FEE_POLICY_PATH,
-            get(query_fee_policy_route::<S>),
-        )
-        .route(
-            ORDERED_ECONOMICS_PROPOSE_PATH,
-            post(ordered_propose::<S>)
-                .layer(DefaultBodyLimit::max(MAX_ORDERED_PROPOSE_REQUEST_BYTES)),
-        )
-        .route(
-            ORDERED_ECONOMICS_PROPOSAL_PATH,
-            post(ordered_proposal::<S>).layer(DefaultBodyLimit::max(MAX_ORDERED_PROPOSAL_BYTES)),
-        )
-        .route(
-            ORDERED_ECONOMICS_OBSERVE_PATH,
-            post(ordered_observe::<S>).layer(DefaultBodyLimit::max(MAX_ORDERED_PROPOSAL_BYTES)),
-        )
-        .route(
-            ORDERED_ECONOMICS_CERTIFICATE_PATH,
-            post(ordered_certificate::<S>)
-                .layer(DefaultBodyLimit::max(MAX_ORDERED_CERTIFICATE_BYTES)),
-        )
-        .route(ORDERED_ECONOMICS_STATUS_PATH, get(ordered_status::<S>))
-        .route(ORDERED_ECONOMICS_OUTCOME_ROUTE, get(ordered_outcome::<S>))
-        .route(
-            ORDERED_ECONOMICS_TICK_PATH,
-            post(ordered_tick::<S>).layer(DefaultBodyLimit::max(1)),
-        )
-        .route(
-            FASTVOTE_PREPARE_PATH,
-            post(fastvote_prepare::<S>).layer(DefaultBodyLimit::max(MAX_SIGNED_PAID_INTENT_BYTES)),
-        )
-        .route(
-            FASTVOTE_CERTIFICATES_PATH,
-            post(fastvote_apply::<S>)
-                .layer(DefaultBodyLimit::max(MAX_FASTVOTE_APPLY_REQUEST_BYTES)),
-        )
-        .route(
-            FASTVOTE_PUBLICATION_SOURCE_PATH,
-            post(fastvote_publication_source::<S>)
-                .layer(DefaultBodyLimit::max(MAX_FASTVOTE_APPLY_REQUEST_BYTES)),
-        )
-        .route(
-            FASTVOTE_PUBLICATION_RETAIN_PATH,
-            post(fastvote_publication_retain::<S>).layer(DefaultBodyLimit::max(
-                consensus::bundle::MAX_ENCODED_BUNDLE_BYTES,
-            )),
-        )
-        .route(
-            FASTVOTE_PUBLISHED_APPLY_PATH,
-            post(fastvote_published_apply::<S>).layer(DefaultBodyLimit::max(
-                MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES,
-            )),
-        )
-        .route(
-            node_wire::FEE_CLAIM_PREPARE_PATH,
-            post(fee_claim_prepare::<S>).layer(DefaultBodyLimit::max(
-                node_wire::MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES,
-            )),
-        )
+    let mut router: Router<SharedSuccessorHost<S>> = successor_main_routes!(mount_main_routes, S)
         .merge(history::routes::<S>())
         .merge(controls::routes::<S>());
     for path in SUCCESSOR_REFUSED_CONTROL_PATHS {
