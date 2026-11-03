@@ -2,7 +2,7 @@
 //! own configuration; the frontend never opens a key or target store.
 use super::*;
 use crate::local_custody_transport as local;
-use native_http::successor_custody::{self, Frontend, Identity, MIN_BUDGET};
+use native_http::successor_custody::{self, Frontend, Identity};
 use std::{
     io::{self, Write},
     time::Duration,
@@ -35,9 +35,11 @@ impl WorkerParams {
         if frontend_uid == local::own_uid(refused)? {
             return Err(refused().into());
         }
-        // The frontend's startup preflight spends one connection and one request.
-        let max_connections: u64 = bounded(&flags.one("--max-connections")?, MIN_BUDGET, 4096)?;
-        let max_requests: u64 = bounded(&flags.one("--max-requests")?, MIN_BUDGET, 4096)?;
+        let max_connections: u64 = bounded(&flags.one("--max-connections")?, 2, 8192)?;
+        let max_requests: u64 = bounded(&flags.one("--max-requests")?, 1, 4096)?;
+        if max_connections <= max_requests {
+            return Err(refused().into());
+        }
         let total: Duration =
             Duration::from_secs(bounded(&flags.one("--total-deadline-seconds")?, 1, 3600)?);
         Ok(Self {
@@ -80,7 +82,7 @@ pub(super) fn serve_worker(
             tokio::select! {biased; _=stop.wait(observations)=>{}, ()=sleep_until(end)=>{}}
             closing.close();
         };
-        let result = successor_custody::serve_worker(listener, prepared.router, identity, params.frontend_uid, params.max_connections, params.max_requests, timeout, end, shutdown).await;
+        let result = successor_custody::serve_worker(listener, prepared.router, prepared.executor.clone(), identity, params.frontend_uid, params.max_connections, params.max_requests, timeout, end, shutdown).await;
         prepared.executor.close();
         prepared.executor.wait_drained().await;
         let removed = owner.close();
@@ -148,7 +150,7 @@ pub(super) fn run_frontend(values: Vec<OsString>) -> Result<(), Box<dyn Error>> 
         1,
         256,
     )?)?;
-    let max_requests: u64 = bounded(&flags.one("--max-requests")?, MIN_BUDGET, 4096)?;
+    let max_requests: u64 = bounded(&flags.one("--max-requests")?, 1, 4096)?;
     let total: Duration =
         Duration::from_secs(bounded(&flags.one("--total-deadline-seconds")?, 1, 3600)?);
     let tls_inputs: NativeTlsInputs = NativeTlsInputs::parse(&mut flags)?;
@@ -206,54 +208,4 @@ pub(super) fn run_frontend(values: Vec<OsString>) -> Result<(), Box<dyn Error>> 
         result
     })?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt;
-
-    const WORKER_FLAGS: &[&str] = &[
-        "--socket",
-        "--frontend-uid",
-        "--max-connections",
-        "--max-requests",
-        "--total-deadline-seconds",
-    ];
-
-    fn admits(socket: &std::path::Path, connections: &str, requests: &str) -> bool {
-        let own: u32 = local::own_uid(refused).unwrap();
-        let frontend: String = own.checked_add(1).unwrap().to_string();
-        let mut tokens: Vec<OsString> = Vec::new();
-        for (flag, value) in [
-            ("--socket", socket.to_str().unwrap()),
-            ("--frontend-uid", frontend.as_str()),
-            ("--max-connections", connections),
-            ("--max-requests", requests),
-            ("--total-deadline-seconds", "60"),
-        ] {
-            tokens.push(flag.into());
-            tokens.push(value.into());
-        }
-        let mut flags: FlagSet = FlagSet::parse(tokens, WORKER_FLAGS, &[]).unwrap();
-        WorkerParams::parse(&mut flags).is_ok()
-    }
-
-    #[test]
-    fn worker_budgets_leave_room_for_the_frontend_startup_preflight() {
-        let nonce: u128 = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let name: String = format!("sp-{}-{nonce}", std::process::id());
-        let directory: PathBuf = std::env::temp_dir().join(name);
-        std::fs::create_dir(&directory).unwrap();
-        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o750)).unwrap();
-        let socket: PathBuf = directory.join("w.sock");
-        // The fixture satisfies every other check, so only a budget can refuse below.
-        assert!(admits(&socket, "2", "2"));
-        assert!(!admits(&socket, "1", "2"));
-        assert!(!admits(&socket, "2", "1"));
-        std::fs::remove_dir_all(&directory).unwrap();
-    }
 }

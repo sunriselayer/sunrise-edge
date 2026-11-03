@@ -146,7 +146,7 @@ pub(super) fn start_host(
         "--frontend-uid",
         &FRONTEND_UID.to_string(),
         "--max-connections",
-        "4096",
+        "4098",
         "--max-requests",
         "4096",
         "--total-deadline-seconds",

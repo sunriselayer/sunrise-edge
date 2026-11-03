@@ -71,14 +71,15 @@ IPC framing must identify this role distinctly, bound request and response
 bytes, authenticate exact peer UIDs before dispatch, and impose finite
 admission/deadlines. A lost reply is not a safe automatic retry; a started
 operation must drain before key/store/fence ownership is released. A failed,
-timed-out or abandoned delivery refuses only its own connection and never ends
-the worker, whose restart would claim the next writer fence even if the dropped
-work already committed. The frontend's startup preflight spends one connection
-and one request at both ends, so the worker `--max-connections` and
-`--max-requests` and the frontend `--max-requests` must each be at least two;
-the frontend refuses readiness otherwise. Uncertain commits use the owning
-exact reconciliation path, with no successful output unless it confirms the
-retained result.
+timed-out or abandoned delivery refuses only its own connection. The serial
+worker waits for its owning blocking executor to drain before accepting another
+request under the same fence; a lost reply never yields a successful result.
+The frontend's startup preflight spends one worker connection and one internal
+worker request, but does not spend the configured public request budget. The
+worker reserves that request and requires `--max-connections` to exceed
+`--max-requests`, so a one-public-request configuration can still serve after
+preflight. Uncertain commits use the owning exact reconciliation path, with no
+successful output unless it confirms the retained result.
 
 Same-identity key recovery requires old writer exclusion and the existing
 retained safety history. A different identity needs the existing authorized
