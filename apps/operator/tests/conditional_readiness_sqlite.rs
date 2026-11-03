@@ -289,26 +289,26 @@ fn protected_vote(
         common.push('\n');
     }
     let socket_dir: Directory = Directory::new("readiness-socket");
-    change_owner(&socket_dir.0, WORKER_UID);
     std::fs::set_permissions(&socket_dir.0, std::fs::Permissions::from_mode(0o750)).unwrap();
+    change_owner(&socket_dir.0, WORKER_UID);
     let socket: PathBuf = socket_dir.0.join("readiness.sock");
     let worker_dir: Directory = Directory::new("readiness-worker-config");
-    change_owner(&worker_dir.0, WORKER_UID);
     std::fs::set_permissions(&worker_dir.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    change_owner(&worker_dir.0, WORKER_UID);
     let worker_config: PathBuf = worker_dir.0.join("config");
     let frontend_dir: Directory = Directory::new("readiness-frontend-config");
-    change_owner(&frontend_dir.0, FRONTEND_UID);
     std::fs::set_permissions(&frontend_dir.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    change_owner(&frontend_dir.0, FRONTEND_UID);
     let frontend_config: PathBuf = frontend_dir.0.join("config");
     for entry in std::fs::read_dir(destination).unwrap() {
         let path: PathBuf = entry.unwrap().path();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         change_owner(&path, WORKER_UID);
     }
-    change_owner(destination, WORKER_UID);
     std::fs::set_permissions(destination, std::fs::Permissions::from_mode(0o700)).unwrap();
-    change_owner(output, FRONTEND_UID);
+    change_owner(destination, WORKER_UID);
     std::fs::set_permissions(output, std::fs::Permissions::from_mode(0o700)).unwrap();
+    change_owner(output, FRONTEND_UID);
     let worker_contents: String = format!(
         "{common}socket={}\nfrontend-uid={FRONTEND_UID}\nmax-connections=3\nmax-requests=1\ntotal-deadline-seconds=300\ntimeout-seconds=270\nstate-db={}\nblob-db={}\nvalidator-id={}\nsigner-key-file={}\n",
         socket.display(),
