@@ -299,6 +299,7 @@ async fn execute(app: Router, input: Input) -> io::Result<Output> {
 pub async fn serve_worker<F>(
     listener: UnixListener,
     app: Router,
+    executor: crate::NativeBlockingExecutor,
     identity: Identity,
     frontend_uid: u32,
     max_connections: u64,
@@ -312,9 +313,12 @@ where
 {
     let mut connections: u64 = 0;
     let mut requests: u64 = 0;
+    // One authenticated context preflight is required before the frontend
+    // advertises readiness. The configured quota counts public requests.
+    let request_limit: u64 = max_requests.checked_add(1).ok_or_else(refused)?;
     let mut shutdown = std::pin::pin!(shutdown);
     loop {
-        if connections >= max_connections || requests >= max_requests {
+        if connections >= max_connections || requests >= request_limit {
             // No more work can be admitted. Return immediately to the owner,
             // which closes admission and drains its blocking executor before
             // releasing the socket and fenced target.
@@ -342,7 +346,18 @@ where
         let result: Result<io::Result<()>, tokio::time::error::Elapsed> = tokio::select! {biased; ()=&mut shutdown=>return Ok(()), result=timeout_at(deadline, work)=>result};
         match result {
             Ok(Ok(())) => {}
-            Ok(Err(_)) | Err(_) => return Err(refused()),
+            Ok(Err(_)) | Err(_) => {
+                // A canceled router future may leave a tracked blocking job
+                // completing an already admitted mutation. This worker is
+                // serial: wait for that job to finish before accepting another
+                // request under the same fence. The failed caller receives no
+                // success bytes and can retry against retained state.
+                tokio::select! {
+                    biased;
+                    ()=&mut shutdown=>return Ok(()),
+                    ()=executor.wait_drained()=>{},
+                }
+            }
         }
     }
 }
@@ -389,15 +404,17 @@ impl Frontend {
             remaining: AtomicU64::new(max_requests),
         })
     }
-    async fn exchange(&self, input: &Input) -> io::Result<Output> {
+    async fn exchange(&self, input: &Input, public_request: bool) -> io::Result<Output> {
         if Instant::now() >= self.end {
             return Err(refused());
         }
-        self.remaining
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left: u64| {
-                left.checked_sub(1)
-            })
-            .map_err(|_| refused())?;
+        if public_request {
+            self.remaining
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left: u64| {
+                    left.checked_sub(1)
+                })
+                .map_err(|_| refused())?;
+        }
         let deadline: Instant = self.end.min(
             Instant::now()
                 .checked_add(self.timeout)
@@ -428,7 +445,7 @@ impl Frontend {
             headers: Vec::new(),
             body: Vec::new(),
         };
-        let output: Output = self.exchange(&input).await?;
+        let output: Output = self.exchange(&input, false).await?;
         self.evidence.verify(&input, &output)
     }
 }
@@ -444,7 +461,7 @@ async fn proxy(State(frontend): State<Arc<Frontend>>, request: Request<Body>) ->
         headers: header_pairs(&parts.headers),
         body: body.to_vec(),
     };
-    let output: Output = match frontend.exchange(&input).await {
+    let output: Output = match frontend.exchange(&input, true).await {
         Ok(output) => output,
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
@@ -457,4 +474,223 @@ async fn proxy(State(frontend): State<Arc<Frontend>>, request: Request<Body>) ->
 }
 pub fn frontend_router(frontend: Arc<Frontend>) -> Router {
     Router::new().fallback(any(proxy)).with_state(frontend)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::routing::{get, post};
+    use std::{num::NonZeroUsize, os::unix::fs::MetadataExt, path::Path, sync::Mutex};
+    use tokio::sync::oneshot;
+
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    type JobGate = (oneshot::Sender<()>, oneshot::Receiver<()>);
+    type SharedJobGate = Arc<Mutex<Option<JobGate>>>;
+
+    struct SocketPath(PathBuf);
+    impl SocketPath {
+        fn new() -> Self {
+            let sequence: u64 = NEXT.fetch_add(1, Ordering::Relaxed);
+            let directory: PathBuf = std::env::temp_dir().join(format!(
+                "sunrise-successor-custody-{}-{sequence}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&directory).unwrap();
+            Self(directory.join("worker.sock"))
+        }
+        fn uid(&self) -> u32 {
+            std::fs::metadata(&self.0).unwrap().uid()
+        }
+    }
+    impl Drop for SocketPath {
+        fn drop(&mut self) {
+            let _removed: io::Result<()> = std::fs::remove_file(&self.0);
+            let _removed: io::Result<()> =
+                std::fs::remove_dir(self.0.parent().unwrap_or(Path::new("/nonexistent")));
+        }
+    }
+
+    fn executor() -> crate::NativeBlockingExecutor {
+        crate::NativeBlockingExecutor::new(crate::NativeBlockingPolicy::new(
+            NonZeroUsize::new(2).unwrap(),
+        ))
+    }
+    fn identity() -> Identity {
+        Identity::new(
+            ValidatorId::new([1; 32]),
+            protocol_types::AtomicityDomainId::new([2; 32]).unwrap(),
+            [3; 32],
+            [4; 32],
+        )
+    }
+    async fn send(path: &Path, route: &str) -> io::Result<Output> {
+        let input: Input = Input {
+            method: Method::GET,
+            uri: route.parse().map_err(|_| refused())?,
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        let mut stream: UnixStream = UnixStream::connect(path).await?;
+        crate::local_custody_transport::write_frame(&mut stream, &input.encode()?, refused).await?;
+        let bytes: Vec<u8> =
+            crate::local_custody_transport::read_frame(&mut stream, MAX_FRAME + 128, refused)
+                .await?;
+        if bytes.get(..128) != Some(identity().encode().as_slice()) {
+            return Err(refused());
+        }
+        Output::decode(bytes.get(128..).ok_or_else(refused)?)
+    }
+
+    #[tokio::test]
+    async fn one_public_request_remains_after_context_preflight() {
+        let path: SocketPath = SocketPath::new();
+        let listener: UnixListener = UnixListener::bind(&path.0).unwrap();
+        let app: Router = Router::new()
+            .route("/context", get(|| async { "context" }))
+            .route("/public", get(|| async { "public" }));
+        let worker = tokio::spawn(serve_worker(
+            listener,
+            app,
+            executor(),
+            identity(),
+            path.uid(),
+            2,
+            1,
+            Duration::from_secs(2),
+            Instant::now() + Duration::from_secs(5),
+            std::future::pending(),
+        ));
+        assert_eq!(send(&path.0, "/context").await.unwrap().body, b"context");
+        assert_eq!(send(&path.0, "/public").await.unwrap().body, b"public");
+        assert!(worker.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn lost_reply_after_committed_handler_keeps_worker_available() {
+        let path: SocketPath = SocketPath::new();
+        let listener: UnixListener = UnixListener::bind(&path.0).unwrap();
+        let (committed_tx, committed_rx) = oneshot::channel::<()>();
+        let signal: Arc<Mutex<Option<oneshot::Sender<()>>>> =
+            Arc::new(Mutex::new(Some(committed_tx)));
+        let app: Router = Router::new()
+            .route(
+                "/commit",
+                post({
+                    let signal: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::clone(&signal);
+                    move || async move {
+                        if let Some(sender) = signal.lock().unwrap().take() {
+                            let _sent = sender.send(());
+                        }
+                        "committed"
+                    }
+                }),
+            )
+            .route("/status", get(|| async { "retained" }));
+        let (stop_tx, stop_rx) = oneshot::channel::<()>();
+        let worker = tokio::spawn(serve_worker(
+            listener,
+            app,
+            executor(),
+            identity(),
+            path.uid(),
+            4,
+            2,
+            Duration::from_secs(2),
+            Instant::now() + Duration::from_secs(5),
+            async move {
+                let _stopped = stop_rx.await;
+            },
+        ));
+        let input: Input = Input {
+            method: Method::POST,
+            uri: "/commit".parse().unwrap(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        let mut lost: UnixStream = UnixStream::connect(&path.0).await.unwrap();
+        crate::local_custody_transport::write_frame(&mut lost, &input.encode().unwrap(), refused)
+            .await
+            .unwrap();
+        drop(lost);
+        committed_rx.await.unwrap();
+        assert_eq!(send(&path.0, "/status").await.unwrap().body, b"retained");
+        let _sent = stop_tx.send(());
+        assert!(worker.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn timed_out_request_drains_admitted_job_before_next_request() {
+        let path: SocketPath = SocketPath::new();
+        let listener: UnixListener = UnixListener::bind(&path.0).unwrap();
+        let executor: crate::NativeBlockingExecutor = executor();
+        let (started_tx, started_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let controls: SharedJobGate = Arc::new(Mutex::new(Some((started_tx, release_rx))));
+        let app: Router = Router::new()
+            .route(
+                "/slow",
+                get({
+                    let controls = Arc::clone(&controls);
+                    let executor = executor.clone();
+                    move || async move {
+                        let (started, release) = controls.lock().unwrap().take().unwrap();
+                        let permit = executor.try_acquire().unwrap();
+                        let job = tokio::task::spawn_blocking(move || {
+                            let _permit = permit;
+                            let _sent = started.send(());
+                            let _released = release.blocking_recv();
+                        });
+                        job.await.unwrap();
+                        "done"
+                    }
+                }),
+            )
+            .route("/next", get(|| async { "next" }));
+        let (stop_tx, stop_rx) = oneshot::channel::<()>();
+        let worker = tokio::spawn(serve_worker(
+            listener,
+            app,
+            executor,
+            identity(),
+            path.uid(),
+            4,
+            2,
+            Duration::from_millis(50),
+            Instant::now() + Duration::from_secs(5),
+            async move {
+                let _stopped = stop_rx.await;
+            },
+        ));
+        let input: Input = Input {
+            method: Method::GET,
+            uri: "/slow".parse().unwrap(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        let mut slow: UnixStream = UnixStream::connect(&path.0).await.unwrap();
+        crate::local_custody_transport::write_frame(&mut slow, &input.encode().unwrap(), refused)
+            .await
+            .unwrap();
+        started_rx.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let next = tokio::spawn({
+            let path = path.0.clone();
+            async move { send(&path, "/next").await }
+        });
+        let mut next = next;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut next)
+                .await
+                .is_err()
+        );
+        let _released = release_tx.send(());
+        let response: Output = tokio::time::timeout(Duration::from_secs(2), next)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.body, b"next");
+        let _sent = stop_tx.send(());
+        assert!(worker.await.unwrap().is_ok());
+    }
 }

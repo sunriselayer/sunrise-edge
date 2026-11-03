@@ -35,8 +35,11 @@ impl WorkerParams {
         if frontend_uid == local::own_uid(refused)? {
             return Err(refused().into());
         }
-        let max_connections: u64 = bounded(&flags.one("--max-connections")?, 1, 4096)?;
+        let max_connections: u64 = bounded(&flags.one("--max-connections")?, 2, 8192)?;
         let max_requests: u64 = bounded(&flags.one("--max-requests")?, 1, 4096)?;
+        if max_connections <= max_requests {
+            return Err(refused().into());
+        }
         let total: Duration =
             Duration::from_secs(bounded(&flags.one("--total-deadline-seconds")?, 1, 3600)?);
         Ok(Self {
@@ -79,7 +82,7 @@ pub(super) fn serve_worker(
             tokio::select! {biased; _=stop.wait(observations)=>{}, ()=sleep_until(end)=>{}}
             closing.close();
         };
-        let result = successor_custody::serve_worker(listener, prepared.router, identity, params.frontend_uid, params.max_connections, params.max_requests, timeout, end, shutdown).await;
+        let result = successor_custody::serve_worker(listener, prepared.router, prepared.executor.clone(), identity, params.frontend_uid, params.max_connections, params.max_requests, timeout, end, shutdown).await;
         prepared.executor.close();
         prepared.executor.wait_drained().await;
         let removed = owner.close();
