@@ -743,6 +743,7 @@ mod tests {
         ChainId, Digest32, Epoch, HashAlgorithmId, HashSuite, HashSuiteSchedule, ProtocolVersion,
         SignatureSchemeId,
     };
+    use tokio::io::AsyncReadExt;
     use validator_set::{ValidatorInfo, ValidatorSet};
 
     struct RealSigner {

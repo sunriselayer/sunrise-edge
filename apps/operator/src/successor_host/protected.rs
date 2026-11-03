@@ -5,7 +5,6 @@ use crate::local_custody_transport as local;
 use native_http::successor_custody::{self, Frontend, Identity};
 use std::{
     io::{self, Write},
-    path::Path,
     time::Duration,
 };
 use tokio::time::{Instant, sleep_until};
