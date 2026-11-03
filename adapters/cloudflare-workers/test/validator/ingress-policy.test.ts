@@ -78,7 +78,7 @@ describe("certified-only DO ingress", () => {
     const result = await pending;
     if (!(result instanceof Response)) throw new Error("aborted body admitted");
     expect(result.status).toBe(400);
-    expect(await result.text()).toBe("invalid-request-body");
+    expect(await result.text()).toBe("request-aborted");
     expect(stream.locked).toBe(false);
   });
 });

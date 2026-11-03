@@ -74,6 +74,9 @@ export async function decodeValidatorRequest(
     }
     return { path, body };
   } catch (error: unknown) {
+    if (error instanceof IngressError && error.code === "request-aborted") {
+      return rejected(400, "request-aborted");
+    }
     if (error instanceof IngressError && error.status === 408) {
       return rejected(408, "request-body-timeout");
     }
