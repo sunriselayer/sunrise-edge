@@ -1218,6 +1218,9 @@ N1/N2の実workflow ownerは既存の
 保護境界の追加分だけを元ownerへ対応付ける。positive Splitのlive escrow/nonce/entitlementは
 元store-backed preparationとordered executionの責務であり、custodyへ重複実装しない。
 
+N1の現行consumer・core保持境界と別UID worker案は[DR-0284](docs/architecture/decisions/0284-conditional-readiness-protected-worker-proposal.md) に整理した。
+これはProposedであり、保護profileの選択・接続・実検証やN1全体の完了ではない。
+
 次はM2-N1/N2の具体的なhost/authority設計と、M2-N3の対象選択根拠を固める。
 この時点で未選択の新backend配線や新しい移行を実装しない。N1〜N5の成果を
 既存M2の該当条件へ戻して記録し、親M2や元の独立security/release条件の代わりにしない。

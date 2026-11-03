@@ -88,6 +88,9 @@ roadmap describes a later target state.
 - [Signing routes and existing test owners](signing-route-test-map.md): concrete
   prepared-owner/CLI/backend correspondence, generic development-only routes,
   automatic authority owners and the limits of each existing test/evidence layer.
+- [Conditional readiness protected worker proposal](decisions/0284-conditional-readiness-protected-worker-proposal.md):
+  M2-N1's existing core authority and retained-vote owner, plus a proposed
+  distinct-UID local boundary for review; no implementation or profile selection.
 - [Positive Standard Asset fee-claim Split proposal policy](positive-fee-claim-split-policy.md)
   ([DR-0267](decisions/0267-positive-standard-asset-fee-claim-policy.md)):
   two immutable recognized leg/claim owners, verified historical identity and
