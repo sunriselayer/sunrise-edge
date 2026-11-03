@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// DR-0284: run the existing ignored readiness owner under actual disposable UIDs.
+// DR-0284/0285: run an original ignored owner under disposable UIDs.
 // This controller performs no build, download, host user change, or fixture assertion.
 // Inputs are exact paths from clean-head Cargo JSON no-run/build receipts:
 //   --target-debug ABS --harness ABS --operator-cargo-json ABS --cli-cargo-json ABS
 //   --evidence-dir ABS_PRIVATE_DIR --expected-head 40_HEX
-//   --tmpfs-mib N --memory-mib N --outer-seconds N
+//   --tmpfs-mib N --memory-mib N --outer-seconds N [--profile readiness|recurring]
 // The eight operator ELFs are copied by the existing Rust owner; the CLI ELF is
 // executed directly beside the harness and is separately checked, not copied.
 
@@ -22,7 +22,10 @@ const BINARIES = [
   'business_cut', 'business_import', 'business_recovery', 'conditional_readiness',
   'ordered_seal', 'successor_activation', 'successor_host', 'sqlite_source_host',
 ];
-const TEST = 'compiled_conditional_readiness_real_retention_restart_and_distinct_certificate';
+const TESTS = {
+  readiness: 'compiled_conditional_readiness_real_retention_restart_and_distinct_certificate',
+  recurring: 'compiled_registered_replacement_and_recurring_successor_hosts',
+};
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OWNER = randomUUID();
 const NAME = `sunrise-readiness-1103-${OWNER}`;
@@ -52,9 +55,9 @@ function argumentsOf(argv) {
   const values = new Map();
   const allowed = new Set([
     '--target-debug', '--harness', '--operator-cargo-json', '--cli-cargo-json', '--evidence-dir',
-    '--expected-head', '--tmpfs-mib', '--memory-mib', '--outer-seconds',
+    '--expected-head', '--tmpfs-mib', '--memory-mib', '--outer-seconds', '--profile',
   ]);
-  if (argv.length !== allowed.size * 2) throw new Error('all nine explicit controller inputs are required');
+  if (argv.length !== 18 && argv.length !== 20) throw new Error('nine required controller inputs and one optional profile are allowed');
   for (let index = 0; index < argv.length; index += 2) {
     const key = argv[index];
     if (!allowed.has(key) || values.has(key) || argv[index + 1] === undefined) {
@@ -62,6 +65,11 @@ function argumentsOf(argv) {
     }
     values.set(key, argv[index + 1]);
   }
+  for (const key of allowed) {
+    if (key !== '--profile' && !values.has(key)) throw new Error(`missing controller input: ${key}`);
+  }
+  const profile = values.get('--profile') ?? 'readiness';
+  if (!Object.hasOwn(TESTS, profile)) throw new Error('profile must be readiness or recurring');
   return {
     targetDebug: requirePath(values.get('--target-debug'), '--target-debug'),
     harness: requirePath(values.get('--harness'), '--harness'),
@@ -71,7 +79,8 @@ function argumentsOf(argv) {
     expectedHead: values.get('--expected-head'),
     tmpfsMiB: number(values.get('--tmpfs-mib'), 128, 6144, '--tmpfs-mib'),
     memoryMiB: number(values.get('--memory-mib'), 512, 8192, '--memory-mib'),
-    outerSeconds: number(values.get('--outer-seconds'), 60, 3600, '--outer-seconds'),
+    outerSeconds: number(values.get('--outer-seconds'), 60, 21600, '--outer-seconds'),
+    profile,
   };
 }
 
@@ -268,6 +277,7 @@ try {
     operatorCargoJsonSha256, cliCargoJsonSha256,
     image: IMAGE, imageId: image, artifacts, tmpfsMiB: inputs.tmpfsMiB,
     memoryMiB: inputs.memoryMiB, outerSeconds: inputs.outerSeconds,
+    profile: inputs.profile, selector: TESTS[inputs.profile],
     startedAt: new Date().toISOString(),
   };
   const mounts = [
@@ -284,12 +294,15 @@ try {
     `--memory=${inputs.memoryMiB}m`, `--memory-swap=${inputs.memoryMiB}m`,
     '--log-driver=none', '--user=0:0',
     '--tmpfs', `/tmp:rw,nosuid,nodev,exec,size=${inputs.tmpfsMiB}m,nr_inodes=65536,mode=1777`,
-    '-e', 'SUNRISE_READINESS_MULTIUID_FIXTURE=1', '-e', 'RUST_TEST_THREADS=1',
+    '-e', inputs.profile === 'recurring'
+      ? 'SUNRISE_SUCCESSOR_MULTIUID_FIXTURE=1'
+      : 'SUNRISE_READINESS_MULTIUID_FIXTURE=1',
+    '-e', 'RUST_TEST_THREADS=1',
     '-e', 'RUST_BACKTRACE=1',
     '-e', 'LD_LIBRARY_PATH=/mnt/libs',
     ...mounts.flatMap((mount) => ['--mount', mount]),
     '--entrypoint', inputs.harness,
-    IMAGE, '--ignored', '--exact', TEST, '--nocapture',
+    IMAGE, '--ignored', '--exact', TESTS[inputs.profile], '--nocapture',
   ];
   receipt.mounts = mounts;
   const result = await runContainer(dockerArgs, inputs.outerSeconds);
@@ -299,8 +312,11 @@ try {
     code: result.code, signal: result.signal, abortReason: result.abortReason,
     stdoutBytes: result.stdoutBytes, stderrBytes: result.stderrBytes,
   };
-  if (result.code !== 0 || result.abortReason) throw new Error('Docker readiness owner did not exit successfully');
-  if (!rawOut.toString('utf8').includes('1 passed')) throw new Error('exact ignored readiness owner did not complete');
+  if (result.code !== 0 || result.abortReason) throw new Error('Docker owner did not exit successfully');
+  if (!rawOut.toString('utf8').includes('1 passed')) throw new Error('exact ignored owner did not complete');
+  if (inputs.profile === 'recurring' && !rawOut.toString('utf8').includes('successor_protected=distinct-uid')) {
+    throw new Error('real protected successor role was not observed');
+  }
 } catch (error) {
   failure = String(error?.stack ?? error);
 } finally {
@@ -309,7 +325,7 @@ try {
     failure ??= 'owned container cleanup failed';
   }
   if (inputs?.evidenceDir) {
-    const prefix = join(inputs.evidenceDir, `readiness-multiuid-${OWNER}`);
+    const prefix = join(inputs.evidenceDir, `${inputs.profile}-multiuid-${OWNER}`);
     const final = {
       ...(receipt ?? { owner: OWNER, name: NAME }),
       finishedAt: new Date().toISOString(), cleanup,
