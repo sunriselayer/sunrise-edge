@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [cloudflareTest({
-    experimental: { newConfig: { configPath: "./profiles/sql/cloudflare.config.ts" } },
+    config: "./profiles/sql/cloudflare.config.ts",
     remoteBindings: false,
     // Vitest renames the Worker; absent scriptName binds to its local runner.
     miniflare: {

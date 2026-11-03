@@ -5,7 +5,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: { include: ["test/certified.test.ts"] },
   plugins: [cloudflareTest({
-    experimental: { newConfig: { configPath: "./profiles/certified/cloudflare.config.ts" } },
+    config: "./profiles/certified/cloudflare.config.ts",
     remoteBindings: false,
     miniflare: {
       // Test runner support only; the production relay needs no Node APIs.
