@@ -54,9 +54,6 @@ pub(super) fn serve_worker(
     params: WorkerParams,
 ) -> Result<(), Box<dyn Error>> {
     let timeout: Duration = Duration::from_secs(host.timeout);
-    if timeout > Duration::from_secs(30) {
-        return Err(refused().into());
-    }
     let prepared: PreparedHost = prepare(host)?;
     let identity: Identity = Identity::new(
         prepared.validator,
@@ -141,7 +138,7 @@ pub(super) fn run_frontend(values: Vec<OsString>) -> Result<(), Box<dyn Error>> 
             .optional_one("--timeout-seconds")?
             .unwrap_or_else(|| "30".into()),
         1,
-        30,
+        3600,
     )?);
     let concurrent: usize = usize::try_from(bounded(
         &flags
