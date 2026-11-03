@@ -399,35 +399,46 @@ fn run_worker(startup: Startup) -> Result<()> {
 
 fn run_frontend(startup: Startup) -> Result<()> {
     let (prepared, output, validator): (PreparedVote, ImmutableArchive, ValidatorId) =
-        frontend_vote_inputs(startup.vote_args)?;
+        frontend_vote_inputs(startup.vote_args)
+            .map_err(|error| format!("readiness frontend public input refused: {error}"))?;
     let runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let vote: Vec<u8> = runtime.block_on(async move {
-        let end: Instant = Instant::now()
-            .checked_add(startup.deadline)
-            .ok_or_else(refused)?;
-        let mut stream: UnixStream =
-            timeout_at(end, UnixStream::connect(&startup.socket)).await??;
-        native_http::local_custody_transport::authenticate(&stream, startup.peer_uid, refused)?;
-        timeout_at(
-            end,
-            native_http::local_custody_transport::write_frame(&mut stream, REQUEST, refused),
-        )
-        .await??;
-        let bytes: Vec<u8> = timeout_at(
-            end,
-            native_http::local_custody_transport::read_frame(&mut stream, MAX_RESPONSE, refused),
-        )
-        .await??;
-        let vote: &[u8] = bytes.strip_prefix(RESPONSE).ok_or_else(refused)?;
-        if vote.is_empty() || vote.len() > MAX_READINESS_VOTE_BYTES {
-            return Err(refused().into());
-        }
-        Ok::<Vec<u8>, Box<dyn Error>>(vote.to_vec())
-    })?;
-    prepared.verify_worker_vote(&vote, validator)?;
-    output.publish("vote.bin", &vote)?;
+    let vote: Vec<u8> = runtime
+        .block_on(async move {
+            let end: Instant = Instant::now()
+                .checked_add(startup.deadline)
+                .ok_or_else(refused)?;
+            let mut stream: UnixStream =
+                timeout_at(end, UnixStream::connect(&startup.socket)).await??;
+            native_http::local_custody_transport::authenticate(&stream, startup.peer_uid, refused)?;
+            timeout_at(
+                end,
+                native_http::local_custody_transport::write_frame(&mut stream, REQUEST, refused),
+            )
+            .await??;
+            let bytes: Vec<u8> = timeout_at(
+                end,
+                native_http::local_custody_transport::read_frame(
+                    &mut stream,
+                    MAX_RESPONSE,
+                    refused,
+                ),
+            )
+            .await??;
+            let vote: &[u8] = bytes.strip_prefix(RESPONSE).ok_or_else(refused)?;
+            if vote.is_empty() || vote.len() > MAX_READINESS_VOTE_BYTES {
+                return Err(refused().into());
+            }
+            Ok::<Vec<u8>, Box<dyn Error>>(vote.to_vec())
+        })
+        .map_err(|error| format!("readiness frontend transport refused: {error}"))?;
+    prepared
+        .verify_worker_vote(&vote, validator)
+        .map_err(|error| format!("readiness frontend vote refused: {error}"))?;
+    output
+        .publish("vote.bin", &vote)
+        .map_err(|error| format!("readiness frontend publication refused: {error}"))?;
     println!(
         "conditional_readiness=retained-vote cut={} next_epoch={} meaning=not-seal-activation-or-serving",
         hex(&prepared.subject.cut_digest.bytes()),
