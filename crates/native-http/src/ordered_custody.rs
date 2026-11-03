@@ -24,8 +24,9 @@ use std::{
     },
     time::Duration,
 };
+#[cfg(test)]
+use tokio::io::AsyncWriteExt;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
     net::{UnixListener, UnixStream},
     time::{Instant, timeout_at},
 };
@@ -333,31 +334,13 @@ impl Output {
 }
 
 async fn read_frame(stream: &mut UnixStream, cap: usize) -> io::Result<Vec<u8>> {
-    let size: u32 = stream.read_u32().await?;
-    let size: usize = usize::try_from(size).map_err(|_| invalid())?;
-    if size == 0 || size > cap {
-        return Err(invalid());
-    }
-    let mut bytes: Vec<u8> = vec![0; size];
-    stream.read_exact(&mut bytes).await?;
-    let mut trailing: [u8; 1] = [0];
-    if stream.read(&mut trailing).await? != 0 {
-        return Err(invalid());
-    }
-    Ok(bytes)
+    crate::local_custody_transport::read_frame(stream, cap, invalid).await
 }
 async fn write_frame(stream: &mut UnixStream, bytes: &[u8]) -> io::Result<()> {
-    stream
-        .write_u32(u32::try_from(bytes.len()).map_err(|_| invalid())?)
-        .await?;
-    stream.write_all(bytes).await?;
-    stream.shutdown().await
+    crate::local_custody_transport::write_frame(stream, bytes, invalid).await
 }
 fn authenticate(stream: &UnixStream, expected: u32) -> io::Result<()> {
-    if stream.peer_cred()?.uid() != expected {
-        return Err(invalid());
-    }
-    Ok(())
+    crate::local_custody_transport::authenticate(stream, expected, invalid)
 }
 
 async fn execute(app: Application, input: Input) -> io::Result<Output> {

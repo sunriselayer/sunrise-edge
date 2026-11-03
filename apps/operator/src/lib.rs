@@ -14,6 +14,8 @@ pub mod host_protocol_context;
 pub mod host_runtime;
 pub mod immutable_archive;
 mod local_anchor;
+#[cfg(target_os = "linux")]
+mod local_custody_transport;
 pub mod native_observations;
 mod native_operations;
 mod native_tls;

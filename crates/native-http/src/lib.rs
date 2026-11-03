@@ -19,6 +19,8 @@ use core::fmt;
 pub mod certified_custody;
 mod fastvote;
 mod lifecycle;
+#[cfg(target_os = "linux")]
+pub mod local_custody_transport;
 mod local_execution;
 mod observations;
 #[cfg(target_os = "linux")]
