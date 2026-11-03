@@ -398,6 +398,7 @@ fn protected_vote(
                 .arg("--ignored")
                 .arg("--exact")
                 .arg("compiled_conditional_readiness_real_retention_restart_and_distinct_certificate")
+                .arg("--nocapture")
                 .env("SUNRISE_READINESS_LOST_RESPONSE_SOCKET", &socket);
             probe
         } else {
