@@ -10,8 +10,10 @@ detailed design, operator guides, and specialist references live here.
 - [Validation and build profiles](development/validation.md): storage-neutral
   required checks, selected PostgreSQL acceptance and assertion-preserving
   signature-heavy test builds.
-- [Preserved roadmap and execution history](development/history/roadmap-through-2026-10-06.md):
-  original release criteria and scoped historical evidence, not a live queue.
+- [Original roadmap archive](development/history/roadmap-through-2026-10-06.md):
+  original release criteria; open only the exact section cited by TODO.
+- [Preserved TODO evidence ledger](development/history/todo-evidence-through-2026-11-03.md):
+  dated execution results and failures; not a live queue.
 
 ## Architecture
 

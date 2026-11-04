@@ -29,6 +29,12 @@ provider as a protocol assumption.
 5. Search the workspace for existing type IDs, enum tags, hash domains, error
    patterns, and canonical encoders before defining new ones.
 
+Keep document reads scoped: use the short architecture index to select one
+subsystem, read only its applicable decisions and the relevant TODO rows, and
+follow an E-number or historical-roadmap link only for the exact criterion in
+question. The full architecture catalog, decision register, and preserved
+execution ledger are lookup references, not default context.
+
 `TODO.md` owns status and remaining gates, not subsystem design. The preserved
 roadmap distinguishes original binding criteria from historical observations
 and aspirational examples. Existing canonical

@@ -3,10 +3,10 @@
 Date: 2026-11-03, Asia/Singapore
 
 Status: The human selected the trusted local OS and distinct-process/UID
-boundary for readiness on 2026-11-03. This role-specific transport and
-artifact design remains proposed, with no implemented or qualified release
-profile, provider, host user or production key. The publication-only decision
-in [DR-0238](0238-publication-only-local-os-custody.md) did not itself select
+boundary for readiness on 2026-11-03. This record selects no release profile,
+provider, host user or production key. Implementation and qualification are
+tracked in TODO. The publication-only decision in
+[DR-0238](0238-publication-only-local-os-custody.md) did not itself select
 readiness.
 
 ## Existing owner and gap
@@ -86,7 +86,11 @@ readiness IPC route must not become an activation or successor-host route.
 Successor automatic signing is the separate M2-N2 decision. Genesis/admin and
 human asset approval are also outside this worker.
 
-## Implementation and verification after design review
+## Original implementation checklist and remaining verification
+
+The prospective wording below is the original design checklist, not a live
+implementation status. Current source and exact qualification belong in
+[TODO.md](../../../TODO.md).
 
 First define the finite request, trusted configuration, output ownership and
 frontend's independently pinned import binding from the existing CLI inputs,

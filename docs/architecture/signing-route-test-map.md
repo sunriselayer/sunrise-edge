@@ -1,4 +1,4 @@
-# Signing routes and their existing test owners
+# Signing routes and their existing test owners (8a5 source snapshot)
 
 This is a source correspondence map for the signing boundaries implemented at
 `8a5cc30a1d4a6166c6a69e720713252112817833`. It records existing consumers and
@@ -7,6 +7,11 @@ Current completion and remaining decisions belong only in
 [`TODO.md`](../../TODO.md). The implementation rationale remains in the linked
 decision records; [DR-0214](decisions/0214-protected-custody-and-review-boundary.md)
 remains Proposed.
+
+This map is deliberately pinned to the stated source and is not a live
+inventory of later branches. Their status and remaining gates belong in
+[TODO.md](../../TODO.md); absence from this snapshot is not evidence that a
+later implementation does not exist.
 
 ## How to read the evidence
 

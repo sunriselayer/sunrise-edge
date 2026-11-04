@@ -32,7 +32,7 @@ fee decisions.
   `apps/wallet` until real duplication between the two actually exists.
 
   **Developer MVP order.** Developer MVP completion order (see
-  [CLI Developer MVP Gate](../../../TODO.md#cli-developer-mvp-gate)) is: local devnet, bounded query API, Rust
+  [CLI Developer MVP Gate](../../development/history/roadmap-through-2026-10-06.md#cli-developer-mvp-gate)) is: local devnet, bounded query API, Rust
   client, Rust CLI, TypeScript client, explorer, wallet, restart/duplicate
   E2E, and explicit documented development-only limitations. This replaces
   [DR-0080](0076-0080-developer-mvp-foundation.md)'s earlier "TypeScript client + counter demo UI" pairing; no
@@ -440,7 +440,7 @@ fee decisions.
   **Ordered slices, amended by
   [DR-0095](0094-0098-blobs-audit-and-documentation.md).** This decision originally sequenced
   the CLI-First Node Production Gate as S0-S5 (see
-  [CLI-First Node Production Gate](../../../TODO.md#cli-first-node-production-gate)).
+  [CLI-First Node Production Gate](../../development/history/roadmap-through-2026-10-06.md#cli-first-node-production-gate)).
   [DR-0095](0094-0098-blobs-audit-and-documentation.md) preserves S0-S3 as the
   common baseline but supersedes the strict S4-before-S5 ordering: S4 and S5
   are independent parallel tracks.

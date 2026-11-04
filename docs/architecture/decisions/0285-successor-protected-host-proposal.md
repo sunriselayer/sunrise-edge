@@ -3,10 +3,10 @@
 Date: 2026-11-03, Asia/Singapore
 
 Status: The human selected the trusted local OS and distinct-process/UID
-boundary for successor signing on 2026-11-03. This role-specific transport and
-frontend verification design remains proposed; no successor custody profile
-or provider has been implemented or qualified. Existing original ordered and
-certified FastVote worker approvals do not extend to a serving successor.
+boundary for successor signing on 2026-11-03. This record selects no release
+profile or provider. Implementation and qualification are tracked in TODO.
+Existing original ordered and certified FastVote worker approvals do not extend
+to a serving successor.
 
 ## Actual consumer and authority
 
@@ -80,7 +80,12 @@ authority. This profile claims neither independent rollback detection nor
 protection from a compromised worker or root. No real keys, host users,
 security policy or deployment are authorized here.
 
-## Implementation and verification after design review
+## Original implementation checklist and remaining verification
+
+The prospective wording below is the original design checklist, not a live
+implementation status. The actual distinct-UID successor run, original
+recurring acceptance and exact-source release evidence remain separate;
+consult [TODO.md](../../../TODO.md) for their current status.
 
 Inventory the exact existing successor route/method/body limits and settle the
 frontend's independent public successor context before adding the private

@@ -71,15 +71,18 @@ records the exact boundary.
 
 ## Separate M2 requirements
 
-Mechanical signature validity is not independent human content review. A future
-trusted review surface must use the same retained content, recompute commitments
-from bounded preimages and fail closed on unknown semantics. The historical
+Mechanical signature validity is not independent human content review. When a
+trusted review surface is selected, it must use the same retained content,
+recompute commitments from bounded preimages and fail closed on unknown
+semantics. The historical
 Ledger transaction policy is not generic-contract review authority.
 
 Automatic validator signing stays with `ConsensusSigner`, committed public
 identity and actual live protocol authority. Readiness has its own narrower
-eligible-key and retention boundary. Native operator/genesis raw-key custody
-and these automatic signers are not migrated by SDK operation preparation.
+eligible-key and retention boundary. SDK operation preparation alone does not
+migrate native operator/genesis custody or these automatic signers. Their
+separate bounded development implementations are tracked by their own
+decisions and [TODO.md](../../TODO.md), not inferred from these SDK owners.
 
 For each family, a protected provider, operator/key-role separation, exposure
 controls, refusal/restart behavior, trusted content review and
@@ -93,9 +96,11 @@ identity. SDK preparation selects no additional backend or public network launch
 separates client review, automatic consensus, readiness and genesis/admin roles,
 and compares local-OS, separated-host and hardware-backed threat boundaries.
 Its contract is independently design-reviewed, not provider selection or M2
-qualification. It explicitly defers an additional presentation layer without a
-concrete trusted review consumer; repeating these prepared-owner guarantees is
-not another security boundary.
+qualification. Its original 2026-10-07 next step deferred a presentation layer
+until a concrete consumer existed. [DR-0237](decisions/0237-bounded-publication-review-presentation.md)
+subsequently supplied that publication presentation, and DR-0238 supplied its
+bounded custody consumer. Repeating prepared-owner guarantees is not another
+security boundary.
 
 [DR-0238](decisions/0238-publication-only-local-os-custody.md) implements one
 of DR-0214's compared candidates ("dedicated encrypted local custody," without

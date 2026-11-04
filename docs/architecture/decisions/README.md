@@ -1,5 +1,11 @@
 # Architecture decision records
 
+This is the complete dated register, including historical proposals and
+partially superseded alternatives. Inclusion here does not grant implementation
+or release authority. Check the record status and its later accepted replacements;
+use the [short architecture index](../README.md) to find the relevant owner and
+[TODO.md](../../../TODO.md) for current work and evidence.
+
 - [DR-0001–DR-0028: foundations and ingress](0001-0028-foundations-and-ingress.md)
 - [DR-0029–DR-0057: transactional runtime](0029-0057-transactional-runtime.md)
 - [DR-0058–DR-0075: PostgreSQL conformance](0058-0075-postgres-conformance.md)
@@ -72,7 +78,7 @@
 - [DR-0174: independently reconstructed frozen member completion](0174-frozen-member-business-reconstruction.md)
 - [DR-0175: first-epoch pre-Seal business cut and verified bounded export](0175-first-epoch-preseal-business-cut.md)
 - [DR-0176: verified business state in a permanently import-only namespace](0176-verified-inactive-business-import.md)
-- [DR-0177: conditional readiness and ordered Seal (Proposed, readiness-only first)](0177-conditional-readiness-and-ordered-seal.md)
+- [DR-0177: conditional readiness and ordered Seal (historical proposal; later contracts control)](0177-conditional-readiness-and-ordered-seal.md)
 - [DR-0178: conditional readiness wire, actual-key signing and protected retention](0178-conditional-readiness-wire-and-retention.md)
 - [DR-0179: authenticated initial validator bond registration](0179-initial-validator-bond-registration.md)
 - [DR-0180: architecture-first interfaces and owning implementations](0180-architecture-first-interface-contracts.md)
@@ -81,11 +87,11 @@
 - [DR-0183: test observation ownership and complete preparation equivalence](0183-test-observation-ownership.md)
 - [DR-0184: one FastVote committee record validator](0184-one-fastvote-committee-record-validator.md)
 - [DR-0185: one immutable reconstruction policy binding owner](0185-one-reconstruction-policy-binding.md)
-- [DR-0186: functional Seal and authenticated serving closure (Proposed)](0186-functional-handoff-closure.md)
+- [DR-0186: functional Seal and authenticated serving closure (historical proposal; superseded in part)](0186-functional-handoff-closure.md)
 - [DR-0187: first-epoch ordered Seal and permanent outgoing closure](0187-first-epoch-ordered-seal.md)
 - [DR-0188: bounded ordered-client empty alignment](0188-ordered-client-empty-alignment.md)
 - [DR-0189: first successor target-local activation and authenticated serving](0189-first-successor-serving.md)
-- [DR-0190: bounded read-only fee-claim preparation transport (Proposed)](0190-read-only-fee-claim-preparation-transport.md)
+- [DR-0190: bounded read-only fee-claim preparation transport (accepted design)](0190-read-only-fee-claim-preparation-transport.md)
 - [DR-0191: recurring successor serving over a verified link chain](0191-recurring-successor-serving.md)
 - [DR-0192: verified original SQLite Seal host composition](0192-verified-sqlite-source-host.md)
 - [DR-0193: required recurring acceptance over isolated owners](0193-required-recurring-acceptance.md)
@@ -93,9 +99,8 @@
 - [DR-0195: explicit local SQLite validator preparation and preflight](0195-local-sqlite-validator-startup.md)
 - [DR-0196: offline Standard Asset genesis authoring](0196-standard-asset-genesis-authoring.md)
 - [DR-0197: offline original-genesis inspection](0197-offline-original-genesis-inspection.md)
-- [DR-0199: local TLS validator startup acceptance](0199-local-tls-validator-startup-acceptance.md)
-
 - [DR-0198: exact original-genesis published-code reference](0198-genesis-publication-reference-alignment.md)
+- [DR-0199: local TLS validator startup acceptance](0199-local-tls-validator-startup-acceptance.md)
 - [DR-0200: semantic maintainability and one mainnet roadmap](0200-maintainability-and-mainnet-roadmap.md)
 - [DR-0201: one envelope codec and acknowledgement binding owner](0201-envelope-and-acknowledgement-ownership.md)
 - [DR-0202: private observations of genuine recurring acceptance work](0202-private-recurring-acceptance-observations.md)
@@ -110,7 +115,7 @@
 - [DR-0211: immutable live-operation preparation before custody selection](0211-external-signing-preparation.md)
 - [DR-0212: offline Native SQLite business-closure recovery rehearsal](0212-offline-business-closure-recovery.md)
 - [DR-0213: bounded Native release artifact evidence](0213-native-release-artifact-evidence.md)
-- [DR-0214: protected custody and trustworthy review boundaries (Proposed)](0214-protected-custody-and-review-boundary.md)
+- [DR-0214: protected custody and trustworthy review boundaries (proposed comparison; selected slices are separate)](0214-protected-custody-and-review-boundary.md)
 - [DR-0215: invocation-bound ordered local signatures and retained reread verification](0215-ordered-local-signature-verification.md)
 - [DR-0216: owned local TLS stop, restart and explicit trust rotation](0216-local-tls-stop-restart-rotation.md)
 - [DR-0217: one publication-query codec and narrow error owner](0217-publication-query-contract-owner.md)
@@ -137,17 +142,26 @@
 - [DR-0243: Node 24 validation profile](0243-node24-validation-profile.md)
 - [DR-0244: publication approval revocation and stopped key lifecycle](0244-publication-approval-revocation-and-key-lifecycle.md)
 - [DR-0245: saved successor fee-claim review and development signing](0245-saved-successor-fee-claim-review.md)
-
-- [DR-0263: encrypted local checkpoint continuation](0263-encrypted-local-checkpoint-continuation.md)
-
-Each record states whether it is accepted or only proposed; proposals are not
-implementation approval. Work status and remaining completion criteria belong
-in [`TODO.md`](../../../TODO.md).
-
+- [DR-0246: Genesis Standard Asset transfer custody](0246-genesis-standard-asset-transfer-custody.md)
+- [DR-0247: Native stop checks before recovery and ordered storage](0247-native-stop-before-storage-continuation.md)
+- [DR-0248: Independent ordered-history floor for inactive import](0248-import-ordered-history-freshness-floor.md)
+- [DR-0249: Genesis Standard Asset split/merge custody](0249-genesis-standard-asset-split-merge-custody.md)
+- [DR-0250: Successor operation-context stop check](0250-successor-operation-context-stop-check.md)
+- [DR-0251: Successor historical-read stop check](0251-successor-historical-read-stop-check.md)
+- [DR-0252: Independent closure-identity pins for inactive import](0252-import-closure-identity-pins.md)
+- [DR-0253: Genesis Standard Asset mint/burn custody](0253-genesis-standard-asset-mint-burn-custody.md)
+- [DR-0254: Native source-host SIGTERM wiring oracle](0254-native-source-host-sigterm-wiring-oracle.md)
+- [DR-0255: Standard Asset create-asset custody](0255-standard-asset-create-asset-custody.md)
+- [DR-0256: Native frontier-maintenance SIGTERM wiring oracle](0256-native-frontier-sigterm-wiring-oracle.md)
+- [DR-0258: Optional mint/burn application asset pin](0258-mint-burn-application-asset-pin.md)
+- [DR-0259: Independent local acknowledgement anchor](0259-independent-local-checkpoint-anchor.md)
 - [DR-0260: Complete-owner-loss local SQLite writer failover control](0260-complete-owner-loss-local-writer-failover.md)
+- [DR-0261: Locally pinned application Coin custody](0261-created-standard-asset-coin-custody.md)
 - [DR-0262: Native SQLite virtual power and typed block errors](0262-native-sqlite-virtual-power-and-block-errors.md)
+- [DR-0263: encrypted local checkpoint continuation](0263-encrypted-local-checkpoint-continuation.md)
 - [DR-0264: original ordered protocol custody worker](0264-original-ordered-protocol-custody-worker.md)
 - [DR-0265: stopped Native storage-profile software upgrade](0265-stopped-native-storage-profile-upgrade.md)
+- [DR-0266: Independent-anchor virtual fault profile](0266-independent-anchor-virtual-fault-profile.md)
 - [DR-0267: positive Standard Asset fee-claim Split proposal policy](0267-positive-standard-asset-fee-claim-policy.md)
 - [DR-0268: certified FastVote protocol custody worker](0268-certified-fastvote-protocol-custody-worker.md)
 - [DR-0269: protected positive Standard Asset fee-claim Split](0269-positive-standard-asset-fee-claim-custody.md)
@@ -165,5 +179,5 @@ in [`TODO.md`](../../../TODO.md).
 - [DR-0281: live application Coins with the recovered same-identity key](0281-live-recovered-application-coins.md)
 - [DR-0282: initial application operations with the recovered same-identity key](0282-initial-recovered-application-key.md)
 - [DR-0283: live genesis foreign split with the recovered same-A key](0283-live-recovered-genesis-foreign-split.md)
-- [DR-0284: conditional readiness protected worker proposal](0284-conditional-readiness-protected-worker-proposal.md)
-- [DR-0285: successor protected host proposal](0285-successor-protected-host-proposal.md)
+- [DR-0284: conditional readiness protected worker selected boundary](0284-conditional-readiness-protected-worker-proposal.md)
+- [DR-0285: successor protected host selected boundary](0285-successor-protected-host-proposal.md)
