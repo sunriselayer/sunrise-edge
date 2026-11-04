@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-10-29 (Asia/Singapore)。これは唯一の現行作業表です。
+更新: 2026-11-03 (Asia/Singapore)。これは唯一の現行作業表です。
 設計は[architecture](docs/architecture/README.md)、実装場所は
 [code map](docs/development/code-map.md)、整理の決定は
 [DR-0236](docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md)に置きます。
@@ -936,6 +936,8 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     E215のNative13 A/B・E219のpublication-genesis RELEASE・E222の元12 runtimeで照合した。
     ZeroShare専用WIPは未統合・未検証で、
     各familyの残るlifecycle/全体対応をそろえるまでM2全体は未完了。
+    初期profileの既存要件照合と、停止対象を除く具体的な次作業は
+    [M2初期リリース対象の照合](#m2初期リリース対象の照合-2026-11-03) にまとめる。
     実鍵ceremonyの公開条件と区別する。
   - 初期履歴: publication-only Linux試作の回収可否が不明。E4はSDK部分だけの成功。
     新しい[publication metadata preview](docs/architecture/publication-review.md) と
@@ -1122,10 +1124,12 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     全accepted signing familyの範囲を明示し、publicationのみで全体を閉じない。
     実鍵・実administrator/recovery役割とceremonyはD04/D06/D07へ残す。Ledgerは別途deferred。
 
-### M2のfamily別対応と残件 (2026-10-29)
+### M2のfamily別対応と残件 (2026-10-30)
 
-現行source `34da6a55` / tree `10b53dc5` を、上の実績と各familyの既存契約へ対応付けた。
-同treeの完全required/全8 CIは `5ac947f3` の記録を参照する。
+main統合時のsource `34da6a55` / tree `10b53dc5` を、上の実績と各familyの既存契約へ対応付けた。
+このtreeの完全required/全8 CIは `5ac947f3` の記録を参照する。
+後続source `ef0cea4e` のapplication Coin復旧鍵consumerは2026-10-29の検証記録、
+`76345c53` の初回create/mint-burn consumerは2026-10-30の検証記録を参照する。
 以下の「完了」は各行に示す選択済み子条件の範囲であり、親M2の完了や最新sourceのRELEASE認定ではない。
 新しいoperation・identity・authorityやtrust条件を追加する表ではない。
 
@@ -1133,23 +1137,28 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
 | --- | --- | --- |
 | Publication / kind1 | E9/E21/E22の別UID承認・取消・同一鍵復旧・独立した新鍵/config/approvalの検証 | 選択済みlocal componentは完了。署名済み要求の取消、account移行や実ceremonyとは別 |
 | Genesis whole-Coin transfer / kind2 | E149のA→B→A ownership、E203-E205の復旧同一A鍵によるlive操作と取消後restart | 選択済み子条件は完了。wallet/account/fee全体の正の鍵交換とは別 |
-| Genesis split/merge / kind3 | E174のforeign split/返送、E206/E208/E209の復旧同一A鍵による既存self操作とrestart | 選択済み子条件は完了。foreign ownershipと同一鍵復旧を相互に代用しない |
+| Genesis split/merge / kind3 | E174のforeign split/返送、E206/E208/E209の復旧同一A鍵によるself操作とrestart。77f6の4完全profiles・完全required・全8 CIで、独立foreign-split profileの復旧同一A鍵によるlive splitとrestart、元Bの返送を確認 | 選択済みconsumer接続は完了。B鍵復旧、正のidentity rotationやwallet/account/fee全体の移行は含めない |
 | Genesis mint/burn / kind4 | E212/E213/E218/E219/E222の復旧同一A鍵によるlive mint/burn・restartと元runtime | 選択済み子条件は完了。古いE41/E141のlive未接続やgate待ちを現在の残件に戻さない |
-| Create-asset / kind5 | E49の実create/receipt/replay/取消、E141の停止後の同一frame署名復旧 | 復旧は歴史preimageのsigning-only。復旧鍵によるlive createは未対応。既存instance seed/fee/nonceを再送するだけでは達成しない |
-| Own-created application mint/burn | E62の実supply遷移、E67のhistorical burn復旧・取消/restart | 初回live mint/burn後に復旧鍵を作る順序。初回liveへの接続にはsetup順序の整理が必要で、単純なpath置換とは扱わない |
-| Application Coinの既存6 stages / kinds2/3/4 | E74/E75の有料操作・replay/取消/restart、E177/E180のhistorical kind2/3復旧、E182のRELEASE CLI profiles | 後続live groupsは元鍵を使う。同一鍵の復旧先はこのsequenceより前に存在し、既存live操作と取消後restartへの接続が次の具体的候補 |
+| Create-asset / kind5 | E49の実create/receipt/replay/取消とE141の歴史frame署名復旧を保持。7634の4完全profiles・完全required・全8 CIで、early同一復旧鍵による初回live createと取消後restartを確認 | 選択済みconsumer接続は完了。新identityへの正のrotation、creator/TreasuryCap移行や実ceremonyは含めない |
+| Own-created application mint/burn | E62の実supply遷移とE67のhistorical burn復旧・取消/restartを保持。7634で初回create前にearly復旧pairを作り、初回live mint/burnと取消後restartを接続し、4完全profiles・完全required・全8 CIで確認 | 選択済みconsumer接続は完了。historical停止後copyと後続6-stage用のlater復旧鍵を維持し、全M2や正のidentity/ownership rotationは含めない |
+| Application Coinの既存6 stages / kinds2/3/4 | E74/E75の有料操作とhistorical復旧を保持。ef0の4完全profiles・local完全required・全8 CIで、既存復旧鍵による6 live操作と5 groupsの取消後restartを確認 | 選択済みconsumer接続は完了。初回create/初回application mint-burn、正のidentity rotationや全M2はこの範囲に含めない |
 | Positive fee-claim strict partial Split | E128の実protected候補送信、Leg/Claim別承認、永久取消、復旧/restart/expiry/rotation mismatch | 選択済みcomponentの範囲。live escrow/nonce/entitlementや新しいhistorical identityへの正のrotationはこの結果へ含めない |
 | ZeroShare / FinalTransfer fee claims | E23/E24のsaved review・開発用署名とFinalTransfer structural表示 | ZeroShare WIPは未統合・未検証・停止中。FinalTransferは既存positive Split serverの対象外で、具体的なprotected backend契約は未確定 |
 | Automatic original ordered proposal/vote | E91のworker/frontend分離とTLS/UID、E194/E198/E199の同一identity復旧とgate | 選択済みoriginal epochの同一host復旧。新identity/membership、後継epochやoff-host復旧は別条件 |
 | Automatic certified FastVote/availability ACK/original frontier vote | E129の21-route UID/TLS、E194の復旧path・vote/ACK一致とfresh paid business | 選択済み同一identity復旧。人のasset承認とは別のlive authority条件を保持し、正のidentity/membership rotationや本番復旧操作を含めない |
 
-次の通常実装候補は、[既存fixture](scripts/check-docker-custody-fixture-1013.mjs) の
-`phase_own_asset_mint_burn` が生成した `own-recovered.seed.restored` を、その後の
-`phase_own_asset_coin_operations` の既存6 stagesと取消後restartに接続すること。
-現在は後者の `serve_command` が元の `custody.seed` を選択する。
-同一identity・既存operation/approval/frame/receipt/nonce/counter・元profile別上限を保持し、
-historical signing-onlyの既存controlsも残す。この表では実装・実行せず、成功にも数えない。
-Create-assetと初回application mint/burnのlive復旧は、復旧鍵が存在する時点を先に整理する別候補とする。
+[ef0のfixture](https://github.com/sunriselayer/sunrise-edge/blob/ef0cea4e33e942f22aa40379e6d426579f846109/scripts/check-docker-custody-fixture-1013.mjs) で、
+`phase_own_asset_mint_burn` が生成する `own-recovered.seed.restored` を、後続の
+`phase_own_asset_coin_operations` の既存6 stagesと全5 groupsの取消後restartへ接続した。
+元47 setup predicates、historical signing-only controls、operation/approval/frame/receipt/
+nonce/counterと元profile別上限を保持し、追加2 flagsは別に照合した。
+[実検証記録](docs/development/validation/2026-10-29-recovered-application-coins/README.md) の
+4完全profiles・同sourceの完全required・全8 CIでこのconsumerを完了した。
+[初回consumerの検証記録](docs/development/validation/2026-10-30-initial-recovered-application-key/README.md) では、
+初回create前に既存helperで2files/2copychildrenのearly復旧pairを作り、初回create・mint/burnと
+両取消後restartの4実child argvを同じ復旧pathへ接続した。原47・prior2・historical9を保持し、
+新initial3 predicatesは別に検査した。実4完全profiles・同source完全required・全8 CIが成功したため、
+この初回consumerの接続は完了。残る全accepted family対応・正のidentity/ownership rotationや実ceremonyへは拡張しない。
 
 [prepared signing owners](docs/architecture/signing-preparation.md) のtransaction/local/general/paid/bond等は、
 prepare/finalizeの共通化や開発用LocalSignerだけでprotected backendの受入済みfamilyにはならない。
@@ -1158,6 +1167,71 @@ prepare/finalizeの共通化や開発用LocalSignerだけでprotected backendの
 同一鍵復旧・鍵違い拒否・正のownership/identity rotationは別々に扱い、application creator/
 TreasuryCap・account/feeの移行をgenesis Coin handoffから推定しない。
 実役割/実鍵/ceremony/実topologyはD04/D06/D07、Ledgerは既存deferredのまま保持する。
+
+### M2初期リリース対象の照合 (2026-11-03)
+
+照合したmainは `8afaf3566294fe3d6e2096ac4107d2270439b7a8`、tree `d392a0da9c8805a8bcc8bf84acd674eb3a42f54e`。
+現行statusの照合元は `c12bc7d176a65efeabcec414e918b7f6a17b72b2`。
+以下は既存決定から確定できる技術範囲と不足であり、公開release profileの承認や
+ProposedのDR-0214の受入ではない。初期ネットワークを狭く呼び替えて、既存の
+protocol-v3 activation・membership/epoch・protected signing条件を免除しない。
+
+#### 元要件と初期profileの境界
+
+| 既存要件の根拠 | 今回の照合結果 | 残す責務 |
+| --- | --- | --- |
+| [DR-0208](docs/architecture/decisions/0208-native-sqlite-first-and-protected-signing.md) | Native+SQLite first、DO後続、Ledger製品の必須化を解除。ローカルOSを信頼する個別componentは後続ADRで実装済み | key保護・役割分離・操作内容確認・失敗拒否・復旧/交換/取消は引き続きM2。plaintext seedやLocalSignerだけで代替しない |
+| [DR-0211のautomatic/readiness要件](docs/architecture/decisions/0211-external-signing-preparation.md#content-review-and-automatic-signing) | automatic signingとreadinessは別owner。後者のprotected provider・実host接続はまだ選択されていない | readiness保護を任意の追加機能として消さない。actual key/eligible identity・retained slotと独立した署名検証を維持する。各voteに人の承認を加えない |
+| [DR-0264](docs/architecture/decisions/0264-original-ordered-protocol-custody-worker.md)、[DR-0268](docs/architecture/decisions/0268-certified-fastvote-protocol-custody-worker.md) | protected automatic workerはoriginal orderedとcurrent certifiedの閉じた範囲。successorは選択範囲外 | recurring/successorの機能的合格をprotected successor signerの合格にしない。初期profileで実際に使うsuccessorのauthority/host境界を定義する |
+| [DR-0214](docs/architecture/decisions/0214-protected-custody-and-review-boundary.md)、[既存署名経路表](https://github.com/sunriselayer/sunrise-edge/blob/8afaf3566294fe3d6e2096ac4107d2270439b7a8/docs/architecture/signing-route-test-map.md) | 署名準備型、認識済み操作、保護backendは別。genesis作成は実consumerだが、汎用admin signerは存在を仮定できない | 実consumerごとのauthority・承認内容・backendを確定する。単にprepared型があるという理由で全familyを必須化せず、現在の拒否も外さない |
+| [DR-0236](docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md)、[DR-0208のlaunch分離](docs/architecture/decisions/0208-native-sqlite-first-and-protected-signing.md#2026-10-11-bounded-docker-and-launch-scope-amendment) | disposable鍵・値でのparameterized実装/検証は進められる | 実operators/key/recovery roles、genesis/economics、実ceremony・topologyはD04/D06/D07/M6/M8。fixture値で本番を決めない |
+| [元activation条件](docs/development/history/roadmap-through-2026-10-06.md#fastvote-certified-execution-gate)、G | 既存の全accepted familyの認証/認可と元release条件を保持 | 狭いcomponent合格や今回の文書照合でM2/公開readinessを完了にしない。停止済み監査の再試行もこの作業に含めない |
+
+#### 初期候補へ対応付ける実consumer
+
+| 区分 | 実consumerと既存の範囲 | 初期profileでの扱い |
+| --- | --- | --- |
+| 選択済みinteractive component | publication、genesis transfer/split/merge/mint/burn、create、自己作成applicationのmint/burn/Coin操作、positive strict partial SplitのLeg/Claim | 上のfamily表の完了範囲を保持。同一鍵復旧・取消後restartの追加接続漏れは今回も特定していない。SDK fake、実UID、RELEASEの証拠は分ける |
+| 選択済みautomatic component | original ordered proposal/voteとcertified FastVote/availability ACK/original frontier voteのworker/frontend | 元ADRの閉じた経路と同一identity復旧まで。successor/readiness、新membership・off-host復旧まで対応済みとはしない |
+| 具体的な保護境界が残るprotocol owner | `conditional_readiness::ReadinessSigningKey` / operator readiness、`successor-host`の実署名consumer | 下のM2-N1/N2から設計を進める。coreの既存authority/retentionを別signerへ移したり、原profileの未達を任意扱いして消したりしない |
+| 保護署名の対象選択が残るinteractive/author owner | generic local/general・paid、bond registration、FinalTransfer fee claim、offline genesis author | M2-N3で必要性を既存初期機能へ対応付ける。local/paidのcustody拒否、bond/claimの開発用署名、genesis private-file署名はprotected対応ではない。未選択経路の追加実装は自動着手しない |
+| 引き続き対象外 | Ledger製品、追加provider/HA、新たな汎用admin signer、未選択の広いasset/account移行 | 元のdeferred/未選択を保持。新backendや新しい公開操作をこの照合から承認しない |
+
+#### 停止対象を除く有限な次作業
+
+M2-N1〜N5は既存M2の不足を分ける作業IDであり、新しい親gateやcheckboxではない。
+コード変更・実検証の実行や完了は今回記録していない。新しい信頼境界の選択は、既存の
+publication向け判断だけから他roleへ拡張せず、具体設計をreview可能にしてから確定する。
+
+| ID / 現在の状態 | 必要な実装・設計作業 | 完了とするための検証・成果物 | 依存/着手条件 |
+| --- | --- | --- | --- |
+| M2-N1 / 設計から着手可 | readinessのparameterized protected-provider契約を、既存のeligible key・complete inactive target・retained slot ownerへ対応付ける。実hostの鍵load/署名/retained returnを列挙し、providerとhostの責任、停止/拒否/復旧を定義する | architectureと日付付きADRに具体consumer・expected key/domain・既存retentionとの境界を記録。選択後に実hostを接続し、既存readinessのexact owner内で正常署名、wrong-key/拒否、再起動/retained reconciliationを検証する。prepared/fakeだけの成功で閉じない | DR-0211の残件。設計整理は実鍵/実operator待ちにしない。backend接続はそのroleの具体契約確定後 |
+| M2-N2 / 設計から着手可 | successorの自動署名consumerと、original workerだけでは満たせない初期profileの差を列挙する。fresh serving warrant・committee/key一致・writer fence・confirmed retentionを元ownerに残す具体契約を定義する | accepted profileの実host/署名domain/authorityを有限に記載し、選択後のhost接続と元recurring ownerによる実検証を行う。通常hostの平文seedや原epoch worker成功をsuccessor保護の証拠にしない | M2-N1と独立して設計可能。新しいIPC/raw-frame署名契約を先に実装しない。元のmembership/epoch条件を削減しない |
+| M2-N3 / 要件・対象選択の整理から着手可 | generic local/paid、bond registration、FinalTransfer、offline genesis authorを、初期profileで必要な具体操作へ照合する。各行を対象/非公開・未対応/後続へ根拠付きで分類し、genesis/adminは実在するconsumerだけを扱う | 対象に選ぶ行にはauthority、認識済みcode/semantics、完全review内容、backend契約を記録。確定した行に限り既存prepared ownerまたはgenesis author/build ownerを使って具体consumer/backendを接続し、exact-byte/返却署名検証・誤入力/未知操作拒否・実consumerの操作結果を元test ownerで確認する | 型が存在するだけでは実装必須にしない。対象外指定で元accepted機能/activation条件を免除しない。安全判定で停止したZeroShareはこの分類・実装候補から除外 |
+| M2-N4 / 対象別仕様の整理から着手可 | N1〜N3と選択済みfamilyごとに、同一鍵復旧・provider停止/取消・新identityへの交換で必要な動作を区別する。既存authorized operation/epochで可能なcutoverと履歴保持、未対応を明示する | 必要と決めた移行だけ、既存authorityの正の移行と旧権限の扱いを実ledger/receiptで検証する。同一鍵署名一致・wrong-key拒否を正の移行に数えない。新address alias、creator pin緩和、historical claimant書換えを解決策にしない | 残るrotation/revocation要件の具体化。B鍵復旧、全account/fee/TreasuryCap移行、off-host復旧を自動で新必須gateにしない。完了済みconsumerを再実装しない |
+| M2-N5 / 対象source確定後 | 確定した対象と必要なN1〜N4変更を、既存実test owner・source/tree・profile別の証拠へ対応付け、欠ける検証だけを実行計画へ落とす | 既存4完全custody profiles、positive Split、ordered/certified UID、readiness/recurringの該当ownerを選び、実行した範囲のraw/actual exit/EOF/wait/reap/資源解放を照合する。runtime変更後はGのliteral npm ci+完全required・exact-source CIと必要なrelease資格を満たす | 今回のTODO変更や既存証拠の整理だけを理由に製品gateを再実行しない。元selector/timeout/7epochs/e8のwithdrawal候補2件/8links/35rolesを保持。RELEASE/原13-target A/B等は元の適用条件でM7と共用 |
+
+N1/N2の実workflow ownerは既存の
+[`conditional_readiness_sqlite.rs`](apps/operator/tests/conditional_readiness_sqlite.rs) 内の
+`compiled_conditional_readiness_real_retention_restart_and_distinct_certificate` と
+`compiled_registered_replacement_and_recurring_successor_hosts`。新しい短縮版を複製せず、
+保護境界の追加分だけを元ownerへ対応付ける。positive Splitのlive escrow/nonce/entitlementは
+元store-backed preparationとordered executionの責務であり、custodyへ重複実装しない。
+
+N1の現行consumer・core保持境界と別UID worker案は[DR-0284](docs/architecture/decisions/0284-conditional-readiness-protected-worker-proposal.md) に整理した。
+N2の実successor hostと別UID worker/frontend案は[DR-0285](docs/architecture/decisions/0285-successor-protected-host-proposal.md) に整理した。
+2026-11-03に人が両roleへtrusted local OS・別process/UID境界を選択した。
+N1の現行fence観測・任意anchorとcross-UID出力、N2の独立したsuccessor公開context導出を
+設計・実装・実検証へ残す。元のoriginal/certified workerをsuccessorの合格へ流用せず、
+N1/N2と親M2は未完了とする。
+
+次はM2-N1/N2の具体的なhost/authority設計と、M2-N3の対象選択根拠を固める。
+この時点で未選択の新backend配線や新しい移行を実装しない。N1〜N5の成果を
+既存M2の該当条件へ戻して記録し、親M2や元の独立security/release条件の代わりにしない。
+停止済みD02/M1独立監査、ZeroShare WIP/fixture、M3 torn-WAL assessment/mechanism2、
+独立anchor VM boot修正はこの実行キューに入れず、未完了・停止の記録だけを保持する。
+元85 checkbox /71完了 /14未完了と親D02/M1/M2/M3/M7を維持する。
+今回の文書照合と静的検証は[記録](docs/development/validation/2026-11-03-m2-initial-scope/README.md) を参照する。
 
 - [ ] **M3: selected SQLite profileのdurabilityを検証する**
   - 対象: 検証。atomic object/state/nonce/receipt/outbox、indexed delivery、
@@ -1510,7 +1584,10 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
 2. M2のpreview/exportとpublication-only local OS custodyは実装・独立correctness
    review・実UID/PTY/refusal/restartに加え、publicationの取消・鍵復旧/交換をE21/E22で検証済み。
    fee-claimの非承認表示・保存内容のdevelopment signingはE23/E24のlocal完全gateとhosted CIまで成功。
-   残るprotected backend/操作意味の承認、他family/automatic signingと各lifecycleを進める。
+   選択済みasset/automatic componentと直近の復旧consumer接続は上のfamily表へ対応済み。
+   次は[M2-N1〜N5](#m2初期リリース対象の照合-2026-11-03) に従い、readiness/successorの保護境界、
+   未選択consumerの必要性、対象別lifecycle、実sourceごとの不足検証を具体化する。
+   停止対象を再開せず、全prepared型や全identity移行を新たな必須条件にしない。
    D03の元scopeはE14/E15/E16・hosted終端成功で完了。公開前の露出/新advisory確認はD04/M8へ対応する。
 3. M3のf093統合と新しいowningはE7、既存5 ENOSPC controlsはE8で成功。
    残るselected-profile fault/combined条件を進める。
@@ -2058,3 +2135,215 @@ main統合は実装の集約であり、親D02/M1/M2/M3/M7や公開準備6件の
 
 [統合・照合記録](docs/development/validation/2026-10-29-parent-stack-integration/README.md) に
 32 headsの祖先照合、元reviewのdisposition、PR状態と文書同期の範囲を記録する。
+
+
+## 2026-10-29 復旧application鍵による既存6段階Coin操作
+
+ユーザーの「すすめよ」により、既に具体化していた復旧鍵consumerを実装・検証した。
+Source `ef0cea4e33e942f22aa40379e6d426579f846109` / tree `38621a364d01e691c9496f2b6756d87de9827818` を
+commit/pushし、main向けの通常[PR #337](https://github.com/sunriselayer/sunrise-edge/pull/337) を作成した。
+既存の復旧済み同一application鍵をmint-one・split・merge・burn・mint-two・transferと
+5 live groups/5 revoked restartsへ接続し、実child argvとregular/UID/mode0600/path/inodeを照合する。
+元47 setup predicatesと独立stage/replay/counter、historical recovery、全上限を保持した。
+
+実4完全Docker profilesは成功。最初のcontroller metadata admission失敗は製品dispatch前に終了し、
+元rawを保持した。controllerのuser-bus環境だけを修正した実行で、67 commands/134 streamsの
+実exit0・両EOF/wait/reap・既知PID/cgroup解放をroot照合した。Cargo `fresh:true` はcache再利用として残す。
+
+同sourceのliteral npm ci+完全requiredは10:48:22-13:29:06 UTCに自然成功。
+Rust147 summariesは4,427/0/43、CF全66成功。invocation合計とignoredを区別した。
+全42 commands/84 streams、source1,243 inputs/runtime23/CF2,347 rolesとlayout2,725行、
+7epochs/e8の元1832-byte候補2件とterminal-unlock end rawを照合し、空の完了unitを停止した。
+
+[全8 CI run40860404544](https://github.com/sunriselayer/sunrise-edge/actions/runs/40860404544) は
+attempt1で15:43:07 UTCまでに全job自然success、Bugbotを含む全9 checksもsuccess。
+全8実checkout `f9cd48dd` はtree `38621a36`、ordered parents `[27650eea, ef0cea4e]` と一致した。
+rootが8 raw/1,238,733 bytes、687 checksum files、148 commandsと39 wrappersの実exit/EOF/wait、
+既知229 PIDs不在を照合した。取得からsealer終了まで10.319秒。8 noticesはrunner移行案内でwarning/failure0。
+Bugbotはadvertised0でannotation endpoint未取得を明記し、review/comments0を別rawで確認した。
+読取側のfilename globとURL query仮定の失敗を保存し、製品/CIのrerun/cancelは0。
+
+[検証記録](docs/development/validation/2026-10-29-recovered-application-coins/README.md) と
+上のfamily表へ反映し、今回のconsumerだけを完了する。PR #337は2026-10-30にmerge済み。
+元85 checkbox /71完了 /14未完了と親D02/M1/M2/M3/M7を保持する。
+この時点の初回create/application mint-burn残件は、次の2026-10-30記録で完了した。
+各familyの残るlifecycle/全体対応と停止対象は引き続き残る。
+
+## 2026-10-30 PR #337 mergeと初回create/mint-burn復旧鍵接続
+
+ユーザーの承認により、全9 checksとBugbot no issuesを再確認し、PR #337をmainへ通常mergeした。
+実merge `5626863a` / tree `38621a36`、ordered parents `[27650eea, ef0cea4e]` を照合した。
+既存checkoutを再利用し、初回consumerをsource `76345c53` / tree `12e140c6` にcommit/pushした。
+[PR #338](https://github.com/sunriselayer/sunrise-edge/pull/338) は2026-10-30にmainへmerge済み。
+
+初回signer前に既存helperで同一application鍵のearly backup/restore pairを作り、
+2files/2copychildren/130 logical bytes・元seedと別inodeのregular/UID/mode0600を確認した。
+初回create・初回mint/burnと各取消後restartの4実child argvが同じ復旧pathを使う。
+原47 setup predicates・prior2・historical9、停止後copyの順序、元nonce/supply/fee/receipt/replayと
+全selector/上限を保持した。後続6-stageは従来のlater復旧pathを維持する。
+
+実4完全Docker profilesとNode/Python syntax・AST、通常correctness reviewは成功。
+rootが67 commands/134 streams、全source/toolと実EOF/wait/reap・既知PID/cgroup解放を照合した。
+同sourceのliteral npm ci+完全requiredは17:59:27-20:41:31 UTCに自然成功。
+Rust147 summariesは4,427/0/43、CF全66成功。invocation合計とignoredを区別した。
+全42 commands/84 streams、source1,244/runtime23/CF2,347 roles・layout2,725行、
+7epochs/e8の元1832-byte候補2件とterminal-unlock end rawをroot照合した。
+成功保存後に空の完了unitを停止し、metadata supervisorの解放も確認した。
+
+[全8 CI run40926698415](https://github.com/sunriselayer/sunrise-edge/actions/runs/40926698415) は
+attempt1で2026-10-29T21:04:21Zまでに自然success、Bugbotもno issuesで全9 checks成功。
+全8実checkout `0f7384f3` はtree `12e140c6` /ordered parents `[5626863a, 76345c53]`。
+rootが8 raw/1,238,644 bytes、497 checksum files、107 commandsと25追加wrappersの
+実exit/両EOF/wait、既知160 PIDs不在を照合した。取得からsealer実終端まで10.189889秒。
+8 runner移行noticesはwarning/failure0、Bugbotのadvertised0とendpoint未取得を区別し、
+完全paginationのreviews/commentsは各0。元sealed rawと読取側のschema/path仮定の記録を保持し、
+product/CIのrerun・cancel・raw再取得は0。
+
+[検証記録](docs/development/validation/2026-10-30-initial-recovered-application-key/README.md) へ
+実装・実測・captureの原証跡を記録し、この初回consumer2件だけを完了する。
+元85 checkbox /71完了 /14未完了と親D02/M1/M2/M3/M7は維持する。
+全accepted signing family、正のidentity/ownership rotation、creator/TreasuryCapや実ceremonyを
+同一鍵復旧の成功から推定せず、停止対象は再開していない。
+
+## 2026-10-30 PR #338 mergeと次のM2候補
+
+ユーザーの指示により、head `76345c53` /base `5626863a`、Ready、全9 checks success、
+完全paginationのreviews/issue comments/inline comments各0を再確認して通常mergeした。
+実merge `9d22920ad08c9f9b05aedd9e6dfcf8730bb9ec09` は2026-10-30 10:44:20 SGT。
+公式Git metadataとlocal mainのtree `12e140c6`、ordered parents `[5626863a, 76345c53]` は
+前回の完全required/全8 CIの検証済みsource treeと一致する。local mainもfast-forward済み・clean。
+通常gh認証を使い、PR作成専用PATは使用しない。mainの自動CIは別runであり、その結果を先取りしない。
+
+次の具体的な通常候補は、既存 `genesis-split-handoff` のA側live foreign splitと
+取消後restartを復旧した同一A鍵へ接続すること。現在はfresh A/Bの元seed pathsを使い、
+A→BへのsplitとB→Aへの同一Coin返送を実行する。self split/mergeの復旧済み条件とは区別する。
+Bの返送、元21 predicates・操作/承認/frame/nonce/fee/receipt/replay/取消と元上限を維持し、
+復旧準備・path選択・追加資源の実測を別に検証する。これは既存recovery consumerの拡張候補であり、
+新しいM2必須gateの追加でも、実装・実行済みの完了記録でもない。
+この時点の候補は、後続の2026-10-30実装・検証記録で完了した。
+
+もう一つは、prepared owner→実CLI consumer→受入済みprotected backend→lifecycle証跡の
+有限な対応表の具体化。generic local/paid/bondの開発用署名をprotected対応と数えず、
+明示的な拒否や未接続を記録する。FinalTransfer/governanceの新backend、identity/creator移行は
+既存契約だけのpath接続ではなく、具体的な契約設計から分ける。
+停止済み監査・ZeroShare WIP/fixture・torn-WAL/mechanism2・独立anchor guestは再開していない。
+元85 checkbox /71完了 /14未完了と親D02/M1/M2/M3/M7は維持する。
+[merge・次候補の照合記録](docs/development/validation/2026-10-30-pr338-merge-and-m2-next/README.md) を参照する。
+
+## 2026-10-30 復旧同一A鍵によるforeign splitと取消後restart
+
+ユーザーが前記の候補1を選び、別受取人へのsplitと取消後restartへの復旧鍵接続、
+検証・commit・pushを依頼した。Source `77f6e576986b579ba6962f882c47a7c9829c9731` /
+tree `a036f4ed11633b8ac3f59c29f417afc4c307a92f` をcommit/push済み。
+[PR #339](https://github.com/sunriselayer/sunrise-edge/pull/339) はmain向けReadyで作成し、2026-10-30にmerge済み。
+既存のearly recovery helperを変更せず、fresh A/B setup後・最初のsigner前に1組のA backup/restoreを作る。
+Aのlive foreign splitと取消後restartは同じ復旧A path、Bの返送とrestartは元B pathを使い、
+actual retained Popen argvの4選択をPython/Node/rootが確認した。
+原21 predicates・phase19exec/2PTY/4signer/1host/0copies/32files、setup2keygen/4waited isolationと
+全操作/承認/frame/nonce/fee/object/result/receipt/replay/取消/元上限を保持する。
+追加は別top-levelの3predicates、2 waited UID copies /2files /実130 logical bytesのみ。
+
+Node24.19.0 syntax・Python AST/compile・通常correctness reviewは成功。
+他55/57関数と元Node validatorは不変。RawPython252,832/262,144B、bootstrap56,725/65,536B。
+初回検証ownerはrootのbridge admission漏れで製品dispatch前に停止し、raw/config/bridgeを保存した。
+検証用設定だけを修正したv2で実4完全profilesが成功。rootが67commands/134streams・570,733B、
+全1,245 source inputs・runtime/artifacts/loader/libs、実EOF/wait/reap・PID/cgroup解放を照合した。
+新A pathと元B path、原21+別3、元live3/3/2/1 /restart1/1/0/1、A→B split/B→A返送を確認。
+Cargo fresh:trueはcache再利用として区別し、成功保存後に空の完了unitを停止した。
+
+同sourceのliteral npm ci +完全check-allは03:27:35–06:13:51 UTCに自然成功。
+rootが42commands/84streams・963,296B、source1,245 files/23tool roles/CF2347roles・2725layoutを照合し、
+147 Rust summariesの4,427 passed/0 failed/43 ignored、CF66 passed、元7epochs/e8の各2件1832-byte候補と
+successor/terminal-unlock endを確認した。root資格`ae47d30a`、reader actual0/両EOF/wait/reap、
+既知owner/cgroup不在と完了空unitだけの停止を保存。監視session143と3batchのGH timeoutは別に保持する。
+
+同sourceの[CI run40997627497 /attempt1](https://github.com/sunriselayer/sunrise-edge/actions/runs/40997627497) は全8 jobsと
+exact-head Bugbot `123874394243` が自然成功。元全8rawは通常ghで各1回・計1,238,646B、
+実checkout0456fcbc/treea036/順序付きparents9d22+77f6を確認。
+rootは全116 physical commands (107成功/保存9失敗)・573 indexed files・178既知PIDs不在、
+原300秒内の取得からsealer終了/rehashまで5.124781秒と元EOF/waitを照合した。root資格`84e362ba`。
+元7epochs/e8の各2件1832-byte候補とend、147 Rust summaries4,427 passed/0 failed/43 ignored、
+CF66 passedを原rawで確認。8 annotationsはplatform notices、warning/failure0、全review/comment inventories0。
+anonymous経路はmetadataだけに使い、解除回答後の終端raw/全paginationには元gh controls/v5 readerを使った。
+原3batchの失敗・observer143・未実行案を保存し、raw retry/CI rerun/cancel/mergeはしていない。
+
+[実装・実検証記録](docs/development/validation/2026-10-30-recovered-genesis-foreign-split/README.md) を参照する。
+今回の同一A consumer接続だけを完了し、元85 checkbox /71完了 /14未完了と親5件は維持する。
+B鍵復旧・正のidentity/ownership rotation・全accepted signing family対応や実ceremonyは含めず、
+停止対象は再開していない。次の通常整理候補はprepared owner→consumer→受入backendの有限な対応表。
+
+## 2026-10-30 PR #339 mergeと次のM2候補
+
+PR #339をmerge済み。main `8a5cc30a` / tree `a036f4ed` / parents `9d22920a,77f6e576` を照合し、
+local mainをfast-forwardしてcleanを確認した。treeは前回の4完全profiles・完全required・全8CIの検証済みsourceと一致する。
+merge直前のexact-head全9checksはSUCCESS、Bugbot指摘なし、reviews/threads各0。main自動CIは別runとして扱う。
+GitHub連携の403後は通常gh認証でhead一致条件付きmergeを行い、作成専用PATは使っていない。
+
+次の通常候補は、既存の署名準備owner→実CLI consumer→受入済みprotected backend→lifecycle実検証の対応表を確定すること。
+generic local/paidのcustody拒否、bondのdevelopment signerと、publication/Standard Asset/positive Splitの有限な専用routeを
+code参照付きで区別する。共有prepare/finalizeの存在をprotected対応と数えず、既存test/完了済みconsumerとの対応漏れを特定する。
+全accepted family/governanceの具体契約は未確定、DR-0214はProposedのまま。前回の範囲外だけを根拠に新しい必須gateを増やさない。
+この時点では候補特定まで。architecture対応表と既存testの対応付けは、下記2026-10-31の整理で実施した。
+
+[merge・次候補の照合記録](docs/development/validation/2026-10-30-pr339-merge-and-m2-next/README.md) を参照する。
+停止対象と元85 checkbox /71完了 /14未完了、親D02/M1/M2/M3/M7は維持する。
+
+## 2026-10-31 M2署名経路と既存テストの対応
+
+source `2e2c10fe` で、[署名経路とtest ownerの対応表](https://github.com/sunriselayer/sunrise-edge/blob/2e2c10fe0c360f99400be79ee50cad18f5e2336f/docs/architecture/signing-route-test-map.md) を作成した。
+6 logical entries /7 concrete prepared typesから実CLI・専用backend・既存test関数へ対応付け、
+automatic ordered/certified、別ownerのreadiness、offline genesis authoringも区別した。
+既存architectureのtransfer-only説明を後続の選択済みfamilyへ対応させた。
+これは既存契約の所在を明確にする文書変更で、新backend・trust契約・必須familyを追加するものではない。
+
+| 区分 | 今回確認できた不足・境界 | 次に必要な具体作業と完了の判断 |
+| --- | --- | --- |
+| 全体範囲の未確定 | 実装済み署名経路は有限に列挙できたが、M2で受入対象とする全family/governance consumerの契約は未確定。DR-0214はProposed | 上の実経路を起点に初期profileの対象/閉じる対象を既存要件へ照合し、具体consumer・authority・review内容・backend契約を記録する。generic local/paid/bond/FinalTransferやreadiness/genesisを、prepared型があるだけで受入対象へ追加しない |
+| 未選択経路の実装不在 | 汎用local/general・paidはcustodyを明示拒否。bondとgeneric fee claimは開発用署名。PreparedTransaction helperにproduction CLI dispatch callerなし。readinessは自身のsoftware key、offline genesisはprivate key fileを使い、selected custody workerへは接続しない | 対象に選ぶ具体経路がある場合に限り、そのoperation-specific契約を先に定義し、既存prepared owner/authorityを使うconsumer接続と実検証を追加する。現在の拒否を外したり汎用frame-signingへ置換しない。今回の対応確認から新たな配線バグは特定していない |
+| rotationの実装・証拠の限界 | publicationは新publisherの正の署名、genesis transfer/foreign splitは選択済みCoin ownership handoffを持つ。同一鍵復旧・新鍵の不一致拒否は、application creator/TreasuryCap・account/fee・historical claimant・protocol membershipの新identityへの正の移行を証明しない | 受入対象に必要な移行だけを、既存のauthorized operation/epoch機構と具体的cutover/履歴保持へ対応付ける。ApplicationAssetPinのcreator固定や元certificateのclaimant条件を緩めない。対象未選択の広い移行を新必須gateにはしない |
+| 実検証の帰属 | SDK fake/unit、development e2e、ignored recurrence、実UID/RELEASE profileは別々の証拠。対応表は各ownerと元source/profileを参照する | 最終的に選んだ範囲へ各実行結果を対応付ける。単なるcompile・短いselector・祖先sourceの成功で全体完了を代用しない。停止済み独立監査の再実行は今回の通常作業から除外する |
+
+選択済み同一鍵recovery consumerの追加接続漏れは今回の対応確認では見つかっていない。
+kind2/3/4/5・application初回と6 stages・foreign splitの直近完了を未達へ戻さず、
+B鍵復旧や全identity移行を新しい必須条件にも追加しない。
+安全判定で停止した独立監査・ZeroShare WIP/fixture・torn-WAL/mechanism2・独立anchor guestは対象外のまま。
+
+[PR #340](https://github.com/sunriselayer/sunrise-edge/pull/340) は文書3件だけのReady PR。
+文書250 local links・74関数参照・2担当の対応確認は成功した。
+literal npm ciはactual0。local完全requiredは旧directory pinのdevice52/current53不一致でRust検証前にactual1。
+失敗rawとsource前後一致を保存し、所有PID/cgroup解放を確認した。hosted CIは別runとして進行中で成功を先取りしない。
+[対応確認・実試行記録](docs/development/validation/2026-10-31-m2-signing-route-map/README.md) を参照する。
+親M2の実装・検証完了は主張せず、元85 checkbox /71完了 /14未完了と親5件を維持する。
+
+## 2026-11-01 PR #340の環境固定情報修復と検証
+
+ユーザーの指示に従い、旧失敗・wrappers・manifestsを保持して新しい検証入力を作成した。
+7 directory pinsとCF全2725 layout /2347 tool rolesを実照合し、device52→53以外の
+content/metadata/linksを維持した。runtime17 roles、source全1246 filesと実body hashも照合した。
+device検査を省略せず、元256MiB per-file cap、全selector/timeout/epochとCF隔離を保持した。
+
+PR head `2e2c10fe` の[CI run41163320441](https://github.com/sunriselayer/sunrise-edge/actions/runs/41163320441) は全8 jobs、Bugbotを含む全9 checks success。
+全8原raw1238688 bytes、checkout `c3407a61` /tree `d392a0da` /parents `[8a5cc30a,2e2c10fe]`、
+147 Rust summaries4427/0/43、CF66、元7epochs/e8の1832-byte候補各2件とendをrootが照合した。
+8 runner notices以外のannotationはなく、reviews/comments/threadsは各0。取得側の失敗と訂正も保存した。
+
+local完全requiredは専用unitで2026-11-01T02:21:48Z–05:10:54Zに自然成功した。
+10 commands/20 streams・961576 bytesの全actual0/EOF/wait/reap、source1246/runtime17/CF2347 rolesと2725 layoutの
+前後・現在一致、既知109 sampled identitiesと10 command PIDs、owner/observerとcgroup解放をrootが照合した。
+147 Rust invocation summaries4427/0/43、CF66。root資格`5330cd4f`。
+終了済みsystemdの空ControlGroup propertyを誤認したreader-v1の失敗を保存し、
+元saved groupの実不在と同一InvocationID/ExecMainPIDを確認するreader-v2がactual0で完了した。
+製品/CIのrerunや判定の省略は行っていない。
+検証記録をcommit/pushした後、head一致・Ready/mergeable・全9 current checks success・reviews/threads各0を再確認し、
+PR #340を2026-11-01T05:17:09Zにmergeした。実merge `8afaf356` /tree `d392a0da` /parents `[8a5cc30a,2e2c10fe]` は
+検証済みsource treeと一致し、local mainもfast-forward済み・clean。main自動CIは別runとして扱う。
+[環境修復・検証記録](docs/development/validation/2026-11-01-pr340-environment-and-validation/README.md) を参照する。
+これはM2の全familyや親5件の完了ではない。停止対象と元85 checkbox /71完了 /14未完了を維持する。
+
+## 2026-11-03 security ingressと開発依存の修正
+
+[PR #341](https://github.com/sunriselayer/sunrise-edge/pull/341) でCloudflare adapterの開発用Vitest/Vite等を更新し、Node 24.19.0のliteral `npm ci`、担当adapterの66 tests、hosted全8 checks成功を確認してmergeした。production dependencyの`npm audit`は0件。開発依存には`minimatch`のmoderate advisoryが残り、非互換majorへの強制更新は行っていない。
+
+[PR #342](https://github.com/sunriselayer/sunrise-edge/pull/342) で共有streamed web ingressのbody読取にidle 30秒・total 120秒の期限とabort伝播を実装した。Bugbotのabort応答指摘を修正し、回帰testとreview threadの解決を確認。最終head `0c19cb5a`のNode 24.19.0 `npm ci`、完全`./scripts/check-all.sh`の自然終了・actual exit 0、[hosted CI run 41612660079](https://github.com/sunriselayer/sunrise-edge/actions/runs/41612660079) の全8 checks成功を確認してmergeした。main merge `923fe5c5` のtreeは検証済みheadと一致する。local rawは `/tmp/sunrise-edge-security-combined-check-0c19-1103.log` に保持した。
+
+Codex Securityの全repo scanはpartial coverageであり、独立したD02/M1全体監査の完了ではない。検出した条件付きmediumのingress所見への上記修正は、親5件の受入完了も意味しない。元85 checkbox /71完了 /14未完了、D02/M1/M2/M3/M7未完了を維持する。

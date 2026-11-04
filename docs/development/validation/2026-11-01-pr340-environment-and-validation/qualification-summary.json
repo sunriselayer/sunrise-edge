@@ -1,0 +1,143 @@
+{
+  "accepted": true,
+  "capturedRawBytes": 961576,
+  "cfExactInventoryBeforeAndAfterHashing": true,
+  "cfLayoutRows": 2725,
+  "cfToolRoles": 2347,
+  "ciTimingEvidence": {
+    "computedUnlock": [
+      "1832",
+      "1832"
+    ],
+    "epochs": {
+      "1": [
+        "1832",
+        "1832"
+      ],
+      "2": [
+        "1832",
+        "1832"
+      ],
+      "3": [
+        "1832",
+        "1832"
+      ],
+      "4": [
+        "1832",
+        "1832"
+      ],
+      "5": [
+        "1832",
+        "1832"
+      ],
+      "6": [
+        "1832",
+        "1832"
+      ],
+      "7": [
+        "1832",
+        "1832"
+      ]
+    },
+    "receipt": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-ci-root-verified.json"
+  },
+  "cloudflareSuites": [
+    13,
+    28,
+    10,
+    15
+  ],
+  "countLimit": "Per-invocation totals, not globally unique tests.",
+  "elapsedSeconds": 1.897,
+  "localTimingMarkersRequired": false,
+  "metadataFilesVerified": 6,
+  "naturalTerminalUnit": {
+    "ActiveState": "active",
+    "ControlGroup": "",
+    "ExecMainCode": "1",
+    "ExecMainPID": "258735",
+    "ExecMainStatus": "0",
+    "InvocationID": "0ef5d24a892b459399852490278da42d",
+    "MainPID": "0",
+    "NRestarts": "0",
+    "Result": "success",
+    "SubState": "exited"
+  },
+  "observerPidAbsent": 275554,
+  "ownedCgroup": {
+    "directories": 0,
+    "emptyExistingCgroupPermittedUntilRootStop": true,
+    "exists": false,
+    "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/m2-signing-env-1101-required-v1.service",
+    "signaledOrStopped": false,
+    "tasks": []
+  },
+  "ownerIdentityReleased": {
+    "admittedStartTicks": "8754980",
+    "currentStartTicks": null,
+    "pid": 258735,
+    "pidReused": false,
+    "released": true
+  },
+  "privateRegularBodiesVerified": 2335,
+  "qualifiedUtc": "2026-11-01T05:12:55.754402+00:00",
+  "rawANSIRewritten": false,
+  "runtimeFullIdentitiesVerified": 17,
+  "rustInvocationSummaries": 147,
+  "rustInvocationTotals": [
+    4427,
+    0,
+    43
+  ],
+  "schema": 1,
+  "source": {
+    "bytes": 26925569,
+    "head": "2e2c10fe0c360f99400be79ee50cad18f5e2336f",
+    "trackedFilesRehashed": 1246,
+    "tree": "d392a0da9c8805a8bcc8bf84acd674eb3a42f54e"
+  },
+  "unitStoppedOrSignaled": false,
+  "watchDiagnostic": {
+    "doesNotOverrideFreshUnitOrProductResult": true,
+    "error": null,
+    "lastUnit": {
+      "ActiveState": "active",
+      "CPUUsageNSec": "13622339446000",
+      "ExecMainStatus": "0",
+      "MainPID": "0",
+      "MemoryCurrent": "[not set]",
+      "Result": "success",
+      "SubState": "exited"
+    },
+    "outcome": "owner terminal",
+    "productSuccessNotInferred": true,
+    "sampleCount": 225
+  },
+  "wrappersVerified": 6,
+  "fullRawQualification": {
+    "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-root-qualified.json",
+    "bytes": 1215281,
+    "sha256": "5330cd4f84c6fec2930e3649b343af6594a5250122acdc0e160519f622caa84e"
+  },
+  "workStartedUtc": "2026-11-01T02:21:48.824472+00:00",
+  "workFinishedUtc": "2026-11-01T05:10:54.860441+00:00",
+  "workElapsedSeconds": 10146.049,
+  "commandCount": 10,
+  "sampledIdentityCount": 109,
+  "ownerReleaseReceipt": {
+    "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-owner-released.json",
+    "sha256": "51bc9635d46022410cf593ba479aca59592228ee7632a810a697782262bf8bd4"
+  },
+  "sourceSnapshots": {
+    "source-before": {
+      "bytes": 543097,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-run-v1/source-before.json",
+      "sha256": "09e72bc59b16129c01430d4b56f52822abf26b2e8c8e4495ef81a7467a759988"
+    },
+    "source-after": {
+      "bytes": 543097,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m2-signing-env-1101-run-v1/source-after.json",
+      "sha256": "09e72bc59b16129c01430d4b56f52822abf26b2e8c8e4495ef81a7467a759988"
+    }
+  }
+}
