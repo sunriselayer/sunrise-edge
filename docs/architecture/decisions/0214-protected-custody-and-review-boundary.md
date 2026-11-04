@@ -5,8 +5,12 @@ Date: 2026-10-07, Asia/Singapore
 Status: Proposed contract and threat-model comparison. On 2026-10-13 the human
 selected trusted local OS with separate processes and permissions for the first
 publication-only slice in [DR-0238](0238-publication-only-local-os-custody.md).
+The human separately selected that same local OS and distinct-process/UID
+boundary for conditional readiness and successor on 2026-11-03 and offline
+Standard Asset genesis authoring on 2026-11-04. The genesis-specific two-stage
+review is [DR-0286](0286-standard-asset-genesis-protected-review-worker.md).
 Other signing families, encrypted custody and production qualification are not
-selected by that scope decision.
+selected by these scope decisions.
 
 ## Context and scope
 

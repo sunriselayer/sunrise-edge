@@ -76,11 +76,18 @@ impl ObjectComposer<'_> {
     }
 }
 
-pub(super) fn build(
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum SigningPurpose {
+    Publication,
+    Initialization,
+    Manifest,
+}
+
+pub(super) fn build_with_signer(
     config: &Config,
     validators: &[Validator],
     allocations: &[Allocation],
-    key: &SigningKey,
+    signer: &mut impl FnMut(SigningPurpose, &[u8]) -> Result<[u8; 64], Box<dyn Error>>,
 ) -> Result<GenesisManifest, Box<dyn Error>> {
     let context: &PublicationContext = &config.context;
     let resolver: &HashSuiteResolver = &config.resolver;
@@ -110,7 +117,7 @@ pub(super) fn build(
         0,
         config.publication_request_id,
     )?;
-    let publication_signature: [u8; 64] = key.sign(&publication_frame).into();
+    let publication_signature: [u8; 64] = signer(SigningPurpose::Publication, &publication_frame)?;
     let publication: PublicationSubmission = PublicationSubmission::new(
         config.publication_request_id,
         PublicationRequest::new(artifact, 0, artifact_digest, publication_signature),
@@ -148,7 +155,8 @@ pub(super) fn build(
         authorizations: Vec::new(),
     };
     let initialization_frame: Vec<u8> = local_execution_signing_frame(context, &intent)?;
-    let initialization_signature: [u8; 64] = key.sign(&initialization_frame).into();
+    let initialization_signature: [u8; 64] =
+        signer(SigningPurpose::Initialization, &initialization_frame)?;
     let initialization: SignedLocalExecutionIntent = SignedLocalExecutionIntent {
         intent,
         signature: initialization_signature,
@@ -297,6 +305,20 @@ pub(super) fn build(
         signature: [0; 64],
     };
     // The signed manifest embeds the final exact nested signatures.
-    manifest.signature = key.sign(&genesis_manifest_signing_frame(&manifest)?).into();
+    manifest.signature = signer(
+        SigningPurpose::Manifest,
+        &genesis_manifest_signing_frame(&manifest)?,
+    )?;
     Ok(manifest)
+}
+
+pub(super) fn build(
+    config: &Config,
+    validators: &[Validator],
+    allocations: &[Allocation],
+    key: &SigningKey,
+) -> Result<GenesisManifest, Box<dyn Error>> {
+    build_with_signer(config, validators, allocations, &mut |_, frame: &[u8]| {
+        Ok(key.sign(frame).into())
+    })
 }

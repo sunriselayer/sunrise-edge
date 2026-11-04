@@ -10,13 +10,16 @@ use abi::package_types::encode_package_origin;
 use execution::call::encode_instance_target;
 use execution::local_execution::encode_object_authority;
 use execution::paid_execution::encode_paid_fee_policy;
-use execution::publication::{encode_dependency_ref, encode_publication_context};
+use execution::publication::{
+    PublicationContext, encode_dependency_ref, encode_publication_context,
+};
 use node_core::economics::encode_fastpath_economics_policy;
 use node_core::fast_path::records::encode_fastpath_validator_set_record;
 use node_core::genesis::{GenesisManifest, GenesisObjectEntry, VerifiedGenesisRoot};
 use node_core::logical_generation::CommitmentProfile;
 use objects::{Owner, ProtocolCustodyPurpose};
 use protocol_types::SignatureSchemeId;
+use sha2::{Digest, Sha256};
 
 /// Bound on the complete diagnostic text, enforced before any stdout write.
 const MAX_DIAGNOSTIC_BYTES: usize = 4 * node_core::MAX_GENESIS_MANIFEST_BYTES + 32_768;
@@ -129,21 +132,21 @@ fn custody_purpose_label(purpose: ProtocolCustodyPurpose) -> &'static str {
     }
 }
 
-fn render_header(out: &mut Diagnostic, root: &VerifiedGenesisRoot) -> Result<(), Box<dyn Error>> {
-    let manifest: &GenesisManifest = root.manifest();
-    out.kv("manifest_digest", &root.digest().to_string());
-    out.kv(
-        "expected_chain_id",
-        &escaped(root.genesis_context().chain_id().as_str()),
-    );
+fn render_header(
+    out: &mut Diagnostic,
+    manifest: &GenesisManifest,
+    context: &PublicationContext,
+    digest: Option<String>,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(digest) = digest {
+        out.kv("manifest_digest", &digest);
+    }
+    out.kv("expected_chain_id", &escaped(context.chain_id().as_str()));
     out.kv(
         "expected_protocol_version",
-        &root.genesis_context().protocol_version().get().to_string(),
+        &context.protocol_version().get().to_string(),
     );
-    out.kv(
-        "expected_epoch",
-        &root.genesis_context().epoch().get().to_string(),
-    );
+    out.kv("expected_epoch", &context.epoch().get().to_string());
     out.kv(
         "manifest_encoding_version",
         &manifest.encoding_version().to_string(),
@@ -190,12 +193,12 @@ fn render_header(out: &mut Diagnostic, root: &VerifiedGenesisRoot) -> Result<(),
     Ok(())
 }
 
-fn render_committee(out: &mut Diagnostic, root: &VerifiedGenesisRoot) {
+fn render_committee(out: &mut Diagnostic, manifest: &GenesisManifest) {
     out.kv(
         "committee_member_count",
-        &root.genesis_committee().validators().len().to_string(),
+        &manifest.validator_set.validators.len().to_string(),
     );
-    for (index, validator) in root.genesis_committee().validators().iter().enumerate() {
+    for (index, validator) in manifest.validator_set.validators.iter().enumerate() {
         let prefix = format!("committee_member_{index}");
         out.kv(&format!("{prefix}_id"), &hex(validator.id.as_bytes()));
         out.kv(&format!("{prefix}_public_key"), &hex(&validator.public_key));
@@ -367,9 +370,40 @@ fn render_object(
 /// stdout itself.
 pub(super) fn render(root: &VerifiedGenesisRoot) -> Result<String, Box<dyn Error>> {
     let manifest: &GenesisManifest = root.manifest();
+    render_descriptive(
+        manifest,
+        root.genesis_context(),
+        Some(root.digest().to_string()),
+        false,
+        "complete=true mode=inspect evidence=none",
+    )
+}
+
+/// Review text describes an unsigned or partially signed candidate. The
+/// caller must label it as unverified; this never claims installer admission.
+pub(crate) fn render_review(
+    manifest: &GenesisManifest,
+    context: &PublicationContext,
+) -> Result<String, Box<dyn Error>> {
+    render_descriptive(
+        manifest,
+        context,
+        None,
+        true,
+        "complete=true mode=genesis-review evidence=unverified",
+    )
+}
+
+fn render_descriptive(
+    manifest: &GenesisManifest,
+    context: &PublicationContext,
+    digest: Option<String>,
+    review: bool,
+    completion: &str,
+) -> Result<String, Box<dyn Error>> {
     let mut out: Diagnostic = Diagnostic::new();
-    render_header(&mut out, root)?;
-    render_committee(&mut out, root);
+    render_header(&mut out, manifest, context, digest)?;
+    render_committee(&mut out, manifest);
     render_fee_policy(&mut out, manifest)?;
     render_economics(&mut out, manifest)?;
     out.kv(
@@ -382,7 +416,73 @@ pub(super) fn render(root: &VerifiedGenesisRoot) -> Result<String, Box<dyn Error
     for (index, entry) in manifest.objects.iter().enumerate() {
         render_object(&mut out, index, entry)?;
     }
-    out.line("complete=true mode=inspect evidence=none");
+    if review {
+        let request = manifest.publication.request();
+        let artifact = request.artifact();
+        let call = &manifest.initialization.intent.call;
+        out.kv(
+            "publication_request_id",
+            &hex(manifest.publication.request_id()),
+        );
+        out.kv("publication_nonce", &request.nonce().to_string());
+        out.kv(
+            "published_wasm_profile",
+            &artifact.wasm_profile().to_string(),
+        );
+        out.kv("published_semantics", &artifact.semantics().to_string());
+        out.kv(
+            "published_wasm_sha256",
+            &hex(&Sha256::digest(artifact.wasm())),
+        );
+        out.kv(
+            "published_abi_sha256",
+            &hex(&Sha256::digest(artifact.unverified_abi())),
+        );
+        out.kv(
+            "published_export_count",
+            &artifact.exports().len().to_string(),
+        );
+        for (index, export) in artifact.exports().iter().enumerate() {
+            out.kv(&format!("published_export_{index}"), &escaped(export));
+        }
+        out.kv(
+            "published_dependency_count",
+            &artifact.unverified_dependencies().len().to_string(),
+        );
+        for (index, dependency) in artifact.unverified_dependencies().iter().enumerate() {
+            out.kv(
+                &format!("published_dependency_{index}_frame"),
+                &hex(&encode_dependency_ref(dependency)?),
+            );
+        }
+        out.kv("initialization_request_id", &hex(&call.request_id));
+        out.kv("initialization_sender", &hex(&call.sender));
+        out.kv("initialization_nonce", &call.nonce.to_string());
+        out.kv("initialization_gas_limit", &call.gas_limit.to_string());
+        out.kv(
+            "initialization_policy_digest",
+            &manifest.initialization.intent.policy_digest.to_string(),
+        );
+        out.kv(
+            "initialization_type_argument_count",
+            &call.type_arguments.len().to_string(),
+        );
+        out.kv(
+            "initialization_access_frame",
+            &hex(&abi::encode_access_manifest(&call.access)?),
+        );
+        out.kv("initialization_arguments", &hex(&call.arguments));
+        out.kv(
+            "initialization_authorization_count",
+            &manifest
+                .initialization
+                .intent
+                .authorizations
+                .len()
+                .to_string(),
+        );
+    }
+    out.line(completion);
     out.finish()
 }
 
