@@ -939,6 +939,12 @@ preimageの上書き衝突、Rust型/lifetimeと承認期限の初期指摘・�
     初期profileの既存要件照合と、停止対象を除く具体的な次作業は
     [M2初期リリース対象の照合](#m2初期リリース対象の照合-2026-11-03) にまとめる。
     実鍵ceremonyの公開条件と区別する。
+    2026-11-04にoffline Standard Asset genesis authorへtrusted local OS・別process/UIDの
+    保護境界を選択し、既存author/buildとinstallerを使うgenesis専用review workerを実装した。
+    独立source reviewで見つかった3件を修正し、既存authorの非ignored 7件と実別UIDの
+    ignored 1件 (4 validator installを含む) は限定環境で成功した。
+    [N3の限定検証](docs/development/validation/2026-11-04-m2-genesis-protected/README.md) は
+    full required・同source CI・実承認役割/鍵/ceremonyの完了ではなく、親M2は未完了。
   - 初期履歴: publication-only Linux試作の回収可否が不明。E4はSDK部分だけの成功。
     新しい[publication metadata preview](docs/architecture/publication-review.md) と
     CLI `contract preview` は実装し、独立指摘を処理してsource approval済み。

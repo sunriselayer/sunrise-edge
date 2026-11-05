@@ -346,6 +346,22 @@ fn protected_vote(
     );
     assert_ne!(wrong_contents, worker_contents);
     write_private(&wrong_config, WORKER_UID, &wrong_contents);
+    let restored_key: PathBuf = worker_dir.0.join("restored.key");
+    let restored_config: PathBuf = worker_dir.0.join("restored-config");
+    let restored_contents: String = worker_contents.replace(
+        &format!("signer-key-file={}\n", key.display()),
+        &format!("signer-key-file={}\n", restored_key.display()),
+    );
+    assert_ne!(restored_contents, worker_contents);
+    assert_eq!(
+        restored_contents.replace(
+            &format!("signer-key-file={}\n", restored_key.display()),
+            &format!("signer-key-file={}\n", key.display()),
+        ),
+        worker_contents,
+        "restored worker config changed more than the key path"
+    );
+    write_private(&restored_config, WORKER_UID, &restored_contents);
     let round = |config: &Path, wrong_uid: bool, lost_response: bool| -> Output {
         assert!(
             matches!(
@@ -426,7 +442,7 @@ fn protected_vote(
             String::from_utf8_lossy(&completed.stdout).contains("readiness_worker=retained-vote");
         assert_eq!(
             retained,
-            config == worker_config.as_path(),
+            config == worker_config.as_path() || config == restored_config.as_path(),
             "unexpected protected retention result"
         );
         frontend
@@ -472,6 +488,42 @@ fn protected_vote(
         first,
         "retained readiness vote changed after protected worker restart"
     );
+    // round has waited for the previous worker and frontend. Recover the same
+    // disposable key at another worker-owned private absolute path, then make
+    // the original unavailable for both the refusal and recovered restart.
+    assert!(restored_key.is_absolute());
+    assert_eq!(std::fs::copy(key, &restored_key).unwrap(), 32);
+    std::fs::set_permissions(&restored_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    change_owner(&restored_key, WORKER_UID);
+    std::fs::remove_file(key).unwrap();
+    assert!(!key.exists(), "original readiness key remained available");
+    let refusal: Output = round(&wrong_config, false, false);
+    assert!(
+        !refusal.status.success(),
+        "wrong-key worker released a retained readiness vote"
+    );
+    assert_eq!(
+        std::fs::read(output.join("vote.bin")).unwrap(),
+        first,
+        "wrong-key refusal changed the retained readiness vote"
+    );
+    assert!(
+        success(round(&restored_config, false, false))
+            .contains("conditional_readiness=retained-vote")
+    );
+    assert!(
+        !key.exists(),
+        "restored worker recreated the original key path"
+    );
+    assert_eq!(
+        std::fs::read(output.join("vote.bin")).unwrap(),
+        first,
+        "retained readiness vote changed after same-key path recovery"
+    );
+    // The unchanged ordinary CLI assertions below still use the original path.
+    assert_eq!(std::fs::copy(&restored_key, key).unwrap(), 32);
+    std::fs::set_permissions(key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    change_owner(key, 0);
     // Restore fixture ownership before the unchanged ordinary CLI assertions.
     for directory in [destination, output] {
         for entry in std::fs::read_dir(directory).unwrap() {

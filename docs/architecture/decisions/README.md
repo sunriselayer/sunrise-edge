@@ -167,3 +167,4 @@ in [`TODO.md`](../../../TODO.md).
 - [DR-0283: live genesis foreign split with the recovered same-A key](0283-live-recovered-genesis-foreign-split.md)
 - [DR-0284: conditional readiness protected worker proposal](0284-conditional-readiness-protected-worker-proposal.md)
 - [DR-0285: successor protected host proposal](0285-successor-protected-host-proposal.md)
+- [DR-0286: offline Standard Asset genesis protected review worker](0286-standard-asset-genesis-protected-review-worker.md)
