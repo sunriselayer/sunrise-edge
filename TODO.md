@@ -22,15 +22,17 @@ N2の元7 epoch/e8 selectorはexact `049dcd59`で実UID正例を含め終端成�
 literal npm ciと完全required、全8 CIも終端成功した。外部の完全required終端記録は
 `m2-required-049dcd59-1105-v11-b4c9a60d27f5-terminal-success-handoff.md`。
 全M2/M7の最終独立review・issue dispositionは残る。
-[PR #346](https://github.com/sunriselayer/sunrise-edge/pull/346) はoffline genesis
+[PR #346](https://github.com/sunriselayer/sunrise-edge/pull/346) も2026-11-05にmergeした。offline genesis
 authorの[DR-0286](docs/architecture/decisions/0286-standard-asset-genesis-protected-review-worker.md)
 境界を実装し、既存author 7件と別UID ignored 1件を限定検証した。
 [検証記録](docs/development/validation/2026-11-04-m2-genesis-protected/README.md) は
-実承認役割・鍵・ceremonyや完全required・release資格を確定しない。同source CIは全8件成功。
+実承認役割・鍵・ceremonyやrelease資格を確定しない。同source CIは全8件成功。
 exact `25a86df1` のreadiness同一鍵別path復元は別UID ignored fixtureを終端成功で確認した。
 外部検証記録: `n4-readiness-25a-1104-owned-v2/terminal-v2.json`。
-これは限定fixtureであり、exact `25a86df1`の完全requiredは実行中で終端判定前。
-統合先の実merge・RELEASE資格も未確定。
+exact `25a86df1`のliteral npm ciと完全requiredは全20実行記録がexit 0・EOF/waitで
+終端成功し、source不変とPID/cgroup解放を確認した。外部終端記録:
+`m2-required-25a86df1-1105-v8-a16b5e9d-terminal-success-handoff.md`。
+これは同sourceの資格であり、RELEASE資格と親M2/M7の完了ではない。
 親M2/M7は未完了。
 
 ## 作業終了時の環境整理
@@ -497,8 +499,9 @@ N2のworker/frontend開発実装だけを元recurring acceptanceに数えない�
 外部検証記録 `n2-049d-retry1-terminal-1104/root-verification.md` で終端照合した。
 N4同一鍵別pathの別UID fixtureはexact `25a86df1`で成功。exact `049dcd59`の
 literal npm ci・完全required・全8 CI・Native13 A/B・原12 RELEASE runtimeは成功した。
-exact `25a86df1`の全8 CIも成功、完全requiredは実行中。適用される後続sourceの
-RELEASE資格は未確認。元original/certified
+exact `25a86df1`の全8 CI・literal npm ci・完全requiredも終端成功し、
+元の7 epoch selectorを保持した。適用される後続sourceのRELEASE資格は未確認。
+元original/certified
 workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする。
 
 次は後続sourceの全体資格とN3の残る未選択対象を照合する。
@@ -862,12 +865,13 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
    fee-claimの非承認表示・保存内容のdevelopment signingはE23/E24のlocal完全gateとhosted CIまで成功。
    選択済みasset/automatic componentと直近の復旧consumer接続は上のfamily表へ対応済み。
    readiness/successorの別UID境界はPR #345でmerge済み。
-   N1元ownerの実UID fixtureとPR #346のoffline genesis限定fixtureは個別に成功した。
+   PR #346もmerge済み。N1元ownerの実UID fixtureとoffline genesis限定fixtureは個別に成功した。
    N2元recurring ownerはexact `049dcd59`で実UID・7 epoch/e8と終端資源解放まで成功。
    readiness同一鍵別pathのN4別UID fixtureはexact `25a86df1`で成功した。
    exact `049dcd59`ではNative13 A/B、原12 RELEASE runtime、literal npm ciと完全required、
-   全8 CIまで成功。次は実行中のexact `25a86df1`完全requiredを終端まで確認し、
-   同sourceの適用されるRELEASE条件と親の残件を照合する。
+   全8 CIまで成功。exact `25a86df1`の全8 CIとliteral npm ci・完全requiredも
+   exit 0・EOF/wait・資源解放まで終端確認した。次は同sourceの適用される
+   RELEASE条件と親の残件を照合する。文書統合PR #347自身の全体gateは別途確認する。
    [M2-N1〜N5の元照合](#m2初期リリース対象の照合-2026-11-03) を参照し、
    残る未選択consumerの必要性、対象別lifecycleと不足検証を具体化する。
    停止対象を再開せず、全prepared型や全identity移行を新たな必須条件にしない。
