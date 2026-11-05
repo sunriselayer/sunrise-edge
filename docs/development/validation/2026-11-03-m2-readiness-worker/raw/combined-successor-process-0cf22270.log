@@ -1,0 +1,16 @@
+   Compiling sunrise-edge-operator v0.1.0 (/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/apps/operator)
+    Finished `test` profile [optimized + debuginfo] target(s) in 26.38s
+     Running tests/successor_host_process_refusals.rs (target/debug/deps/successor_host_process_refusals-3b2b622d14409d19)
+
+running 8 tests
+test shipped_cli_successor_actions_refuse_without_ordinary_fallback ... ok
+test compiled_host_requires_fence_confirmation_before_any_io ... ok
+test protected_successor_roles_refuse_cross_role_capabilities_before_io ... ok
+test compiled_recurring_consumers_refuse_over_budget_before_genesis_or_target_io ... ok
+test compiled_host_refuses_missing_artifact_transport_before_opening_a_target ... ok
+test compiled_host_help_and_unknown_modes_never_serve ... ok
+test compiled_host_refuses_every_nonloopback_listen_before_any_io ... ok
+test compiled_live_and_history_tls_options_refuse_before_artifact_or_target_io ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+

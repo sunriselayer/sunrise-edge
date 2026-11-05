@@ -1,5 +1,6 @@
 use crate::{
     common::{FlagSet, parse_hash_suite, parse_hex_32},
+    local_custody_transport::{self, SocketOwner},
     native_operations::{PreparedLocalObservations, StopOwner},
     native_tls::{self, NativeTlsInputs},
 };
@@ -13,17 +14,18 @@ use node_core::ordered_economics::OrderedEconomicsPolicy;
 use protocol_types::{
     AtomicityDomainId, ChainId, Epoch, HashSuiteSchedule, ProtocolVersion, ValidatorId,
 };
+#[cfg(test)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::BTreeMap,
     error::Error,
     ffi::OsString,
-    fs::{self, File, Metadata},
+    fs::{self, Metadata},
     future::Future,
-    io::{self, Read, Write},
+    io::{self, Write},
     net::SocketAddr,
     num::NonZeroUsize,
-    os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
     time::Duration,
@@ -41,75 +43,19 @@ fn refused() -> io::Error {
 }
 
 fn own_uid() -> io::Result<u32> {
-    let file: File = File::open("/proc/self/status")?;
-    let mut bytes: String = String::new();
-    file.take(8192).read_to_string(&mut bytes)?;
-    bytes
-        .lines()
-        .find_map(|line: &str| {
-            line.strip_prefix("Uid:")?
-                .split_whitespace()
-                .nth(1)?
-                .parse::<u32>()
-                .ok()
-        })
-        .ok_or_else(refused)
+    local_custody_transport::own_uid(refused)
 }
 fn absolute(path: &Path) -> io::Result<()> {
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|part: Component<'_>| matches!(part, Component::CurDir | Component::ParentDir))
-    {
-        return Err(refused());
-    }
-    Ok(())
-}
-fn identity(metadata: &Metadata) -> (u64, u64) {
-    (metadata.dev(), metadata.ino())
+    local_custody_transport::absolute(path, refused)
 }
 fn owned(path: &Path, mode: u32, directory: bool) -> io::Result<Metadata> {
-    absolute(path)?;
-    let metadata: Metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink()
-        || metadata.uid() != own_uid()?
-        || metadata.permissions().mode() & 0o7777 != mode
-        || if directory {
-            !metadata.is_dir()
-        } else {
-            !metadata.is_file()
-        }
-    {
-        return Err(refused());
-    }
-    Ok(metadata)
+    local_custody_transport::owned(path, mode, directory, refused)
 }
 fn private_file(path: &Path) -> io::Result<Metadata> {
-    owned(path.parent().ok_or_else(refused)?, 0o700, true)?;
-    owned(path, 0o600, false)
+    local_custody_transport::private_file(path, refused)
 }
 fn config_file(path: &Path) -> io::Result<String> {
-    let before: Metadata = private_file(path)?;
-    if before.len() > MAX_CONFIG {
-        return Err(refused());
-    }
-    let file: File = File::open(path)?;
-    let opened: Metadata = file.metadata()?;
-    if identity(&before) != identity(&opened)
-        || opened.uid() != own_uid()?
-        || opened.permissions().mode() & 0o7777 != 0o600
-        || !opened.is_file()
-    {
-        return Err(refused());
-    }
-    let mut bytes: String = String::new();
-    file.take(MAX_CONFIG + 1).read_to_string(&mut bytes)?;
-    if bytes.len() as u64 > MAX_CONFIG
-        || identity(&fs::symlink_metadata(path)?) != identity(&before)
-    {
-        return Err(refused());
-    }
-    Ok(bytes)
+    local_custody_transport::config_file(path, MAX_CONFIG, refused)
 }
 struct Config {
     values: BTreeMap<String, Vec<String>>,
@@ -314,7 +260,8 @@ impl Worker {
             let mut stop: StopOwner = StopOwner::install(
                 PreparedLocalObservations::connect(None).map_err(|_| refused())?,
             )?;
-            let (owner, listener): (SocketOwner, UnixListener) = SocketOwner::bind(&self.socket)?;
+            let (owner, listener): (SocketOwner, UnixListener) =
+                SocketOwner::bind(&self.socket, refused)?;
             let end: Instant = Instant::now().checked_add(self.total).ok_or_else(refused)?;
             if !stop.stop_before_readiness() {
                 if self.certified {
@@ -346,52 +293,6 @@ impl Worker {
 enum OwnerIdentity {
     Ordered(Identity),
     Certified(native_http::certified_custody::Identity),
-}
-
-struct SocketOwner {
-    path: PathBuf,
-    inode: (u64, u64),
-}
-impl SocketOwner {
-    fn bind(path: &Path) -> io::Result<(Self, UnixListener)> {
-        owned(path.parent().ok_or_else(refused)?, 0o750, true)?;
-        match fs::symlink_metadata(path) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            _ => return Err(refused()),
-        }
-        let listener: std::os::unix::net::UnixListener =
-            std::os::unix::net::UnixListener::bind(path)?;
-        let metadata: Metadata = fs::symlink_metadata(path)?;
-        let owner: Self = Self {
-            path: path.into(),
-            inode: identity(&metadata),
-        };
-        fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
-        let after: Metadata = fs::symlink_metadata(path)?;
-        if !after.file_type().is_socket()
-            || after.uid() != own_uid()?
-            || identity(&after) != owner.inode
-        {
-            return Err(refused());
-        }
-        listener.set_nonblocking(true)?;
-        Ok((owner, UnixListener::from_std(listener)?))
-    }
-    fn remove(&self) -> io::Result<()> {
-        let after: Metadata = fs::symlink_metadata(&self.path)?;
-        if identity(&after) != self.inode || !after.file_type().is_socket() {
-            return Err(refused());
-        }
-        fs::remove_file(&self.path)
-    }
-    fn close(self) -> io::Result<()> {
-        self.remove()
-    }
-}
-impl Drop for SocketOwner {
-    fn drop(&mut self) {
-        let _removed: io::Result<()> = self.remove();
-    }
 }
 
 type Shutdown = Pin<Box<dyn Future<Output = ()> + Send>>;

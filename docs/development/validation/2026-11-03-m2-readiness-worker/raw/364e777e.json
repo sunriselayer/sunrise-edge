@@ -1,0 +1,133 @@
+{
+  "owner": "fc6c27a6-ec2b-4678-b80b-4761c9cac7f5",
+  "name": "sunrise-readiness-1103-fc6c27a6-ec2b-4678-b80b-4761c9cac7f5",
+  "sourceHead": "364e777e9668fae21e494ffa79d4eb4d1e8ecb32",
+  "sourceTree": "0ee5b1f99fc4dc86dbe0a1f80692f9c0e6e7662d",
+  "operatorCargoJsonSha256": "c38b8c135aec02d11b028c39e0db3d7ef3f390d5fe4189295fd7abd5e56600be",
+  "cliCargoJsonSha256": "2df0f0b8210186effe340fe30d60280ad7b9183577015be971e6369ed1d55d73",
+  "image": "python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+  "imageId": "sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+  "artifacts": [
+    {
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/target/debug/business_cut",
+      "sha256": "6182d197c6bc7bec38da3caac911515980dc180fa3db5557c8cc86b8d70ee787",
+      "bytes": 342690864,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 52,
+      "inode": 61272261
+    },
+    {
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/target/debug/business_import",
+      "sha256": "84aed16da879a48600244826f8925dd083c7e9e3c700d4234220e8f5feaeedb0",
+      "bytes": 341513480,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 52,
+      "inode": 61272382
+    },
+    {
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/target/debug/business_recovery",
+      "sha256": "e0182af0769e75c83d094be36a38f32abccd91fe13fc58152d6877e0dc6165c9",
+      "bytes": 342221808,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 52,
+      "inode": 61272184
+    },
+    {
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/target/debug/conditional_readiness",
+      "sha256": "c85dec8ba9740753d9cd3f47c75110d3286289ce00fd36e661f4ec8d84f78366",
+      "bytes": 342031840,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 52,
+      "inode": 61272333
+    },
+    {
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/target/debug/ordered_seal",
+      "sha256": "b2e06af967753f21a6a87bab1edefc3da5c48eb414bc2062786505e8b9095d62",
+      "bytes": 342000160,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 52,
+      "inode": 61272241
+    },
+    {
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/target/debug/successor_activation",
+      "sha256": "1e399d706915cf909c5716d65fe680f5c14f61b257beec53074e8e7567eb52fd",
+      "bytes": 341963400,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 52,
+      "inode": 61272221
+    },
+    {
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/target/debug/successor_host",
+      "sha256": "35e15836d5cd24d91f1f3c8547f6694b4c9a0ed70826a8b7bae712462ef68c3a",
+      "bytes": 350476480,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 52,
+      "inode": 61272288
+    },
+    {
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/target/debug/sqlite_source_host",
+      "sha256": "f7764f84391ba4f25889da9df5993e934076437d7f73683602ca646a494af251",
+      "bytes": 349705824,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 52,
+      "inode": 61272339
+    },
+    {
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/target/debug/deps/conditional_readiness_sqlite-6ed71df01b8b98e0",
+      "sha256": "a8b7d560b54195b59047b2cd978a8121aa0c82070ce1055f3571f4dc54f03ea2",
+      "bytes": 464404136,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 52,
+      "inode": 61272434
+    },
+    {
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/target/debug/sunrise-edge-cli",
+      "sha256": "bf2ab39875e85992870bd209b4237f08d4741244f8fd8389ddc24aec349555bc",
+      "bytes": 212401272,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 52,
+      "inode": 61270768
+    }
+  ],
+  "tmpfsMiB": 4096,
+  "memoryMiB": 6144,
+  "outerSeconds": 900,
+  "startedAt": "2026-11-03T15:09:13.327Z",
+  "mounts": [
+    "type=bind,source=/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/target/debug,target=/home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/target/debug,readonly",
+    "type=bind,source=/usr/lib64/ld-linux-x86-64.so.2,target=/lib64/ld-linux-x86-64.so.2,readonly",
+    "type=bind,source=/usr/lib64/libgcc_s-16-20261029.so.1,target=/mnt/libs/libgcc_s.so.1,readonly",
+    "type=bind,source=/usr/lib64/libm.so.6,target=/mnt/libs/libm.so.6,readonly",
+    "type=bind,source=/usr/lib64/libc.so.6,target=/mnt/libs/libc.so.6,readonly"
+  ],
+  "run": {
+    "code": 101,
+    "signal": null,
+    "abortReason": null,
+    "stdoutBytes": 317,
+    "stderrBytes": 5765
+  },
+  "finishedAt": "2026-11-03T15:09:17.804Z",
+  "cleanup": "already-removed",
+  "failure": "Error: Docker readiness owner did not exit successfully\n    at file:///home/yu/src/github.com/sunriselayer/sunrise-edge-m2-readiness-worker-1103/scripts/check-docker-readiness-fixture-1103.mjs:297:54\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)"
+}

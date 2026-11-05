@@ -1,0 +1,6 @@
+[acceptance-timing] stage=initial-readiness epoch=- observation=start elapsed_ms=0
+
+thread 'compiled_conditional_readiness_real_retention_restart_and_distinct_certificate' (8) panicked at apps/operator/tests/conditional_readiness_sqlite.rs:293:85:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[acceptance-timing] stage=initial-readiness epoch=- observation=unwind elapsed_ms=1842

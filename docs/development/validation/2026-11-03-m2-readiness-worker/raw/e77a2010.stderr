@@ -1,0 +1,7 @@
+[acceptance-timing] stage=initial-readiness epoch=- observation=start elapsed_ms=0
+
+thread 'compiled_conditional_readiness_real_retention_restart_and_distinct_certificate' (7) panicked at apps/operator/tests/support/command_output.rs:6:5:
+stdout= stderr=Permission denied (os error 13)
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[acceptance-timing] stage=initial-readiness epoch=- observation=unwind elapsed_ms=2312

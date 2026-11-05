@@ -176,6 +176,29 @@ fn compiled_host_requires_fence_confirmation_before_any_io() {
 }
 
 #[test]
+fn protected_successor_roles_refuse_cross_role_capabilities_before_io() {
+    let root: TempDir = TempDir::new(TEMP_PREFIX, "protected-roles", &NEXT);
+    let missing: PathBuf = root.0.join("missing");
+    let worker: Output = Command::new(env!("CARGO_BIN_EXE_successor_host"))
+        .args(["serve-protected-worker", "--listen", "127.0.0.1:0"])
+        .output()
+        .unwrap();
+    assert!(!worker.status.success());
+    assert!(stderr(&worker).contains("protected worker cannot own a public listener"));
+    assert!(worker.stdout.is_empty());
+
+    let frontend: Output = Command::new(env!("CARGO_BIN_EXE_successor_host"))
+        .args(["serve-protected-frontend", "--signer-key-file"])
+        .arg(&missing)
+        .output()
+        .unwrap();
+    assert!(!frontend.status.success());
+    assert!(frontend.stdout.is_empty());
+    assert!(!missing.exists());
+    no_target_written(&root.0);
+}
+
+#[test]
 fn compiled_host_refuses_missing_artifact_transport_before_opening_a_target() {
     for listen in ["127.0.0.1:0", "[::1]:0"] {
         let root: TempDir = TempDir::new(TEMP_PREFIX, "artifacts", &NEXT);

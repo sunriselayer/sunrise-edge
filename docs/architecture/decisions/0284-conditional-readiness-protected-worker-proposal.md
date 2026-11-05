@@ -3,9 +3,10 @@
 Date: 2026-11-03, Asia/Singapore
 
 Status: The human selected the trusted local OS and distinct-process/UID
-boundary for readiness on 2026-11-03. This role-specific transport and
-artifact design remains proposed, with no implemented or qualified release
-profile, provider, host user or production key. The publication-only decision
+boundary for readiness on 2026-11-03. The role-specific worker and frontend
+are implemented in a development branch and passed a disposable distinct-UID
+process fixture. This is not a qualified release profile or a provider, host
+user or production key decision. The publication-only decision
 in [DR-0238](0238-publication-only-local-os-custody.md) did not itself select
 readiness.
 
@@ -112,3 +113,14 @@ permissions and recovery authority still require review. No
 real key, host user, security policy, deployment, or stopped audit/fixture is
 authorized by this document. Current progress and remaining M2 conditions
 belong in [`TODO.md`](../../../TODO.md).
+
+## 2026-11-03 implementation evidence
+
+Code commit `da03f57421fc2e16bf1f38348e35311b282edb06` adds the fixed
+`vote-worker` and `vote-frontend` roles without changing the existing
+`vote-sqlite` command. The original readiness owner passed once on the host
+and once inside the bounded Docker fixture with worker UID 10001 and frontend
+UID 10002. The raw success, failed attempts and cleanup receipt are preserved
+in [the validation record](../../../docs/development/validation/2026-11-03-m2-readiness-worker/README.md).
+This evidence is limited to readiness. Combined-source full required, hosted
+CI and release qualification remain open.
