@@ -5,6 +5,8 @@
 
 mod build;
 mod input;
+#[cfg(target_os = "linux")]
+mod protected;
 
 use crate::common::{hex_lower as hex, load_signing_key_file};
 use crate::genesis_output::{FreshGenesisOutput, PublishedGenesis};
@@ -21,8 +23,13 @@ use std::{error::Error, ffi::OsString, io::Write};
 /// manifest only after generic installer validation; never activates a network.
 pub fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>> {
     let mut tokens = tokens.into_iter();
-    if tokens.next().as_deref() != Some(std::ffi::OsStr::new("author")) {
-        return Err("expected standard-asset-genesis author subcommand".into());
+    match tokens.next().as_deref() {
+        Some(command) if command == "author" => {}
+        #[cfg(target_os = "linux")]
+        Some(command) if command == "protected-worker" => return protected::worker(tokens),
+        #[cfg(target_os = "linux")]
+        Some(command) if command == "protected-review" => return protected::review(tokens),
+        _ => return Err("expected standard-asset-genesis author or protected subcommand".into()),
     }
     let config: Config = Config::parse(tokens)?;
     let output: FreshGenesisOutput = FreshGenesisOutput::plan(

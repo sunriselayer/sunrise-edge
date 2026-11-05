@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-11-04 (Asia/Singapore)。これは唯一の現行作業表です。
+更新: 2026-11-05 (Asia/Singapore)。これは唯一の現行作業表です。
 現行チェックは **85件中71件完了・14件未完了**。残るコード・検証の親は
 **D02/M1/M2/M3/M7**、停止中の子3件と公開準備の親6件も未完了です。
 以下の行を現行状態とし、祖先sourceの成功や部分実行を親の完了へ転用しません。
@@ -14,13 +14,24 @@ E1-E222の原記録と日付別の実行・失敗履歴は
 と[元ロードマップ](docs/development/history/roadmap-through-2026-10-06.md)に保存しています。
 証跡は必要なE番号・原条件だけを辿ってください。
 
-2026-11-04時点の未統合差分: [PR #345](https://github.com/sunriselayer/sunrise-edge/pull/345)
-はreadiness/successorの選択済み別UID境界を実装し、N1の対象fixtureを通した。
-N2の元recurring owner、同sourceの完全requiredとRELEASE資格は未確定。
+2026-11-05に[PR #345](https://github.com/sunriselayer/sunrise-edge/pull/345)
+をmergeした。readiness/successorの選択済み別UID境界を実装し、N1の元ownerを実UID fixtureで検証。
+N2の元7 epoch/e8 selectorはexact `049dcd59`で実UID正例を含め終端成功した。
+外部検証記録: `n2-049d-retry1-terminal-1104/root-verification.md`。
+同sourceのNative13 A/Bと原12 RELEASE runtimeは成功し、後者は104 passed / 0 failed / 3 ignored。
+literal npm ciと完全required、全8 CIも終端成功した。外部の完全required終端記録は
+`m2-required-049dcd59-1105-v11-b4c9a60d27f5-terminal-success-handoff.md`。
+全M2/M7の最終独立review・issue dispositionは残る。
 [PR #346](https://github.com/sunriselayer/sunrise-edge/pull/346) はoffline genesis
-authorの選択済み境界を追加し、限定した別UID fixtureを通したが、完全requiredと
-最終CI・release資格は未確定。別branch `25a86df1` のreadiness同一鍵別path復元は
-静的確認とcommit/pushまでで、実fixtureは未実行。これらを親M2/M7へ加算しません。
+authorの[DR-0286](docs/architecture/decisions/0286-standard-asset-genesis-protected-review-worker.md)
+境界を実装し、既存author 7件と別UID ignored 1件を限定検証した。
+[検証記録](docs/development/validation/2026-11-04-m2-genesis-protected/README.md) は
+実承認役割・鍵・ceremonyや完全required・release資格を確定しない。同source CIは全8件成功。
+exact `25a86df1` のreadiness同一鍵別path復元は別UID ignored fixtureを終端成功で確認した。
+外部検証記録: `n4-readiness-25a-1104-owned-v2/terminal-v2.json`。
+これは限定fixtureであり、exact `25a86df1`の完全requiredは実行中で終端判定前。
+統合先の実merge・RELEASE資格も未確定。
+親M2/M7は未完了。
 
 ## 作業終了時の環境整理
 
@@ -170,6 +181,11 @@ authorの選択済み境界を追加し、限定した別UID fixtureを通した
     初期profileの既存要件照合と、停止対象を除く具体的な次作業は
     [M2初期リリース対象の照合](#m2初期リリース対象の照合-2026-11-03) にまとめる。
     実鍵ceremonyの公開条件と区別する。
+    2026-11-04にoffline genesis authorへ別process/UID境界を選択し、既存author/buildと
+    installerを使うgenesis専用二段階review workerを実装した。独立source指摘3件を修正し、
+    既存author非ignored 7件と別UID ignored 1件 (4 validator installを含む) は限定環境で成功。
+    [N3限定検証](docs/development/validation/2026-11-04-m2-genesis-protected/README.md)
+    は最終source全体gateや実承認者・鍵の証拠ではなく、親M2は未完了。
   - 初期履歴: publication-only Linux試作の回収可否が不明。E4はSDK部分だけの成功。
     新しい[publication metadata preview](docs/architecture/publication-review.md) と
     CLI `contract preview` は実装し、独立指摘を処理してsource approval済み。
@@ -415,8 +431,8 @@ protocol-v3 activation・membership/epoch・protected signing条件を免除し�
 | 既存要件の根拠 | 今回の照合結果 | 残す責務 |
 | --- | --- | --- |
 | [DR-0208](docs/architecture/decisions/0208-native-sqlite-first-and-protected-signing.md) | Native+SQLite first、DO後続、Ledger製品の必須化を解除。ローカルOSを信頼する個別componentは後続ADRで実装済み | key保護・役割分離・操作内容確認・失敗拒否・復旧/交換/取消は引き続きM2。plaintext seedやLocalSignerだけで代替しない |
-| [DR-0211のautomatic/readiness要件](docs/architecture/decisions/0211-external-signing-preparation.md#content-review-and-automatic-signing) | automatic signingとreadinessは別owner。後者のprotected provider・実host接続はまだ選択されていない | readiness保護を任意の追加機能として消さない。actual key/eligible identity・retained slotと独立した署名検証を維持する。各voteに人の承認を加えない |
-| [DR-0264](docs/architecture/decisions/0264-original-ordered-protocol-custody-worker.md)、[DR-0268](docs/architecture/decisions/0268-certified-fastvote-protocol-custody-worker.md) | protected automatic workerはoriginal orderedとcurrent certifiedの閉じた範囲。successorは選択範囲外 | recurring/successorの機能的合格をprotected successor signerの合格にしない。初期profileで実際に使うsuccessorのauthority/host境界を定義する |
+| [DR-0211のautomatic/readiness要件](docs/architecture/decisions/0211-external-signing-preparation.md#content-review-and-automatic-signing) | automatic signingとreadinessは別owner。後者は当時未選択だったが、後にDR-0284で境界を選択し開発workerを実装した | readiness保護を任意の追加機能として消さない。actual key/eligible identity・retained slotと独立した署名検証を維持する。各voteに人の承認を加えない |
+| [DR-0264](docs/architecture/decisions/0264-original-ordered-protocol-custody-worker.md)、[DR-0268](docs/architecture/decisions/0268-certified-fastvote-protocol-custody-worker.md) | protected automatic workerはoriginal orderedとcurrent certifiedの閉じた範囲。この時点のsuccessorは選択範囲外。後にDR-0285で別境界を選択した | recurring/successorの機能的合格をprotected successor signerの合格にしない。初期profileで実際に使うsuccessorのauthority/host境界を定義する |
 | [DR-0214](docs/architecture/decisions/0214-protected-custody-and-review-boundary.md)、[既存署名経路表](https://github.com/sunriselayer/sunrise-edge/blob/8afaf3566294fe3d6e2096ac4107d2270439b7a8/docs/architecture/signing-route-test-map.md) | 署名準備型、認識済み操作、保護backendは別。genesis作成は実consumerだが、汎用admin signerは存在を仮定できない | 実consumerごとのauthority・承認内容・backendを確定する。単にprepared型があるという理由で全familyを必須化せず、現在の拒否も外さない |
 | [DR-0236](docs/architecture/decisions/0236-separated-code-verification-and-launch-tracking.md)、[DR-0208のlaunch分離](docs/architecture/decisions/0208-native-sqlite-first-and-protected-signing.md#2026-10-11-bounded-docker-and-launch-scope-amendment) | disposable鍵・値でのparameterized実装/検証は進められる | 実operators/key/recovery roles、genesis/economics、実ceremony・topologyはD04/D06/D07/M6/M8。fixture値で本番を決めない |
 | [元activation条件](docs/development/history/roadmap-through-2026-10-06.md#fastvote-certified-execution-gate)、G | 既存の全accepted familyの認証/認可と元release条件を保持 | 狭いcomponent合格や今回の文書照合でM2/公開readinessを完了にしない。停止済み監査の再試行もこの作業に含めない |
@@ -427,15 +443,15 @@ protocol-v3 activation・membership/epoch・protected signing条件を免除し�
 | --- | --- | --- |
 | 選択済みinteractive component | publication、genesis transfer/split/merge/mint/burn、create、自己作成applicationのmint/burn/Coin操作、positive strict partial SplitのLeg/Claim | 上のfamily表の完了範囲を保持。同一鍵復旧・取消後restartの追加接続漏れは今回も特定していない。SDK fake、実UID、RELEASEの証拠は分ける |
 | 選択済みautomatic component | original ordered proposal/voteとcertified FastVote/availability ACK/original frontier voteのworker/frontend | 元ADRの閉じた経路と同一identity復旧まで。successor/readiness、新membership・off-host復旧まで対応済みとはしない |
-| 具体的な保護境界が残るprotocol owner | `conditional_readiness::ReadinessSigningKey` / operator readiness、`successor-host`の実署名consumer | 下のM2-N1/N2から設計を進める。coreの既存authority/retentionを別signerへ移したり、原profileの未達を任意扱いして消したりしない |
-| 保護署名の対象選択が残るinteractive/author owner | generic local/general・paid、bond registration、FinalTransfer fee claim、offline genesis author | M2-N3で必要性を既存初期機能へ対応付ける。local/paidのcustody拒否、bond/claimの開発用署名、genesis private-file署名はprotected対応ではない。未選択経路の追加実装は自動着手しない |
+| 選択済み境界の全体資格が残るprotocol owner | `conditional_readiness::ReadinessSigningKey` / operator readiness、`successor-host`の実署名consumer | DR-0284/0285で選択した開発workerを元ownerへ照合する。N2元recurring ownerはexact `049dcd59`の実UID正例を含め成功。後続sourceの全体資格は未達。coreの既存authority/retentionや原profileを縮めない |
+| 保護署名の対象選択が残るinteractive/author owner | generic local/general・paid、bond registration、FinalTransfer fee claim、offline genesis author | generic/paidはcustody拒否、bond/claimはdevelopment署名で未選択。offline genesisだけDR-0286の別UID workerを開発実装・限定検証した。実承認役割/鍵、全体資格は未達。未選択経路を自動接続しない |
 | 引き続き対象外 | Ledger製品、追加provider/HA、新たな汎用admin signer、未選択の広いasset/account移行 | 元のdeferred/未選択を保持。新backendや新しい公開操作をこの照合から承認しない |
 
 #### 停止対象を除く有限な次作業
 
 M2-N1〜N5は既存M2の不足を分ける作業IDであり、新しい親gateやcheckboxではない。
-コード変更・実検証の実行や完了は今回記録していない。新しい信頼境界の選択は、既存の
-publication向け判断だけから他roleへ拡張せず、具体設計をreview可能にしてから確定する。
+以下の表は2026-11-03の元照合条件を保存する。後日の選択と限定実装・実検証は
+冒頭と下の現行差分に記す。publication向け判断から他roleへ暗黙に拡張しない。
 
 | ID / 現在の状態 | 必要な実装・設計作業 | 完了とするための検証・成果物 | 依存/着手条件 |
 | --- | --- | --- | --- |
@@ -444,6 +460,24 @@ publication向け判断だけから他roleへ拡張せず、具体設計をrevie
 | M2-N3 / 要件・対象選択の整理から着手可 | generic local/paid、bond registration、FinalTransfer、offline genesis authorを、初期profileで必要な具体操作へ照合する。各行を対象/非公開・未対応/後続へ根拠付きで分類し、genesis/adminは実在するconsumerだけを扱う | 対象に選ぶ行にはauthority、認識済みcode/semantics、完全review内容、backend契約を記録。確定した行に限り既存prepared ownerまたはgenesis author/build ownerを使って具体consumer/backendを接続し、exact-byte/返却署名検証・誤入力/未知操作拒否・実consumerの操作結果を元test ownerで確認する | 型が存在するだけでは実装必須にしない。対象外指定で元accepted機能/activation条件を免除しない。安全判定で停止したZeroShareはこの分類・実装候補から除外 |
 | M2-N4 / 対象別仕様の整理から着手可 | N1〜N3と選択済みfamilyごとに、同一鍵復旧・provider停止/取消・新identityへの交換で必要な動作を区別する。既存authorized operation/epochで可能なcutoverと履歴保持、未対応を明示する | 必要と決めた移行だけ、既存authorityの正の移行と旧権限の扱いを実ledger/receiptで検証する。同一鍵署名一致・wrong-key拒否を正の移行に数えない。新address alias、creator pin緩和、historical claimant書換えを解決策にしない | 残るrotation/revocation要件の具体化。B鍵復旧、全account/fee/TreasuryCap移行、off-host復旧を自動で新必須gateにしない。完了済みconsumerを再実装しない |
 | M2-N5 / 対象source確定後 | 確定した対象と必要なN1〜N4変更を、既存実test owner・source/tree・profile別の証拠へ対応付け、欠ける検証だけを実行計画へ落とす | 既存4完全custody profiles、positive Split、ordered/certified UID、readiness/recurringの該当ownerを選び、実行した範囲のraw/actual exit/EOF/wait/reap/資源解放を照合する。runtime変更後はGのliteral npm ci+完全required・exact-source CIと必要なrelease資格を満たす | 今回のTODO変更や既存証拠の整理だけを理由に製品gateを再実行しない。元selector/timeout/7epochs/e8のwithdrawal候補2件/8links/35rolesを保持。RELEASE/原13-target A/B等は元の適用条件でM7と共用 |
+
+### M2-N3/N4の現行区分 (2026-11-04)
+
+| N3の実経路 | 現行区分と残件 |
+| --- | --- |
+| generic local/general・paid | 既存CLIはcustodyをI/O前に拒否する。認識済み操作・権限・review内容が選ばれるまで別backendを接続しない |
+| bond registration | development seedの`structural_registration_claim`は`executed=false`。実登録やprotected governance署名の証拠ではない |
+| FinalTransfer fee claim | development署名の経路でありpositive Split custodyに含めない。具体authorityとreview契約は未選択 |
+| offline genesis author | [DR-0286](docs/architecture/decisions/0286-standard-asset-genesis-protected-review-worker.md) の二段階workerを実装・限定別UID検証済み。実承認者/鍵/economics/ceremony、全体gateは未達 |
+
+N4では、同一identityの鍵復旧、provider停止/取消後restart、新identityへの正の移行を
+分ける。N1 readinessの元ownerは別UID・retained voteを確認した。N2の元recurring
+7 epoch/e8 ownerと実UID正例はexact `049dcd59`で成功した。N4の同一鍵別path復元も
+exact `25a86df1`の別UID ignored fixtureで成功した。いずれも限定sourceの証拠であり、
+同一鍵署名一致やwrong-key拒否は新identity移行の
+成功ではない。別公開鍵は別addressであり、既存の認可操作・epochと履歴検証だけを対象別に
+照合する。新address alias、creator pin緩和、historical claimant書換え、包括的な
+B鍵/account/TreasuryCap/off-host移行を新gateに追加しない。
 
 N1/N2の実workflow ownerは既存の
 [`conditional_readiness_sqlite.rs`](apps/operator/tests/conditional_readiness_sqlite.rs) 内の
@@ -455,11 +489,19 @@ N1/N2の実workflow ownerは既存の
 N1の現行consumer・core保持境界と別UID worker案は[DR-0284](docs/architecture/decisions/0284-conditional-readiness-protected-worker-proposal.md) に整理した。
 N2の実successor hostと別UID worker/frontend案は[DR-0285](docs/architecture/decisions/0285-successor-protected-host-proposal.md) に整理した。
 2026-11-03に人が両roleへtrusted local OS・別process/UID境界を選択した。
-N1の現行fence観測・任意anchorとcross-UID出力、N2の独立したsuccessor公開context導出を
-設計・実装・実検証へ残す。元のoriginal/certified workerをsuccessorの合格へ流用せず、
-N1/N2と親M2は未完了とする。
+N1は元readiness ownerの実UID 10001/10002、wrong-key、lost-response、retained restartを
+[限定検証](docs/development/validation/2026-11-03-m2-readiness-worker/README.md)で確認した。
+N2のworker/frontend開発実装だけを元recurring acceptanceに数えない。元selector
+`compiled_registered_replacement_and_recurring_successor_hosts`はexact `049dcd59`で
+1件成功、7 epoch ends、実別UID marker 2件、e8 terminal unlockと1832-byte候補2件を
+外部検証記録 `n2-049d-retry1-terminal-1104/root-verification.md` で終端照合した。
+N4同一鍵別pathの別UID fixtureはexact `25a86df1`で成功。exact `049dcd59`の
+literal npm ci・完全required・全8 CI・Native13 A/B・原12 RELEASE runtimeは成功した。
+exact `25a86df1`の全8 CIも成功、完全requiredは実行中。適用される後続sourceの
+RELEASE資格は未確認。元original/certified
+workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする。
 
-次はM2-N1/N2の具体的なhost/authority設計と、M2-N3の対象選択根拠を固める。
+次は後続sourceの全体資格とN3の残る未選択対象を照合する。
 この時点で未選択の新backend配線や新しい移行を実装しない。N1〜N5の成果を
 既存M2の該当条件へ戻して記録し、親M2や元の独立security/release条件の代わりにしない。
 停止済みD02/M1独立監査、ZeroShare WIP/fixture、M3 torn-WAL assessment/mechanism2、
@@ -819,10 +861,13 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
    review・実UID/PTY/refusal/restartに加え、publicationの取消・鍵復旧/交換をE21/E22で検証済み。
    fee-claimの非承認表示・保存内容のdevelopment signingはE23/E24のlocal完全gateとhosted CIまで成功。
    選択済みasset/automatic componentと直近の復旧consumer接続は上のfamily表へ対応済み。
-   readiness/successorの別UID境界は選択され、PR #345で開発実装中。
-   次はN2元recurring ownerの終端と資源解放を確認し、同sourceの完全required・
-   原12 RELEASE runtime等の適用条件を照合する。続いてPR #346のoffline genesis
-   authorと別branchのreadiness鍵復元を実fixture・exact-source CIへ対応付ける。
+   readiness/successorの別UID境界はPR #345でmerge済み。
+   N1元ownerの実UID fixtureとPR #346のoffline genesis限定fixtureは個別に成功した。
+   N2元recurring ownerはexact `049dcd59`で実UID・7 epoch/e8と終端資源解放まで成功。
+   readiness同一鍵別pathのN4別UID fixtureはexact `25a86df1`で成功した。
+   exact `049dcd59`ではNative13 A/B、原12 RELEASE runtime、literal npm ciと完全required、
+   全8 CIまで成功。次は実行中のexact `25a86df1`完全requiredを終端まで確認し、
+   同sourceの適用されるRELEASE条件と親の残件を照合する。
    [M2-N1〜N5の元照合](#m2初期リリース対象の照合-2026-11-03) を参照し、
    残る未選択consumerの必要性、対象別lifecycleと不足検証を具体化する。
    停止対象を再開せず、全prepared型や全identity移行を新たな必須条件にしない。

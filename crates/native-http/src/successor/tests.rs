@@ -258,6 +258,90 @@ fn loopback_listener_accepts_only_exact_ipv4_or_ipv6_loopback() {
     }
 }
 
+/// The policy consumed by the keyless frontend is emitted by the same
+/// declarations as the real router, including history and control routes.
+#[tokio::test]
+async fn successor_success_catalog_matches_real_router_and_refused_paths() {
+    let (app, _authority): (Router, Arc<StubAuthority>) = router(Decision::Refused);
+    for spec in MAIN_SPECS
+        .iter()
+        .chain(history::SPECS)
+        .chain(controls::SPECS)
+    {
+        let path: String = spec
+            .path
+            .split('/')
+            .map(|segment: &str| {
+                if segment.starts_with('{') && segment.ends_with('}') {
+                    "11".repeat(32)
+                } else {
+                    segment.to_owned()
+                }
+            })
+            .collect::<Vec<String>>()
+            .join("/");
+        let method: axum::http::Method = match spec.method {
+            RouteMethod::Get => axum::http::Method::GET,
+            RouteMethod::Post => axum::http::Method::POST,
+        };
+        assert!(permits_success(&method, &path), "{method} {path}");
+        let response: Response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method.clone())
+                    .uri(path.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+        assert_ne!(
+            response.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{method} {path}"
+        );
+    }
+    for path in SUCCESSOR_REFUSED_CONTROL_PATHS {
+        for method in [axum::http::Method::GET, axum::http::Method::POST] {
+            assert!(!permits_success(&method, path));
+            let response: Response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(*path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        }
+    }
+    assert!(!permits_success(&axum::http::Method::GET, "/v1/unknown"));
+    assert!(!permits_success(
+        &axum::http::Method::POST,
+        QUERY_CONTEXT_PATH
+    ));
+    assert!(!permits_success(
+        &axum::http::Method::GET,
+        "/v1/objects/not-hex"
+    ));
+    let response: Response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(QUERY_CONTEXT_PATH)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
 #[tokio::test]
 async fn binding_refuses_a_nonloopback_address_before_any_socket() {
     let address: SocketAddr = "0.0.0.0:0".parse().unwrap();

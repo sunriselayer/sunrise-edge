@@ -5,10 +5,14 @@ Date: 2026-10-07, Asia/Singapore
 Status: Proposed contract and threat-model comparison. On 2026-10-13 the human
 selected trusted local OS with separate processes and permissions for the first
 publication-only slice in [DR-0238](0238-publication-only-local-os-custody.md).
-That slice alone selected no other family. Later, the human selected the same
-OS/process boundary separately for readiness and successor in DR-0284/0285.
-Other selected slices and their implementation status belong in TODO; encrypted
-custody and production qualification remain unselected.
+That slice alone selected no other family. The human separately selected the
+same OS/process boundary for readiness and successor on 2026-11-03 in
+[DR-0284](0284-conditional-readiness-protected-worker-proposal.md) and
+[DR-0285](0285-successor-protected-host-proposal.md), and for offline Standard
+Asset genesis authoring on 2026-11-04 in
+[DR-0286](0286-standard-asset-genesis-protected-review-worker.md). Other
+families, encrypted custody and production qualification remain unselected;
+implementation and exact qualification belong in [TODO.md](../../../TODO.md).
 
 ## Context and scope
 

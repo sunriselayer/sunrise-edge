@@ -3,10 +3,13 @@
 Date: 2026-11-03, Asia/Singapore
 
 Status: The human selected the trusted local OS and distinct-process/UID
-boundary for successor signing on 2026-11-03. This record selects no release
-profile or provider. Implementation and qualification are tracked in TODO.
-Existing original ordered and certified FastVote worker approvals do not extend
-to a serving successor.
+boundary for successor signing on 2026-11-03. The role-specific transport and frontend verification have a development
+implementation. This record selects no release profile or provider. The original recurring selector later passed with two distinct-UID markers,
+seven epoch ends and e8 terminal unlock on exact source `049dcd59` (external
+receipt `n2-049d-retry1-terminal-1104/root-verification.md`). That bounded
+result remains separate from later-source complete required, CI and release
+qualification in TODO. Existing original ordered and certified
+FastVote worker approvals do not extend to a serving successor.
 
 ## Actual consumer and authority
 
@@ -69,9 +72,16 @@ status and replay bytes, including refusal and old-epoch behavior. Private
 IPC framing must identify this role distinctly, bound request and response
 bytes, authenticate exact peer UIDs before dispatch, and impose finite
 admission/deadlines. A lost reply is not a safe automatic retry; a started
-operation must drain before key/store/fence ownership is released. Uncertain
-commits use the owning exact reconciliation path, with no successful output
-unless it confirms the retained result.
+operation must drain before key/store/fence ownership is released. A failed,
+timed-out or abandoned delivery refuses only its own connection. The serial
+worker waits for its owning blocking executor to drain before accepting another
+request under the same fence; a lost reply never yields a successful result.
+The frontend's startup preflight spends one worker connection and one internal
+worker request, but does not spend the configured public request budget. The
+worker reserves that request and requires `--max-connections` to exceed
+`--max-requests`, so a one-public-request configuration can still serve after
+preflight. Uncertain commits use the owning exact reconciliation path, with no
+successful output unless it confirms the retained result.
 
 Same-identity key recovery requires old writer exclusion and the existing
 retained safety history. A different identity needs the existing authorized
@@ -83,9 +93,9 @@ security policy or deployment are authorized here.
 ## Original implementation checklist and remaining verification
 
 The prospective wording below is the original design checklist, not a live
-implementation status. The actual distinct-UID successor run, original
-recurring acceptance and exact-source release evidence remain separate;
-consult [TODO.md](../../../TODO.md) for their current status.
+implementation status. The exact-`049dcd59` distinct-UID original recurring selector has bounded
+success evidence; later-source complete required, CI and release evidence
+remain separate. Consult [TODO.md](../../../TODO.md) for current status.
 
 Inventory the exact existing successor route/method/body limits and settle the
 frontend's independent public successor context before adding the private
@@ -103,5 +113,5 @@ replace that run. An implementation change then needs the existing exact-source
 required gate, hosted CI and relevant RELEASE/UID evidence.
 
 Detailed role permissions, local pin ownership and recovery authority require
-review before implementation. This document does not close M2-N2, M2 or any
+review before release qualification. This document does not close M2-N2, M2 or any
 independent security/release gate. Progress remains in [`TODO.md`](../../../TODO.md).

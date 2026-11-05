@@ -1,0 +1,9 @@
+[acceptance-timing] stage=initial-readiness epoch=- observation=start elapsed_ms=0
+[acceptance-timing] stage=initial-readiness epoch=- observation=end elapsed_ms=5223
+[acceptance-timing] stage=compiled-seal epoch=0 observation=start elapsed_ms=0
+[acceptance-timing] stage=compiled-seal epoch=0 observation=end elapsed_ms=1799
+[acceptance-timing] stage=initial-seal epoch=0 observation=start elapsed_ms=0
+[acceptance-timing] stage=initial-seal epoch=0 observation=end elapsed_ms=4194
+[acceptance-timing] stage=first-successor epoch=1 observation=start elapsed_ms=0
+native_operations schema=1 stop=sigint connections_admitted=11 connections_refused=0 accept_failures=0 upgrade_failures=0 upgrade_timeouts=0 requests_dispatched=10 requests_refused=0 input_timeouts=0 output_timeouts=0 connection_failures=0 connection_task_failures=0 blocking_admitted=10 blocking_overloaded=0 blocking_closed=0 blocking_panics=0
+[acceptance-timing] stage=first-successor epoch=1 observation=end elapsed_ms=19566

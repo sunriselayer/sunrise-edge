@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod input;
-mod render;
+pub(crate) mod render;
 
 use crate::original_genesis_install::validate_original_genesis_in_memory;
 use input::Config;

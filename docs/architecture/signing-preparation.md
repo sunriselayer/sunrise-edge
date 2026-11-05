@@ -111,6 +111,11 @@ own pinned config and the caller's bounded artifact/nonce/request-id, and
 document's "Separate M2 requirements" section above anticipates. It does not
 migrate any other prepared owner, `ConsensusSigner`, readiness, or genesis/
 admin signing, and it is not an at-rest-encryption or compromised-root claim.
+Readiness, successor and offline genesis later received separate selected local-OS
+boundaries in [DR-0284](decisions/0284-conditional-readiness-protected-worker-proposal.md),
+[DR-0285](decisions/0285-successor-protected-host-proposal.md) and
+[DR-0286](decisions/0286-standard-asset-genesis-protected-review-worker.md).
+Their development evidence does not extend DR-0238 or qualify the release.
 
 [DR-0246](decisions/0246-genesis-standard-asset-transfer-custody.md) adds a
 separate [genesis Standard Asset transfer](standard-asset-transfer-custody.md)

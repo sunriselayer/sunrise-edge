@@ -721,6 +721,8 @@ fn start(
     let generation: u64 = field(&line, "writer_generation=").parse().unwrap();
     HostProcess {
         child: guard.into_inner(),
+        #[cfg(target_os = "linux")]
+        protected_worker: None,
         address,
         generation,
         validator: targets.members[index].validator_id,

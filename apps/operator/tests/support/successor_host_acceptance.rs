@@ -44,6 +44,10 @@ use sunrise_edge_client::{
 #[path = "recurring_host_acceptance.rs"]
 mod recurring;
 
+#[cfg(target_os = "linux")]
+#[path = "successor_host_acceptance/protected.rs"]
+mod protected;
+
 #[path = "../../../../clients/rust/tests/support/external_signer.rs"]
 mod external_signer;
 
@@ -291,6 +295,8 @@ fn activation(
 /// One real successor_host process. Dropping it kills and reaps the child.
 struct HostProcess {
     child: Child,
+    #[cfg(target_os = "linux")]
+    protected_worker: Option<Child>,
     address: SocketAddr,
     generation: u64,
     validator: ValidatorId,
@@ -298,6 +304,42 @@ struct HostProcess {
 
 impl Drop for HostProcess {
     fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if self.protected_worker.is_some() {
+            let frontend_pid: u32 = self.child.id();
+            // The container's root test owner needs CAP_KILL to signal a
+            // distinct-UID frontend. Never wait on a child we failed to kill.
+            let frontend_stop: std::io::Result<std::process::ExitStatus> =
+                self.child.kill().and_then(|()| self.child.wait());
+            if let Err(error) = frontend_stop {
+                let _observed = self.child.try_wait();
+                if let Some(mut worker) = self.protected_worker.take() {
+                    if worker.kill().is_ok() {
+                        let _ignored = worker.wait();
+                    } else {
+                        let _observed = worker.try_wait();
+                    }
+                }
+                if !std::thread::panicking() {
+                    panic!("protected frontend {frontend_pid} could not be stopped: {error}");
+                }
+                return;
+            }
+            let mut worker: Child = self
+                .protected_worker
+                .take()
+                .expect("protected worker owned");
+            if std::thread::panicking() {
+                if worker.kill().is_ok() {
+                    let _ignored = worker.wait();
+                } else {
+                    let _observed = worker.try_wait();
+                }
+            } else {
+                process::ChildGuard::new(worker).stop_orderly(Duration::from_secs(60));
+            }
+            return;
+        }
         let _ignored = self.child.kill();
         let _ignored = self.child.wait();
     }
@@ -315,6 +357,10 @@ fn start_host(
     export: &Path,
     index: usize,
 ) -> HostProcess {
+    #[cfg(target_os = "linux")]
+    if index == 3 && protected::enabled() {
+        return protected::start_host(fixture, inputs, export, index);
+    }
     let mut command: Command = Command::new(&inputs.executables.successor_host);
     command.arg("serve");
     pins(&mut command, fixture, inputs);
@@ -350,6 +396,8 @@ fn start_host(
         generation,
         validator: inputs.members[index].validator_id,
         child: guard.into_inner(),
+        #[cfg(target_os = "linux")]
+        protected_worker: None,
     }
 }
 

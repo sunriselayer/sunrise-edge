@@ -21,9 +21,11 @@ For a concrete signing family, use its applicable decision and source owner;
 the route map is a dated 8a5 snapshot, not a live inventory.
 [DR-0284](decisions/0284-conditional-readiness-protected-worker-proposal.md)
 and [DR-0285](decisions/0285-successor-protected-host-proposal.md) record the
-selected trusted-local-OS boundary for readiness and successor separately;
-implementation and qualification are source-specific in TODO. Do not infer
-genesis, administrative, or generic signing authority from those selections.
+selected trusted-local-OS boundary for readiness and successor separately.
+[DR-0286](decisions/0286-standard-asset-genesis-protected-review-worker.md)
+records the later offline genesis author boundary. Implementation and
+qualification are source-specific in TODO. Do not infer generic administrative
+or other family authority from these selections.
 
 Historical design alternatives remain available in the
 [catalog](catalog.md) and [decision register](decisions/README.md). Read an

@@ -14,60 +14,36 @@ use node_core::ordered_economics::{
 use protocol_types::ValidatorId;
 use std::num::NonZeroUsize;
 
+macro_rules! control_routes {
+    ($emit:ident, $s:ty) => {
+        $emit! {
+            (Post, FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH, post(advance_frontier::<$s>).layer(DefaultBodyLimit::max(1))),
+            (Post, FASTVOTE_FROZEN_FRONTIER_PAGE_PATH, post(frontier_page::<$s>).layer(DefaultBodyLimit::max(node_wire::MAX_FRONTIER_PAGE_REQUEST_BYTES))),
+            (Post, node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH, post(ingest_page::<$s>).layer(DefaultBodyLimit::max(node_wire::MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES))),
+            (Post, node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH, post(confirm_member::<$s>).layer(DefaultBodyLimit::max(node_wire::MAX_DRAIN_MEMBER_CONFIRM_REQUEST_BYTES))),
+            (Post, node_wire::FASTVOTE_DRAIN_IMPORT_PATH, post(import_publication::<$s>).layer(DefaultBodyLimit::max(consensus::bundle::MAX_ENCODED_BUNDLE_BYTES))),
+            (Post, node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH, post(advance_union::<$s>).layer(DefaultBodyLimit::max(node_wire::MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES))),
+            (Post, node_wire::FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH, post(retained_source::<$s>).layer(DefaultBodyLimit::max(node_wire::MAX_RETAINED_PUBLICATION_SOURCE_REQUEST_BYTES))),
+            (Post, node_wire::FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH, post(signer_progress::<$s>).layer(DefaultBodyLimit::max(node_wire::MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES))),
+            (Post, node_wire::FASTVOTE_DRAIN_APPLY_PATH, post(apply_member::<$s>).layer(DefaultBodyLimit::max(node_wire::MAX_DRAIN_MEMBER_APPLY_REQUEST_BYTES))),
+        }
+    };
+}
+macro_rules! control_specs {
+    ($(($method:ident, $path:expr, $handler:expr)),* $(,)?) => {
+        pub(super) const SPECS: &[RouteSpec] = &[$(RouteSpec { method: RouteMethod::$method, path: $path }),*];
+    };
+}
+control_routes!(control_specs, ());
+macro_rules! mount_control_routes {
+    ($(($method:ident, $path:expr, $handler:expr)),* $(,)?) => {{
+        let mut router: Router<SharedSuccessorHost<S>> = Router::new();
+        $(router = router.route($path, $handler);)*
+        router
+    }};
+}
 pub(super) fn routes<S: SuccessorStore>() -> Router<SharedSuccessorHost<S>> {
-    Router::new()
-        .route(
-            FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
-            post(advance_frontier::<S>).layer(DefaultBodyLimit::max(1)),
-        )
-        .route(
-            FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
-            post(frontier_page::<S>).layer(DefaultBodyLimit::max(
-                node_wire::MAX_FRONTIER_PAGE_REQUEST_BYTES,
-            )),
-        )
-        .route(
-            node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
-            post(ingest_page::<S>).layer(DefaultBodyLimit::max(
-                node_wire::MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES,
-            )),
-        )
-        .route(
-            node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
-            post(confirm_member::<S>).layer(DefaultBodyLimit::max(
-                node_wire::MAX_DRAIN_MEMBER_CONFIRM_REQUEST_BYTES,
-            )),
-        )
-        .route(
-            node_wire::FASTVOTE_DRAIN_IMPORT_PATH,
-            post(import_publication::<S>).layer(DefaultBodyLimit::max(
-                consensus::bundle::MAX_ENCODED_BUNDLE_BYTES,
-            )),
-        )
-        .route(
-            node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH,
-            post(advance_union::<S>).layer(DefaultBodyLimit::max(
-                node_wire::MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES,
-            )),
-        )
-        .route(
-            node_wire::FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH,
-            post(retained_source::<S>).layer(DefaultBodyLimit::max(
-                node_wire::MAX_RETAINED_PUBLICATION_SOURCE_REQUEST_BYTES,
-            )),
-        )
-        .route(
-            node_wire::FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,
-            post(signer_progress::<S>).layer(DefaultBodyLimit::max(
-                node_wire::MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES,
-            )),
-        )
-        .route(
-            node_wire::FASTVOTE_DRAIN_APPLY_PATH,
-            post(apply_member::<S>).layer(DefaultBodyLimit::max(
-                node_wire::MAX_DRAIN_MEMBER_APPLY_REQUEST_BYTES,
-            )),
-        )
+    control_routes!(mount_control_routes, S)
 }
 
 #[allow(clippy::result_large_err)]

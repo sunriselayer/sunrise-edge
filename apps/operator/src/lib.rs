@@ -7,6 +7,8 @@ pub mod business_recovery;
 pub mod business_snapshot;
 pub mod common;
 pub mod conditional_readiness;
+#[cfg(target_os = "linux")]
+mod conditional_readiness_custody;
 pub mod economics;
 pub mod genesis_inspection;
 mod genesis_output;
@@ -14,6 +16,8 @@ pub mod host_protocol_context;
 pub mod host_runtime;
 pub mod immutable_archive;
 mod local_anchor;
+#[cfg(target_os = "linux")]
+mod local_custody_transport;
 pub mod native_observations;
 mod native_operations;
 mod native_tls;

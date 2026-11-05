@@ -3,9 +3,10 @@
 Date: 2026-11-03, Asia/Singapore
 
 Status: The human selected the trusted local OS and distinct-process/UID
-boundary for readiness on 2026-11-03. This record selects no release profile,
-provider, host user or production key. Implementation and qualification are
-tracked in TODO. The publication-only decision in
+boundary for readiness on 2026-11-03. The role-specific worker and frontend have a development implementation and
+a disposable distinct-UID process fixture. This record selects no release
+profile, provider, host user or production key; combined-source qualification
+and current progress are tracked in TODO. The publication-only decision in
 [DR-0238](0238-publication-only-local-os-custody.md) did not itself select
 readiness.
 
@@ -116,3 +117,17 @@ permissions and recovery authority still require review. No
 real key, host user, security policy, deployment, or stopped audit/fixture is
 authorized by this document. Current progress and remaining M2 conditions
 belong in [`TODO.md`](../../../TODO.md).
+
+## 2026-11-03 development evidence
+
+Code commit `da03f57421fc2e16bf1f38348e35311b282edb06` adds the fixed
+`vote-worker` and `vote-frontend` roles without replacing `vote-sqlite`. The
+existing readiness owner passed on the host and in a bounded Docker fixture
+with worker UID 10001 and frontend UID 10002, including wrong-key, wrong-UID,
+lost-response and retained-restart checks. See the
+[validation record](../../development/validation/2026-11-03-m2-readiness-worker/README.md)
+for raw success, preserved failures and cleanup. This is readiness-only
+development evidence. A separate exact-`25a86df1` same-key/different-path
+readiness recovery ignored fixture later passed with distinct UIDs and terminal
+resource release (external receipt `n4-readiness-25a-1104-owned-v2/terminal-v2.json`).
+Neither fixture qualifies later-source full required, hosted CI or release.
