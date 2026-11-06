@@ -6,6 +6,16 @@ historical-body oracle across four compiled direct-TLS hosts, total SIGKILL and
 reap, generation-3 reopen, exact saved replay, fresh paid business and final
 stop. Existing empty-closure, ACK-loss and trust-rotation selectors remain.
 
+The five focused successes below ran from the same pre-commit worktree state
+and compiled test binary (SHA-256
+`1b252968829a32c836abb37eb5b1f17487811931d93e4ec30d97ffcc493caff8`).
+The implementation file had no edits after that build; its final Git blob
+`2943825c1b1fe36fede1998fbd479352e3c46a62` matches commit `f40f6689`
+(tree `c3e17b0447760ac1035faaf3f57d5fb62e2b066f`). The validation note was
+added after the runs. No pre-run whole-tree hash was recorded, so these focused
+runs do not by themselves qualify the complete committed tree. The later
+combined-source required gate is tracked separately in TODO.
+
 The initial focused run compiled successfully but failed its explicit
 `sunrise-edge-cli` precondition (exit 101). After
 `cargo build --locked -p sunrise-edge-cli --bin sunrise-edge-cli` (exit 0),

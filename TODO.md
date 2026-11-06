@@ -181,7 +181,7 @@ source不変、PID/cgroup解放を別途照合した。merge commitは `add45bb6
     `50fbf22d` のStandard Asset/publication fixture全117はE156で成功。
     同sourceのoriginal ordered/certified別UID・TLS fixtureもE166で成功。
     f51はE182の4 RELEASE CLI profiles、E187の元12 runtime、E189の全8CI、
-    E191のlocal完全requiredまで成功。現行8daはE213の完全required・E218の全8CI、
+    E191のlocal完全requiredまで成功。8da sourceではE213の完全required・E218の全8CI、
     E215のNative13 A/B・E219のpublication-genesis RELEASE・E222の元12 runtimeで照合した。
     ZeroShare専用WIPは未統合・未検証で、
     各familyの残るlifecycle/全体対応をそろえるまでM2全体は未完了。
@@ -509,8 +509,9 @@ exact `25a86df1`の全8 CI・literal npm ci・完全requiredも終端成功し�
 2026-11-06にN2の既存recurring ownerへ、保護workerの誤鍵起動拒否を追加した。
 別鍵は実member key mismatchで拒否し、fenceの既存進行だけを許して
 他のmetadata・receipt・blob行と署名routeを不変とする検証である。
-元targetのビルド・Clippy・fmtは成功したが、新条件を含む元7 epoch/e8 runtime、
-統合sourceの完全required・CIは未実行。実行前に成功扱いしない。
+元targetと統合後のtest targetのビルド・Clippy・fmtは成功したが、新条件を含む
+元7 epoch/e8 runtimeの終端成功は未確認。統合sourceの完全required初回は
+記録修正のためcompile途中で自己中断し、CIも未終端。partialを成功扱いしない。
 現時点の範囲は[限定記録](docs/development/validation/2026-11-06-m2-n2-protected-wrong-key/README.md) を参照する。
 元original/certified
 workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする。
@@ -753,7 +754,7 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     Rust147 summaries/4,397 passed/0 failed/43 ignored・CF66、元7epochs/e8条件を保持。
     記録serviceの同Invocation自然終了と自己所有unit停止後のPID/cgroup不在も確認し、
     local完全gateは完了。E188/初回143の失敗・partialと未保存証拠の限界は保持する。
-  - 現行8daの資格: E213のliteral npm ci +完全required、E218の全8 CI、E215のfresh
+  - 8da sourceの歴史資格: E213のliteral npm ci +完全required、E218の全8 CI、E215のfresh
     Native13 A/B全byte/mode/owner一致、E216/E217のfresh23/current49と元一覧、
     E219のRELEASE publication-genesis 73 predicates、E222の元12 runtime101/0/3を
     同じsource/treeでroot照合した。外側143・集計失敗と未観測区間は保全し、
@@ -761,7 +762,7 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     独立最終source/security/release reviewとissue dispositionは残り、全M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
-    公開準備行の責務は未達のまま保持する。現行8daのbuild/upgrade/restore/parity/
+    公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
     元selectorの成功を、別の未指定campaign待ちとはしない。新sourceにはそのsourceの
     13-target A/B・実RELEASE bindingsを使い、ancestor結果を借用しない。
     広告する他providerに限り元のPhase16/17実provider基準を適用する。
