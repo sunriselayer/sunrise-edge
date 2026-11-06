@@ -5,12 +5,14 @@ Date: 2026-10-07, Asia/Singapore
 Status: Proposed contract and threat-model comparison. On 2026-10-13 the human
 selected trusted local OS with separate processes and permissions for the first
 publication-only slice in [DR-0238](0238-publication-only-local-os-custody.md).
-The human separately selected that same local OS and distinct-process/UID
-boundary for conditional readiness and successor on 2026-11-03 and offline
-Standard Asset genesis authoring on 2026-11-04. The genesis-specific two-stage
-review is [DR-0286](0286-standard-asset-genesis-protected-review-worker.md).
-Other signing families, encrypted custody and production qualification are not
-selected by these scope decisions.
+That slice alone selected no other family. The human separately selected the
+same OS/process boundary for readiness and successor on 2026-11-03 in
+[DR-0284](0284-conditional-readiness-protected-worker-proposal.md) and
+[DR-0285](0285-successor-protected-host-proposal.md), and for offline Standard
+Asset genesis authoring on 2026-11-04 in
+[DR-0286](0286-standard-asset-genesis-protected-review-worker.md). Other
+families, encrypted custody and production qualification remain unselected;
+implementation and exact qualification belong in [TODO.md](../../../TODO.md).
 
 ## Context and scope
 
@@ -164,7 +166,18 @@ through existing authorized operation/epoch mechanisms, with explicit overlap,
 cutover and historical verification. Do not invent an address alias, rewrite
 genesis or assume a protocol-wide revocation registry exists.
 
-## Safe next slice and outstanding choices
+## Historical 2026-10-07 next slice and outstanding choices
+
+Current reading, 2026-11-04: the publication presentation proposed below was
+implemented by [DR-0237](0237-bounded-publication-review-presentation.md), and
+publication-only local custody was selected in
+[DR-0238](0238-publication-only-local-os-custody.md). The same local-OS,
+separate-process/UID boundary was subsequently selected for readiness and
+successor in [DR-0284](0284-conditional-readiness-protected-worker-proposal.md)
+and [DR-0285](0285-successor-protected-host-proposal.md). The original
+next-step wording below does not revoke those bounded decisions.
+Other signing families, real roles, recovery holders and release qualification
+remain separate choices and gates in [TODO.md](../../../TODO.md).
 
 `PreparedPublication` already exposes retained inputs, builds commitment/frame and
 authenticates/verifies final output. Bounded closed `CodeArtifact` decoding and

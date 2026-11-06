@@ -2,7 +2,7 @@
 
 Close every native public `POST /v1/events` surface to authenticated
 `SubmitTransaction` only, satisfying criterion 1 of the
-[Initial Code Security Audit Entry Gate](../../../TODO.md#initial-code-security-audit-entry-gate)
+[Initial Code Security Audit Entry Gate](../../development/history/roadmap-through-2026-10-06.md#initial-code-security-audit-entry-gate)
 (DR-0097, see [DR-0094–DR-0098](0094-0098-blobs-audit-and-documentation.md)).
 
 - DR-0099: Reject every known non-`SubmitTransaction` `NodeEventKind` at the

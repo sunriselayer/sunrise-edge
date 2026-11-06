@@ -7,6 +7,13 @@ The first implementation candidate is readiness only. This record grants no
 code authority, wire/key allocation, schema migration or completion claim.
 Current work and gates belong only in [TODO.md](../../../TODO.md).
 
+Current reading, 2026-11-04: this is a historical proposal, not the current
+implementation contract. [DR-0178](0178-conditional-readiness-wire-and-retention.md)
+accepted the closed readiness-only contract; [DR-0187](0187-first-epoch-ordered-seal.md)
+accepted the separate first-epoch Seal contract. Use those decisions and the
+current architecture for new work. The proposal below remains for rationale;
+it does not add an alternative authority path or acceptance gate.
+
 ## Context
 
 [DR-0154](0154-complete-epoch-handoff.md) requires an eligible next quorum's

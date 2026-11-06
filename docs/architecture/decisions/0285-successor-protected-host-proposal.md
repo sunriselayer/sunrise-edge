@@ -3,11 +3,13 @@
 Date: 2026-11-03, Asia/Singapore
 
 Status: The human selected the trusted local OS and distinct-process/UID
-boundary for successor signing on 2026-11-03. The role-specific transport and
-frontend verification are implemented in a development branch. The actual
-distinct-UID successor run and original recurring acceptance are still open;
-no successor release profile or provider is qualified. Existing original ordered and
-certified FastVote worker approvals do not extend to a serving successor.
+boundary for successor signing on 2026-11-03. The role-specific transport and frontend verification have a development
+implementation. This record selects no release profile or provider. The original recurring selector later passed with two distinct-UID markers,
+seven epoch ends and e8 terminal unlock on exact source `049dcd59` (external
+receipt `n2-049d-retry1-terminal-1104/root-verification.md`). That bounded
+result remains separate from later-source complete required, CI and release
+qualification in TODO. Existing original ordered and certified
+FastVote worker approvals do not extend to a serving successor.
 
 ## Actual consumer and authority
 
@@ -88,7 +90,12 @@ authority. This profile claims neither independent rollback detection nor
 protection from a compromised worker or root. No real keys, host users,
 security policy or deployment are authorized here.
 
-## Implementation and verification after design review
+## Original implementation checklist and remaining verification
+
+The prospective wording below is the original design checklist, not a live
+implementation status. The exact-`049dcd59` distinct-UID original recurring selector has bounded
+success evidence; later-source complete required, CI and release evidence
+remain separate. Consult [TODO.md](../../../TODO.md) for current status.
 
 Inventory the exact existing successor route/method/body limits and settle the
 frontend's independent public successor context before adding the private
@@ -106,5 +113,5 @@ replace that run. An implementation change then needs the existing exact-source
 required gate, hosted CI and relevant RELEASE/UID evidence.
 
 Detailed role permissions, local pin ownership and recovery authority require
-review before implementation. This document does not close M2-N2, M2 or any
+review before release qualification. This document does not close M2-N2, M2 or any
 independent security/release gate. Progress remains in [`TODO.md`](../../../TODO.md).

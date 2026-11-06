@@ -3,11 +3,11 @@
 Date: 2026-11-03, Asia/Singapore
 
 Status: The human selected the trusted local OS and distinct-process/UID
-boundary for readiness on 2026-11-03. The role-specific worker and frontend
-are implemented in a development branch and passed a disposable distinct-UID
-process fixture. This is not a qualified release profile or a provider, host
-user or production key decision. The publication-only decision
-in [DR-0238](0238-publication-only-local-os-custody.md) did not itself select
+boundary for readiness on 2026-11-03. The role-specific worker and frontend have a development implementation and
+a disposable distinct-UID process fixture. This record selects no release
+profile, provider, host user or production key; combined-source qualification
+and current progress are tracked in TODO. The publication-only decision in
+[DR-0238](0238-publication-only-local-os-custody.md) did not itself select
 readiness.
 
 ## Existing owner and gap
@@ -87,7 +87,11 @@ readiness IPC route must not become an activation or successor-host route.
 Successor automatic signing is the separate M2-N2 decision. Genesis/admin and
 human asset approval are also outside this worker.
 
-## Implementation and verification after design review
+## Original implementation checklist and remaining verification
+
+The prospective wording below is the original design checklist, not a live
+implementation status. Current source and exact qualification belong in
+[TODO.md](../../../TODO.md).
 
 First define the finite request, trusted configuration, output ownership and
 frontend's independently pinned import binding from the existing CLI inputs,
@@ -114,13 +118,16 @@ real key, host user, security policy, deployment, or stopped audit/fixture is
 authorized by this document. Current progress and remaining M2 conditions
 belong in [`TODO.md`](../../../TODO.md).
 
-## 2026-11-03 implementation evidence
+## 2026-11-03 development evidence
 
 Code commit `da03f57421fc2e16bf1f38348e35311b282edb06` adds the fixed
-`vote-worker` and `vote-frontend` roles without changing the existing
-`vote-sqlite` command. The original readiness owner passed once on the host
-and once inside the bounded Docker fixture with worker UID 10001 and frontend
-UID 10002. The raw success, failed attempts and cleanup receipt are preserved
-in [the validation record](../../../docs/development/validation/2026-11-03-m2-readiness-worker/README.md).
-This evidence is limited to readiness. Combined-source full required, hosted
-CI and release qualification remain open.
+`vote-worker` and `vote-frontend` roles without replacing `vote-sqlite`. The
+existing readiness owner passed on the host and in a bounded Docker fixture
+with worker UID 10001 and frontend UID 10002, including wrong-key, wrong-UID,
+lost-response and retained-restart checks. See the
+[validation record](../../development/validation/2026-11-03-m2-readiness-worker/README.md)
+for raw success, preserved failures and cleanup. This is readiness-only
+development evidence. A separate exact-`25a86df1` same-key/different-path
+readiness recovery ignored fixture later passed with distinct UIDs and terminal
+resource release (external receipt `n4-readiness-25a-1104-owned-v2/terminal-v2.json`).
+Neither fixture qualifies later-source full required, hosted CI or release.

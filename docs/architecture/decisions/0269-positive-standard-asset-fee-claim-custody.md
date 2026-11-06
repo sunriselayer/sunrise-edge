@@ -4,9 +4,12 @@ Date: 2026-10-17 (Asia/Singapore)
 
 Status: Accepted for the implementation boundary. Actual qualification belongs in TODO.
 
-Use the trusted local OS model selected in DR-0214. One separate custody UID
-holds the original historical claimant key and serves one finite, closed local
-IPC family. Both the embedded positive Split leg and its outer claim require
+Use the trusted local OS model compared in
+[DR-0214](0214-protected-custody-and-review-boundary.md) and selected for this
+closed fee-claim route by this record. DR-0214 alone selects no fee-claim
+consumer. One separate custody UID holds the original historical claimant key
+and serves one finite, closed local IPC family. Both the embedded positive Split
+leg and its outer claim require
 that key. Reuse DR-0267's immutable typed policy and genuine verified successor
 workflow; a current committee member or a caller's epoch cannot replace the
 original certificate authority.

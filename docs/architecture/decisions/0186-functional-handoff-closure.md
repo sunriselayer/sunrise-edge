@@ -17,6 +17,13 @@ live signature may be created or exposed after committed Seal. The next
 separately reviewed transition and activation contract must preserve that
 boundary; this clarification adopts no replacement producer or schema.
 
+Current reading, 2026-11-04: this remains a historical proposal. Use
+[DR-0187](0187-first-epoch-ordered-seal.md) for first-epoch Seal,
+[DR-0189](0189-first-successor-serving.md) for first successor activation and
+serving, and [DR-0191](0191-recurring-successor-serving.md) for recurring
+successors. Their separate accepted contracts do not turn this record's
+unadopted alternatives into implementation authority or release evidence.
+
 ## Context
 
 [DR-0180](0180-architecture-first-interface-contracts.md) asks for responsibility
