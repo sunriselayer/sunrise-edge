@@ -19,6 +19,13 @@ normal key then starts through the original recurring owner. This observes
 the existing startup-fence contract; it does not change authority or add a
 new signer route.
 
+During integration review, the non-fence comparison was extended to every
+column of `durable_metadata` except `writer_fence`, including
+`mutation_sequence` and origin/binding. The state and blob SQL lists now
+reuse the existing recurring acceptance capture rather than duplicating that
+test oracle. The compile and Clippy results below refer to the earlier code
+commit; the integrated source requires its own gate.
+
 ## Completed build checks
 
 The dedicated target and raw records are under

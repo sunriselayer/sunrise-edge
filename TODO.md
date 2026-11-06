@@ -506,6 +506,12 @@ N4同一鍵別pathの別UID fixtureはexact `25a86df1`で成功。exact `049dcd5
 literal npm ci・完全required・全8 CI・Native13 A/B・原12 RELEASE runtimeは成功した。
 exact `25a86df1`の全8 CI・literal npm ci・完全requiredも終端成功し、
 元の7 epoch selectorを保持した。適用される後続sourceのRELEASE資格は未確認。
+2026-11-06にN2の既存recurring ownerへ、保護workerの誤鍵起動拒否を追加した。
+別鍵は実member key mismatchで拒否し、fenceの既存進行だけを許して
+他のmetadata・receipt・blob行と署名routeを不変とする検証である。
+元targetのビルド・Clippy・fmtは成功したが、新条件を含む元7 epoch/e8 runtime、
+統合sourceの完全required・CIは未実行。実行前に成功扱いしない。
+現時点の範囲は[限定記録](docs/development/validation/2026-11-06-m2-n2-protected-wrong-key/README.md) を参照する。
 元original/certified
 workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする。
 
@@ -561,6 +567,11 @@ workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする�
     E74の実compiled TLSで成功。独立anchorを使用する追加variantも成功。
     このsourceの最終完全gate/CIは未完了。
     host/power/media/fsync・別host/実topology failoverの証拠へ読み替えない。
+    2026-11-06に既存の実TLS owner-loss helperへ、70KiBの参照付きhistorical bodyを
+    保持する別selectorを追加。全4hostのSIGKILL/reap、次generation、保存済み再送、
+    新規有料取引と最終停止までのbody・portable collectionsを照合した。
+    新selectorと既存関連4件の限定実行は成功し、[記録](docs/development/validation/2026-11-06-m3-positive-owner-loss/README.md) を保存。
+    統合sourceの完全required・CIと別host/物理faultは未達で、M3親は未完了。
   - [x] [ordinary SQLiteの仮想power/block-I/O fault component](docs/architecture/native-sqlite-virtual-fault-profile.md):
     E77の失敗を保持し、E79で実guest電源断2種・write-only EIO・flush-only EIOと
     全cold復旧を検証。既存schema/v6・user_version5の通常profileだけを対象とする。

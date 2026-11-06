@@ -117,30 +117,14 @@ fn target_fence(
 
 fn target_rows(target: &Path) -> (recurring::SqlRows, recurring::SqlRows) {
     // The failed startup is permitted to claim a writer generation. Every
-    // other durable row and blob must remain byte-for-byte unchanged.
-    let state: recurring::SqlRows = recurring::sql_rows(
+    // other durable row and blob must remain byte-for-byte unchanged, including
+    // non-fence metadata columns in the same row as the writer fence.
+    let state: recurring::SqlRows = recurring::capture_state_rows(
         &target.join("state.db"),
-        &[
-            "SELECT * FROM durable_import_progress ORDER BY id",
-            "SELECT * FROM durable_outgoing_barrier ORDER BY id",
-            "SELECT * FROM durable_successor_serving ORDER BY id",
-            "SELECT * FROM durable_state ORDER BY key",
-            "SELECT * FROM durable_conditional_readiness ORDER BY slot",
-            "SELECT * FROM durable_object_heads ORDER BY object_id",
-            "SELECT * FROM durable_object_versions ORDER BY object_id, object_version",
-            "SELECT * FROM durable_receipts ORDER BY request_id",
-            "SELECT * FROM durable_outbox_messages ORDER BY request_id, message_index",
-            "SELECT * FROM durable_outbox_delivery ORDER BY request_id",
-            "SELECT * FROM durable_outbox_attempts ORDER BY lease_id",
-        ],
+        "SELECT id, schema_identity, chain_id, validator_id, domain, mutation_sequence, \
+         source_instance_id, namespace_origin, import_binding FROM durable_metadata ORDER BY id",
     );
-    let blobs: recurring::SqlRows = recurring::sql_rows(
-        &target.join("body.db"),
-        &[
-            "SELECT * FROM blob_metadata ORDER BY id",
-            "SELECT * FROM blobs ORDER BY digest_algorithm, digest_bytes",
-        ],
-    );
+    let blobs: recurring::SqlRows = recurring::capture_blob_rows(&target.join("body.db"));
     (state, blobs)
 }
 
