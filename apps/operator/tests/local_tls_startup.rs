@@ -4328,25 +4328,33 @@ fn compiled_host_startup_line_limits_cover_literal_maximum_producer_formats() {
 #[cfg(target_os = "linux")]
 #[test]
 fn actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence() {
-    exercise_direct_tls_owned_sigkill(false, false, false);
+    exercise_direct_tls_owned_sigkill(false, false, false, false);
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn actual_direct_tls_complete_owner_loss_authorizes_fresh_writer_and_paid_business() {
-    exercise_direct_tls_owned_sigkill(true, false, false);
+    exercise_direct_tls_owned_sigkill(true, false, false, false);
+}
+
+/// Preserve one independently fixed referenced body through real direct-TLS
+/// owner death, replacement writer, exact paid replay and fresh paid business.
+#[cfg(target_os = "linux")]
+#[test]
+fn actual_direct_tls_complete_owner_loss_preserves_historical_referenced_body() {
+    exercise_direct_tls_owned_sigkill(true, false, false, true);
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn actual_direct_tls_independent_anchors_preserve_paid_recovery_after_complete_owner_loss() {
-    exercise_direct_tls_owned_sigkill(true, true, false);
+    exercise_direct_tls_owned_sigkill(true, true, false, false);
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn actual_direct_tls_encrypted_checkpoints_restore_paid_state_without_original_source_paths() {
-    exercise_direct_tls_owned_sigkill(true, true, true);
+    exercise_direct_tls_owned_sigkill(true, true, true, false);
 }
 
 #[cfg(target_os = "linux")]
@@ -4361,16 +4369,24 @@ fn exercise_direct_tls_owned_sigkill(
     total_connection_loss: bool,
     independent_anchor: bool,
     encrypted_restore: bool,
+    positive_historical_body: bool,
 ) {
     use std::os::unix::process::ExitStatusExt;
 
     assert!(!independent_anchor || total_connection_loss);
     assert!(!encrypted_restore || (independent_anchor && total_connection_loss));
+    assert!(!positive_historical_body || total_connection_loss);
     let mut network: Network = author_inspect_and_prepare();
     if independent_anchor {
         let anchors: IndependentAnchors = IndependentAnchors::enroll(&network);
         network.independent_anchors = Some(anchors);
         assert_missing_independent_anchor_refuses_without_changes(&network);
+    }
+    let historical_body: Option<historical_referenced_body::HistoricalReferencedBody> =
+        positive_historical_body
+            .then(|| historical_referenced_body::HistoricalReferencedBody::install(&network));
+    if historical_body.is_some() {
+        assert_no_parent_sqlite_handles(&network);
     }
     let mut peers: Vec<DirectPeer> = direct_peers(&network);
     let mut hosts: Vec<Host> = start_direct_hosts(&network, &mut peers, 2);
@@ -4412,6 +4428,9 @@ fn exercise_direct_tls_owned_sigkill(
         sender,
     );
     let nonce: u64 = verify_initial(&network, &initial, sender);
+    if let Some(body) = &historical_body {
+        body.verify(&network, &peers);
+    }
     let first: Outputs = Outputs::new(&network.artifacts_dir, "direct-owned-sigkill-transfer");
     let output: Output = run_cli(transfer_args(
         &network,
@@ -4450,6 +4469,9 @@ fn exercise_direct_tls_owned_sigkill(
     let ids: Vec<ObjectId> = observed_ids(&committed.result);
     let committed_view: Observation = observe(&peers, &ids, request, sender);
     verify_committed_state(&network, &committed, &saved, &committed_view);
+    if let Some(body) = &historical_body {
+        body.verify(&network, &peers);
+    }
 
     // The original case retains real parent-side capabilities. The complete
     // owner-loss case retains values only: every inspection connection is
@@ -4472,6 +4494,11 @@ fn exercise_direct_tls_owned_sigkill(
     // referenced blobs requires an empty outbox, not nonempty-outbox replay or
     // equality of physical SQLite pages.
     let before: Vec<SourceBusinessSnapshot> = snapshots(&network);
+    if let Some(body) = &historical_body {
+        for captured in &before {
+            body.assert_snapshot(&network, captured);
+        }
+    }
     if total_connection_loss {
         assert_no_parent_sqlite_handles(&network);
     }
@@ -4539,6 +4566,11 @@ fn exercise_direct_tls_owned_sigkill(
     }
     let stopped: Vec<SourceBusinessSnapshot> = snapshots(&network);
     assert_unchanged(&before, &stopped, "owned SIGKILL stopped-host state");
+    if let Some(body) = &historical_body {
+        for captured in &stopped {
+            body.assert_snapshot(&network, captured);
+        }
+    }
     assert_eq!(
         &Saved::read(&first),
         &saved,
@@ -4618,6 +4650,12 @@ fn exercise_direct_tls_owned_sigkill(
     }
     let reopened: Vec<SourceBusinessSnapshot> = snapshots(&network);
     assert_reopened(&before, &reopened, 2, 3);
+    if let Some(body) = &historical_body {
+        body.verify(&network, &peers);
+        for captured in &reopened {
+            body.assert_snapshot(&network, captured);
+        }
+    }
     if let Some(before) = &raw_before {
         sqlite_durable_image::assert_only_fence_changed(
             before,
@@ -4675,6 +4713,9 @@ fn exercise_direct_tls_owned_sigkill(
         &committed_view,
         "owned SIGKILL restart after replay",
     );
+    if let Some(body) = &historical_body {
+        body.verify(&network, &peers);
+    }
     for (path, bytes) in &original_inputs {
         let actual: Vec<u8> = fs::read(path).unwrap();
         assert_eq!(&actual, bytes, "replay preserves input {}", path.display());
@@ -4702,6 +4743,9 @@ fn exercise_direct_tls_owned_sigkill(
             "direct-complete-owner-loss-fresh",
             true,
         );
+        if let Some(body) = &historical_body {
+            body.verify(&network, &peers);
+        }
         if let Some(expected) = &anchors_before_replay {
             assert_ne!(
                 &network.independent_anchors.as_ref().unwrap().images(),
@@ -4746,6 +4790,11 @@ fn exercise_direct_tls_owned_sigkill(
         &after_stop,
         "owned SIGKILL ordinary tail stop",
     );
+    if let Some(body) = &historical_body {
+        for captured in &after_stop {
+            body.assert_snapshot(&network, captured);
+        }
+    }
     if let Some(before) = &final_raw {
         assert_eq!(&sqlite_durable_images(&network), before);
     }
