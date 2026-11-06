@@ -98,6 +98,52 @@ fn worker_tree(path: &Path) {
     chown(path, WORKER_UID);
 }
 
+fn target_fence(
+    fixture: &Fixture,
+    inputs: &SuccessorProcessInputs,
+    index: usize,
+) -> WriterFenceGeneration {
+    let store: SqliteDurableStore = SqliteDurableStore::open_historical(
+        inputs.targets[index].join("state.db"),
+        SqliteNamespace::new(
+            fixture.network.chain_id.clone(),
+            inputs.members[index].validator_id,
+            fixture.network.domain,
+        ),
+    )
+    .unwrap();
+    store.writer_fence().unwrap()
+}
+
+fn target_rows(target: &Path) -> (recurring::SqlRows, recurring::SqlRows) {
+    // The failed startup is permitted to claim a writer generation. Every
+    // other durable row and blob must remain byte-for-byte unchanged.
+    let state: recurring::SqlRows = recurring::sql_rows(
+        &target.join("state.db"),
+        &[
+            "SELECT * FROM durable_import_progress ORDER BY id",
+            "SELECT * FROM durable_outgoing_barrier ORDER BY id",
+            "SELECT * FROM durable_successor_serving ORDER BY id",
+            "SELECT * FROM durable_state ORDER BY key",
+            "SELECT * FROM durable_conditional_readiness ORDER BY slot",
+            "SELECT * FROM durable_object_heads ORDER BY object_id",
+            "SELECT * FROM durable_object_versions ORDER BY object_id, object_version",
+            "SELECT * FROM durable_receipts ORDER BY request_id",
+            "SELECT * FROM durable_outbox_messages ORDER BY request_id, message_index",
+            "SELECT * FROM durable_outbox_delivery ORDER BY request_id",
+            "SELECT * FROM durable_outbox_attempts ORDER BY lease_id",
+        ],
+    );
+    let blobs: recurring::SqlRows = recurring::sql_rows(
+        &target.join("body.db"),
+        &[
+            "SELECT * FROM blob_metadata ORDER BY id",
+            "SELECT * FROM blobs ORDER BY digest_algorithm, digest_bytes",
+        ],
+    );
+    (state, blobs)
+}
+
 pub(super) fn start_host(
     fixture: &Fixture,
     inputs: &SuccessorProcessInputs,
@@ -131,32 +177,80 @@ pub(super) fn start_host(
         "orderly stop removes the prior owned socket"
     );
 
-    let mut worker: Command = Command::new(&inputs.executables.successor_host);
-    worker.arg("serve-protected-worker");
-    pins(&mut worker, fixture, inputs);
-    target_flags(&mut worker, inputs, export, &inputs.certificate, index);
-    worker.args([
-        "--created-checkpoint",
-        &HOST_CHECKPOINT.to_string(),
-        "--timeout-seconds",
-        "600",
-        "--confirm-offline-fence-advance",
-        "--socket",
-        socket.to_str().unwrap(),
-        "--frontend-uid",
-        &FRONTEND_UID.to_string(),
-        "--max-connections",
-        "4098",
-        "--max-requests",
-        "4096",
-        "--total-deadline-seconds",
-        "3600",
-    ]);
-    worker
-        .uid(WORKER_UID)
-        .gid(0)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+    let worker_command = |key: &Path| -> Command {
+        let mut command: Command = Command::new(&inputs.executables.successor_host);
+        command.arg("serve-protected-worker");
+        pins(&mut command, fixture, inputs);
+        target_flags_with_key(
+            &mut command,
+            inputs,
+            export,
+            &inputs.certificate,
+            index,
+            key,
+        );
+        command.args([
+            "--created-checkpoint",
+            &HOST_CHECKPOINT.to_string(),
+            "--timeout-seconds",
+            "600",
+            "--confirm-offline-fence-advance",
+            "--socket",
+            socket.to_str().unwrap(),
+            "--frontend-uid",
+            &FRONTEND_UID.to_string(),
+            "--max-connections",
+            "4098",
+            "--max-requests",
+            "4096",
+            "--total-deadline-seconds",
+            "3600",
+        ]);
+        command.uid(WORKER_UID).gid(0);
+        command
+    };
+    let wrong_key: PathBuf = inputs.targets[index].join("wrong-private.key");
+    let wrong_seed: [u8; 32] = [0x97; 32];
+    let wrong_signer: ed25519_zebra::SigningKey = wrong_seed.into();
+    let wrong_public: [u8; 32] = ed25519_zebra::VerificationKey::from(&wrong_signer).into();
+    assert_ne!(wrong_public, *inputs.members[index].validator_id.as_bytes());
+    fs::write(&wrong_key, wrong_seed).unwrap();
+    fs::set_permissions(&wrong_key, fs::Permissions::from_mode(0o600)).unwrap();
+    chown(&wrong_key, WORKER_UID);
+    let before_fence: WriterFenceGeneration = target_fence(fixture, inputs, index);
+    let before_rows: (recurring::SqlRows, recurring::SqlRows) = target_rows(&inputs.targets[index]);
+    let wrong: Output =
+        process::spawn_bounded_output(worker_command(&wrong_key), Duration::from_secs(600));
+    assert!(
+        !wrong.status.success(),
+        "wrong-key successor worker started"
+    );
+    assert!(
+        String::from_utf8_lossy(&wrong.stderr)
+            .contains("successor member key differs from the local signing key"),
+        "wrong-key successor refusal lacked the actual-key check: {}",
+        String::from_utf8_lossy(&wrong.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&wrong.stdout).contains("complete=true") && !socket.exists(),
+        "wrong-key successor worker exposed a listening or signed route"
+    );
+    let after_fence: WriterFenceGeneration = target_fence(fixture, inputs, index);
+    assert_eq!(
+        before_fence.checked_next(),
+        Some(after_fence),
+        "failed startup claims exactly one writer generation"
+    );
+    assert_eq!(
+        target_rows(&inputs.targets[index]),
+        before_rows,
+        "wrong-key startup changed retained business, receipt or blob rows"
+    );
+    println!("successor_protected_wrong_key_refused=passed");
+
+    let key: PathBuf = inputs.targets[index].join("private.key");
+    let mut worker: Command = worker_command(&key);
+    worker.stdout(Stdio::piped()).stderr(Stdio::inherit());
     let startup_cap: NonZeroUsize =
         process::compiled_host_startup_line_limit(fixture.network.chain_id.as_str());
     let (worker_guard, worker_line): (process::ChildGuard, String) =

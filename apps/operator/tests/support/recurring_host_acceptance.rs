@@ -59,7 +59,7 @@ struct CurrentTargets {
     members: Vec<SuccessorProcessMember>,
 }
 
-type SqlRows = Vec<Vec<Vec<rusqlite::types::Value>>>;
+pub(super) type SqlRows = Vec<Vec<Vec<rusqlite::types::Value>>>;
 
 /// Every physical durable row, blob, source token, fence and permanent origin.
 /// A refusal compares against the state captured AFTER the fault is injected.
@@ -76,7 +76,7 @@ struct ProtectedState {
     blob_rows: Vec<SqlRows>,
 }
 
-fn sql_rows(path: &Path, statements: &[&str]) -> SqlRows {
+pub(super) fn sql_rows(path: &Path, statements: &[&str]) -> SqlRows {
     let mut connection: rusqlite::Connection =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();

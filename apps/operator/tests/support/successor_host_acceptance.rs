@@ -262,6 +262,19 @@ fn target_flags(
     index: usize,
 ) {
     let target: &Path = &inputs.targets[index];
+    let key: PathBuf = target.join("private.key");
+    target_flags_with_key(command, inputs, export, certificate, index, &key);
+}
+
+fn target_flags_with_key(
+    command: &mut Command,
+    inputs: &SuccessorProcessInputs,
+    export: &Path,
+    certificate: &Path,
+    index: usize,
+    key: &Path,
+) {
+    let target: &Path = &inputs.targets[index];
     command.args([
         "--manifest-history-dir",
         export.to_str().unwrap(),
@@ -274,7 +287,7 @@ fn target_flags(
         "--validator-id",
         &hex(inputs.members[index].validator_id.as_bytes()),
         "--signer-key-file",
-        target.join("private.key").to_str().unwrap(),
+        key.to_str().unwrap(),
     ]);
 }
 
