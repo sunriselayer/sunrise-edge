@@ -59,7 +59,7 @@ struct CurrentTargets {
     members: Vec<SuccessorProcessMember>,
 }
 
-type SqlRows = Vec<Vec<Vec<rusqlite::types::Value>>>;
+pub(super) type SqlRows = Vec<Vec<Vec<rusqlite::types::Value>>>;
 
 /// Every physical durable row, blob, source token, fence and permanent origin.
 /// A refusal compares against the state captured AFTER the fault is injected.
@@ -99,6 +99,37 @@ fn sql_rows(path: &Path, statements: &[&str]) -> SqlRows {
     tables
 }
 
+const STATE_CONTENT_QUERIES: [&str; 11] = [
+    "SELECT * FROM durable_import_progress ORDER BY id",
+    "SELECT * FROM durable_outgoing_barrier ORDER BY id",
+    "SELECT * FROM durable_successor_serving ORDER BY id",
+    "SELECT * FROM durable_state ORDER BY key",
+    "SELECT * FROM durable_conditional_readiness ORDER BY slot",
+    "SELECT * FROM durable_object_heads ORDER BY object_id",
+    "SELECT * FROM durable_object_versions ORDER BY object_id, object_version",
+    "SELECT * FROM durable_receipts ORDER BY request_id",
+    "SELECT * FROM durable_outbox_messages ORDER BY request_id, message_index",
+    "SELECT * FROM durable_outbox_delivery ORDER BY request_id",
+    "SELECT * FROM durable_outbox_attempts ORDER BY lease_id",
+];
+
+pub(super) fn capture_state_rows(path: &Path, metadata_query: &str) -> SqlRows {
+    let statements: Vec<&str> = std::iter::once(metadata_query)
+        .chain(STATE_CONTENT_QUERIES)
+        .collect();
+    sql_rows(path, &statements)
+}
+
+pub(super) fn capture_blob_rows(path: &Path) -> SqlRows {
+    sql_rows(
+        path,
+        &[
+            "SELECT * FROM blob_metadata ORDER BY id",
+            "SELECT * FROM blobs ORDER BY digest_algorithm, digest_bytes",
+        ],
+    )
+}
+
 fn protected_state(fixture: &Fixture, targets: &CurrentTargets) -> ProtectedState {
     let mut metadata: Vec<(
         WriterFenceGeneration,
@@ -136,30 +167,11 @@ fn protected_state(fixture: &Fixture, targets: &CurrentTargets) -> ProtectedStat
                 .get_successor_serving(&operation, fixture.network.domain)
                 .unwrap(),
         ));
-        state_rows.push(sql_rows(
+        state_rows.push(capture_state_rows(
             &path.join("state.db"),
-            &[
-                "SELECT * FROM durable_metadata ORDER BY id",
-                "SELECT * FROM durable_import_progress ORDER BY id",
-                "SELECT * FROM durable_outgoing_barrier ORDER BY id",
-                "SELECT * FROM durable_successor_serving ORDER BY id",
-                "SELECT * FROM durable_state ORDER BY key",
-                "SELECT * FROM durable_conditional_readiness ORDER BY slot",
-                "SELECT * FROM durable_object_heads ORDER BY object_id",
-                "SELECT * FROM durable_object_versions ORDER BY object_id, object_version",
-                "SELECT * FROM durable_receipts ORDER BY request_id",
-                "SELECT * FROM durable_outbox_messages ORDER BY request_id, message_index",
-                "SELECT * FROM durable_outbox_delivery ORDER BY request_id",
-                "SELECT * FROM durable_outbox_attempts ORDER BY lease_id",
-            ],
+            "SELECT * FROM durable_metadata ORDER BY id",
         ));
-        blob_rows.push(sql_rows(
-            &path.join("body.db"),
-            &[
-                "SELECT * FROM blob_metadata ORDER BY id",
-                "SELECT * FROM blobs ORDER BY digest_algorithm, digest_bytes",
-            ],
-        ));
+        blob_rows.push(capture_blob_rows(&path.join("body.db")));
     }
     ProtectedState {
         business: lifecycle::physical_snapshots(fixture, targets),

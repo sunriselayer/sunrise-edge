@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-11-05 (Asia/Singapore)。これは唯一の現行作業表です。
+更新: 2026-11-06 (Asia/Singapore)。これは唯一の現行作業表です。
 現行チェックは **85件中71件完了・14件未完了**。残るコード・検証の親は
 **D02/M1/M2/M3/M7**、停止中の子3件と公開準備の親6件も未完了です。
 以下の行を現行状態とし、祖先sourceの成功や部分実行を親の完了へ転用しません。
@@ -34,6 +34,11 @@ exact `25a86df1`のliteral npm ciと完全requiredは全20実行記録がexit 0�
 `m2-required-25a86df1-1105-v8-a16b5e9d-terminal-success-handoff.md`。
 これは同sourceの資格であり、RELEASE資格と親M2/M7の完了ではない。
 親M2/M7は未完了。
+[PR #347](https://github.com/sunriselayer/sunrise-edge/pull/347) は2026-11-06にmergeした。
+文書とAGENTSだけのexact `38575295`で全8 CI、literal npm ciと完全requiredが
+終端成功した。元7 epoch/e8 selectorを含む20 command/40 streamのexit 0・EOF/wait、
+source不変、PID/cgroup解放を別途照合した。merge commitは `add45bb62`。
+これは文書統合sourceの資格であり、親M2/M7の未達を解消しない。
 
 ## 作業終了時の環境整理
 
@@ -176,7 +181,7 @@ exact `25a86df1`のliteral npm ciと完全requiredは全20実行記録がexit 0�
     `50fbf22d` のStandard Asset/publication fixture全117はE156で成功。
     同sourceのoriginal ordered/certified別UID・TLS fixtureもE166で成功。
     f51はE182の4 RELEASE CLI profiles、E187の元12 runtime、E189の全8CI、
-    E191のlocal完全requiredまで成功。現行8daはE213の完全required・E218の全8CI、
+    E191のlocal完全requiredまで成功。8da sourceではE213の完全required・E218の全8CI、
     E215のNative13 A/B・E219のpublication-genesis RELEASE・E222の元12 runtimeで照合した。
     ZeroShare専用WIPは未統合・未検証で、
     各familyの残るlifecycle/全体対応をそろえるまでM2全体は未完了。
@@ -501,6 +506,18 @@ N4同一鍵別pathの別UID fixtureはexact `25a86df1`で成功。exact `049dcd5
 literal npm ci・完全required・全8 CI・Native13 A/B・原12 RELEASE runtimeは成功した。
 exact `25a86df1`の全8 CI・literal npm ci・完全requiredも終端成功し、
 元の7 epoch selectorを保持した。適用される後続sourceのRELEASE資格は未確認。
+2026-11-06にN2の既存recurring ownerへ、保護workerの誤鍵起動拒否を追加した。
+別鍵は実member key mismatchで拒否し、fenceの既存進行だけを許して
+他のmetadata・receipt・blob行と署名routeを不変とする検証である。
+元targetと統合後のtest targetのビルド・Clippy・fmtは成功した。
+記録訂正前のexact `17946e42`でliteral npm ci・完全requiredはexit 0、実EOF/wait、
+process group解放、source不変で終端し、通常分岐の元7 epoch/e8も成功。
+ただし通常gateは`SUNRISE_SUCCESSOR_MULTIUID_FIXTURE`を設定せず、
+追加したwrong-key別UID分岐は実行されていない。markerもrawにない。
+同sourceのCIは2026-11-06 10:21 UTC時点で実行中。
+READMEの環境条件訂正後の最終sourceで完全required・CIと
+実UIDの元ownerを再照合する。初回のpartialと通常分岐をM2合格に数えない。
+現時点の範囲は[限定記録](docs/development/validation/2026-11-06-m2-n2-protected-wrong-key/README.md) を参照する。
 元original/certified
 workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする。
 
@@ -556,6 +573,12 @@ workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする�
     E74の実compiled TLSで成功。独立anchorを使用する追加variantも成功。
     このsourceの最終完全gate/CIは未完了。
     host/power/media/fsync・別host/実topology failoverの証拠へ読み替えない。
+    2026-11-06に既存の実TLS owner-loss helperへ、70KiBの参照付きhistorical bodyを
+    保持する別selectorを追加。全4hostのSIGKILL/reap、次generation、保存済み再送、
+    新規有料取引と最終停止までのbody・portable collectionsを照合した。
+    新selectorと既存関連4件の限定実行は成功し、[記録](docs/development/validation/2026-11-06-m3-positive-owner-loss/README.md) を保存。
+    記録訂正前のexact `17946e42`の完全requiredで新selectorも成功した。同sourceCIと
+    記録訂正後の最終source全体資格、別host/物理faultは未達で、M3親は未完了。
   - [x] [ordinary SQLiteの仮想power/block-I/O fault component](docs/architecture/native-sqlite-virtual-fault-profile.md):
     E77の失敗を保持し、E79で実guest電源断2種・write-only EIO・flush-only EIOと
     全cold復旧を検証。既存schema/v6・user_version5の通常profileだけを対象とする。
@@ -737,7 +760,7 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     Rust147 summaries/4,397 passed/0 failed/43 ignored・CF66、元7epochs/e8条件を保持。
     記録serviceの同Invocation自然終了と自己所有unit停止後のPID/cgroup不在も確認し、
     local完全gateは完了。E188/初回143の失敗・partialと未保存証拠の限界は保持する。
-  - 現行8daの資格: E213のliteral npm ci +完全required、E218の全8 CI、E215のfresh
+  - 8da sourceの歴史資格: E213のliteral npm ci +完全required、E218の全8 CI、E215のfresh
     Native13 A/B全byte/mode/owner一致、E216/E217のfresh23/current49と元一覧、
     E219のRELEASE publication-genesis 73 predicates、E222の元12 runtime101/0/3を
     同じsource/treeでroot照合した。外側143・集計失敗と未観測区間は保全し、
@@ -745,7 +768,7 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     独立最終source/security/release reviewとissue dispositionは残り、全M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
-    公開準備行の責務は未達のまま保持する。現行8daのbuild/upgrade/restore/parity/
+    公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
     元selectorの成功を、別の未指定campaign待ちとはしない。新sourceにはそのsourceの
     13-target A/B・実RELEASE bindingsを使い、ancestor結果を借用しない。
     広告する他providerに限り元のPhase16/17実provider基準を適用する。
@@ -871,7 +894,7 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
    exact `049dcd59`ではNative13 A/B、原12 RELEASE runtime、literal npm ciと完全required、
    全8 CIまで成功。exact `25a86df1`の全8 CIとliteral npm ci・完全requiredも
    exit 0・EOF/wait・資源解放まで終端確認した。次は同sourceの適用される
-   RELEASE条件と親の残件を照合する。文書統合PR #347自身の全体gateは別途確認する。
+   RELEASE条件と親の残件を照合する。文書統合PR #347自身の全体gateは冒頭に記録済み。
    [M2-N1〜N5の元照合](#m2初期リリース対象の照合-2026-11-03) を参照し、
    残る未選択consumerの必要性、対象別lifecycleと不足検証を具体化する。
    停止対象を再開せず、全prepared型や全identity移行を新たな必須条件にしない。
