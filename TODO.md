@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-11-05 (Asia/Singapore)。これは唯一の現行作業表です。
+更新: 2026-11-06 (Asia/Singapore)。これは唯一の現行作業表です。
 現行チェックは **85件中71件完了・14件未完了**。残るコード・検証の親は
 **D02/M1/M2/M3/M7**、停止中の子3件と公開準備の親6件も未完了です。
 以下の行を現行状態とし、祖先sourceの成功や部分実行を親の完了へ転用しません。
@@ -34,6 +34,11 @@ exact `25a86df1`のliteral npm ciと完全requiredは全20実行記録がexit 0�
 `m2-required-25a86df1-1105-v8-a16b5e9d-terminal-success-handoff.md`。
 これは同sourceの資格であり、RELEASE資格と親M2/M7の完了ではない。
 親M2/M7は未完了。
+[PR #347](https://github.com/sunriselayer/sunrise-edge/pull/347) は2026-11-06にmergeした。
+文書とAGENTSだけのexact `38575295`で全8 CI、literal npm ciと完全requiredが
+終端成功した。元7 epoch/e8 selectorを含む20 command/40 streamのexit 0・EOF/wait、
+source不変、PID/cgroup解放を別途照合した。merge commitは `add45bb62`。
+これは文書統合sourceの資格であり、親M2/M7の未達を解消しない。
 
 ## 作業終了時の環境整理
 
@@ -871,7 +876,7 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
    exact `049dcd59`ではNative13 A/B、原12 RELEASE runtime、literal npm ciと完全required、
    全8 CIまで成功。exact `25a86df1`の全8 CIとliteral npm ci・完全requiredも
    exit 0・EOF/wait・資源解放まで終端確認した。次は同sourceの適用される
-   RELEASE条件と親の残件を照合する。文書統合PR #347自身の全体gateは別途確認する。
+   RELEASE条件と親の残件を照合する。文書統合PR #347自身の全体gateは冒頭に記録済み。
    [M2-N1〜N5の元照合](#m2初期リリース対象の照合-2026-11-03) を参照し、
    残る未選択consumerの必要性、対象別lifecycleと不足検証を具体化する。
    停止対象を再開せず、全prepared型や全identity移行を新たな必須条件にしない。
