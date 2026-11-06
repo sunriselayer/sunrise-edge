@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-11-06 (Asia/Singapore)。これは唯一の現行作業表です。
+更新: 2026-11-07 (Asia/Singapore)。これは唯一の現行作業表です。
 現行チェックは **85件中71件完了・14件未完了**。残るコード・検証の親は
 **D02/M1/M2/M3/M7**、停止中の子3件と公開準備の親6件も未完了です。
 以下の行を現行状態とし、祖先sourceの成功や部分実行を親の完了へ転用しません。
@@ -39,6 +39,14 @@ exact `25a86df1`のliteral npm ciと完全requiredは全20実行記録がexit 0�
 終端成功した。元7 epoch/e8 selectorを含む20 command/40 streamのexit 0・EOF/wait、
 source不変、PID/cgroup解放を別途照合した。merge commitは `add45bb62`。
 これは文書統合sourceの資格であり、親M2/M7の未達を解消しない。
+[PR #348](https://github.com/sunriselayer/sunrise-edge/pull/348) は2026-11-07
+(Asia/Singapore) にmergeした。exact `d3c57cbc`のliteral npm ci・完全required、
+全8 hosted CI、元7 epoch/e8の実UID N2誤鍵拒否fixtureを終端成功で照合した。
+fixtureは誤鍵拒否2件・別UID起動2件・e8の1832-byte候補とACK各2件、
+EOF/wait/reap・既知PID/cgroup/Docker解放を確認。先のstaging失敗2件は別に保全した。
+merge commitは `8fc79746`、treeは検証済みheadと同一。M3の新selectorも
+同headの完全requiredとCIで成功した。これは選択済みcomponentの資格であり、
+親M2/M3/M7、停止中fault、最終独立security/release reviewは未完了。
 
 ## 作業終了時の環境整理
 
@@ -514,10 +522,16 @@ exact `25a86df1`の全8 CI・literal npm ci・完全requiredも終端成功し�
 process group解放、source不変で終端し、通常分岐の元7 epoch/e8も成功。
 ただし通常gateは`SUNRISE_SUCCESSOR_MULTIUID_FIXTURE`を設定せず、
 追加したwrong-key別UID分岐は実行されていない。markerもrawにない。
-同sourceのCIは2026-11-06 10:21 UTC時点で実行中。
-READMEの環境条件訂正後の最終sourceで完全required・CIと
-実UIDの元ownerを再照合する。初回のpartialと通常分岐をM2合格に数えない。
-現時点の範囲は[限定記録](docs/development/validation/2026-11-06-m2-n2-protected-wrong-key/README.md) を参照する。
+同sourceのCIは記録訂正pushでcancelされたため成功に数えない。
+最終exact `d3c57cbc`ではliteral npm ci・完全requiredと全8 CIが終端成功し、
+通常分岐の元7 epoch/e8を保持した。別の実UID fixtureで同じ元selectorを
+13,408.18秒実行し、誤鍵拒否2件・別UID 2件・epoch 1〜7終了・e8 unlock・
+1832-byte候補とACK各2件・1 passed/0 failedをrawで確認。実EOF/wait/reap、
+既知PID/cgroup/Docker解放、source/tool不変も独立照合した。
+先のpartialとstaging失敗2件は別に保全し、成功へ合算しない。
+[限定記録](docs/development/validation/2026-11-06-m2-n2-protected-wrong-key/README.md) を参照する。
+後続`823671df`は既存offline genesis author ownerに承認切断拒否を追加したが、
+実UID fixture・全体gate/CIは未実行で、N3全体や親M2の完了とはしない。
 元original/certified
 workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする。
 
@@ -577,8 +591,9 @@ workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする�
     保持する別selectorを追加。全4hostのSIGKILL/reap、次generation、保存済み再送、
     新規有料取引と最終停止までのbody・portable collectionsを照合した。
     新selectorと既存関連4件の限定実行は成功し、[記録](docs/development/validation/2026-11-06-m3-positive-owner-loss/README.md) を保存。
-    記録訂正前のexact `17946e42`の完全requiredで新selectorも成功した。同sourceCIと
-    記録訂正後の最終source全体資格、別host/物理faultは未達で、M3親は未完了。
+    記録訂正前のexact `17946e42`の完全requiredで新selectorも成功した。
+    最終exact `d3c57cbc`の完全requiredと全8 CIでも同selectorが成功。
+    別host/物理faultは未達で、M3親は未完了。
   - [x] [ordinary SQLiteの仮想power/block-I/O fault component](docs/architecture/native-sqlite-virtual-fault-profile.md):
     E77の失敗を保持し、E79で実guest電源断2種・write-only EIO・flush-only EIOと
     全cold復旧を検証。既存schema/v6・user_version5の通常profileだけを対象とする。
@@ -766,6 +781,10 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     同じsource/treeでroot照合した。外側143・集計失敗と未観測区間は保全し、
     製品本体の自然0/全raw/EOF/wait・inputs・全既知PID/cgroup解放を別途確認した。
     独立最終source/security/release reviewとissue dispositionは残り、全M7は未完了。
+  - PR #348 exact `d3c57cbc`ではliteral npm ci・完全required、全8 CIと
+    N2実UID元selectorを終端成功で照合した。merge commit `8fc79746`は同tree。
+    後続genesis testを含む最終sourceでのfresh Native13 A/B・元12 RELEASE runtimeと
+    独立最終source/security/release reviewは未達で、親M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/

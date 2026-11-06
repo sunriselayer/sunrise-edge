@@ -45,7 +45,7 @@ sunrise-edge-operator --all-features --test conditional_readiness_sqlite --
 `440a838b851339c6a27a07bb6661fa439dc251ffed4c18b51979df7c225f03f3`).
 `cargo +1.97.1 fmt --all --check` and `git diff --check` passed.
 
-## Runtime qualification pending
+## Earlier ordinary gate
 
 The unchanged selector completed on `17946e42` in the ordinary local required
 gate after all seven epochs and e8, with actual exit 0, raw EOF, wait, and
@@ -55,12 +55,32 @@ false and the new wrong-key assertion did not run. The expected
 `successor_protected_wrong_key_refused=passed` marker is absent from its raw
 output. This ordinary result is not the protected branch's verdict.
 
-Run the same original selector in a bounded root-inside-container real-UID
-fixture on the final exact source, preserving the full seven epochs, e8,
-1832-byte candidates, raw exit, both stream EOFs, wait/reap, and owned
-container/PID/cgroup release. Require the wrong-key marker and existing
-distinct-UID markers there. The preceding `049dcd59` fixture took about
-3 hours 43 minutes and remains historical evidence only. Hosted CI, the
-final source's complete required gate, and the applicable release profile
-remain separate qualification. Until the protected fixture actually succeeds,
-the new wrong-key control and M2-N2 remain open.
+The preceding `049dcd59` fixture took about 3 hours 43 minutes and remains
+historical evidence only. The final-source result is below.
+
+## Final source and protected result
+
+PR #348 head `d3c57cbc893b52d32f64251afddf20d9b51071f1`, tree
+`e182027210dfa41ebd05598b8fe85a76fa581611`, passed literal npm ci and
+the complete required gate with actual exit 0, stream EOF, wait/reap and
+source integrity. All seven hosted CI jobs and aggregate `check` passed in
+run 42202141140. The ordinary gate and CI do not enable the protected
+real-UID branch.
+
+The separate final-head attempt c ran the original ignored selector inside
+a bounded, root-inside-container fixture with worker UID 10001 and frontend
+UID 10002. It passed once in 13,408.18 seconds with two actual wrong-key
+refusals, two distinct-UID starts, recurring epoch ends 1 through 7, epoch-8
+terminal unlock, two 1832-byte epoch-8 candidates and acknowledged submissions.
+The attached Docker test and outer controller exited 0, both pairs of raw
+streams reached EOF and both processes were waited/reaped. The known PIDs,
+cgroup and container were released; source, staged executables and libraries
+remained exact. An independent terminal audit repeated these checks. The
+exact unchanged test asserts eight links; no separate raw 35-role counter was
+present, so that count is not claimed as an independent raw observation.
+The two earlier attempts failed during executable staging and are retained
+separately, not counted as product success. See external terminal receipts
+`pr348-n2-protected-final-run-20261106c/terminal.json` and
+`pr348-n2-outer-owner-run-20261106c/owner-terminal.json` under the validation
+directory. Parent M2, the final RELEASE profile and independent security
+review remain open.
