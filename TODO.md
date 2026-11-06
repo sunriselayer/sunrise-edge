@@ -509,9 +509,14 @@ exact `25a86df1`の全8 CI・literal npm ci・完全requiredも終端成功し�
 2026-11-06にN2の既存recurring ownerへ、保護workerの誤鍵起動拒否を追加した。
 別鍵は実member key mismatchで拒否し、fenceの既存進行だけを許して
 他のmetadata・receipt・blob行と署名routeを不変とする検証である。
-元targetと統合後のtest targetのビルド・Clippy・fmtは成功したが、新条件を含む
-元7 epoch/e8 runtimeの終端成功は未確認。統合sourceの完全required初回は
-記録修正のためcompile途中で自己中断し、CIも未終端。partialを成功扱いしない。
+元targetと統合後のtest targetのビルド・Clippy・fmtは成功した。
+記録訂正前のexact `17946e42`でliteral npm ci・完全requiredはexit 0、実EOF/wait、
+process group解放、source不変で終端し、通常分岐の元7 epoch/e8も成功。
+ただし通常gateは`SUNRISE_SUCCESSOR_MULTIUID_FIXTURE`を設定せず、
+追加したwrong-key別UID分岐は実行されていない。markerもrawにない。
+同sourceのCIは2026-11-06 10:21 UTC時点で実行中。
+READMEの環境条件訂正後の最終sourceで完全required・CIと
+実UIDの元ownerを再照合する。初回のpartialと通常分岐をM2合格に数えない。
 現時点の範囲は[限定記録](docs/development/validation/2026-11-06-m2-n2-protected-wrong-key/README.md) を参照する。
 元original/certified
 workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする。
@@ -572,7 +577,8 @@ workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする�
     保持する別selectorを追加。全4hostのSIGKILL/reap、次generation、保存済み再送、
     新規有料取引と最終停止までのbody・portable collectionsを照合した。
     新selectorと既存関連4件の限定実行は成功し、[記録](docs/development/validation/2026-11-06-m3-positive-owner-loss/README.md) を保存。
-    統合sourceの完全required・CIと別host/物理faultは未達で、M3親は未完了。
+    記録訂正前のexact `17946e42`の完全requiredで新selectorも成功した。同sourceCIと
+    記録訂正後の最終source全体資格、別host/物理faultは未達で、M3親は未完了。
   - [x] [ordinary SQLiteの仮想power/block-I/O fault component](docs/architecture/native-sqlite-virtual-fault-profile.md):
     E77の失敗を保持し、E79で実guest電源断2種・write-only EIO・flush-only EIOと
     全cold復旧を検証。既存schema/v6・user_version5の通常profileだけを対象とする。

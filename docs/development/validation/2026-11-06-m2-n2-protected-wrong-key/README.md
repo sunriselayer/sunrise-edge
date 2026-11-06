@@ -47,13 +47,20 @@ sunrise-edge-operator --all-features --test conditional_readiness_sqlite --
 
 ## Runtime qualification pending
 
-The original ignored seven-epoch selector has **not run** on this source.
-The preceding `049dcd59` owner took about 3 hours 43 minutes with a finite
-six-hour controller deadline. Its success is preserved separately and is
-not this change's verdict. Run the unchanged selector once in the combined
-exact-source required gate, preserving raw exit, stdout/stderr EOF,
-wait/reap, owned container and PID/cgroup release. Check the new
-`successor_protected_wrong_key_refused=passed` marker alongside the existing
-distinct-UID and seven-epoch/e8 observations. Hosted CI and the applicable
-release profile remain separate qualification. Until that terminal evidence
-exists, this new control is compiled only and M2-N2 remains open.
+The unchanged selector completed on `17946e42` in the ordinary local required
+gate after all seven epochs and e8, with actual exit 0, raw EOF, wait, and
+process-group release. That gate does not set
+`SUNRISE_SUCCESSOR_MULTIUID_FIXTURE`, so `protected::enabled()` returned
+false and the new wrong-key assertion did not run. The expected
+`successor_protected_wrong_key_refused=passed` marker is absent from its raw
+output. This ordinary result is not the protected branch's verdict.
+
+Run the same original selector in a bounded root-inside-container real-UID
+fixture on the final exact source, preserving the full seven epochs, e8,
+1832-byte candidates, raw exit, both stream EOFs, wait/reap, and owned
+container/PID/cgroup release. Require the wrong-key marker and existing
+distinct-UID markers there. The preceding `049dcd59` fixture took about
+3 hours 43 minutes and remains historical evidence only. Hosted CI, the
+final source's complete required gate, and the applicable release profile
+remain separate qualification. Until the protected fixture actually succeeds,
+the new wrong-key control and M2-N2 remain open.
