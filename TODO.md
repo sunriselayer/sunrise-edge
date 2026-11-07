@@ -600,7 +600,7 @@ workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする�
     次generationを起動する別controlを追加。全12 SQL tables・2 blob tablesと4 portable
     collections/参照bodyの保存済み再送不変、新規有料取引/両quorum/nonce/receiptを検証する。
     E74の実compiled TLSで成功。独立anchorを使用する追加variantも成功。
-    このsourceの最終完全gate/CIは未完了。
+    E74時点のsourceの最終完全gate/CIは未完了だった。後続sourceの結果は下に記録する。
     host/power/media/fsync・別host/実topology failoverの証拠へ読み替えない。
     2026-11-06に既存の実TLS owner-loss helperへ、70KiBの参照付きhistorical bodyを
     保持する別selectorを追加。全4hostのSIGKILL/reap、次generation、保存済み再送、
