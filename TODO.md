@@ -863,6 +863,12 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     e8の8 linksは実行したexact selectorの既存assertionに含まれる。35 rolesは別の
     `business_recovery` unit testのassertionで、この元12 runtime rawからの独立観測とはしない。
     独立最終source/security/release reviewとissue dispositionは未達で、親M7は未完了。
+    PR #350の`81bde20f`では全8 hosted CIが成功したが、同HEADのlocal完全requiredは
+    literal npm ciがexit 0、`./scripts/check-all.sh`がexit 101。実`/tmp`を使った
+    再実行でも7 epoch後のe8 `pack-saved`で`recovery_budget_refusal=observations`となった。
+    最終receipt SHA-256は`949c7cce3adb2ca8127b34562c28eba06a7c0144d3c9676e6252a04908a6c610`。
+    rawのEOF・wait/reap・PID/cgroup解放とsource不変を確認済み。CIや祖先sourceの成功を
+    このlocal失敗の代わりにせず、完全requiredとPR #350の統合は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
