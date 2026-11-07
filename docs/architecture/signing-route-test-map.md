@@ -70,6 +70,34 @@ discovery/execution helper own those ignored tests. Their selectors, timeouts,
 seven epochs and withdrawal-unlock controls are retained. Running a short
 selector test or merely compiling the enclosing target is not their success.
 
+### FinalTransfer within the prepared fee-claim owner
+
+At this pinned source, the last unclaimed positive share becomes
+`FinalTransfer` in [preparation](../../crates/node-core/src/fee_claims/preparation.rs).
+Its [codec](../../crates/node-core/src/fee_claims/codec.rs) retains a nonempty
+signed local-execution leg in the v1 intent; the
+[ordered handler](../../crates/node-core/src/fee_claims.rs) uses the resource's
+policy-pinned `transfer_entrypoint`. Preparation checks the historical
+claimant key, unused request ID and leg/kind match. The existing
+[`fee_claim_final_transfer_operation_round_trips`](../../crates/node-core/src/fee_claims/codec/tests.rs)
+and
+[`final_transfer_leg_selectors_match_when_leg_bytes_are_identical`](../../clients/rust/src/fee_claim_client/tests.rs)
+cover canonical bytes and selector equality, not business approval.
+
+[`FeeClaimReview::build`](../../clients/rust/src/fee_claim_review.rs) renders
+the full leg and claim fields while labeling the view non-authorizing, generic
+code/arguments uninterpreted and the displayed leg signature unauthenticated
+by that review. Its `final_transfer_renders_the_full_raw_leg_content` and
+`malformed_leg_bytes_are_refused` tests cover this display/refusal. The
+[generic CLI](../../apps/cli/src/commands/fee_claim_review.rs) reviews saved
+inputs without a seed or signs after review construction with a development
+`LocalSigner`. The selected
+[positive Split policy](../../apps/cli/src/positive_fee_claim_split.rs) accepts
+only `Split { expected_payout: Some(_) }`, so its protected approval does not
+authorize `FinalTransfer`. A protected `FinalTransfer` operator/authority,
+recognized leg meaning, approval content and backend remain unselected in this
+snapshot; [TODO.md](../../TODO.md) owns their current status.
+
 ## Selected protected client routes
 
 Every selected route uses the trusted local OS and private process/permission

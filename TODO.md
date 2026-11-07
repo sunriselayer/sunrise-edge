@@ -485,6 +485,11 @@ M2-N1〜N5は既存M2の不足を分ける作業IDであり、新しい親gate�
 | FinalTransfer fee claim | development署名の経路でありpositive Split custodyに含めない。具体authorityとreview契約は未選択 |
 | offline genesis author | [DR-0286](docs/architecture/decisions/0286-standard-asset-genesis-protected-review-worker.md) の二段階workerを実装・限定別UID検証済み。実承認者/鍵/economics/ceremony、全体gateは未達 |
 
+FinalTransferの既存codec・prepared consumer・review表示・development signer・
+positive Splitとの権限分離を[署名経路マップ](docs/architecture/signing-route-test-map.md#finaltransfer-within-the-prepared-fee-claim-owner)へ対応付けた。
+これは静的な所在確認であり、未選択のauthority・leg semantics・承認内容・backend、
+実consumerの保護署名と検証は未達のまま保持する。
+
 N4では、同一identityの鍵復旧、provider停止/取消後restart、新identityへの正の移行を
 分ける。N1 readinessの元ownerは別UID・retained voteを確認した。N2の元recurring
 7 epoch/e8 ownerと実UID正例はexact `049dcd59`で成功した。N4の同一鍵別path復元も
@@ -812,15 +817,19 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     元の単一Description不一致以外のpredicateを満たすことを終端exit 0で確認した。
     限定compile資格のreceipt SHA-256は
     `e4d689d0d62c12c41c5f3cb59801aea984b3de2783e5e28f64d64b787734d410`。
-    元の外側`passed=false`を成功に書き換えない。続く実測`--list`は22回すべて
+    元の外側`passed=false`を成功に書き換えない。初回実測`--list`は22回すべて
     exit 0で候補一覧を生成したが、外側ownerは245msの短いunit実行を捕捉できず、
     admission SHAの取り違えもあり`passed=false`で終了した。失敗receipt
     `aa9cf2b779bb820379de26cad8b22612b8cac8031ffa7f2b119f7b0f94307796`を
     保全した。残余監視は135サンプル・停止時刻後の最終観測・実unit/cgroup不在を
     独立照合し、monitor receipt SHA-256
     `99912018576e6c36864a59cf6e2a70deb6e5317fcc5e18724101a4d841287f02`を記録。
-    監視成功を元ownerの合格に転用せず、修正版の独立審査を進める。
-    `--list`・元12 runtime・親M7は未完了。
+    監視成功を元ownerの合格に転用しない。別outputの修正版は実行中unitの再観測を
+    gateにして元10 driverのall/ignoredと2 exact ignoredの計22一覧を取得した。
+    外側`passed=true`、22 exit 0/wait、実EOF/reap、unit/cgroup解放とsource不変を
+    独立照合した。outer receipt SHA-256は
+    `5165dcbc1e5b00a04736625c156697abac0f857d562a9656f860fe76c1fdb1c0`。
+    一覧候補は確定したが、元12 runtime・親M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
@@ -953,7 +962,7 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
    PR #349の限定genesis別UID fixtureと同source完全required・CIは上記の通り成功した。
    merge commit `a6ae6229`を起点とするfresh Native13 A/Bは限定成功した。
    元12の未実行候補を同HEADで生成し、専用driver buildの外側判定失敗を保全した。
-   full-window監視と別の限定compile資格を独立照合した。次は実測`--list`・
+   full-window監視と別の限定compile資格、修正版での22件実測`--list`を独立照合した。次は
    同じHEADの元12 RELEASE runtimeを有限時間で実行し、親M2/M7の未達範囲と区別して記録する。
    [M2-N1〜N5の元照合](#m2初期リリース対象の照合-2026-11-03) を参照し、
    残る未選択consumerの必要性、対象別lifecycleと不足検証を具体化する。
