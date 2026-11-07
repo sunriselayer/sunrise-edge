@@ -530,8 +530,17 @@ process group解放、source不変で終端し、通常分岐の元7 epoch/e8も
 既知PID/cgroup/Docker解放、source/tool不変も独立照合した。
 先のpartialとstaging失敗2件は別に保全し、成功へ合算しない。
 [限定記録](docs/development/validation/2026-11-06-m2-n2-protected-wrong-key/README.md) を参照する。
-後続`823671df`は既存offline genesis author ownerに承認切断拒否を追加したが、
-実UID fixture・全体gate/CIは未実行で、N3全体や親M2の完了とはしない。
+後続`823671df`は既存offline genesis author ownerに二つの承認切断拒否を追加した。
+PR #349のexact `c58c5444`で全8 CIとliteral npm ci・完全requiredが終端成功し、
+元recurring selectorも1 passed/0 failed・約10,759秒で完走した。
+初回完全gateはservice PATHに`cf`がなく最終型検証でexit 1、初回genesis fixtureは
+compile serviceの作業ディレクトリ不足でexit 1となった。両失敗のrawとreceiptを保全した。
+修正した専用環境での完全gateはexit 0・実EOF/wait/reap・PID/cgroup解放・source/CLI不変を
+独立照合した。同じ`c58c5444`の別UID genesis V2 fixtureは既存7通常テストと
+元ignored selector 1件が成功し、二つの切断拒否marker、4 validator installを
+元test内で確認した。raw/ELF hash、container/unit/PID解放も独立照合済み。
+merge commit `a6ae6229`は同tree。これはN3の限定consumer資格であり、
+未選択のgeneric/paid、bond、FinalTransfer、親M2を完了とはしない。
 元original/certified
 workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする。
 
@@ -783,8 +792,11 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     独立最終source/security/release reviewとissue dispositionは残り、全M7は未完了。
   - PR #348 exact `d3c57cbc`ではliteral npm ci・完全required、全8 CIと
     N2実UID元selectorを終端成功で照合した。merge commit `8fc79746`は同tree。
-    後続genesis testを含む最終sourceでのfresh Native13 A/B・元12 RELEASE runtimeと
-    独立最終source/security/release reviewは未達で、親M7は未完了。
+    PR #349 exact `c58c5444`では全8 CI、literal npm ci・完全requiredと
+    genesis別UID限定fixtureを終端成功で照合した。最初の`cf` PATH不足と
+    fixture作業ディレクトリ不足によるexit 1も別に保全。merge commit `a6ae6229`は
+    exact `c58c5444`と同tree。後続sourceでのfresh Native13 A/B・元12 RELEASE runtime、
+    独立最終source/security/release reviewとissue dispositionは未達で、親M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
@@ -914,6 +926,9 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
    全8 CIまで成功。exact `25a86df1`の全8 CIとliteral npm ci・完全requiredも
    exit 0・EOF/wait・資源解放まで終端確認した。次は同sourceの適用される
    RELEASE条件と親の残件を照合する。文書統合PR #347自身の全体gateは冒頭に記録済み。
+   PR #349の限定genesis別UID fixtureと同source完全required・CIは上記の通り成功した。
+   次はmerge commit `a6ae6229`を起点とするfresh Native13 A/Bと元12 RELEASE runtimeを
+   実行し、親M2/M7の未達範囲と区別して記録する。
    [M2-N1〜N5の元照合](#m2初期リリース対象の照合-2026-11-03) を参照し、
    残る未選択consumerの必要性、対象別lifecycleと不足検証を具体化する。
    停止対象を再開せず、全prepared型や全identity移行を新たな必須条件にしない。
