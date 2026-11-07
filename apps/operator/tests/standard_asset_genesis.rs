@@ -328,7 +328,7 @@ fn protected_author_reviews_three_exact_frames_and_installs_four_validator_pairs
             std::thread::sleep(Duration::from_millis(20));
         }
     };
-    let review = |phase: &str| -> String {
+    let review = |phase: &str, respond: bool| -> String {
         let mut command: Command = Command::new(&binary);
         command
             .args(["protected-review", phase])
@@ -357,25 +357,26 @@ fn protected_author_reviews_three_exact_frames_and_installs_four_validator_pairs
                 break value.trim().to_owned();
             }
         };
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(
-                format!(
-                    "{} {digest}\n",
-                    if phase == "revoke" {
-                        "revoke"
-                    } else {
-                        "approve"
-                    }
+        let mut stdin: std::process::ChildStdin = child.stdin.take().unwrap();
+        if respond {
+            stdin
+                .write_all(
+                    format!(
+                        "{} {digest}\n",
+                        if phase == "revoke" {
+                            "revoke"
+                        } else {
+                            "approve"
+                        }
+                    )
+                    .as_bytes(),
                 )
-                .as_bytes(),
-            )
-            .unwrap();
+                .unwrap();
+        }
+        drop(stdin);
         lines.read_to_string(&mut captured).unwrap();
-        assert!(wait(&mut child).success(), "reviewer refused");
-        assert!(captured.contains("approval_sent=true"));
+        assert_eq!(wait(&mut child).success(), respond, "reviewer outcome");
+        assert_eq!(captured.contains("approval_sent=true"), respond);
         captured
     };
 
@@ -391,6 +392,15 @@ fn protected_author_reviews_three_exact_frames_and_installs_four_validator_pairs
     assert_eq!(unauthorized.read(&mut byte).unwrap(), 0);
     assert!(!wait(&mut unauthorized_worker).success());
     assert!(!state.exists());
+
+    // The real reviewer can inspect the exact nested candidate and then close
+    // stdin without approval. EOF must leave no retained approval or output.
+    let mut disconnected_nested: Child = spawn_worker("nested", &state, expiry);
+    let disconnected_nested_text: String = review("nested", false);
+    assert!(disconnected_nested_text.contains("publication_signing_frame="));
+    assert!(!wait(&mut disconnected_nested).success());
+    assert!(!state.exists());
+    assert!(!output_path.exists());
 
     let mut nested_worker: Child = spawn_worker("nested", &state, expiry);
     let socket_metadata: fs::Metadata = fs::symlink_metadata(&socket).unwrap();
@@ -411,7 +421,7 @@ fn protected_author_reviews_three_exact_frames_and_installs_four_validator_pairs
         !private_key_probe.status.success(),
         "reviewer could read protected key"
     );
-    let nested_text: String = review("nested");
+    let nested_text: String = review("nested", true);
     assert!(nested_text.contains("publication_signing_frame="));
     assert!(nested_text.contains("initialization_signing_frame="));
     assert!(nested_text.contains("fee_policy_frame="));
@@ -536,8 +546,21 @@ fn protected_author_reviews_three_exact_frames_and_installs_four_validator_pairs
         .gid(0);
     refused(spawn_bounded_output(wrong_key, Duration::from_secs(30)));
     fs::write(&key, original_key).unwrap();
+
+    // A disconnected outer review cannot publish a partially signed manifest
+    // or consume the retained nested approval, even after the protected key
+    // has been opened for the two independently reviewed inner frames.
+    let retained_approval: Vec<u8> = fs::read(&state).unwrap();
+    let mut disconnected_manifest: Child = spawn_worker("manifest", &state, 0);
+    let disconnected_manifest_text: String = review("manifest", false);
+    assert!(disconnected_manifest_text.contains("manifest_signing_frame="));
+    assert!(!wait(&mut disconnected_manifest).success());
+    assert_eq!(fs::read(&state).unwrap(), retained_approval);
+    assert!(!output_path.exists());
+    println!("genesis_protected_review_disconnects=both_refused");
+
     let mut manifest_worker: Child = spawn_worker("manifest", &state, 0);
-    let manifest_text: String = review("manifest");
+    let manifest_text: String = review("manifest", true);
     assert!(manifest_text.contains("manifest_signing_frame="));
     assert!(wait(&mut manifest_worker).success());
     let protected_bytes: Vec<u8> = fs::read(&output_path).unwrap();
@@ -577,10 +600,10 @@ fn protected_author_reviews_three_exact_frames_and_installs_four_validator_pairs
 
     let revoked_state: PathBuf = worker_dir.join("revoked.state");
     let mut revoked_nested: Child = spawn_worker("nested", &revoked_state, expiry);
-    review("nested");
+    review("nested", true);
     assert!(wait(&mut revoked_nested).success());
     let mut revoke_worker: Child = spawn_worker("revoke", &revoked_state, 0);
-    review("revoke");
+    review("revoke", true);
     assert!(wait(&mut revoke_worker).success());
     assert!(worker_dir.join("revoked.state.revoked").exists());
     let mut revoked_manifest: Command = Command::new(&binary);

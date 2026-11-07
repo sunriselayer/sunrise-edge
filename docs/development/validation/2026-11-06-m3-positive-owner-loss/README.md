@@ -43,4 +43,13 @@ The new-selector success raw SHA-256 is
 This is positive historical-body preservation during local process failover.
 It does not exercise a blob-write fault, paid-produced blob publication,
 cross-host failover, power/media/fsync faults, torn WAL, or the independent
-anchor guest. The full required gate and hosted CI remain separate.
+anchor guest.
+
+On integrated PR #348 head `d3c57cbc893b52d32f64251afddf20d9b51071f1`,
+tree `e182027210dfa41ebd05598b8fe85a76fa581611`, literal npm ci and the
+complete local required gate finished with exit 0, physical stream EOF,
+wait/reap, process-group release and unchanged source. The new selector also
+passed in exact-head CI run 42202141140; all seven jobs and aggregate `check`
+finished successfully. This qualifies the selected local owner-loss component
+on that head. Cross-host and physical faults, the stopped independent-anchor
+guest and torn-WAL work, and parent M3 remain open.

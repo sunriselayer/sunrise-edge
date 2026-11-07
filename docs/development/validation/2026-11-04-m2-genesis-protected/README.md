@@ -60,6 +60,16 @@ its cgroup released. No failure was retried.
 
 ## Remaining qualification
 
+After PR #348 merged, commit `823671df` added disconnected-review refusals
+to the same ignored protected selector. Closing reviewer stdin after the
+nested preview must leave no retained approval or manifest. Closing stdin
+after the outer manifest preview must leave the existing nested approval
+unchanged and publish no manifest. The original positive review and four
+validator installations remain in the selector. This follow-up passed
+Rust 1.97.1 format check and applies cleanly to the merged source, but its
+real-UID runtime, complete required gate and hosted CI are not yet verified.
+The 2026-11-04 results above apply only to their earlier source.
+
 The repository-wide literal `npm ci` and complete required check, hosted CI,
 real approver and recovery-holder assignment, approved code/economic policy
 provenance, real key ceremony and production host-user configuration are not
