@@ -829,7 +829,10 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     外側`passed=true`、22 exit 0/wait、実EOF/reap、unit/cgroup解放とsource不変を
     独立照合した。outer receipt SHA-256は
     `5165dcbc1e5b00a04736625c156697abac0f857d562a9656f860fe76c1fdb1c0`。
-    一覧候補は確定したが、元12 runtime・親M7は未完了。
+    一覧候補は確定した。次の`runtime-check`は新しいguard関数への引数を内部呼出しで
+    渡していないためTypeErrorでexit 1となり、outer receipt
+    `010c641c62b169fd15bcf89eff394d79ce12b21c28d8d2a85533b945fb18735c`を
+    保全した。失敗後の資源監視と修正版の独立審査を進める。元12 runtime・親M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
