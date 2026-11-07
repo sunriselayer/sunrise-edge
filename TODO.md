@@ -806,8 +806,13 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     `24d86bf26d33c1e5a7c1ca50ea25a855c0d8040ceed1bcefdfd7b8c1b91ee279`。driver build・
     実測`--list`・12 runtimeは未実行で、候補の`PENDING`安全弁を保持する。
     続く専用driver buildでは13 debug host・10 test driverのcompileと全23 ELF再hashが
-    成功したが、外側ownerはunit解放判定で`passed=false`を記録した。後続の独立終端監査中で、
-    現時点ではbuild資格・元12 runtime成功として数えない。
+    成功したが、外側ownerはunit解放判定で`passed=false`を記録した。失敗記録を保持し、
+    full-window監視の592サンプルと実資源解放を独立照合した。別の限定validatorは同じHEADの
+    13 host・10 driverの23 ELF、1,310 source file、311 private archiveを再hashし、
+    元の単一Description不一致以外のpredicateを満たすことを終端exit 0で確認した。
+    限定compile資格のreceipt SHA-256は
+    `e4d689d0d62c12c41c5f3cb59801aea984b3de2783e5e28f64d64b787734d410`。
+    元の外側`passed=false`を成功に書き換えず、`--list`・元12 runtime・親M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
@@ -940,7 +945,7 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
    PR #349の限定genesis別UID fixtureと同source完全required・CIは上記の通り成功した。
    merge commit `a6ae6229`を起点とするfresh Native13 A/Bは限定成功した。
    元12の未実行候補を同HEADで生成し、専用driver buildの外側判定失敗を保全した。
-   次は同buildの終端監査・実測`--list`・
+   full-window監視と別の限定compile資格を独立照合した。次は実測`--list`・
    同じHEADの元12 RELEASE runtimeを有限時間で実行し、親M2/M7の未達範囲と区別して記録する。
    [M2-N1〜N5の元照合](#m2初期リリース対象の照合-2026-11-03) を参照し、
    残る未選択consumerの必要性、対象別lifecycleと不足検証を具体化する。
