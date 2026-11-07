@@ -836,7 +836,15 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     前後の状態を保存した。監視は停止時刻後まで102サンプル全件でunit/cgroup不在を照合し、
     receipt SHA-256 `569181ef18a9807e4a01b1c7f7bc2daee70d51d724cb1ea4b9f9abdc8892ca2f`。
     owner終了から監視開始までの302.396秒は未観測として保持し、失敗checkを合格にしない。
-    修正版の独立審査を進める。元12 runtime・親M7は未完了。
+    修正版の独立審査後、別outputの`runtime-check`を実行し、13 RELEASE host・
+    13 debug host・10 driverの実hash、outer/child exit 0、EOF/wait/reap、
+    bounded unitとPID/cgroup解放を独立照合した。outer receipt SHA-256は
+    `62339e06620af0b917811af2f055278d42d5abd5b744efcc83db794c06e2693b`。
+    初回`runtime-probe`はcallerが事前作成するprivate `probe-tmp`欠落でexit 1となり、
+    失敗outer receipt
+    `7338166742581de40551f10590ee24160d942d3491ff947da64540466770ba2c`を
+    保全した。必要な入力と終了監視を照合してから別outputで再検証する。
+    `runtime-probe`と元12 runtime・親M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
