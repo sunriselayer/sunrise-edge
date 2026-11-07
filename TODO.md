@@ -816,7 +816,11 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     exit 0で候補一覧を生成したが、外側ownerは245msの短いunit実行を捕捉できず、
     admission SHAの取り違えもあり`passed=false`で終了した。失敗receipt
     `aa9cf2b779bb820379de26cad8b22612b8cac8031ffa7f2b119f7b0f94307796`を
-    保全し、残余監視と修正版の独立審査を進める。`--list`・元12 runtime・親M7は未完了。
+    保全した。残余監視は135サンプル・停止時刻後の最終観測・実unit/cgroup不在を
+    独立照合し、monitor receipt SHA-256
+    `99912018576e6c36864a59cf6e2a70deb6e5317fcc5e18724101a4d841287f02`を記録。
+    監視成功を元ownerの合格に転用せず、修正版の独立審査を進める。
+    `--list`・元12 runtime・親M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
