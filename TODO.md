@@ -812,7 +812,11 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     元の単一Description不一致以外のpredicateを満たすことを終端exit 0で確認した。
     限定compile資格のreceipt SHA-256は
     `e4d689d0d62c12c41c5f3cb59801aea984b3de2783e5e28f64d64b787734d410`。
-    元の外側`passed=false`を成功に書き換えず、`--list`・元12 runtime・親M7は未完了。
+    元の外側`passed=false`を成功に書き換えない。続く実測`--list`は22回すべて
+    exit 0で候補一覧を生成したが、外側ownerは245msの短いunit実行を捕捉できず、
+    admission SHAの取り違えもあり`passed=false`で終了した。失敗receipt
+    `aa9cf2b779bb820379de26cad8b22612b8cac8031ffa7f2b119f7b0f94307796`を
+    保全し、残余監視と修正版の独立審査を進める。`--list`・元12 runtime・親M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
