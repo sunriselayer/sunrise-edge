@@ -803,8 +803,8 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     fixture作業ディレクトリ不足によるexit 1も別に保全。merge commit `a6ae6229`は
     exact `c58c5444`と同tree。merge後HEAD `a6ae6229`ではfresh Native13 A/Bの
     元13ターゲットを2回ビルドし、26 ELFを再hash、13組の全byte・mode一致を独立照合した。
-    exit 0・実EOF/wait/reap・PID/cgroup解放も確認済み。元12 RELEASE runtime、
-    独立最終source/security/release reviewとissue dispositionは未達で、親M7は未完了。
+    exit 0・実EOF/wait/reap・PID/cgroup解放も確認済み。この時点では元12 RELEASE runtime、
+    独立最終source/security/release reviewとissue dispositionが未達だった。
     同HEADの元12用に別RELEASE source・専用Cargo cacheを固定し、Native13証跡と
     #348→#349の変更5 pathを照合した。独立review後に13 host/10 driver/2 exact ignoredの
     実行しない候補を生成した。候補manifest SHA-256は
@@ -852,7 +852,17 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     確認し、outer/child exit 0・実EOF/wait/reap・unit/cgroup/PID解放を独立照合した。
     probe外側receipt SHA-256は
     `51e09bf1e3548dd895fe98f4bc466ec894bbebe14a9e29dd578cbba305d13ed8`。
-    元12 runtimeのケース実行と親M7は未完了。
+    続く同HEADの元12 RELEASE runtimeは10 wholeと2 exact ignored selectorを単発で実行し、
+    12/12 exit 0・実EOF/wait/reap、105 passed・0 failed・4 ignoredを独立照合した。
+    7 epochの全start/end、e8 terminal unlock、別々の1832-byte withdrawal候補2件と
+    各committed ACK、13 RELEASE/13 debug host/10 driverの実hash、source不変、
+    1,775 live unit samplesと全既知PID/cgroup/TMP解放まで確認した。外側receipt SHA-256は
+    `0397cddf1962d9b196bbe0dd9b9ef5bc1119c76c43f3054f690463cc389e8b80`、
+    内部receipt SHA-256は
+    `2d8d184b3157bce45f0fb6828dfd0333c4123ce3fe54cecc9eb07858d7892b77`。
+    e8の8 linksは実行したexact selectorの既存assertionに含まれる。35 rolesは別の
+    `business_recovery` unit testのassertionで、この元12 runtime rawからの独立観測とはしない。
+    独立最終source/security/release reviewとissue dispositionは未達で、親M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
