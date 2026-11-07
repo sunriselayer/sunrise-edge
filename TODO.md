@@ -847,8 +847,12 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     監視し、terminal receipt SHA-256
     `30755462562245b93752e0eb9fa1e8a37eb5e47e6d092d67e98112d1b0c4a675`を得た。
     owner終了から監視開始までの189.054秒は未観測として保持し、失敗probeを合格にしない。
-    必要な空のprivate `probe-tmp`を用意し、別admission/別outputで再検証する。
-    `runtime-probe`と元12 runtime・親M7は未完了。
+    必要な空のprivate `probe-tmp`を用意し、別admission/別outputで再検証した。
+    新probeは13 RELEASE artifactの隔離view hash、loopback、独立PID/net名前空間を
+    確認し、outer/child exit 0・実EOF/wait/reap・unit/cgroup/PID解放を独立照合した。
+    probe外側receipt SHA-256は
+    `51e09bf1e3548dd895fe98f4bc466ec894bbebe14a9e29dd578cbba305d13ed8`。
+    元12 runtimeのケース実行と親M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
