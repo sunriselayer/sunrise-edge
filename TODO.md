@@ -537,8 +537,9 @@ PR #349のexact `c58c5444`で全8 CIとliteral npm ci・完全requiredが終端�
 compile serviceの作業ディレクトリ不足でexit 1となった。両失敗のrawとreceiptを保全した。
 修正した専用環境での完全gateはexit 0・実EOF/wait/reap・PID/cgroup解放・source/CLI不変を
 独立照合した。同じ`c58c5444`の別UID genesis V2 fixtureは既存7通常テストと
-元ignored selector 1件が成功し、二つの切断拒否marker、4 validator installを
-元test内で確認した。raw/ELF hash、container/unit/PID解放も独立照合済み。
+元ignored selector 1件が成功した。二つの切断拒否と4 validator installを
+元testのassertionで確認し、単一の`both_refused` markerをrawで確認した。
+raw/ELF hash、container/unit/PID解放も独立照合済み。
 merge commit `a6ae6229`は同tree。これはN3の限定consumer資格であり、
 未選択のgeneric/paid、bond、FinalTransfer、親M2を完了とはしない。
 元original/certified
