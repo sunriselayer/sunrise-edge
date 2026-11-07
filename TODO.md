@@ -800,6 +800,11 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     元13ターゲットを2回ビルドし、26 ELFを再hash、13組の全byte・mode一致を独立照合した。
     exit 0・実EOF/wait/reap・PID/cgroup解放も確認済み。元12 RELEASE runtime、
     独立最終source/security/release reviewとissue dispositionは未達で、親M7は未完了。
+    同HEADの元12用に別RELEASE source・専用Cargo cacheを固定し、Native13証跡と
+    #348→#349の変更5 pathを照合した。独立review後に13 host/10 driver/2 exact ignoredの
+    実行しない候補を生成した。候補manifest SHA-256は
+    `24d86bf26d33c1e5a7c1ca50ea25a855c0d8040ceed1bcefdfd7b8c1b91ee279`。driver build・
+    実測`--list`・12 runtimeは未実行で、候補の`PENDING`安全弁を保持する。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
@@ -931,7 +936,8 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
    RELEASE条件と親の残件を照合する。文書統合PR #347自身の全体gateは冒頭に記録済み。
    PR #349の限定genesis別UID fixtureと同source完全required・CIは上記の通り成功した。
    merge commit `a6ae6229`を起点とするfresh Native13 A/Bは限定成功した。
-   次は同じHEADの元12 RELEASE runtimeを実行し、親M2/M7の未達範囲と区別して記録する。
+   元12の未実行候補を同HEADで生成した。次は専用driver build・実測`--list`・
+   同じHEADの元12 RELEASE runtimeを有限時間で実行し、親M2/M7の未達範囲と区別して記録する。
    [M2-N1〜N5の元照合](#m2初期リリース対象の照合-2026-11-03) を参照し、
    残る未選択consumerの必要性、対象別lifecycleと不足検証を具体化する。
    停止対象を再開せず、全prepared型や全identity移行を新たな必須条件にしない。
