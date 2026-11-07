@@ -843,7 +843,11 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     初回`runtime-probe`はcallerが事前作成するprivate `probe-tmp`欠落でexit 1となり、
     失敗outer receipt
     `7338166742581de40551f10590ee24160d942d3491ff947da64540466770ba2c`を
-    保全した。必要な入力と終了監視を照合してから別outputで再検証する。
+    保全した。失敗unitの期限後まで162サンプル・全観測0エラー・既知PID/cgroup不在を
+    監視し、terminal receipt SHA-256
+    `30755462562245b93752e0eb9fa1e8a37eb5e47e6d092d67e98112d1b0c4a675`を得た。
+    owner終了から監視開始までの189.054秒は未観測として保持し、失敗probeを合格にしない。
+    必要な空のprivate `probe-tmp`を用意し、別admission/別outputで再検証する。
     `runtime-probe`と元12 runtime・親M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
