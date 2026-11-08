@@ -5,6 +5,10 @@ Date: 2026-11-08 (Asia/Singapore)
 Status: Proposed implementation candidate. No protected bond signer, trusted
 approval surface, production authority, or release qualification is selected.
 
+Later scope note (2026-11-08): [DR-0288](0288-successor-bond-registration-structural-preview.md)
+supersedes only this record's original-only successor-pin refusal. The original
+preview behavior and all nonauthorization limits remain unchanged.
+
 ## Context
 
 DR-0211 retains the exact signed custody leg and predicted bond row in the

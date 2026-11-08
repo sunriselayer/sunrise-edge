@@ -132,9 +132,10 @@ DR-0264/0268 select automatic ordered/certified workers under their existing
 live-authority owners, independently of these SDK preparations.
 
 [DR-0287](decisions/0287-bond-registration-structural-preview.md) describes a
-separate seed-free original-scope bond-registration preview candidate. It
-reuses the original prepared owner to expose complete canonical preimages and their
-recomputed frame without signing or writing an artifact. Its structural
-output is explicitly nonauthorizing; successor pins fail closed, while bond
-authority, recognized leg semantics,
-trusted review and protected custody remain unselected in TODO M2-N3.
+seed-free original bond-registration preview. The subsequent
+[DR-0288](decisions/0288-successor-bond-registration-structural-preview.md)
+extends that structural display through the existing verified successor
+preparation and current-context owner. Both scopes share canonical preimage
+and frame recomputation, sign nothing and write no artifact. Their output is
+nonauthorizing; bond authority, recognized leg semantics, trusted review and
+protected custody remain unselected in TODO M2-N3.

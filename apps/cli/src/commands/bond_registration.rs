@@ -6,12 +6,11 @@ use sunrise_edge_client::{
     AtomicityDomainId, ChainId, Epoch, HashSuiteResolver, HashSuiteSchedule, LocalSigner,
     ProtocolVersion, PublicationContext,
     bond_registration::{
-        BondRegistrationContext, BondRegistrationIntent, FastPathBondRecord,
-        MAX_BOND_REGISTRATION_ROW_BYTES, MAX_LOCAL_EXECUTION_INTENT_BYTES,
-        OriginalBondRegistrationContent, PreparedLocalBondRegistration,
-        PreparedSuccessorBondRegistration, decode_fastpath_bond_record,
-        prepare_successor_bond_registration_for_public_key,
-        preview_original_bond_registration_content,
+        BondRegistrationContent, BondRegistrationContext, BondRegistrationIntent,
+        FastPathBondRecord, MAX_BOND_REGISTRATION_ROW_BYTES, MAX_LOCAL_EXECUTION_INTENT_BYTES,
+        PreparedLocalBondRegistration, PreparedSuccessorBondRegistration,
+        decode_fastpath_bond_record, prepare_successor_bond_registration_for_public_key,
+        preview_original_bond_registration_content, preview_successor_bond_registration_content,
     },
 };
 
@@ -28,7 +27,7 @@ use super::hash_suite_pins::parse_pinned_flags;
 use super::network_artifacts::{ReservedArtifact, read_bounded, reserve_artifacts};
 
 const HELP: &str = "Offline initial validator-bond registration preparation (no execution, membership, readiness or activation).\n\nRequired: --ordered-genesis-manifest FILE --ordered-expected-genesis-digest HEX --expected-chain-id CHAIN --expected-protocol-version N --expected-epoch N --domain HEX --suite epoch:id:transaction:object:effects:code:config:certificate --request-id HEX --signed-leg FILE --expected-bond-row FILE --seed-file FILE --out FILE.\n\nOne to 64 --suite entries form the explicit locally trusted schedule; algorithms 1 (SHA2-256) and 2 (SHA3-256) are supported. --seed-file is an existing private development seed file, not a production keystore. The generation-one row is a bounded caller prediction only: this command never executes the leg or proves source objects. The normal ordered handler executes the separately signed owned custody leg and rechecks its exact result. The actual key derives the new validator ID and may not reuse any genesis ID or key.\n\nThe output is an exact signed registration envelope, written through a fresh held file handle without overwrite. Wrap it using economics candidate-wrap --kind bond-registration with explicit request/context/checkpoint pins, then use the existing ordered submission/replay workflow.";
-const PREVIEW_HELP: &str = "Offline, seed-free structural preview of an original-scope bond-registration claim. Successor pins are refused. This command does not approve, sign, execute, register, or write an output artifact.\n\nRequired: --ordered-genesis-manifest FILE --ordered-expected-genesis-digest HEX --expected-chain-id CHAIN --expected-protocol-version N --expected-epoch N --domain HEX --suite epoch:id:transaction:object:effects:code:config:certificate --request-id HEX --signed-leg FILE --expected-bond-row FILE --expected-authorization-key HEX.\n\nThe supplied public key is a local review input, never a key selected by the leg or row. The full canonical signed leg, predicted row, unsigned outer intent and outer signing frame are printed as hex. This structural view does not recognize generic contract semantics or authorize protected custody.";
+const PREVIEW_HELP: &str = "Offline, seed-free structural preview of an original or verified successor bond-registration claim. This command does not approve, sign, execute, register, or write an output artifact.\n\nRequired: --ordered-genesis-manifest FILE --ordered-expected-genesis-digest HEX --expected-chain-id CHAIN --expected-protocol-version N --expected-epoch N --domain HEX --suite epoch:id:transaction:object:effects:code:config:certificate --request-id HEX --signed-leg FILE --expected-bond-row FILE --expected-authorization-key HEX. Successor scope additionally requires the complete ordered successor archive pins and the exact verified e+1 context.\n\nThe supplied public key is a local review input, never a key selected by the leg or row. The full canonical signed leg, predicted row, unsigned outer intent and outer signing frame are printed as hex. This structural view does not recognize generic contract semantics or authorize protected custody.";
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -88,11 +87,6 @@ fn run_mode<I: IntoIterator<Item = OsString>>(args: I, mode: Mode) -> Result<(),
     flags.extend(super::successor_pins::successor_flag_specs(false));
     let (parsed, schedules): (ParsedArgs, Vec<HashSuiteSchedule>) =
         parse_pinned_flags(args, &flags)?;
-    if matches!(mode, Mode::Preview) && super::successor_pins::successor_requested(&parsed) {
-        return Err(invalid(
-            "bond-registration-preview supports original scope only",
-        ));
-    }
     if schedules.is_empty() {
         return Err(invalid("one to 64 explicit --suite entries are required"));
     }
@@ -209,18 +203,31 @@ fn run_mode<I: IntoIterator<Item = OsString>>(args: I, mode: Mode) -> Result<(),
         _ => return Err(invalid("registration authority composition is incomplete")),
     };
     if matches!(mode, Mode::Preview) {
-        let prepared: &PreparedLocalBondRegistration = prepared
-            .as_ref()
-            .ok_or_else(|| invalid("original registration preview is incomplete"))?;
-        let content: OriginalBondRegistrationContent =
-            preview_original_bond_registration_content(&resolver, prepared, &row_bytes)
-                .map_err(failure)?;
-        let report: String = render_preview(
-            prepared.intent(),
-            prepared.predicted_initial_row(),
-            &content,
-            domain,
-        );
+        let (intent, row, content, scope): (
+            &BondRegistrationIntent,
+            &FastPathBondRecord,
+            BondRegistrationContent,
+            &str,
+        ) = match (&prepared, &successor_prepared) {
+            (Some(prepared), None) => (
+                prepared.intent(),
+                prepared.predicted_initial_row(),
+                preview_original_bond_registration_content(&resolver, prepared, &row_bytes)
+                    .map_err(failure)?,
+                "original",
+            ),
+            (None, Some(prepared)) => (
+                prepared.intent(),
+                prepared.predicted_initial_row(),
+                preview_successor_bond_registration_content(
+                    &resolver, prepared, &context, &row_bytes,
+                )
+                .map_err(failure)?,
+                "successor",
+            ),
+            _ => return Err(invalid("registration preview preparation is incomplete")),
+        };
+        let report: String = render_preview(intent, row, &content, domain, scope);
         print!("{report}");
         return Ok(());
     }
@@ -271,8 +278,9 @@ fn run_mode<I: IntoIterator<Item = OsString>>(args: I, mode: Mode) -> Result<(),
 fn render_preview(
     intent: &BondRegistrationIntent,
     row: &FastPathBondRecord,
-    content: &OriginalBondRegistrationContent,
+    content: &BondRegistrationContent,
     domain: AtomicityDomainId,
+    scope: &str,
 ) -> String {
     let lines: Vec<String> = vec![
         "preview=structural_bond_registration".to_string(),
@@ -280,7 +288,7 @@ fn render_preview(
         "signed=false".to_string(),
         "executed=false".to_string(),
         "leg_semantics=unreviewed".to_string(),
-        "scope=original".to_string(),
+        format!("scope={scope}"),
         format!("ordered_domain={}", encode_hex(domain.as_bytes())),
         format!(
             "chain_id={}",

@@ -561,6 +561,47 @@ pub(super) fn register(
         )
         .unwrap();
     assert_eq!(public_prepared.predicted_initial_row(), &predicted);
+    let row_bytes: Vec<u8> = encode_fastpath_bond_record(&predicted).unwrap();
+    let preview: sunrise_edge_client::bond_registration::BondRegistrationContent =
+        sunrise_edge_client::bond_registration::preview_successor_bond_registration_content(
+            &fixture.network.resolver,
+            &public_prepared,
+            &context,
+            &row_bytes,
+        )
+        .unwrap();
+    assert_eq!(preview.signed_leg, leg);
+    assert_eq!(preview.predicted_row, row_bytes);
+    assert_eq!(
+        preview.outer_intent,
+        node_core::bond_lifecycle::registration::encode_bond_registration_intent(
+            public_prepared.intent()
+        )
+        .unwrap()
+    );
+    assert_eq!(preview.outer_frame, public_prepared.signable_frame());
+    assert_eq!(
+        preview.row_digest,
+        public_prepared.intent().expected_initial_row_digest
+    );
+    assert!(
+        sunrise_edge_client::bond_registration::preview_successor_bond_registration_content(
+            &fixture.network.resolver,
+            &public_prepared,
+            &fixture.network.context,
+            &row_bytes,
+        )
+        .is_err()
+    );
+    assert!(
+        sunrise_edge_client::bond_registration::preview_successor_bond_registration_content(
+            &fixture.network.resolver,
+            &public_prepared,
+            &context,
+            &[0_u8, 1_u8],
+        )
+        .is_err()
+    );
     let external = external_signer::TestSigner::new(seed, external_signer::Behavior::Valid);
     assert_eq!(
         public_prepared
@@ -623,6 +664,19 @@ pub(super) fn register(
     let signed_path: PathBuf = directory.join(format!("registration-{coin_byte}.signed"));
     std::fs::write(&leg_path, &leg).unwrap();
     std::fs::write(&row_path, encode_fastpath_bond_record(&predicted).unwrap()).unwrap();
+    let mut preview_flags: Vec<String> = ordered_pins(fixture, links, current);
+    preview_flags.extend([
+        "--request-id".into(),
+        hex(&id),
+        "--signed-leg".into(),
+        leg_path.to_str().unwrap().into(),
+        "--expected-bond-row".into(),
+        row_path.to_str().unwrap().into(),
+        "--expected-authorization-key".into(),
+        hex(signer.address().as_bytes()),
+    ]);
+    cli(&["economics", "bond-registration-preview"], preview_flags);
+    assert!(!signed_path.exists(), "preview creates no signed artifact");
     private_seed(&seed_path, seed);
     let mut flags: Vec<String> = ordered_pins(fixture, links, current);
     flags.extend([
