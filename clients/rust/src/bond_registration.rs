@@ -141,12 +141,11 @@ pub fn preview_original_bond_registration_content(
             "registration predicted row digest changed",
         )));
     }
-    let outer_intent: Vec<u8> = encode_bond_registration_intent(intent)
-        .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
-    let intent_digest: Digest32 = bond_registration_intent_digest(resolver, intent)
-        .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
-    let outer_frame: Vec<u8> = bond_registration_signing_frame(&intent.context, intent_digest)
-        .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
+    let outer_intent: Vec<u8> = encode_bond_registration_intent(intent).map_err(Box::new)?;
+    let intent_digest: Digest32 =
+        bond_registration_intent_digest(resolver, intent).map_err(Box::new)?;
+    let outer_frame: Vec<u8> =
+        bond_registration_signing_frame(&intent.context, intent_digest).map_err(Box::new)?;
     if outer_frame != prepared.signable_frame() {
         return Err(Box::new(BondRegistrationError::Invalid(
             "registration outer signing frame changed",
