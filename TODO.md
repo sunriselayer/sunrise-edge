@@ -633,12 +633,12 @@ workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする�
     全12 SQL tables・2 blob tables・4 portable collections・positive historical bodyと通常reopen/fencingを
     b389のsource/実結果へ対応付けた。表の非空やphysical faultを主張せず、追加の通常assertion不足は
     特定されていない。この対応表だけを理由とするruntime再実行や親M3の完了は行わない。
-  - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。
-    trait reply-loss、process SIGKILL、power/host/media/fsync faultは別証拠。
-    全12 SQL tables・4 portable collections・positive blob/oracleを省略しない。
-    selected-profileのhost/power/storage faults、ENOSPC/resource exhaustion、
-    real writer failover、TLS failure/rotationは、このCODE/VERIFY行の完了条件に残す。
-    D07の実topology運用rehearsalは代替・延期理由にならない。一つの合格で全M3を閉じない。
+  - f093の新owning/SQLite libはE7、元5 ENOSPCはE8に記録済み。
+    E210が通常coverageを対応付け済みであり、同じassertionを増やさない。
+    selected-profileの物理host/power/media/fsync、別host writer failoverは未検証。
+    E8/E169のENOSPC、E30/E193/E203/E206のTLS、E74の同host SIGKILL、E79の通常VMを
+    他のresource exhaustion・fault条件へ転用しない。上記の停止中2子条件とD07の
+    実topology rehearsalは別に保持し、親M3は未完了。
 
 - [x] **M4: checkpoint・暗号化バックアップ・復元コードを検証する**
   - 対象: 実装 + 検証。checkpoint/state-root・immutable body manifests、
