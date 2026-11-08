@@ -485,6 +485,11 @@ M2-N1〜N5は既存M2の不足を分ける作業IDであり、新しい親gate�
 | FinalTransfer fee claim | development署名の経路でありpositive Split custodyに含めない。具体authorityとreview契約は未選択 |
 | offline genesis author | [DR-0286](docs/architecture/decisions/0286-standard-asset-genesis-protected-review-worker.md) の二段階workerを実装・限定別UID検証済み。実承認者/鍵/economics/ceremony、全体gateは未達 |
 
+FinalTransferの既存codec・prepared consumer・review表示・development signer・
+positive Splitとの権限分離を[署名経路マップ](docs/architecture/signing-route-test-map.md#finaltransfer-within-the-prepared-fee-claim-owner)へ対応付けた。
+これは静的な所在確認であり、未選択のauthority・leg semantics・承認内容・backend、
+実consumerの保護署名と検証は未達のまま保持する。
+
 N4では、同一identityの鍵復旧、provider停止/取消後restart、新identityへの正の移行を
 分ける。N1 readinessの元ownerは別UID・retained voteを確認した。N2の元recurring
 7 epoch/e8 ownerと実UID正例はexact `049dcd59`で成功した。N4の同一鍵別path復元も
@@ -530,8 +535,18 @@ process group解放、source不変で終端し、通常分岐の元7 epoch/e8も
 既知PID/cgroup/Docker解放、source/tool不変も独立照合した。
 先のpartialとstaging失敗2件は別に保全し、成功へ合算しない。
 [限定記録](docs/development/validation/2026-11-06-m2-n2-protected-wrong-key/README.md) を参照する。
-後続`823671df`は既存offline genesis author ownerに承認切断拒否を追加したが、
-実UID fixture・全体gate/CIは未実行で、N3全体や親M2の完了とはしない。
+後続`823671df`は既存offline genesis author ownerに二つの承認切断拒否を追加した。
+PR #349のexact `c58c5444`で全8 CIとliteral npm ci・完全requiredが終端成功し、
+元recurring selectorも1 passed/0 failed・約10,759秒で完走した。
+初回完全gateはservice PATHに`cf`がなく最終型検証でexit 1、初回genesis fixtureは
+compile serviceの作業ディレクトリ不足でexit 1となった。両失敗のrawとreceiptを保全した。
+修正した専用環境での完全gateはexit 0・実EOF/wait/reap・PID/cgroup解放・source/CLI不変を
+独立照合した。同じ`c58c5444`の別UID genesis V2 fixtureは既存7通常テストと
+元ignored selector 1件が成功した。二つの切断拒否と4 validator installを
+元testのassertionで確認し、単一の`both_refused` markerをrawで確認した。
+raw/ELF hash、container/unit/PID解放も独立照合済み。
+merge commit `a6ae6229`は同tree。これはN3の限定consumer資格であり、
+未選択のgeneric/paid、bond、FinalTransfer、親M2を完了とはしない。
 元original/certified
 workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする。
 
@@ -585,7 +600,7 @@ workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする�
     次generationを起動する別controlを追加。全12 SQL tables・2 blob tablesと4 portable
     collections/参照bodyの保存済み再送不変、新規有料取引/両quorum/nonce/receiptを検証する。
     E74の実compiled TLSで成功。独立anchorを使用する追加variantも成功。
-    このsourceの最終完全gate/CIは未完了。
+    E74時点のsourceの最終完全gate/CIは未完了だった。後続sourceの結果は下に記録する。
     host/power/media/fsync・別host/実topology failoverの証拠へ読み替えない。
     2026-11-06に既存の実TLS owner-loss helperへ、70KiBの参照付きhistorical bodyを
     保持する別selectorを追加。全4hostのSIGKILL/reap、次generation、保存済み再送、
@@ -783,8 +798,77 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     独立最終source/security/release reviewとissue dispositionは残り、全M7は未完了。
   - PR #348 exact `d3c57cbc`ではliteral npm ci・完全required、全8 CIと
     N2実UID元selectorを終端成功で照合した。merge commit `8fc79746`は同tree。
-    後続genesis testを含む最終sourceでのfresh Native13 A/B・元12 RELEASE runtimeと
-    独立最終source/security/release reviewは未達で、親M7は未完了。
+    PR #349 exact `c58c5444`では全8 CI、literal npm ci・完全requiredと
+    genesis別UID限定fixtureを終端成功で照合した。最初の`cf` PATH不足と
+    fixture作業ディレクトリ不足によるexit 1も別に保全。merge commit `a6ae6229`は
+    exact `c58c5444`と同tree。merge後HEAD `a6ae6229`ではfresh Native13 A/Bの
+    元13ターゲットを2回ビルドし、26 ELFを再hash、13組の全byte・mode一致を独立照合した。
+    exit 0・実EOF/wait/reap・PID/cgroup解放も確認済み。この時点では元12 RELEASE runtime、
+    独立最終source/security/release reviewとissue dispositionが未達だった。
+    同HEADの元12用に別RELEASE source・専用Cargo cacheを固定し、Native13証跡と
+    #348→#349の変更5 pathを照合した。独立review後に13 host/10 driver/2 exact ignoredの
+    実行しない候補を生成した。候補manifest SHA-256は
+    `24d86bf26d33c1e5a7c1ca50ea25a855c0d8040ceed1bcefdfd7b8c1b91ee279`。driver build・
+    実測`--list`・12 runtimeは未実行で、候補の`PENDING`安全弁を保持する。
+    続く専用driver buildでは13 debug host・10 test driverのcompileと全23 ELF再hashが
+    成功したが、外側ownerはunit解放判定で`passed=false`を記録した。失敗記録を保持し、
+    full-window監視の592サンプルと実資源解放を独立照合した。別の限定validatorは同じHEADの
+    13 host・10 driverの23 ELF、1,310 source file、311 private archiveを再hashし、
+    元の単一Description不一致以外のpredicateを満たすことを終端exit 0で確認した。
+    限定compile資格のreceipt SHA-256は
+    `e4d689d0d62c12c41c5f3cb59801aea984b3de2783e5e28f64d64b787734d410`。
+    元の外側`passed=false`を成功に書き換えない。初回実測`--list`は22回すべて
+    exit 0で候補一覧を生成したが、外側ownerは245msの短いunit実行を捕捉できず、
+    admission SHAの取り違えもあり`passed=false`で終了した。失敗receipt
+    `aa9cf2b779bb820379de26cad8b22612b8cac8031ffa7f2b119f7b0f94307796`を
+    保全した。残余監視は135サンプル・停止時刻後の最終観測・実unit/cgroup不在を
+    独立照合し、monitor receipt SHA-256
+    `99912018576e6c36864a59cf6e2a70deb6e5317fcc5e18724101a4d841287f02`を記録。
+    監視成功を元ownerの合格に転用しない。別outputの修正版は実行中unitの再観測を
+    gateにして元10 driverのall/ignoredと2 exact ignoredの計22一覧を取得した。
+    外側`passed=true`、22 exit 0/wait、実EOF/reap、unit/cgroup解放とsource不変を
+    独立照合した。outer receipt SHA-256は
+    `5165dcbc1e5b00a04736625c156697abac0f857d562a9656f860fe76c1fdb1c0`。
+    一覧候補は確定した。次の`runtime-check`は新しいguard関数への引数を内部呼出しで
+    渡していないためTypeErrorでexit 1となり、outer receipt
+    `010c641c62b169fd15bcf89eff394d79ce12b21c28d8d2a85533b945fb18735c`を
+    保全した。既知wrapper/worker PIDとcgroup不在を確認し、該当unitだけを`reset-failed`して
+    前後の状態を保存した。監視は停止時刻後まで102サンプル全件でunit/cgroup不在を照合し、
+    receipt SHA-256 `569181ef18a9807e4a01b1c7f7bc2daee70d51d724cb1ea4b9f9abdc8892ca2f`。
+    owner終了から監視開始までの302.396秒は未観測として保持し、失敗checkを合格にしない。
+    修正版の独立審査後、別outputの`runtime-check`を実行し、13 RELEASE host・
+    13 debug host・10 driverの実hash、outer/child exit 0、EOF/wait/reap、
+    bounded unitとPID/cgroup解放を独立照合した。outer receipt SHA-256は
+    `62339e06620af0b917811af2f055278d42d5abd5b744efcc83db794c06e2693b`。
+    初回`runtime-probe`はcallerが事前作成するprivate `probe-tmp`欠落でexit 1となり、
+    失敗outer receipt
+    `7338166742581de40551f10590ee24160d942d3491ff947da64540466770ba2c`を
+    保全した。失敗unitの期限後まで162サンプル・全観測0エラー・既知PID/cgroup不在を
+    監視し、terminal receipt SHA-256
+    `30755462562245b93752e0eb9fa1e8a37eb5e47e6d092d67e98112d1b0c4a675`を得た。
+    owner終了から監視開始までの189.054秒は未観測として保持し、失敗probeを合格にしない。
+    必要な空のprivate `probe-tmp`を用意し、別admission/別outputで再検証した。
+    新probeは13 RELEASE artifactの隔離view hash、loopback、独立PID/net名前空間を
+    確認し、outer/child exit 0・実EOF/wait/reap・unit/cgroup/PID解放を独立照合した。
+    probe外側receipt SHA-256は
+    `51e09bf1e3548dd895fe98f4bc466ec894bbebe14a9e29dd578cbba305d13ed8`。
+    続く同HEADの元12 RELEASE runtimeは10 wholeと2 exact ignored selectorを単発で実行し、
+    12/12 exit 0・実EOF/wait/reap、105 passed・0 failed・4 ignoredを独立照合した。
+    7 epochの全start/end、e8 terminal unlock、別々の1832-byte withdrawal候補2件と
+    各committed ACK、13 RELEASE/13 debug host/10 driverの実hash、source不変、
+    1,775 live unit samplesと全既知PID/cgroup/TMP解放まで確認した。外側receipt SHA-256は
+    `0397cddf1962d9b196bbe0dd9b9ef5bc1119c76c43f3054f690463cc389e8b80`、
+    内部receipt SHA-256は
+    `2d8d184b3157bce45f0fb6828dfd0333c4123ce3fe54cecc9eb07858d7892b77`。
+    e8の8 linksは実行したexact selectorの既存assertionに含まれる。35 rolesは別の
+    `business_recovery` unit testのassertionで、この元12 runtime rawからの独立観測とはしない。
+    独立最終source/security/release reviewとissue dispositionは未達で、親M7は未完了。
+    PR #350の`81bde20f`では全8 hosted CIが成功したが、同HEADのlocal完全requiredは
+    literal npm ciがexit 0、`./scripts/check-all.sh`がexit 101。実`/tmp`を使った
+    再実行でも7 epoch後のe8 `pack-saved`で`recovery_budget_refusal=observations`となった。
+    最終receipt SHA-256は`949c7cce3adb2ca8127b34562c28eba06a7c0144d3c9676e6252a04908a6c610`。
+    rawのEOF・wait/reap・PID/cgroup解放とsource不変を確認済み。CIや祖先sourceの成功を
+    このlocal失敗の代わりにせず、完全requiredとPR #350の統合は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
@@ -914,6 +998,11 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
    全8 CIまで成功。exact `25a86df1`の全8 CIとliteral npm ci・完全requiredも
    exit 0・EOF/wait・資源解放まで終端確認した。次は同sourceの適用される
    RELEASE条件と親の残件を照合する。文書統合PR #347自身の全体gateは冒頭に記録済み。
+   PR #349の限定genesis別UID fixtureと同source完全required・CIは上記の通り成功した。
+   merge commit `a6ae6229`を起点とするfresh Native13 A/Bは限定成功した。
+   元12の未実行候補を同HEADで生成し、専用driver buildの外側判定失敗を保全した。
+   full-window監視と別の限定compile資格、修正版での22件実測`--list`を独立照合した。次は
+   同じHEADの元12 RELEASE runtimeを有限時間で実行し、親M2/M7の未達範囲と区別して記録する。
    [M2-N1〜N5の元照合](#m2初期リリース対象の照合-2026-11-03) を参照し、
    残る未選択consumerの必要性、対象別lifecycleと不足検証を具体化する。
    停止対象を再開せず、全prepared型や全identity移行を新たな必須条件にしない。
