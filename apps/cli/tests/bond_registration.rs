@@ -511,8 +511,9 @@ fn seed_free_preview_refuses_changed_leg_row_and_key_without_output() {
     refuse(&successor_output);
     assert!(
         String::from_utf8_lossy(&successor_output.stderr)
-            .contains("bond-registration-preview supports original scope only")
+            .contains("successor authority refused: successor artifact could not be read")
     );
+    assert!(!Path::new(&fixture.path("signed")).exists());
 
     let mut altered_leg: SignedLocalExecutionIntent =
         execution::local_execution::decode_signed_local_execution(&fixture.leg).unwrap();

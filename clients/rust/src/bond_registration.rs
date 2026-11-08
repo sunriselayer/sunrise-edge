@@ -81,9 +81,9 @@ impl fmt::Display for LocalBondRegistrationError {
 
 impl Error for LocalBondRegistrationError {}
 
-/// Canonical bytes and leg fields for a seed-free, nonauthorizing original
-/// registration inspection. This is not a review approval or execution proof.
-pub struct OriginalBondRegistrationContent {
+/// Canonical bytes and leg fields for a seed-free, nonauthorizing registration
+/// inspection. This is not a review approval or execution proof.
+pub struct BondRegistrationContent {
     /// Canonical, already signed custody leg bytes.
     pub signed_leg: Vec<u8>,
     /// Canonical bytes of the caller's predicted generation-one row.
@@ -106,6 +106,9 @@ pub struct OriginalBondRegistrationContent {
     pub leg_entrypoint: String,
 }
 
+/// Original-scope name retained for callers of the first preview route.
+pub type OriginalBondRegistrationContent = BondRegistrationContent;
+
 /// Rechecks the retained original prepared claim against the exact input row
 /// and independently reconstructed signature frame without signing.
 pub fn preview_original_bond_registration_content(
@@ -113,7 +116,53 @@ pub fn preview_original_bond_registration_content(
     prepared: &PreparedLocalBondRegistration,
     input_row: &[u8],
 ) -> Result<OriginalBondRegistrationContent, Box<BondRegistrationError>> {
-    let intent: &BondRegistrationIntent = prepared.intent();
+    preview_bond_registration_content(
+        resolver,
+        prepared.intent(),
+        prepared.predicted_initial_row(),
+        prepared.signable_frame(),
+        input_row,
+    )
+}
+
+/// Rechecks a retained successor claim only in its verified current context.
+/// The verified chain and original resource authority remain borrowed from
+/// the prepared owner. This inspection does not sign or execute.
+pub fn preview_successor_bond_registration_content(
+    resolver: &HashSuiteResolver,
+    prepared: &PreparedSuccessorBondRegistration<'_>,
+    declared: &PublicationContext,
+    input_row: &[u8],
+) -> Result<BondRegistrationContent, Box<BondRegistrationError>> {
+    prepared
+        .workflow()
+        .require_signing_context(declared)
+        .map_err(|_| {
+            Box::new(BondRegistrationError::Invalid(
+                "registration preview context differs from the verified successor",
+            ))
+        })?;
+    if prepared.intent().context != *declared {
+        return Err(Box::new(BondRegistrationError::Invalid(
+            "registration preview context changed after preparation",
+        )));
+    }
+    preview_bond_registration_content(
+        resolver,
+        prepared.intent(),
+        prepared.predicted_initial_row(),
+        prepared.signable_frame(),
+        input_row,
+    )
+}
+
+fn preview_bond_registration_content(
+    resolver: &HashSuiteResolver,
+    intent: &BondRegistrationIntent,
+    predicted_initial_row: &FastPathBondRecord,
+    signable_frame: &[u8],
+    input_row: &[u8],
+) -> Result<BondRegistrationContent, Box<BondRegistrationError>> {
     let signed_leg: SignedLocalExecutionIntent = decode_signed_local_execution(&intent.leg)
         .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
     let canonical_leg: Vec<u8> = encode_signed_local_execution(&signed_leg)
@@ -123,7 +172,7 @@ pub fn preview_original_bond_registration_content(
             "registration signed leg changed after preparation",
         )));
     }
-    let canonical_row: Vec<u8> = encode_fastpath_bond_record(prepared.predicted_initial_row())
+    let canonical_row: Vec<u8> = encode_fastpath_bond_record(predicted_initial_row)
         .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
     if canonical_row != input_row {
         return Err(Box::new(BondRegistrationError::Invalid(
@@ -132,7 +181,7 @@ pub fn preview_original_bond_registration_content(
     }
     let row_digest: Digest32 = bond_row_digest(
         resolver,
-        prepared.predicted_initial_row().lifecycle_epoch,
+        predicted_initial_row.lifecycle_epoch,
         &canonical_row,
     )
     .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
@@ -146,12 +195,12 @@ pub fn preview_original_bond_registration_content(
         bond_registration_intent_digest(resolver, intent).map_err(Box::new)?;
     let outer_frame: Vec<u8> =
         bond_registration_signing_frame(&intent.context, intent_digest).map_err(Box::new)?;
-    if outer_frame != prepared.signable_frame() {
+    if outer_frame != signable_frame {
         return Err(Box::new(BondRegistrationError::Invalid(
             "registration outer signing frame changed",
         )));
     }
-    Ok(OriginalBondRegistrationContent {
+    Ok(BondRegistrationContent {
         signed_leg: canonical_leg,
         predicted_row: canonical_row,
         outer_intent,

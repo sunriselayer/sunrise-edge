@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-11-08 (Asia/Singapore)。これは唯一の現行作業表です。
+更新: 2026-11-09 (Asia/Singapore)。これは唯一の現行作業表です。
 現行チェックは **85件中71件完了・14件未完了**。残るコード・検証の親は
 **D02/M1/M2/M3/M7**、停止中の子3件と公開準備の親6件も未完了です。
 以下の行を現行状態とし、祖先sourceの成功や部分実行を親の完了へ転用しません。
@@ -47,6 +47,13 @@ EOF/wait/reap・既知PID/cgroup/Docker解放を確認。先のstaging失敗2件
 merge commitは `8fc79746`、treeは検証済みheadと同一。M3の新selectorも
 同headの完全requiredとCIで成功した。これは選択済みcomponentの資格であり、
 親M2/M3/M7、停止中fault、最終独立security/release reviewは未完了。
+[PR #352](https://github.com/sunriselayer/sunrise-edge/pull/352) は2026-11-08にmergeした。
+original bondのseed-free構造プレビューをexact `0907bb22`で確認し、同sourceの
+literal npm ci・完全requiredはV5でexit 0/実EOF/wait、全8 CIも成功した。
+外部終端記録の移動先は `sunrise-edge-validation-1013/home-temp-relocations-1108.json` に記録。
+初回CIのDeno取得504と先行V4のdisk-floor失敗は別に保全する。
+内容承認・実登録・保護署名の証拠ではなく、
+親M2/M7と停止中の子条件は未完了のまま保持する。
 
 ## 作業終了時の環境整理
 
@@ -481,7 +488,7 @@ M2-N1〜N5は既存M2の不足を分ける作業IDであり、新しい親gate�
 | N3の実経路 | 現行区分と残件 |
 | --- | --- |
 | generic local/general・paid | 既存CLIはcustodyをI/O前に拒否する。認識済み操作・権限・review内容が選ばれるまで別backendを接続しない |
-| bond registration | development seedの`structural_registration_claim`は`executed=false`。[DR-0287](docs/architecture/decisions/0287-bond-registration-structural-preview.md) のoriginal専用・seed-free構造プレビューを追加し、exact `642f2a88`で新規2件と既存を含むCLI全10件の限定テストが成功。raw EOF/wait/reap・process group解放・source不変を[記録](docs/development/validation/2026-11-08-m2-bond-preview/README.md)した。完全required/同source CIは未実行。内容承認、実登録、protected governance署名、successor previewの証拠ではない |
+| bond registration | development seedの`structural_registration_claim`は`executed=false`。[DR-0287](docs/architecture/decisions/0287-bond-registration-structural-preview.md) のoriginal専用・seed-free構造プレビューを追加し、exact `642f2a88`で新規2件と既存を含むCLI全10件の限定テストが成功。raw EOF/wait/reap・process group解放・source不変を[記録](docs/development/validation/2026-11-08-m2-bond-preview/README.md)した。PR #352のexact `0907bb22`でliteral npm ci・完全required/全8 CIも終端成功。[DR-0288](docs/architecture/decisions/0288-successor-bond-registration-structural-preview.md) のsuccessor拡張は別sourceの未検証候補。内容承認、実登録、protected governance署名の証拠ではない |
 | FinalTransfer fee claim | development署名の経路でありpositive Split custodyに含めない。具体authorityとreview契約は未選択 |
 | offline genesis author | [DR-0286](docs/architecture/decisions/0286-standard-asset-genesis-protected-review-worker.md) の二段階workerを実装・限定別UID検証済み。実承認者/鍵/economics/ceremony、全体gateは未達 |
 
@@ -633,12 +640,12 @@ workerの証拠をsuccessorへ流用せず、N1/N2と親M2は未完了とする�
     全12 SQL tables・2 blob tables・4 portable collections・positive historical bodyと通常reopen/fencingを
     b389のsource/実結果へ対応付けた。表の非空やphysical faultを主張せず、追加の通常assertion不足は
     特定されていない。この対応表だけを理由とするruntime再実行や親M3の完了は行わない。
-  - 次: 統合したf093の新しいowning結果と、残るselected-profile coverageを対応表で埋める。
-    trait reply-loss、process SIGKILL、power/host/media/fsync faultは別証拠。
-    全12 SQL tables・4 portable collections・positive blob/oracleを省略しない。
-    selected-profileのhost/power/storage faults、ENOSPC/resource exhaustion、
-    real writer failover、TLS failure/rotationは、このCODE/VERIFY行の完了条件に残す。
-    D07の実topology運用rehearsalは代替・延期理由にならない。一つの合格で全M3を閉じない。
+  - f093の新owning/SQLite libはE7、元5 ENOSPCはE8に記録済み。
+    E210が通常coverageを対応付け済みであり、同じassertionを増やさない。
+    selected-profileの物理host/power/media/fsync、別host writer failoverは未検証。
+    E8/E169のENOSPC、E30/E193/E203/E206のTLS、E74の同host SIGKILL、E79の通常VMを
+    他のresource exhaustion・fault条件へ転用しない。上記の停止中2子条件とD07の
+    実topology rehearsalは別に保持し、親M3は未完了。
 
 - [x] **M4: checkpoint・暗号化バックアップ・復元コードを検証する**
   - 対象: 実装 + 検証。checkpoint/state-root・immutable body manifests、

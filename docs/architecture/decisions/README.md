@@ -182,3 +182,5 @@ use the [short architecture index](../README.md) to find the relevant owner and
 - [DR-0284: conditional readiness protected worker selected boundary](0284-conditional-readiness-protected-worker-proposal.md)
 - [DR-0285: successor protected host selected boundary](0285-successor-protected-host-proposal.md)
 - [DR-0286: offline Standard Asset genesis protected review worker](0286-standard-asset-genesis-protected-review-worker.md)
+- [DR-0287: seed-free bond-registration structural preview](0287-bond-registration-structural-preview.md)
+- [DR-0288: verified-successor bond-registration structural preview](0288-successor-bond-registration-structural-preview.md)
