@@ -1004,10 +1004,10 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
    exit 0・EOF/wait・資源解放まで終端確認した。次は同sourceの適用される
    RELEASE条件と親の残件を照合する。文書統合PR #347自身の全体gateは冒頭に記録済み。
    PR #349の限定genesis別UID fixtureと同source完全required・CIは上記の通り成功した。
-   merge commit `a6ae6229`を起点とするfresh Native13 A/Bは限定成功した。
-   元12の未実行候補を同HEADで生成し、専用driver buildの外側判定失敗を保全した。
-   full-window監視と別の限定compile資格、修正版での22件実測`--list`を独立照合した。次は
-   同じHEADの元12 RELEASE runtimeを有限時間で実行し、親M2/M7の未達範囲と区別して記録する。
+   merge commit `a6ae6229`起点のfresh Native13 A/Bと元12 RELEASE runtimeは
+   上記M7の範囲で終端成功した。途中のowner判定・probe失敗はM7に保全済み。
+   PR #350ではlocal完全requiredと全8 CIを同sourceで照合してmergeした。
+   次は親M2/M7の未達条件を個別に照合し、独立最終reviewと公開準備を完了扱いしない。
    [M2-N1〜N5の元照合](#m2初期リリース対象の照合-2026-11-03) を参照し、
    残る未選択consumerの必要性、対象別lifecycleと不足検証を具体化する。
    停止対象を再開せず、全prepared型や全identity移行を新たな必須条件にしない。
