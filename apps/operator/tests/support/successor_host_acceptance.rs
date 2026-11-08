@@ -369,11 +369,16 @@ fn start_host(
     inputs: &SuccessorProcessInputs,
     export: &Path,
     index: usize,
+    protected_key: Option<&Path>,
 ) -> HostProcess {
     #[cfg(target_os = "linux")]
     if index == 3 && protected::enabled() {
-        return protected::start_host(fixture, inputs, export, index);
+        return protected::start_host(fixture, inputs, export, index, protected_key);
     }
+    assert!(
+        protected_key.is_none(),
+        "an unprotected host cannot select a recovered protected key"
+    );
     let mut command: Command = Command::new(&inputs.executables.successor_host);
     command.arg("serve");
     pins(&mut command, fixture, inputs);
@@ -2341,7 +2346,7 @@ fn accept(
         inspect_imported_share(fixture, inputs, &workflow, export, claimant_index);
     recurring::prove_direct_live_tls(fixture, inputs, export, &workflow, seal);
     let mut hosts: Vec<HostProcess> = (0..4)
-        .map(|index: usize| start_host(fixture, inputs, export, index))
+        .map(|index: usize| start_host(fixture, inputs, export, index, None))
         .collect();
     let next_epoch: u64 = fixture.network.epoch.get() + 1;
     assert_eq!(workflow.expected_context().epoch().get(), next_epoch);
@@ -2493,11 +2498,18 @@ fn accept(
     let paused: HostProcess = hosts.remove(3);
     let paused_generation: u64 = paused.generation;
     drop(paused);
+    // The old frontend and worker have both been reaped. Recover only the
+    // selected worker's disposable key, leaving its retained state in place.
+    #[cfg(target_os = "linux")]
+    let recovered_key: Option<PathBuf> =
+        protected::enabled().then(|| protected::recover_same_key_after_stop(inputs, 3));
+    #[cfg(not(target_os = "linux"))]
+    let recovered_key: Option<PathBuf> = None;
     let alive = ordered_endpoints(&[Some(&hosts[0]), Some(&hosts[1]), Some(&hosts[2]), None]);
     // The paid Call and fee-claim rounds advanced the prefix since the last
     // empty round, so the routing hint (not a stale parent) selects it.
     let missed: RoundOutcome = round(&alive, &workflow, None);
-    let reopened: HostProcess = start_host(fixture, inputs, export, 3);
+    let reopened: HostProcess = start_host(fixture, inputs, export, 3, recovered_key.as_deref());
     assert!(
         reopened.generation > paused_generation,
         "reopen claims a new writer fence"
@@ -2541,6 +2553,10 @@ fn accept(
         sunrise_edge_client::current_inline_object_ref(&refreshed).is_some(),
         "the freshly instantiated Definition is live on the caught-up successor host"
     );
+    #[cfg(target_os = "linux")]
+    if let Some(key) = recovered_key.as_deref() {
+        protected::restore_original_key_for_recurring(inputs, 3, key);
+    }
     drop(reopened_all);
     drop(first_successor);
     recurring::run(
