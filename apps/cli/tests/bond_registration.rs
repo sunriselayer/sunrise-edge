@@ -39,8 +39,8 @@ use sunrise_edge_client::{
     bond_registration::{
         BondRegistrationContext, FastPathBondRecord, LocalBondRegistrationError,
         MAX_BOND_REGISTRATION_ROW_BYTES, MAX_LOCAL_EXECUTION_INTENT_BYTES,
-        decode_signed_bond_registration_intent, encode_fastpath_bond_record,
-        verify_signed_bond_registration,
+        PreparedLocalBondRegistration, decode_signed_bond_registration_intent,
+        encode_fastpath_bond_record, verify_signed_bond_registration,
     },
     ordered_economics::{
         ORDERED_ECONOMICS_OUTCOME_PATH_PREFIX, ORDERED_ECONOMICS_PROPOSE_PATH,
@@ -276,6 +276,22 @@ impl Fixture {
         args
     }
 
+    fn preview_args(&self, authorization_key: [u8; 32]) -> Vec<String> {
+        let mut args: Vec<String> = vec!["economics".into(), "bond-registration-preview".into()];
+        args.extend(self.pins());
+        args.extend([
+            "--request-id".into(),
+            hex(&REQUEST_ID),
+            "--signed-leg".into(),
+            self.path("leg"),
+            "--expected-bond-row".into(),
+            self.path("row"),
+            "--expected-authorization-key".into(),
+            hex(&authorization_key),
+        ]);
+        args
+    }
+
     fn wrap_args(&self, intent: &str, output: &str) -> Vec<String> {
         let mut args: Vec<String> = vec!["economics".into(), "candidate-wrap".into()];
         args.extend(self.pins());
@@ -387,6 +403,130 @@ fn executable_prepares_exact_claim_wraps_kind7_and_preserves_inputs() {
     assert_eq!(candidate.request_id, REQUEST_ID);
     assert_eq!(candidate.context, fixture.context);
     assert_eq!(fixture.input_inventory(), inputs);
+}
+
+#[test]
+fn seed_free_preview_recomputes_exact_original_content_without_output() {
+    let fixture: Fixture = Fixture::new();
+    let signer: LocalSigner = LocalSigner::from_seed(NEW_SEED);
+    let key: [u8; 32] = *signer.address().as_bytes();
+    fs::remove_file(fixture.path("seed")).unwrap();
+    let mut before: Vec<String> = fs::read_dir(&fixture.directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    before.sort();
+    let output: Output = run(&fixture.preview_args(key));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let stdout: String = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.starts_with(
+        "preview=structural_bond_registration\napproved=false\nsigned=false\nexecuted=false\nleg_semantics=unreviewed\nscope=original\n"
+    ));
+    assert!(stdout.contains(&format!("chain_id={}\n", fixture.context.chain_id())));
+    assert!(stdout.contains(&format!(
+        "ordered_domain={}\n",
+        hex(fixture.domain.as_bytes())
+    )));
+    assert!(stdout.contains("protocol_version=7\nepoch=0\n"));
+    assert!(stdout.contains(&format!("validator_id={}\n", hex(&key))));
+    assert!(stdout.contains(&format!("predicted_amount={}\n", fixture.row.amount)));
+    assert!(stdout.contains(&format!("signed_leg_hex={}\n", hex(&fixture.leg))));
+    assert!(stdout.contains(&format!(
+        "predicted_row_hex={}\n",
+        hex(&encode_fastpath_bond_record(&fixture.row).unwrap())
+    )));
+    let trusted: BondRegistrationContext = BondRegistrationContext::load(
+        Path::new(&fixture.path("genesis")),
+        &fixture.resolver,
+        fixture.digest.bytes(),
+        &fixture.context,
+        fixture.domain,
+    )
+    .unwrap();
+    let prepared: PreparedLocalBondRegistration = trusted
+        .prepare_for_public_key(key, REQUEST_ID, fixture.leg.clone(), fixture.row.clone())
+        .unwrap();
+    assert!(stdout.contains(&format!(
+        "outer_intent_hex={}\n",
+        hex(&node_core::bond_lifecycle::registration::encode_bond_registration_intent(
+            prepared.intent()
+        )
+        .unwrap())
+    )));
+    assert!(stdout.contains(&format!(
+        "outer_frame_hex={}\n",
+        hex(prepared.signable_frame())
+    )));
+    let mut after: Vec<String> = fs::read_dir(&fixture.directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    after.sort();
+    assert_eq!(before, after);
+    assert!(!Path::new(&fixture.path("signed")).exists());
+}
+
+#[test]
+fn seed_free_preview_refuses_changed_leg_row_and_key_without_output() {
+    let fixture: Fixture = Fixture::new();
+    let signer: LocalSigner = LocalSigner::from_seed(NEW_SEED);
+    let key: [u8; 32] = *signer.address().as_bytes();
+    fs::remove_file(fixture.path("seed")).unwrap();
+    let wrong_key: [u8; 32] = *LocalSigner::from_seed([0x66; 32]).address().as_bytes();
+    let output: Output = run(&fixture.preview_args(wrong_key));
+    refuse(&output);
+    assert!(!Path::new(&fixture.path("signed")).exists());
+
+    let mut forbidden_signing_flags: Vec<String> = fixture.preview_args(key);
+    forbidden_signing_flags.extend(["--seed-file".into(), fixture.path("missing-seed")]);
+    refuse(&run(&forbidden_signing_flags));
+    let mut forbidden_output_flags: Vec<String> = fixture.preview_args(key);
+    forbidden_output_flags.extend(["--out".into(), fixture.path("signed")]);
+    refuse(&run(&forbidden_output_flags));
+    let mut forbidden_successor_flags: Vec<String> = fixture.preview_args(key);
+    forbidden_successor_flags.extend(["--successor-max-links".into(), "1".into()]);
+    let successor_output: Output = run(&forbidden_successor_flags);
+    refuse(&successor_output);
+    assert!(
+        String::from_utf8_lossy(&successor_output.stderr)
+            .contains("bond-registration-preview supports original scope only")
+    );
+
+    let mut altered_leg: SignedLocalExecutionIntent =
+        execution::local_execution::decode_signed_local_execution(&fixture.leg).unwrap();
+    altered_leg.intent.call.request_id = [0x87; 32];
+    fs::write(
+        fixture.path("leg"),
+        encode_signed_local_execution(&altered_leg).unwrap(),
+    )
+    .unwrap();
+    let output: Output = run(&fixture.preview_args(key));
+    refuse(&output);
+    fs::write(fixture.path("leg"), &fixture.leg).unwrap();
+
+    fs::write(fixture.path("row"), [0x00_u8, 0x01]).unwrap();
+    refuse(&run(&fixture.preview_args(key)));
+    fs::write(
+        fixture.path("row"),
+        encode_fastpath_bond_record(&fixture.row).unwrap(),
+    )
+    .unwrap();
+
+    let mut altered_row: FastPathBondRecord = fixture.row.clone();
+    altered_row.generation = 2;
+    fs::write(
+        fixture.path("row"),
+        encode_fastpath_bond_record(&altered_row).unwrap(),
+    )
+    .unwrap();
+    let output: Output = run(&fixture.preview_args(key));
+    refuse(&output);
+    assert!(!Path::new(&fixture.path("signed")).exists());
 }
 
 #[test]
