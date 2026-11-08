@@ -868,7 +868,12 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     再実行でも7 epoch後のe8 `pack-saved`で`recovery_budget_refusal=observations`となった。
     最終receipt SHA-256は`949c7cce3adb2ca8127b34562c28eba06a7c0144d3c9676e6252a04908a6c610`。
     rawのEOF・wait/reap・PID/cgroup解放とsource不変を確認済み。CIや祖先sourceの成功を
-    このlocal失敗の代わりにせず、完全requiredとPR #350の統合は未完了。
+    このlocal失敗の代わりにしない。その後の`9981690a`では隔離したdirect `/tmp`を使い、
+    同HEADのliteral npm ci・完全requiredをともにexit 0、rawのEOF・wait/reap、
+    全既知PID/cgroup解放まで照合した。7 epoch後のe8 `pack-saved`もsuccess=true。
+    終端receipt SHA-256は`3c27709c39a0f2897da25332ed1af0cbc3b4ed46616037fd8f37c6e9e20a13e1`。
+    同HEADの全8 CIも成功し、PR #350の通常merge `7b8e7777`は検証済みtreeと一致。
+    先の失敗は保全し、独立最終reviewとissue dispositionを残して親M7は未完了。
   - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
