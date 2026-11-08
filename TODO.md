@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-11-07 (Asia/Singapore)。これは唯一の現行作業表です。
+更新: 2026-11-08 (Asia/Singapore)。これは唯一の現行作業表です。
 現行チェックは **85件中71件完了・14件未完了**。残るコード・検証の親は
 **D02/M1/M2/M3/M7**、停止中の子3件と公開準備の親6件も未完了です。
 以下の行を現行状態とし、祖先sourceの成功や部分実行を親の完了へ転用しません。
@@ -481,7 +481,7 @@ M2-N1〜N5は既存M2の不足を分ける作業IDであり、新しい親gate�
 | N3の実経路 | 現行区分と残件 |
 | --- | --- |
 | generic local/general・paid | 既存CLIはcustodyをI/O前に拒否する。認識済み操作・権限・review内容が選ばれるまで別backendを接続しない |
-| bond registration | development seedの`structural_registration_claim`は`executed=false`。実登録やprotected governance署名の証拠ではない |
+| bond registration | development seedの`structural_registration_claim`は`executed=false`。[DR-0287](docs/architecture/decisions/0287-bond-registration-structural-preview.md) のoriginal専用・seed-free構造プレビューを追加し、exact `642f2a88`で新規2件と既存を含むCLI全10件の限定テストが成功。raw EOF/wait/reap・process group解放・source不変を[記録](docs/development/validation/2026-11-08-m2-bond-preview/README.md)した。完全required/同source CIは未実行。内容承認、実登録、protected governance署名、successor previewの証拠ではない |
 | FinalTransfer fee claim | development署名の経路でありpositive Split custodyに含めない。具体authorityとreview契約は未選択 |
 | offline genesis author | [DR-0286](docs/architecture/decisions/0286-standard-asset-genesis-protected-review-worker.md) の二段階workerを実装・限定別UID検証済み。実承認者/鍵/economics/ceremony、全体gateは未達 |
 

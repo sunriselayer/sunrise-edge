@@ -8,12 +8,24 @@
 use std::{error::Error, fmt, path::Path};
 
 use crypto::CryptoError;
-use execution::publication::PublicationContext;
+use execution::{
+    local_execution::{
+        SignedLocalExecutionIntent, decode_signed_local_execution, encode_signed_local_execution,
+    },
+    publication::PublicationContext,
+};
 use hashing::HashSuiteResolver;
 use node_core::bond_lifecycle::registration::BondRegistrationPreparationRequest;
+use node_core::bond_lifecycle::{
+    bond_row_digest,
+    registration::{
+        bond_registration_intent_digest, bond_registration_signing_frame,
+        encode_bond_registration_intent,
+    },
+};
 use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::OrderedEconomicsPolicy;
-use protocol_types::{AtomicityDomainId, ValidatorId};
+use protocol_types::{AtomicityDomainId, Digest32, ValidatorId};
 
 use crate::key::LocalSigner;
 use crate::local_genesis::load_verified_genesis_root;
@@ -68,6 +80,90 @@ impl fmt::Display for LocalBondRegistrationError {
 }
 
 impl Error for LocalBondRegistrationError {}
+
+/// Canonical bytes and leg fields for a seed-free, nonauthorizing original
+/// registration inspection. This is not a review approval or execution proof.
+pub struct OriginalBondRegistrationContent {
+    /// Canonical, already signed custody leg bytes.
+    pub signed_leg: Vec<u8>,
+    /// Canonical bytes of the caller's predicted generation-one row.
+    pub predicted_row: Vec<u8>,
+    /// Canonical unsigned outer registration intent bytes.
+    pub outer_intent: Vec<u8>,
+    /// Exact outer frame that a signer would receive, without signing here.
+    pub outer_frame: Vec<u8>,
+    /// Recomputed digest of the predicted row.
+    pub row_digest: Digest32,
+    /// Recomputed digest of the outer intent.
+    pub intent_digest: Digest32,
+    /// Sender encoded in the signed custody leg.
+    pub leg_sender: [u8; 32],
+    /// Nonce encoded in the signed custody leg.
+    pub leg_nonce: u64,
+    /// Gas limit encoded in the signed custody leg.
+    pub leg_gas_limit: u64,
+    /// Entrypoint encoded in the signed custody leg.
+    pub leg_entrypoint: String,
+}
+
+/// Rechecks the retained original prepared claim against the exact input row
+/// and independently reconstructed signature frame without signing.
+pub fn preview_original_bond_registration_content(
+    resolver: &HashSuiteResolver,
+    prepared: &PreparedLocalBondRegistration,
+    input_row: &[u8],
+) -> Result<OriginalBondRegistrationContent, Box<BondRegistrationError>> {
+    let intent: &BondRegistrationIntent = prepared.intent();
+    let signed_leg: SignedLocalExecutionIntent = decode_signed_local_execution(&intent.leg)
+        .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
+    let canonical_leg: Vec<u8> = encode_signed_local_execution(&signed_leg)
+        .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
+    if canonical_leg != intent.leg {
+        return Err(Box::new(BondRegistrationError::Invalid(
+            "registration signed leg changed after preparation",
+        )));
+    }
+    let canonical_row: Vec<u8> = encode_fastpath_bond_record(prepared.predicted_initial_row())
+        .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
+    if canonical_row != input_row {
+        return Err(Box::new(BondRegistrationError::Invalid(
+            "registration predicted row changed after preparation",
+        )));
+    }
+    let row_digest: Digest32 = bond_row_digest(
+        resolver,
+        prepared.predicted_initial_row().lifecycle_epoch,
+        &canonical_row,
+    )
+    .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
+    if row_digest != intent.expected_initial_row_digest {
+        return Err(Box::new(BondRegistrationError::Invalid(
+            "registration predicted row digest changed",
+        )));
+    }
+    let outer_intent: Vec<u8> = encode_bond_registration_intent(intent).map_err(Box::new)?;
+    let intent_digest: Digest32 =
+        bond_registration_intent_digest(resolver, intent).map_err(Box::new)?;
+    let outer_frame: Vec<u8> =
+        bond_registration_signing_frame(&intent.context, intent_digest).map_err(Box::new)?;
+    if outer_frame != prepared.signable_frame() {
+        return Err(Box::new(BondRegistrationError::Invalid(
+            "registration outer signing frame changed",
+        )));
+    }
+    Ok(OriginalBondRegistrationContent {
+        signed_leg: canonical_leg,
+        predicted_row: canonical_row,
+        outer_intent,
+        outer_frame,
+        row_digest,
+        intent_digest,
+        leg_sender: signed_leg.intent.call.sender,
+        leg_nonce: signed_leg.intent.call.nonce,
+        leg_gas_limit: signed_leg.intent.call.gas_limit,
+        leg_entrypoint: signed_leg.intent.call.entrypoint,
+    })
+}
 
 /// Locally pinned first-epoch inputs read from one authenticated manifest.
 /// The domain is a separate local ordered-engine pin, not a manifest field.

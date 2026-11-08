@@ -130,3 +130,11 @@ selects the strict partial positive fee Split Leg/Claim consumer. See the map
 for their actual CLI/backend/test owners; none enables generic paid execution.
 DR-0264/0268 select automatic ordered/certified workers under their existing
 live-authority owners, independently of these SDK preparations.
+
+[DR-0287](decisions/0287-bond-registration-structural-preview.md) describes a
+separate seed-free original-scope bond-registration preview candidate. It
+reuses the original prepared owner to expose complete canonical preimages and their
+recomputed frame without signing or writing an artifact. Its structural
+output is explicitly nonauthorizing; successor pins fail closed, while bond
+authority, recognized leg semantics,
+trusted review and protected custody remain unselected in TODO M2-N3.

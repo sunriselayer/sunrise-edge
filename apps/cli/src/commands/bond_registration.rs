@@ -6,17 +6,20 @@ use sunrise_edge_client::{
     AtomicityDomainId, ChainId, Epoch, HashSuiteResolver, HashSuiteSchedule, LocalSigner,
     ProtocolVersion, PublicationContext,
     bond_registration::{
-        BondRegistrationContext, FastPathBondRecord, MAX_BOND_REGISTRATION_ROW_BYTES,
-        MAX_LOCAL_EXECUTION_INTENT_BYTES, PreparedLocalBondRegistration,
+        BondRegistrationContext, BondRegistrationIntent, FastPathBondRecord,
+        MAX_BOND_REGISTRATION_ROW_BYTES, MAX_LOCAL_EXECUTION_INTENT_BYTES,
+        OriginalBondRegistrationContent, PreparedLocalBondRegistration,
         PreparedSuccessorBondRegistration, decode_fastpath_bond_record,
         prepare_successor_bond_registration_for_public_key,
+        preview_original_bond_registration_content,
     },
 };
 
 use crate::{
     args::{FlagSpec, ParsedArgs, scalar},
     error::CliError,
-    hex::decode_hex_32,
+    hex::{decode_hex_32, encode_hex},
+    output::sanitize_line,
     parse::{parse_u32, parse_u64},
     seed::load_dev_seed,
 };
@@ -25,6 +28,13 @@ use super::hash_suite_pins::parse_pinned_flags;
 use super::network_artifacts::{ReservedArtifact, read_bounded, reserve_artifacts};
 
 const HELP: &str = "Offline initial validator-bond registration preparation (no execution, membership, readiness or activation).\n\nRequired: --ordered-genesis-manifest FILE --ordered-expected-genesis-digest HEX --expected-chain-id CHAIN --expected-protocol-version N --expected-epoch N --domain HEX --suite epoch:id:transaction:object:effects:code:config:certificate --request-id HEX --signed-leg FILE --expected-bond-row FILE --seed-file FILE --out FILE.\n\nOne to 64 --suite entries form the explicit locally trusted schedule; algorithms 1 (SHA2-256) and 2 (SHA3-256) are supported. --seed-file is an existing private development seed file, not a production keystore. The generation-one row is a bounded caller prediction only: this command never executes the leg or proves source objects. The normal ordered handler executes the separately signed owned custody leg and rechecks its exact result. The actual key derives the new validator ID and may not reuse any genesis ID or key.\n\nThe output is an exact signed registration envelope, written through a fresh held file handle without overwrite. Wrap it using economics candidate-wrap --kind bond-registration with explicit request/context/checkpoint pins, then use the existing ordered submission/replay workflow.";
+const PREVIEW_HELP: &str = "Offline, seed-free structural preview of an original-scope bond-registration claim. Successor pins are refused. This command does not approve, sign, execute, register, or write an output artifact.\n\nRequired: --ordered-genesis-manifest FILE --ordered-expected-genesis-digest HEX --expected-chain-id CHAIN --expected-protocol-version N --expected-epoch N --domain HEX --suite epoch:id:transaction:object:effects:code:config:certificate --request-id HEX --signed-leg FILE --expected-bond-row FILE --expected-authorization-key HEX.\n\nThe supplied public key is a local review input, never a key selected by the leg or row. The full canonical signed leg, predicted row, unsigned outer intent and outer signing frame are printed as hex. This structural view does not recognize generic contract semantics or authorize protected custody.";
+
+#[derive(Clone, Copy)]
+enum Mode {
+    DevelopmentSign,
+    Preview,
+}
 
 fn failure(error: impl Error + Send + Sync + 'static) -> CliError {
     CliError::LocalExecution(Box::new(error))
@@ -37,7 +47,7 @@ fn invalid(message: impl Into<String>) -> CliError {
     ))
 }
 
-const FLAGS: &[FlagSpec] = &[
+const COMMON_FLAGS: &[FlagSpec] = &[
     scalar("--ordered-genesis-manifest"),
     scalar("--ordered-expected-genesis-digest"),
     scalar("--expected-chain-id"),
@@ -47,20 +57,42 @@ const FLAGS: &[FlagSpec] = &[
     scalar("--request-id"),
     scalar("--signed-leg"),
     scalar("--expected-bond-row"),
-    scalar("--seed-file"),
-    scalar("--out"),
 ];
 
 pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    run_mode(args, Mode::DevelopmentSign)
+}
+
+pub(super) fn run_preview<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    run_mode(args, Mode::Preview)
+}
+
+fn run_mode<I: IntoIterator<Item = OsString>>(args: I, mode: Mode) -> Result<(), CliError> {
     let args: Vec<OsString> = args.into_iter().collect();
     if args.len() == 1 && args[0] == "--help" {
-        println!("{HELP}");
+        println!(
+            "{}",
+            if matches!(mode, Mode::Preview) {
+                PREVIEW_HELP
+            } else {
+                HELP
+            }
+        );
         return Ok(());
     }
-    let mut flags: Vec<FlagSpec> = FLAGS.to_vec();
+    let mut flags: Vec<FlagSpec> = COMMON_FLAGS.to_vec();
+    match mode {
+        Mode::DevelopmentSign => flags.extend([scalar("--seed-file"), scalar("--out")]),
+        Mode::Preview => flags.push(scalar("--expected-authorization-key")),
+    }
     flags.extend(super::successor_pins::successor_flag_specs(false));
     let (parsed, schedules): (ParsedArgs, Vec<HashSuiteSchedule>) =
         parse_pinned_flags(args, &flags)?;
+    if matches!(mode, Mode::Preview) && super::successor_pins::successor_requested(&parsed) {
+        return Err(invalid(
+            "bond-registration-preview supports original scope only",
+        ));
+    }
     if schedules.is_empty() {
         return Err(invalid("one to 64 explicit --suite entries are required"));
     }
@@ -69,8 +101,22 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
     let manifest_path: &str = parsed.require("--ordered-genesis-manifest")?;
     let signed_leg_path: &str = parsed.require("--signed-leg")?;
     let predicted_row_path: &str = parsed.require("--expected-bond-row")?;
-    let seed_path: &str = parsed.require("--seed-file")?;
-    let out_path: &str = parsed.require("--out")?;
+    let (seed_path, out_path, preview_key): (Option<&str>, Option<&str>, Option<[u8; 32]>) =
+        match mode {
+            Mode::DevelopmentSign => (
+                Some(parsed.require("--seed-file")?),
+                Some(parsed.require("--out")?),
+                None,
+            ),
+            Mode::Preview => (
+                None,
+                None,
+                Some(decode_hex_32(
+                    "--expected-authorization-key",
+                    parsed.require("--expected-authorization-key")?,
+                )?),
+            ),
+        };
     let request_id: [u8; 32] = decode_hex_32("--request-id", parsed.require("--request-id")?)?;
     let expected_digest: [u8; 32] = decode_hex_32(
         "--ordered-expected-genesis-digest",
@@ -120,7 +166,15 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
     let row_bytes: Vec<u8> = read_bounded(predicted_row_path, MAX_BOND_REGISTRATION_ROW_BYTES)?;
     let predicted_initial_row: FastPathBondRecord =
         decode_fastpath_bond_record(&row_bytes).map_err(failure)?;
-    let signer: LocalSigner = LocalSigner::from_seed(load_dev_seed(Path::new(seed_path))?);
+    let signer: Option<LocalSigner> = match seed_path {
+        Some(path) => Some(LocalSigner::from_seed(load_dev_seed(Path::new(path))?)),
+        None => None,
+    };
+    let authorization_key: [u8; 32] = match (&signer, preview_key) {
+        (Some(signer), None) => *signer.address().as_bytes(),
+        (None, Some(key)) => key,
+        _ => return Err(invalid("registration signing mode is incomplete")),
+    };
     let (prepared, successor_prepared): (
         Option<PreparedLocalBondRegistration>,
         Option<PreparedSuccessorBondRegistration<'_>>,
@@ -129,7 +183,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
             Some(
                 trusted
                     .prepare_for_public_key(
-                        *signer.address().as_bytes(),
+                        authorization_key,
                         request_id,
                         leg,
                         predicted_initial_row,
@@ -144,7 +198,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
                 prepare_successor_bond_registration_for_public_key(
                     workflow,
                     &context,
-                    *signer.address().as_bytes(),
+                    authorization_key,
                     request_id,
                     leg,
                     predicted_initial_row,
@@ -154,6 +208,25 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
         ),
         _ => return Err(invalid("registration authority composition is incomplete")),
     };
+    if matches!(mode, Mode::Preview) {
+        let prepared: &PreparedLocalBondRegistration = prepared
+            .as_ref()
+            .ok_or_else(|| invalid("original registration preview is incomplete"))?;
+        let content: OriginalBondRegistrationContent =
+            preview_original_bond_registration_content(&resolver, prepared, &row_bytes)
+                .map_err(failure)?;
+        let report: String = render_preview(
+            prepared.intent(),
+            prepared.predicted_initial_row(),
+            &content,
+            domain,
+        );
+        print!("{report}");
+        return Ok(());
+    }
+    let signer: LocalSigner = signer.ok_or_else(|| invalid("registration signer is missing"))?;
+    let seed_path: &str = seed_path.ok_or_else(|| invalid("registration seed is missing"))?;
+    let out_path: &str = out_path.ok_or_else(|| invalid("registration output is missing"))?;
     let mut outputs: Vec<ReservedArtifact> = reserve_artifacts(
         &[(out_path, "signed-bond-registration")],
         &[
@@ -190,4 +263,76 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
     println!("signed_registration_bytes={}", bytes.len());
     println!("out={}", crate::output::sanitize_line(out_path));
     Ok(())
+}
+
+/// This structural report is deliberately outside the signing path. All
+/// values come from the retained preparation; opaque contract semantics are
+/// neither interpreted nor approved here.
+fn render_preview(
+    intent: &BondRegistrationIntent,
+    row: &FastPathBondRecord,
+    content: &OriginalBondRegistrationContent,
+    domain: AtomicityDomainId,
+) -> String {
+    let lines: Vec<String> = vec![
+        "preview=structural_bond_registration".to_string(),
+        "approved=false".to_string(),
+        "signed=false".to_string(),
+        "executed=false".to_string(),
+        "leg_semantics=unreviewed".to_string(),
+        "scope=original".to_string(),
+        format!("ordered_domain={}", encode_hex(domain.as_bytes())),
+        format!(
+            "chain_id={}",
+            sanitize_line(intent.context.chain_id().as_str())
+        ),
+        format!(
+            "protocol_version={}",
+            intent.context.protocol_version().get()
+        ),
+        format!("epoch={}", intent.context.epoch().get()),
+        format!(
+            "resource_chain_id={}",
+            sanitize_line(intent.resource_context.chain_id().as_str())
+        ),
+        format!(
+            "resource_protocol_version={}",
+            intent.resource_context.protocol_version().get()
+        ),
+        format!("resource_epoch={}", intent.resource_context.epoch().get()),
+        format!("request_id={}", encode_hex(&intent.request_id)),
+        format!(
+            "validator_id={}",
+            encode_hex(intent.validator_id.as_bytes())
+        ),
+        format!(
+            "authorization_key={}",
+            encode_hex(&intent.authorization_key)
+        ),
+        format!("resource_domain={}", row.resource_domain),
+        format!("resource={}", encode_hex(&row.resource)),
+        format!("predicted_amount={}", row.amount),
+        format!("predicted_required_minimum={}", row.required_minimum),
+        format!("leg_sender={}", encode_hex(&content.leg_sender)),
+        format!("leg_nonce={}", content.leg_nonce),
+        format!("leg_gas_limit={}", content.leg_gas_limit),
+        format!("leg_entrypoint={}", sanitize_line(&content.leg_entrypoint)),
+        format!(
+            "pinned_genesis_digest={}",
+            encode_hex(&intent.pinned_genesis_digest.bytes())
+        ),
+        format!(
+            "predicted_row_digest={}",
+            encode_hex(&content.row_digest.bytes())
+        ),
+        format!(
+            "outer_intent_digest={}",
+            encode_hex(&content.intent_digest.bytes())
+        ),
+        format!("signed_leg_hex={}", encode_hex(&content.signed_leg)),
+        format!("predicted_row_hex={}", encode_hex(&content.predicted_row)),
+        format!("outer_intent_hex={}", encode_hex(&content.outer_intent)),
+        format!("outer_frame_hex={}", encode_hex(&content.outer_frame)),
+    ];
+    format!("{}\n", lines.join("\n"))
 }
