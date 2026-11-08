@@ -868,8 +868,14 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     再実行でも7 epoch後のe8 `pack-saved`で`recovery_budget_refusal=observations`となった。
     最終receipt SHA-256は`949c7cce3adb2ca8127b34562c28eba06a7c0144d3c9676e6252a04908a6c610`。
     rawのEOF・wait/reap・PID/cgroup解放とsource不変を確認済み。CIや祖先sourceの成功を
-    このlocal失敗の代わりにせず、完全requiredとPR #350の統合は未完了。
-  - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
+    このlocal失敗の代わりにしない。その後の`9981690a`では隔離したdirect `/tmp`を使い、
+    同HEADのliteral npm ci・完全requiredをともにexit 0、rawのEOF・wait/reap、
+    全既知PID/cgroup解放まで照合した。7 epoch後のe8 `pack-saved`もsuccess=true。
+    終端receipt SHA-256は`3c27709c39a0f2897da25332ed1af0cbc3b4ed46616037fd8f37c6e9e20a13e1`。
+    同HEADの全8 CIも成功し、PR #350の通常merge `7b8e7777`は検証済みtreeと一致。
+    先の失敗は保全し、独立最終reviewとissue dispositionを残して親M7は未完了。
+  - 次: 既知の実行失敗と後続成功は[部分整理](docs/development/validation/2026-11-08-m7-release-issue-disposition/README.md)した。
+    元の独立した最終source/release reviewと完全なissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
     元selectorの成功を、別の未指定campaign待ちとはしない。新sourceにはそのsourceの
@@ -999,10 +1005,10 @@ Native+SQLite firstは他providerの認定ではありません。protocol-v3の
    exit 0・EOF/wait・資源解放まで終端確認した。次は同sourceの適用される
    RELEASE条件と親の残件を照合する。文書統合PR #347自身の全体gateは冒頭に記録済み。
    PR #349の限定genesis別UID fixtureと同source完全required・CIは上記の通り成功した。
-   merge commit `a6ae6229`を起点とするfresh Native13 A/Bは限定成功した。
-   元12の未実行候補を同HEADで生成し、専用driver buildの外側判定失敗を保全した。
-   full-window監視と別の限定compile資格、修正版での22件実測`--list`を独立照合した。次は
-   同じHEADの元12 RELEASE runtimeを有限時間で実行し、親M2/M7の未達範囲と区別して記録する。
+   merge commit `a6ae6229`起点のfresh Native13 A/Bと元12 RELEASE runtimeは
+   上記M7の範囲で終端成功した。途中のowner判定・probe失敗はM7に保全済み。
+   PR #350ではlocal完全requiredと全8 CIを同sourceで照合してmergeした。
+   次は親M2/M7の未達条件を個別に照合し、独立最終reviewと公開準備を完了扱いしない。
    [M2-N1〜N5の元照合](#m2初期リリース対象の照合-2026-11-03) を参照し、
    残る未選択consumerの必要性、対象別lifecycleと不足検証を具体化する。
    停止対象を再開せず、全prepared型や全identity移行を新たな必須条件にしない。
