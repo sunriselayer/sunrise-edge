@@ -112,38 +112,45 @@ pub fn preview_original_bond_registration_content(
     resolver: &HashSuiteResolver,
     prepared: &PreparedLocalBondRegistration,
     input_row: &[u8],
-) -> Result<OriginalBondRegistrationContent, BondRegistrationError> {
+) -> Result<OriginalBondRegistrationContent, Box<BondRegistrationError>> {
     let intent: &BondRegistrationIntent = prepared.intent();
-    let signed_leg: SignedLocalExecutionIntent = decode_signed_local_execution(&intent.leg)?;
-    let canonical_leg: Vec<u8> = encode_signed_local_execution(&signed_leg)?;
+    let signed_leg: SignedLocalExecutionIntent = decode_signed_local_execution(&intent.leg)
+        .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
+    let canonical_leg: Vec<u8> = encode_signed_local_execution(&signed_leg)
+        .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
     if canonical_leg != intent.leg {
-        return Err(BondRegistrationError::Invalid(
+        return Err(Box::new(BondRegistrationError::Invalid(
             "registration signed leg changed after preparation",
-        ));
+        )));
     }
-    let canonical_row: Vec<u8> = encode_fastpath_bond_record(prepared.predicted_initial_row())?;
+    let canonical_row: Vec<u8> = encode_fastpath_bond_record(prepared.predicted_initial_row())
+        .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
     if canonical_row != input_row {
-        return Err(BondRegistrationError::Invalid(
+        return Err(Box::new(BondRegistrationError::Invalid(
             "registration predicted row changed after preparation",
-        ));
+        )));
     }
     let row_digest: Digest32 = bond_row_digest(
         resolver,
         prepared.predicted_initial_row().lifecycle_epoch,
         &canonical_row,
-    )?;
+    )
+    .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
     if row_digest != intent.expected_initial_row_digest {
-        return Err(BondRegistrationError::Invalid(
+        return Err(Box::new(BondRegistrationError::Invalid(
             "registration predicted row digest changed",
-        ));
+        )));
     }
-    let outer_intent: Vec<u8> = encode_bond_registration_intent(intent)?;
-    let intent_digest: Digest32 = bond_registration_intent_digest(resolver, intent)?;
-    let outer_frame: Vec<u8> = bond_registration_signing_frame(&intent.context, intent_digest)?;
+    let outer_intent: Vec<u8> = encode_bond_registration_intent(intent)
+        .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
+    let intent_digest: Digest32 = bond_registration_intent_digest(resolver, intent)
+        .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
+    let outer_frame: Vec<u8> = bond_registration_signing_frame(&intent.context, intent_digest)
+        .map_err(|error| Box::new(BondRegistrationError::from(error)))?;
     if outer_frame != prepared.signable_frame() {
-        return Err(BondRegistrationError::Invalid(
+        return Err(Box::new(BondRegistrationError::Invalid(
             "registration outer signing frame changed",
-        ));
+        )));
     }
     Ok(OriginalBondRegistrationContent {
         signed_leg: canonical_leg,
