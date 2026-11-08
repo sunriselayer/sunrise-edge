@@ -492,6 +492,23 @@ fn seed_free_preview_refuses_changed_leg_row_and_key_without_output() {
     forbidden_successor_flags.extend(["--successor-max-links".into(), "1".into()]);
     let successor_output: Output = run(&forbidden_successor_flags);
     refuse(&successor_output);
+    let mut complete_successor_flags: Vec<String> = fixture.preview_args(key);
+    complete_successor_flags.extend([
+        "--successor-genesis-epoch".into(),
+        "0".into(),
+        "--successor-max-links".into(),
+        "1".into(),
+        "--successor-plan-history-dir".into(),
+        fixture.path("missing-plan-history"),
+        "--successor-cut-dir".into(),
+        fixture.path("missing-cut"),
+        "--successor-manifest-history-dir".into(),
+        fixture.path("missing-manifest-history"),
+        "--successor-certificate-dir".into(),
+        fixture.path("missing-certificate"),
+    ]);
+    let successor_output: Output = run(&complete_successor_flags);
+    refuse(&successor_output);
     assert!(
         String::from_utf8_lossy(&successor_output.stderr)
             .contains("bond-registration-preview supports original scope only")
