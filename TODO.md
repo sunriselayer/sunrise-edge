@@ -874,7 +874,8 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     終端receipt SHA-256は`3c27709c39a0f2897da25332ed1af0cbc3b4ed46616037fd8f37c6e9e20a13e1`。
     同HEADの全8 CIも成功し、PR #350の通常merge `7b8e7777`は検証済みtreeと一致。
     先の失敗は保全し、独立最終reviewとissue dispositionを残して親M7は未完了。
-  - 次: 元の独立した最終source/release reviewとissue dispositionを現行source/tool/profile・
+  - 次: 既知の実行失敗と後続成功は[部分整理](docs/development/validation/2026-11-08-m7-release-issue-disposition/README.md)した。
+    元の独立した最終source/release reviewと完全なissue dispositionを現行source/tool/profile・
     上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
     元selectorの成功を、別の未指定campaign待ちとはしない。新sourceにはそのsourceの
