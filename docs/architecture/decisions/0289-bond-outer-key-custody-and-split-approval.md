@@ -4,6 +4,12 @@ Date: 2026-11-09 (Asia/Singapore)
 
 Status: Selected boundary; implementation and qualification pending.
 
+Later scope note (2026-11-09): [DR-0291](0291-original-bond-inner-standard-asset-profile.md)
+selects the first original-genesis inner transfer and source-owner key
+boundary. This record's historical statement that inner custody was not yet
+selected describes its original decision; the distinct-approver requirement
+and implementation limits remain.
+
 ## Context
 
 [DR-0287](0287-bond-registration-structural-preview.md) and
