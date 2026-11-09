@@ -2585,7 +2585,11 @@ fn protected_original_bond_uses_two_distinct_approvers_and_workers() {
         namespace_ids().expect("original bond test requires subordinate UID/GID ranges");
     let test_binary = std::env::current_exe().unwrap();
     let output = Command::new("unshare")
-        .args(["--map-current-user", "--map-users"])
+        // The fixture controller needs effective namespace CAP_CHOWN after
+        // exec; retaining a nonzero namespace UID does not guarantee it on
+        // hosted runners. This maps only the current host user to namespace
+        // root, while the role processes below still drop all capabilities.
+        .args(["--map-root-user", "--map-users"])
         .arg(format!("2000:{subuid}:100"))
         .arg("--map-groups")
         .arg(format!("2000:{subgid}:100"))
