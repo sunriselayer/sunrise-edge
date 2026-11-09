@@ -76,16 +76,25 @@ fn fund_e_for(
     request: [u8; 32],
     amount: u64,
 ) -> CertifiedPaidMaterial {
+    fund_for_recipient(fixture, nonce, request, amount, *e_id().as_bytes())
+}
+
+fn fund_for_recipient(
+    fixture: &CausalFixture,
+    nonce: u64,
+    request: [u8; 32],
+    amount: u64,
+    recipient: [u8; 32],
+) -> CertifiedPaidMaterial {
     let source: Object = current_object(&fixture.network, 0, fixture.manifest.objects[1].object.id);
-    let template: Vec<u8> =
-        paid_transfer_to(fixture, 0, &source, request, nonce, e_id().as_bytes());
+    let template: Vec<u8> = paid_transfer_to(fixture, 0, &source, request, nonce, &recipient);
     let mut signed: SignedPaidIntent =
         execution::paid_execution::decode_signed_paid_intent(&template).unwrap();
     let PaidApplication::Call(call) = &mut signed.intent.application else {
         panic!("genuine call template");
     };
     call.entrypoint = "split".into();
-    call.arguments = public_standard_asset::split_arguments(amount, e_id().as_bytes()).unwrap();
+    call.arguments = public_standard_asset::split_arguments(amount, &recipient).unwrap();
     signed.signature = fixture.network.signers[0]
         .key
         .sign(&paid_intent_signing_frame(&fixture::protocol(), &signed.intent).unwrap())
@@ -99,7 +108,7 @@ fn fund_e_for(
         .iter()
         .filter_map(|effect| match effect {
             execution::ObjectEffect::Created(object)
-                if object.owner == Owner::Address(Address::new(*e_id().as_bytes())) =>
+                if object.owner == Owner::Address(Address::new(recipient)) =>
             {
                 Some(object)
             }
@@ -121,7 +130,7 @@ fn fund_e_for(
     for replica in 0..REPLICAS {
         assert_eq!(
             current_object(&fixture.network, replica, created[0].id).owner,
-            Owner::Address(Address::new(*e_id().as_bytes()))
+            Owner::Address(Address::new(recipient))
         );
     }
     material
@@ -132,6 +141,14 @@ fn funded_object(fixture: &CausalFixture) -> Object {
 }
 
 fn funded_object_for(fixture: &CausalFixture, request: [u8; 32]) -> Object {
+    funded_object_for_recipient(fixture, request, *e_id().as_bytes())
+}
+
+fn funded_object_for_recipient(
+    fixture: &CausalFixture,
+    request: [u8; 32],
+    recipient: [u8; 32],
+) -> Object {
     let record: NodeDedupRecord = NodeDedupRecord::decode(
         receipt(&fixture.network, 0, request)
             .unwrap()
@@ -148,7 +165,7 @@ fn funded_object_for(fixture: &CausalFixture, request: [u8; 32]) -> Object {
         .iter()
         .find_map(|effect| match effect {
             execution::ObjectEffect::Created(object)
-                if object.owner == Owner::Address(Address::new(*e_id().as_bytes())) =>
+                if object.owner == Owner::Address(Address::new(recipient)) =>
             {
                 Some(object.id)
             }
@@ -165,15 +182,17 @@ fn leg(
     nonce: u64,
     recipient: &[u8; 32],
     gas: u64,
+    source_signer: &SigningKey,
 ) -> Vec<u8> {
     let network: &Network = &fixture.network;
+    let source_key: [u8; 32] = VerificationKey::from(source_signer).into();
     let intent: LocalExecutionIntent = LocalExecutionIntent {
         mode: LocalExecutionMode::Call,
         policy_digest: network.leg_policy.digest(&network.resolver).unwrap(),
         call: CallIntent {
             context: fixture::protocol(),
             request_id: request,
-            sender: *e_id().as_bytes(),
+            sender: source_key,
             nonce,
             code: fixture.instance.code.clone(),
             instance: instance_target(&network.resolver, &fixture.instance).unwrap(),
@@ -192,7 +211,7 @@ fn leg(
     };
     let framed: Vec<u8> = local_execution_signing_frame(&fixture::protocol(), &intent).unwrap();
     encode_signed_local_execution(&SignedLocalExecutionIntent {
-        signature: e_key().sign(&framed).into(),
+        signature: source_signer.sign(&framed).into(),
         intent,
     })
     .unwrap()
@@ -224,6 +243,24 @@ fn registration_claim_for_object(
     nonce: u64,
     claimed_amount: Option<u64>,
 ) -> (OrderedCandidate, FastPathBondRecord) {
+    registration_claim_for_object_signed_by(
+        fixture,
+        source,
+        request,
+        nonce,
+        claimed_amount,
+        &e_key(),
+    )
+}
+
+fn registration_claim_for_object_signed_by(
+    fixture: &CausalFixture,
+    source: Object,
+    request: [u8; 32],
+    nonce: u64,
+    claimed_amount: Option<u64>,
+    source_signer: &SigningKey,
+) -> (OrderedCandidate, FastPathBondRecord) {
     let network: &Network = &fixture.network;
     let resource = &fixture.manifest.economics_policy.resources[0];
     let scope: objects::ProtocolCustodyScope = objects::ProtocolCustodyScope {
@@ -239,7 +276,15 @@ fn registration_claim_for_object(
         &scope,
     )
     .unwrap();
-    let signed_leg: Vec<u8> = leg(fixture, &source, request, nonce, &token, 500_000);
+    let signed_leg: Vec<u8> = leg(
+        fixture,
+        &source,
+        request,
+        nonce,
+        &token,
+        500_000,
+        source_signer,
+    );
     let authority_observed = network.stores[0]
         .get_versioned_durable(
             &network.context,
@@ -355,6 +400,14 @@ fn commit_registration(
 }
 
 fn assert_registered(fixture: &CausalFixture, expected: &FastPathBondRecord) {
+    assert_registered_from(fixture, expected, *e_id().as_bytes());
+}
+
+fn assert_registered_from(
+    fixture: &CausalFixture,
+    expected: &FastPathBondRecord,
+    source_key: [u8; 32],
+) {
     let network: &Network = &fixture.network;
     for replica in 0..REPLICAS {
         let actual = verify_registered_bond_chain(
@@ -375,7 +428,7 @@ fn assert_registered(fixture: &CausalFixture, expected: &FastPathBondRecord) {
                 fixture::chain(),
                 fixture::protocol().protocol_version(),
                 fixture::protocol().epoch(),
-                *e_id().as_bytes()
+                source_key
             )
             .unwrap(),
             1
@@ -603,6 +656,57 @@ pub(super) fn registered_cut_fixture_configure(
         next,
         keys,
         registration: candidate,
+    }
+}
+
+/// Exercise the existing ordered owner with a source Coin key distinct from
+/// the registering validator. These signatures are local test material; the
+/// protected CLI fixture has a different genesis and is not this input.
+#[test]
+fn initial_registration_distinct_source_and_validator_keys_order_effects() {
+    let fixture: CausalFixture = fresh_fixture();
+    let source_signer = SigningKey::from([0x67; 32]);
+    let source_key: [u8; 32] = VerificationKey::from(&source_signer).into();
+    assert_ne!(source_key, *e_id().as_bytes());
+
+    fund_for_recipient(&fixture, 0, FUND, 10_000, source_key);
+    let source = funded_object_for_recipient(&fixture, FUND, source_key);
+    let (candidate, expected) = registration_claim_for_object_signed_by(
+        &fixture,
+        source.clone(),
+        REGISTER,
+        0,
+        None,
+        &source_signer,
+    );
+    let signed = verify_signed_bond_registration(&fixture.network.root, &candidate.intent).unwrap();
+    let signed_leg =
+        execution::local_execution::decode_signed_local_execution(&signed.intent.leg).unwrap();
+    assert_eq!(signed_leg.intent.call.sender, source_key);
+    assert_eq!(signed.intent.authorization_key, *e_id().as_bytes());
+    assert_eq!(signed.intent.request_id, candidate.request_id);
+    assert_eq!(signed_leg.intent.call.request_id, candidate.request_id);
+    commit_registration(&fixture.network, &candidate, 1);
+    assert_registered_from(&fixture, &expected, source_key);
+    for replica in 0..REPLICAS {
+        let actual = current_object(&fixture.network, replica, source.id);
+        assert_eq!(actual.version, source.version.checked_add(1).unwrap());
+        assert_eq!(
+            object_ref(&fixture.network, &actual),
+            expected.custody_object
+        );
+        let outcome = query_ordered_outcome(
+            &fixture.network.stores[replica],
+            &fixture.network.context,
+            &fixture.network.env(),
+            &candidate.request_id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            outcome.output.responses()[0].status(),
+            NodeResponseStatus::Accepted
+        );
     }
 }
 
