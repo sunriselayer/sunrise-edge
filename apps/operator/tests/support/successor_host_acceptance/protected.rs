@@ -2,12 +2,13 @@
 //! The seven-epoch flow and its selectors stay in the parent acceptance.
 use super::*;
 use std::{
-    fs,
-    os::unix::{fs::PermissionsExt, process::CommandExt},
+    fs, io,
+    os::unix::{fs::OpenOptionsExt, fs::PermissionsExt, process::CommandExt},
 };
 
 const WORKER_UID: u32 = 10_001;
 const FRONTEND_UID: u32 = 10_002;
+const RECOVERED_KEY_FILE: &str = "restored-private.key";
 
 pub(super) fn enabled() -> bool {
     if std::env::var_os("SUNRISE_SUCCESSOR_MULTIUID_FIXTURE").is_none() {
@@ -46,6 +47,26 @@ fn chown(path: &Path, uid: u32) {
         "fixture chown failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn copy_private_key(source: &Path, destination: &Path) {
+    let mut reader: fs::File = fs::File::open(source).unwrap();
+    let mut writer: fs::File = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(destination)
+        .unwrap();
+    assert_eq!(
+        writer.metadata().unwrap().permissions().mode() & 0o077,
+        0,
+        "new key was readable by another UID before the copy"
+    );
+    assert_eq!(io::copy(&mut reader, &mut writer).unwrap(), 32);
+    writer.sync_all().unwrap();
+    drop(writer);
+    fs::set_permissions(destination, fs::Permissions::from_mode(0o600)).unwrap();
+    chown(destination, WORKER_UID);
 }
 
 fn traverse_ancestors(path: &Path) {
@@ -128,16 +149,76 @@ fn target_rows(target: &Path) -> (recurring::SqlRows, recurring::SqlRows) {
     (state, blobs)
 }
 
+pub(super) fn recover_same_key_after_stop(
+    inputs: &SuccessorProcessInputs,
+    index: usize,
+) -> PathBuf {
+    assert_eq!(index, 3, "only the selected protected role is recovered");
+    let original: PathBuf = inputs.targets[index].join("private.key");
+    let recovered: PathBuf = inputs.targets[index].join(RECOVERED_KEY_FILE);
+    assert!(recovered.is_absolute() && !recovered.exists());
+    copy_private_key(&original, &recovered);
+    fs::remove_file(&original).unwrap();
+    assert!(
+        !original.exists(),
+        "original successor key remained available"
+    );
+    let denied: Output = Command::new("cat")
+        .arg(&recovered)
+        .uid(FRONTEND_UID)
+        .gid(0)
+        .output()
+        .unwrap();
+    assert!(
+        !denied.status.success() && denied.stdout.is_empty(),
+        "keyless frontend read the recovered worker key"
+    );
+    recovered
+}
+
+pub(super) fn restore_original_key_for_recurring(
+    inputs: &SuccessorProcessInputs,
+    index: usize,
+    recovered: &Path,
+) {
+    assert_eq!(index, 3);
+    assert_eq!(
+        recovered,
+        inputs.targets[index].join(RECOVERED_KEY_FILE).as_path()
+    );
+    let original: PathBuf = inputs.targets[index].join("private.key");
+    assert!(
+        !original.exists(),
+        "recovered worker used the original key path"
+    );
+    // The later recurring owner still reads the original disposable fixture
+    // path. Restore it only after this host has restarted and caught up.
+    copy_private_key(recovered, &original);
+    println!("successor_protected_same_key_recovered=passed");
+}
+
 pub(super) fn start_host(
     fixture: &Fixture,
     inputs: &SuccessorProcessInputs,
     export: &Path,
     index: usize,
+    recovered_key: Option<&Path>,
 ) -> HostProcess {
     assert_eq!(
         index, 3,
         "one exact protected successor role in the existing quorum"
     );
+    let original_key: PathBuf = inputs.targets[index].join("private.key");
+    if let Some(key) = recovered_key {
+        assert_eq!(
+            key,
+            inputs.targets[index].join(RECOVERED_KEY_FILE).as_path()
+        );
+        assert!(
+            !original_key.exists(),
+            "recovered startup retained the old key"
+        );
+    }
     for path in [
         fixture.directory.0.join("genesis.bin"),
         inputs.plan_history.clone(),
@@ -232,8 +313,8 @@ pub(super) fn start_host(
     );
     println!("successor_protected_wrong_key_refused=passed");
 
-    let key: PathBuf = inputs.targets[index].join("private.key");
-    let mut worker: Command = worker_command(&key);
+    let key: &Path = recovered_key.unwrap_or(&original_key);
+    let mut worker: Command = worker_command(key);
     worker.stdout(Stdio::piped()).stderr(Stdio::inherit());
     let startup_cap: NonZeroUsize =
         process::compiled_host_startup_line_limit(fixture.network.chain_id.as_str());
