@@ -45,6 +45,9 @@ jobs:
         with:
           node-version: 24.19.0
       - name: Run repository gate
+        env:
+          # Only the original bond namespace fixture reads this opt-in.
+          SUNRISE_BOND_CI_SUDO_UNSHARE: "1"
         run: ./scripts/check-all.sh --group rust-tests
 
   portable-tools:

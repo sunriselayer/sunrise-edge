@@ -2666,23 +2666,51 @@ fn protected_original_bond_uses_two_distinct_approvers_and_workers() {
     let (subuid, subgid) =
         namespace_ids().expect("original bond test requires subordinate UID/GID ranges");
     let test_binary = std::env::current_exe().unwrap();
-    let output = Command::new("unshare")
+    let ci_sudo = match std::env::var_os("SUNRISE_BOND_CI_SUDO_UNSHARE") {
+        None => false,
+        Some(value) if value.to_str() == Some("1") => {
+            assert_eq!(
+                std::env::var("GITHUB_ACTIONS").as_deref(),
+                Ok("true"),
+                "sudo namespace fixture is only enabled in GitHub Actions"
+            );
+            true
+        }
+        Some(_) => panic!("bond CI sudo namespace opt-in must be exactly 1"),
+    };
+    let mut namespace = if ci_sudo {
+        let mut command = Command::new("/usr/bin/sudo");
+        command.args(["-n", "--", "/usr/bin/unshare"]);
+        command
+    } else {
+        Command::new("unshare")
+    };
+    namespace
         // The fixture controller needs effective namespace CAP_CHOWN after
-        // exec; retaining a nonzero namespace UID does not guarantee it on
-        // hosted runners. This maps only the current host user to namespace
-        // root, while the role processes below still drop all capabilities.
+        // exec. The CI opt-in maps sudo's UID 0 to namespace root; the local
+        // path maps the invoking host UID. The five role processes below
+        // still drop all capabilities.
         .args(["--map-root-user", "--map-users"])
         .arg(format!("2000:{subuid}:100"))
         .arg("--map-groups")
         .arg(format!("2000:{subgid}:100"))
-        .arg("--keep-caps")
+        .arg("--keep-caps");
+    if ci_sudo {
+        // sudo may discard the environment. Set this marker only after
+        // unshare, before the test binary executes inside its user namespace.
+        namespace
+            .arg("/usr/bin/env")
+            .arg("SUNRISE_BOND_UID_NAMESPACE_CHILD=1");
+    } else {
+        namespace.env("SUNRISE_BOND_UID_NAMESPACE_CHILD", "1");
+    }
+    let output = namespace
         .arg(test_binary)
         .args([
             "--exact",
             "protected_original_bond_uses_two_distinct_approvers_and_workers",
             "--nocapture",
         ])
-        .env("SUNRISE_BOND_UID_NAMESPACE_CHILD", "1")
         .output();
     match output {
         Ok(output) if output.status.success() => {}
