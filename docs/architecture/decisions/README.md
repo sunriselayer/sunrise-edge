@@ -185,3 +185,4 @@ use the [short architecture index](../README.md) to find the relevant owner and
 - [DR-0287: seed-free bond-registration structural preview](0287-bond-registration-structural-preview.md)
 - [DR-0288: verified-successor bond-registration structural preview](0288-successor-bond-registration-structural-preview.md)
 - [DR-0289: bond outer-key custody and separate content approvals](0289-bond-outer-key-custody-and-split-approval.md)
+- [DR-0290: incoming successor protected-key cutover fixture](0290-incoming-successor-protected-key-cutover.md)
