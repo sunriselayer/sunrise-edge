@@ -54,6 +54,12 @@ literal npm ci・完全requiredはV5でexit 0/実EOF/wait、全8 CIも成功し�
 初回CIのDeno取得504と先行V4のdisk-floor失敗は別に保全する。
 内容承認・実登録・保護署名の証拠ではなく、
 親M2/M7と停止中の子条件は未完了のまま保持する。
+[PR #353](https://github.com/sunriselayer/sunrise-edge/pull/353) は2026-11-09
+(Asia/Singapore) にmergeした。successor bondのseed-free構造プレビューを
+exact `6fec1e5d`で確認し、literal npm ci・完全required、元7 epoch/e8 selector、
+全8 CIが終端成功した。e8の1832-byte候補とcommitted ACKは各2件。
+merge commitは `cfe02169`、treeは検証済みheadと同一。これは内容承認・実登録・
+protected governance署名や親M2/M7の完了ではない。
 
 ## 作業終了時の環境整理
 
@@ -488,7 +494,7 @@ M2-N1〜N5は既存M2の不足を分ける作業IDであり、新しい親gate�
 | N3の実経路 | 現行区分と残件 |
 | --- | --- |
 | generic local/general・paid | 既存CLIはcustodyをI/O前に拒否する。認識済み操作・権限・review内容が選ばれるまで別backendを接続しない |
-| bond registration | development seedの`structural_registration_claim`は`executed=false`。[DR-0287](docs/architecture/decisions/0287-bond-registration-structural-preview.md) のoriginal専用・seed-free構造プレビューを追加し、exact `642f2a88`で新規2件と既存を含むCLI全10件の限定テストが成功。raw EOF/wait/reap・process group解放・source不変を[記録](docs/development/validation/2026-11-08-m2-bond-preview/README.md)した。PR #352のexact `0907bb22`でliteral npm ci・完全required/全8 CIも終端成功。[DR-0288](docs/architecture/decisions/0288-successor-bond-registration-structural-preview.md) のsuccessor拡張は別sourceの未検証候補。内容承認、実登録、protected governance署名の証拠ではない |
+| bond registration | development seedの`structural_registration_claim`は`executed=false`。[DR-0287](docs/architecture/decisions/0287-bond-registration-structural-preview.md) のoriginal専用・seed-free構造プレビューは[限定検証](docs/development/validation/2026-11-08-m2-bond-preview/README.md)とPR #352の完全required/全8 CIで成功。[DR-0288](docs/architecture/decisions/0288-successor-bond-registration-structural-preview.md) のsuccessor拡張はPR #353のexact `6fec1e5d`でliteral npm ci・完全required/元7 epoch/e8 selector/全8 CIが終端成功。いずれも内容承認、実登録、protected governance署名の証拠ではない |
 | FinalTransfer fee claim | development署名の経路でありpositive Split custodyに含めない。具体authorityとreview契約は未選択 |
 | offline genesis author | [DR-0286](docs/architecture/decisions/0286-standard-asset-genesis-protected-review-worker.md) の二段階workerを実装・限定別UID検証済み。実承認者/鍵/economics/ceremony、全体gateは未達 |
 
