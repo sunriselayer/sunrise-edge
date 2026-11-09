@@ -2,18 +2,20 @@
 //! This module constructs an exact local frame and review; it never approves,
 //! signs, sends a request to custody, or treats a caller object as live state.
 
-use execution::local_execution::{
+use protocol_types::HashPurpose;
+use public_standard_asset::{SCHEMA_VERSION, coin_amount, coin_type_tag, transfer_arguments};
+use sunrise_edge_client::local_execution::{
     InstanceRecord, LocalExecutionMode, LocalExecutionPolicy, ResolvedExecutionScope,
     generic_object_result_semantics, instance_target,
 };
-use execution::publication::{authenticate_publication_submission, verify_publication_interface};
-use objects::{Object, ObjectRef, Owner, ProtocolCustodyPurpose, ProtocolCustodyScope};
-use protocol_types::HashPurpose;
-use public_standard_asset::{SCHEMA_VERSION, coin_amount, coin_type_tag, transfer_arguments};
+use sunrise_edge_client::publication::{
+    authenticate_publication_submission, verify_publication_interface,
+};
 use sunrise_edge_client::{
-    AccessEntry, AccessManifest, AccessMode, Address, Digest32, ExpectedProtocolContext,
-    PreparedLocalExecution, RequestId, VerifiedGenesisRoot, bond_registration::BondResourceId,
-    call::CallIntent, encode_object,
+    AccessEntry, AccessManifest, AccessMode, Address, Digest32, ExpectedProtocolContext, Object,
+    ObjectRef, Owner, PreparedLocalExecution, ProtocolCustodyPurpose, ProtocolCustodyScope,
+    RequestId, VerifiedGenesisRoot, bond_registration::BondResourceId, call::CallIntent,
+    encode_object,
 };
 
 use super::asset_trust::PinnedAssetTrust;
@@ -274,11 +276,11 @@ impl BondInnerTrust {
             resource.instance.revision,
             resource.instance.record_digest,
             source_object.schema_version,
-            encode_hex(&abi::package_types::encode_scoped_type_tag(&resource.ty).map_err(failure)?),
+            encode_hex(&sunrise_edge_client::package_types::encode_scoped_type_tag(&resource.ty).map_err(failure)?),
             encode_hex(&request.source_coin_bytes),
             encode_hex(&predicted_bytes),
             prepared.intent().policy_digest,
-            encode_hex(&execution::local_execution::encode_local_execution_intent(prepared.intent()).map_err(failure)?),
+            encode_hex(&sunrise_edge_client::local_execution::encode_local_execution_intent(prepared.intent()).map_err(failure)?),
         ));
         if review.len() > MAX_REVIEW_BYTES {
             return Err(invalid("bond inner review exceeds its bound"));
