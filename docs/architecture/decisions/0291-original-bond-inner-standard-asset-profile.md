@@ -2,7 +2,7 @@
 
 Date: 2026-11-09 (Asia/Singapore)
 
-Status: Selected initial boundary; protected implementation and qualification pending.
+Status: Selected initial boundary; development implementation committed, qualification pending.
 
 ## Context
 
@@ -89,3 +89,14 @@ then does it label the leg's bounded Standard Asset meaning as
 recognized. The supplied Coin is still a caller snapshot, so this joined
 preview explicitly retains the unverified-source warning. Successor scope
 cannot select this check. It does not create an approval or signature.
+
+## Later protected-fixture note (2026-11-10)
+
+The original-genesis fixture now reconstructs the pinned whole-Coin transfer
+inside a separate source-owner key worker. A broker checks the inner and outer
+approval records, distinct approver UIDs, expiry and tombstones before
+releasing either verified signature. The worker accepts only a typed operation,
+not an arbitrary frame. The fixture uses disposable UIDs and keys; it neither
+proves the source snapshot current nor establishes actual human approver
+identity, executes the ordered transfer/registration, or qualifies release.
+Full required and exact-source CI remain open.
