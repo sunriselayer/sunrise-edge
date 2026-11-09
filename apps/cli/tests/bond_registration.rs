@@ -2053,7 +2053,11 @@ fn protected_bond_namespace_run() {
         "--request-id".into(),
         hex(&PROTECTED_OUTER_REQUEST_ID),
         "--out".into(),
-        cli_dir.join("outer-request").to_str().unwrap().into(),
+        cli_dir
+            .join("outer-request-initial")
+            .to_str()
+            .unwrap()
+            .into(),
     ]);
     let prepared = run_role(&binary, cli_uid, gid, &prepare_outer);
     assert!(
@@ -2062,7 +2066,7 @@ fn protected_bond_namespace_run() {
         String::from_utf8_lossy(&prepared.stderr)
     );
     fs::copy(
-        cli_dir.join("outer-request"),
+        cli_dir.join("outer-request-initial"),
         private(OUTER_APPROVER).join("request"),
     )
     .unwrap();
@@ -2272,6 +2276,42 @@ fn protected_bond_namespace_run() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(fs::read(cli_dir.join("signed-leg")).unwrap(), fixture.leg);
+    // The actual protected inner output, rather than the independently
+    // prebuilt fixture leg used by the early-refusal probe, now becomes the
+    // outer request's only signed-leg input.
+    let mut prepare_protected_outer = prepare_outer.clone();
+    replace(
+        &mut prepare_protected_outer,
+        "--signed-leg",
+        cli_dir.join("signed-leg").to_str().unwrap().into(),
+    );
+    replace(
+        &mut prepare_protected_outer,
+        "--out",
+        cli_dir.join("outer-request").to_str().unwrap().into(),
+    );
+    let prepared_protected_outer = run_role(&binary, cli_uid, gid, &prepare_protected_outer);
+    assert!(
+        prepared_protected_outer.status.success(),
+        "{}",
+        String::from_utf8_lossy(&prepared_protected_outer.stderr)
+    );
+    assert_eq!(
+        fs::read(cli_dir.join("outer-request")).unwrap(),
+        fs::read(cli_dir.join("outer-request-initial")).unwrap(),
+        "the protected inner signed leg changed the outer prepared bytes"
+    );
+    fs::copy(
+        cli_dir.join("outer-request"),
+        private(OUTER_APPROVER).join("request-protected"),
+    )
+    .unwrap();
+    set_mode(&private(OUTER_APPROVER).join("request-protected"), 0o600);
+    fixture_chown(
+        &private(OUTER_APPROVER).join("request-protected"),
+        OUTER_APPROVER,
+        gid,
+    );
     let mut changed_inner = prepare_inner.clone();
     replace(&mut changed_inner, "--nonce", "1".into());
     replace(
@@ -2312,11 +2352,21 @@ fn protected_bond_namespace_run() {
     assert!(!cli_dir.join("changed-inner-signed").exists());
     inner_worker.wait();
 
+    let mut approve_protected_outer = approve_args(OUTER_APPROVER, "outer");
+    replace(
+        &mut approve_protected_outer,
+        "--request",
+        private(OUTER_APPROVER)
+            .join("request-protected")
+            .to_str()
+            .unwrap()
+            .into(),
+    );
     let outer_approved = approve_on_test_pty(
         &binary,
         OUTER_APPROVER,
         gid,
-        &approve_args(OUTER_APPROVER, "outer"),
+        &approve_protected_outer,
         &outer_confirmation,
     );
     assert!(
@@ -2357,6 +2407,10 @@ fn protected_bond_namespace_run() {
     );
     let verified = verify_signed_bond_registration(&root, &signed_registration).unwrap();
     assert_eq!(verified.intent.leg, fixture.leg);
+    assert_eq!(
+        verified.intent.leg,
+        fs::read(cli_dir.join("signed-leg")).unwrap()
+    );
     assert_eq!(verified.intent.request_id, PROTECTED_OUTER_REQUEST_ID);
     assert_eq!(verified.intent, expected_intent);
 
