@@ -57,6 +57,7 @@ use sunrise_edge_devnet::{
 };
 
 const NEW_SEED: [u8; 32] = [0x65; 32];
+const SOURCE_SEED: [u8; 32] = [0x67; 32];
 
 #[path = "../../../clients/rust/tests/support/external_signer.rs"]
 mod external_signer;
@@ -123,7 +124,8 @@ impl Fixture {
         )
         .unwrap();
         let signer: LocalSigner = LocalSigner::from_seed(NEW_SEED);
-        let owner: DevOwner = DevOwner::new(*signer.address().as_bytes());
+        let source_signer: LocalSigner = LocalSigner::from_seed(SOURCE_SEED);
+        let owner: DevOwner = DevOwner::new(*source_signer.address().as_bytes());
         let (mut manifest, metadata): (GenesisManifest, PaidGenesisActivationMetadata) =
             build_paid_genesis_manifest(&resolver, &context, &[owner], owner).unwrap();
         manifest.commitment_profile = CommitmentProfile::CausalAdmission;
@@ -141,7 +143,7 @@ impl Fixture {
             .iter()
             .find(|entry| entry.object.id == metadata.owner_coins[0].spend_coin)
             .unwrap();
-        assert_eq!(source.object.owner, Owner::Address(signer.address()));
+        assert_eq!(source.object.owner, Owner::Address(source_signer.address()));
         let source_ref: ObjectRef = object_ref(&resolver, &source.object, context.epoch());
         let scope: ProtocolCustodyScope = ProtocolCustodyScope {
             purpose: ProtocolCustodyPurpose::BondCollateral,
@@ -159,7 +161,7 @@ impl Fixture {
             call: CallIntent {
                 context: context.clone(),
                 request_id: REQUEST_ID,
-                sender: *signer.address().as_bytes(),
+                sender: *source_signer.address().as_bytes(),
                 nonce: 0,
                 code: resource.code.clone(),
                 instance: resource.instance.clone(),
@@ -179,7 +181,7 @@ impl Fixture {
             authorizations: Vec::new(),
         };
         let signed_leg: SignedLocalExecutionIntent = SignedLocalExecutionIntent {
-            signature: signer
+            signature: source_signer
                 .sign_framed(&local_execution_signing_frame(&context, &intent).unwrap())
                 .unwrap()
                 .try_into()
@@ -214,6 +216,11 @@ impl Fixture {
         fs::write(
             directory.join("genesis"),
             encode_genesis_manifest(&manifest).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            directory.join("source-coin"),
+            objects::encode_object(&source.object).unwrap(),
         )
         .unwrap();
         fs::write(directory.join("leg"), &leg).unwrap();
@@ -292,6 +299,33 @@ impl Fixture {
         args
     }
 
+    fn inner_preview_args(&self) -> Vec<String> {
+        let resource = &self.manifest.economics_policy.resources[0].resource_id;
+        let source_key = LocalSigner::from_seed(SOURCE_SEED);
+        let validator_key = LocalSigner::from_seed(NEW_SEED);
+        let mut args = vec!["economics".into(), "bond-inner-preview".into()];
+        args.extend(self.pins());
+        args.extend([
+            "--source-coin".into(),
+            self.path("source-coin"),
+            "--source-key".into(),
+            hex(source_key.address().as_bytes()),
+            "--validator-key".into(),
+            hex(validator_key.address().as_bytes()),
+            "--resource-domain".into(),
+            resource.domain().to_string(),
+            "--resource-id".into(),
+            hex(resource.value()),
+            "--nonce".into(),
+            "0".into(),
+            "--request-id".into(),
+            hex(&REQUEST_ID),
+            "--gas-limit".into(),
+            "500000".into(),
+        ]);
+        args
+    }
+
     fn wrap_args(&self, intent: &str, output: &str) -> Vec<String> {
         let mut args: Vec<String> = vec!["economics".into(), "candidate-wrap".into()];
         args.extend(self.pins());
@@ -311,7 +345,7 @@ impl Fixture {
     }
 
     fn input_inventory(&self) -> Vec<Vec<u8>> {
-        ["genesis", "leg", "row", "seed"]
+        ["genesis", "source-coin", "leg", "row", "seed"]
             .map(|name: &str| fs::read(self.path(name)).unwrap())
             .to_vec()
     }
@@ -403,6 +437,181 @@ fn executable_prepares_exact_claim_wraps_kind7_and_preserves_inputs() {
     assert_eq!(candidate.request_id, REQUEST_ID);
     assert_eq!(candidate.context, fixture.context);
     assert_eq!(fixture.input_inventory(), inputs);
+}
+
+#[test]
+fn original_inner_preview_rebuilds_the_existing_whole_coin_leg_without_signing() {
+    let fixture = Fixture::new();
+    fs::remove_file(fixture.path("seed")).unwrap();
+    let mut before: Vec<String> = fs::read_dir(&fixture.directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    before.sort();
+    let output = run(&fixture.inner_preview_args());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let leg = execution::local_execution::decode_signed_local_execution(&fixture.leg).unwrap();
+    let frame = local_execution_signing_frame(&fixture.context, &leg.intent).unwrap();
+    let source_bytes = fs::read(fixture.path("source-coin")).unwrap();
+    let source_object = objects::decode_object(&source_bytes).unwrap();
+    let scope = ProtocolCustodyScope {
+        purpose: ProtocolCustodyPurpose::BondCollateral,
+        chain_id: fixture.context.chain_id().clone(),
+        subject: *fixture.row.validator_id.as_bytes(),
+        resource: fixture.row.resource,
+    };
+    let token = derive_deposit_owner_token(
+        &fixture.resolver,
+        &fixture.context,
+        source_object.id,
+        &scope,
+    )
+    .unwrap();
+    let mut predicted_object = source_object.clone();
+    predicted_object.version += 1;
+    predicted_object.owner = Owner::ProtocolCustody(scope);
+    assert!(stdout.starts_with(
+        "profile=original-genesis-standard-asset-bond-inner\nauthorizing=false\nsigned=false\nexecuted=false\n"
+    ));
+    assert!(stdout.contains("source_snapshot_unverified=true\n"));
+    assert!(stdout.contains("code_revision=1\n"));
+    assert!(stdout.contains("code_dependencies=none\nentrypoint=transfer\n"));
+    assert!(stdout.contains(&format!("amount={}\n", fixture.row.amount)));
+    assert!(stdout.contains(&format!(
+        "source_id={}\n",
+        leg.intent.call.access.entries[0].object_ref.id
+    )));
+    assert!(stdout.contains(&format!(
+        "predicted_digest={}\n",
+        fixture.row.custody_object.digest
+    )));
+    assert!(stdout.contains(&format!("unsigned_frame_hex={}\n", hex(&frame))));
+    assert!(stdout.contains(&format!("source_object_hex={}\n", hex(&source_bytes))));
+    assert!(stdout.contains(&format!(
+        "predicted_object_hex={}\n",
+        hex(&objects::encode_object(&predicted_object).unwrap())
+    )));
+    assert!(stdout.contains(&format!("deposit_token={}\n", hex(&token))));
+    assert!(stdout.contains(&format!("policy_digest={}\n", leg.intent.policy_digest)));
+    assert!(stdout.contains(&format!(
+        "unsigned_intent_hex={}\n",
+        hex(&execution::local_execution::encode_local_execution_intent(&leg.intent).unwrap())
+    )));
+    assert_eq!(
+        leg.intent.call.sender,
+        *LocalSigner::from_seed(SOURCE_SEED).address().as_bytes()
+    );
+    assert_eq!(
+        fixture.row.authorization_key,
+        *LocalSigner::from_seed(NEW_SEED).address().as_bytes()
+    );
+    assert_ne!(leg.intent.call.sender, fixture.row.authorization_key);
+    let mut after: Vec<String> = fs::read_dir(&fixture.directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    after.sort();
+    assert_eq!(before, after);
+    assert!(!Path::new(&fixture.path("signed")).exists());
+}
+
+#[test]
+fn original_inner_preview_refuses_untrusted_scope_source_and_entrypoint() {
+    let fixture = Fixture::new();
+    let args = fixture.inner_preview_args();
+    for (flag, value) in [
+        (
+            "--source-key",
+            hex(LocalSigner::from_seed([0x68; 32]).address().as_bytes()),
+        ),
+        ("--resource-id", hex(&[0xAA; 32])),
+        ("--expected-epoch", "1".into()),
+        ("--ordered-expected-genesis-digest", hex(&[0xBB; 32])),
+    ] {
+        let mut case = args.clone();
+        replace(&mut case, flag, value);
+        refuse(&run(&case));
+    }
+    for extra in [
+        vec!["--out".into(), fixture.path("signed")],
+        vec!["--successor-max-links".into(), "1".into()],
+        vec!["--seed-file".into(), fixture.path("seed")],
+    ] {
+        let mut case = args.clone();
+        case.extend(extra);
+        refuse(&run(&case));
+    }
+    let original = fs::read(fixture.path("source-coin")).unwrap();
+    fs::write(fixture.path("source-coin"), [0_u8; 3]).unwrap();
+    refuse(&run(&args));
+    let mut wrong_owner = objects::decode_object(&original).unwrap();
+    wrong_owner.owner = Owner::Address(LocalSigner::from_seed([0x68; 32]).address());
+    fs::write(
+        fixture.path("source-coin"),
+        objects::encode_object(&wrong_owner).unwrap(),
+    )
+    .unwrap();
+    refuse(&run(&args));
+    let mut overflowing = objects::decode_object(&original).unwrap();
+    overflowing.version = u64::MAX;
+    fs::write(
+        fixture.path("source-coin"),
+        objects::encode_object(&overflowing).unwrap(),
+    )
+    .unwrap();
+    refuse(&run(&args));
+    fs::write(fixture.path("source-coin"), original).unwrap();
+
+    let genesis_signer = LocalSigner::from_seed(DEVNET_PAID_GENESIS_SEED);
+    for case in 0..5 {
+        let mut changed = fixture.manifest.clone();
+        let replacement_ty = changed.fee_policy.reservation_type.clone();
+        let resource = &mut changed.economics_policy.resources[0];
+        match case {
+            0 => std::mem::swap(
+                &mut resource.split_entrypoint,
+                &mut resource.transfer_entrypoint,
+            ),
+            1 => {
+                resource.code = execution::publication::UnverifiedDependencyRef::new(
+                    resource.code.origin().clone(),
+                    2,
+                    resource.context.clone(),
+                    *resource.code.artifact_digest(),
+                )
+                .unwrap()
+            }
+            2 => resource.instance.seed[0] ^= 1,
+            3 => resource.ty = replacement_ty,
+            4 => resource.schema += 1,
+            _ => unreachable!(),
+        }
+        changed.signature = genesis_signer
+            .sign_framed(&genesis_manifest_signing_frame(&changed).unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let changed_digest = genesis_manifest_commitment(&fixture.resolver, &changed).unwrap();
+        fs::write(
+            fixture.path("genesis"),
+            encode_genesis_manifest(&changed).unwrap(),
+        )
+        .unwrap();
+        let mut changed_args = args.clone();
+        replace(
+            &mut changed_args,
+            "--ordered-expected-genesis-digest",
+            hex(&changed_digest.bytes()),
+        );
+        refuse(&run(&changed_args));
+    }
+    assert!(!Path::new(&fixture.path("signed")).exists());
 }
 
 #[test]

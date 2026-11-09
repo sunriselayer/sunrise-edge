@@ -78,6 +78,7 @@ mod asset_transfer;
 mod asset_transfer_tests;
 mod asset_trust;
 mod asset_wire;
+pub(crate) mod bond_inner;
 pub(crate) mod client;
 mod config;
 pub(crate) mod error;

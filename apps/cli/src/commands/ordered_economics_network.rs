@@ -1195,6 +1195,7 @@ pub(crate) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
         "candidate-wrap" => run_candidate_wrap(iterator),
         "bond-registration-prepare" => super::bond_registration::run(iterator),
         "bond-registration-preview" => super::bond_registration::run_preview(iterator),
+        "bond-inner-preview" => super::bond_inner::run(iterator),
         "ordered-freeze-build" => run_freeze_build(iterator),
         "drain-set-build" => run_drain_set_build(iterator),
         "fee-claim-prepare" => run_fee_claim_prepare(iterator),

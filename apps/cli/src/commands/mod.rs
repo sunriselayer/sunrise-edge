@@ -1,6 +1,7 @@
 //! One module per subcommand.
 
 pub mod address;
+mod bond_inner;
 mod bond_registration;
 pub mod context;
 pub mod contract;

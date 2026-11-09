@@ -13,6 +13,7 @@ name = "sunrise-edge-cli"
 path = "src/main.rs"
 
 [dependencies]
+execution.workspace = true
 protocol-types.workspace = true
 sunrise-edge-client.workspace = true
 sunrise-edge-ledger.workspace = true
@@ -32,7 +33,6 @@ usb-hid = ["sunrise-edge-ledger/usb-hid"]
 abi.workspace = true
 consensus.workspace = true
 crypto.workspace = true
-execution.workspace = true
 fees.workspace = true
 hashing.workspace = true
 native-http.workspace = true

@@ -28,7 +28,9 @@ qualification are source-specific in TODO. Do not infer generic administrative
 or other family authority from these selections.
 [DR-0289](decisions/0289-bond-outer-key-custody-and-split-approval.md)
 selects only bond outer-key isolation and distinct collateral/registration
-approvers; the generic collateral policy remains unapproved.
+approvers. [DR-0291](decisions/0291-original-bond-inner-standard-asset-profile.md)
+selects the first original-genesis Standard Asset collateral operation and
+source-owner key boundary; protected approval and qualification remain open.
 
 Historical design alternatives remain available in the
 [catalog](catalog.md) and [decision register](decisions/README.md). Read an

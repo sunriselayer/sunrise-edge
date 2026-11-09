@@ -82,6 +82,17 @@ impl PinnedAssetTrust {
     /// origin under the generic-object-result profile.
     pub(super) fn new(config: CustodyConfig, root: VerifiedGenesisRoot) -> Result<Self, CliError> {
         let expected: ExpectedProtocolContext = config.expected_context()?;
+        Self::from_original_scope(expected, config.publisher(), root)
+    }
+
+    /// The original bond preview shares the exact authenticated Standard
+    /// Asset code check, while its source-owner key is a separate local pin.
+    /// This creates no signing or approval authority.
+    pub(super) fn from_original_scope(
+        expected: ExpectedProtocolContext,
+        publisher: Address,
+        root: VerifiedGenesisRoot,
+    ) -> Result<Self, CliError> {
         let context: PublicationContext = PublicationContext::new(
             expected.chain_id().clone(),
             expected.protocol_version(),
@@ -235,7 +246,7 @@ impl PinnedAssetTrust {
             resolver,
             expected,
             context,
-            publisher: config.publisher(),
+            publisher,
             genesis_digest,
             fee_policy,
             origin,
