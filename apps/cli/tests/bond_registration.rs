@@ -2697,10 +2697,43 @@ fn protected_original_bond_uses_two_distinct_approvers_and_workers() {
         .arg("--keep-caps");
     if ci_sudo {
         // sudo may discard the environment. Set this marker only after
-        // unshare, before the test binary executes inside its user namespace.
+        // unshare. The fixed shell prints only namespace and executable-path
+        // metadata before execing the original test binary and selector.
         namespace
             .arg("/usr/bin/env")
-            .arg("SUNRISE_BOND_UID_NAMESPACE_CHILD=1");
+            .arg("SUNRISE_BOND_UID_NAMESPACE_CHILD=1")
+            .args([
+                "/usr/bin/sh",
+                "-c",
+                r#"
+set -u
+printf '%s\n' 'bond namespace pre-exec:' >&2
+/usr/bin/id >&2
+for entry in uid_map gid_map attr/current; do
+    printf '%s=' "$entry" >&2
+    /usr/bin/head -c 256 "/proc/self/$entry" >&2 || :
+    printf '\n' >&2
+done
+/usr/bin/grep '^CapEff:' /proc/self/status >&2 || :
+path=$1
+count=0
+while [ "$count" -lt 16 ]; do
+    /usr/bin/stat -Lc 'mode=%a uid=%u gid=%g type=%F path=%n' -- "$path" >&2 || :
+    [ "$path" = / ] && break
+    path=${path%/*}
+    [ -n "$path" ] || path=/
+    count=$((count + 1))
+done
+if [ -x /usr/bin/findmnt ]; then
+    printf '%s\n' 'binary mount:' >&2
+    /usr/bin/findmnt --target "$1" --noheadings --output TARGET,FSTYPE,OPTIONS 2>&1 |
+        /usr/bin/head -c 512 >&2
+    printf '\n' >&2
+fi
+exec "$@"
+"#,
+                "bond-namespace-preexec",
+            ]);
     } else {
         namespace.env("SUNRISE_BOND_UID_NAMESPACE_CHILD", "1");
     }
