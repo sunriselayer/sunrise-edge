@@ -2340,6 +2340,10 @@ fn accept(
         );
         let incoming: ValidatorId = member_from_seed(INCOMING_MEMBER_SEED).validator_id;
         let retired: ValidatorId = member_from_seed(RETIRED_MEMBER_SEED).validator_id;
+        // Later hosts[0] observations must still exercise the protected E5
+        // fixture; identity lookup alone would silently follow a reordered role.
+        assert_eq!(successor_member_index(inputs, INCOMING_MEMBER_SEED), 0);
+        assert_eq!(successor_member_index(inputs, RETAINED_MEMBER_SEED), 3);
         assert!(verified.get(incoming).is_some() && verified.get(retired).is_none());
         assert!(
             fixture
