@@ -62,3 +62,20 @@ Refusal tests cover unknown code/revision/dependencies/entrypoint, malformed
 source and predicted effects, wrong identity/role/context, expired or revoked
 approval, and changed content. Full required and exact-source CI evidence are
 separate. This decision closes no M2 or release checkbox.
+
+## Later implementation note (2026-11-10)
+
+The nonauthorizing `bond-inner-preview` can optionally query an endpoint for
+the declared source object. It first compares the endpoint's reported protocol
+context to the local pin, then requires a current inline result whose
+recomputed digest, creating chain/protocol, version, canonical bytes and exact
+access reference match the reviewed local Coin. Absent, tombstoned, blob-only,
+historical, changed and malformed responses refuse before any review output.
+
+This is a check against an **endpoint-reported** current snapshot. A matching
+response and body digest do not prove that the endpoint's claimed head is the
+current chain state. The review therefore retains
+`source_snapshot_unverified=true` and explicitly says the query is not a
+chain-state proof. The command remains unable to approve, sign, register or
+execute. The two-principal approval broker, separately isolated keys, actual
+registration and release qualification remain pending.

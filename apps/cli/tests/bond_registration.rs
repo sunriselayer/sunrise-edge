@@ -32,10 +32,14 @@ use node_core::{
 };
 use objects::{Object, ObjectRef, Owner, ProtocolCustodyPurpose, ProtocolCustodyScope};
 use protocol_types::HashPurpose;
+use runtime::{DurableObjectVersion, ObjectHeadRevision};
 use sunrise_edge_client::{
-    AccessMode, AtomicityDomainId, ChainId, CommitmentProfile, Digest32, Epoch, HashAlgorithmId,
-    HashSuite, HashSuiteId, HashSuiteResolver, HashSuiteSchedule, LocalSigner, ProtocolVersion,
-    PublicationContext, SignatureSchemeId, ValidatorId, VerifiedGenesisRoot,
+    AccessMode, AtomicityDomainId, ChainId, CommitmentProfile, Digest32,
+    ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
+    ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID, Epoch, HashAlgorithmId,
+    HashSuite, HashSuiteId, HashSuiteResolver, HashSuiteSchedule, HttpContextQueryResult,
+    HttpObjectQueryResult, LocalSigner, ProtocolVersion, PublicationContext,
+    QUERY_RESULT_MEDIA_TYPE, SignatureSchemeId, ValidatorId, VerifiedGenesisRoot,
     bond_registration::{
         BondRegistrationContext, FastPathBondRecord, LocalBondRegistrationError,
         MAX_BOND_REGISTRATION_ROW_BYTES, MAX_LOCAL_EXECUTION_INTENT_BYTES,
@@ -480,6 +484,8 @@ fn original_inner_preview_rebuilds_the_existing_whole_coin_leg_without_signing()
         "profile=original-genesis-standard-asset-bond-inner\nauthorizing=false\nsigned=false\nexecuted=false\n"
     ));
     assert!(stdout.contains("source_snapshot_unverified=true\n"));
+    assert!(stdout.contains("source_endpoint_current_inline_checked=false\n"));
+    assert!(stdout.contains("source_current_query_chain_proof=false\n"));
     assert!(stdout.contains("code_revision=1\n"));
     assert!(stdout.contains("code_dependencies=none\nentrypoint=transfer\n"));
     assert!(stdout.contains(&format!("amount={}\n", fixture.row.amount)));
@@ -519,6 +525,254 @@ fn original_inner_preview_rebuilds_the_existing_whole_coin_leg_without_signing()
     after.sort();
     assert_eq!(before, after);
     assert!(!Path::new(&fixture.path("signed")).exists());
+}
+
+fn bond_query_context(fixture: &Fixture) -> Vec<u8> {
+    HttpContextQueryResult::new(
+        fixture.context.chain_id().clone(),
+        fixture.context.protocol_version(),
+        fixture.context.epoch(),
+        HashSuiteId::new(23),
+        ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
+        SignatureSchemeId::Ed25519.as_u16(),
+        ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
+        fixture.domain,
+        vec![1],
+    )
+    .unwrap()
+    .encode()
+    .unwrap()
+}
+
+fn bond_query_source(fixture: &Fixture) -> Vec<u8> {
+    let bytes = fs::read(fixture.path("source-coin")).unwrap();
+    let object = objects::decode_object(&bytes).unwrap();
+    HttpObjectQueryResult::CurrentInline {
+        object_id: object.id,
+        head_revision: ObjectHeadRevision::new(1).unwrap(),
+        object_version: DurableObjectVersion::new(object.version).unwrap(),
+        digest: object_ref(&fixture.resolver, &object, fixture.context.epoch()).digest,
+        creating_chain_id: fixture.context.chain_id().clone(),
+        creating_protocol_version: fixture.context.protocol_version(),
+        canonical_object_bytes: bytes,
+    }
+    .encode()
+    .unwrap()
+}
+
+fn source_query_probe(
+    responses: Vec<Vec<u8>>,
+) -> (SocketAddr, JoinHandle<Result<Vec<ObservedRequest>, String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let worker = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut requests = Vec::new();
+        for response in responses {
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(pair) => break pair,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => return Err(format!("query accept: {error}")),
+                }
+            };
+            requests.push(read_request(&mut stream)?);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {QUERY_RESULT_MEDIA_TYPE}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response.len()
+            );
+            stream
+                .write_all(header.as_bytes())
+                .and_then(|()| stream.write_all(&response))
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(requests)
+    });
+    (address, worker)
+}
+
+#[test]
+fn original_inner_preview_checks_endpoint_reported_current_source_without_authority() {
+    let fixture = Fixture::new();
+    fs::remove_file(fixture.path("seed")).unwrap();
+    let source = objects::decode_object(&fs::read(fixture.path("source-coin")).unwrap()).unwrap();
+    let (endpoint, worker) = source_query_probe(vec![
+        bond_query_context(&fixture),
+        bond_query_source(&fixture),
+    ]);
+    let mut args = fixture.inner_preview_args();
+    args.extend([
+        "--endpoint".into(),
+        endpoint.to_string(),
+        "--source-object-id".into(),
+        hex(source.id.as_bytes()),
+    ]);
+    let output = run(&args);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("source_endpoint_current_inline_checked=true\n"));
+    assert!(stdout.contains("source_snapshot_unverified=true\n"));
+    assert!(stdout.contains("source_current_query_chain_proof=false\n"));
+    assert!(stdout.contains("authorizing=false\nsigned=false\nexecuted=false\n"));
+    assert!(!Path::new(&fixture.path("signed")).exists());
+    let requests = worker.join().unwrap().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        (requests[0].method.as_str(), requests[0].path.as_str()),
+        ("GET", "/v1/context")
+    );
+    assert_eq!(requests[1].method, "GET");
+    assert_eq!(
+        requests[1].path,
+        format!("/v1/objects/{}", hex(source.id.as_bytes()))
+    );
+}
+
+#[test]
+fn original_inner_preview_refuses_changed_or_unverifiable_current_source() {
+    let fixture = Fixture::new();
+    let original = fs::read(fixture.path("source-coin")).unwrap();
+    let source = objects::decode_object(&original).unwrap();
+    let base_args = {
+        let mut args = fixture.inner_preview_args();
+        args.extend([
+            "--endpoint".into(),
+            "127.0.0.1:1".into(),
+            "--source-object-id".into(),
+            hex(source.id.as_bytes()),
+        ]);
+        args
+    };
+    let (endpoint, worker) = source_query_probe(vec![
+        bond_query_context(&fixture),
+        HttpObjectQueryResult::Absent {
+            object_id: source.id,
+        }
+        .encode()
+        .unwrap(),
+    ]);
+    let mut args = base_args.clone();
+    replace(&mut args, "--endpoint", endpoint.to_string());
+    refuse(&run(&args));
+    worker.join().unwrap().unwrap();
+
+    let invalid_context = HttpContextQueryResult::new(
+        ChainId::new("another-chain").unwrap(),
+        fixture.context.protocol_version(),
+        fixture.context.epoch(),
+        HashSuiteId::new(23),
+        ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
+        SignatureSchemeId::Ed25519.as_u16(),
+        ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
+        fixture.domain,
+        vec![1],
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+    let (endpoint, worker) = source_query_probe(vec![invalid_context]);
+    let mut args = base_args.clone();
+    replace(&mut args, "--endpoint", endpoint.to_string());
+    refuse(&run(&args));
+    assert_eq!(worker.join().unwrap().unwrap().len(), 1);
+
+    let wrong_digest = HttpObjectQueryResult::CurrentInline {
+        object_id: source.id,
+        head_revision: ObjectHeadRevision::new(1).unwrap(),
+        object_version: DurableObjectVersion::new(source.version).unwrap(),
+        digest: Digest32::new(HashAlgorithmId::Sha3_256, [0xAA; 32]),
+        creating_chain_id: fixture.context.chain_id().clone(),
+        creating_protocol_version: fixture.context.protocol_version(),
+        canonical_object_bytes: original.clone(),
+    }
+    .encode()
+    .unwrap();
+    let (endpoint, worker) = source_query_probe(vec![bond_query_context(&fixture), wrong_digest]);
+    let mut args = base_args.clone();
+    replace(&mut args, "--endpoint", endpoint.to_string());
+    refuse(&run(&args));
+    worker.join().unwrap().unwrap();
+
+    // A self-consistent body digest for another chain still cannot become
+    // this original-genesis bond source's reviewed access reference.
+    let foreign_chain = ChainId::new("another-chain").unwrap();
+    let foreign_resolver = HashSuiteResolver::new(
+        foreign_chain.clone(),
+        fixture.context.protocol_version(),
+        vec![HashSuiteSchedule {
+            activation_epoch: fixture.context.epoch(),
+            suite: fixture
+                .resolver
+                .suite_for_epoch(fixture.context.epoch())
+                .unwrap()
+                .clone(),
+        }],
+    )
+    .unwrap();
+    let foreign_provenance = HttpObjectQueryResult::CurrentInline {
+        object_id: source.id,
+        head_revision: ObjectHeadRevision::new(1).unwrap(),
+        object_version: DurableObjectVersion::new(source.version).unwrap(),
+        digest: foreign_resolver
+            .hash_for_purpose(fixture.context.epoch(), HashPurpose::Object, &original)
+            .unwrap(),
+        creating_chain_id: foreign_chain,
+        creating_protocol_version: fixture.context.protocol_version(),
+        canonical_object_bytes: original.clone(),
+    }
+    .encode()
+    .unwrap();
+    let (endpoint, worker) =
+        source_query_probe(vec![bond_query_context(&fixture), foreign_provenance]);
+    let mut args = base_args.clone();
+    replace(&mut args, "--endpoint", endpoint.to_string());
+    refuse(&run(&args));
+    worker.join().unwrap().unwrap();
+
+    let mut changed = source.clone();
+    changed.version += 1;
+    fs::write(
+        fixture.path("source-coin"),
+        objects::encode_object(&changed).unwrap(),
+    )
+    .unwrap();
+    let (endpoint, worker) = source_query_probe(vec![bond_query_context(&fixture), {
+        // The endpoint still reports the original source snapshot.
+        HttpObjectQueryResult::CurrentInline {
+            object_id: source.id,
+            head_revision: ObjectHeadRevision::new(1).unwrap(),
+            object_version: DurableObjectVersion::new(source.version).unwrap(),
+            digest: object_ref(&fixture.resolver, &source, fixture.context.epoch()).digest,
+            creating_chain_id: fixture.context.chain_id().clone(),
+            creating_protocol_version: fixture.context.protocol_version(),
+            canonical_object_bytes: original.clone(),
+        }
+        .encode()
+        .unwrap()
+    }]);
+    let mut args = base_args.clone();
+    replace(&mut args, "--endpoint", endpoint.to_string());
+    refuse(&run(&args));
+    worker.join().unwrap().unwrap();
+    for incomplete in [
+        vec!["--endpoint".into(), "127.0.0.1:1".into()],
+        vec!["--source-object-id".into(), hex(source.id.as_bytes())],
+        vec!["--tls-server-name".into(), "example.invalid".into()],
+    ] {
+        let mut args = fixture.inner_preview_args();
+        args.extend(incomplete);
+        refuse(&run(&args));
+    }
 }
 
 #[test]
