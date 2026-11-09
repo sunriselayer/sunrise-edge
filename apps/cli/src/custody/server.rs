@@ -42,7 +42,7 @@ pub const SOCKET_DIR_MODE: u32 = 0o750;
 pub const SOCKET_FILE_MODE: u32 = 0o660;
 /// Fixed per-connection bound on each individual read or write. Mechanical,
 /// not operator policy, so it is a constant rather than a flag.
-const CUSTODY_IO_DEADLINE: Duration = Duration::from_secs(10);
+pub(super) const CUSTODY_IO_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Closed accepted range for `--max-connections`/`--max-requests`: at least
 /// one (zero would mean "serve nothing," a meaningless invocation), at most
@@ -308,35 +308,7 @@ async fn serve_async_with_policy(
         return Err(CustodyError::OperatorUidMatchesCustodyUid { uid: this_uid });
     }
 
-    let parent = socket_path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .ok_or_else(|| CustodyError::NotADirectory(socket_path.to_path_buf()))?;
-    require_private_dir(parent, SOCKET_DIR_MODE)?;
-    if std::fs::symlink_metadata(socket_path).is_ok() {
-        return Err(CustodyError::SocketAlreadyExists(socket_path.to_path_buf()));
-    }
-    let listener = UnixListener::bind(socket_path).map_err(|source| CustodyError::Io {
-        path: socket_path.to_path_buf(),
-        source,
-    })?;
-    // Captured once, immediately after bind and before any later step can
-    // fail (chmod changes none of these identity fields), so the cleanup
-    // unlink on every exit from here on, a failed chmod included, can prove
-    // it is removing exactly the socket this process bound — never a path
-    // something else replaced in the meantime.
-    let bound_socket = BoundSocketCleanup {
-        path: socket_path,
-        identity: socket_identity(socket_path),
-    };
-    std::fs::set_permissions(
-        socket_path,
-        std::fs::Permissions::from_mode(SOCKET_FILE_MODE),
-    )
-    .map_err(|source| CustodyError::Io {
-        path: socket_path.to_path_buf(),
-        source,
-    })?;
+    let (listener, bound_socket) = bind_custody_socket(socket_path)?;
 
     // One absolute, checked deadline for this entire invocation: accept,
     // and the combined read+write of every connection, are all bounded
@@ -397,6 +369,45 @@ async fn serve_async_with_policy(
     Ok(summary)
 }
 
+/// Shared custody socket bind/cleanup policy for bounded operation-specific
+/// services. A role-specific server still performs its own peer check before
+/// reading any request bytes.
+pub(super) fn bind_custody_socket(
+    socket_path: &Path,
+) -> Result<(UnixListener, BoundSocketCleanup<'_>), CustodyError> {
+    let parent = socket_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| CustodyError::NotADirectory(socket_path.to_path_buf()))?;
+    require_private_dir(parent, SOCKET_DIR_MODE)?;
+    if std::fs::symlink_metadata(socket_path).is_ok() {
+        return Err(CustodyError::SocketAlreadyExists(socket_path.to_path_buf()));
+    }
+    let listener = UnixListener::bind(socket_path).map_err(|source| CustodyError::Io {
+        path: socket_path.to_path_buf(),
+        source,
+    })?;
+    // Captured once, immediately after bind and before any later step can
+    // fail (chmod changes none of these identity fields), so the cleanup
+    // unlink on every exit from here on, a failed chmod included, can prove
+    // it is removing exactly the socket this process bound — never a path
+    // something else replaced in the meantime.
+    let bound_socket = BoundSocketCleanup {
+        path: socket_path,
+        identity: socket_identity(socket_path),
+    };
+    std::fs::set_permissions(
+        socket_path,
+        std::fs::Permissions::from_mode(SOCKET_FILE_MODE),
+    )
+    .map_err(|source| CustodyError::Io {
+        path: socket_path.to_path_buf(),
+        source,
+    })?;
+
+    Ok((listener, bound_socket))
+}
+
 /// Unlinks the one socket path a `serve` invocation bound when dropped, on
 /// every exit after a successful `bind` (a failed chmod, a deadline
 /// overflow, or the normal bounded end alike), but only while that path is
@@ -404,7 +415,7 @@ async fn serve_async_with_policy(
 /// listener alone closes its descriptor but never removes the path, which
 /// would otherwise make the next `serve` at the same path fail with
 /// `SocketAlreadyExists` even though nothing is listening.
-struct BoundSocketCleanup<'a> {
+pub(super) struct BoundSocketCleanup<'a> {
     path: &'a Path,
     identity: Option<SocketIdentity>,
 }
@@ -716,7 +727,7 @@ pub(super) fn sign_create_request(
     Ok(signed.signature)
 }
 
-async fn read_request_frame(
+pub(super) async fn read_request_frame(
     stream: &mut UnixStream,
     maximum: usize,
 ) -> Result<Vec<u8>, CustodyError> {

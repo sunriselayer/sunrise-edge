@@ -30,7 +30,9 @@ or other family authority from these selections.
 selects only bond outer-key isolation and distinct collateral/registration
 approvers. [DR-0291](decisions/0291-original-bond-inner-standard-asset-profile.md)
 selects the first original-genesis Standard Asset collateral operation and
-source-owner key boundary; protected approval and qualification remain open.
+source-owner key boundary. The [original bond protected-signing
+fixture](original-bond-protected-signing.md) describes the scoped development
+implementation; release qualification remains in TODO.
 
 Historical design alternatives remain available in the
 [catalog](catalog.md) and [decision register](decisions/README.md). Read an

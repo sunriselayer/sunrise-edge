@@ -36,6 +36,7 @@ fn invalid(message: &'static str) -> CliError {
 
 /// Caller-supplied source snapshot and replay fields. No caller chooses code,
 /// entrypoint, transfer operand, policy digest, frame or predicted mutation.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BondInnerRequest {
     pub(crate) source_coin_bytes: Vec<u8>,
     pub(crate) validator_key: [u8; 32],

@@ -237,7 +237,7 @@ pub(super) fn request_positive_fee_split_signature(
     runtime.block_on(request_signature_async(target, &frame))
 }
 
-async fn connect_and_check_peer(
+pub(super) async fn connect_and_check_peer(
     socket: &Path,
     expected_uid: u32,
 ) -> Result<UnixStream, CustodyError> {
