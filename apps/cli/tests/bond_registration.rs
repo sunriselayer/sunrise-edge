@@ -2678,6 +2678,24 @@ fn protected_original_bond_uses_two_distinct_approvers_and_workers() {
         }
         Some(_) => panic!("bond CI sudo namespace opt-in must be exactly 1"),
     };
+    let ci_runner_ids = ci_sudo.then(|| {
+        // Capture these before sudo changes the effective UID/GID. The
+        // hosted checkout sits below a runner-owned 0750 home directory.
+        let uid = namespace_id("-u");
+        let gid = namespace_id("-g");
+        for (kind, id, subordinate_start) in [("UID", uid, subuid), ("GID", gid, subgid)] {
+            let subordinate_end = subordinate_start
+                .checked_add(100)
+                .expect("bond subordinate ID range overflows");
+            assert!(
+                id != 0
+                    && !(2000..2100).contains(&id)
+                    && !(subordinate_start..subordinate_end).contains(&id),
+                "bond CI runner {kind} collides with a protected role or subordinate ID mapping"
+            );
+        }
+        (uid, gid)
+    });
     let mut namespace = if ci_sudo {
         let mut command = Command::new("/usr/bin/sudo");
         command.args(["-n", "--", "/usr/bin/unshare"]);
@@ -2693,8 +2711,17 @@ fn protected_original_bond_uses_two_distinct_approvers_and_workers() {
         .args(["--map-root-user", "--map-users"])
         .arg(format!("2000:{subuid}:100"))
         .arg("--map-groups")
-        .arg(format!("2000:{subgid}:100"))
-        .arg("--keep-caps");
+        .arg(format!("2000:{subgid}:100"));
+    if let Some((uid, gid)) = ci_runner_ids {
+        // Map only the checkout owner's IDs, so namespace root can traverse
+        // its private home without changing host permissions or role maps.
+        namespace
+            .arg("--map-users")
+            .arg(format!("{uid}:{uid}:1"))
+            .arg("--map-groups")
+            .arg(format!("{gid}:{gid}:1"));
+    }
+    namespace.arg("--keep-caps");
     if ci_sudo {
         // sudo may discard the environment. Set this marker only after
         // unshare. The fixed shell prints only namespace and executable-path
