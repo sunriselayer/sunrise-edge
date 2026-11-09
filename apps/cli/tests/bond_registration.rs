@@ -2002,6 +2002,9 @@ fn protected_bond_namespace_run() {
         .contains(&cli_uid)
     );
     set_mode(&fixture.directory, 0o755);
+    // Each role reads the signed public manifest, including under a strict
+    // unit umask. Role key/config files remain private in their own dirs.
+    set_mode(Path::new(&fixture.path("genesis")), 0o644);
     let binary = fixture.directory.join("protected-bond-cli");
     fs::copy(env!("CARGO_BIN_EXE_sunrise-edge-cli"), &binary).unwrap();
     set_mode(&binary, 0o755);
