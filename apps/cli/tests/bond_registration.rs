@@ -15,7 +15,7 @@ use std::{
 
 #[cfg(target_os = "linux")]
 use std::{
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     process::{Child, Stdio},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -1733,11 +1733,93 @@ fn fixture_chown(path: &Path, uid: u32, gid: u32) {
         .arg(path)
         .output()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    if !output.status.success() {
+        panic!(
+            "{}; namespace diagnostics: {}",
+            String::from_utf8_lossy(&output.stderr),
+            fixture_chown_diagnostics(path)
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn fixture_chown_diagnostics(path: &Path) -> String {
+    // Failure-only, bounded metadata. Never read fixture key/config contents.
+    fn proc_text(path: &str, maximum: u64) -> String {
+        let mut text = String::new();
+        match File::open(path).and_then(|file| file.take(maximum).read_to_string(&mut text)) {
+            Ok(_) => text,
+            Err(error) => format!("unavailable({:?})", error.kind()),
+        }
+    }
+    fn status_fields(text: &str) -> String {
+        text.lines()
+            .filter(|line| {
+                [
+                    "Uid:",
+                    "Gid:",
+                    "CapEff:",
+                    "CapBnd:",
+                    "NoNewPrivs:",
+                    "Seccomp:",
+                    "Seccomp_filters:",
+                ]
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+            })
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+    fn metadata(path: &Path) -> String {
+        match fs::symlink_metadata(path) {
+            Ok(value) => format!(
+                "uid={} gid={} mode={:o} dev={} inode={}",
+                value.uid(),
+                value.gid(),
+                value.mode() & 0o7777,
+                value.dev(),
+                value.ino()
+            ),
+            Err(error) => format!("unavailable({:?})", error.kind()),
+        }
+    }
+    let own_status = status_fields(&proc_text("/proc/self/status", 8192));
+    // `cat` is an ordinary external executable like `chown`; its own
+    // /proc/self/status shows whether capabilities changed across exec.
+    let child_status = match Command::new("cat").arg("/proc/self/status").output() {
+        Ok(output) if output.status.success() => status_fields(&String::from_utf8_lossy(
+            &output.stdout[..output.stdout.len().min(8192)],
+        )),
+        Ok(output) => format!("exit={}", output.status),
+        Err(error) => format!("unavailable({:?})", error.kind()),
+    };
+    let mount_type = match Command::new("stat")
+        .args(["-f", "-c", "%T"])
+        .arg(path)
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout[..output.stdout.len().min(64)])
+                .trim()
+                .to_owned()
+        }
+        Ok(output) => format!("exit={}", output.status),
+        Err(error) => format!("unavailable({:?})", error.kind()),
+    };
+    format!(
+        "self=[{own_status}] exec_child=[{child_status}] uid_map=[{}] gid_map=[{}] setgroups=[{}] apparmor=[{}] target=[{}] parent=[{}] mount_type={mount_type}",
+        proc_text("/proc/self/uid_map", 512)
+            .trim()
+            .replace('\n', "; "),
+        proc_text("/proc/self/gid_map", 512)
+            .trim()
+            .replace('\n', "; "),
+        proc_text("/proc/self/setgroups", 128).trim(),
+        proc_text("/proc/self/attr/current", 512).trim(),
+        metadata(path),
+        path.parent().map(metadata).unwrap_or_else(|| "none".into()),
+    )
 }
 
 #[cfg(target_os = "linux")]
