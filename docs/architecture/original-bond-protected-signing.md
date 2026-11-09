@@ -71,8 +71,10 @@ dependency closure, instance, type, schema and transfer entrypoint.
    wrapper/ordered route.
 
 `custody revoke-bond-inner` and `revoke-bond-outer` create permanent broker
-tombstones. An inner tombstone also prevents later outer checks. Approval
-records survive a bounded broker restart; they do not overwrite. Expired,
+tombstones. An inner tombstone also prevents later outer checks. The two
+phases share one request ID, so an outer tombstone also prevents later inner
+signing for that request. Approval records survive a bounded broker restart;
+they do not overwrite. Expired,
 changed, missing, malformed or revoked records refuse. The broker handles
 one request at a time, including the worker challenge, signature verification,
 final approval check, and reply write/close. Both phase expiries are checked
