@@ -2,8 +2,13 @@
 
 Date: 2026-11-08 (Asia/Singapore)
 
-Status: Proposed implementation candidate. Protected bond authority, trusted
-approval, key custody and release qualification remain unselected.
+Status: Implemented structural preview. It grants no protected signing,
+trusted approval or release qualification.
+
+Later scope note (2026-11-09): [DR-0289](0289-bond-outer-key-custody-and-split-approval.md)
+selects the outer-key boundary and separate approvers only. The structural
+preview remains nonauthorizing; protected signing and semantic approval are
+still unimplemented.
 
 ## Context
 

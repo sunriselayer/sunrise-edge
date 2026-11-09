@@ -26,6 +26,9 @@ selected trusted-local-OS boundary for readiness and successor separately.
 records the later offline genesis author boundary. Implementation and
 qualification are source-specific in TODO. Do not infer generic administrative
 or other family authority from these selections.
+[DR-0289](decisions/0289-bond-outer-key-custody-and-split-approval.md)
+selects only bond outer-key isolation and distinct collateral/registration
+approvers; the generic collateral policy remains unapproved.
 
 Historical design alternatives remain available in the
 [catalog](catalog.md) and [decision register](decisions/README.md). Read an
