@@ -154,6 +154,10 @@ impl NativeTlsFiles {
 
 /// Host checkpoint for FastVote preparation and fee-claim preparation.
 const HOST_CHECKPOINT: u64 = 1_000;
+const INCOMING_MEMBER_SEED: [u8; 32] = [0xe5; 32];
+const RETIRED_MEMBER_SEED: [u8; 32] = [0xa4; 32];
+const PROTECTED_INCOMING_INDEX: usize = 0;
+const TLS_PROBE_RETAINED_INDEX: usize = 3;
 
 fn original_member_index(fixture: &Fixture, seed: [u8; 32]) -> usize {
     fixture
@@ -372,7 +376,7 @@ fn start_host(
     protected_key: Option<&Path>,
 ) -> HostProcess {
     #[cfg(target_os = "linux")]
-    if index == 3 && protected::enabled() {
+    if index == PROTECTED_INCOMING_INDEX && protected::enabled() {
         return protected::start_host(fixture, inputs, export, index, protected_key);
     }
     assert!(
@@ -2314,6 +2318,35 @@ fn accept(
             .map(|member: &validator_set::ValidatorInfo| member.id)
             .collect::<Vec<ValidatorId>>()
     );
+    #[cfg(target_os = "linux")]
+    let incoming_protected: bool = protected::enabled();
+    #[cfg(not(target_os = "linux"))]
+    let incoming_protected: bool = false;
+    if incoming_protected {
+        assert!(
+            inputs.recur_changed_committee,
+            "the protected incoming role requires the registered replacement"
+        );
+        let incoming: ValidatorId = member_from_seed(INCOMING_MEMBER_SEED).validator_id;
+        let retired: ValidatorId = member_from_seed(RETIRED_MEMBER_SEED).validator_id;
+        assert_eq!(
+            inputs.members[PROTECTED_INCOMING_INDEX].validator_id,
+            incoming
+        );
+        assert_eq!(
+            inputs.members[TLS_PROBE_RETAINED_INDEX].validator_id,
+            member_from_seed([0xa1; 32]).validator_id
+        );
+        assert!(verified.get(incoming).is_some() && verified.get(retired).is_none());
+        assert!(
+            fixture
+                .network
+                .validators
+                .iter()
+                .any(|member| member.validator_id == retired),
+            "the refused key must belong to the removed original member"
+        );
+    }
     // Artifact substitution: a genuine but unnamed certificate variant is
     // refused by the source-free verifier before any destination write.
     assert!(
@@ -2344,7 +2377,12 @@ fn accept(
     let claimant_index: usize = original_member_index(fixture, [0xa2; 32]);
     let share: node_core::fee_claims::FeeClaimInspection =
         inspect_imported_share(fixture, inputs, &workflow, export, claimant_index);
-    recurring::prove_direct_live_tls(fixture, inputs, export, &workflow, seal);
+    let tls_probe_index: usize = if incoming_protected {
+        TLS_PROBE_RETAINED_INDEX
+    } else {
+        0
+    };
+    recurring::prove_direct_live_tls(fixture, inputs, export, &workflow, seal, tls_probe_index);
     let mut hosts: Vec<HostProcess> = (0..4)
         .map(|index: usize| start_host(fixture, inputs, export, index, None))
         .collect();
@@ -2437,10 +2475,23 @@ fn accept(
         Some(&hosts[3]),
     ]);
     let mut parent: Option<QuorumCertificate> = None;
-    for _ in 0..3 {
+    for round_index in 0..3 {
         let outcome: RoundOutcome = round(&endpoints, &workflow, parent.as_ref());
         assert!(outcome.qc_formed_from.len() >= 3);
-        parent = Some(decode_quorum_certificate(&outcome.certificate_bytes).unwrap());
+        let certificate: QuorumCertificate =
+            decode_quorum_certificate(&outcome.certificate_bytes).unwrap();
+        if incoming_protected && round_index == 0 {
+            let incoming: ValidatorId = inputs.members[PROTECTED_INCOMING_INDEX].validator_id;
+            assert!(outcome.qc_formed_from.contains(&incoming));
+            assert!(
+                certificate
+                    .votes
+                    .iter()
+                    .any(|vote| vote.validator == incoming)
+            );
+            println!("successor_protected_incoming_member_vote=passed");
+        }
+        parent = Some(certificate);
     }
     let advanced: OrderedStatus = status(hosts[0].address);
     assert!(advanced.committed_height > before.committed_height);
@@ -2495,28 +2546,41 @@ fn accept(
 
     // Close one host, certify a round without it, reopen it under a fresh
     // writer generation and catch it up from the certified prefix.
-    let paused: HostProcess = hosts.remove(3);
+    let paused_index: usize = if incoming_protected {
+        PROTECTED_INCOMING_INDEX
+    } else {
+        3
+    };
+    let paused: HostProcess = hosts.remove(paused_index);
     let paused_generation: u64 = paused.generation;
     drop(paused);
     // The old frontend and worker have both been reaped. Recover only the
     // selected worker's disposable key, leaving its retained state in place.
     #[cfg(target_os = "linux")]
     let recovered_key: Option<PathBuf> =
-        protected::enabled().then(|| protected::recover_same_key_after_stop(inputs, 3));
+        incoming_protected.then(|| protected::recover_same_key_after_stop(inputs, paused_index));
     #[cfg(not(target_os = "linux"))]
     let recovered_key: Option<PathBuf> = None;
-    let alive = ordered_endpoints(&[Some(&hosts[0]), Some(&hosts[1]), Some(&hosts[2]), None]);
+    let alive = ordered_endpoints(&hosts.iter().map(Some).collect::<Vec<_>>());
     // The paid Call and fee-claim rounds advanced the prefix since the last
     // empty round, so the routing hint (not a stale parent) selects it.
     let missed: RoundOutcome = round(&alive, &workflow, None);
-    let reopened: HostProcess = start_host(fixture, inputs, export, 3, recovered_key.as_deref());
+    let reopened: HostProcess = start_host(
+        fixture,
+        inputs,
+        export,
+        paused_index,
+        recovered_key.as_deref(),
+    );
     assert!(
         reopened.generation > paused_generation,
         "reopen claims a new writer fence"
     );
     let deadline: Instant = Instant::now() + Duration::from_secs(1800);
+    let mut reopened_slot: [Option<&HostProcess>; 4] = [None; 4];
+    reopened_slot[paused_index] = Some(&reopened);
     replay_declared_prefix_with_sink(
-        &ordered_endpoints(&[None, None, None, Some(&reopened)]),
+        &ordered_endpoints(&reopened_slot),
         workflow.ordered_policy(),
         &[(
             missed.proposal_bytes.clone(),
@@ -2532,7 +2596,7 @@ fn accept(
         status(hosts[0].address).high_qc,
         "the paused peer caught up through verified signerless replay"
     );
-    hosts.push(reopened);
+    hosts.insert(paused_index, reopened);
     let reopened_all: Vec<&HostProcess> = hosts.iter().collect();
     assert_eq!(receipts(&reopened_all, seal.request_id), seal_receipt);
     assert_eq!(
@@ -2546,7 +2610,7 @@ fn accept(
         receipts(&reopened_all, instantiate_request),
         instantiate_receipt
     );
-    let refreshed = Client::new(transport(reopened_all.last().unwrap().address))
+    let refreshed = Client::new(transport(reopened_all[paused_index].address))
         .query_object(fresh_definition)
         .unwrap();
     assert!(
@@ -2555,7 +2619,7 @@ fn accept(
     );
     #[cfg(target_os = "linux")]
     if let Some(key) = recovered_key.as_deref() {
-        protected::restore_original_key_for_recurring(inputs, 3, key);
+        protected::restore_original_key_for_recurring(inputs, paused_index, key);
     }
     drop(reopened_all);
     drop(first_successor);

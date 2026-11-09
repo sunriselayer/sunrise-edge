@@ -189,11 +189,13 @@ pub(super) fn prove_direct_live_tls(
     export: &Path,
     current: &SuccessorWorkflowAuthority,
     seal: &OrderedCandidate,
+    probe_index: usize,
 ) {
     let targets: CurrentTargets = CurrentTargets {
         paths: inputs.targets.clone(),
         members: inputs.members.clone(),
     };
+    assert!(probe_index < targets.paths.len());
     let before: ProtectedState = protected_state(fixture, &targets);
     let directory: PathBuf = fixture.directory.0.join("direct-successor-tls");
     std::fs::create_dir(&directory).unwrap();
@@ -210,7 +212,13 @@ pub(super) fn prove_direct_live_tls(
     let mut command: Command = Command::new(&inputs.executables.successor_host);
     command.arg("serve");
     pins(&mut command, fixture, inputs);
-    super::target_flags(&mut command, inputs, export, &inputs.certificate, 0);
+    super::target_flags(
+        &mut command,
+        inputs,
+        export,
+        &inputs.certificate,
+        probe_index,
+    );
     command.args([
         "--listen",
         "127.0.0.1:0",
@@ -239,7 +247,7 @@ pub(super) fn prove_direct_live_tls(
     let generation: u64 = field(&line, "writer_generation=").parse().unwrap();
     assert_eq!(
         generation,
-        before.metadata[0].0.get().checked_add(1).unwrap()
+        before.metadata[probe_index].0.get().checked_add(1).unwrap()
     );
     let address: SocketAddr = field(&line, "listen=").parse().unwrap();
     tls.received(address);
@@ -252,29 +260,43 @@ pub(super) fn prove_direct_live_tls(
         assert_eq!(old.token.mutation_sequence(), new.token.mutation_sequence());
         assert_eq!(
             new.token.writer_fence().get(),
-            if index == 0 {
+            if index == probe_index {
                 generation
             } else {
                 old.token.writer_fence().get()
             }
         );
     }
-    assert_eq!(started.metadata[0].0.get(), generation);
-    assert_eq!(started.metadata[0].1, before.metadata[0].1);
-    assert_eq!(started.metadata[0].2, before.metadata[0].2);
-    assert_eq!(started.metadata[0].3, before.metadata[0].3);
-    assert_eq!(&started.metadata[1..], &before.metadata[1..]);
+    assert_eq!(started.metadata[probe_index].0.get(), generation);
+    assert_eq!(
+        started.metadata[probe_index].1,
+        before.metadata[probe_index].1
+    );
+    assert_eq!(
+        started.metadata[probe_index].2,
+        before.metadata[probe_index].2
+    );
+    assert_eq!(
+        started.metadata[probe_index].3,
+        before.metadata[probe_index].3
+    );
+    for index in 0..targets.paths.len() {
+        if index != probe_index {
+            assert_eq!(started.metadata[index], before.metadata[index]);
+        }
+    }
     assert_eq!(started.blob_rows, before.blob_rows);
     let mut expected_rows: Vec<SqlRows> = before.state_rows.clone();
     // Exact defining schema: durable_metadata has ten columns, with the one
     // operator-owned writer_fence at index 5. No other row/value is masked.
-    assert_eq!(expected_rows[0][0].len(), 1);
-    assert_eq!(expected_rows[0][0][0].len(), 10);
+    assert_eq!(expected_rows[probe_index][0].len(), 1);
+    assert_eq!(expected_rows[probe_index][0][0].len(), 10);
     assert_eq!(
-        expected_rows[0][0][0][5],
-        rusqlite::types::Value::Blob(before.metadata[0].0.get().to_be_bytes().to_vec())
+        expected_rows[probe_index][0][0][5],
+        rusqlite::types::Value::Blob(before.metadata[probe_index].0.get().to_be_bytes().to_vec())
     );
-    expected_rows[0][0][0][5] = rusqlite::types::Value::Blob(generation.to_be_bytes().to_vec());
+    expected_rows[probe_index][0][0][5] =
+        rusqlite::types::Value::Blob(generation.to_be_bytes().to_vec());
     assert_eq!(started.state_rows, expected_rows);
     let client: Client<RemoteTlsHttpTransport> = Client::new(tls.transport(address));
     let context: node_wire::HttpContextQueryResult = client.query_context().unwrap();
@@ -312,7 +334,7 @@ pub(super) fn prove_direct_live_tls(
             .unwrap();
         // Existing stored receipt bytes are compared with the independently
         // read row captured from the same genuine activated namespace.
-        let expected: Option<&node_core::business_reconstruction::SourceSnapshotRecord> = started.business[0].records.iter()
+        let expected: Option<&node_core::business_reconstruction::SourceSnapshotRecord> = started.business[probe_index].records.iter()
             .find(|record| matches!(record.descriptor.key(), runtime::portable::DurableRecordKey::Receipt(id) if id.as_bytes() == &request));
         match receipt {
             sunrise_edge_client::HttpReceiptQueryResult::Present {

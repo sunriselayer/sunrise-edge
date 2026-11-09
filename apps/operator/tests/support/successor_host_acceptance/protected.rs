@@ -153,7 +153,10 @@ pub(super) fn recover_same_key_after_stop(
     inputs: &SuccessorProcessInputs,
     index: usize,
 ) -> PathBuf {
-    assert_eq!(index, 3, "only the selected protected role is recovered");
+    assert_eq!(
+        index, PROTECTED_INCOMING_INDEX,
+        "only the incoming protected role is recovered"
+    );
     let original: PathBuf = inputs.targets[index].join("private.key");
     let recovered: PathBuf = inputs.targets[index].join(RECOVERED_KEY_FILE);
     assert!(recovered.is_absolute() && !recovered.exists());
@@ -181,7 +184,7 @@ pub(super) fn restore_original_key_for_recurring(
     index: usize,
     recovered: &Path,
 ) {
-    assert_eq!(index, 3);
+    assert_eq!(index, PROTECTED_INCOMING_INDEX);
     assert_eq!(
         recovered,
         inputs.targets[index].join(RECOVERED_KEY_FILE).as_path()
@@ -205,8 +208,8 @@ pub(super) fn start_host(
     recovered_key: Option<&Path>,
 ) -> HostProcess {
     assert_eq!(
-        index, 3,
-        "one exact protected successor role in the existing quorum"
+        index, PROTECTED_INCOMING_INDEX,
+        "the incoming successor has the protected role in this quorum"
     );
     let original_key: PathBuf = inputs.targets[index].join("private.key");
     if let Some(key) = recovered_key {
@@ -229,7 +232,7 @@ pub(super) fn start_host(
         public_tree(&path);
     }
     worker_tree(&inputs.targets[index]);
-    let socket_dir: PathBuf = fixture.directory.0.join("successor-protected-socket-3");
+    let socket_dir: PathBuf = fixture.directory.0.join("successor-protected-socket-0");
     if !socket_dir.exists() {
         fs::create_dir(&socket_dir).unwrap();
     }
@@ -275,10 +278,25 @@ pub(super) fn start_host(
         command
     };
     let wrong_key: PathBuf = inputs.targets[index].join("wrong-private.key");
-    let wrong_seed: [u8; 32] = [0x97; 32];
+    let wrong_seed: [u8; 32] = RETIRED_MEMBER_SEED;
     let wrong_signer: ed25519_zebra::SigningKey = wrong_seed.into();
     let wrong_public: [u8; 32] = ed25519_zebra::VerificationKey::from(&wrong_signer).into();
     assert_ne!(wrong_public, *inputs.members[index].validator_id.as_bytes());
+    assert!(
+        fixture
+            .network
+            .validators
+            .iter()
+            .any(|member| member.seed == wrong_seed),
+        "the refused key must be a formerly authorized original member"
+    );
+    assert!(
+        !inputs
+            .members
+            .iter()
+            .any(|member| member.seed == wrong_seed),
+        "the retired member remained in the successor quorum"
+    );
     fs::write(&wrong_key, wrong_seed).unwrap();
     fs::set_permissions(&wrong_key, fs::Permissions::from_mode(0o600)).unwrap();
     chown(&wrong_key, WORKER_UID);
