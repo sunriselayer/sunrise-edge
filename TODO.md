@@ -494,7 +494,7 @@ M2-N1〜N5は既存M2の不足を分ける作業IDであり、新しい親gate�
 | N3の実経路 | 現行区分と残件 |
 | --- | --- |
 | generic local/general・paid | 既存CLIはcustodyをI/O前に拒否する。認識済み操作・権限・review内容が選ばれるまで別backendを接続しない |
-| bond registration | development seedの`structural_registration_claim`は`executed=false`。[DR-0287](docs/architecture/decisions/0287-bond-registration-structural-preview.md) のoriginal専用・seed-free構造プレビューは[限定検証](docs/development/validation/2026-11-08-m2-bond-preview/README.md)とPR #352の完全required/全8 CIで成功。[DR-0288](docs/architecture/decisions/0288-successor-bond-registration-structural-preview.md) のsuccessor拡張はPR #353のexact `6fec1e5d`でliteral npm ci・完全required/元7 epoch/e8 selector/全8 CIが終端成功。いずれも内容承認、実登録、protected governance署名の証拠ではない |
+| bond registration | [DR-0287](docs/architecture/decisions/0287-bond-registration-structural-preview.md) のoriginalと[DR-0288](docs/architecture/decisions/0288-successor-bond-registration-structural-preview.md) のsuccessor seed-free構造プレビューはPR #352/#353の完全required・全8 CIで成功。#353は元7 epoch/e8 selectorでも成功。[DR-0289](docs/architecture/decisions/0289-bond-outer-key-custody-and-split-approval.md) で外側の新validator鍵の別process/UID保護と、担保移動・登録の承認者分離を選択。内側generic legの独立semantic approval、実承認者・鍵、protected署名・実登録は未達。development構造claimは`executed=false` |
 | FinalTransfer fee claim | development署名の経路でありpositive Split custodyに含めない。具体authorityとreview契約は未選択 |
 | offline genesis author | [DR-0286](docs/architecture/decisions/0286-standard-asset-genesis-protected-review-worker.md) の二段階workerを実装・限定別UID検証済み。実承認者/鍵/economics/ceremony、全体gateは未達 |
 

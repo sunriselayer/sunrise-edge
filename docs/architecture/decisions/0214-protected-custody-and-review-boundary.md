@@ -10,9 +10,12 @@ same OS/process boundary for readiness and successor on 2026-11-03 in
 [DR-0284](0284-conditional-readiness-protected-worker-proposal.md) and
 [DR-0285](0285-successor-protected-host-proposal.md), and for offline Standard
 Asset genesis authoring on 2026-11-04 in
-[DR-0286](0286-standard-asset-genesis-protected-review-worker.md). Other
-families, encrypted custody and production qualification remain unselected;
-implementation and exact qualification belong in [TODO.md](../../../TODO.md).
+[DR-0286](0286-standard-asset-genesis-protected-review-worker.md). On
+2026-11-09, [DR-0289](0289-bond-outer-key-custody-and-split-approval.md)
+selected only bond outer-key isolation and separate content approvers. Other
+families, encrypted custody, real roles and production qualification remain
+unselected; implementation and exact qualification belong in
+[TODO.md](../../../TODO.md).
 
 ## Context and scope
 
@@ -176,8 +179,8 @@ separate-process/UID boundary was subsequently selected for readiness and
 successor in [DR-0284](0284-conditional-readiness-protected-worker-proposal.md)
 and [DR-0285](0285-successor-protected-host-proposal.md). The original
 next-step wording below does not revoke those bounded decisions.
-Other signing families, real roles, recovery holders and release qualification
-remain separate choices and gates in [TODO.md](../../../TODO.md).
+Further signing-family boundaries, real roles, recovery holders and release
+qualification remain separate choices and gates in [TODO.md](../../../TODO.md).
 
 `PreparedPublication` already exposes retained inputs, builds commitment/frame and
 authenticates/verifies final output. Bounded closed `CodeArtifact` decoding and

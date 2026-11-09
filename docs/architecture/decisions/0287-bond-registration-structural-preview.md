@@ -2,12 +2,16 @@
 
 Date: 2026-11-08 (Asia/Singapore)
 
-Status: Proposed implementation candidate. No protected bond signer, trusted
-approval surface, production authority, or release qualification is selected.
+Status: Implemented structural preview. It grants no protected signing,
+trusted approval or release qualification.
 
 Later scope note (2026-11-08): [DR-0288](0288-successor-bond-registration-structural-preview.md)
 supersedes only this record's original-only successor-pin refusal. The original
 preview behavior and all nonauthorization limits remain unchanged.
+
+Later scope note (2026-11-09): [DR-0289](0289-bond-outer-key-custody-and-split-approval.md)
+selects the outer-key boundary and separate approvers, without approving this
+preview, the inner generic leg or an actual protected signing path.
 
 ## Context
 
