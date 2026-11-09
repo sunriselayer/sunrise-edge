@@ -48,6 +48,8 @@ pub(crate) struct BondInnerRequest {
 pub(crate) struct PreparedBondInner {
     pub(crate) prepared: PreparedLocalExecution,
     pub(crate) review: String,
+    pub(crate) predicted_ref: ObjectRef,
+    pub(crate) amount: u64,
 }
 
 /// Immutable original root and its independently rebuilt known-code trust.
@@ -285,6 +287,11 @@ impl BondInnerTrust {
         if review.len() > MAX_REVIEW_BYTES {
             return Err(invalid("bond inner review exceeds its bound"));
         }
-        Ok(PreparedBondInner { prepared, review })
+        Ok(PreparedBondInner {
+            prepared,
+            review,
+            predicted_ref: predicted,
+            amount,
+        })
     }
 }

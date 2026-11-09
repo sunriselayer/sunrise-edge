@@ -935,6 +935,64 @@ fn seed_free_preview_recomputes_exact_original_content_without_output() {
 }
 
 #[test]
+fn original_registration_preview_recognizes_only_the_exact_pinned_inner_leg() {
+    let fixture = Fixture::new();
+    fs::remove_file(fixture.path("seed")).unwrap();
+    let validator_key = *LocalSigner::from_seed(NEW_SEED).address().as_bytes();
+    let source_key = *LocalSigner::from_seed(SOURCE_SEED).address().as_bytes();
+    let mut args = fixture.preview_args(validator_key);
+    args.extend([
+        "--inner-source-coin".into(),
+        fixture.path("source-coin"),
+        "--inner-source-key".into(),
+        hex(&source_key),
+    ]);
+    let original_source = fs::read(fixture.path("source-coin")).unwrap();
+    let output = run(&args);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("leg_semantics=manifest-pinned-original-standard-asset-whole-transfer\n")
+    );
+    assert!(stdout.contains("source_snapshot_unverified=true\n"));
+    assert!(stdout.contains("approved=false\nsigned=false\nexecuted=false\n"));
+    assert_eq!(
+        fs::read(fixture.path("source-coin")).unwrap(),
+        original_source
+    );
+    assert!(!Path::new(&fixture.path("signed")).exists());
+
+    let mut wrong_key = args.clone();
+    replace(
+        &mut wrong_key,
+        "--inner-source-key",
+        hex(LocalSigner::from_seed([0x68; 32]).address().as_bytes()),
+    );
+    refuse(&run(&wrong_key));
+    let mut changed_source = objects::decode_object(&original_source).unwrap();
+    changed_source.version += 1;
+    fs::write(
+        fixture.path("source-coin"),
+        objects::encode_object(&changed_source).unwrap(),
+    )
+    .unwrap();
+    refuse(&run(&args));
+    fs::write(fixture.path("source-coin"), &original_source).unwrap();
+
+    for missing in ["--inner-source-coin", "--inner-source-key"] {
+        let mut incomplete = args.clone();
+        let index = incomplete.iter().position(|arg| arg == missing).unwrap();
+        incomplete.drain(index..=index + 1);
+        refuse(&run(&incomplete));
+    }
+    assert!(!Path::new(&fixture.path("signed")).exists());
+}
+
+#[test]
 fn seed_free_preview_refuses_changed_leg_row_and_key_without_output() {
     let fixture: Fixture = Fixture::new();
     let signer: LocalSigner = LocalSigner::from_seed(NEW_SEED);

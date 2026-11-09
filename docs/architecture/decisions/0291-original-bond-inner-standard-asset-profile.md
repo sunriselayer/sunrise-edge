@@ -79,3 +79,13 @@ current chain state. The review therefore retains
 chain-state proof. The command remains unable to approve, sign, register or
 execute. The two-principal approval broker, separately isolated keys, actual
 registration and release qualification remain pending.
+
+The original `bond-registration-preview` can also require the complete
+source Coin/key pair and rebuild the manifest-pinned inner request from the
+already signed leg. It compares the exact unsigned intent with that leg, and
+the predicted custody reference and amount with the outer row. The row's
+authority remains a separate caller prediction for the ordered handler. Only
+then does it label the leg's bounded Standard Asset meaning as
+recognized. The supplied Coin is still a caller snapshot, so this joined
+preview explicitly retains the unverified-source warning. Successor scope
+cannot select this check. It does not create an approval or signature.
