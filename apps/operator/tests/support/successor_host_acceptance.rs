@@ -155,9 +155,8 @@ impl NativeTlsFiles {
 /// Host checkpoint for FastVote preparation and fee-claim preparation.
 const HOST_CHECKPOINT: u64 = 1_000;
 const INCOMING_MEMBER_SEED: [u8; 32] = [0xe5; 32];
+const RETAINED_MEMBER_SEED: [u8; 32] = [0xa1; 32];
 const RETIRED_MEMBER_SEED: [u8; 32] = [0xa4; 32];
-const PROTECTED_INCOMING_INDEX: usize = 0;
-const TLS_PROBE_RETAINED_INDEX: usize = 3;
 
 fn original_member_index(fixture: &Fixture, seed: [u8; 32]) -> usize {
     fixture
@@ -175,6 +174,18 @@ fn member_from_seed(seed: [u8; 32]) -> SuccessorProcessMember {
         validator_id: ValidatorId::new(public),
         seed,
     }
+}
+
+/// Slot of an actual member among the staged successor targets. The changed
+/// committee is ordered by validator ID, not by the original A/B/C/D seeds, so
+/// a role is always located by its identity and never assumed at a fixed slot.
+fn successor_member_index(inputs: &SuccessorProcessInputs, seed: [u8; 32]) -> usize {
+    let identity: ValidatorId = member_from_seed(seed).validator_id;
+    inputs
+        .members
+        .iter()
+        .position(|member: &SuccessorProcessMember| member.validator_id == identity)
+        .expect("the independently derived successor identity must exist")
 }
 
 /// A genuine minimal current-member quorum containing the actual later
@@ -376,7 +387,7 @@ fn start_host(
     protected_key: Option<&Path>,
 ) -> HostProcess {
     #[cfg(target_os = "linux")]
-    if index == PROTECTED_INCOMING_INDEX && protected::enabled() {
+    if protected::enabled() && index == successor_member_index(inputs, INCOMING_MEMBER_SEED) {
         return protected::start_host(fixture, inputs, export, index, protected_key);
     }
     assert!(
@@ -2329,14 +2340,6 @@ fn accept(
         );
         let incoming: ValidatorId = member_from_seed(INCOMING_MEMBER_SEED).validator_id;
         let retired: ValidatorId = member_from_seed(RETIRED_MEMBER_SEED).validator_id;
-        assert_eq!(
-            inputs.members[PROTECTED_INCOMING_INDEX].validator_id,
-            incoming
-        );
-        assert_eq!(
-            inputs.members[TLS_PROBE_RETAINED_INDEX].validator_id,
-            member_from_seed([0xa1; 32]).validator_id
-        );
         assert!(verified.get(incoming).is_some() && verified.get(retired).is_none());
         assert!(
             fixture
@@ -2378,7 +2381,7 @@ fn accept(
     let share: node_core::fee_claims::FeeClaimInspection =
         inspect_imported_share(fixture, inputs, &workflow, export, claimant_index);
     let tls_probe_index: usize = if incoming_protected {
-        TLS_PROBE_RETAINED_INDEX
+        successor_member_index(inputs, RETAINED_MEMBER_SEED)
     } else {
         0
     };
@@ -2481,7 +2484,7 @@ fn accept(
         let certificate: QuorumCertificate =
             decode_quorum_certificate(&outcome.certificate_bytes).unwrap();
         if incoming_protected && round_index == 0 {
-            let incoming: ValidatorId = inputs.members[PROTECTED_INCOMING_INDEX].validator_id;
+            let incoming: ValidatorId = member_from_seed(INCOMING_MEMBER_SEED).validator_id;
             assert!(outcome.qc_formed_from.contains(&incoming));
             assert!(
                 certificate
@@ -2547,7 +2550,7 @@ fn accept(
     // Close one host, certify a round without it, reopen it under a fresh
     // writer generation and catch it up from the certified prefix.
     let paused_index: usize = if incoming_protected {
-        PROTECTED_INCOMING_INDEX
+        successor_member_index(inputs, INCOMING_MEMBER_SEED)
     } else {
         3
     };

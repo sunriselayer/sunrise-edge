@@ -154,7 +154,8 @@ pub(super) fn recover_same_key_after_stop(
     index: usize,
 ) -> PathBuf {
     assert_eq!(
-        index, PROTECTED_INCOMING_INDEX,
+        index,
+        successor_member_index(inputs, INCOMING_MEMBER_SEED),
         "only the incoming protected role is recovered"
     );
     let original: PathBuf = inputs.targets[index].join("private.key");
@@ -184,7 +185,11 @@ pub(super) fn restore_original_key_for_recurring(
     index: usize,
     recovered: &Path,
 ) {
-    assert_eq!(index, PROTECTED_INCOMING_INDEX);
+    assert_eq!(
+        index,
+        successor_member_index(inputs, INCOMING_MEMBER_SEED),
+        "only the incoming protected role is restored"
+    );
     assert_eq!(
         recovered,
         inputs.targets[index].join(RECOVERED_KEY_FILE).as_path()
@@ -208,7 +213,8 @@ pub(super) fn start_host(
     recovered_key: Option<&Path>,
 ) -> HostProcess {
     assert_eq!(
-        index, PROTECTED_INCOMING_INDEX,
+        index,
+        successor_member_index(inputs, INCOMING_MEMBER_SEED),
         "the incoming successor has the protected role in this quorum"
     );
     let original_key: PathBuf = inputs.targets[index].join("private.key");
@@ -232,7 +238,10 @@ pub(super) fn start_host(
         public_tree(&path);
     }
     worker_tree(&inputs.targets[index]);
-    let socket_dir: PathBuf = fixture.directory.0.join("successor-protected-socket-0");
+    let socket_dir: PathBuf = fixture
+        .directory
+        .0
+        .join(format!("successor-protected-socket-{index}"));
     if !socket_dir.exists() {
         fs::create_dir(&socket_dir).unwrap();
     }
