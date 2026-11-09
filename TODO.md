@@ -73,6 +73,14 @@ committed ACK各2件、literal npm ci・完全required、全8 CIを同headで確
 PID/cgroup・target解放を独立照合した。merge commitは `4c7ed157`。
 これは後段e1のincoming鍵に限る資格であり、setup・後続epochs・全M2/M7や
 独立最終reviewを完了しない。
+[PR #357](https://github.com/sunriselayer/sunrise-edge/pull/357) は2026-11-10
+(Asia/Singapore) にmergeした。選択済みoriginal genesis Standard Asset Coin rev1
+全量transferの内側プレビューをexact `d3521522`で確認し、literal npm ciと
+完全requiredのR2はexit 0・raw/EOF/wait/reap、source不変・PID/cgroup/target解放まで
+独立照合した。元7 epoch/e8 selector、1832-byte候補とcommitted ACK各2件を維持し、
+全8 CIも同headで成功した。R1のanchor失敗は別に保全した。merge commitは
+`13ae8b30`。これは内側のseed-free構造プレビューの資格であり、保護署名・
+実登録・親M2/M7の完了ではない。
 
 ## 作業終了時の環境整理
 
