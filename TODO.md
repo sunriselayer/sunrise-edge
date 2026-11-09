@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-11-09 (Asia/Singapore)。これは唯一の現行作業表です。
+更新: 2026-11-10 (Asia/Singapore)。これは唯一の現行作業表です。
 現行チェックは **85件中71件完了・14件未完了**。残るコード・検証の親は
 **D02/M1/M2/M3/M7**、停止中の子3件と公開準備の親6件も未完了です。
 以下の行を現行状態とし、祖先sourceの成功や部分実行を親の完了へ転用しません。
@@ -65,6 +65,14 @@ mergeした。文書・TODOのexact `6209977b`でliteral npm ci・完全required
 全8 CI・Bugbotが終端成功し、元7 epoch/e8 selectorの候補2件とACK、
 raw/EOF/wait/reap・source不変・PID/cgroup解放を照合した。merge commitは
 `d044d436`。これは文書sourceの資格であり、親M2/M3/M7を完了しない。
+[PR #356](https://github.com/sunriselayer/sunrise-edge/pull/356) は2026-11-10
+(Asia/Singapore) にmergeした。incoming successor E5を保護するe1の実UID
+fixtureをexact `3d5687d4`で終端成功し、元7 epoch/e8 selector、候補1832 bytesと
+committed ACK各2件、literal npm ci・完全required、全8 CIを同headで確認した。
+初回fixtureのEACCES失敗は保全し、成功したr2のraw/EOF/wait/reap・Docker/
+PID/cgroup・target解放を独立照合した。merge commitは `4c7ed157`。
+これは後段e1のincoming鍵に限る資格であり、setup・後続epochs・全M2/M7や
+独立最終reviewを完了しない。
 
 ## 作業終了時の環境整理
 
