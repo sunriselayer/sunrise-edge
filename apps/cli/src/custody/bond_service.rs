@@ -417,6 +417,10 @@ async fn handle_broker_message(
                     return Err(invalid("bond approval peer has the wrong phase role"));
                 }
                 let prepared = trust.prepare(&request)?;
+                // Requery before sampling any expiry: the inner approval and
+                // the new record must both be checked after the potentially
+                // slow node round trip, never against an earlier sample.
+                prepared.requery_async(trust, &request).await?;
                 if let BondRequest::Outer { inner, .. } = &request {
                     let inner_content = trust.prepare(&BondRequest::Inner(inner.clone()))?.content;
                     bond_approvals::authorize(
@@ -427,7 +431,6 @@ async fn handle_broker_message(
                     )
                     .map_err(failure)?;
                 }
-                prepared.requery_async(trust, &request).await?;
                 bond_approvals::write(
                     dir,
                     &prepared.content,
