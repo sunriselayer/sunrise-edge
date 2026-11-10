@@ -2176,8 +2176,7 @@ fn fixed_bond_observation_run() {
 #[cfg(target_os = "linux")]
 fn start_fixed_bond_node(
     harness: &Path,
-    uid: u32,
-    gid: u32,
+    role: (u32, u32),
     socket: &Path,
     expected: &Path,
     response: &Path,
@@ -2186,8 +2185,8 @@ fn start_fixed_bond_node(
 ) -> BondServiceChild {
     let mut command = role_command(
         harness,
-        uid,
-        gid,
+        role.0,
+        role.1,
         &[
             "--exact".into(),
             "protected_original_bond_uses_two_distinct_approvers_and_workers".into(),
@@ -3012,8 +3011,7 @@ fn protected_bond_namespace_run() {
     set_mode(&cli_dir.join("config-node"), 0o600);
     let mut node = start_fixed_bond_node(
         &role_harness,
-        LOCAL_NODE,
-        gid,
+        (LOCAL_NODE, gid),
         &node_socket,
         &node_dir.join("request"),
         &node_dir.join("response"),
@@ -3314,8 +3312,7 @@ fn protected_bond_namespace_run() {
     );
     let mut changed_node = start_fixed_bond_node(
         &role_harness,
-        LOCAL_NODE,
-        gid,
+        (LOCAL_NODE, gid),
         &node_socket,
         &node_dir.join("request"),
         &node_dir.join("response"),
@@ -3343,8 +3340,7 @@ fn protected_bond_namespace_run() {
     // separate owner.
     let mut node = start_fixed_bond_node(
         &role_harness,
-        LOCAL_NODE,
-        gid,
+        (LOCAL_NODE, gid),
         &node_socket,
         &node_dir.join("request"),
         &node_dir.join("response"),
