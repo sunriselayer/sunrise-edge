@@ -532,9 +532,13 @@ committed ACK各2件を保持した。PR #359はmerge commit `d4264777`でmain�
 独立静的reviewはPASS。限定R5は結合1/1、通常CLI 1/1、pinなしbaseline 1/1が成功し、
 不完全pinは期待どおり拒否された。失敗したR1/R2と修正前R3/R4の証跡は別に保全する。
 外部終端記録は`m2-bond-handoff-focused-1110/ordered-handoff-final-focused-terminal-audit.json`。
-結合の最終source完全required/全8 CIはPR #360の終端証跡で別途採否を確認し、
-それまでは成功に数えない。運用上の署名前source現行性、実承認者・鍵のenrollment、
-親M2/M7・release資格は引き続き未達。
+最終source `8827a7b7` / tree `643c42ec` のliteral npm ci・完全required R2は
+exit 0、実EOF/wait/reap・source/tool不変・unit/PID/cgroup/一時領域解放まで独立照合した。
+元recurring selector各1/1、7 epochとe8の異なる1832-byte候補2件・committed ACK各2件も確認した
+（外部記録`bond-handoff-final-8827a7b7-1110/required-inert-r2/required-bond-handoff-r2-unit/unit-terminal.json`）。
+同headの全8 hosted CIも成功し、PR #360はmerge commit `a023cb94`でmainへ統合した。
+この証拠はテスト専用結合のsource資格であり、運用上の署名前source現行性、
+実承認者・鍵のenrollment、親M2/M7・release資格は引き続き未達。
 
 original bondの初期releaseでは、人が[DR-0292](docs/architecture/decisions/0292-original-bond-trusted-local-currentness.md) の
 指定ローカルserving nodeを信頼境界に選択した。chain-state proofとは呼ばない。
