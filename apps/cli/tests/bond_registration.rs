@@ -2182,22 +2182,6 @@ fn start_fixed_bond_node(
 }
 
 #[cfg(target_os = "linux")]
-fn read_direct_bond_before(stream: &mut UnixStream, bytes: &mut [u8], deadline: Instant) {
-    let mut at = 0;
-    while at < bytes.len() {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(
-            !remaining.is_zero(),
-            "direct bond IPC read deadline elapsed"
-        );
-        stream.set_read_timeout(Some(remaining)).unwrap();
-        let count = stream.read(&mut bytes[at..]).unwrap();
-        assert!(count != 0, "direct bond IPC ended before its bounded frame");
-        at += count;
-    }
-}
-
-#[cfg(target_os = "linux")]
 fn direct_bond_refusal_run() {
     let socket = PathBuf::from(std::env::var_os("SUNRISE_BOND_DIRECT_SOCKET").unwrap());
     let body = fs::read(std::env::var_os("SUNRISE_BOND_DIRECT_BODY").unwrap()).unwrap();
@@ -2213,21 +2197,6 @@ fn direct_bond_refusal_run() {
         .write_all(&u32::try_from(body.len()).unwrap().to_be_bytes())
         .unwrap();
     stream.write_all(&body).unwrap();
-    if std::env::var_os("SUNRISE_BOND_DIRECT_WORKER_CHALLENGE").is_some() {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut length = [0_u8; 4];
-        read_direct_bond_before(&mut stream, &mut length, deadline);
-        let length = u32::from_be_bytes(length) as usize;
-        assert!((2..=65_536).contains(&length));
-        let mut challenge = vec![0_u8; length];
-        read_direct_bond_before(&mut stream, &mut challenge, deadline);
-        assert_eq!(
-            &challenge[..2],
-            &[1, 2],
-            "worker did not challenge the broker"
-        );
-        stream.write_all(&[1, 1]).unwrap(); // Adversarial broker approval.
-    }
     stream.shutdown(std::net::Shutdown::Write).unwrap();
     let mut reply = [0_u8; 2];
     stream.read_exact(&mut reply).unwrap();
@@ -3155,7 +3124,7 @@ fn protected_bond_namespace_run() {
         set_mode(&path, 0o600);
         fixture_chown(&path, uid, gid);
     }
-    let direct = |uid: u32, body: &Path, socket: &Path, worker_challenge: bool| {
+    let direct = |uid: u32, body: &Path, socket: &Path| {
         let mut command = role_command(
             &std::env::current_exe().unwrap(),
             uid,
@@ -3168,9 +3137,6 @@ fn protected_bond_namespace_run() {
         );
         command.env("SUNRISE_BOND_DIRECT_SOCKET", socket);
         command.env("SUNRISE_BOND_DIRECT_BODY", body);
-        if worker_challenge {
-            command.env("SUNRISE_BOND_DIRECT_WORKER_CHALLENGE", "1");
-        }
         let output = command.output().unwrap();
         assert!(
             output.status.success(),
@@ -3219,19 +3185,14 @@ fn protected_bond_namespace_run() {
     fs::write(&approve_body_path, approve_body).unwrap();
     set_mode(&approve_body_path, 0o600);
     fixture_chown(&approve_body_path, INNER_APPROVER, gid);
-    direct(
-        INNER_APPROVER,
-        &approve_body_path,
-        &broker_node_socket,
-        false,
-    );
+    direct(INNER_APPROVER, &approve_body_path, &broker_node_socket);
     let mut sign_body = vec![1_u8, 4_u8]; // broker v1, Sign
     put_length_bytes(&mut sign_body, &inner_node_bytes);
     put_length_bytes(&mut sign_body, node_config.as_bytes());
     let sign_body_path = cli_dir.join("sign-node-ipc");
     fs::write(&sign_body_path, sign_body).unwrap();
     set_mode(&sign_body_path, 0o600);
-    direct(cli_uid, &sign_body_path, &broker_node_socket, false);
+    direct(cli_uid, &sign_body_path, &broker_node_socket);
     broker_node.wait();
     let approval_names: Vec<_> = fs::read_dir(&approvals_node)
         .unwrap()
@@ -3270,7 +3231,7 @@ fn protected_bond_namespace_run() {
     fs::write(&worker_body_path, &inner_node_bytes).unwrap();
     set_mode(&worker_body_path, 0o600);
     fixture_chown(&worker_body_path, BROKER, gid);
-    direct(BROKER, &worker_body_path, &worker_node_socket, true);
+    direct(BROKER, &worker_body_path, &worker_node_socket);
     worker_node.wait();
 
     // The same protected approver must refuse when the second independent

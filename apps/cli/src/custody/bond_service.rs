@@ -377,6 +377,10 @@ async fn authorized_content(
     } else {
         None
     };
+    prepared.requery_async(trust, request).await?;
+    // Sample approval expiry after the potentially slow node round trip.
+    // The broker's final call to this function is immediately before reply
+    // emission, while its serial loop still excludes a revoke request.
     bond_approvals::authorize_for_sign(
         dir,
         content,
@@ -386,7 +390,6 @@ async fn authorized_content(
         now().map_err(failure)?,
     )
     .map_err(failure)?;
-    prepared.requery_async(trust, request).await?;
     Ok(prepared.content)
 }
 
@@ -474,6 +477,9 @@ async fn handle_worker_request(
         if signer.address() != prepared.content.expected_key {
             return Err(invalid("bond worker signer mismatch"));
         }
+        // Requery first so the broker's expiry/revocation check is the last
+        // authorization decision before the protected key signs.
+        let permit = prepared.requery_async(trust, request).await?;
         let challenge = BrokerMessage::Check {
             request: request.clone(),
             config: trust.config().raw_bytes().to_vec(),
@@ -485,7 +491,6 @@ async fn handle_worker_request(
         if bond_wire::decode_reply(&answer).map_err(failure)? != Reply::Approved {
             return Err(invalid("bond broker refused worker approval challenge"));
         }
-        let permit = prepared.requery_async(trust, request).await?;
         let signature = prepared.sign_with(signer, permit)?;
         Ok(signature)
     }
