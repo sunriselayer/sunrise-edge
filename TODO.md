@@ -536,6 +536,20 @@ committed ACK各2件を保持した。PR #359はmerge commit `d4264777`でmain�
 それまでは成功に数えない。運用上の署名前source現行性、実承認者・鍵のenrollment、
 親M2/M7・release資格は引き続き未達。
 
+original bondの初期releaseでは、人が[DR-0292](docs/architecture/decisions/0292-original-bond-trusted-local-currentness.md) の
+指定ローカルserving nodeを信頼境界に選択した。chain-state proofとは呼ばない。
+`cbcd82ad`で同一store・fenceからの局所観測に使う読み取り専用primitiveを追加し、
+公開constructorを閉じた。隔離環境の限定3テストはCurrentInlineの一致・拒否、
+実SQLiteのgenesis Coin、誤validator・古いfence、token中の書込み/変更を確認した
+（外部記録`m2-currentness-1110/opaque-fix-49cc/result.txt`）。`746c0734`では
+元ホストのfence取得後、同一storeを使うopt-in認証付きUnix照会口へ接続した。
+隔離環境の限定5テストはpeer UIDの本文前拒否、Coin/tip観測、古いfence、
+同じsocket pathでのrestart、設定・確認フラグの拒否を確認した
+（外部記録`m2-currentness-1110/listener-d4db/result.txt`）。
+実別UIDのhost/socket接続、指定nodeとserver peerのconsumer側固定、CLI・両承認者・
+broker・鍵workerの署名前再照合、内容承認への観測結合、完全required・CI・release資格は
+未達であり、親M2は未完了のまま。
+
 FinalTransferの既存codec・prepared consumer・review表示・development signer・
 positive Splitとの権限分離を[署名経路マップ](docs/architecture/signing-route-test-map.md#finaltransfer-within-the-prepared-fee-claim-owner)へ対応付けた。
 これは静的な所在確認であり、未選択のauthority・leg semantics・承認内容・backend、

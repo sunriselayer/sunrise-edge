@@ -33,6 +33,10 @@ selects the first original-genesis Standard Asset collateral operation and
 source-owner key boundary. The [original bond protected-signing
 fixture](original-bond-protected-signing.md) describes the scoped development
 implementation; release qualification remains in TODO.
+[DR-0292](decisions/0292-original-bond-trusted-local-currentness.md) selects
+the initial release's designated local-node trust boundary for source Coin
+currentness; local observation admission is opt-in, while consumer rechecks
+and release qualification remain pending.
 
 Historical design alternatives remain available in the
 [catalog](catalog.md) and [decision register](decisions/README.md). Read an
