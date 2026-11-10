@@ -17,7 +17,7 @@ use std::{
 use std::{
     os::unix::{
         fs::{MetadataExt, PermissionsExt},
-        net::UnixListener,
+        net::{UnixListener, UnixStream},
     },
     process::{Child, Stdio},
     time::{SystemTime, UNIX_EPOCH},
@@ -2110,6 +2110,28 @@ fn fixed_bond_observation_run() {
 }
 
 #[cfg(target_os = "linux")]
+fn direct_bond_refusal_run() {
+    let socket = PathBuf::from(std::env::var_os("SUNRISE_BOND_DIRECT_SOCKET").unwrap());
+    let body = fs::read(std::env::var_os("SUNRISE_BOND_DIRECT_BODY").unwrap()).unwrap();
+    assert!(body.len() <= 2_000_000);
+    let mut stream = UnixStream::connect(socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .write_all(&u32::try_from(body.len()).unwrap().to_be_bytes())
+        .unwrap();
+    stream.write_all(&body).unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut reply = Vec::new();
+    stream.read_to_end(&mut reply).unwrap();
+    assert_eq!(reply, [1, 2], "direct bond request was not refused");
+}
+
+#[cfg(target_os = "linux")]
 fn protected_bond_namespace_run() {
     const BROKER: u32 = 2001;
     const INNER_WORKER: u32 = 2002;
@@ -3022,6 +3044,125 @@ fn protected_bond_namespace_run() {
     let refused_node = run_role(&binary, INNER_APPROVER, gid, &approve_node);
     refuse(&refused_node);
     assert!(String::from_utf8_lossy(&refused_node.stderr).contains("decision-point requery"));
+
+    // Send v2 bytes directly over the authorized peer UIDs. These checks
+    // bypass the CLI's early refusal and prove that neither service writes
+    // an approval nor returns a signature while requery is pending.
+    for uid in [BROKER, INNER_WORKER] {
+        let path = private(uid).join("config-node");
+        fs::write(&path, &node_config).unwrap();
+        set_mode(&path, 0o600);
+        fixture_chown(&path, uid, gid);
+    }
+    let direct = |uid: u32, body: &Path, socket: &Path| {
+        let mut command = role_command(
+            &std::env::current_exe().unwrap(),
+            uid,
+            gid,
+            &[
+                "--exact".into(),
+                "protected_original_bond_uses_two_distinct_approvers_and_workers".into(),
+                "--nocapture".into(),
+            ],
+        );
+        command.env("SUNRISE_BOND_DIRECT_SOCKET", socket);
+        command.env("SUNRISE_BOND_DIRECT_BODY", body);
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "direct bond refusal failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    let put_length_bytes = |out: &mut Vec<u8>, bytes: &[u8]| {
+        out.extend_from_slice(&u32::try_from(bytes.len()).unwrap().to_be_bytes());
+        out.extend_from_slice(bytes);
+    };
+    let approvals_node = private(BROKER).join("approvals-node");
+    fs::create_dir(&approvals_node).unwrap();
+    set_mode(&approvals_node, 0o700);
+    fixture_chown(&approvals_node, BROKER, gid);
+    let broker_node_socket = socket_dir("broker").join("bond-node.sock");
+    let mut broker_node_args = broker_args.clone();
+    replace(
+        &mut broker_node_args,
+        "--config",
+        private(BROKER).join("config-node").to_str().unwrap().into(),
+    );
+    replace(
+        &mut broker_node_args,
+        "--socket",
+        broker_node_socket.to_str().unwrap().into(),
+    );
+    replace(
+        &mut broker_node_args,
+        "--approvals-dir",
+        approvals_node.to_str().unwrap().into(),
+    );
+    let mut broker_node =
+        start_bond_service(&binary, BROKER, gid, &broker_node_args, &broker_node_socket);
+    let mut approve_body = vec![1_u8, 1_u8]; // broker v1, Approve
+    put_length_bytes(&mut approve_body, &inner_node_bytes);
+    let direct_not_after = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600;
+    approve_body.extend_from_slice(&direct_not_after.to_be_bytes());
+    put_length_bytes(&mut approve_body, node_config.as_bytes());
+    let approve_body_path = private(INNER_APPROVER).join("approve-node-ipc");
+    fs::write(&approve_body_path, approve_body).unwrap();
+    set_mode(&approve_body_path, 0o600);
+    fixture_chown(&approve_body_path, INNER_APPROVER, gid);
+    direct(INNER_APPROVER, &approve_body_path, &broker_node_socket);
+    let mut sign_body = vec![1_u8, 4_u8]; // broker v1, Sign
+    put_length_bytes(&mut sign_body, &inner_node_bytes);
+    put_length_bytes(&mut sign_body, node_config.as_bytes());
+    let sign_body_path = cli_dir.join("sign-node-ipc");
+    fs::write(&sign_body_path, sign_body).unwrap();
+    set_mode(&sign_body_path, 0o600);
+    direct(cli_uid, &sign_body_path, &broker_node_socket);
+    broker_node.wait();
+    let approval_names: Vec<_> = fs::read_dir(&approvals_node)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(approval_names.len(), 1);
+    assert_eq!(
+        approval_names[0],
+        std::ffi::OsString::from(".bond-broker.lock")
+    );
+
+    let worker_node_socket = socket_dir("inner").join("bond-node.sock");
+    let mut worker_node_args =
+        service_args(INNER_WORKER, "serve-bond-inner", &worker_node_socket, "1");
+    replace(
+        &mut worker_node_args,
+        "--config",
+        private(INNER_WORKER)
+            .join("config-node")
+            .to_str()
+            .unwrap()
+            .into(),
+    );
+    worker_node_args.extend([
+        "--key-file".into(),
+        private(INNER_WORKER).join("key").to_str().unwrap().into(),
+    ]);
+    let mut worker_node = start_bond_service(
+        &binary,
+        INNER_WORKER,
+        gid,
+        &worker_node_args,
+        &worker_node_socket,
+    );
+    let worker_body_path = private(BROKER).join("worker-node-ipc");
+    fs::write(&worker_body_path, &inner_node_bytes).unwrap();
+    set_mode(&worker_body_path, 0o600);
+    fixture_chown(&worker_body_path, BROKER, gid);
+    direct(BROKER, &worker_body_path, &worker_node_socket);
+    worker_node.wait();
     if std::env::var_os("SUNRISE_BOND_ORDERED_HANDOFF").is_some() {
         let actual_leg = fs::read(cli_dir.join("signed-leg")).unwrap();
         println!(
@@ -3053,6 +3194,10 @@ fn protected_original_bond_uses_two_distinct_approvers_and_workers() {
     }
     if std::env::var_os("SUNRISE_BOND_NODE_SOCKET").is_some() {
         fixed_bond_observation_run();
+        return;
+    }
+    if std::env::var_os("SUNRISE_BOND_DIRECT_SOCKET").is_some() {
+        direct_bond_refusal_run();
         return;
     }
     if std::env::var_os("SUNRISE_BOND_UID_NAMESPACE_CHILD").is_some() {
