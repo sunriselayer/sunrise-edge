@@ -2073,40 +2073,128 @@ fn fixed_bond_observation_run() {
     let socket = PathBuf::from(std::env::var_os("SUNRISE_BOND_NODE_SOCKET").unwrap());
     let expected = fs::read(std::env::var_os("SUNRISE_BOND_NODE_REQUEST").unwrap()).unwrap();
     let response = fs::read(std::env::var_os("SUNRISE_BOND_NODE_RESPONSE").unwrap()).unwrap();
+    let changed =
+        std::env::var_os("SUNRISE_BOND_NODE_CHANGED_RESPONSE").map(|path| fs::read(path).unwrap());
+    let count: usize = std::env::var("SUNRISE_BOND_NODE_COUNT")
+        .ok()
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(1);
+    assert!((1..=32).contains(&count));
+    assert!(changed.is_none() || count == 2);
     let listener = UnixListener::bind(&socket).unwrap();
     set_mode(&socket, 0o770);
     listener.set_nonblocking(true).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let (mut stream, _) = loop {
-        match listener.accept() {
-            Ok(pair) => break pair,
-            Err(error)
-                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-            {
-                thread::sleep(Duration::from_millis(10));
+    let deadline = Instant::now() + Duration::from_secs(90);
+    for index in 0..count {
+        let (mut stream, _) = loop {
+            match listener.accept() {
+                Ok(pair) => break pair,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("bond node fixture accept failed: {error}"),
             }
-            Err(error) => panic!("bond node fixture accept failed: {error}"),
-        }
-    };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let mut length = [0_u8; 4];
-    stream.read_exact(&mut length).unwrap();
-    let length = u32::from_be_bytes(length) as usize;
-    assert!(length <= currentness_wire::MAX_REQUEST_BYTES);
-    let mut request = vec![0_u8; length];
-    stream.read_exact(&mut request).unwrap();
-    let mut eof = [0];
-    assert_eq!(stream.read(&mut eof).unwrap(), 0);
-    assert_eq!(request, expected);
-    stream
-        .write_all(&u32::try_from(response.len()).unwrap().to_be_bytes())
-        .unwrap();
-    stream.write_all(&response).unwrap();
-    drop(stream);
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut length = [0_u8; 4];
+        stream.read_exact(&mut length).unwrap();
+        let length = u32::from_be_bytes(length) as usize;
+        assert!(length <= currentness_wire::MAX_REQUEST_BYTES);
+        let mut request = vec![0_u8; length];
+        stream.read_exact(&mut request).unwrap();
+        let mut eof = [0];
+        assert_eq!(stream.read(&mut eof).unwrap(), 0);
+        assert_eq!(request, expected);
+        let reply = if index == 1 {
+            changed.as_deref().unwrap_or(&response)
+        } else {
+            &response
+        };
+        stream
+            .write_all(&u32::try_from(reply.len()).unwrap().to_be_bytes())
+            .unwrap();
+        stream.write_all(reply).unwrap();
+    }
     drop(listener);
     fs::remove_file(&socket).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn start_fixed_bond_node(
+    uid: u32,
+    gid: u32,
+    socket: &Path,
+    expected: &Path,
+    response: &Path,
+    count: usize,
+    changed: Option<&Path>,
+) -> BondServiceChild {
+    let mut command = role_command(
+        &std::env::current_exe().unwrap(),
+        uid,
+        gid,
+        &[
+            "--exact".into(),
+            "protected_original_bond_uses_two_distinct_approvers_and_workers".into(),
+            "--nocapture".into(),
+        ],
+    );
+    command.env("SUNRISE_BOND_NODE_SOCKET", socket);
+    command.env("SUNRISE_BOND_NODE_REQUEST", expected);
+    command.env("SUNRISE_BOND_NODE_RESPONSE", response);
+    command.env("SUNRISE_BOND_NODE_COUNT", count.to_string());
+    if let Some(path) = changed {
+        command.env("SUNRISE_BOND_NODE_CHANGED_RESPONSE", path);
+    }
+    let child = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut child = BondServiceChild(Some(child));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() && Instant::now() < deadline {
+        if let Some(status) = child.0.as_mut().unwrap().try_wait().unwrap() {
+            let mut stderr = String::new();
+            child
+                .0
+                .as_mut()
+                .unwrap()
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut stderr)
+                .unwrap();
+            panic!("fixed bond node exited with {status}: {stderr}");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(socket.exists(), "fixed bond node did not bind");
+    child
+}
+
+#[cfg(target_os = "linux")]
+fn read_direct_bond_before(stream: &mut UnixStream, bytes: &mut [u8], deadline: Instant) {
+    let mut at = 0;
+    while at < bytes.len() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "direct bond IPC read deadline elapsed"
+        );
+        stream.set_read_timeout(Some(remaining)).unwrap();
+        let count = stream.read(&mut bytes[at..]).unwrap();
+        assert!(count != 0, "direct bond IPC ended before its bounded frame");
+        at += count;
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2125,6 +2213,21 @@ fn direct_bond_refusal_run() {
         .write_all(&u32::try_from(body.len()).unwrap().to_be_bytes())
         .unwrap();
     stream.write_all(&body).unwrap();
+    if std::env::var_os("SUNRISE_BOND_DIRECT_WORKER_CHALLENGE").is_some() {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut length = [0_u8; 4];
+        read_direct_bond_before(&mut stream, &mut length, deadline);
+        let length = u32::from_be_bytes(length) as usize;
+        assert!((2..=65_536).contains(&length));
+        let mut challenge = vec![0_u8; length];
+        read_direct_bond_before(&mut stream, &mut challenge, deadline);
+        assert_eq!(
+            &challenge[..2],
+            &[1, 2],
+            "worker did not challenge the broker"
+        );
+        stream.write_all(&[1, 1]).unwrap(); // Adversarial broker approval.
+    }
     stream.shutdown(std::net::Shutdown::Write).unwrap();
     let mut reply = [0_u8; 2];
     stream.read_exact(&mut reply).unwrap();
@@ -2825,9 +2928,8 @@ fn protected_bond_namespace_run() {
     assert!(!cli_dir.join("refused-registration").exists());
     broker.wait();
     // Reuse this owner and its already verified Coin/genesis. A distinct
-    // dummy node UID supplies one pinned local locator for preparation;
-    // every configured approval/signing path still refuses until each
-    // decision point has its own fresh requery.
+    // dummy node UID supplies one pinned local locator for preparation and
+    // each subsequent approval/signing decision point.
     let namespace = b"bond-local-fixture-instance";
     let node_dir = socket_dir("currentness");
     fs::create_dir(&node_dir).unwrap();
@@ -2869,6 +2971,19 @@ fn protected_bond_namespace_run() {
     )
     .unwrap();
     fs::write(node_dir.join("response"), &response).unwrap();
+    let mut changed_fence = frame.clone();
+    changed_fence.token = PortableSnapshotToken::new(
+        namespace.to_vec(),
+        fixture.domain,
+        WriterFenceGeneration::new(8).unwrap(),
+        8,
+    )
+    .unwrap();
+    fs::write(
+        node_dir.join("changed-response"),
+        currentness_wire::encode_response(&changed_fence).unwrap(),
+    )
+    .unwrap();
     fixture_chown(&node_dir, LOCAL_NODE, gid);
     let node_config = format!(
         "{config}local_node_socket={}\nlocal_node_uid={LOCAL_NODE}\nlocal_node_validator_id={}\nlocal_node_namespace_hex={}\n",
@@ -2878,33 +2993,15 @@ fn protected_bond_namespace_run() {
     );
     fs::write(cli_dir.join("config-node"), &node_config).unwrap();
     set_mode(&cli_dir.join("config-node"), 0o600);
-    let mut node = role_command(
-        &std::env::current_exe().unwrap(),
+    let mut node = start_fixed_bond_node(
         LOCAL_NODE,
         gid,
-        &[
-            "--exact".into(),
-            "protected_original_bond_uses_two_distinct_approvers_and_workers".into(),
-            "--nocapture".into(),
-        ],
+        &node_socket,
+        &node_dir.join("request"),
+        &node_dir.join("response"),
+        1,
+        None,
     );
-    node.env("SUNRISE_BOND_NODE_SOCKET", &node_socket);
-    node.env("SUNRISE_BOND_NODE_REQUEST", node_dir.join("request"));
-    node.env("SUNRISE_BOND_NODE_RESPONSE", node_dir.join("response"));
-    let mut node = node
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !node_socket.exists() && Instant::now() < deadline {
-        assert!(
-            node.try_wait().unwrap().is_none(),
-            "local node fixture exited"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert!(node_socket.exists(), "local node fixture did not bind");
     let mut prepare_node = prepare_inner.clone();
     replace(
         &mut prepare_node,
@@ -2917,12 +3014,7 @@ fn protected_bond_namespace_run() {
         cli_dir.join("inner-request-node").to_str().unwrap().into(),
     );
     let prepared_node = run_role(&binary, cli_uid, gid, &prepare_node);
-    let node_result = node.wait_with_output().unwrap();
-    assert!(
-        node_result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&node_result.stderr)
-    );
+    node.wait();
     assert!(
         prepared_node.status.success(),
         "{}",
@@ -3023,7 +3115,10 @@ fn protected_bond_namespace_run() {
     ]);
     let refused_node = run_role(&binary, cli_uid, gid, &sign_node);
     refuse(&refused_node);
-    assert!(String::from_utf8_lossy(&refused_node.stderr).contains("decision-point requery"));
+    assert!(
+        String::from_utf8_lossy(&refused_node.stderr)
+            .contains("designated local bond observation refused")
+    );
     assert!(!cli_dir.join("signed-node").exists());
     let approver_node = private(INNER_APPROVER).join("config-node");
     fs::write(&approver_node, &node_config).unwrap();
@@ -3049,18 +3144,18 @@ fn protected_bond_namespace_run() {
     ];
     let refused_node = run_role(&binary, INNER_APPROVER, gid, &approve_node);
     refuse(&refused_node);
-    assert!(String::from_utf8_lossy(&refused_node.stderr).contains("decision-point requery"));
+    assert!(!broker_socket.exists());
 
     // Send v2 bytes directly over the authorized peer UIDs. These checks
     // bypass the CLI's early refusal and prove that neither service writes
-    // an approval nor returns a signature while requery is pending.
+    // an approval nor returns a signature when the node is unavailable.
     for uid in [BROKER, INNER_WORKER] {
         let path = private(uid).join("config-node");
         fs::write(&path, &node_config).unwrap();
         set_mode(&path, 0o600);
         fixture_chown(&path, uid, gid);
     }
-    let direct = |uid: u32, body: &Path, socket: &Path| {
+    let direct = |uid: u32, body: &Path, socket: &Path, worker_challenge: bool| {
         let mut command = role_command(
             &std::env::current_exe().unwrap(),
             uid,
@@ -3073,6 +3168,9 @@ fn protected_bond_namespace_run() {
         );
         command.env("SUNRISE_BOND_DIRECT_SOCKET", socket);
         command.env("SUNRISE_BOND_DIRECT_BODY", body);
+        if worker_challenge {
+            command.env("SUNRISE_BOND_DIRECT_WORKER_CHALLENGE", "1");
+        }
         let output = command.output().unwrap();
         assert!(
             output.status.success(),
@@ -3121,14 +3219,19 @@ fn protected_bond_namespace_run() {
     fs::write(&approve_body_path, approve_body).unwrap();
     set_mode(&approve_body_path, 0o600);
     fixture_chown(&approve_body_path, INNER_APPROVER, gid);
-    direct(INNER_APPROVER, &approve_body_path, &broker_node_socket);
+    direct(
+        INNER_APPROVER,
+        &approve_body_path,
+        &broker_node_socket,
+        false,
+    );
     let mut sign_body = vec![1_u8, 4_u8]; // broker v1, Sign
     put_length_bytes(&mut sign_body, &inner_node_bytes);
     put_length_bytes(&mut sign_body, node_config.as_bytes());
     let sign_body_path = cli_dir.join("sign-node-ipc");
     fs::write(&sign_body_path, sign_body).unwrap();
     set_mode(&sign_body_path, 0o600);
-    direct(cli_uid, &sign_body_path, &broker_node_socket);
+    direct(cli_uid, &sign_body_path, &broker_node_socket, false);
     broker_node.wait();
     let approval_names: Vec<_> = fs::read_dir(&approvals_node)
         .unwrap()
@@ -3167,8 +3270,245 @@ fn protected_bond_namespace_run() {
     fs::write(&worker_body_path, &inner_node_bytes).unwrap();
     set_mode(&worker_body_path, 0o600);
     fixture_chown(&worker_body_path, BROKER, gid);
-    direct(BROKER, &worker_body_path, &worker_node_socket);
+    direct(BROKER, &worker_body_path, &worker_node_socket, true);
     worker_node.wait();
+
+    // The same protected approver must refuse when the second independent
+    // sample changes its writer fence after the typed confirmation. The
+    // fixed node is only a transport fixture, never a serving-node oracle.
+    let node_expires = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600;
+    let request_digest = fixture
+        .resolver
+        .hash_for_purpose(Epoch::new(0), HashPurpose::Transaction, &inner_node_bytes)
+        .unwrap();
+    let inner_node_confirmation = format!(
+        "APPROVE-ORIGINAL-BOND phase=Inner request={} key={} frame_digest={} not_after={node_expires} request_digest={request_digest}",
+        hex(&fixture.protected_request_id),
+        source_key,
+        inner_digest,
+    );
+    let mut approve_inner_node = approve_node.clone();
+    replace(
+        &mut approve_inner_node,
+        "--broker-socket",
+        broker_node_socket.to_str().unwrap().into(),
+    );
+    replace(
+        &mut approve_inner_node,
+        "--not-after-unix-seconds",
+        node_expires.to_string(),
+    );
+    let mut changed_node = start_fixed_bond_node(
+        LOCAL_NODE,
+        gid,
+        &node_socket,
+        &node_dir.join("request"),
+        &node_dir.join("response"),
+        2,
+        Some(&node_dir.join("changed-response")),
+    );
+    let changed_approval = approve_on_test_pty(
+        &binary,
+        INNER_APPROVER,
+        gid,
+        &approve_inner_node,
+        &inner_node_confirmation,
+    );
+    assert!(
+        !changed_approval.status.success(),
+        "changed local fence was approved"
+    );
+    changed_node.wait();
+    assert!(!node_socket.exists());
+    assert_eq!(fs::read_dir(&approvals_node).unwrap().count(), 1);
+
+    // All decision points now sample the same pinned locator independently:
+    // three samples per approval and seven per signing phase. The fixed
+    // response proves orchestration only; compiled-host qualification is a
+    // separate owner.
+    let mut node = start_fixed_bond_node(
+        LOCAL_NODE,
+        gid,
+        &node_socket,
+        &node_dir.join("request"),
+        &node_dir.join("response"),
+        20,
+        None,
+    );
+    replace(&mut broker_node_args, "--max-connections", "4".into());
+    replace(&mut broker_node_args, "--max-requests", "4".into());
+    replace(
+        &mut broker_node_args,
+        "--inner-worker-socket",
+        worker_node_socket.to_str().unwrap().into(),
+    );
+    let outer_node_socket = socket_dir("outer").join("bond-node.sock");
+    replace(
+        &mut broker_node_args,
+        "--outer-worker-socket",
+        outer_node_socket.to_str().unwrap().into(),
+    );
+    let mut broker_node =
+        start_bond_service(&binary, BROKER, gid, &broker_node_args, &broker_node_socket);
+    let inner_approved = approve_on_test_pty(
+        &binary,
+        INNER_APPROVER,
+        gid,
+        &approve_inner_node,
+        &inner_node_confirmation,
+    );
+    assert!(
+        inner_approved.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&inner_approved.stdout),
+        String::from_utf8_lossy(&inner_approved.stderr)
+    );
+    let mut worker_node = start_bond_service(
+        &binary,
+        INNER_WORKER,
+        gid,
+        &worker_node_args,
+        &worker_node_socket,
+    );
+    replace(
+        &mut sign_node,
+        "--broker-socket",
+        broker_node_socket.to_str().unwrap().into(),
+    );
+    let signed_inner_node = run_role(&binary, cli_uid, gid, &sign_node);
+    assert!(
+        signed_inner_node.status.success(),
+        "{}",
+        String::from_utf8_lossy(&signed_inner_node.stderr)
+    );
+    assert_eq!(fs::read(cli_dir.join("signed-node")).unwrap(), fixture.leg);
+    worker_node.wait();
+
+    for uid in [OUTER_APPROVER, OUTER_WORKER] {
+        let path = private(uid).join("config-node");
+        fs::write(&path, &node_config).unwrap();
+        set_mode(&path, 0o600);
+        fixture_chown(&path, uid, gid);
+    }
+    let outer_request_node = private(OUTER_APPROVER).join("request-node");
+    fs::copy(cli_dir.join("outer-request-node"), &outer_request_node).unwrap();
+    set_mode(&outer_request_node, 0o600);
+    fixture_chown(&outer_request_node, OUTER_APPROVER, gid);
+    let outer_node_bytes = fs::read(cli_dir.join("outer-request-node")).unwrap();
+    let outer_request_digest = fixture
+        .resolver
+        .hash_for_purpose(Epoch::new(0), HashPurpose::Transaction, &outer_node_bytes)
+        .unwrap();
+    let outer_node_confirmation = format!(
+        "APPROVE-ORIGINAL-BOND phase=Outer request={} key={} frame_digest={} not_after={node_expires} request_digest={outer_request_digest}",
+        hex(&fixture.protected_request_id),
+        validator_key,
+        outer_digest,
+    );
+    let mut approve_outer_node = approve_args(OUTER_APPROVER, "outer");
+    replace(
+        &mut approve_outer_node,
+        "--config",
+        private(OUTER_APPROVER)
+            .join("config-node")
+            .to_str()
+            .unwrap()
+            .into(),
+    );
+    replace(
+        &mut approve_outer_node,
+        "--request",
+        outer_request_node.to_str().unwrap().into(),
+    );
+    replace(
+        &mut approve_outer_node,
+        "--broker-socket",
+        broker_node_socket.to_str().unwrap().into(),
+    );
+    replace(
+        &mut approve_outer_node,
+        "--not-after-unix-seconds",
+        node_expires.to_string(),
+    );
+    let outer_approved = approve_on_test_pty(
+        &binary,
+        OUTER_APPROVER,
+        gid,
+        &approve_outer_node,
+        &outer_node_confirmation,
+    );
+    assert!(
+        outer_approved.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&outer_approved.stdout),
+        String::from_utf8_lossy(&outer_approved.stderr)
+    );
+    let mut outer_node_args =
+        service_args(OUTER_WORKER, "serve-bond-outer", &outer_node_socket, "1");
+    replace(
+        &mut outer_node_args,
+        "--config",
+        private(OUTER_WORKER)
+            .join("config-node")
+            .to_str()
+            .unwrap()
+            .into(),
+    );
+    outer_node_args.extend([
+        "--key-file".into(),
+        private(OUTER_WORKER).join("key").to_str().unwrap().into(),
+    ]);
+    let mut outer_node_worker = start_bond_service(
+        &binary,
+        OUTER_WORKER,
+        gid,
+        &outer_node_args,
+        &outer_node_socket,
+    );
+    let mut sign_outer_node = sign_outer.clone();
+    replace(
+        &mut sign_outer_node,
+        "--config",
+        cli_dir.join("config-node").to_str().unwrap().into(),
+    );
+    replace(
+        &mut sign_outer_node,
+        "--request",
+        cli_dir.join("outer-request-node").to_str().unwrap().into(),
+    );
+    replace(
+        &mut sign_outer_node,
+        "--broker-socket",
+        broker_node_socket.to_str().unwrap().into(),
+    );
+    replace(
+        &mut sign_outer_node,
+        "--out",
+        cli_dir
+            .join("signed-registration-node")
+            .to_str()
+            .unwrap()
+            .into(),
+    );
+    let signed_outer_node = run_role(&binary, cli_uid, gid, &sign_outer_node);
+    assert!(
+        signed_outer_node.status.success(),
+        "{}",
+        String::from_utf8_lossy(&signed_outer_node.stderr)
+    );
+    assert_eq!(
+        fs::read(cli_dir.join("signed-registration-node")).unwrap(),
+        signed_registration,
+    );
+    outer_node_worker.wait();
+    broker_node.wait();
+    node.wait();
+    assert!(!broker_node_socket.exists());
+    assert!(!node_socket.exists());
     if std::env::var_os("SUNRISE_BOND_ORDERED_HANDOFF").is_some() {
         let actual_leg = fs::read(cli_dir.join("signed-leg")).unwrap();
         println!(
