@@ -16,7 +16,7 @@ use tokio::{
 };
 
 use super::{bond_policy::BondTrust, client::connect_and_check_peer};
-use crate::error::CliError;
+use crate::{error::CliError, hex::encode_hex};
 
 const IO_DEADLINE: Duration = Duration::from_secs(15);
 
@@ -109,6 +109,45 @@ fn require_original_validator(
 /// the Coin remains current when an approval or signature is delivered.
 #[derive(Clone)]
 pub(super) struct LocalBondObservation(OriginalBondLocalObservationFrame);
+
+impl LocalBondObservation {
+    pub(super) fn frame(&self) -> &OriginalBondLocalObservationFrame {
+        &self.0
+    }
+}
+
+/// A request-carried locator is only statically checked against the private
+/// pins and reviewed Coin. This does not requery the node or establish
+/// currentness at any later decision point.
+pub(super) fn review_locator(
+    trust: &BondTrust,
+    reference: &ObjectRef,
+    frame: &OriginalBondLocalObservationFrame,
+) -> Result<String, CliError> {
+    Pins::from_trust(trust)?.check(frame.clone(), reference, None)?;
+    let bytes = wire::encode_response(frame).map_err(|_| refused())?;
+    Ok(format!(
+        "local_observation_locator_claim=true\nlocal_observation_chain_state_proof=false\nlocal_observation_currentness_reserved=false\nlocal_observation_frame_hex={}\nlocal_observation_validator={}\nlocal_observation_chain_id={}\nlocal_observation_protocol_version={}\nlocal_observation_namespace_hex={}\nlocal_observation_domain={}\nlocal_observation_writer_fence={}\nlocal_observation_mutation_sequence={}\nlocal_observation_epoch={}\nlocal_observation_validator_set_digest={}\nlocal_observation_genesis_digest={}\nlocal_observation_anchor={}\nlocal_observation_through_height={}\nlocal_observation_through_view={}\nlocal_observation_through_digest={}\nlocal_observation_coin_id={}\nlocal_observation_coin_version={}\nlocal_observation_coin_digest={}\n",
+        encode_hex(&bytes),
+        encode_hex(frame.validator.as_bytes()),
+        frame.chain_id,
+        frame.protocol_version.get(),
+        encode_hex(frame.token.namespace()),
+        frame.token.domain(),
+        frame.token.writer_fence().get(),
+        frame.token.mutation_sequence(),
+        frame.epoch.get(),
+        frame.validator_set_digest,
+        frame.genesis_digest,
+        frame.anchor,
+        frame.through_height,
+        frame.through_view,
+        frame.through_digest,
+        frame.coin.id,
+        frame.coin.version,
+        frame.coin.digest,
+    ))
+}
 
 /// One fresh read from the configured local node. Callers at separate review,
 /// approval and signing decisions must requery and bind the complete result.

@@ -367,6 +367,7 @@ fn authorized_content(
     dir: &Path,
     request: &BondRequest,
 ) -> Result<BondApprovalContent, CliError> {
+    trust.require_signing_ready()?;
     let prepared = trust.prepare(request)?;
     let content = prepared.content;
     let inner_content = if let BondRequest::Outer { inner, .. } = request {
@@ -393,6 +394,9 @@ fn handle_broker_message(
     observed_uid: u32,
     message: BrokerMessage,
 ) -> Reply {
+    if !matches!(&message, BrokerMessage::Revoke { .. }) && trust.require_signing_ready().is_err() {
+        return Reply::Refused;
+    }
     let result: Result<(), CliError> = (|| match message {
         BrokerMessage::Approve {
             request,
@@ -460,6 +464,7 @@ async fn handle_worker_request(
     request: &BondRequest,
 ) -> Reply {
     let result: Result<[u8; 64], CliError> = async {
+        trust.require_signing_ready()?;
         if request.phase() != phase {
             return Err(invalid("bond worker phase mismatch"));
         }
@@ -510,6 +515,7 @@ async fn broker_sign(
     config: Vec<u8>,
 ) -> Reply {
     let result: Result<[u8; 64], CliError> = async {
+        trust.require_signing_ready()?;
         if observed_uid != trust.config().cli_uid() || config != trust.config().raw_bytes() {
             return Err(invalid(
                 "bond signing caller or role config differs from pin",

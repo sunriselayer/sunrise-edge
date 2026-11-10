@@ -2,8 +2,9 @@
 
 Date: 2026-11-10 (Asia/Singapore)
 
-Status: Selected trust boundary; opt-in local observation transport implemented;
-approver and signing enforcement pending.
+Status: Selected trust boundary; opt-in local observation transport and
+preparation locator implemented; decision-point requery and signing enforcement
+pending.
 
 ## Context
 
@@ -66,9 +67,18 @@ and leaves ordinary HTTP service running. Any bond signing flow must refuse
 while this route is unavailable; the HTTP host does not imply currentness.
 
 The existing loopback HTTP route and outbound diagnostics socket are not this
-admission boundary. There is no bond CLI, broker, content-approver or protected
-key-worker connection to the listener yet. The present bond preview and
-protected signing fixture therefore retain their unverified-source status.
+admission boundary. With a complete private node pin group, `prepare-bond-inner`
+observes the exact reviewed Coin once and places the complete canonical
+`SRBOBS01` locator in a version-two inner request; the outer request embeds
+that same inner locator. The typed preparation review displays the locator,
+token, applied tip, Coin reference, and `chain_state_proof=false`, while
+retaining `source_snapshot_unverified=true`. The signable inner and outer
+frames and approval-record schema do not change. Broker and reply IPC remain
+version one; configurations without node pins retain version-one requests.
+Until both approvers, the broker, and the relevant key worker have independent
+fresh requery at their decision points, configured-node approval and signing
+requests refuse before any approval record or signature. No preparation
+locator alone is authorization or proof of delivery-time currentness.
 This record does not approve, sign, register, or execute a bond and closes no
 M2 or release requirement. Actual node/approver enrollment, real keys, host
 users, and security policy are outside this decision.

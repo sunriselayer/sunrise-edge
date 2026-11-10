@@ -16,7 +16,8 @@ use sunrise_edge_client::{
 
 use super::{
     bond_config::BondConfig,
-    bond_inner::{BondInnerRequest, BondInnerTrust, PreparedBondInner},
+    bond_currentness,
+    bond_inner::{BondInnerRequest, BondInnerTrust, MAX_REVIEW_BYTES, PreparedBondInner},
     bond_wire::{self, BondPhase, BondRequest},
 };
 use crate::{error::CliError, hex::encode_hex};
@@ -55,10 +56,16 @@ pub(super) struct PreparedBondOperation {
     pub(super) content: BondApprovalContent,
     pub(super) review: String,
     owner: PreparedOwner,
+    currentness_requery_pending: bool,
 }
 
 impl PreparedBondOperation {
     pub(super) fn finalize(self, signature: Vec<u8>) -> Result<Vec<u8>, CliError> {
+        if self.currentness_requery_pending {
+            return Err(invalid(
+                "bond currentness decision-point requery is not implemented",
+            ));
+        }
         match self.owner {
             PreparedOwner::Inner(inner) => {
                 let signed = inner.prepared.finalize(signature).map_err(failure)?;
@@ -69,6 +76,11 @@ impl PreparedBondOperation {
     }
 
     pub(super) fn sign_with(self, signer: &LocalSigner) -> Result<[u8; 64], CliError> {
+        if self.currentness_requery_pending {
+            return Err(invalid(
+                "bond currentness decision-point requery is not implemented",
+            ));
+        }
         if signer.address() != self.content.expected_key {
             return Err(invalid("bond worker key differs from the pinned phase key"));
         }
@@ -138,6 +150,60 @@ impl BondTrust {
         &self.root
     }
 
+    pub(super) fn require_signing_ready(&self) -> Result<(), CliError> {
+        if self.config.currentness().is_some() {
+            return Err(invalid(
+                "bond currentness decision-point requery is not implemented",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Derive the exact reviewed Coin reference before the one live
+    /// prepare-inner observation. The final prepare repeats all checks.
+    pub(super) fn source_ref_for_observation(
+        &self,
+        request: &BondInnerRequest,
+    ) -> Result<sunrise_edge_client::ObjectRef, CliError> {
+        self.check_inner_pins(request)?;
+        Ok(self.inner.prepare(request)?.source_ref)
+    }
+
+    fn check_inner_pins(&self, request: &BondInnerRequest) -> Result<(), CliError> {
+        if request.validator_key != self.config.validator_key()
+            || request.resource != self.config.resource()
+        {
+            return Err(invalid(
+                "bond request validator or resource differs from the role pin",
+            ));
+        }
+        Ok(())
+    }
+
+    fn prepare_reviewed_inner(
+        &self,
+        request: &BondInnerRequest,
+    ) -> Result<PreparedBondInner, CliError> {
+        self.check_inner_pins(request)?;
+        let mut inner = self.inner.prepare(request)?;
+        match (
+            self.config.currentness(),
+            request.local_observation.as_ref(),
+        ) {
+            (None, None) => {}
+            (Some(_), Some(frame)) => inner.review.push_str(&bond_currentness::review_locator(
+                self,
+                &inner.source_ref,
+                frame,
+            )?),
+            _ => return Err(invalid("bond request and local node pin profile differ")),
+        }
+        if inner.review.len() > MAX_REVIEW_BYTES {
+            return Err(invalid("bond inner review exceeds its bound"));
+        }
+        Ok(inner)
+    }
+
     pub(super) fn prepare(&self, request: &BondRequest) -> Result<PreparedBondOperation, CliError> {
         match request {
             BondRequest::Inner(inner_request) => self.prepare_inner(inner_request, request),
@@ -155,14 +221,7 @@ impl BondTrust {
         inner_request: &BondInnerRequest,
         whole_request: &BondRequest,
     ) -> Result<PreparedBondOperation, CliError> {
-        if inner_request.validator_key != self.config.validator_key()
-            || inner_request.resource != self.config.resource()
-        {
-            return Err(invalid(
-                "bond request validator or resource differs from the role pin",
-            ));
-        }
-        let inner = self.inner.prepare(inner_request)?;
+        let inner = self.prepare_reviewed_inner(inner_request)?;
         let frame = inner.prepared.signable_frame().to_vec();
         let review = inner.review.clone();
         Ok(PreparedBondOperation {
@@ -178,6 +237,7 @@ impl BondTrust {
             },
             review,
             owner: PreparedOwner::Inner(Box::new(inner)),
+            currentness_requery_pending: self.config.currentness().is_some(),
         })
     }
 
@@ -189,14 +249,7 @@ impl BondTrust {
         outer_request_id: RequestId,
         whole_request: &BondRequest,
     ) -> Result<PreparedBondOperation, CliError> {
-        if inner_request.validator_key != self.config.validator_key()
-            || inner_request.resource != self.config.resource()
-        {
-            return Err(invalid(
-                "bond request validator or resource differs from the role pin",
-            ));
-        }
-        let inner = self.inner.prepare(inner_request)?;
+        let inner = self.prepare_reviewed_inner(inner_request)?;
         let predicted_ref = inner.predicted_ref.clone();
         let amount = inner.amount;
         let decoded_leg = decode_signed_local_execution(signed_leg).map_err(failure)?;
@@ -265,6 +318,7 @@ impl BondTrust {
             },
             review,
             owner: PreparedOwner::Outer(Box::new(outer)),
+            currentness_requery_pending: self.config.currentness().is_some(),
         })
     }
 }
