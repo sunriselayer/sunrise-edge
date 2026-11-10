@@ -44,7 +44,7 @@ fn bond_handoff_sha256(bytes: &[u8]) -> String {
 
 #[cfg(target_os = "linux")]
 fn bond_handoff_decode_hex(value: &str, max: usize) -> Vec<u8> {
-    assert!(value.len() % 2 == 0 && value.len() <= max * 2);
+    assert!(value.len().is_multiple_of(2) && value.len() <= max * 2);
     value
         .as_bytes()
         .chunks_exact(2)
