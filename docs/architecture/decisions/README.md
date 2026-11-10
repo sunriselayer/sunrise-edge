@@ -187,3 +187,4 @@ use the [short architecture index](../README.md) to find the relevant owner and
 - [DR-0289: bond outer-key custody and separate content approvals](0289-bond-outer-key-custody-and-split-approval.md)
 - [DR-0290: incoming successor protected-key cutover fixture](0290-incoming-successor-protected-key-cutover.md)
 - [DR-0291: original bond inner Standard Asset profile](0291-original-bond-inner-standard-asset-profile.md)
+- [DR-0292: original bond trusted local currentness](0292-original-bond-trusted-local-currentness.md)

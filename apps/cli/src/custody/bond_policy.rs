@@ -134,6 +134,10 @@ impl BondTrust {
         &self.config
     }
 
+    pub(super) fn currentness_root(&self) -> &VerifiedGenesisRoot {
+        &self.root
+    }
+
     pub(super) fn prepare(&self, request: &BondRequest) -> Result<PreparedBondOperation, CliError> {
         match request {
             BondRequest::Inner(inner_request) => self.prepare_inner(inner_request, request),

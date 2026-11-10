@@ -2,18 +2,23 @@
 //! Every process loads its own OS-owned copy; no request may select a role,
 //! key, genesis root, hash suite, resource or peer UID.
 
-use std::{collections::BTreeMap, error::Error, fmt, path::Path};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    fmt,
+    path::{Component, Path, PathBuf},
+};
 
 use sunrise_edge_client::{
     Address, AtomicityDomainId, ChainId,
     ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
     ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID, Epoch, ExpectedProtocolContext,
     HashAlgorithmId, HashSuite, HashSuiteId, HashSuiteResolver, HashSuiteSchedule, ProtocolVersion,
-    SignatureSchemeId, bond_registration::BondResourceId,
+    SignatureSchemeId, ValidatorId, bond_registration::BondResourceId,
 };
 
 use super::{error::CustodyError, fsperm::read_private_file};
-use crate::hex::decode_hex_32;
+use crate::hex::{decode_hex_32, decode_hex_exact};
 
 pub(super) const MAX_CONFIG_BYTES: usize = 4096;
 const KEYS: [&str; 14] = [
@@ -33,6 +38,22 @@ const KEYS: [&str; 14] = [
     "inner_approver_uid",
 ];
 const OUTER_APPROVER_UID: &str = "outer_approver_uid";
+const NODE_KEYS: [&str; 4] = [
+    "local_node_socket",
+    "local_node_uid",
+    "local_node_validator_id",
+    "local_node_namespace_hex",
+];
+
+/// Optional, all-or-nothing local serving-node identity. The namespace is an
+/// exact store pin, including its independently bootstrapped instance ID.
+#[derive(Clone, Debug)]
+pub(super) struct BondCurrentnessTarget {
+    pub(super) socket: PathBuf,
+    pub(super) uid: u32,
+    pub(super) validator: ValidatorId,
+    pub(super) namespace: Vec<u8>,
+}
 
 /// A closed, redacted validation error; input bytes and private paths are not
 /// included in its display text.
@@ -103,6 +124,7 @@ pub(super) struct BondConfig {
     validator_key: [u8; 32],
     resource: BondResourceId,
     uids: [u32; 6],
+    currentness: Option<BondCurrentnessTarget>,
 }
 
 impl BondConfig {
@@ -127,11 +149,13 @@ impl BondConfig {
                 return Err(BondConfigError::Invalid("empty or duplicate value"));
             }
         }
-        if fields.len() != KEYS.len() + 1
+        let has_node_group = NODE_KEYS.iter().any(|key| fields.contains_key(*key));
+        if fields.len() != KEYS.len() + 1 + if has_node_group { NODE_KEYS.len() } else { 0 }
             || !KEYS
                 .iter()
                 .chain([&OUTER_APPROVER_UID])
                 .all(|key| fields.contains_key(*key))
+            || (has_node_group && !NODE_KEYS.iter().all(|key| fields.contains_key(*key)))
         {
             return Err(BondConfigError::Invalid("required keys"));
         }
@@ -181,6 +205,46 @@ impl BondConfig {
                 ));
             }
         }
+        let currentness = if has_node_group {
+            let socket = PathBuf::from(field("local_node_socket")?);
+            if !socket.is_absolute()
+                || socket.as_os_str().len() > 100
+                || socket
+                    .components()
+                    .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
+            {
+                return Err(BondConfigError::Invalid("local_node_socket"));
+            }
+            let uid = decimal(field("local_node_uid")?, "local_node_uid")?;
+            if uids.contains(&uid) {
+                return Err(BondConfigError::Invalid(
+                    "node UID must differ from bond roles",
+                ));
+            }
+            let validator = ValidatorId::new(hex32(
+                field("local_node_validator_id")?,
+                "local_node_validator_id",
+            )?);
+            let namespace_hex = field("local_node_namespace_hex")?;
+            if namespace_hex.is_empty() || namespace_hex.len() > 512 || namespace_hex.len() % 2 != 0
+            {
+                return Err(BondConfigError::Invalid("local_node_namespace_hex"));
+            }
+            let namespace = decode_hex_exact(
+                "local_node_namespace_hex",
+                namespace_hex,
+                namespace_hex.len() / 2,
+            )
+            .map_err(|_| BondConfigError::Invalid("local_node_namespace_hex"))?;
+            Some(BondCurrentnessTarget {
+                socket,
+                uid,
+                validator,
+                namespace,
+            })
+        } else {
+            None
+        };
         let result = Self {
             raw: raw.clone(),
             chain_id,
@@ -192,6 +256,7 @@ impl BondConfig {
             validator_key,
             resource,
             uids,
+            currentness,
         };
         result.resolver()?;
         result.expected_context()?;
@@ -241,6 +306,9 @@ impl BondConfig {
     }
     pub(super) fn domain(&self) -> AtomicityDomainId {
         self.domain
+    }
+    pub(super) fn currentness(&self) -> Option<&BondCurrentnessTarget> {
+        self.currentness.as_ref()
     }
     pub(super) fn cli_uid(&self) -> u32 {
         self.uids[0]
@@ -381,6 +449,40 @@ mod tests {
             raw.replace("resource_domain=1", "resource_domain=-1"),
             format!("{raw}unknown=x\n"),
             raw.replace("cli_uid=1001", "cli_uid=1002"),
+        ] {
+            assert!(BondConfig::parse(changed.into_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn optional_node_pins_are_complete_private_and_distinct() {
+        let base = valid();
+        assert!(
+            BondConfig::parse(base.clone().into_bytes())
+                .unwrap()
+                .currentness()
+                .is_none()
+        );
+        let node = format!(
+            "local_node_socket=/tmp/bond-node.sock\nlocal_node_uid=2001\nlocal_node_validator_id={}\nlocal_node_namespace_hex={}\n",
+            "44".repeat(32),
+            "a1".repeat(96),
+        );
+        let complete = format!("{base}{node}");
+        let parsed = BondConfig::parse(complete.clone().into_bytes()).unwrap();
+        let target = parsed.currentness().unwrap();
+        assert_eq!(target.socket, PathBuf::from("/tmp/bond-node.sock"));
+        assert_eq!(target.uid, 2001);
+        assert_eq!(target.validator, ValidatorId::new([0x44; 32]));
+        assert_eq!(target.namespace, vec![0xa1; 96]);
+        for changed in [
+            format!("{base}local_node_uid=2001\n"),
+            complete.replace("local_node_uid=2001", "local_node_uid=1004"),
+            complete.replace("/tmp/bond-node.sock", "bond-node.sock"),
+            complete.replace("/tmp/bond-node.sock", "/tmp/../bond-node.sock"),
+            complete.replace(&"a1".repeat(96), "abc"),
+            complete.replace(&"a1".repeat(96), &"a1".repeat(257)),
+            format!("{complete}unknown=x\n"),
         ] {
             assert!(BondConfig::parse(changed.into_bytes()).is_err());
         }

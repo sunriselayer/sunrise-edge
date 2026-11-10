@@ -13,10 +13,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-#[path = "../../tests/support/causal_genesis_fixture.rs"]
-mod causal_genesis_fixture;
-#[path = "../../tests/support/genesis_fixture.rs"]
-mod genesis_fixture;
+use crate::{causal_genesis_fixture, genesis_fixture};
 #[path = "../../tests/business_cut/fixture.rs"]
 // The same genuine source fixture has integration-only executable/history
 // helpers. This unit target deliberately uses only its source construction.
