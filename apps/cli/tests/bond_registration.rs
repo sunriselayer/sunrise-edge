@@ -2126,9 +2126,15 @@ fn direct_bond_refusal_run() {
         .unwrap();
     stream.write_all(&body).unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut reply = Vec::new();
-    stream.read_to_end(&mut reply).unwrap();
+    let mut reply = [0_u8; 2];
+    stream.read_exact(&mut reply).unwrap();
     assert_eq!(reply, [1, 2], "direct bond request was not refused");
+    let mut trailing = [0_u8; 1];
+    assert_eq!(
+        stream.read(&mut trailing).unwrap(),
+        0,
+        "bond reply had trailing bytes"
+    );
 }
 
 #[cfg(target_os = "linux")]
