@@ -519,6 +519,13 @@ M2-N1〜N5は既存M2の不足を分ける作業IDであり、新しい親gate�
 | FinalTransfer fee claim | development署名の経路でありpositive Split custodyに含めない。具体authorityとreview契約は未選択 |
 | offline genesis author | [DR-0286](docs/architecture/decisions/0286-standard-asset-genesis-protected-review-worker.md) の二段階workerを実装・限定別UID検証済み。実承認者/鍵/economics/ceremony、全体gateは未達 |
 
+original bondの既存node-core ordered登録ownerでは、`184ef2a3`で内側
+source-owner鍵と外側validator鍵を分離した正例を追加し、既存commit・全replicaの
+担保object/nonce/登録chain/receipt照合を再利用した。新旧の限定テストは各1件成功。
+これは同ownerのlocal test signerによる実ordered効果の証拠であり、別genesisを使う
+protected CLI workerの実出力bytesをそのまま投入した証拠ではない。後者のfixture接続、
+署名前source現行性、実承認者・鍵、最新sourceの完全required/CIは引き続き未達。
+
 FinalTransferの既存codec・prepared consumer・review表示・development signer・
 positive Splitとの権限分離を[署名経路マップ](docs/architecture/signing-route-test-map.md#finaltransfer-within-the-prepared-fee-claim-owner)へ対応付けた。
 これは静的な所在確認であり、未選択のauthority・leg semantics・承認内容・backend、
