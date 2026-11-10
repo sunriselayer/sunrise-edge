@@ -2623,6 +2623,7 @@ dependencies = [
  "rcgen",
  "runtime",
  "rustls",
+ "sha2 0.11.0",
  "sunrise-edge-client",
  "sunrise-edge-devnet",
  "sunrise-edge-ledger",

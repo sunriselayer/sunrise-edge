@@ -33,8 +33,8 @@ use execution::{
 use node_core::{
     fast_path::records::FastPathBondState,
     genesis::{
-        GenesisManifest, encode_genesis_manifest, genesis_manifest_commitment,
-        genesis_manifest_signing_frame,
+        GenesisManifest, decode_genesis_manifest, encode_genesis_manifest,
+        genesis_manifest_commitment, genesis_manifest_signing_frame,
     },
 };
 use objects::{Object, ObjectRef, Owner, ProtocolCustodyPurpose, ProtocolCustodyScope};
@@ -50,8 +50,9 @@ use sunrise_edge_client::{
     bond_registration::{
         BondRegistrationContext, FastPathBondRecord, LocalBondRegistrationError,
         MAX_BOND_REGISTRATION_ROW_BYTES, MAX_LOCAL_EXECUTION_INTENT_BYTES,
-        PreparedLocalBondRegistration, decode_signed_bond_registration_intent,
-        encode_fastpath_bond_record, verify_signed_bond_registration,
+        PreparedLocalBondRegistration, decode_fastpath_bond_record,
+        decode_signed_bond_registration_intent, encode_fastpath_bond_record,
+        verify_signed_bond_registration,
     },
     ordered_economics::{
         ORDERED_ECONOMICS_OUTCOME_PATH_PREFIX, ORDERED_ECONOMICS_PROPOSE_PATH,
@@ -73,10 +74,6 @@ const SOURCE_SEED: [u8; 32] = [0x67; 32];
 #[path = "../../../clients/rust/tests/support/external_signer.rs"]
 mod external_signer;
 const REQUEST_ID: [u8; 32] = [0x86; 32];
-#[cfg(target_os = "linux")]
-// The original registration owner requires the signed leg and outer claim to
-// carry one operation request ID; the two approval records remain phase keyed.
-const PROTECTED_OUTER_REQUEST_ID: [u8; 32] = REQUEST_ID;
 const SUITE: &str = "0:23:2:2:2:2:2:2";
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 
@@ -85,6 +82,12 @@ fn hex(bytes: &[u8]) -> String {
         .iter()
         .map(|byte: &u8| format!("{byte:02x}"))
         .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex(&Sha256::digest(bytes))
 }
 
 fn write_seed(path: &Path, seed: [u8; 32]) {
@@ -105,6 +108,9 @@ struct Fixture {
     digest: Digest32,
     row: FastPathBondRecord,
     leg: Vec<u8>,
+    protected_validator_seed: [u8; 32],
+    protected_request_id: [u8; 32],
+    protected_suite: &'static str,
 }
 
 impl Fixture {
@@ -254,7 +260,78 @@ impl Fixture {
             digest,
             row,
             leg,
+            protected_validator_seed: NEW_SEED,
+            protected_request_id: REQUEST_ID,
+            protected_suite: SUITE,
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn from_ordered_handoff(path: &Path) -> Self {
+        assert!(path.is_absolute(), "ordered handoff path must be absolute");
+        let metadata = fs::read_to_string(path.join("manifest")).unwrap();
+        let mut lines = metadata.lines();
+        assert_eq!(lines.next(), Some("profile=genesis-test-bond-v1"));
+        let mut files = Vec::new();
+        for name in ["genesis", "source-coin", "row", "leg"] {
+            let length = lines.next().unwrap();
+            let digest = lines.next().unwrap();
+            let expected_len: usize = length
+                .strip_prefix(&format!("{name}_len="))
+                .unwrap()
+                .parse()
+                .unwrap();
+            let expected_sha = digest.strip_prefix(&format!("{name}_sha256=")).unwrap();
+            assert!(expected_len <= 1_048_576, "ordered handoff input too large");
+            let bytes = fs::read(path.join(name)).unwrap();
+            assert_eq!(bytes.len(), expected_len);
+            assert_eq!(sha256_hex(&bytes), expected_sha);
+            files.push(bytes);
+        }
+        assert_eq!(lines.next(), None, "unexpected ordered handoff metadata");
+        let mut fixture = Self::new();
+        let context = PublicationContext::new(
+            ChainId::new("genesis-test").unwrap(),
+            ProtocolVersion::new(3),
+            Epoch::new(0),
+        )
+        .unwrap();
+        let resolver = HashSuiteResolver::new(
+            context.chain_id().clone(),
+            context.protocol_version(),
+            vec![HashSuiteSchedule {
+                activation_epoch: Epoch::new(0),
+                suite: HashSuite::genesis(),
+            }],
+        )
+        .unwrap();
+        let manifest = decode_genesis_manifest(&files[0]).unwrap();
+        assert_eq!(manifest.context(), &context);
+        let digest = genesis_manifest_commitment(&resolver, &manifest).unwrap();
+        VerifiedGenesisRoot::verify_bytes(&resolver, &files[0], digest.bytes(), &context).unwrap();
+        let row = decode_fastpath_bond_record(&files[2]).unwrap();
+        assert_eq!(
+            row.validator_id.as_bytes(),
+            LocalSigner::from_seed([0xe5; 32]).address().as_bytes()
+        );
+        for (name, bytes) in ["genesis", "source-coin", "row", "leg"]
+            .into_iter()
+            .zip(&files)
+        {
+            fs::write(fixture.directory.join(name), bytes).unwrap();
+        }
+        write_seed(&fixture.directory.join("seed"), [0xe5; 32]);
+        fixture.context = context;
+        fixture.resolver = resolver;
+        fixture.domain = AtomicityDomainId::new([1; 32]).unwrap();
+        fixture.manifest = manifest;
+        fixture.digest = digest;
+        fixture.row = row;
+        fixture.leg = files[3].clone();
+        fixture.protected_validator_seed = [0xe5; 32];
+        fixture.protected_request_id = [0xe6; 32];
+        fixture.protected_suite = "0:1:1:1:1:1:1:1";
+        fixture
     }
 
     fn path(&self, name: &str) -> String {
@@ -1988,7 +2065,10 @@ fn protected_bond_namespace_run() {
     const INNER_APPROVER: u32 = 2004;
     const OUTER_APPROVER: u32 = 2005;
 
-    let fixture = Fixture::new();
+    let fixture = match std::env::var_os("SUNRISE_BOND_ORDERED_HANDOFF") {
+        Some(path) => Fixture::from_ordered_handoff(Path::new(&path)),
+        None => Fixture::new(),
+    };
     let cli_uid = namespace_id("-u");
     let gid = namespace_id("-g");
     assert!(
@@ -2006,16 +2086,24 @@ fn protected_bond_namespace_run() {
     // unit umask. Role key/config files remain private in their own dirs.
     set_mode(Path::new(&fixture.path("genesis")), 0o644);
     let binary = fixture.directory.join("protected-bond-cli");
+    if let Ok(expected) = std::env::var("SUNRISE_BOND_ORDERED_CLI_SHA256") {
+        assert_eq!(
+            sha256_hex(&fs::read(env!("CARGO_BIN_EXE_sunrise-edge-cli")).unwrap()),
+            expected,
+            "protected fixture CLI binary changed after artifact pinning"
+        );
+    }
     fs::copy(env!("CARGO_BIN_EXE_sunrise-edge-cli"), &binary).unwrap();
     set_mode(&binary, 0o755);
 
     let resource = &fixture.manifest.economics_policy.resources[0].resource_id;
     let source_key = LocalSigner::from_seed(SOURCE_SEED).address();
-    let validator_key = LocalSigner::from_seed(NEW_SEED).address();
+    let validator_key = LocalSigner::from_seed(fixture.protected_validator_seed).address();
     let config = format!(
-        "chain_id={}\nprotocol_version={}\nsuite={SUITE}\ndomain={}\ngenesis_digest={}\nsource_key={}\nvalidator_key={}\nresource_domain={}\nresource_id={}\ncli_uid={cli_uid}\nbroker_uid={BROKER}\ninner_worker_uid={INNER_WORKER}\nouter_worker_uid={OUTER_WORKER}\ninner_approver_uid={INNER_APPROVER}\nouter_approver_uid={OUTER_APPROVER}\n",
+        "chain_id={}\nprotocol_version={}\nsuite={}\ndomain={}\ngenesis_digest={}\nsource_key={}\nvalidator_key={}\nresource_domain={}\nresource_id={}\ncli_uid={cli_uid}\nbroker_uid={BROKER}\ninner_worker_uid={INNER_WORKER}\nouter_worker_uid={OUTER_WORKER}\ninner_approver_uid={INNER_APPROVER}\nouter_approver_uid={OUTER_APPROVER}\n",
         fixture.context.chain_id(),
         fixture.context.protocol_version().get(),
+        fixture.protected_suite,
         hex(fixture.domain.as_bytes()),
         hex(&fixture.digest.bytes()),
         hex(source_key.as_bytes()),
@@ -2049,7 +2137,10 @@ fn protected_bond_namespace_run() {
     }
     write_seed(&private(INNER_WORKER).join("key"), SOURCE_SEED);
     write_seed(&private(INNER_WORKER).join("wrong-key"), [0x68; 32]);
-    write_seed(&private(OUTER_WORKER).join("key"), NEW_SEED);
+    write_seed(
+        &private(OUTER_WORKER).join("key"),
+        fixture.protected_validator_seed,
+    );
     fs::create_dir(private(BROKER).join("approvals")).unwrap();
     set_mode(&private(BROKER).join("approvals"), 0o700);
     for uid in [
@@ -2102,7 +2193,7 @@ fn protected_bond_namespace_run() {
         "--nonce".into(),
         "0".into(),
         "--request-id".into(),
-        hex(&REQUEST_ID),
+        hex(&fixture.protected_request_id),
         "--gas-limit".into(),
         "500000".into(),
         "--out".into(),
@@ -2136,7 +2227,7 @@ fn protected_bond_namespace_run() {
         "--predicted-row".into(),
         cli_dir.join("row").to_str().unwrap().into(),
         "--request-id".into(),
-        hex(&PROTECTED_OUTER_REQUEST_ID),
+        hex(&fixture.protected_request_id),
         "--out".into(),
         cli_dir
             .join("outer-request-initial")
@@ -2175,7 +2266,7 @@ fn protected_bond_namespace_run() {
         .unwrap();
     let inner_confirmation = format!(
         "APPROVE-ORIGINAL-BOND phase=Inner request={} key={} frame_digest={} not_after={expires}",
-        hex(&REQUEST_ID),
+        hex(&fixture.protected_request_id),
         source_key,
         inner_digest,
     );
@@ -2196,7 +2287,7 @@ fn protected_bond_namespace_run() {
     .unwrap()
     .prepare_for_public_key(
         *validator_key.as_bytes(),
-        PROTECTED_OUTER_REQUEST_ID,
+        fixture.protected_request_id,
         fixture.leg.clone(),
         fixture.row.clone(),
     )
@@ -2212,7 +2303,7 @@ fn protected_bond_namespace_run() {
         .unwrap();
     let outer_confirmation = format!(
         "APPROVE-ORIGINAL-BOND phase=Outer request={} key={} frame_digest={} not_after={expires}",
-        hex(&PROTECTED_OUTER_REQUEST_ID),
+        hex(&fixture.protected_request_id),
         validator_key,
         outer_digest,
     );
@@ -2487,7 +2578,7 @@ fn protected_bond_namespace_run() {
     assert_eq!(
         signed_registration,
         outer_prepared
-            .sign_and_finalize_with(&LocalSigner::from_seed(NEW_SEED))
+            .sign_and_finalize_with(&LocalSigner::from_seed(fixture.protected_validator_seed))
             .unwrap()
     );
     let verified = verify_signed_bond_registration(&root, &signed_registration).unwrap();
@@ -2496,7 +2587,7 @@ fn protected_bond_namespace_run() {
         verified.intent.leg,
         fs::read(cli_dir.join("signed-leg")).unwrap()
     );
-    assert_eq!(verified.intent.request_id, PROTECTED_OUTER_REQUEST_ID);
+    assert_eq!(verified.intent.request_id, fixture.protected_request_id);
     assert_eq!(verified.intent, expected_intent);
 
     // Hold a worker connection after it has received the broker's typed
@@ -2599,7 +2690,7 @@ fn protected_bond_namespace_run() {
         "--broker-socket".into(),
         broker_socket.to_str().unwrap().into(),
         "--request-id".into(),
-        hex(&REQUEST_ID),
+        hex(&fixture.protected_request_id),
     ]);
     let mut revoke_child = role_command(&binary, INNER_APPROVER, gid, &revoke)
         .stdout(Stdio::null())
@@ -2650,6 +2741,18 @@ fn protected_bond_namespace_run() {
     );
     assert!(!cli_dir.join("refused-registration").exists());
     broker.wait();
+    if std::env::var_os("SUNRISE_BOND_ORDERED_HANDOFF").is_some() {
+        let actual_leg = fs::read(cli_dir.join("signed-leg")).unwrap();
+        println!(
+            "SUNRISE_BOND_ORDERED_RESULT_V1 inner_len={} inner_sha256={} inner={} outer_len={} outer_sha256={} outer={}",
+            actual_leg.len(),
+            sha256_hex(&actual_leg),
+            hex(&actual_leg),
+            signed_registration.len(),
+            sha256_hex(&signed_registration),
+            hex(&signed_registration),
+        );
+    }
 }
 
 /// A user namespace supplies five disposable OS principals without creating
@@ -2658,6 +2761,11 @@ fn protected_bond_namespace_run() {
 #[cfg(target_os = "linux")]
 #[test]
 fn protected_original_bond_uses_two_distinct_approvers_and_workers() {
+    assert!(
+        std::env::var_os("SUNRISE_BOND_ORDERED_HANDOFF").is_none()
+            || std::env::var_os("SUNRISE_BOND_ORDERED_CLI_SHA256").is_some(),
+        "external fixture requires a pinned production CLI binary"
+    );
     if std::env::var_os("SUNRISE_BOND_BLOCKED_SOCKET").is_some() {
         blocked_bond_worker_run();
         return;
@@ -2731,11 +2839,22 @@ fn protected_original_bond_uses_two_distinct_approvers_and_workers() {
         // metadata before execing the original test binary and selector.
         namespace
             .arg("/usr/bin/env")
-            .arg("SUNRISE_BOND_UID_NAMESPACE_CHILD=1")
-            .args([
-                "/usr/bin/sh",
-                "-c",
-                r#"
+            .arg("SUNRISE_BOND_UID_NAMESPACE_CHILD=1");
+        for name in [
+            "SUNRISE_BOND_ORDERED_HANDOFF",
+            "SUNRISE_BOND_ORDERED_CLI_SHA256",
+        ] {
+            if let Some(value) = std::env::var_os(name) {
+                namespace.arg(format!(
+                    "{name}={}",
+                    value.to_str().expect("UTF-8 handoff path/hash")
+                ));
+            }
+        }
+        namespace.args([
+            "/usr/bin/sh",
+            "-c",
+            r#"
 set -u
 printf '%s\n' 'bond namespace pre-exec:' >&2
 /usr/bin/id >&2
@@ -2762,8 +2881,8 @@ if [ -x /usr/bin/findmnt ]; then
 fi
 exec "$@"
 "#,
-                "bond-namespace-preexec",
-            ]);
+            "bond-namespace-preexec",
+        ]);
     } else {
         namespace.env("SUNRISE_BOND_UID_NAMESPACE_CHILD", "1");
     }
@@ -2776,7 +2895,20 @@ exec "$@"
         ])
         .output();
     match output {
-        Ok(output) if output.status.success() => {}
+        Ok(output) if output.status.success() => {
+            if std::env::var_os("SUNRISE_BOND_ORDERED_HANDOFF").is_some() {
+                let stdout = String::from_utf8(output.stdout).unwrap();
+                let prefix = "SUNRISE_BOND_ORDERED_RESULT_V1 ";
+                assert_eq!(stdout.matches(prefix).count(), 1);
+                // libtest may print "test name ... " before a child's first
+                // --nocapture line. Emit a fresh line for the outer owner.
+                let marker = stdout
+                    .lines()
+                    .find_map(|line| line.find(prefix).map(|offset| &line[offset..]))
+                    .expect("protected child did not return signed bytes");
+                println!("\n{marker}");
+            }
+        }
         Ok(output) => panic!(
             "original bond namespace failed: status={} stdout={} stderr={}",
             output.status,
