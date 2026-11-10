@@ -19,21 +19,13 @@ provider as a protocol assumption.
 
 ## Read before changing code
 
-1. Read [`README.md`](README.md) for project orientation and setup.
-2. Use the [architecture index](docs/architecture/README.md) to read the
-   relevant subsystem and decision records.
-3. Read current completion requirements and sequencing in [`TODO.md`](TODO.md),
-   subsystem contracts in architecture, and any referenced original criteria
-   in the preserved development/history roadmap.
-4. Inspect the affected crate APIs, tests, and dependency direction.
-5. Search the workspace for existing type IDs, enum tags, hash domains, error
-   patterns, and canonical encoders before defining new ones.
-
-Keep document reads scoped: use the short architecture index to select one
-subsystem, read only its applicable decisions and the relevant TODO rows, and
-follow an E-number or historical-roadmap link only for the exact criterion in
-question. The full architecture catalog, decision register, and preserved
-execution ledger are lookup references, not default context.
+Inspect the affected [`TODO.md`](TODO.md) row, source, owning tests, and the
+relevant subsystem from the [architecture index](docs/architecture/README.md).
+Follow a decision, E-number, or historical-roadmap link only for the criterion
+at issue; the full catalogs are lookup references, not default context. Read
+[`README.md`](README.md) when project orientation is needed. For a
+protocol-critical change, also search existing type IDs, enum tags, hash
+domains, error patterns, and canonical encoders before defining new ones.
 
 `TODO.md` owns status and remaining gates, not subsystem design. The preserved
 roadmap distinguishes original binding criteria from historical observations
@@ -41,6 +33,11 @@ and aspirational examples. Existing canonical
 bytes, stable test vectors, accepted decision records, and released protocol
 behavior are compatibility constraints. Do not rewrite them merely to match an
 aspirational example.
+
+Prioritize closing an existing unchecked TODO criterion. Before adding a new
+fixture, decision record, or prerequisite, identify the criterion and its
+shortest completion path. Do not expand evidence merely because it is possible
+while an independent unmet condition still prevents completion.
 
 ## Non-negotiable architecture rules
 
@@ -182,28 +179,35 @@ task runtime must fail explicitly rather than silently fall back to system Node.
 
 ## Workflow
 
-1. Inspect `git status` and preserve unrelated user changes.
-2. Identify whether the task changes protocol behavior or only implementation.
-3. For a new phase or architecture change, update the relevant document under
-   `docs/architecture/` and add a decision record before or alongside the
-   implementation.
-4. Implement the smallest coherent change without compatibility shortcuts.
-5. Add unit, stable-vector, integration, and adversarial tests proportional to
-   the risk.
-6. Run targeted tests while iterating.
-7. Run the full required validation before handoff:
+1. Inspect `git status`, the relevant base/PR chain, and the affected TODO row;
+   preserve unrelated changes.
+2. Identify protocol, architecture, implementation, test, or documentation
+   scope. Add a dated decision record only when an architecture decision itself
+   changes. Keep applicable architecture documentation in sync with behavior.
+3. Implement the smallest coherent change and add tests proportional to its
+   risk. Extend the owning test rather than duplicating its implementation or
+   assertions. Run the owning focused checks while iterating.
+4. Select validation for the claim being made. The authoritative required,
+   full, and isolated recipes are in
+   [repository validation](docs/architecture/repository-validation.md) and
+   `scripts/ci-gates.sh` / `scripts/ci-execution.sh`; do not restate their
+   selectors here. All seven hosted required lanes and the aggregate `check`
+   are the minimum routine PR gate on the selected source. They do not by
+   themselves authorize a merge: the applicable original conditions in
+   `TODO.md` section G and the maintainer's direction still govern. A local
+   serial run is not an additional requirement for every edit or handoff.
+5. When an affected TODO acceptance or release claim explicitly requires the
+   local complete profile, run literal `npm ci --prefix adapters/cloudflare-workers`
+   and `./scripts/check-all.sh` on the final frozen source as well as its
+   separately required CI and release evidence. Do not substitute hosted CI
+   for that local result. A prior run stays tied to its exact tree; it cannot
+   qualify a later documentation commit for an M2/M7 acceptance claim.
 
-```bash
-npm ci --prefix adapters/cloudflare-workers
-./scripts/check-all.sh
-```
-
-The required storage-neutral check includes Rust formatting, full-workspace
-all-feature Clippy and nonignored all-feature tests except `runtime-postgres`,
-Cloudflare type/lint/workerd tests, Deno/Vercel/Supabase/AWS adapter checks, and
-`git diff --check`. Run the targeted command while iterating, then the complete
-script before handoff. Do not omit provider checks because a change appears to
-touch only the shared Web layer.
+Record the exact source, commands, actual results, and unrun checks. A failed,
+cancelled, skipped, partial, or ancestor-source result is not success. Do not
+start a duplicate validation while another owner runs the same source/cache/
+target. For documentation/status-only edits, review the changed text and
+relevant links. Such an edit alone does not trigger a new local serial run.
 
 PostgreSQL is an optional deployment profile, not a protocol assumption.
 DR-0172 separates its retained full integration/fault suite from ordinary
@@ -219,8 +223,8 @@ Never auto-merge those PRs. Review changelogs and compatibility impact, retain
 immutable workflow-action SHAs, and require the complete repository gate before
 accepting an update.
 
-Do not claim success if any required command was skipped or failed. Explain any
-environmental limitation precisely.
+Explain any environmental limitation precisely and keep the corresponding
+acceptance or release claim open.
 
 ## Documentation and pull requests
 
@@ -244,6 +248,6 @@ environmental limitation precisely.
 `TODO.md` is the only source of truth for current implementation status, active
 roadmap sequencing, deferred work, and completion gates; do not copy changing
 milestone status into this file or the README. Architecture documents record
-implemented behavior and accepted decisions, not the live work queue. Re-check
-`main`, the open stacked PR chain, and `TODO.md` before starting each slice,
-because repository state may have advanced since context was last loaded.
+implemented behavior and accepted decisions, not the live work queue. Before
+writing or merging, re-check the exact checkout, relevant PR chain, and TODO
+row because repository state may have advanced.

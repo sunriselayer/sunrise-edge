@@ -58,7 +58,12 @@ Every PR and main update runs these seven unconditional lanes:
 | `readiness-sqlite` | The compiled multi-process `conditional_readiness` CLI/SQLite acceptance case, moved out of `rust-tests` into its own 120-minute budget |
 | `recurring-sqlite` | The real changed-committee recurring SQLite hosts/CLI workflow through the configured withdrawal unlock, with its own 360-minute upper budget; not a benchmark or optional test |
 
-Run the same complete required set locally:
+The seven hosted lanes and aggregate `check` are the routine exact-source PR
+integration gate. They are a minimum, not merge authorization; the applicable
+original conditions in `TODO.md` section G and the maintainer's direction
+still govern. Hosted success does not assert that the serial local command
+ran. When an affected TODO acceptance or release claim requires that local
+result, run the same complete required set on the final frozen source:
 
 ```bash
 npm ci --prefix adapters/cloudflare-workers
@@ -71,6 +76,13 @@ claiming a partial PG run. Common cryptographic, paid execution, causal replay,
 Freeze/DrainSet and authority controls still run. SQLite reopen/fencing and
 real four-validator SQLite HTTP tests are not replaced by mocks. All PG targets
 still compile under full-workspace Clippy.
+
+An intermediate handoff or documentation/status-only change does not by itself
+require a local serial run. A prior run remains tied to its exact source tree;
+it cannot qualify a later documentation commit for a milestone acceptance.
+Preserve any TODO criterion that explicitly requires both local and hosted
+evidence; neither result substitutes for PG, release-runtime, or independent
+review evidence.
 
 The required workflow has no path filters or conditional/tolerated failures.
 Stable `check` runs with `always()` and accepts explicit success from exactly
