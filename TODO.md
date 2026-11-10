@@ -557,8 +557,14 @@ proof=false、期限・上限後のsocket削除とHTTP 200、fence更新後resta
 不正frame拒否の限定3件、operator listenerの限定1件が隔離環境で成功し、
 独立静的reviewもPASS（外部記録`m2-currentness-1110/codec-7b02c7d2/result.txt`）。
 復号した観測値は未認証の局所locatorであり、chain proofや現在性承認ではない。
-指定nodeとserver peerのconsumer側固定、CLI・両承認者・broker・鍵workerの署名前再照合、
-内容承認への観測結合、完全required・CI・release資格は未達であり、親M2は未完了のまま。
+`50338c2a`ではCLIの私有optional node設定をcomplete-or-refuseで追加し、
+socket・server UID・元validator・正確なstore namespaceとverified genesis由来の
+chain/domain/committee/anchorを照合する単一clientを実装した。peer UIDの送信前確認、
+有限時間のframe/EOF、先行観測の全token/tip一致と拒否を限定7テストで確認した
+（外部記録`m2-currentness-1110/client-46256109/terminal-release.txt`）。
+このclientはまだ呼び出されない。CLI・両承認者・broker・鍵workerの署名前再照合、
+内容承認への観測結合、実hostとの結合、完全required・CI・release資格は未達であり、
+親M2は未完了のまま。
 
 FinalTransferの既存codec・prepared consumer・review表示・development signer・
 positive Splitとの権限分離を[署名経路マップ](docs/architecture/signing-route-test-map.md#finaltransfer-within-the-prepared-fee-claim-owner)へ対応付けた。
