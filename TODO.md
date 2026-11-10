@@ -546,9 +546,14 @@ original bondの初期releaseでは、人が[DR-0292](docs/architecture/decision
 隔離環境の限定5テストはpeer UIDの本文前拒否、Coin/tip観測、古いfence、
 同じsocket pathでのrestart、設定・確認フラグの拒否を確認した
 （外部記録`m2-currentness-1110/listener-d4db/result.txt`）。
-実別UIDのhost/socket接続、指定nodeとserver peerのconsumer側固定、CLI・両承認者・
-broker・鍵workerの署名前再照合、内容承認への観測結合、完全required・CI・release資格は
-未達であり、親M2は未完了のまま。
+`e6ba7490`ではlistenerの期限・接続上限後にbond照会だけを閉じ、通常HTTPを
+継続するよう修正した。隔離Dockerの元compiled host UID12001と許可client UID12002、
+同groupの拒否UID12003で元ignored selector 1/1が成功。実Coin/token/tip、
+proof=false、期限・上限後のsocket削除とHTTP 200、fence更新後restart、
+実EOF/wait/reap・container解放を確認した
+（外部記録`m2-currentness-1110/multiuid-a0aa/result.txt`）。
+指定nodeとserver peerのconsumer側固定、CLI・両承認者・broker・鍵workerの署名前再照合、
+内容承認への観測結合、完全required・CI・release資格は未達であり、親M2は未完了のまま。
 
 FinalTransferの既存codec・prepared consumer・review表示・development signer・
 positive Splitとの権限分離を[署名経路マップ](docs/architecture/signing-route-test-map.md#finaltransfer-within-the-prepared-fee-claim-owner)へ対応付けた。
