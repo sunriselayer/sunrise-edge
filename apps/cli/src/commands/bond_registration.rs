@@ -354,6 +354,7 @@ fn check_original_inner_semantics(
         nonce: signed_leg.intent.call.nonce,
         request_id: RequestId::new(signed_leg.intent.call.request_id).map_err(failure)?,
         gas_limit: signed_leg.intent.call.gas_limit,
+        local_observation: None,
     };
     let inner: PreparedBondInner = trust.prepare(&request)?;
     if inner.prepared.intent() != &signed_leg.intent

@@ -4,8 +4,10 @@
 //!
 //! This crate owns the exact canonical HTTP/query-result frames and the
 //! route/media-type constants shared between the `native-http` server
-//! adapter and `clients/rust`. Its defining core, execution, consensus and
-//! foundational protocol dependencies remain explicit — never Axum, Tokio,
+//! adapter and `clients/rust`. One narrow original-bond local Unix IPC frame
+//! also lives here; decoding it grants no storage authority. Its defining
+//! core, execution, consensus and foundational protocol dependencies remain
+//! explicit — never Axum, Tokio,
 //! or any transport implementation. Routing, admission, clocks, storage authority, and HTTP
 //! status classification remain server concerns in `native-http`.
 //! Pure node event/response/dedup framing and nested lists belong to
@@ -13,8 +15,8 @@
 //! Outer binding and single-acknowledgement views verify syntax only, never
 //! application success, authorization or inclusion.
 //!
-//! `native-http` re-exports every name in this crate's public API so
-//! existing server callers keep their original import paths; the bytes
+//! `native-http` re-exports the preexisting HTTP API names so existing server
+//! callers keep their original import paths; the bytes
 //! produced and accepted here are unchanged from their prior `native-http`
 //! definitions.
 
@@ -25,6 +27,7 @@ pub mod fastvote_retained_publication;
 pub mod fee_claims;
 pub mod ordered_economics;
 pub mod ordered_history;
+pub mod original_bond_currentness;
 
 pub use fastvote_drain::{
     DRAIN_MEMBER_APPLY_REQUEST_TYPE_ID, DRAIN_MEMBER_CONFIRM_REQUEST_TYPE_ID,

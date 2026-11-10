@@ -2,6 +2,7 @@
 //! This module constructs an exact local frame and review; it never approves,
 //! signs, sends a request to custody, or treats a caller object as live state.
 
+use node_wire::original_bond_currentness::OriginalBondLocalObservationFrame;
 use protocol_types::HashPurpose;
 use public_standard_asset::{SCHEMA_VERSION, coin_amount, coin_type_tag, transfer_arguments};
 use sunrise_edge_client::local_execution::{
@@ -21,7 +22,7 @@ use sunrise_edge_client::{
 use super::asset_trust::PinnedAssetTrust;
 use crate::{error::CliError, hex::encode_hex};
 
-const MAX_REVIEW_BYTES: usize = 64 * 1024;
+pub(super) const MAX_REVIEW_BYTES: usize = 64 * 1024;
 
 fn failure(error: impl std::error::Error + Send + Sync + 'static) -> CliError {
     CliError::LocalExecution(Box::new(error))
@@ -44,6 +45,9 @@ pub(crate) struct BondInnerRequest {
     pub(crate) nonce: u64,
     pub(crate) request_id: RequestId,
     pub(crate) gas_limit: u64,
+    /// Untrusted syntax-only locator carried by v2 requests. It cannot
+    /// authorize an approval or a signature without a fresh node requery.
+    pub(crate) local_observation: Option<OriginalBondLocalObservationFrame>,
 }
 
 pub(crate) struct PreparedBondInner {
@@ -51,6 +55,7 @@ pub(crate) struct PreparedBondInner {
     pub(crate) review: String,
     pub(crate) predicted_ref: ObjectRef,
     pub(crate) amount: u64,
+    pub(crate) source_ref: ObjectRef,
 }
 
 /// Immutable original root and its independently rebuilt known-code trust.
@@ -293,6 +298,7 @@ impl BondInnerTrust {
             review,
             predicted_ref: predicted,
             amount,
+            source_ref: source,
         })
     }
 }

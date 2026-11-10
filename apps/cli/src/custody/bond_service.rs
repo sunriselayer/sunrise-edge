@@ -313,7 +313,7 @@ async fn handle_connection(
                         .await
                     }
                     Ok(message) => {
-                        handle_broker_message(trust, approvals_dir, observed_uid, message)
+                        handle_broker_message(trust, approvals_dir, observed_uid, message).await
                     }
                     Err(_) => Reply::Refused,
                 }
@@ -330,19 +330,21 @@ async fn handle_connection(
     // until this write and close complete. The final authorization sample
     // immediately before emission is the expiry decision; the write/close
     // is the sign/revoke ordering point. No delivery-time claim is made.
-    let store_intact = !store_lock.is_some_and(|lock| lock.check().is_err());
-    let release_authorized = store_intact
+    let release_authorized = !store_lock.is_some_and(|lock| lock.check().is_err())
         && match (mode, &reply) {
             (ServiceMode::Broker { approvals_dir, .. }, Reply::Signed(_)) => {
                 match bond_wire::decode_broker_message(&body) {
                     Ok(BrokerMessage::Sign { request, .. }) => {
-                        authorized_content(trust, approvals_dir, &request).is_ok()
+                        authorized_content(trust, approvals_dir, &request)
+                            .await
+                            .is_ok()
                     }
                     _ => false,
                 }
             }
             _ => true,
-        };
+        }
+        && !store_lock.is_some_and(|lock| lock.check().is_err());
     let reply = if !release_authorized {
         Reply::Refused
     } else {
@@ -362,89 +364,100 @@ async fn handle_connection(
     accepted
 }
 
-fn authorized_content(
+async fn authorized_content(
     trust: &BondTrust,
     dir: &Path,
     request: &BondRequest,
 ) -> Result<BondApprovalContent, CliError> {
     let prepared = trust.prepare(request)?;
-    let content = prepared.content;
+    let content = &prepared.content;
     let inner_content = if let BondRequest::Outer { inner, .. } = request {
         let inner_request = BondRequest::Inner(inner.clone());
         Some(trust.prepare(&inner_request)?.content)
     } else {
         None
     };
+    prepared.requery_async(trust, request).await?;
+    // Sample approval expiry after the potentially slow node round trip.
+    // The broker's final call to this function is immediately before reply
+    // emission, while its serial loop still excludes a revoke request.
     bond_approvals::authorize_for_sign(
         dir,
-        &content,
+        content,
         inner_content.as_ref(),
         trust.config().inner_approver_uid(),
         trust.config().outer_approver_uid(),
         now().map_err(failure)?,
     )
     .map_err(failure)?;
-    Ok(content)
+    Ok(prepared.content)
 }
 
-fn handle_broker_message(
+async fn handle_broker_message(
     trust: &BondTrust,
     dir: &Path,
     observed_uid: u32,
     message: BrokerMessage,
 ) -> Reply {
-    let result: Result<(), CliError> = (|| match message {
-        BrokerMessage::Approve {
-            request,
-            not_after,
-            config,
-        } => {
-            if config != trust.config().raw_bytes() {
-                return Err(invalid("bond approval role config differs from broker pin"));
-            }
-            let expected_uid = match request.phase() {
-                BondPhase::Inner => trust.config().inner_approver_uid(),
-                BondPhase::Outer => trust.config().outer_approver_uid(),
-            };
-            if observed_uid != expected_uid {
-                return Err(invalid("bond approval peer has the wrong phase role"));
-            }
-            let prepared = trust.prepare(&request)?;
-            if let BondRequest::Outer { inner, .. } = &request {
-                let inner_content = trust.prepare(&BondRequest::Inner(inner.clone()))?.content;
-                bond_approvals::authorize(
+    let result: Result<(), CliError> = async {
+        match message {
+            BrokerMessage::Approve {
+                request,
+                not_after,
+                config,
+            } => {
+                if config != trust.config().raw_bytes() {
+                    return Err(invalid("bond approval role config differs from broker pin"));
+                }
+                let expected_uid = match request.phase() {
+                    BondPhase::Inner => trust.config().inner_approver_uid(),
+                    BondPhase::Outer => trust.config().outer_approver_uid(),
+                };
+                if observed_uid != expected_uid {
+                    return Err(invalid("bond approval peer has the wrong phase role"));
+                }
+                let prepared = trust.prepare(&request)?;
+                // Requery before sampling any expiry: the inner approval and
+                // the new record must both be checked after the potentially
+                // slow node round trip, never against an earlier sample.
+                prepared.requery_async(trust, &request).await?;
+                if let BondRequest::Outer { inner, .. } = &request {
+                    let inner_content = trust.prepare(&BondRequest::Inner(inner.clone()))?.content;
+                    bond_approvals::authorize(
+                        dir,
+                        &inner_content,
+                        trust.config().inner_approver_uid(),
+                        now().map_err(failure)?,
+                    )
+                    .map_err(failure)?;
+                }
+                bond_approvals::write(
                     dir,
-                    &inner_content,
-                    trust.config().inner_approver_uid(),
+                    &prepared.content,
+                    observed_uid,
+                    not_after,
                     now().map_err(failure)?,
                 )
-                .map_err(failure)?;
+                .map_err(failure)
             }
-            bond_approvals::write(
-                dir,
-                &prepared.content,
-                observed_uid,
-                not_after,
-                now().map_err(failure)?,
-            )
-            .map_err(failure)
-        }
-        // Check is accepted only as the response to a broker-initiated
-        // worker request on that same authenticated Unix connection.
-        BrokerMessage::Check { .. } | BrokerMessage::Sign { .. } => {
-            Err(invalid("bond broker message has the wrong connection role"))
-        }
-        BrokerMessage::Revoke { phase, request_id } => {
-            let expected_uid = match phase {
-                BondPhase::Inner => trust.config().inner_approver_uid(),
-                BondPhase::Outer => trust.config().outer_approver_uid(),
-            };
-            if observed_uid != expected_uid {
-                return Err(invalid("bond revocation peer has the wrong phase role"));
+            // Check is accepted only as the response to a broker-initiated
+            // worker request on that same authenticated Unix connection.
+            BrokerMessage::Check { .. } | BrokerMessage::Sign { .. } => {
+                Err(invalid("bond broker message has the wrong connection role"))
             }
-            bond_approvals::revoke(dir, &request_id).map_err(failure)
+            BrokerMessage::Revoke { phase, request_id } => {
+                let expected_uid = match phase {
+                    BondPhase::Inner => trust.config().inner_approver_uid(),
+                    BondPhase::Outer => trust.config().outer_approver_uid(),
+                };
+                if observed_uid != expected_uid {
+                    return Err(invalid("bond revocation peer has the wrong phase role"));
+                }
+                bond_approvals::revoke(dir, &request_id).map_err(failure)
+            }
         }
-    })();
+    }
+    .await;
     if result.is_ok() {
         Reply::Approved
     } else {
@@ -467,6 +480,9 @@ async fn handle_worker_request(
         if signer.address() != prepared.content.expected_key {
             return Err(invalid("bond worker signer mismatch"));
         }
+        // Requery first so the broker's expiry/revocation check is the last
+        // authorization decision before the protected key signs.
+        let permit = prepared.requery_async(trust, request).await?;
         let challenge = BrokerMessage::Check {
             request: request.clone(),
             config: trust.config().raw_bytes().to_vec(),
@@ -478,7 +494,7 @@ async fn handle_worker_request(
         if bond_wire::decode_reply(&answer).map_err(failure)? != Reply::Approved {
             return Err(invalid("bond broker refused worker approval challenge"));
         }
-        let signature = prepared.sign_with(signer)?;
+        let signature = prepared.sign_with(signer, permit)?;
         Ok(signature)
     }
     .await;
@@ -515,7 +531,7 @@ async fn broker_sign(
                 "bond signing caller or role config differs from pin",
             ));
         }
-        authorized_content(trust, dir, &request)?;
+        authorized_content(trust, dir, &request).await?;
         let prepared = trust.prepare(&request)?;
         let (socket, worker_uid) = match request.phase() {
             BondPhase::Inner => (inner_worker_socket, trust.config().inner_worker_uid()),
@@ -541,7 +557,7 @@ async fn broker_sign(
                 ));
             }
         }
-        authorized_content(trust, dir, &request)?;
+        authorized_content(trust, dir, &request).await?;
         worker
             .write_all(&bond_wire::encode_reply(&Reply::Approved))
             .await
@@ -558,7 +574,8 @@ async fn broker_sign(
         };
         // Verify the returned signature with the owner's exact prepared
         // operation. The caller reauthorizes at the emission point.
-        prepared.finalize(signature.to_vec())?;
+        let permit = prepared.requery_async(trust, &request).await?;
+        prepared.finalize(signature.to_vec(), permit)?;
         Ok(signature)
     }
     .await;

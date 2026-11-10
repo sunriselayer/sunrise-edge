@@ -176,6 +176,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
         )?)
         .map_err(failure)?,
         gas_limit: parse_u64("--gas-limit", parsed.require("--gas-limit")?)?,
+        local_observation: None,
     };
     let root = load_verified_genesis_root(
         Path::new(manifest_path),

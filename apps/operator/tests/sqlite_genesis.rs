@@ -95,7 +95,6 @@ use sunrise_edge_operator::business_snapshot::capture_source_business_snapshot;
 use sunrise_edge_operator::host_runtime::{
     fast_path_committee_matches, require_committed_genesis_fee_policy,
 };
-
 struct Built {
     directory: Directory,
     network: genesis_fixture::FastVoteGenesisFixture,

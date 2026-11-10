@@ -532,9 +532,49 @@ committed ACK各2件を保持した。PR #359はmerge commit `d4264777`でmain�
 独立静的reviewはPASS。限定R5は結合1/1、通常CLI 1/1、pinなしbaseline 1/1が成功し、
 不完全pinは期待どおり拒否された。失敗したR1/R2と修正前R3/R4の証跡は別に保全する。
 外部終端記録は`m2-bond-handoff-focused-1110/ordered-handoff-final-focused-terminal-audit.json`。
-結合の最終source完全required/全8 CIはPR #360の終端証跡で別途採否を確認し、
-それまでは成功に数えない。運用上の署名前source現行性、実承認者・鍵のenrollment、
-親M2/M7・release資格は引き続き未達。
+最終source `8827a7b7` / tree `643c42ec` のliteral npm ci・完全required R2は
+exit 0、実EOF/wait/reap・source/tool不変・unit/PID/cgroup/一時領域解放まで独立照合した。
+元recurring selector各1/1、7 epochとe8の異なる1832-byte候補2件・committed ACK各2件も確認した
+（外部記録`bond-handoff-final-8827a7b7-1110/required-inert-r2/required-bond-handoff-r2-unit/unit-terminal.json`）。
+同headの全8 hosted CIも成功し、PR #360はmerge commit `a023cb94`でmainへ統合した。
+この証拠はテスト専用結合のsource資格であり、運用上の署名前source現行性、
+実承認者・鍵のenrollment、親M2/M7・release資格は引き続き未達。
+
+original bondの初期releaseでは、人が[DR-0292](docs/architecture/decisions/0292-original-bond-trusted-local-currentness.md) の
+指定ローカルserving nodeを信頼境界に選択した。chain-state proofとは呼ばない。
+`cbcd82ad`で同一store・fenceからの局所観測に使う読み取り専用primitiveを追加し、
+公開constructorを閉じた。隔離環境の限定3テストはCurrentInlineの一致・拒否、
+実SQLiteのgenesis Coin、誤validator・古いfence、token中の書込み/変更を確認した
+（外部記録`m2-currentness-1110/opaque-fix-49cc/result.txt`）。`746c0734`では
+元ホストのfence取得後、同一storeを使うopt-in認証付きUnix照会口へ接続した。
+隔離環境の限定5テストはpeer UIDの本文前拒否、Coin/tip観測、古いfence、
+同じsocket pathでのrestart、設定・確認フラグの拒否を確認した
+（外部記録`m2-currentness-1110/listener-d4db/result.txt`）。
+`e6ba7490`ではlistenerの期限・接続上限後にbond照会だけを閉じ、通常HTTPを
+継続するよう修正した。隔離Dockerの元compiled host UID12001と許可client UID12002、
+同groupの拒否UID12003で元ignored selector 1/1が成功。実Coin/token/tip、
+proof=false、期限・上限後のsocket削除とHTTP 200、fence更新後restart、
+実EOF/wait/reap・container解放を確認した
+（外部記録`m2-currentness-1110/multiuid-a0aa/result.txt`）。
+`fccd23a9`では局所観測の要求・応答codecを`node-wire`へ一元化し、既存listenerを
+同じcodecへ移した。変更前の154-byte要求・405-byte応答と独立照合した固定vector、
+不正frame拒否の限定3件、operator listenerの限定1件が隔離環境で成功し、
+独立静的reviewもPASS（外部記録`m2-currentness-1110/codec-7b02c7d2/result.txt`）。
+復号した観測値は未認証の局所locatorであり、chain proofや現在性承認ではない。
+`50338c2a`ではCLIの私有optional node設定をcomplete-or-refuseで追加し、
+socket・server UID・元validator・正確なstore namespaceとverified genesis由来の
+chain/domain/committee/anchorを照合する単一clientを実装した。peer UIDの送信前確認、
+有限時間のframe/EOF、先行観測の全token/tip一致と拒否を限定7テストで確認した
+（外部記録`m2-currentness-1110/client-46256109/terminal-release.txt`）。
+このclientはPR #361時点では呼び出されず、単独で現在性を保証しない。
+後続[PR #362](https://github.com/sunriselayer/sunrise-edge/pull/362)ではrequest v2へ正規locatorを結び、
+CLI両承認者の確認前後、brokerの承認記録・challenge・署名返却前と鍵workerの署名前に
+独立再照会を接続した。期限は再照会後に確認し、v1のpinなし経路とsignable frameを維持する。
+既存bond multi-UID ownerにsynthetic nodeの通し経路、直接broker/worker拒否、
+変更fence拒否を追加し、別UIDが実行する同じtest harnessを検証付きで一時領域へコピーする。
+独立静的reviewは順序修正とcopyまでPASS。実行テスト・完全required・同head CI、
+実hostと保護署名を結ぶ検証、実承認者・鍵のenrollment、release資格は未達。
+synthetic nodeをchain proofや実hostの現在性証拠にせず、親M2は未完了のまま。
 
 FinalTransferの既存codec・prepared consumer・review表示・development signer・
 positive Splitとの権限分離を[署名経路マップ](docs/architecture/signing-route-test-map.md#finaltransfer-within-the-prepared-fee-claim-owner)へ対応付けた。

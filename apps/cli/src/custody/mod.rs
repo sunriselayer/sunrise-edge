@@ -81,6 +81,8 @@ mod asset_wire;
 mod bond_approvals;
 mod bond_commands;
 mod bond_config;
+#[allow(dead_code)] // Prepared but not connected to approval/signing decisions yet.
+mod bond_currentness;
 pub(crate) mod bond_inner;
 mod bond_policy;
 mod bond_service;
