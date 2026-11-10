@@ -61,7 +61,9 @@ bounded request, performs one read-only query at a time, joins any in-flight
 query at stop, and removes its exact owned socket before the host terminal
 record. The response carries the full local token, applied ordered tip, exact
 Coin reference and `chain_state_proof=false`. Exhaustion or listener failure
-stops the host rather than silently continuing HTTP service.
+closes and unlinks this optional route, reports bond currentness unavailable,
+and leaves ordinary HTTP service running. Any bond signing flow must refuse
+while this route is unavailable; the HTTP host does not imply currentness.
 
 The existing loopback HTTP route and outbound diagnostics socket are not this
 admission boundary. There is no bond CLI, broker, content-approver or protected

@@ -213,7 +213,7 @@ pub(in crate::sqlite_source_host) async fn serve(
             return Ok(());
         }
         if connections >= config.max_connections || requests >= config.max_requests {
-            return Err(refused()); // quota exhaustion closes the owning host.
+            return Err(refused()); // quota exhaustion closes only this route.
         }
         let accepted = tokio::select! {
             biased;

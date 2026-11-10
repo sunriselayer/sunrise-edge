@@ -505,13 +505,9 @@ fn run_original(tokens: Vec<OsString>, worker: Option<WorkerMode>) -> Result<(),
             #[cfg(target_os = "linux")]
             if let Some((config, reader, owner, socket)) = bond_listener {
                 let (socket_stop, socket_stop_receiver) = tokio::sync::watch::channel(false);
-                let (socket_done, mut socket_done_receiver) = tokio::sync::watch::channel(false);
                 let shutdown_stop = socket_stop.clone();
                 let http_shutdown = async move {
-                    tokio::select! {
-                        _ = shutdown => {},
-                        _ = socket_done_receiver.changed() => {},
-                    }
+                    shutdown.await;
                     let _ = shutdown_stop.send(true);
                 };
                 let http = async {
@@ -532,14 +528,17 @@ fn run_original(tokens: Vec<OsString>, worker: Option<WorkerMode>) -> Result<(),
                     let result = currentness::listener::serve(
                         socket, reader, validator, config, socket_stop_receiver,
                     ).await;
-                    let _ = socket_done.send(true);
-                    result
+                    // The socket owner unlinks its exact inode immediately
+                    // after admissions and the in-flight query drain. A
+                    // refused/exhausted optional observation route degrades
+                    // bond currentness, not the ordinary HTTP host.
+                    let closed = owner.close();
+                    if result.is_err() || closed.is_err() {
+                        eprintln!("bond_currentness_unavailable=true");
+                    }
                 };
-                let (http_result, local_result) = tokio::join!(http, local);
-                let close_result = owner.close();
-                http_result?;
-                local_result?;
-                return close_result;
+                let (http_result, ()) = tokio::join!(http, local);
+                return http_result;
             }
             match tls {
                 None => native_http::serve_with_stream_upgrade_observed(
