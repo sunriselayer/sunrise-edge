@@ -2,7 +2,7 @@
 
 Date: 2026-11-09 (Asia/Singapore)
 
-Status: Selected boundary; implementation and qualification pending.
+Status: Selected boundary; development implementation committed, qualification pending.
 
 Later scope note (2026-11-09): [DR-0291](0291-original-bond-inner-standard-asset-profile.md)
 selects the first original-genesis inner transfer and source-owner key
@@ -61,3 +61,13 @@ approvals, wrong-key/content/role refusal, restart and revocation, and actual
 registration effects without reducing the seven-epoch/e8 successor selector.
 Record exact-source required and CI results in TODO. This selection closes no
 M2 or release checkbox.
+
+## Later implementation note (2026-11-10)
+
+The original-genesis fixture now connects the outer validator key to its own
+UID-isolated worker through a typed approval broker. It verifies the signed
+inner leg and the exact prepared registration frame, requires separate inner
+and outer approver UIDs, and refuses changed, expired or revoked content.
+This does not extend protected signing to successor bonds. The fixture does
+not enroll actual people or keys, execute ordered effects, or qualify a release;
+the exact-source full required and CI gates remain open.

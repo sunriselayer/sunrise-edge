@@ -13,6 +13,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "linux")]
+use std::{
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    process::{Child, Stdio},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 use abi::{AccessEntry, AccessManifest};
 use crypto::SignatureSigner;
 use execution::{
@@ -32,10 +39,14 @@ use node_core::{
 };
 use objects::{Object, ObjectRef, Owner, ProtocolCustodyPurpose, ProtocolCustodyScope};
 use protocol_types::HashPurpose;
+use runtime::{DurableObjectVersion, ObjectHeadRevision};
 use sunrise_edge_client::{
-    AccessMode, AtomicityDomainId, ChainId, CommitmentProfile, Digest32, Epoch, HashAlgorithmId,
-    HashSuite, HashSuiteId, HashSuiteResolver, HashSuiteSchedule, LocalSigner, ProtocolVersion,
-    PublicationContext, SignatureSchemeId, ValidatorId, VerifiedGenesisRoot,
+    AccessMode, AtomicityDomainId, ChainId, CommitmentProfile, Digest32,
+    ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
+    ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID, Epoch, HashAlgorithmId,
+    HashSuite, HashSuiteId, HashSuiteResolver, HashSuiteSchedule, HttpContextQueryResult,
+    HttpObjectQueryResult, LocalSigner, ProtocolVersion, PublicationContext,
+    QUERY_RESULT_MEDIA_TYPE, SignatureSchemeId, ValidatorId, VerifiedGenesisRoot,
     bond_registration::{
         BondRegistrationContext, FastPathBondRecord, LocalBondRegistrationError,
         MAX_BOND_REGISTRATION_ROW_BYTES, MAX_LOCAL_EXECUTION_INTENT_BYTES,
@@ -62,6 +73,10 @@ const SOURCE_SEED: [u8; 32] = [0x67; 32];
 #[path = "../../../clients/rust/tests/support/external_signer.rs"]
 mod external_signer;
 const REQUEST_ID: [u8; 32] = [0x86; 32];
+#[cfg(target_os = "linux")]
+// The original registration owner requires the signed leg and outer claim to
+// carry one operation request ID; the two approval records remain phase keyed.
+const PROTECTED_OUTER_REQUEST_ID: [u8; 32] = REQUEST_ID;
 const SUITE: &str = "0:23:2:2:2:2:2:2";
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 
@@ -480,6 +495,8 @@ fn original_inner_preview_rebuilds_the_existing_whole_coin_leg_without_signing()
         "profile=original-genesis-standard-asset-bond-inner\nauthorizing=false\nsigned=false\nexecuted=false\n"
     ));
     assert!(stdout.contains("source_snapshot_unverified=true\n"));
+    assert!(stdout.contains("source_endpoint_current_inline_checked=false\n"));
+    assert!(stdout.contains("source_current_query_chain_proof=false\n"));
     assert!(stdout.contains("code_revision=1\n"));
     assert!(stdout.contains("code_dependencies=none\nentrypoint=transfer\n"));
     assert!(stdout.contains(&format!("amount={}\n", fixture.row.amount)));
@@ -519,6 +536,254 @@ fn original_inner_preview_rebuilds_the_existing_whole_coin_leg_without_signing()
     after.sort();
     assert_eq!(before, after);
     assert!(!Path::new(&fixture.path("signed")).exists());
+}
+
+fn bond_query_context(fixture: &Fixture) -> Vec<u8> {
+    HttpContextQueryResult::new(
+        fixture.context.chain_id().clone(),
+        fixture.context.protocol_version(),
+        fixture.context.epoch(),
+        HashSuiteId::new(23),
+        ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
+        SignatureSchemeId::Ed25519.as_u16(),
+        ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
+        fixture.domain,
+        vec![1],
+    )
+    .unwrap()
+    .encode()
+    .unwrap()
+}
+
+fn bond_query_source(fixture: &Fixture) -> Vec<u8> {
+    let bytes = fs::read(fixture.path("source-coin")).unwrap();
+    let object = objects::decode_object(&bytes).unwrap();
+    HttpObjectQueryResult::CurrentInline {
+        object_id: object.id,
+        head_revision: ObjectHeadRevision::new(1).unwrap(),
+        object_version: DurableObjectVersion::new(object.version).unwrap(),
+        digest: object_ref(&fixture.resolver, &object, fixture.context.epoch()).digest,
+        creating_chain_id: fixture.context.chain_id().clone(),
+        creating_protocol_version: fixture.context.protocol_version(),
+        canonical_object_bytes: bytes,
+    }
+    .encode()
+    .unwrap()
+}
+
+fn source_query_probe(
+    responses: Vec<Vec<u8>>,
+) -> (SocketAddr, JoinHandle<Result<Vec<ObservedRequest>, String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let worker = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut requests = Vec::new();
+        for response in responses {
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(pair) => break pair,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => return Err(format!("query accept: {error}")),
+                }
+            };
+            requests.push(read_request(&mut stream)?);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {QUERY_RESULT_MEDIA_TYPE}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response.len()
+            );
+            stream
+                .write_all(header.as_bytes())
+                .and_then(|()| stream.write_all(&response))
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(requests)
+    });
+    (address, worker)
+}
+
+#[test]
+fn original_inner_preview_checks_endpoint_reported_current_source_without_authority() {
+    let fixture = Fixture::new();
+    fs::remove_file(fixture.path("seed")).unwrap();
+    let source = objects::decode_object(&fs::read(fixture.path("source-coin")).unwrap()).unwrap();
+    let (endpoint, worker) = source_query_probe(vec![
+        bond_query_context(&fixture),
+        bond_query_source(&fixture),
+    ]);
+    let mut args = fixture.inner_preview_args();
+    args.extend([
+        "--endpoint".into(),
+        endpoint.to_string(),
+        "--source-object-id".into(),
+        hex(source.id.as_bytes()),
+    ]);
+    let output = run(&args);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("source_endpoint_current_inline_checked=true\n"));
+    assert!(stdout.contains("source_snapshot_unverified=true\n"));
+    assert!(stdout.contains("source_current_query_chain_proof=false\n"));
+    assert!(stdout.contains("authorizing=false\nsigned=false\nexecuted=false\n"));
+    assert!(!Path::new(&fixture.path("signed")).exists());
+    let requests = worker.join().unwrap().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        (requests[0].method.as_str(), requests[0].path.as_str()),
+        ("GET", "/v1/context")
+    );
+    assert_eq!(requests[1].method, "GET");
+    assert_eq!(
+        requests[1].path,
+        format!("/v1/objects/{}", hex(source.id.as_bytes()))
+    );
+}
+
+#[test]
+fn original_inner_preview_refuses_changed_or_unverifiable_current_source() {
+    let fixture = Fixture::new();
+    let original = fs::read(fixture.path("source-coin")).unwrap();
+    let source = objects::decode_object(&original).unwrap();
+    let base_args = {
+        let mut args = fixture.inner_preview_args();
+        args.extend([
+            "--endpoint".into(),
+            "127.0.0.1:1".into(),
+            "--source-object-id".into(),
+            hex(source.id.as_bytes()),
+        ]);
+        args
+    };
+    let (endpoint, worker) = source_query_probe(vec![
+        bond_query_context(&fixture),
+        HttpObjectQueryResult::Absent {
+            object_id: source.id,
+        }
+        .encode()
+        .unwrap(),
+    ]);
+    let mut args = base_args.clone();
+    replace(&mut args, "--endpoint", endpoint.to_string());
+    refuse(&run(&args));
+    worker.join().unwrap().unwrap();
+
+    let invalid_context = HttpContextQueryResult::new(
+        ChainId::new("another-chain").unwrap(),
+        fixture.context.protocol_version(),
+        fixture.context.epoch(),
+        HashSuiteId::new(23),
+        ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
+        SignatureSchemeId::Ed25519.as_u16(),
+        ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
+        fixture.domain,
+        vec![1],
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+    let (endpoint, worker) = source_query_probe(vec![invalid_context]);
+    let mut args = base_args.clone();
+    replace(&mut args, "--endpoint", endpoint.to_string());
+    refuse(&run(&args));
+    assert_eq!(worker.join().unwrap().unwrap().len(), 1);
+
+    let wrong_digest = HttpObjectQueryResult::CurrentInline {
+        object_id: source.id,
+        head_revision: ObjectHeadRevision::new(1).unwrap(),
+        object_version: DurableObjectVersion::new(source.version).unwrap(),
+        digest: Digest32::new(HashAlgorithmId::Sha3_256, [0xAA; 32]),
+        creating_chain_id: fixture.context.chain_id().clone(),
+        creating_protocol_version: fixture.context.protocol_version(),
+        canonical_object_bytes: original.clone(),
+    }
+    .encode()
+    .unwrap();
+    let (endpoint, worker) = source_query_probe(vec![bond_query_context(&fixture), wrong_digest]);
+    let mut args = base_args.clone();
+    replace(&mut args, "--endpoint", endpoint.to_string());
+    refuse(&run(&args));
+    worker.join().unwrap().unwrap();
+
+    // A self-consistent body digest for another chain still cannot become
+    // this original-genesis bond source's reviewed access reference.
+    let foreign_chain = ChainId::new("another-chain").unwrap();
+    let foreign_resolver = HashSuiteResolver::new(
+        foreign_chain.clone(),
+        fixture.context.protocol_version(),
+        vec![HashSuiteSchedule {
+            activation_epoch: fixture.context.epoch(),
+            suite: fixture
+                .resolver
+                .suite_for_epoch(fixture.context.epoch())
+                .unwrap()
+                .clone(),
+        }],
+    )
+    .unwrap();
+    let foreign_provenance = HttpObjectQueryResult::CurrentInline {
+        object_id: source.id,
+        head_revision: ObjectHeadRevision::new(1).unwrap(),
+        object_version: DurableObjectVersion::new(source.version).unwrap(),
+        digest: foreign_resolver
+            .hash_for_purpose(fixture.context.epoch(), HashPurpose::Object, &original)
+            .unwrap(),
+        creating_chain_id: foreign_chain,
+        creating_protocol_version: fixture.context.protocol_version(),
+        canonical_object_bytes: original.clone(),
+    }
+    .encode()
+    .unwrap();
+    let (endpoint, worker) =
+        source_query_probe(vec![bond_query_context(&fixture), foreign_provenance]);
+    let mut args = base_args.clone();
+    replace(&mut args, "--endpoint", endpoint.to_string());
+    refuse(&run(&args));
+    worker.join().unwrap().unwrap();
+
+    let mut changed = source.clone();
+    changed.version += 1;
+    fs::write(
+        fixture.path("source-coin"),
+        objects::encode_object(&changed).unwrap(),
+    )
+    .unwrap();
+    let (endpoint, worker) = source_query_probe(vec![bond_query_context(&fixture), {
+        // The endpoint still reports the original source snapshot.
+        HttpObjectQueryResult::CurrentInline {
+            object_id: source.id,
+            head_revision: ObjectHeadRevision::new(1).unwrap(),
+            object_version: DurableObjectVersion::new(source.version).unwrap(),
+            digest: object_ref(&fixture.resolver, &source, fixture.context.epoch()).digest,
+            creating_chain_id: fixture.context.chain_id().clone(),
+            creating_protocol_version: fixture.context.protocol_version(),
+            canonical_object_bytes: original.clone(),
+        }
+        .encode()
+        .unwrap()
+    }]);
+    let mut args = base_args.clone();
+    replace(&mut args, "--endpoint", endpoint.to_string());
+    refuse(&run(&args));
+    worker.join().unwrap().unwrap();
+    for incomplete in [
+        vec!["--endpoint".into(), "127.0.0.1:1".into()],
+        vec!["--source-object-id".into(), hex(source.id.as_bytes())],
+        vec!["--tls-server-name".into(), "example.invalid".into()],
+    ] {
+        let mut args = fixture.inner_preview_args();
+        args.extend(incomplete);
+        refuse(&run(&args));
+    }
 }
 
 #[test]
@@ -677,6 +942,64 @@ fn seed_free_preview_recomputes_exact_original_content_without_output() {
         .collect();
     after.sort();
     assert_eq!(before, after);
+    assert!(!Path::new(&fixture.path("signed")).exists());
+}
+
+#[test]
+fn original_registration_preview_recognizes_only_the_exact_pinned_inner_leg() {
+    let fixture = Fixture::new();
+    fs::remove_file(fixture.path("seed")).unwrap();
+    let validator_key = *LocalSigner::from_seed(NEW_SEED).address().as_bytes();
+    let source_key = *LocalSigner::from_seed(SOURCE_SEED).address().as_bytes();
+    let mut args = fixture.preview_args(validator_key);
+    args.extend([
+        "--inner-source-coin".into(),
+        fixture.path("source-coin"),
+        "--inner-source-key".into(),
+        hex(&source_key),
+    ]);
+    let original_source = fs::read(fixture.path("source-coin")).unwrap();
+    let output = run(&args);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("leg_semantics=manifest-pinned-original-standard-asset-whole-transfer\n")
+    );
+    assert!(stdout.contains("source_snapshot_unverified=true\n"));
+    assert!(stdout.contains("approved=false\nsigned=false\nexecuted=false\n"));
+    assert_eq!(
+        fs::read(fixture.path("source-coin")).unwrap(),
+        original_source
+    );
+    assert!(!Path::new(&fixture.path("signed")).exists());
+
+    let mut wrong_key = args.clone();
+    replace(
+        &mut wrong_key,
+        "--inner-source-key",
+        hex(LocalSigner::from_seed([0x68; 32]).address().as_bytes()),
+    );
+    refuse(&run(&wrong_key));
+    let mut changed_source = objects::decode_object(&original_source).unwrap();
+    changed_source.version += 1;
+    fs::write(
+        fixture.path("source-coin"),
+        objects::encode_object(&changed_source).unwrap(),
+    )
+    .unwrap();
+    refuse(&run(&args));
+    fs::write(fixture.path("source-coin"), &original_source).unwrap();
+
+    for missing in ["--inner-source-coin", "--inner-source-key"] {
+        let mut incomplete = args.clone();
+        let index = incomplete.iter().position(|arg| arg == missing).unwrap();
+        incomplete.drain(index..=index + 1);
+        refuse(&run(&incomplete));
+    }
     assert!(!Path::new(&fixture.path("signed")).exists());
 }
 
@@ -1338,4 +1661,1128 @@ fn compiled_preparation_wrap_and_nondefault_suite_submission_delivers_exact_orde
         fs::read(fixture.path("candidate")).unwrap(),
         candidate_bytes
     );
+}
+
+#[cfg(target_os = "linux")]
+struct BondServiceChild(Option<Child>);
+
+#[cfg(target_os = "linux")]
+impl BondServiceChild {
+    fn wait(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = self.0.as_mut().unwrap().try_wait().unwrap() {
+                assert!(status.success(), "bond service exited with {status}");
+                self.0.take();
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "bond service did not reach its bounded end"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for BondServiceChild {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn namespace_ids() -> Option<(u32, u32)> {
+    let user = std::env::var("USER").ok()?;
+    let parse = |path: &str| -> Option<u32> {
+        fs::read_to_string(path).ok()?.lines().find_map(|line| {
+            let mut fields = line.split(':');
+            let name = fields.next()?;
+            let start = fields.next()?.parse::<u32>().ok()?;
+            let count = fields.next()?.parse::<u32>().ok()?;
+            (name == user && count >= 100).then_some(start)
+        })
+    };
+    Some((parse("/etc/subuid")?, parse("/etc/subgid")?))
+}
+
+#[cfg(target_os = "linux")]
+fn namespace_id(flag: &str) -> u32 {
+    let output = Command::new("id").arg(flag).output().unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+#[cfg(target_os = "linux")]
+fn set_mode(path: &Path, mode: u32) {
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn fixture_chown(path: &Path, uid: u32, gid: u32) {
+    let output = Command::new("chown")
+        .args(["-R", &format!("{uid}:{gid}")])
+        .arg(path)
+        .output()
+        .unwrap();
+    if !output.status.success() {
+        panic!(
+            "{}; namespace diagnostics: {}",
+            String::from_utf8_lossy(&output.stderr),
+            fixture_chown_diagnostics(path)
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn fixture_chown_diagnostics(path: &Path) -> String {
+    // Failure-only, bounded metadata. Never read fixture key/config contents.
+    fn proc_text(path: &str, maximum: u64) -> String {
+        let mut text = String::new();
+        match File::open(path).and_then(|file| file.take(maximum).read_to_string(&mut text)) {
+            Ok(_) => text,
+            Err(error) => format!("unavailable({:?})", error.kind()),
+        }
+    }
+    fn status_fields(text: &str) -> String {
+        text.lines()
+            .filter(|line| {
+                [
+                    "Uid:",
+                    "Gid:",
+                    "CapEff:",
+                    "CapBnd:",
+                    "NoNewPrivs:",
+                    "Seccomp:",
+                    "Seccomp_filters:",
+                ]
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+            })
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+    fn metadata(path: &Path) -> String {
+        match fs::symlink_metadata(path) {
+            Ok(value) => format!(
+                "uid={} gid={} mode={:o} dev={} inode={}",
+                value.uid(),
+                value.gid(),
+                value.mode() & 0o7777,
+                value.dev(),
+                value.ino()
+            ),
+            Err(error) => format!("unavailable({:?})", error.kind()),
+        }
+    }
+    let own_status = status_fields(&proc_text("/proc/self/status", 8192));
+    // `cat` is an ordinary external executable like `chown`; its own
+    // /proc/self/status shows whether capabilities changed across exec.
+    let child_status = match Command::new("cat").arg("/proc/self/status").output() {
+        Ok(output) if output.status.success() => status_fields(&String::from_utf8_lossy(
+            &output.stdout[..output.stdout.len().min(8192)],
+        )),
+        Ok(output) => format!("exit={}", output.status),
+        Err(error) => format!("unavailable({:?})", error.kind()),
+    };
+    let mount_type = match Command::new("stat")
+        .args(["-f", "-c", "%T"])
+        .arg(path)
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout[..output.stdout.len().min(64)])
+                .trim()
+                .to_owned()
+        }
+        Ok(output) => format!("exit={}", output.status),
+        Err(error) => format!("unavailable({:?})", error.kind()),
+    };
+    format!(
+        "self=[{own_status}] exec_child=[{child_status}] uid_map=[{}] gid_map=[{}] setgroups=[{}] apparmor=[{}] target=[{}] parent=[{}] mount_type={mount_type}",
+        proc_text("/proc/self/uid_map", 512)
+            .trim()
+            .replace('\n', "; "),
+        proc_text("/proc/self/gid_map", 512)
+            .trim()
+            .replace('\n', "; "),
+        proc_text("/proc/self/setgroups", 128).trim(),
+        proc_text("/proc/self/attr/current", 512).trim(),
+        metadata(path),
+        path.parent().map(metadata).unwrap_or_else(|| "none".into()),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn role_command(binary: &Path, uid: u32, gid: u32, args: &[String]) -> Command {
+    let mut command = Command::new("setpriv");
+    command.args([
+        "--bounding-set=-all",
+        "--inh-caps=-all",
+        "--ambient-caps=-all",
+        "--no-new-privs",
+    ]);
+    command.arg(format!("--reuid={uid}"));
+    command.arg(format!("--regid={gid}"));
+    command.arg(format!("--groups={gid}"));
+    command.arg(binary).args(args);
+    command
+}
+
+#[cfg(target_os = "linux")]
+fn run_role(binary: &Path, uid: u32, gid: u32, args: &[String]) -> Output {
+    role_command(binary, uid, gid, args).output().unwrap()
+}
+
+#[cfg(target_os = "linux")]
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(target_os = "linux")]
+fn command_on_path(name: &str) -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|directory| directory.join(name))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| panic!("required original bond test command is unavailable: {name}"))
+}
+
+#[cfg(target_os = "linux")]
+fn approve_on_test_pty(
+    binary: &Path,
+    uid: u32,
+    gid: u32,
+    args: &[String],
+    confirmation: &str,
+) -> Output {
+    let command_text = std::iter::once(binary.to_str().unwrap())
+        .chain(args.iter().map(String::as_str))
+        .map(shell_quote)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut command = role_command(
+        &command_on_path("script"),
+        uid,
+        gid,
+        &[
+            "-q".into(),
+            "-e".into(),
+            "-c".into(),
+            command_text,
+            "/dev/null".into(),
+        ],
+    );
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("{confirmation}\n").as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[cfg(target_os = "linux")]
+fn start_bond_service(
+    binary: &Path,
+    uid: u32,
+    gid: u32,
+    args: &[String],
+    socket: &Path,
+) -> BondServiceChild {
+    let child = role_command(binary, uid, gid, args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut child = BondServiceChild(Some(child));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() && Instant::now() < deadline {
+        if let Some(status) = child.0.as_mut().unwrap().try_wait().unwrap() {
+            let mut stderr = String::new();
+            child
+                .0
+                .as_mut()
+                .unwrap()
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut stderr)
+                .unwrap();
+            panic!("bond service exited with {status}: {stderr}");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(socket.exists(), "bond service did not bind its socket");
+    child
+}
+
+#[cfg(target_os = "linux")]
+fn blocked_bond_worker_run() {
+    use std::os::unix::net::UnixListener;
+
+    let socket = PathBuf::from(std::env::var_os("SUNRISE_BOND_BLOCKED_SOCKET").unwrap());
+    let marker = PathBuf::from(std::env::var_os("SUNRISE_BOND_BLOCKED_MARKER").unwrap());
+    let release = PathBuf::from(std::env::var_os("SUNRISE_BOND_BLOCKED_RELEASE").unwrap());
+    let config = fs::read(std::env::var_os("SUNRISE_BOND_BLOCKED_CONFIG").unwrap()).unwrap();
+    let signature_hex = std::env::var("SUNRISE_BOND_BLOCKED_SIGNATURE").unwrap();
+    let signature = signature_hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|digits| u8::from_str_radix(std::str::from_utf8(digits).unwrap(), 16).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(signature.len(), 64);
+    let listener = UnixListener::bind(&socket).unwrap();
+    set_mode(&socket, 0o770);
+    let (mut stream, _) = listener.accept().unwrap();
+    let mut length = [0_u8; 4];
+    stream.read_exact(&mut length).unwrap();
+    let length = u32::from_be_bytes(length) as usize;
+    assert!(length <= 1_048_576);
+    let mut request = vec![0_u8; length];
+    stream.read_exact(&mut request).unwrap();
+    fs::write(&marker, b"worker received typed request").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !release.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(release.exists(), "blocked worker was not released");
+    let mut check = vec![1_u8, 2_u8];
+    check.extend_from_slice(&(request.len() as u32).to_be_bytes());
+    check.extend_from_slice(&request);
+    check.extend_from_slice(&(config.len() as u32).to_be_bytes());
+    check.extend_from_slice(&config);
+    stream
+        .write_all(&(check.len() as u32).to_be_bytes())
+        .unwrap();
+    stream.write_all(&check).unwrap();
+    let mut approval = [0_u8; 2];
+    stream.read_exact(&mut approval).unwrap();
+    assert_eq!(approval, [1, 1]);
+    stream.write_all(&[1, 3]).unwrap();
+    stream.write_all(&signature).unwrap();
+    drop(stream);
+    drop(listener);
+    fs::remove_file(&socket).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn protected_bond_namespace_run() {
+    const BROKER: u32 = 2001;
+    const INNER_WORKER: u32 = 2002;
+    const OUTER_WORKER: u32 = 2003;
+    const INNER_APPROVER: u32 = 2004;
+    const OUTER_APPROVER: u32 = 2005;
+
+    let fixture = Fixture::new();
+    let cli_uid = namespace_id("-u");
+    let gid = namespace_id("-g");
+    assert!(
+        ![
+            BROKER,
+            INNER_WORKER,
+            OUTER_WORKER,
+            INNER_APPROVER,
+            OUTER_APPROVER
+        ]
+        .contains(&cli_uid)
+    );
+    set_mode(&fixture.directory, 0o755);
+    // Each role reads the signed public manifest, including under a strict
+    // unit umask. Role key/config files remain private in their own dirs.
+    set_mode(Path::new(&fixture.path("genesis")), 0o644);
+    let binary = fixture.directory.join("protected-bond-cli");
+    fs::copy(env!("CARGO_BIN_EXE_sunrise-edge-cli"), &binary).unwrap();
+    set_mode(&binary, 0o755);
+
+    let resource = &fixture.manifest.economics_policy.resources[0].resource_id;
+    let source_key = LocalSigner::from_seed(SOURCE_SEED).address();
+    let validator_key = LocalSigner::from_seed(NEW_SEED).address();
+    let config = format!(
+        "chain_id={}\nprotocol_version={}\nsuite={SUITE}\ndomain={}\ngenesis_digest={}\nsource_key={}\nvalidator_key={}\nresource_domain={}\nresource_id={}\ncli_uid={cli_uid}\nbroker_uid={BROKER}\ninner_worker_uid={INNER_WORKER}\nouter_worker_uid={OUTER_WORKER}\ninner_approver_uid={INNER_APPROVER}\nouter_approver_uid={OUTER_APPROVER}\n",
+        fixture.context.chain_id(),
+        fixture.context.protocol_version().get(),
+        hex(fixture.domain.as_bytes()),
+        hex(&fixture.digest.bytes()),
+        hex(source_key.as_bytes()),
+        hex(validator_key.as_bytes()),
+        resource.domain(),
+        hex(resource.value()),
+    );
+    let private = |uid: u32| fixture.directory.join(format!("private-{uid}"));
+    for uid in [
+        cli_uid,
+        BROKER,
+        INNER_WORKER,
+        OUTER_WORKER,
+        INNER_APPROVER,
+        OUTER_APPROVER,
+    ] {
+        let dir = private(uid);
+        fs::create_dir(&dir).unwrap();
+        set_mode(&dir, 0o700);
+        fs::write(dir.join("config"), &config).unwrap();
+        set_mode(&dir.join("config"), 0o600);
+    }
+    let cli_dir = private(cli_uid);
+    for (source, destination) in [
+        ("source-coin", "source-coin"),
+        ("row", "row"),
+        ("leg", "signed-leg-initial"),
+    ] {
+        fs::copy(fixture.path(source), cli_dir.join(destination)).unwrap();
+        set_mode(&cli_dir.join(destination), 0o600);
+    }
+    write_seed(&private(INNER_WORKER).join("key"), SOURCE_SEED);
+    write_seed(&private(INNER_WORKER).join("wrong-key"), [0x68; 32]);
+    write_seed(&private(OUTER_WORKER).join("key"), NEW_SEED);
+    fs::create_dir(private(BROKER).join("approvals")).unwrap();
+    set_mode(&private(BROKER).join("approvals"), 0o700);
+    for uid in [
+        BROKER,
+        INNER_WORKER,
+        OUTER_WORKER,
+        INNER_APPROVER,
+        OUTER_APPROVER,
+    ] {
+        fixture_chown(&private(uid), uid, gid);
+    }
+    let socket_dir = |role: &str| fixture.directory.join(format!("socket-{role}"));
+    for (role, uid) in [
+        ("broker", BROKER),
+        ("inner", INNER_WORKER),
+        ("outer", OUTER_WORKER),
+    ] {
+        let dir = socket_dir(role);
+        fs::create_dir(&dir).unwrap();
+        set_mode(&dir, 0o750);
+        fixture_chown(&dir, uid, gid);
+    }
+    let broker_socket = socket_dir("broker").join("bond.sock");
+    let inner_socket = socket_dir("inner").join("bond.sock");
+    let outer_socket = socket_dir("outer").join("bond.sock");
+    let cli_args = |action: &str| {
+        vec![
+            "custody".into(),
+            action.into(),
+            "--config".into(),
+            cli_dir.join("config").to_str().unwrap().into(),
+            "--genesis-manifest".into(),
+            fixture.path("genesis"),
+        ]
+    };
+    let role_args = |uid: u32, action: &str| {
+        vec![
+            "custody".into(),
+            action.into(),
+            "--config".into(),
+            private(uid).join("config").to_str().unwrap().into(),
+            "--genesis-manifest".into(),
+            fixture.path("genesis"),
+        ]
+    };
+    let mut prepare_inner = cli_args("prepare-bond-inner");
+    prepare_inner.extend([
+        "--source-coin".into(),
+        cli_dir.join("source-coin").to_str().unwrap().into(),
+        "--nonce".into(),
+        "0".into(),
+        "--request-id".into(),
+        hex(&REQUEST_ID),
+        "--gas-limit".into(),
+        "500000".into(),
+        "--out".into(),
+        cli_dir.join("inner-request").to_str().unwrap().into(),
+    ]);
+    let prepared = run_role(&binary, cli_uid, gid, &prepare_inner);
+    assert!(
+        prepared.status.success(),
+        "{}",
+        String::from_utf8_lossy(&prepared.stderr)
+    );
+    assert!(String::from_utf8_lossy(&prepared.stdout).contains("source_snapshot_unverified=true"));
+    fs::copy(
+        cli_dir.join("inner-request"),
+        private(INNER_APPROVER).join("request"),
+    )
+    .unwrap();
+    set_mode(&private(INNER_APPROVER).join("request"), 0o600);
+    fixture_chown(
+        &private(INNER_APPROVER).join("request"),
+        INNER_APPROVER,
+        gid,
+    );
+
+    let mut prepare_outer = cli_args("prepare-bond-outer");
+    prepare_outer.extend([
+        "--inner-request".into(),
+        cli_dir.join("inner-request").to_str().unwrap().into(),
+        "--signed-leg".into(),
+        cli_dir.join("signed-leg-initial").to_str().unwrap().into(),
+        "--predicted-row".into(),
+        cli_dir.join("row").to_str().unwrap().into(),
+        "--request-id".into(),
+        hex(&PROTECTED_OUTER_REQUEST_ID),
+        "--out".into(),
+        cli_dir
+            .join("outer-request-initial")
+            .to_str()
+            .unwrap()
+            .into(),
+    ]);
+    let prepared = run_role(&binary, cli_uid, gid, &prepare_outer);
+    assert!(
+        prepared.status.success(),
+        "{}",
+        String::from_utf8_lossy(&prepared.stderr)
+    );
+    fs::copy(
+        cli_dir.join("outer-request-initial"),
+        private(OUTER_APPROVER).join("request"),
+    )
+    .unwrap();
+    set_mode(&private(OUTER_APPROVER).join("request"), 0o600);
+    fixture_chown(
+        &private(OUTER_APPROVER).join("request"),
+        OUTER_APPROVER,
+        gid,
+    );
+
+    let expires = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 180;
+    let leg = execution::local_execution::decode_signed_local_execution(&fixture.leg).unwrap();
+    let inner_frame = local_execution_signing_frame(&fixture.context, &leg.intent).unwrap();
+    let inner_digest = fixture
+        .resolver
+        .hash_for_purpose(Epoch::new(0), HashPurpose::Transaction, &inner_frame)
+        .unwrap();
+    let inner_confirmation = format!(
+        "APPROVE-ORIGINAL-BOND phase=Inner request={} key={} frame_digest={} not_after={expires}",
+        hex(&REQUEST_ID),
+        source_key,
+        inner_digest,
+    );
+    let root = VerifiedGenesisRoot::verify_bytes(
+        &fixture.resolver,
+        &encode_genesis_manifest(&fixture.manifest).unwrap(),
+        fixture.digest.bytes(),
+        &fixture.context,
+    )
+    .unwrap();
+    let outer_prepared = BondRegistrationContext::load(
+        Path::new(&fixture.path("genesis")),
+        &fixture.resolver,
+        fixture.digest.bytes(),
+        &fixture.context,
+        fixture.domain,
+    )
+    .unwrap()
+    .prepare_for_public_key(
+        *validator_key.as_bytes(),
+        PROTECTED_OUTER_REQUEST_ID,
+        fixture.leg.clone(),
+        fixture.row.clone(),
+    )
+    .unwrap();
+    assert_eq!(outer_prepared.genesis_root().digest(), root.digest());
+    let outer_digest = fixture
+        .resolver
+        .hash_for_purpose(
+            Epoch::new(0),
+            HashPurpose::Transaction,
+            outer_prepared.signable_frame(),
+        )
+        .unwrap();
+    let outer_confirmation = format!(
+        "APPROVE-ORIGINAL-BOND phase=Outer request={} key={} frame_digest={} not_after={expires}",
+        hex(&PROTECTED_OUTER_REQUEST_ID),
+        validator_key,
+        outer_digest,
+    );
+    let approve_args = |uid: u32, phase: &str| {
+        let mut args = role_args(uid, &format!("approve-bond-{phase}"));
+        args.extend([
+            "--request".into(),
+            private(uid).join("request").to_str().unwrap().into(),
+            "--broker-socket".into(),
+            broker_socket.to_str().unwrap().into(),
+            "--not-after-unix-seconds".into(),
+            expires.to_string(),
+        ]);
+        args
+    };
+    let service_args = |uid: u32, action: &str, socket: &Path, count: &str| {
+        let mut args = role_args(uid, action);
+        args.extend([
+            "--socket".into(),
+            socket.to_str().unwrap().into(),
+            "--max-connections".into(),
+            count.into(),
+            "--max-requests".into(),
+            count.into(),
+            "--total-deadline-secs".into(),
+            "90".into(),
+        ]);
+        args
+    };
+    let mut broker_args = service_args(BROKER, "serve-bond-approvals", &broker_socket, "2");
+    broker_args.extend([
+        "--approvals-dir".into(),
+        private(BROKER).join("approvals").to_str().unwrap().into(),
+        "--inner-worker-socket".into(),
+        inner_socket.to_str().unwrap().into(),
+        "--outer-worker-socket".into(),
+        outer_socket.to_str().unwrap().into(),
+    ]);
+    let mut broker = start_bond_service(&binary, BROKER, gid, &broker_args, &broker_socket);
+    let second_broker_dir = socket_dir("broker-second");
+    fs::create_dir(&second_broker_dir).unwrap();
+    set_mode(&second_broker_dir, 0o750);
+    fixture_chown(&second_broker_dir, BROKER, gid);
+    let second_broker_socket = second_broker_dir.join("bond.sock");
+    let mut duplicate_broker = broker_args.clone();
+    replace(
+        &mut duplicate_broker,
+        "--socket",
+        second_broker_socket.to_str().unwrap().into(),
+    );
+    let duplicate = run_role(&binary, BROKER, gid, &duplicate_broker);
+    assert!(
+        !duplicate.status.success(),
+        "a second broker served the same approval store"
+    );
+    assert!(
+        !second_broker_socket.exists(),
+        "duplicate broker bound a socket before refusing the store lock"
+    );
+    let outer_too_early = approve_on_test_pty(
+        &binary,
+        OUTER_APPROVER,
+        gid,
+        &approve_args(OUTER_APPROVER, "outer"),
+        &outer_confirmation,
+    );
+    assert!(
+        !outer_too_early.status.success(),
+        "outer approved before inner approval"
+    );
+    let inner_approved = approve_on_test_pty(
+        &binary,
+        INNER_APPROVER,
+        gid,
+        &approve_args(INNER_APPROVER, "inner"),
+        &inner_confirmation,
+    );
+    assert!(
+        inner_approved.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&inner_approved.stdout),
+        String::from_utf8_lossy(&inner_approved.stderr)
+    );
+    broker.wait();
+    assert!(
+        !broker_socket.exists(),
+        "bounded broker did not unlink its own socket"
+    );
+
+    let mut broker_args = service_args(BROKER, "serve-bond-approvals", &broker_socket, "7");
+    broker_args.extend([
+        "--approvals-dir".into(),
+        private(BROKER).join("approvals").to_str().unwrap().into(),
+        "--inner-worker-socket".into(),
+        inner_socket.to_str().unwrap().into(),
+        "--outer-worker-socket".into(),
+        outer_socket.to_str().unwrap().into(),
+    ]);
+    let mut broker = start_bond_service(&binary, BROKER, gid, &broker_args, &broker_socket);
+    let mut inner_args = service_args(INNER_WORKER, "serve-bond-inner", &inner_socket, "1");
+    replace(&mut inner_args, "--max-connections", "2".into());
+    inner_args.extend([
+        "--key-file".into(),
+        private(INNER_WORKER).join("key").to_str().unwrap().into(),
+    ]);
+    let mut wrong_key_args = inner_args.clone();
+    replace(
+        &mut wrong_key_args,
+        "--key-file",
+        private(INNER_WORKER)
+            .join("wrong-key")
+            .to_str()
+            .unwrap()
+            .into(),
+    );
+    let wrong_key = run_role(&binary, INNER_WORKER, gid, &wrong_key_args);
+    assert!(
+        !wrong_key.status.success(),
+        "wrong protected key was accepted"
+    );
+    assert!(!inner_socket.exists());
+    let mut inner_worker =
+        start_bond_service(&binary, INNER_WORKER, gid, &inner_args, &inner_socket);
+    // The CLI can reach the socket through its group, but the worker must
+    // close this connection before waiting for any request body.
+    let mut wrong_peer = std::os::unix::net::UnixStream::connect(&inner_socket).unwrap();
+    wrong_peer
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut byte = [0_u8; 1];
+    assert_eq!(wrong_peer.read(&mut byte).unwrap(), 0);
+    drop(wrong_peer);
+    let mut sign_inner = cli_args("sign-bond-inner");
+    sign_inner.extend([
+        "--request".into(),
+        cli_dir.join("inner-request").to_str().unwrap().into(),
+        "--broker-socket".into(),
+        broker_socket.to_str().unwrap().into(),
+        "--out".into(),
+        cli_dir.join("signed-leg").to_str().unwrap().into(),
+    ]);
+    let output = run_role(&binary, cli_uid, gid, &sign_inner);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read(cli_dir.join("signed-leg")).unwrap(), fixture.leg);
+    // The actual protected inner output, rather than the independently
+    // prebuilt fixture leg used by the early-refusal probe, now becomes the
+    // outer request's only signed-leg input.
+    let mut prepare_protected_outer = prepare_outer.clone();
+    replace(
+        &mut prepare_protected_outer,
+        "--signed-leg",
+        cli_dir.join("signed-leg").to_str().unwrap().into(),
+    );
+    replace(
+        &mut prepare_protected_outer,
+        "--out",
+        cli_dir.join("outer-request").to_str().unwrap().into(),
+    );
+    let prepared_protected_outer = run_role(&binary, cli_uid, gid, &prepare_protected_outer);
+    assert!(
+        prepared_protected_outer.status.success(),
+        "{}",
+        String::from_utf8_lossy(&prepared_protected_outer.stderr)
+    );
+    assert_eq!(
+        fs::read(cli_dir.join("outer-request")).unwrap(),
+        fs::read(cli_dir.join("outer-request-initial")).unwrap(),
+        "the protected inner signed leg changed the outer prepared bytes"
+    );
+    fs::copy(
+        cli_dir.join("outer-request"),
+        private(OUTER_APPROVER).join("request-protected"),
+    )
+    .unwrap();
+    set_mode(&private(OUTER_APPROVER).join("request-protected"), 0o600);
+    fixture_chown(
+        &private(OUTER_APPROVER).join("request-protected"),
+        OUTER_APPROVER,
+        gid,
+    );
+    let mut changed_inner = prepare_inner.clone();
+    replace(&mut changed_inner, "--nonce", "1".into());
+    replace(
+        &mut changed_inner,
+        "--out",
+        cli_dir
+            .join("changed-inner-request")
+            .to_str()
+            .unwrap()
+            .into(),
+    );
+    let changed_prepared = run_role(&binary, cli_uid, gid, &changed_inner);
+    assert!(changed_prepared.status.success());
+    let mut changed_sign = sign_inner.clone();
+    replace(
+        &mut changed_sign,
+        "--request",
+        cli_dir
+            .join("changed-inner-request")
+            .to_str()
+            .unwrap()
+            .into(),
+    );
+    replace(
+        &mut changed_sign,
+        "--out",
+        cli_dir
+            .join("changed-inner-signed")
+            .to_str()
+            .unwrap()
+            .into(),
+    );
+    let changed = run_role(&binary, cli_uid, gid, &changed_sign);
+    assert!(
+        !changed.status.success(),
+        "changed inner content was signed"
+    );
+    assert!(!cli_dir.join("changed-inner-signed").exists());
+    inner_worker.wait();
+
+    let mut approve_protected_outer = approve_args(OUTER_APPROVER, "outer");
+    replace(
+        &mut approve_protected_outer,
+        "--request",
+        private(OUTER_APPROVER)
+            .join("request-protected")
+            .to_str()
+            .unwrap()
+            .into(),
+    );
+    let outer_approved = approve_on_test_pty(
+        &binary,
+        OUTER_APPROVER,
+        gid,
+        &approve_protected_outer,
+        &outer_confirmation,
+    );
+    assert!(
+        outer_approved.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&outer_approved.stdout),
+        String::from_utf8_lossy(&outer_approved.stderr)
+    );
+    let mut outer_args = service_args(OUTER_WORKER, "serve-bond-outer", &outer_socket, "1");
+    outer_args.extend([
+        "--key-file".into(),
+        private(OUTER_WORKER).join("key").to_str().unwrap().into(),
+    ]);
+    let mut outer_worker =
+        start_bond_service(&binary, OUTER_WORKER, gid, &outer_args, &outer_socket);
+    let mut sign_outer = cli_args("sign-bond-outer");
+    sign_outer.extend([
+        "--request".into(),
+        cli_dir.join("outer-request").to_str().unwrap().into(),
+        "--broker-socket".into(),
+        broker_socket.to_str().unwrap().into(),
+        "--out".into(),
+        cli_dir.join("signed-registration").to_str().unwrap().into(),
+    ]);
+    let output = run_role(&binary, cli_uid, gid, &sign_outer);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let signed_registration = fs::read(cli_dir.join("signed-registration")).unwrap();
+    let expected_intent = outer_prepared.intent().clone();
+    assert_eq!(
+        signed_registration,
+        outer_prepared
+            .sign_and_finalize_with(&LocalSigner::from_seed(NEW_SEED))
+            .unwrap()
+    );
+    let verified = verify_signed_bond_registration(&root, &signed_registration).unwrap();
+    assert_eq!(verified.intent.leg, fixture.leg);
+    assert_eq!(
+        verified.intent.leg,
+        fs::read(cli_dir.join("signed-leg")).unwrap()
+    );
+    assert_eq!(verified.intent.request_id, PROTECTED_OUTER_REQUEST_ID);
+    assert_eq!(verified.intent, expected_intent);
+
+    // Hold a worker connection after it has received the broker's typed
+    // request. A revoke queued during this interval must not complete before
+    // the broker finishes the in-flight sign response. This exercises the
+    // broker's serialized release/revoke linearization without timing guesses
+    // about which request entered the accept queue first.
+    outer_worker.wait();
+    let marker = socket_dir("outer").join("received");
+    let release = socket_dir("outer").join("release");
+    let mut blocked = role_command(
+        &std::env::current_exe().unwrap(),
+        OUTER_WORKER,
+        gid,
+        &[
+            "--exact".into(),
+            "protected_original_bond_uses_two_distinct_approvers_and_workers".into(),
+            "--nocapture".into(),
+        ],
+    );
+    blocked.env("SUNRISE_BOND_BLOCKED_SOCKET", &outer_socket);
+    blocked.env("SUNRISE_BOND_BLOCKED_MARKER", &marker);
+    blocked.env("SUNRISE_BOND_BLOCKED_RELEASE", &release);
+    blocked.env(
+        "SUNRISE_BOND_BLOCKED_CONFIG",
+        private(OUTER_WORKER).join("config"),
+    );
+    blocked.env(
+        "SUNRISE_BOND_BLOCKED_SIGNATURE",
+        hex(
+            &decode_signed_bond_registration_intent(&signed_registration)
+                .unwrap()
+                .signature,
+        ),
+    );
+    let mut blocked = blocked
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !outer_socket.exists() && Instant::now() < deadline {
+        assert!(blocked.try_wait().unwrap().is_none());
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(outer_socket.exists());
+    let mut racing_sign = sign_outer.clone();
+    replace(
+        &mut racing_sign,
+        "--out",
+        cli_dir.join("racing-registration").to_str().unwrap().into(),
+    );
+    let mut racing_sign_child = role_command(&binary, cli_uid, gid, &racing_sign)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    while !marker.exists() && Instant::now() < deadline {
+        if let Some(status) = racing_sign_child.try_wait().unwrap() {
+            let mut stderr = String::new();
+            racing_sign_child
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut stderr)
+                .unwrap();
+            let worker_status = blocked.try_wait().unwrap();
+            let broker_status = broker.0.as_mut().unwrap().try_wait().unwrap();
+            let mut worker_stderr = String::new();
+            if worker_status.is_some() {
+                blocked
+                    .stderr
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut worker_stderr)
+                    .unwrap();
+            }
+            panic!(
+                "racing sign exited with {status}: {stderr}; blocked worker={worker_status:?}: {worker_stderr}; broker={broker_status:?}"
+            );
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        marker.exists(),
+        "broker did not connect to the blocked worker"
+    );
+
+    let mut revoke = vec![
+        "custody".into(),
+        "revoke-bond-inner".into(),
+        "--config".into(),
+        private(INNER_APPROVER)
+            .join("config")
+            .to_str()
+            .unwrap()
+            .into(),
+    ];
+    revoke.extend([
+        "--broker-socket".into(),
+        broker_socket.to_str().unwrap().into(),
+        "--request-id".into(),
+        hex(&REQUEST_ID),
+    ]);
+    let mut revoke_child = role_command(&binary, INNER_APPROVER, gid, &revoke)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        revoke_child.try_wait().unwrap().is_none(),
+        "revoke completed while an earlier sign was in flight"
+    );
+    fs::write(&release, b"release").unwrap();
+    let racing_result = racing_sign_child.wait_with_output().unwrap();
+    assert!(
+        racing_result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&racing_result.stderr)
+    );
+    assert_eq!(
+        fs::read(cli_dir.join("racing-registration")).unwrap(),
+        signed_registration
+    );
+    let blocked_result = blocked.wait_with_output().unwrap();
+    assert!(
+        blocked_result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&blocked_result.stderr)
+    );
+    let revoked = revoke_child.wait_with_output().unwrap();
+    assert!(
+        revoked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&revoked.stderr)
+    );
+    replace(
+        &mut sign_outer,
+        "--out",
+        cli_dir
+            .join("refused-registration")
+            .to_str()
+            .unwrap()
+            .into(),
+    );
+    let refused = run_role(&binary, cli_uid, gid, &sign_outer);
+    assert!(
+        !refused.status.success(),
+        "outer signed after inner revocation"
+    );
+    assert!(!cli_dir.join("refused-registration").exists());
+    broker.wait();
+}
+
+/// A user namespace supplies five disposable OS principals without creating
+/// host users or changing any host policy. This test fails rather than
+/// silently passing when that boundary cannot be exercised.
+#[cfg(target_os = "linux")]
+#[test]
+fn protected_original_bond_uses_two_distinct_approvers_and_workers() {
+    if std::env::var_os("SUNRISE_BOND_BLOCKED_SOCKET").is_some() {
+        blocked_bond_worker_run();
+        return;
+    }
+    if std::env::var_os("SUNRISE_BOND_UID_NAMESPACE_CHILD").is_some() {
+        protected_bond_namespace_run();
+        return;
+    }
+    let (subuid, subgid) =
+        namespace_ids().expect("original bond test requires subordinate UID/GID ranges");
+    let test_binary = std::env::current_exe().unwrap();
+    let ci_sudo = match std::env::var_os("SUNRISE_BOND_CI_SUDO_UNSHARE") {
+        None => false,
+        Some(value) if value.to_str() == Some("1") => {
+            assert_eq!(
+                std::env::var("GITHUB_ACTIONS").as_deref(),
+                Ok("true"),
+                "sudo namespace fixture is only enabled in GitHub Actions"
+            );
+            true
+        }
+        Some(_) => panic!("bond CI sudo namespace opt-in must be exactly 1"),
+    };
+    let ci_runner_ids = ci_sudo.then(|| {
+        // Capture these before sudo changes the effective UID/GID. The
+        // hosted checkout sits below a runner-owned 0750 home directory.
+        let uid = namespace_id("-u");
+        let gid = namespace_id("-g");
+        for (kind, id, subordinate_start) in [("UID", uid, subuid), ("GID", gid, subgid)] {
+            let subordinate_end = subordinate_start
+                .checked_add(100)
+                .expect("bond subordinate ID range overflows");
+            assert!(
+                id != 0
+                    && !(2000..2100).contains(&id)
+                    && !(subordinate_start..subordinate_end).contains(&id),
+                "bond CI runner {kind} collides with a protected role or subordinate ID mapping"
+            );
+        }
+        (uid, gid)
+    });
+    let mut namespace = if ci_sudo {
+        let mut command = Command::new("/usr/bin/sudo");
+        command.args(["-n", "--", "/usr/bin/unshare"]);
+        command
+    } else {
+        Command::new("unshare")
+    };
+    namespace
+        // The fixture controller needs effective namespace CAP_CHOWN after
+        // exec. The CI opt-in maps sudo's UID 0 to namespace root; the local
+        // path maps the invoking host UID. The five role processes below
+        // still drop all capabilities.
+        .args(["--map-root-user", "--map-users"])
+        .arg(format!("2000:{subuid}:100"))
+        .arg("--map-groups")
+        .arg(format!("2000:{subgid}:100"));
+    if let Some((uid, gid)) = ci_runner_ids {
+        // Map only the checkout owner's IDs, so namespace root can traverse
+        // its private home without changing host permissions or role maps.
+        namespace
+            .arg("--map-users")
+            .arg(format!("{uid}:{uid}:1"))
+            .arg("--map-groups")
+            .arg(format!("{gid}:{gid}:1"));
+    }
+    namespace.arg("--keep-caps");
+    if ci_sudo {
+        // sudo may discard the environment. Set this marker only after
+        // unshare. The fixed shell prints only namespace and executable-path
+        // metadata before execing the original test binary and selector.
+        namespace
+            .arg("/usr/bin/env")
+            .arg("SUNRISE_BOND_UID_NAMESPACE_CHILD=1")
+            .args([
+                "/usr/bin/sh",
+                "-c",
+                r#"
+set -u
+printf '%s\n' 'bond namespace pre-exec:' >&2
+/usr/bin/id >&2
+for entry in uid_map gid_map attr/current; do
+    printf '%s=' "$entry" >&2
+    /usr/bin/head -c 256 "/proc/self/$entry" >&2 || :
+    printf '\n' >&2
+done
+/usr/bin/grep '^CapEff:' /proc/self/status >&2 || :
+path=$1
+count=0
+while [ "$count" -lt 16 ]; do
+    /usr/bin/stat -Lc 'mode=%a uid=%u gid=%g type=%F path=%n' -- "$path" >&2 || :
+    [ "$path" = / ] && break
+    path=${path%/*}
+    [ -n "$path" ] || path=/
+    count=$((count + 1))
+done
+if [ -x /usr/bin/findmnt ]; then
+    printf '%s\n' 'binary mount:' >&2
+    /usr/bin/findmnt --target "$1" --noheadings --output TARGET,FSTYPE,OPTIONS 2>&1 |
+        /usr/bin/head -c 512 >&2
+    printf '\n' >&2
+fi
+exec "$@"
+"#,
+                "bond-namespace-preexec",
+            ]);
+    } else {
+        namespace.env("SUNRISE_BOND_UID_NAMESPACE_CHILD", "1");
+    }
+    let output = namespace
+        .arg(test_binary)
+        .args([
+            "--exact",
+            "protected_original_bond_uses_two_distinct_approvers_and_workers",
+            "--nocapture",
+        ])
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => panic!(
+            "original bond namespace failed: status={} stdout={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ),
+        Err(error) => panic!("original bond namespace could not start: {error}"),
+    }
 }

@@ -78,7 +78,13 @@ mod asset_transfer;
 mod asset_transfer_tests;
 mod asset_trust;
 mod asset_wire;
+mod bond_approvals;
+mod bond_commands;
+mod bond_config;
 pub(crate) mod bond_inner;
+mod bond_policy;
+mod bond_service;
+mod bond_wire;
 pub(crate) mod client;
 mod config;
 pub(crate) mod error;
@@ -195,6 +201,17 @@ where
             positive_fee_split_commands::sign(args, positive_fee_split_wire::Phase::Claim)
         }
         "serve-fee-split" => positive_fee_split_commands::serve(args),
+        "prepare-bond-inner" => bond_commands::prepare_inner(args),
+        "prepare-bond-outer" => bond_commands::prepare_outer(args),
+        "approve-bond-inner" => bond_commands::approve(args, bond_wire::BondPhase::Inner),
+        "approve-bond-outer" => bond_commands::approve(args, bond_wire::BondPhase::Outer),
+        "revoke-bond-inner" => bond_commands::revoke(args, bond_wire::BondPhase::Inner),
+        "revoke-bond-outer" => bond_commands::revoke(args, bond_wire::BondPhase::Outer),
+        "sign-bond-inner" => bond_commands::sign(args, bond_wire::BondPhase::Inner),
+        "sign-bond-outer" => bond_commands::sign(args, bond_wire::BondPhase::Outer),
+        "serve-bond-approvals" => bond_commands::serve_broker(args),
+        "serve-bond-inner" => bond_commands::serve_worker(args, bond_wire::BondPhase::Inner),
+        "serve-bond-outer" => bond_commands::serve_worker(args, bond_wire::BondPhase::Outer),
         other => Err(CliError::UnknownCustodyAction(other.to_string())),
     }
 }

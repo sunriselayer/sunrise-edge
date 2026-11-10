@@ -3,10 +3,13 @@
 use std::{error::Error, ffi::OsString, path::Path};
 
 use sunrise_edge_client::{
-    AtomicityDomainId, ChainId, Epoch, HashSuiteResolver, HashSuiteSchedule, LocalSigner,
-    ProtocolVersion, PublicationContext,
+    Address, AtomicityDomainId, ChainId,
+    ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
+    ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID, Epoch, ExpectedProtocolContext,
+    HashSuiteResolver, HashSuiteSchedule, LocalSigner, ProtocolVersion, PublicationContext,
+    RequestId, SignatureSchemeId,
     bond_registration::{
-        BondRegistrationContent, BondRegistrationContext, BondRegistrationIntent,
+        BondRegistrationContent, BondRegistrationContext, BondRegistrationIntent, BondResourceId,
         FastPathBondRecord, MAX_BOND_REGISTRATION_ROW_BYTES, MAX_LOCAL_EXECUTION_INTENT_BYTES,
         PreparedLocalBondRegistration, PreparedSuccessorBondRegistration,
         decode_fastpath_bond_record, prepare_successor_bond_registration_for_public_key,
@@ -16,6 +19,7 @@ use sunrise_edge_client::{
 
 use crate::{
     args::{FlagSpec, ParsedArgs, scalar},
+    custody::bond_inner::{BondInnerRequest, BondInnerTrust, PreparedBondInner},
     error::CliError,
     hex::{decode_hex_32, encode_hex},
     output::sanitize_line,
@@ -27,7 +31,7 @@ use super::hash_suite_pins::parse_pinned_flags;
 use super::network_artifacts::{ReservedArtifact, read_bounded, reserve_artifacts};
 
 const HELP: &str = "Offline initial validator-bond registration preparation (no execution, membership, readiness or activation).\n\nRequired: --ordered-genesis-manifest FILE --ordered-expected-genesis-digest HEX --expected-chain-id CHAIN --expected-protocol-version N --expected-epoch N --domain HEX --suite epoch:id:transaction:object:effects:code:config:certificate --request-id HEX --signed-leg FILE --expected-bond-row FILE --seed-file FILE --out FILE.\n\nOne to 64 --suite entries form the explicit locally trusted schedule; algorithms 1 (SHA2-256) and 2 (SHA3-256) are supported. --seed-file is an existing private development seed file, not a production keystore. The generation-one row is a bounded caller prediction only: this command never executes the leg or proves source objects. The normal ordered handler executes the separately signed owned custody leg and rechecks its exact result. The actual key derives the new validator ID and may not reuse any genesis ID or key.\n\nThe output is an exact signed registration envelope, written through a fresh held file handle without overwrite. Wrap it using economics candidate-wrap --kind bond-registration with explicit request/context/checkpoint pins, then use the existing ordered submission/replay workflow.";
-const PREVIEW_HELP: &str = "Offline, seed-free structural preview of an original or verified successor bond-registration claim. This command does not approve, sign, execute, register, or write an output artifact.\n\nRequired: --ordered-genesis-manifest FILE --ordered-expected-genesis-digest HEX --expected-chain-id CHAIN --expected-protocol-version N --expected-epoch N --domain HEX --suite epoch:id:transaction:object:effects:code:config:certificate --request-id HEX --signed-leg FILE --expected-bond-row FILE --expected-authorization-key HEX. Successor scope additionally requires the complete ordered successor archive pins and the exact verified e+1 context.\n\nThe supplied public key is a local review input, never a key selected by the leg or row. The full canonical signed leg, predicted row, unsigned outer intent and outer signing frame are printed as hex. This structural view does not recognize generic contract semantics or authorize protected custody.";
+const PREVIEW_HELP: &str = "Offline, seed-free structural preview of an original or verified successor bond-registration claim. This command does not approve, sign, execute, register, or write an output artifact.\n\nRequired: --ordered-genesis-manifest FILE --ordered-expected-genesis-digest HEX --expected-chain-id CHAIN --expected-protocol-version N --expected-epoch N --domain HEX --suite epoch:id:transaction:object:effects:code:config:certificate --request-id HEX --signed-leg FILE --expected-bond-row FILE --expected-authorization-key HEX. Successor scope additionally requires the complete ordered successor archive pins and the exact verified e+1 context.\n\nOptional original-genesis-only semantic check: supply both --inner-source-coin FILE and --inner-source-key HEX. This rebuilds the manifest-pinned Standard Asset whole-Coin transfer and compares the exact signed leg and predicted row. The source file is a caller snapshot, not current-state proof or content approval. The supplied public key is a local review input, never a key selected by the leg or row. The full canonical signed leg, predicted row, unsigned outer intent and outer signing frame are printed as hex. The default structural view leaves generic leg semantics unreviewed.";
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -82,7 +86,11 @@ fn run_mode<I: IntoIterator<Item = OsString>>(args: I, mode: Mode) -> Result<(),
     let mut flags: Vec<FlagSpec> = COMMON_FLAGS.to_vec();
     match mode {
         Mode::DevelopmentSign => flags.extend([scalar("--seed-file"), scalar("--out")]),
-        Mode::Preview => flags.push(scalar("--expected-authorization-key")),
+        Mode::Preview => flags.extend([
+            scalar("--expected-authorization-key"),
+            scalar("--inner-source-coin"),
+            scalar("--inner-source-key"),
+        ]),
     }
     flags.extend(super::successor_pins::successor_flag_specs(false));
     let (parsed, schedules): (ParsedArgs, Vec<HashSuiteSchedule>) =
@@ -111,6 +119,25 @@ fn run_mode<I: IntoIterator<Item = OsString>>(args: I, mode: Mode) -> Result<(),
                 )?),
             ),
         };
+    let inner_source: Option<(&str, Address)> = if matches!(mode, Mode::Preview) {
+        match (
+            parsed.get("--inner-source-coin"),
+            parsed.get("--inner-source-key"),
+        ) {
+            (None, None) => None,
+            (Some(path), Some(key)) => Some((
+                path,
+                Address::new(decode_hex_32("--inner-source-key", key)?),
+            )),
+            _ => {
+                return Err(invalid(
+                    "original inner semantic check requires both source Coin and source key",
+                ));
+            }
+        }
+    } else {
+        None
+    };
     let request_id: [u8; 32] = decode_hex_32("--request-id", parsed.require("--request-id")?)?;
     let expected_digest: [u8; 32] = decode_hex_32(
         "--ordered-expected-genesis-digest",
@@ -203,6 +230,20 @@ fn run_mode<I: IntoIterator<Item = OsString>>(args: I, mode: Mode) -> Result<(),
         _ => return Err(invalid("registration authority composition is incomplete")),
     };
     if matches!(mode, Mode::Preview) {
+        let recognized_inner: bool = match (inner_source, &prepared, &workflow) {
+            (None, _, _) => false,
+            (Some((path, source_key)), Some(prepared), None) => {
+                check_original_inner_semantics(
+                    path, source_key, prepared, &resolver, &context, domain,
+                )?;
+                true
+            }
+            (Some(_), _, _) => {
+                return Err(invalid(
+                    "inner Standard Asset semantic check is original-genesis only",
+                ));
+            }
+        };
         let (intent, row, content, scope): (
             &BondRegistrationIntent,
             &FastPathBondRecord,
@@ -227,7 +268,7 @@ fn run_mode<I: IntoIterator<Item = OsString>>(args: I, mode: Mode) -> Result<(),
             ),
             _ => return Err(invalid("registration preview preparation is incomplete")),
         };
-        let report: String = render_preview(intent, row, &content, domain, scope);
+        let report: String = render_preview(intent, row, &content, domain, scope, recognized_inner);
         print!("{report}");
         return Ok(());
     }
@@ -272,22 +313,84 @@ fn run_mode<I: IntoIterator<Item = OsString>>(args: I, mode: Mode) -> Result<(),
     Ok(())
 }
 
-/// This structural report is deliberately outside the signing path. All
-/// values come from the retained preparation; opaque contract semantics are
-/// neither interpreted nor approved here.
+/// Connects the existing exact inner and outer prepared owners without
+/// granting either a signing endpoint. The source bytes remain a caller
+/// snapshot, so this recognizes a bounded contract meaning, not live state.
+fn check_original_inner_semantics(
+    source_path: &str,
+    source_key: Address,
+    outer: &PreparedLocalBondRegistration,
+    resolver: &HashSuiteResolver,
+    context: &PublicationContext,
+    domain: AtomicityDomainId,
+) -> Result<(), CliError> {
+    let source_bytes = read_bounded(
+        source_path,
+        sunrise_edge_client::MAX_AUTHENTICATED_OBJECT_BODY_BYTES,
+    )?;
+    let signed_leg =
+        sunrise_edge_client::local_execution::decode_signed_local_execution(&outer.intent().leg)
+            .map_err(failure)?;
+    let row = outer.predicted_initial_row();
+    let expected = ExpectedProtocolContext::new(
+        context.chain_id().clone(),
+        context.protocol_version(),
+        context.epoch(),
+        resolver
+            .suite_for_epoch(context.epoch())
+            .map_err(failure)?
+            .id,
+        ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
+        SignatureSchemeId::Ed25519.as_u16(),
+        ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
+        domain,
+    )
+    .map_err(failure)?;
+    let trust = BondInnerTrust::new(expected, source_key, outer.genesis_root().clone())?;
+    let request = BondInnerRequest {
+        source_coin_bytes: source_bytes.clone(),
+        validator_key: outer.intent().authorization_key,
+        resource: BondResourceId::new(row.resource_domain, row.resource).map_err(failure)?,
+        nonce: signed_leg.intent.call.nonce,
+        request_id: RequestId::new(signed_leg.intent.call.request_id).map_err(failure)?,
+        gas_limit: signed_leg.intent.call.gas_limit,
+    };
+    let inner: PreparedBondInner = trust.prepare(&request)?;
+    if inner.prepared.intent() != &signed_leg.intent
+        || inner.predicted_ref != row.custody_object
+        || inner.amount != row.amount
+    {
+        return Err(invalid(
+            "signed bond leg or predicted row differs from the manifest-pinned whole-Coin transfer",
+        ));
+    }
+    Ok(())
+}
+
+/// This report is deliberately outside the signing path. The optional
+/// original-genesis check recognizes only the pinned whole-Coin transfer;
+/// nothing in this report is an approval or current-state proof.
 fn render_preview(
     intent: &BondRegistrationIntent,
     row: &FastPathBondRecord,
     content: &BondRegistrationContent,
     domain: AtomicityDomainId,
     scope: &str,
+    recognized_inner: bool,
 ) -> String {
-    let lines: Vec<String> = vec![
+    let mut lines: Vec<String> = vec![
         "preview=structural_bond_registration".to_string(),
         "approved=false".to_string(),
         "signed=false".to_string(),
         "executed=false".to_string(),
-        "leg_semantics=unreviewed".to_string(),
+        format!(
+            "leg_semantics={}",
+            if recognized_inner {
+                "manifest-pinned-original-standard-asset-whole-transfer"
+            } else {
+                "unreviewed"
+            }
+        ),
         format!("scope={scope}"),
         format!("ordered_domain={}", encode_hex(domain.as_bytes())),
         format!(
@@ -342,5 +445,8 @@ fn render_preview(
         format!("outer_intent_hex={}", encode_hex(&content.outer_intent)),
         format!("outer_frame_hex={}", encode_hex(&content.outer_frame)),
     ];
+    if recognized_inner {
+        lines.push("source_snapshot_unverified=true".to_string());
+    }
     format!("{}\n", lines.join("\n"))
 }

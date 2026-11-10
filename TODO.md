@@ -73,6 +73,14 @@ committed ACK各2件、literal npm ci・完全required、全8 CIを同headで確
 PID/cgroup・target解放を独立照合した。merge commitは `4c7ed157`。
 これは後段e1のincoming鍵に限る資格であり、setup・後続epochs・全M2/M7や
 独立最終reviewを完了しない。
+[PR #357](https://github.com/sunriselayer/sunrise-edge/pull/357) は2026-11-10
+(Asia/Singapore) にmergeした。選択済みoriginal genesis Standard Asset Coin rev1
+全量transferの内側プレビューをexact `d3521522`で確認し、literal npm ciと
+完全requiredのR2はexit 0・raw/EOF/wait/reap、source不変・PID/cgroup/target解放まで
+独立照合した。元7 epoch/e8 selector、1832-byte候補とcommitted ACK各2件を維持し、
+全8 CIも同headで成功した。R1のanchor失敗は別に保全した。merge commitは
+`13ae8b30`。これは内側のseed-free構造プレビューの資格であり、保護署名・
+実登録・親M2/M7の完了ではない。
 
 ## 作業終了時の環境整理
 
@@ -507,7 +515,7 @@ M2-N1〜N5は既存M2の不足を分ける作業IDであり、新しい親gate�
 | N3の実経路 | 現行区分と残件 |
 | --- | --- |
 | generic local/general・paid | 既存CLIはcustodyをI/O前に拒否する。認識済み操作・権限・review内容が選ばれるまで別backendを接続しない |
-| bond registration | [DR-0287](docs/architecture/decisions/0287-bond-registration-structural-preview.md) のoriginalと[DR-0288](docs/architecture/decisions/0288-successor-bond-registration-structural-preview.md) のsuccessor seed-free構造プレビューはPR #352/#353の完全required・全8 CIで成功。#353は元7 epoch/e8 selectorでも成功。[DR-0289](docs/architecture/decisions/0289-bond-outer-key-custody-and-split-approval.md) で外側の新validator鍵の別process/UID保護と、担保移動・登録の承認者分離を選択。[DR-0291](docs/architecture/decisions/0291-original-bond-inner-standard-asset-profile.md) でoriginal genesisのmanifest固定Standard Asset Coin rev1 `transfer`、全Coinの導出済みBondCollateral deposit tokenへの移動と、内側source-owner鍵の別process/UID保護を初期対象に選択。manifest/code/effectsの照合、段階別の承認UIDとexact frame結合、protected署名・実登録、実承認者・鍵は未達。successorのlive-epoch担保移動はこの限定profileに含めない。development構造claimは`executed=false` |
+| bond registration | [DR-0287](docs/architecture/decisions/0287-bond-registration-structural-preview.md) のoriginalと[DR-0288](docs/architecture/decisions/0288-successor-bond-registration-structural-preview.md) のsuccessor seed-free構造プレビューはPR #352/#353の完全required・全8 CIで成功。#353は元7 epoch/e8 selectorでも成功。[DR-0289](docs/architecture/decisions/0289-bond-outer-key-custody-and-split-approval.md) で外側の新validator鍵の別process/UID保護と、担保移動・登録の承認者分離を選択。[DR-0291](docs/architecture/decisions/0291-original-bond-inner-standard-asset-profile.md) でoriginal genesisのmanifest固定Standard Asset Coin rev1 `transfer`、全Coinの導出済みBondCollateral deposit tokenへの移動と、内側source-owner鍵の別process/UID保護を初期対象に選択。`6095e6d2`でmanifest/code/effects照合、段階別UID承認とexact frame結合、別UID鍵worker・brokerのdevelopment実装をコミット・pushし、独立静的レビュー2件はPASS。`7a6fb1a2`の既存bond CLI ownerで保護inner実出力からouter承認・署名への結合を検証し、16/16成功（外部記録`bond-protected-link-1110/exact-head-bond-registration.receipt.json`、raw log SHA256 `45a735e5`）。この限定テストは同じbytesのactual ordered effectsを検証せず、完全required/全8 CIも未取得。source現行性の証明、actual ordered transfer/registration、実承認者・鍵のenrollment、release資格は未達。successorのlive-epoch担保移動はこの限定profileに含めない。development構造claimは`executed=false` |
 | FinalTransfer fee claim | development署名の経路でありpositive Split custodyに含めない。具体authorityとreview契約は未選択 |
 | offline genesis author | [DR-0286](docs/architecture/decisions/0286-standard-asset-genesis-protected-review-worker.md) の二段階workerを実装・限定別UID検証済み。実承認者/鍵/economics/ceremony、全体gateは未達 |
 

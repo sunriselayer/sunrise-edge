@@ -2,7 +2,7 @@
 
 Date: 2026-11-09 (Asia/Singapore)
 
-Status: Selected initial boundary; protected implementation and qualification pending.
+Status: Selected initial boundary; development implementation committed, qualification pending.
 
 ## Context
 
@@ -62,3 +62,41 @@ Refusal tests cover unknown code/revision/dependencies/entrypoint, malformed
 source and predicted effects, wrong identity/role/context, expired or revoked
 approval, and changed content. Full required and exact-source CI evidence are
 separate. This decision closes no M2 or release checkbox.
+
+## Later implementation note (2026-11-10)
+
+The nonauthorizing `bond-inner-preview` can optionally query an endpoint for
+the declared source object. It first compares the endpoint's reported protocol
+context to the local pin, then requires a current inline result whose
+recomputed digest, creating chain/protocol, version, canonical bytes and exact
+access reference match the reviewed local Coin. Absent, tombstoned, blob-only,
+historical, changed and malformed responses refuse before any review output.
+
+This is a check against an **endpoint-reported** current snapshot. A matching
+response and body digest do not prove that the endpoint's claimed head is the
+current chain state. The review therefore retains
+`source_snapshot_unverified=true` and explicitly says the query is not a
+chain-state proof. The command remains unable to approve, sign, register or
+execute. The two-principal approval broker, separately isolated keys, actual
+registration and release qualification remain pending.
+
+The original `bond-registration-preview` can also require the complete
+source Coin/key pair and rebuild the manifest-pinned inner request from the
+already signed leg. It compares the exact unsigned intent with that leg, and
+the predicted custody reference and amount with the outer row. The row's
+authority remains a separate caller prediction for the ordered handler. Only
+then does it label the leg's bounded Standard Asset meaning as
+recognized. The supplied Coin is still a caller snapshot, so this joined
+preview explicitly retains the unverified-source warning. Successor scope
+cannot select this check. It does not create an approval or signature.
+
+## Later protected-fixture note (2026-11-10)
+
+The original-genesis fixture now reconstructs the pinned whole-Coin transfer
+inside a separate source-owner key worker. A broker checks the inner and outer
+approval records, distinct approver UIDs, expiry and tombstones before
+releasing either verified signature. The worker accepts only a typed operation,
+not an arbitrary frame. The fixture uses disposable UIDs and keys; it neither
+proves the source snapshot current nor establishes actual human approver
+identity, executes the ordered transfer/registration, or qualifies release.
+Full required and exact-source CI remain open.

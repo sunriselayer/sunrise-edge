@@ -43,7 +43,7 @@ fn io_error(path: &Path, source: std::io::Error) -> CustodyError {
 /// plain synchronous config/key/approval loading paths that run before any
 /// runtime exists, as well as from inside `serve`'s own async context, and
 /// must not spin up a nested runtime in either case.
-fn current_effective_uid() -> Result<u32, CustodyError> {
+pub(super) fn current_effective_uid() -> Result<u32, CustodyError> {
     /// Generous bound for one bounded read of `/proc/self/status`, which is
     /// a small fixed-shape pseudo-file; this bounds the read before any
     /// parsing is attempted rather than reading to an unbounded `String`.
