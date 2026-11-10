@@ -1814,6 +1814,52 @@ fn set_mode(path: &Path, mode: u32) {
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
 }
 
+/// The namespace controller's Cargo target may be unreachable to subordinate
+/// role UIDs. Run role helpers from the same 0755 fixture directory as the
+/// copied production CLI, after verifying the exact executable bytes.
+#[cfg(target_os = "linux")]
+fn copy_role_test_harness(directory: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+
+    const MAX_HARNESS_BYTES: u64 = 512 * 1024 * 1024;
+    fn fingerprint(path: &Path) -> (u64, String) {
+        let metadata = fs::metadata(path).unwrap();
+        assert!(metadata.is_file());
+        assert!((1..=MAX_HARNESS_BYTES).contains(&metadata.len()));
+        let mut file = File::open(path).unwrap();
+        let mut hasher = Sha256::new();
+        let mut total = 0_u64;
+        let mut chunk = [0_u8; 64 * 1024];
+        loop {
+            let count = file.read(&mut chunk).unwrap();
+            if count == 0 {
+                break;
+            }
+            total = total.checked_add(count as u64).unwrap();
+            assert!(total <= MAX_HARNESS_BYTES);
+            hasher.update(&chunk[..count]);
+        }
+        assert_eq!(total, metadata.len());
+        (total, format!("{:x}", hasher.finalize()))
+    }
+
+    assert_eq!(fs::metadata(directory).unwrap().mode() & 0o777, 0o755);
+    let original = std::env::current_exe().unwrap();
+    let before = fingerprint(&original);
+    let role_copy = directory.join("protected-bond-test-harness");
+    assert!(!role_copy.exists());
+    assert_eq!(fs::copy(&original, &role_copy).unwrap(), before.0);
+    set_mode(&role_copy, 0o755);
+    assert_eq!(
+        fingerprint(&original),
+        before,
+        "test harness changed during copy"
+    );
+    assert_eq!(fingerprint(&role_copy), before, "role harness copy differs");
+    assert_eq!(fs::metadata(&role_copy).unwrap().mode() & 0o777, 0o755);
+    role_copy
+}
+
 #[cfg(target_os = "linux")]
 fn fixture_chown(path: &Path, uid: u32, gid: u32) {
     let output = Command::new("chown")
@@ -2129,6 +2175,7 @@ fn fixed_bond_observation_run() {
 
 #[cfg(target_os = "linux")]
 fn start_fixed_bond_node(
+    harness: &Path,
     uid: u32,
     gid: u32,
     socket: &Path,
@@ -2138,7 +2185,7 @@ fn start_fixed_bond_node(
     changed: Option<&Path>,
 ) -> BondServiceChild {
     let mut command = role_command(
-        &std::env::current_exe().unwrap(),
+        harness,
         uid,
         gid,
         &[
@@ -2236,6 +2283,7 @@ fn protected_bond_namespace_run() {
         .contains(&cli_uid)
     );
     set_mode(&fixture.directory, 0o755);
+    let role_harness = copy_role_test_harness(&fixture.directory);
     // Each role reads the signed public manifest, including under a strict
     // unit umask. Role key/config files remain private in their own dirs.
     set_mode(Path::new(&fixture.path("genesis")), 0o644);
@@ -2754,7 +2802,7 @@ fn protected_bond_namespace_run() {
     let marker = socket_dir("outer").join("received");
     let release = socket_dir("outer").join("release");
     let mut blocked = role_command(
-        &std::env::current_exe().unwrap(),
+        &role_harness,
         OUTER_WORKER,
         gid,
         &[
@@ -2963,6 +3011,7 @@ fn protected_bond_namespace_run() {
     fs::write(cli_dir.join("config-node"), &node_config).unwrap();
     set_mode(&cli_dir.join("config-node"), 0o600);
     let mut node = start_fixed_bond_node(
+        &role_harness,
         LOCAL_NODE,
         gid,
         &node_socket,
@@ -3126,7 +3175,7 @@ fn protected_bond_namespace_run() {
     }
     let direct = |uid: u32, body: &Path, socket: &Path| {
         let mut command = role_command(
-            &std::env::current_exe().unwrap(),
+            &role_harness,
             uid,
             gid,
             &[
@@ -3264,6 +3313,7 @@ fn protected_bond_namespace_run() {
         node_expires.to_string(),
     );
     let mut changed_node = start_fixed_bond_node(
+        &role_harness,
         LOCAL_NODE,
         gid,
         &node_socket,
@@ -3292,6 +3342,7 @@ fn protected_bond_namespace_run() {
     // response proves orchestration only; compiled-host qualification is a
     // separate owner.
     let mut node = start_fixed_bond_node(
+        &role_harness,
         LOCAL_NODE,
         gid,
         &node_socket,
