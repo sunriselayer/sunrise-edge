@@ -26,11 +26,14 @@ request it creates a fresh context at the claimed fence. It brackets all
 deciding reads with `read_stable_advisory`, requiring equal full portable
 tokens (namespace, domain, writer fence, mutation sequence). It reads the
 committed epoch record with `query_committed_epoch_state`, requiring epoch
-zero and the expected validator-set digest; the locally advertised applied
-committed tip through `query_ordered_history_summary`; and the exact source
-Coin through `query_object`. Only a current inline object whose ID, version,
-digest, creating context, and canonical body match the reviewed Coin may be
-reported. Missing, tombstoned, blob-only, malformed, changed-fence, and
+zero and the expected validator-set digest. Under the same token it reuses
+the original host's active validator-set, root, fee, and committee checks
+rather than relying only on startup validation. It reads the locally
+advertised applied committed tip through `query_ordered_history_summary`
+and the exact source Coin through `query_object`. Only a current inline
+object whose ID, version, digest, creating chain ID and protocol version,
+and canonical body match the reviewed Coin may be reported. Missing,
+tombstoned, blob-only, malformed, changed-fence, and
 changed-token observations refuse. The ordered tip is local progress, not
 proof that the node has the network's latest head.
 
@@ -39,6 +42,13 @@ caller authority or a mutation fence. A later write can race signature
 creation or delivery. This boundary makes no atomic-currentness claim at
 signature delivery or execution; the ordered handler's own source/effects
 checks remain separate.
+
+Both content approvers, the broker, and the relevant key worker must
+independently requery the pinned node at their approval, signing, or
+signature-release points. The observation is bound to the existing typed
+approval content and carried from the inner request into the outer request.
+A changed observation or restarted node refuses and requires new approval;
+the protocol signing frames remain unchanged.
 
 ## Implementation boundary
 
