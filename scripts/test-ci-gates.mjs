@@ -388,6 +388,24 @@ if(tool==='cargo'&&JSON.stringify(args.slice(0,7))===JSON.stringify(['run','--qu
 `;
     writeFileSync(join(directory, tool), body, { flag: "wx", mode: 0o755 });
   }
+  // The shell dispatch double has no Cargo JSON. Only the artifact selector
+  // is replaced here; its real exact-path/hash parser is exercised separately.
+  writeFileSync(join(directory, "python3"), `#!${process.execPath}
+const {spawnSync}=require('node:child_process');
+const args=process.argv.slice(2);
+if(args[0]==='scripts/select-bond-ordered-artifacts.py'){
+ process.stdout.write([
+  'SUNRISE_BOND_ORDERED_CLI=/mock/bond-cli',
+  'SUNRISE_BOND_ORDERED_CLI_SHA256='+'0'.repeat(64),
+  'SUNRISE_BOND_ORDERED_HARNESS=/mock/bond-harness',
+  'SUNRISE_BOND_ORDERED_HARNESS_SHA256='+'1'.repeat(64),
+  ''
+ ].join('\\n'));
+ process.exit(0);
+}
+const child=spawnSync('/usr/bin/python3',args,{stdio:'inherit',env:process.env});
+process.exit(child.status??1);
+`, { flag: "wx", mode: 0o755 });
   function runBash(args, overrides = {}) {
     writeFileSync(logPath, "");
     const result = spawnSync(realBash, args, {
@@ -661,6 +679,7 @@ if(tool==='cargo'&&JSON.stringify(args.slice(0,7))===JSON.stringify(['run','--qu
     ["scripts/check-fee-escrow-inventory.sh"], ["scripts/check-postgres-soak.sh", "--self-test-cli"], ["scripts/build-cloudflare-validator.sh"],
   ]);
   assert.deepEqual(required.filter(({ tool, args }) => tool === "cargo" && args[0] === "test").map(({ args }) => args), [
+    ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres", "--no-run", "--message-format=json"],
     ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"],
     ["test", "--quiet", "-p", "node-core", "--lib", auxiliary[0][2], "--", "--ignored", "--exact", "--list"],
     ["test", "--quiet", "-p", "node-core", "--lib", auxiliary[0][2], "--", "--ignored", "--exact"],
@@ -697,6 +716,7 @@ if(tool==='cargo'&&JSON.stringify(args.slice(0,7))===JSON.stringify(['run','--qu
   function gateEvents(log) {
     return log.flatMap(({ tool, args, cwd }) => {
       if (tool === "cargo" && args[0] === "build") return [];
+      if (tool === "cargo" && args[0] === "test" && args.includes("--no-run")) return [];
       if (tool === "cargo" && args.includes("--list")) return [];
       if (tool === "cargo" && args[0] === "run" && args[5] === "fee_escrow_inventory") {
         assert.deepEqual(args, sqliteInventoryArgs(args[8]));
@@ -739,7 +759,12 @@ if(tool==='cargo'&&JSON.stringify(args.slice(0,7))===JSON.stringify(['run','--qu
     assert.throws(() => gateEvents([{ ...storageEvent, args: withoutAnchor }]));
   }
   assert.deepEqual(lanes.get("rust-tests")[0].args, compiledCliBuild);
-  assert.deepEqual(lanes.get("rust-tests")[1].args, ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"]);
+  assert.deepEqual(lanes.get("rust-tests").slice(0, 4).map(({tool,args}) => [tool,args]), [
+    ["cargo", compiledCliBuild],
+    ["cargo", [...compiledCliBuild, "--message-format=json"]],
+    ["cargo", ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres", "--no-run", "--message-format=json"]],
+    ["cargo", ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"]],
+  ]);
   for (const [log, expectedBuilds] of [[required, 3], [full, 3], [lanes.get("rust-tests"), 1]]) {
     const buildIndex = log.findIndex(({ tool, args }) => tool === "cargo" && JSON.stringify(args) === JSON.stringify(compiledCliBuild));
     const testIndex = log.findIndex(({ tool, args }) => tool === "cargo" && args[0] === "test" && args.includes("--workspace"));

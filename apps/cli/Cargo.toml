@@ -41,6 +41,7 @@ objects.workspace = true
 protocol-types.workspace = true
 rcgen.workspace = true
 runtime.workspace = true
+sha2.workspace = true
 wat.workspace = true
 rustls.workspace = true
 sunrise-edge-devnet.workspace = true

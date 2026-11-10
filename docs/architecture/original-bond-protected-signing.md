@@ -93,7 +93,10 @@ uses a disposable user namespace with five mapped subordinate UIDs and
 capability-dropped role processes. It creates no host users or real keys.
 Its exact protected output matches the existing signed-leg and registration
 vectors, including restart, altered-content, wrong-key and revocation
-refusals. Actual ordered effects remain independently checked in the
-node-core registration owner; byte equality of a signed claim alone is not
-an execution receipt. Full required and exact-source CI qualification remain
-separate in [TODO.md](../../TODO.md).
+refusals. A test-only handoff now gives this fixture the existing node-core
+genesis/current Coin, then passes the workers' actual signed leg and claim
+unchanged to that owner's ordered commit and four-replica oracle. The local
+comparison leg never becomes the execution candidate. This verifies fixture
+byte continuity and ordered effects; it does not authenticate a current
+chain head before signing or enroll real approvers and keys. Full required
+and exact-source CI qualification remain separate in [TODO.md](../../TODO.md).

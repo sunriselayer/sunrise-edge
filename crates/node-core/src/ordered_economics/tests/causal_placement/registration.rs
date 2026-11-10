@@ -17,12 +17,167 @@ use crate::fast_path::records::{FastPathValidatorEntry, FastPathValidatorSetReco
 use consensus::{DrainUnionIdentity, FrozenFrontierPage, FrozenFrontierVote};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
+#[cfg(target_os = "linux")]
+use std::{
+    fs,
+    path::Path,
+    process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 const FUND: [u8; 32] = [0x66; 32];
 const REGISTER: [u8; 32] = [0xe6; 32];
 const FREEZE: [u8; 32] = [0xe7; 32];
 const DRAIN: [u8; 32] = [0xe8; 32];
 const CHECKPOINT: u64 = 20;
+#[cfg(target_os = "linux")]
+static NEXT_BOND_HANDOFF: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(target_os = "linux")]
+fn bond_handoff_sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn bond_handoff_decode_hex(value: &str, max: usize) -> Vec<u8> {
+    assert!(value.len().is_multiple_of(2) && value.len() <= max * 2);
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+struct BondHandoffDirectory(std::path::PathBuf);
+
+#[cfg(target_os = "linux")]
+impl Drop for BondHandoffDirectory {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn protected_bond_ordered_bytes(
+    fixture: &CausalFixture,
+    source: &Object,
+    row: &FastPathBondRecord,
+    baseline_leg: &[u8],
+) -> (Vec<u8>, Vec<u8>) {
+    use std::os::unix::fs::PermissionsExt;
+    let harness = std::env::var("SUNRISE_BOND_ORDERED_HARNESS").unwrap();
+    let harness_sha = std::env::var("SUNRISE_BOND_ORDERED_HARNESS_SHA256").unwrap();
+    let cli = std::env::var("SUNRISE_BOND_ORDERED_CLI").unwrap();
+    let cli_sha = std::env::var("SUNRISE_BOND_ORDERED_CLI_SHA256").unwrap();
+    for (path, digest) in [(&harness, &harness_sha), (&cli, &cli_sha)] {
+        let path = Path::new(path);
+        assert!(path.is_absolute() && !path.is_symlink() && path.is_file());
+        assert_eq!(bond_handoff_sha256(&fs::read(path).unwrap()), *digest);
+    }
+    let input = BondHandoffDirectory(std::env::temp_dir().join(format!(
+        "sunrise-bond-ordered-handoff-{}-{}",
+        std::process::id(),
+        NEXT_BOND_HANDOFF.fetch_add(1, Ordering::Relaxed),
+    )));
+    fs::create_dir(&input.0).unwrap();
+    fs::set_permissions(&input.0, fs::Permissions::from_mode(0o700)).unwrap();
+    let inputs = [
+        (
+            "genesis",
+            encode_genesis_manifest(&fixture.manifest).unwrap(),
+        ),
+        ("source-coin", objects::encode_object(source).unwrap()),
+        ("row", encode_fastpath_bond_record(row).unwrap()),
+        ("leg", baseline_leg.to_vec()),
+    ];
+    let mut metadata = String::from("profile=genesis-test-bond-v1\n");
+    for (name, bytes) in inputs {
+        assert!(bytes.len() <= 1_048_576);
+        fs::write(input.0.join(name), &bytes).unwrap();
+        metadata.push_str(&format!(
+            "{name}_len={}\n{name}_sha256={}\n",
+            bytes.len(),
+            bond_handoff_sha256(&bytes),
+        ));
+    }
+    fs::write(input.0.join("manifest"), metadata).unwrap();
+    let stdout_path = input.0.join("harness.stdout");
+    let stderr_path = input.0.join("harness.stderr");
+    let stdout_file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&stdout_path)
+        .unwrap();
+    let stderr_file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&stderr_path)
+        .unwrap();
+    for path in [&stdout_path, &stderr_path] {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let status = Command::new("/usr/bin/timeout")
+        .args(["--signal=TERM", "--kill-after=5s", "300s", &harness])
+        .args([
+            "--exact",
+            "protected_original_bond_uses_two_distinct_approvers_and_workers",
+            "--nocapture",
+        ])
+        .env("SUNRISE_BOND_ORDERED_HANDOFF", &input.0)
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file))
+        .status()
+        .unwrap();
+    assert!(
+        fs::metadata(&stdout_path).unwrap().len() <= 1_048_576
+            && fs::metadata(&stderr_path).unwrap().len() <= 1_048_576,
+        "protected harness output exceeded its bound"
+    );
+    let stdout_bytes = fs::read(&stdout_path).unwrap();
+    let stderr_bytes = fs::read(&stderr_path).unwrap();
+    assert!(
+        status.success(),
+        "protected bond handoff failed: status={} stdout={} stderr={}",
+        status,
+        String::from_utf8_lossy(&stdout_bytes),
+        String::from_utf8_lossy(&stderr_bytes),
+    );
+    assert_eq!(
+        bond_handoff_sha256(&fs::read(&harness).unwrap()),
+        harness_sha
+    );
+    assert_eq!(bond_handoff_sha256(&fs::read(&cli).unwrap()), cli_sha);
+    let stdout = String::from_utf8(stdout_bytes).unwrap();
+    let markers: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.starts_with("SUNRISE_BOND_ORDERED_RESULT_V1 "))
+        .collect();
+    assert_eq!(markers.len(), 1, "exactly one protected result");
+    let parts: Vec<&str> = markers[0].split_ascii_whitespace().collect();
+    assert_eq!(parts.len(), 7);
+    assert_eq!(parts[0], "SUNRISE_BOND_ORDERED_RESULT_V1");
+    let read_part = |index: usize, name: &str| parts[index].strip_prefix(name).unwrap();
+    let inner = bond_handoff_decode_hex(read_part(3, "inner="), 1_048_576);
+    let outer = bond_handoff_decode_hex(read_part(6, "outer="), 1_048_576);
+    assert_eq!(
+        inner.len(),
+        read_part(1, "inner_len=").parse::<usize>().unwrap()
+    );
+    assert_eq!(
+        outer.len(),
+        read_part(4, "outer_len=").parse::<usize>().unwrap()
+    );
+    assert_eq!(bond_handoff_sha256(&inner), read_part(2, "inner_sha256="));
+    assert_eq!(bond_handoff_sha256(&outer), read_part(5, "outer_sha256="));
+    (inner, outer)
+}
 
 #[path = "registration/generic.rs"]
 mod generic;
@@ -261,21 +416,9 @@ fn registration_claim_for_object_signed_by(
     claimed_amount: Option<u64>,
     source_signer: &SigningKey,
 ) -> (OrderedCandidate, FastPathBondRecord) {
+    let (row, token) = registration_expected_row(fixture, &source, claimed_amount);
     let network: &Network = &fixture.network;
     let resource = &fixture.manifest.economics_policy.resources[0];
-    let scope: objects::ProtocolCustodyScope = objects::ProtocolCustodyScope {
-        purpose: objects::ProtocolCustodyPurpose::BondCollateral,
-        chain_id: fixture::chain(),
-        subject: *e_id().as_bytes(),
-        resource: *resource.resource_id.value(),
-    };
-    let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
-        &network.resolver,
-        &fixture::protocol(),
-        source.id,
-        &scope,
-    )
-    .unwrap();
     let signed_leg: Vec<u8> = leg(
         fixture,
         &source,
@@ -285,46 +428,6 @@ fn registration_claim_for_object_signed_by(
         500_000,
         source_signer,
     );
-    let authority_observed = network.stores[0]
-        .get_versioned_durable(
-            &network.context,
-            network.domain(),
-            &crate::local_instance_state::object_authority_key(source.id),
-        )
-        .unwrap();
-    let authority =
-        execution::local_execution::decode_object_authority(authority_observed.value().unwrap())
-            .unwrap();
-    let amount: u64 = match abi::call_values::decode_call_value(
-        &public_standard_asset::coin_body_layout(),
-        &source.data,
-    )
-    .unwrap()
-    {
-        abi::call_values::CallValue::U64(amount) => amount,
-        other => panic!("genuine collateral body: {other:?}"),
-    };
-    let mut predicted_object: Object = source;
-    predicted_object.version = predicted_object.version.checked_add(1).unwrap();
-    predicted_object.owner = Owner::ProtocolCustody(scope);
-    let row: FastPathBondRecord = FastPathBondRecord {
-        context: resource.context.clone(),
-        validator_id: e_id(),
-        resource_domain: resource.resource_id.domain(),
-        resource: *resource.resource_id.value(),
-        custody_object: object_ref(network, &predicted_object),
-        custody_object_epoch: fixture::protocol().epoch(),
-        authority,
-        amount: claimed_amount.unwrap_or(amount),
-        committed_at_checkpoint: CHECKPOINT,
-        generation: 1,
-        lifecycle_epoch: fixture::protocol().epoch(),
-        slashable_from_epoch: Epoch::new(fixture::protocol().epoch().get().checked_add(1).unwrap()),
-        required_minimum: resource.bond.as_ref().unwrap().min_bond.get(),
-        state: crate::fast_path::records::FastPathBondState::Active,
-        authorization_scheme: SignatureSchemeId::Ed25519,
-        authorization_key: *e_id().as_bytes(),
-    };
     let prepared = prepare_bond_registration(
         &network.root,
         BondRegistrationPreparationRequest {
@@ -357,6 +460,69 @@ fn registration_claim_for_object_signed_by(
         },
         row,
     )
+}
+
+fn registration_expected_row(
+    fixture: &CausalFixture,
+    source: &Object,
+    claimed_amount: Option<u64>,
+) -> (FastPathBondRecord, [u8; 32]) {
+    let network: &Network = &fixture.network;
+    let resource = &fixture.manifest.economics_policy.resources[0];
+    let scope: objects::ProtocolCustodyScope = objects::ProtocolCustodyScope {
+        purpose: objects::ProtocolCustodyPurpose::BondCollateral,
+        chain_id: fixture::chain(),
+        subject: *e_id().as_bytes(),
+        resource: *resource.resource_id.value(),
+    };
+    let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
+        &network.resolver,
+        &fixture::protocol(),
+        source.id,
+        &scope,
+    )
+    .unwrap();
+    let authority_observed = network.stores[0]
+        .get_versioned_durable(
+            &network.context,
+            network.domain(),
+            &crate::local_instance_state::object_authority_key(source.id),
+        )
+        .unwrap();
+    let authority =
+        execution::local_execution::decode_object_authority(authority_observed.value().unwrap())
+            .unwrap();
+    let amount: u64 = match abi::call_values::decode_call_value(
+        &public_standard_asset::coin_body_layout(),
+        &source.data,
+    )
+    .unwrap()
+    {
+        abi::call_values::CallValue::U64(amount) => amount,
+        other => panic!("genuine collateral body: {other:?}"),
+    };
+    let mut predicted_object: Object = source.clone();
+    predicted_object.version = predicted_object.version.checked_add(1).unwrap();
+    predicted_object.owner = Owner::ProtocolCustody(scope);
+    let row: FastPathBondRecord = FastPathBondRecord {
+        context: resource.context.clone(),
+        validator_id: e_id(),
+        resource_domain: resource.resource_id.domain(),
+        resource: *resource.resource_id.value(),
+        custody_object: object_ref(network, &predicted_object),
+        custody_object_epoch: fixture::protocol().epoch(),
+        authority,
+        amount: claimed_amount.unwrap_or(amount),
+        committed_at_checkpoint: CHECKPOINT,
+        generation: 1,
+        lifecycle_epoch: fixture::protocol().epoch(),
+        slashable_from_epoch: Epoch::new(fixture::protocol().epoch().get().checked_add(1).unwrap()),
+        required_minimum: resource.bond.as_ref().unwrap().min_bond.get(),
+        state: crate::fast_path::records::FastPathBondState::Active,
+        authorization_scheme: SignatureSchemeId::Ed25519,
+        authorization_key: *e_id().as_bytes(),
+    };
+    (row, token)
 }
 
 fn sign_changed(
@@ -660,25 +826,127 @@ pub(super) fn registered_cut_fixture_configure(
 }
 
 /// Exercise the existing ordered owner with a source Coin key distinct from
-/// the registering validator. These signatures are local test material; the
-/// protected CLI fixture has a different genesis and is not this input.
+/// the registering validator. The required gate supplies the protected CLI
+/// harness and submits its actual worker output. A direct cargo test retains
+/// the original local-signature baseline when no pinned harness is supplied.
 #[test]
 fn initial_registration_distinct_source_and_validator_keys_order_effects() {
-    let fixture: CausalFixture = fresh_fixture();
+    let pin_names = [
+        "SUNRISE_BOND_ORDERED_CLI",
+        "SUNRISE_BOND_ORDERED_CLI_SHA256",
+        "SUNRISE_BOND_ORDERED_HARNESS",
+        "SUNRISE_BOND_ORDERED_HARNESS_SHA256",
+    ];
+    let supplied = pin_names
+        .iter()
+        .filter(|name| std::env::var_os(name).is_some())
+        .count();
+    assert!(
+        supplied == 0 || supplied == pin_names.len(),
+        "partial protected bond artifact pins"
+    );
+    let protected = supplied == pin_names.len();
+    let fixture: CausalFixture = if protected {
+        // This one test's signed genesis uses the canonical empty Standard
+        // Asset initializer arguments required by the original-genesis CLI
+        // profile. Other causal fixtures and their selectors are unchanged.
+        setup_fixture_configure(
+            crate::logical_generation::CommitmentProfile::CausalAdmission,
+            |manifest| {
+                manifest.initialization.intent.call.arguments =
+                    public_standard_asset::no_arguments().unwrap();
+                let frame = local_execution_signing_frame(
+                    &fixture::protocol(),
+                    &manifest.initialization.intent,
+                )
+                .unwrap();
+                manifest.initialization.signature = fixture::key().sign(&frame).into();
+            },
+        )
+    } else {
+        fresh_fixture()
+    };
     let source_signer = SigningKey::from([0x67; 32]);
     let source_key: [u8; 32] = VerificationKey::from(&source_signer).into();
     assert_ne!(source_key, *e_id().as_bytes());
 
     fund_for_recipient(&fixture, 0, FUND, 10_000, source_key);
     let source = funded_object_for_recipient(&fixture, FUND, source_key);
-    let (candidate, expected) = registration_claim_for_object_signed_by(
-        &fixture,
-        source.clone(),
-        REGISTER,
-        0,
-        None,
-        &source_signer,
-    );
+    let (candidate, expected) = if protected {
+        #[cfg(target_os = "linux")]
+        {
+            for replica in 0..REPLICAS {
+                assert_eq!(current_object(&fixture.network, replica, source.id), source);
+            }
+            let (row, token) = registration_expected_row(&fixture, &source, None);
+            let baseline_leg = leg(
+                &fixture,
+                &source,
+                REGISTER,
+                0,
+                &token,
+                500_000,
+                &source_signer,
+            );
+            let (protected_leg, protected_claim) =
+                protected_bond_ordered_bytes(&fixture, &source, &row, &baseline_leg);
+            assert_eq!(
+                protected_leg, baseline_leg,
+                "protected worker changed inner bytes"
+            );
+            execution::local_execution::authenticate_local_execution(
+                &fixture.network.resolver,
+                &fixture.network.leg_policy,
+                &protected_leg,
+            )
+            .unwrap();
+            let signed =
+                verify_signed_bond_registration(&fixture.network.root, &protected_claim).unwrap();
+            assert_eq!(
+                signed.intent.leg, protected_leg,
+                "outer claim changed inner bytes"
+            );
+            assert_eq!(signed.intent.context, fixture::protocol());
+            assert_eq!(signed.intent.request_id, REGISTER);
+            assert_eq!(signed.intent.authorization_key, *e_id().as_bytes());
+            let resource = &fixture.manifest.economics_policy.resources[0];
+            let prepared = prepare_bond_registration(
+                &fixture.network.root,
+                BondRegistrationPreparationRequest {
+                    context: fixture::protocol(),
+                    request_id: REGISTER,
+                    authorization_key: *e_id().as_bytes(),
+                    resource_context: resource.context.clone(),
+                    resource: resource.resource_id,
+                    leg: protected_leg,
+                    predicted_initial_row: row.clone(),
+                },
+            )
+            .unwrap();
+            assert_eq!(signed.intent, prepared.intent);
+            (
+                OrderedCandidate {
+                    context: fixture::protocol(),
+                    request_id: REGISTER,
+                    kind: OrderedOperationKind::BondRegistration,
+                    intent: protected_claim,
+                    created_checkpoint: CHECKPOINT,
+                },
+                row,
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        panic!("protected bond ordered handoff requires Linux")
+    } else {
+        registration_claim_for_object_signed_by(
+            &fixture,
+            source.clone(),
+            REGISTER,
+            0,
+            None,
+            &source_signer,
+        )
+    };
     let signed = verify_signed_bond_registration(&fixture.network.root, &candidate.intent).unwrap();
     let signed_leg =
         execution::local_execution::decode_signed_local_execution(&signed.intent.leg).unwrap();

@@ -515,16 +515,26 @@ M2-N1〜N5は既存M2の不足を分ける作業IDであり、新しい親gate�
 | N3の実経路 | 現行区分と残件 |
 | --- | --- |
 | generic local/general・paid | 既存CLIはcustodyをI/O前に拒否する。認識済み操作・権限・review内容が選ばれるまで別backendを接続しない |
-| bond registration | [DR-0287](docs/architecture/decisions/0287-bond-registration-structural-preview.md) のoriginalと[DR-0288](docs/architecture/decisions/0288-successor-bond-registration-structural-preview.md) のsuccessor seed-free構造プレビューはPR #352/#353の完全required・全8 CIで成功。#353は元7 epoch/e8 selectorでも成功。[DR-0289](docs/architecture/decisions/0289-bond-outer-key-custody-and-split-approval.md) で外側の新validator鍵の別process/UID保護と、担保移動・登録の承認者分離を選択。[DR-0291](docs/architecture/decisions/0291-original-bond-inner-standard-asset-profile.md) でoriginal genesisのmanifest固定Standard Asset Coin rev1 `transfer`、全Coinの導出済みBondCollateral deposit tokenへの移動と、内側source-owner鍵の別process/UID保護を初期対象に選択。`6095e6d2`でmanifest/code/effects照合、段階別UID承認とexact frame結合、別UID鍵worker・brokerのdevelopment実装をコミット・pushし、独立静的レビュー2件はPASS。`7a6fb1a2`の既存bond CLI ownerで保護inner実出力からouter承認・署名への結合を検証し、16/16成功（外部記録`bond-protected-link-1110/exact-head-bond-registration.receipt.json`、raw log SHA256 `45a735e5`）。この限定テストは同じbytesのactual ordered effectsを検証せず、完全required/全8 CIも未取得。source現行性の証明、actual ordered transfer/registration、実承認者・鍵のenrollment、release資格は未達。successorのlive-epoch担保移動はこの限定profileに含めない。development構造claimは`executed=false` |
+| bond registration | [DR-0287](docs/architecture/decisions/0287-bond-registration-structural-preview.md) のoriginalと[DR-0288](docs/architecture/decisions/0288-successor-bond-registration-structural-preview.md) のsuccessor seed-free構造プレビューはPR #352/#353の完全required・全8 CIで成功。#353は元7 epoch/e8 selectorでも成功。[DR-0289](docs/architecture/decisions/0289-bond-outer-key-custody-and-split-approval.md) で外側の新validator鍵の別process/UID保護と、担保移動・登録の承認者分離を選択。[DR-0291](docs/architecture/decisions/0291-original-bond-inner-standard-asset-profile.md) でoriginal genesisのmanifest固定Standard Asset Coin rev1 `transfer`、全Coinの導出済みBondCollateral deposit tokenへの移動と、内側source-owner鍵の別process/UID保護を初期対象に選択。`6095e6d2`でmanifest/code/effects照合、段階別UID承認とexact frame結合、別UID鍵worker・brokerのdevelopment実装をコミット・pushし、独立静的レビュー2件はPASS。`7a6fb1a2`の既存bond CLI ownerで保護inner実出力からouter承認・署名への結合を検証し、16/16成功（外部記録`bond-protected-link-1110/exact-head-bond-registration.receipt.json`、raw log SHA256 `45a735e5`）。PR #358のexact `ff003d92`では同ownerの保護結合を維持し、literal npm ciと完全required R3をexit 0・実EOF/wait/reap・source不変・unit/PID/cgroup/target/一時領域解放まで独立照合した。元7 epoch/e8と異なる1832-byte候補・committed ACK各2件も確認した。R1/R2失敗は別に保全し、全8 hosted CIも同headで成功。PR #358はmerge commit `75521d62`でmainへ統合した。source現行性の運用証明、実承認者・鍵のenrollment、release資格は未達。successorのlive-epoch担保移動はこの限定profileに含めない。development構造claimは`executed=false` |
 | FinalTransfer fee claim | development署名の経路でありpositive Split custodyに含めない。具体authorityとreview契約は未選択 |
 | offline genesis author | [DR-0286](docs/architecture/decisions/0286-standard-asset-genesis-protected-review-worker.md) の二段階workerを実装・限定別UID検証済み。実承認者/鍵/economics/ceremony、全体gateは未達 |
 
 original bondの既存node-core ordered登録ownerでは、`184ef2a3`で内側
 source-owner鍵と外側validator鍵を分離した正例を追加し、既存commit・全replicaの
 担保object/nonce/登録chain/receipt照合を再利用した。新旧の限定テストは各1件成功。
-これは同ownerのlocal test signerによる実ordered効果の証拠であり、別genesisを使う
-protected CLI workerの実出力bytesをそのまま投入した証拠ではない。後者のfixture接続、
-署名前source現行性、実承認者・鍵、最新sourceの完全required/CIは引き続き未達。
+これは同ownerのlocal test signerによる実ordered効果の証拠。PR #359のexact
+`eb88a848`ではこの限定正例と既存正例を各1件成功で確認した。同headの全8 CIと
+literal npm ci・完全required R1はexit 0、実EOF/wait/reap・source不変・unit/PID/cgroup/
+target/一時領域解放まで独立照合し、元7 epoch/e8・異なる1832-byte候補と
+committed ACK各2件を保持した。PR #359はmerge commit `d4264777`でmainへ統合した。
+後続[PR #360](https://github.com/sunriselayer/sunrise-edge/pull/360)の`b90d855a`ではnode-core fixtureの正規genesis/current Coinを保護CLIへ渡し、
+実inner/outer workerの出力bytesを元ordered ownerへ戻すテスト専用結合を実装した。
+独立静的reviewはPASS。限定R5は結合1/1、通常CLI 1/1、pinなしbaseline 1/1が成功し、
+不完全pinは期待どおり拒否された。失敗したR1/R2と修正前R3/R4の証跡は別に保全する。
+外部終端記録は`m2-bond-handoff-focused-1110/ordered-handoff-final-focused-terminal-audit.json`。
+結合の最終source完全required/全8 CIはPR #360の終端証跡で別途採否を確認し、
+それまでは成功に数えない。運用上の署名前source現行性、実承認者・鍵のenrollment、
+親M2/M7・release資格は引き続き未達。
 
 FinalTransferの既存codec・prepared consumer・review表示・development signer・
 positive Splitとの権限分離を[署名経路マップ](docs/architecture/signing-route-test-map.md#finaltransfer-within-the-prepared-fee-claim-owner)へ対応付けた。

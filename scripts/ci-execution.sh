@@ -133,6 +133,77 @@ ci_check_deno_adapters() {
   done
 }
 
+# Bind the existing ordered registration owner to one exact protected CLI
+# harness and one exact production CLI binary. The final workspace selector
+# below is unchanged; this no-run pass only selects executable artifacts.
+ci_run_rust_tests_with_bond_handoff() (
+  local evidence status
+  evidence="$(mktemp -d "${TMPDIR:-/tmp}/sunrise-bond-artifacts.XXXXXXXX")" || return "$?"
+  cargo build -p sunrise-edge-cli --bin sunrise-edge-cli --all-features --message-format=json \
+    > "$evidence/cli-build.json" || {
+      status="$?"
+      echo "preserved bond artifact build evidence: $evidence" >&2
+      return "$status"
+    }
+  cargo test --workspace --all-targets --all-features "$@" --no-run --message-format=json \
+    > "$evidence/workspace-no-run.json" || {
+      status="$?"
+      echo "preserved bond artifact no-run evidence: $evidence" >&2
+      return "$status"
+    }
+  python3 scripts/select-bond-ordered-artifacts.py \
+    "$evidence/cli-build.json" "$evidence/workspace-no-run.json" \
+    > "$evidence/pins" || {
+      status="$?"
+      echo "preserved bond artifact selection evidence: $evidence" >&2
+      return "$status"
+    }
+  local -a pins
+  mapfile -t pins < "$evidence/pins"
+  if [[ "${#pins[@]}" -ne 4 ]]; then
+    echo "preserved malformed bond artifact selection: $evidence" >&2
+    return 1
+  fi
+  local -a names=(
+    SUNRISE_BOND_ORDERED_CLI
+    SUNRISE_BOND_ORDERED_CLI_SHA256
+    SUNRISE_BOND_ORDERED_HARNESS
+    SUNRISE_BOND_ORDERED_HARNESS_SHA256
+  )
+  local index value
+  for index in 0 1 2 3; do
+    if [[ "${pins[index]}" != "${names[index]}="* ]]; then
+      echo "preserved malformed bond artifact name: $evidence" >&2
+      return 1
+    fi
+    value="${pins[index]#*=}"
+    if [[ -z "$value" ]]; then
+      echo "preserved empty bond artifact pin: $evidence" >&2
+      return 1
+    fi
+  done
+  for index in 1 3; do
+    value="${pins[index]#*=}"
+    if [[ ! "$value" =~ ^[0-9a-f]{64}$ ]]; then
+      echo "preserved malformed bond artifact digest: $evidence" >&2
+      return 1
+    fi
+  done
+  export "${pins[@]}" || return "$?"
+  cargo test --workspace --all-targets --all-features "$@"
+  status="$?"
+  if [[ "$status" -eq 0 ]]; then
+    rm -- "$evidence/cli-build.json" "$evidence/workspace-no-run.json" "$evidence/pins" &&
+      rmdir -- "$evidence" || {
+        status="$?"
+        echo "preserved bond artifact cleanup failure: $evidence" >&2
+      }
+  else
+    echo "preserved failed bond workspace evidence: $evidence" >&2
+  fi
+  return "$status"
+)
+
 ci_run_action() {
   if [[ "$#" -ne 1 ]]; then
     echo 'malformed repository gate action' >&2
@@ -147,11 +218,11 @@ ci_run_action() {
     rust-style) ci_check_rust_style ;;
     rust-tests-required)
       cargo build -p sunrise-edge-cli --bin sunrise-edge-cli --all-features || return "$?"
-      cargo test --workspace --all-targets --all-features --exclude runtime-postgres
+      ci_run_rust_tests_with_bond_handoff --exclude runtime-postgres
       ;;
     rust-tests-full)
       cargo build -p sunrise-edge-cli --bin sunrise-edge-cli --all-features || return "$?"
-      cargo test --workspace --all-targets --all-features
+      ci_run_rust_tests_with_bond_handoff
       ;;
     sqlite-inventory) ci_check_sqlite_inventory ;;
     core-recurrence|readiness-sqlite|recurring-sqlite) ci_run_required_extended_group "$1" ;;
