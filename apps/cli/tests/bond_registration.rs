@@ -3202,6 +3202,8 @@ fn protected_bond_namespace_run() {
     fixture_chown(&approvals_node, BROKER, gid);
     let broker_node_socket = socket_dir("broker").join("bond-node.sock");
     let mut broker_node_args = broker_args.clone();
+    replace(&mut broker_node_args, "--max-connections", "2".into());
+    replace(&mut broker_node_args, "--max-requests", "2".into());
     replace(
         &mut broker_node_args,
         "--config",
