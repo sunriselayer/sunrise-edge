@@ -248,13 +248,6 @@ fn require_exact_inline(
 }
 
 #[cfg(test)]
-#[path = "../../tests/support/causal_genesis_fixture.rs"]
-mod causal_genesis_fixture;
-#[cfg(test)]
-#[path = "../../tests/support/genesis_fixture.rs"]
-mod genesis_fixture;
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::original_genesis_install::{OriginalGenesisInstallation, install_original_genesis};
@@ -296,7 +289,7 @@ mod tests {
         pub(super) store: Arc<SqliteDurableStore>,
         pub(super) blobs: Arc<SqliteBlobStore>,
         pub(super) root: VerifiedGenesisRoot,
-        pub(super) network: super::genesis_fixture::FastVoteGenesisFixture,
+        pub(super) network: crate::genesis_fixture::FastVoteGenesisFixture,
         pub(super) claimed: WriterFenceGeneration,
         pub(super) public_key: [u8; 32],
         pub(super) reviewed: ObjectRef,
@@ -306,7 +299,7 @@ mod tests {
     impl Installed {
         pub(super) fn new() -> Self {
             let directory = Directory::new();
-            let fixture = super::causal_genesis_fixture::build("bond-currentness-unit");
+            let fixture = crate::causal_genesis_fixture::build("bond-currentness-unit");
             let network = fixture.network;
             let root = VerifiedGenesisRoot::verify_bytes(
                 &network.resolver,

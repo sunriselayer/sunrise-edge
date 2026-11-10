@@ -5,11 +5,17 @@ pub mod business_import;
 mod business_pins;
 pub mod business_recovery;
 pub mod business_snapshot;
+#[cfg(test)]
+#[path = "../tests/support/causal_genesis_fixture.rs"]
+mod causal_genesis_fixture;
 pub mod common;
 pub mod conditional_readiness;
 #[cfg(target_os = "linux")]
 mod conditional_readiness_custody;
 pub mod economics;
+#[cfg(test)]
+#[path = "../tests/support/genesis_fixture.rs"]
+mod genesis_fixture;
 pub mod genesis_inspection;
 mod genesis_output;
 pub mod host_protocol_context;
