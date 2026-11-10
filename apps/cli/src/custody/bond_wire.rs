@@ -2,6 +2,9 @@
 //! frame, key path, trust root, peer UID, or caller-selected operation kind.
 //! Each key worker rebuilds its own exact frame from these bounded preimages.
 
+use node_wire::original_bond_currentness::{
+    self as currentness_wire, OriginalBondLocalObservationFrame,
+};
 use sunrise_edge_client::{
     MAX_AUTHENTICATED_OBJECT_BODY_BYTES, RequestId,
     bond_registration::{
@@ -16,7 +19,9 @@ use super::{
     wire::CustodyWireError,
 };
 
-const VERSION: u8 = 1;
+const REQUEST_V1: u8 = 1;
+const REQUEST_V2: u8 = 2;
+const BROKER_REPLY_VERSION: u8 = 1;
 const INNER_KIND: u8 = 1;
 const OUTER_KIND: u8 = 2;
 const BROKER_APPROVE: u8 = 1;
@@ -27,13 +32,15 @@ const REPLY_APPROVED: u8 = 1;
 const REPLY_REFUSED: u8 = 2;
 const REPLY_SIGNED: u8 = 3;
 const INNER_FIXED_BYTES: usize = 1 + 1 + 32 + 2 + 32 + 8 + 32 + 8 + 4;
-pub(super) const MAX_REQUEST_BYTES: usize = INNER_FIXED_BYTES
+const MAX_V1_REQUEST_BYTES: usize = INNER_FIXED_BYTES
     + MAX_AUTHENTICATED_OBJECT_BODY_BYTES
     + 4
     + MAX_LOCAL_EXECUTION_INTENT_BYTES
     + 4
     + MAX_BOND_REGISTRATION_ROW_BYTES
     + 32;
+pub(super) const MAX_REQUEST_BYTES: usize =
+    MAX_V1_REQUEST_BYTES + 4 + currentness_wire::MAX_RESPONSE_BYTES;
 pub(super) const MAX_BROKER_MESSAGE_BYTES: usize =
     MAX_REQUEST_BYTES + 2 + 4 + 8 + 4 + MAX_CONFIG_BYTES;
 pub(super) const MAX_REPLY_BYTES: usize = 2 + 64;
@@ -91,10 +98,15 @@ fn encode_inner(out: &mut Vec<u8>, inner: &BondInnerRequest) -> Result<(), Custo
         &inner.source_coin_bytes,
         MAX_AUTHENTICATED_OBJECT_BODY_BYTES,
     )?;
+    if let Some(observation) = &inner.local_observation {
+        let bytes = currentness_wire::encode_response(observation)
+            .map_err(|_| CustodyWireError::Truncated)?;
+        put_bytes(out, &bytes, currentness_wire::MAX_RESPONSE_BYTES)?;
+    }
     Ok(())
 }
 
-fn decode_inner(r: &mut Reader<'_>) -> Result<BondInnerRequest, CustodyWireError> {
+fn decode_inner(r: &mut Reader<'_>, version: u8) -> Result<BondInnerRequest, CustodyWireError> {
     let validator_key = r.array()?;
     let resource_domain = u16::from_be_bytes(r.array()?);
     let resource_id = r.array()?;
@@ -104,6 +116,14 @@ fn decode_inner(r: &mut Reader<'_>) -> Result<BondInnerRequest, CustodyWireError
     let request_id = RequestId::new(r.array()?).map_err(CustodyWireError::RequestId)?;
     let gas_limit = r.u64()?;
     let source_coin_bytes = r.bytes(MAX_AUTHENTICATED_OBJECT_BODY_BYTES)?;
+    let local_observation = if version == REQUEST_V2 {
+        let bytes = r.bytes(currentness_wire::MAX_RESPONSE_BYTES)?;
+        let value: OriginalBondLocalObservationFrame =
+            currentness_wire::decode_response(&bytes).map_err(|_| CustodyWireError::Truncated)?;
+        Some(value)
+    } else {
+        None
+    };
     Ok(BondInnerRequest {
         source_coin_bytes,
         validator_key,
@@ -111,6 +131,7 @@ fn decode_inner(r: &mut Reader<'_>) -> Result<BondInnerRequest, CustodyWireError
         nonce,
         request_id,
         gas_limit,
+        local_observation,
     })
 }
 
@@ -119,7 +140,12 @@ pub(super) fn encode_request(request: &BondRequest) -> Result<Vec<u8>, CustodyWi
         BondRequest::Inner(_) => INNER_KIND,
         BondRequest::Outer { .. } => OUTER_KIND,
     };
-    let mut out = vec![VERSION, kind];
+    let version = if request.inner().local_observation.is_some() {
+        REQUEST_V2
+    } else {
+        REQUEST_V1
+    };
+    let mut out = vec![version, kind];
     encode_inner(&mut out, request.inner())?;
     if let BondRequest::Outer {
         signed_leg,
@@ -132,10 +158,15 @@ pub(super) fn encode_request(request: &BondRequest) -> Result<Vec<u8>, CustodyWi
         put_bytes(&mut out, row, MAX_BOND_REGISTRATION_ROW_BYTES)?;
         out.extend_from_slice(outer_request_id.as_bytes());
     }
-    if out.len() > MAX_REQUEST_BYTES {
+    let maximum = if version == REQUEST_V1 {
+        MAX_V1_REQUEST_BYTES
+    } else {
+        MAX_REQUEST_BYTES
+    };
+    if out.len() > maximum {
         return Err(CustodyWireError::FrameTooLarge {
             actual: out.len(),
-            maximum: MAX_REQUEST_BYTES,
+            maximum,
         });
     }
     Ok(out)
@@ -149,11 +180,18 @@ pub(super) fn decode_request(bytes: &[u8]) -> Result<BondRequest, CustodyWireErr
         });
     }
     let mut r = Reader::new(bytes);
-    if r.array::<1>()?[0] != VERSION {
-        return Err(CustodyWireError::UnsupportedVersion(bytes[0]));
+    let version = r.array::<1>()?[0];
+    if !matches!(version, REQUEST_V1 | REQUEST_V2) {
+        return Err(CustodyWireError::UnsupportedVersion(version));
+    }
+    if version == REQUEST_V1 && bytes.len() > MAX_V1_REQUEST_BYTES {
+        return Err(CustodyWireError::FrameTooLarge {
+            actual: bytes.len(),
+            maximum: MAX_V1_REQUEST_BYTES,
+        });
     }
     let kind = r.array::<1>()?[0];
-    let inner = decode_inner(&mut r)?;
+    let inner = decode_inner(&mut r, version)?;
     let request = match kind {
         INNER_KIND => BondRequest::Inner(inner),
         OUTER_KIND => BondRequest::Outer {
@@ -192,7 +230,7 @@ pub(super) enum BrokerMessage {
 }
 
 pub(super) fn encode_broker_message(message: &BrokerMessage) -> Result<Vec<u8>, CustodyWireError> {
-    let mut out = vec![VERSION];
+    let mut out = vec![BROKER_REPLY_VERSION];
     match message {
         BrokerMessage::Approve {
             request,
@@ -238,7 +276,7 @@ pub(super) fn decode_broker_message(bytes: &[u8]) -> Result<BrokerMessage, Custo
     }
     let mut r = Reader::new(bytes);
     let version = r.array::<1>()?[0];
-    if version != VERSION {
+    if version != BROKER_REPLY_VERSION {
         return Err(CustodyWireError::UnsupportedVersion(version));
     }
     let kind = r.array::<1>()?[0];
@@ -277,10 +315,10 @@ pub(super) enum Reply {
 
 pub(super) fn encode_reply(reply: &Reply) -> Vec<u8> {
     match reply {
-        Reply::Approved => vec![VERSION, REPLY_APPROVED],
-        Reply::Refused => vec![VERSION, REPLY_REFUSED],
+        Reply::Approved => vec![BROKER_REPLY_VERSION, REPLY_APPROVED],
+        Reply::Refused => vec![BROKER_REPLY_VERSION, REPLY_REFUSED],
         Reply::Signed(signature) => {
-            let mut out = vec![VERSION, REPLY_SIGNED];
+            let mut out = vec![BROKER_REPLY_VERSION, REPLY_SIGNED];
             out.extend_from_slice(signature);
             out
         }
@@ -296,7 +334,7 @@ pub(super) fn decode_reply(bytes: &[u8]) -> Result<Reply, CustodyWireError> {
     }
     let mut r = Reader::new(bytes);
     let version = r.array::<1>()?[0];
-    if version != VERSION {
+    if version != BROKER_REPLY_VERSION {
         return Err(CustodyWireError::UnsupportedVersion(version));
     }
     let kind = r.array::<1>()?[0];
@@ -313,6 +351,11 @@ pub(super) fn decode_reply(bytes: &[u8]) -> Result<Reply, CustodyWireError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use runtime::{WriterFenceGeneration, portable::PortableSnapshotToken};
+    use sunrise_edge_client::{
+        AtomicityDomainId, ChainId, Digest32, Epoch, HashAlgorithmId, ObjectId, ObjectRef,
+        ProtocolVersion, ValidatorId,
+    };
 
     fn inner() -> BondInnerRequest {
         BondInnerRequest {
@@ -322,6 +365,35 @@ mod tests {
             nonce: 2,
             request_id: RequestId::new([5; 32]).unwrap(),
             gas_limit: 500_000,
+            local_observation: None,
+        }
+    }
+
+    fn locator() -> OriginalBondLocalObservationFrame {
+        let digest = |byte| Digest32::new(HashAlgorithmId::Sha2_256, [byte; 32]);
+        OriginalBondLocalObservationFrame {
+            validator: ValidatorId::new([1; 32]),
+            chain_id: ChainId::new("bond-test").unwrap(),
+            protocol_version: ProtocolVersion::new(3),
+            token: PortableSnapshotToken::new(
+                b"test-store".to_vec(),
+                AtomicityDomainId::new([2; 32]).unwrap(),
+                WriterFenceGeneration::new(7).unwrap(),
+                8,
+            )
+            .unwrap(),
+            epoch: Epoch::new(0),
+            validator_set_digest: digest(3),
+            genesis_digest: digest(4),
+            anchor: digest(5),
+            through_height: 0,
+            through_view: 0,
+            through_digest: digest(5),
+            coin: ObjectRef {
+                id: ObjectId::new([6; 32]),
+                version: 1,
+                digest: digest(7),
+            },
         }
     }
 
@@ -336,6 +408,7 @@ mod tests {
         };
         for request in [inner_request, outer] {
             let encoded = encode_request(&request).unwrap();
+            assert_eq!(encoded[0], REQUEST_V1);
             assert_eq!(decode_request(&encoded).unwrap(), request);
             for end in 0..encoded.len() {
                 assert!(decode_request(&encoded[..end]).is_err());
@@ -350,6 +423,59 @@ mod tests {
             changed[1] = 9;
             assert!(decode_request(&changed).is_err());
         }
+    }
+
+    #[test]
+    fn v2_embeds_one_complete_canonical_locator_and_preserves_outer_version() {
+        let mut inner = inner();
+        inner.local_observation = Some(locator());
+        let observation =
+            currentness_wire::encode_response(inner.local_observation.as_ref().unwrap()).unwrap();
+        let requests = [
+            BondRequest::Inner(inner.clone()),
+            BondRequest::Outer {
+                inner,
+                signed_leg: vec![1, 2],
+                row: vec![3, 4],
+                outer_request_id: RequestId::new([6; 32]).unwrap(),
+            },
+        ];
+        for request in requests {
+            let encoded = encode_request(&request).unwrap();
+            assert_eq!(encoded[0], REQUEST_V2);
+            assert_eq!(decode_request(&encoded).unwrap(), request);
+            let offset = encoded
+                .windows(observation.len())
+                .position(|bytes| bytes == observation)
+                .unwrap();
+            assert_eq!(
+                &encoded[offset - 4..offset],
+                &u32::try_from(observation.len()).unwrap().to_be_bytes(),
+            );
+            let mut changed = encoded.clone();
+            changed[offset + 8] = 1; // chain_state_proof=true is unsupported.
+            assert!(decode_request(&changed).is_err());
+            let mut changed = encoded.clone();
+            changed[offset - 4..offset].fill(0);
+            assert!(decode_request(&changed).is_err());
+            let mut changed = encoded.clone();
+            changed[0] = REQUEST_V1;
+            assert!(decode_request(&changed).is_err());
+            let mut changed = encoded.clone();
+            changed.pop();
+            assert!(decode_request(&changed).is_err());
+            let mut changed = encoded;
+            changed.push(0);
+            assert!(decode_request(&changed).is_err());
+            let broker = encode_broker_message(&BrokerMessage::Check {
+                request,
+                config: vec![1],
+            })
+            .unwrap();
+            assert_eq!(broker[0], BROKER_REPLY_VERSION);
+            assert!(decode_broker_message(&broker).is_ok());
+        }
+        assert_eq!(encode_reply(&Reply::Refused)[0], BROKER_REPLY_VERSION);
     }
 
     #[test]

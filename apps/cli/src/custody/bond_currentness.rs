@@ -1,6 +1,7 @@
 //! Private, opt-in client for the designated original serving node's local
 //! Coin observation. This is not a chain proof or a currentness reservation.
-//! No approval or signing path calls this module yet.
+//! Request-carried locators are untrusted until every decision point makes a
+//! fresh peer-authenticated query and compares the complete result.
 
 use std::{io, path::PathBuf, time::Duration};
 
@@ -16,7 +17,7 @@ use tokio::{
 };
 
 use super::{bond_policy::BondTrust, client::connect_and_check_peer};
-use crate::error::CliError;
+use crate::{error::CliError, hex::encode_hex};
 
 const IO_DEADLINE: Duration = Duration::from_secs(15);
 
@@ -110,6 +111,45 @@ fn require_original_validator(
 #[derive(Clone)]
 pub(super) struct LocalBondObservation(OriginalBondLocalObservationFrame);
 
+impl LocalBondObservation {
+    pub(super) fn frame(&self) -> &OriginalBondLocalObservationFrame {
+        &self.0
+    }
+}
+
+/// A request-carried locator is only statically checked against the private
+/// pins and reviewed Coin. This does not requery the node or establish
+/// currentness at any later decision point.
+pub(super) fn review_locator(
+    trust: &BondTrust,
+    reference: &ObjectRef,
+    frame: &OriginalBondLocalObservationFrame,
+) -> Result<String, CliError> {
+    Pins::from_trust(trust)?.check(frame.clone(), reference, None)?;
+    let bytes = wire::encode_response(frame).map_err(|_| refused())?;
+    Ok(format!(
+        "local_observation_locator_claim=true\nlocal_observation_chain_state_proof=false\nlocal_observation_currentness_reserved=false\nlocal_observation_frame_hex={}\nlocal_observation_validator={}\nlocal_observation_chain_id={}\nlocal_observation_protocol_version={}\nlocal_observation_namespace_hex={}\nlocal_observation_domain={}\nlocal_observation_writer_fence={}\nlocal_observation_mutation_sequence={}\nlocal_observation_epoch={}\nlocal_observation_validator_set_digest={}\nlocal_observation_genesis_digest={}\nlocal_observation_anchor={}\nlocal_observation_through_height={}\nlocal_observation_through_view={}\nlocal_observation_through_digest={}\nlocal_observation_coin_id={}\nlocal_observation_coin_version={}\nlocal_observation_coin_digest={}\n",
+        encode_hex(&bytes),
+        encode_hex(frame.validator.as_bytes()),
+        frame.chain_id,
+        frame.protocol_version.get(),
+        encode_hex(frame.token.namespace()),
+        frame.token.domain(),
+        frame.token.writer_fence().get(),
+        frame.token.mutation_sequence(),
+        frame.epoch.get(),
+        frame.validator_set_digest,
+        frame.genesis_digest,
+        frame.anchor,
+        frame.through_height,
+        frame.through_view,
+        frame.through_digest,
+        frame.coin.id,
+        frame.coin.version,
+        frame.coin.digest,
+    ))
+}
+
 /// One fresh read from the configured local node. Callers at separate review,
 /// approval and signing decisions must requery and bind the complete result.
 pub(super) fn observe(
@@ -126,6 +166,34 @@ pub(super) fn observe(
         .build()
         .map_err(|_| refused())?;
     runtime.block_on(observe_async(&pins, reference, &body, prior))
+}
+
+/// Synchronous CLI decision-point requery. The request's locator is checked
+/// against private pins before contacting the node, then all returned fields
+/// must equal that exact canonical locator.
+pub(super) fn requery(
+    trust: &BondTrust,
+    reference: &ObjectRef,
+    coin_body: &[u8],
+    locator: &OriginalBondLocalObservationFrame,
+) -> Result<(), CliError> {
+    let prior = Pins::from_trust(trust)?.check(locator.clone(), reference, None)?;
+    observe(trust, reference, coin_body, Some(&prior))?;
+    Ok(())
+}
+
+/// Async broker/worker decision-point requery; never nests a Tokio runtime.
+pub(super) async fn requery_async(
+    trust: &BondTrust,
+    reference: &ObjectRef,
+    coin_body: &[u8],
+    locator: &OriginalBondLocalObservationFrame,
+) -> Result<(), CliError> {
+    let pins = Pins::from_trust(trust)?;
+    let prior = pins.check(locator.clone(), reference, None)?;
+    let body = wire::encode_request(reference, coin_body).map_err(|_| refused())?;
+    observe_async(&pins, reference, &body, Some(&prior)).await?;
+    Ok(())
 }
 
 async fn observe_async(
@@ -381,5 +449,56 @@ mod tests {
         assert!(observe_async(&pins, &reference, &body, None).await.is_err());
         assert!(observe_async(&pins, &reference, &body, None).await.is_err());
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fresh_query_refuses_changed_fence_coin_tip_and_unavailable_node() {
+        let dir = TempDir::new(0o700);
+        let socket = dir.child("changing-observe.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (pins, reference, frame) = fixture(socket);
+        let prior = pins.check(frame.clone(), &reference, None).unwrap();
+        let body = wire::encode_request(&reference, b"reviewed Coin").unwrap();
+        let mut changed_fence = frame.clone();
+        changed_fence.token = PortableSnapshotToken::new(
+            frame.token.namespace().to_vec(),
+            frame.token.domain(),
+            WriterFenceGeneration::new(8).unwrap(),
+            frame.token.mutation_sequence(),
+        )
+        .unwrap();
+        let mut changed_coin = frame.clone();
+        changed_coin.coin.version += 1;
+        let mut changed_tip = frame.clone();
+        changed_tip.through_height = 1;
+        changed_tip.through_view = 1;
+        changed_tip.through_digest = Digest32::new(HashAlgorithmId::Sha2_256, [0x22; 32]);
+        let replies = [changed_fence, changed_coin, changed_tip]
+            .map(|value| wire::encode_response(&value).unwrap());
+        let expected = body.clone();
+        let server = tokio::spawn(async move {
+            for reply in replies {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let length = stream.read_u32().await.unwrap() as usize;
+                let mut request = vec![0; length];
+                stream.read_exact(&mut request).await.unwrap();
+                assert_eq!(request, expected);
+                stream.write_u32(reply.len() as u32).await.unwrap();
+                stream.write_all(&reply).await.unwrap();
+            }
+        });
+        for _ in 0..3 {
+            assert!(
+                observe_async(&pins, &reference, &body, Some(&prior))
+                    .await
+                    .is_err()
+            );
+        }
+        server.await.unwrap();
+        assert!(
+            observe_async(&pins, &reference, &body, Some(&prior))
+                .await
+                .is_err()
+        );
     }
 }

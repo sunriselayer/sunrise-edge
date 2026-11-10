@@ -9,6 +9,7 @@ use sunrise_edge_client::{RequestId, bond_registration::MAX_LOCAL_EXECUTION_INTE
 
 use super::{
     bond_config::{BondConfig, BondRole},
+    bond_currentness,
     bond_inner::BondInnerRequest,
     bond_policy::BondTrust,
     bond_service,
@@ -83,7 +84,7 @@ pub(super) fn prepare_inner<I: IntoIterator<Item = OsString>>(args: I) -> Result
     super::check_review_preimage_destination(output).map_err(failure)?;
     let trust = load(&parsed)?;
     check_role(trust.config(), BondRole::Cli)?;
-    let request = BondRequest::Inner(BondInnerRequest {
+    let mut inner = BondInnerRequest {
         source_coin_bytes: read_private(
             parsed.require("--source-coin")?,
             sunrise_edge_client::MAX_AUTHENTICATED_OBJECT_BODY_BYTES,
@@ -97,7 +98,15 @@ pub(super) fn prepare_inner<I: IntoIterator<Item = OsString>>(args: I) -> Result
         )?)
         .map_err(failure)?,
         gas_limit: parse_u64("--gas-limit", parsed.require("--gas-limit")?)?,
-    });
+        local_observation: None,
+    };
+    if trust.config().currentness().is_some() {
+        let reference = trust.source_ref_for_observation(&inner)?;
+        let observation =
+            bond_currentness::observe(&trust, &reference, &inner.source_coin_bytes, None)?;
+        inner.local_observation = Some(observation.frame().clone());
+    }
+    let request = BondRequest::Inner(inner);
     let prepared = trust.prepare(&request)?;
     print!("{}", prepared.review);
     super::write_review_preimage(
@@ -192,6 +201,7 @@ pub(super) fn approve<I: IntoIterator<Item = OsString>>(
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(failure(CustodyError::ApproveRequiresTerminal));
     }
+    prepared.requery(&trust, &request)?;
     print!("{}", prepared.review);
     let resolver = trust.config().resolver().map_err(failure)?;
     let digest = resolver
@@ -201,8 +211,20 @@ pub(super) fn approve<I: IntoIterator<Item = OsString>>(
             &prepared.content.frame,
         )
         .map_err(failure)?;
+    let request_binding = if trust.config().currentness().is_some() {
+        let request_digest = resolver
+            .hash_for_purpose(
+                sunrise_edge_client::Epoch::new(0),
+                HashPurpose::Transaction,
+                &prepared.content.request,
+            )
+            .map_err(failure)?;
+        format!(" request_digest={request_digest}")
+    } else {
+        String::new()
+    };
     let confirmation = format!(
-        "APPROVE-ORIGINAL-BOND phase={phase:?} request={} key={} frame_digest={} not_after={not_after}",
+        "APPROVE-ORIGINAL-BOND phase={phase:?} request={} key={} frame_digest={} not_after={not_after}{request_binding}",
         prepared.content.request_id, prepared.content.expected_key, digest,
     );
     println!("Type exactly to approve:\n{confirmation}");
@@ -210,6 +232,7 @@ pub(super) fn approve<I: IntoIterator<Item = OsString>>(
     if typed != confirmation {
         return Err(failure(CustodyError::ApprovalConfirmationMismatch));
     }
+    prepared.requery(&trust, &request)?;
     bond_service::request_broker(
         Path::new(parsed.require(BROKER_SOCKET)?),
         trust.config(),
@@ -273,12 +296,14 @@ pub(super) fn sign<I: IntoIterator<Item = OsString>>(
         return Err(invalid("bond signing phase differs from the request"));
     }
     let prepared = trust.prepare(&request)?;
+    prepared.requery(&trust, &request)?;
     let signature = bond_service::request_signature_from_broker(
         Path::new(parsed.require(BROKER_SOCKET)?),
         trust.config(),
         &request,
     )?;
-    let signed = prepared.finalize(signature.to_vec())?;
+    let permit = prepared.requery(&trust, &request)?;
+    let signed = prepared.finalize(signature.to_vec(), permit)?;
     super::write_review_preimage(output, &signed).map_err(failure)?;
     println!("bond_phase_signed={phase:?}");
     println!("executed=false");

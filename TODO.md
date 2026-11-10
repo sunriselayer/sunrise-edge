@@ -566,9 +566,15 @@ socket・server UID・元validator・正確なstore namespaceとverified genesis
 chain/domain/committee/anchorを照合する単一clientを実装した。peer UIDの送信前確認、
 有限時間のframe/EOF、先行観測の全token/tip一致と拒否を限定7テストで確認した
 （外部記録`m2-currentness-1110/client-46256109/terminal-release.txt`）。
-このclientはまだ呼び出されない。CLI・両承認者・broker・鍵workerの署名前再照合、
-内容承認への観測結合、実hostとの結合、完全required・CI・release資格は未達であり、
-親M2は未完了のまま。
+このclientはPR #361時点では呼び出されず、単独で現在性を保証しない。
+後続[PR #362](https://github.com/sunriselayer/sunrise-edge/pull/362)ではrequest v2へ正規locatorを結び、
+CLI両承認者の確認前後、brokerの承認記録・challenge・署名返却前と鍵workerの署名前に
+独立再照会を接続した。期限は再照会後に確認し、v1のpinなし経路とsignable frameを維持する。
+既存bond multi-UID ownerにsynthetic nodeの通し経路、直接broker/worker拒否、
+変更fence拒否を追加し、別UIDが実行する同じtest harnessを検証付きで一時領域へコピーする。
+独立静的reviewは順序修正とcopyまでPASS。実行テスト・完全required・同head CI、
+実hostと保護署名を結ぶ検証、実承認者・鍵のenrollment、release資格は未達。
+synthetic nodeをchain proofや実hostの現在性証拠にせず、親M2は未完了のまま。
 
 FinalTransferの既存codec・prepared consumer・review表示・development signer・
 positive Splitとの権限分離を[署名経路マップ](docs/architecture/signing-route-test-map.md#finaltransfer-within-the-prepared-fee-claim-owner)へ対応付けた。
