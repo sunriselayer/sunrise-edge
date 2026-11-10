@@ -2617,6 +2617,7 @@ dependencies = [
  "hashing",
  "native-http",
  "node-core",
+ "node-wire",
  "objects",
  "protocol-types",
  "public-standard-asset",

@@ -14,6 +14,8 @@ path = "src/main.rs"
 
 [dependencies]
 execution.workspace = true
+node-core.workspace = true
+node-wire.workspace = true
 protocol-types.workspace = true
 sunrise-edge-client.workspace = true
 sunrise-edge-ledger.workspace = true
