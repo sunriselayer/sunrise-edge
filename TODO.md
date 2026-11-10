@@ -572,8 +572,12 @@ CLI両承認者の確認前後、brokerの承認記録・challenge・署名返�
 独立再照会を接続した。期限は再照会後に確認し、v1のpinなし経路とsignable frameを維持する。
 既存bond multi-UID ownerにsynthetic nodeの通し経路、直接broker/worker拒否、
 変更fence拒否を追加し、別UIDが実行する同じtest harnessを検証付きで一時領域へコピーする。
-独立静的reviewは順序修正とcopyまでPASS。実行テスト・完全required・同head CI、
-実hostと保護署名を結ぶ検証、実承認者・鍵のenrollment、release資格は未達。
+独立静的reviewは順序修正とcopyまでPASS。最終head `1c1fd897`では
+protected bond multi-UID owner・ordered登録を含むrust-testsと元7 epoch/e8の
+recurring-sqliteを含む全8 hosted CIが終端成功した。PR #362の通常merge
+`922b95ac`は検証headと同tree。literal npm ci・ローカル完全requiredは
+同headで未実行。実hostと保護署名を結ぶ検証、実承認者・鍵のenrollment、
+release資格は未達。
 synthetic nodeをchain proofや実hostの現在性証拠にせず、親M2は未完了のまま。
 
 FinalTransferの既存codec・prepared consumer・review表示・development signer・
