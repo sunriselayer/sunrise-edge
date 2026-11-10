@@ -552,6 +552,11 @@ original bondの初期releaseでは、人が[DR-0292](docs/architecture/decision
 proof=false、期限・上限後のsocket削除とHTTP 200、fence更新後restart、
 実EOF/wait/reap・container解放を確認した
 （外部記録`m2-currentness-1110/multiuid-a0aa/result.txt`）。
+`fccd23a9`では局所観測の要求・応答codecを`node-wire`へ一元化し、既存listenerを
+同じcodecへ移した。変更前の154-byte要求・405-byte応答と独立照合した固定vector、
+不正frame拒否の限定3件、operator listenerの限定1件が隔離環境で成功し、
+独立静的reviewもPASS（外部記録`m2-currentness-1110/codec-7b02c7d2/result.txt`）。
+復号した観測値は未認証の局所locatorであり、chain proofや現在性承認ではない。
 指定nodeとserver peerのconsumer側固定、CLI・両承認者・broker・鍵workerの署名前再照合、
 内容承認への観測結合、完全required・CI・release資格は未達であり、親M2は未完了のまま。
 
