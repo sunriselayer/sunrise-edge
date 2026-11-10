@@ -8,7 +8,6 @@
 //! admission genesis before claiming that fence.
 #![forbid(unsafe_code)]
 
-#[allow(dead_code)] // No listener is admitted yet; this is a host-private observation seam.
 mod currentness;
 
 use crate::common::{FlagSet, load_signing_key_file, parse_hash_suite, parse_hex_32};
@@ -67,6 +66,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--created-checkpoint",
     "--timeout-seconds",
     "--max-concurrent",
+    "--bond-currentness-config",
     crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG,
     native_tls::CERT_FLAG,
     native_tls::KEY_FLAG,
@@ -215,6 +215,16 @@ fn run_original(tokens: Vec<OsString>, worker: Option<WorkerMode>) -> Result<(),
         crate::native_operations::LocalObservationsPath::parse(
             flags.optional_one(crate::native_operations::LOCAL_OBSERVATIONS_SOCKET_FLAG)?,
         )?;
+    #[cfg(target_os = "linux")]
+    let bond_currentness_path = match flags.optional_one(currentness::listener::FLAG)? {
+        Some(path) if worker.is_none() => Some(PathBuf::from(path)),
+        Some(_) => return Err("bond currentness listener is original host only".into()),
+        None => None,
+    };
+    #[cfg(not(target_os = "linux"))]
+    if flags.optional_one("--bond-currentness-config")?.is_some() {
+        return Err("bond currentness listener requires Linux".into());
+    }
     flags.finish()?;
     if !confirmed {
         return Err(
@@ -229,6 +239,11 @@ fn run_original(tokens: Vec<OsString>, worker: Option<WorkerMode>) -> Result<(),
     if !listen_addr.ip().is_loopback() {
         return Err("--listen must be a loopback address".into());
     }
+    #[cfg(target_os = "linux")]
+    let bond_currentness = bond_currentness_path
+        .as_deref()
+        .map(currentness::listener::Config::load)
+        .transpose()?;
     let local_observations: crate::native_operations::PreparedLocalObservations =
         crate::native_operations::PreparedLocalObservations::connect(local_observations_path)?;
     let tls: Option<tokio_rustls::TlsAcceptor> = tls_inputs.load()?;
@@ -372,6 +387,23 @@ fn run_original(tokens: Vec<OsString>, worker: Option<WorkerMode>) -> Result<(),
     node_core::ordered_economics::query_status(store_arc.as_ref(), &serving_context, &ordered_env)
         .map_err(|error| format!("existing ordered economics state is not valid: {error}"))?;
 
+    #[cfg(target_os = "linux")]
+    let bond_currentness = bond_currentness
+        .map(|config| {
+            currentness::OriginalBondCurrentnessReader::new(
+                Arc::clone(&store_arc),
+                Arc::clone(&blob_arc),
+                root.clone(),
+                domain,
+                validator,
+                derived_public_key,
+                generation,
+                Duration::from_secs(timeout_seconds.min(30)),
+            )
+            .map(|reader| (config, Arc::new(reader)))
+        })
+        .transpose()?;
+
     let seal = OrderedSealHostComposition {
         genesis_root: root.clone(),
         paid_base_policy: ordered_leg_policy.clone(),
@@ -447,6 +479,14 @@ fn run_original(tokens: Vec<OsString>, worker: Option<WorkerMode>) -> Result<(),
     runtime.block_on(async move {
         let mut stop = crate::native_operations::StopOwner::install(local_observations)?;
         let listener = tokio::net::TcpListener::bind(listen_addr).await?;
+        #[cfg(target_os = "linux")]
+        let bond_listener = match bond_currentness {
+            Some((config, reader)) => {
+                let (owner, socket) = config.bind()?;
+                Some((config, reader, owner, socket))
+            }
+            None => None,
+        };
         let bound_addr = listener.local_addr()?;
         if !stop.stop_before_readiness() {
         println!(
@@ -462,21 +502,55 @@ fn run_original(tokens: Vec<OsString>, worker: Option<WorkerMode>) -> Result<(),
         let serve_policy: native_http::NativeHttpServePolicy =
             native_http::NativeHttpServePolicy::default().with_certified_publication(true);
         crate::native_operations::serve(blocking_executor, stop, move |shutdown, observations| async move {
-        match tls {
-            None => native_http::serve_with_stream_upgrade_observed(
-                listener, router, serve_policy,
-                |stream: tokio::net::TcpStream| async move { Ok::<_, std::io::Error>(stream) },
-                shutdown, observations).await,
-            Some(acceptor) => native_http::serve_with_stream_upgrade_observed(
-                listener,
-                router,
-                serve_policy,
-                move |stream: tokio::net::TcpStream| native_tls::accept(acceptor.clone(), stream),
-                shutdown,
-                observations,
-            )
-            .await,
-        }
+            #[cfg(target_os = "linux")]
+            if let Some((config, reader, owner, socket)) = bond_listener {
+                let (socket_stop, socket_stop_receiver) = tokio::sync::watch::channel(false);
+                let (socket_done, mut socket_done_receiver) = tokio::sync::watch::channel(false);
+                let shutdown_stop = socket_stop.clone();
+                let http_shutdown = async move {
+                    tokio::select! {
+                        _ = shutdown => {},
+                        _ = socket_done_receiver.changed() => {},
+                    }
+                    let _ = shutdown_stop.send(true);
+                };
+                let http = async {
+                    let result = match tls {
+                        None => native_http::serve_with_stream_upgrade_observed(
+                            listener, router, serve_policy,
+                            |stream: tokio::net::TcpStream| async move { Ok::<_, std::io::Error>(stream) },
+                            http_shutdown, observations).await,
+                        Some(acceptor) => native_http::serve_with_stream_upgrade_observed(
+                            listener, router, serve_policy,
+                            move |stream: tokio::net::TcpStream| native_tls::accept(acceptor.clone(), stream),
+                            http_shutdown, observations).await,
+                    };
+                    let _ = socket_stop.send(true);
+                    result
+                };
+                let local = async {
+                    let result = currentness::listener::serve(
+                        socket, reader, validator, config, socket_stop_receiver,
+                    ).await;
+                    let _ = socket_done.send(true);
+                    result
+                };
+                let (http_result, local_result) = tokio::join!(http, local);
+                let close_result = owner.close();
+                http_result?;
+                local_result?;
+                return close_result;
+            }
+            match tls {
+                None => native_http::serve_with_stream_upgrade_observed(
+                    listener, router, serve_policy,
+                    |stream: tokio::net::TcpStream| async move { Ok::<_, std::io::Error>(stream) },
+                    shutdown, observations).await,
+                Some(acceptor) => native_http::serve_with_stream_upgrade_observed(
+                    listener, router, serve_policy,
+                    move |stream: tokio::net::TcpStream| native_tls::accept(acceptor.clone(), stream),
+                    shutdown, observations).await,
+            }
         }).await
     })?;
     Ok(())
@@ -544,6 +618,22 @@ mod tests {
     #[test]
     fn missing_confirm_flag_refuses_before_any_file_access() {
         let error = run(args_with("127.0.0.1:0", false)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("--confirm-offline-fence-advance")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn missing_confirm_refuses_before_loading_bond_listener_file() {
+        let mut args = args_with("127.0.0.1:0", false);
+        args.extend([
+            OsString::from(currentness::listener::FLAG),
+            OsString::from("/nonexistent/bond-listener.conf"),
+        ]);
+        let error = run(args).unwrap_err();
         assert!(
             error
                 .to_string()

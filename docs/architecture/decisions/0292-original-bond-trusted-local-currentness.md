@@ -2,7 +2,8 @@
 
 Date: 2026-11-10 (Asia/Singapore)
 
-Status: Selected trust boundary; transport and runtime enforcement pending.
+Status: Selected trust boundary; opt-in local observation transport implemented;
+approver and signing enforcement pending.
 
 ## Context
 
@@ -19,8 +20,8 @@ token**. The designated node identity, chain, domain, validator, and genesis
 digest must be pinned outside an untrusted request. This is a local-node trust
 choice, not a chain-state proof: report `chain_state_proof=false`.
 
-After the host's single writer-fence claim, a future read-only currentness
-operation must use that host's existing `Arc<SqliteDurableStore>` and original
+After the host's single writer-fence claim, the read-only currentness
+operation uses that host's existing `Arc<SqliteDurableStore>` and original
 ordered policy, never a second database opener or a startup context. For each
 request it creates a fresh context at the claimed fence. It brackets all
 deciding reads with `read_stable_advisory`, requiring equal full portable
@@ -52,16 +53,23 @@ the protocol signing frames remain unchanged.
 
 ## Implementation boundary
 
-The live original host currently has no authenticated read-only Unix query
-listener. Its loopback HTTP query routes and outbound diagnostics socket do
-not provide this admission boundary. A narrow listener, closed CLI
-configuration, peer authentication, and stop/drain integration must be
-reviewed and implemented before any runtime currentness result is exposed.
-The present bond preview and protected signing fixture therefore retain their
-unverified-source status. This record does not approve, sign, register, or
-execute a bond and closes no M2 or release requirement. Actual node/approver
-enrollment, real keys, host users, and security policy are outside this
-decision.
+The opt-in `--bond-currentness-config` private file selects one socket path,
+one to eight distinct allowed peer UIDs different from the host UID, connection and request caps,
+and a total deadline. The original host binds the socket after its one fence
+claim and before readiness. It authenticates the Unix peer before reading a
+bounded request, performs one read-only query at a time, joins any in-flight
+query at stop, and removes its exact owned socket before the host terminal
+record. The response carries the full local token, applied ordered tip, exact
+Coin reference and `chain_state_proof=false`. Exhaustion or listener failure
+stops the host rather than silently continuing HTTP service.
+
+The existing loopback HTTP route and outbound diagnostics socket are not this
+admission boundary. There is no bond CLI, broker, content-approver or protected
+key-worker connection to the listener yet. The present bond preview and
+protected signing fixture therefore retain their unverified-source status.
+This record does not approve, sign, register, or execute a bond and closes no
+M2 or release requirement. Actual node/approver enrollment, real keys, host
+users, and security policy are outside this decision.
 
 [DR-0289]: 0289-bond-outer-key-custody-and-split-approval.md
 [DR-0291]: 0291-original-bond-inner-standard-asset-profile.md

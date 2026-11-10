@@ -1,5 +1,8 @@
 //! Read-only original-bond source observation against the live host store.
-//! There is deliberately no transport or approval/signing route in this slice.
+//! The optional local listener exposes observations, never approval or signing.
+
+#[cfg(target_os = "linux")]
+pub(super) mod listener;
 
 use crate::sqlite_genesis_checks::{
     OriginalHostPins, read_original_host_state, read_stable_advisory_with_token,
@@ -44,8 +47,8 @@ pub(super) struct OriginalBondCurrentnessObservation {
 
 /// Pinned, read-only reader for one original host's already-claimed writer
 /// fence and *same* store Arc. Construction neither opens nor advances state.
-/// A future authenticated local listener may invoke `observe`; currently no
-/// request path does, so this type grants no live signing authority.
+/// Only the original host can construct this reader after its fence claim.
+/// Its local listener grants no signing authority.
 pub(super) struct OriginalBondCurrentnessReader {
     store: Arc<SqliteDurableStore>,
     blobs: Arc<SqliteBlobStore>,
@@ -261,7 +264,7 @@ mod tests {
     use runtime_sqlite::SqliteNamespace;
     use std::{
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -288,109 +291,165 @@ mod tests {
         }
     }
 
+    pub(super) struct Installed {
+        _directory: Directory,
+        pub(super) store: Arc<SqliteDurableStore>,
+        pub(super) blobs: Arc<SqliteBlobStore>,
+        pub(super) root: VerifiedGenesisRoot,
+        pub(super) network: super::genesis_fixture::FastVoteGenesisFixture,
+        pub(super) claimed: WriterFenceGeneration,
+        pub(super) public_key: [u8; 32],
+        pub(super) reviewed: ObjectRef,
+        pub(super) body: Vec<u8>,
+    }
+
+    impl Installed {
+        pub(super) fn new() -> Self {
+            let directory = Directory::new();
+            let fixture = super::causal_genesis_fixture::build("bond-currentness-unit");
+            let network = fixture.network;
+            let root = VerifiedGenesisRoot::verify_bytes(
+                &network.resolver,
+                &network.manifest_bytes,
+                network.manifest_digest,
+                &network.context,
+            )
+            .unwrap();
+            let initial = WriterFenceGeneration::new(1).unwrap();
+            let namespace = SqliteNamespace::new(
+                network.chain_id.clone(),
+                network.validators[0].validator_id,
+                network.domain,
+            );
+            let store = Arc::new(
+                SqliteDurableStore::create_new(
+                    directory.0.join("state.sqlite"),
+                    namespace,
+                    initial,
+                )
+                .unwrap(),
+            );
+            let blobs = Arc::new(
+                SqliteBlobStore::create_new_fresh(directory.0.join("blobs.sqlite")).unwrap(),
+            );
+            let deadline = SystemClock
+                .now_unix_millis()
+                .unwrap()
+                .checked_add(60_000)
+                .unwrap();
+            let context = DurableOperationContext::new(
+                initial,
+                StorageDeadline::new(deadline).unwrap(),
+                StorageCorrelationId::new([0x71; 16]).unwrap(),
+            );
+            let policy = OrderedEconomicsPolicy::from_genesis_root(&root, network.domain).unwrap();
+            install_original_genesis(
+                store.as_ref(),
+                blobs.as_ref(),
+                &OriginalGenesisInstallation {
+                    context: &context,
+                    domain: network.domain,
+                    resolver: &network.resolver,
+                    root: &root,
+                    policy: &policy,
+                    checkpoint: 10,
+                },
+            )
+            .unwrap();
+            let claimed = initial.checked_next().unwrap();
+            store.advance_writer_fence(initial, claimed).unwrap();
+            let public_key: [u8; 32] =
+                VerificationKey::from(&network.validators[0].signing_key).into();
+            let coin = root
+                .manifest()
+                .objects
+                .iter()
+                .find(|entry| entry.object.id == network.fee_coin)
+                .unwrap();
+            let body = encode_object(&coin.object).unwrap();
+            let reviewed = ObjectRef {
+                id: coin.object.id,
+                version: coin.object.version,
+                digest: network
+                    .resolver
+                    .hash_for_purpose(network.epoch, protocol_types::HashPurpose::Object, &body)
+                    .unwrap(),
+            };
+            Self {
+                _directory: directory,
+                store,
+                blobs,
+                root,
+                network,
+                claimed,
+                public_key,
+                reviewed,
+                body,
+            }
+        }
+
+        pub(super) fn reader(&self) -> OriginalBondCurrentnessReader {
+            OriginalBondCurrentnessReader::new(
+                Arc::clone(&self.store),
+                Arc::clone(&self.blobs),
+                self.root.clone(),
+                self.network.domain,
+                self.network.validators[0].validator_id,
+                self.public_key,
+                self.claimed,
+                Duration::from_secs(30),
+            )
+            .unwrap()
+        }
+
+        pub(super) fn path(&self) -> &Path {
+            &self._directory.0
+        }
+    }
+
     #[test]
     fn claimed_original_sqlite_coin_refuses_wrong_validator_and_stale_fence() {
-        let directory = Directory::new();
-        let fixture = super::causal_genesis_fixture::build("bond-currentness-unit");
-        let network = fixture.network;
-        let root = VerifiedGenesisRoot::verify_bytes(
-            &network.resolver,
-            &network.manifest_bytes,
-            network.manifest_digest,
-            &network.context,
-        )
-        .unwrap();
-        let initial = WriterFenceGeneration::new(1).unwrap();
-        let namespace = SqliteNamespace::new(
-            network.chain_id.clone(),
-            network.validators[0].validator_id,
-            network.domain,
-        );
-        let store = Arc::new(
-            SqliteDurableStore::create_new(directory.0.join("state.sqlite"), namespace, initial)
-                .unwrap(),
-        );
-        let blobs =
-            Arc::new(SqliteBlobStore::create_new_fresh(directory.0.join("blobs.sqlite")).unwrap());
-        let deadline = SystemClock
-            .now_unix_millis()
-            .unwrap()
-            .checked_add(60_000)
+        let installed = Installed::new();
+        let reader = installed.reader();
+        let observation = reader
+            .observe(&installed.reviewed, &installed.body)
             .unwrap();
-        let context = DurableOperationContext::new(
-            initial,
-            StorageDeadline::new(deadline).unwrap(),
-            StorageCorrelationId::new([0x71; 16]).unwrap(),
-        );
-        let policy = OrderedEconomicsPolicy::from_genesis_root(&root, network.domain).unwrap();
-        install_original_genesis(
-            store.as_ref(),
-            blobs.as_ref(),
-            &OriginalGenesisInstallation {
-                context: &context,
-                domain: network.domain,
-                resolver: &network.resolver,
-                root: &root,
-                policy: &policy,
-                checkpoint: 10,
-            },
-        )
-        .unwrap();
-        let claimed = initial.checked_next().unwrap();
-        store.advance_writer_fence(initial, claimed).unwrap();
-        let public_key: [u8; 32] = VerificationKey::from(&network.validators[0].signing_key).into();
-        let reader = OriginalBondCurrentnessReader::new(
-            Arc::clone(&store),
-            Arc::clone(&blobs),
-            root.clone(),
-            network.domain,
-            network.validators[0].validator_id,
-            public_key,
-            claimed,
-            Duration::from_secs(30),
-        )
-        .unwrap();
-        let coin = root
-            .manifest()
-            .objects
-            .iter()
-            .find(|entry| entry.object.id == network.fee_coin)
-            .unwrap();
-        let body = encode_object(&coin.object).unwrap();
-        let reviewed = ObjectRef {
-            id: coin.object.id,
-            version: coin.object.version,
-            digest: network
-                .resolver
-                .hash_for_purpose(network.epoch, protocol_types::HashPurpose::Object, &body)
-                .unwrap(),
-        };
-        let observation = reader.observe(&reviewed, &body).unwrap();
-        assert_eq!(observation.token.writer_fence(), claimed);
-        assert_eq!(observation.epoch, network.epoch);
-        assert_eq!(observation.coin, reviewed);
+        assert_eq!(observation.token.writer_fence(), installed.claimed);
+        assert_eq!(observation.epoch, installed.network.epoch);
+        assert_eq!(observation.coin, installed.reviewed);
         assert_eq!(observation.ordered_tip.through_height, 0);
 
         let wrong_validator = OriginalBondCurrentnessReader::new(
-            Arc::clone(&store),
-            Arc::clone(&blobs),
-            root,
-            network.domain,
-            network.validators[1].validator_id,
-            public_key,
-            claimed,
+            Arc::clone(&installed.store),
+            Arc::clone(&installed.blobs),
+            installed.root.clone(),
+            installed.network.domain,
+            installed.network.validators[1].validator_id,
+            installed.public_key,
+            installed.claimed,
             Duration::from_secs(30),
         )
         .unwrap();
-        assert!(wrong_validator.observe(&reviewed, &body).is_err());
+        assert!(
+            wrong_validator
+                .observe(&installed.reviewed, &installed.body)
+                .is_err()
+        );
         let changed_reference = ObjectRef {
-            version: reviewed.version + 1,
-            ..reviewed.clone()
+            version: installed.reviewed.version + 1,
+            ..installed.reviewed.clone()
         };
-        assert!(reader.observe(&changed_reference, &body).is_err());
-        let stale = claimed.checked_next().unwrap();
-        store.advance_writer_fence(claimed, stale).unwrap();
-        assert!(reader.observe(&reviewed, &body).is_err());
+        assert!(reader.observe(&changed_reference, &installed.body).is_err());
+        let stale = installed.claimed.checked_next().unwrap();
+        installed
+            .store
+            .advance_writer_fence(installed.claimed, stale)
+            .unwrap();
+        assert!(
+            reader
+                .observe(&installed.reviewed, &installed.body)
+                .is_err()
+        );
     }
 
     #[test]
