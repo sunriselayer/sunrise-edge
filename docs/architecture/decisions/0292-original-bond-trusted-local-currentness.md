@@ -2,9 +2,8 @@
 
 Date: 2026-11-10 (Asia/Singapore)
 
-Status: Selected trust boundary; opt-in local observation transport and
-preparation locator implemented; decision-point requery and signing enforcement
-pending.
+Status: Selected trust boundary; opt-in local observation and decision-point
+requery code connected; exact-source runtime qualification pending.
 
 ## Context
 
@@ -75,10 +74,19 @@ token, applied tip, Coin reference, and `chain_state_proof=false`, while
 retaining `source_snapshot_unverified=true`. The signable inner and outer
 frames and approval-record schema do not change. Broker and reply IPC remain
 version one; configurations without node pins retain version-one requests.
-Until both approvers, the broker, and the relevant key worker have independent
-fresh requery at their decision points, configured-node approval and signing
-requests refuse before any approval record or signature. No preparation
-locator alone is authorization or proof of delivery-time currentness.
+Each content approver requeries before review and after typed confirmation;
+the latter binds a digest of the complete version-two request. The broker
+requeries before approval writes, at the worker challenge and before final
+signature release. The worker requeries immediately before signing; the CLI
+requeries before its sign request and after the broker response. Every requery
+requires byte-equivalent canonical locator fields, including the full token,
+ordered tip and exact Coin reference/body. If the node is unavailable or any
+field changes, that request refuses. Approval records are create-only and bind
+the exact request. Once an approval is recorded, a changed observation cannot
+reuse it: a new request ID and both approvals are required. No preparation
+locator alone is authorization or proof of
+delivery-time currentness. The multi-UID transport fixture uses a fixed
+dummy response; actual compiled-host runtime qualification remains separate.
 This record does not approve, sign, register, or execute a bond and closes no
 M2 or release requirement. Actual node/approver enrollment, real keys, host
 users, and security policy are outside this decision.

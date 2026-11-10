@@ -1,6 +1,7 @@
 //! Private, opt-in client for the designated original serving node's local
 //! Coin observation. This is not a chain proof or a currentness reservation.
-//! No approval or signing path calls this module yet.
+//! Request-carried locators are untrusted until every decision point makes a
+//! fresh peer-authenticated query and compares the complete result.
 
 use std::{io, path::PathBuf, time::Duration};
 
@@ -165,6 +166,34 @@ pub(super) fn observe(
         .build()
         .map_err(|_| refused())?;
     runtime.block_on(observe_async(&pins, reference, &body, prior))
+}
+
+/// Synchronous CLI decision-point requery. The request's locator is checked
+/// against private pins before contacting the node, then all returned fields
+/// must equal that exact canonical locator.
+pub(super) fn requery(
+    trust: &BondTrust,
+    reference: &ObjectRef,
+    coin_body: &[u8],
+    locator: &OriginalBondLocalObservationFrame,
+) -> Result<(), CliError> {
+    let prior = Pins::from_trust(trust)?.check(locator.clone(), reference, None)?;
+    observe(trust, reference, coin_body, Some(&prior))?;
+    Ok(())
+}
+
+/// Async broker/worker decision-point requery; never nests a Tokio runtime.
+pub(super) async fn requery_async(
+    trust: &BondTrust,
+    reference: &ObjectRef,
+    coin_body: &[u8],
+    locator: &OriginalBondLocalObservationFrame,
+) -> Result<(), CliError> {
+    let pins = Pins::from_trust(trust)?;
+    let prior = pins.check(locator.clone(), reference, None)?;
+    let body = wire::encode_request(reference, coin_body).map_err(|_| refused())?;
+    observe_async(&pins, reference, &body, Some(&prior)).await?;
+    Ok(())
 }
 
 async fn observe_async(
@@ -420,5 +449,56 @@ mod tests {
         assert!(observe_async(&pins, &reference, &body, None).await.is_err());
         assert!(observe_async(&pins, &reference, &body, None).await.is_err());
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fresh_query_refuses_changed_fence_coin_tip_and_unavailable_node() {
+        let dir = TempDir::new(0o700);
+        let socket = dir.child("changing-observe.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (pins, reference, frame) = fixture(socket);
+        let prior = pins.check(frame.clone(), &reference, None).unwrap();
+        let body = wire::encode_request(&reference, b"reviewed Coin").unwrap();
+        let mut changed_fence = frame.clone();
+        changed_fence.token = PortableSnapshotToken::new(
+            frame.token.namespace().to_vec(),
+            frame.token.domain(),
+            WriterFenceGeneration::new(8).unwrap(),
+            frame.token.mutation_sequence(),
+        )
+        .unwrap();
+        let mut changed_coin = frame.clone();
+        changed_coin.coin.version += 1;
+        let mut changed_tip = frame.clone();
+        changed_tip.through_height = 1;
+        changed_tip.through_view = 1;
+        changed_tip.through_digest = Digest32::new(HashAlgorithmId::Sha2_256, [0x22; 32]);
+        let replies = [changed_fence, changed_coin, changed_tip]
+            .map(|value| wire::encode_response(&value).unwrap());
+        let expected = body.clone();
+        let server = tokio::spawn(async move {
+            for reply in replies {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let length = stream.read_u32().await.unwrap() as usize;
+                let mut request = vec![0; length];
+                stream.read_exact(&mut request).await.unwrap();
+                assert_eq!(request, expected);
+                stream.write_u32(reply.len() as u32).await.unwrap();
+                stream.write_all(&reply).await.unwrap();
+            }
+        });
+        for _ in 0..3 {
+            assert!(
+                observe_async(&pins, &reference, &body, Some(&prior))
+                    .await
+                    .is_err()
+            );
+        }
+        server.await.unwrap();
+        assert!(
+            observe_async(&pins, &reference, &body, Some(&prior))
+                .await
+                .is_err()
+        );
     }
 }

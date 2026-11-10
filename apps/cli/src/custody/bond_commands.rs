@@ -190,7 +190,6 @@ pub(super) fn approve<I: IntoIterator<Item = OsString>>(
     if request.phase() != phase {
         return Err(invalid("bond approval phase differs from the request"));
     }
-    trust.require_signing_ready()?;
     let prepared = trust.prepare(&request)?;
     let not_after = parse_u64(
         "--not-after-unix-seconds",
@@ -202,6 +201,7 @@ pub(super) fn approve<I: IntoIterator<Item = OsString>>(
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(failure(CustodyError::ApproveRequiresTerminal));
     }
+    prepared.requery(&trust, &request)?;
     print!("{}", prepared.review);
     let resolver = trust.config().resolver().map_err(failure)?;
     let digest = resolver
@@ -211,8 +211,20 @@ pub(super) fn approve<I: IntoIterator<Item = OsString>>(
             &prepared.content.frame,
         )
         .map_err(failure)?;
+    let request_binding = if trust.config().currentness().is_some() {
+        let request_digest = resolver
+            .hash_for_purpose(
+                sunrise_edge_client::Epoch::new(0),
+                HashPurpose::Transaction,
+                &prepared.content.request,
+            )
+            .map_err(failure)?;
+        format!(" request_digest={request_digest}")
+    } else {
+        String::new()
+    };
     let confirmation = format!(
-        "APPROVE-ORIGINAL-BOND phase={phase:?} request={} key={} frame_digest={} not_after={not_after}",
+        "APPROVE-ORIGINAL-BOND phase={phase:?} request={} key={} frame_digest={} not_after={not_after}{request_binding}",
         prepared.content.request_id, prepared.content.expected_key, digest,
     );
     println!("Type exactly to approve:\n{confirmation}");
@@ -220,6 +232,7 @@ pub(super) fn approve<I: IntoIterator<Item = OsString>>(
     if typed != confirmation {
         return Err(failure(CustodyError::ApprovalConfirmationMismatch));
     }
+    prepared.requery(&trust, &request)?;
     bond_service::request_broker(
         Path::new(parsed.require(BROKER_SOCKET)?),
         trust.config(),
@@ -282,14 +295,15 @@ pub(super) fn sign<I: IntoIterator<Item = OsString>>(
     if request.phase() != phase {
         return Err(invalid("bond signing phase differs from the request"));
     }
-    trust.require_signing_ready()?;
     let prepared = trust.prepare(&request)?;
+    prepared.requery(&trust, &request)?;
     let signature = bond_service::request_signature_from_broker(
         Path::new(parsed.require(BROKER_SOCKET)?),
         trust.config(),
         &request,
     )?;
-    let signed = prepared.finalize(signature.to_vec())?;
+    let permit = prepared.requery(&trust, &request)?;
+    let signed = prepared.finalize(signature.to_vec(), permit)?;
     super::write_review_preimage(output, &signed).map_err(failure)?;
     println!("bond_phase_signed={phase:?}");
     println!("executed=false");
