@@ -3,8 +3,8 @@
 
 use super::{OriginalBondCurrentnessObservation, OriginalBondCurrentnessReader};
 use crate::local_custody_transport::{self, SocketOwner};
-use objects::{ObjectRef, decode_object_ref, encode_object_ref};
-use protocol_types::{Digest32, ValidatorId};
+use node_wire::original_bond_currentness::{self as wire, OriginalBondLocalObservationFrame};
+use protocol_types::ValidatorId;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -22,10 +22,8 @@ pub(in crate::sqlite_source_host) const FLAG: &str = "--bond-currentness-config"
 const MAX_CONFIG: u64 = 4096;
 const MAX_REQUESTS: u64 = 4096;
 const MAX_SECONDS: u64 = 3600;
-const REQUEST_MAGIC: &[u8; 8] = b"SRBREAD1";
-const RESPONSE_MAGIC: &[u8; 8] = b"SRBOBS01";
-const MAX_FRAME: usize = node_core::MAX_AUTHENTICATED_OBJECT_BODY_BYTES + 4096;
-const MAX_RESPONSE: usize = 1024;
+const MAX_FRAME: usize = wire::MAX_REQUEST_BYTES;
+const MAX_RESPONSE: usize = wire::MAX_RESPONSE_BYTES;
 
 fn refused() -> io::Error {
     io::Error::other("original bond currentness listener refused")
@@ -115,29 +113,6 @@ impl Config {
     }
 }
 
-/// The request is magic, u16 canonical ObjectRef length, ObjectRef, and exact
-/// reviewed canonical Coin body. There is one request per connection.
-fn decode_request(bytes: &[u8]) -> io::Result<(ObjectRef, &[u8])> {
-    if bytes.len() < 8 + 2 + 1 || &bytes[..8] != REQUEST_MAGIC {
-        return Err(refused());
-    }
-    let length = usize::from(u16::from_be_bytes([bytes[8], bytes[9]]));
-    let end = 10usize.checked_add(length).ok_or_else(refused)?;
-    if length == 0 || end >= bytes.len() || length > 1024 {
-        return Err(refused());
-    }
-    let reference = decode_object_ref(&bytes[10..end]).map_err(|_| refused())?;
-    if encode_object_ref(&reference).map_err(|_| refused())? != bytes[10..end] {
-        return Err(refused());
-    }
-    Ok((reference, &bytes[end..]))
-}
-
-fn digest(bytes: &mut Vec<u8>, value: Digest32) {
-    bytes.extend_from_slice(&value.algorithm().as_u16().to_be_bytes());
-    bytes.extend_from_slice(&value.bytes());
-}
-
 /// Success only. `chain_state_proof=false` is a literal zero byte. Fields are
 /// ordered and length-prefixed to preserve the entire local token and tip.
 fn encode_response(
@@ -146,45 +121,21 @@ fn encode_response(
 ) -> io::Result<Vec<u8>> {
     let token = &observation.token;
     let tip = &observation.ordered_tip;
-    let chain = tip.context.chain_id().as_str().as_bytes();
-    let coin = encode_object_ref(&observation.coin).map_err(|_| refused())?;
-    let mut bytes = Vec::with_capacity(MAX_RESPONSE);
-    bytes.extend_from_slice(RESPONSE_MAGIC);
-    bytes.push(0); // chain_state_proof=false; not current at delivery.
-    bytes.extend_from_slice(&validator.as_bytes()[..]);
-    bytes.extend_from_slice(
-        &u16::try_from(chain.len())
-            .map_err(|_| refused())?
-            .to_be_bytes(),
-    );
-    bytes.extend_from_slice(chain);
-    bytes.extend_from_slice(&tip.context.protocol_version().get().to_be_bytes());
-    bytes.extend_from_slice(&token.domain().as_bytes()[..]);
-    bytes.extend_from_slice(
-        &u16::try_from(token.namespace().len())
-            .map_err(|_| refused())?
-            .to_be_bytes(),
-    );
-    bytes.extend_from_slice(token.namespace());
-    bytes.extend_from_slice(&token.writer_fence().get().to_be_bytes());
-    bytes.extend_from_slice(&token.mutation_sequence().to_be_bytes());
-    bytes.extend_from_slice(&observation.epoch.get().to_be_bytes());
-    digest(&mut bytes, observation.validator_set_digest);
-    digest(&mut bytes, tip.genesis_digest);
-    digest(&mut bytes, tip.anchor);
-    bytes.extend_from_slice(&tip.through_height.to_be_bytes());
-    bytes.extend_from_slice(&tip.through_view.to_be_bytes());
-    digest(&mut bytes, tip.through_digest);
-    bytes.extend_from_slice(
-        &u16::try_from(coin.len())
-            .map_err(|_| refused())?
-            .to_be_bytes(),
-    );
-    bytes.extend_from_slice(&coin);
-    if bytes.len() > MAX_RESPONSE {
-        return Err(refused());
-    }
-    Ok(bytes)
+    wire::encode_response(&OriginalBondLocalObservationFrame {
+        validator,
+        chain_id: tip.context.chain_id().clone(),
+        protocol_version: tip.context.protocol_version(),
+        token: token.clone(),
+        epoch: observation.epoch,
+        validator_set_digest: observation.validator_set_digest,
+        genesis_digest: tip.genesis_digest,
+        anchor: tip.anchor,
+        through_height: tip.through_height,
+        through_view: tip.through_view,
+        through_digest: tip.through_digest,
+        coin: observation.coin.clone(),
+    })
+    .map_err(|_| refused())
 }
 
 async fn changed(stop: &mut watch::Receiver<bool>) {
@@ -255,7 +206,7 @@ pub(in crate::sqlite_source_host) async fn serve(
         }
         let request_reader = Arc::clone(&reader);
         let queried = tokio::task::spawn_blocking(move || -> io::Result<Vec<u8>> {
-            let (reference, body) = decode_request(&bytes)?;
+            let (reference, body) = wire::decode_request(&bytes).map_err(|_| refused())?;
             let observation = request_reader
                 .observe(&reference, body)
                 .map_err(|_| refused())?;
@@ -310,13 +261,7 @@ mod tests {
     }
 
     fn request(installed: &Installed) -> Vec<u8> {
-        let reference = encode_object_ref(&installed.reviewed).unwrap();
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(REQUEST_MAGIC);
-        bytes.extend_from_slice(&u16::try_from(reference.len()).unwrap().to_be_bytes());
-        bytes.extend_from_slice(&reference);
-        bytes.extend_from_slice(&installed.body);
-        bytes
+        wire::encode_request(&installed.reviewed, &installed.body).unwrap()
     }
 
     async fn exchange(path: &Path, bytes: &[u8]) -> io::Result<Vec<u8>> {
@@ -388,7 +333,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(response, expected);
-        assert_eq!(&response[..8], RESPONSE_MAGIC);
+        assert_eq!(&response[..8], b"SRBOBS01");
         assert_eq!(response[8], 0); // no chain-state proof
         // A changed writer generation makes this same live IPC route refuse.
         store
