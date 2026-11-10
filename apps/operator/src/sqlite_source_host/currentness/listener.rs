@@ -23,7 +23,6 @@ const MAX_CONFIG: u64 = 4096;
 const MAX_REQUESTS: u64 = 4096;
 const MAX_SECONDS: u64 = 3600;
 const MAX_FRAME: usize = wire::MAX_REQUEST_BYTES;
-const MAX_RESPONSE: usize = wire::MAX_RESPONSE_BYTES;
 
 fn refused() -> io::Error {
     io::Error::other("original bond currentness listener refused")
@@ -267,7 +266,12 @@ mod tests {
     async fn exchange(path: &Path, bytes: &[u8]) -> io::Result<Vec<u8>> {
         let mut stream = UnixStream::connect(path).await?;
         native_http::local_custody_transport::write_frame(&mut stream, bytes, refused).await?;
-        native_http::local_custody_transport::read_frame(&mut stream, MAX_RESPONSE, refused).await
+        native_http::local_custody_transport::read_frame(
+            &mut stream,
+            wire::MAX_RESPONSE_BYTES,
+            refused,
+        )
+        .await
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
