@@ -1840,7 +1840,7 @@ fn copy_role_test_harness(directory: &Path) -> PathBuf {
             hasher.update(&chunk[..count]);
         }
         assert_eq!(total, metadata.len());
-        (total, format!("{:x}", hasher.finalize()))
+        (total, hex(&hasher.finalize()))
     }
 
     assert_eq!(fs::metadata(directory).unwrap().mode() & 0o777, 0o755);
