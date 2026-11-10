@@ -34,19 +34,19 @@ use std::{
 
 /// A local observation at one stable SQLite token. It is neither a chain
 /// proof nor a mutation fence, and can become stale immediately after return.
-pub struct OriginalBondCurrentnessObservation {
-    pub token: PortableSnapshotToken,
-    pub epoch: Epoch,
-    pub validator_set_digest: Digest32,
-    pub ordered_tip: OrderedHistoryIdentity,
-    pub coin: ObjectRef,
+pub(super) struct OriginalBondCurrentnessObservation {
+    pub(super) token: PortableSnapshotToken,
+    pub(super) epoch: Epoch,
+    pub(super) validator_set_digest: Digest32,
+    pub(super) ordered_tip: OrderedHistoryIdentity,
+    pub(super) coin: ObjectRef,
 }
 
 /// Pinned, read-only reader for one original host's already-claimed writer
 /// fence and *same* store Arc. Construction neither opens nor advances state.
 /// A future authenticated local listener may invoke `observe`; currently no
 /// request path does, so this type grants no live signing authority.
-pub struct OriginalBondCurrentnessReader {
+pub(super) struct OriginalBondCurrentnessReader {
     store: Arc<SqliteDurableStore>,
     blobs: Arc<SqliteBlobStore>,
     root: VerifiedGenesisRoot,
@@ -64,7 +64,7 @@ pub struct OriginalBondCurrentnessReader {
 impl OriginalBondCurrentnessReader {
     /// Binds the reader to an original host's preexisting, claimed store.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(super) fn new(
         store: Arc<SqliteDurableStore>,
         blobs: Arc<SqliteBlobStore>,
         root: VerifiedGenesisRoot,
@@ -106,7 +106,7 @@ impl OriginalBondCurrentnessReader {
     /// caller must already have validated its operation-specific Coin meaning;
     /// this method requires the exact canonical body and reference to be the
     /// current inline object under a stable local token.
-    pub fn observe(
+    pub(super) fn observe(
         &self,
         reviewed: &ObjectRef,
         reviewed_bytes: &[u8],
@@ -245,10 +245,153 @@ fn require_exact_inline(
 }
 
 #[cfg(test)]
+#[path = "../../tests/support/causal_genesis_fixture.rs"]
+mod causal_genesis_fixture;
+#[cfg(test)]
+#[path = "../../tests/support/genesis_fixture.rs"]
+mod genesis_fixture;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::original_genesis_install::{OriginalGenesisInstallation, install_original_genesis};
+    use ed25519_zebra::VerificationKey;
     use protocol_types::{ChainId, HashAlgorithmId, ProtocolVersion};
     use runtime::{DurableObjectVersion, ObjectHeadRevision};
+    use runtime_sqlite::SqliteNamespace;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    struct Directory(PathBuf);
+
+    impl Directory {
+        fn new() -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "bond-currentness-unit-{}-{nonce}",
+                std::process::id(),
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn claimed_original_sqlite_coin_refuses_wrong_validator_and_stale_fence() {
+        let directory = Directory::new();
+        let fixture = super::causal_genesis_fixture::build("bond-currentness-unit");
+        let network = fixture.network;
+        let root = VerifiedGenesisRoot::verify_bytes(
+            &network.resolver,
+            &network.manifest_bytes,
+            network.manifest_digest,
+            &network.context,
+        )
+        .unwrap();
+        let initial = WriterFenceGeneration::new(1).unwrap();
+        let namespace = SqliteNamespace::new(
+            network.chain_id.clone(),
+            network.validators[0].validator_id,
+            network.domain,
+        );
+        let store = Arc::new(
+            SqliteDurableStore::create_new(directory.0.join("state.sqlite"), namespace, initial)
+                .unwrap(),
+        );
+        let blobs =
+            Arc::new(SqliteBlobStore::create_new_fresh(directory.0.join("blobs.sqlite")).unwrap());
+        let deadline = SystemClock
+            .now_unix_millis()
+            .unwrap()
+            .checked_add(60_000)
+            .unwrap();
+        let context = DurableOperationContext::new(
+            initial,
+            StorageDeadline::new(deadline).unwrap(),
+            StorageCorrelationId::new([0x71; 16]).unwrap(),
+        );
+        let policy = OrderedEconomicsPolicy::from_genesis_root(&root, network.domain).unwrap();
+        install_original_genesis(
+            store.as_ref(),
+            blobs.as_ref(),
+            &OriginalGenesisInstallation {
+                context: &context,
+                domain: network.domain,
+                resolver: &network.resolver,
+                root: &root,
+                policy: &policy,
+                checkpoint: 10,
+            },
+        )
+        .unwrap();
+        let claimed = initial.checked_next().unwrap();
+        store.advance_writer_fence(initial, claimed).unwrap();
+        let public_key: [u8; 32] = VerificationKey::from(&network.validators[0].signing_key).into();
+        let reader = OriginalBondCurrentnessReader::new(
+            Arc::clone(&store),
+            Arc::clone(&blobs),
+            root.clone(),
+            network.domain,
+            network.validators[0].validator_id,
+            public_key,
+            claimed,
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        let coin = root
+            .manifest()
+            .objects
+            .iter()
+            .find(|entry| entry.object.id == network.fee_coin)
+            .unwrap();
+        let body = encode_object(&coin.object).unwrap();
+        let reviewed = ObjectRef {
+            id: coin.object.id,
+            version: coin.object.version,
+            digest: network
+                .resolver
+                .hash_for_purpose(network.epoch, protocol_types::HashPurpose::Object, &body)
+                .unwrap(),
+        };
+        let observation = reader.observe(&reviewed, &body).unwrap();
+        assert_eq!(observation.token.writer_fence(), claimed);
+        assert_eq!(observation.epoch, network.epoch);
+        assert_eq!(observation.coin, reviewed);
+        assert_eq!(observation.ordered_tip.through_height, 0);
+
+        let wrong_validator = OriginalBondCurrentnessReader::new(
+            Arc::clone(&store),
+            Arc::clone(&blobs),
+            root,
+            network.domain,
+            network.validators[1].validator_id,
+            public_key,
+            claimed,
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        assert!(wrong_validator.observe(&reviewed, &body).is_err());
+        let changed_reference = ObjectRef {
+            version: reviewed.version + 1,
+            ..reviewed.clone()
+        };
+        assert!(reader.observe(&changed_reference, &body).is_err());
+        let stale = claimed.checked_next().unwrap();
+        store.advance_writer_fence(claimed, stale).unwrap();
+        assert!(reader.observe(&reviewed, &body).is_err());
+    }
 
     #[test]
     fn local_coin_result_refuses_noncurrent_and_changed_preimages() {

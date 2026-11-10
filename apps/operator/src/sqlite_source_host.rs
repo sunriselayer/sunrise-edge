@@ -8,8 +8,8 @@
 //! admission genesis before claiming that fence.
 #![forbid(unsafe_code)]
 
+#[allow(dead_code)] // No listener is admitted yet; this is a host-private observation seam.
 mod currentness;
-pub use currentness::{OriginalBondCurrentnessObservation, OriginalBondCurrentnessReader};
 
 use crate::common::{FlagSet, load_signing_key_file, parse_hash_suite, parse_hex_32};
 use crate::host_protocol_context::host_query_protocol_config;

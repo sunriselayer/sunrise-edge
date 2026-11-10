@@ -88,82 +88,13 @@ use std::{
     num::NonZeroUsize,
     path::{Path, PathBuf},
     process::{Command, Output},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use sunrise_edge_operator::business_snapshot::capture_source_business_snapshot;
 use sunrise_edge_operator::host_runtime::{
     fast_path_committee_matches, require_committed_genesis_fee_policy,
 };
-use sunrise_edge_operator::sqlite_source_host::OriginalBondCurrentnessReader;
-
-#[test]
-fn original_bond_coin_observation_uses_claimed_sqlite_fence_and_exact_genesis_coin() {
-    let built: Built = build();
-    let root: VerifiedGenesisRoot = verified_root(&built);
-    let state_db: PathBuf = built.directory.0.join("bond-currentness-state.sqlite");
-    let blob_db: PathBuf = built.directory.0.join("bond-currentness-blobs.sqlite");
-    let output: Output = run_sqlite_genesis(prepare_args(&built, 0, &state_db, &blob_db));
-    assert!(output.status.success(), "{}", stderr_text(&output));
-
-    let store: Arc<SqliteDurableStore> =
-        Arc::new(SqliteDurableStore::open_existing(&state_db, namespace(&built, 0)).unwrap());
-    let initial: WriterFenceGeneration = store.writer_fence().unwrap();
-    let claimed: WriterFenceGeneration = initial.checked_next().unwrap();
-    store.advance_writer_fence(initial, claimed).unwrap();
-    let blobs: Arc<SqliteBlobStore> = Arc::new(SqliteBlobStore::open_existing(&blob_db).unwrap());
-    let public_key: [u8; 32] =
-        VerificationKey::from(&built.network.validators[0].signing_key).into();
-    let reader = OriginalBondCurrentnessReader::new(
-        Arc::clone(&store),
-        blobs,
-        root.clone(),
-        built.network.domain,
-        built.network.validators[0].validator_id,
-        public_key,
-        claimed,
-        Duration::from_secs(30),
-    )
-    .unwrap();
-    let coin = root
-        .manifest()
-        .objects
-        .iter()
-        .find(|entry| entry.object.id == built.network.fee_coin)
-        .unwrap();
-    let body: Vec<u8> = objects::encode_object(&coin.object).unwrap();
-    let reviewed = objects::ObjectRef {
-        id: coin.object.id,
-        version: coin.object.version,
-        digest: built
-            .network
-            .resolver
-            .hash_for_purpose(
-                built.network.epoch,
-                protocol_types::HashPurpose::Object,
-                &body,
-            )
-            .unwrap(),
-    };
-    let observation = reader.observe(&reviewed, &body).unwrap();
-    assert_eq!(observation.token.writer_fence(), claimed);
-    assert_eq!(observation.epoch, built.network.epoch);
-    assert_eq!(observation.coin, reviewed);
-    assert_eq!(observation.ordered_tip.through_height, 0);
-
-    let changed_reference = objects::ObjectRef {
-        version: reviewed.version + 1,
-        ..reviewed.clone()
-    };
-    assert!(reader.observe(&changed_reference, &body).is_err());
-    let stale: WriterFenceGeneration = claimed.checked_next().unwrap();
-    store.advance_writer_fence(claimed, stale).unwrap();
-    assert!(reader.observe(&reviewed, &body).is_err());
-}
-
 struct Built {
     directory: Directory,
     network: genesis_fixture::FastVoteGenesisFixture,
