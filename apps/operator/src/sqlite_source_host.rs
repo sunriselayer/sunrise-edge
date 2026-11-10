@@ -8,6 +8,9 @@
 //! admission genesis before claiming that fence.
 #![forbid(unsafe_code)]
 
+mod currentness;
+pub use currentness::{OriginalBondCurrentnessObservation, OriginalBondCurrentnessReader};
+
 use crate::common::{FlagSet, load_signing_key_file, parse_hash_suite, parse_hex_32};
 use crate::host_protocol_context::host_query_protocol_config;
 use crate::host_runtime::{FileEd25519Signer, NoOutboundTransport, SequentialIdentitySource};

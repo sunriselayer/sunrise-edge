@@ -94,6 +94,21 @@ pub(crate) fn read_stable_advisory<S, T>(
 where
     S: DurablePortableSnapshotRepository,
 {
+    read_stable_advisory_with_token(store, context, domain, read).map(|(result, _token)| result)
+}
+
+/// The same advisory bracket, returning the exact token that covered the
+/// deciding reads. This token is a local observation locator, never authority
+/// or a mutation fence.
+pub(crate) fn read_stable_advisory_with_token<S, T>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    read: impl FnOnce() -> Result<T, Box<dyn Error>>,
+) -> Result<(T, PortableSnapshotToken), Box<dyn Error>>
+where
+    S: DurablePortableSnapshotRepository,
+{
     let before: PortableSnapshotToken = store
         .begin_portable_snapshot(context, domain)
         .map_err(|error| format!("preflight snapshot observation failed: {error:?}"))?;
@@ -106,7 +121,7 @@ where
             "source changed during preflight; refusing to report an advisory success".into(),
         );
     }
-    Ok(result)
+    Ok((result, before))
 }
 
 #[cfg(test)]
@@ -176,8 +191,10 @@ mod tests {
             StorageDeadline::new(deadline).unwrap(),
             StorageCorrelationId::new([75; 16]).unwrap(),
         );
-        let unchanged: u64 = read_stable_advisory(&store, &operation, domain, || Ok(7u64)).unwrap();
+        let (unchanged, stable_token): (u64, PortableSnapshotToken) =
+            read_stable_advisory_with_token(&store, &operation, domain, || Ok(7u64)).unwrap();
         assert_eq!(unchanged, 7);
+        assert_eq!(stable_token.writer_fence(), fence);
 
         let result: Result<(), Box<dyn Error>> =
             read_stable_advisory(&store, &operation, domain, || {
@@ -220,5 +237,16 @@ mod tests {
             .get_versioned_durable(&operation, domain, b"preflight/concurrent-write")
             .unwrap();
         assert_eq!(observed.value(), Some([1u8].as_slice()));
+
+        let next: WriterFenceGeneration = fence.checked_next().unwrap();
+        let changed_fence: Result<((), PortableSnapshotToken), Box<dyn Error>> =
+            read_stable_advisory_with_token(&store, &operation, domain, || {
+                store.advance_writer_fence(fence, next)?;
+                Ok(())
+            });
+        assert!(
+            changed_fence.is_err(),
+            "fence change must refuse the advisory token"
+        );
     }
 }
