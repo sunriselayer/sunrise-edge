@@ -2,133 +2,61 @@
 
 ## Status
 
-Accepted as the detailed design for FastVote Phase 2 Slice 2, 2026-09-22,
-and **implemented the same day.** This DR fixes and implements the wire
-format, the API, the activation write set, and the reclamation rule for the
-outgoing-set-certified `e -> e+1` transition that
-[DR-0131](0131-fastvote-validator-lifecycle.md) named but left pending its
-own decision record. It also corrects seven assumptions in DR-0131 that were
-wrong and would either brick a node on restart or leave the paid path dead
-after the first transition (see "Corrections to DR-0131" below); those
-corrections are part of this DR's implemented design. The "Slice 2
-design-acceptance criteria" section below is satisfied: the consensus and
-node-core codecs, `propose_and_vote`/`activate`, C1's restart-verify chain,
-lazy stale-lock/prepared-record reclamation, the headline four-independent-
-SQLite test and its supporting adversarial evidence, and independent
-Rust/JS vectors are all implemented and passing, and `cargo fmt`, `cargo
-clippy -D warnings`, `cargo test --workspace`, and `./scripts/check-all.sh`
-all pass on the integrated diff. **Slice 2 is implemented.** FastVote Phase 2
-subsequently closed when [DR-0134](0134-fastvote-authorization-boundary.md)'s
-companion Slice 4 code and review gate landed in PR #180.
-Nothing in this DR authorizes testnet or production activation of any new
-ingress. Retired-validator and wrong-epoch rejection are now end-to-end
-observable through a real transition (see the adversarial evidence in
-`crates/node-core/src/epoch_transition/tests.rs`), for the first time since
-DR-0131's Slice 1 fencing had nothing to enforce it against.
+Accepted and implemented 2026-09-22 for FastVote Phase 2 Slice 2. This DR
+specifies the outgoing-set-certified `e -> e+1` wire format, APIs, activation
+write set and reclamation rule left open by
+[DR-0131](0131-fastvote-validator-lifecycle.md), including its seven corrected
+assumptions below. Codecs, `propose_and_vote`/`activate`, restart chain
+verification, stale-lock/prepared-record reclamation, a four-independent-SQLite
+test, adversarial tests and Rust/JS vectors passed, as did `cargo fmt`,
+`cargo clippy -D warnings`, `cargo test --workspace` and
+`./scripts/check-all.sh`. Phase 2 closed with
+[DR-0134](0134-fastvote-authorization-boundary.md) Slice 4 in PR #180. No new
+testnet/production ingress is authorized. Retired-validator and wrong-epoch
+rejection are exercised by `crates/node-core/src/epoch_transition/tests.rs`.
 
-**Revision (2026-09-22, same day, pre-implementation review):** review found
-two blocking underspecifications in the design below, both corrected in this
-text, still design-only: (1) C1's restart-verify rule, as first written,
-described only chain contiguity (`to_epoch == next.from_epoch`) and did not
-say the chain must be cryptographically re-verified at restart; §7 now
-specifies the exact per-step decode/load/verify/bind algorithm and its exact
-fail-closed behavior. (2) `activate`'s already-activated branch, as first
-written, compared only `activation_digest`; §3.C.3 now compares the full
-transition identity (`from_epoch`, `to_epoch`,
-`previous_validator_set_digest`, `next_validator_set_digest`,
-`activation_digest`), because `activation_digest` alone does not bind the
-outgoing epoch or either validator-set digest (see §2's field list).
+Same-day reviews corrected the following; the detailed rules are in the
+referenced sections:
 
-**Revision (2026-09-22, same day, implementation review):** implementation
-review found a semantic flaw in `propose_and_vote`'s "already exists" check,
-corrected in this text: `propose_and_vote` always derives `next_epoch` from
-the fenced live `current_epoch`, and `activate` only ever installs a
-`FastPathEpochTransitionRecord` at `next_epoch` in the exact same atomic
-`commit_durable` that advances the live `FastPathEpochRecord` to it (§3.C.8).
-Those two facts together mean `propose_and_vote` can never legitimately
-observe a transition record already present at `current_epoch + 1` while the
-live epoch record still reads `current_epoch` -- there is no interleaving of
-a concurrent `activate` that produces that combination, because the two
-writes are the same commit. A record present under that combination is
-therefore always partial or corrupt prior state (for example, a write that
-should never exist outside that one atomic commit, or on-disk tampering),
-never a legitimate race. §1.2 and §3.B below now have `propose_and_vote`
-fail closed with `Invalid` in that case instead of returning an
-`AlreadyActivated` value, and `propose_and_vote` now returns
-`EpochTransitionVote` (§1.1) directly instead of a `TransitionProposalOutcome`
-wrapper enum whose second variant was never actually reachable through
-legitimate use. `activate`'s
-own already-activated branch (§3.C.3) is unaffected: it is reached by
-re-running `activate` itself, whose atomicity makes that branch, unlike
-this one, genuinely reachable.
-
-**Revision (2026-09-22, same day, adversarial-evidence review):** writing
-the stale-prepared-record-supersession test (C5, §3.D) surfaced a second
-implementation bug, now fixed, not a design flaw in the text above:
-`local_instance_state::fastpath_synthetic_prepare_request_id`'s preimage did
-not mix the epoch in directly, relying solely on
-`HashSuiteResolver::hash_for_purpose`'s own epoch-indexed suite selection to
-vary the digest. A resolver whose schedule does not change suite across the
-transition -- the common case, and true of every fixture this DR's own test
-suite otherwise uses -- selects the identical suite for both epochs, so the
-same original request id reused at `e+1` produced the identical synthetic
-prepare-receipt id as its `e`-epoch prepare, and the durable receipt layer
-rejected the second `commit_invocation` as a conflicting duplicate before
-C5's own record-level supersession logic ever mattered. The preimage now
-also includes the epoch's raw bytes, so the two epochs' synthetic ids always
-differ regardless of suite schedule.
-
-**Revision (2026-09-22, same day, concurrency/canonicalization review):**
-further review found three more issues, all fixed, none a change to the
-safety contract:
-
-1. The implementation-review revision above overstated its own claim:
-   `propose_and_vote`'s epoch fence (step 1) and its transition-record read
-   (step 4) are two separate reads, not one atomic operation, even though
-   `activate` itself installs the live epoch record and the transition row
-   together in one commit. A concurrent `activate` *can* commit in the
-   window between those two reads, and when it does, `propose_and_vote`
-   observes a transition row at `current_epoch + 1` alongside its own
-   now-stale fenced `current_epoch` -- a real, benign race, not corrupt
-   state. `propose_and_vote` now re-reads the live epoch record at that
-   point and returns the retryable `NodeCoreError::StateConflict` if it has
-   advanced beyond `current_epoch`, reserving `Invalid` for the case the live epoch
-   record still reads `current_epoch` (§3.B step 4, §6).
-2. `derive_activation_set` did not canonicalize `next_validators` before
-   encoding the `FastPathValidatorSetRecord` it embeds in the activation
-   set. `ValidatorSet::new` already canonicalizes its own `ValidatorInfo`
-   list, so `next_validator_set_digest` was always order-invariant, but the
-   committed `0x641F` bytes and therefore `activation_digest` were not:
-   independent callers supplying the identical operator-authorized set in a
-   different order would disagree on `activation_digest` and never form a
-   quorum. `next_validators` is now sorted by `ValidatorId` before anything
-   is validated or encoded (§3.A step 2).
-3. Added `activate_rejects_a_certificate_bound_to_a_different_outgoing_validator_set_digest`:
-   a cryptographically valid outgoing-set quorum certificate whose
-   `current_validator_set_digest` field itself differs from the committed
-   `FastPathEpochRecord`'s, reaching `activate`'s not-yet-activated
-   verify-then-bind check (§3.C step 5) rather than the already-activated
-   identity comparison the existing tests already covered.
+1. Restart checks must cryptographically decode, load, verify and bind every
+   transition step, not merely check chain contiguity (§7). `activate`'s
+   already-activated branch must compare all five identity fields, not just
+   `activation_digest`, which alone binds neither the outgoing epoch nor the
+   validator-set digests (§3.C.3).
+2. `propose_and_vote` derives `next_epoch` from the fenced live epoch, while
+   `activate` atomically writes the transition row and advances the epoch.
+   A row at `current_epoch + 1` with the live epoch still unchanged is invalid;
+   `propose_and_vote` returns `EpochTransitionVote` directly, without the
+   unreachable `TransitionProposalOutcome::AlreadyActivated` variant.
+   Its epoch fence and row read are separate, however: a concurrent activation
+   between them can expose a row with a stale fenced epoch. Re-read the live
+   epoch; return retryable `StateConflict` if it advanced, otherwise `Invalid`
+   (§3.B, §6). Re-running `activate` can legitimately reach its own
+   already-activated branch.
+3. Synthetic prepare-receipt IDs now mix raw epoch bytes into the preimage.
+   Epoch-indexed hash-suite selection alone gave identical IDs when the suite
+   stayed constant and an original request ID was reused at `e+1`, causing a
+   durable duplicate before stale-record supersession (§3.D).
+4. `derive_activation_set` sorts `next_validators` by `ValidatorId` before
+   validating/encoding. `ValidatorSet::new` had canonicalized its digest, but
+   unsorted `0x641F` bytes made `activation_digest` order-dependent (§3.A).
+5. The adversarial test
+   `activate_rejects_a_certificate_bound_to_a_different_outgoing_validator_set_digest`
+   covers a valid quorum certificate whose `current_validator_set_digest`
+   disagrees with the committed epoch record at the not-yet-activated binding
+   check (§3.C.5).
 
 ## Context
 
-[DR-0131](0131-fastvote-validator-lifecycle.md) accepted the Phase 2
-architecture and implemented Slice 1: a CAS-fenced singleton
-`FastPathEpochRecord` (`0x6426`), an epoch-stamped `FastPathLockRecord`
-(`0x641B`), and a shared two-tier fencing model
-(`crates/node-core/src/mutation_fence.rs`) that every mutation path commits
-through. Slice 1 deliberately introduced no post-genesis write to the epoch
-record, so wrong-epoch and retired-validator rejection are real, fenced
-checks but unreachable in practice: nothing can yet change the active set.
-
-Slice 2 is the transition itself. Its safety contract is already fixed by
-DR-0131's "Key transition safety proof"; what this DR fixes is the wire
-format, the API, the activation write set, and the reclamation rule. Design
-review of the Slice 1 code against DR-0131's own text turned up seven
-corrections, three of them blocking: a naive Slice 2 built on DR-0131's
-literal wording would either fail every restart after the first transition,
-leave epoch `e+1` unable to execute anything, or make a transition
-certificate structurally indistinguishable from a transaction certificate.
+[DR-0131](0131-fastvote-validator-lifecycle.md) implemented Phase 2
+Slice 1's CAS-fenced `FastPathEpochRecord` (`0x6426`), epoch-stamped
+`FastPathLockRecord` (`0x641B`) and shared two-tier mutation fence. It had no
+post-genesis epoch write, so retired-set and wrong-epoch rejection could not
+be exercised through a real transition. This slice supplies the wire/API,
+activation write set and reclamation rule under DR-0131's transition safety
+proof. Its seven corrections below include three blocking gaps: restart
+failure, dead paid execution at `e+1`, and an indistinguishable transition
+certificate.
 
 ## Corrections to DR-0131
 
@@ -858,37 +786,12 @@ tech-lead review.
   `IndeterminateOnceActivateStore`/`RacingActivateEngine` and a real-thread
   `BarrierGatedActivateStore`, since `activate` intercepts `commit_durable`
   rather than `commit_invocation` and has no pluggable engine to hook).
-- Four latent bugs were found and fixed by this slice's own adversarial
-  evidence, not by design review: (1) `propose_and_vote`'s "already exists"
-  check, as first implemented, treated a transition record present at
-  `current_epoch + 1` as an `AlreadyActivated` outcome; since `activate`
-  installs the live epoch record and that row atomically in the same commit,
-  a *literal replay* of the same combination is partial or corrupt prior
-  state, not `AlreadyActivated` — see the "implementation review" revision
-  above. (2) `fastpath_synthetic_prepare_request_id`'s preimage did
-  not mix in the epoch directly, relying solely on
-  `resolver.hash_for_purpose`'s own epoch-indexed suite selection; a
-  resolver whose schedule does not change suite across the transition (the
-  common case) therefore produced the identical synthetic prepare-receipt id
-  for the same original request id reused at the next epoch, silently
-  breaking C5's own stale-prepared-record supersession the first time it was
-  exercised end-to-end. The epoch is now mixed directly into the preimage
-  bytes. (3) The implementation-review fix for (1) itself overstated its own
-  claim: `propose_and_vote`'s epoch fence and its transition-record read are
-  two separate reads, so a concurrent `activate` really can commit between
-  them, producing exactly that combination as a benign race, not corrupt
-  state; `propose_and_vote` now re-reads the live epoch record at that point
-  and returns the retryable `StateConflict` for that case, reserving
-  `Invalid` for a live epoch record that still reads `current_epoch` — see
-  the "concurrency/canonicalization review" revision above. (4)
-  `derive_activation_set` encoded `next_validators` in caller-supplied
-  order; `ValidatorSet::new` already canonicalizes its own digest
-  internally, but the committed `FastPathValidatorSetRecord` bytes and
-  `activation_digest` were not order-invariant, so independently derived
-  permutations of the identical operator-authorized set could disagree on
-  `activation_digest` and never quorum. `next_validators` is now sorted by
-  `ValidatorId` before anything is validated or encoded — see the same
-  revision.
+- Implementation review and adversarial evidence found and fixed four defects, summarized
+  in Status and specified in §3/§6: a transition-row replay falsely treated as
+  `AlreadyActivated`; synthetic prepare IDs missing raw epoch bytes;
+  `propose_and_vote` misclassifying a concurrent activation between its
+  separate reads; and caller-ordered `next_validators` changing committed
+  `0x641F` bytes/`activation_digest` despite a canonical set digest.
 - Explicit canonical equivocation evidence is implemented by
   [DR-0133](0133-fastvote-equivocation-evidence.md), including the exact
   `EpochTransitionVote` conflict key (same outgoing validator, same outgoing

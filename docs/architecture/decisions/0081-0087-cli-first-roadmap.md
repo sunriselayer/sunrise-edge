@@ -38,15 +38,13 @@ fee decisions.
   [DR-0080](0076-0080-developer-mvp-foundation.md)'s earlier "TypeScript client + counter demo UI" pairing; no
   `demo/counter` directory is created.
 
-  **Amendment: gate renamed and resequenced by DR-0085.** The monorepo
-  layout, uniform fungible asset model, local devnet module, and deferred
-  scope stated in this entry are unchanged. Only the ordering statement
-  immediately above is resequenced: DR-0085 renames the gate this order
-  belongs to `CLI Developer MVP Gate`, keeps this entry's `clients/typescript`/
-  `apps/explorer`/`apps/wallet` steps verbatim as still-required future work,
-  and defers starting them until a new `CLI-First Node Production Gate`
-  passes. The `local devnet, bounded query API, Rust client, Rust CLI,
-  restart/duplicate E2E` prefix of this order is implemented As-Is.
+  **Amendment: gate renamed and resequenced by DR-0085.** DR-0085 renames
+  this gate `CLI Developer MVP Gate`: its local devnet, bounded query API,
+  Rust client/CLI, and restart/duplicate E2E prefix is implemented As-Is.
+  `clients/typescript`, `apps/explorer`, and `apps/wallet` remain required but
+  start only after the `CLI-First Node Production Gate` passes. This changes
+  neither the monorepo layout nor the asset model, devnet module, or deferred
+  scope.
 
   **Uniform fungible asset model.** Every asset, including any future fee
   asset, uses exactly one `AssetId`/account/transfer implementation path.
@@ -95,35 +93,26 @@ fee decisions.
   upload; and all other production-hardening work already frozen by
   [DR-0076](0076-0080-developer-mvp-foundation.md).
 
-  **DR-0086 amendment (current status).** The same-sender-only and deferred
-  cross-owner statements immediately above record DR-0081's original MVP
-  boundary; they are not the current implementation status. S2 now permits
-  the exact policy-bounded existing Address-owned destination described by
-  DR-0086 while preserving both source and destination owners. Literal owner
-  reassignment/gifting remains deferred and fail-closed. S2 is complete As-Is,
-  S3 fee accounting/gas metering is next, and this is not production or
-  mainnet readiness. Compatibility is explicit: this dev profile installs
-  preinstalled asset module version 2 with the `0xF011` semantics declaration
-  version 2; historical module/semantics version 1 bytes remain pinned but are
-  not installed by this profile. The `0xF001` body, `0xF002` arguments, and
-  `0xF003` event stay at schema version 1 and the WASM bytes are unchanged.
-  This profile selection is not a claim that general upgrade activation is
-  implemented.
+  **DR-0086 amendment (current status).** The preceding same-sender boundary
+  is historical. S2 permits DR-0086's exact policy-bounded existing
+  Address-owned destination while preserving both owners; reassignment/
+  gifting still fails closed. This dev profile installs module v2 with
+  `0xF011` semantics v2; historical v1 bytes remain pinned but uninstalled.
+  The `0xF001` body, `0xF002` arguments, `0xF003` event (all schema v1), and
+  WASM bytes are unchanged. S2 is As-Is, not general upgrade activation or
+  production/mainnet readiness.
 
-  **DR-0087 amendment (current status).** The empty-registry/fee-free and
-  deferred-fee statements above likewise preserve DR-0081's historical MVP
-  boundary, not current behavior. S3 now uses the same ordinary asset-account
-  path for payer and distinct treasury, settles actual gas after execution,
-  and commits trap fee-only effects as described by DR-0087. The active
-  module/semantics declaration is version 3; historical v1/v2 declarations,
-  the `0xF001`/`0xF002`/`0xF003` schemas, and WAT/WASM/code hash remain pinned.
-  [DR-0088](0088-0093-hardware-signing.md) subsequently implements S4a's hardware-signing profile/host
-  preflight, [DR-0091](0088-0093-hardware-signing.md) records S4b's separate device application and Nano S+
-  Speculos evidence As-Is, [DR-0092](0088-0093-hardware-signing.md) implements S4c Phase 1's host
-  APDU/USB/HID and CLI signer selection As-Is, and [DR-0093](0088-0093-hardware-signing.md) implements S4c
-  Phase 2a's active-app/firmware identity check As-Is, strictly in software
-  (S4c itself remains incomplete, pending Phase 2b's real hardware
-  validation); this is still not production or mainnet readiness.
+  **DR-0087 amendment (current status).** The preceding fee-free boundary is
+  historical. S3 uses ordinary asset accounts for payer and distinct treasury,
+  settles actual gas after execution, and commits trap fee-only effects. The
+  active module/semantics declaration is v3; historical v1/v2 declarations,
+  the `0xF001`/`0xF002`/`0xF003` schemas, and WAT/WASM/code hash stay pinned.
+  [DR-0088](0088-0093-hardware-signing.md) implements S4a profile/preflight;
+  [DR-0091](0088-0093-hardware-signing.md) records S4b app and Nano S+
+  Speculos evidence; [DR-0092](0088-0093-hardware-signing.md) implements S4c
+  Phase 1 host APDU/USB/HID and CLI selection; [DR-0093](0088-0093-hardware-signing.md)
+  implements Phase 2a software app/firmware identity checks. S4c still awaits
+  Phase 2b physical validation; none of this establishes production readiness.
 - DR-0082: Add the bounded canonical Developer MVP query surface described in
   [product-surfaces.md §43](../product-surfaces.md#43-bounded-developer-mvp-query-api). Keep query selectors non-authoritative,
   resolve all chain/domain/epoch/storage authority from trusted composition,
@@ -197,210 +186,107 @@ fee decisions.
   Production Gate below passes (see the "Amendment: gate renamed and
   resequenced by DR-0085" note on DR-0081's "Developer MVP order" above).
 
-  **Current implementation status (2026-09-04).** The CLI Developer MVP Gate's
-  criteria 1-6, 10, and 11 are implemented and validated As-Is, so that gate
-  has passed without making a production-readiness claim. S0 below is also
-  implemented As-Is. S1 below is now also implemented and tested As-Is (see
-  "S1 implementation status" immediately below), and S2 is implemented and
-  validated As-Is by DR-0086. S3 is implemented and validated As-Is by
-  DR-0087. S4a is implemented and validated As-Is by
-  [DR-0088](0088-0093-hardware-signing.md), and
-  [DR-0089](0088-0093-hardware-signing.md)
-  subsequently makes eight S4b device-contract clarifications in [`docs/signing/hardware-signing.md`](../../signing/hardware-signing.md)
-  and one correction to DR-0088's blanket 230-byte whole-APDU data cap (FIRST rises
-  230→255 bytes, first chunk 205→230 bytes, CONTINUE/LAST unchanged at
-  230). [DR-0090](0088-0093-hardware-signing.md) records the separate
-  `sunriselayer/sunrise-edge-ledger-app` repository's earlier host-validated
-  `no_std` core milestone. [DR-0091](0088-0093-hardware-signing.md) records its merged PR #2 device application,
-  five-target builds, and fixed-seed Nano S+ Speculos evidence; S4b is complete
-  As-Is. [DR-0092](0088-0093-hardware-signing.md) implements S4c Phase 1's host APDU/USB/HID crate and CLI
-  signer selection As-Is (profile/address checks and USB-descriptor-level
-  device recognition), and [DR-0093](0088-0093-hardware-signing.md) subsequently implements S4c Phase 2a's
-  active-app/firmware identity check As-Is (strict Ledger OS identity/
-  dashboard response parsing and bounds, a staged dashboard/firmware/
-  open-app/reconnect/active-app sequence, and a required
-  `--ledger-expected-firmware-version` CLI flag) — strictly in software,
-  against `FakeTransport` only; S4c itself is still not complete, since it
-  still needs Phase 2b's real hardware validation. S4
-  remains incomplete. [DR-0095](0094-0098-blobs-audit-and-documentation.md) supersedes the old strict ordering: S4c Phase
-  2b and S4d's physical-device HIL/release evidence are deferred, while S5 is
-  an independent parallel software-production track. The TypeScript client,
-  explorer, and wallet remain deferred until the Software Production Gate
-  (S0-S3 + S5) passes; they do not wait for deferred S4 hardware work.
+  **Current implementation status (2026-09-04).** CLI Developer MVP criteria
+  1-6, 10, and 11 and S0-S3 are implemented and validated As-Is (S2 by DR-0086,
+  S3 by DR-0087), without production-readiness authority. S4a is As-Is by
+  [DR-0088](0088-0093-hardware-signing.md). [DR-0089](0088-0093-hardware-signing.md)
+  clarifies eight S4b device-contract points in
+  [`docs/signing/hardware-signing.md`](../../signing/hardware-signing.md) and corrects
+  FIRST data 230→255 bytes/first chunk 205→230, leaving CONTINUE/LAST at 230.
+  [DR-0090](0088-0093-hardware-signing.md) records the separate
+  `sunriselayer/sunrise-edge-ledger-app` host-validated `no_std` core;
+  [DR-0091](0088-0093-hardware-signing.md) records merged PR #2, five-target
+  builds, and fixed-seed Nano S+ Speculos evidence, completing S4b As-Is.
+  [DR-0092](0088-0093-hardware-signing.md) implements S4c Phase 1 host
+  APDU/USB/HID, CLI selection, profile/address checks, and USB-descriptor
+  recognition. [DR-0093](0088-0093-hardware-signing.md) implements Phase 2a
+  software-only (`FakeTransport`) app/firmware identity, bounded Ledger OS/
+  dashboard parsing, staged dashboard/firmware/open-app/reconnect/active-app,
+  and required `--ledger-expected-firmware-version`. S4c awaits Phase 2b
+  physical validation. [DR-0095](0094-0098-blobs-audit-and-documentation.md)
+  defers S4c Phase 2b/S4d HIL/release evidence and makes S5 a parallel
+  software-production track. TypeScript client, explorer, and wallet wait for
+  the Software Production Gate (S0-S3 + S5), not deferred S4 hardware work.
 
   **S1 implementation status (2026-09-01): both remote TLS transport and
   expected-protocol-context verification are implemented and tested As-Is;
-  S1 as a whole is complete.** S1 below names two separate concerns, and both
-  are now implemented by this update. `clients/rust` adds a public
-  `context::ExpectedProtocolContext`: a caller supplies the exact locally
-  trusted `chain_id`, `protocol_version`, an exact-epoch policy (this initial
-  slice trusts one caller-supplied epoch exactly, not a floor or range —
-  every subsequent epoch rollover requires the caller to update it
-  deliberately, since this type never derives, advances, or widens it
-  automatically), `hash_suite_id`, `transaction_auth_profile_id`,
-  `signature_scheme_id`, `address_binding_id`, and logical
-  `AtomicityDomainId`. `ExpectedProtocolContext::new` rejects a zero
-  `protocol_version`, `hash_suite_id`, `transaction_auth_profile_id`,
-  `signature_scheme_id`, or `address_binding_id` (an empty `chain_id` or an
-  all-zero `domain` is already rejected by `ChainId`/`AtomicityDomainId`
-  themselves before construction); zero `epoch` is deliberately accepted,
-  since epoch zero is the legitimate genesis epoch. It deliberately never
-  pins or decodes `protocol_config_bytes`: approximating full
-  `ProtocolConfig` verification is out of scope for this slice, not silently
-  weakened. `ExpectedProtocolContext::verify` compares every one of those
-  eight fields against an untrusted `/v1/context`
-  `node_wire::HttpContextQueryResult` and returns a typed, field-specific
-  `ProtocolContextMismatch` on the first disagreement, in a fixed
-  deterministic field order; `Client::query_verified_context` is the new
-  client API that queries `/v1/context` and requires an exact match before
-  returning the result at all, so an untrusted mismatched response is never
-  handed to a caller under the pretense of being verified. The logical
-  `AtomicityDomainId` comparison here is a routing/placement expectation —
-  which logical atomicity domain the caller intends to reach — and is
-  deliberately never folded into `crypto::SignatureDomain`; it adds no new
-  signature-domain binding beyond the existing chain id/protocol
-  version/epoch/message type/signature scheme already described in
+  S1 as a whole is complete.** `clients/rust::context::ExpectedProtocolContext`
+  takes caller-trusted `chain_id`, `protocol_version`, exact `epoch`,
+  `hash_suite_id`, `transaction_auth_profile_id`, `signature_scheme_id`,
+  `address_binding_id`, and logical `AtomicityDomainId`. The caller must
+  deliberately update the epoch on rollover; no floor, range, or automatic
+  widening exists. Construction rejects zero for the version and four IDs;
+  `ChainId`/`AtomicityDomainId` reject empty/all-zero values themselves, while
+  genesis epoch zero is valid. This slice does not pin or decode
+  `protocol_config_bytes` or approximate full `ProtocolConfig` verification.
+  `verify` compares all eight fields with untrusted `/v1/context` in a fixed
+  order, returning the first typed `ProtocolContextMismatch`;
+  `Client::query_verified_context` returns nothing on mismatch. The logical
+  domain is a routing/placement expectation, not an added
+  `crypto::SignatureDomain` input; its existing bindings remain as in
   [core-protocol.md §8](../core-protocol.md#8-signature-domain-separation).
-  No library path panics: every failure is a typed
-  `ExpectedProtocolContextError` (construction) or `ProtocolContextMismatch`
-  (comparison), wrapped by a new `ClientError::ProtocolContextMismatch`
-  variant.
+  Failures are typed `ExpectedProtocolContextError` or
+  `ClientError::ProtocolContextMismatch`, without library panics.
 
-  `apps/cli`'s `transfer` command now requires five `--expected-*` flags —
-  `--expected-chain-id`, `--expected-protocol-version`, `--expected-epoch`,
-  `--expected-hash-suite-id`, `--expected-domain` — and builds an
-  `ExpectedProtocolContext` from them before any network dispatch, rejecting
-  a missing, zero, or malformed value at that point (`ArgsError::MissingFlag`
-  for an absent flag; `ExpectedProtocolContextError`/`TypeError` for a zero or
-  otherwise invalid value; `HexError` for a malformed `--expected-domain`).
-  The transaction-authentication profile id, signature-scheme id, and
-  address-binding id expectations are not separate flags — this workspace
-  implements exactly one combination (the committed
-  `ED25519_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID`, `Ed25519`, and
-  `AddressIsPublicKey`) — but `transfer` still supplies them explicitly to
-  `ExpectedProtocolContext::new` so the client verifier independently
-  compares them against the remote result rather than trusting them
-  implicitly. `transfer` then calls only
-  `Client::query_verified_context` — never the unverified `query_context` —
-  and uses only that verified `HttpContextQueryResult`, never any value
-  independently derived from the raw remote response, for every subsequent
-  step: the next-nonce query, both object queries, transaction construction
-  (chain id/protocol version/epoch), signing, and submission. Adversarial
-  tests cover every one of `ProtocolContextMismatch`'s eight variants
-  (chain id, protocol version, epoch, hash-suite id, transaction-auth
-  profile id, signature-scheme id, address-binding id, domain) and each
-  proves `transfer` issues exactly one request — the context query — before
-  returning the typed error, never reaching the nonce/object queries or
-  signing/submission that would follow a verified context. Existing stable
-  wire bytes, every previously implemented command, and this command's prior
-  parser/seed-file/two-stage-signer/owner-check behavior are all preserved
-  unchanged; only the pre-signing context check moved from three ad hoc
-  per-field comparisons inside `transfer` into the new typed, reusable
-  `clients/rust` verification boundary, and gained the five additional
-  chain-id/protocol-version/epoch/hash-suite/domain comparisons S1a requires.
+  `apps/cli transfer` requires `--expected-chain-id`,
+  `--expected-protocol-version`, `--expected-epoch`,
+  `--expected-hash-suite-id`, and `--expected-domain` before network dispatch.
+  Missing, zero/invalid, and malformed-hex inputs return `ArgsError::MissingFlag`,
+  `ExpectedProtocolContextError`/`TypeError`, and `HexError` respectively.
+  The one implemented auth/scheme/binding combination
+  (`ED25519_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID`, `Ed25519`,
+  `AddressIsPublicKey`) is supplied explicitly rather than exposed as flags.
+  `transfer` uses only `Client::query_verified_context` and its verified
+  result for nonce/object queries, transaction context, signing, and submit.
+  Adversarial tests cover all eight mismatch variants and require exactly
+  one context request before rejection, with no nonce/object/sign/submit.
+  Stable wire bytes and existing parser, seed-file, two-stage signer, and
+  owner checks remain unchanged; the prior three ad hoc CLI comparisons moved
+  to the reusable client boundary, which adds the five S1a comparisons.
 
   **S1's remote TLS transport slice.** `clients/rust` adds
-  `transport::RemoteTlsHttpTransport`, a second production `Transport`
-  implementation alongside the unchanged, still loopback-only plaintext
-  `LoopbackHttpTransport`. Both share one private bounded-stream abstraction
-  (`BoundedTransportIo`), so the exact same HTTP/1.1 request/response byte
-  framing, header/body bounds, and per-stage monotonic-deadline handling
-  apply to plaintext and TLS traffic alike; `RemoteTlsHttpTransport` differs
-  only in driving a real `rustls` `ClientConnection` — including its own
-  deadline-checked `read_tls`/`write_tls`/`process_new_packets` handshake
-  pump, never `rustls`'s unbounded `complete_io` — ahead of that shared
-  framing. `RemoteTlsHttpTransport::new` requires one caller-supplied
-  `SocketAddr` (this transport performs no DNS resolution of its own — the
-  caller must already have resolved one), one caller-supplied DNS server
-  name (used for both the TLS SNI extension and post-handshake hostname
-  validation, and rejected if empty or an IP-address literal — this
-  transport never falls back to validating the connection's IP as a
-  hostname), and one caller-supplied CA trust-anchor DER, capped at the new
-  public `transport::MAX_CA_CERTIFICATE_DER_BYTES` (16 KiB) and rejected if
-  empty, oversized, or not a valid X.509 certificate; that DER is the
-  transport's sole trust anchor; no system root store is ever consulted, no
-  PEM/bundle format is accepted, and no client certificate (mTLS) is ever
-  presented. Every timeout (connect, TLS-handshake read/write, and
-  post-handshake read/write) must be nonzero and forms one hard total
-  request budget by checked addition, exactly like
-  `LoopbackHttpTransport`'s; a `WireRequest::deadline` may only tighten that
-  budget, never extend it. Real loopback-TCP tests
-  (`clients/rust/tests/remote_tls_transport.rs`) issue an ephemeral
-  `rcgen`-issued CA/leaf pair and drive a real `rustls` `ServerConnection`
-  server against the real client code (never a fake `Transport`), proving:
-  a correct hostname/CA succeeds and sends the exact validated-DNS-name
-  `Host` header (never the connected `SocketAddr`'s IP); a wrong hostname
-  and a wrong CA each fail with a TLS protocol error during the handshake; a
-  stalled handshake and a peer that closes before the handshake completes
-  each fail promptly rather than busy-spinning or blocking past the
-  deadline; a short caller deadline tightens a much larger configured
-  budget; and every malformed-constructor input (bad DNS name, an IP
-  literal, empty/oversized/invalid CA DER, a zero timeout) is rejected
-  before any network I/O. A dedicated regression test in the same file also
-  proves the shared bounded-stream refactor left `LoopbackHttpTransport`'s
-  plaintext framing byte-for-byte unchanged.
+  `transport::RemoteTlsHttpTransport` beside the unchanged loopback-only
+  plaintext transport. Both use private `BoundedTransportIo` for identical
+  HTTP/1.1 framing, header/body bounds, and per-stage monotonic deadlines.
+  The TLS path drives a real `rustls::ClientConnection` with deadline-checked
+  `read_tls`/`write_tls`/`process_new_packets`, never unbounded `complete_io`.
+  Its constructor requires an already-resolved `SocketAddr`, a nonempty DNS
+  server name (SNI and hostname validation; IP literals rejected), and one
+  valid X.509 DER trust anchor of 1–16 KiB
+  (`transport::MAX_CA_CERTIFICATE_DER_BYTES`). It accepts no system roots,
+  PEM/bundle, or client certificate. Nonzero connect/handshake/post-handshake
+  timeouts form one checked hard request budget; `WireRequest::deadline` can
+  tighten but never extend it. Real loopback TCP/`rustls` tests in
+  `clients/rust/tests/remote_tls_transport.rs` use an ephemeral `rcgen` CA/
+  leaf: valid name/CA and DNS `Host` succeed; wrong name/CA, stalled or
+  prematurely closed handshake, short caller deadline, bad DNS/IP name,
+  empty/oversized/invalid DER, and zero timeout fail as specified. A separate
+  regression test pins plaintext framing byte for byte.
 
-  `apps/cli`'s `context`, `object`, `receipt`, `next-nonce`, and `transfer`
-  commands each gain one paired, optional
-  `--tls-server-name`/`--tls-ca-cert-der-file` flag set, parsed centrally in
-  `apps/cli/src/net.rs` into exactly one new `CliTransport` enum
-  (`Loopback`/`RemoteTls`) implementing `Transport`, so every command's
-  generic `execute<T: Transport>` body is unchanged regardless of which mode
-  a given invocation selected. With neither flag, a command behaves exactly
-  as before (loopback-only plaintext, `CliError::NonLoopbackEndpoint` on a
-  non-loopback `--endpoint`). With both flags, `--endpoint` is parsed as an
-  already-resolved `SocketAddr` (no loopback restriction, and still no DNS
-  resolution) and the command dials `RemoteTlsHttpTransport`. Supplying
-  exactly one of the two flags returns a new typed
-  `CliError::PartialTlsConfiguration` before any network dispatch. The CA
-  file is read with `std` only, through a bounded `Read::take` adaptor
-  capped at one byte more than the same public
-  `MAX_CA_CERTIFICATE_DER_BYTES` the transport itself enforces, so a
-  mistaken or hostile oversized file can never make this binary buffer an
-  unbounded amount of data before rejecting it; an empty file, an oversized
-  file, and any I/O failure each return their own typed, actionable
-  `CliError` variant naming the file path but never its contents.
-  `apps/cli/tests/tls_cli_e2e.rs` adds two deterministic local TLS
-  integration tests (again a real `rcgen`/`rustls` loopback TLS server, no
-  fake transport, no external network): one proves a real `context`
-  invocation succeeds over TLS with the exact expected `Host` authority; the
-  other proves that when a `transfer` invocation successfully authenticates
-  TLS against a server whose `/v1/context` result disagrees with
-  `--expected-chain-id`, it dispatches exactly one `/v1/context` request —
-  confirmed by the test server's own connection counter, which would observe
-  a second connection attempt if one occurred — and returns the typed
-  `ProtocolContextMismatch` before ever reaching the nonce/object/sign/submit
-  steps that a verified context would unlock. This is the same ordering and
-  same typed-mismatch guarantee S1a's existing fake-`Transport` unit tests
-  already proved, now demonstrated over a real authenticated TLS connection
-  instead of a fake transport, which is exactly why TLS endpoint
-  authentication and the expected-context check must remain two independent
-  boundaries: successfully authenticating the TLS endpoint above proves only
-  that the CLI reached a server holding a trusted key for
-  `--tls-server-name`, never that the server speaks the caller's intended
-  chain/protocol, so the pre-existing S1a check is what actually stops the
-  transfer here.
+  All five CLI network commands (`context`, `object`, `receipt`, `next-nonce`,
+  `transfer`) parse paired optional `--tls-server-name` and
+  `--tls-ca-cert-der-file` flags centrally in `apps/cli/src/net.rs`, selecting
+  `CliTransport::{Loopback,RemoteTls}` without changing their generic
+  `execute<T: Transport>` bodies. Neither flag keeps loopback-only plaintext
+  and `CliError::NonLoopbackEndpoint`; both permit an already-resolved remote
+  `SocketAddr` without DNS lookup; one flag yields
+  `CliError::PartialTlsConfiguration` before dispatch. The CA file uses a
+  bounded `Read::take` (limit plus one byte); empty/oversized/read failures
+  have typed path-naming errors that never expose contents. Real local TLS
+  tests in `apps/cli/tests/tls_cli_e2e.rs` verify `context` and exact DNS
+  `Host`, plus a mismatched-chain `transfer`: the server's connection counter
+  sees only `/v1/context`, and the CLI returns `ProtocolContextMismatch`
+  before nonce/object/sign/submit. TLS identity thus does not replace the
+  independent expected-context check.
 
-  **Explicit limits (not silently assumed).** This slice performs no DNS
-  resolution anywhere; the caller must always supply an already-resolved
-  `SocketAddr`. It trusts exactly one caller-supplied CA DER file as the sole
-  anchor — never a system/OS trust store, never a PEM/bundle format, never
-  more than one combined anchor. It never performs mTLS (no client
-  certificate is ever presented). It has no certificate revocation checking
-  (no CRL/OCSP), no certificate rotation or lifecycle handling, and no
-  deployment/operations evidence for how a CA certificate reaches an
-  operator's filesystem or how it is rotated over a validator's lifetime —
-  all of that remains explicitly deferred to later CLI-First Node Production
-  Gate slices (S5) or the Post-MVP Production Hardening persistence/
-  operations work, not silently approximated here. TLS endpoint
-  authentication and the separate `ExpectedProtocolContext` check are
-  intentionally never merged into one another: a successful TLS handshake
-  never substitutes for the expected-context check, and a verified context
-  never widens what the TLS layer itself trusts. This is real S1 evidence,
-  not a mainnet-readiness or production-certification claim: Phase 16/17's
-  production exit criteria and an independent security audit remain
-    required afterward, unchanged, and S2 (cross-owner transfer) was the next
-  ordered slice at that decision point.
+  **Explicit limits (not silently assumed).** The transport requires an
+  already-resolved `SocketAddr` and one caller-supplied DER CA; it does no DNS,
+  system-root, PEM/bundle, or mTLS handling. CRL/OCSP, CA rotation/lifecycle,
+  and operator delivery of the CA file remain S5/operations work. TLS server
+  identity and `ExpectedProtocolContext` are independent checks: neither
+  substitutes for the other. S1 evidence is not production/mainnet
+  certification; Phase 16/17 and independent audit still apply. At this
+  decision point S2 cross-owner transfer was next.
 
   **DR-0086 amendment (current status).** The preceding "S2 is next" sentence
   records DR-0085's S1 completion point. S2 is now implemented and validated

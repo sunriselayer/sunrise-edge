@@ -2,34 +2,24 @@
 
 ## Status
 
-Accepted implementation direction, 2026-09-27. This record fixes the design for
+Accepted design direction 2026-09-27 for
 [DR-0151](0151-integrated-network-delivery-and-lightweight-stores.md)'s
-integrated membership/epoch delivery after independent design review and
-correction of the availability/drain/readiness gaps. The mechanism is specified
-in [Complete epoch handoff](../epoch-handoff.md). At acceptance, this was a
-design-only decision and did not activate a new runtime rule. Independent
-implementation slices on 2026-09-28 allocate the availability wire family and
-implement the handoff-capable logical commitment profile and a canonical
-publication bundle with one replica's durable `retain_publication` step,
-described below. A later 2026-09-28 Draft PR slice adds prepare-side retained
-witness/artifacts, the v2 availability-certificate apply gate, certified-only
-HTTP source/retention/published-apply routes and Rust client/CLI aggregation.
-At that draft's date, Freeze/DrainSet/Seal and integrated epoch handoff were
-unimplemented. Later accepted capability records include DR-0167/0168; this
-dated account is not their current implementation status. Consult TODO for
-the remaining complete cut/import/readiness/Seal/activation gate.
-The complete design requires a
-publication-before-apply rule, not a new quorum-applied finality rule.
-Implementation and validation status belong in [`TODO.md`](../../../TODO.md).
+membership/epoch handoff; the mechanism is in
+[Complete epoch handoff](../epoch-handoff.md). Acceptance alone activated no
+runtime rule. On 2026-09-28 independent slices added availability wire,
+logical commitment, canonical publication bundle and one replica's durable
+`retain_publication`; a later Draft PR added prepare-side retained artifacts,
+v2 certificate apply and certified-only HTTP/client/CLI routes. Freeze,
+DrainSet, Seal and integrated handoff were still absent at that draft's date.
+DR-0167/0168 and [`TODO.md`](../../../TODO.md) provide later status. The
+design requires publication before apply, not quorum-applied finality.
 
-The independent logical-generation admission extraction on 2026-09-30
-deliberately refuses Logical-profile epoch proposal/vote and fresh activation
-with `EpochTransitionLogicalProfileUnsupported`. The existing transition
-writer cannot install next-epoch policies with the required provenance in
-this slice. Exact already-committed transition identity is reconciled before
-the fresh-activation gate; Historical transitions remain supported. Full
-Logical handoff and activation remain a later, independently verified
-implementation, not authority conferred by these local admission guards.
+The 2026-09-30 logical-generation extraction rejects Logical-profile epoch
+proposal/vote and fresh activation with
+`EpochTransitionLogicalProfileUnsupported`: the transition writer could not
+install next-epoch policy provenance. Exact already-committed identity is
+reconciled before that gate. Historical transitions remain supported; the
+local admission guard does not confer full Logical handoff authority.
 
 ## Context and reusable boundaries
 

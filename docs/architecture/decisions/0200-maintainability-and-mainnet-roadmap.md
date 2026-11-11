@@ -8,237 +8,203 @@ protocol authority, deployment or release-readiness claim.
 
 ## Context
 
-The user requests a saved refactoring plan covering fundamental design,
-maintainability, redundancy and over-engineering, a consolidated mainnet TODO,
-and ten hours of continued implementation. File splitting alone is insufficient.
-The existing roadmap mixes a live queue, repeated design brief and thousands
-of lines of historical attempts. Existing architecture contracts already define
-most responsibilities; another generic framework or parallel roadmap would make
-that problem worse.
+The user requested a structural refactoring plan, one mainnet TODO and ten
+hours of implementation. The old roadmap mixed live work, design and historical
+attempts; existing architecture contracts already define most responsibilities.
 
 ## Decision
 
-Keep one live queue in root TODO.md, one responsibility-oriented structural
-plan in implementation-structure.md, actual locations in development/code-map.md,
-and dated rationale here. Preserve the old roadmap and original criteria under
-development/history, clearly marked historical, with repository links rebased.
-Do not erase failed/interrupted evidence or reinterpret old pending statuses.
-The human's requested documentation/plan consolidation also covers aligning
-the contributor orientation in AGENTS.md with these owners. This changes no
-authority, security, validation or original release requirement.
+Keep the live queue in root TODO.md, structural plan in
+implementation-structure.md, code locations in development/code-map.md and
+dated rationale here. Preserve the original roadmap, criteria and failed or
+interrupted evidence under development/history with rebased links; do not
+reinterpret old pending statuses. Align AGENTS.md with these owners without
+changing authority, security, validation or release requirements.
 
-Use R0–R4 work packages: plan/gate reconciliation; public contract/dependency
-ownership; core/runtime semantic responsibilities; attributable tests and
-nonredundant CI; audit/startup integration seams. They are outcomes rather than
-mandatory helper-sized PRs. The ten-hour queue is in TODO, not this record.
+R0–R4 cover plan/gate reconciliation, contract/dependency ownership,
+core/runtime responsibilities, attributable tests and CI, and audit/startup
+seams. They describe outcomes, not mandatory PR size; the timed queue is in TODO.
 
-A substantive refactor has one defining invariant, actual migrated callers and
-a removed old mechanism. A mechanical move may support that work but cannot
-stand in for it. Shared canonical bounds/codec contracts belong to their defining
-owner; transport framing overhead and local deployment budgets stay separate.
-Move no execution, store or lifecycle authority into a new foundational crate
-just to make an SDK dependency graph look smaller.
+A substantive refactor needs one invariant owner, migrated callers and removal
+of the old mechanism. A mechanical move alone does not suffice. Canonical
+bounds/codecs belong to their owner; transport overhead and deployment budgets
+stay separate. Do not move execution, store or lifecycle authority into a
+foundation crate merely to shrink the SDK dependency graph.
 
-Consolidate mainnet work into independent release audits, protected signing,
-selected-profile durability, checkpoint/backup/restore, ingress/operations,
-economic/genesis approval, reproducible supported-runtime release and public
-testnet/final approval. These are mappings of existing S4/S5, Phase 15–17 and
-cross-phase criteria, not permission to delete or soften them.
+Group mainnet work under independent audits, protected signing, selected-profile
+durability, checkpoint/backup/restore, ingress/operations, economic/genesis
+approval, reproducible supported-runtime release and public testnet/final
+approval. These map existing S4/S5, Phase 15–17 and cross-phase criteria;
+none is waived.
 
-PostgreSQL remains optional under DR-0151/0172; its actual suite is retained for
-selected PG changes/claims. Lightweight profiles need their own real capability
-evidence, not a renamed PG pass. Development remains local SQLite/loopback.
+PostgreSQL remains optional under DR-0151/0172, with its real suite required for
+selected PG changes/claims. Other profiles need their own capability evidence.
+Development remains local SQLite/loopback.
 
-The later Ledger deferral permits non-Ledger software work but does not itself
-close the original complete S4/mainnet constraint. Keep that gate and the
-all-provider release-scope question open until an explicit human-reviewed
-decision changes them. Do not invent a production signer, economic configuration,
-SLO or launch profile merely to finish an automated window.
+Ledger deferral permits non-Ledger work but does not close the original S4/mainnet
+gate or all-provider release-scope question; those require a human-reviewed
+decision. Do not invent production signing, economics, SLOs or a launch profile.
 
 ## Acceptance and non-goals
 
-Preserve original gate text/evidence in the archive; check rebased links and
-all live requirements against it. Status is updated only in TODO. Retain all
-required real functional tests, independent oracles, protocol vectors, actual
-store faults and optional selected-PG coverage. No path-filter skip, simulated
-success, changed unlock delay or erased history is a CI optimization.
+Preserve archived gate text/evidence and verify rebased links and live
+requirements against it; update status only in TODO. Retain required real
+functional tests, independent oracles, vectors, store faults and selected-PG
+coverage. Path-filter skips, simulated success, changed unlock delays and
+erased history are not CI optimizations.
 
-Every implementation slice needs proportional targeted checks, complete required
+Every implementation slice needs proportional checks, complete required
 acceptance, independent exact-head source approval and required CI before a
 normal merge. Approval is not a security audit or operational qualification.
 
-The budget authorizes continued local implementation, not cloud resources,
-production D1/Worker traffic, paid-plan changes, live provider activation or
-public/mainnet launch. Stop starting new slices at the window deadline; retain
-real head/review/test state and any unfinished requirements.
+The budget authorized local implementation only: no cloud resources,
+production D1/Worker traffic, paid plans, live providers or launch. At the
+deadline, stop new slices and retain exact head/review/test state and unmet gates.
 
 ## 2026-10-10 R1 submission-signature codec ownership
 
-The existing E009/version1 raw signature-envelope codec and the unchanged
-transaction-v1/submit-transaction-v1 message families belong to execution.
-The SDK uses that owner directly. Core retains its public typed RequestId
-wrapper and reexports, preserving existing API paths and authentication order.
-Its old defining constants and local envelope construction are removed.
+Execution owns the existing E009/version1 raw signature-envelope codec and
+unchanged transaction-v1/submit-transaction-v1 messages; SDK uses it directly.
+Core retains the public typed RequestId wrapper/reexports and existing API and
+authentication order, while its duplicate constants/envelope builder are removed.
 
-The raw owner encodes exactly 32 identity bytes and the supplied payload,
-including zero identity or an empty payload. It validates no request authority,
-transaction, signature or durable outcome. Field copies precede the existing
-32 MiB canonical finish bound; this is not preallocation admission. Core's
-nonzero RequestId and separate 1 MiB authentication bound remain unchanged.
-SDK canonical-envelope failure still maps to the existing NodeCore error;
-unsupported-scheme and transaction-encoding errors retain their priority.
+The raw owner encodes 32 identity bytes and the supplied payload, including
+zero/empty values, without validating authority, transaction, signature or
+durable outcome. Field copies precede the existing 32 MiB finish bound, not
+preallocation admission. Core's nonzero RequestId and 1 MiB authentication
+bound, SDK NodeCore mapping and unsupported-scheme/transaction-error priority
+remain unchanged.
 
-Seven added source controls use independent complete E009 literals, complete
-prepared/signed bytes, exact/+1 frame-size refusal, typed-zero refusal and
-caller-error priority. The large SDK operand is an encoder-only negative,
-not an admissible transaction. Approximately 96 MiB of major live byte buffers
-is source reasoning, not a measured heap/concurrency ceiling or resource grant.
+Seven source controls cover independent E009 literals, complete prepared/signed
+bytes, exact/+1 frame-size and typed-zero refusal, and caller-error priority.
+The large SDK operand is encoder-only; approximately 96 MiB of major live
+buffers is source reasoning, not measured heap/concurrency or a resource grant.
 
-UNFORMATTED, UNCOMPILED and UNEXECUTED. This ownership slice changes no Cargo
-edge, protocol bytes, crypto, custody or durable admission and does not close
-R1/M2 or qualify release. Actual validation and all existing gates remain.
+At authorship: UNFORMATTED, UNCOMPILED, UNEXECUTED. No Cargo edge, protocol
+bytes, crypto, custody or durable admission changed; R1/M2 and release gates
+remained open pending actual validation.
 
 ## 2026-10-11 R1 generic validator-count bound ownership
 
 Date: 2026-10-11 (Asia/Tokyo).
 
-The existing generic 10,000-member ceiling has one defining owner,
-`validator_set::MAX_VALIDATORS`, exposed additively from the validator-set
-crate. Core's fee-share and validator-entry record codecs consume that owner
-at their four existing encode/decode bound operands. The two private copies
-are removed without changing wire bytes, record APIs, errors or check order.
-Encoders still validate/build their items before the list-bound check;
-decoders still reject excessive counts before looking up missing list items.
+`validator_set::MAX_VALIDATORS` is the additive defining owner of the generic
+10,000-member ceiling. Core fee-share and validator-entry codecs use it at
+their four existing encode/decode bounds; two private copies are removed.
+Wire bytes, APIs, errors and order remain: encoders build/validate items before
+the count check; decoders reject excess counts before missing-item lookup.
 
-The distinct `MAX_FASTPATH_ACTIVE_VALIDATORS = 256` live economics admission
-limit remains unchanged. The generic record ceiling preserves historical
-readability; exposing it grants no membership, key, quorum, custody or durable
-authority and does not widen live admission.
+The distinct live `MAX_FASTPATH_ACTIVE_VALIDATORS = 256` admission cap remains.
+The generic record cap preserves historical reads and grants no membership,
+key, quorum, custody, durable authority or wider live admission.
 
-Eight appended source controls use independent literal 10,000/10,001
-boundaries for generic construction/codec and both core record codecs.
-The generic decoder control retains caller-limit clamping and a narrower
-caller cap. Count-only malformed frames retain refusal priority over missing
-members/items. Structural fixtures use ordered u32-derived IDs, unique opaque
-keys and power one, not verified signing keys. Charged settlements have
-strictly ordered shares, a conserved positive total, generation one and no
-claims, so their excessive-count refusal is not an earlier invariant failure.
-Existing complete vectors and committee controls are left unchanged.
+Eight source controls pin independent 10,000/10,001 boundaries for generic
+construction/codec and both core codecs, including caller-limit clamping and
+a narrower cap. Malformed count refusal precedes missing-item refusal.
+Fixtures use ordered u32 IDs, unique opaque keys and power one, not verified
+signers; charged settlements use ordered shares, conserved positive total,
+generation one and no claims so the count is the first failure. Existing
+vectors and committee controls remain.
 
-UNFORMATTED, UNCOMPILED and UNEXECUTED. This source implementation removes
-duplicate bound definitions, not a Cargo edge or all SDK/core coupling. No
-build benefit, execution result or custody qualification is measured. R1
-remains open; targeted/full validation, independent implementation review and
-required CI gates remain unmet by this slice alone.
+At authorship: UNFORMATTED, UNCOMPILED, UNEXECUTED. This removes duplicate
+bounds, not a Cargo edge or all SDK/core coupling. It established no measured
+build, runtime or custody result; R1 still required targeted/full validation,
+independent review and CI.
 
 ## 2026-10-11 R1 consensus decoder-byte bound ownership
 
 Date: 2026-10-11 (Asia/Tokyo).
 
-The existing strict decoder admission caps have one defining consensus owner:
+Consensus owns the strict decoder caps
 `MAX_ENCODED_CERTIFICATE_BYTES = 8_388_608` and
-`MAX_ENCODED_PROPOSAL_BYTES = 10_485_760`. Both are additively reexported from
-the crate root; the durable module remains private. Node-wire consumes these
-owners instead of two copied numerical operands. Candidate/framing overhead
-and status derivation remain unchanged and transport-owned: certificate
-8_388_608, ordered proposal 11_018_240 and status 8_388_864 bytes.
+`MAX_ENCODED_PROPOSAL_BYTES = 10_485_760`, additively reexported from the
+crate root while durable stays private. Node-wire replaces two numeric copies
+with these owners. Transport still owns certificate 8_388_608, ordered proposal
+11_018_240 and status 8_388_864 byte totals, including framing/derivation.
 
-The existing `actual > max` checks still precede canonical parsing. Values,
-canonical bytes, codec function bodies, error kinds/fields/text/priority,
-signatures and context/admission checks remain unchanged. These are decoder
-admission caps, not universal encoder limits, admissible capacity, committee
-or custody authority. No manifest or Cargo edge changes.
+`actual > max` still precedes canonical parsing. Values, bytes, codec bodies,
+errors and priority, signatures, context/admission checks, manifests and Cargo
+edges remain unchanged. These decoder caps grant no universal encoder capacity,
+committee or custody authority.
 
-Five appended consensus controls independently pin the two public literals
-and malformed zero frames at each literal cap and cap+1. At-cap inputs reach
-canonical refusal; cap+1 inputs assert the complete existing typed oversize
-refusal. One appended wire control separately pins all three literal totals
-and their owner/overhead relationships. Existing vectors and controls remain.
+Five consensus controls pin both literals and malformed zero frames at cap and
+cap+1: canonical refusal at cap, existing typed oversize refusal above it.
+One wire control pins all three totals and owner/overhead relations; existing
+vectors and controls remain.
 
-Independent design and implemented-source reviews approved only this exact
-four-Rust-path slice. All six controls remain UNFORMATTED, UNCOMPILED and
-UNEXECUTED, outside the original 41 selectors. This removes copied bounds,
-not all SDK/core coupling. No build benefit, runtime, valid-capacity, custody
-or release qualification is established. R1 remains open; all required
-targeted/full and CI validation remains separate.
+Independent design/source reviews approved this four-Rust-path slice only.
+At authorship its six controls were UNFORMATTED, UNCOMPILED, UNEXECUTED and
+outside the original 41 selectors. Removing copied bounds did not resolve all
+SDK/core coupling or qualify build benefit, runtime, valid capacity, custody,
+release or R1; targeted/full and CI remained separate.
 
 ## 2026-10-11 R1 frozen-frontier bound ownership
 
 Date: 2026-10-11 (Asia/Tokyo).
 
-The existing frontier codec now publicly owns its 8,192-byte vote cap. Its
-distinct availability/root alias is `MAX_FROZEN_FRONTIER_VOTE_BYTES`, not the
-coincidentally equal availability-vote cap. Wire consumes this owner and the
-existing 524,288-byte page and 128-entry owners, preserving all public wire
-names/types. An adjacent private const assertion checks u16 representability
-before the explicit entry-limit cast; actual compiler qualification is pending.
-Request 128 bytes, response framing allowance 64 bytes and the derived 532,544
-response cap remain transport-owned and unchanged. No Cargo edge changes.
+The frontier codec publicly owns its 8,192-byte vote cap through the distinct
+`MAX_FROZEN_FRONTIER_VOTE_BYTES` alias, not the equal availability-vote cap.
+Wire uses it with existing 524,288-byte page and 128-entry owners, preserving
+public names/types. A private const assertion precedes the u16 entry-limit
+cast; compiler qualification was pending. Transport still owns the 128-byte
+request, 64-byte response allowance and derived 532,544-byte response cap.
+No Cargo edge changes.
 
-The vote encoder still checks its byte cap after frame construction; its strict
-decoder checks before canonical parsing. No codec body, value, signature,
-error variant/text/priority or caller authority check changes. The byte cap
-grants no authentication, quorum, persistence or custody authority.
+The vote encoder checks after frame construction; the strict decoder checks
+before parsing. Codec bodies, values, signatures, error variant/text/priority
+and caller authority checks remain unchanged. The cap grants no authentication,
+quorum, persistence or custody authority.
 
-Four consensus and five wire source controls independently pin literal caps,
-at-cap canonical refusal versus cap+1 bound refusal, page entry count and exact
-wire refusal order. The 128-entry page structurally round-trips; the independent
-129-entry frame supplies all 129 valid nested identities in fields 4–132,
-with 132 complete fields and literal length 41,441. Its refusal is not a
-missing-body shortcut. Request controls separately retain limit-only 129
-refusal and limit-before-zero-cursor priority after prior framing checks.
-Opaque vote/page wire components round-trip only as an envelope; independently
-framed component+1 cases fit below the outer allowance and retain vote-before-
-page refusal. Outer malformed-at-cap controls do not prove valid capacity.
+Four consensus and five wire controls pin literal caps, at-cap canonical versus
+cap+1 bound refusal, page count and wire refusal order. The 128-entry page
+round-trips; the 129-entry frame has 129 valid nested identities in fields
+4–132, 132 complete fields and literal length 41,441, avoiding a missing-body
+shortcut. Request controls pin limit-only 129 refusal and limit-before-zero-
+cursor priority after framing checks. Opaque vote/page parts round-trip only
+as an envelope; framed component+1 cases stay below the outer allowance and
+retain vote-before-page refusal. Malformed-at-cap is not valid capacity proof.
 
-Independent design and corrected implemented-source reviews approve only this
-five-Rust-path slice. Existing functions, controls and complete vectors remain
-preserved. All nine new controls remain UNFORMATTED, UNCOMPILED and UNEXECUTED,
-outside the original 41. The original review's two design-conformance gaps are
-resolved by the explicit persistence disclaimer and isolated 129/None encode/
-decode controls; its original BLOCK remains historical. No runtime, signed
-capacity, quorum, retention, physical durability or custody is qualified.
-R1 and the original twenty completion groups remain open; targeted/full,
-independent exact-head and CI/release gates remain separate.
+Independent design/corrected-source reviews approved this five-Rust-path slice;
+the original review BLOCK remains historical. The persistence disclaimer and
+isolated 129/None encode/decode controls resolved its two conformance gaps.
+Existing functions, controls and vectors remain. At authorship nine new
+controls were UNFORMATTED, UNCOMPILED, UNEXECUTED and outside the original 41.
+No runtime, signed capacity, quorum, retention, physical durability or custody
+was qualified; R1 and twenty completion groups retained targeted/full,
+independent exact-head and CI/release gates.
 
 ## 2026-10-11 human amendment: code completion versus network launch
 
 Date: 2026-10-11 (Asia/Tokyo).
 
-The human authorizes local PostgreSQL in Docker and bounded isolated Docker
-disk-full/forced-stop experiments. Host disk filling, global swap/settings,
-foreign workloads, cloud/public activation and real-key operations remain
-outside that authority. The original environment refusal stays historical;
-permission alone supplies no environment, fault, durability or PG result.
+The human authorized local Docker PostgreSQL and bounded isolated Docker
+disk-full/forced-stop experiments, excluding host disk filling, global
+swap/settings, foreign workloads, cloud/public activation and real keys.
+The old environment refusal remains historical; permission proves no result.
 
-Separate SOURCE, VERIFY and LAUNCH within the existing roadmap. Implemented
-source is not verified CODE completion. The original applicable cryptographic,
-atomicity, recovery/fault, advisory, independent review and exact-head required/
-selected-profile/CI gates remain code-verification obligations. Actual keys,
-backup/operator ceremonies, production workload/topology, actual genesis and
-economic values, and public activation belong to human-owned network launch.
-Disposable keys and parameters can verify parameterized code without selecting
-those production values. This deferral does not remove code-side protected
-signing/content verification, genesis/supply invariants or recovery mechanisms.
+Keep SOURCE, VERIFY and LAUNCH distinct: source alone is not verified CODE.
+Cryptographic, atomicity, recovery/fault, advisory, independent review and
+exact-head required/selected-profile/CI gates remain code obligations.
+Actual keys, backup/operator ceremonies, production topology/workload,
+genesis/economics and activation are human-owned launch choices. Disposable
+values may verify parameterized code without choosing production values;
+protected signing/content, genesis/supply and recovery code remain required.
 
-No checkbox is closed by this scope decision. The original twenty combined
-readiness groups retain their mappings; only their launch-only actions are
-deferred from code completion. A separately provider-stopped dependency workflow
-remains stopped: Docker permission is not acquisition/runtime admission or
-permission to retry/reroute it. Progress belongs in TODO, not this record.
+This closes no checkbox. The twenty readiness groups retain their mappings;
+only launch-only actions leave code completion. A separately provider-stopped
+dependency workflow remains stopped: Docker permission is neither runtime
+admission nor retry/reroute permission. Progress belongs in TODO.
 
 ## 2026-10-12 R1 retained-receipt reconciliation binding
 
-The common durable reconciliation owner now consumes the existing pure
-`NodeDedupRecord::decode_bound` contract, removing its second implementation of
-nested identity/digest and exact canonical re-encoding checks. Durable lookup
-identity and outer event-digest/RequestIdReuse authority still precede decoding
-in the reconciliation caller. Decode, projection and encoding error categories
-retain their original mapping and order. Returned responses are unchanged and
-replay creates no new outbound work, state/object reads or commit.
+Durable reconciliation now calls pure `NodeDedupRecord::decode_bound` rather
+than duplicating nested identity/digest and canonical re-encoding checks.
+Lookup identity and outer event-digest/RequestIdReuse checks still precede it;
+decode/projection/encoding error mappings and order, responses, and replay's
+absence of outbound work, state/object reads or commit remain unchanged.
 
-Four focused controls supplement the existing genuine idempotent/paid/claim/
-bond replay tests: absence/exact output, joint-invalid outer identity/reuse,
-nested identity/digest substitution and malformed canonical bytes. Source
-review and actual targeted/full acceptance remain separate; no custody,
-inclusion, release or whole R1 completion follows from this migration alone.
+Four controls supplement genuine idempotent/paid/claim/bond replay tests:
+absence/exact output, joint-invalid outer identity/reuse, nested identity/
+digest substitution and malformed canonical bytes. Source review and actual
+targeted/full acceptance remained separate; this alone qualified no custody,
+inclusion, release or whole R1 completion.

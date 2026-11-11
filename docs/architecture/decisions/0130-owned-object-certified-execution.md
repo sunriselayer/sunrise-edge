@@ -13,51 +13,25 @@ lifecycle/recovery or Phase 3 slashing/reward distribution.
 
 ## Context
 
-[DR-0129](0129-fastvote-fastcertificate-fast-path.md) ("phase 0") implemented
-only the owned-object fast path's canonical `FastVote`/`FastCertificate`
-types, wire codec, and a stateless `FastPathCertifier` signature/quorum
-aggregation library in `crates/consensus`. It deliberately stopped short of
-any `node-core` dependency, persistent lock, effects application, certificate
-publication, or ingress, and named the next slice as a separate decision
-because "authenticated execution, object authority, fees, crash recovery, and
-idempotent publication cannot be bypassed by an intermediate API."
+[DR-0129](0129-fastvote-fastcertificate-fast-path.md) built only the
+stateless `FastVote`/`FastCertificate` codecs and signer/quorum library in
+`crates/consensus`. It deferred authenticated execution, authority, fees,
+crash recovery and idempotent publication as one coupled boundary.
 
-FastVote/multi-validator integration is item 5 of `TODO.md`'s delivery
-roadmap and is delivered across four phases, tracked there and in
-`docs/architecture/core-protocol.md` section 11:
+The `TODO.md` delivery roadmap and `docs/architecture/core-protocol.md` §11
+split FastVote into four phases: Phase 0's canonical library (DR-0129), this
+Phase 1's coherent prepare/lock/vote/apply execution, Phase 2's epoch and
+validator lifecycle/ingress/equivocation/fault work, and Phase 3's economics.
+DR-0137 later replaced this record's signer-subset fee proposal with
+entitlements from the committed full active set: certificates may contain
+different valid quorum subsets. FastVote completes only after Phase 3.
+A static signed-genesis, frozen-epoch permissioned testnet could be deployed
+on Phase 1, but that is a separate deployment decision.
 
-* **Phase 0 (DR-0129, done).** Canonical types, wire codec, and
-  signature/quorum aggregation library only.
-* **Phase 1 (this DR, implemented locally).** One coherent
-  certified-execution slice:
-  signed paid intent authentication, exact replay reconciliation,
-  nonce/policy/object/ABI validation, deterministic paid execution, a
-  canonical commitment over the complete staged commit, durable exclusive
-  sender-authorized owned-object version locks, byte-stable `FastVote`,
-  quorum certificate verification, and atomic certificate apply.
-* **Phase 2 (not yet designed).** Validator lifecycle: epoch/validator-set
-  transitions, retired/wrong-epoch rejection, relay/event-family
-  authorization, explicit equivocation evidence, multi-validator
-  fault/restart tests.
-* **Phase 3 (subsequently designed in DR-0137).** Economics/security completion:
-  bond-linked slashing execution and deterministic transaction-fee escrow
-  distribution to the committed active validator set, including a canonical
-  rounding-remainder rule and vectors. DR-0137 corrects this decision's earlier
-  signer-subset proposal because valid certificates can carry different quorums.
-
-**FastVote is complete only after Phase 3.** A testnet may launch on top of
-Phase 1 — a static signed genesis validator set with a frozen epoch is
-sufficient for a permissioned testnet — but that launch is a deployment
-decision, not a claim that FastVote itself is finished. Validator-set
-changes, slashing, and fee/reward distribution are FastVote completion
-criteria in this plan, not vague "production" deferrals to be named later.
-
-This phase remains scoped to the owned-object fast path. `ChainedHotStuff`,
-shared-object consensus, and validator-set-change events
-(`ApplyValidatorSetChange`) are unchanged and out of scope here, exactly as
-in DR-0129. Standard Asset remains ordinary paid contract state: this DR adds
-no node-core special balance authority, and the existing paid-fee mechanism
-(DR-0126/DR-0127) is reused, not replaced (see "Fee escrow boundary" below).
+This phase changes only the owned-object path. `ChainedHotStuff`, shared-object
+consensus and `ApplyValidatorSetChange` are unchanged. Standard Asset stays
+ordinary paid contract state; there is no node-core balance privilege and
+DR-0126/DR-0127 paid fees are reused (see “Fee escrow boundary”).
 
 ## Decision
 
