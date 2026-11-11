@@ -30,10 +30,48 @@ The local receipts and raw streams above are retained below
 terminal records; this summary does not promote a liveness observation, a
 partial step, or a different source to success.
 
+## 2026-11-11 exact-source follow-up
+
+Combined dependency PR [#364](https://github.com/sunriselayer/sunrise-edge/pull/364)
+merged as `2415dbec19c5cb10885820e7daa626cd4b24dec1` with tree
+`2a0a2f091cc6baa692417bb9c32840f692a42b4f`. Its exact PR head has
+successful literal `npm ci --prefix adapters/cloudflare-workers` and complete
+local required checks, all eight ordinary CI
+checks, and the five PostgreSQL lanes plus aggregate. On the merged head/tree,
+the second fresh Native13 A/B attempt built all 13 targets twice and found all
+13 pairs byte-equal. The first Native attempt failed before build A and remains
+failed.
+
+The first original12 driver-build owner failed its post-build hard-link-count
+assumption, despite both Cargo invocations exiting 0. Its result remains
+failed. A separately reviewed v2 post-build validator qualified the 13 debug
+hosts and ten test drivers; all 22 original inventory invocations then passed.
+Bounded check and probe stages passed before the original ten whole and two
+exact ignored RELEASE selections ran. All 12 selections exited 0 with actual
+EOF/wait (105 passed, 0 failed, 4 ignored). The executed selector covered seven
+recurring epoch start/end pairs, terminal epoch 8, two distinct 1,832-byte
+withdrawal candidates and both committed acknowledgments. It asserts eight
+links; its recovery helper checks `3 + 4 × 8 = 35` roles. These two counts are
+test assertions, not separately printed raw counts. Source and all 36 bound
+RELEASE/debug/test ELF hashes matched before and after; owned temporary data,
+known PIDs and the service cgroup were released. The independent non-security
+review found no additional source/runtime defect on this exact tree. The
+bounded root receipt is SHA-256
+`6f8fd2ace5740d9c0cc5ec941112294f7e28783fa09ee7958b555b0eee344bef`
+at `/home/yu/Desktop/SunriseEdge/validation-tmp/m7-issue-disposition-prep-1111/h-root-verification.json`;
+the inner/outer runtime receipts are SHA-256 `2146fe4c902fc6b0a59affd4f898b0ace86aef353e85be0a7d807c88484e4375`
+and `2c8d558d8919d0833c682c531cd3b768eb124259ca7b53ea2be8864e458aec66`.
+The ignored real-UID protected-author fixture was not qualified by this run.
+
+The CLI capability row in the release handoff was stale on `2415dbec` and is
+corrected in the later documentation tree. The Native/RELEASE result above
+belongs only to `2415dbec`/`2a0a2f09`; it does not qualify that later tree.
+The independent security review remains stopped, so M7 remains unchecked and
+this record authorizes no release.
+
 ## Still unresolved
 
-The independent final source/security/release review and complete final issue
-disposition remain open. M2 protected-signing coverage, M3 selected-profile
-fault coverage, and the human-selected public operation conditions remain
-separate TODO rows. This reconciliation closes no M7 checkbox and authorizes
-no deployment or release.
+The independent final security/release approval remains open. M2
+protected-signing coverage, M3 selected-profile fault coverage, and the
+human-selected public operation conditions remain separate TODO rows. This
+reconciliation closes no M7 checkbox and authorizes no deployment or release.
