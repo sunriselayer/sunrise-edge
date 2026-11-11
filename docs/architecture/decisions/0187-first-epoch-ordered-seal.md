@@ -5,7 +5,7 @@ Date: 2026-10-03 (Asia/Singapore)
 Status: Accepted exact design contract after read-only Opus review.
 The review approved these semantics, not an unreviewed implementation or deployment.
 This supersedes the Seal-only alternatives in
-[DR-0186](0186-functional-handoff-closure.md), not its separate successor
+[historical DR-0186](https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/docs/architecture/decisions/0186-functional-handoff-closure.md), not its separate successor
 activation and recurring reconstruction requirements. Validation and progress
 belong only in [TODO.md](../../../TODO.md).
 

@@ -6,6 +6,11 @@ Status: Accepted after independent conditional PLAN approval. The five required
 corrections below are part of the implementation contract; source, execution,
 integration and release acceptance belong in TODO.
 
+Current reading (2026-11-12): this record originally pinned Node 22.20.0.
+[DR-0243](0243-node24-validation-profile.md) supersedes only that version with
+Node 24.19.0, reflected in the invocation below. The remaining framing
+contract is unchanged; source-specific qualification stays in TODO.
+
 ## Existing boundary
 
 The SDK already provides synchronous loopback HTTP and CA/DNS-pinned TLS.
@@ -111,7 +116,7 @@ Pass disposable certificate/key PEM through stdin, not persistent key files.
 Use a DNS SAN/SNI identity with a numeric loopback listening address.
 
 The owning nonignored Rust SDK integration test runs in the rust-tests lane.
-Add the existing pinned setup-node action with Node 22.20.0 to that lane and
+Use the existing pinned setup-node action with Node 24.19.0 in that lane and
 make the fixture fail, not skip, when process.version differs or Node is absent.
 The literal required/full gates retain that same owning test. Verify owned
 bounded process cleanup; no hosted resource or external socket is used.

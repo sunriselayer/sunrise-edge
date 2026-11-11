@@ -43,11 +43,13 @@ Development `LocalSigner`/seed conveniences delegate to these prepared owners.
 Actual CLI local/general execution, paid Call/Instantiate/Publish, publication,
 Standard Asset paid operations, original/successor bond registration and
 successor fee claims use the same preparation and finalization. Their concrete
-signer selections differ: generic local/paid commands reject custody, bond and
-generic fee-claim commands use development signing, and publication/recognized
-Standard Asset/positive Split have dedicated protected routes. The
-[route and test-owner map](signing-route-test-map.md) records these distinctions,
-the separate automatic authority owners and links to dated executed evidence.
+signer selections differ: generic local/paid commands reject custody, ordinary
+bond and generic fee-claim commands use development signing, while the scoped
+original-genesis bond and publication/recognized Standard Asset/positive Split
+have dedicated protected routes. The
+[dated route and test-owner map](signing-route-test-map.md) preserves the 8a5
+source snapshot; use the current family contracts and TODO for live scope and
+qualification.
 Fee-source ownership checks take the expected public `Address`, not
 secret-bearing keys.
 CLI development seed flags are still development flags; no production provider
@@ -92,19 +94,14 @@ their existence does not establish complete coverage of M2. Provider revocation
 does not erase historical signatures or silently rotate an AddressIsPublicKey
 identity. SDK preparation selects no additional backend or public network launch.
 
-[Proposed DR-0214](decisions/0214-protected-custody-and-review-boundary.md)
-separates client review, automatic consensus, readiness and genesis/admin roles,
-and compares local-OS, separated-host and hardware-backed threat boundaries.
-Its contract is independently design-reviewed, not provider selection or M2
-qualification. Its original 2026-10-07 next step deferred a presentation layer
-until a concrete consumer existed. [DR-0237](decisions/0237-bounded-publication-review-presentation.md)
-subsequently supplied that publication presentation, and DR-0238 supplied its
-bounded custody consumer. Repeating prepared-owner guarantees is not another
-security boundary.
+[DR-0214](decisions/0214-protected-custody-and-review-boundary.md) preserves the
+earlier threat-model comparison, not a current family selection. The selected
+boundaries below retain separate review, automatic-signing and genesis/admin
+authority.
 
-[DR-0238](decisions/0238-publication-only-local-os-custody.md) implements one
-of DR-0214's compared candidates ("dedicated encrypted local custody," without
-the encryption) for `PreparedPublication` only. Its `serve` process never
+[DR-0238](decisions/0238-publication-only-local-os-custody.md) selects the
+trusted local OS with a separate process and UID for `PreparedPublication`
+only. Its `serve` process never
 receives a caller-supplied frame: it rebuilds `PreparedPublication` from its
 own pinned config and the caller's bounded artifact/nonce/request-id, and
 `custody approve` is the human-review consumer of `PublicationReview` this
@@ -131,11 +128,15 @@ for their actual CLI/backend/test owners; none enables generic paid execution.
 DR-0264/0268 select automatic ordered/certified workers under their existing
 live-authority owners, independently of these SDK preparations.
 
-[DR-0287](decisions/0287-bond-registration-structural-preview.md) describes a
-seed-free original bond-registration preview. The subsequent
+[DR-0287](decisions/0287-bond-registration-structural-preview.md) and
 [DR-0288](decisions/0288-successor-bond-registration-structural-preview.md)
-extends that structural display through the existing verified successor
-preparation and current-context owner. Both scopes share canonical preimage
-and frame recomputation, sign nothing and write no artifact. Their output is
-nonauthorizing; bond authority, recognized leg semantics, trusted review and
-protected custody remain unselected in TODO M2-N3.
+provide seed-free, nonauthorizing bond previews. For the original-genesis
+profile, [DR-0289](decisions/0289-bond-outer-key-custody-and-split-approval.md)
+and [DR-0291](decisions/0291-original-bond-inner-standard-asset-profile.md)
+select separate content approvers and key workers, and the manifest-fixed
+whole-Coin Standard Asset transfer. [DR-0292](decisions/0292-original-bond-trusted-local-currentness.md)
+selects the designated local node for source-Coin currentness and a pre-sign
+recheck. The [development fixture](original-bond-protected-signing.md) connects
+this limited path; it does not authorize generic bond operations or qualify real
+approvers, keys or release. Successor live-epoch collateral and other family
+choices remain open in TODO M2-N3.

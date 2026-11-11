@@ -12,10 +12,15 @@ same OS/process boundary for readiness and successor on 2026-11-03 in
 Asset genesis authoring on 2026-11-04 in
 [DR-0286](0286-standard-asset-genesis-protected-review-worker.md). On
 2026-11-09, [DR-0289](0289-bond-outer-key-custody-and-split-approval.md)
-selected only bond outer-key isolation and separate content approvers. Other
-families, encrypted custody, real roles and production qualification remain
-unselected; implementation and exact qualification belong in
-[TODO.md](../../../TODO.md).
+selected bond outer-key isolation and separate content approvers;
+[DR-0291](0291-original-bond-inner-standard-asset-profile.md) selected the
+original-genesis inner collateral operation and key boundary. On 2026-11-10,
+[DR-0292](0292-original-bond-trusted-local-currentness.md) selected the
+designated local-node trust boundary for that operation. Generic local/paid,
+FinalTransfer, successor live-epoch collateral, encrypted custody, real roles
+and production qualification remain unselected or unqualified. Current family
+scope is in [signing preparation](../signing-preparation.md); implementation and exact
+qualification belong in [TODO.md](../../../TODO.md).
 
 ## Context and scope
 
@@ -41,12 +46,12 @@ neither protects the provider's key nor establishes trustworthy human review.
 | Conditional readiness | `node_core::conditional_readiness` owns actual-key matching, eligible successor checks, complete inactive-target verification and exact retained-slot reconciliation; readiness confers no serving authority |
 | Genesis and administrative approval | Genesis authoring and each actual administrative operation retain their own locally pinned authority and ceremony; validator membership does not confer these powers |
 
-Current [native custody](../../../apps/operator/src/host_runtime.rs) holds a
-raw `SigningKey`; the SQLite host loads a seed and checks its public key against
-the committed original authority before composing it. Readiness currently owns
-its software key directly. [Genesis authoring](../../../apps/operator/src/standard_asset_genesis.rs)
-also loads a raw key and signs publication, initialization and the manifest.
-SDK preparation migrates none of these custodians. An administrative provider
+At this proposal's 2026-10-07 source snapshot, [native custody](../../../apps/operator/src/host_runtime.rs)
+held a raw `SigningKey`; the SQLite host loaded a seed and checked its public
+key against the committed original authority before composing it. Readiness
+owned its software key directly. [Genesis authoring](../../../apps/operator/src/standard_asset_genesis.rs)
+also loaded a raw key and signed publication, initialization and the manifest.
+SDK preparation did not migrate these custodians. An administrative provider
 integration must first identify the actual signing consumer; this record
 creates no new admin route, privilege or general-purpose signing endpoint.
 

@@ -2,8 +2,7 @@
 
 The readiness-only contract in
 [DR-0178](decisions/0178-conditional-readiness-wire-and-retention.md) refines
-[DR-0154](decisions/0154-complete-epoch-handoff.md) and the earlier
-[DR-0177 proposal](decisions/0177-conditional-readiness-and-ordered-seal.md).
+[DR-0154](decisions/0154-complete-epoch-handoff.md).
 Readiness is a nonexclusive assertion, not Seal, membership activation or
 serving authority. [DR-0187](decisions/0187-first-epoch-ordered-seal.md) separately
 defines the first-epoch [Seal contract](ordered-seal.md); it does not relax this
@@ -188,31 +187,12 @@ cost; this is not a constant-memory, constant-time or bounded-total-history clai
 
 ## Separate Seal boundary
 
-The earlier alternatives in this section are historical proposal context.
-[DR-0187](decisions/0187-first-epoch-ordered-seal.md) supersedes them with exact
-selected-branch checks, an acceptance-only terminal and hard-stop closure.
-Readiness alone still grants none of that authority.
-
-Fix the exact pre-Seal business-prefix anchor. This first boundary admits only
-fully proof-checked post-anchor empty progress with unchanged business roots
-and generation floor. Different business/control material requires another
-verified cut/binding. The cut's fixed terminal three-chain does **not** prove
-the live high/locked suffix; equal applied/committed heights do not prove it either.
-Checking outgoing empty progress grants no live-progress rights to inactive staging.
-
-Before Seal implementation, specify complete phase-aware high/locked and
-justification traversal, inherited candidate authentication, bounded continuation
-and exact Seal candidate/proof-companion ownership. Process justified committed
-progress and fence all relevant observations. Resolve inherited business-bearing
-suffixes through normal recovery, without erasing locks/QCs or original outcomes.
-
-Seal must use the existing ordered engine and narrowly warranted post-DrainSet
-control admission; current broad refusal is not weakened by readiness. Competing
-uncommitted Seal proposals do not create a singleton target lock. Only normal
-committed acceptance fixes the immutable target. Seal's own proof/receipt stays
-outside its pre-Seal cut, avoiding circular roots. Seal, transition voting,
-activation and policy/provenance/serving rollover are subsequent features, not
-readiness-only acceptance requirements.
+Readiness alone grants no Seal, transition or serving authority. The accepted
+[first-epoch Seal contract](ordered-seal.md) owns selected-branch verification,
+proof companions, justified progress, committed hard-stop and the permanent
+outgoing barrier. [First successor serving](first-successor-serving.md) and
+[recurring successor serving](recurring-successor-serving.md) own activation and
+later links. None is an alternative readiness signing path.
 
 ## Owners and required readiness evidence
 
@@ -245,8 +225,12 @@ Required acceptance evidence includes:
 
 The closed wire/storage frames, fresh-token CAS and actual-key owner have a
 separate accepted design boundary. Callable local composition is documented
-in the [readiness guide](../guides/conditional-readiness.md). Future Seal
-traversal/companion review remains separate and unresolved.
+in the [readiness guide](../guides/conditional-readiness.md). Seal traversal
+and proof companions belong to the accepted
+[first-epoch Seal contract](ordered-seal.md); target-local activation and later
+links belong to the separate [first-successor](first-successor-serving.md) and
+[recurring-successor](recurring-successor-serving.md) contracts. Readiness alone
+completes none of them.
 
 PostgreSQL is optional; relevant changes/claims need selected actual acceptance.
 SQLite readiness implies no PG import, DO deployment or provider certification.

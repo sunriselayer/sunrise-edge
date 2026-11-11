@@ -5,6 +5,11 @@ Date: 2026-10-07 (Asia/Singapore)
 Status: Proposed bounded integration-test contract. Implementation and combined
 source acceptance remain separate; this permits no deployed profile or launch.
 
+Current reading (2026-11-12): this proposal originally pinned Node 22.20.0.
+[DR-0243](0243-node24-validation-profile.md) supersedes only that version with
+Node 24.19.0, reflected below. The proposal does not override the current
+runtime contract or TODO.
+
 ## Boundary
 
 DR-0203/0206 narrow the core and native host; DR-0204/0205 add closed relay and
@@ -39,7 +44,7 @@ both fixtures — a closed `start(script, cert_pem, key_pem, native_port)` entry
 point and a `stop(expected_outcomes)` exit point, not a general process
 framework or production dependency. The expected outcome lines stay each
 test's own closed contract with its fixture; the shared owner never infers or
-relaxes them. Disposable keys travel on stdin, never logs. Pin Node 22.20.0,
+relaxes them. Disposable keys travel on stdin, never logs. Pin Node 24.19.0,
 numeric loopback listeners, request/response bounds, a bounded stdout
 reader (per-line and whole-stream), a <=30s watchdog, and owned child/task
 cleanup on both ordinary completion and a test panic's unwind.
