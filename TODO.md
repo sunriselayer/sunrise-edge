@@ -1,6 +1,6 @@
 # Sunrise Edge: 実装・検証・公開準備
 
-更新: 2026-11-10 (Asia/Singapore)。これは唯一の現行作業表です。
+更新: 2026-11-11 (Asia/Singapore)。これは唯一の現行作業表です。
 現行チェックは **85件中71件完了・14件未完了**。残るコード・検証の親は
 **D02/M1/M2/M3/M7**、停止中の子3件と公開準備の親6件も未完了です。
 以下の行を現行状態とし、祖先sourceの成功や部分実行を親の完了へ転用しません。
@@ -504,8 +504,8 @@ M2-N1〜N5は既存M2の不足を分ける作業IDであり、新しい親gate�
 
 | ID / 現在の状態 | 必要な実装・設計作業 | 完了とするための検証・成果物 | 依存/着手条件 |
 | --- | --- | --- | --- |
-| M2-N1 / 設計から着手可 | readinessのparameterized protected-provider契約を、既存のeligible key・complete inactive target・retained slot ownerへ対応付ける。実hostの鍵load/署名/retained returnを列挙し、providerとhostの責任、停止/拒否/復旧を定義する | architectureと日付付きADRに具体consumer・expected key/domain・既存retentionとの境界を記録。選択後に実hostを接続し、既存readinessのexact owner内で正常署名、wrong-key/拒否、再起動/retained reconciliationを検証する。prepared/fakeだけの成功で閉じない | DR-0211の残件。設計整理は実鍵/実operator待ちにしない。backend接続はそのroleの具体契約確定後 |
-| M2-N2 / 設計から着手可 | successorの自動署名consumerと、original workerだけでは満たせない初期profileの差を列挙する。fresh serving warrant・committee/key一致・writer fence・confirmed retentionを元ownerに残す具体契約を定義する | accepted profileの実host/署名domain/authorityを有限に記載し、選択後のhost接続と元recurring ownerによる実検証を行う。通常hostの平文seedや原epoch worker成功をsuccessor保護の証拠にしない | M2-N1と独立して設計可能。新しいIPC/raw-frame署名契約を先に実装しない。元のmembership/epoch条件を削減しない |
+| M2-N1 / 選択済み経路を実装・旧source実UID検証済み | readinessのparameterized protected-provider契約を、既存のeligible key・complete inactive target・retained slot ownerへ対応付ける。実hostの鍵load/署名/retained returnを列挙し、providerとhostの責任、停止/拒否/復旧を定義する | architectureと日付付きADRに具体consumer・expected key/domain・既存retentionとの境界を記録。選択後に実hostを接続し、既存readinessのexact owner内で正常署名、wrong-key/拒否、再起動/retained reconciliationを検証する。prepared/fakeだけの成功で閉じない | DR-0284の選択済み別UID worker/frontendと元ownerに対応済み。現行sourceの実UID結果は未記録 |
+| M2-N2 / 選択済み経路を実装・旧source実UID検証済み | successorの自動署名consumerと、original workerだけでは満たせない初期profileの差を列挙する。fresh serving warrant・committee/key一致・writer fence・confirmed retentionを元ownerに残す具体契約を定義する | accepted profileの実host/署名domain/authorityを有限に記載し、選択後のhost接続と元recurring ownerによる実検証を行う。通常hostの平文seedや原epoch worker成功をsuccessor保護の証拠にしない | DR-0285の選択済み別UID worker/frontendと元recurring ownerに対応済み。現行sourceの実UID結果は未記録 |
 | M2-N3 / 要件・対象選択の整理から着手可 | generic local/paid、bond registration、FinalTransfer、offline genesis authorを、初期profileで必要な具体操作へ照合する。各行を対象/非公開・未対応/後続へ根拠付きで分類し、genesis/adminは実在するconsumerだけを扱う | 対象に選ぶ行にはauthority、認識済みcode/semantics、完全review内容、backend契約を記録。確定した行に限り既存prepared ownerまたはgenesis author/build ownerを使って具体consumer/backendを接続し、exact-byte/返却署名検証・誤入力/未知操作拒否・実consumerの操作結果を元test ownerで確認する | 型が存在するだけでは実装必須にしない。対象外指定で元accepted機能/activation条件を免除しない。安全判定で停止したZeroShareはこの分類・実装候補から除外 |
 | M2-N4 / 対象別仕様の整理から着手可 | N1〜N3と選択済みfamilyごとに、同一鍵復旧・provider停止/取消・新identityへの交換で必要な動作を区別する。既存authorized operation/epochで可能なcutoverと履歴保持、未対応を明示する | 必要と決めた移行だけ、既存authorityの正の移行と旧権限の扱いを実ledger/receiptで検証する。同一鍵署名一致・wrong-key拒否を正の移行に数えない。新address alias、creator pin緩和、historical claimant書換えを解決策にしない | 残るrotation/revocation要件の具体化。B鍵復旧、全account/fee/TreasuryCap移行、off-host復旧を自動で新必須gateにしない。完了済みconsumerを再実装しない |
 | M2-N5 / 対象source確定後 | 確定した対象と必要なN1〜N4変更を、既存実test owner・source/tree・profile別の証拠へ対応付け、欠ける検証だけを実行計画へ落とす | 既存4完全custody profiles、positive Split、ordered/certified UID、readiness/recurringの該当ownerを選び、実行した範囲のraw/actual exit/EOF/wait/reap/資源解放を照合する。runtime変更後はGのliteral npm ci+完全required・exact-source CIと必要なrelease資格を満たす | 今回のTODO変更や既存証拠の整理だけを理由に製品gateを再実行しない。元selector/timeout/7epochs/e8のwithdrawal候補2件/8links/35rolesを保持。RELEASE/原13-target A/B等は元の適用条件でM7と共用 |
@@ -969,9 +969,20 @@ M5の元のproduction条件は保存した原文と公開準備の対応表へ�
     終端receipt SHA-256は`3c27709c39a0f2897da25332ed1af0cbc3b4ed46616037fd8f37c6e9e20a13e1`。
     同HEADの全8 CIも成功し、PR #350の通常merge `7b8e7777`は検証済みtreeと一致。
     先の失敗は保全し、独立最終reviewとissue dispositionを残して親M7は未完了。
-  - 次: 既知の実行失敗と後続成功は[部分整理](docs/development/validation/2026-11-08-m7-release-issue-disposition/README.md)した。
-    元の独立した最終source/release reviewと完全なissue dispositionを現行source/tool/profile・
-    上記実結果に対応付ける。独立security監査など元のrelease条件、D02/M1・M2/M3・
+  - 現行`2415dbec`/tree `2a0a2f09`の[issue follow-up](docs/development/validation/2026-11-08-m7-release-issue-disposition/README.md#2026-11-11-exact-source-follow-up):
+    #364の同treeでliteral npm ci・完全required、全8 CIとPG追加gateが成功。
+    同headでfresh Native13 A/B全13組byte一致、別validatorで13 host/10 driverを照合し、
+    元22 listと元12 RELEASE runtimeの12/12 actual exit 0・EOF/wait、105 passed/
+    0 failed/4 ignoredを確認。元7 epoch、e8の別々の1832-byte候補2件と対応するcommitted ACK2件、
+    8 linksの実行assertionと35 rolesの派生assertion、前後source/36 ELF一致・所有資源解放を
+    rootと独立した非security reviewで照合した。root receipt SHA-256は
+    `6f8fd2ace5740d9c0cc5ec941112294f7e28783fa09ee7958b555b0eee344bef`。
+    初回Native・driver-build owner・validatorの失敗は保全し、ignoredの実UID fixtureは
+    この実行の資格に含めない。CLI能力表の修正は別treeであり、現行Hの実行資格を継承しない。
+    独立security reviewは停止中のため、親M7は未完了。
+  - 次: Hの既知失敗と後続成功、独立非security source/runtime reviewは
+    [issue整理](docs/development/validation/2026-11-08-m7-release-issue-disposition/README.md)に対応付けた。
+    文書変更は別treeとして扱う。独立securityを含む元の最終release review、D02/M1・M2/M3・
     公開準備行の責務は未達のまま保持する。8da sourceのbuild/upgrade/restore/parity/
     元selectorの成功を、別の未指定campaign待ちとはしない。新sourceにはそのsourceの
     13-target A/B・実RELEASE bindingsを使い、ancestor結果を借用しない。
