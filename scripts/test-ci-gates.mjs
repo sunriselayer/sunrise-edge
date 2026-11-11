@@ -235,7 +235,7 @@ function checkWorkflow(text, profile) {
   for (const value of [
     "CARGO_INCREMENTAL: \"0\"", "CARGO_PROFILE_DEV_DEBUG: \"0\"", "CARGO_PROFILE_TEST_DEBUG: \"0\"",
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
   ]) assert(text.includes(value));
   // DR-0243: every Node lane, including the owning SDK relay lane, pins 24.19.0.
   assert.deepEqual([...text.matchAll(/node-version: (\S+)/g)].map((m) => m[1]),
@@ -252,7 +252,7 @@ function checkWorkflow(text, profile) {
   return jobs;
 }
 const sdkNodeSetup = "      - name: Set up Node.js for real SDK relay interoperability\n" +
-  "        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0\n" +
+  "        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0\n" +
   "        with:\n" +
   "          node-version: 24.19.0\n";
 const profiles = [["required", requiredGroups, ".github/workflows/ci.yml"], ["postgres", postgresGroups, ".github/workflows/postgres.yml"]];

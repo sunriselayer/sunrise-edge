@@ -81,7 +81,7 @@ age = { version = "=0.12.1", default-features = false }
 libc = "=0.2.189"
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
 ed25519-zebra = { version = "=4.2.0", default-features = false }
-curve25519-dalek = { version = "=4.1.3", default-features = false }
+curve25519-dalek = { version = "=5.0.0", default-features = false }
 postgres = "=0.19.14"
 postgres_rustls = "=0.1.6"
 r2d2_postgres = "=0.18.2"
@@ -90,7 +90,7 @@ rustls = { version = "=0.23.46", default-features = false, features = ["ring", "
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
 rustix = { version = "=1.1.5", default-features = false, features = ["fs", "std"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
-hyper = { version = "1.11.0", default-features = false, features = ["http1", "server"] }
+hyper = { version = "=1.11.1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1.20", default-features = false, features = ["tokio"] }
 http-body-util = "0.1.3"
 sha2 = "0.11.0"
@@ -101,7 +101,7 @@ wasmi = "=1.1.0"
 wasmi_core = "=1.1.0"
 wasmparser = { version = "=0.239.0", default-features = false, features = ["std", "validate", "features"] }
 # WAT-to-WASM output is protocol-relevant. Bumps require regenerated artifact vectors.
-wat = "=1.257.1"
+wat = "=1.261.0"
 
 # Reduce measured repeated codec/interpreter/replay runtime
 # cost without dropping development/test assertions or overflow checks.
