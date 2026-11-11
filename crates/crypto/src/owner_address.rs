@@ -65,7 +65,7 @@ impl Error for Ed25519OwnerAddressError {}
 
 /// Validates exact Ed25519 owner bytes under a committed, versioned policy.
 ///
-/// The strict policy uses the already pinned `curve25519-dalek` 4.1.3
+/// The strict policy uses the pinned `curve25519-dalek` 5.0.0
 /// primitives directly: decompress, require byte-for-byte canonical
 /// recompression, reject the identity, and require `is_torsion_free()`. The
 /// order is intentional so the repository's universal non-canonical identity
