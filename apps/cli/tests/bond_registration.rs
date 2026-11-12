@@ -2282,7 +2282,11 @@ fn start_real_bond_host(
     let mut args = real_bond_sqlite_pins(fixture, validator, node_dir);
     args.extend([
         "--signing-key-file".into(),
-        node_dir.join("validator.key").to_str().unwrap().into(),
+        node_dir
+            .join("private/validator.key")
+            .to_str()
+            .unwrap()
+            .into(),
         "--listen".into(),
         "127.0.0.1:0".into(),
         "--created-checkpoint".into(),
@@ -2292,7 +2296,11 @@ fn start_real_bond_host(
         "--max-concurrent".into(),
         "2".into(),
         "--bond-currentness-config".into(),
-        node_dir.join("currentness.conf").to_str().unwrap().into(),
+        node_dir
+            .join("private/currentness.conf")
+            .to_str()
+            .unwrap()
+            .into(),
         "--confirm-offline-fence-advance".into(),
     ]);
     start_bond_service(binary, uid, gid, &args, socket)
@@ -3175,8 +3183,11 @@ fn protected_bond_namespace_run() {
             "SUNRISE_BOND_REAL_SQLITE_SOURCE_HOST_SHA256",
             &fixture.directory,
         );
-        fs::write(node_dir.join("validator.key"), DEVNET_PAID_GENESIS_SEED).unwrap();
-        set_mode(&node_dir.join("validator.key"), 0o600);
+        let node_private = node_dir.join("private");
+        fs::create_dir(&node_private).unwrap();
+        set_mode(&node_private, 0o700);
+        fs::write(node_private.join("validator.key"), DEVNET_PAID_GENESIS_SEED).unwrap();
+        set_mode(&node_private.join("validator.key"), 0o600);
         let mut listener_config = format!("socket={}\n", node_socket.display());
         for uid in [
             cli_uid,
@@ -3190,8 +3201,8 @@ fn protected_bond_namespace_run() {
         }
         listener_config
             .push_str("max-connections=64\nmax-requests=64\ntotal-deadline-seconds=180\n");
-        fs::write(node_dir.join("currentness.conf"), listener_config).unwrap();
-        set_mode(&node_dir.join("currentness.conf"), 0o600);
+        fs::write(node_private.join("currentness.conf"), listener_config).unwrap();
+        set_mode(&node_private.join("currentness.conf"), 0o600);
         (genesis_binary, host_binary)
     });
     fixture_chown(&node_dir, LOCAL_NODE, gid);
