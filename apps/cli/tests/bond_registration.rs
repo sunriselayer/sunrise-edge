@@ -3112,10 +3112,10 @@ fn protected_bond_namespace_run() {
     );
     assert!(!cli_dir.join("refused-registration").exists());
     broker.wait();
-    // Reuse this owner and its already verified Coin/genesis. The optional
-    // compiled source host owns the same original SQLite state and serves
-    // the v2 path under a distinct node UID; the fixed-node path remains a
-    // transport-only fallback for ordinary focused runs.
+    // Reuse this owner and its already verified Coin/genesis. The compiled
+    // host can observe the standalone fixture's genesis Coin. The ordered
+    // handoff Coin comes from a later paid split; sqlite_genesis alone cannot
+    // install that post-genesis state, so that path retains the fixed response.
     let namespace = b"bond-local-fixture-instance";
     let node_dir = socket_dir("currentness");
     fs::create_dir(&node_dir).unwrap();
@@ -3179,12 +3179,18 @@ fn protected_bond_namespace_run() {
         currentness_wire::encode_response(&changed_fence).unwrap(),
     )
     .unwrap();
-    let real_host_enabled = std::env::var_os("SUNRISE_BOND_REAL_SQLITE_GENESIS").is_some();
+    let real_host_pinned = std::env::var_os("SUNRISE_BOND_REAL_SQLITE_GENESIS").is_some();
     assert_eq!(
-        real_host_enabled,
+        real_host_pinned,
         std::env::var_os("SUNRISE_BOND_REAL_SQLITE_SOURCE_HOST").is_some(),
         "real SQLite genesis and source host artifacts must be pinned together"
     );
+    // The ordered handoff still checks its post-genesis Coin, protected
+    // approvals, exact signed bytes and refusal cases against the fixed
+    // response. Only the standalone genesis Coin can be observed by this
+    // prepared SQLite source without adding a separate replay fixture.
+    let real_host_enabled =
+        real_host_pinned && std::env::var_os("SUNRISE_BOND_ORDERED_HANDOFF").is_none();
     let real_host_binary = real_host_enabled.then(|| {
         let genesis_binary = real_bond_artifact(
             "SUNRISE_BOND_REAL_SQLITE_GENESIS",
