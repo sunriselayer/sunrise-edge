@@ -620,7 +620,7 @@ design, not permission to implement unresolved schemas or claim activation.
 ### Remaining functional ownership
 
 The [handoff contracts](../../../docs/architecture/architecture-contracts.md#handoff-contracts)
-and [proposed DR-0186 closure](../../../docs/architecture/functional-handoff-closure.md)
+and the [historical proposed DR-0186 closure](https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/docs/architecture/functional-handoff-closure.md)
 identify concrete remaining consumers, not executable producers.
 [DR-0187](../../../docs/architecture/decisions/0187-first-epoch-ordered-seal.md) supersedes
 the Seal-only alternatives with a reviewed exact first-epoch contract. It avoids

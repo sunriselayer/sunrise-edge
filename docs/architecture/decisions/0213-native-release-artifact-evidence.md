@@ -15,6 +15,11 @@ The original missing/empty-marker allowance is not sufficient for the pinned
 Cargo invocation's no-extraction contract; source correction remains separate.
 Current completion and remaining gates stay in [TODO](../../../TODO.md).
 
+Current reading (2026-11-12): this record originally pinned Node 22.20.0.
+[DR-0243](0243-node24-validation-profile.md) supersedes only that version with
+Node 24.19.0, reflected below. Build targets, comparisons, provenance and
+resource bounds retain their original owners.
+
 ## Outcome and owner
 
 One local `scripts/check-native-release-evidence.mjs` script records nonsecret
@@ -96,7 +101,7 @@ gates; the source target amendment grants no invocation or release authority.
 
 ## Closed recipe and inputs
 
-Use installed Node 22.20.0, checked through `process.version`; require its
+Use installed Node 24.19.0, checked through `process.version`; require its
 absolute executable path. The default PATH Node is not evidence of the pin.
 Use only Node built-ins and child argument arrays, without shell evaluation,
 installation, downloading, provider access or rustup fallback.

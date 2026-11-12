@@ -3,7 +3,7 @@
 Date: 2026-10-02 (Asia/Singapore)
 
 Status: Accepted exact readiness-only implementation contract after independent
-design review of [DR-0177](0177-conditional-readiness-and-ordered-seal.md).
+design review of the [historical DR-0177 proposal](https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/docs/architecture/decisions/0177-conditional-readiness-and-ordered-seal.md).
 The authorized Codex substitute returned APPROVE on the closed specification;
 Opus was unavailable. This record does not
 authorize Seal, activation or active serving. Implementation and validation

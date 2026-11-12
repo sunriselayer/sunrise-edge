@@ -12,7 +12,7 @@ Current work and implementation evidence remain only in
 
 [DR-0187](0187-first-epoch-ordered-seal.md) accepts the first-epoch ordered
 Seal and permanent outgoing barrier but explicitly supplies no activation
-producer. [DR-0186](0186-functional-handoff-closure.md) and
+producer. [Historical DR-0186](https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/docs/architecture/decisions/0186-functional-handoff-closure.md) and
 [epoch-handoff.md](../epoch-handoff.md)'s "Recovery and serving authority"
 section describe the aspirational target -- a verified predecessor cut and
 next set deriving a fresh epoch-scoped anchor and safety state -- without

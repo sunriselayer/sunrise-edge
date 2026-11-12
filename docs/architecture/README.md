@@ -2,8 +2,9 @@
 
 Start with the one subsystem relevant to the change. Use the
 [full architecture catalog](catalog.md) only when the owner is unclear. The
-[decision register](decisions/README.md) preserves dated rationale, including
-proposals and superseded alternatives; a link is not an acceptance claim.
+[decision register](decisions/README.md) preserves dated rationale still in the
+active tree; fully replaced proposals remain in Git history. A link is not an
+acceptance claim.
 Current work, validation, and release gates belong in [TODO.md](../../TODO.md).
 
 | Change area | Start here | Follow when relevant |
@@ -13,32 +14,15 @@ Current work, validation, and release gates belong in [TODO.md](../../TODO.md).
 | Stores, snapshots, recovery | [Persistence](persistence.md) | [Operator persistence](../operations/persistence.md) |
 | Generic contracts and Standard Asset | [Generic contracts](generic-contracts.md) | [Smart contracts](../smartcontract/README.md) |
 | First Seal, import, serving, recurring links | [Handoff contracts](first-successor-serving.md) | [Recurring successor](recurring-successor-serving.md), [Seal](ordered-seal.md) |
-| Signing, review, custody | [Signing preparation](signing-preparation.md) | [DR-0214 comparison](decisions/0214-protected-custody-and-review-boundary.md), [8a5 route snapshot](signing-route-test-map.md) |
+| Signing, review, custody | [Signing preparation](signing-preparation.md) | [Original bond protected signing](original-bond-protected-signing.md), [protocol custody](local-protocol-custody.md) |
 | Native release and validation | [Release handoff](native-release-handoff.md) | [Validation profiles](repository-validation.md) |
 | Product and operator flows | [Product surfaces](product-surfaces.md) | [Operator guides](../README.md) |
 
-For a concrete signing family, use its applicable decision and source owner;
-the route map is a dated 8a5 snapshot, not a live inventory.
-[DR-0284](decisions/0284-conditional-readiness-protected-worker-proposal.md)
-and [DR-0285](decisions/0285-successor-protected-host-proposal.md) record the
-selected trusted-local-OS boundary for readiness and successor separately.
-[DR-0286](decisions/0286-standard-asset-genesis-protected-review-worker.md)
-records the later offline genesis author boundary. Implementation and
-qualification are source-specific in TODO. Do not infer generic administrative
-or other family authority from these selections.
-[DR-0289](decisions/0289-bond-outer-key-custody-and-split-approval.md)
-selects only bond outer-key isolation and distinct collateral/registration
-approvers. [DR-0291](decisions/0291-original-bond-inner-standard-asset-profile.md)
-selects the first original-genesis Standard Asset collateral operation and
-source-owner key boundary. The [original bond protected-signing
-fixture](original-bond-protected-signing.md) describes the scoped development
-implementation; release qualification remains in TODO.
-[DR-0292](decisions/0292-original-bond-trusted-local-currentness.md) selects
-the initial release's designated local-node trust boundary for source Coin
-currentness; local observation admission is opt-in, while consumer rechecks
-and release qualification remain pending.
-
-Historical design alternatives remain available in the
-[catalog](catalog.md) and [decision register](decisions/README.md). Read an
-older proposal only when a current contract or TODO entry cites its exact
-criterion; later accepted records control the portions they explicitly replace.
+For a concrete signing family, use its current architecture contract and source
+owner. [Signing preparation](signing-preparation.md) distinguishes the selected
+role-specific boundaries from mechanical signature preparation; the
+[original bond contract](original-bond-protected-signing.md) gives its narrower
+development profile. Source-specific evidence and release qualification belong
+in TODO. Historical alternatives remain in the [catalog](catalog.md),
+[decision register](decisions/README.md) and Git history; read them only for a
+specific criterion. Later accepted decisions control the portions they replace.

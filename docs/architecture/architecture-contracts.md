@@ -148,9 +148,12 @@ defines the exact committed boundary and permanently stops outgoing own
 signatures and ordinary completion. It supersedes the earlier proposed
 post-Seal outgoing transition vote: neither fresh signing nor cached live
 outgoing own-signature responses may be exposed after acceptance. Original
-read-only reconciliation remains distinct. Successor activation needs its own
-reviewed proof-backed contract; this outline approves no replacement schema
-and does not treat a Seal or Ready certificate alone as serving authority.
+read-only reconciliation remains distinct. [DR-0189](decisions/0189-first-successor-serving.md)
+accepts the separate proof-backed first-successor activation contract, and
+[DR-0191](decisions/0191-recurring-successor-serving.md) accepts verified
+recurring links. This outline grants no serving authority from a Seal or Ready
+certificate alone; the accepted contracts and current implementation status
+must be read separately.
 
 The remaining interface partition is below. These are conceptual contracts,
 not names of callable Rust producers or approved wire/storage schemas.
@@ -171,45 +174,26 @@ installed authority is observed afresh. Namespace metadata is provider data
 to verify, not a transferable serving capability.
 
 Keep first-epoch chain-only safety rows byte-identical and retained for their
-original historical interpretation. Successor epochs need separately scoped
-safety and protected-signing keys; exact key families require a namespace
-sweep before implementation. Original request identities/receipts remain
-chain-wide so replay can reconcile before resolving a newer epoch. These
-requirements do not globally order otherwise independent owned transactions.
+original historical interpretation. The accepted
+[first-successor](first-successor-serving.md) and
+[recurring-successor](recurring-successor-serving.md) contracts define the
+implemented epoch-scoped safety key owners. Protected signing remains
+role-specific under [signing preparation](signing-preparation.md), with its
+source-specific qualification in TODO. Any additional key family still
+requires a namespace sweep before allocation. Original request identities and
+receipts remain chain-wide so replay can reconcile before resolving a newer
+epoch. These requirements do not globally order otherwise independent owned
+transactions.
 
-DR-0187 defines the first-epoch Seal subject/proof ownership. Epoch-scoped
-successor safety keys, non-circular activation commitments, protected
-target-local activation retention and recurring reconstruction still need
-their owning detailed contracts. The architecture outline does not approve
-a wire format or fill those gaps with placeholder authority.
-The proposed [recurring successor serving](recurring-successor-serving.md)
-contract ([DR-0191](decisions/0191-recurring-successor-serving.md)) is the
-pre-code proposal for recurring reconstruction. It extends DR-0187 and
-DR-0189 additively and is not accepted authority.
-
-[Functional handoff closure](functional-handoff-closure.md) and
-[DR-0186](decisions/0186-functional-handoff-closure.md) propose concrete closures
-for the decisions below; their separate activation/recurring proposals remain
-pre-code design review, not serving authority. Their outgoing post-Seal signing
-sketches are superseded by DR-0187.
-
-Settle these coupled design questions before implementing those producers:
-
-- Whether retained validators continue in the outgoing namespace or select
-  their separately verified import target, and how outgoing safety and original
-  Seal history remain available across crashes. An atomic transaction
-  in one namespace does not imply cross-namespace atomic retirement/activation.
-- Preserve DR-0187's bounded first-epoch Seal reference and quorum-retained
-  companion closure in the separately reviewed successor/predecessor contract.
-  Readiness evidence cannot simply be inlined if it exceeds the ordered
-  candidate bound; a digest alone proves neither retention nor local target
-  verification.
-- Exact retained headers/justifications and bounded phase-aware high/locked
-  traversal for the business-free suffix; pruning must not delete evidence
-  which a later verifier requires.
-- Successor activation/predecessor commitment schemas and verified host/client
-  reconfiguration. A peer's newer epoch or an `epoch-repin-required` hint is
-  never an authorized re-pin.
+[Ordered Seal](ordered-seal.md) owns first-epoch proof, selected-branch
+verification and permanent outgoing closure. [First successor serving](first-successor-serving.md)
+owns proof-backed target-local activation and serving; [recurring successor
+serving](recurring-successor-serving.md) extends that authority over verified
+predecessor links. Their accepted decisions are DR-0187/0189/0191. The current
+architecture contracts retain the separate import origin, bounded proof
+companions, epoch-scoped safety, writer fences and per-invocation rechecks.
+Neither readiness nor a peer's newer-epoch hint grants serving authority.
+Implementation and release status belong only in [TODO.md](../../TODO.md).
 
 ## Interfaces before bodies
 

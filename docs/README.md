@@ -29,7 +29,12 @@ detailed design, operator guides, and specialist references live here.
 - [Ordered Freeze and immutable frontiers](architecture/frozen-frontier.md)
 - [Quorum-retained DrainSet and member drain](architecture/quorum-drain.md)
 - [Authenticated ordered-history export](architecture/ordered-history.md)
-- [Architecture decision records](architecture/decisions/README.md)
+
+## Decision rationale
+
+- [Dated decision register](architecture/decisions/README.md): optional
+  historical lookup. Start with the architecture index and TODO; open only the
+  decision needed for the criterion at issue.
 
 ## Smart contracts
 

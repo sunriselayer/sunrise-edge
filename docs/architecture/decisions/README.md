@@ -1,7 +1,8 @@
 # Architecture decision records
 
-This is the complete dated register, including historical proposals and
-partially superseded alternatives. Inclusion here does not grant implementation
+This is the active-tree dated register, including proposals still relevant to
+unselected work and partially superseded alternatives. Fully replaced proposals
+remain in immutable Git history. Inclusion here does not grant implementation
 or release authority. Check the record status and its later accepted replacements;
 use the [short architecture index](../README.md) to find the relevant owner and
 [TODO.md](../../../TODO.md) for current work and evidence.
@@ -78,7 +79,6 @@ use the [short architecture index](../README.md) to find the relevant owner and
 - [DR-0174: independently reconstructed frozen member completion](0174-frozen-member-business-reconstruction.md)
 - [DR-0175: first-epoch pre-Seal business cut and verified bounded export](0175-first-epoch-preseal-business-cut.md)
 - [DR-0176: verified business state in a permanently import-only namespace](0176-verified-inactive-business-import.md)
-- [DR-0177: conditional readiness and ordered Seal (historical proposal; later contracts control)](0177-conditional-readiness-and-ordered-seal.md)
 - [DR-0178: conditional readiness wire, actual-key signing and protected retention](0178-conditional-readiness-wire-and-retention.md)
 - [DR-0179: authenticated initial validator bond registration](0179-initial-validator-bond-registration.md)
 - [DR-0180: architecture-first interfaces and owning implementations](0180-architecture-first-interface-contracts.md)
@@ -87,7 +87,6 @@ use the [short architecture index](../README.md) to find the relevant owner and
 - [DR-0183: test observation ownership and complete preparation equivalence](0183-test-observation-ownership.md)
 - [DR-0184: one FastVote committee record validator](0184-one-fastvote-committee-record-validator.md)
 - [DR-0185: one immutable reconstruction policy binding owner](0185-one-reconstruction-policy-binding.md)
-- [DR-0186: functional Seal and authenticated serving closure (historical proposal; superseded in part)](0186-functional-handoff-closure.md)
 - [DR-0187: first-epoch ordered Seal and permanent outgoing closure](0187-first-epoch-ordered-seal.md)
 - [DR-0188: bounded ordered-client empty alignment](0188-ordered-client-empty-alignment.md)
 - [DR-0189: first successor target-local activation and authenticated serving](0189-first-successor-serving.md)
@@ -188,3 +187,8 @@ use the [short architecture index](../README.md) to find the relevant owner and
 - [DR-0290: incoming successor protected-key cutover fixture](0290-incoming-successor-protected-key-cutover.md)
 - [DR-0291: original bond inner Standard Asset profile](0291-original-bond-inner-standard-asset-profile.md)
 - [DR-0292: original bond trusted local currentness](0292-original-bond-trusted-local-currentness.md)
+
+The replaced proposals [DR-0177](https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/docs/architecture/decisions/0177-conditional-readiness-and-ordered-seal.md)
+and [DR-0186](https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/docs/architecture/decisions/0186-functional-handoff-closure.md)
+remain in immutable Git history. Accepted DR-0178/0187/0189/0191 and their
+current architecture contracts govern those subjects.

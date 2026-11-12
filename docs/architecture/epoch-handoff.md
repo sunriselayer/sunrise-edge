@@ -9,9 +9,12 @@ For first-epoch Seal, [DR-0187](decisions/0187-first-epoch-ordered-seal.md)
 supersedes this outline's old-engine post-Seal progress and outgoing
 epoch-transition-vote sketches. Its accepted boundary permanently stops fresh
 signing, cached live outgoing own-signature responses and ordinary completion.
-Original read-only reconciliation remains legal; successor activation requires a separate reviewed
-proof-backed target-local contract. This clarification defines no replacement
-producer or schema.
+Original read-only reconciliation remains legal. The accepted
+[first-successor](first-successor-serving.md) and
+[recurring-successor](recurring-successor-serving.md) contracts separately own
+target-local activation and later links. This To-Be outline defines no
+alternative producer or schema; implementation and release status remain in
+[TODO.md](../../TODO.md).
 
 ## Guarantees and fault model
 
@@ -288,15 +291,18 @@ Serve/sign as the new active validator only after a durable verified-cut marker,
 the same committed Seal and activation. Conditional readiness is not active
 validator eligibility.
 
-Cast an epoch-transition vote only for the committed Seal. Persist its exact
-signed identity before exposure, retain it on retry, and refuse another target.
 Before Seal, proposal changes use ordinary HotStuff views; they cannot wedge
-an epoch-wide first-writer-wins transition-vote row. Bind activation to the
-outgoing authority, Seal/DrainSet proofs, cut and next set; rederive/verify
-locally and install new policies/epoch atomically with fences.
-Version the activation-set signed preimage to carry these bindings: this is a
-semantic change to the existing `0x6428` frame, not merely a new key constant.
-Historical activation preimages retain their own verification rules.
+an epoch-wide first-writer-wins transition-vote row. The accepted
+[first-epoch Seal contract](ordered-seal.md) permanently stops outgoing live
+signing and cached own-signature exposure after commitment; it creates no
+post-Seal outgoing transition vote. The separate
+[first-successor contract](first-successor-serving.md) verifies the committed
+Seal, DrainSet, cut and next set with the target's fresh local authority before
+atomically installing successor policy and serving. Its exact retained
+reconciliation governs uncertain completion. [Recurring successors](recurring-successor-serving.md)
+derive authority from verified predecessor links. Historical signed preimages
+retain their own verification rules; this outline allocates no replacement
+frame or signing permission.
 
 In this initial profile a committed Freeze is a commitment to finish that
 epoch. There is **no local unfreeze or cancellation transition**. Resume through
@@ -309,11 +315,22 @@ prerequisite disguised as an operator escape hatch.
 
 ## Portable commitment and cut schema
 
-Current `fast_path/commitment.rs` v1 includes some generic state/nonce revisions,
+This section preserves DR-0154's full handoff-profile design obligations, not
+a second current frame or key registry. Implemented slices and their limits are
+described by [logical execution generation](logical-execution-generation.md),
+[portable reconstruction](portable-reconstruction.md), and the accepted
+[first-epoch business cut](first-epoch-business-cut.md). The accepted
+[first-successor contract](first-successor-serving.md) owns target-local
+activation. Use those owners for current bytes, key allocations and supported
+paths; requirements below that still lack an owner remain conditional design
+targets, not authority to activate a profile.
+
+Historical `fast_path/commitment.rs` v1 includes generic state/nonce and
 object-head revisions and creation-checkpoint fields. Merely dropping local
 fields from the transfer root does not make its signed witness replayable.
-The new profile needs a logical staged-commit encoding: bind exact original
-signed intent and result, read keys with authenticated content observations,
+For the handoff-capable logical profile, DR-0154 requires a staged-commit
+encoding that binds the exact original signed intent and result, read keys
+with authenticated content observations,
 pristine-versus-deleted tags, semantic generations, ObjectRefs, mutations,
 authorities, nonce value/precondition and an authenticated **semantic execution
 generation**. Define that generation deterministically as one plus the maximum
@@ -341,10 +358,11 @@ counters.** Historical v1 witnesses retain their original signed checkpoint
 operands and bytes for read-only verification; do not reinterpret those legacy
 fields as new semantic generation metadata.
 
-Define explicit runtime-neutral bounded repositories; the current key scanner
-does not enumerate the separate SQL receipt, object-head or object-version
-tables. Each collection has canonical keys, exact semantic projections and
-complete range boundaries:
+The implemented runtime-neutral bounded portable repository enumerates its
+four closed structured collections; a generic key scanner alone does not
+establish higher-layer completeness. The following are semantic material
+categories for a full handoff, not additional `DurableCollection` variants.
+Their owning projections need canonical keys and complete range boundaries:
 
 - Code/ABI/blob content and authenticated publication/dependency provenance.
 - Instance and created-object authority, defining-code policy and type/schema.
@@ -371,9 +389,10 @@ addition, duplicate/reordered entries, foreign pages and tombstone-as-absence.
 Bound bytes/entries per page and pages/work per invocation; persist a CAS-fenced
 cursor/running digest for continuation. Large **legal** records must transfer
 as bounded authenticated chunks rather than become impossible to export.
-There is no arbitrary whole-history/cut-size ceiling. New exact frame/key IDs
-and constants require the repository namespace sweep and stable/adversarial
-vectors before implementation; no IDs are allocated by this design document.
+There is no arbitrary whole-history/cut-size ceiling. Any further exact
+frame/key IDs and constants require the repository namespace sweep and
+stable/adversarial vectors before implementation. This historical outline
+allocates none; current allocations belong to the accepted owners.
 DrainSet pre-vote bulk retention uses this same bounded chunk/cursor contract.
 Key retained progress by verified operation/artifact identity, not by a leader's
 proposal, so view changes reuse completed downloads rather than restart them.

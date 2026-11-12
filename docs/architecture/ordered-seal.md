@@ -2,12 +2,10 @@
 
 This is the accepted closed design contract of
 [DR-0187](decisions/0187-first-epoch-ordered-seal.md).
-It replaces only the Seal alternatives of
-[functional handoff closure](functional-handoff-closure.md); post-Seal
-transition, successor serving and recurring epochs remain separate contracts.
-Its hard-stop also rules out the older proposal's post-Seal outgoing
-transition-vote sketches. Separate successor design must not assume an
-exception permitting a new outgoing live signature.
+It replaces the earlier Seal alternatives. Post-Seal transition,
+[first successor serving](first-successor-serving.md) and
+[recurring successors](recurring-successor-serving.md) have separate accepted
+contracts. The Seal hard-stop permits no new outgoing live signature.
 Current status belongs only in [TODO.md](../../TODO.md).
 
 ## Authority and finite composition

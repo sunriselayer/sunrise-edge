@@ -90,15 +90,20 @@ roadmap describes a later target state.
 - [Immutable operation signing preparation](signing-preparation.md): one
   mechanical frame/identity owner, operation-specific immutable trust inputs,
   actual SDK/CLI consumers and the separate custody/content-review boundary.
-- [Signing routes and existing test owners](signing-route-test-map.md): concrete
-  prepared-owner/CLI/backend correspondence, generic development-only routes,
-  automatic authority owners and the limits of each existing test/evidence layer.
+- [Signing routes and existing test owners](signing-route-test-map.md):
+  dated 8a5 prepared-owner/CLI/backend correspondence and test-owner snapshot;
+  current route status belongs in [signing preparation](signing-preparation.md)
+  and TODO.
 - [Conditional readiness protected worker](decisions/0284-conditional-readiness-protected-worker-proposal.md):
   selected trusted-local-OS, distinct-UID boundary for the existing retained-vote
   owner; implementation and qualification remain source-specific in TODO.
 - [Successor protected host](decisions/0285-successor-protected-host-proposal.md):
   selected trusted-local-OS, distinct-UID boundary for the fresh-warrant
   successor host; implementation and qualification remain source-specific in TODO.
+- [Original bond protected signing](original-bond-protected-signing.md):
+  selected separate inner/outer approvers and key workers, original-genesis
+  Standard Asset collateral operation, and designated local-node currentness;
+  the development fixture is not generic bond or release qualification.
 - [Positive Standard Asset fee-claim Split proposal policy](positive-fee-claim-split-policy.md)
   ([DR-0267](decisions/0267-positive-standard-asset-fee-claim-policy.md)):
   two immutable recognized leg/claim owners, verified historical identity and
@@ -329,10 +334,6 @@ roadmap describes a later target state.
   certificates and protected per-identity retention; no serving authority.
   Seal traversal follows the separate DR-0187 contract below; successor
   activation requires its own serving-authority contract.
-- [Historical functional handoff proposal](functional-handoff-closure.md)
-  ([DR-0186](decisions/0186-functional-handoff-closure.md), superseded in part):
-  retained for rationale. DR-0187 owns the first-epoch Seal; DR-0189 and
-  DR-0191 own accepted successor serving contracts.
 - [First-epoch ordered Seal](ordered-seal.md)
   ([DR-0187](decisions/0187-first-epoch-ordered-seal.md)):
   accepted hard-stop authority, private exact acceptance terminal and permanent

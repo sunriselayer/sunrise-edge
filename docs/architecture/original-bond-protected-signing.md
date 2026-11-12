@@ -7,8 +7,9 @@ genesis manifest's Standard Asset Coin revision-one whole-coin `transfer` to
 the derived `BondCollateral` token, followed by the corresponding initial
 validator registration. The source Coin is a supplied snapshot; neither a
 local file nor an endpoint-reported `CurrentInline` proves current chain
-state. The ordered handler rechecks actual source and effects. Signing itself
-does not execute or register anything.
+state. The selected opt-in local-node observation is described below. The
+ordered handler rechecks actual source and effects. Signing itself does not
+execute or register anything.
 
 ## Roles and pinned inputs
 
@@ -97,6 +98,27 @@ refusals. A test-only handoff now gives this fixture the existing node-core
 genesis/current Coin, then passes the workers' actual signed leg and claim
 unchanged to that owner's ordered commit and four-replica oracle. The local
 comparison leg never becomes the execution candidate. This verifies fixture
-byte continuity and ordered effects; it does not authenticate a current
-chain head before signing or enroll real approvers and keys. Full required
-and exact-source CI qualification remain separate in [TODO.md](../../TODO.md).
+byte continuity and ordered effects; that test-only handoff does not
+authenticate current local state or enroll real approvers and keys. Full
+required and exact-source CI qualification remain separate in
+[TODO.md](../../TODO.md).
+
+## Selected local-node currentness
+
+[DR-0292](decisions/0292-original-bond-trusted-local-currentness.md) selects one
+designated original SQLite source host as a trusted local observer for the
+initial release. Its opt-in private Unix socket is bound after the host's
+writer-fence claim and authenticates the peer UID before reading a bounded
+request. The observation uses the host's own store and policy at one stable
+portable token; it checks committed epoch zero, the applied ordered tip and
+the reviewed Coin's complete identity and canonical body. Both approvers, the
+broker, worker and CLI requery that same locator at their decision points.
+A changed token, tip, Coin or restarted/unavailable node refuses the request
+and requires a new request ID with both approvals. An unpinned version-one
+request supplies no currentness assertion.
+
+This is a designated-node trust boundary, not a chain-state proof or atomic
+currentness guarantee at delivery. The ordered handler's source and effects
+checks remain separate. The multi-UID fixture's fixed response does not qualify
+the real compiled host, real approvers or keys; exact-source runtime and release
+status remain in [TODO.md](../../TODO.md).
