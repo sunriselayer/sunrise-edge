@@ -16,7 +16,7 @@
   - 必須範囲: 保護された鍵backend、operator/authority分離、操作ごとの正確な内容確認、拒否・故障、必要な復旧・交換・取消。自動protocol署名と人のasset/governance承認を分ける。
   - publication、選択済みStandard Asset各family/positive Split、original ordered/certified FastVote、readiness/successor、offline genesis author、original bondの限定componentは実装・個別検証済み。各結果のsource/profileと限界は[旧TODO][historical-todo]と[signing contracts](docs/architecture/signing-preparation.md)を参照する。個別合格を全familyの資格に転用しない。
   - 残件: generic local/general・paidとFinalTransferの対象/authority/content/backendは未選択。original bondの局所観測と承認・署名前の反復照会はPR #362で実装済みだが、実hostと保護署名を結ぶ検証、実承認者/鍵enrollment、release資格が未達。選択済みfamilyの残るlifecycleと、確定対象に対する同一sourceの全体検証を照合する。未選択の全prepared型や全identity移行を新しい必須条件にしない。
-  - [ ] **N1 readiness: 現行sourceの別UID実行結果**: 既存readiness ownerの別UID worker/frontend profileを同一sourceで実行し、raw結果と資源解放を記録する。
+  - [x] **N1 readiness: 現行sourceの別UID実行結果**: commit `6801bca3`で既存readiness ownerの別UID worker/frontend profileが1 passed/0 failed。raw結果・実行元tree・資源解放は[検証記録](docs/development/validation/2026-11-12-m2-current-source-uid/README.md)に固定。後続の文書commitやM2親の資格へ転用しない。
   - [ ] **N2 successor: 現行sourceの別UID実行結果**: 既存recurring ownerの別UID profileを元の7 epochs/e8のまま同一sourceで実行し、raw結果と資源解放を記録する。
   - [ ] **ZeroShare専用custody WIP**: 別branchの未検証コードは未統合。fixture作成は提供側の安全判定で停止しており、再試行・迂回しない。実装済み・検証済みとは数えない。
   - 現行のN1〜N5区分は[下の表](#m2初期リリース対象の照合-2026-11-03)にまとめる。
