@@ -32,7 +32,7 @@
 - [ ] **M7: 再現可能なsupported-runtime releaseを作る**
   - 対象: source/compiler/deps/build provenance、fresh 13-target Native A/B全byte比較、canonical/digest/effects/consensus/proof parity、conformance/property/fuzz/adversarial/long-run・upgrade/restore・advisory qualification、独立最終source/security/release reviewとissue disposition。
   - `2415dbec`/tree `2a0a2f09`では#364のliteral npm ci・完全required、全8 CI/PG、13-target A/B、元12 RELEASE runtime 105 passed/0 failed/4 ignored、元7 epochs/e8と2件の1832-byte候補/committed ACK、source/36 ELF不変と資源解放を照合した。[exact-source issue記録](docs/development/validation/2026-11-08-m7-release-issue-disposition/README.md#2026-11-11-exact-source-follow-up)を参照。旧失敗は消さない。独立非security reviewは完了したが、独立security/final release reviewとissue dispositionは未完了。実UID ignored fixtureはこの実行の資格外。
-  - 文書のみのPR #365は別tree `71acddf4`へマージされた。`recurring-sqlite`と集約`check`の終端前にマージされたため、#365の全8 CI成功は未確認。元treeの技術資格を文書treeへ転用しない。公開条件とM2/M3/D02/M1をこの行で完了扱いしない。広告する他providerには元の実provider基準を適用する。
+  - 文書PR #365はCI終端前にマージされたが、その後head `e1bc3809`/同一tree `71acddf4`の全7 laneと集約`check`が[成功](https://github.com/sunriselayer/sunrise-edge/actions/runs/43035754943)した。#366/#367も各headの全8 CI成功後にマージした。これらを別sourceの技術資格や独立security/final reviewに転用せず、公開条件とM2/M3/D02/M1を完了扱いしない。広告する他providerには元の実provider基準を適用する。
 
 ### M2初期リリース対象の照合 (2026-11-03)
 
