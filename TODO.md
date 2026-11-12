@@ -15,7 +15,7 @@
 - [ ] **M2: protected signerと操作内容レビューを実装・検証する**
   - 必須範囲: 保護された鍵backend、operator/authority分離、操作ごとの正確な内容確認、拒否・故障、必要な復旧・交換・取消。自動protocol署名と人のasset/governance承認を分ける。
   - 完了済みの小項目は下のチェックで保持する。各結果のsource/profileと限界は[旧TODO][historical-todo]と[signing contracts](docs/architecture/signing-preparation.md)を参照する。個別合格を全familyの資格に転用しない。
-  - 残件: generic local/general・paidとFinalTransferの対象/authority/content/backendは未選択。original bondの局所観測と承認・署名前の反復照会はPR #362で実装済みだが、実hostと保護署名を結ぶ検証、実承認者/鍵enrollment、release資格が未達。選択済みfamilyの残るlifecycleと、確定対象に対する同一sourceの全体検証を照合する。未選択の全prepared型や全identity移行を新しい必須条件にしない。
+  - 残件: generic local/general・paidとFinalTransferの対象/authority/content/backendは未選択。original bondの局所観測と承認・署名前の反復照会はPR #362で実装済み、実hostと保護署名の限定結合も下の小項目で検証済み。実承認者/鍵enrollmentとrelease資格は未達。選択済みfamilyの残るlifecycleと、確定対象に対する同一sourceの全体検証を照合する。未選択の全prepared型や全identity移行を新しい必須条件にしない。
   - [x] **publicationの保護承認と取消・同一鍵復旧・交換component**: [専用custody](docs/architecture/local-publication-custody.md)と[lifecycle](docs/architecture/publication-custody-lifecycle.md)の既存実UID/PTY/拒否・restart結果に限定する。
   - [x] **genesis Standard Assetのtransfer・split/merge・mint/burn・create component**: [transfer](docs/architecture/standard-asset-transfer-custody.md)、[split/merge](docs/architecture/standard-asset-split-merge-custody.md)、[mint/burn](docs/architecture/standard-asset-mint-burn-custody.md)、[create](docs/architecture/standard-asset-create-asset-custody.md)の実CLI・別UID結果と、旧TODOに記録した限定復旧・live Coin handoffを含む。
   - [x] **own-created application asset/Coinの操作と限定復旧component**: [application asset pin](docs/architecture/decisions/0258-mint-burn-application-asset-pin.md)のmint/burnと[Coin custody](docs/architecture/standard-asset-application-coin-custody.md)のCoin操作・kind2/3 historical recoveryを既存profileで検証済み。
@@ -24,10 +24,10 @@
   - [x] **original ordered protocol worker component**: [別UID/TLS worker](docs/architecture/local-protocol-custody.md)と停止後同一identity復旧を既存ownerで検証済み。
   - [x] **certified FastVote protected worker component**: [別UID/TLS lifecycle](docs/architecture/local-certified-protocol-custody-fixture.md)と停止後同一identity復旧を既存ownerで検証済み。
   - [x] **offline genesis authorの二段階保護review component**: [限定別UID検証](docs/development/validation/2026-11-04-m2-genesis-protected/README.md)に限る。実承認者・実鍵ceremonyは未達。
-  - [x] **original bondの限定保護inner/outer結合component**: [固定manifest/profile](docs/architecture/decisions/0291-original-bond-inner-standard-asset-profile.md)と[PR #358](https://github.com/sunriselayer/sunrise-edge/pull/358)の既存CLI owner結果に限る。実SQLite host接続・実鍵enrollmentは未達。
+  - [x] **original bondの限定保護inner/outer結合component**: [固定manifest/profile](docs/architecture/decisions/0291-original-bond-inner-standard-asset-profile.md)と[PR #358](https://github.com/sunriselayer/sunrise-edge/pull/358)の既存CLI owner結果に限る。実SQLite host接続は下の別小項目で扱う。
   - [x] **N1 readiness: 現行sourceの別UID実行結果**: commit `6801bca3`で既存readiness ownerの別UID worker/frontend profileが1 passed/0 failed。raw結果・実行元tree・資源解放は[検証記録](docs/development/validation/2026-11-12-m2-current-source-uid/README.md)に固定。後続の文書commitやM2親の資格へ転用しない。
   - [ ] **N2 successor: 現行sourceの別UID実行結果**: 既存recurring ownerの別UID profileを元の7 epochs/e8のまま同一sourceで実行し、raw結果と資源解放を記録する。
-  - [ ] **original bond: 実SQLite hostと保護署名の結合検証**: 同一genesis/Coinの実host観測から内側担保移動と外側登録の別承認・署名へ接続し、停止後の古いfenceを拒否する。
+  - [x] **original bond: 実SQLite hostと保護署名の結合検証**: commit `b2087f0d`の既存ownerで同一genesis/Coinの実host観測から別承認・署名へ接続し、停止後の古いfenceを拒否。1 passed/0 failedと失敗・成功raw、終了・資源解放は[限定検証記録](docs/development/validation/2026-11-12-m2-bond-realhost/README.md)。最終PR headの全体gateや実鍵資格へ転用しない。
   - [ ] **ZeroShare専用custody WIP**: 別branchの未検証コードは未統合。fixture作成は提供側の安全判定で停止しており、再試行・迂回しない。実装済み・検証済みとは数えない。
   - 現行のN1〜N5区分は[下の表](#m2初期リリース対象の照合-2026-11-03)にまとめる。
 

@@ -1,0 +1,1 @@
+CI gate contract passed: 7 required lanes, 5 explicit PostgreSQL lanes, 19 retained plus 3 new required-recurrence ignored selectors, three DB/compiler-free contract owners, complete required/full coverage and fail-closed dispatch/results
