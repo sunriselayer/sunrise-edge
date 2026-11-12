@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select the exact protected bond test and CLI binary from Cargo JSON.
+"""Select the exact protected bond test, CLI and real source binaries.
 
 The required/full Rust gate supplies complete --message-format=json records
 from its own build/no-run commands. No target-directory glob or test ordering
@@ -51,8 +51,8 @@ def sha256(path: Path) -> str:
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        raise ValueError("expected build and no-run JSON paths")
+    if len(sys.argv) != 4:
+        raise ValueError("expected CLI build, operator build and no-run JSON paths")
     root = Path(__file__).resolve().parent.parent
     target_value = os.environ.get("CARGO_TARGET_DIR")
     target = Path(target_value).resolve() if target_value else root / "target"
@@ -65,20 +65,38 @@ def main() -> None:
         "bin",
         target,
     )
-    harness = select(
+    genesis = select(
         Path(sys.argv[2]),
+        root / "apps/operator/src/bin/sqlite_genesis.rs",
+        "sqlite_genesis",
+        "bin",
+        target,
+    )
+    host = select(
+        Path(sys.argv[2]),
+        root / "apps/operator/src/bin/sqlite_source_host.rs",
+        "sqlite_source_host",
+        "bin",
+        target,
+    )
+    harness = select(
+        Path(sys.argv[3]),
         root / "apps/cli/tests/bond_registration.rs",
         "bond_registration",
         "test",
         target,
     )
-    for value in (str(cli), str(harness)):
+    for value in (str(cli), str(harness), str(genesis), str(host)):
         if any(character in value for character in ("\n", "\r", "\0", "=")):
             raise ValueError("artifact path cannot be exported safely")
     print(f"SUNRISE_BOND_ORDERED_CLI={cli}")
     print(f"SUNRISE_BOND_ORDERED_CLI_SHA256={sha256(cli)}")
     print(f"SUNRISE_BOND_ORDERED_HARNESS={harness}")
     print(f"SUNRISE_BOND_ORDERED_HARNESS_SHA256={sha256(harness)}")
+    print(f"SUNRISE_BOND_REAL_SQLITE_GENESIS={genesis}")
+    print(f"SUNRISE_BOND_REAL_SQLITE_GENESIS_SHA256={sha256(genesis)}")
+    print(f"SUNRISE_BOND_REAL_SQLITE_SOURCE_HOST={host}")
+    print(f"SUNRISE_BOND_REAL_SQLITE_SOURCE_HOST_SHA256={sha256(host)}")
 
 
 if __name__ == "__main__":
