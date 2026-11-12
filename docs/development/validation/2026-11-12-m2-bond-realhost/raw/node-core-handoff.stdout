@@ -1,0 +1,11 @@
+
+running 1 test
+test ordered_economics::tests::causal_placement::registration::initial_registration_distinct_source_and_validator_keys_order_effects ... FAILED
+
+failures:
+
+failures:
+    ordered_economics::tests::causal_placement::registration::initial_registration_distinct_source_and_validator_keys_order_effects
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1265 filtered out; finished in 7.65s
+

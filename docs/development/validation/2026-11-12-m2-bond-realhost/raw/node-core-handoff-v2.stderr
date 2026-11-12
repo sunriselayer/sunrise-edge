@@ -1,0 +1,41 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (/home/yu/Desktop/SunriseEdge/validation-tmp/m2-bond-handoff-fixture-1112/target/debug/deps/node_core-7d6a6711c815bd8d)
+
+thread 'ordered_economics::tests::causal_placement::registration::initial_registration_distinct_source_and_validator_keys_order_effects' (790199) panicked at crates/node-core/src/ordered_economics/tests/causal_placement/registration.rs:145:5:
+protected bond handoff failed: status=exit status: 101 stdout=
+running 1 test
+test protected_original_bond_uses_two_distinct_approvers_and_workers ... FAILED
+
+failures:
+
+failures:
+    protected_original_bond_uses_two_distinct_approvers_and_workers
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 6.57s
+
+ stderr=
+thread 'protected_original_bond_uses_two_distinct_approvers_and_workers' (790202) panicked at apps/cli/tests/bond_registration.rs:4086:23:
+original bond namespace failed: status=exit status: 101 stdout=
+running 1 test
+test protected_original_bond_uses_two_distinct_approvers_and_workers ... FAILED
+
+failures:
+
+failures:
+    protected_original_bond_uses_two_distinct_approvers_and_workers
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 6.56s
+
+ stderr=
+thread 'protected_original_bond_uses_two_distinct_approvers_and_workers' (790206) panicked at apps/cli/tests/bond_registration.rs:2337:5:
+real source observation failed: 
+thread 'protected_original_bond_uses_two_distinct_approvers_and_workers' (790397) panicked at apps/cli/tests/bond_registration.rs:2222:36:
+called `Result::unwrap()` on an `Err` value: Error { kind: UnexpectedEof, message: "failed to fill whole buffer" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p node-core --lib`
