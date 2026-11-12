@@ -134,7 +134,9 @@ ci_check_deno_adapters() {
 }
 
 # Bind the existing ordered registration owner to its exact protected CLI
-# harness, production CLI, and compiled SQLite genesis/source-host binaries.
+# harness and production CLI. Pin compiled SQLite genesis/source-host binaries
+# for the standalone protected owner; the ordered post-genesis Coin uses its
+# existing fixed-response currentness fixture.
 # The final workspace selector below is unchanged; the no-run pass only
 # selects executable artifacts.
 ci_run_rust_tests_with_bond_handoff() (
