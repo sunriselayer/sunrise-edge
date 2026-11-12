@@ -1,6 +1,6 @@
 # Sunrise Edge: 現在のTODO
 
-更新: 2026-11-12 (Asia/Singapore)。元85チェックのうち71件は完了、未完了は下の14件（親11件、子3件）。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
+更新: 2026-11-12 (Asia/Singapore)。元85チェックのうち71件は完了、元の未完了は下の14件（親11件、子3件）。M2の既存N1/N2未達を追う補助チェック2件は元85件に加えない。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
 
 ## コード・検証: 親5件、子3件
 
@@ -16,6 +16,8 @@
   - 必須範囲: 保護された鍵backend、operator/authority分離、操作ごとの正確な内容確認、拒否・故障、必要な復旧・交換・取消。自動protocol署名と人のasset/governance承認を分ける。
   - publication、選択済みStandard Asset各family/positive Split、original ordered/certified FastVote、readiness/successor、offline genesis author、original bondの限定componentは実装・個別検証済み。各結果のsource/profileと限界は[旧TODO][historical-todo]と[signing contracts](docs/architecture/signing-preparation.md)を参照する。個別合格を全familyの資格に転用しない。
   - 残件: generic local/general・paidとFinalTransferの対象/authority/content/backendは未選択。original bondの局所観測と承認・署名前の反復照会はPR #362で実装済みだが、実hostと保護署名を結ぶ検証、実承認者/鍵enrollment、release資格が未達。選択済みfamilyの残るlifecycleと、確定対象に対する同一sourceの全体検証を照合する。未選択の全prepared型や全identity移行を新しい必須条件にしない。
+  - [ ] **N1 readiness: 現行sourceの別UID実行結果**: 既存readiness ownerの別UID worker/frontend profileを同一sourceで実行し、raw結果と資源解放を記録する。
+  - [ ] **N2 successor: 現行sourceの別UID実行結果**: 既存recurring ownerの別UID profileを元の7 epochs/e8のまま同一sourceで実行し、raw結果と資源解放を記録する。
   - [ ] **ZeroShare専用custody WIP**: 別branchの未検証コードは未統合。fixture作成は提供側の安全判定で停止しており、再試行・迂回しない。実装済み・検証済みとは数えない。
   - 現行のN1〜N5区分は[下の表](#m2初期リリース対象の照合-2026-11-03)にまとめる。
 
@@ -38,7 +40,7 @@
 
 | 区分 | 現在必要な残件 |
 | --- | --- |
-| N1 readiness / N2 successor | 選択した別UID worker/frontendと旧sourceの元owner実UID検証は存在する。現行sourceでの対応結果は未記録。元のeligible key、retained slot、fresh serving warrant、committee/fenceを省略しない。 |
+| N1 readiness / N2 successor | 選択した別UID worker/frontendと旧sourceの元owner実UID検証は存在する。現行sourceでの対応結果は上のN1/N2補助チェックで個別に追う。元のeligible key、retained slot、fresh serving warrant、committee/fenceを省略しない。 |
 | N3 対象consumer | offline genesisとoriginal bondの限定経路は実装済み。generic local/general・paid、FinalTransferは対象と承認契約の選択待ち。successor live-epoch担保移動はoriginal genesis限定profileの資格に含めない。 |
 | N4 lifecycle | 同一鍵復旧・取消・交換の既存結果をfamilyごとに使い、必要な未対応移行だけを特定する。新address aliasやhistorical claimant書換えを暗黙に採用しない。 |
 | N5 全体資格 | 確定したconsumer/変更を既存の元test owner、実UID/RELEASE、同一sourceのGへ対応付ける。既存selector、7 epochs/e8、候補2件、8 links、35 rolesを縮めない。 |
