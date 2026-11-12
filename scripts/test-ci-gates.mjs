@@ -399,6 +399,10 @@ if(args[0]==='scripts/select-bond-ordered-artifacts.py'){
   'SUNRISE_BOND_ORDERED_CLI_SHA256='+'0'.repeat(64),
   'SUNRISE_BOND_ORDERED_HARNESS=/mock/bond-harness',
   'SUNRISE_BOND_ORDERED_HARNESS_SHA256='+'1'.repeat(64),
+  'SUNRISE_BOND_REAL_SQLITE_GENESIS=/mock/sqlite-genesis',
+  'SUNRISE_BOND_REAL_SQLITE_GENESIS_SHA256='+'2'.repeat(64),
+  'SUNRISE_BOND_REAL_SQLITE_SOURCE_HOST=/mock/sqlite-source-host',
+  'SUNRISE_BOND_REAL_SQLITE_SOURCE_HOST_SHA256='+'3'.repeat(64),
   ''
  ].join('\\n'));
  process.exit(0);
@@ -759,9 +763,10 @@ process.exit(child.status??1);
     assert.throws(() => gateEvents([{ ...storageEvent, args: withoutAnchor }]));
   }
   assert.deepEqual(lanes.get("rust-tests")[0].args, compiledCliBuild);
-  assert.deepEqual(lanes.get("rust-tests").slice(0, 4).map(({tool,args}) => [tool,args]), [
+  assert.deepEqual(lanes.get("rust-tests").slice(0, 5).map(({tool,args}) => [tool,args]), [
     ["cargo", compiledCliBuild],
     ["cargo", [...compiledCliBuild, "--message-format=json"]],
+    ["cargo", ["build", "-p", "sunrise-edge-operator", "--bin", "sqlite_genesis", "--bin", "sqlite_source_host", "--all-features", "--message-format=json"]],
     ["cargo", ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres", "--no-run", "--message-format=json"]],
     ["cargo", ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"]],
   ]);
