@@ -3124,11 +3124,19 @@ fn protected_bond_namespace_run() {
     let source_bytes = fs::read(cli_dir.join("source-coin")).unwrap();
     let source = objects::decode_object(&source_bytes).unwrap();
     let source_ref = object_ref(&fixture.resolver, &source, Epoch::new(0));
+    let source_host_key = LocalSigner::from_seed(fixture.source_host_validator_seed).address();
+    let source_host_validator = ValidatorId::new(*source_host_key.as_bytes());
+    assert_ne!(source_host_key, source_key);
+    assert_ne!(source_host_key, validator_key);
+    assert!(root.genesis_committee().validators().iter().any(|member| {
+        member.id == source_host_validator
+            && member.public_key.as_slice() == source_host_key.as_bytes()
+    }));
     let anchor = OrderedEconomicsPolicy::from_genesis_root(&root, fixture.domain)
         .unwrap()
         .anchor();
     let mut frame = OriginalBondLocalObservationFrame {
-        validator: root.genesis_committee().validators()[0].id,
+        validator: source_host_validator,
         chain_id: fixture.context.chain_id().clone(),
         protocol_version: fixture.context.protocol_version(),
         token: PortableSnapshotToken::new(
@@ -3247,7 +3255,7 @@ fn protected_bond_namespace_run() {
             &cli_dir.join("real-node-response"),
         );
         frame = currentness_wire::decode_response(&response).unwrap();
-        assert_eq!(frame.validator, root.genesis_committee().validators()[0].id);
+        assert_eq!(frame.validator, source_host_validator);
         assert_eq!(frame.chain_id, *fixture.context.chain_id());
         assert_eq!(frame.protocol_version, fixture.context.protocol_version());
         assert_eq!(frame.token.domain(), fixture.domain);
