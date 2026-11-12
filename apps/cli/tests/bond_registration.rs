@@ -119,6 +119,7 @@ struct Fixture {
     digest: Digest32,
     row: FastPathBondRecord,
     leg: Vec<u8>,
+    source_host_validator_seed: [u8; 32],
     protected_validator_seed: [u8; 32],
     protected_request_id: [u8; 32],
     protected_suite: &'static str,
@@ -271,6 +272,7 @@ impl Fixture {
             digest,
             row,
             leg,
+            source_host_validator_seed: DEVNET_PAID_GENESIS_SEED,
             protected_validator_seed: NEW_SEED,
             protected_request_id: REQUEST_ID,
             protected_suite: SUITE,
@@ -339,6 +341,9 @@ impl Fixture {
         fixture.digest = digest;
         fixture.row = row;
         fixture.leg = files[3].clone();
+        // node-core's genesis-test fixture registers validator zero from
+        // fixture::key() = [7; 32], distinct from both protected bond keys.
+        fixture.source_host_validator_seed = [7; 32];
         fixture.protected_validator_seed = [0xe5; 32];
         fixture.protected_request_id = [0xe6; 32];
         fixture.protected_suite = "0:1:1:1:1:1:1:1";
@@ -3186,7 +3191,11 @@ fn protected_bond_namespace_run() {
         let node_private = node_dir.join("private");
         fs::create_dir(&node_private).unwrap();
         set_mode(&node_private, 0o700);
-        fs::write(node_private.join("validator.key"), DEVNET_PAID_GENESIS_SEED).unwrap();
+        fs::write(
+            node_private.join("validator.key"),
+            fixture.source_host_validator_seed,
+        )
+        .unwrap();
         set_mode(&node_private.join("validator.key"), 0o600);
         let mut listener_config = format!("socket={}\n", node_socket.display());
         for uid in [
