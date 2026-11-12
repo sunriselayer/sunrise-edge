@@ -449,25 +449,22 @@ audit-first sequencing and documentation-ownership decisions.
 
 ## 2026-10-12 addendum to DR-0094: Native supplied-blob read refusal controls
 
-Two nonignored source controls exercise the actual signed Native HTTP composition
-with a genuinely fresh `SqliteDurableStore::create_new` fixture per case:
+Two nonignored signed Native HTTP source controls use separate fresh
+`SqliteDurableStore::create_new` fixtures:
 `sqlite_preinstalled_route_missing_blob_refuses_without_mutation` and
 `sqlite_preinstalled_route_blob_digest_mismatch_refuses_without_mutation`.
-A private supplied port delegates puts and nonselected reads to the original
-`MemoryBlobStore`; only the selected getter returns absence or sixteen `0xEE`
-bytes. The complete pristine capture precedes construction of that port.
+After a pristine capture, a private port delegates puts and other reads to the
+original `MemoryBlobStore`, returning absence or sixteen `0xEE` bytes only for
+the selected getter. Expected responses are 503 / `object-blob-unavailable`
+and 500 / `invalid-node-output`. Unfaulted observers compare full object
+head/v1 record/backing bytes, nonce zero, absent new receipt, four portable
+collections with tokens and referenced blob descriptors/chunks, exactly one
+selected lookup, and zero outbound messages before/after router dispatch.
 
-Independent literal bounded responses are 503 / `object-blob-unavailable` and
-500 / `invalid-node-output`. Before and after the actual router call, assertions
-retain the original full object head/v1 record and backing bytes, public nonce
-zero, no fresh request receipt, full four-collection portable snapshots/tokens
-and their referenced blob descriptors/chunks. Exactly one selected lookup and
-zero outbound messages are required. Observers use the original unfaulted store.
-
-These are UNFORMATTED, UNCOMPILED and UNEXECUTED source controls, not physical
-blob corruption, SQLite ENOSPC/COMMIT or crash/power evidence. The opaque 500
-alone does not identify the internal error variant. Four portable collections
-and their referenced blobs are not all twelve SQL tables or every unreferenced
-blob. No zero-total-COMMIT, cross-file atomicity, custody, M3/TODO-group or release
-qualification follows. Production code, wire behavior and existing controls are
-unchanged; only the private fixture helper's blob-store type is generalized.
+These source controls were UNFORMATTED, UNCOMPILED and UNEXECUTED at this
+addendum. They prove neither physical corruption, SQLite ENOSPC/COMMIT,
+crash/power, zero-total-COMMIT, cross-file atomicity, custody, M3/TODO-group,
+nor release qualification. The opaque 500 does not identify its internal error;
+four collections/referenced blobs exclude other SQL tables and unreferenced
+blobs. Production code/wire/controls are unchanged; only the private helper's
+blob-store type is generalized.

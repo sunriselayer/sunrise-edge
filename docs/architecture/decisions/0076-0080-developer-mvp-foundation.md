@@ -134,33 +134,20 @@ HTTP composition decisions.
   columns; a `Tombstoned` head resolves its last version through that same
   path rather than trusting a raw `MAX(object_version)` value on its own.
   Loading a head never recurses into itself: it may call the version-row
-  loader, which never calls back into the head loader. The full feature-gated
-  shared conformance suite that PostgreSQL uses
-  (`run_durable_store_conformance`, `run_durable_object_conformance`,
-  `run_schema_skew_conformance`) passes against it unmodified, plus a
-  dedicated restart test that closes and reopens the file to prove committed
-  state (including a real durable state read/mutation), an object's current
-  head/immutable version, and a receipt all survive; that exact request replay
-  after reopen returns `RequestAlreadyCommitted` without reapplying any
-  effect; that acknowledging the same outbox lease twice after reopen remains
-  idempotent; and that the persisted writer fence — not anything held in
-  process memory — is what fences a stale context after an operator advance.
-  A bounded contention test proves a short deadline lets a blocked write fail
-  closed in roughly that deadline (with an explicit lower bound as well as an
-  upper one, so the wait is shown to actually approach the requested budget
-  rather than returning near-instantly), not the fixed five-second default.
-  Focused corruption tests directly tamper with persisted columns through a
-  second raw connection to prove representative strict-decode and
-  cross-check rules above fail closed, including a discriminating case that
-  inserts a complete, well-formed second immutable version row while leaving
-  the head at the first version, proving the head is rejected specifically
-  because it no longer names the maximum retained version rather than
-  because of any individually malformed column (not an exhaustive
-  enumeration of every rule: for example, a non-32-byte digest length is not
-  separately covered). This adapter has none of `runtime-postgres`'s
-  connection pooling, disk/WAL/connection-exhaustion fault evidence,
-  PgBouncer/backup-restore rehearsal, or TLS commit-loss evidence, and is not
-  suitable for multi-writer or production deployments.
+  loader, which never calls back into the head loader. The unmodified
+  feature-gated PostgreSQL shared suites (`run_durable_store_conformance`,
+  `run_durable_object_conformance`, `run_schema_skew_conformance`) pass. A
+  reopen test covers durable state, current head/version, receipt, exact
+  replay (`RequestAlreadyCommitted` without reapplication), repeated lease
+  acknowledgement, and persisted operator-advanced writer fence. A bounded
+  contention test checks both lower and upper bounds around a short deadline
+  rather than the default five seconds. Raw second-connection corruption
+  tests cover representative strict decodes and a well-formed extra immutable
+  version with a stale head; coverage is not exhaustive (non-32-byte digest
+  length is one untested case). This adapter has no PostgreSQL pooling,
+  disk/WAL/connection-exhaustion or TLS commit-loss fault evidence, or
+  PgBouncer/backup-restore rehearsal; it is unsuitable for multi-writer or
+  production deployment.
 - DR-0080: Expose DR-0078's preinstalled-WASM entrypoint through a new
   additive `native-http` composition (`preinstalled_wasm_structured_durable_router`
   / `_with_executor`) rather than changing `structured_durable_router`, which

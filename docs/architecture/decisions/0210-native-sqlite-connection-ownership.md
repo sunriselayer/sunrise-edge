@@ -9,122 +9,104 @@ or production qualification. Local selected-profile work follows DR-0208.
 
 ## Context
 
-The shared `SqlDurableEngine` owns state, object, receipt/outbox, namespace,
-fencing and atomic decision rules. Native `NativeSqlBackend` owns the connection
-mutex and actual SQLite BEGIN/COMMIT. Before this decision, fresh and import paths
-explicitly selected FULL synchronization; ordinary/historical reopen did not use
-one common configuration/verification owner. SQLite defaults may already be FULL. This is
-an explicit contract gap, not evidence of corruption or a proven vulnerability.
+`SqlDurableEngine` owns logical state/object, receipt/outbox, namespace,
+fencing and atomic decisions; `NativeSqlBackend` owns the connection mutex and
+SQLite BEGIN/COMMIT. Fresh/import paths explicitly selected FULL synchronization,
+but ordinary/historical reopen lacked a common configuration/verification
+owner. Defaults may already be FULL: this was a contract gap, not proven damage.
 
-Native file/ancestor handles already protect fresh/import opening and final
-synchronization. Reopened structured handles do not retain that attachment
-evidence through their operation lifetime. Selected Native qualification should
-not rely on a pathname continuing to identify the same file without checking it.
+Fresh/import file and ancestor handles already protect opening and final sync;
+reopened structured handles lacked lifetime attachment checks. Native
+qualification must check that a pathname still denotes the same file.
 
 ## Decision
 
-Keep one private native writable-connection settings owner. Set and verify
-`foreign_keys=ON`, `trusted_schema=OFF` and `synchronous=FULL`; retain bounded
-busy-timeout and checkpoint policy. Only explicit fresh/development initialization
-may select WAL; existing live/historical/import opens require the already
-supported WAL/application/schema identity and never bootstrap or repair it.
-Store-specific application/schema identities remain with their existing owners.
-Reuse the settings owner for the actual structured/import/blob consumers where
-their contracts match; do not force different read-only blob behavior into it.
+One private writable-connection owner sets/verifies `foreign_keys=ON`,
+`trusted_schema=OFF` and `synchronous=FULL`, retaining bounded busy timeout and
+checkpoint policy. Only explicit fresh/development initialization may select
+WAL; live/historical/import opens require supported WAL/application/schema
+identity without bootstrap or repair. Store-specific identities stay with
+their owners. Reuse settings for matching structured/import/blob consumers,
+not for different read-only blob behavior.
 
-Use lock-safe identity observations, not extra open main/WAL/SHM descriptors.
-Capture regular-file device/inode identity with `symlink_metadata` before and
-after SQLite opening; retain ancestor directory handles, which do not share a
-SQLite locked inode. Recheck main/sidecar identity around transactions under
-the backend's existing mutex: before BEGIN, after acquiring SQLite's lock,
-before COMMIT dispatch and after COMMIT. Existing regular sidecars are observed
-before use; legitimate SQLite-created sidecars attach to the same identity
-owner. Reject symlinks, aliasing and replacement. Do not freeze mutable WAL
-bytes/length, remove sidecars, or reject valid checkpoint/close lifecycle.
-The first attributable identity qualification is Linux/POSIX; other platforms
-cannot claim equivalent identity evidence from file length or timestamps.
+Observe identity without extra open main/WAL/SHM descriptors. Capture regular
+file device/inode via `symlink_metadata` before/after SQLite open and retain
+ancestor directory handles, which do not share the locked inode. Under the
+existing mutex, recheck main/sidecars before BEGIN, after SQLite lock acquisition,
+before COMMIT dispatch and after COMMIT. Observe existing regular sidecars
+before use and attach legitimate SQLite-created ones to the same owner. Reject
+symlinks, aliases and replacement, but permit mutable WAL size/bytes and valid
+checkpoint/close lifecycle. Linux/POSIX is the first qualified identity profile;
+length/timestamps do not establish equivalent evidence elsewhere.
 
-Reads complete through `TransactionDecision::Rollback`, not COMMIT. Recheck
-identity before returning their result under the same mutex, with definite read
-refusal on a changed observation. Separate blob point/descriptor/chunk reads
-and native snapshot/maintenance access need equivalent scoped before/after
-checks; the private raw `NativeSqlBackend::lock` is not a production bypass.
+Reads use `TransactionDecision::Rollback`, not COMMIT, and refuse definitely if
+the mutex-scoped return check finds identity drift. Blob point/descriptor/chunk
+reads and native snapshot/maintenance need equivalent before/after checks;
+private `NativeSqlBackend::lock` is no production bypass.
 
-Closing any independent descriptor for a POSIX locked inode can release every
-lock held by that process on it. SQLite accounts for its own descriptor closes,
-not `std::fs::File` guard drops. Constructor failures and Drop therefore must
-never introduce extra main/SHM descriptors. No fd leaks, process-global registry,
-unsafe VFS/raw handle, or assumed singleton connection is a solution.
+Closing an independent descriptor for a POSIX locked inode can release all
+process locks on it. SQLite handles its own closes, not `std::fs::File` guard
+drops; constructors and Drop must add no main/SHM descriptor. Do not substitute
+fd leaks, a global registry, unsafe VFS/raw handles or singleton assumptions.
 
-Amend the fresh/import leaf-handle mechanism in DR-0195 at this physical boundary:
-reserve the new file exclusively, capture its identity, synchronize and close
-that reservation before SQLite opens it. Retain identity and ancestor handles,
-not the leaf descriptor. Final fresh-file synchronization uses the SQLite-owned
-connection/VFS checkpoint/flush with an explicitly checked non-busy complete
-result, followed by held parent-directory synchronization and attachment checks.
-Never reopen the leaf merely to `sync_all` it. Keep the exact initial identity
-and fresh-only/no-repair semantics; no success follows incomplete synchronization.
-Drop active statements/transactions before the checkpoint and verify every busy
-and completeness result field. The existing busy-timeout bounds lock waiting,
-not synchronous disk-I/O duration; bounded host blocking admission remains
-required. This is neither a background worker nor a cross-file transaction.
+Amend DR-0195's fresh/import leaf reservation: create exclusively, capture
+identity, synchronize and close before SQLite opens; retain identity and
+ancestor handles, not the leaf descriptor. Final fresh-file sync uses SQLite's
+connection/VFS checkpoint/flush with every busy/completeness field checked,
+then held parent-directory sync and attachment checks. Drop active statements/
+transactions first; never reopen merely for `sync_all`. Preserve initial
+identity and fresh-only/no-repair semantics; incomplete sync fails. Busy timeout
+bounds lock waits, not disk I/O, so host blocking admission remains required.
+This adds neither a background worker nor cross-file transaction.
 
-Any internal memory-only development connection must be explicit and must not
-masquerade as a guarded file or qualify the native release profile. Existing
-auto-bootstrap development APIs remain distinct from production reopen.
-No new public maintenance bypass, file-copy repair or namespace promotion follows.
+Memory-only development connections remain explicit and cannot qualify as
+guarded files or Native release; auto-bootstrap remains separate from production
+reopen. No public maintenance bypass, file-copy repair or namespace promotion.
 
-Failure before commit dispatch produces no confirmed result and retains the
-original definite-failure classification. Failure during/after COMMIT, including
-postcommit identity failure, remains indeterminate. Request reconciliation stays
-with the existing receipt owner. Add a distinguishable operator indeterminate
-error instead of mapping `SqlBackendError::CommitIndeterminate` to definite
-`SqliteDurableStoreError::Unavailable` in `run_operator_step`.
+Failure before COMMIT dispatch stays definite with no confirmed result;
+during/after COMMIT, including identity failure, is indeterminate. Existing
+receipt ownership reconciles requests. `run_operator_step` must expose a
+distinct operator indeterminate error, not map
+`SqlBackendError::CommitIndeterminate` to definite
+`SqliteDurableStoreError::Unavailable`.
 
-Bootstrap/fence/lifecycle operations have no request receipt: their existing
-namespace metadata, lifecycle/barrier and exact writer-generation readers own
-inspection. On an indeterminate reply, refuse serving/success and preserve the
-files; inspect those exact values under confirmed physical writer exclusion,
-without reset, repair or blind retry. A matching generation does not prove which
-of two competing operators claimed it, so metadata observation alone never
-grants live writer ownership. No new receipt protocol or duplicate evaluator
-is introduced merely to reconcile these operator operations.
+Bootstrap/fence/lifecycle have no request receipt; namespace metadata,
+lifecycle/barrier and exact writer-generation readers own inspection. On
+indeterminate reply, refuse serving/success, preserve files and inspect those
+values under physical writer exclusion, without reset, repair or blind retry.
+A matching generation cannot identify which competing operator claimed it;
+metadata alone grants no live ownership. Add no duplicate evaluator or receipt
+protocol for these operations.
 
-Safe API attachment checks cannot prevent a privileged filesystem actor from
-swapping paths between checks or revoke a writer on another disk. Preserve the
-trusted local-directory/single-writer operational assumptions, explicit fencing
-and physical exclusion; do not present these checks as malicious-root isolation,
-distributed HA or cross-file atomicity. No unsafe raw SQLite handle/VFS is added.
+Attachment checks cannot stop privileged path swaps between checks or revoke a
+writer on another disk. Preserve trusted local-directory/single-writer
+assumptions, fencing and physical exclusion; claim no malicious-root isolation,
+distributed HA or cross-file atomicity. Add no unsafe raw SQLite handle/VFS.
 
 ## Local acceptance
 
-Retain existing real-file atomicity, ABA, deadline/contention, schema/lifecycle,
-writer-generation, import, Seal/activation, original receipt and replay controls.
-Add FULL-on-reopen and settings refusal checks across real constructors, plus
-main/ancestor/sidecar replacement and symlink/alias controls with real files.
-Hold a transaction on connection A, open/drop connection B's identity owner and
-exercise its constructor-failure path, then prove a real external process still
-cannot acquire the write lock until A releases it. This tests actual lock
-ownership, not only that a second same-process mutex exists. Exercise definite
-versus post-dispatch indeterminate classification through both request and
-operator APIs, retaining the exact persisted metadata/fence on lost confirmation.
+Retain real-file atomicity, ABA, contention/deadline, schema/lifecycle,
+writer-generation, import, Seal/activation, receipt and replay controls. Add
+FULL-on-reopen/settings refusal and real-file main/ancestor/sidecar replacement,
+symlink and alias controls. With A holding a transaction, open/drop B's identity
+owner and exercise B constructor failure; an external process must remain
+write-locked until A releases. This tests POSIX locks, not merely a mutex.
+Check definite versus post-dispatch indeterminate results through request and
+operator APIs with exact persisted metadata/fence after lost confirmation.
 
-Use a disposable subprocess of a Rust test executable with private `cfg(test)`
-commit-boundary synchronization, absent from releases. Kill after real SQL
-mutations but before COMMIT: reopen and find none of the object/state/nonce,
-receipt or outbox write set. Kill after SQLite COMMIT but before returning output:
-reopen and find the exact complete write set and receipt. Verify stale fencing
-and no duplicate revision/nonce/outbox application on a repeated request using
-the relevant owning API; backend assertions are not proof of node authentication
-or a newly claimed protocol replay path. Retain those genuine core/host owners.
+Use a disposable Rust subprocess and private test-only commit-boundary sync.
+Kill after SQL mutations/before COMMIT and reopen to find none of the object/
+state/nonce/receipt/outbox write set. Kill after COMMIT/before reply and reopen
+to find the complete set and receipt. Verify stale fencing and no duplicate
+revision/nonce/outbox through the owning API; backend checks do not prove node
+authentication or a new replay path. Keep the genuine core/host owners.
 
-Retain existing immutable blob publication/reference ordering. An interrupted
-pre-reference publication may leave an orphan body, never an accepted dangling
-reference; do not add a fake cross-file transaction or a new garbage collector.
-Focused real-store checks, complete required acceptance and independent exact-head
-review/CI are required. This proves process-failure behavior on local storage,
-not power-loss flush correctness, ENOSPC, off-host restore, failover or mainnet.
-Those remaining release requirements stay open in TODO.
+Retain immutable blob publication/reference ordering: interrupted pre-reference
+publication may leave an orphan body, never an accepted dangling reference.
+Add no fake cross-file transaction or garbage collector. Focused real-store,
+complete required and independent exact-head review/CI remain necessary.
+Process-failure proof is not power/fsync, ENOSPC, off-host restore, failover or
+mainnet qualification; those gates stay in TODO.
 
 ## Owning implementation boundaries
 
@@ -148,38 +130,34 @@ Implementation, integration and qualification status remain only in TODO.
 
 ## 2026-10-10: compiled serving-host SIGKILL source control
 
-The existing [TLS process target](../../../apps/operator/tests/local_tls_startup.rs)
-adds the nonignored Linux control
-`actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence`.
-Its [private child owner](../../../apps/operator/tests/support/compiled_source_host_process.rs)
-adds `ChildGuard::kill_abruptly_and_reap`, not a production signal or storage API.
+The [TLS process target](../../../apps/operator/tests/local_tls_startup.rs) adds
+nonignored Linux control
+`actual_direct_tls_hosts_replay_once_after_owned_sigkill_and_fresh_fence`;
+its [private child owner](../../../apps/operator/tests/support/compiled_source_host_process.rs)
+adds test-only `ChildGuard::kill_abruptly_and_reap`.
 
-The fixture authenticates an acknowledged paid CLI transfer before the fault.
-All four live owned children must return actual signal-9/no-exit-code status
-and confirmed reap receipts under one original eligibility/polling end. Restart
-retains the same four database/blob paths, namespaces, keys, certificates,
-configuration and nonzero endpoints, advancing the writer fence from 2 to 3.
-Pre-held stale read and valid nonempty CAS/Put capabilities must refuse as
-`WriterFenced`. Complete logical snapshots compare State, Receipts, ObjectHeads,
-ObjectVersions, referenced blob bytes and mutation sequence; they are continuity
-observations, not independently reconstructed cut authority. Canonical saved
-artifacts, paid receipt/result, public object/nonce query bytes and all 19 input
-files remain equal. Saved CLI replay must return all four original results
-without a second business mutation/receipt commit. Read-only SQL COMMIT is not
-excluded. Ordinary tail stop follows those assertions and is not the fault oracle.
+After an authenticated acknowledged paid CLI transfer, all four live children
+must show actual signal-9/no-exit-code and confirmed reap under one polling end.
+Restart reuses four database/blob paths, namespaces, keys, certificates,
+configuration and nonzero endpoints, advancing fence 2→3. Pre-held stale read
+and valid nonempty CAS/Put refuse `WriterFenced`. Logical snapshots compare
+State, Receipts, ObjectHeads, ObjectVersions, referenced blob bytes and mutation
+sequence as continuity, not independent cut authority. Saved canonical
+artifacts, paid receipt/result, public object/nonce bytes and all 19 inputs
+stay equal. Saved CLI replay returns all four original results without another
+business mutation/receipt commit; read-only SQL COMMIT is not excluded.
+Ordinary tail stop follows and is not the fault oracle.
 
-Parent-side SQLite handles remain open across host reaps/restart. The outbox
-oracle is guarded empty, not nonempty-outbox delivery; physical pages and
-unreferenced blobs are not compared. The shared end bounds polling and success
-eligibility, not kill/wait syscalls, scheduling, legacy Drop cleanup, readers or
-process-group release. This is post-acknowledged serving-host failure, not loss
-of every connection, WAL loss, interrupted COMMIT, power/fsync, disk failure,
-ENOSPC or failover qualification. Existing before-COMMIT and after-COMMIT-before-
-confirmation requirements above remain unchanged.
+Parent SQLite handles stay open. The outbox oracle is guarded empty; physical
+pages and unreferenced blobs are not compared. The shared end bounds polling/
+success eligibility, not kill/wait syscalls, scheduling, Drop cleanup, readers
+or process-group release. This covers post-acknowledged host failure, not loss
+of all connections, WAL, interrupted COMMIT, power/fsync, disk, ENOSPC or
+failover; before-COMMIT and after-COMMIT-before-confirmation gates remain.
 
-UNFORMATTED, UNCOMPILED, UNEXECUTED; runtime/resource fit is UNKNOWN. This source
-control does not complete M3/TODO, qualify PostgreSQL or custody, or grant runtime,
-dependency/floor/private-input/ROOT ONE or release authority.
+At authorship: UNFORMATTED, UNCOMPILED, UNEXECUTED, runtime/resource fit UNKNOWN.
+This control qualified no M3/TODO, PostgreSQL, custody, dependency/floor/private-
+input/ROOT ONE, runtime or release authority.
 
 ## 2026-10-11 (Asia/Tokyo): request-scoped outbox reply-loss source controls
 
@@ -190,37 +168,34 @@ Local `3e0f066e` adds three controls in the existing
 - `sqlite_request_outbox_unresolved_landed_claim_preserves_first_ambiguity_without_send`
 - `sqlite_request_outbox_unresolved_landed_ack_preserves_first_ambiguity_after_one_send`
 
-The fixture creates a fresh real-file SQLite store and uses the existing valid
-signed submission through the actual typed `ReadOnly` Native consumer. Its
-forwarding wrapper first requires a real successful claim or acknowledgement,
-then masks only that reply as `ConnectionLost`. Native reconciliation must reuse
-the original request and operation context. The refused-reconciliation controls
-return a different second rejection without another delegation, requiring the
-original ambiguity to survive. No production fault hook or new API is introduced.
+The fresh real-file fixture submits a valid signature through the typed
+`ReadOnly` Native consumer. A forwarding wrapper requires a real successful
+claim/acknowledgement, then masks only its reply as `ConnectionLost`.
+Reconciliation reuses original request/context; refusal controls return a
+different second rejection without delegation, preserving first ambiguity.
+No production hook or API is added.
 
 Independent literal state/payload/nonce frames and public receipt/result/outbound
-codecs define expected bytes, not captured invocation writes or stored post-state.
-One-key pages and seven-byte chunks compare every descriptor and body in all four
-portable collections under the same local token, retaining unrelated rows.
-Immutable referenced blobs use their separate interface outside that token;
-this fixture has empty object/reference collections and proves no positive
-object/blob coverage or content-hash authentication. No handoff-empty-outbox
-guard is invoked.
+codecs define expected bytes, not captured writes/post-state. One-key pages
+and seven-byte chunks compare every descriptor/body in four portable collections
+under one local token, retaining unrelated rows. Referenced blobs use a
+separate interface outside that token; empty object/reference collections prove
+no positive blob coverage or content-hash authentication. The handoff-empty-
+outbox guard is not invoked.
 
-Before original lease expiry, probes require the complete same-lease claim tuple
-and foreign `NoDueWork`; after ACK, they require same-ACK `Acknowledged`, original
-claim `LeaseIdReuse` and fresh foreign `NoDueWork`. Explicit clock checks surround
-those probes. After setup, the source requires one application transition and
-one `commit_invocation`, with sequence deltas +3/+2/+3 across the three cases.
-Claim ambiguity permits no send or ACK; success and ACK ambiguity require one
-exact canonical send. Reconciliation/probe snapshots must not add mutations.
-These counters do not count all SQL COMMITs or prove a new business replay path.
+Clock-bounded probes require the complete same-lease claim and foreign
+`NoDueWork` before expiry; after ACK, same-ACK `Acknowledged`, original-claim
+`LeaseIdReuse` and fresh foreign `NoDueWork`. After setup each case requires
+one application transition and `commit_invocation`, with +3/+2/+3 sequence
+deltas. Claim ambiguity allows no send/ACK; success and ACK ambiguity require
+one exact canonical send. Reconciliation/probes add no mutations. These counts
+neither cover every SQL COMMIT nor prove a new business replay path.
 
-Different exact-slice source review passed. UNFORMATTED, UNCOMPILED, UNEXECUTED;
-all three names are outside the original 41 selectors. Synthetic trait reply
-loss after a confirmed operation is not failed SQLite COMMIT, physical I/O,
-ENOSPC, crash/power-loss durability, custody or M3/TODO20 completion. All original
-before-COMMIT/after-COMMIT-before-confirmation and release requirements remain.
+Different exact-slice source review passed. At authorship the three controls
+were UNFORMATTED, UNCOMPILED, UNEXECUTED and outside the original 41 selectors.
+Synthetic trait reply loss after confirmed operation is not failed SQLite
+COMMIT, physical I/O, ENOSPC, crash/power durability, custody or M3/TODO20;
+original commit-boundary and release gates remain.
 
 ## 2026-10-12 (Asia/Tokyo): bounded Docker ENOSPC source controls
 

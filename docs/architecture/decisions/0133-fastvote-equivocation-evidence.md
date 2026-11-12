@@ -2,109 +2,58 @@
 
 ## Status
 
-Accepted as the detailed design for FastVote Phase 2 Slice 3, 2026-09-22,
-**revised the same day** after review found that the original text
-incorrectly deferred cross-transaction same-object-version conflicts (see
-"Revision" below). This DR fixes the wire format, canonical codec, frame
-IDs, in-process node-core APIs, persistence key/record, idempotency and
-atomic compare-and-swap behavior, historical-validator-set verification
-rule, and restart/tamper posture for explicit canonical equivocation
-evidence that [DR-0131](0131-fastvote-validator-lifecycle.md) named but left
-pending its own decision record.
+Accepted, revised after review and implemented 2026-09-22 for FastVote
+Phase 2 Slice 3. This DR supplies the canonical evidence frames, conflict
+keys, historical-set verification, durable CAS/idempotency and restart checks
+left open by [DR-0131](0131-fastvote-validator-lifecycle.md). Implemented
+frames are revised `0xD006`/`0xD008` plus `0xD00C`–`0xD00F` and node-core
+`0x6429`; exact prepare replay and certificate apply recheck the signed
+`locked_objects_digest`. Evidence identity excludes signatures. Tests cover
+consensus/node-core adversarial cases and independent JS vectors. Phase 2
+closed later with [DR-0134](0134-fastvote-authorization-boundary.md) Slice 4
+in PR #180; this slice itself adds no bonding, slashing, penalty, reward or
+external ingress.
 
-**Implemented and locally validated, 2026-09-22.** Canonical frames
-`0xD006`/`0xD008` have been revised in place with `locked_objects_digest`;
-`0xD00C` (`LockedObjectSetPreimage`), `0xD00D` (`FastVoteEquivocationEvidence`),
-`0xD00E` (`FastVoteObjectConflictEvidence`), `0xD00F` (`EpochTransitionEquivocationEvidence`),
-and node-core `0x6429` (`FastPathEquivocationEvidenceRecord`) are implemented
-with strict rechecks on exact prepare replay and before certificate apply,
-normalized signature-excluding evidence identity, restart-verified transition-chain
-anchored historical validator resolution, deterministic transactional store/query
-with `AlreadyRecorded`, comprehensive unit/adversarial tests across `consensus`
-and `node-core`, and independent JS vectors. Completing this slice did not by
-itself close the FastVote Certified Execution Gate's Phase 2 entry in
-`TODO.md`; [DR-0134](0134-fastvote-authorization-boundary.md)'s companion
-Slice 4 code and review gate later landed in PR #180 and closed Phase 2.
-This DR implements no bonding, slashing, penalty,
-reward, or external ingress. FastVote overall remains incomplete until Phase 3.
+The original design wrongly excluded double votes for *different*
+transactions over the same `(ObjectId, version)`: an honest validator's lock
+prevents them, but a faulty or modified signer can bypass that lock. The
+same-day revision added `locked_objects_digest` to the unreleased v1 vote and
+certificate payloads in place and introduced a distinct evidence class for
+that violation (§1–§5). Review also required:
 
-**Revision (2026-09-22, same day, review correction).** The original text
-found that `FastVote`'s existing `tx_hash`-scoped conflict key made a
-`locked_objects_digest` field unnecessary, and left cross-transaction
-same-object-version conflicts as a structurally-prevented, out-of-scope
-failure mode. That reasoning was **wrong**: it covered only misconduct where
-an honest validator's own lock logic would already have blocked a second
-`cast_vote` — but it did not evidence the case where a validator's lock logic
-*was* bypassed (bug or modified binary) and it doubly voted for two
-*different* transactions over the identical `(ObjectId, version)`. That case
-is exactly what equivocation evidence must be able to prove; deferring it
-left Slice 3 unable to evidence a real, named FastVote safety violation. This
-revision adds `locked_objects_digest` to `FastVote`/`FastCertificate`'s
-canonical v1 payload **in place** (this repository is unreleased: no v2, no
-compatibility layer — see "In-place revision" below) and covers both
-misconduct classes with distinct canonical evidence shapes. It also corrects
-six further review findings, folded into the relevant sections below rather
-than narrated separately: normalized (signature-excluding) evidence
-identity, `HashSuiteResolver`/context binding, historical validator-row
-trust anchoring against the restart-verified transition chain, real
-`DurableCommitOutcome`/`DurableCommitRejection` mapping, query-side
-cross-checking, and `StateKeyScanner`-based future enumeration.
-
-**Revision (2026-09-22, same day, second review pass).** Folded into the
-relevant sections rather than narrated separately: class (b) submission now
-explicitly hashes each attached preimage and requires it match its vote's
-signed `locked_objects_digest`, fail-closed, before either preimage is
-trusted for anything else (§8 step 4); `fast_path::prepare`/`apply` extend
-their existing commitment-style independent-binding checks to
-`locked_objects_digest` (§2); `0xD00E` decode/verify now require the claimed
-`conflicting_object_id`/`conflicting_version` be the *smallest* shared pair,
-not merely a present one, and require each preimage's own context echo
-against its attached vote (§5); `load_historical_validator_set` takes
-`protocol_version` as an explicit parameter (§7); a new unresolved risk
-names the inherent limit that a signer can sign a false
-`locked_objects_digest`, with honest certificate formation/application as
-the compensating control (Unresolved risks item 6); and §9's restart/tamper
-wording is tightened so structural decode is never credited with detecting
-a well-formed corrupted signature.
+- signature-excluding normalized identity, resolver/context binding,
+  restart-verified historical validator-set anchoring, durable outcome/error
+  mapping, query cross-checking and `StateKeyScanner` enumeration (§5–§8);
+- hashing each attached object-set preimage against its vote's signed digest
+  before use, and independent commitment checks in `prepare`/`apply` (§2, §8);
+- choosing the smallest shared `(ObjectId, version)` and checking each
+  preimage's context echo, with explicit `protocol_version` for historical
+  set loading (§5, §7);
+- acknowledging that a signer can sign a false digest; honest certificate
+  formation/application is the compensating control (§9, Unresolved risks).
+  Structural decode alone cannot detect a well-formed corrupted signature.
 
 ## Context
 
-[DR-0130](0130-owned-object-certified-execution.md) (Phase 1) implemented
-local certified execution against one static signed genesis validator set.
-[DR-0131](0131-fastvote-validator-lifecycle.md) (Phase 2 Slice 1) added the
-CAS-fenced `FastPathEpochRecord`, the epoch-stamped `FastPathLockRecord`, and
-the shared two-tier mutation-fencing model. [DR-0132](0132-fastvote-epoch-transition.md)
-(Phase 2 Slice 2) implemented the outgoing-set-certified `e -> e+1` epoch
-transition, `EpochTransitionVote`/`EpochTransitionCertificate`
-(`0xD009`-`0xD00B`), and the permanent per-`next_epoch`
-`FastPathEpochTransitionRecord` (`0x6427`) audit chain that
-`install_genesis_with_history`'s restart-verify (DR-0132 §7) re-decodes,
-re-loads, and cryptographically re-verifies in full on every node startup.
-This DR's historical-validator-set trust rule (§6) relies on, but does not
-repeat, that chain.
+[DR-0130](0130-owned-object-certified-execution.md) certified against a
+static genesis set; [DR-0131](0131-fastvote-validator-lifecycle.md) added epoch
+and lock fencing; [DR-0132](0132-fastvote-epoch-transition.md) implemented the
+outgoing-set-certified transition and permanent `0x6427` chain. Its restart
+path cryptographically re-verifies every step. Historical key resolution here
+relies on that chain (§6).
 
-DR-0132's own replay/conflict matrix originally described "two validators
-propose different `next_validators`" as "a canonical conflicting-statement
-pair for Slice 3." That was a **correction target**, not a stable citation:
-it conflated two *different* validators disagreeing (ordinary failure to
-reach quorum, not misbehavior by either) with the *same* validator
-equivocating. DR-0132 has been corrected to say so explicitly ("an ordinary
-two-validator disagreement, not equivocation... only the *same* validator
-signing two such votes is"); this DR's own conflict keys (§1) are built on
-the corrected reading; DR-0132's own text now points here.
+DR-0132's original conflict matrix mistook two *different* validators
+proposing different next sets for equivocation. Their disagreement merely
+prevents quorum; only one validator signing conflicting statements is
+misconduct. DR-0132 was corrected, and this DR's keys use that distinction.
 
-Two independent signable statement families exist in the owned-object fast
-path: `consensus::FastVote`/`FastCertificate` (`0xD006`-`0xD008`, revised in
-place by this DR) and `consensus::EpochTransitionVote`/
-`EpochTransitionCertificate` (`0xD009`-`0xD00B`, unchanged by this DR — no
-owned object is ever locked by an epoch transition). Both are stateless,
-epoch-scoped, Ed25519-signed canonical frames verified by a structurally
-mirrored `*Certifier` bound to one immutable `ValidatorSet` snapshot. This DR
-defines how conflicting statements are recognized, normalized into canonical
-evidence envelopes, cryptographically re-verified against the *historical*
-validator set for the epoch they claim, and durably, idempotently persisted
-— without touching either family's signature domain, and without any new
-signing operation (evidence submission verifies; it never signs).
+Two signable families exist: `FastVote`/`FastCertificate` (`0xD006`–`0xD008`,
+revised here) and `EpochTransitionVote`/`EpochTransitionCertificate`
+(`0xD009`–`0xD00B`, unchanged; transitions lock no owned objects). Both use
+stateless epoch-scoped Ed25519 canonical frames and a certifier bound to an
+immutable validator set. This DR defines canonical conflicts, historical-set
+verification and durable idempotent evidence without changing their signature
+domains or introducing a new signing operation.
 
 ## Decision
 
@@ -1086,33 +1035,16 @@ tech-lead review.
 5. **Phase 3 consumption shape is undesigned** — what slashing does with
    evidence, retention/archival policy, and economic parameters are all
    left open.
-6. **A malicious signer can sign a false `locked_objects_digest`** — nothing
-   in `cast_vote` (or anywhere else in this design) can force a validator to
-   hash its *actual* locked object set rather than an arbitrary Digest32 it
-   simply signs. Such a vote is a completely valid `FastVote` by every check
-   this DR or DR-0129/DR-0130 define; if the matching preimage were ever
-   attached to it, class (b)'s §8-step-4 hash check would correctly reject
-   it (the false digest cannot match the real preimage's hash), so this is
-   not by itself a hole in class (b)'s own proof — but it does mean a
-   validator can sign a vote whose locked-object claim is simply
-   unfalsifiable evidence-wise (no correct preimage exists to attach, and no
-   one is forced to produce one). **This DR does not, and cannot, claim
-   complete proof of what a validator actually locked — only that a
-   `FastVote` faithfully carries whatever `locked_objects_digest` its
-   signer chose to sign.** The compensating control is not evidentiary but
-   architectural, and already exists independently of this DR: honest
-   certificate *formation* (`try_form_certificate`'s target-triple match,
-   §2) and honest certificate *application* (apply's independent
-   `fresh_locked_objects_digest` re-derivation, §2, added by this DR) both
-   require the *locally, independently re-derived* digest from the node's
-   own real admission output — a vote carrying a false digest can be
-   validly signed and even relayed, but can never contribute to a
-   certificate that a different, honest node's own re-derivation accepts,
-   because that node computes the digest itself rather than trusting the
-   vote's claim. A false digest therefore cannot make a bad state apply; it
-   can only, at most, prevent that one vote from ever being usable in a
-   real quorum — a liveness cost to the dishonest signer alone, not a
-   safety gap for anyone else.
+6. **A malicious signer can sign a false `locked_objects_digest`.**
+   `cast_vote` cannot force a validator to hash its actual locked set. The
+   resulting signature is valid under this and DR-0129/DR-0130's checks, but
+   a correct preimage cannot satisfy class (b)'s signed-digest check (§8 step
+   4), leaving the false claim unevidencable through that class alone. This DR
+   proves what the signer signed, not what it actually locked. Honest
+   certificate formation (`try_form_certificate`) and application independently
+   derive the digest from their own admission outputs (§2), so the false vote
+   cannot contribute to a certificate that an honest node accepts or produce
+   a bad apply; it can reduce that signer's usable voting power and liveness.
 
 ## Consequences / Deferred
 

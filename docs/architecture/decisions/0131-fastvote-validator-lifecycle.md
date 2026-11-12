@@ -2,32 +2,16 @@
 
 ## Status
 
-Accepted as the Phase 2 architecture, 2026-09-22. Slice 1 is fully specified
-and implemented. Slices 2-4's safety contract — in particular the key
-transition safety proof below — is fixed by this DR. DR-0132 and DR-0133
-implement Slices 2 and 3; [DR-0134](0134-fastvote-authorization-boundary.md)
-implements Slice 4's authorization and ingress boundary. Its companion code,
-tests, complete gate, and fresh reviews landed in PR #180, closing Phase 2.
-[DR-0132](0132-fastvote-epoch-transition.md) fixes Slice 2's detailed
-design (wire format, API, activation write set, reclamation rule) and
-corrects seven assumptions this DR made about the transition (C1-C7 in
-DR-0132; C1, C3, and C7 are blocking-severity — the restart-verify check
-below and the epoch-scoped policy rows in the "Two-tier fence model" section
-would otherwise brick a node on restart or leave epoch `e+1` unable to
-execute anything). **Slice 2 is now implemented** (DR-0132, 2026-09-22),
-making retired-validator and wrong-epoch rejection end-to-end observable
-through a real outgoing-set-certified `e -> e+1` transition for the first
-time. DR-0134's companion implementation and reviews have since landed.
-Retired-validator and wrong-epoch rejection were
-enforced by Slice 1's fencing from day one, but had no observable
-end-to-end effect beyond what
-[DR-0130](0130-owned-object-certified-execution.md) already verified
-(membership against one static genesis set) until Slice 2's transition
-existed. Completing Slices 1-2 does not close the FastVote Certified
-Execution Gate's Phase 2 entry in `TODO.md`. FastVote remains incomplete
-until Phase 3. [DR-0133](0133-fastvote-equivocation-evidence.md) implements
-Slice 3's evidence envelope, conflict keys, historical verification rule,
-and persistence key.
+Accepted 2026-09-22 as the Phase 2 architecture; Slice 1 is implemented.
+The transition safety proof below governs Slices 2–4. [DR-0132](0132-fastvote-epoch-transition.md)
+implements Slice 2's transition and corrects seven assumptions here (C1/C3/C7
+would have broken restart or paid execution at `e+1`).
+[DR-0133](0133-fastvote-equivocation-evidence.md) implements Slice 3's evidence;
+[DR-0134](0134-fastvote-authorization-boundary.md) and its code, tests, full
+gate and reviews landed in PR #180, closing Phase 2. Slice 2 made retired-set
+and wrong-epoch rejection observable end to end: Slice 1 fenced them, but
+[DR-0130](0130-owned-object-certified-execution.md) still used a static
+genesis set. FastVote Phase 3 remains open; this DR grants no new ingress.
 
 ## Context
 

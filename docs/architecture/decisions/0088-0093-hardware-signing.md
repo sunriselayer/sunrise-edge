@@ -3,28 +3,19 @@
 Hardware-signing profile, Ledger device contract, application, and host
 transport decisions.
 
-**DR-0107 amendment (current status).** DR-0092's "CLI signer selection
-amends the one-runtime-dependency invariant" section below describes
-`transfer`'s Ledger path as building a `PreparedTransaction` and calling
-`sign_and_finalize_external` with `DeviceSigningProfile::V1` and (at the
-time) the live protocol-3 `sunrise.devnet.asset_account.v1` clear-signing
-policy. [DR-0107](0107-standard-asset-v1-devnet-activation.md) deletes that
-fixture and rebuilds `apps/cli`'s `transfer` around protocol-4 Standard
-Asset v1 whole-coin transfer; no Ledger clear-signing policy exists for that
-entrypoint yet (a deliberate, documented deferral, not an oversight), so a
-Ledger `SignerSelection` now fails closed with a typed
-`CliError::LedgerStandardAssetTransferUnsupported` immediately after signer
-selection, strictly before any `connect()`, other device dispatch, or
-network `Client` construction — never reaching the live-transfer path this
-section originally described. `HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3`
-(renamed from the policy this section still calls by its old name) survives
-only as a fixture exercised by `clients/rust::transaction`'s historical
-vector test; no live devnet build matches it. The hardware-signing profile,
-device contract, APDU state machine, and every S4a–S4d evidence boundary
-described below are otherwise unaffected: this amendment concerns only
-which host-side entrypoint can currently reach the Ledger path, not the
-device/transport/profile machinery itself. The text below is preserved
-unamended as a historical record of what DR-0092 implemented at the time.
+**DR-0107 amendment (current status).** DR-0092's host Ledger `transfer` path
+below is historical. [DR-0107](0107-standard-asset-v1-devnet-activation.md)
+replaced the protocol-3 `sunrise.devnet.asset_account.v1` transfer with
+protocol-4 Standard Asset v1 whole-coin transfer, which has no Ledger
+clear-signing policy yet. Ledger `SignerSelection` therefore returns typed
+`CliError::LedgerStandardAssetTransferUnsupported` before `connect()`,
+device dispatch, or network `Client` construction; it does not reach the
+former `PreparedTransaction` / `sign_and_finalize_external` /
+`DeviceSigningProfile::V1` live path. The renamed
+`HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3` is exercised only by
+`clients/rust::transaction`'s historical vector test. The profile, device
+contract, APDU state machine, and S4a–S4d evidence boundaries below remain
+unchanged as DR-0092's historical record.
 
 - DR-0088: Implement only S4a's hardware-signing profile and host preflight in
   this repository, with the dedicated Ledger application isolated in a
