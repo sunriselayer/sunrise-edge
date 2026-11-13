@@ -119,6 +119,12 @@ request supplies no currentness assertion.
 
 This is a designated-node trust boundary, not a chain-state proof or atomic
 currentness guarantee at delivery. The ordered handler's source and effects
-checks remain separate. The multi-UID fixture's fixed response does not qualify
-the real compiled host, real approvers or keys; exact-source runtime and release
+checks remain separate. The multi-UID standalone fixture uses pinned compiled
+`sqlite_genesis` and `sqlite_source_host` over the same genesis manifest and
+Coin as its protected CLI roles. It stops and restarts that source to exercise
+the changed writer fence before refreshing the signed request. The ordered
+node-core handoff's Coin is created by a later paid split, so its protected
+signing path retains the fixed response for currentness transport and refusal
+checks; it does not claim a real host observed that post-genesis Coin. These
+fixtures do not enroll real approvers or keys; exact-source runtime and release
 status remain in [TODO.md](../../TODO.md).

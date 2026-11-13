@@ -119,6 +119,7 @@ struct Fixture {
     digest: Digest32,
     row: FastPathBondRecord,
     leg: Vec<u8>,
+    source_host_validator_seed: [u8; 32],
     protected_validator_seed: [u8; 32],
     protected_request_id: [u8; 32],
     protected_suite: &'static str,
@@ -271,6 +272,7 @@ impl Fixture {
             digest,
             row,
             leg,
+            source_host_validator_seed: DEVNET_PAID_GENESIS_SEED,
             protected_validator_seed: NEW_SEED,
             protected_request_id: REQUEST_ID,
             protected_suite: SUITE,
@@ -339,6 +341,9 @@ impl Fixture {
         fixture.digest = digest;
         fixture.row = row;
         fixture.leg = files[3].clone();
+        // node-core's genesis-test fixture registers validator zero from
+        // fixture::key() = [7; 32], distinct from both protected bond keys.
+        fixture.source_host_validator_seed = [7; 32];
         fixture.protected_validator_seed = [0xe5; 32];
         fixture.protected_request_id = [0xe6; 32];
         fixture.protected_suite = "0:1:1:1:1:1:1:1";
@@ -1771,6 +1776,21 @@ impl BondServiceChild {
             thread::sleep(Duration::from_millis(10));
         }
     }
+
+    fn stop_real_host(&mut self) {
+        let child = self.0.as_mut().expect("owned real source host");
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "real source host exited early"
+        );
+        let signal = Command::new("kill")
+            .args(["-s", "TERM", "--"])
+            .arg(child.id().to_string())
+            .output()
+            .unwrap();
+        assert!(signal.status.success(), "real source host SIGTERM failed");
+        self.wait();
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1818,44 +1838,49 @@ fn set_mode(path: &Path, mode: u32) {
 /// role UIDs. Run role helpers from the same 0755 fixture directory as the
 /// copied production CLI, after verifying the exact executable bytes.
 #[cfg(target_os = "linux")]
-fn copy_role_test_harness(directory: &Path) -> PathBuf {
+fn fingerprint_bond_artifact(path: &Path) -> (u64, String) {
     use sha2::{Digest, Sha256};
 
-    const MAX_HARNESS_BYTES: u64 = 512 * 1024 * 1024;
-    fn fingerprint(path: &Path) -> (u64, String) {
-        let metadata = fs::metadata(path).unwrap();
-        assert!(metadata.is_file());
-        assert!((1..=MAX_HARNESS_BYTES).contains(&metadata.len()));
-        let mut file = File::open(path).unwrap();
-        let mut hasher = Sha256::new();
-        let mut total = 0_u64;
-        let mut chunk = [0_u8; 64 * 1024];
-        loop {
-            let count = file.read(&mut chunk).unwrap();
-            if count == 0 {
-                break;
-            }
-            total = total.checked_add(count as u64).unwrap();
-            assert!(total <= MAX_HARNESS_BYTES);
-            hasher.update(&chunk[..count]);
+    const MAX_BOND_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
+    let metadata = fs::metadata(path).unwrap();
+    assert!(metadata.is_file());
+    assert!((1..=MAX_BOND_ARTIFACT_BYTES).contains(&metadata.len()));
+    let mut file = File::open(path).unwrap();
+    let mut hasher = Sha256::new();
+    let mut total = 0_u64;
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut chunk).unwrap();
+        if count == 0 {
+            break;
         }
-        assert_eq!(total, metadata.len());
-        (total, hex(&hasher.finalize()))
+        total = total.checked_add(count as u64).unwrap();
+        assert!(total <= MAX_BOND_ARTIFACT_BYTES);
+        hasher.update(&chunk[..count]);
     }
+    assert_eq!(total, metadata.len());
+    (total, hex(&hasher.finalize()))
+}
 
+#[cfg(target_os = "linux")]
+fn copy_role_test_harness(directory: &Path) -> PathBuf {
     assert_eq!(fs::metadata(directory).unwrap().mode() & 0o777, 0o755);
     let original = std::env::current_exe().unwrap();
-    let before = fingerprint(&original);
+    let before = fingerprint_bond_artifact(&original);
     let role_copy = directory.join("protected-bond-test-harness");
     assert!(!role_copy.exists());
     assert_eq!(fs::copy(&original, &role_copy).unwrap(), before.0);
     set_mode(&role_copy, 0o755);
     assert_eq!(
-        fingerprint(&original),
+        fingerprint_bond_artifact(&original),
         before,
         "test harness changed during copy"
     );
-    assert_eq!(fingerprint(&role_copy), before, "role harness copy differs");
+    assert_eq!(
+        fingerprint_bond_artifact(&role_copy),
+        before,
+        "role harness copy differs"
+    );
     assert_eq!(fs::metadata(&role_copy).unwrap().mode() & 0o777, 0o755);
     role_copy
 }
@@ -2171,6 +2196,150 @@ fn fixed_bond_observation_run() {
     }
     drop(listener);
     fs::remove_file(&socket).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn read_real_bond_observation_run() {
+    let socket = PathBuf::from(std::env::var_os("SUNRISE_BOND_REAL_NODE_QUERY_SOCKET").unwrap());
+    let request =
+        fs::read(std::env::var_os("SUNRISE_BOND_REAL_NODE_QUERY_REQUEST").unwrap()).unwrap();
+    let response_path =
+        PathBuf::from(std::env::var_os("SUNRISE_BOND_REAL_NODE_QUERY_RESPONSE").unwrap());
+    assert!(!request.is_empty() && request.len() <= currentness_wire::MAX_REQUEST_BYTES);
+    let mut stream = UnixStream::connect(socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .write_all(&u32::try_from(request.len()).unwrap().to_be_bytes())
+        .unwrap();
+    stream.write_all(&request).unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut length = [0_u8; 4];
+    stream.read_exact(&mut length).unwrap();
+    let length = u32::from_be_bytes(length) as usize;
+    assert!((1..=currentness_wire::MAX_RESPONSE_BYTES).contains(&length));
+    let mut response = vec![0_u8; length];
+    stream.read_exact(&mut response).unwrap();
+    let mut trailing = [0_u8; 1];
+    assert_eq!(stream.read(&mut trailing).unwrap(), 0);
+    currentness_wire::decode_response(&response).unwrap();
+    fs::write(response_path, response).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn real_bond_artifact(path: &str, digest: &str, destination: &Path) -> PathBuf {
+    let original = PathBuf::from(std::env::var_os(path).expect("pinned real bond artifact path"));
+    let expected = std::env::var(digest).expect("pinned real bond artifact SHA-256");
+    let before = fingerprint_bond_artifact(&original);
+    assert_eq!(before.1, expected);
+    let binary = destination.join(path.to_ascii_lowercase().replace('_', "-"));
+    assert_eq!(fs::copy(&original, &binary).unwrap(), before.0);
+    set_mode(&binary, 0o755);
+    assert_eq!(fingerprint_bond_artifact(&original), before);
+    assert_eq!(fingerprint_bond_artifact(&binary), before);
+    binary
+}
+
+#[cfg(target_os = "linux")]
+fn real_bond_sqlite_pins(
+    fixture: &Fixture,
+    validator: ValidatorId,
+    node_dir: &Path,
+) -> Vec<String> {
+    vec![
+        "--chain-id".into(),
+        fixture.context.chain_id().to_string(),
+        "--validator-id".into(),
+        hex(validator.as_bytes()),
+        "--domain".into(),
+        hex(fixture.domain.as_bytes()),
+        "--protocol-version".into(),
+        fixture.context.protocol_version().get().to_string(),
+        "--epoch".into(),
+        fixture.context.epoch().get().to_string(),
+        "--suite".into(),
+        fixture.protected_suite.into(),
+        "--genesis-manifest".into(),
+        fixture.path("genesis"),
+        "--expected-genesis-digest".into(),
+        hex(&fixture.digest.bytes()),
+        "--state-db".into(),
+        node_dir.join("state.sqlite").to_str().unwrap().into(),
+        "--blob-db".into(),
+        node_dir.join("blobs.sqlite").to_str().unwrap().into(),
+    ]
+}
+
+#[cfg(target_os = "linux")]
+fn start_real_bond_host(
+    binary: &Path,
+    fixture: &Fixture,
+    validator: ValidatorId,
+    node_dir: &Path,
+    socket: &Path,
+    uid: u32,
+    gid: u32,
+) -> BondServiceChild {
+    let mut args = real_bond_sqlite_pins(fixture, validator, node_dir);
+    args.extend([
+        "--signing-key-file".into(),
+        node_dir
+            .join("private/validator.key")
+            .to_str()
+            .unwrap()
+            .into(),
+        "--listen".into(),
+        "127.0.0.1:0".into(),
+        "--created-checkpoint".into(),
+        "10".into(),
+        "--timeout-seconds".into(),
+        "30".into(),
+        "--max-concurrent".into(),
+        "2".into(),
+        "--bond-currentness-config".into(),
+        node_dir
+            .join("private/currentness.conf")
+            .to_str()
+            .unwrap()
+            .into(),
+        "--confirm-offline-fence-advance".into(),
+    ]);
+    start_bond_service(binary, uid, gid, &args, socket)
+}
+
+#[cfg(target_os = "linux")]
+fn query_real_bond_host(
+    harness: &Path,
+    uid: u32,
+    gid: u32,
+    socket: &Path,
+    request: &Path,
+    response: &Path,
+) -> Vec<u8> {
+    let mut command = role_command(
+        harness,
+        uid,
+        gid,
+        &[
+            "--exact".into(),
+            "protected_original_bond_uses_two_distinct_approvers_and_workers".into(),
+            "--nocapture".into(),
+        ],
+    );
+    command.env("SUNRISE_BOND_REAL_NODE_QUERY_SOCKET", socket);
+    command.env("SUNRISE_BOND_REAL_NODE_QUERY_REQUEST", request);
+    command.env("SUNRISE_BOND_REAL_NODE_QUERY_RESPONSE", response);
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "real source observation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::read(response).unwrap()
 }
 
 #[cfg(target_os = "linux")]
@@ -2943,9 +3112,10 @@ fn protected_bond_namespace_run() {
     );
     assert!(!cli_dir.join("refused-registration").exists());
     broker.wait();
-    // Reuse this owner and its already verified Coin/genesis. A distinct
-    // dummy node UID supplies one pinned local locator for preparation and
-    // each subsequent approval/signing decision point.
+    // Reuse this owner and its already verified Coin/genesis. The compiled
+    // host can observe the standalone fixture's genesis Coin. The ordered
+    // handoff Coin comes from a later paid split; sqlite_genesis alone cannot
+    // install that post-genesis state, so that path retains the fixed response.
     let namespace = b"bond-local-fixture-instance";
     let node_dir = socket_dir("currentness");
     fs::create_dir(&node_dir).unwrap();
@@ -2954,11 +3124,19 @@ fn protected_bond_namespace_run() {
     let source_bytes = fs::read(cli_dir.join("source-coin")).unwrap();
     let source = objects::decode_object(&source_bytes).unwrap();
     let source_ref = object_ref(&fixture.resolver, &source, Epoch::new(0));
+    let source_host_key = LocalSigner::from_seed(fixture.source_host_validator_seed).address();
+    let source_host_validator = ValidatorId::new(*source_host_key.as_bytes());
+    assert_ne!(source_host_key, source_key);
+    assert_ne!(source_host_key, validator_key);
+    assert!(root.genesis_committee().validators().iter().any(|member| {
+        member.id == source_host_validator
+            && member.public_key.as_slice() == source_host_key.as_bytes()
+    }));
     let anchor = OrderedEconomicsPolicy::from_genesis_root(&root, fixture.domain)
         .unwrap()
         .anchor();
-    let frame = OriginalBondLocalObservationFrame {
-        validator: root.genesis_committee().validators()[0].id,
+    let mut frame = OriginalBondLocalObservationFrame {
+        validator: source_host_validator,
         chain_id: fixture.context.chain_id().clone(),
         protocol_version: fixture.context.protocol_version(),
         token: PortableSnapshotToken::new(
@@ -2980,12 +3158,13 @@ fn protected_bond_namespace_run() {
         through_digest: anchor,
         coin: source_ref.clone(),
     };
-    let response = currentness_wire::encode_response(&frame).unwrap();
+    let mut response = currentness_wire::encode_response(&frame).unwrap();
     fs::write(
         node_dir.join("request"),
         currentness_wire::encode_request(&source_ref, &source_bytes).unwrap(),
     )
     .unwrap();
+    set_mode(&node_dir.join("request"), 0o640);
     fs::write(node_dir.join("response"), &response).unwrap();
     let mut changed_fence = frame.clone();
     changed_fence.token = PortableSnapshotToken::new(
@@ -3000,24 +3179,127 @@ fn protected_bond_namespace_run() {
         currentness_wire::encode_response(&changed_fence).unwrap(),
     )
     .unwrap();
+    let real_host_pinned = std::env::var_os("SUNRISE_BOND_REAL_SQLITE_GENESIS").is_some();
+    assert_eq!(
+        real_host_pinned,
+        std::env::var_os("SUNRISE_BOND_REAL_SQLITE_SOURCE_HOST").is_some(),
+        "real SQLite genesis and source host artifacts must be pinned together"
+    );
+    // The ordered handoff still checks its post-genesis Coin, protected
+    // approvals, exact signed bytes and refusal cases against the fixed
+    // response. Only the standalone genesis Coin can be observed by this
+    // prepared SQLite source without adding a separate replay fixture.
+    let real_host_enabled =
+        real_host_pinned && std::env::var_os("SUNRISE_BOND_ORDERED_HANDOFF").is_none();
+    let real_host_binary = real_host_enabled.then(|| {
+        let genesis_binary = real_bond_artifact(
+            "SUNRISE_BOND_REAL_SQLITE_GENESIS",
+            "SUNRISE_BOND_REAL_SQLITE_GENESIS_SHA256",
+            &fixture.directory,
+        );
+        let host_binary = real_bond_artifact(
+            "SUNRISE_BOND_REAL_SQLITE_SOURCE_HOST",
+            "SUNRISE_BOND_REAL_SQLITE_SOURCE_HOST_SHA256",
+            &fixture.directory,
+        );
+        let node_private = node_dir.join("private");
+        fs::create_dir(&node_private).unwrap();
+        set_mode(&node_private, 0o700);
+        fs::write(
+            node_private.join("validator.key"),
+            fixture.source_host_validator_seed,
+        )
+        .unwrap();
+        set_mode(&node_private.join("validator.key"), 0o600);
+        let mut listener_config = format!("socket={}\n", node_socket.display());
+        for uid in [
+            cli_uid,
+            BROKER,
+            INNER_WORKER,
+            OUTER_WORKER,
+            INNER_APPROVER,
+            OUTER_APPROVER,
+        ] {
+            listener_config.push_str(&format!("allowed-uid={uid}\n"));
+        }
+        listener_config
+            .push_str("max-connections=64\nmax-requests=64\ntotal-deadline-seconds=180\n");
+        fs::write(node_private.join("currentness.conf"), listener_config).unwrap();
+        set_mode(&node_private.join("currentness.conf"), 0o600);
+        (genesis_binary, host_binary)
+    });
     fixture_chown(&node_dir, LOCAL_NODE, gid);
+    let mut real_host = real_host_binary
+        .as_ref()
+        .map(|(genesis_binary, host_binary)| {
+            let mut prepare = vec!["prepare".into()];
+            prepare.extend(real_bond_sqlite_pins(&fixture, frame.validator, &node_dir));
+            prepare.extend(["--created-checkpoint".into(), "10".into()]);
+            let prepared = run_role(genesis_binary, LOCAL_NODE, gid, &prepare);
+            assert!(
+                prepared.status.success(),
+                "real SQLite genesis failed: {}",
+                String::from_utf8_lossy(&prepared.stderr)
+            );
+            start_real_bond_host(
+                host_binary,
+                &fixture,
+                frame.validator,
+                &node_dir,
+                &node_socket,
+                LOCAL_NODE,
+                gid,
+            )
+        });
+    if real_host.is_some() {
+        response = query_real_bond_host(
+            &role_harness,
+            cli_uid,
+            gid,
+            &node_socket,
+            &node_dir.join("request"),
+            &cli_dir.join("real-node-response"),
+        );
+        frame = currentness_wire::decode_response(&response).unwrap();
+        assert_eq!(frame.validator, source_host_validator);
+        assert_eq!(frame.chain_id, *fixture.context.chain_id());
+        assert_eq!(frame.protocol_version, fixture.context.protocol_version());
+        assert_eq!(frame.token.domain(), fixture.domain);
+        assert_eq!(frame.epoch, Epoch::new(0));
+        assert_eq!(
+            frame.validator_set_digest,
+            root.genesis_committee()
+                .digest(root.genesis_resolver())
+                .unwrap()
+        );
+        assert_eq!(frame.genesis_digest, root.digest());
+        assert_eq!(frame.anchor, anchor);
+        assert_eq!(frame.through_height, 0);
+        assert_eq!(frame.through_view, 0);
+        assert_eq!(frame.through_digest, anchor);
+        assert_eq!(frame.coin, source_ref);
+    }
     let node_config = format!(
         "{config}local_node_socket={}\nlocal_node_uid={LOCAL_NODE}\nlocal_node_validator_id={}\nlocal_node_namespace_hex={}\n",
         node_socket.display(),
         hex(frame.validator.as_bytes()),
-        hex(namespace),
+        hex(frame.token.namespace()),
     );
     fs::write(cli_dir.join("config-node"), &node_config).unwrap();
     set_mode(&cli_dir.join("config-node"), 0o600);
-    let mut node = start_fixed_bond_node(
-        &role_harness,
-        (LOCAL_NODE, gid),
-        &node_socket,
-        &node_dir.join("request"),
-        &node_dir.join("response"),
-        1,
-        None,
-    );
+    let mut node = if real_host.is_none() {
+        Some(start_fixed_bond_node(
+            &role_harness,
+            (LOCAL_NODE, gid),
+            &node_socket,
+            &node_dir.join("request"),
+            &node_dir.join("response"),
+            1,
+            None,
+        ))
+    } else {
+        None
+    };
     let mut prepare_node = prepare_inner.clone();
     replace(
         &mut prepare_node,
@@ -3030,7 +3312,9 @@ fn protected_bond_namespace_run() {
         cli_dir.join("inner-request-node").to_str().unwrap().into(),
     );
     let prepared_node = run_role(&binary, cli_uid, gid, &prepare_node);
-    node.wait();
+    if let Some(node) = node.as_mut() {
+        node.wait();
+    }
     assert!(
         prepared_node.status.success(),
         "{}",
@@ -3041,7 +3325,7 @@ fn protected_bond_namespace_run() {
     assert!(node_review.contains("local_observation_chain_state_proof=false\n"));
     assert!(node_review.contains("local_observation_currentness_reserved=false\n"));
     assert!(node_review.contains(&format!("local_observation_frame_hex={}\n", hex(&response))));
-    let inner_node_bytes = fs::read(cli_dir.join("inner-request-node")).unwrap();
+    let mut inner_node_bytes = fs::read(cli_dir.join("inner-request-node")).unwrap();
     assert_eq!(inner_node_bytes[0], 2);
     assert!(
         inner_node_bytes
@@ -3115,6 +3399,13 @@ fn protected_bond_namespace_run() {
         &new_request_without_node_pins,
     ));
     assert!(!cli_dir.join("outer-new-request-unpinned").exists());
+    if let Some(host) = real_host.as_mut() {
+        host.stop_real_host();
+        assert!(
+            !node_socket.exists(),
+            "stopped real host retained its socket"
+        );
+    }
     let mut sign_node = cli_args("sign-bond-inner");
     replace(
         &mut sign_node,
@@ -3283,9 +3574,10 @@ fn protected_bond_namespace_run() {
     direct(BROKER, &worker_body_path, &worker_node_socket);
     worker_node.wait();
 
-    // The same protected approver must refuse when the second independent
-    // sample changes its writer fence after the typed confirmation. The
-    // fixed node is only a transport fixture, never a serving-node oracle.
+    // The same protected approver must refuse when the observed writer fence
+    // changes. In the compiled-host path this is an actual offline stop and
+    // restart of the original SQLite source; the fixed-node fallback only
+    // checks transport orchestration.
     let node_expires = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -3295,7 +3587,7 @@ fn protected_bond_namespace_run() {
         .resolver
         .hash_for_purpose(Epoch::new(0), HashPurpose::Transaction, &inner_node_bytes)
         .unwrap();
-    let inner_node_confirmation = format!(
+    let mut inner_node_confirmation = format!(
         "APPROVE-ORIGINAL-BOND phase=Inner request={} key={} frame_digest={} not_after={node_expires} request_digest={request_digest}",
         hex(&fixture.protected_request_id),
         source_key,
@@ -3312,15 +3604,45 @@ fn protected_bond_namespace_run() {
         "--not-after-unix-seconds",
         node_expires.to_string(),
     );
-    let mut changed_node = start_fixed_bond_node(
-        &role_harness,
-        (LOCAL_NODE, gid),
-        &node_socket,
-        &node_dir.join("request"),
-        &node_dir.join("response"),
-        2,
-        Some(&node_dir.join("changed-response")),
-    );
+    let mut changed_node = if let Some((_, host_binary)) = real_host_binary.as_ref() {
+        real_host = Some(start_real_bond_host(
+            host_binary,
+            &fixture,
+            frame.validator,
+            &node_dir,
+            &node_socket,
+            LOCAL_NODE,
+            gid,
+        ));
+        let restarted_response = query_real_bond_host(
+            &role_harness,
+            cli_uid,
+            gid,
+            &node_socket,
+            &node_dir.join("request"),
+            &cli_dir.join("restarted-node-response"),
+        );
+        let restarted = currentness_wire::decode_response(&restarted_response).unwrap();
+        assert_eq!(restarted.token.namespace(), frame.token.namespace());
+        assert_eq!(restarted.coin, frame.coin);
+        assert_eq!(restarted.through_digest, frame.through_digest);
+        assert_eq!(
+            restarted.token.writer_fence().get(),
+            frame.token.writer_fence().get().checked_add(1).unwrap(),
+            "real original host restart did not advance the writer fence"
+        );
+        None
+    } else {
+        Some(start_fixed_bond_node(
+            &role_harness,
+            (LOCAL_NODE, gid),
+            &node_socket,
+            &node_dir.join("request"),
+            &node_dir.join("response"),
+            2,
+            Some(&node_dir.join("changed-response")),
+        ))
+    };
     let changed_approval = approve_on_test_pty(
         &binary,
         INNER_APPROVER,
@@ -3332,23 +3654,82 @@ fn protected_bond_namespace_run() {
         !changed_approval.status.success(),
         "changed local fence was approved"
     );
-    changed_node.wait();
-    assert!(!node_socket.exists());
+    if let Some(node) = changed_node.as_mut() {
+        node.wait();
+        assert!(!node_socket.exists());
+    }
     assert_eq!(fs::read_dir(&approvals_node).unwrap().count(), 1);
 
-    // All decision points now sample the same pinned locator independently:
-    // three samples per approval and seven per signing phase. The fixed
-    // response proves orchestration only; compiled-host qualification is a
-    // separate owner.
-    let mut node = start_fixed_bond_node(
-        &role_harness,
-        (LOCAL_NODE, gid),
-        &node_socket,
-        &node_dir.join("request"),
-        &node_dir.join("response"),
-        20,
-        None,
-    );
+    // Refresh the request against the restarted source. The original v2
+    // approval and signing flow below then uses this one real locator at
+    // every decision point and retains its exact signed-byte assertions.
+    if real_host.is_some() {
+        response = query_real_bond_host(
+            &role_harness,
+            cli_uid,
+            gid,
+            &node_socket,
+            &node_dir.join("request"),
+            &cli_dir.join("current-node-response"),
+        );
+        let current = currentness_wire::decode_response(&response).unwrap();
+        assert_eq!(current.token.namespace(), frame.token.namespace());
+        assert_eq!(current.coin, source_ref);
+        assert_ne!(current.token.writer_fence(), frame.token.writer_fence());
+        fs::remove_file(cli_dir.join("inner-request-node")).unwrap();
+        fs::remove_file(cli_dir.join("outer-request-node")).unwrap();
+        let prepared = run_role(&binary, cli_uid, gid, &prepare_node);
+        assert!(
+            prepared.status.success(),
+            "{}",
+            String::from_utf8_lossy(&prepared.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&prepared.stdout)
+                .contains(&format!("local_observation_frame_hex={}\n", hex(&response)))
+        );
+        inner_node_bytes = fs::read(cli_dir.join("inner-request-node")).unwrap();
+        assert!(
+            inner_node_bytes
+                .windows(response.len())
+                .any(|part| part == response.as_slice())
+        );
+        let refreshed_digest = fixture
+            .resolver
+            .hash_for_purpose(Epoch::new(0), HashPurpose::Transaction, &inner_node_bytes)
+            .unwrap();
+        inner_node_confirmation = format!(
+            "APPROVE-ORIGINAL-BOND phase=Inner request={} key={} frame_digest={} not_after={node_expires} request_digest={refreshed_digest}",
+            hex(&fixture.protected_request_id),
+            source_key,
+            inner_digest,
+        );
+        let prepared = run_role(&binary, cli_uid, gid, &prepare_outer_node);
+        assert!(
+            prepared.status.success(),
+            "{}",
+            String::from_utf8_lossy(&prepared.stderr)
+        );
+        fs::remove_file(&request_node).unwrap();
+        fs::copy(cli_dir.join("inner-request-node"), &request_node).unwrap();
+        set_mode(&request_node, 0o600);
+        fixture_chown(&request_node, INNER_APPROVER, gid);
+    }
+    // The fixed-node fallback keeps its bounded sample count. The compiled
+    // host stays live for the same broker, approver and worker operations.
+    let mut node = if real_host.is_none() {
+        Some(start_fixed_bond_node(
+            &role_harness,
+            (LOCAL_NODE, gid),
+            &node_socket,
+            &node_dir.join("request"),
+            &node_dir.join("response"),
+            20,
+            None,
+        ))
+    } else {
+        None
+    };
     replace(&mut broker_node_args, "--max-connections", "4".into());
     replace(&mut broker_node_args, "--max-requests", "4".into());
     replace(
@@ -3516,7 +3897,12 @@ fn protected_bond_namespace_run() {
     );
     outer_node_worker.wait();
     broker_node.wait();
-    node.wait();
+    if let Some(node) = node.as_mut() {
+        node.wait();
+    }
+    if let Some(host) = real_host.as_mut() {
+        host.stop_real_host();
+    }
     assert!(!broker_node_socket.exists());
     assert!(!node_socket.exists());
     if std::env::var_os("SUNRISE_BOND_ORDERED_HANDOFF").is_some() {
@@ -3550,6 +3936,10 @@ fn protected_original_bond_uses_two_distinct_approvers_and_workers() {
     }
     if std::env::var_os("SUNRISE_BOND_NODE_SOCKET").is_some() {
         fixed_bond_observation_run();
+        return;
+    }
+    if std::env::var_os("SUNRISE_BOND_REAL_NODE_QUERY_SOCKET").is_some() {
+        read_real_bond_observation_run();
         return;
     }
     if std::env::var_os("SUNRISE_BOND_DIRECT_SOCKET").is_some() {
@@ -3629,6 +4019,10 @@ fn protected_original_bond_uses_two_distinct_approvers_and_workers() {
         for name in [
             "SUNRISE_BOND_ORDERED_HANDOFF",
             "SUNRISE_BOND_ORDERED_CLI_SHA256",
+            "SUNRISE_BOND_REAL_SQLITE_GENESIS",
+            "SUNRISE_BOND_REAL_SQLITE_GENESIS_SHA256",
+            "SUNRISE_BOND_REAL_SQLITE_SOURCE_HOST",
+            "SUNRISE_BOND_REAL_SQLITE_SOURCE_HOST_SHA256",
         ] {
             if let Some(value) = std::env::var_os(name) {
                 namespace.arg(format!(

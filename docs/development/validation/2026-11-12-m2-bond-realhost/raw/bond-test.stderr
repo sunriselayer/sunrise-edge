@@ -1,0 +1,20 @@
+
+thread 'protected_original_bond_uses_two_distinct_approvers_and_workers' (557631) panicked at apps/cli/tests/bond_registration.rs:4058:23:
+original bond namespace failed: status=exit status: 101 stdout=
+running 1 test
+test protected_original_bond_uses_two_distinct_approvers_and_workers ... FAILED
+
+failures:
+
+failures:
+    protected_original_bond_uses_two_distinct_approvers_and_workers
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 6.57s
+
+ stderr=
+thread 'protected_original_bond_uses_two_distinct_approvers_and_workers' (557635) panicked at apps/cli/tests/bond_registration.rs:2080:13:
+bond service exited with exit status: 1: sqlite-source-host: original bond currentness listener refused
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

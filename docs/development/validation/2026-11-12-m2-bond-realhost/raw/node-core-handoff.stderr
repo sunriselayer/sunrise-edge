@@ -1,0 +1,63 @@
+   Compiling smallvec v1.15.2
+   Compiling zeroize v1.9.0
+   Compiling tokio v1.53.1
+   Compiling syn v3.0.3
+   Compiling curve25519-dalek v4.1.3
+   Compiling parking_lot_core v0.9.12
+   Compiling parking_lot v0.12.5
+   Compiling futures-task v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling async-trait v0.1.92
+   Compiling ed25519-zebra v4.2.0
+   Compiling crypto v0.1.0 (/home/yu/Desktop/SunriseEdge/m2-bond-handoff-fixture-1112/crates/crypto)
+   Compiling scheduled-thread-pool v0.2.7
+   Compiling rusqlite v0.40.2
+   Compiling tokio-util v0.7.19
+   Compiling tokio-postgres v0.7.18
+   Compiling r2d2 v0.8.10
+   Compiling consensus v0.1.0 (/home/yu/Desktop/SunriseEdge/m2-bond-handoff-fixture-1112/crates/consensus)
+   Compiling postgres v0.19.14
+   Compiling r2d2_postgres v0.18.2
+   Compiling runtime-sqlite v0.1.0 (/home/yu/Desktop/SunriseEdge/m2-bond-handoff-fixture-1112/crates/runtime-sqlite)
+   Compiling runtime-postgres v0.1.0 (/home/yu/Desktop/SunriseEdge/m2-bond-handoff-fixture-1112/crates/runtime-postgres)
+   Compiling protocol-config v0.1.0 (/home/yu/Desktop/SunriseEdge/m2-bond-handoff-fixture-1112/crates/protocol-config)
+   Compiling execution v0.1.0 (/home/yu/Desktop/SunriseEdge/m2-bond-handoff-fixture-1112/crates/execution)
+   Compiling node-core v0.1.0 (/home/yu/Desktop/SunriseEdge/m2-bond-handoff-fixture-1112/crates/node-core)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2m 48s
+     Running unittests src/lib.rs (/home/yu/Desktop/SunriseEdge/validation-tmp/m2-bond-handoff-fixture-1112/target/debug/deps/node_core-7d6a6711c815bd8d)
+
+thread 'ordered_economics::tests::causal_placement::registration::initial_registration_distinct_source_and_validator_keys_order_effects' (782422) panicked at crates/node-core/src/ordered_economics/tests/causal_placement/registration.rs:145:5:
+protected bond handoff failed: status=exit status: 101 stdout=
+running 1 test
+test protected_original_bond_uses_two_distinct_approvers_and_workers ... FAILED
+
+failures:
+
+failures:
+    protected_original_bond_uses_two_distinct_approvers_and_workers
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 7.03s
+
+ stderr=
+thread 'protected_original_bond_uses_two_distinct_approvers_and_workers' (782493) panicked at apps/cli/tests/bond_registration.rs:4078:23:
+original bond namespace failed: status=exit status: 101 stdout=
+running 1 test
+test protected_original_bond_uses_two_distinct_approvers_and_workers ... FAILED
+
+failures:
+
+failures:
+    protected_original_bond_uses_two_distinct_approvers_and_workers
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 7.00s
+
+ stderr=
+thread 'protected_original_bond_uses_two_distinct_approvers_and_workers' (782497) panicked at apps/cli/tests/bond_registration.rs:2085:13:
+bond service exited with exit status: 1: sqlite-source-host: local signing key does not match the committed validator's registered public key
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p node-core --lib`
