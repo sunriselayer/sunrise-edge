@@ -1,0 +1,69 @@
+{
+  "source_head": "894e58817945b602fea97073bcee0c7f640c2955",
+  "source_tree": "72b23957fd8fcfaf19bcd288600be039384e024e",
+  "build_exit": 0,
+  "runtime_service_exit": 0,
+  "ordinary_passed": 7,
+  "ordinary_ignored": 1,
+  "protected_passed": 1,
+  "failed": 0,
+  "disconnect_marker_observed": true,
+  "raw_hashes_match_terminal": true,
+  "four_artifacts_and_four_libraries_unchanged": true,
+  "docker_listing": {
+    "command": [
+      "env",
+      "-u",
+      "DOCKER_CONTEXT",
+      "-u",
+      "DOCKER_TLS_VERIFY",
+      "-u",
+      "DOCKER_CERT_PATH",
+      "DOCKER_HOST=unix:///var/run/docker.sock",
+      "docker",
+      "ps",
+      "-a",
+      "--filter",
+      "label=sunrise.edge.genesis.controller=1113-v1",
+      "--no-trunc",
+      "--format",
+      "{{.ID}} {{.Names}} {{.Status}}"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "units": {
+    "exit": 0,
+    "stdout": "Id=sunrise-edge-genesis-build-1113.service\nLoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\n\nId=sunrise-edge-genesis-runtime-1113.service\nLoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\n",
+    "stderr": ""
+  },
+  "target_removed": true,
+  "runtime_request": {
+    "command": [
+      "newgrp",
+      "docker",
+      "-c",
+      "/usr/bin/python3 /home/yu/Desktop/SunriseEdge/validation-tmp/m2-genesis-disconnect-1113/controller-current.py --run"
+    ],
+    "service": [
+      "systemd-run",
+      "--user",
+      "--wait",
+      "--pipe",
+      "--collect",
+      "--service-type=exec",
+      "--unit=sunrise-edge-genesis-runtime-1113.service",
+      "--property=RuntimeMaxSec=2880",
+      "--property=Restart=no",
+      "--working-directory=/home/yu/src/github.com/sunriselayer/sunrise-edge",
+      "newgrp",
+      "docker",
+      "-c",
+      "/usr/bin/python3 /home/yu/Desktop/SunriseEdge/validation-tmp/m2-genesis-disconnect-1113/controller-current.py --run"
+    ],
+    "ordinary_and_protected": true,
+    "controller_sha256": "eda519f9cd4a9ccbea77e8aec0047dfb6e9581e7c16f56c89e290d03121d1f46"
+  },
+  "scope": "Existing protected genesis component only; no real approver/key enrollment or M2/release completion"
+}
