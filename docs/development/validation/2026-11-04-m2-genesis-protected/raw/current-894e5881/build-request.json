@@ -1,0 +1,54 @@
+{
+  "source": {
+    "head": "894e58817945b602fea97073bcee0c7f640c2955",
+    "tree": "72b23957fd8fcfaf19bcd288600be039384e024e"
+  },
+  "command": [
+    "/usr/bin/cargo",
+    "+1.97.1",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "sunrise-edge-operator",
+    "--test",
+    "standard_asset_genesis",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "service_command": [
+    "systemd-run",
+    "--user",
+    "--wait",
+    "--pipe",
+    "--collect",
+    "--service-type=exec",
+    "--unit=sunrise-edge-genesis-build-1113.service",
+    "--property=RuntimeMaxSec=1800",
+    "--property=MemoryMax=4G",
+    "--property=MemorySwapMax=0",
+    "--property=CPUQuota=200%",
+    "--working-directory=/home/yu/src/github.com/sunriselayer/sunrise-edge",
+    "--setenv=CARGO_TARGET_DIR=/home/yu/Desktop/SunriseEdge/validation-tmp/m2-genesis-disconnect-1113/target",
+    "--setenv=CARGO_BUILD_JOBS=1",
+    "--setenv=CARGO_INCREMENTAL=0",
+    "/usr/bin/cargo",
+    "+1.97.1",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "sunrise-edge-operator",
+    "--test",
+    "standard_asset_genesis",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "environment": {
+    "CARGO_TARGET_DIR": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-genesis-disconnect-1113/target",
+    "CARGO_BUILD_JOBS": "1",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_HOME": null,
+    "RUSTUP_HOME": null
+  }
+}
