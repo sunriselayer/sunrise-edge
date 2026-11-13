@@ -1,0 +1,146 @@
+{
+  "owner": "b282ba2d-e938-4e9b-ac06-e6516e57a8ca",
+  "name": "sunrise-readiness-1103-b282ba2d-e938-4e9b-ac06-e6516e57a8ca",
+  "sourceHead": "abccadfd9bd1ffa960a60ca7efc9dbc315e3d1ae",
+  "sourceTree": "5f874da90dcdba4e98dd7db5de6a96004ab58789",
+  "operatorCargoJsonSha256": "66e3c7dd93f54c72cbb6ab901f5967d2d7027b7a535d44b16c7f006cec782cf5",
+  "cliCargoJsonSha256": "574fde10210502d0cc21b83a23f0c066f0e05978448d6523fbedc96f4dbdc2a8",
+  "image": "python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+  "imageId": "sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+  "artifacts": [
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug/business_cut",
+      "sha256": "b83cb3e813d7e8099ba44ff1c9a08b3dea6d3b0ebed3ffae517cb4b76878cbf8",
+      "bytes": 337270688,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 66312,
+      "inode": 8710633
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug/business_import",
+      "sha256": "bbddf20e5f832b7060f4d8f9c6325ae0f448047beb5c231540bc41c5facc9420",
+      "bytes": 336427288,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 66312,
+      "inode": 8710613
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug/business_recovery",
+      "sha256": "e3598e5c3195f110ea1189b2dfc6c06b81d5e70d3108b880a551e82075713651",
+      "bytes": 337048336,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 66312,
+      "inode": 8710629
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug/conditional_readiness",
+      "sha256": "484a92acc12df04dfa798f940838a454f85262f0c8c7a229a7c801ad09ebd485",
+      "bytes": 336994712,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 66312,
+      "inode": 8710609
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug/ordered_seal",
+      "sha256": "b279ee68a3dc5c7a4893ee5d294bf9409a6a813834849df018465616573e0cff",
+      "bytes": 336388256,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 66312,
+      "inode": 8710638
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug/successor_activation",
+      "sha256": "caa3b4adbea3220d3f345120f5cb7f1b2fdc7503389227f1e79493c95c26ead5",
+      "bytes": 336667792,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 66312,
+      "inode": 8710632
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug/successor_host",
+      "sha256": "62a55e1e24ec24f46e96171c0f622f2240620f10f2d17679fb82cac280fddfe5",
+      "bytes": 345590096,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 66312,
+      "inode": 8710615
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug/sqlite_source_host",
+      "sha256": "9b3b80c8ceed76a9816c41536684da94506f87d98d076a81d950c907f0bf3a3f",
+      "bytes": 345173952,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 66312,
+      "inode": 8710634
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug/deps/conditional_readiness_sqlite-614f16a0bb574e81",
+      "sha256": "81312a801ae522d188657b762d41c1c1e84cd4e41f268812db416a282ee441f8",
+      "bytes": 450807064,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 66312,
+      "inode": 8710744
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug/sunrise-edge-cli",
+      "sha256": "ece9b6810fd304ab3b5b50c7f61d04ac8ca4459cace692008fabf7c7648b4e97",
+      "bytes": 206098360,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 66312,
+      "inode": 8710726
+    },
+    {
+      "path": "/usr/bin/kill",
+      "sha256": "a3e3b6b576ad76b7dc8143710adb9d6e0ea71a65429d101f3258dcc070a89c09",
+      "bytes": 34976,
+      "uid": 0,
+      "gid": 0,
+      "mode": 493,
+      "device": 66312,
+      "inode": 11819006
+    }
+  ],
+  "tmpfsMiB": 6144,
+  "memoryMiB": 8192,
+  "outerSeconds": 21600,
+  "profile": "recurring",
+  "selector": "compiled_registered_replacement_and_recurring_successor_hosts",
+  "startedAt": "2026-11-13T07:38:25.709Z",
+  "mounts": [
+    "type=bind,source=/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug,target=/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug,readonly",
+    "type=bind,source=/usr/bin/kill,target=/usr/bin/kill,readonly",
+    "type=bind,source=/usr/lib/ld-linux-x86-64.so.2,target=/usr/lib64/ld-linux-x86-64.so.2,readonly",
+    "type=bind,source=/usr/lib/libgcc_s.so.1,target=/mnt/libs/libgcc_s.so.1,readonly",
+    "type=bind,source=/usr/lib/libm.so.6,target=/mnt/libs/libm.so.6,readonly",
+    "type=bind,source=/usr/lib/libc.so.6,target=/mnt/libs/libc.so.6,readonly"
+  ],
+  "run": {
+    "code": 0,
+    "signal": null,
+    "abortReason": null,
+    "stdoutBytes": 168119,
+    "stderrBytes": 10260
+  },
+  "finishedAt": "2026-11-13T11:03:01.039Z",
+  "cleanup": "already-removed",
+  "failure": null
+}

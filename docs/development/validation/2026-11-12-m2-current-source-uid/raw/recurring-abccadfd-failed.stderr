@@ -1,0 +1,181 @@
+[acceptance-timing] stage=initial-readiness epoch=- observation=start elapsed_ms=0
+[acceptance-timing] stage=initial-readiness epoch=- observation=end elapsed_ms=5373
+[acceptance-timing] stage=compiled-seal epoch=0 observation=start elapsed_ms=0
+[acceptance-timing] stage=compiled-seal epoch=0 observation=end elapsed_ms=2330
+[acceptance-timing] stage=initial-seal epoch=0 observation=start elapsed_ms=0
+[acceptance-timing] stage=initial-seal epoch=0 observation=end elapsed_ms=5715
+[acceptance-timing] stage=first-successor epoch=1 observation=start elapsed_ms=0
+native_operations schema=1 stop=sigint connections_admitted=11 connections_refused=0 accept_failures=0 upgrade_failures=0 upgrade_timeouts=0 requests_dispatched=10 requests_refused=0 input_timeouts=0 output_timeouts=0 connection_failures=0 connection_task_failures=0 blocking_admitted=10 blocking_overloaded=0 blocking_closed=0 blocking_panics=0
+[acceptance-timing] stage=first-successor epoch=1 observation=end elapsed_ms=30025
+[acceptance-timing] stage=recurring-epoch epoch=1 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=1 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=1 observation=end elapsed_ms=44623
+[acceptance-timing] stage=history-cut epoch=1 observation=start elapsed_ms=0
+[acceptance-timing] stage=history-cut epoch=1 observation=end elapsed_ms=10411
+[acceptance-timing] stage=cut-import-readiness epoch=1 observation=start elapsed_ms=0
+[acceptance-timing] stage=cut-import-readiness epoch=1 observation=end elapsed_ms=5099
+[acceptance-timing] stage=ordered-seal epoch=1 observation=start elapsed_ms=0
+native_operations schema=1 stop=sigint connections_admitted=28 connections_refused=0 accept_failures=0 upgrade_failures=0 upgrade_timeouts=0 requests_dispatched=26 requests_refused=0 input_timeouts=0 output_timeouts=0 connection_failures=0 connection_task_failures=0 blocking_admitted=14 blocking_overloaded=0 blocking_closed=0 blocking_panics=0
+native_operations schema=1 stop=sigint connections_admitted=14 connections_refused=0 accept_failures=0 upgrade_failures=0 upgrade_timeouts=0 requests_dispatched=13 requests_refused=0 input_timeouts=0 output_timeouts=0 connection_failures=0 connection_task_failures=0 blocking_admitted=7 blocking_overloaded=0 blocking_closed=0 blocking_panics=0
+[acceptance-timing] stage=ordered-seal epoch=1 observation=end elapsed_ms=46792
+[acceptance-timing] stage=history-seal epoch=1 observation=start elapsed_ms=0
+[acceptance-timing] stage=history-seal epoch=1 observation=end elapsed_ms=11735
+[acceptance-timing] stage=successor-activation epoch=2 observation=start elapsed_ms=0
+[acceptance-timing] stage=successor-activation epoch=2 observation=end elapsed_ms=3340
+[acceptance-timing] stage=recurring-epoch epoch=1 observation=end elapsed_ms=245161
+[acceptance-timing] stage=recurring-epoch epoch=2 observation=start elapsed_ms=0
+[acceptance-timing] stage=fourth-host-restart epoch=2 observation=start elapsed_ms=0
+[acceptance-timing] stage=fourth-host-restart epoch=2 observation=end elapsed_ms=43469
+[acceptance-timing] stage=freeze-drain epoch=2 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=2 observation=end elapsed_ms=174183
+[acceptance-timing] stage=history-cut epoch=2 observation=start elapsed_ms=0
+[acceptance-timing] stage=history-cut epoch=2 observation=end elapsed_ms=28015
+[acceptance-timing] stage=cut-import-readiness epoch=2 observation=start elapsed_ms=0
+[acceptance-timing] stage=cut-import-readiness epoch=2 observation=end elapsed_ms=8437
+[acceptance-timing] stage=ordered-seal epoch=2 observation=start elapsed_ms=0
+[acceptance-timing] stage=ordered-seal epoch=2 observation=end elapsed_ms=34154
+[acceptance-timing] stage=history-seal epoch=2 observation=start elapsed_ms=0
+[acceptance-timing] stage=history-seal epoch=2 observation=end elapsed_ms=32960
+[acceptance-timing] stage=successor-activation epoch=3 observation=start elapsed_ms=0
+[acceptance-timing] stage=successor-activation epoch=3 observation=end elapsed_ms=10044
+[acceptance-timing] stage=recurring-epoch epoch=2 observation=end elapsed_ms=611124
+[acceptance-timing] stage=recurring-epoch epoch=3 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=3 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=3 observation=end elapsed_ms=383243
+[acceptance-timing] stage=history-cut epoch=3 observation=start elapsed_ms=0
+[acceptance-timing] stage=history-cut epoch=3 observation=end elapsed_ms=31366
+[acceptance-timing] stage=cut-import-readiness epoch=3 observation=start elapsed_ms=0
+[acceptance-timing] stage=cut-import-readiness epoch=3 observation=end elapsed_ms=11116
+[acceptance-timing] stage=ordered-seal epoch=3 observation=start elapsed_ms=0
+[acceptance-timing] stage=ordered-seal epoch=3 observation=end elapsed_ms=67262
+[acceptance-timing] stage=history-seal epoch=3 observation=start elapsed_ms=0
+[acceptance-timing] stage=history-seal epoch=3 observation=end elapsed_ms=39207
+[acceptance-timing] stage=successor-activation epoch=4 observation=start elapsed_ms=0
+[acceptance-timing] stage=successor-activation epoch=4 observation=end elapsed_ms=15125
+[acceptance-timing] stage=recurring-epoch epoch=3 observation=end elapsed_ms=1027904
+[acceptance-timing] stage=recurring-epoch epoch=4 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=4 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=4 observation=end elapsed_ms=530520
+[acceptance-timing] stage=history-cut epoch=4 observation=start elapsed_ms=0
+[acceptance-timing] stage=history-cut epoch=4 observation=end elapsed_ms=43007
+[acceptance-timing] stage=cut-import-readiness epoch=4 observation=start elapsed_ms=0
+[acceptance-timing] stage=cut-import-readiness epoch=4 observation=end elapsed_ms=13807
+[acceptance-timing] stage=ordered-seal epoch=4 observation=start elapsed_ms=0
+[acceptance-timing] stage=ordered-seal epoch=4 observation=end elapsed_ms=90994
+[acceptance-timing] stage=history-seal epoch=4 observation=start elapsed_ms=0
+[acceptance-timing] stage=history-seal epoch=4 observation=end elapsed_ms=54306
+[acceptance-timing] stage=successor-activation epoch=5 observation=start elapsed_ms=0
+[acceptance-timing] stage=successor-activation epoch=5 observation=end elapsed_ms=18326
+[acceptance-timing] stage=recurring-epoch epoch=4 observation=end elapsed_ms=1459559
+[acceptance-timing] stage=recurring-epoch epoch=5 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=5 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=5 observation=end elapsed_ms=682362
+[acceptance-timing] stage=history-cut epoch=5 observation=start elapsed_ms=0
+[acceptance-timing] stage=history-cut epoch=5 observation=end elapsed_ms=55603
+[acceptance-timing] stage=cut-import-readiness epoch=5 observation=start elapsed_ms=0
+[acceptance-timing] stage=cut-import-readiness epoch=5 observation=end elapsed_ms=16932
+[acceptance-timing] stage=ordered-seal epoch=5 observation=start elapsed_ms=0
+[acceptance-timing] stage=ordered-seal epoch=5 observation=end elapsed_ms=115755
+[acceptance-timing] stage=history-seal epoch=5 observation=start elapsed_ms=0
+[acceptance-timing] stage=history-seal epoch=5 observation=end elapsed_ms=69759
+[acceptance-timing] stage=successor-activation epoch=6 observation=start elapsed_ms=0
+[acceptance-timing] stage=successor-activation epoch=6 observation=end elapsed_ms=23117
+[acceptance-timing] stage=recurring-epoch epoch=5 observation=end elapsed_ms=1943358
+[acceptance-timing] stage=recurring-epoch epoch=6 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=6 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=6 observation=end elapsed_ms=881869
+[acceptance-timing] stage=history-cut epoch=6 observation=start elapsed_ms=0
+[acceptance-timing] stage=history-cut epoch=6 observation=end elapsed_ms=75367
+[acceptance-timing] stage=cut-import-readiness epoch=6 observation=start elapsed_ms=0
+[acceptance-timing] stage=cut-import-readiness epoch=6 observation=end elapsed_ms=20379
+[acceptance-timing] stage=ordered-seal epoch=6 observation=start elapsed_ms=0
+[acceptance-timing] stage=ordered-seal epoch=6 observation=end elapsed_ms=151314
+[acceptance-timing] stage=history-seal epoch=6 observation=start elapsed_ms=0
+[acceptance-timing] stage=history-seal epoch=6 observation=end elapsed_ms=89785
+[acceptance-timing] stage=successor-activation epoch=7 observation=start elapsed_ms=0
+[acceptance-timing] stage=successor-activation epoch=7 observation=end elapsed_ms=22779
+[acceptance-timing] stage=recurring-epoch epoch=6 observation=end elapsed_ms=2411887
+[acceptance-timing] stage=recurring-epoch epoch=7 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=7 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=7 observation=end elapsed_ms=1048646
+[acceptance-timing] stage=history-cut epoch=7 observation=start elapsed_ms=0
+[acceptance-timing] stage=history-cut epoch=7 observation=end elapsed_ms=84413
+[acceptance-timing] stage=cut-import-readiness epoch=7 observation=start elapsed_ms=0
+[acceptance-timing] stage=cut-import-readiness epoch=7 observation=end elapsed_ms=17910
+[acceptance-timing] stage=ordered-seal epoch=7 observation=start elapsed_ms=0
+[acceptance-timing] stage=ordered-seal epoch=7 observation=end elapsed_ms=175470
+[acceptance-timing] stage=history-seal epoch=7 observation=start elapsed_ms=0
+[acceptance-timing] stage=history-seal epoch=7 observation=end elapsed_ms=105850
+[acceptance-timing] stage=successor-activation epoch=8 observation=start elapsed_ms=0
+[acceptance-timing] stage=successor-activation epoch=8 observation=end elapsed_ms=21979
+[acceptance-timing] stage=recurring-epoch epoch=7 observation=end elapsed_ms=2814926
+[acceptance-timing] stage=terminal-unlock epoch=8 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=8 observation=start elapsed_ms=0
+[acceptance-timing] stage=freeze-drain epoch=8 observation=end elapsed_ms=1235246
+compiled saved-closure stage=pack-saved elapsed_ms=6972 success=true
+
+thread 'compiled_registered_replacement_and_recurring_successor_hosts' (7) panicked at apps/operator/tests/support/encrypted_recovery_acceptance.rs:94:5:
+compiled saved-closure stage=open-saved failed: stdout=[] stderr=[114, 101, 99, 111, 118, 101, 114, 121, 32, 113, 117, 111, 116, 97, 32, 114, 101, 102, 117, 115, 101, 100, 10]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at ./rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at ./rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: conditional_readiness_sqlite::encrypted_recovery_acceptance::success
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge/apps/operator/tests/support/encrypted_recovery_acceptance.rs:94:5
+   3: conditional_readiness_sqlite::encrypted_recovery_acceptance::relocate
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge/apps/operator/tests/support/encrypted_recovery_acceptance.rs:502:33
+   4: conditional_readiness_sqlite::successor_host_acceptance::recurring::run
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge/apps/operator/tests/support/recurring_host_acceptance.rs:3553:9
+   5: conditional_readiness_sqlite::successor_host_acceptance::accept
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge/apps/operator/tests/support/successor_host_acceptance.rs:2633:5
+   6: conditional_readiness_sqlite::successor_host_acceptance::run::{closure#0}::{closure#0}
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge/apps/operator/tests/support/successor_host_acceptance.rs:2293:36
+   7: tokio::runtime::context::runtime_mt::exit_runtime::<conditional_readiness_sqlite::successor_host_acceptance::run::{closure#0}::{closure#0}, ()>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/runtime_mt.rs:35:5
+   8: tokio::runtime::scheduler::multi_thread::worker::block_in_place::<conditional_readiness_sqlite::successor_host_acceptance::run::{closure#0}::{closure#0}, ()>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/multi_thread/worker.rs:505:9
+   9: tokio::runtime::scheduler::block_in_place::block_in_place::<conditional_readiness_sqlite::successor_host_acceptance::run::{closure#0}::{closure#0}, ()>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/block_in_place.rs:8:5
+  10: tokio::task::blocking::block_in_place::<conditional_readiness_sqlite::successor_host_acceptance::run::{closure#0}::{closure#0}, ()>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/blocking.rs:78:9
+  11: conditional_readiness_sqlite::successor_host_acceptance::run::{closure#0}
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge/apps/operator/tests/support/successor_host_acceptance.rs:2293:5
+  12: conditional_readiness_sqlite::ordered_seal_sqlite_acceptance::run::{closure#0}
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge/apps/operator/tests/support/ordered_seal_sqlite_acceptance.rs:2511:10
+  13: conditional_readiness_sqlite::run_conditional_readiness::{closure#0}
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge/apps/operator/tests/conditional_readiness_sqlite.rs:1121:6
+  14: conditional_readiness_sqlite::compiled_registered_replacement_and_recurring_successor_hosts::{closure#0}
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge/apps/operator/tests/conditional_readiness_sqlite.rs:561:37
+  15: <core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>> as core::future::future::Future>::poll
+             at ./rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/future/future.rs:133:9
+  16: <tokio::runtime::park::CachedParkThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/park.rs:284:71
+  17: tokio::task::coop::with_budget::<core::task::poll::Poll<()>, <tokio::runtime::park::CachedParkThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:167:5
+  18: tokio::task::coop::budget::<core::task::poll::Poll<()>, <tokio::runtime::park::CachedParkThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:133:5
+  19: <tokio::runtime::park::CachedParkThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/park.rs:284:31
+  20: <tokio::runtime::context::blocking::BlockingRegionGuard>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/blocking.rs:66:14
+  21: <tokio::runtime::scheduler::multi_thread::MultiThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/multi_thread/mod.rs:92:22
+  22: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::multi_thread::MultiThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, ()>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/runtime.rs:65:16
+  23: <tokio::runtime::scheduler::multi_thread::MultiThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/multi_thread/mod.rs:91:9
+  24: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:376:50
+  25: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at ./home/yu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:343:18
+  26: conditional_readiness_sqlite::compiled_registered_replacement_and_recurring_successor_hosts
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge/apps/operator/tests/conditional_readiness_sqlite.rs:561:42
+  27: conditional_readiness_sqlite::compiled_registered_replacement_and_recurring_successor_hosts::{closure#0}
+             at ./home/yu/src/github.com/sunriselayer/sunrise-edge/apps/operator/tests/conditional_readiness_sqlite.rs:560:73
+  28: <conditional_readiness_sqlite::compiled_registered_replacement_and_recurring_successor_hosts::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at ./rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  29: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at ./rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+[acceptance-timing] stage=terminal-unlock epoch=8 observation=unwind elapsed_ms=2385975

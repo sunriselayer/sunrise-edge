@@ -1,0 +1,146 @@
+{
+  "owner": "54fa554d-d4ae-4095-beb4-0a19ea78262a",
+  "name": "sunrise-readiness-1103-54fa554d-d4ae-4095-beb4-0a19ea78262a",
+  "sourceHead": "abccadfd9bd1ffa960a60ca7efc9dbc315e3d1ae",
+  "sourceTree": "5f874da90dcdba4e98dd7db5de6a96004ab58789",
+  "operatorCargoJsonSha256": "ff0597ba48b0e2519b130d385c1e746f342e69d4a971a8507bb9e538415cabd3",
+  "cliCargoJsonSha256": "be2190fc0f3a388e32f36e97d883e0a7503aa311590828f22bae82ceb32fe60e",
+  "image": "python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+  "imageId": "sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+  "artifacts": [
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-current-source-uid-1112/target/debug/business_cut",
+      "sha256": "ebe3f011283c5aa0db3a151dac82542c2534f02b3e150a1393e77f18d3d5dc63",
+      "bytes": 349628680,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 49,
+      "inode": 73810418
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-current-source-uid-1112/target/debug/business_import",
+      "sha256": "8382b7de6e382ab0d9fc5f76e7aca934677ca35b6f6bf10474d2c9f420366ce2",
+      "bytes": 348634336,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 49,
+      "inode": 73810221
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-current-source-uid-1112/target/debug/business_recovery",
+      "sha256": "7dc91bac1ce8b7d33cfce6be9427b1c792a2965f6a4e62612634d5e20f2ef931",
+      "bytes": 349355808,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 49,
+      "inode": 73809867
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-current-source-uid-1112/target/debug/conditional_readiness",
+      "sha256": "776d15c7f5a83307d4160cd12902dfe8b3d413ad3486594fc38cc236c65379a4",
+      "bytes": 349173376,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 49,
+      "inode": 73810166
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-current-source-uid-1112/target/debug/ordered_seal",
+      "sha256": "b34a78557cb2fbccf39b40e16c2d2c618de9117da4838beee90ef8e007505d5a",
+      "bytes": 348945416,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 49,
+      "inode": 73810258
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-current-source-uid-1112/target/debug/successor_activation",
+      "sha256": "417b71236bfcc55052f1c4f550c63c03125ba04297b58cab1e44136e39cd945c",
+      "bytes": 348984744,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 49,
+      "inode": 73810272
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-current-source-uid-1112/target/debug/successor_host",
+      "sha256": "aea20da0ecd8139f29046b18861381a4216cfa07f32d071b8bb426cfd4ceaa4b",
+      "bytes": 357675664,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 49,
+      "inode": 73810183
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-current-source-uid-1112/target/debug/sqlite_source_host",
+      "sha256": "3ea2fcd3367dbe35fb92184b96fa73068ba36e395a74f80bffe400aacf9a5c44",
+      "bytes": 357031008,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 49,
+      "inode": 73809885
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-current-source-uid-1112/target/debug/deps/conditional_readiness_sqlite-55c5969993f5e80c",
+      "sha256": "8e7cd66f79261c83f45f10396b514d0714a8fc4f39c7e284255b5390057127ea",
+      "bytes": 476936464,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 49,
+      "inode": 73828081
+    },
+    {
+      "path": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-current-source-uid-1112/target/debug/sunrise-edge-cli",
+      "sha256": "39d7ed9a34d605dfa42d5586004df54f6831112a7bfaad1dbb7d5a1b61299085",
+      "bytes": 218503840,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": 493,
+      "device": 49,
+      "inode": 73825702
+    },
+    {
+      "path": "/usr/bin/kill",
+      "sha256": "a1f5d916d9277c74c5f12d1a8ddb76a29bfa65a783de16b8135e0602b2d3a0be",
+      "bytes": 36584,
+      "uid": 0,
+      "gid": 0,
+      "mode": 493,
+      "device": 37,
+      "inode": 119577923
+    }
+  ],
+  "tmpfsMiB": 4096,
+  "memoryMiB": 6144,
+  "outerSeconds": 21600,
+  "profile": "recurring",
+  "selector": "compiled_registered_replacement_and_recurring_successor_hosts",
+  "startedAt": "2026-11-12T04:04:16.057Z",
+  "mounts": [
+    "type=bind,source=/home/yu/Desktop/SunriseEdge/validation-tmp/m2-current-source-uid-1112/target/debug,target=/home/yu/Desktop/SunriseEdge/validation-tmp/m2-current-source-uid-1112/target/debug,readonly",
+    "type=bind,source=/usr/bin/kill,target=/usr/bin/kill,readonly",
+    "type=bind,source=/usr/lib64/ld-linux-x86-64.so.2,target=/lib64/ld-linux-x86-64.so.2,readonly",
+    "type=bind,source=/usr/lib64/libgcc_s-16-20261029.so.1,target=/mnt/libs/libgcc_s.so.1,readonly",
+    "type=bind,source=/usr/lib64/libm.so.6,target=/mnt/libs/libm.so.6,readonly",
+    "type=bind,source=/usr/lib64/libc.so.6,target=/mnt/libs/libc.so.6,readonly"
+  ],
+  "run": {
+    "code": 101,
+    "signal": null,
+    "abortReason": null,
+    "stdoutBytes": 168215,
+    "stderrBytes": 18003
+  },
+  "finishedAt": "2026-11-12T07:40:33.594Z",
+  "cleanup": "already-removed",
+  "failure": "Error: Docker owner did not exit successfully\n    at file:///home/yu/src/github.com/sunriselayer/sunrise-edge/scripts/check-docker-readiness-fixture-1103.mjs:317:54\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)"
+}

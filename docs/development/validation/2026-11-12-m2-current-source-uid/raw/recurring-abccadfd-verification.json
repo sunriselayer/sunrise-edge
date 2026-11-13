@@ -1,0 +1,173 @@
+{
+  "checked_at_utc": "2026-11-13T11:05:45.698907+00:00",
+  "source_head": "abccadfd9bd1ffa960a60ca7efc9dbc315e3d1ae",
+  "source_tree": "5f874da90dcdba4e98dd7db5de6a96004ab58789",
+  "controller_exit": 0,
+  "runtime_exit": 0,
+  "passed": 1,
+  "failed": 0,
+  "selector": "compiled_registered_replacement_and_recurring_successor_hosts",
+  "completed_epochs": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "successor_epoch": 8,
+  "withdrawal_candidate_bytes": [
+    1832,
+    1832
+  ],
+  "committed_acknowledgements": 2,
+  "distinct_uid_marker_observed": true,
+  "runtime_stdout_bytes_match_receipt": true,
+  "runtime_stderr_bytes_match_receipt": true,
+  "all_eleven_artifact_hashes_unchanged_before_cleanup": true,
+  "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "node": "v24.19.0",
+  "cargo_build_commands": {
+    "source": {
+      "head": "abccadfd9bd1ffa960a60ca7efc9dbc315e3d1ae",
+      "tree": "5f874da90dcdba4e98dd7db5de6a96004ab58789"
+    },
+    "environment": {
+      "CARGO_TARGET_DIR": "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target",
+      "CARGO_BUILD_JOBS": "4",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "commands": [
+      [
+        "operator",
+        [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "-p",
+          "sunrise-edge-operator",
+          "--bins",
+          "--message-format=json"
+        ]
+      ],
+      [
+        "cli",
+        [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "-p",
+          "sunrise-edge-cli",
+          "--bin",
+          "sunrise-edge-cli",
+          "--message-format=json"
+        ]
+      ],
+      [
+        "harness",
+        [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "-p",
+          "sunrise-edge-operator",
+          "--test",
+          "conditional_readiness_sqlite",
+          "--no-run",
+          "--message-format=json"
+        ]
+      ]
+    ]
+  },
+  "controller_request": {
+    "argv": [
+      "/home/yu/.nvm/versions/node/v24.19.0/bin/node",
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge/scripts/check-docker-readiness-fixture-1103.mjs",
+      "--target-debug",
+      "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug",
+      "--harness",
+      "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug/deps/conditional_readiness_sqlite-614f16a0bb574e81",
+      "--operator-cargo-json",
+      "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/build-after-fetch/operator-and-harness-cargo.json",
+      "--cli-cargo-json",
+      "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/build-after-fetch/cli-cargo.json",
+      "--evidence-dir",
+      "/home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/evidence",
+      "--expected-head",
+      "abccadfd9bd1ffa960a60ca7efc9dbc315e3d1ae",
+      "--tmpfs-mib",
+      "6144",
+      "--memory-mib",
+      "8192",
+      "--outer-seconds",
+      "21600",
+      "--profile",
+      "recurring"
+    ],
+    "group_argv": [
+      "newgrp",
+      "docker",
+      "-c",
+      "/home/yu/.nvm/versions/node/v24.19.0/bin/node /home/yu/src/github.com/sunriselayer/sunrise-edge/scripts/check-docker-readiness-fixture-1103.mjs --target-debug /home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug --harness /home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/target/debug/deps/conditional_readiness_sqlite-614f16a0bb574e81 --operator-cargo-json /home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/build-after-fetch/operator-and-harness-cargo.json --cli-cargo-json /home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/build-after-fetch/cli-cargo.json --evidence-dir /home/yu/Desktop/SunriseEdge/validation-tmp/m2-n2-1113/evidence --expected-head abccadfd9bd1ffa960a60ca7efc9dbc315e3d1ae --tmpfs-mib 6144 --memory-mib 8192 --outer-seconds 21600 --profile recurring"
+    ],
+    "unit": "sunrise-edge-m2-n2-1113.service",
+    "runtime_max_seconds": 21720,
+    "scope": "Original recurring distinct-UID owner at clean abccadfd; existing maximum 6144 MiB tmpfs/8192 MiB memory profile; no product quota, selector, epoch, proof, or authority changes"
+  },
+  "containers": {
+    "listing": {
+      "arguments": [
+        "ps",
+        "-a",
+        "--filter",
+        "label=sunrise-edge.readiness-fixture-owner",
+        "--no-trunc",
+        "--format",
+        "{{.ID}} {{.Names}} {{.Status}}"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "exact_inspection": {
+      "arguments": [
+        "container",
+        "inspect",
+        "--format",
+        "{{.Id}} {{.Name}} {{.State.Status}}",
+        "sunrise-readiness-1103-b282ba2d-e938-4e9b-ac06-e6516e57a8ca",
+        "9e44e649ba340ab290ab8244d28a14804b6d541d1d35dbb16ea879355604726c"
+      ],
+      "exit_code": 1,
+      "stdout": "\n",
+      "stderr": "Error response from daemon: No such container: sunrise-readiness-1103-b282ba2d-e938-4e9b-ac06-e6516e57a8ca\nError response from daemon: No such container: 9e44e649ba340ab290ab8244d28a14804b6d541d1d35dbb16ea879355604726c\n"
+    }
+  },
+  "unit": {
+    "exit_code": 0,
+    "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\n",
+    "stderr": ""
+  },
+  "matching_processes": [],
+  "dedicated_target_removed": true,
+  "temporary_fixture_and_disposable_users": "container-local; container absent",
+  "scope": "Bounded N2 component only; parent M2/M7, authority/key enrollment and release qualification remain open",
+  "archived_stdout": [
+    {
+      "file": "recurring-abccadfd.stdout.gz",
+      "uncompressed_bytes": 168119,
+      "uncompressed_sha256": "a0e6176ec0b5bdd007c8fce9635cb13ef11511b1b35021aca161ae1b95d2da07",
+      "gzip_sha256": "fecd84da6cbcaab3f13a513021279e50a49ef3232ed54ff8b0089bfed79def5f"
+    },
+    {
+      "file": "recurring-abccadfd-failed.stdout.gz",
+      "uncompressed_bytes": 168215,
+      "uncompressed_sha256": "6d3c3b9f6c4bd6e8876a29391bcd4172eb699126a71dde29f8e4ca498437fccb",
+      "gzip_sha256": "e340a9d2aa1d3ffe76efbbc3da94180aa100fe5fba185b2b2044fa9caf4b7245"
+    }
+  ]
+}
