@@ -1,6 +1,6 @@
 # Sunrise Edge: 現在のTODO
 
-更新: 2026-11-13 (Asia/Singapore)。元85チェックのうち71件は完了、元の未完了は下の14件（親11件、子3件）。M2の完了済みfamilyとN1/N2結果・実host接続を可視化する補助チェックは元85件に加えない。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
+更新: 2026-11-14 (Asia/Singapore)。元85チェックのうち71件は完了、元の未完了は下の14件（親11件、子3件）。M2の完了済みfamilyとN1/N2結果・実host接続を可視化する補助チェックは元85件に加えない。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
 
 ## コード・検証: 親5件、子3件
 
@@ -16,7 +16,7 @@
   - 必須範囲: 保護された鍵backend、operator/authority分離、操作ごとの正確な内容確認、拒否・故障、必要な復旧・交換・取消。自動protocol署名と人のasset/governance承認を分ける。
   - 初期release対象の選択（2026-11-13）: 既存の選択済みfamilyに限定する。generic local/general・paidとFinalTransferは初期release対象外の将来範囲として残し、実装・検証完了とは数えない。
   - 完了済みの小項目は下のチェックで保持する。各結果のsource/profileと限界は[旧TODO][historical-todo]と[signing contracts](docs/architecture/signing-preparation.md)を参照する。個別合格を全familyの資格に転用しない。
-  - 残件: original bondの局所観測と承認・署名前の反復照会はPR #362で実装済み、実hostと保護署名の限定結合も下の小項目で検証済み。実承認者/鍵enrollmentとrelease資格は未達。選択済みfamilyの残るlifecycleと、確定対象に対する同一sourceの全体検証を照合する。対象外の全prepared型や全identity移行を新しい必須条件にしない。
+  - 残件: original bondの局所観測と承認・署名前の反復照会はPR #362で実装済み、実hostと保護署名の限定結合も下の小項目で検証済み。選択済みfamilyのlifecycleと元ownerの対応付けは[照合表](docs/architecture/signing-preparation.md#selected-family-lifecycle-correspondence)で整理済み。同一sourceの実UID/RELEASE全体資格、実承認者/鍵enrollmentとM2親の受入は未達。対象外の全prepared型や全identity移行を新しい必須条件にしない。
   - [x] **publicationの保護承認と取消・同一鍵復旧・交換component**: [専用custody](docs/architecture/local-publication-custody.md)と[lifecycle](docs/architecture/publication-custody-lifecycle.md)の既存実UID/PTY/拒否・restart結果に限定する。
   - [x] **genesis Standard Assetのtransfer・split/merge・mint/burn・create component**: [transfer](docs/architecture/standard-asset-transfer-custody.md)、[split/merge](docs/architecture/standard-asset-split-merge-custody.md)、[mint/burn](docs/architecture/standard-asset-mint-burn-custody.md)、[create](docs/architecture/standard-asset-create-asset-custody.md)の実CLI・別UID結果と、旧TODOに記録した限定復旧・live Coin handoffを含む。
   - [x] **own-created application asset/Coinの操作と限定復旧component**: [application asset pin](docs/architecture/decisions/0258-mint-burn-application-asset-pin.md)のmint/burnと[Coin custody](docs/architecture/standard-asset-application-coin-custody.md)のCoin操作・kind2/3 historical recoveryを既存profileで検証済み。
@@ -53,12 +53,14 @@
 | --- | --- |
 | N1 readiness / N2 successor | 選択した別UID worker/frontendと旧sourceの元owner実UID検証は存在する。現行sourceでの対応結果は上のN1/N2補助チェックで個別に追う。元のeligible key、retained slot、fresh serving warrant、committee/fenceを省略しない。 |
 | N3 対象consumer | 2026-11-13に初期releaseを既存の選択済みfamilyへ限定した。offline genesisとoriginal bondの限定経路を含む。generic local/general・paid、FinalTransferは初期release対象外の将来範囲。successor live-epoch担保移動はoriginal genesis限定profileの資格に含めない。 |
-| N4 lifecycle | 同一鍵復旧・取消・交換の既存結果をfamilyごとに使い、必要な未対応移行だけを特定する。新address aliasやhistorical claimant書換えを暗黙に採用しない。 |
+| N4 lifecycle | `8bb97ddf`の選択済みfamilyについて実装と元ownerの[対応付け](docs/architecture/signing-preparation.md#selected-family-lifecycle-correspondence)を完了。今回の照合では、採用済み契約に対する追加の未対応遷移は特定されなかった。同一鍵の再読込、別identityの署名、実object/membership移行を区別し、genesis/bondの限定restartを本番backup復旧へ広げない。過去の実行結果は各source/profileのまま保持し、N5の新たな実UID/RELEASE合格とはしない。 |
 | N5 全体資格 | 確定したconsumer/変更を既存の元test owner、実UID/RELEASE、同一sourceのGへ対応付ける。既存selector、7 epochs/e8、候補2件、8 links、35 rolesを縮めない。 |
 
 ## 公開準備: 6件
 
 これらは実役割・実値・実環境・公開権限の条件であり、fixture値やlocal Docker/loopbackの合格とは分ける。
+
+作業順（2026-11-14）: D04/D06/D07/D08/M6/M8の本番準備は後回しとし、既存の選択済みfamilyの非本番実装・検証を優先する。未確定の実運用情報を既存資料の提出待ちにはしない。元の完了条件は維持する。
 
 - [ ] **D04: 実validator・custody/admin役割とrelease profileを選ぶ**: 独立operators、real genesis/chain pins、economics、supported routes、exact release artifactを固定する。Native+SQLite firstの技術選択だけでは足りない。
 - [ ] **D06: 実genesis・鍵/config ceremonyを確認する**: 実genesisを独立検証し、実鍵・設定・独立installationをrehearsalする。parameterized author/inspector/installの既存コードを実ceremonyの結果と混同しない。
