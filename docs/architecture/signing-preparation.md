@@ -178,3 +178,17 @@ existence, ordinary CI success or this correspondence does not establish fresh
 same-source UID/RELEASE qualification, actual enrollment, production backup
 recovery or complete M2 acceptance. Unselected families and stopped work do
 not acquire implementation or qualification through this table.
+
+## Qualification owner correspondence
+
+The following owners keep the required evidence classes separate. This table
+adds no recipe, selector, fixture or prerequisite; source-specific results and
+missing conditions remain in [TODO.md](../../TODO.md).
+
+| Evidence class | Existing defining owner | Boundary |
+| --- | --- | --- |
+| Ordinary required validation | [Repository profiles](repository-validation.md), [closed plans](../../scripts/ci-gates.sh), [recipes](../../scripts/ci-execution.sh) and [hosted lanes](../../.github/workflows/ci.yml) | Complete local required and exact-source hosted results retain their own inputs. Ordinary success does not execute every ignored UID fixture or qualify saved RELEASE artifacts. |
+| Selected-family UID/PTY controls | The lifecycle owners above: [custody](../../scripts/check-docker-custody-fixture-1013.mjs), [positive Split](../../scripts/check-docker-positive-fee-split-fixture-1017.mjs), [ordered](../../scripts/check-docker-ordered-custody-fixture-1017.mjs), [certified](../../scripts/check-docker-certified-custody-fixture-1017.mjs), [readiness/recurring](../../scripts/check-docker-readiness-fixture-1103.mjs), [genesis](../../apps/operator/tests/standard_asset_genesis.rs) and [bond](../../apps/cli/tests/bond_registration.rs) | Retain each original selector/profile, bounds and oracle, with actual exits, EOF, wait/reap and owned-resource release. Disposable principals establish neither real enrollment nor another source's qualification. |
+| Fixed Native thirteen-artifact A/B | [Build/comparison owner](../../scripts/check-native-release-evidence.mjs) and [artifact-selection contract](native-release-handoff.md#selecting-an-artifact-entry) | Fresh fixed-profile builds, complete byte comparison and provenance do not execute the compared outputs or grant release authority. |
+| Saved RELEASE runtime | [Post-comparison runtime contract](native-release-handoff.md#separate-post-comparison-local-runtime-rehearsal) | Bind verified saved artifacts to their existing acceptance drivers. Preserve selectors, epochs, candidates, links, roles and delays. Runtime results remain distinct from UID coverage and final acceptance. |
+| Independent final review and issue disposition | [Exact-source handoff contract](../security/network-code-audit-scope.md#exact-source-and-reproducible-handoff) | Scope, report, findings/disposition and independent fix verification belong to the actual final revision. CI, ordinary technical approval and repeated component runs do not supply this evidence. Stopped-work boundaries remain in TODO. |

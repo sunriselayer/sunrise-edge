@@ -54,7 +54,7 @@
 | N1 readiness / N2 successor | 選択した別UID worker/frontendと旧sourceの元owner実UID検証は存在する。現行sourceでの対応結果は上のN1/N2補助チェックで個別に追う。元のeligible key、retained slot、fresh serving warrant、committee/fenceを省略しない。 |
 | N3 対象consumer | 2026-11-13に初期releaseを既存の選択済みfamilyへ限定した。offline genesisとoriginal bondの限定経路を含む。generic local/general・paid、FinalTransferは初期release対象外の将来範囲。successor live-epoch担保移動はoriginal genesis限定profileの資格に含めない。 |
 | N4 lifecycle | `8bb97ddf`の選択済みfamilyについて実装と元ownerの[対応付け](docs/architecture/signing-preparation.md#selected-family-lifecycle-correspondence)を完了。今回の照合では、採用済み契約に対する追加の未対応遷移は特定されなかった。同一鍵の再読込、別identityの署名、実object/membership移行を区別し、genesis/bondの限定restartを本番backup復旧へ広げない。過去の実行結果は各source/profileのまま保持し、N5の新たな実UID/RELEASE合格とはしない。 |
-| N5 全体資格 | 確定したconsumer/変更を既存の元test owner、実UID/RELEASE、同一sourceのGへ対応付ける。既存selector、7 epochs/e8、候補2件、8 links、35 rolesを縮めない。 |
+| N5 全体資格 | 選択済みconsumerのrequired・実UID/PTY・Native13 A/B・保存RELEASE runtime・独立最終reviewを[既存ownerへ対応付け済み](docs/architecture/signing-preparation.md#qualification-owner-correspondence)。全体資格は未達であり、G6の独立最終review/issue dispositionをCI・技術review・部分再実行で代替しない。停止条件が残る間は全体資格を閉じるためだけの一括再検証を増やさない。元のselector、7 epochs/e8、候補2件、8 links、35 rolesを維持する。 |
 
 ## 公開準備: 6件
 
