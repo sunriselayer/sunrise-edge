@@ -140,3 +140,55 @@ recheck. The [development fixture](original-bond-protected-signing.md) connects
 this limited path; it does not authorize generic bond operations or qualify real
 approvers, keys or release. Successor live-epoch collateral and other family
 choices remain open in TODO M2-N3.
+
+## Selected-family lifecycle correspondence
+
+The existing contracts distinguish same-key restoration, a new signing
+identity, and an authorized object or membership transition. Replacing a key
+file does not transfer an old identity's ownership, historical entitlement or
+approval. Cancellation affects later authorization checks; it cannot recall
+an already released signature. Automatic protocol workers retain their own
+live-authority and fencing rules rather than human approval tombstones.
+
+The publication and asset rows below use existing phases of the
+[bounded custody controller](../../scripts/check-docker-custody-fixture-1013.mjs).
+The [lifecycle contract](publication-custody-lifecycle.md) distinguishes
+historical signing-only recovery from the separately implemented live consumers.
+
+| Family | Implemented lifecycle boundary | Existing defining controls and limits |
+| --- | --- | --- |
+| Publication / kind 1 | Stop-first same-key recovery retains the complete revocation set. A new publisher needs its own matching key/config, request and exact approval. | `phase_recovery_verification`, `phase_retain_revocation_through_recovery`, `phase_new_identity`. A new publisher does not migrate the old account. |
+| Genesis Coin transfer / kind 2 | Historical same-key signing recovery and the separate recovered-A live A-to-B-to-A Coin handoff retain cancellation and restarted refusal. | `phase_transfer_recovery`, `phase_genesis_coin_identity_handoff`; [transfer probes](../../apps/cli/src/custody/asset_fixture.rs). The handoff moves that Coin, not every object or fee source. |
+| Genesis Coin split/merge / kind 3 | Same-key historical recovery, recovered-key self operations and the separate recovered-A foreign split/B return use their existing object-owner transitions. | `phase_split_merge_recovery`, `phase_split_merge`, `phase_genesis_split_identity_handoff`; [split/merge probes](../../apps/cli/src/custody/asset_split_merge_fixture.rs) and [handoff probe](../../apps/cli/src/custody/asset_fixture.rs). No account-wide identity alias is introduced. |
+| Genesis mint/burn / kind 4 | Same-key historical recovery and the separate live recovered-key mint/burn consumer preserve old/new revocations after restart. | `phase_genesis_mint_burn_recovery`, `phase_mint_burn`; [mint/burn probe](../../apps/cli/src/custody/asset_mint_burn_fixture.rs). This does not rotate TreasuryCap authority. |
+| Create-asset and own-created application asset/Coin | Recovered-key first create, mint/burn and six live Coin stages coexist with the independent historical application transfer and split/merge recovery profiles. | `phase_create_recovery`, `phase_initial_application_recovery`, `phase_own_asset_mint_burn`, `phase_own_asset_coin_operations`; [create probe](../../apps/cli/src/custody/asset_create_fixture.rs), [application Coin probe](../../apps/cli/src/custody/asset_application_coin_fixture.rs). Creator/publisher and separate genesis-fee pins remain fixed; creator migration is not supplied. |
+| Positive strict-partial fee Split Leg/Claim | Stop-first same-key recovery retains both phase approvals and permanent cancellation. Restored approvals, expired phases and a different historical claimant key refuse. | [Existing two-phase controller](../../scripts/check-docker-positive-fee-split-fixture-1017.mjs), `distinct_uid_positive_fee_split_probe` in the [owning probe](../../apps/cli/src/custody/positive_fee_split_fixture.rs). A different key does not inherit the old certificate's entitlement. |
+| Original ordered / certified FastVote workers | Stop/drain, downtime refusal, saved-signature replay, fencing and same-identity key-path recovery retain the existing protocol safety state. | `recover_stopped_keys` in the [ordered owner](../../scripts/fixtures/original-ordered-custody-1017.py), `recover_stopped_worker_keys` in the [certified owner](../../scripts/fixtures/certified-fastvote-custody-1017.py). A membership/key replacement needs its existing protocol authorization. |
+| Readiness / successor workers | Reaped workers resume through the original same-key-path recovery controls. Eligible keys, retained slots, fresh serving warrants and committee/fence checks remain authoritative. | The original [readiness/recurring owners](../../apps/operator/tests/conditional_readiness_sqlite.rs) and [successor protected helper](../../apps/operator/tests/support/successor_host_acceptance/protected.rs). This is not an arbitrary new-key substitution route. |
+| Offline genesis author | A new manifest worker resumes retained nested approval only for the same pinned draft/config/reviewer, unexpired state and no tombstone. The test restores the original key-file bytes after intentional wrong-key substitution and refusal; outer-review disconnect retains the approval for another worker. | `protected_author_reviews_three_exact_frames_and_installs_four_validator_pairs` in the [genesis owner](../../apps/operator/tests/standard_asset_genesis.rs), backed by [protected processing](../../apps/operator/src/standard_asset_genesis/protected.rs). Authenticated revoke survives restart. This is bounded resume/restoration, not lost-key backup recovery or in-place authority rotation. |
+| Original-genesis bond inner/outer | Broker restart retains exact approval records under its exclusive store lock. Workers require their separately pinned keys. Permanent tombstones invalidate the shared request ID, and release/revoke ordering is serialized. | `protected_original_bond_uses_two_distinct_approvers_and_workers` in the [bond owner](../../apps/cli/tests/bond_registration.rs), plus `exact_record_uid_expiry_restart_and_revoke` in [approval storage](../../apps/cli/src/custody/bond_approvals.rs). Source-host restart invalidates old currentness; refreshed requests need both approvals. No new-key or live-successor bond migration follows. |
+| Fee-claim preview/export | Inspection and development signing supply no protected-provider lifecycle. | The [review contract](fee-claim-review.md) remains separate from positive Split; a display is not protected approval. |
+
+These are source-to-owner correspondences, not new executions. Existing
+shared key/config startup checks need not be duplicated for every asset
+family. The historical [route/test map](signing-route-test-map.md) retains its
+own pinned snapshot; it is not rewritten by this table. Each executed result
+keeps its own source/profile in [TODO.md](../../TODO.md). An ignored fixture's
+existence, ordinary CI success or this correspondence does not establish fresh
+same-source UID/RELEASE qualification, actual enrollment, production backup
+recovery or complete M2 acceptance. Unselected families and stopped work do
+not acquire implementation or qualification through this table.
+
+## Qualification owner correspondence
+
+The following owners keep the required evidence classes separate. This table
+adds no recipe, selector, fixture or prerequisite; source-specific results and
+missing conditions remain in [TODO.md](../../TODO.md).
+
+| Evidence class | Existing defining owner | Boundary |
+| --- | --- | --- |
+| Ordinary required validation | [Repository profiles](repository-validation.md), [closed plans](../../scripts/ci-gates.sh), [recipes](../../scripts/ci-execution.sh) and [hosted lanes](../../.github/workflows/ci.yml) | Complete local required and exact-source hosted results retain their own inputs. Ordinary success does not execute every ignored UID fixture or qualify saved RELEASE artifacts. |
+| Selected-family UID/PTY controls | The lifecycle owners above: [custody](../../scripts/check-docker-custody-fixture-1013.mjs), [positive Split](../../scripts/check-docker-positive-fee-split-fixture-1017.mjs), [ordered](../../scripts/check-docker-ordered-custody-fixture-1017.mjs), [certified](../../scripts/check-docker-certified-custody-fixture-1017.mjs), [readiness/recurring](../../scripts/check-docker-readiness-fixture-1103.mjs), [genesis](../../apps/operator/tests/standard_asset_genesis.rs) and [bond](../../apps/cli/tests/bond_registration.rs) | Retain each original selector/profile, bounds and oracle, with actual exits, EOF, wait/reap and owned-resource release. Disposable principals establish neither real enrollment nor another source's qualification. |
+| Fixed Native thirteen-artifact A/B | [Build/comparison owner](../../scripts/check-native-release-evidence.mjs) and [artifact-selection contract](native-release-handoff.md#selecting-an-artifact-entry) | Fresh fixed-profile builds, complete byte comparison and provenance do not execute the compared outputs or grant release authority. |
+| Saved RELEASE runtime | [Post-comparison runtime contract](native-release-handoff.md#separate-post-comparison-local-runtime-rehearsal) | Bind verified saved artifacts to their existing acceptance drivers. Preserve selectors, epochs, candidates, links, roles and delays. Runtime results remain distinct from UID coverage and final acceptance. |
+| Independent final review and issue disposition | [Exact-source handoff contract](../security/network-code-audit-scope.md#exact-source-and-reproducible-handoff) | Scope, report, findings/disposition and independent fix verification belong to the actual final revision. CI, ordinary technical approval and repeated component runs do not supply this evidence. Stopped-work boundaries remain in TODO. |
